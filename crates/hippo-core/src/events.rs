@@ -15,7 +15,7 @@ pub struct EventEnvelope {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", content = "data")]
 pub enum EventPayload {
-    Shell(ShellEvent),
+    Shell(Box<ShellEvent>),
     FsChange(FsChangeEvent),
     IdeAction(IdeActionEvent),
     Raw(serde_json::Value),
@@ -81,7 +81,7 @@ impl EventEnvelope {
             envelope_id: Uuid::new_v4(),
             producer_version: 1,
             timestamp: Utc::now(),
-            payload: EventPayload::Shell(event),
+            payload: EventPayload::Shell(Box::new(event)),
         }
     }
 }

@@ -2,7 +2,7 @@ use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct HippoConfig {
     #[serde(default)]
     pub lmstudio: LmStudioConfig,
@@ -14,18 +14,6 @@ pub struct HippoConfig {
     pub brain: BrainConfig,
     #[serde(default)]
     pub storage: StorageConfig,
-}
-
-impl Default for HippoConfig {
-    fn default() -> Self {
-        Self {
-            lmstudio: LmStudioConfig::default(),
-            models: ModelsConfig::default(),
-            daemon: DaemonConfig::default(),
-            brain: BrainConfig::default(),
-            storage: StorageConfig::default(),
-        }
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

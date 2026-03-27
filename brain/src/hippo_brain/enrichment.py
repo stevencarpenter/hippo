@@ -100,21 +100,23 @@ def claim_pending_events(conn, batch_size: int, worker_id: str) -> list[dict]:
 
     events = []
     for row in cursor.fetchall():
-        events.append({
-            "id": row[0],
-            "session_id": row[1],
-            "timestamp": row[2],
-            "command": row[3],
-            "exit_code": row[4],
-            "duration_ms": row[5],
-            "cwd": row[6],
-            "hostname": row[7],
-            "shell": row[8],
-            "git_repo": row[9],
-            "git_branch": row[10],
-            "git_commit": row[11],
-            "git_dirty": row[12],
-        })
+        events.append(
+            {
+                "id": row[0],
+                "session_id": row[1],
+                "timestamp": row[2],
+                "command": row[3],
+                "exit_code": row[4],
+                "duration_ms": row[5],
+                "cwd": row[6],
+                "hostname": row[7],
+                "shell": row[8],
+                "git_repo": row[9],
+                "git_branch": row[10],
+                "git_commit": row[11],
+                "git_dirty": row[12],
+            }
+        )
     return events
 
 
@@ -124,14 +126,16 @@ def write_knowledge_node(
     """Insert knowledge node, link to events, upsert entities, mark queue done."""
     node_uuid = str(uuid.uuid4())
     now_ms = int(time.time() * 1000)
-    content = json.dumps({
-        "summary": result.summary,
-        "intent": result.intent,
-        "outcome": result.outcome,
-        "entities": result.entities,
-        "relationships": result.relationships,
-        "tags": result.tags,
-    })
+    content = json.dumps(
+        {
+            "summary": result.summary,
+            "intent": result.intent,
+            "outcome": result.outcome,
+            "entities": result.entities,
+            "relationships": result.relationships,
+            "tags": result.tags,
+        }
+    )
     tags_json = json.dumps(result.tags)
 
     cursor = conn.execute(

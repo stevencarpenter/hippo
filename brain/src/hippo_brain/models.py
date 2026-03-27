@@ -6,13 +6,15 @@ class EnrichmentResult:
     summary: str
     intent: str
     outcome: str
-    entities: dict = field(default_factory=lambda: {
-        "projects": [],
-        "tools": [],
-        "files": [],
-        "services": [],
-        "errors": [],
-    })
+    entities: dict = field(
+        default_factory=lambda: {
+            "projects": [],
+            "tools": [],
+            "files": [],
+            "services": [],
+            "errors": [],
+        }
+    )
     relationships: list = field(default_factory=list)
     tags: list = field(default_factory=list)
     embed_text: str = ""

@@ -237,9 +237,8 @@ pub fn get_entities(
     conn: &Connection,
     entity_type: Option<&str>,
 ) -> Result<Vec<crate::protocol::EntityInfo>> {
-    let mut sql = String::from(
-        "SELECT id, type, name, canonical, first_seen, last_seen FROM entities",
-    );
+    let mut sql =
+        String::from("SELECT id, type, name, canonical, first_seen, last_seen FROM entities");
     let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
     if let Some(et) = entity_type {
         sql.push_str(" WHERE type = ?1");
@@ -261,10 +260,7 @@ pub fn get_entities(
     Ok(rows.filter_map(|r| r.ok()).collect())
 }
 
-pub fn raw_query(
-    conn: &Connection,
-    text: &str,
-) -> Result<Vec<crate::protocol::QueryHit>> {
+pub fn raw_query(conn: &Connection, text: &str) -> Result<Vec<crate::protocol::QueryHit>> {
     let pattern = format!("%{}%", text);
     let mut stmt = conn.prepare(
         "SELECT id, command, cwd, timestamp FROM events WHERE command LIKE ?1
@@ -386,7 +382,13 @@ pub fn recover_fallback_files(
                             "unknown",
                             session_map,
                         )?;
-                        match insert_event(conn, session_id, shell_event, shell_event.redaction_count, None) {
+                        match insert_event(
+                            conn,
+                            session_id,
+                            shell_event,
+                            shell_event.redaction_count,
+                            None,
+                        ) {
                             Ok(_) => recovered += 1,
                             Err(_) => errors += 1,
                         }
@@ -491,9 +493,11 @@ mod tests {
 
         // Verify event exists
         let cmd: String = conn
-            .query_row("SELECT command FROM events WHERE id = ?1", [event_id], |row| {
-                row.get(0)
-            })
+            .query_row(
+                "SELECT command FROM events WHERE id = ?1",
+                [event_id],
+                |row| row.get(0),
+            )
             .unwrap();
         assert_eq!(cmd, "cargo build");
 
@@ -623,7 +627,8 @@ mod tests {
         // Recover into SQLite
         let conn = open_memory().unwrap();
         let mut session_map = HashMap::new();
-        let (recovered, errors) = recover_fallback_files(&conn, &fallback_dir, &mut session_map).unwrap();
+        let (recovered, errors) =
+            recover_fallback_files(&conn, &fallback_dir, &mut session_map).unwrap();
         assert_eq!(recovered, 2);
         assert_eq!(errors, 0);
 

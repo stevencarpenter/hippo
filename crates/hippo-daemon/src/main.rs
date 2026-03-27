@@ -148,10 +148,7 @@ async fn main() -> Result<()> {
             let since_ms = since
                 .as_deref()
                 .and_then(commands::parse_duration_to_since_ms);
-            println!(
-                "Export training data to {} (since_ms: {:?})",
-                out, since_ms
-            );
+            println!("Export training data to {} (since_ms: {:?})", out, since_ms);
             println!("Training export requires the brain server. Use: hippo-brain export");
         }
         Commands::Config { action } => match action {
@@ -160,7 +157,10 @@ async fn main() -> Result<()> {
                 let config_path = config.storage.config_dir.join("config.toml");
                 std::fs::create_dir_all(&config.storage.config_dir)?;
                 if !config_path.exists() {
-                    std::fs::write(&config_path, include_str!("../../../config/config.default.toml"))?;
+                    std::fs::write(
+                        &config_path,
+                        include_str!("../../../config/config.default.toml"),
+                    )?;
                 }
                 let status = std::process::Command::new(editor)
                     .arg(&config_path)

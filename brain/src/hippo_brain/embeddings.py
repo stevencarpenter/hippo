@@ -3,24 +3,26 @@ from pathlib import Path
 import lancedb
 import pyarrow as pa
 
-KNOWLEDGE_SCHEMA = pa.schema([
-    pa.field("id", pa.int64()),
-    pa.field("session_id", pa.int64()),
-    pa.field("captured_at", pa.int64()),
-    pa.field("commands_raw", pa.string()),
-    pa.field("cwd", pa.string()),
-    pa.field("git_branch", pa.string()),
-    pa.field("git_repo", pa.string()),
-    pa.field("outcome", pa.string()),
-    pa.field("tags", pa.string()),
-    pa.field("entities_json", pa.string()),
-    pa.field("embed_text", pa.string()),
-    pa.field("summary", pa.string()),
-    pa.field("vec_knowledge", pa.list_(pa.float32(), 2560)),
-    pa.field("vec_command", pa.list_(pa.float32(), 384)),
-    pa.field("enrichment_model", pa.string()),
-    pa.field("enrichment_version", pa.int32()),
-])
+KNOWLEDGE_SCHEMA = pa.schema(
+    [
+        pa.field("id", pa.int64()),
+        pa.field("session_id", pa.int64()),
+        pa.field("captured_at", pa.int64()),
+        pa.field("commands_raw", pa.string()),
+        pa.field("cwd", pa.string()),
+        pa.field("git_branch", pa.string()),
+        pa.field("git_repo", pa.string()),
+        pa.field("outcome", pa.string()),
+        pa.field("tags", pa.string()),
+        pa.field("entities_json", pa.string()),
+        pa.field("embed_text", pa.string()),
+        pa.field("summary", pa.string()),
+        pa.field("vec_knowledge", pa.list_(pa.float32(), 2560)),
+        pa.field("vec_command", pa.list_(pa.float32(), 384)),
+        pa.field("enrichment_model", pa.string()),
+        pa.field("enrichment_version", pa.int32()),
+    ]
+)
 
 
 def open_vector_db(data_dir: str | Path) -> lancedb.DBConnection:
