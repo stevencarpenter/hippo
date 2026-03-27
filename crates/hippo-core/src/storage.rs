@@ -374,12 +374,14 @@ pub fn recover_fallback_files(
             match serde_json::from_str::<crate::events::EventEnvelope>(line) {
                 Ok(envelope) => {
                     if let crate::events::EventPayload::Shell(ref shell_event) = envelope.payload {
+                        let username =
+                            std::env::var("USER").unwrap_or_else(|_| "unknown".to_string());
                         let session_id = get_or_create_session(
                             conn,
                             &shell_event.session_id.to_string(),
                             &shell_event.hostname,
                             &format!("{:?}", shell_event.shell),
-                            "unknown",
+                            &username,
                             session_map,
                         )?;
                         match insert_event(

@@ -8,11 +8,13 @@ use rusqlite::Connection;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::Mutex;
+use tokio::sync::watch;
 use tokio::time::{self, Duration, Instant};
 use tracing::{error, info, warn};
+
+use crate::framing::{read_frame, write_frame};
 
 pub struct DaemonState {
     pub config: HippoConfig,
@@ -22,30 +24,7 @@ pub struct DaemonState {
     pub start_time: Instant,
     pub drop_count: AtomicU64,
     pub event_buffer: Mutex<Vec<EventEnvelope>>,
-}
-
-async fn read_frame(stream: &mut UnixStream) -> Result<Option<Vec<u8>>> {
-    let mut len_buf = [0u8; 4];
-    match stream.read_exact(&mut len_buf).await {
-        Ok(_) => {}
-        Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => return Ok(None),
-        Err(e) => return Err(e.into()),
-    }
-    let len = u32::from_be_bytes(len_buf) as usize;
-    if len > 10 * 1024 * 1024 {
-        anyhow::bail!("frame too large: {} bytes", len);
-    }
-    let mut buf = vec![0u8; len];
-    stream.read_exact(&mut buf).await?;
-    Ok(Some(buf))
-}
-
-async fn write_frame(stream: &mut UnixStream, data: &[u8]) -> Result<()> {
-    let len = (data.len() as u32).to_be_bytes();
-    stream.write_all(&len).await?;
-    stream.write_all(data).await?;
-    stream.flush().await?;
-    Ok(())
+    pub shutdown_tx: watch::Sender<bool>,
 }
 
 pub async fn handle_request(state: &Arc<DaemonState>, request: DaemonRequest) -> DaemonResponse {
@@ -68,6 +47,29 @@ pub async fn handle_request(state: &Arc<DaemonState>, request: DaemonRequest) ->
                         storage::list_fallback_files(&state.config.fallback_dir())
                             .map(|f| f.len() as u64)
                             .unwrap_or(0);
+
+                    // Check LM Studio reachability
+                    let lm_url = format!("{}/models", state.config.lmstudio.base_url);
+                    let client = reqwest::Client::builder()
+                        .timeout(Duration::from_secs(1))
+                        .build()
+                        .unwrap_or_default();
+                    status.lmstudio_reachable = client
+                        .get(&lm_url)
+                        .send()
+                        .await
+                        .map(|r| r.status().is_success())
+                        .unwrap_or(false);
+
+                    // Check Brain reachability
+                    let brain_url = format!("http://localhost:{}/health", state.config.brain.port);
+                    status.brain_reachable = client
+                        .get(&brain_url)
+                        .send()
+                        .await
+                        .map(|r| r.status().is_success())
+                        .unwrap_or(false);
+
                     DaemonResponse::Status(status)
                 }
                 Err(e) => DaemonResponse::Error(e.to_string()),
@@ -129,6 +131,7 @@ pub async fn flush_events(state: &Arc<DaemonState>) {
         return;
     }
 
+    let username = std::env::var("USER").unwrap_or_else(|_| "unknown".to_string());
     let db = state.db.lock().await;
     let mut session_map = state.session_map.lock().await;
 
@@ -151,21 +154,32 @@ pub async fn flush_events(state: &Arc<DaemonState>) {
                 })
                 .collect();
 
+            // Build a redacted envelope for fallback paths -- never write
+            // the original (un-redacted) envelope to disk.
+            redacted_event.env_snapshot = filtered_env.clone();
+            let redacted_envelope = EventEnvelope {
+                envelope_id: envelope.envelope_id,
+                producer_version: envelope.producer_version,
+                timestamp: envelope.timestamp,
+                payload: EventPayload::Shell(redacted_event.clone()),
+            };
+
             let shell_str = format!("{:?}", redacted_event.shell);
             let session_id = match storage::get_or_create_session(
                 &db,
                 &redacted_event.session_id.to_string(),
                 &redacted_event.hostname,
                 &shell_str,
-                "unknown",
+                &username,
                 &mut session_map,
             ) {
                 Ok(id) => id,
                 Err(e) => {
                     warn!("session creation failed, falling back: {}", e);
-                    if let Err(fe) =
-                        storage::write_fallback_jsonl(&state.config.fallback_dir(), envelope)
-                    {
+                    if let Err(fe) = storage::write_fallback_jsonl(
+                        &state.config.fallback_dir(),
+                        &redacted_envelope,
+                    ) {
                         error!("fallback write failed: {}", fe);
                     }
                     state.drop_count.fetch_add(1, Ordering::Relaxed);
@@ -190,7 +204,7 @@ pub async fn flush_events(state: &Arc<DaemonState>) {
             ) {
                 warn!("event insert failed, falling back: {}", e);
                 if let Err(fe) =
-                    storage::write_fallback_jsonl(&state.config.fallback_dir(), envelope)
+                    storage::write_fallback_jsonl(&state.config.fallback_dir(), &redacted_envelope)
                 {
                     error!("fallback write failed: {}", fe);
                 }
@@ -232,6 +246,8 @@ pub async fn run(config: HippoConfig) -> Result<()> {
         Err(e) => warn!("fallback recovery failed: {}", e),
     }
 
+    let (shutdown_tx, mut shutdown_rx) = watch::channel(false);
+
     let state = Arc::new(DaemonState {
         config: config.clone(),
         db: Mutex::new(conn),
@@ -240,16 +256,26 @@ pub async fn run(config: HippoConfig) -> Result<()> {
         start_time: Instant::now(),
         drop_count: AtomicU64::new(0),
         event_buffer: Mutex::new(Vec::new()),
+        shutdown_tx,
     });
 
     // Spawn flush task
     let flush_state = Arc::clone(&state);
     let flush_interval = config.daemon.flush_interval_ms;
+    let mut flush_shutdown_rx = state.shutdown_tx.subscribe();
     tokio::spawn(async move {
         let mut interval = time::interval(Duration::from_millis(flush_interval));
         loop {
-            interval.tick().await;
-            flush_events(&flush_state).await;
+            tokio::select! {
+                _ = interval.tick() => {
+                    flush_events(&flush_state).await;
+                }
+                _ = flush_shutdown_rx.changed() => {
+                    // Final flush before exiting
+                    flush_events(&flush_state).await;
+                    break;
+                }
+            }
         }
     });
 
@@ -258,14 +284,27 @@ pub async fn run(config: HippoConfig) -> Result<()> {
     info!("daemon listening on {:?}", socket_path);
 
     loop {
-        let (stream, _) = listener.accept().await?;
-        let conn_state = Arc::clone(&state);
-        tokio::spawn(async move {
-            if let Err(e) = handle_connection(conn_state, stream).await {
-                warn!("connection error: {}", e);
+        tokio::select! {
+            result = listener.accept() => {
+                let (stream, _) = result?;
+                let conn_state = Arc::clone(&state);
+                tokio::spawn(async move {
+                    if let Err(e) = handle_connection(conn_state, stream).await {
+                        warn!("connection error: {}", e);
+                    }
+                });
             }
-        });
+            _ = shutdown_rx.changed() => {
+                info!("shutdown signal received, stopping accept loop");
+                break;
+            }
+        }
     }
+
+    // Final flush before exit
+    flush_events(&state).await;
+    info!("daemon shut down cleanly");
+    Ok(())
 }
 
 async fn handle_connection(state: Arc<DaemonState>, mut stream: UnixStream) -> Result<()> {
@@ -277,16 +316,16 @@ async fn handle_connection(state: Arc<DaemonState>, mut stream: UnixStream) -> R
 
         let response = handle_request(&state, request).await;
 
-        // IngestEvent is fire-and-forget — no response
+        // IngestEvent is fire-and-forget -- no response
         if !is_ingest {
             let response_json = serde_json::to_vec(&response)?;
             write_frame(&mut stream, &response_json).await?;
         }
 
         if is_shutdown {
-            // Flush remaining events before exit
-            flush_events(&state).await;
-            std::process::exit(0);
+            // Signal all tasks to shut down gracefully
+            let _ = state.shutdown_tx.send(true);
+            break;
         }
     }
     Ok(())

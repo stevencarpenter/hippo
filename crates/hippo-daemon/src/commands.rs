@@ -1,36 +1,16 @@
 use anyhow::Result;
 use chrono::Utc;
-use hippo_core::config::HippoConfig;
+use hippo_core::config::{ENV_ALLOWLIST, HippoConfig};
 use hippo_core::events::{EventEnvelope, GitState, ShellEvent, ShellKind};
 use hippo_core::protocol::{DaemonRequest, DaemonResponse};
 use hippo_core::redaction::RedactionEngine;
 use hippo_core::storage;
 use std::collections::HashMap;
 use std::path::PathBuf;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::UnixStream;
 use uuid::Uuid;
 
-async fn read_frame(stream: &mut UnixStream) -> Result<Option<Vec<u8>>> {
-    let mut len_buf = [0u8; 4];
-    match stream.read_exact(&mut len_buf).await {
-        Ok(_) => {}
-        Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => return Ok(None),
-        Err(e) => return Err(e.into()),
-    }
-    let len = u32::from_be_bytes(len_buf) as usize;
-    let mut buf = vec![0u8; len];
-    stream.read_exact(&mut buf).await?;
-    Ok(Some(buf))
-}
-
-async fn write_frame(stream: &mut UnixStream, data: &[u8]) -> Result<()> {
-    let len = (data.len() as u32).to_be_bytes();
-    stream.write_all(&len).await?;
-    stream.write_all(data).await?;
-    stream.flush().await?;
-    Ok(())
-}
+use crate::framing::{read_frame, write_frame};
 
 pub async fn send_request(
     socket_path: &std::path::Path,
@@ -98,7 +78,9 @@ pub async fn handle_send_event_shell(
         None
     };
 
-    let env_snapshot: HashMap<String, String> = std::env::vars().collect();
+    let env_snapshot: HashMap<String, String> = std::env::vars()
+        .filter(|(k, _)| ENV_ALLOWLIST.contains(&k.as_str()))
+        .collect();
 
     let event = ShellEvent {
         session_id,

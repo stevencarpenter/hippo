@@ -1,6 +1,7 @@
 mod cli;
 mod commands;
 mod daemon;
+mod framing;
 
 use anyhow::Result;
 use clap::Parser;
