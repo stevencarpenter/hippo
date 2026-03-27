@@ -43,3 +43,11 @@ async def test_mock_embed_deterministic(mock_client):
 
 async def test_mock_reachable(mock_client):
     assert await mock_client.is_reachable() is True
+
+
+def test_deterministic_vector_non_multiple_of_8_dims():
+    """When dims is not a multiple of 8, the inner break on line 97 fires."""
+    vec = MockLMStudioClient._deterministic_vector("test", 10)
+    assert len(vec) == 10
+    magnitude = math.sqrt(sum(x * x for x in vec))
+    assert abs(magnitude - 1.0) < 1e-6

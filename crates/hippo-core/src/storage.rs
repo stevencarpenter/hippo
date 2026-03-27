@@ -651,4 +651,278 @@ mod tests {
             .collect();
         assert_eq!(done_files.len(), 1);
     }
+
+    #[test]
+    fn test_insert_event_no_git_no_output() {
+        // Exercises the None branches for git_state, stdout, stderr
+        let conn = open_memory().unwrap();
+        let sid = upsert_session(&conn, "sess-no-git", "laptop", "zsh", "user").unwrap();
+        let event = ShellEvent {
+            session_id: uuid::Uuid::new_v4(),
+            command: "echo hello".to_string(),
+            exit_code: 0,
+            duration_ms: 10,
+            cwd: PathBuf::from("/tmp"),
+            hostname: "laptop".to_string(),
+            shell: ShellKind::Bash,
+            stdout: None,
+            stderr: None,
+            env_snapshot: HashMap::new(),
+            git_state: None,
+            redaction_count: 0,
+        };
+        let eid = insert_event(&conn, sid, &event, 0, None).unwrap();
+        assert!(eid > 0);
+
+        // Verify NULLs stored correctly
+        let (git_repo, stdout): (Option<String>, Option<String>) = conn
+            .query_row(
+                "SELECT git_repo, stdout FROM events WHERE id = ?1",
+                [eid],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert!(git_repo.is_none());
+        assert!(stdout.is_none());
+    }
+
+    #[test]
+    fn test_insert_event_with_output() {
+        // Exercises the Some branches for stdout/stderr
+        use crate::events::CapturedOutput;
+        let conn = open_memory().unwrap();
+        let sid = upsert_session(&conn, "sess-output", "laptop", "zsh", "user").unwrap();
+        let event = ShellEvent {
+            session_id: uuid::Uuid::new_v4(),
+            command: "ls -la".to_string(),
+            exit_code: 0,
+            duration_ms: 5,
+            cwd: PathBuf::from("/tmp"),
+            hostname: "laptop".to_string(),
+            shell: ShellKind::Zsh,
+            stdout: Some(CapturedOutput {
+                content: "file1\nfile2".to_string(),
+                truncated: false,
+                original_bytes: 11,
+            }),
+            stderr: Some(CapturedOutput {
+                content: "warning: something".to_string(),
+                truncated: true,
+                original_bytes: 500,
+            }),
+            env_snapshot: HashMap::new(),
+            git_state: Some(GitState {
+                repo: Some("myrepo".to_string()),
+                branch: Some("main".to_string()),
+                commit: Some("abc1234".to_string()),
+                is_dirty: true,
+            }),
+            redaction_count: 2,
+        };
+        let eid = insert_event(&conn, sid, &event, 2, None).unwrap();
+        let (stdout_val, stderr_val, stdout_trunc, stderr_trunc, redact): (
+            String,
+            String,
+            i32,
+            i32,
+            u32,
+        ) = conn
+            .query_row(
+                "SELECT stdout, stderr, stdout_truncated, stderr_truncated, redaction_count FROM events WHERE id = ?1",
+                [eid],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
+            )
+            .unwrap();
+        assert_eq!(stdout_val, "file1\nfile2");
+        assert_eq!(stderr_val, "warning: something");
+        assert_eq!(stdout_trunc, 0);
+        assert_eq!(stderr_trunc, 1);
+        assert_eq!(redact, 2);
+    }
+
+    #[test]
+    fn test_get_sessions_with_since_filter() {
+        let conn = open_memory().unwrap();
+        upsert_session(&conn, "s1", "laptop", "zsh", "user").unwrap();
+
+        // A very large since_ms should return no sessions
+        let future_ms = chrono::Utc::now().timestamp_millis() + 100_000;
+        let sessions = get_sessions(&conn, Some(future_ms), 100).unwrap();
+        assert!(sessions.is_empty());
+
+        // since_ms of 0 should return all sessions
+        let all = get_sessions(&conn, Some(0), 100).unwrap();
+        assert_eq!(all.len(), 1);
+    }
+
+    #[test]
+    fn test_get_events_with_session_filter() {
+        let conn = open_memory().unwrap();
+        let sid1 = upsert_session(&conn, "s1", "laptop", "zsh", "user").unwrap();
+        let sid2 = upsert_session(&conn, "s2", "laptop", "bash", "user").unwrap();
+
+        let event1 = sample_shell_event();
+        insert_event(&conn, sid1, &event1, 0, None).unwrap();
+
+        let mut event2 = sample_shell_event();
+        event2.command = "npm test".to_string();
+        insert_event(&conn, sid2, &event2, 0, None).unwrap();
+
+        // Filter by session_id
+        let filtered = get_events(&conn, Some(sid1), None, None, 100).unwrap();
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].command, "cargo build");
+
+        let filtered2 = get_events(&conn, Some(sid2), None, None, 100).unwrap();
+        assert_eq!(filtered2.len(), 1);
+        assert_eq!(filtered2[0].command, "npm test");
+    }
+
+    #[test]
+    fn test_get_events_with_since_filter() {
+        let conn = open_memory().unwrap();
+        let sid = upsert_session(&conn, "s1", "laptop", "zsh", "user").unwrap();
+        let event = sample_shell_event();
+        insert_event(&conn, sid, &event, 0, None).unwrap();
+
+        // Future since should return nothing
+        let future_ms = chrono::Utc::now().timestamp_millis() + 100_000;
+        let empty = get_events(&conn, None, Some(future_ms), None, 100).unwrap();
+        assert!(empty.is_empty());
+
+        // Past since should return the event
+        let past = get_events(&conn, None, Some(0), None, 100).unwrap();
+        assert_eq!(past.len(), 1);
+    }
+
+    #[test]
+    fn test_get_events_combined_filters() {
+        let conn = open_memory().unwrap();
+        let sid = upsert_session(&conn, "s1", "laptop", "zsh", "user").unwrap();
+        let event = sample_shell_event();
+        insert_event(&conn, sid, &event, 0, None).unwrap();
+
+        // session_id + since + project all combined
+        let result = get_events(&conn, Some(sid), Some(0), Some("project"), 100).unwrap();
+        assert_eq!(result.len(), 1);
+
+        // Wrong session_id
+        let result = get_events(&conn, Some(sid + 999), Some(0), Some("project"), 100).unwrap();
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_get_entities_no_filter() {
+        let conn = open_memory().unwrap();
+        // Insert entities directly
+        conn.execute(
+            "INSERT INTO entities (type, name, canonical, first_seen, last_seen) VALUES (?1, ?2, ?3, ?4, ?5)",
+            rusqlite::params!["tool", "cargo", "cargo", 1000, 2000],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO entities (type, name, canonical, first_seen, last_seen) VALUES (?1, ?2, ?3, ?4, ?5)",
+            rusqlite::params!["project", "hippo", "hippo", 1000, 2000],
+        )
+        .unwrap();
+
+        let all = get_entities(&conn, None).unwrap();
+        assert_eq!(all.len(), 2);
+    }
+
+    #[test]
+    fn test_get_entities_with_type_filter() {
+        let conn = open_memory().unwrap();
+        conn.execute(
+            "INSERT INTO entities (type, name, canonical, first_seen, last_seen) VALUES (?1, ?2, ?3, ?4, ?5)",
+            rusqlite::params!["tool", "cargo", "cargo", 1000, 2000],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO entities (type, name, canonical, first_seen, last_seen) VALUES (?1, ?2, ?3, ?4, ?5)",
+            rusqlite::params!["project", "hippo", "hippo", 1000, 2000],
+        )
+        .unwrap();
+
+        let tools = get_entities(&conn, Some("tool")).unwrap();
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0].name, "cargo");
+        assert_eq!(tools[0].entity_type, "tool");
+
+        let projects = get_entities(&conn, Some("project")).unwrap();
+        assert_eq!(projects.len(), 1);
+        assert_eq!(projects[0].name, "hippo");
+
+        let empty = get_entities(&conn, Some("nonexistent")).unwrap();
+        assert!(empty.is_empty());
+    }
+
+    #[test]
+    fn test_list_fallback_files_nonexistent_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let nonexistent = dir.path().join("does_not_exist");
+        let files = list_fallback_files(&nonexistent).unwrap();
+        assert!(files.is_empty());
+    }
+
+    #[test]
+    fn test_recover_fallback_with_malformed_json() {
+        use std::io::Write;
+
+        let dir = tempfile::tempdir().unwrap();
+        let fallback_dir = dir.path().join("fallback");
+        std::fs::create_dir_all(&fallback_dir).unwrap();
+
+        // Write a file with some valid and some invalid lines
+        let date = chrono::Utc::now().format("%Y-%m-%d");
+        let file_path = fallback_dir.join(format!("{}.jsonl", date));
+        let mut file = std::fs::File::create(&file_path).unwrap();
+
+        // Valid event line
+        let event = crate::events::EventEnvelope::shell(sample_shell_event());
+        let valid_json = serde_json::to_string(&event).unwrap();
+        writeln!(file, "{}", valid_json).unwrap();
+
+        // Invalid JSON line
+        writeln!(file, "{{this is not valid json}}").unwrap();
+
+        // Empty line (should be skipped, not counted as error)
+        writeln!(file).unwrap();
+
+        // Another invalid line
+        writeln!(file, "also bad").unwrap();
+
+        drop(file);
+
+        let conn = open_memory().unwrap();
+        let mut session_map = HashMap::new();
+        let (recovered, errors) =
+            recover_fallback_files(&conn, &fallback_dir, &mut session_map).unwrap();
+        assert_eq!(recovered, 1);
+        assert_eq!(errors, 2);
+    }
+
+    #[test]
+    fn test_insert_event_with_env_snapshot() {
+        let conn = open_memory().unwrap();
+        let sid = upsert_session(&conn, "sess-env", "laptop", "zsh", "user").unwrap();
+
+        // Create env snapshot
+        let env: HashMap<String, String> =
+            HashMap::from([("HOME".to_string(), "/home/test".to_string())]);
+        let env_id = upsert_env_snapshot(&conn, &env).unwrap();
+
+        let event = sample_shell_event();
+        let eid = insert_event(&conn, sid, &event, 0, env_id).unwrap();
+
+        // Verify env_snapshot_id stored
+        let stored_env_id: Option<i64> = conn
+            .query_row(
+                "SELECT env_snapshot_id FROM events WHERE id = ?1",
+                [eid],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(stored_env_id, env_id);
+    }
 }

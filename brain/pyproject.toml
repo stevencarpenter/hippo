@@ -36,3 +36,8 @@ asyncio_mode = "auto"
 markers = [
     "live: tests requiring a running LM Studio instance",
 ]
+
+[dependency-groups]
+dev = [
+    "pytest-cov>=7.1.0",
+]
