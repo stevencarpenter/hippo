@@ -330,6 +330,79 @@ pub fn get_status(conn: &Connection) -> Result<crate::protocol::StatusInfo> {
     })
 }
 
+pub fn write_fallback_jsonl(
+    fallback_dir: &Path,
+    envelope: &crate::events::EventEnvelope,
+) -> Result<()> {
+    use std::io::Write;
+    std::fs::create_dir_all(fallback_dir)?;
+    let date = Utc::now().format("%Y-%m-%d");
+    let path = fallback_dir.join(format!("{}.jsonl", date));
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)?;
+    let json = serde_json::to_string(envelope)?;
+    writeln!(file, "{}", json)?;
+    Ok(())
+}
+
+pub fn list_fallback_files(fallback_dir: &Path) -> Result<Vec<std::path::PathBuf>> {
+    if !fallback_dir.exists() {
+        return Ok(Vec::new());
+    }
+    let mut files: Vec<std::path::PathBuf> = std::fs::read_dir(fallback_dir)?
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| p.extension().and_then(|e| e.to_str()) == Some("jsonl"))
+        .collect();
+    files.sort();
+    Ok(files)
+}
+
+pub fn recover_fallback_files(
+    conn: &Connection,
+    fallback_dir: &Path,
+    session_map: &mut HashMap<String, i64>,
+) -> Result<(usize, usize)> {
+    let files = list_fallback_files(fallback_dir)?;
+    let mut recovered = 0usize;
+    let mut errors = 0usize;
+
+    for file_path in &files {
+        let content = std::fs::read_to_string(file_path)?;
+        for line in content.lines() {
+            if line.trim().is_empty() {
+                continue;
+            }
+            match serde_json::from_str::<crate::events::EventEnvelope>(line) {
+                Ok(envelope) => {
+                    if let crate::events::EventPayload::Shell(ref shell_event) = envelope.payload {
+                        let session_id = get_or_create_session(
+                            conn,
+                            &shell_event.session_id.to_string(),
+                            &shell_event.hostname,
+                            &format!("{:?}", shell_event.shell),
+                            "unknown",
+                            session_map,
+                        )?;
+                        match insert_event(conn, session_id, shell_event, shell_event.redaction_count, None) {
+                            Ok(_) => recovered += 1,
+                            Err(_) => errors += 1,
+                        }
+                    }
+                }
+                Err(_) => errors += 1,
+            }
+        }
+        // Rename to .done
+        let done_path = file_path.with_extension("jsonl.done");
+        std::fs::rename(file_path, done_path)?;
+    }
+
+    Ok((recovered, errors))
+}
+
 #[cfg(test)]
 pub fn open_memory() -> Result<Connection> {
     let conn = Connection::open_in_memory()?;
@@ -525,5 +598,50 @@ mod tests {
         assert_eq!(status.sessions_today, 1);
         assert_eq!(status.queue_depth, 1);
         assert_eq!(status.queue_failed, 0);
+    }
+
+    #[test]
+    fn test_write_and_recover_fallback() {
+        use crate::events::EventEnvelope;
+
+        let dir = tempfile::tempdir().unwrap();
+        let fallback_dir = dir.path().join("fallback");
+
+        // Write 2 events to JSONL
+        let event1 = EventEnvelope::shell(sample_shell_event());
+        let mut event2_shell = sample_shell_event();
+        event2_shell.command = "npm test".to_string();
+        let event2 = EventEnvelope::shell(event2_shell);
+
+        write_fallback_jsonl(&fallback_dir, &event1).unwrap();
+        write_fallback_jsonl(&fallback_dir, &event2).unwrap();
+
+        // Verify JSONL file exists
+        let files = list_fallback_files(&fallback_dir).unwrap();
+        assert_eq!(files.len(), 1);
+
+        // Recover into SQLite
+        let conn = open_memory().unwrap();
+        let mut session_map = HashMap::new();
+        let (recovered, errors) = recover_fallback_files(&conn, &fallback_dir, &mut session_map).unwrap();
+        assert_eq!(recovered, 2);
+        assert_eq!(errors, 0);
+
+        // Verify events exist in DB
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM events", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(count, 2);
+
+        // Verify original file renamed to .done
+        let remaining = list_fallback_files(&fallback_dir).unwrap();
+        assert!(remaining.is_empty());
+
+        let done_files: Vec<_> = std::fs::read_dir(&fallback_dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path().to_string_lossy().ends_with(".done"))
+            .collect();
+        assert_eq!(done_files.len(), 1);
     }
 }
