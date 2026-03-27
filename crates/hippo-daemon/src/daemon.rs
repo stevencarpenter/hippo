@@ -4,6 +4,7 @@ use hippo_core::events::{EventEnvelope, EventPayload};
 use hippo_core::protocol::{DaemonRequest, DaemonResponse};
 use hippo_core::redaction::RedactionEngine;
 use hippo_core::storage;
+use rusqlite::Connection;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
