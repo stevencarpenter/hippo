@@ -1,1 +1,359 @@
-// Config types - to be implemented in Task 3
+use anyhow::Result;
+use serde::{Deserialize, Serialize};
+use std::path::{Path, PathBuf};
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HippoConfig {
+    #[serde(default)]
+    pub lmstudio: LmStudioConfig,
+    #[serde(default)]
+    pub models: ModelsConfig,
+    #[serde(default)]
+    pub daemon: DaemonConfig,
+    #[serde(default)]
+    pub brain: BrainConfig,
+    #[serde(default)]
+    pub storage: StorageConfig,
+}
+
+impl Default for HippoConfig {
+    fn default() -> Self {
+        Self {
+            lmstudio: LmStudioConfig::default(),
+            models: ModelsConfig::default(),
+            daemon: DaemonConfig::default(),
+            brain: BrainConfig::default(),
+            storage: StorageConfig::default(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LmStudioConfig {
+    #[serde(default = "default_lmstudio_base_url")]
+    pub base_url: String,
+}
+
+fn default_lmstudio_base_url() -> String {
+    "http://localhost:1234/v1".to_string()
+}
+
+impl Default for LmStudioConfig {
+    fn default() -> Self {
+        Self {
+            base_url: default_lmstudio_base_url(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ModelsConfig {
+    #[serde(default)]
+    pub enrichment: String,
+    #[serde(default)]
+    pub query: String,
+    #[serde(default)]
+    pub embedding: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DaemonConfig {
+    #[serde(default = "default_flush_interval_ms")]
+    pub flush_interval_ms: u64,
+    #[serde(default = "default_flush_batch_size")]
+    pub flush_batch_size: usize,
+    #[serde(default = "default_socket_timeout_ms")]
+    pub socket_timeout_ms: u64,
+}
+
+fn default_flush_interval_ms() -> u64 {
+    100
+}
+fn default_flush_batch_size() -> usize {
+    50
+}
+fn default_socket_timeout_ms() -> u64 {
+    100
+}
+
+impl Default for DaemonConfig {
+    fn default() -> Self {
+        Self {
+            flush_interval_ms: default_flush_interval_ms(),
+            flush_batch_size: default_flush_batch_size(),
+            socket_timeout_ms: default_socket_timeout_ms(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BrainConfig {
+    #[serde(default = "default_brain_port")]
+    pub port: u16,
+    #[serde(default = "default_poll_interval_secs")]
+    pub poll_interval_secs: u64,
+    #[serde(default = "default_enrichment_batch_size")]
+    pub enrichment_batch_size: usize,
+    #[serde(default = "default_max_queue_depth")]
+    pub max_queue_depth: usize,
+}
+
+fn default_brain_port() -> u16 {
+    9175
+}
+fn default_poll_interval_secs() -> u64 {
+    5
+}
+fn default_enrichment_batch_size() -> usize {
+    10
+}
+fn default_max_queue_depth() -> usize {
+    100
+}
+
+impl Default for BrainConfig {
+    fn default() -> Self {
+        Self {
+            port: default_brain_port(),
+            poll_interval_secs: default_poll_interval_secs(),
+            enrichment_batch_size: default_enrichment_batch_size(),
+            max_queue_depth: default_max_queue_depth(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StorageConfig {
+    #[serde(default = "default_data_dir")]
+    pub data_dir: PathBuf,
+    #[serde(default = "default_config_dir")]
+    pub config_dir: PathBuf,
+}
+
+fn default_data_dir() -> PathBuf {
+    dirs::data_local_dir()
+        .unwrap_or_else(|| PathBuf::from("~/.local/share"))
+        .join("hippo")
+}
+
+fn default_config_dir() -> PathBuf {
+    dirs::config_dir()
+        .unwrap_or_else(|| PathBuf::from("~/.config"))
+        .join("hippo")
+}
+
+impl Default for StorageConfig {
+    fn default() -> Self {
+        Self {
+            data_dir: default_data_dir(),
+            config_dir: default_config_dir(),
+        }
+    }
+}
+
+impl HippoConfig {
+    pub fn load(path: &Path) -> Result<Self> {
+        if !path.exists() {
+            return Ok(Self::default());
+        }
+        let content = std::fs::read_to_string(path)?;
+        let config: Self = toml::from_str(&content)?;
+        Ok(config)
+    }
+
+    pub fn load_default() -> Result<Self> {
+        let config_path = default_config_dir().join("config.toml");
+        Self::load(&config_path)
+    }
+
+    pub fn db_path(&self) -> PathBuf {
+        self.storage.data_dir.join("hippo.db")
+    }
+
+    pub fn socket_path(&self) -> PathBuf {
+        socket_path(&self.storage.data_dir)
+    }
+
+    pub fn fallback_dir(&self) -> PathBuf {
+        self.storage.data_dir.join("fallback")
+    }
+
+    pub fn log_path(&self) -> PathBuf {
+        self.storage.data_dir.join("hippo.log")
+    }
+}
+
+pub fn socket_path(data_dir: &Path) -> PathBuf {
+    let candidate = data_dir.join("daemon.sock");
+    if candidate.as_os_str().len() > 100 {
+        std::env::temp_dir().join("hippo-daemon.sock")
+    } else {
+        candidate
+    }
+}
+
+// --- Redaction config ---
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RedactConfig {
+    pub patterns: Vec<RedactPattern>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RedactPattern {
+    pub name: String,
+    pub regex: String,
+    #[serde(default = "default_replacement")]
+    pub replacement: String,
+}
+
+fn default_replacement() -> String {
+    "[REDACTED]".to_string()
+}
+
+impl RedactConfig {
+    pub fn builtin() -> Self {
+        Self {
+            patterns: vec![
+                RedactPattern {
+                    name: "aws_access_key".to_string(),
+                    regex: r"AKIA[0-9A-Z]{16}".to_string(),
+                    replacement: "[REDACTED]".to_string(),
+                },
+                RedactPattern {
+                    name: "github_pat".to_string(),
+                    regex: r"ghp_[a-zA-Z0-9]{36}|github_pat_[a-zA-Z0-9_]{82}".to_string(),
+                    replacement: "[REDACTED]".to_string(),
+                },
+                RedactPattern {
+                    name: "generic_secret_assignment".to_string(),
+                    regex: r"(?i)(api[_-]?key|api[_-]?token|access[_-]?token|auth[_-]?token|secret[_-]?key|private[_-]?key|password)\s*[=:]\s*\S{8,}".to_string(),
+                    replacement: "[REDACTED]".to_string(),
+                },
+                RedactPattern {
+                    name: "jwt".to_string(),
+                    regex: r"eyJ[a-zA-Z0-9_-]{10,}\.eyJ[a-zA-Z0-9_-]{10,}\.[a-zA-Z0-9_-]+".to_string(),
+                    replacement: "[REDACTED]".to_string(),
+                },
+                RedactPattern {
+                    name: "bearer_header".to_string(),
+                    regex: r"(?i)authorization:\s*bearer\s+\S+".to_string(),
+                    replacement: "[REDACTED]".to_string(),
+                },
+                RedactPattern {
+                    name: "private_key_pem".to_string(),
+                    regex: r"-----BEGIN [A-Z ]*PRIVATE KEY-----".to_string(),
+                    replacement: "[REDACTED]".to_string(),
+                },
+            ],
+        }
+    }
+}
+
+pub const ENV_ALLOWLIST: &[&str] = &[
+    "HOME",
+    "USER",
+    "LOGNAME",
+    "SHELL",
+    "TERM",
+    "COLORTERM",
+    "TERM_PROGRAM",
+    "LANG",
+    "LC_ALL",
+    "PATH",
+    "PWD",
+    "OLDPWD",
+    "SHLVL",
+    "HOSTNAME",
+    "EDITOR",
+    "VISUAL",
+    "TMPDIR",
+    "VIRTUAL_ENV",
+    "CONDA_DEFAULT_ENV",
+    "NODE_ENV",
+    "RAILS_ENV",
+    "APP_ENV",
+    "AWS_PROFILE",
+    "AWS_DEFAULT_REGION",
+    "KUBECONFIG",
+    "XDG_CONFIG_HOME",
+    "XDG_DATA_HOME",
+    "HIPPO_SESSION_ID",
+];
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_default_config() {
+        let config = HippoConfig::default();
+        assert_eq!(config.lmstudio.base_url, "http://localhost:1234/v1");
+        assert_eq!(config.daemon.flush_interval_ms, 100);
+        assert_eq!(config.daemon.flush_batch_size, 50);
+        assert_eq!(config.brain.port, 9175);
+        assert_eq!(config.brain.poll_interval_secs, 5);
+    }
+
+    #[test]
+    fn test_config_from_toml() {
+        let toml_str = r#"
+[lmstudio]
+base_url = "http://custom:5678/v1"
+
+[daemon]
+flush_interval_ms = 200
+
+[brain]
+port = 8080
+"#;
+        let config: HippoConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.lmstudio.base_url, "http://custom:5678/v1");
+        assert_eq!(config.daemon.flush_interval_ms, 200);
+        assert_eq!(config.brain.port, 8080);
+        // Defaults for unspecified fields
+        assert_eq!(config.daemon.flush_batch_size, 50);
+    }
+
+    #[test]
+    fn test_missing_config_returns_default() {
+        let config = HippoConfig::load(Path::new("/nonexistent/path/config.toml")).unwrap();
+        assert_eq!(config.lmstudio.base_url, "http://localhost:1234/v1");
+    }
+
+    #[test]
+    fn test_builtin_redact_patterns() {
+        let config = RedactConfig::builtin();
+        assert_eq!(config.patterns.len(), 6);
+        let names: Vec<&str> = config.patterns.iter().map(|p| p.name.as_str()).collect();
+        assert!(names.contains(&"aws_access_key"));
+        assert!(names.contains(&"github_pat"));
+        assert!(names.contains(&"jwt"));
+        assert!(names.contains(&"bearer_header"));
+        assert!(names.contains(&"private_key_pem"));
+        assert!(names.contains(&"generic_secret_assignment"));
+    }
+
+    #[test]
+    fn test_socket_path_length_fallback() {
+        // Short path should use data_dir
+        let short = PathBuf::from("/tmp/hippo");
+        let result = socket_path(&short);
+        assert_eq!(result, short.join("daemon.sock"));
+
+        // Long path should fall back to TMPDIR
+        let long_dir = PathBuf::from("/".to_string() + &"a".repeat(120));
+        let result = socket_path(&long_dir);
+        assert!(result.ends_with("hippo-daemon.sock"));
+        assert!(result.as_os_str().len() <= 104);
+    }
+
+    #[test]
+    fn test_env_allowlist_contains_essentials() {
+        assert!(ENV_ALLOWLIST.contains(&"HOME"));
+        assert!(ENV_ALLOWLIST.contains(&"PATH"));
+        assert!(ENV_ALLOWLIST.contains(&"PWD"));
+        assert!(ENV_ALLOWLIST.contains(&"SHELL"));
+        assert!(ENV_ALLOWLIST.contains(&"HIPPO_SESSION_ID"));
+    }
+}
