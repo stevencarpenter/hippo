@@ -1,0 +1,105 @@
+import hashlib
+import math
+
+import httpx
+
+
+class LMStudioClient:
+    def __init__(self, base_url: str = "http://localhost:1234/v1", timeout: float = 30.0):
+        self.base_url = base_url.rstrip("/")
+        self.timeout = timeout
+
+    async def chat(
+        self,
+        messages: list[dict],
+        model: str = "",
+        temperature: float = 0.0,
+        max_tokens: int = 2048,
+    ) -> str:
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
+            resp = await client.post(
+                f"{self.base_url}/chat/completions",
+                json={
+                    "model": model,
+                    "messages": messages,
+                    "temperature": temperature,
+                    "max_tokens": max_tokens,
+                },
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            return data["choices"][0]["message"]["content"]
+
+    async def embed(self, texts: list[str], model: str = "") -> list[list[float]]:
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
+            resp = await client.post(
+                f"{self.base_url}/embeddings",
+                json={"model": model, "input": texts},
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            return [item["embedding"] for item in data["data"]]
+
+    async def is_reachable(self) -> bool:
+        try:
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                resp = await client.get(f"{self.base_url}/models")
+                return resp.status_code == 200
+        except Exception:
+            return False
+
+
+class MockLMStudioClient(LMStudioClient):
+    CANNED_RESPONSE = (
+        '{"summary": "test command", "intent": "testing", "outcome": "success", '
+        '"entities": {"projects": [], "tools": [], "files": [], "services": [], "errors": []}, '
+        '"relationships": [], "tags": ["test"], "embed_text": "test embed text"}'
+    )
+
+    def __init__(self, base_url: str = "http://mock:1234/v1", timeout: float = 1.0):
+        super().__init__(base_url, timeout)
+        self.chat_calls: list[dict] = []
+        self.embed_calls: list[dict] = []
+
+    async def chat(
+        self,
+        messages: list[dict],
+        model: str = "",
+        temperature: float = 0.0,
+        max_tokens: int = 2048,
+    ) -> str:
+        self.chat_calls.append({
+            "messages": messages,
+            "model": model,
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+        })
+        return self.CANNED_RESPONSE
+
+    async def embed(self, texts: list[str], model: str = "") -> list[list[float]]:
+        self.embed_calls.append({"texts": texts, "model": model})
+        return [self._deterministic_vector(text, 384) for text in texts]
+
+    async def is_reachable(self) -> bool:
+        return True
+
+    @staticmethod
+    def _deterministic_vector(text: str, dims: int) -> list[float]:
+        """Generate a deterministic, normalized vector from text using SHA256."""
+        raw = []
+        i = 0
+        while len(raw) < dims:
+            h = hashlib.sha256(f"{text}:{i}".encode()).digest()
+            for j in range(0, len(h), 4):
+                if len(raw) >= dims:
+                    break
+                # Convert 4 bytes to a float in [-1, 1]
+                val = int.from_bytes(h[j : j + 4], "big", signed=True) / (2**31)
+                raw.append(val)
+            i += 1
+
+        # Normalize
+        magnitude = math.sqrt(sum(x * x for x in raw))
+        if magnitude > 0:
+            raw = [x / magnitude for x in raw]
+        return raw
