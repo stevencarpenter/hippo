@@ -1,0 +1,13 @@
+/target
+*.swp
+*.swo
+.DS_Store
+.superpowers/
+__pycache__/
+*.pyc
+.venv/
+brain/.venv/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.coverage
