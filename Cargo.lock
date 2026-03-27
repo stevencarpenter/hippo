@@ -545,6 +545,7 @@ dependencies = [
  "hostname",
  "libc",
  "reqwest",
+ "rusqlite",
  "serde",
  "serde_json",
  "tokio",
