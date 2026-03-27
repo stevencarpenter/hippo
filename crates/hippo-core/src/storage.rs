@@ -151,6 +151,185 @@ pub fn insert_event(
     Ok(event_id)
 }
 
+pub fn get_sessions(
+    conn: &Connection,
+    since_ms: Option<i64>,
+    limit: usize,
+) -> Result<Vec<crate::protocol::SessionInfo>> {
+    let mut sql = String::from(
+        "SELECT s.id, s.start_time, s.end_time, s.hostname, s.shell,
+                (SELECT COUNT(*) FROM events e WHERE e.session_id = s.id) as event_count,
+                s.summary
+         FROM sessions s",
+    );
+    let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
+    if let Some(since) = since_ms {
+        sql.push_str(" WHERE s.start_time >= ?1");
+        params.push(Box::new(since));
+    }
+    sql.push_str(" ORDER BY s.start_time DESC");
+    sql.push_str(&format!(" LIMIT {}", limit));
+
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(rusqlite::params_from_iter(params.iter()), |row| {
+        Ok(crate::protocol::SessionInfo {
+            id: row.get(0)?,
+            start_time: row.get(1)?,
+            end_time: row.get(2)?,
+            hostname: row.get(3)?,
+            shell: row.get(4)?,
+            event_count: row.get(5)?,
+            summary: row.get(6)?,
+        })
+    })?;
+    Ok(rows.filter_map(|r| r.ok()).collect())
+}
+
+pub fn get_events(
+    conn: &Connection,
+    session_id: Option<i64>,
+    since_ms: Option<i64>,
+    project: Option<&str>,
+    limit: usize,
+) -> Result<Vec<crate::protocol::EventInfo>> {
+    let mut sql = String::from(
+        "SELECT id, session_id, timestamp, command, exit_code, duration_ms, cwd, git_branch, enriched
+         FROM events WHERE 1=1",
+    );
+    let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
+    let mut idx = 1;
+
+    if let Some(sid) = session_id {
+        sql.push_str(&format!(" AND session_id = ?{}", idx));
+        params.push(Box::new(sid));
+        idx += 1;
+    }
+    if let Some(since) = since_ms {
+        sql.push_str(&format!(" AND timestamp >= ?{}", idx));
+        params.push(Box::new(since));
+        idx += 1;
+    }
+    if let Some(proj) = project {
+        sql.push_str(&format!(" AND cwd LIKE ?{}", idx));
+        params.push(Box::new(format!("%{}%", proj)));
+    }
+    sql.push_str(" ORDER BY timestamp DESC");
+    sql.push_str(&format!(" LIMIT {}", limit));
+
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(rusqlite::params_from_iter(params.iter()), |row| {
+        Ok(crate::protocol::EventInfo {
+            id: row.get(0)?,
+            session_id: row.get(1)?,
+            timestamp: row.get(2)?,
+            command: row.get(3)?,
+            exit_code: row.get(4)?,
+            duration_ms: row.get(5)?,
+            cwd: row.get(6)?,
+            git_branch: row.get(7)?,
+            enriched: row.get::<_, i32>(8)? != 0,
+        })
+    })?;
+    Ok(rows.filter_map(|r| r.ok()).collect())
+}
+
+pub fn get_entities(
+    conn: &Connection,
+    entity_type: Option<&str>,
+) -> Result<Vec<crate::protocol::EntityInfo>> {
+    let mut sql = String::from(
+        "SELECT id, type, name, canonical, first_seen, last_seen FROM entities",
+    );
+    let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
+    if let Some(et) = entity_type {
+        sql.push_str(" WHERE type = ?1");
+        params.push(Box::new(et.to_string()));
+    }
+    sql.push_str(" ORDER BY last_seen DESC");
+
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(rusqlite::params_from_iter(params.iter()), |row| {
+        Ok(crate::protocol::EntityInfo {
+            id: row.get(0)?,
+            entity_type: row.get(1)?,
+            name: row.get(2)?,
+            canonical: row.get(3)?,
+            first_seen: row.get(4)?,
+            last_seen: row.get(5)?,
+        })
+    })?;
+    Ok(rows.filter_map(|r| r.ok()).collect())
+}
+
+pub fn raw_query(
+    conn: &Connection,
+    text: &str,
+) -> Result<Vec<crate::protocol::QueryHit>> {
+    let pattern = format!("%{}%", text);
+    let mut stmt = conn.prepare(
+        "SELECT id, command, cwd, timestamp FROM events WHERE command LIKE ?1
+         ORDER BY timestamp DESC LIMIT 20",
+    )?;
+    let rows = stmt.query_map([&pattern], |row| {
+        Ok(crate::protocol::QueryHit {
+            event_id: row.get(0)?,
+            command: row.get(1)?,
+            cwd: row.get(2)?,
+            timestamp: row.get(3)?,
+            relevance: "keyword".to_string(),
+        })
+    })?;
+    Ok(rows.filter_map(|r| r.ok()).collect())
+}
+
+pub fn get_status(conn: &Connection) -> Result<crate::protocol::StatusInfo> {
+    let today_start = {
+        let now = Utc::now();
+        now.date_naive()
+            .and_hms_opt(0, 0, 0)
+            .unwrap()
+            .and_utc()
+            .timestamp_millis()
+    };
+
+    let events_today: u64 = conn.query_row(
+        "SELECT COUNT(*) FROM events WHERE timestamp >= ?1",
+        [today_start],
+        |row| row.get(0),
+    )?;
+
+    let sessions_today: u64 = conn.query_row(
+        "SELECT COUNT(*) FROM sessions WHERE start_time >= ?1",
+        [today_start],
+        |row| row.get(0),
+    )?;
+
+    let queue_depth: u64 = conn.query_row(
+        "SELECT COUNT(*) FROM enrichment_queue WHERE status = 'pending'",
+        [],
+        |row| row.get(0),
+    )?;
+
+    let queue_failed: u64 = conn.query_row(
+        "SELECT COUNT(*) FROM enrichment_queue WHERE status = 'failed'",
+        [],
+        |row| row.get(0),
+    )?;
+
+    Ok(crate::protocol::StatusInfo {
+        uptime_secs: 0,
+        events_today,
+        sessions_today,
+        queue_depth,
+        queue_failed,
+        drop_count: 0,
+        lmstudio_reachable: false,
+        brain_reachable: false,
+        db_size_bytes: 0,
+        fallback_files_pending: 0,
+    })
+}
+
 #[cfg(test)]
 pub fn open_memory() -> Result<Connection> {
     let conn = Connection::open_in_memory()?;
@@ -285,5 +464,66 @@ mod tests {
         let id2 =
             get_or_create_session(&conn, "uuid-b", "laptop", "zsh", "user", &mut map).unwrap();
         assert_ne!(id1, id2);
+    }
+
+    #[test]
+    fn test_get_sessions() {
+        let conn = open_memory().unwrap();
+        upsert_session(&conn, "s1", "laptop", "zsh", "user").unwrap();
+        upsert_session(&conn, "s2", "laptop", "bash", "user").unwrap();
+
+        let sessions = get_sessions(&conn, None, 100).unwrap();
+        assert_eq!(sessions.len(), 2);
+    }
+
+    #[test]
+    fn test_get_events_with_filter() {
+        let conn = open_memory().unwrap();
+        let sid = upsert_session(&conn, "s1", "laptop", "zsh", "user").unwrap();
+        let event = sample_shell_event();
+        insert_event(&conn, sid, &event, 0, None).unwrap();
+
+        let mut event2 = sample_shell_event();
+        event2.command = "npm test".to_string();
+        event2.cwd = PathBuf::from("/home/user/other");
+        insert_event(&conn, sid, &event2, 0, None).unwrap();
+
+        // All events
+        let all = get_events(&conn, None, None, None, 100).unwrap();
+        assert_eq!(all.len(), 2);
+
+        // Filter by project
+        let filtered = get_events(&conn, None, None, Some("project"), 100).unwrap();
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].command, "cargo build");
+    }
+
+    #[test]
+    fn test_raw_query() {
+        let conn = open_memory().unwrap();
+        let sid = upsert_session(&conn, "s1", "laptop", "zsh", "user").unwrap();
+        let event = sample_shell_event();
+        insert_event(&conn, sid, &event, 0, None).unwrap();
+
+        let hits = raw_query(&conn, "cargo").unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].command, "cargo build");
+
+        let empty = raw_query(&conn, "nonexistent").unwrap();
+        assert!(empty.is_empty());
+    }
+
+    #[test]
+    fn test_get_status() {
+        let conn = open_memory().unwrap();
+        let sid = upsert_session(&conn, "s1", "laptop", "zsh", "user").unwrap();
+        let event = sample_shell_event();
+        insert_event(&conn, sid, &event, 0, None).unwrap();
+
+        let status = get_status(&conn).unwrap();
+        assert_eq!(status.events_today, 1);
+        assert_eq!(status.sessions_today, 1);
+        assert_eq!(status.queue_depth, 1);
+        assert_eq!(status.queue_failed, 0);
     }
 }
