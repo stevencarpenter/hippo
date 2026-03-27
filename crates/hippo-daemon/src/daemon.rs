@@ -1,13 +1,13 @@
 use anyhow::Result;
-use hippo_core::config::{HippoConfig, ENV_ALLOWLIST};
+use hippo_core::config::{ENV_ALLOWLIST, HippoConfig};
 use hippo_core::events::{EventEnvelope, EventPayload};
 use hippo_core::protocol::{DaemonRequest, DaemonResponse};
 use hippo_core::redaction::RedactionEngine;
 use hippo_core::storage;
 use rusqlite::Connection;
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::Mutex;
@@ -48,14 +48,11 @@ async fn write_frame(stream: &mut UnixStream, data: &[u8]) -> Result<()> {
     Ok(())
 }
 
-pub async fn handle_request(
-    state: &Arc<DaemonState>,
-    request: DaemonRequest,
-) -> DaemonResponse {
+pub async fn handle_request(state: &Arc<DaemonState>, request: DaemonRequest) -> DaemonResponse {
     match request {
         DaemonRequest::IngestEvent(envelope) => {
             let mut buffer = state.event_buffer.lock().await;
-            buffer.push(envelope);
+            buffer.push(*envelope);
             DaemonResponse::Ack
         }
         DaemonRequest::GetStatus => {
@@ -167,7 +164,7 @@ pub async fn flush_events(state: &Arc<DaemonState>) {
                 Err(e) => {
                     warn!("session creation failed, falling back: {}", e);
                     if let Err(fe) =
-                        storage::write_fallback_jsonl(&state.config.fallback_dir(), &envelope)
+                        storage::write_fallback_jsonl(&state.config.fallback_dir(), envelope)
                     {
                         error!("fallback write failed: {}", fe);
                     }
@@ -193,7 +190,7 @@ pub async fn flush_events(state: &Arc<DaemonState>) {
             ) {
                 warn!("event insert failed, falling back: {}", e);
                 if let Err(fe) =
-                    storage::write_fallback_jsonl(&state.config.fallback_dir(), &envelope)
+                    storage::write_fallback_jsonl(&state.config.fallback_dir(), envelope)
                 {
                     error!("fallback write failed: {}", fe);
                 }

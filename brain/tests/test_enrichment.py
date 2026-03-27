@@ -92,7 +92,13 @@ def test_claim_and_write(tmp_db):
         summary="Testing and building hippo",
         intent="testing",
         outcome="success",
-        entities={"projects": ["hippo"], "tools": ["cargo"], "files": [], "services": [], "errors": []},
+        entities={
+            "projects": ["hippo"],
+            "tools": ["cargo"],
+            "files": [],
+            "services": [],
+            "errors": [],
+        },
         relationships=[],
         tags=["rust", "testing"],
         embed_text="cargo test and build hippo project",
@@ -101,7 +107,9 @@ def test_claim_and_write(tmp_db):
     assert node_id > 0
 
     # Verify knowledge node content
-    row = conn.execute("SELECT content, embed_text FROM knowledge_nodes WHERE id = ?", (node_id,)).fetchone()
+    row = conn.execute(
+        "SELECT content, embed_text FROM knowledge_nodes WHERE id = ?", (node_id,)
+    ).fetchone()
     assert "Testing and building hippo" in row[0]
     assert row[1] == "cargo test and build hippo project"
 
@@ -140,18 +148,24 @@ def test_mark_queue_failed(tmp_db):
 
     # First failure — should stay pending
     mark_queue_failed(conn, [1], "timeout error")
-    row = conn.execute("SELECT status, retry_count FROM enrichment_queue WHERE event_id = 1").fetchone()
+    row = conn.execute(
+        "SELECT status, retry_count FROM enrichment_queue WHERE event_id = 1"
+    ).fetchone()
     assert row[0] == "pending"
     assert row[1] == 1
 
     # Second failure — still pending
     mark_queue_failed(conn, [1], "timeout error")
-    row = conn.execute("SELECT status, retry_count FROM enrichment_queue WHERE event_id = 1").fetchone()
+    row = conn.execute(
+        "SELECT status, retry_count FROM enrichment_queue WHERE event_id = 1"
+    ).fetchone()
     assert row[0] == "pending"
     assert row[1] == 2
 
     # Third failure — should be failed (retry_count >= max_retries)
     mark_queue_failed(conn, [1], "timeout error")
-    row = conn.execute("SELECT status, retry_count FROM enrichment_queue WHERE event_id = 1").fetchone()
+    row = conn.execute(
+        "SELECT status, retry_count FROM enrichment_queue WHERE event_id = 1"
+    ).fetchone()
     assert row[0] == "failed"
     assert row[1] == 3

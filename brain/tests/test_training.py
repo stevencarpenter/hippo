@@ -25,11 +25,13 @@ def _seed_db(conn):
         )
 
     # Insert knowledge nodes
-    content = json.dumps({
-        "summary": "Ran project commands successfully",
-        "intent": "development",
-        "outcome": "success",
-    })
+    content = json.dumps(
+        {
+            "summary": "Ran project commands successfully",
+            "intent": "development",
+            "outcome": "success",
+        }
+    )
     conn.execute(
         """INSERT INTO knowledge_nodes (id, uuid, content, embed_text, outcome, tags,
                                         enrichment_model, created_at, updated_at)

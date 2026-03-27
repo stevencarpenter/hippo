@@ -5,7 +5,7 @@ use crate::events::EventEnvelope;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", content = "data")]
 pub enum DaemonRequest {
-    IngestEvent(EventEnvelope),
+    IngestEvent(Box<EventEnvelope>),
     GetStatus,
     GetSessions {
         since_ms: Option<i64>,

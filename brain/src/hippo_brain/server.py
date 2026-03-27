@@ -1,5 +1,4 @@
 import asyncio
-import json
 import logging
 import sqlite3
 from pathlib import Path
@@ -32,9 +31,7 @@ class BrainServer:
         enrichment_batch_size: int = 10,
     ):
         if not db_path:
-            db_path = str(
-                Path.home() / ".local" / "share" / "hippo" / "hippo.db"
-            )
+            db_path = str(Path.home() / ".local" / "share" / "hippo" / "hippo.db")
         self.db_path = db_path
         self.client = LMStudioClient(base_url=lmstudio_base_url)
         self.enrichment_model = enrichment_model
@@ -52,11 +49,13 @@ class BrainServer:
 
     async def health(self, request: Request) -> JSONResponse:
         reachable = await self.client.is_reachable()
-        return JSONResponse({
-            "status": "ok",
-            "lmstudio_reachable": reachable,
-            "enrichment_running": self.enrichment_running,
-        })
+        return JSONResponse(
+            {
+                "status": "ok",
+                "lmstudio_reachable": reachable,
+                "enrichment_running": self.enrichment_running,
+            }
+        )
 
     async def query(self, request: Request) -> JSONResponse:
         body = await request.json()

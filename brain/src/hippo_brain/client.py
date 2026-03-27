@@ -68,12 +68,14 @@ class MockLMStudioClient(LMStudioClient):
         temperature: float = 0.0,
         max_tokens: int = 2048,
     ) -> str:
-        self.chat_calls.append({
-            "messages": messages,
-            "model": model,
-            "temperature": temperature,
-            "max_tokens": max_tokens,
-        })
+        self.chat_calls.append(
+            {
+                "messages": messages,
+                "model": model,
+                "temperature": temperature,
+                "max_tokens": max_tokens,
+            }
+        )
         return self.CANNED_RESPONSE
 
     async def embed(self, texts: list[str], model: str = "") -> list[list[float]]:

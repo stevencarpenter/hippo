@@ -61,12 +61,13 @@ pub async fn send_event_fire_and_forget(
         _ => return Ok(()), // silently drop
     };
 
-    let request = DaemonRequest::IngestEvent(envelope.clone());
+    let request = DaemonRequest::IngestEvent(Box::new(envelope.clone()));
     let json = serde_json::to_vec(&request)?;
     let _ = write_frame(&mut stream, &json).await;
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn handle_send_event_shell(
     config: &HippoConfig,
     cmd: String,
@@ -131,8 +132,22 @@ pub async fn handle_status(config: &HippoConfig) -> Result<()> {
             println!("  Drop count:        {}", status.drop_count);
             println!("  DB size:           {} bytes", status.db_size_bytes);
             println!("  Fallback pending:  {}", status.fallback_files_pending);
-            println!("  LM Studio:        {}", if status.lmstudio_reachable { "reachable" } else { "unreachable" });
-            println!("  Brain:            {}", if status.brain_reachable { "reachable" } else { "unreachable" });
+            println!(
+                "  LM Studio:        {}",
+                if status.lmstudio_reachable {
+                    "reachable"
+                } else {
+                    "unreachable"
+                }
+            );
+            println!(
+                "  Brain:            {}",
+                if status.brain_reachable {
+                    "reachable"
+                } else {
+                    "unreachable"
+                }
+            );
         }
         DaemonResponse::Error(e) => eprintln!("Error: {}", e),
         _ => eprintln!("Unexpected response"),
@@ -226,10 +241,7 @@ pub async fn handle_events(
                 let time = chrono::DateTime::from_timestamp_millis(e.timestamp)
                     .map(|dt| dt.format("%H:%M:%S").to_string())
                     .unwrap_or_else(|| "??:??:??".to_string());
-                let exit = e
-                    .exit_code
-                    .map(|c| format!(" [{}]", c))
-                    .unwrap_or_default();
+                let exit = e.exit_code.map(|c| format!(" [{}]", c)).unwrap_or_default();
                 let branch = e
                     .git_branch
                     .as_ref()
@@ -324,14 +336,20 @@ pub async fn handle_doctor(config: &HippoConfig) -> Result<()> {
     let lm_url = format!("{}/models", config.lmstudio.base_url);
     match reqwest::get(&lm_url).await {
         Ok(r) if r.status().is_success() => println!("[OK] LM Studio reachable"),
-        _ => println!("[!!] LM Studio not reachable at {}", config.lmstudio.base_url),
+        _ => println!(
+            "[!!] LM Studio not reachable at {}",
+            config.lmstudio.base_url
+        ),
     }
 
     // Check brain
     let brain_url = format!("http://localhost:{}/health", config.brain.port);
     match reqwest::get(&brain_url).await {
         Ok(r) if r.status().is_success() => println!("[OK] Brain server reachable"),
-        _ => println!("[!!] Brain server not reachable on port {}", config.brain.port),
+        _ => println!(
+            "[!!] Brain server not reachable on port {}",
+            config.brain.port
+        ),
     }
 
     // Check fallback files
