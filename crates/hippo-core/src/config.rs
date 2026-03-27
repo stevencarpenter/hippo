@@ -344,4 +344,101 @@ port = 8080
         assert!(ENV_ALLOWLIST.contains(&"SHELL"));
         assert!(ENV_ALLOWLIST.contains(&"HIPPO_SESSION_ID"));
     }
+
+    #[test]
+    fn test_load_valid_toml_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("config.toml");
+        std::fs::write(
+            &config_path,
+            r#"
+[lmstudio]
+base_url = "http://custom:9999/v1"
+
+[daemon]
+flush_interval_ms = 500
+flush_batch_size = 100
+
+[brain]
+port = 7777
+poll_interval_secs = 10
+"#,
+        )
+        .unwrap();
+        let config = HippoConfig::load(&config_path).unwrap();
+        assert_eq!(config.lmstudio.base_url, "http://custom:9999/v1");
+        assert_eq!(config.daemon.flush_interval_ms, 500);
+        assert_eq!(config.daemon.flush_batch_size, 100);
+        assert_eq!(config.brain.port, 7777);
+        assert_eq!(config.brain.poll_interval_secs, 10);
+    }
+
+    #[test]
+    fn test_load_default_returns_ok() {
+        // load_default points at ~/.config/hippo/config.toml which likely
+        // does not exist in CI, so it should fall through to default.
+        let config = HippoConfig::load_default().unwrap();
+        assert_eq!(config.daemon.flush_interval_ms, 100);
+    }
+
+    #[test]
+    fn test_db_path() {
+        let config = HippoConfig::default();
+        let db = config.db_path();
+        assert!(db.ends_with("hippo.db"));
+        assert!(db.starts_with(&config.storage.data_dir));
+    }
+
+    #[test]
+    fn test_socket_path_method() {
+        let config = HippoConfig::default();
+        let sock = config.socket_path();
+        assert!(
+            sock.to_string_lossy().contains("daemon.sock")
+                || sock.to_string_lossy().contains("hippo-daemon.sock")
+        );
+    }
+
+    #[test]
+    fn test_fallback_dir() {
+        let config = HippoConfig::default();
+        let fb = config.fallback_dir();
+        assert!(fb.ends_with("fallback"));
+        assert!(fb.starts_with(&config.storage.data_dir));
+    }
+
+    #[test]
+    fn test_log_path() {
+        let config = HippoConfig::default();
+        let log = config.log_path();
+        assert!(log.ends_with("hippo.log"));
+        assert!(log.starts_with(&config.storage.data_dir));
+    }
+
+    #[test]
+    fn test_redact_pattern_default_replacement() {
+        // Exercises the default_replacement() serde default function
+        let toml_str = r#"
+[[patterns]]
+name = "test_pat"
+regex = "foo"
+"#;
+        let config: RedactConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.patterns.len(), 1);
+        assert_eq!(config.patterns[0].replacement, "[REDACTED]");
+    }
+
+    #[test]
+    fn test_redact_config_toml_roundtrip() {
+        let toml_str = r#"
+[[patterns]]
+name = "custom"
+regex = "secret_\\w+"
+replacement = "***"
+"#;
+        let config: RedactConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.patterns.len(), 1);
+        assert_eq!(config.patterns[0].name, "custom");
+        assert_eq!(config.patterns[0].replacement, "***");
+    }
 }

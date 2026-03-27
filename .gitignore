@@ -11,3 +11,4 @@ brain/.venv/
 .pytest_cache/
 .ruff_cache/
 .coverage
+**/*.local.json
