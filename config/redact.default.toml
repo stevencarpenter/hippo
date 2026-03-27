@@ -1,0 +1,29 @@
+[[patterns]]
+name = "aws_access_key"
+regex = 'AKIA[0-9A-Z]{16}'
+replacement = "[REDACTED]"
+
+[[patterns]]
+name = "github_pat"
+regex = 'ghp_[a-zA-Z0-9]{36}|github_pat_[a-zA-Z0-9_]{82}'
+replacement = "[REDACTED]"
+
+[[patterns]]
+name = "generic_secret_assignment"
+regex = '(?i)(api[_-]?key|api[_-]?token|access[_-]?token|auth[_-]?token|secret[_-]?key|private[_-]?key|password)\s*[=:]\s*\S{8,}'
+replacement = "[REDACTED]"
+
+[[patterns]]
+name = "jwt"
+regex = 'eyJ[a-zA-Z0-9_-]{10,}\.eyJ[a-zA-Z0-9_-]{10,}\.[a-zA-Z0-9_-]+'
+replacement = "[REDACTED]"
+
+[[patterns]]
+name = "bearer_header"
+regex = '(?i)authorization:\s*bearer\s+\S+'
+replacement = "[REDACTED]"
+
+[[patterns]]
+name = "private_key_pem"
+regex = '-----BEGIN [A-Z ]*PRIVATE KEY-----'
+replacement = "[REDACTED]"

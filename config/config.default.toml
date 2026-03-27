@@ -1,0 +1,22 @@
+[lmstudio]
+base_url = "http://localhost:1234/v1"
+
+[models]
+enrichment = ""
+query = ""
+embedding = ""
+
+[daemon]
+flush_interval_ms = 100
+flush_batch_size = 50
+socket_timeout_ms = 100
+
+[brain]
+port = 9175
+poll_interval_secs = 5
+enrichment_batch_size = 10
+max_queue_depth = 100
+
+[storage]
+# data_dir = "~/.local/share/hippo"
+# config_dir = "~/.config/hippo"
