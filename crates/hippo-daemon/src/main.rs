@@ -5,7 +5,7 @@ mod framing;
 
 use anyhow::Result;
 use clap::Parser;
-use cli::{Cli, Commands, ConfigAction, DaemonAction, RedactAction, SendEventSource};
+use cli::{BrainAction, Cli, Commands, ConfigAction, DaemonAction, RedactAction, SendEventSource};
 use hippo_core::config::HippoConfig;
 use tracing_subscriber::EnvFilter;
 
@@ -53,6 +53,21 @@ async fn main() -> Result<()> {
             }
             DaemonAction::Install => {
                 println!("Copy plist to ~/Library/LaunchAgents/ and load with launchctl.");
+            }
+        },
+        Commands::Brain { action } => match action {
+            BrainAction::Stop => {
+                let output = std::process::Command::new("pkill")
+                    .args(["-f", "hippo-brain serve"])
+                    .output();
+                match output {
+                    Ok(o) if o.status.success() => {
+                        println!("Sent SIGTERM to brain server.");
+                    }
+                    _ => {
+                        println!("No brain server process found.");
+                    }
+                }
             }
         },
         Commands::SendEvent { source } => match source {

@@ -14,6 +14,11 @@ pub enum Commands {
         #[command(subcommand)]
         action: DaemonAction,
     },
+    /// Brain server management
+    Brain {
+        #[command(subcommand)]
+        action: BrainAction,
+    },
     /// Send an event to the daemon
     SendEvent {
         #[command(subcommand)]
@@ -77,6 +82,12 @@ pub enum Commands {
     },
     /// Run diagnostic checks
     Doctor,
+}
+
+#[derive(Subcommand)]
+pub enum BrainAction {
+    /// Stop the brain server (sends SIGTERM)
+    Stop,
 }
 
 #[derive(Subcommand)]
