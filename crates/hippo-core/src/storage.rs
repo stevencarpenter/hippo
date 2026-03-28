@@ -19,6 +19,16 @@ pub fn open_db(path: &Path) -> Result<Connection> {
          PRAGMA foreign_keys=ON;
          PRAGMA busy_timeout=5000;",
     )?;
+    let version: i64 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+    const EXPECTED_VERSION: i64 = 1;
+    if version != 0 && version != EXPECTED_VERSION {
+        anyhow::bail!(
+            "DB schema version mismatch: expected {}, found {}. \
+             Please run migrations or delete the database.",
+            EXPECTED_VERSION,
+            version
+        );
+    }
     conn.execute_batch(SCHEMA)?;
     Ok(conn)
 }
@@ -154,7 +164,9 @@ pub fn insert_event_at(
         None => (None, None),
     };
 
-    conn.execute(
+    let tx = conn.unchecked_transaction()?;
+
+    tx.execute(
         "INSERT INTO events (session_id, timestamp, command, stdout, stderr, stdout_truncated, stderr_truncated,
          exit_code, duration_ms, cwd, hostname, shell, git_repo, git_branch, git_commit, git_dirty,
          env_snapshot_id, redaction_count)
@@ -180,14 +192,15 @@ pub fn insert_event_at(
             redaction_count,
         ],
     )?;
-    let event_id = conn.last_insert_rowid();
+    let event_id = tx.last_insert_rowid();
 
-    // Auto-queue for enrichment
-    conn.execute(
+    // Auto-queue for enrichment (atomic with event insert — rolls back on failure)
+    tx.execute(
         "INSERT INTO enrichment_queue (event_id) VALUES (?1)",
         [event_id],
     )?;
 
+    tx.commit()?;
     Ok(event_id)
 }
 
@@ -407,6 +420,7 @@ pub fn recover_fallback_files(
 
     for file_path in &files {
         let content = std::fs::read_to_string(file_path)?;
+        let mut file_errors = 0usize;
         for line in content.lines() {
             if line.trim().is_empty() {
                 continue;
@@ -433,16 +447,24 @@ pub fn recover_fallback_files(
                             None,
                         ) {
                             Ok(_) => recovered += 1,
-                            Err(_) => errors += 1,
+                            Err(_) => file_errors += 1,
                         }
                     }
                 }
-                Err(_) => errors += 1,
+                Err(_) => file_errors += 1,
             }
         }
-        // Rename to .done
-        let done_path = file_path.with_extension("jsonl.done");
-        std::fs::rename(file_path, done_path)?;
+        errors += file_errors;
+
+        if file_errors == 0 {
+            // All lines succeeded — mark as done
+            let done_path = file_path.with_extension("jsonl.done");
+            std::fs::rename(file_path, done_path)?;
+        } else {
+            // Some lines failed — preserve for operator inspection
+            let partial_path = file_path.with_extension("jsonl.partial");
+            std::fs::rename(file_path, partial_path)?;
+        }
     }
 
     Ok((recovered, errors))
@@ -1024,5 +1046,110 @@ mod tests {
             )
             .unwrap();
         assert_eq!(stored_env_id, env_id);
+    }
+
+    #[test]
+    fn test_insert_event_at_is_atomic_under_queue_failure() {
+        let conn = open_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TRIGGER fail_queue_insert BEFORE INSERT ON enrichment_queue
+             BEGIN SELECT RAISE(ABORT, 'injected failure'); END;",
+        )
+        .unwrap();
+
+        let sid = upsert_session(&conn, "s1", "host", "zsh", "user").unwrap();
+        let result = insert_event(&conn, sid, &sample_shell_event(), 0, None);
+
+        assert!(result.is_err());
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM events", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(
+            count, 0,
+            "event row must not survive when queue insert fails"
+        );
+    }
+
+    #[test]
+    fn test_partial_fallback_recovery_preserves_failed_lines() {
+        use std::io::Write;
+
+        let dir = tempfile::tempdir().unwrap();
+        let fallback_dir = dir.path().join("fallback");
+        std::fs::create_dir_all(&fallback_dir).unwrap();
+
+        let date = Utc::now().format("%Y-%m-%d");
+        let file_path = fallback_dir.join(format!("{}.jsonl", date));
+        let mut file = std::fs::File::create(&file_path).unwrap();
+
+        // Valid event line 1
+        let event1 = EventEnvelope::shell(sample_shell_event());
+        let valid1 = serde_json::to_string(&event1).unwrap();
+        writeln!(file, "{}", valid1).unwrap();
+
+        // Malformed line in the middle
+        writeln!(file, "NOT VALID JSON").unwrap();
+
+        // Valid event line 2
+        let mut shell2 = sample_shell_event();
+        shell2.command = "ls -la".to_string();
+        let event2 = EventEnvelope::shell(shell2);
+        let valid2 = serde_json::to_string(&event2).unwrap();
+        writeln!(file, "{}", valid2).unwrap();
+
+        drop(file);
+
+        let conn = open_memory().unwrap();
+        let mut session_map = HashMap::new();
+        let (recovered, errors) =
+            recover_fallback_files(&conn, &fallback_dir, &mut session_map).unwrap();
+
+        // Two valid events stored, one malformed line counted as error
+        assert_eq!(recovered, 2);
+        assert_eq!(errors, 1);
+
+        // Valid events are in the database
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM events", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 2);
+
+        // Original .jsonl file is gone
+        assert!(!file_path.exists(), ".jsonl file should have been renamed");
+
+        // .partial file exists (not .done) because of the failed line
+        let partial_path = file_path.with_extension("jsonl.partial");
+        assert!(
+            partial_path.exists(),
+            "file should be renamed to .partial when some lines fail"
+        );
+
+        // .partial files are NOT picked up by list_fallback_files
+        let pending = list_fallback_files(&fallback_dir).unwrap();
+        assert!(
+            pending.is_empty(),
+            ".partial files must not be collected for re-recovery"
+        );
+    }
+
+    #[test]
+    fn test_open_db_version_matches_schema() {
+        let dir = tempfile::tempdir().unwrap();
+        let conn = open_db(&dir.path().join("test.db")).unwrap();
+        let v: i64 = conn
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(v, 1);
+    }
+
+    #[test]
+    fn test_open_db_rejects_wrong_version() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("test.db");
+        {
+            let conn = rusqlite::Connection::open(&db_path).unwrap();
+            conn.execute_batch("PRAGMA user_version = 99").unwrap();
+        }
+        assert!(open_db(&db_path).is_err());
     }
 }

@@ -1,7 +1,7 @@
 # hippo-brain
 
 Python enrichment and query server for Hippo. Polls the shared SQLite database for new shell events, enriches them via
-local LLMs (LM Studio), and serves semantic search queries over HTTP.
+local LLMs (LM Studio), and serves knowledge queries over HTTP.
 
 ## Setup
 
@@ -48,4 +48,4 @@ uv run --project brain ruff format --check brain/
 
 The brain server listens on `127.0.0.1:9175` and exposes:
 
-- `POST /query` — Semantic search over enriched knowledge nodes
+- `POST /query` — Full-text search over events and enriched knowledge nodes

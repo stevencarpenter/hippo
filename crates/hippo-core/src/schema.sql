@@ -209,6 +209,10 @@ CREATE TABLE IF NOT EXISTS relationships
 )
     );
 
+-- NOTE: event_entities is not yet populated by the enrichment pipeline.
+-- Populating it correctly requires per-event entity attribution at enrichment
+-- time, which the current batch-level enrichment contract does not support.
+-- Reserved for future per-event graph features. See ARCH-R12.
 CREATE TABLE IF NOT EXISTS event_entities
 (
     id
@@ -405,3 +409,5 @@ CREATE INDEX IF NOT EXISTS idx_relationships_to ON relationships (to_entity_id, 
 CREATE INDEX IF NOT EXISTS idx_event_entities_entity ON event_entities (entity_id, event_id);
 CREATE INDEX IF NOT EXISTS idx_kn_entities_entity ON knowledge_node_entities (entity_id);
 CREATE INDEX IF NOT EXISTS idx_queue_pending ON enrichment_queue (status, priority) WHERE status = 'pending';
+
+PRAGMA user_version = 1;

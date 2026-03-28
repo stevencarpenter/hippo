@@ -10,11 +10,11 @@ class LMStudioClient:
         self.timeout = timeout
 
     async def chat(
-            self,
-            messages: list[dict],
-            model: str = "",
-            temperature: float = 0.0,
-            max_tokens: int = 2048,
+        self,
+        messages: list[dict],
+        model: str = "",
+        temperature: float = 0.0,
+        max_tokens: int = 2048,
     ) -> str:
         async with httpx.AsyncClient(timeout=self.timeout) as client:
             resp = await client.post(
@@ -62,11 +62,11 @@ class MockLMStudioClient(LMStudioClient):
         self.embed_calls: list[dict] = []
 
     async def chat(
-            self,
-            messages: list[dict],
-            model: str = "",
-            temperature: float = 0.0,
-            max_tokens: int = 2048,
+        self,
+        messages: list[dict],
+        model: str = "",
+        temperature: float = 0.0,
+        max_tokens: int = 2048,
     ) -> str:
         self.chat_calls.append(
             {
@@ -96,7 +96,7 @@ class MockLMStudioClient(LMStudioClient):
                 if len(raw) >= dims:
                     break
                 # Convert 4 bytes to a float in [-1, 1]
-                val = int.from_bytes(h[j: j + 4], "big", signed=True) / (2 ** 31)
+                val = int.from_bytes(h[j : j + 4], "big", signed=True) / (2**31)
                 raw.append(val)
             i += 1
 

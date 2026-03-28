@@ -3,7 +3,7 @@ import re
 import time
 import uuid
 
-from hippo_brain.models import EnrichmentResult
+from hippo_brain.models import EnrichmentResult, validate_enrichment_data
 
 STALE_LOCK_TIMEOUT_MS = 5 * 60 * 1000
 
@@ -54,17 +54,14 @@ def parse_enrichment_response(raw: str) -> EnrichmentResult:
     text = text.strip()
 
     data = json.loads(text)
-    return EnrichmentResult(
-        summary=data.get("summary", ""),
-        intent=data.get("intent", ""),
-        outcome=data.get("outcome", "unknown"),
-        entities=data.get("entities", {}),
-        relationships=data.get("relationships", []),
-        tags=data.get("tags", []),
-        embed_text=data.get("embed_text", ""),
-    )
+    return validate_enrichment_data(data)
 
 
+# Batching contract:
+# Events are claimed from the queue in priority/creation order and fetched
+# in timestamp order. Batches are not coherence-grouped by session or repo;
+# the batch size is configured via enrichment_batch_size. One failed batch
+# retries all claimed events together up to max_retries.
 def claim_pending_events(conn, batch_size: int, worker_id: str) -> list[dict]:
     """Atomically claim pending events from the enrichment queue."""
     now_ms = int(time.time() * 1000)
@@ -103,6 +100,7 @@ def claim_pending_events(conn, batch_size: int, worker_id: str) -> list[dict]:
                cwd, hostname, shell, git_repo, git_branch, git_commit, git_dirty
         FROM events
         WHERE id IN ({placeholders})
+        ORDER BY timestamp ASC
         """,
         event_ids,
     )
@@ -130,9 +128,13 @@ def claim_pending_events(conn, batch_size: int, worker_id: str) -> list[dict]:
 
 
 def write_knowledge_node(
-        conn, result: EnrichmentResult, event_ids: list[int], model_name: str
+    conn, result: EnrichmentResult, event_ids: list[int], model_name: str
 ) -> int:
-    """Insert knowledge node, link to events, upsert entities, mark queue done."""
+    """Insert knowledge node, link to events, upsert entities, mark queue done.
+
+    All inserts run inside an explicit transaction so a mid-write failure
+    leaves no partial state in the database.
+    """
     node_uuid = str(uuid.uuid4())
     now_ms = int(time.time() * 1000)
     content = json.dumps(
@@ -147,82 +149,109 @@ def write_knowledge_node(
     )
     tags_json = json.dumps(result.tags)
 
-    cursor = conn.execute(
-        """
-        INSERT INTO knowledge_nodes (uuid, content, embed_text, node_type, outcome,
-                                     tags, enrichment_model, enrichment_version,
-                                     created_at, updated_at)
-        VALUES (?, ?, ?, 'observation', ?, ?, ?, 1, ?, ?)
-        """,
-        (
-            node_uuid,
-            content,
-            result.embed_text,
-            result.outcome,
-            tags_json,
-            model_name,
-            now_ms,
-            now_ms,
-        ),
-    )
-    node_id = cursor.lastrowid
+    conn.execute("BEGIN")
+    try:
+        cursor = conn.execute(
+            """
+            INSERT INTO knowledge_nodes (uuid, content, embed_text, node_type, outcome,
+                                         tags, enrichment_model, enrichment_version,
+                                         created_at, updated_at)
+            VALUES (?, ?, ?, 'observation', ?, ?, ?, 1, ?, ?)
+            """,
+            (
+                node_uuid,
+                content,
+                result.embed_text,
+                result.outcome,
+                tags_json,
+                model_name,
+                now_ms,
+                now_ms,
+            ),
+        )
+        node_id = cursor.lastrowid
 
-    # Link to events
-    for event_id in event_ids:
+        # Link to events
+        for event_id in event_ids:
+            conn.execute(
+                "INSERT INTO knowledge_node_events (knowledge_node_id, event_id) VALUES (?, ?)",
+                (node_id, event_id),
+            )
+
+        # Upsert entities
+        all_entities = result.entities if isinstance(result.entities, dict) else {}
+        entity_type_map = {
+            "projects": "project",
+            "tools": "tool",
+            "files": "file",
+            "services": "service",
+            "errors": "concept",
+        }
+        for key, entity_type in entity_type_map.items():
+            for name in all_entities.get(key, []):
+                canonical = name.lower().strip()
+                cursor = conn.execute(
+                    """
+                    INSERT INTO entities (type, name, canonical, first_seen, last_seen, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT (type, canonical) DO
+                    UPDATE SET
+                        last_seen = excluded.last_seen
+                        RETURNING id
+                    """,
+                    (entity_type, name, canonical, now_ms, now_ms, now_ms),
+                )
+                entity_id = cursor.fetchone()[0]
+                conn.execute(
+                    """
+                    INSERT INTO knowledge_node_entities (knowledge_node_id, entity_id)
+                    VALUES (?, ?) ON CONFLICT DO NOTHING
+                    """,
+                    (node_id, entity_id),
+                )
+
+        # Populate relationships table
+        for rel in result.relationships:
+            from_canonical = rel.get("from", "").lower().strip()
+            to_canonical = rel.get("to", "").lower().strip()
+            relationship = rel.get("relationship", "")
+            if not (from_canonical and to_canonical and relationship):
+                continue
+            from_id = conn.execute(
+                "SELECT id FROM entities WHERE canonical = ?", (from_canonical,)
+            ).fetchone()
+            to_id = conn.execute(
+                "SELECT id FROM entities WHERE canonical = ?", (to_canonical,)
+            ).fetchone()
+            if from_id and to_id:
+                conn.execute(
+                    """INSERT INTO relationships (from_entity_id, to_entity_id, relationship)
+                       VALUES (?, ?, ?)
+                       ON CONFLICT (from_entity_id, to_entity_id, relationship)
+                       DO UPDATE SET evidence_count = evidence_count + 1, last_seen = ?""",
+                    (from_id[0], to_id[0], relationship, int(time.time() * 1000)),
+                )
+
+        # Mark events as enriched
+        placeholders = ",".join("?" * len(event_ids))
         conn.execute(
-            "INSERT INTO knowledge_node_events (knowledge_node_id, event_id) VALUES (?, ?)",
-            (node_id, event_id),
+            f"UPDATE events SET enriched = 1 WHERE id IN ({placeholders})",
+            event_ids,
         )
 
-    # Upsert entities
-    all_entities = result.entities if isinstance(result.entities, dict) else {}
-    entity_type_map = {
-        "projects": "project",
-        "tools": "tool",
-        "files": "file",
-        "services": "service",
-        "errors": "concept",
-    }
-    for key, entity_type in entity_type_map.items():
-        for name in all_entities.get(key, []):
-            canonical = name.lower().strip()
-            cursor = conn.execute(
-                """
-                INSERT INTO entities (type, name, canonical, first_seen, last_seen, created_at)
-                VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT (type, canonical) DO
-                UPDATE SET
-                    last_seen = excluded.last_seen
-                    RETURNING id
-                """,
-                (entity_type, name, canonical, now_ms, now_ms, now_ms),
-            )
-            entity_id = cursor.fetchone()[0]
-            conn.execute(
-                """
-                INSERT INTO knowledge_node_entities (knowledge_node_id, entity_id)
-                VALUES (?, ?) ON CONFLICT DO NOTHING
-                """,
-                (node_id, entity_id),
-            )
+        # Mark queue entries done
+        conn.execute(
+            f"""
+            UPDATE enrichment_queue SET status = 'done', updated_at = ?
+            WHERE event_id IN ({placeholders})
+            """,
+            [now_ms, *event_ids],
+        )
 
-    # Mark events as enriched
-    placeholders = ",".join("?" * len(event_ids))
-    conn.execute(
-        f"UPDATE events SET enriched = 1 WHERE id IN ({placeholders})",
-        event_ids,
-    )
-
-    # Mark queue entries done
-    conn.execute(
-        f"""
-        UPDATE enrichment_queue SET status = 'done', updated_at = ?
-        WHERE event_id IN ({placeholders})
-        """,
-        [now_ms, *event_ids],
-    )
-
-    conn.commit()
-    return node_id
+        conn.commit()
+        return node_id
+    except Exception:
+        conn.rollback()
+        raise
 
 
 def mark_queue_failed(conn, event_ids: list[int], error: str):

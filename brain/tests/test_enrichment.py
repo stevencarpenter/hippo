@@ -1,4 +1,7 @@
+import json
 import time
+
+import pytest
 
 from hippo_brain.enrichment import (
     build_enrichment_prompt,
@@ -51,6 +54,65 @@ def test_parse_enrichment_response_with_code_fences():
     result = parse_enrichment_response(raw)
     assert result.summary == "Built project"
     assert result.intent == "building"
+
+
+def _valid_enrichment_dict(**overrides) -> dict:
+    """Return a minimal valid enrichment dict, with optional overrides."""
+    base = {
+        "summary": "Ran tests",
+        "intent": "testing",
+        "outcome": "success",
+        "entities": {
+            "projects": ["hippo"],
+            "tools": ["cargo"],
+            "files": [],
+            "services": [],
+            "errors": [],
+        },
+        "relationships": [],
+        "tags": ["rust"],
+        "embed_text": "cargo test hippo",
+    }
+    base.update(overrides)
+    return base
+
+
+def test_parse_rejects_missing_required_field():
+    data = _valid_enrichment_dict()
+    del data["summary"]
+    with pytest.raises(ValueError, match="summary"):
+        parse_enrichment_response(json.dumps(data))
+
+
+def test_parse_rejects_invalid_outcome():
+    data = _valid_enrichment_dict(outcome="succeeded")
+    with pytest.raises(ValueError, match="outcome"):
+        parse_enrichment_response(json.dumps(data))
+
+
+def test_parse_skips_non_string_entity_items():
+    data = _valid_enrichment_dict(
+        entities={
+            "projects": [],
+            "tools": ["cargo", 123],
+            "files": [],
+            "services": [],
+            "errors": [],
+        }
+    )
+    result = parse_enrichment_response(json.dumps(data))
+    assert result.entities["tools"] == ["cargo"]
+
+
+def test_parse_rejects_entities_not_dict():
+    data = _valid_enrichment_dict(entities=["not", "a", "dict"])
+    with pytest.raises(ValueError, match="entities must be a dict"):
+        parse_enrichment_response(json.dumps(data))
+
+
+def test_parse_rejects_invalid_json():
+    with pytest.raises(json.JSONDecodeError):
+        parse_enrichment_response("not json")
 
 
 def test_claim_and_write(tmp_db):
@@ -169,3 +231,260 @@ def test_mark_queue_failed(tmp_db):
     ).fetchone()
     assert row[0] == "failed"
     assert row[1] == 3
+
+
+def _seed_event_with_queue(conn, event_id=1, session_id=1):
+    """Insert a session, event, and queue entry for write_knowledge_node tests."""
+    now_ms = int(time.time() * 1000)
+    conn.execute(
+        "INSERT OR IGNORE INTO sessions (id, start_time, shell, hostname, username) "
+        "VALUES (?, ?, 'zsh', 'laptop', 'user')",
+        (session_id, now_ms),
+    )
+    conn.execute(
+        """INSERT INTO events (id, session_id, timestamp, command, exit_code, duration_ms,
+                               cwd, hostname, shell)
+           VALUES (?, ?, ?, 'cargo test', 0, 1000, '/project', 'laptop', 'zsh')""",
+        (event_id, session_id, now_ms),
+    )
+    conn.execute("INSERT INTO enrichment_queue (event_id) VALUES (?)", (event_id,))
+    conn.commit()
+
+
+def _make_result():
+    """Return a valid EnrichmentResult for write tests."""
+    return EnrichmentResult(
+        summary="Ran tests",
+        intent="testing",
+        outcome="success",
+        entities={
+            "projects": ["hippo"],
+            "tools": ["cargo"],
+            "files": [],
+            "services": [],
+            "errors": [],
+        },
+        relationships=[],
+        tags=["rust"],
+        embed_text="cargo test hippo",
+    )
+
+
+class _FailingConn:
+    """Thin wrapper around a sqlite3.Connection that injects a failure
+    when a specific SQL fragment is executed."""
+
+    def __init__(self, real_conn, fail_on: str):
+        self._conn = real_conn
+        self._fail_on = fail_on
+
+    def execute(self, sql, *args, **kwargs):
+        result = self._conn.execute(sql, *args, **kwargs)
+        if self._fail_on in str(sql):
+            raise RuntimeError("injected mid-write failure")
+        return result
+
+    def commit(self):
+        return self._conn.commit()
+
+    def rollback(self):
+        return self._conn.rollback()
+
+
+def test_write_knowledge_node_failure_leaves_no_partial_state(tmp_db):
+    conn, _ = tmp_db
+    _seed_event_with_queue(conn, event_id=1)
+
+    result = _make_result()
+
+    wrapper = _FailingConn(conn, "INSERT INTO knowledge_node_events")
+    with pytest.raises(RuntimeError, match="injected mid-write failure"):
+        write_knowledge_node(wrapper, result, [1], "test-model")
+
+    # Verify no partial state persisted
+    assert conn.execute("SELECT COUNT(*) FROM knowledge_nodes").fetchone()[0] == 0
+    assert conn.execute("SELECT COUNT(*) FROM knowledge_node_events").fetchone()[0] == 0
+    assert conn.execute("SELECT COUNT(*) FROM knowledge_node_entities").fetchone()[0] == 0
+    assert conn.execute("SELECT enriched FROM events WHERE id = 1").fetchone()[0] == 0
+
+
+def test_retry_after_rollback_writes_clean_node(tmp_db):
+    conn, _ = tmp_db
+    _seed_event_with_queue(conn, event_id=1)
+
+    result = _make_result()
+
+    # First call: injected failure at knowledge_node_events INSERT
+    wrapper = _FailingConn(conn, "INSERT INTO knowledge_node_events")
+    with pytest.raises(RuntimeError):
+        write_knowledge_node(wrapper, result, [1], "test-model")
+
+    # Second call: should succeed cleanly on the real connection
+    node_id = write_knowledge_node(conn, result, [1], "test-model")
+    assert node_id > 0
+
+    # Exactly one node
+    assert conn.execute("SELECT COUNT(*) FROM knowledge_nodes").fetchone()[0] == 1
+    # Linked to event
+    assert conn.execute("SELECT COUNT(*) FROM knowledge_node_events").fetchone()[0] == 1
+
+
+def test_batch_events_returned_in_timestamp_order(tmp_db):
+    conn, _ = tmp_db
+    now_ms = int(time.time() * 1000)
+
+    conn.execute(
+        "INSERT INTO sessions (id, start_time, shell, hostname, username) "
+        "VALUES (1, ?, 'zsh', 'laptop', 'user')",
+        (now_ms,),
+    )
+
+    # Insert events with out-of-order timestamps
+    timestamps = [now_ms + 300, now_ms + 100, now_ms + 200]
+    for i, ts in enumerate(timestamps, 1):
+        conn.execute(
+            """INSERT INTO events (id, session_id, timestamp, command, exit_code,
+                                   duration_ms, cwd, hostname, shell)
+               VALUES (?, 1, ?, 'cmd', 0, 100, '/p', 'laptop', 'zsh')""",
+            (i, ts),
+        )
+        conn.execute("INSERT INTO enrichment_queue (event_id) VALUES (?)", (i,))
+    conn.commit()
+
+    events = claim_pending_events(conn, batch_size=10, worker_id="test")
+    returned_timestamps = [e["timestamp"] for e in events]
+    assert returned_timestamps == sorted(returned_timestamps)
+    assert returned_timestamps == [now_ms + 100, now_ms + 200, now_ms + 300]
+
+
+def test_batch_can_span_multiple_sessions(tmp_db):
+    conn, _ = tmp_db
+    now_ms = int(time.time() * 1000)
+
+    # Two sessions
+    conn.execute(
+        "INSERT INTO sessions (id, start_time, shell, hostname, username) "
+        "VALUES (1, ?, 'zsh', 'laptop', 'user')",
+        (now_ms,),
+    )
+    conn.execute(
+        "INSERT INTO sessions (id, start_time, shell, hostname, username) "
+        "VALUES (2, ?, 'zsh', 'laptop', 'user')",
+        (now_ms,),
+    )
+
+    # Events from session 1
+    conn.execute(
+        """INSERT INTO events (id, session_id, timestamp, command, exit_code,
+                               duration_ms, cwd, hostname, shell)
+           VALUES (1, 1, ?, 'cmd1', 0, 100, '/p', 'laptop', 'zsh')""",
+        (now_ms,),
+    )
+    conn.execute("INSERT INTO enrichment_queue (event_id) VALUES (1)")
+
+    # Events from session 2
+    conn.execute(
+        """INSERT INTO events (id, session_id, timestamp, command, exit_code,
+                               duration_ms, cwd, hostname, shell)
+           VALUES (2, 2, ?, 'cmd2', 0, 100, '/p', 'laptop', 'zsh')""",
+        (now_ms + 100,),
+    )
+    conn.execute("INSERT INTO enrichment_queue (event_id) VALUES (2)")
+    conn.commit()
+
+    events = claim_pending_events(conn, batch_size=10, worker_id="test")
+    returned_ids = {e["id"] for e in events}
+    assert returned_ids == {1, 2}
+    # Verify they come from different sessions
+    returned_sessions = {e["session_id"] for e in events}
+    assert returned_sessions == {1, 2}
+
+
+def test_write_knowledge_node_populates_relationships(tmp_db):
+    conn, _ = tmp_db
+    _seed_event_with_queue(conn, event_id=1)
+
+    result = EnrichmentResult(
+        summary="Built and tested hippo",
+        intent="testing",
+        outcome="success",
+        entities={
+            "projects": ["hippo"],
+            "tools": ["cargo"],
+            "files": [],
+            "services": [],
+            "errors": [],
+        },
+        relationships=[
+            {"from": "cargo", "to": "hippo", "relationship": "builds"},
+            {"from": "cargo", "to": "hippo", "relationship": "tests"},
+            # This one references an entity not in entities dict, should be skipped
+            {"from": "npm", "to": "hippo", "relationship": "manages"},
+            # Malformed entries should be skipped
+            {"from": "", "to": "hippo", "relationship": "builds"},
+            {"from": "cargo", "to": "", "relationship": "builds"},
+            {"from": "cargo", "to": "hippo", "relationship": ""},
+        ],
+        tags=["rust"],
+        embed_text="cargo build and test hippo",
+    )
+
+    node_id = write_knowledge_node(conn, result, [1], "test-model")
+    assert node_id > 0
+
+    # Verify entities exist
+    entities = conn.execute("SELECT id, canonical FROM entities").fetchall()
+    entity_map = {row[1]: row[0] for row in entities}
+    assert "hippo" in entity_map
+    assert "cargo" in entity_map
+
+    # Verify relationships table has the two valid rows (cargo->hippo builds, cargo->hippo tests)
+    rels = conn.execute(
+        "SELECT from_entity_id, to_entity_id, relationship, evidence_count FROM relationships"
+    ).fetchall()
+    assert len(rels) == 2
+
+    cargo_id = entity_map["cargo"]
+    hippo_id = entity_map["hippo"]
+    rel_set = {(r[0], r[1], r[2]) for r in rels}
+    assert (cargo_id, hippo_id, "builds") in rel_set
+    assert (cargo_id, hippo_id, "tests") in rel_set
+
+    # All evidence_count should be 1 on first insert
+    for r in rels:
+        assert r[3] == 1
+
+    # --- Call again with same relationships to verify ON CONFLICT path ---
+    _seed_event_with_queue(conn, event_id=2)
+    result2 = EnrichmentResult(
+        summary="Built hippo again",
+        intent="building",
+        outcome="success",
+        entities={
+            "projects": ["hippo"],
+            "tools": ["cargo"],
+            "files": [],
+            "services": [],
+            "errors": [],
+        },
+        relationships=[
+            {"from": "cargo", "to": "hippo", "relationship": "builds"},
+        ],
+        tags=["rust"],
+        embed_text="cargo build hippo again",
+    )
+    write_knowledge_node(conn, result2, [2], "test-model")
+
+    # The "builds" relationship should now have evidence_count = 2
+    row = conn.execute(
+        "SELECT evidence_count FROM relationships WHERE from_entity_id = ? AND to_entity_id = ? AND relationship = ?",
+        (cargo_id, hippo_id, "builds"),
+    ).fetchone()
+    assert row[0] == 2
+
+    # The "tests" relationship should still have evidence_count = 1
+    row = conn.execute(
+        "SELECT evidence_count FROM relationships WHERE from_entity_id = ? AND to_entity_id = ? AND relationship = ?",
+        (cargo_id, hippo_id, "tests"),
+    ).fetchone()
+    assert row[0] == 1
