@@ -364,7 +364,7 @@ port = 7777
 poll_interval_secs = 10
 "#,
         )
-        .unwrap();
+            .unwrap();
         let config = HippoConfig::load(&config_path).unwrap();
         assert_eq!(config.lmstudio.base_url, "http://custom:9999/v1");
         assert_eq!(config.daemon.flush_interval_ms, 500);

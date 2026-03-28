@@ -7,9 +7,12 @@
 
 ## Vision
 
-Hippo is a local-first, privacy-preserving knowledge capture daemon for macOS. It observes developer activity in real-time, builds a linked knowledge graph, and surfaces it through a fast CLI. Shell is the first capture source; the architecture is designed to grow to cover IDE activity, filesystem events, browser activity, and any other producer.
+Hippo is a local-first, privacy-preserving knowledge capture daemon for macOS. It observes developer activity in
+real-time, builds a linked knowledge graph, and surfaces it through a fast CLI. Shell is the first capture source; the
+architecture is designed to grow to cover IDE activity, filesystem events, browser activity, and any other producer.
 
-Long-term vision: a fully local second brain — automated knowledge base, documentation, and retrieval — all on-device, no cloud dependency.
+Long-term vision: a fully local second brain — automated knowledge base, documentation, and retrieval — all on-device,
+no cloud dependency.
 
 **Name:** Hippo — loveable until angry, and shorthand for hippocampus.
 
@@ -40,9 +43,11 @@ Shell hook → Unix socket               Polls enrichment queue
 → CLI socket handler
 ```
 
-The daemon owns the hot path: capture, redact, store. The brain owns the slow path: enrich, embed, synthesize. They share a SQLite database.
+The daemon owns the hot path: capture, redact, store. The brain owns the slow path: enrich, embed, synthesize. They
+share a SQLite database.
 
-**Future producers** (FSEvents, IDE webhook, browser) add a new `EventPayload` variant. The storage and enrichment pipeline is unchanged.
+**Future producers** (FSEvents, IDE webhook, browser) add a new `EventPayload` variant. The storage and enrichment
+pipeline is unchanged.
 
 ---
 
@@ -50,24 +55,33 @@ The daemon owns the hot path: capture, redact, store. The brain owns the slow pa
 
 ### hippo-daemon (Rust)
 
-- **Shell hook** — zsh/bash `preexec`/`precmd` hooks in `~/.config/hippo/hippo.zsh`. Captures command, exit code, cwd, timing, git state. Fire-and-forget via background CLI call. Never blocks prompt.
-- **Redaction engine** — compiled `RegexSet` from `~/.config/hippo/redact.toml`. Runs in-daemon before any data hits disk. ENV capture uses an explicit allowlist (~20 safe vars). Stores `redaction_count` per event; never stores what was redacted.
-- **Event bus** — tokio async. Typed `EventEnvelope` with `EventPayload` enum (`Shell`, `FsChange`, `IdeAction`, `Raw`). Length-prefixed framing (4-byte u32 + JSON body) via `tokio-util::LengthDelimitedCodec`.
-- **Storage writer** — batched SQLite writes (mpsc channel + 100ms flush timer). WAL mode. Falls back to JSONL on SQLite failure.
+- **Shell hook** — zsh/bash `preexec`/`precmd` hooks in `~/.config/hippo/hippo.zsh`. Captures command, exit code, cwd,
+  timing, git state. Fire-and-forget via background CLI call. Never blocks prompt.
+- **Redaction engine** — compiled `RegexSet` from `~/.config/hippo/redact.toml`. Runs in-daemon before any data hits
+  disk. ENV capture uses an explicit allowlist (~20 safe vars). Stores `redaction_count` per event; never stores what
+  was redacted.
+- **Event bus** — tokio async. Typed `EventEnvelope` with `EventPayload` enum (`Shell`, `FsChange`, `IdeAction`, `Raw`).
+  Length-prefixed framing (4-byte u32 + JSON body) via `tokio-util::LengthDelimitedCodec`.
+- **Storage writer** — batched SQLite writes (mpsc channel + 100ms flush timer). WAL mode. Falls back to JSONL on SQLite
+  failure.
 - **CLI handler** — same binary, subcommands via `clap`. Communicates with running daemon via Unix socket.
 
 ### hippo-brain (Python)
 
-- **Enrichment worker** — polls enrichment queue, groups events into 30-second session bursts, calls LM Studio for entity extraction and knowledge node synthesis. Yields if a user query is in flight.
-- **Embedding pipeline** — calls LM Studio (`/v1/embeddings`). Two surfaces per node: command signature (small model, 384d) and knowledge summary (quality model, 2560d). Writes to LanceDB.
+- **Enrichment worker** — polls enrichment queue, groups events into 30-second session bursts, calls LM Studio for
+  entity extraction and knowledge node synthesis. Yields if a user query is in flight.
+- **Embedding pipeline** — calls LM Studio (`/v1/embeddings`). Two surfaces per node: command signature (small model,
+  384d) and knowledge summary (quality model, 2560d). Writes to LanceDB.
 - **Graph synthesizer** — extracts entities and relationships, writes to SQLite junction tables.
-- **Training exporter** — queries knowledge graph, formats high-quality session pairs as JSONL for `mlx_lm.lora`. Filters low-quality sessions (confused iteration, short duration, empty entities, any detected secrets).
+- **Training exporter** — queries knowledge graph, formats high-quality session pairs as JSONL for `mlx_lm.lora`.
+  Filters low-quality sessions (confused iteration, short duration, empty entities, any detected secrets).
 
 ### Storage Layer
 
 - **SQLite** — `~/.local/share/hippo/hippo.db`. WAL mode. Single file, inspectable with any SQLite client.
 - **LanceDB** — `~/.local/share/hippo/vectors/`. Two vector columns: `vec_command` (384d) and `vec_knowledge` (2560d).
-- **JSONL fallback** — `~/.local/share/hippo/events/YYYY-MM-DD.jsonl`. Written when SQLite unavailable. Re-imported on daemon startup.
+- **JSONL fallback** — `~/.local/share/hippo/events/YYYY-MM-DD.jsonl`. Written when SQLite unavailable. Re-imported on
+  daemon startup.
 
 ---
 
@@ -75,7 +89,8 @@ The daemon owns the hot path: capture, redact, store. The brain owns the slow pa
 
 ### SQLite Schema
 
-All timestamps are INTEGER Unix epoch milliseconds throughout. WAL mode and foreign keys are set on every connection open.
+All timestamps are INTEGER Unix epoch milliseconds throughout. WAL mode and foreign keys are set on every connection
+open.
 
 ```sql
 PRAGMA journal_mode = WAL;
@@ -239,11 +254,14 @@ schema = pa.schema([
 ```
 
 Notes:
+
 - Do not create IVF_PQ index until table has 5000+ rows
 - Create FTS index explicitly on `embed_text` and `summary` (string columns only — not the `tags` list field)
 - Run `table.compact_files()` periodically in a maintenance job
 - `vec_command` uses the small embedding model (384d); `vec_knowledge` uses the quality model (2560d)
-- **Dimension lock:** LanceDB enforces exact dimension match at insert time. If the embedding model in config changes, existing records cannot be updated in-place — use `enrichment_version` to track and re-embed. Document this prominently in the config.
+- **Dimension lock:** LanceDB enforces exact dimension match at insert time. If the embedding model in config changes,
+  existing records cannot be updated in-place — use `enrichment_version` to track and re-embed. Document this
+  prominently in the config.
 
 ---
 
@@ -253,11 +271,14 @@ Notes:
 
 Command metadata only. Stdout/stderr capture is a future opt-in Tier 2 feature via a `h <cmd>` PTY wrapper.
 
-`HIPPO_SESSION_ID` is generated once at login (sourced from `~/.config/hippo/hippo-env.zsh` via `zshenv`) and exported. Survives subshells.
+`HIPPO_SESSION_ID` is generated once at login (sourced from `~/.config/hippo/hippo-env.zsh` via `zshenv`) and exported.
+Survives subshells.
 
-Git state is cached per-cwd and refreshed only when the directory changes or 5 seconds elapse. Commands in large repos will not cause prompt lag.
+Git state is cached per-cwd and refreshed only when the directory changes or 5 seconds elapse. Commands in large repos
+will not cause prompt lag.
 
-The CLI call is always backgrounded and disowned. `SO_SNDTIMEO` is set to 100ms on the socket. If the daemon is not running, `connect()` fails immediately and the CLI exits silently.
+The CLI call is always backgrounded and disowned. `SO_SNDTIMEO` is set to 100ms on the socket. If the daemon is not
+running, `connect()` fails immediately and the CLI exits silently.
 
 ### Enrichment Prompt
 
@@ -315,11 +336,13 @@ Fallback:  SQLite unavailable → YYYY-MM-DD.jsonl
 Recovery:  on startup, re-import unprocessed .jsonl files → SQLite
 ```
 
-JSONL files are structurally identical to SQLite event rows. No capture-path event is silently lost. Only the Unix socket send (100ms timeout, background process) can drop — unavoidable tradeoff for shell responsiveness.
+JSONL files are structurally identical to SQLite event rows. No capture-path event is silently lost. Only the Unix
+socket send (100ms timeout, background process) can drop — unavoidable tradeoff for shell responsiveness.
 
 ### Enrichment Degradation
 
-- LM Studio unavailable → queue accumulates, brain retries with exponential backoff (1s → 2s → 4s, cap 5min), max 3 retries then `failed`
+- LM Studio unavailable → queue accumulates, brain retries with exponential backoff (1s → 2s → 4s, cap 5min), max 3
+  retries then `failed`
 - LM Studio busy → enrichment yields, retries in 5s
 - Queue depth > 100 → pause enrichment, log warning, keep capturing
 
@@ -333,7 +356,8 @@ JSONL files are structurally identical to SQLite event rows. No capture-path eve
 
 ## Models & Configuration
 
-Model selection is fully user-controlled. Hippo never loads or manages models — that is LM Studio's responsibility. Any model available in LM Studio can be configured.
+Model selection is fully user-controlled. Hippo never loads or manages models — that is LM Studio's responsibility. Any
+model available in LM Studio can be configured.
 
 ```toml
 # ~/.config/hippo/config.toml
@@ -349,6 +373,7 @@ embedding  = ""  # required — set to whichever embedding model is loaded in LM
 ```
 
 **Default recommended stack (M5 Max 128GB):**
+
 - Enrichment: LFM2-24B-A2B-MLX-8bit (~25.3GB, 2B active — always loaded)
 - Query/synthesis: Qwen3-Coder-Next-MLX-6bit (~64.8GB — on demand, LM Studio auto-evicts)
 - These cannot coexist; LM Studio handles the swap via auto-evict + JIT TTL
@@ -395,7 +420,8 @@ hippo redact test "<string>"
 
 ## Daemon Management
 
-Runs as a launchd `LaunchAgent` (user session, not root). `KeepAlive: true` so launchd restarts on crash — brief restarts are invisible to the shell hook.
+Runs as a launchd `LaunchAgent` (user session, not root). `KeepAlive: true` so launchd restarts on crash — brief
+restarts are invisible to the shell hook.
 
 - Socket: `~/.local/share/hippo/daemon.sock`
 - Database: `~/.local/share/hippo/hippo.db`
@@ -407,20 +433,20 @@ Runs as a launchd `LaunchAgent` (user session, not root). `KeepAlive: true` so l
 
 ## Rust Crate Stack
 
-| Crate | Purpose |
-|-------|---------|
-| `tokio` (full) | Async runtime |
-| `rusqlite` (bundled) | SQLite — bundled avoids macOS system SQLite version issues |
-| `tokio-util` | `LengthDelimitedCodec` for Unix socket framing |
-| `serde` + `serde_json` | Serialization |
-| `uuid` | Event/session IDs |
-| `chrono` | Timestamps — always `DateTime<Utc>`, display-only conversion |
-| `clap` (derive) | CLI parsing + subcommand dispatch |
-| `regex` | `RegexSet` for redaction, compiled once at startup |
-| `toml` | Config parsing |
-| `tracing` + `tracing-subscriber` | Structured logging to file |
-| `thiserror` / `anyhow` | Typed errors (lib) / contextual errors (CLI) |
-| `notify` | Future: FSEvents watcher |
+| Crate                            | Purpose                                                      |
+|----------------------------------|--------------------------------------------------------------|
+| `tokio` (full)                   | Async runtime                                                |
+| `rusqlite` (bundled)             | SQLite — bundled avoids macOS system SQLite version issues   |
+| `tokio-util`                     | `LengthDelimitedCodec` for Unix socket framing               |
+| `serde` + `serde_json`           | Serialization                                                |
+| `uuid`                           | Event/session IDs                                            |
+| `chrono`                         | Timestamps — always `DateTime<Utc>`, display-only conversion |
+| `clap` (derive)                  | CLI parsing + subcommand dispatch                            |
+| `regex`                          | `RegexSet` for redaction, compiled once at startup           |
+| `toml`                           | Config parsing                                               |
+| `tracing` + `tracing-subscriber` | Structured logging to file                                   |
+| `thiserror` / `anyhow`           | Typed errors (lib) / contextual errors (CLI)                 |
+| `notify`                         | Future: FSEvents watcher                                     |
 
 ---
 
@@ -448,10 +474,10 @@ Runs as a launchd `LaunchAgent` (user session, not root). `KeepAlive: true` so l
 
 Each adds a new `EventPayload` variant. Core storage and enrichment pipeline unchanged.
 
-| Source | Mechanism |
-|--------|-----------|
-| Stdout/stderr | Opt-in PTY wrapper `h <cmd>` |
-| Filesystem | FSEvents watcher via `notify` crate |
-| JetBrains IDE | Plugin posting to daemon HTTP endpoint |
-| Browser | Native messaging extension |
-| Generic apps | Accessibility API or app-specific hooks |
+| Source        | Mechanism                               |
+|---------------|-----------------------------------------|
+| Stdout/stderr | Opt-in PTY wrapper `h <cmd>`            |
+| Filesystem    | FSEvents watcher via `notify` crate     |
+| JetBrains IDE | Plugin posting to daemon HTTP endpoint  |
+| Browser       | Native messaging extension              |
+| Generic apps  | Accessibility API or app-specific hooks |

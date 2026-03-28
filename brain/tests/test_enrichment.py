@@ -66,13 +66,13 @@ def test_claim_and_write(tmp_db):
     # Insert events
     conn.execute(
         """INSERT INTO events (id, session_id, timestamp, command, exit_code, duration_ms,
-                              cwd, hostname, shell)
+                               cwd, hostname, shell)
            VALUES (1, 1, ?, 'cargo test', 0, 1000, '/project', 'laptop', 'zsh')""",
         (now_ms,),
     )
     conn.execute(
         """INSERT INTO events (id, session_id, timestamp, command, exit_code, duration_ms,
-                              cwd, hostname, shell)
+                               cwd, hostname, shell)
            VALUES (2, 1, ?, 'cargo build', 0, 2000, '/project', 'laptop', 'zsh')""",
         (now_ms,),
     )
@@ -139,7 +139,7 @@ def test_mark_queue_failed(tmp_db):
     )
     conn.execute(
         """INSERT INTO events (id, session_id, timestamp, command, exit_code, duration_ms,
-                              cwd, hostname, shell)
+                               cwd, hostname, shell)
            VALUES (1, 1, ?, 'failing cmd', 1, 500, '/project', 'laptop', 'zsh')""",
         (now_ms,),
     )

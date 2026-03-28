@@ -72,19 +72,21 @@ def claim_pending_events(conn, batch_size: int, worker_id: str) -> list[dict]:
     cursor = conn.execute(
         """
         UPDATE enrichment_queue
-        SET status = 'processing', locked_at = ?, locked_by = ?,
+        SET status     = 'processing',
+            locked_at  = ?,
+            locked_by  = ?,
             updated_at = ?
-        WHERE id IN (
-            SELECT id FROM enrichment_queue
-            WHERE status = 'pending'
-               OR (
-                    status = 'processing'
-                    AND COALESCE(locked_at, 0) <= ?
-               )
-            ORDER BY priority ASC, created_at ASC
+        WHERE id IN (SELECT id
+                     FROM enrichment_queue
+                     WHERE status = 'pending'
+                        OR (
+                         status = 'processing'
+                             AND COALESCE(locked_at, 0) <= ?
+                         )
+                     ORDER BY priority ASC, created_at ASC
             LIMIT ?
-        )
-        RETURNING event_id
+            )
+            RETURNING event_id
         """,
         (now_ms, worker_id, now_ms, stale_before_ms, batch_size),
     )
@@ -128,7 +130,7 @@ def claim_pending_events(conn, batch_size: int, worker_id: str) -> list[dict]:
 
 
 def write_knowledge_node(
-    conn, result: EnrichmentResult, event_ids: list[int], model_name: str
+        conn, result: EnrichmentResult, event_ids: list[int], model_name: str
 ) -> int:
     """Insert knowledge node, link to events, upsert entities, mark queue done."""
     node_uuid = str(uuid.uuid4())
@@ -187,10 +189,10 @@ def write_knowledge_node(
             cursor = conn.execute(
                 """
                 INSERT INTO entities (type, name, canonical, first_seen, last_seen, created_at)
-                VALUES (?, ?, ?, ?, ?, ?)
-                ON CONFLICT (type, canonical) DO UPDATE SET
+                VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT (type, canonical) DO
+                UPDATE SET
                     last_seen = excluded.last_seen
-                RETURNING id
+                    RETURNING id
                 """,
                 (entity_type, name, canonical, now_ms, now_ms, now_ms),
             )
@@ -198,8 +200,7 @@ def write_knowledge_node(
             conn.execute(
                 """
                 INSERT INTO knowledge_node_entities (knowledge_node_id, entity_id)
-                VALUES (?, ?)
-                ON CONFLICT DO NOTHING
+                VALUES (?, ?) ON CONFLICT DO NOTHING
                 """,
                 (node_id, entity_id),
             )
@@ -231,15 +232,15 @@ def mark_queue_failed(conn, event_ids: list[int], error: str):
         conn.execute(
             """
             UPDATE enrichment_queue
-            SET retry_count = retry_count + 1,
+            SET retry_count   = retry_count + 1,
                 error_message = ?,
-                locked_at = NULL,
-                locked_by = NULL,
-                updated_at = ?,
-                status = CASE
-                    WHEN retry_count + 1 >= max_retries THEN 'failed'
-                    ELSE 'pending'
-                END
+                locked_at     = NULL,
+                locked_by     = NULL,
+                updated_at    = ?,
+                status        = CASE
+                                    WHEN retry_count + 1 >= max_retries THEN 'failed'
+                                    ELSE 'pending'
+                    END
             WHERE event_id = ?
             """,
             (error, now_ms, event_id),

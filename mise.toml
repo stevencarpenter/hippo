@@ -151,6 +151,6 @@ run = "cargo run --bin hippo -- redact test \"$1\""
 [tasks.clean]
 description = "Remove build artifacts"
 run = [
-  "cargo clean",
-  "rm -rf brain/.venv brain/.pytest_cache brain/.ruff_cache brain/.venv",
+    "cargo clean",
+    "rm -rf brain/.venv brain/.pytest_cache brain/.ruff_cache brain/.venv",
 ]

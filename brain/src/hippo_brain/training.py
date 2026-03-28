@@ -18,10 +18,10 @@ def _write_jsonl(path: Path, examples: list[dict]):
 
 
 def export_training_data(
-    conn,
-    output_dir: str | Path,
-    since_ms: int | None = None,
-    min_events: int = 1,
+        conn,
+        output_dir: str | Path,
+        since_ms: int | None = None,
+        min_events: int = 1,
 ) -> dict:
     """Export knowledge nodes as JSONL conversation pairs for fine-tuning.
 
@@ -32,10 +32,10 @@ def export_training_data(
 
     # Query knowledge nodes with success/partial outcome
     sql = """
-        SELECT kn.id, kn.content, kn.embed_text, kn.outcome, kn.tags
-        FROM knowledge_nodes kn
-        WHERE kn.outcome IN ('success', 'partial')
-    """
+          SELECT kn.id, kn.content, kn.embed_text, kn.outcome, kn.tags
+          FROM knowledge_nodes kn
+          WHERE kn.outcome IN ('success', 'partial') \
+          """
     params = []
     if since_ms is not None:
         sql += " AND kn.created_at >= ?"
@@ -51,7 +51,7 @@ def export_training_data(
             """
             SELECT e.command, e.exit_code, e.duration_ms, e.cwd, e.git_branch
             FROM events e
-            JOIN knowledge_node_events kne ON kne.event_id = e.id
+                     JOIN knowledge_node_events kne ON kne.event_id = e.id
             WHERE kne.knowledge_node_id = ?
             """,
             (node_id,),

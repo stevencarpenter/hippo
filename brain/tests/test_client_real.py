@@ -84,9 +84,9 @@ async def test_is_reachable_returns_true(client):
 async def test_is_reachable_returns_false_on_connection_error(client):
     """is_reachable() returns False on connection error."""
     with patch(
-        "httpx.AsyncClient.get",
-        new_callable=AsyncMock,
-        side_effect=httpx.ConnectError("Connection refused"),
+            "httpx.AsyncClient.get",
+            new_callable=AsyncMock,
+            side_effect=httpx.ConnectError("Connection refused"),
     ):
         assert await client.is_reachable() is False
 
