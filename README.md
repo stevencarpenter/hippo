@@ -1,6 +1,7 @@
 # Hippo
 
-Local knowledge capture daemon for macOS. Hippo watches your shell activity, redacts secrets, enriches events with local LLMs, and builds a searchable second brain — all without sending data off your machine.
+Local knowledge capture daemon for macOS. Hippo watches your shell activity, redacts secrets, enriches events with local
+LLMs, and builds a searchable second brain — all without sending data off your machine.
 
 ## Architecture
 
@@ -17,8 +18,10 @@ Two always-on processes share a SQLite database at `~/.local/share/hippo/hippo.d
                               serves CLI queries              writes embeddings
 ```
 
-- **hippo-daemon** (Rust) — captures shell events via Unix socket, applies secret redaction, stores to SQLite, serves CLI queries
-- **hippo-brain** (Python) — polls enrichment queue from SQLite, calls LM Studio for summarization, writes knowledge nodes + embeddings to LanceDB, serves HTTP query API on port 9175
+- **hippo-daemon** (Rust) — captures shell events via Unix socket, applies secret redaction, stores to SQLite, serves
+  CLI queries
+- **hippo-brain** (Python) — polls enrichment queue from SQLite, calls LM Studio for summarization, writes knowledge
+  nodes + embeddings to LanceDB, serves HTTP query API on port 9175
 
 ## Prerequisites
 
@@ -81,20 +84,20 @@ hippo redact test "password=hunter2"
 
 All common workflows are defined in `mise.toml`:
 
-| Task | Description |
-|---|---|
-| `mise run build` | Build Rust crates (debug) |
-| `mise run build:release` | Build Rust crates (release) |
-| `mise run build:brain` | Sync Python dependencies |
-| `mise run test` | Run all tests (Rust + Python) |
-| `mise run lint` | Run all linters (clippy + ruff) |
-| `mise run fmt` | Format all code |
-| `mise run fmt:check` | Check formatting without changes |
-| `mise run check` | Full CI: lint + format + test |
-| `mise run run:daemon` | Run daemon in foreground |
-| `mise run run:brain` | Run brain server |
-| `mise run doctor` | Run diagnostic checks |
-| `mise run start` / `stop` / `restart` | Manage launchd service |
+| Task                                  | Description                      |
+|---------------------------------------|----------------------------------|
+| `mise run build`                      | Build Rust crates (debug)        |
+| `mise run build:release`              | Build Rust crates (release)      |
+| `mise run build:brain`                | Sync Python dependencies         |
+| `mise run test`                       | Run all tests (Rust + Python)    |
+| `mise run lint`                       | Run all linters (clippy + ruff)  |
+| `mise run fmt`                        | Format all code                  |
+| `mise run fmt:check`                  | Check formatting without changes |
+| `mise run check`                      | Full CI: lint + format + test    |
+| `mise run run:daemon`                 | Run daemon in foreground         |
+| `mise run run:brain`                  | Run brain server                 |
+| `mise run doctor`                     | Run diagnostic checks            |
+| `mise run start` / `stop` / `restart` | Manage launchd service           |
 
 Run `mise tasks` for the full list.
 
@@ -122,7 +125,8 @@ port = 9175
 poll_interval_secs = 5
 ```
 
-Secret redaction patterns are configured in `~/.config/hippo/redact.toml`. See [`config/redact.default.toml`](config/redact.default.toml).
+Secret redaction patterns are configured in `~/.config/hippo/redact.toml`. See [
+`config/redact.default.toml`](config/redact.default.toml).
 
 ## Project Structure
 
@@ -139,12 +143,12 @@ Secret redaction patterns are configured in `~/.config/hippo/redact.toml`. See [
 
 ## Data Storage
 
-| Store | Path | Purpose |
-|---|---|---|
-| SQLite | `~/.local/share/hippo/hippo.db` | Events, sessions, enrichment queue |
+| Store   | Path                            | Purpose                               |
+|---------|---------------------------------|---------------------------------------|
+| SQLite  | `~/.local/share/hippo/hippo.db` | Events, sessions, enrichment queue    |
 | LanceDB | `~/.local/share/hippo/lancedb/` | Vector embeddings for semantic search |
-| Config | `~/.config/hippo/config.toml` | User configuration |
-| Logs | `~/.local/share/hippo/*.log` | Daemon and brain logs |
+| Config  | `~/.config/hippo/config.toml`   | User configuration                    |
+| Logs    | `~/.local/share/hippo/*.log`    | Daemon and brain logs                 |
 
 ## License
 

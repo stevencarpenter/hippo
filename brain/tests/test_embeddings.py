@@ -1,6 +1,5 @@
-import tempfile
-
 import pytest
+import tempfile
 
 from hippo_brain.client import MockLMStudioClient
 from hippo_brain.embeddings import (

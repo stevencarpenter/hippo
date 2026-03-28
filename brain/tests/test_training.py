@@ -19,7 +19,7 @@ def _seed_db(conn):
     for i in range(1, 4):
         conn.execute(
             """INSERT INTO events (id, session_id, timestamp, command, exit_code, duration_ms,
-                                  cwd, hostname, shell, git_branch)
+                                   cwd, hostname, shell, git_branch)
                VALUES (?, 1, ?, ?, 0, ?, '/project', 'laptop', 'zsh', 'main')""",
             (i, now_ms + i, f"command-{i}", 1000 + i),
         )

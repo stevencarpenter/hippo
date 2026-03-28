@@ -1,5 +1,4 @@
 import math
-
 import pytest
 
 from hippo_brain.client import MockLMStudioClient

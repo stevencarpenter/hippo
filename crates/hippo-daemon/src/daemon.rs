@@ -1,16 +1,16 @@
 use anyhow::Result;
-use hippo_core::config::{ENV_ALLOWLIST, HippoConfig};
+use hippo_core::config::{HippoConfig, ENV_ALLOWLIST};
 use hippo_core::events::{EventEnvelope, EventPayload};
 use hippo_core::protocol::{DaemonRequest, DaemonResponse};
 use hippo_core::redaction::RedactionEngine;
 use hippo_core::storage;
 use rusqlite::Connection;
 use std::collections::HashMap;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use tokio::net::{UnixListener, UnixStream};
-use tokio::sync::Mutex;
 use tokio::sync::watch;
+use tokio::sync::Mutex;
 use tokio::time::{self, Duration, Instant};
 use tracing::{error, info, warn};
 
@@ -187,10 +187,11 @@ pub async fn flush_events(state: &Arc<DaemonState>) {
                 }
             };
 
-            let env_snapshot_id = storage::upsert_env_snapshot(&db, &filtered_env).unwrap_or_else(|e| {
-                warn!("env snapshot failed: {}", e);
-                None
-            });
+            let env_snapshot_id =
+                storage::upsert_env_snapshot(&db, &filtered_env).unwrap_or_else(|e| {
+                    warn!("env snapshot failed: {}", e);
+                    None
+                });
 
             if let Err(e) = storage::insert_event_at(
                 &db,
