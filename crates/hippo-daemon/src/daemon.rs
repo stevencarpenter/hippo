@@ -187,18 +187,16 @@ pub async fn flush_events(state: &Arc<DaemonState>) {
                 }
             };
 
-            let env_snapshot_id = match storage::upsert_env_snapshot(&db, &filtered_env) {
-                Ok(id) => id,
-                Err(e) => {
-                    warn!("env snapshot failed: {}", e);
-                    None
-                }
-            };
+            let env_snapshot_id = storage::upsert_env_snapshot(&db, &filtered_env).unwrap_or_else(|e| {
+                warn!("env snapshot failed: {}", e);
+                None
+            });
 
-            if let Err(e) = storage::insert_event(
+            if let Err(e) = storage::insert_event_at(
                 &db,
                 session_id,
                 &redacted_event,
+                envelope.timestamp.timestamp_millis(),
                 redacted_event.redaction_count,
                 env_snapshot_id,
             ) {

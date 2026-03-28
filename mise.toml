@@ -1,0 +1,161 @@
+[tools]
+rust = "latest"
+python = "3.14"
+uv = "latest"
+
+[env]
+HIPPO_DATA_DIR = "~/.local/share/hippo"
+HIPPO_CONFIG_DIR = "~/.config/hippo"
+
+# ── Build ────────────────────────────────────────────────────────────
+
+[tasks.build]
+description = "Build all Rust crates (debug)"
+run = "cargo build"
+
+[tasks."build:release"]
+description = "Build all Rust crates (release)"
+run = "cargo build --release"
+
+[tasks."build:brain"]
+description = "Sync Python brain dependencies"
+run = "uv sync --project brain"
+
+[tasks."build:all"]
+description = "Build everything"
+depends = ["build", "build:brain"]
+
+# ── Test ─────────────────────────────────────────────────────────────
+
+[tasks.test]
+description = "Run all tests (Rust + Python)"
+depends = ["test:rust", "test:python"]
+
+[tasks."test:rust"]
+description = "Run Rust tests"
+run = "cargo test"
+
+[tasks."test:core"]
+description = "Run hippo-core tests only"
+run = "cargo test -p hippo-core"
+
+[tasks."test:daemon"]
+description = "Run hippo-daemon tests only"
+run = "cargo test -p hippo-daemon"
+
+[tasks."test:python"]
+description = "Run Python brain tests with coverage"
+run = "uv run --project brain pytest brain/tests -v --cov=hippo_brain --cov-report=term-missing"
+
+# ── Lint ─────────────────────────────────────────────────────────────
+
+[tasks.lint]
+description = "Run all linters"
+depends = ["lint:rust", "lint:python"]
+
+[tasks."lint:rust"]
+description = "Run clippy on all Rust targets"
+run = "cargo clippy --all-targets -- -D warnings"
+
+[tasks."lint:python"]
+description = "Run ruff check on Python brain"
+run = "uv run --project brain ruff check brain/"
+
+# ── Format ───────────────────────────────────────────────────────────
+
+[tasks.fmt]
+description = "Format all code"
+depends = ["fmt:rust", "fmt:python"]
+
+[tasks."fmt:rust"]
+description = "Format Rust code"
+run = "cargo fmt"
+
+[tasks."fmt:python"]
+description = "Format Python code"
+run = "uv run --project brain ruff format brain/"
+
+[tasks."fmt:check"]
+description = "Check formatting without modifying files"
+run = [
+    "cargo fmt --check",
+    "uv run --project brain ruff format --check brain/",
+]
+
+# ── Check (CI-equivalent) ───────────────────────────────────────────
+
+[tasks.check]
+description = "Full CI check: lint + format + test"
+depends = ["lint", "fmt:check", "test"]
+
+# ── Run ──────────────────────────────────────────────────────────────
+
+[tasks."run:daemon"]
+description = "Run the daemon in the foreground"
+run = "cargo run --bin hippo -- daemon run"
+
+[tasks."run:brain"]
+description = "Run the brain enrichment server"
+run = "uv run --project brain hippo-brain serve"
+
+[tasks.status]
+description = "Show daemon status"
+run = "cargo run --bin hippo -- status"
+
+[tasks.doctor]
+description = "Run diagnostic checks"
+run = "cargo run --bin hippo -- doctor"
+
+# ── Query / Explore ──────────────────────────────────────────────────
+
+[tasks.sessions]
+description = "List today's sessions"
+run = "cargo run --bin hippo -- sessions --today"
+
+[tasks.events]
+description = "List recent events (last 2h)"
+run = "cargo run --bin hippo -- events --since 2h"
+
+[tasks.entities]
+description = "List known entities"
+run = "cargo run --bin hippo -- entities"
+
+# ── Service management ───────────────────────────────────────────────
+
+[tasks.install]
+description = "Install the LaunchAgent for the daemon"
+run = "cargo run --bin hippo -- daemon install"
+
+[tasks.start]
+description = "Start the daemon via launchd"
+run = "cargo run --bin hippo -- daemon start"
+
+[tasks.stop]
+description = "Stop the daemon"
+run = "cargo run --bin hippo -- daemon stop"
+
+[tasks.restart]
+description = "Restart the daemon"
+run = "cargo run --bin hippo -- daemon restart"
+
+# ── Export / Training ────────────────────────────────────────────────
+
+[tasks."export:training"]
+description = "Export training data as JSONL (last 30d)"
+run = "cargo run --bin hippo -- export-training --since 30d --out ."
+
+# ── Redaction ────────────────────────────────────────────────────────
+
+[tasks."redact:test"]
+description = "Test a string against redaction patterns"
+usage = "mise run redact:test -- <string>"
+run = "cargo run --bin hippo -- redact test \"$1\""
+
+# ── Clean ────────────────────────────────────────────────────────────
+
+[tasks.clean]
+description = "Remove build artifacts"
+run = [
+    "cargo clean",
+    "rm -rf brain/.venv brain/.pytest_cache brain/.ruff_cache",
+]

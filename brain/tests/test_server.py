@@ -192,21 +192,25 @@ def test_brain_server_get_routes(tmp_db):
 
 
 def test_create_app_is_callable(tmp_db):
-    """create_app constructs a BrainServer internally; Starlette 1.0 removed on_startup kwarg
-    so the call raises TypeError, but we verify the function signature exists and is importable."""
+    """create_app is importable and callable."""
     from hippo_brain.server import create_app as create_app_fn
 
     assert callable(create_app_fn)
 
 
 def test_create_app_routes_work(tmp_db):
-    """Verify create_app produces a fully functional app (skip startup to avoid enrichment loop)."""
+    """Verify create_app produces a fully functional app."""
     _, db_path = tmp_db
-    app = _make_app(str(db_path))
-    client = TestClient(app)
-
-    resp = client.get("/health")
-    assert resp.status_code == 200
+    app = create_app(
+        db_path=str(db_path),
+        lmstudio_base_url="http://localhost:1234/v1",
+        enrichment_model="test-model",
+        poll_interval_secs=9999,
+        enrichment_batch_size=5,
+    )
+    with TestClient(app) as client:
+        resp = client.get("/health")
+        assert resp.status_code == 200
 
 
 # ---- Query error handling ----
@@ -275,7 +279,7 @@ async def test_enrichment_loop_processes_events(tmp_db):
     except asyncio.CancelledError:
         pass
 
-    assert server.enrichment_running is True
+    assert server.enrichment_running is False
     mock_chat.assert_called()
 
     # Verify enrichment happened
@@ -338,8 +342,8 @@ async def test_enrichment_loop_skips_empty_queue(tmp_db):
     except asyncio.CancelledError:
         pass
 
-    # Should have run without errors
-    assert server.enrichment_running is True
+    # Should have run without errors and cleaned up after cancellation
+    assert server.enrichment_running is False
 
 
 async def test_start_enrichment_creates_task(tmp_db):
@@ -362,18 +366,18 @@ async def test_start_enrichment_creates_task(tmp_db):
 # ---- create_app full coverage ----
 
 
-def test_create_app_constructs_server_and_fails_on_starlette_1(tmp_db):
-    """create_app constructs a BrainServer; Starlette 1.0 removed on_startup kwarg.
-    We exercise the function body to cover lines 152-167."""
+def test_create_app_starts_and_stops_enrichment_task(tmp_db):
+    """create_app should start the background task on startup and stop cleanly on shutdown."""
     _, db_path = tmp_db
-    try:
-        create_app(
-            db_path=str(db_path),
-            lmstudio_base_url="http://localhost:1234/v1",
-            enrichment_model="test",
-            poll_interval_secs=9999,
-            enrichment_batch_size=5,
-        )
-    except TypeError:
-        # Expected with Starlette 1.0 (on_startup kwarg removed)
-        pass
+    app = create_app(
+        db_path=str(db_path),
+        lmstudio_base_url="http://localhost:1234/v1",
+        enrichment_model="test",
+        poll_interval_secs=9999,
+        enrichment_batch_size=5,
+    )
+
+    with TestClient(app) as client:
+        resp = client.get("/health")
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "ok"
