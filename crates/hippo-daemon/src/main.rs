@@ -295,7 +295,7 @@ async fn main() -> Result<()> {
         },
         Commands::Redact { action } => match action {
             RedactAction::Test { input } => {
-                commands::handle_redact_test(&input);
+                commands::handle_redact_test(&config, &input);
             }
         },
         Commands::Doctor => {

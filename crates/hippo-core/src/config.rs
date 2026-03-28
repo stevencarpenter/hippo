@@ -154,6 +154,10 @@ impl HippoConfig {
         Self::load(&config_path)
     }
 
+    pub fn redact_path(&self) -> PathBuf {
+        self.storage.config_dir.join("redact.toml")
+    }
+
     pub fn db_path(&self) -> PathBuf {
         self.storage.data_dir.join("hippo.db")
     }
@@ -200,6 +204,20 @@ fn default_replacement() -> String {
 }
 
 impl RedactConfig {
+    pub fn load(path: &Path) -> Result<Self> {
+        if !path.exists() {
+            return Ok(Self::builtin());
+        }
+        let content = std::fs::read_to_string(path)?;
+        let config: Self = toml::from_str(&content)?;
+        Ok(config)
+    }
+
+    pub fn load_default() -> Result<Self> {
+        let redact_path = default_config_dir().join("redact.toml");
+        Self::load(&redact_path)
+    }
+
     pub fn builtin() -> Self {
         Self {
             patterns: vec![
@@ -416,6 +434,14 @@ poll_interval_secs = 10
     }
 
     #[test]
+    fn test_redact_path() {
+        let config = HippoConfig::default();
+        let redact = config.redact_path();
+        assert!(redact.ends_with("redact.toml"));
+        assert!(redact.starts_with(&config.storage.config_dir));
+    }
+
+    #[test]
     fn test_redact_pattern_default_replacement() {
         // Exercises the default_replacement() serde default function
         let toml_str = r#"
@@ -440,5 +466,38 @@ replacement = "***"
         assert_eq!(config.patterns.len(), 1);
         assert_eq!(config.patterns[0].name, "custom");
         assert_eq!(config.patterns[0].replacement, "***");
+    }
+
+    #[test]
+    fn test_redact_load_missing_returns_builtin() {
+        let config = RedactConfig::load(Path::new("/nonexistent/path/redact.toml")).unwrap();
+        assert_eq!(config.patterns.len(), 6);
+    }
+
+    #[test]
+    fn test_redact_load_reads_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let redact_path = dir.path().join("redact.toml");
+        std::fs::write(
+            &redact_path,
+            r#"
+[[patterns]]
+name = "internal_token"
+regex = "internal_[A-Z0-9]{8}"
+replacement = "***"
+"#,
+        )
+        .unwrap();
+
+        let config = RedactConfig::load(&redact_path).unwrap();
+        assert_eq!(config.patterns.len(), 1);
+        assert_eq!(config.patterns[0].name, "internal_token");
+        assert_eq!(config.patterns[0].replacement, "***");
+    }
+
+    #[test]
+    fn test_redact_load_default_returns_ok() {
+        let config = RedactConfig::load_default().unwrap();
+        assert!(!config.patterns.is_empty());
     }
 }

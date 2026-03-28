@@ -1,9 +1,11 @@
 """Tests for hippo_brain.__init__.main() command dispatch."""
 
-import pytest
 import sys
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock, patch
 
+import pytest
+
+import hippo_brain
 from hippo_brain import main
 
 
@@ -36,17 +38,57 @@ def test_main_serve_dispatches(monkeypatch):
 
     with patch.dict("sys.modules", {"uvicorn": mock_uvicorn}):
         with patch("hippo_brain.server.create_app", mock_create_app):
-            # Re-import to get fresh dispatch
-            import importlib
-            import hippo_brain
+            with patch(
+                "hippo_brain._load_runtime_settings",
+                return_value={
+                    "db_path": "",
+                    "lmstudio_base_url": "http://localhost:1234/v1",
+                    "enrichment_model": "",
+                    "poll_interval_secs": 5,
+                    "enrichment_batch_size": 10,
+                    "port": 9175,
+                },
+            ):
+                hippo_brain.main()
 
-            importlib.reload(hippo_brain)
-            hippo_brain.main()
+    mock_create_app.assert_called_once_with(
+        db_path="",
+        lmstudio_base_url="http://localhost:1234/v1",
+        enrichment_model="",
+        poll_interval_secs=5,
+        enrichment_batch_size=10,
+    )
+    mock_uvicorn.run.assert_called_once_with("fake-app", host="127.0.0.1", port=9175)
 
-    mock_create_app.assert_called_once()
-    mock_uvicorn.run.assert_called_once()
-    call_args = mock_uvicorn.run.call_args
-    assert call_args[1].get("host", call_args[0][1] if len(call_args[0]) > 1 else None) or True
+
+def test_main_serve_uses_config_runtime_settings(monkeypatch):
+    """'serve' should pass config-derived settings to create_app and uvicorn.run."""
+    monkeypatch.setattr(sys, "argv", ["hippo-brain", "serve"])
+
+    mock_create_app = MagicMock(return_value="fake-app")
+    mock_uvicorn = MagicMock()
+    runtime_settings = {
+        "db_path": "/tmp/hippo.db",
+        "lmstudio_base_url": "http://localhost:2222/v1",
+        "enrichment_model": "local-model",
+        "poll_interval_secs": 9,
+        "enrichment_batch_size": 3,
+        "port": 9444,
+    }
+
+    with patch.dict("sys.modules", {"uvicorn": mock_uvicorn}):
+        with patch("hippo_brain.server.create_app", mock_create_app):
+            with patch("hippo_brain._load_runtime_settings", return_value=runtime_settings):
+                hippo_brain.main()
+
+    mock_create_app.assert_called_once_with(
+        db_path="/tmp/hippo.db",
+        lmstudio_base_url="http://localhost:2222/v1",
+        enrichment_model="local-model",
+        poll_interval_secs=9,
+        enrichment_batch_size=3,
+    )
+    mock_uvicorn.run.assert_called_once_with("fake-app", host="127.0.0.1", port=9444)
 
 
 def test_main_enrich_prints_message(capsys, monkeypatch):

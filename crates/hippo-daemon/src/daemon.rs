@@ -36,45 +36,47 @@ pub async fn handle_request(state: &Arc<DaemonState>, request: DaemonRequest) ->
             DaemonResponse::Ack
         }
         DaemonRequest::GetStatus => {
-            let db = state.db.lock().await;
-            match storage::get_status(&db) {
-                Ok(mut status) => {
-                    status.uptime_secs = state.start_time.elapsed().as_secs();
-                    status.drop_count = state.drop_count.load(Ordering::Relaxed);
-                    status.db_size_bytes = std::fs::metadata(state.config.db_path())
-                        .map(|m| m.len())
-                        .unwrap_or(0);
-                    status.fallback_files_pending =
-                        storage::list_fallback_files(&state.config.fallback_dir())
-                            .map(|f| f.len() as u64)
-                            .unwrap_or(0);
-
-                    // Check LM Studio reachability
-                    let lm_url = format!("{}/models", state.config.lmstudio.base_url);
-                    let client = reqwest::Client::builder()
-                        .timeout(Duration::from_secs(1))
-                        .build()
-                        .unwrap_or_default();
-                    status.lmstudio_reachable = client
-                        .get(&lm_url)
-                        .send()
-                        .await
-                        .map(|r| r.status().is_success())
-                        .unwrap_or(false);
-
-                    // Check Brain reachability
-                    let brain_url = format!("http://localhost:{}/health", state.config.brain.port);
-                    status.brain_reachable = client
-                        .get(&brain_url)
-                        .send()
-                        .await
-                        .map(|r| r.status().is_success())
-                        .unwrap_or(false);
-
-                    DaemonResponse::Status(status)
+            let mut status = {
+                let db = state.db.lock().await;
+                match storage::get_status(&db) {
+                    Ok(status) => status,
+                    Err(e) => return DaemonResponse::Error(e.to_string()),
                 }
-                Err(e) => DaemonResponse::Error(e.to_string()),
-            }
+            };
+
+            status.uptime_secs = state.start_time.elapsed().as_secs();
+            status.drop_count = state.drop_count.load(Ordering::Relaxed);
+            status.db_size_bytes = std::fs::metadata(state.config.db_path())
+                .map(|m| m.len())
+                .unwrap_or(0);
+            status.fallback_files_pending =
+                storage::list_fallback_files(&state.config.fallback_dir())
+                    .map(|f| f.len() as u64)
+                    .unwrap_or(0);
+
+            // Check LM Studio reachability
+            let lm_url = format!("{}/models", state.config.lmstudio.base_url);
+            let client = reqwest::Client::builder()
+                .timeout(Duration::from_secs(1))
+                .build()
+                .unwrap_or_default();
+            status.lmstudio_reachable = client
+                .get(&lm_url)
+                .send()
+                .await
+                .map(|r| r.status().is_success())
+                .unwrap_or(false);
+
+            // Check Brain reachability
+            let brain_url = format!("http://localhost:{}/health", state.config.brain.port);
+            status.brain_reachable = client
+                .get(&brain_url)
+                .send()
+                .await
+                .map(|r| r.status().is_success())
+                .unwrap_or(false);
+
+            DaemonResponse::Status(status)
         }
         DaemonRequest::GetSessions { since_ms, limit } => {
             let db = state.db.lock().await;
@@ -218,6 +220,18 @@ pub async fn run(config: HippoConfig) -> Result<()> {
     let socket_path = config.socket_path();
     let db_path = config.db_path();
 
+    let redaction = match RedactionEngine::from_config_path(&config.redact_path()) {
+        Ok(engine) => engine,
+        Err(e) => {
+            warn!(
+                "failed to load custom redaction config from {}: {}; falling back to builtins",
+                config.redact_path().display(),
+                e
+            );
+            RedactionEngine::builtin()
+        }
+    };
+
     // Only remove a socket we can prove is stale. Refuse to replace
     // responsive or ambiguous sockets to avoid orphaning a live daemon.
     if socket_path.exists() {
@@ -266,7 +280,7 @@ pub async fn run(config: HippoConfig) -> Result<()> {
     let state = Arc::new(DaemonState {
         config: config.clone(),
         db: Mutex::new(conn),
-        redaction: RedactionEngine::builtin(),
+        redaction,
         session_map: Mutex::new(session_map),
         start_time: Instant::now(),
         drop_count: AtomicU64::new(0),
@@ -379,11 +393,16 @@ mod tests {
 
     use hippo_core::config::HippoConfig;
     use hippo_core::events::{EventEnvelope, GitState, ShellEvent, ShellKind};
+    use hippo_core::protocol::StatusInfo;
     use hippo_core::storage;
     use std::collections::HashMap;
+
+    use std::net::TcpListener as StdTcpListener;
     use std::path::PathBuf;
     use tempfile::tempdir;
+    use tokio::io::AsyncReadExt;
     use tokio::io::AsyncWriteExt;
+    use tokio::sync::oneshot;
     use tokio::time::sleep;
     use uuid::Uuid;
 
@@ -428,6 +447,54 @@ mod tests {
             }
             assert!(Instant::now() < deadline, "daemon never became ready");
             sleep(Duration::from_millis(25)).await;
+        }
+    }
+
+    fn bind_local_http_listener() -> (StdTcpListener, u16) {
+        let listener = StdTcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        (listener, port)
+    }
+
+    async fn spawn_slow_http_listener(
+        listener: StdTcpListener,
+    ) -> (oneshot::Receiver<()>, tokio::task::JoinHandle<()>) {
+        listener.set_nonblocking(true).unwrap();
+        let listener = tokio::net::TcpListener::from_std(listener).unwrap();
+        let (started_tx, started_rx) = oneshot::channel();
+
+        let handle = tokio::spawn(async move {
+            if let Ok((mut stream, _)) = listener.accept().await {
+                let mut buf = [0u8; 1024];
+                let _ = stream.read(&mut buf).await;
+                let _ = started_tx.send(());
+                sleep(Duration::from_secs(2)).await;
+            }
+        });
+
+        (started_rx, handle)
+    }
+
+    fn test_state_with_config(config: HippoConfig) -> Arc<DaemonState> {
+        let conn = storage::open_db(&config.db_path()).unwrap();
+        let (shutdown_tx, _shutdown_rx) = watch::channel(false);
+
+        Arc::new(DaemonState {
+            config,
+            db: Mutex::new(conn),
+            redaction: RedactionEngine::builtin(),
+            session_map: Mutex::new(HashMap::new()),
+            start_time: Instant::now(),
+            drop_count: AtomicU64::new(0),
+            event_buffer: Mutex::new(Vec::new()),
+            shutdown_tx,
+        })
+    }
+
+    fn status_from_response(response: DaemonResponse) -> StatusInfo {
+        match response {
+            DaemonResponse::Status(status) => status,
+            other => panic!("expected status response, got {:?}", other),
         }
     }
 
@@ -522,5 +589,95 @@ mod tests {
             event_count, 1,
             "accepted ingest event was lost during shutdown"
         );
+    }
+
+    #[tokio::test]
+    async fn test_get_status_releases_db_lock_before_external_awaits() {
+        let mut config = test_config();
+
+        let (lm_listener, lm_port) = bind_local_http_listener();
+        let (brain_listener, brain_port) = bind_local_http_listener();
+
+        config.lmstudio.base_url = format!("http://127.0.0.1:{lm_port}/v1");
+        config.brain.port = brain_port;
+
+        let state = test_state_with_config(config);
+        let (lm_started_rx, lm_handle) = spawn_slow_http_listener(lm_listener).await;
+        let (_brain_started_rx, brain_handle) = spawn_slow_http_listener(brain_listener).await;
+
+        let state_for_request = Arc::clone(&state);
+        let request_handle = tokio::spawn(async move {
+            handle_request(&state_for_request, DaemonRequest::GetStatus).await
+        });
+
+        lm_started_rx
+            .await
+            .expect("LM Studio probe never reached the slow listener");
+
+        let db_guard = state
+            .db
+            .try_lock()
+            .expect("DB lock should be released before external status awaits");
+        drop(db_guard);
+
+        let response = request_handle.await.unwrap();
+        let status = status_from_response(response);
+        assert!(!status.lmstudio_reachable);
+        assert!(!status.brain_reachable);
+
+        lm_handle.abort();
+        let _ = lm_handle.await;
+        brain_handle.abort();
+        let _ = brain_handle.await;
+    }
+
+    #[tokio::test]
+    async fn test_daemon_uses_custom_redaction_config_on_flush_path() {
+        let config = test_config();
+        std::fs::create_dir_all(&config.storage.config_dir).unwrap();
+        std::fs::write(
+            config.redact_path(),
+            r#"
+[[patterns]]
+name = "internal_token"
+regex = "internal_[A-Z0-9]{8}"
+replacement = "[CUSTOM]"
+"#,
+        )
+        .unwrap();
+
+        let redaction = RedactionEngine::from_config_path(&config.redact_path()).unwrap();
+        let conn = storage::open_db(&config.db_path()).unwrap();
+        let (shutdown_tx, _shutdown_rx) = watch::channel(false);
+        let state = Arc::new(DaemonState {
+            config: config.clone(),
+            db: Mutex::new(conn),
+            redaction,
+            session_map: Mutex::new(HashMap::new()),
+            start_time: Instant::now(),
+            drop_count: AtomicU64::new(0),
+            event_buffer: Mutex::new(Vec::new()),
+            shutdown_tx,
+        });
+
+        let envelope = test_envelope("echo internal_ABCD1234");
+        {
+            let mut buffer = state.event_buffer.lock().await;
+            buffer.push(envelope);
+        }
+
+        flush_events(&state).await;
+
+        let db = state.db.lock().await;
+        let command: String = db
+            .query_row("SELECT command FROM events LIMIT 1", [], |row| row.get(0))
+            .unwrap();
+        drop(db);
+
+        assert!(command.contains("[CUSTOM]"));
+        assert!(!command.contains("internal_ABCD1234"));
+
+        let files = storage::list_fallback_files(&config.fallback_dir()).unwrap();
+        assert!(files.is_empty());
     }
 }
