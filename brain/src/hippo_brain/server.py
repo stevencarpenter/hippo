@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import sqlite3
+import time
 from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 
@@ -24,12 +25,12 @@ logger = logging.getLogger("hippo_brain")
 
 class BrainServer:
     def __init__(
-            self,
-            db_path: str = "",
-            lmstudio_base_url: str = "http://localhost:1234/v1",
-            enrichment_model: str = "",
-            poll_interval_secs: int = 5,
-            enrichment_batch_size: int = 10,
+        self,
+        db_path: str = "",
+        lmstudio_base_url: str = "http://localhost:1234/v1",
+        enrichment_model: str = "",
+        poll_interval_secs: int = 5,
+        enrichment_batch_size: int = 10,
     ):
         if not db_path:
             db_path = str(Path.home() / ".local" / "share" / "hippo" / "hippo.db")
@@ -40,6 +41,9 @@ class BrainServer:
         self.enrichment_batch_size = enrichment_batch_size
         self.enrichment_running = False
         self._enrichment_task = None
+        self.last_success_at_ms: int | None = None
+        self.last_error: str | None = None
+        self.last_error_at_ms: int | None = None
 
     def _get_conn(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.db_path)
@@ -50,11 +54,35 @@ class BrainServer:
 
     async def health(self, request: Request) -> JSONResponse:
         reachable = await self.client.is_reachable()
+
+        queue_depth = 0
+        queue_failed = 0
+        db_reachable = True
+        try:
+            conn = self._get_conn()
+            try:
+                queue_depth = conn.execute(
+                    "SELECT COUNT(*) FROM enrichment_queue WHERE status = 'pending'"
+                ).fetchone()[0]
+                queue_failed = conn.execute(
+                    "SELECT COUNT(*) FROM enrichment_queue WHERE status = 'failed'"
+                ).fetchone()[0]
+            finally:
+                conn.close()
+        except Exception:
+            db_reachable = False
+
         return JSONResponse(
             {
-                "status": "ok",
+                "status": "ok" if db_reachable else "degraded",
                 "lmstudio_reachable": reachable,
                 "enrichment_running": self.enrichment_running,
+                "db_reachable": db_reachable,
+                "queue_depth": queue_depth,
+                "queue_failed": queue_failed,
+                "last_success_at_ms": self.last_success_at_ms,
+                "last_error": self.last_error,
+                "last_error_at_ms": self.last_error_at_ms,
             }
         )
 
@@ -128,13 +156,20 @@ class BrainServer:
                         )
                         result = parse_enrichment_response(raw)
                         write_knowledge_node(conn, result, event_ids, self.enrichment_model)
+                        self.last_success_at_ms = int(time.time() * 1000)
+                        self.last_error = None
+                        self.last_error_at_ms = None
                         logger.info("enriched %d events -> node created", len(event_ids))
                     except Exception as e:
+                        self.last_error = str(e)
+                        self.last_error_at_ms = int(time.time() * 1000)
                         logger.error("enrichment failed: %s", e)
                         mark_queue_failed(conn, event_ids, str(e))
 
                     conn.close()
                 except Exception as e:
+                    self.last_error = str(e)
+                    self.last_error_at_ms = int(time.time() * 1000)
                     logger.error("enrichment loop error: %s", e)
                     await asyncio.sleep(self.poll_interval_secs)
         finally:
@@ -160,11 +195,11 @@ class BrainServer:
 
 
 def create_app(
-        db_path: str = "",
-        lmstudio_base_url: str = "http://localhost:1234/v1",
-        enrichment_model: str = "",
-        poll_interval_secs: int = 5,
-        enrichment_batch_size: int = 10,
+    db_path: str = "",
+    lmstudio_base_url: str = "http://localhost:1234/v1",
+    enrichment_model: str = "",
+    poll_interval_secs: int = 5,
+    enrichment_batch_size: int = 10,
 ) -> Starlette:
     server = BrainServer(
         db_path=db_path,

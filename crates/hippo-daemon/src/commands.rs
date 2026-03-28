@@ -111,12 +111,128 @@ pub async fn send_event_fire_and_forget(
     Ok(())
 }
 
-fn redacted_fallback_envelope(envelope: &EventEnvelope) -> EventEnvelope {
+fn load_redaction_engine(config: &HippoConfig) -> RedactionEngine {
+    match RedactionEngine::from_config_path(&config.redact_path()) {
+        Ok(engine) => engine,
+        Err(err) => {
+            eprintln!(
+                "Warning: failed to load redaction config from {}: {}. Falling back to built-in patterns.",
+                config.redact_path().display(),
+                err
+            );
+            RedactionEngine::builtin()
+        }
+    }
+}
+
+fn format_optional_brain_field(label: &str, value: Option<&str>) -> Option<String> {
+    value
+        .filter(|s| !s.is_empty())
+        .map(|s| format!("[OK] Brain {}: {}", label, s))
+}
+
+async fn print_brain_health_details(config: &HippoConfig) {
+    let brain_url = format!("http://localhost:{}/health", config.brain.port);
+    match reqwest::get(&brain_url).await {
+        Ok(resp) if resp.status().is_success() => {
+            println!("[OK] Brain server reachable");
+
+            match resp.json::<serde_json::Value>().await {
+                Ok(json) => {
+                    let queue_depth = json
+                        .get("queue_depth")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or_default();
+                    let queue_failed = json
+                        .get("queue_failed")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or_default();
+                    let enrichment_running = json
+                        .get("enrichment_running")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false);
+                    let lmstudio_reachable = json
+                        .get("lmstudio_reachable")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false);
+                    let db_reachable = json
+                        .get("db_reachable")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false);
+                    let last_success_at_ms = json
+                        .get("last_success_at_ms")
+                        .and_then(|v| v.as_i64())
+                        .map(|v| v.to_string());
+                    let last_error = json
+                        .get("last_error")
+                        .and_then(|v| v.as_str())
+                        .filter(|s| !s.is_empty())
+                        .map(|s| s.to_string());
+
+                    println!(
+                        "[OK] Brain queue depth: {} pending, {} failed",
+                        queue_depth, queue_failed
+                    );
+                    println!(
+                        "[OK] Brain LM Studio: {}",
+                        if lmstudio_reachable {
+                            "reachable"
+                        } else {
+                            "unreachable"
+                        }
+                    );
+                    println!(
+                        "[OK] Brain DB: {}",
+                        if db_reachable {
+                            "reachable"
+                        } else {
+                            "unreachable"
+                        }
+                    );
+                    println!(
+                        "[OK] Brain enrichment loop: {}",
+                        if enrichment_running {
+                            "running"
+                        } else {
+                            "not running"
+                        }
+                    );
+
+                    if let Some(line) = format_optional_brain_field(
+                        "last success ms",
+                        last_success_at_ms.as_deref(),
+                    ) {
+                        println!("{}", line);
+                    }
+                    if let Some(line) =
+                        format_optional_brain_field("last error", last_error.as_deref())
+                    {
+                        println!("{}", line);
+                    }
+                }
+                Err(err) => {
+                    println!(
+                        "[!!] Brain server reachable but returned unreadable health JSON: {}",
+                        err
+                    );
+                }
+            }
+        }
+        _ => println!(
+            "[!!] Brain server not reachable on port {}",
+            config.brain.port
+        ),
+    }
+}
+
+fn redacted_fallback_envelope(
+    envelope: &EventEnvelope,
+    redaction: &RedactionEngine,
+) -> EventEnvelope {
     let EventPayload::Shell(shell) = &envelope.payload else {
         return envelope.clone();
     };
 
-    let redaction = RedactionEngine::builtin();
     let mut redacted_shell = shell.clone();
     let command = redaction.redact(&redacted_shell.command);
     redacted_shell.command = command.text;
@@ -199,7 +315,8 @@ pub async fn handle_send_event_shell(
     {
         Ok(()) => Ok(()),
         Err(_) => {
-            let fallback = redacted_fallback_envelope(&envelope);
+            let redaction = load_redaction_engine(config);
+            let fallback = redacted_fallback_envelope(&envelope, &redaction);
             storage::write_fallback_jsonl(&config.fallback_dir(), &fallback)?;
             Ok(())
         }
@@ -374,8 +491,8 @@ pub async fn handle_query_raw(config: &HippoConfig, text: &str) -> Result<()> {
     Ok(())
 }
 
-pub fn handle_redact_test(input: &str) {
-    let engine = RedactionEngine::builtin();
+pub fn handle_redact_test(config: &HippoConfig, input: &str) {
+    let engine = load_redaction_engine(config);
     let matches = engine.test_string(input);
     if matches.is_empty() {
         println!("No patterns matched.");
@@ -430,14 +547,7 @@ pub async fn handle_doctor(config: &HippoConfig) -> Result<()> {
     }
 
     // Check brain
-    let brain_url = format!("http://localhost:{}/health", config.brain.port);
-    match reqwest::get(&brain_url).await {
-        Ok(r) if r.status().is_success() => println!("[OK] Brain server reachable"),
-        _ => println!(
-            "[!!] Brain server not reachable on port {}",
-            config.brain.port
-        ),
-    }
+    print_brain_health_details(config).await;
 
     // Check fallback files
     let fallback_files = storage::list_fallback_files(&config.fallback_dir())
@@ -482,7 +592,8 @@ mod tests {
     use super::*;
     use hippo_core::events::EventPayload;
     use tempfile::tempdir;
-    use tokio::net::UnixListener;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::{TcpListener, UnixListener};
 
     #[tokio::test]
     async fn test_handle_send_event_shell_writes_redacted_fallback_when_daemon_unavailable() {
@@ -523,6 +634,55 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_handle_send_event_shell_uses_custom_redaction_config_for_fallback() {
+        let temp = tempdir().unwrap();
+        let mut config = HippoConfig::default();
+        config.storage.data_dir = temp.path().join("data");
+        config.storage.config_dir = temp.path().join("config");
+        std::fs::create_dir_all(&config.storage.config_dir).unwrap();
+        std::fs::write(
+            config.redact_path(),
+            r#"
+[[patterns]]
+name = "internal_token"
+regex = "internal_[A-Z0-9]{8}"
+replacement = "***"
+"#,
+        )
+        .unwrap();
+
+        handle_send_event_shell(
+            &config,
+            "echo internal_ABCD1234".to_string(),
+            0,
+            "/tmp".to_string(),
+            42,
+            None,
+            None,
+            false,
+        )
+        .await
+        .unwrap();
+
+        let files = storage::list_fallback_files(&config.fallback_dir()).unwrap();
+        assert_eq!(files.len(), 1);
+
+        let content = std::fs::read_to_string(&files[0]).unwrap();
+        assert!(content.contains("***"));
+        assert!(!content.contains("internal_ABCD1234"));
+
+        let envelope: EventEnvelope =
+            serde_json::from_str(content.lines().next().unwrap()).unwrap();
+        match envelope.payload {
+            EventPayload::Shell(shell) => {
+                assert!(shell.command.contains("***"));
+                assert!(!shell.command.contains("internal_ABCD1234"));
+            }
+            other => panic!("expected shell payload, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
     async fn test_send_request_with_timeout_fails_fast_on_hung_server() {
         let temp = tempdir().unwrap();
         let socket_path = temp.path().join("hung.sock");
@@ -542,5 +702,34 @@ mod tests {
             err.to_string().contains("timed out"),
             "unexpected error: {err:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn test_doctor_reports_brain_health_details_from_json() {
+        let temp = tempdir().unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut buf = [0u8; 1024];
+            let _ = stream.read(&mut buf).await.unwrap();
+            let body = r#"{"status":"ok","lmstudio_reachable":true,"enrichment_running":true,"db_reachable":true,"queue_depth":3,"queue_failed":1,"last_success_at_ms":123456,"last_error":"model offline"}"#;
+            let response = format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        });
+
+        let mut config = HippoConfig::default();
+        config.storage.data_dir = temp.path().join("data");
+        config.storage.config_dir = temp.path().join("config");
+        config.brain.port = addr.port();
+
+        print_brain_health_details(&config).await;
+
+        server.await.unwrap();
     }
 }

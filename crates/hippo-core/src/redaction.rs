@@ -1,4 +1,5 @@
 use regex::{Regex, RegexSet};
+use std::path::Path;
 
 use crate::config::RedactConfig;
 
@@ -28,6 +29,12 @@ impl RedactionEngine {
             patterns,
             names,
         })
+    }
+
+    pub fn from_config_path(path: &Path) -> Result<Self, Box<dyn std::error::Error>> {
+        let content = std::fs::read_to_string(path)?;
+        let config: RedactConfig = toml::from_str(&content)?;
+        Ok(Self::new(&config)?)
     }
 
     pub fn builtin() -> Self {
@@ -68,6 +75,27 @@ mod tests {
 
     fn engine() -> RedactionEngine {
         RedactionEngine::builtin()
+    }
+
+    #[test]
+    fn test_load_engine_from_config_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("redact.toml");
+        std::fs::write(
+            &path,
+            r#"
+[[patterns]]
+name = "custom"
+regex = "secret_\\w+"
+replacement = "***"
+"#,
+        )
+        .unwrap();
+
+        let engine = RedactionEngine::from_config_path(&path).unwrap();
+        let result = engine.redact("echo secret_token");
+        assert_eq!(result.text, "echo ***");
+        assert_eq!(result.count, 1);
     }
 
     #[test]

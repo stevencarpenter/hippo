@@ -2,8 +2,9 @@
 
 import asyncio
 import time
-from starlette.testclient import TestClient
 from unittest.mock import AsyncMock
+
+from starlette.testclient import TestClient
 
 from hippo_brain.server import BrainServer, create_app
 
@@ -79,7 +80,19 @@ def test_health_endpoint(tmp_db):
     assert data["status"] == "ok"
     assert "lmstudio_reachable" in data
     assert "enrichment_running" in data
+    assert "db_reachable" in data
+    assert "queue_depth" in data
+    assert "queue_failed" in data
+    assert "last_success_at_ms" in data
+    assert "last_error" in data
+    assert "last_error_at_ms" in data
     assert data["enrichment_running"] is False
+    assert data["db_reachable"] is True
+    assert data["queue_depth"] == 0
+    assert data["queue_failed"] == 0
+    assert data["last_success_at_ms"] is None
+    assert data["last_error"] is None
+    assert data["last_error_at_ms"] is None
 
 
 # ---- /query ----
