@@ -64,15 +64,33 @@ async fn main() -> Result<()> {
                         }
                     }
                     Err(_) => {
-                        if socket.exists() {
-                            println!(
-                                "Could not connect to daemon, but socket exists at {}.\n\
-                                 The daemon may have crashed. Cleaning up stale socket.",
-                                socket.display()
-                            );
-                            std::fs::remove_file(&socket).ok();
-                        } else {
-                            println!("Daemon is not running (no socket found).");
+                        match commands::probe_socket(&socket, config.daemon.socket_timeout_ms).await
+                        {
+                            commands::SocketProbeResult::Missing => {
+                                println!("Daemon is not running (no socket found).");
+                            }
+                            commands::SocketProbeResult::Stale => {
+                                println!(
+                                    "Could not connect to daemon, and socket {} is stale.\n\
+                                     Cleaning it up.",
+                                    socket.display()
+                                );
+                                std::fs::remove_file(&socket).ok();
+                            }
+                            commands::SocketProbeResult::Responsive => {
+                                println!(
+                                    "Daemon at {} responded to a probe, but shutdown request failed.\n\
+                                     Leaving the socket in place.",
+                                    socket.display()
+                                );
+                            }
+                            commands::SocketProbeResult::Unresponsive => {
+                                println!(
+                                    "Socket exists at {}, but the daemon did not respond.\n\
+                                     Refusing to remove it automatically; inspect or kill the process first.",
+                                    socket.display()
+                                );
+                            }
                         }
                     }
                 }

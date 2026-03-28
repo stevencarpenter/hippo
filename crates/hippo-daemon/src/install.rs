@@ -28,7 +28,7 @@ pub fn detect_vars(brain_dir: &Path) -> Result<PlistVars> {
     let home = dirs::home_dir().context("cannot determine home directory")?;
     let path = std::env::var("PATH").unwrap_or_default();
     let data_dir = dirs::data_local_dir()
-        .unwrap_or_else(|| PathBuf::from("~/.local/share"))
+        .unwrap_or_else(|| home.join(".local/share"))
         .join("hippo");
 
     Ok(PlistVars {

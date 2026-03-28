@@ -133,6 +133,29 @@ run = "cargo run --bin hippo -- daemon stop"
 description = "Restart the daemon"
 run = "cargo run --bin hippo -- daemon restart"
 
+[tasks.nuke]
+description = "Kill all hippo processes immediately (SIGKILL), unload LaunchAgents, remove socket"
+run = """
+#!/usr/bin/env bash
+set -uo pipefail
+
+echo "Unloading LaunchAgents..."
+launchctl bootout "gui/$(id -u)" ~/Library/LaunchAgents/com.hippo.daemon.plist 2>/dev/null && echo "  Unloaded com.hippo.daemon" || echo "  com.hippo.daemon not loaded"
+launchctl bootout "gui/$(id -u)" ~/Library/LaunchAgents/com.hippo.brain.plist 2>/dev/null && echo "  Unloaded com.hippo.brain" || echo "  com.hippo.brain not loaded"
+
+echo "Attempting graceful brain shutdown..."
+cargo run --bin hippo -- brain stop 2>/dev/null || true
+
+echo "Killing all hippo processes (SIGKILL)..."
+pkill -9 -f 'hippo.*(daemon|send-event)' 2>/dev/null && echo "  Killed daemon processes" || echo "  No daemon processes found"
+pkill -9 -f 'hippo-brain' 2>/dev/null && echo "  Killed brain processes" || echo "  No brain processes found"
+
+echo "Cleaning up socket..."
+rm -f ~/.local/share/hippo/daemon.sock /tmp/hippo-daemon.sock
+
+echo "Done. Data and logs preserved in ~/.local/share/hippo/"
+"""
+
 # ── Export / Training ────────────────────────────────────────────────
 
 [tasks."export:training"]
@@ -143,7 +166,6 @@ run = "cargo run --bin hippo -- export-training --since 30d --out ."
 
 [tasks."redact:test"]
 description = "Test a string against redaction patterns"
-usage = "mise run redact:test -- <string>"
 run = "cargo run --bin hippo -- redact test \"$1\""
 
 # ── Clean ────────────────────────────────────────────────────────────
@@ -154,21 +176,3 @@ run = [
     "cargo clean",
     "rm -rf brain/.venv brain/.pytest_cache brain/.ruff_cache brain/.venv",
 ]
-
-# ── Nuke (full teardown) ────────────────────────────────────────────
-
-[tasks.nuke]
-description = "Full teardown: stop all services, unload agents, kill processes"
-run = """
-echo "Unloading LaunchAgents..."
-launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.hippo.daemon.plist 2>/dev/null || true
-
-echo "Attempting graceful brain shutdown..."
-cargo run --bin hippo -- brain stop 2>/dev/null || true
-
-echo "Killing all hippo processes (SIGKILL)..."
-pkill -9 -f hippo-daemon 2>/dev/null || true
-pkill -9 -f hippo-brain 2>/dev/null || true
-
-echo "Nuke complete."
-"""
