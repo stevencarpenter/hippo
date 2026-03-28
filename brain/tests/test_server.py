@@ -2,9 +2,8 @@
 
 import asyncio
 import time
-from unittest.mock import AsyncMock
-
 from starlette.testclient import TestClient
+from unittest.mock import AsyncMock
 
 from hippo_brain.server import BrainServer, create_app
 

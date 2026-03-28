@@ -2,7 +2,8 @@
 
 ## What This Is
 
-Hippo - a local knowledge capture daemon for macOS. Rust daemon captures shell activity, Python brain enriches it via local LLMs.
+Hippo - a local knowledge capture daemon for macOS. Rust daemon captures shell activity, Python brain enriches it via
+local LLMs.
 
 ## Project Structure
 
@@ -39,9 +40,11 @@ uv run --project brain hippo-brain serve
 Two processes share a SQLite database at ~/.local/share/hippo/hippo.db:
 
 1. hippo-daemon (Rust) - captures shell events via Unix socket, redacts secrets, writes to SQLite, serves CLI queries
-2. hippo-brain (Python) - polls enrichment queue from SQLite, calls LM Studio API, writes knowledge nodes + embeddings to LanceDB
+2. hippo-brain (Python) - polls enrichment queue from SQLite, calls LM Studio API, writes knowledge nodes + embeddings
+   to LanceDB
 
 Communication:
+
 - Shell hook to daemon: fire-and-forget via Unix socket (length-prefixed JSON)
 - CLI to daemon: request/response via same Unix socket
 - hippo query (non-raw) to brain: HTTP request to brain local server

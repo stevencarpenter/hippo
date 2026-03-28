@@ -53,7 +53,6 @@ ENRICHMENT_SCHEMA = {
     },
 }
 
-
 ENRICHMENT_FIXTURES = [
     {
         "input": {

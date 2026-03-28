@@ -81,7 +81,14 @@ pub fn upsert_env_snapshot(
     let env_json = stable_env_json(env)?;
     let mut hasher = Sha256::new();
     hasher.update(env_json.as_bytes());
-    let content_hash = format!("{:x}", hasher.finalize());
+    let content_hash = hasher
+        .finalize()
+        .iter()
+        .fold(String::with_capacity(64), |mut s, b| {
+            use std::fmt::Write;
+            write!(s, "{:02x}", b).unwrap();
+            s
+        });
 
     // Try to find existing
     let existing: Option<i64> = conn
@@ -161,7 +168,7 @@ pub fn insert_event_at(
             stdout_truncated,
             stderr_truncated,
             event.exit_code,
-            event.duration_ms,
+            event.duration_ms as i64,
             event.cwd.to_string_lossy(),
             event.hostname,
             shell_str,
@@ -211,7 +218,7 @@ pub fn get_sessions(
             end_time: row.get(2)?,
             hostname: row.get(3)?,
             shell: row.get(4)?,
-            event_count: row.get(5)?,
+            event_count: row.get::<_, i64>(5)? as u64,
             summary: row.get(6)?,
         })
     })?;
@@ -257,7 +264,7 @@ pub fn get_events(
             timestamp: row.get(2)?,
             command: row.get(3)?,
             exit_code: row.get(4)?,
-            duration_ms: row.get(5)?,
+            duration_ms: row.get::<_, i64>(5)? as u64,
             cwd: row.get(6)?,
             git_branch: row.get(7)?,
             enriched: row.get::<_, i32>(8)? != 0,
@@ -324,25 +331,25 @@ pub fn get_status(conn: &Connection) -> Result<crate::protocol::StatusInfo> {
     let events_today: u64 = conn.query_row(
         "SELECT COUNT(*) FROM events WHERE timestamp >= ?1",
         [today_start],
-        |row| row.get(0),
+        |row| row.get::<_, i64>(0).map(|v| v as u64),
     )?;
 
     let sessions_today: u64 = conn.query_row(
         "SELECT COUNT(*) FROM sessions WHERE start_time >= ?1",
         [today_start],
-        |row| row.get(0),
+        |row| row.get::<_, i64>(0).map(|v| v as u64),
     )?;
 
     let queue_depth: u64 = conn.query_row(
         "SELECT COUNT(*) FROM enrichment_queue WHERE status = 'pending'",
         [],
-        |row| row.get(0),
+        |row| row.get::<_, i64>(0).map(|v| v as u64),
     )?;
 
     let queue_failed: u64 = conn.query_row(
         "SELECT COUNT(*) FROM enrichment_queue WHERE status = 'failed'",
         [],
-        |row| row.get(0),
+        |row| row.get::<_, i64>(0).map(|v| v as u64),
     )?;
 
     Ok(crate::protocol::StatusInfo {
@@ -781,7 +788,7 @@ mod tests {
 
     #[test]
     fn test_insert_event_with_output() {
-        // Exercises the Some branches for stdout/stderr
+        // Exercises Some branches for stdout/stderr
         use crate::events::CapturedOutput;
         let conn = open_memory().unwrap();
         let sid = upsert_session(&conn, "sess-output", "laptop", "zsh", "user").unwrap();
@@ -839,7 +846,7 @@ mod tests {
         upsert_session(&conn, "s1", "laptop", "zsh", "user").unwrap();
 
         // A very large since_ms should return no sessions
-        let future_ms = chrono::Utc::now().timestamp_millis() + 100_000;
+        let future_ms = Utc::now().timestamp_millis() + 100_000;
         let sessions = get_sessions(&conn, Some(future_ms), 100).unwrap();
         assert!(sessions.is_empty());
 
@@ -879,7 +886,7 @@ mod tests {
         insert_event(&conn, sid, &event, 0, None).unwrap();
 
         // Future since should return nothing
-        let future_ms = chrono::Utc::now().timestamp_millis() + 100_000;
+        let future_ms = Utc::now().timestamp_millis() + 100_000;
         let empty = get_events(&conn, None, Some(future_ms), None, 100).unwrap();
         assert!(empty.is_empty());
 
@@ -912,12 +919,12 @@ mod tests {
             "INSERT INTO entities (type, name, canonical, first_seen, last_seen) VALUES (?1, ?2, ?3, ?4, ?5)",
             rusqlite::params!["tool", "cargo", "cargo", 1000, 2000],
         )
-        .unwrap();
+            .unwrap();
         conn.execute(
             "INSERT INTO entities (type, name, canonical, first_seen, last_seen) VALUES (?1, ?2, ?3, ?4, ?5)",
             rusqlite::params!["project", "hippo", "hippo", 1000, 2000],
         )
-        .unwrap();
+            .unwrap();
 
         let all = get_entities(&conn, None).unwrap();
         assert_eq!(all.len(), 2);
@@ -930,12 +937,12 @@ mod tests {
             "INSERT INTO entities (type, name, canonical, first_seen, last_seen) VALUES (?1, ?2, ?3, ?4, ?5)",
             rusqlite::params!["tool", "cargo", "cargo", 1000, 2000],
         )
-        .unwrap();
+            .unwrap();
         conn.execute(
             "INSERT INTO entities (type, name, canonical, first_seen, last_seen) VALUES (?1, ?2, ?3, ?4, ?5)",
             rusqlite::params!["project", "hippo", "hippo", 1000, 2000],
         )
-        .unwrap();
+            .unwrap();
 
         let tools = get_entities(&conn, Some("tool")).unwrap();
         assert_eq!(tools.len(), 1);
@@ -967,12 +974,12 @@ mod tests {
         std::fs::create_dir_all(&fallback_dir).unwrap();
 
         // Write a file with some valid and some invalid lines
-        let date = chrono::Utc::now().format("%Y-%m-%d");
+        let date = Utc::now().format("%Y-%m-%d");
         let file_path = fallback_dir.join(format!("{}.jsonl", date));
         let mut file = std::fs::File::create(&file_path).unwrap();
 
         // Valid event line
-        let event = crate::events::EventEnvelope::shell(sample_shell_event());
+        let event = EventEnvelope::shell(sample_shell_event());
         let valid_json = serde_json::to_string(&event).unwrap();
         writeln!(file, "{}", valid_json).unwrap();
 

@@ -24,12 +24,12 @@ logger = logging.getLogger("hippo_brain")
 
 class BrainServer:
     def __init__(
-        self,
-        db_path: str = "",
-        lmstudio_base_url: str = "http://localhost:1234/v1",
-        enrichment_model: str = "",
-        poll_interval_secs: int = 5,
-        enrichment_batch_size: int = 10,
+            self,
+            db_path: str = "",
+            lmstudio_base_url: str = "http://localhost:1234/v1",
+            enrichment_model: str = "",
+            poll_interval_secs: int = 5,
+            enrichment_batch_size: int = 10,
     ):
         if not db_path:
             db_path = str(Path.home() / ".local" / "share" / "hippo" / "hippo.db")
@@ -70,8 +70,10 @@ class BrainServer:
 
             # Search events
             cursor = conn.execute(
-                """SELECT id, command, cwd, timestamp FROM events
-                   WHERE command LIKE ? ORDER BY timestamp DESC LIMIT 10""",
+                """SELECT id, command, cwd, timestamp
+                   FROM events
+                   WHERE command LIKE ?
+                   ORDER BY timestamp DESC LIMIT 10""",
                 (pattern,),
             )
             events = [
@@ -81,8 +83,10 @@ class BrainServer:
 
             # Search knowledge nodes
             cursor = conn.execute(
-                """SELECT id, uuid, content, embed_text FROM knowledge_nodes
-                   WHERE content LIKE ? OR embed_text LIKE ?
+                """SELECT id, uuid, content, embed_text
+                   FROM knowledge_nodes
+                   WHERE content LIKE ?
+                      OR embed_text LIKE ?
                    ORDER BY created_at DESC LIMIT 10""",
                 (pattern, pattern),
             )
@@ -156,11 +160,11 @@ class BrainServer:
 
 
 def create_app(
-    db_path: str = "",
-    lmstudio_base_url: str = "http://localhost:1234/v1",
-    enrichment_model: str = "",
-    poll_interval_secs: int = 5,
-    enrichment_batch_size: int = 10,
+        db_path: str = "",
+        lmstudio_base_url: str = "http://localhost:1234/v1",
+        enrichment_model: str = "",
+        poll_interval_secs: int = 5,
+        enrichment_batch_size: int = 10,
 ) -> Starlette:
     server = BrainServer(
         db_path=db_path,

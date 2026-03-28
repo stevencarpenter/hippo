@@ -1,9 +1,8 @@
 """Tests for hippo_brain.__init__.main() command dispatch."""
 
+import pytest
 import sys
 from unittest.mock import patch, MagicMock
-
-import pytest
 
 from hippo_brain import main
 

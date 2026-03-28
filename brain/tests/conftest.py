@@ -1,8 +1,7 @@
+import pytest
 import sqlite3
 import tempfile
 from pathlib import Path
-
-import pytest
 
 SCHEMA_PATH = Path(__file__).parent.parent.parent / "crates" / "hippo-core" / "src" / "schema.sql"
 
