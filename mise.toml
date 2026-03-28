@@ -1,7 +1,6 @@
 [tools]
-rust = "latest"
+rust = "1.93"
 python = "3.14"
-uv = "latest"
 
 [env]
 HIPPO_DATA_DIR = "~/.local/share/hippo"
@@ -77,10 +76,7 @@ run = "uv run --project brain ruff format brain/"
 
 [tasks."fmt:check"]
 description = "Check formatting without modifying files"
-run = [
-    "cargo fmt --check",
-    "uv run --project brain ruff format --check brain/",
-]
+run = ["cargo fmt --check", "uv run --project brain ruff format --check brain/"]
 
 # ── Check (CI-equivalent) ───────────────────────────────────────────
 
@@ -156,6 +152,6 @@ run = "cargo run --bin hippo -- redact test \"$1\""
 [tasks.clean]
 description = "Remove build artifacts"
 run = [
-    "cargo clean",
-    "rm -rf brain/.venv brain/.pytest_cache brain/.ruff_cache",
+  "cargo clean",
+  "rm -rf brain/.venv brain/.pytest_cache brain/.ruff_cache brain/.venv",
 ]
