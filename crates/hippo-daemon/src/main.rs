@@ -33,7 +33,7 @@ async fn main() -> Result<()> {
                     &config.socket_path(),
                     &hippo_core::protocol::DaemonRequest::Shutdown,
                 )
-                .await;
+                    .await;
                 println!("Shutdown signal sent.");
             }
             DaemonAction::Restart => {
@@ -41,7 +41,7 @@ async fn main() -> Result<()> {
                     &config.socket_path(),
                     &hippo_core::protocol::DaemonRequest::Shutdown,
                 )
-                .await;
+                    .await;
                 tokio::time::sleep(std::time::Duration::from_secs(1)).await;
                 tracing_subscriber::fmt()
                     .with_env_filter(
@@ -75,7 +75,7 @@ async fn main() -> Result<()> {
                     git_commit,
                     git_dirty,
                 )
-                .await?;
+                    .await?;
             }
         },
         Commands::Status => {
@@ -121,7 +121,7 @@ async fn main() -> Result<()> {
                 &config.socket_path(),
                 &hippo_core::protocol::DaemonRequest::GetEntities { entity_type },
             )
-            .await?;
+                .await?;
             match response {
                 hippo_core::protocol::DaemonResponse::Entities(entities) => {
                     if entities.is_empty() {

@@ -1,6 +1,6 @@
 use anyhow::Result;
 use chrono::Utc;
-use hippo_core::config::{ENV_ALLOWLIST, HippoConfig};
+use hippo_core::config::{HippoConfig, ENV_ALLOWLIST};
 use hippo_core::events::{EventEnvelope, EventPayload, GitState, ShellEvent, ShellKind};
 use hippo_core::protocol::{DaemonRequest, DaemonResponse};
 use hippo_core::redaction::RedactionEngine;
@@ -35,8 +35,8 @@ pub async fn send_event_fire_and_forget(
         std::time::Duration::from_millis(timeout_ms),
         UnixStream::connect(socket_path),
     )
-    .await
-    .map_err(|_| anyhow::anyhow!("timed out connecting to daemon socket"))??;
+        .await
+        .map_err(|_| anyhow::anyhow!("timed out connecting to daemon socket"))??;
 
     let request = DaemonRequest::IngestEvent(Box::new(envelope.clone()));
     let json = serde_json::to_vec(&request)?;
@@ -128,7 +128,7 @@ pub async fn handle_send_event_shell(
         &envelope,
         config.daemon.socket_timeout_ms,
     )
-    .await
+        .await
     {
         Ok(()) => Ok(()),
         Err(_) => {
@@ -200,7 +200,7 @@ pub async fn handle_sessions(
             limit: Some(50),
         },
     )
-    .await?;
+        .await?;
 
     match response {
         DaemonResponse::Sessions(sessions) => {
@@ -249,7 +249,7 @@ pub async fn handle_events(
             limit: Some(50),
         },
     )
-    .await?;
+        .await?;
 
     match response {
         DaemonResponse::Events(events) => {
@@ -286,7 +286,7 @@ pub async fn handle_query_raw(config: &HippoConfig, text: &str) -> Result<()> {
             text: text.to_string(),
         },
     )
-    .await?;
+        .await?;
 
     match response {
         DaemonResponse::QueryResult(hits) => {
@@ -433,8 +433,8 @@ mod tests {
             None,
             false,
         )
-        .await
-        .unwrap();
+            .await
+            .unwrap();
 
         let files = storage::list_fallback_files(&config.fallback_dir()).unwrap();
         assert_eq!(files.len(), 1);
