@@ -4,6 +4,8 @@ mod daemon;
 mod framing;
 mod install;
 
+use std::path::PathBuf;
+
 use anyhow::Result;
 use clap::Parser;
 use cli::{BrainAction, Cli, Commands, ConfigAction, DaemonAction, RedactAction, SendEventSource};
@@ -52,8 +54,33 @@ async fn main() -> Result<()> {
                     .init();
                 daemon::run(config).await?;
             }
-            DaemonAction::Install => {
-                println!("Copy plist to ~/Library/LaunchAgents/ and load with launchctl.");
+            DaemonAction::Install { force } => {
+                let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+                let project_root = manifest_dir
+                    .parent()
+                    .and_then(|p| p.parent())
+                    .expect("cannot determine project root");
+                let brain_dir = project_root.join("brain");
+
+                let vars = install::detect_vars(&brain_dir)?;
+
+                println!("Installing LaunchAgents...");
+                println!("  hippo binary: {}", vars.hippo_bin.display());
+                println!("  uv binary:    {}", vars.uv_bin.display());
+                println!("  brain dir:    {}", vars.brain_dir.display());
+                println!("  data dir:     {}", vars.data_dir.display());
+                println!();
+
+                let daemon_template = include_str!("../../../launchd/com.hippo.daemon.plist");
+                let brain_template = include_str!("../../../launchd/com.hippo.brain.plist");
+
+                install::install_plist("com.hippo.daemon", daemon_template, &vars, force)?;
+                install::install_plist("com.hippo.brain", brain_template, &vars, force)?;
+
+                println!();
+                println!("Load with:");
+                println!("  launchctl load ~/Library/LaunchAgents/com.hippo.daemon.plist");
+                println!("  launchctl load ~/Library/LaunchAgents/com.hippo.brain.plist");
             }
         },
         Commands::Brain { action } => match action {

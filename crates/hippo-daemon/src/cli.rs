@@ -100,8 +100,12 @@ pub enum DaemonAction {
     Stop,
     /// Restart the daemon
     Restart,
-    /// Install the LaunchAgent
-    Install,
+    /// Install LaunchAgents for daemon and brain
+    Install {
+        /// Overwrite existing plist files
+        #[arg(long)]
+        force: bool,
+    },
 }
 
 #[derive(Subcommand)]
