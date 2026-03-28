@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import sqlite3
+from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 
 from starlette.applications import Starlette
@@ -100,40 +101,52 @@ class BrainServer:
         """Background enrichment polling loop."""
         self.enrichment_running = True
         worker_id = "brain-enrichment"
-        while True:
-            try:
-                await asyncio.sleep(self.poll_interval_secs)
-                conn = self._get_conn()
-                events = claim_pending_events(conn, self.enrichment_batch_size, worker_id)
-                if not events:
-                    conn.close()
-                    continue
-
-                event_ids = [e["id"] for e in events]
-                prompt = build_enrichment_prompt(events)
-
+        try:
+            while True:
                 try:
-                    raw = await self.client.chat(
-                        messages=[
-                            {"role": "system", "content": SYSTEM_PROMPT},
-                            {"role": "user", "content": prompt},
-                        ],
-                        model=self.enrichment_model,
-                    )
-                    result = parse_enrichment_response(raw)
-                    write_knowledge_node(conn, result, event_ids, self.enrichment_model)
-                    logger.info("enriched %d events -> node created", len(event_ids))
-                except Exception as e:
-                    logger.error("enrichment failed: %s", e)
-                    mark_queue_failed(conn, event_ids, str(e))
+                    await asyncio.sleep(self.poll_interval_secs)
+                    conn = self._get_conn()
+                    events = claim_pending_events(conn, self.enrichment_batch_size, worker_id)
+                    if not events:
+                        conn.close()
+                        continue
 
-                conn.close()
-            except Exception as e:
-                logger.error("enrichment loop error: %s", e)
-                await asyncio.sleep(self.poll_interval_secs)
+                    event_ids = [e["id"] for e in events]
+                    prompt = build_enrichment_prompt(events)
+
+                    try:
+                        raw = await self.client.chat(
+                            messages=[
+                                {"role": "system", "content": SYSTEM_PROMPT},
+                                {"role": "user", "content": prompt},
+                            ],
+                            model=self.enrichment_model,
+                        )
+                        result = parse_enrichment_response(raw)
+                        write_knowledge_node(conn, result, event_ids, self.enrichment_model)
+                        logger.info("enriched %d events -> node created", len(event_ids))
+                    except Exception as e:
+                        logger.error("enrichment failed: %s", e)
+                        mark_queue_failed(conn, event_ids, str(e))
+
+                    conn.close()
+                except Exception as e:
+                    logger.error("enrichment loop error: %s", e)
+                    await asyncio.sleep(self.poll_interval_secs)
+        finally:
+            self.enrichment_running = False
 
     def start_enrichment(self):
         self._enrichment_task = asyncio.create_task(self._enrichment_loop())
+
+    async def stop_enrichment(self):
+        if self._enrichment_task is None:
+            return
+
+        self._enrichment_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await self._enrichment_task
+        self._enrichment_task = None
 
     def get_routes(self) -> list[Route]:
         return [
@@ -157,11 +170,16 @@ def create_app(
         enrichment_batch_size=enrichment_batch_size,
     )
 
-    async def on_startup():
+    @asynccontextmanager
+    async def lifespan(_app: Starlette):
         server.start_enrichment()
+        try:
+            yield
+        finally:
+            await server.stop_enrichment()
 
     app = Starlette(
         routes=server.get_routes(),
-        on_startup=[on_startup],
+        lifespan=lifespan,
     )
     return app

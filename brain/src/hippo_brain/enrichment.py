@@ -5,6 +5,8 @@ import uuid
 
 from hippo_brain.models import EnrichmentResult
 
+STALE_LOCK_TIMEOUT_MS = 5 * 60 * 1000
+
 SYSTEM_PROMPT = """You are a developer activity analyst. You receive shell command events and produce structured enrichment data.
 
 For each batch of events, output a JSON object with these fields:
@@ -66,6 +68,7 @@ def parse_enrichment_response(raw: str) -> EnrichmentResult:
 def claim_pending_events(conn, batch_size: int, worker_id: str) -> list[dict]:
     """Atomically claim pending events from the enrichment queue."""
     now_ms = int(time.time() * 1000)
+    stale_before_ms = now_ms - STALE_LOCK_TIMEOUT_MS
     cursor = conn.execute(
         """
         UPDATE enrichment_queue
@@ -74,12 +77,16 @@ def claim_pending_events(conn, batch_size: int, worker_id: str) -> list[dict]:
         WHERE id IN (
             SELECT id FROM enrichment_queue
             WHERE status = 'pending'
+               OR (
+                    status = 'processing'
+                    AND COALESCE(locked_at, 0) <= ?
+               )
             ORDER BY priority ASC, created_at ASC
             LIMIT ?
         )
         RETURNING event_id
         """,
-        (now_ms, worker_id, now_ms, batch_size),
+        (now_ms, worker_id, now_ms, stale_before_ms, batch_size),
     )
     event_ids = [row[0] for row in cursor.fetchall()]
     conn.commit()

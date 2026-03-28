@@ -40,10 +40,10 @@ _hippo_precmd() {
     if [[ "${_HIPPO_CWD}" != "${_HIPPO_LAST_GIT_CWD}" ]] || (( now - _HIPPO_LAST_GIT_TS >= 5 )); then
         _HIPPO_LAST_GIT_CWD="${_HIPPO_CWD}"
         _HIPPO_LAST_GIT_TS="${now}"
-        if git rev-parse --is-inside-work-tree &>/dev/null; then
-            _HIPPO_GIT_BRANCH="$(git rev-parse --abbrev-ref HEAD 2>/dev/null)"
-            _HIPPO_GIT_COMMIT="$(git rev-parse --short HEAD 2>/dev/null)"
-            if [[ -n "$(git status --porcelain 2>/dev/null | head -1)" ]]; then
+        if git -C "${_HIPPO_CWD}" rev-parse --is-inside-work-tree &>/dev/null; then
+            _HIPPO_GIT_BRANCH="$(git -C "${_HIPPO_CWD}" rev-parse --abbrev-ref HEAD 2>/dev/null)"
+            _HIPPO_GIT_COMMIT="$(git -C "${_HIPPO_CWD}" rev-parse --short HEAD 2>/dev/null)"
+            if [[ -n "$(git -C "${_HIPPO_CWD}" status --porcelain 2>/dev/null | head -1)" ]]; then
                 _HIPPO_GIT_DIRTY=1
             else
                 _HIPPO_GIT_DIRTY=0

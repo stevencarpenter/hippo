@@ -1,7 +1,7 @@
 use anyhow::Result;
 use chrono::Utc;
 use hippo_core::config::{ENV_ALLOWLIST, HippoConfig};
-use hippo_core::events::{EventEnvelope, GitState, ShellEvent, ShellKind};
+use hippo_core::events::{EventEnvelope, EventPayload, GitState, ShellEvent, ShellKind};
 use hippo_core::protocol::{DaemonRequest, DaemonResponse};
 use hippo_core::redaction::RedactionEngine;
 use hippo_core::storage;
@@ -29,22 +29,47 @@ pub async fn send_request(
 pub async fn send_event_fire_and_forget(
     socket_path: &std::path::Path,
     envelope: &EventEnvelope,
+    timeout_ms: u64,
 ) -> Result<()> {
-    let connect = tokio::time::timeout(
-        std::time::Duration::from_millis(100),
+    let mut stream = tokio::time::timeout(
+        std::time::Duration::from_millis(timeout_ms),
         UnixStream::connect(socket_path),
     )
-    .await;
-
-    let mut stream = match connect {
-        Ok(Ok(s)) => s,
-        _ => return Ok(()), // silently drop
-    };
+    .await
+    .map_err(|_| anyhow::anyhow!("timed out connecting to daemon socket"))??;
 
     let request = DaemonRequest::IngestEvent(Box::new(envelope.clone()));
     let json = serde_json::to_vec(&request)?;
-    let _ = write_frame(&mut stream, &json).await;
+    write_frame(&mut stream, &json).await?;
     Ok(())
+}
+
+fn redacted_fallback_envelope(envelope: &EventEnvelope) -> EventEnvelope {
+    let EventPayload::Shell(shell) = &envelope.payload else {
+        return envelope.clone();
+    };
+
+    let redaction = RedactionEngine::builtin();
+    let mut redacted_shell = shell.clone();
+    let command = redaction.redact(&redacted_shell.command);
+    redacted_shell.command = command.text;
+    redacted_shell.redaction_count = command.count;
+    redacted_shell.env_snapshot = redacted_shell
+        .env_snapshot
+        .iter()
+        .filter(|(key, _)| ENV_ALLOWLIST.contains(&key.as_str()))
+        .map(|(key, value)| {
+            let redacted = redaction.redact(value);
+            (key.clone(), redacted.text)
+        })
+        .collect();
+
+    EventEnvelope {
+        envelope_id: envelope.envelope_id,
+        producer_version: envelope.producer_version,
+        timestamp: envelope.timestamp,
+        payload: EventPayload::Shell(redacted_shell),
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -98,7 +123,20 @@ pub async fn handle_send_event_shell(
     };
 
     let envelope = EventEnvelope::shell(event);
-    send_event_fire_and_forget(&config.socket_path(), &envelope).await
+    match send_event_fire_and_forget(
+        &config.socket_path(),
+        &envelope,
+        config.daemon.socket_timeout_ms,
+    )
+    .await
+    {
+        Ok(()) => Ok(()),
+        Err(_) => {
+            let fallback = redacted_fallback_envelope(&envelope);
+            storage::write_fallback_jsonl(&config.fallback_dir(), &fallback)?;
+            Ok(())
+        }
+    }
 }
 
 pub async fn handle_status(config: &HippoConfig) -> Result<()> {
@@ -370,4 +408,49 @@ pub fn parse_duration_to_since_ms(s: &str) -> Option<i64> {
     };
     let now = Utc::now().timestamp_millis();
     Some(now - ms as i64)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use hippo_core::events::EventPayload;
+    use tempfile::tempdir;
+
+    #[tokio::test]
+    async fn test_handle_send_event_shell_writes_redacted_fallback_when_daemon_unavailable() {
+        let temp = tempdir().unwrap();
+        let mut config = HippoConfig::default();
+        config.storage.data_dir = temp.path().join("data");
+        config.storage.config_dir = temp.path().join("config");
+
+        handle_send_event_shell(
+            &config,
+            "export API_KEY=sk-1234567890abcdef".to_string(),
+            0,
+            "/tmp".to_string(),
+            42,
+            Some("main".to_string()),
+            None,
+            false,
+        )
+        .await
+        .unwrap();
+
+        let files = storage::list_fallback_files(&config.fallback_dir()).unwrap();
+        assert_eq!(files.len(), 1);
+
+        let content = std::fs::read_to_string(&files[0]).unwrap();
+        assert!(content.contains("[REDACTED]"));
+        assert!(!content.contains("sk-1234567890abcdef"));
+
+        let envelope: EventEnvelope =
+            serde_json::from_str(content.lines().next().unwrap()).unwrap();
+        match envelope.payload {
+            EventPayload::Shell(shell) => {
+                assert!(shell.command.contains("[REDACTED]"));
+                assert_eq!(shell.redaction_count, 1);
+            }
+            other => panic!("expected shell payload, got {:?}", other),
+        }
+    }
 }

@@ -1,8 +1,8 @@
 use anyhow::Result;
 use chrono::Utc;
-use rusqlite::Connection;
+use rusqlite::{Connection, OptionalExtension};
 use sha2::{Digest, Sha256};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 
 use crate::events::ShellEvent;
@@ -30,6 +30,17 @@ pub fn upsert_session(
     shell: &str,
     username: &str,
 ) -> Result<i64> {
+    if let Some(existing) = conn
+        .query_row(
+            "SELECT id FROM sessions WHERE terminal = ?1 ORDER BY start_time DESC LIMIT 1",
+            [session_uuid],
+            |row| row.get(0),
+        )
+        .optional()?
+    {
+        return Ok(existing);
+    }
+
     let now = Utc::now().timestamp_millis();
     conn.execute(
         "INSERT INTO sessions (start_time, terminal, shell, hostname, username)
@@ -55,6 +66,11 @@ pub fn get_or_create_session(
     Ok(id)
 }
 
+fn stable_env_json(env: &HashMap<String, String>) -> Result<String> {
+    let ordered: BTreeMap<_, _> = env.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+    Ok(serde_json::to_string(&ordered)?)
+}
+
 pub fn upsert_env_snapshot(
     conn: &Connection,
     env: &HashMap<String, String>,
@@ -62,7 +78,7 @@ pub fn upsert_env_snapshot(
     if env.is_empty() {
         return Ok(None);
     }
-    let env_json = serde_json::to_string(env)?;
+    let env_json = stable_env_json(env)?;
     let mut hasher = Sha256::new();
     hasher.update(env_json.as_bytes());
     let content_hash = format!("{:x}", hasher.finalize());
@@ -94,7 +110,24 @@ pub fn insert_event(
     redaction_count: u32,
     env_snapshot_id: Option<i64>,
 ) -> Result<i64> {
-    let timestamp = Utc::now().timestamp_millis();
+    insert_event_at(
+        conn,
+        session_id,
+        event,
+        Utc::now().timestamp_millis(),
+        redaction_count,
+        env_snapshot_id,
+    )
+}
+
+pub fn insert_event_at(
+    conn: &Connection,
+    session_id: i64,
+    event: &ShellEvent,
+    timestamp: i64,
+    redaction_count: u32,
+    env_snapshot_id: Option<i64>,
+) -> Result<i64> {
     let shell_str = format!("{:?}", event.shell);
     let (git_repo, git_branch, git_commit, git_dirty) = match &event.git_state {
         Some(gs) => (
@@ -384,10 +417,11 @@ pub fn recover_fallback_files(
                             &username,
                             session_map,
                         )?;
-                        match insert_event(
+                        match insert_event_at(
                             conn,
                             session_id,
                             shell_event,
+                            envelope.timestamp.timestamp_millis(),
                             shell_event.redaction_count,
                             None,
                         ) {
@@ -422,7 +456,7 @@ pub fn open_memory() -> Result<Connection> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::events::{GitState, ShellEvent, ShellKind};
+    use crate::events::{EventEnvelope, GitState, ShellEvent, ShellKind};
     use std::path::PathBuf;
 
     fn sample_shell_event() -> ShellEvent {
@@ -530,6 +564,25 @@ mod tests {
     }
 
     #[test]
+    fn test_env_snapshot_dedup_with_different_insertion_order() {
+        let conn = open_memory().unwrap();
+
+        let env_a: HashMap<String, String> = HashMap::from([
+            ("HOME".to_string(), "/home/user".to_string()),
+            ("PATH".to_string(), "/usr/bin".to_string()),
+        ]);
+        let env_b: HashMap<String, String> = HashMap::from([
+            ("PATH".to_string(), "/usr/bin".to_string()),
+            ("HOME".to_string(), "/home/user".to_string()),
+        ]);
+
+        let id_a = upsert_env_snapshot(&conn, &env_a).unwrap().unwrap();
+        let id_b = upsert_env_snapshot(&conn, &env_b).unwrap().unwrap();
+
+        assert_eq!(id_a, id_b);
+    }
+
+    #[test]
     fn test_session_map() {
         let conn = open_memory().unwrap();
         let mut map = HashMap::new();
@@ -543,6 +596,25 @@ mod tests {
         let id2 =
             get_or_create_session(&conn, "uuid-b", "laptop", "zsh", "user", &mut map).unwrap();
         assert_ne!(id1, id2);
+    }
+
+    #[test]
+    fn test_upsert_session_reuses_existing_terminal_session() {
+        let conn = open_memory().unwrap();
+
+        let first = upsert_session(&conn, "sess-1", "laptop", "zsh", "user").unwrap();
+        let second = upsert_session(&conn, "sess-1", "laptop", "zsh", "user").unwrap();
+
+        assert_eq!(first, second);
+
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sessions WHERE terminal = 'sess-1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 1);
     }
 
     #[test]
@@ -650,6 +722,27 @@ mod tests {
             .filter(|e| e.path().to_string_lossy().ends_with(".done"))
             .collect();
         assert_eq!(done_files.len(), 1);
+    }
+
+    #[test]
+    fn test_recover_fallback_preserves_envelope_timestamp() {
+        let dir = tempfile::tempdir().unwrap();
+        let fallback_dir = dir.path().join("fallback");
+        let conn = open_memory().unwrap();
+        let mut session_map = HashMap::new();
+
+        let mut envelope = EventEnvelope::shell(sample_shell_event());
+        envelope.timestamp = chrono::DateTime::from_timestamp_millis(1_700_000_000_123).unwrap();
+        write_fallback_jsonl(&fallback_dir, &envelope).unwrap();
+
+        let (recovered, errors) =
+            recover_fallback_files(&conn, &fallback_dir, &mut session_map).unwrap();
+        assert_eq!((recovered, errors), (1, 0));
+
+        let stored_timestamp: i64 = conn
+            .query_row("SELECT timestamp FROM events LIMIT 1", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(stored_timestamp, envelope.timestamp.timestamp_millis());
     }
 
     #[test]

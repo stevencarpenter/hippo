@@ -50,6 +50,39 @@ def test_claim_pending_events_empty_queue(tmp_db):
     assert result == []
 
 
+def test_claim_pending_events_reclaims_stale_processing_lock(tmp_db):
+    conn, _ = tmp_db
+    now_ms = int(time.time() * 1000)
+    stale_ms = now_ms - (10 * 60 * 1000)
+
+    conn.execute(
+        "INSERT INTO sessions (id, start_time, shell, hostname, username) "
+        "VALUES (1, ?, 'zsh', 'laptop', 'user')",
+        (now_ms,),
+    )
+    conn.execute(
+        "INSERT INTO events (id, session_id, timestamp, command, exit_code, duration_ms, "
+        "cwd, hostname, shell) VALUES (1, 1, ?, 'cargo test', 0, 1000, '/tmp', 'laptop', 'zsh')",
+        (now_ms,),
+    )
+    conn.execute(
+        """
+        INSERT INTO enrichment_queue (event_id, status, locked_at, locked_by)
+        VALUES (1, 'processing', ?, 'dead-worker')
+        """,
+        (stale_ms,),
+    )
+    conn.commit()
+
+    events = claim_pending_events(conn, batch_size=10, worker_id="new-worker")
+
+    assert [event["id"] for event in events] == [1]
+    row = conn.execute(
+        "SELECT status, locked_by FROM enrichment_queue WHERE event_id = 1"
+    ).fetchone()
+    assert row == ("processing", "new-worker")
+
+
 def test_write_knowledge_node_empty_entities(tmp_db):
     """Line 88: result.entities as empty dict — no entities inserted."""
     conn, _ = tmp_db
