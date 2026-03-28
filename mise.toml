@@ -154,3 +154,21 @@ run = [
     "cargo clean",
     "rm -rf brain/.venv brain/.pytest_cache brain/.ruff_cache brain/.venv",
 ]
+
+# ── Nuke (full teardown) ────────────────────────────────────────────
+
+[tasks.nuke]
+description = "Full teardown: stop all services, unload agents, kill processes"
+run = """
+echo "Unloading LaunchAgents..."
+launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.hippo.daemon.plist 2>/dev/null || true
+
+echo "Attempting graceful brain shutdown..."
+cargo run --bin hippo -- brain stop 2>/dev/null || true
+
+echo "Killing all hippo processes (SIGKILL)..."
+pkill -9 -f hippo-daemon 2>/dev/null || true
+pkill -9 -f hippo-brain 2>/dev/null || true
+
+echo "Nuke complete."
+"""
