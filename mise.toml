@@ -1,6 +1,5 @@
 [tools]
 rust = "1.93"
-python = "3.14"
 
 [env]
 HIPPO_DATA_DIR = "~/.local/share/hippo"
