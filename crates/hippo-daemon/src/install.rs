@@ -21,9 +21,73 @@ pub struct PlistVars {
     pub data_dir: PathBuf,
 }
 
+/// Auto-detect system paths for plist variable substitution.
+pub fn detect_vars(brain_dir: &Path) -> Result<PlistVars> {
+    let hippo_bin = std::env::current_exe().context("cannot determine hippo binary path")?;
+    let uv_bin = which("uv").unwrap_or_else(|| PathBuf::from("/usr/local/bin/uv"));
+    let home = dirs::home_dir().context("cannot determine home directory")?;
+    let path = std::env::var("PATH").unwrap_or_default();
+    let data_dir = dirs::data_local_dir()
+        .unwrap_or_else(|| PathBuf::from("~/.local/share"))
+        .join("hippo");
+
+    Ok(PlistVars {
+        hippo_bin,
+        uv_bin,
+        brain_dir: brain_dir.to_path_buf(),
+        home,
+        path,
+        data_dir,
+    })
+}
+
+fn which(binary: &str) -> Option<PathBuf> {
+    std::env::var_os("PATH").and_then(|paths| {
+        std::env::split_paths(&paths).find_map(|dir| {
+            let candidate = dir.join(binary);
+            candidate.is_file().then_some(candidate)
+        })
+    })
+}
+
+/// Write a rendered plist to ~/Library/LaunchAgents/.
+/// Returns the destination path. Fails if file exists unless `force` is true.
+pub fn install_plist(
+    label: &str,
+    template: &str,
+    vars: &PlistVars,
+    force: bool,
+) -> Result<PathBuf> {
+    let launch_agents = dirs::home_dir()
+        .context("cannot determine home directory")?
+        .join("Library/LaunchAgents");
+    std::fs::create_dir_all(&launch_agents)?;
+
+    let dest = launch_agents.join(format!("{}.plist", label));
+    if dest.exists() && !force {
+        anyhow::bail!(
+            "{} already exists. Use --force to overwrite.",
+            dest.display()
+        );
+    }
+
+    let rendered = render_plist(template, vars);
+    std::fs::write(&dest, rendered)?;
+    println!("  Installed {}", dest.display());
+    Ok(dest)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_detect_vars_finds_current_exe() {
+        let vars = detect_vars(Path::new("/fake/brain")).unwrap();
+        assert!(vars.hippo_bin.exists() || vars.hippo_bin.to_string_lossy().contains("hippo"));
+        assert!(!vars.home.as_os_str().is_empty());
+        assert!(!vars.path.is_empty());
+    }
 
     #[test]
     fn test_render_plist_replaces_all_placeholders() {
