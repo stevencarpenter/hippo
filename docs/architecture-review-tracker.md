@@ -23,6 +23,7 @@ We are starting with the risk register so future agents can:
 
 - [x] Pass 0: initial architecture risk register created
 - [ ] Pass 1: deeper architecture audit with load and failure analysis
+- [x] Pass 1A: Cluster A audit completed for `ARCH-R01` through `ARCH-R05`
 - [ ] Pass 2: prioritized remediation plan with phases and sequencing
 - [ ] Pass 3: implementation tracking against accepted remediation items
 
@@ -99,11 +100,11 @@ The main weaknesses are operational rather than conceptual:
 
 | ID | Area | Title | Severity | Effort | Confidence | Status | Owner | Last updated |
 |---|---|---|---|---|---|---|---|---|
-| ARCH-R01 | daemon/sqlite | Single SQLite connection serializes daemon work | High | M | High | new | TBD | 2026-03-28 |
-| ARCH-R02 | daemon/status | `GetStatus` holds DB lock during external waits | High | S | High | new | TBD | 2026-03-28 |
-| ARCH-R03 | daemon/ingest | In-memory ingest buffer is unbounded and `flush_batch_size` is unused | High | M | High | new | TBD | 2026-03-28 |
-| ARCH-R04 | daemon/durability | Fire-and-forget ingest does not guarantee persistence | High | M | High | new | TBD | 2026-03-28 |
-| ARCH-R05 | storage/contracts | Event queue writes and fallback recovery are not transactionally safe enough | High | M | Med | new | TBD | 2026-03-28 |
+| ARCH-R01 | daemon/sqlite | Single SQLite connection serializes daemon DB work | High | M | High | triaged | TBD | 2026-03-28 |
+| ARCH-R02 | daemon/status | `GetStatus` holds DB lock during external waits | High | S | High | triaged | TBD | 2026-03-28 |
+| ARCH-R03 | daemon/ingest | In-memory ingest buffer is unbounded and `flush_batch_size` is unused | High | M | High | triaged | TBD | 2026-03-28 |
+| ARCH-R04 | daemon/durability | Fire-and-forget ingest does not guarantee persistence | High | M | High | triaged | TBD | 2026-03-28 |
+| ARCH-R05 | storage/contracts | Event queue writes and fallback recovery are not transactionally safe enough | High | M | High | triaged | TBD | 2026-03-28 |
 | ARCH-R06 | storage/migrations | Shared SQLite schema has no visible migration or versioning mechanism | High | L | High | new | TBD | 2026-03-28 |
 | ARCH-R07 | security/redaction | Docs promise custom redaction config but runtime appears to use builtins only | High | S-M | High | new | TBD | 2026-03-28 |
 | ARCH-R08 | brain/query | Query API is lexical, not semantic, despite docs and vector seam | High | M | High | new | TBD | 2026-03-28 |
@@ -118,9 +119,9 @@ The main weaknesses are operational rather than conceptual:
 
 ## Detailed findings
 
-### ARCH-R01 — Single SQLite connection serializes daemon work
+### ARCH-R01 — Single SQLite connection serializes daemon DB work
 
-- Status: `new`
+- Status: `triaged`
 - Severity: `High`
 - Effort: `M`
 - Confidence: `High`
@@ -144,6 +145,13 @@ This is the main concurrency bottleneck on the Rust side. If one path takes long
 
 Separate hot-path ingest from read-oriented requests. At minimum, stop holding one shared synchronous connection behind a single async mutex for every request type.
 
+#### Pass 1A triage notes
+
+- Confirmed from code: the daemon holds one shared `Mutex<Connection>` and all DB-oriented request paths plus flush work serialize through it.
+- Refined wording: this finding is specifically about serialized daemon DB work, not all daemon work.
+- Nuance: interactive shell latency is somewhat insulated because `IngestEvent` appends to `event_buffer` and does not take the DB lock directly.
+- Likely impact: persistence/admin responsiveness degrades first, especially when long flushes and read/status requests overlap.
+
 #### Acceptance criteria
 
 - The daemon no longer serializes all DB work behind one shared mutex-protected connection.
@@ -152,13 +160,14 @@ Separate hot-path ingest from read-oriented requests. At minimum, stop holding o
 
 #### Verification
 
-- Not started.
+- Pass 1A review completed.
+- Recommended validation test: hold `state.db.lock().await`, concurrently start `handle_request(GetEvents)` and `flush_events(&state)`, and verify both remain blocked until the lock is released.
 
 ---
 
 ### ARCH-R02 — `GetStatus` holds DB lock during external waits
 
-- Status: `new`
+- Status: `triaged`
 - Severity: `High`
 - Effort: `S`
 - Confidence: `High`
@@ -180,6 +189,12 @@ A slow or unreachable local service can turn a simple status request into an avo
 
 Drop the DB lock as soon as the local status snapshot is computed, then do external reachability checks afterward.
 
+#### Pass 1A triage notes
+
+- Strongly confirmed from code: `GetStatus` keeps the DB lock while doing local file work and while awaiting two HTTP reachability checks.
+- This affects more than the human-facing status command because socket probing also depends on the same status path.
+- This is the cleanest and smallest Cluster A fix with immediate operational value.
+
 #### Acceptance criteria
 
 - No external `await` happens while the daemon holds the DB lock.
@@ -187,13 +202,14 @@ Drop the DB lock as soon as the local status snapshot is computed, then do exter
 
 #### Verification
 
-- Not started.
+- Pass 1A review completed.
+- Recommended validation test: run hanging local HTTP responders for LM Studio and brain, trigger `GetStatus`, and verify a concurrent DB-backed request is blocked before the fix and not blocked after the fix.
 
 ---
 
 ### ARCH-R03 — In-memory ingest buffer is unbounded and `flush_batch_size` is unused
 
-- Status: `new`
+- Status: `triaged`
 - Severity: `High`
 - Effort: `M`
 - Confidence: `High`
@@ -218,6 +234,13 @@ This creates memory growth risk under bursty traffic and makes flush latency mor
 
 Introduce a bounded queue or explicit backpressure policy and either honor `flush_batch_size` or remove it from config until it is real.
 
+#### Pass 1A triage notes
+
+- Confirmed from code: the in-memory queue is an uncapped `Vec`, ingest always pushes, and flush drains the entire buffer in one pass.
+- Refined interpretation: the design issue is clearly real, but the practical severity depends on workload shape.
+- Nuance: human-scale shell usage may hide the issue for longer; automation-heavy or bursty usage will amplify it quickly.
+- This finding amplifies `ARCH-R01` because a large drained backlog lengthens the DB critical section.
+
 #### Acceptance criteria
 
 - The daemon has an explicit policy for queue capacity and overload behavior.
@@ -226,13 +249,14 @@ Introduce a bounded queue or explicit backpressure policy and either honor `flus
 
 #### Verification
 
-- Not started.
+- Pass 1A review completed.
+- Recommended validation test: set `flush_batch_size = 1`, enqueue multiple events, run one flush, and verify all events still drain and persist, proving the configured batch size is currently ignored.
 
 ---
 
 ### ARCH-R04 — Fire-and-forget ingest does not guarantee persistence
 
-- Status: `new`
+- Status: `triaged`
 - Severity: `High`
 - Effort: `M`
 - Confidence: `High`
@@ -256,6 +280,12 @@ If the daemon crashes after accept and before the next flush, the event can be l
 
 Decide whether the product wants best-effort ingest or durable ingest semantics. Then make the protocol and fallback behavior match that decision explicitly.
 
+#### Pass 1A triage notes
+
+- Confirmed from code: sender-side success means socket connect plus frame write, not durable storage.
+- Important nuance: this is primarily an abrupt-failure problem, not a graceful-shutdown problem, because accepted ingest is flushed on orderly shutdown.
+- Fallback helps when the sender cannot connect or write, but not when the daemon dies after accepting bytes and before flush.
+
 #### Acceptance criteria
 
 - The ingest contract is documented as either durable or best-effort.
@@ -264,16 +294,17 @@ Decide whether the product wants best-effort ingest or durable ingest semantics.
 
 #### Verification
 
-- Not started.
+- Pass 1A review completed.
+- Recommended validation test: start the daemon with a long flush interval, send one event, hard-kill the daemon before flush, restart, and verify the accepted event is absent from both SQLite and fallback.
 
 ---
 
 ### ARCH-R05 — Event queue writes and fallback recovery are not transactionally safe enough
 
-- Status: `new`
+- Status: `triaged`
 - Severity: `High`
 - Effort: `M`
-- Confidence: `Med`
+- Confidence: `High`
 - Area: `storage/contracts`
 
 #### Problem
@@ -293,6 +324,12 @@ A failure between event insert and queue insert can leave stored events that nev
 
 Wrap event insert plus queue insert in a transaction. Rework fallback replay to preserve partially failed input for retry instead of renaming the full file unconditionally.
 
+#### Pass 1A triage notes
+
+- Confidence raised to `High`: the split event/queue write and unconditional `.done` rename are both directly visible in code.
+- Refined interpretation: the main risk is not SQLite interleaving on the current daemon path, but mid-path fault handling and replay retirement semantics.
+- Additional nuance: because `envelope_id` is not persisted into the events table, replay is not naturally idempotent.
+
 #### Acceptance criteria
 
 - Event insert and queue insert are atomic.
@@ -301,7 +338,8 @@ Wrap event insert plus queue insert in a transaction. Rework fallback replay to 
 
 #### Verification
 
-- Not started.
+- Pass 1A review completed.
+- Recommended validation test: install a trigger that forces `INSERT INTO enrichment_queue` to fail during replay, then verify current behavior can produce an event row without a queue row while still renaming the fallback file to `.done`.
 
 ---
 
@@ -725,6 +763,49 @@ This section is intentionally lightweight for now. It exists to make the future 
 
 ## Future audit sections
 
+### Pass 1A — Cluster A audit notes
+
+#### Scope completed
+
+- `ARCH-R01`
+- `ARCH-R02`
+- `ARCH-R03`
+- `ARCH-R04`
+- `ARCH-R05`
+
+#### What was validated
+
+- Rust test baseline passed during this audit:
+  - `53` tests in `hippo-core`
+  - `6` tests in `hippo-daemon`
+  - `1` shell hook integration test
+- The shell hook is clearly backgrounded and disowned, so command capture does not wait for durable persistence.
+- The protocol includes `Ack`, but ingest intentionally suppresses response delivery.
+- Graceful shutdown behavior is better than the raw durability risk might imply because accepted ingest is flushed on shutdown.
+- The cleanest first fix in Cluster A is still `ARCH-R02`.
+
+#### Observed versus theoretical split
+
+- Observed directly from code:
+  - single serialized daemon DB handle
+  - status path holds DB lock across external waits
+  - uncapped in-memory ingest queue with drain-all flush
+  - sender success means socket write, not durable persistence
+  - event insert and queue insert are split
+  - fallback replay retires files even after partial failure
+- Still theoretical until explicit fault or load tests are added:
+  - exact user-visible latency impact under realistic mixed load
+  - exact event loss window frequency in practice
+  - exact prevalence of replay inconsistency under fault conditions
+
+#### Most targeted validation tests to add next
+
+1. Lock-contention test proving DB-backed request paths and flush serialize behind the shared DB mutex.
+2. Status-path regression test proving no external await happens while holding the DB lock.
+3. Batch-size regression test proving `flush_batch_size` is currently ignored.
+4. Process-level crash-window test for accepted-but-unflushed event loss.
+5. Replay fault-injection test for event insert without queue insert plus unconditional `.done` retirement.
+
 ### Pass 1 — deeper architecture audit
 
 #### Goals
@@ -807,3 +888,4 @@ When updating a finding, prefer this pattern:
 ## Change log
 
 - 2026-03-28: Initial tracker created from source inspection of Rust and Python architecture plus delegated implementation review.
+- 2026-03-28: Pass 1A Cluster A audit completed for `ARCH-R01` through `ARCH-R05`, including Rust test baseline confirmation and triage notes.

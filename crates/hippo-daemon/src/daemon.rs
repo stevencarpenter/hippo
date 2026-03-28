@@ -1,16 +1,17 @@
 use anyhow::Result;
-use hippo_core::config::{HippoConfig, ENV_ALLOWLIST};
+use hippo_core::config::{ENV_ALLOWLIST, HippoConfig};
 use hippo_core::events::{EventEnvelope, EventPayload};
 use hippo_core::protocol::{DaemonRequest, DaemonResponse};
 use hippo_core::redaction::RedactionEngine;
 use hippo_core::storage;
 use rusqlite::Connection;
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::net::{UnixListener, UnixStream};
-use tokio::sync::watch;
 use tokio::sync::Mutex;
+use tokio::sync::watch;
+use tokio::task::JoinSet;
 use tokio::time::{self, Duration, Instant};
 use tracing::{error, info, warn};
 
@@ -217,9 +218,24 @@ pub async fn run(config: HippoConfig) -> Result<()> {
     let socket_path = config.socket_path();
     let db_path = config.db_path();
 
-    // Remove stale socket
+    // Only remove a socket we can prove is stale. Refuse to replace
+    // responsive or ambiguous sockets to avoid orphaning a live daemon.
     if socket_path.exists() {
-        std::fs::remove_file(&socket_path)?;
+        match crate::commands::probe_socket(&socket_path, config.daemon.socket_timeout_ms).await {
+            crate::commands::SocketProbeResult::Missing => {}
+            crate::commands::SocketProbeResult::Stale => {
+                std::fs::remove_file(&socket_path)?;
+            }
+            crate::commands::SocketProbeResult::Responsive => {
+                anyhow::bail!("daemon socket already in use at {}", socket_path.display());
+            }
+            crate::commands::SocketProbeResult::Unresponsive => {
+                anyhow::bail!(
+                    "socket exists at {} but did not respond; refusing to replace it",
+                    socket_path.display()
+                );
+            }
+        }
     }
 
     // Ensure data dir exists
@@ -262,7 +278,7 @@ pub async fn run(config: HippoConfig) -> Result<()> {
     let flush_state = Arc::clone(&state);
     let flush_interval = config.daemon.flush_interval_ms;
     let mut flush_shutdown_rx = state.shutdown_tx.subscribe();
-    tokio::spawn(async move {
+    let flush_task = tokio::spawn(async move {
         let mut interval = time::interval(Duration::from_millis(flush_interval));
         loop {
             tokio::select! {
@@ -281,27 +297,54 @@ pub async fn run(config: HippoConfig) -> Result<()> {
     // Bind listener
     let listener = UnixListener::bind(&socket_path)?;
     info!("daemon listening on {:?}", socket_path);
+    let mut connection_tasks = JoinSet::new();
 
     loop {
         tokio::select! {
             result = listener.accept() => {
                 let (stream, _) = result?;
                 let conn_state = Arc::clone(&state);
-                tokio::spawn(async move {
-                    if let Err(e) = handle_connection(conn_state, stream).await {
-                        warn!("connection error: {}", e);
-                    }
-                });
+                connection_tasks.spawn(async move { handle_connection(conn_state, stream).await });
             }
             _ = shutdown_rx.changed() => {
                 info!("shutdown signal received, stopping accept loop");
                 break;
             }
+            Some(join_result) = connection_tasks.join_next(), if !connection_tasks.is_empty() => {
+                match join_result {
+                    Ok(Ok(())) => {}
+                    Ok(Err(e)) => warn!("connection error: {}", e),
+                    Err(e) => warn!("connection task join error: {}", e),
+                }
+            }
+        }
+    }
+
+    // Drop the listener so the socket fd is closed before removal
+    drop(listener);
+
+    while let Some(join_result) = connection_tasks.join_next().await {
+        match join_result {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => warn!("connection error: {}", e),
+            Err(e) => warn!("connection task join error: {}", e),
         }
     }
 
     // Final flush before exit
     flush_events(&state).await;
+
+    if let Err(e) = flush_task.await {
+        warn!("flush task join error: {}", e);
+    }
+
+    // Remove socket file so `daemon stop` polling sees shutdown
+    if let Err(e) = std::fs::remove_file(&socket_path)
+        && e.kind() != std::io::ErrorKind::NotFound
+    {
+        warn!("failed to remove socket: {}", e);
+    }
+
     info!("daemon shut down cleanly");
     Ok(())
 }
@@ -328,4 +371,156 @@ async fn handle_connection(state: Arc<DaemonState>, mut stream: UnixStream) -> R
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use hippo_core::config::HippoConfig;
+    use hippo_core::events::{EventEnvelope, GitState, ShellEvent, ShellKind};
+    use hippo_core::storage;
+    use std::collections::HashMap;
+    use std::path::PathBuf;
+    use tempfile::tempdir;
+    use tokio::io::AsyncWriteExt;
+    use tokio::time::sleep;
+    use uuid::Uuid;
+
+    fn test_config() -> HippoConfig {
+        let temp = tempdir().unwrap();
+        let mut config = HippoConfig::default();
+        config.storage.data_dir = temp.path().join("data");
+        config.storage.config_dir = temp.path().join("config");
+        std::mem::forget(temp);
+        config
+    }
+
+    fn test_envelope(command: &str) -> EventEnvelope {
+        EventEnvelope::shell(ShellEvent {
+            session_id: Uuid::new_v4(),
+            command: command.to_string(),
+            exit_code: 0,
+            duration_ms: 42,
+            cwd: PathBuf::from("/tmp"),
+            hostname: "test-host".to_string(),
+            shell: ShellKind::Zsh,
+            stdout: None,
+            stderr: None,
+            env_snapshot: HashMap::new(),
+            git_state: Some(GitState {
+                repo: None,
+                branch: Some("main".to_string()),
+                commit: Some("abc1234".to_string()),
+                is_dirty: false,
+            }),
+            redaction_count: 0,
+        })
+    }
+
+    async fn wait_for_daemon(socket_path: &std::path::Path) {
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            if let Ok(DaemonResponse::Status(_)) =
+                crate::commands::send_request(socket_path, &DaemonRequest::GetStatus).await
+            {
+                return;
+            }
+            assert!(Instant::now() < deadline, "daemon never became ready");
+            sleep(Duration::from_millis(25)).await;
+        }
+    }
+
+    #[tokio::test]
+    async fn test_run_refuses_to_replace_live_socket() {
+        let config = test_config();
+        let socket_path = config.socket_path();
+
+        let run_config = config.clone();
+        let daemon_handle = tokio::spawn(async move { run(run_config).await });
+        wait_for_daemon(&socket_path).await;
+
+        let second_run =
+            tokio::time::timeout(Duration::from_millis(500), run(config.clone())).await;
+        match second_run {
+            Ok(Err(_)) => {
+                let shutdown_result =
+                    crate::commands::send_request(&socket_path, &DaemonRequest::Shutdown).await;
+                let daemon_result = daemon_handle.await.unwrap();
+
+                assert!(
+                    matches!(shutdown_result, Ok(DaemonResponse::Ack)),
+                    "original daemon stopped responding after second run attempt: {:?}",
+                    shutdown_result
+                );
+                assert!(
+                    daemon_result.is_ok(),
+                    "daemon shut down with error: {daemon_result:?}"
+                );
+            }
+            Ok(Ok(())) => panic!("second daemon unexpectedly started and exited cleanly"),
+            Err(_) => {
+                daemon_handle.abort();
+                let _ = daemon_handle.await;
+                panic!("second daemon run hung instead of rejecting the live socket");
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn test_shutdown_waits_for_accepted_ingest_connections() {
+        let config = test_config();
+        let socket_path = config.socket_path();
+        let db_path = config.db_path();
+        let envelope = test_envelope("echo delayed-ingest");
+        let request = DaemonRequest::IngestEvent(Box::new(envelope));
+        let payload = serde_json::to_vec(&request).unwrap();
+        let split_at = payload.len() / 2;
+
+        let run_config = config.clone();
+        let daemon_handle = tokio::spawn(async move { run(run_config).await });
+        wait_for_daemon(&socket_path).await;
+
+        let mut delayed_stream = UnixStream::connect(&socket_path).await.unwrap();
+        delayed_stream
+            .write_all(&(payload.len() as u32).to_be_bytes())
+            .await
+            .unwrap();
+        delayed_stream
+            .write_all(&payload[..split_at])
+            .await
+            .unwrap();
+        delayed_stream.flush().await.unwrap();
+
+        let shutdown_response =
+            crate::commands::send_request(&socket_path, &DaemonRequest::Shutdown).await;
+        assert!(
+            matches!(shutdown_response, Ok(DaemonResponse::Ack)),
+            "shutdown request failed: {:?}",
+            shutdown_response
+        );
+
+        sleep(Duration::from_millis(100)).await;
+
+        delayed_stream
+            .write_all(&payload[split_at..])
+            .await
+            .unwrap();
+        delayed_stream.shutdown().await.unwrap();
+
+        let daemon_result = daemon_handle.await.unwrap();
+        assert!(
+            daemon_result.is_ok(),
+            "daemon shut down with error: {daemon_result:?}"
+        );
+
+        let conn = storage::open_db(&db_path).unwrap();
+        let event_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM events", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(
+            event_count, 1,
+            "accepted ingest event was lost during shutdown"
+        );
+    }
 }

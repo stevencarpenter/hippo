@@ -1,6 +1,6 @@
 use anyhow::Result;
 use chrono::Utc;
-use hippo_core::config::{HippoConfig, ENV_ALLOWLIST};
+use hippo_core::config::{ENV_ALLOWLIST, HippoConfig};
 use hippo_core::events::{EventEnvelope, EventPayload, GitState, ShellEvent, ShellKind};
 use hippo_core::protocol::{DaemonRequest, DaemonResponse};
 use hippo_core::redaction::RedactionEngine;
@@ -12,18 +12,85 @@ use uuid::Uuid;
 
 use crate::framing::{read_frame, write_frame};
 
+const REQUEST_TIMEOUT_MS: u64 = 5_000;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SocketProbeResult {
+    Missing,
+    Responsive,
+    Stale,
+    Unresponsive,
+}
+
 pub async fn send_request(
     socket_path: &std::path::Path,
     request: &DaemonRequest,
 ) -> Result<DaemonResponse> {
-    let mut stream = UnixStream::connect(socket_path).await?;
-    let json = serde_json::to_vec(request)?;
-    write_frame(&mut stream, &json).await?;
-    let frame = read_frame(&mut stream)
-        .await?
-        .ok_or_else(|| anyhow::anyhow!("no response from daemon"))?;
-    let response: DaemonResponse = serde_json::from_slice(&frame)?;
-    Ok(response)
+    send_request_with_timeout(socket_path, request, REQUEST_TIMEOUT_MS).await
+}
+
+pub async fn send_request_with_timeout(
+    socket_path: &std::path::Path,
+    request: &DaemonRequest,
+    timeout_ms: u64,
+) -> Result<DaemonResponse> {
+    let timeout = std::time::Duration::from_millis(timeout_ms);
+    let exchange = async {
+        let mut stream = UnixStream::connect(socket_path).await?;
+        let json = serde_json::to_vec(request)?;
+        write_frame(&mut stream, &json).await?;
+        let frame = read_frame(&mut stream)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("no response from daemon"))?;
+        let response: DaemonResponse = serde_json::from_slice(&frame)?;
+        anyhow::Ok(response)
+    };
+
+    tokio::time::timeout(timeout, exchange)
+        .await
+        .map_err(|_| anyhow::anyhow!("timed out waiting for daemon response"))?
+}
+
+pub async fn probe_socket(socket_path: &std::path::Path, timeout_ms: u64) -> SocketProbeResult {
+    if !socket_path.exists() {
+        return SocketProbeResult::Missing;
+    }
+
+    let timeout = std::time::Duration::from_millis(timeout_ms);
+    let connect_result = match tokio::time::timeout(timeout, UnixStream::connect(socket_path)).await
+    {
+        Ok(result) => result,
+        Err(_) => return SocketProbeResult::Unresponsive,
+    };
+
+    let mut stream = match connect_result {
+        Ok(stream) => stream,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return SocketProbeResult::Missing,
+        Err(e) if e.kind() == std::io::ErrorKind::ConnectionRefused => {
+            return SocketProbeResult::Stale;
+        }
+        Err(_) => return SocketProbeResult::Unresponsive,
+    };
+
+    let request = match serde_json::to_vec(&DaemonRequest::GetStatus) {
+        Ok(request) => request,
+        Err(_) => return SocketProbeResult::Unresponsive,
+    };
+
+    let exchange = async {
+        write_frame(&mut stream, &request).await?;
+        let frame = read_frame(&mut stream).await?;
+        anyhow::Ok(frame)
+    };
+
+    match tokio::time::timeout(timeout, exchange).await {
+        Ok(Ok(Some(frame))) if serde_json::from_slice::<DaemonResponse>(&frame).is_ok() => {
+            SocketProbeResult::Responsive
+        }
+        Ok(Ok(_)) => SocketProbeResult::Unresponsive,
+        Ok(Err(_)) => SocketProbeResult::Unresponsive,
+        Err(_) => SocketProbeResult::Unresponsive,
+    }
 }
 
 pub async fn send_event_fire_and_forget(
@@ -35,8 +102,8 @@ pub async fn send_event_fire_and_forget(
         std::time::Duration::from_millis(timeout_ms),
         UnixStream::connect(socket_path),
     )
-        .await
-        .map_err(|_| anyhow::anyhow!("timed out connecting to daemon socket"))??;
+    .await
+    .map_err(|_| anyhow::anyhow!("timed out connecting to daemon socket"))??;
 
     let request = DaemonRequest::IngestEvent(Box::new(envelope.clone()));
     let json = serde_json::to_vec(&request)?;
@@ -128,7 +195,7 @@ pub async fn handle_send_event_shell(
         &envelope,
         config.daemon.socket_timeout_ms,
     )
-        .await
+    .await
     {
         Ok(()) => Ok(()),
         Err(_) => {
@@ -200,7 +267,7 @@ pub async fn handle_sessions(
             limit: Some(50),
         },
     )
-        .await?;
+    .await?;
 
     match response {
         DaemonResponse::Sessions(sessions) => {
@@ -249,7 +316,7 @@ pub async fn handle_events(
             limit: Some(50),
         },
     )
-        .await?;
+    .await?;
 
     match response {
         DaemonResponse::Events(events) => {
@@ -286,7 +353,7 @@ pub async fn handle_query_raw(config: &HippoConfig, text: &str) -> Result<()> {
             text: text.to_string(),
         },
     )
-        .await?;
+    .await?;
 
     match response {
         DaemonResponse::QueryResult(hits) => {
@@ -415,6 +482,7 @@ mod tests {
     use super::*;
     use hippo_core::events::EventPayload;
     use tempfile::tempdir;
+    use tokio::net::UnixListener;
 
     #[tokio::test]
     async fn test_handle_send_event_shell_writes_redacted_fallback_when_daemon_unavailable() {
@@ -433,8 +501,8 @@ mod tests {
             None,
             false,
         )
-            .await
-            .unwrap();
+        .await
+        .unwrap();
 
         let files = storage::list_fallback_files(&config.fallback_dir()).unwrap();
         assert_eq!(files.len(), 1);
@@ -452,5 +520,27 @@ mod tests {
             }
             other => panic!("expected shell payload, got {:?}", other),
         }
+    }
+
+    #[tokio::test]
+    async fn test_send_request_with_timeout_fails_fast_on_hung_server() {
+        let temp = tempdir().unwrap();
+        let socket_path = temp.path().join("hung.sock");
+        let listener = UnixListener::bind(&socket_path).unwrap();
+        let server = tokio::spawn(async move {
+            let (_stream, _) = listener.accept().await.unwrap();
+            tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+        });
+
+        let result = send_request_with_timeout(&socket_path, &DaemonRequest::GetStatus, 50).await;
+
+        server.abort();
+        let _ = server.await;
+
+        let err = result.expect_err("hung server should trigger a timeout");
+        assert!(
+            err.to_string().contains("timed out"),
+            "unexpected error: {err:?}"
+        );
     }
 }

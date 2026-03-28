@@ -546,6 +546,7 @@ dependencies = [
  "anyhow",
  "chrono",
  "clap",
+ "dirs",
  "hippo-core",
  "hostname",
  "reqwest",
