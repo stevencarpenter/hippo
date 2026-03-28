@@ -18,10 +18,10 @@ def _write_jsonl(path: Path, examples: list[dict]):
 
 
 def export_training_data(
-        conn,
-        output_dir: str | Path,
-        since_ms: int | None = None,
-        min_events: int = 1,
+    conn,
+    output_dir: str | Path,
+    since_ms: int | None = None,
+    min_events: int = 1,
 ) -> dict:
     """Export knowledge nodes as JSONL conversation pairs for fine-tuning.
 

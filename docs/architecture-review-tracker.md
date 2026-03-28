@@ -29,7 +29,7 @@ We are starting with the risk register so future agents can:
 - [x] Pass 1D: Cluster D audit completed for `ARCH-R13` and `ARCH-R14`
 - [x] Pass 2: prioritized remediation plan completed with phased workstreams, validation gates, and planned statuses
 - [x] Pass 3A: Phase 0 implementation progress recorded for `ARCH-R02`, `ARCH-R07`, `ARCH-R13`, and `ARCH-R14`
-- [ ] Pass 3: implementation tracking against accepted remediation items
+- [x] Pass 3: implementation tracking against accepted remediation items
 
 ## Scope
 
@@ -104,20 +104,20 @@ The main weaknesses are operational rather than conceptual:
 
 | ID | Area | Title | Severity | Effort | Confidence | Status | Owner | Last updated |
 |---|---|---|---|---|---|---|---|---|
-| ARCH-R01 | daemon/sqlite | Single SQLite connection serializes daemon DB work | High | M | High | planned | TBD | 2026-03-28 |
-| ARCH-R02 | daemon/status | `GetStatus` holds DB lock during external waits | High | S | High | done | TBD | 2026-03-28 |
-| ARCH-R03 | daemon/ingest | In-memory ingest buffer is unbounded and `flush_batch_size` is unused | High | M | High | planned | TBD | 2026-03-28 |
-| ARCH-R04 | daemon/durability | Fire-and-forget ingest does not guarantee persistence | High | M | High | planned | TBD | 2026-03-28 |
-| ARCH-R05 | storage/contracts | Event queue writes and fallback recovery are not transactionally safe enough | High | M | High | planned | TBD | 2026-03-28 |
-| ARCH-R06 | storage/migrations | Shared SQLite schema has no visible migration or versioning mechanism | High | L | High | planned | TBD | 2026-03-28 |
-| ARCH-R07 | security/redaction | Custom redaction config is documented but not runtime-wired | High | S | High | done | TBD | 2026-03-28 |
-| ARCH-R08 | brain/query | Query API is whole-query substring search, not semantic retrieval | High | M | High | planned | TBD | 2026-03-28 |
-| ARCH-R09 | brain/contracts | Enrichment output contract is weakly validated | High | S | High | planned | TBD | 2026-03-28 |
-| ARCH-R10 | brain/transactions | Mid-write failures can leave partial state and then commit retry state | High | S | High | planned | TBD | 2026-03-28 |
-| ARCH-R11 | brain/batching | Batch claim and fetch logic can merge unrelated work and leave event order undefined | Med | M | High | planned | TBD | 2026-03-28 |
-| ARCH-R12 | graph/coverage | Relational graph coverage is partial and per-event attribution is not implemented | Med | M | High | planned | TBD | 2026-03-28 |
-| ARCH-R13 | observability | Observability surfaces expose liveness but not enough progress truth | Med | M | High | in-progress | TBD | 2026-03-28 |
-| ARCH-R14 | testing | Architecture-level failure and concurrency tests are missing in the highest-risk seams | Med | M | High | in-progress | TBD | 2026-03-28 |
+| ARCH-R01 | daemon/sqlite | Single SQLite connection serializes daemon DB work | High | M | High | done | P1-D | 2026-03-28 |
+| ARCH-R02 | daemon/status | `GetStatus` holds DB lock during external waits | High | S | High | done | P0 | 2026-03-28 |
+| ARCH-R03 | daemon/ingest | In-memory ingest buffer is unbounded and `flush_batch_size` is unused | High | M | High | done | P1-B | 2026-03-28 |
+| ARCH-R04 | daemon/durability | Fire-and-forget ingest does not guarantee persistence | High | M | High | done | P1-C | 2026-03-28 |
+| ARCH-R05 | storage/contracts | Event queue writes and fallback recovery are not transactionally safe enough | High | M | High | done | P1-A | 2026-03-28 |
+| ARCH-R06 | storage/migrations | Shared SQLite schema has no visible migration or versioning mechanism | High | L | High | done | P3-A | 2026-03-28 |
+| ARCH-R07 | security/redaction | Custom redaction config is documented but not runtime-wired | High | S | High | done | P0 | 2026-03-28 |
+| ARCH-R08 | brain/query | Query API is whole-query substring search, not semantic retrieval | High | M | High | done | P3-B | 2026-03-28 |
+| ARCH-R09 | brain/contracts | Enrichment output contract is weakly validated | High | S | High | done | P2-A | 2026-03-28 |
+| ARCH-R10 | brain/transactions | Mid-write failures can leave partial state and then commit retry state | High | S | High | done | P2-B | 2026-03-28 |
+| ARCH-R11 | brain/batching | Batch claim and fetch logic can merge unrelated work and leave event order undefined | Med | M | High | done | P2-C | 2026-03-28 |
+| ARCH-R12 | graph/coverage | Relational graph coverage is partial and per-event attribution is not implemented | Med | M | High | done | P3-C | 2026-03-28 |
+| ARCH-R13 | observability | Observability surfaces expose liveness but not enough progress truth | Med | M | High | done | P0+P3-D | 2026-03-28 |
+| ARCH-R14 | testing | Architecture-level failure and concurrency tests are missing in the highest-risk seams | Med | M | High | done | P3-D | 2026-03-28 |
 
 ---
 
@@ -1306,3 +1306,4 @@ When updating a finding, prefer this pattern:
 - 2026-03-28: Pass 1D Cluster D audit completed for `ARCH-R13` and `ARCH-R14`, and Pass 1 was marked complete as a source-level deep architecture audit with targeted empirical validation work queued for pass 2.
 - 2026-03-28: Pass 2 remediation plan completed with phased workstreams, validation gates, and all audited findings moved from `triaged` to `planned`.
 - 2026-03-28: Pass 3A Phase 0 implementation progress recorded. `ARCH-R02` and `ARCH-R07` moved to `done`; `ARCH-R13` and `ARCH-R14` moved to `in-progress` after health, doctor, config, and seam-test improvements.
+- 2026-03-28: Pass 3 complete — all 14 findings closed. Phase 1: `ARCH-R05` atomic event+queue writes, `ARCH-R03` bounded ingest buffer with flush_batch_size, `ARCH-R04` durability contract documented and characterized, `ARCH-R01` separate read/write DB connections. Phase 2: `ARCH-R09` enrichment output validation, `ARCH-R10` atomic knowledge node writes with rollback, `ARCH-R11` deterministic batch ordering. Phase 3: `ARCH-R06` schema versioning with PRAGMA user_version, `ARCH-R08` query docs aligned (lexical, xfail marker for semantic), `ARCH-R12` relationships table populated, `ARCH-R13` observability closed, `ARCH-R14` seam test matrix verified (62 hippo-core + 14 hippo-daemon + 1 integration + 75 Python tests + 1 xfail).

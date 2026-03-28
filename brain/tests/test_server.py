@@ -4,6 +4,8 @@ import asyncio
 import time
 from unittest.mock import AsyncMock
 
+import pytest
+
 from starlette.testclient import TestClient
 
 from hippo_brain.server import BrainServer, create_app
@@ -373,6 +375,69 @@ async def test_start_enrichment_creates_task(tmp_db):
         await server._enrichment_task
     except asyncio.CancelledError:
         pass
+
+
+# ---- schema version checks ----
+
+
+def test_brain_server_rejects_wrong_schema_version(tmp_path):
+    """_get_conn raises RuntimeError when user_version does not match."""
+    import sqlite3
+
+    db_path = tmp_path / "bad_version.db"
+    conn = sqlite3.connect(str(db_path))
+    conn.execute("PRAGMA user_version = 99")
+    conn.close()
+
+    server = _make_server(str(db_path))
+    try:
+        server._get_conn()
+        raise AssertionError("Expected RuntimeError was not raised")
+    except RuntimeError as e:
+        assert "schema version mismatch" in str(e).lower()
+
+
+# ---- query alignment ----
+
+
+@pytest.mark.xfail(reason="semantic retrieval not yet wired into /query")
+def test_query_returns_semantically_related_result(tmp_db):
+    """When semantic retrieval is wired, querying 'version control' should
+    find events about 'git' even if 'version control' never appears literally."""
+    conn, db_path = tmp_db
+    now_ms = int(time.time() * 1000)
+
+    # Seed a session and git-related events (none contain "version control")
+    conn.execute(
+        "INSERT INTO sessions (id, start_time, shell, hostname, username) "
+        "VALUES (1, ?, 'zsh', 'laptop', 'user')",
+        (now_ms,),
+    )
+    git_commands = [
+        (1, "git commit -m 'fix auth bug'"),
+        (2, "git push origin main"),
+        (3, "git log --oneline -10"),
+    ]
+    for eid, cmd in git_commands:
+        conn.execute(
+            "INSERT INTO events (id, session_id, timestamp, command, exit_code, "
+            "duration_ms, cwd, hostname, shell) "
+            "VALUES (?, 1, ?, ?, 0, 500, '/projects/hippo', 'laptop', 'zsh')",
+            (eid, now_ms + eid, cmd),
+        )
+    conn.commit()
+
+    app = _make_app(str(db_path))
+    client = TestClient(app)
+
+    # "version control" doesn't literally appear in any command, so lexical
+    # LIKE search will return nothing.  Semantic search should match.
+    resp = client.post("/query", json={"text": "version control"})
+    assert resp.status_code == 200
+    data = resp.json()
+    assert len(data["events"]) > 0, (
+        "Expected semantic search to find git commands for 'version control'"
+    )
 
 
 # ---- create_app full coverage ----

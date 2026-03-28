@@ -93,6 +93,14 @@ pub async fn probe_socket(socket_path: &std::path::Path, timeout_ms: u64) -> Soc
     }
 }
 
+/// Fire-and-forget event send. Returns Ok(()) once the frame is written to the socket.
+///
+/// Durability contract: success means the event was accepted by the daemon socket.
+/// It does NOT mean the event has been written to SQLite. If the daemon crashes
+/// after accept but before the next periodic flush, the event may be lost.
+///
+/// The fallback JSONL path is triggered only when the socket is unreachable — not
+/// when the daemon crashes after accepting the event.
 pub async fn send_event_fire_and_forget(
     socket_path: &std::path::Path,
     envelope: &EventEnvelope,

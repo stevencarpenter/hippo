@@ -50,6 +50,14 @@ class BrainServer:
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA foreign_keys=ON")
         conn.execute("PRAGMA busy_timeout=5000")
+        version = conn.execute("PRAGMA user_version").fetchone()[0]
+        EXPECTED_VERSION = 1
+        if version != EXPECTED_VERSION:
+            conn.close()
+            raise RuntimeError(
+                f"DB schema version mismatch: expected {EXPECTED_VERSION}, found {version}. "
+                "Please run migrations or delete the database."
+            )
         return conn
 
     async def health(self, request: Request) -> JSONResponse:
@@ -86,6 +94,9 @@ class BrainServer:
             }
         )
 
+    # Current implementation: lexical substring search over events.command and
+    # knowledge_nodes.content/embed_text. Semantic (vector) retrieval is available
+    # via the embeddings module but is not yet wired into this endpoint.
     async def query(self, request: Request) -> JSONResponse:
         body = await request.json()
         text = body.get("text", "")
@@ -164,7 +175,11 @@ class BrainServer:
                         self.last_error = str(e)
                         self.last_error_at_ms = int(time.time() * 1000)
                         logger.error("enrichment failed: %s", e)
-                        mark_queue_failed(conn, event_ids, str(e))
+                        retry_conn = self._get_conn()
+                        try:
+                            mark_queue_failed(retry_conn, event_ids, str(e))
+                        finally:
+                            retry_conn.close()
 
                     conn.close()
                 except Exception as e:

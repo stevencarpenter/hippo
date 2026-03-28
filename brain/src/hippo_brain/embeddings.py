@@ -53,11 +53,11 @@ def _pad_or_truncate(vec: list[float], target_dim: int) -> list[float]:
 
 
 async def embed_knowledge_node(
-        client,
-        table: lancedb.table.Table,
-        node_dict: dict,
-        embed_model: str = "",
-        command_model: str = "",
+    client,
+    table: lancedb.table.Table,
+    node_dict: dict,
+    embed_model: str = "",
+    command_model: str = "",
 ):
     """Get embeddings from client, pad/truncate, add row to table."""
     embed_text = node_dict.get("embed_text", "")
@@ -97,10 +97,10 @@ async def embed_knowledge_node(
 
 
 def search_similar(
-        table: lancedb.table.Table,
-        query_vec: list[float],
-        column: str = "vec_knowledge",
-        limit: int = 10,
+    table: lancedb.table.Table,
+    query_vec: list[float],
+    column: str = "vec_knowledge",
+    limit: int = 10,
 ) -> list[dict]:
     """Vector search on the given column."""
     results = table.search(query_vec, vector_column_name=column).limit(limit).to_list()

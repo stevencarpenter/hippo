@@ -19,7 +19,8 @@ use crate::framing::{read_frame, write_frame};
 
 pub struct DaemonState {
     pub config: HippoConfig,
-    pub db: Mutex<Connection>,
+    pub write_db: Mutex<Connection>,
+    pub read_db: Mutex<Connection>,
     pub redaction: RedactionEngine,
     pub session_map: Mutex<HashMap<String, i64>>,
     pub start_time: Instant,
@@ -32,12 +33,17 @@ pub async fn handle_request(state: &Arc<DaemonState>, request: DaemonRequest) ->
     match request {
         DaemonRequest::IngestEvent(envelope) => {
             let mut buffer = state.event_buffer.lock().await;
-            buffer.push(*envelope);
+            let cap = state.config.daemon.flush_batch_size * 4;
+            if buffer.len() >= cap {
+                state.drop_count.fetch_add(1, Ordering::Relaxed);
+            } else {
+                buffer.push(*envelope);
+            }
             DaemonResponse::Ack
         }
         DaemonRequest::GetStatus => {
             let mut status = {
-                let db = state.db.lock().await;
+                let db = state.read_db.lock().await;
                 match storage::get_status(&db) {
                     Ok(status) => status,
                     Err(e) => return DaemonResponse::Error(e.to_string()),
@@ -79,7 +85,7 @@ pub async fn handle_request(state: &Arc<DaemonState>, request: DaemonRequest) ->
             DaemonResponse::Status(status)
         }
         DaemonRequest::GetSessions { since_ms, limit } => {
-            let db = state.db.lock().await;
+            let db = state.read_db.lock().await;
             match storage::get_sessions(&db, since_ms, limit.unwrap_or(50)) {
                 Ok(sessions) => DaemonResponse::Sessions(sessions),
                 Err(e) => DaemonResponse::Error(e.to_string()),
@@ -91,7 +97,7 @@ pub async fn handle_request(state: &Arc<DaemonState>, request: DaemonRequest) ->
             project,
             limit,
         } => {
-            let db = state.db.lock().await;
+            let db = state.read_db.lock().await;
             match storage::get_events(
                 &db,
                 session_id,
@@ -104,14 +110,14 @@ pub async fn handle_request(state: &Arc<DaemonState>, request: DaemonRequest) ->
             }
         }
         DaemonRequest::GetEntities { entity_type } => {
-            let db = state.db.lock().await;
+            let db = state.read_db.lock().await;
             match storage::get_entities(&db, entity_type.as_deref()) {
                 Ok(entities) => DaemonResponse::Entities(entities),
                 Err(e) => DaemonResponse::Error(e.to_string()),
             }
         }
         DaemonRequest::RawQuery { text } => {
-            let db = state.db.lock().await;
+            let db = state.read_db.lock().await;
             match storage::raw_query(&db, &text) {
                 Ok(hits) => DaemonResponse::QueryResult(hits),
                 Err(e) => DaemonResponse::Error(e.to_string()),
@@ -127,7 +133,8 @@ pub async fn handle_request(state: &Arc<DaemonState>, request: DaemonRequest) ->
 pub async fn flush_events(state: &Arc<DaemonState>) {
     let events: Vec<EventEnvelope> = {
         let mut buffer = state.event_buffer.lock().await;
-        buffer.drain(..).collect()
+        let n = buffer.len().min(state.config.daemon.flush_batch_size);
+        buffer.drain(..n).collect()
     };
 
     if events.is_empty() {
@@ -135,7 +142,7 @@ pub async fn flush_events(state: &Arc<DaemonState>) {
     }
 
     let username = std::env::var("USER").unwrap_or_else(|_| "unknown".to_string());
-    let db = state.db.lock().await;
+    let db = state.write_db.lock().await;
     let mut session_map = state.session_map.lock().await;
 
     for envelope in &events {
@@ -257,13 +264,14 @@ pub async fn run(config: HippoConfig) -> Result<()> {
         std::fs::create_dir_all(parent)?;
     }
 
-    // Open database
-    let conn = storage::open_db(&db_path)?;
+    // Open database connections: one for writes (flush), one for reads (status/queries)
+    let write_conn = storage::open_db(&db_path)?;
+    let read_conn = storage::open_db(&db_path)?;
 
     // Recover fallback files
     let mut session_map = HashMap::new();
     let fallback_dir = config.fallback_dir();
-    match storage::recover_fallback_files(&conn, &fallback_dir, &mut session_map) {
+    match storage::recover_fallback_files(&write_conn, &fallback_dir, &mut session_map) {
         Ok((recovered, errors)) => {
             if recovered > 0 || errors > 0 {
                 info!(
@@ -279,7 +287,8 @@ pub async fn run(config: HippoConfig) -> Result<()> {
 
     let state = Arc::new(DaemonState {
         config: config.clone(),
-        db: Mutex::new(conn),
+        write_db: Mutex::new(write_conn),
+        read_db: Mutex::new(read_conn),
         redaction,
         session_map: Mutex::new(session_map),
         start_time: Instant::now(),
@@ -476,12 +485,14 @@ mod tests {
     }
 
     fn test_state_with_config(config: HippoConfig) -> Arc<DaemonState> {
-        let conn = storage::open_db(&config.db_path()).unwrap();
+        let write_conn = storage::open_db(&config.db_path()).unwrap();
+        let read_conn = storage::open_db(&config.db_path()).unwrap();
         let (shutdown_tx, _shutdown_rx) = watch::channel(false);
 
         Arc::new(DaemonState {
             config,
-            db: Mutex::new(conn),
+            write_db: Mutex::new(write_conn),
+            read_db: Mutex::new(read_conn),
             redaction: RedactionEngine::builtin(),
             session_map: Mutex::new(HashMap::new()),
             start_time: Instant::now(),
@@ -615,9 +626,9 @@ mod tests {
             .expect("LM Studio probe never reached the slow listener");
 
         let db_guard = state
-            .db
+            .read_db
             .try_lock()
-            .expect("DB lock should be released before external status awaits");
+            .expect("read_db lock should be released before external status awaits");
         drop(db_guard);
 
         let response = request_handle.await.unwrap();
@@ -647,11 +658,13 @@ replacement = "[CUSTOM]"
         .unwrap();
 
         let redaction = RedactionEngine::from_config_path(&config.redact_path()).unwrap();
-        let conn = storage::open_db(&config.db_path()).unwrap();
+        let write_conn = storage::open_db(&config.db_path()).unwrap();
+        let read_conn = storage::open_db(&config.db_path()).unwrap();
         let (shutdown_tx, _shutdown_rx) = watch::channel(false);
         let state = Arc::new(DaemonState {
             config: config.clone(),
-            db: Mutex::new(conn),
+            write_db: Mutex::new(write_conn),
+            read_db: Mutex::new(read_conn),
             redaction,
             session_map: Mutex::new(HashMap::new()),
             start_time: Instant::now(),
@@ -668,7 +681,7 @@ replacement = "[CUSTOM]"
 
         flush_events(&state).await;
 
-        let db = state.db.lock().await;
+        let db = state.write_db.lock().await;
         let command: String = db
             .query_row("SELECT command FROM events LIMIT 1", [], |row| row.get(0))
             .unwrap();
@@ -679,5 +692,196 @@ replacement = "[CUSTOM]"
 
         let files = storage::list_fallback_files(&config.fallback_dir()).unwrap();
         assert!(files.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_flush_respects_batch_size() {
+        let mut config = test_config();
+        config.daemon.flush_batch_size = 2;
+        let state = test_state_with_config(config);
+
+        // Push 5 events into the buffer
+        {
+            let mut buffer = state.event_buffer.lock().await;
+            for i in 0..5 {
+                buffer.push(test_envelope(&format!("echo batch {i}")));
+            }
+        }
+
+        // Flush once -- should drain exactly 2
+        flush_events(&state).await;
+
+        // Verify 2 events written to SQLite
+        let db = state.write_db.lock().await;
+        let written: i64 = db
+            .query_row("SELECT COUNT(*) FROM events", [], |row| row.get(0))
+            .unwrap();
+        drop(db);
+        assert_eq!(
+            written, 2,
+            "flush should write exactly flush_batch_size events"
+        );
+
+        // Verify 3 remain in the buffer
+        let buffer = state.event_buffer.lock().await;
+        assert_eq!(buffer.len(), 3, "remaining events should stay in buffer");
+    }
+
+    /// Characterizes the best-effort ingest durability contract.
+    /// Events buffered in memory are lost if the daemon is killed before flush.
+    /// This is intentional for a local shell capture tool.
+    /// Graceful shutdown (via DaemonRequest::Shutdown) does flush before exit.
+    #[tokio::test]
+    async fn test_crash_before_flush_loses_accepted_events() {
+        let mut config = test_config();
+        // Set a very long flush interval so the periodic flush never fires
+        config.daemon.flush_interval_ms = 600_000;
+        let socket_path = config.socket_path();
+        let db_path = config.db_path();
+
+        let run_config = config.clone();
+        let daemon_handle = tokio::spawn(async move { run(run_config).await });
+        wait_for_daemon(&socket_path).await;
+
+        // Send one event via the socket (fire-and-forget, no response expected)
+        let envelope = test_envelope("echo crash-test");
+        let request = DaemonRequest::IngestEvent(Box::new(envelope));
+        let payload = serde_json::to_vec(&request).unwrap();
+
+        let mut stream = UnixStream::connect(&socket_path).await.unwrap();
+        crate::framing::write_frame(&mut stream, &payload)
+            .await
+            .unwrap();
+        drop(stream);
+
+        // Give the daemon time to accept and buffer the event
+        sleep(Duration::from_millis(100)).await;
+
+        // Abort the daemon task (simulates kill/crash — no graceful shutdown)
+        daemon_handle.abort();
+        let _ = daemon_handle.await;
+
+        // Open the DB directly and verify the event was never persisted
+        let conn = storage::open_db(&db_path).unwrap();
+        let event_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM events", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(
+            event_count, 0,
+            "buffered event should be lost when daemon is killed before flush"
+        );
+
+        let queue_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM enrichment_queue", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(
+            queue_count, 0,
+            "enrichment_queue should also be empty when daemon is killed before flush"
+        );
+    }
+
+    /// Verifies that read requests (GetEvents) do not deadlock when the
+    /// write_db lock is held (e.g. during a slow flush), because reads use
+    /// a separate read_db connection.
+    #[tokio::test]
+    async fn test_concurrent_read_write_no_deadlock() {
+        let config = test_config();
+        let socket_path = config.socket_path();
+
+        let run_config = config.clone();
+        let daemon_handle = tokio::spawn(async move { run(run_config).await });
+        wait_for_daemon(&socket_path).await;
+
+        // Ingest an event and flush it so there is data to read
+        let envelope = test_envelope("echo concurrency-test");
+        crate::commands::send_event_fire_and_forget(
+            &socket_path,
+            &envelope,
+            config.daemon.socket_timeout_ms,
+        )
+        .await
+        .unwrap();
+
+        // Give the daemon time to buffer, then trigger a flush via a brief wait
+        sleep(Duration::from_millis(200)).await;
+
+        // Now issue a GetEvents request while the daemon is live -- this exercises
+        // the read_db path.  If read and write shared one lock, holding write_db
+        // during flush would block this read.  With separate connections, the read
+        // completes independently.
+        let read_result = tokio::time::timeout(
+            Duration::from_millis(200),
+            crate::commands::send_request(
+                &socket_path,
+                &DaemonRequest::GetEvents {
+                    session_id: None,
+                    since_ms: None,
+                    project: None,
+                    limit: Some(10),
+                },
+            ),
+        )
+        .await;
+
+        assert!(
+            read_result.is_ok(),
+            "GetEvents should complete within 200ms, not deadlock"
+        );
+
+        let response = read_result.unwrap().unwrap();
+        assert!(
+            matches!(response, DaemonResponse::Events(_)),
+            "expected Events response, got {:?}",
+            response
+        );
+
+        // Clean shutdown
+        let _ = crate::commands::send_request(&socket_path, &DaemonRequest::Shutdown).await;
+        let daemon_result = daemon_handle.await.unwrap();
+        assert!(
+            daemon_result.is_ok(),
+            "daemon shut down with error: {daemon_result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_ingest_drops_at_capacity() {
+        let mut config = test_config();
+        config.daemon.flush_batch_size = 2;
+        let state = test_state_with_config(config);
+
+        // Fill to capacity: flush_batch_size * 4 = 8
+        for i in 0..8 {
+            let resp = handle_request(
+                &state,
+                DaemonRequest::IngestEvent(Box::new(test_envelope(&format!("echo fill {i}")))),
+            )
+            .await;
+            assert!(matches!(resp, DaemonResponse::Ack));
+        }
+
+        assert_eq!(state.event_buffer.lock().await.len(), 8);
+        assert_eq!(state.drop_count.load(Ordering::Relaxed), 0);
+
+        // One more should be dropped
+        let resp = handle_request(
+            &state,
+            DaemonRequest::IngestEvent(Box::new(test_envelope("echo overflow"))),
+        )
+        .await;
+        assert!(matches!(resp, DaemonResponse::Ack));
+
+        assert_eq!(
+            state.drop_count.load(Ordering::Relaxed),
+            1,
+            "drop_count should be 1"
+        );
+        assert_eq!(
+            state.event_buffer.lock().await.len(),
+            8,
+            "buffer should not grow past capacity"
+        );
     }
 }
