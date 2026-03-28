@@ -32,20 +32,78 @@ async fn main() -> Result<()> {
                 println!("Use: launchctl load ~/Library/LaunchAgents/com.hippo.daemon.plist");
             }
             DaemonAction::Stop => {
-                let _ = commands::send_request(
-                    &config.socket_path(),
+                let socket = config.socket_path();
+                match commands::send_request(
+                    &socket,
                     &hippo_core::protocol::DaemonRequest::Shutdown,
                 )
-                .await;
-                println!("Shutdown signal sent.");
+                .await
+                {
+                    Ok(_) => {
+                        print!("Shutdown signal sent. Waiting for daemon to exit");
+                        let deadline =
+                            tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+                        loop {
+                            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                            if !socket.exists() {
+                                println!(" done.");
+                                break;
+                            }
+                            if tokio::time::Instant::now() >= deadline {
+                                println!(
+                                    " timed out.\nSocket still exists at {}. \
+                                     The daemon may still be shutting down, or you may need: \
+                                     pkill -9 -f 'hippo.*daemon'",
+                                    socket.display()
+                                );
+                                break;
+                            }
+                            print!(".");
+                            use std::io::Write;
+                            std::io::stdout().flush().ok();
+                        }
+                    }
+                    Err(_) => {
+                        if socket.exists() {
+                            println!(
+                                "Could not connect to daemon, but socket exists at {}.\n\
+                                 The daemon may have crashed. Cleaning up stale socket.",
+                                socket.display()
+                            );
+                            std::fs::remove_file(&socket).ok();
+                        } else {
+                            println!("Daemon is not running (no socket found).");
+                        }
+                    }
+                }
             }
             DaemonAction::Restart => {
-                let _ = commands::send_request(
-                    &config.socket_path(),
-                    &hippo_core::protocol::DaemonRequest::Shutdown,
-                )
-                .await;
-                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                let socket = config.socket_path();
+                if socket.exists() {
+                    let _ = commands::send_request(
+                        &socket,
+                        &hippo_core::protocol::DaemonRequest::Shutdown,
+                    )
+                    .await;
+
+                    // Poll for shutdown (same logic as Stop, shorter timeout)
+                    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(3);
+                    loop {
+                        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                        if !socket.exists() {
+                            break;
+                        }
+                        if tokio::time::Instant::now() >= deadline {
+                            eprintln!(
+                                "Warning: daemon did not stop within 3s. \
+                                 You may need: pkill -9 -f 'hippo.*daemon'"
+                            );
+                            std::process::exit(1);
+                        }
+                    }
+                }
+
+                println!("Starting daemon...");
                 tracing_subscriber::fmt()
                     .with_env_filter(
                         EnvFilter::try_from_default_env()
