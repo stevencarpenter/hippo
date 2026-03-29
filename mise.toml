@@ -26,20 +26,65 @@ depends = ["build", "build:brain"]
 # ── Test ─────────────────────────────────────────────────────────────
 
 [tasks.test]
-description = "Run all tests (Rust + Python)"
-depends = ["test:rust", "test:python"]
+description = "Run all tests (Rust unit + integration + Python) with lint and format checks"
+run = """
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ "${1:-}" == "--clean" ]]; then
+    echo "==> Cleaning build artifacts..."
+    cargo clean
+    rm -rf brain/.pytest_cache brain/.ruff_cache
+    echo ""
+fi
+
+echo "==> Rust unit tests (hippo-core)"
+cargo test -p hippo-core
+echo ""
+
+echo "==> Rust unit tests (hippo-daemon)"
+cargo test -p hippo-daemon --lib
+echo ""
+
+echo "==> Rust integration tests (hippo-daemon)"
+cargo test -p hippo-daemon --tests
+echo ""
+
+echo "==> Python tests (brain)"
+uv run --project brain pytest brain/tests -v --cov=hippo_brain --cov-report=term-missing
+echo ""
+
+echo "==> Clippy"
+cargo clippy --all-targets -- -D warnings
+echo ""
+
+echo "==> Format check (Rust)"
+cargo fmt --check
+echo ""
+
+echo "==> Ruff check + format (Python)"
+uv run --project brain ruff check brain/
+uv run --project brain ruff format --check brain/src brain/tests
+echo ""
+
+echo "=== All checks passed ==="
+"""
 
 [tasks."test:rust"]
-description = "Run Rust tests"
-run = "cargo test"
+description = "Run all Rust tests (unit + integration)"
+run = "cargo test -p hippo-core -p hippo-daemon"
 
 [tasks."test:core"]
 description = "Run hippo-core tests only"
 run = "cargo test -p hippo-core"
 
 [tasks."test:daemon"]
-description = "Run hippo-daemon tests only"
-run = "cargo test -p hippo-daemon"
+description = "Run hippo-daemon unit tests only"
+run = "cargo test -p hippo-daemon --lib"
+
+[tasks."test:integration"]
+description = "Run hippo-daemon integration tests only"
+run = "cargo test -p hippo-daemon --tests"
 
 [tasks."test:python"]
 description = "Run Python brain tests with coverage"
@@ -48,7 +93,7 @@ run = "uv run --project brain pytest brain/tests -v --cov=hippo_brain --cov-repo
 # ── Lint ─────────────────────────────────────────────────────────────
 
 [tasks.lint]
-description = "Run all linters"
+description = "Run all linters (check only)"
 depends = ["lint:rust", "lint:python"]
 
 [tasks."lint:rust"]
@@ -59,10 +104,30 @@ run = "cargo clippy --all-targets -- -D warnings"
 description = "Run ruff check on Python brain"
 run = "uv run --project brain ruff check brain/"
 
+# ── Fix (auto-correct lint + format) ────────────────────────────────
+
+[tasks.fix]
+description = "Auto-fix all lint and format issues"
+depends = ["fix:rust", "fix:python", "fmt:sql"]
+
+[tasks."fix:rust"]
+description = "Auto-fix Rust clippy warnings and format"
+run = [
+  "cargo clippy --all-targets --fix --allow-dirty --allow-staged -- -D warnings",
+  "cargo fmt",
+]
+
+[tasks."fix:python"]
+description = "Auto-fix Python lint warnings and format"
+run = [
+  "uv run --project brain ruff check --fix brain/",
+  "uv run --project brain ruff format brain/",
+]
+
 # ── Format ───────────────────────────────────────────────────────────
 
 [tasks.fmt]
-description = "Format all code"
+description = "Format all code (no lint fixes)"
 depends = ["fmt:rust", "fmt:python"]
 
 [tasks."fmt:rust"]
@@ -73,6 +138,10 @@ run = "cargo fmt"
 description = "Format Python code"
 run = "uv run --project brain ruff format brain/"
 
+[tasks."fmt:sql"]
+description = "Format SQL files with sqlfluff"
+run = "uv run --project brain python tools/format_sql.py crates/hippo-core/src/schema.sql"
+
 [tasks."fmt:check"]
 description = "Check formatting without modifying files"
 run = ["cargo fmt --check", "uv run --project brain ruff format --check brain/"]
@@ -80,8 +149,8 @@ run = ["cargo fmt --check", "uv run --project brain ruff format --check brain/"]
 # ── Check (CI-equivalent) ───────────────────────────────────────────
 
 [tasks.check]
-description = "Full CI check: lint + format + test"
-depends = ["lint", "fmt:check", "test"]
+description = "Alias for 'mise run test' (full CI check)"
+run = "mise run test"
 
 # ── Run ──────────────────────────────────────────────────────────────
 
@@ -173,6 +242,6 @@ run = "cargo run --bin hippo -- redact test \"$1\""
 [tasks.clean]
 description = "Remove build artifacts"
 run = [
-    "cargo clean",
-    "rm -rf brain/.venv brain/.pytest_cache brain/.ruff_cache brain/.venv",
+  "cargo clean",
+  "rm -rf brain/.venv brain/.pytest_cache brain/.ruff_cache brain/.venv",
 ]

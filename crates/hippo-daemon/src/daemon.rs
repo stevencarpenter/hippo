@@ -203,6 +203,7 @@ pub async fn flush_events(state: &Arc<DaemonState>) {
                     None
                 });
 
+            let eid = envelope.envelope_id.to_string();
             if let Err(e) = storage::insert_event_at(
                 &db,
                 session_id,
@@ -210,6 +211,7 @@ pub async fn flush_events(state: &Arc<DaemonState>) {
                 envelope.timestamp.timestamp_millis(),
                 redacted_event.redaction_count,
                 env_snapshot_id,
+                Some(&eid),
             ) {
                 warn!("event insert failed, falling back: {}", e);
                 if let Err(fe) =

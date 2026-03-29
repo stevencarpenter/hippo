@@ -18,4 +18,3 @@ tab_space_size = 4
 templater = None
 
 # These settings aim to keep CREATE TABLE definitions compact and aligned
-

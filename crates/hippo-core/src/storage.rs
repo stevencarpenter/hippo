@@ -20,8 +20,17 @@ pub fn open_db(path: &Path) -> Result<Connection> {
          PRAGMA busy_timeout=5000;",
     )?;
     let version: i64 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
-    const EXPECTED_VERSION: i64 = 1;
-    if version != 0 && version != EXPECTED_VERSION {
+    const EXPECTED_VERSION: i64 = 2;
+
+    // Migrate from v1 → v2: add envelope_id column for dedup
+    if version == 1 {
+        conn.execute_batch(
+            "ALTER TABLE events ADD COLUMN envelope_id TEXT;
+             CREATE UNIQUE INDEX IF NOT EXISTS idx_events_envelope_id
+                 ON events (envelope_id) WHERE envelope_id IS NOT NULL;
+             PRAGMA user_version = 2;",
+        )?;
+    } else if version != 0 && version != EXPECTED_VERSION {
         anyhow::bail!(
             "DB schema version mismatch: expected {}, found {}. \
              Please run migrations or delete the database.",
@@ -29,7 +38,10 @@ pub fn open_db(path: &Path) -> Result<Connection> {
             version
         );
     }
-    conn.execute_batch(SCHEMA)?;
+
+    if version == 0 {
+        conn.execute_batch(SCHEMA)?;
+    }
     Ok(conn)
 }
 
@@ -134,6 +146,7 @@ pub fn insert_event(
         Utc::now().timestamp_millis(),
         redaction_count,
         env_snapshot_id,
+        None,
     )
 }
 
@@ -144,6 +157,7 @@ pub fn insert_event_at(
     timestamp: i64,
     redaction_count: u32,
     env_snapshot_id: Option<i64>,
+    envelope_id: Option<&str>,
 ) -> Result<i64> {
     let shell_str = format!("{:?}", event.shell);
     let (git_repo, git_branch, git_commit, git_dirty) = match &event.git_state {
@@ -166,11 +180,11 @@ pub fn insert_event_at(
 
     let tx = conn.unchecked_transaction()?;
 
-    tx.execute(
-        "INSERT INTO events (session_id, timestamp, command, stdout, stderr, stdout_truncated, stderr_truncated,
+    let rows = tx.execute(
+        "INSERT OR IGNORE INTO events (session_id, timestamp, command, stdout, stderr, stdout_truncated, stderr_truncated,
          exit_code, duration_ms, cwd, hostname, shell, git_repo, git_branch, git_commit, git_dirty,
-         env_snapshot_id, redaction_count)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
+         env_snapshot_id, redaction_count, envelope_id)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)",
         rusqlite::params![
             session_id,
             timestamp,
@@ -190,8 +204,14 @@ pub fn insert_event_at(
             git_dirty,
             env_snapshot_id,
             redaction_count,
+            envelope_id,
         ],
     )?;
+    if rows == 0 {
+        // Duplicate envelope_id — skip enrichment queue too
+        tx.commit()?;
+        return Ok(-1);
+    }
     let event_id = tx.last_insert_rowid();
 
     // Auto-queue for enrichment (atomic with event insert — rolls back on failure)
@@ -438,6 +458,7 @@ pub fn recover_fallback_files(
                             &username,
                             session_map,
                         )?;
+                        let eid = envelope.envelope_id.to_string();
                         match insert_event_at(
                             conn,
                             session_id,
@@ -445,6 +466,7 @@ pub fn recover_fallback_files(
                             envelope.timestamp.timestamp_millis(),
                             shell_event.redaction_count,
                             None,
+                            Some(&eid),
                         ) {
                             Ok(_) => recovered += 1,
                             Err(_) => file_errors += 1,
@@ -1139,7 +1161,7 @@ mod tests {
         let v: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 1);
+        assert_eq!(v, 2);
     }
 
     #[test]
@@ -1151,5 +1173,120 @@ mod tests {
             conn.execute_batch("PRAGMA user_version = 99").unwrap();
         }
         assert!(open_db(&db_path).is_err());
+    }
+
+    #[test]
+    fn test_open_db_migrates_v1_to_v2() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("test.db");
+        // Create a v1 database — minimal schema WITHOUT envelope_id
+        {
+            let conn = rusqlite::Connection::open(&db_path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE IF NOT EXISTS sessions (
+                    id INTEGER PRIMARY KEY,
+                    start_time INTEGER NOT NULL,
+                    end_time INTEGER,
+                    terminal TEXT,
+                    shell TEXT NOT NULL,
+                    hostname TEXT NOT NULL,
+                    username TEXT NOT NULL,
+                    summary TEXT,
+                    created_at INTEGER NOT NULL DEFAULT (unixepoch('now','subsec') * 1000)
+                );
+                CREATE TABLE IF NOT EXISTS events (
+                    id INTEGER PRIMARY KEY,
+                    session_id INTEGER NOT NULL REFERENCES sessions(id),
+                    timestamp INTEGER NOT NULL,
+                    command TEXT NOT NULL,
+                    stdout TEXT, stderr TEXT,
+                    stdout_truncated INTEGER DEFAULT 0, stderr_truncated INTEGER DEFAULT 0,
+                    exit_code INTEGER,
+                    duration_ms INTEGER NOT NULL,
+                    cwd TEXT NOT NULL, hostname TEXT NOT NULL, shell TEXT NOT NULL,
+                    git_repo TEXT, git_branch TEXT, git_commit TEXT, git_dirty INTEGER,
+                    env_snapshot_id INTEGER,
+                    enriched INTEGER NOT NULL DEFAULT 0,
+                    redaction_count INTEGER NOT NULL DEFAULT 0,
+                    archived_at INTEGER,
+                    created_at INTEGER NOT NULL DEFAULT (unixepoch('now','subsec') * 1000)
+                );
+                CREATE TABLE IF NOT EXISTS enrichment_queue (
+                    id INTEGER PRIMARY KEY,
+                    event_id INTEGER NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'pending',
+                    priority INTEGER NOT NULL DEFAULT 0,
+                    retries INTEGER NOT NULL DEFAULT 0,
+                    max_retries INTEGER NOT NULL DEFAULT 3,
+                    last_error TEXT,
+                    created_at INTEGER NOT NULL DEFAULT (unixepoch('now','subsec') * 1000),
+                    updated_at INTEGER NOT NULL DEFAULT (unixepoch('now','subsec') * 1000)
+                );
+                PRAGMA user_version = 1;",
+            )
+            .unwrap();
+        }
+        // open_db should migrate to v2
+        let conn = open_db(&db_path).unwrap();
+        let v: i64 = conn
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(v, 2);
+        // Verify envelope_id column exists by inserting with it
+        let sid = upsert_session(&conn, "mig-test", "host", "zsh", "user").unwrap();
+        let eid = insert_event_at(
+            &conn,
+            sid,
+            &sample_shell_event(),
+            0,
+            0,
+            None,
+            Some("test-envelope-id"),
+        )
+        .unwrap();
+        assert!(eid > 0);
+    }
+
+    #[test]
+    fn test_duplicate_envelope_id_is_ignored() {
+        let conn = open_memory().unwrap();
+        let sid = upsert_session(&conn, "dedup-test", "host", "zsh", "user").unwrap();
+
+        let eid1 = insert_event_at(
+            &conn,
+            sid,
+            &sample_shell_event(),
+            1000,
+            0,
+            None,
+            Some("same-envelope"),
+        )
+        .unwrap();
+        assert!(eid1 > 0);
+
+        // Second insert with same envelope_id should be silently ignored
+        let eid2 = insert_event_at(
+            &conn,
+            sid,
+            &sample_shell_event(),
+            2000,
+            0,
+            None,
+            Some("same-envelope"),
+        )
+        .unwrap();
+        assert_eq!(eid2, -1, "duplicate should return -1");
+
+        // Only one event in the table
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM events", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 1);
+
+        // Only one enrichment queue entry
+        let q_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM enrichment_queue", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(q_count, 1);
     }
 }
