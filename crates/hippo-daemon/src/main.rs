@@ -1,14 +1,16 @@
 mod cli;
-mod commands;
-mod daemon;
-mod framing;
 mod install;
+
+use hippo_daemon::{claude_session, commands, daemon};
 
 use std::path::PathBuf;
 
 use anyhow::Result;
 use clap::Parser;
-use cli::{BrainAction, Cli, Commands, ConfigAction, DaemonAction, RedactAction, SendEventSource};
+use cli::{
+    BrainAction, Cli, Commands, ConfigAction, DaemonAction, IngestSource, RedactAction,
+    SendEventSource,
+};
 use hippo_core::config::HippoConfig;
 use tracing_subscriber::EnvFilter;
 
@@ -296,6 +298,63 @@ async fn main() -> Result<()> {
         Commands::Redact { action } => match action {
             RedactAction::Test { input } => {
                 commands::handle_redact_test(&config, &input);
+            }
+        },
+        Commands::Ingest { source } => match source {
+            IngestSource::ClaudeSession {
+                path,
+                batch,
+                inline,
+            } => {
+                let path = std::path::Path::new(&path);
+                if !path.exists() {
+                    eprintln!("File not found: {}", path.display());
+                    std::process::exit(1);
+                }
+                let socket = config.socket_path();
+                let timeout = config.daemon.socket_timeout_ms;
+                if batch {
+                    let (sent, errors) =
+                        claude_session::ingest_batch(path, &socket, timeout).await?;
+                    println!(
+                        "Batch import complete: {} events sent, {} errors",
+                        sent, errors
+                    );
+                } else if !inline && std::env::var("TMUX").is_ok() {
+                    // Spawn tailer in a new tmux window
+                    let hippo_bin =
+                        std::env::current_exe().unwrap_or_else(|_| PathBuf::from("hippo"));
+                    let session_name = path
+                        .file_stem()
+                        .and_then(|s| s.to_str())
+                        .unwrap_or("session");
+                    let short_id = &session_name[..8.min(session_name.len())];
+                    let window_name = format!("hippo:{}", short_id);
+                    let cmd = format!(
+                        "{} ingest claude-session --inline {}",
+                        hippo_bin.display(),
+                        path.display()
+                    );
+                    let status = std::process::Command::new("tmux")
+                        .args(["new-window", "-n", &window_name, &cmd])
+                        .status();
+                    match status {
+                        Ok(s) if s.success() => {
+                            println!(
+                                "Tailing in tmux window '{}' (switch with: tmux select-window -t '{}')",
+                                window_name, window_name
+                            );
+                        }
+                        _ => {
+                            eprintln!("Failed to create tmux window, falling back to inline");
+                            println!("Tailing {} (Ctrl+C to stop)", path.display());
+                            claude_session::ingest_tail(path, &socket, timeout).await?;
+                        }
+                    }
+                } else {
+                    println!("Tailing {} (Ctrl+C to stop)", path.display());
+                    claude_session::ingest_tail(path, &socket, timeout).await?;
+                }
             }
         },
         Commands::Doctor => {

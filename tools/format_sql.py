@@ -1,4 +1,11 @@
-#!/usr/bin/env python3
+#!/usr/bin/env -S uv run --project brain python
+## /// script
+## requires-python = ">=3.14"
+## dependencies = [
+##     "sqlfluff",
+## ]
+## ///
+
 """Format SQL files using sqlparse with sensible defaults for SQLite.
 
 Usage:
@@ -8,41 +15,40 @@ This script is intentionally small and depends on `sqlparse` which should be
 installed in the project's Python environment (add to dev deps).
 """
 import argparse
+import shutil
+import subprocess
 import sys
 from pathlib import Path
 
 try:
-    import sqlparse
-except Exception as e:
-    print("Missing dependency 'sqlparse'. Install it in the brain dev env:")
-    print("  uv run --project brain pip install sqlparse")
-    raise
+    import sqlfluff  # noqa: F401
+except Exception:
+    sqlfluff = None
 
 
-def format_file(path: Path) -> int:
-    text = path.read_text(encoding="utf-8")
-    # Format with reindent and uppercase keywords. Do NOT force line wrapping;
-    # the user said they don't care about long lines.
-    formatted = sqlparse.format(
-        text,
-        reindent=True,
-        keyword_case="upper",
-        identifier_case=None,
-        strip_comments=False,
-        use_space_around_operators=True,
-    )
+def run_sqlfluff_fix(path: Path) -> int:
+    # Prefer using sqlfluff if available on PATH (installed in the project's env)
+    sqlfluff_exe = shutil.which("sqlfluff")
+    if not sqlfluff_exe:
+        return 2
 
-    if formatted != text:
-        path.write_text(formatted, encoding="utf-8")
-        print(f"Formatted: {path}")
-        return 1
-    else:
-        print(f"Unchanged: {path}")
-        return 0
+    # Run `sqlfluff fix --force <file>`; --force overwrites the file
+    cmd = [sqlfluff_exe, "fix", "--dialect", "sqlite", "--force", str(path)]
+    try:
+        proc = subprocess.run(cmd, check=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        if proc.returncode == 0:
+            print(f"sqlfluff fixed: {path}")
+            return 0
+        else:
+            print(f"sqlfluff failed ({proc.returncode}) for {path}: {proc.stderr.strip()}")
+            return 2
+    except Exception as e:
+        print(f"Failed to run sqlfluff: {e}")
+        return 2
 
 
 def main(argv: list[str]) -> int:
-    parser = argparse.ArgumentParser(description="Format SQL files for the project")
+    parser = argparse.ArgumentParser(description="Format SQL files for the project (sqlfluff preferred)")
     parser.add_argument("files", nargs="+", help="SQL files to format")
     args = parser.parse_args(argv[1:])
 
@@ -53,17 +59,14 @@ def main(argv: list[str]) -> int:
             print(f"File not found: {p}")
             exit_code = 2
             continue
-        try:
-            changed = format_file(p)
-            if changed:
-                exit_code = 1
-        except Exception as e:
-            print(f"Failed to format {p}: {e}")
-            exit_code = 2
+
+        # Try sqlfluff first (preferred for consistent team formatting)
+        rc = run_sqlfluff_fix(p)
+        if rc == 0:
+            continue
 
     return exit_code
 
 
 if __name__ == "__main__":
     raise SystemExit(main(sys.argv))
-

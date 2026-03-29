@@ -80,6 +80,11 @@ pub enum Commands {
         #[command(subcommand)]
         action: RedactAction,
     },
+    /// Ingest events from external sources
+    Ingest {
+        #[command(subcommand)]
+        source: IngestSource,
+    },
     /// Run diagnostic checks
     Doctor,
 }
@@ -146,6 +151,21 @@ pub enum ConfigAction {
         key: String,
         /// Config value
         value: String,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum IngestSource {
+    /// Import a Claude Code session JSONL file
+    ClaudeSession {
+        /// Path to the JSONL session file
+        path: String,
+        /// Batch mode: process entire file and exit (default: tail mode)
+        #[arg(long)]
+        batch: bool,
+        /// Run inline instead of spawning a tmux window (used internally)
+        #[arg(long)]
+        inline: bool,
     },
 }
 

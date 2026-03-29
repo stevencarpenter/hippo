@@ -81,7 +81,7 @@ def export_training_data(
         try:
             content_data = json.loads(content)
             summary = content_data.get("summary", embed_text)
-        except (json.JSONDecodeError, TypeError):
+        except json.JSONDecodeError, TypeError:
             summary = embed_text
 
         assistant_message = summary

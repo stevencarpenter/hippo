@@ -2,7 +2,7 @@
 
 ## Current Version
 
-The schema version is tracked via SQLite's `PRAGMA user_version`. The current version is **1**.
+The schema version is tracked via SQLite's `PRAGMA user_version`. The current version is **2**.
 
 Both `hippo-daemon` (Rust) and `hippo-brain` (Python) check the version on every connection. If the version does not match, the process refuses to open the database and exits with an error message.
 
@@ -40,15 +40,22 @@ PRAGMA user_version = 2;
 
 Use `ALTER TABLE` for existing databases. The `CREATE TABLE IF NOT EXISTS` block handles fresh databases. Bump the version.
 
-For a migration from version 1 to version 2:
+The v1→v2 migration (adding `envelope_id` to events) is a working example in `open_db`:
 
-```sql
--- Add a migration step in open_db (Rust) after execute_batch(SCHEMA):
--- if version == 1 {
---     conn.execute_batch("ALTER TABLE events ADD COLUMN new_col TEXT;")?;
---     conn.execute_batch("PRAGMA user_version = 2;")?;
--- }
+```rust
+if version == 1 {
+    conn.execute_batch(
+        "ALTER TABLE events ADD COLUMN envelope_id TEXT;
+         CREATE UNIQUE INDEX IF NOT EXISTS idx_events_envelope_id
+             ON events (envelope_id) WHERE envelope_id IS NOT NULL;
+         PRAGMA user_version = 2;",
+    )?;
+}
 ```
+
+Note: SQLite does not allow `ADD COLUMN ... UNIQUE` — use a separate unique index instead.
+
+For future migrations, add a new `if version == N` block before the version mismatch check.
 
 When the number of migrations grows, move them into a dedicated migration runner.
 
