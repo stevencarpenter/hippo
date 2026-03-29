@@ -156,6 +156,10 @@ async fn main() -> Result<()> {
                 install::install_plist("com.hippo.brain", brain_template, &vars, force)?;
 
                 println!();
+                println!("Symlink binary...");
+                install::symlink_binary(&vars.hippo_bin, force)?;
+
+                println!();
                 println!("Load with:");
                 println!("  launchctl load ~/Library/LaunchAgents/com.hippo.daemon.plist");
                 println!("  launchctl load ~/Library/LaunchAgents/com.hippo.brain.plist");
