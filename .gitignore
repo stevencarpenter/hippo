@@ -47,11 +47,18 @@ brain/.venv/
 # Sensitive or high-churn files
 .idea/**/dataSources/
 .idea/**/dataSources.ids
-.idea/**/dataSources.local.xml
 .idea/**/sqlDataSources.xml
 .idea/**/dynamic.xml
 .idea/**/uiDesigner.xml
 .idea/**/dbnavigator.xml
+
+# Allow committing selected IntelliJ project settings that we want to share
+!.idea/fileWatchers.xml
+!.idea/codeStyles/
+!.idea/codeStyles/Project.xml
+!.idea/inspectionProfiles/
+!.idea/.name
+!.idea/dataSources.local.xml
 
 # Gradle
 .idea/**/gradle.xml
