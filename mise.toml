@@ -187,33 +187,118 @@ run = "cargo run --bin hippo -- entities"
 # ── Service management ───────────────────────────────────────────────
 
 [tasks.install]
-description = "Install the LaunchAgent for the daemon"
-run = "cargo run --bin hippo -- daemon install"
+description = "Full clean-install: stop, build, install, configure, start, verify"
+run = """
+#!/usr/bin/env bash
+set -euo pipefail
+
+DOMAIN="gui/$(id -u)"
+DAEMON_PLIST=~/Library/LaunchAgents/com.hippo.daemon.plist
+BRAIN_PLIST=~/Library/LaunchAgents/com.hippo.brain.plist
+DATA_DIR=~/.local/share/hippo
+CONFIG_DIR=~/.config/hippo
+
+# ── 1. Stop everything ──────────────────────────────────────────────
+echo "==> Stopping services..."
+launchctl bootout "$DOMAIN" "$DAEMON_PLIST" 2>/dev/null && echo "  Unloaded daemon" || true
+launchctl bootout "$DOMAIN" "$BRAIN_PLIST" 2>/dev/null && echo "  Unloaded brain" || true
+pkill -f 'hippo.*(daemon|send-event)' 2>/dev/null || true
+pkill -f 'hippo-brain' 2>/dev/null || true
+
+# ── 2. Clean stale artifacts ────────────────────────────────────────
+echo "==> Cleaning stale artifacts..."
+rm -f "$DATA_DIR/daemon.sock" /tmp/hippo-daemon.sock
+rm -f "$DAEMON_PLIST" "$BRAIN_PLIST"
+rm -f ~/.local/bin/hippo
+rm -f "$DATA_DIR"/*.log
+
+# ── 3. Build release binary ─────────────────────────────────────────
+echo "==> Building release binary..."
+cargo build --release
+
+# ── 4. Sync brain Python deps ───────────────────────────────────────
+echo "==> Syncing brain dependencies..."
+uv sync --project brain
+
+# ── 5. Install plists + symlink ─────────────────────────────────────
+echo "==> Installing LaunchAgents + symlink..."
+cargo run --release --bin hippo -- daemon install --force
+
+# ── 6. Bootstrap config files (preserve existing) ───────────────────
+echo "==> Ensuring config files..."
+mkdir -p "$CONFIG_DIR"
+if [ ! -f "$CONFIG_DIR/config.toml" ]; then
+    cp config/config.default.toml "$CONFIG_DIR/config.toml"
+    echo "  Created $CONFIG_DIR/config.toml"
+else
+    echo "  $CONFIG_DIR/config.toml exists (preserved)"
+fi
+if [ ! -f "$CONFIG_DIR/redact.toml" ]; then
+    cp config/redact.default.toml "$CONFIG_DIR/redact.toml"
+    echo "  Created $CONFIG_DIR/redact.toml"
+else
+    echo "  $CONFIG_DIR/redact.toml exists (preserved)"
+fi
+
+# ── 7. Ensure data dir ──────────────────────────────────────────────
+mkdir -p "$DATA_DIR"
+
+# ── 8. Start services ───────────────────────────────────────────────
+echo "==> Starting services..."
+launchctl bootstrap "$DOMAIN" "$DAEMON_PLIST" && echo "  Loaded daemon" || echo "  Failed to load daemon"
+launchctl bootstrap "$DOMAIN" "$BRAIN_PLIST" && echo "  Loaded brain" || echo "  Failed to load brain"
+
+# ── 9. Verify ────────────────────────────────────────────────────────
+echo "==> Verifying (waiting for daemon to initialize)..."
+sleep 1
+~/.local/bin/hippo doctor || true
+
+echo ""
+echo "=== Install complete ==="
+
+# Check if shell needs reloading for PATH
+if ! command -v hippo &>/dev/null; then
+    echo ""
+    echo "hippo is not on your PATH yet. Run:"
+    echo "  exec zsh"
+fi
+"""
 
 [tasks.start]
-description = "Start the daemon via launchd"
-run = "cargo run --bin hippo -- daemon start"
+description = "Start hippo services via launchd"
+run = """
+#!/usr/bin/env bash
+set -euo pipefail
+DOMAIN="gui/$(id -u)"
+launchctl bootstrap "$DOMAIN" ~/Library/LaunchAgents/com.hippo.daemon.plist 2>/dev/null && echo "Started daemon" || echo "Daemon already loaded (or failed)"
+launchctl bootstrap "$DOMAIN" ~/Library/LaunchAgents/com.hippo.brain.plist 2>/dev/null && echo "Started brain" || echo "Brain already loaded (or failed)"
+"""
 
 [tasks.stop]
-description = "Stop the daemon"
-run = "cargo run --bin hippo -- daemon stop"
+description = "Stop hippo services via launchd"
+run = """
+#!/usr/bin/env bash
+set -euo pipefail
+DOMAIN="gui/$(id -u)"
+launchctl bootout "$DOMAIN" ~/Library/LaunchAgents/com.hippo.daemon.plist 2>/dev/null && echo "Stopped daemon" || echo "Daemon not loaded"
+launchctl bootout "$DOMAIN" ~/Library/LaunchAgents/com.hippo.brain.plist 2>/dev/null && echo "Stopped brain" || echo "Brain not loaded"
+"""
 
 [tasks.restart]
-description = "Restart the daemon"
-run = "cargo run --bin hippo -- daemon restart"
+description = "Restart hippo services"
+depends = ["stop", "start"]
 
 [tasks.nuke]
-description = "Kill all hippo processes immediately (SIGKILL), unload LaunchAgents, remove socket"
+description = "Kill all hippo processes (SIGKILL), unload LaunchAgents, remove socket"
 run = """
 #!/usr/bin/env bash
 set -uo pipefail
 
-echo "Unloading LaunchAgents..."
-launchctl bootout "gui/$(id -u)" ~/Library/LaunchAgents/com.hippo.daemon.plist 2>/dev/null && echo "  Unloaded com.hippo.daemon" || echo "  com.hippo.daemon not loaded"
-launchctl bootout "gui/$(id -u)" ~/Library/LaunchAgents/com.hippo.brain.plist 2>/dev/null && echo "  Unloaded com.hippo.brain" || echo "  com.hippo.brain not loaded"
+DOMAIN="gui/$(id -u)"
 
-echo "Attempting graceful brain shutdown..."
-cargo run --bin hippo -- brain stop 2>/dev/null || true
+echo "Unloading LaunchAgents..."
+launchctl bootout "$DOMAIN" ~/Library/LaunchAgents/com.hippo.daemon.plist 2>/dev/null && echo "  Unloaded com.hippo.daemon" || echo "  com.hippo.daemon not loaded"
+launchctl bootout "$DOMAIN" ~/Library/LaunchAgents/com.hippo.brain.plist 2>/dev/null && echo "  Unloaded com.hippo.brain" || echo "  com.hippo.brain not loaded"
 
 echo "Killing all hippo processes (SIGKILL)..."
 pkill -9 -f 'hippo.*(daemon|send-event)' 2>/dev/null && echo "  Killed daemon processes" || echo "  No daemon processes found"

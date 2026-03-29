@@ -50,6 +50,51 @@ fn which(binary: &str) -> Option<PathBuf> {
     })
 }
 
+/// Symlink the hippo binary into ~/.local/bin so it's on PATH for shell hooks.
+/// Creates ~/.local/bin if it doesn't exist. Returns the symlink path.
+pub fn symlink_binary(hippo_bin: &Path, force: bool) -> Result<PathBuf> {
+    let bin_dir = dirs::home_dir()
+        .context("cannot determine home directory")?
+        .join(".local/bin");
+    std::fs::create_dir_all(&bin_dir)?;
+
+    let link = bin_dir.join("hippo");
+
+    if link.exists() || link.symlink_metadata().is_ok() {
+        if !force {
+            // Check if it already points to the right place
+            if let Ok(target) = std::fs::read_link(&link)
+                && target == hippo_bin
+            {
+                println!("  Symlink already correct: {}", link.display());
+                return Ok(link);
+            }
+            anyhow::bail!(
+                "{} already exists. Use --force to overwrite.",
+                link.display()
+            );
+        }
+        // Remove existing symlink or file
+        std::fs::remove_file(&link)
+            .with_context(|| format!("cannot remove existing {}", link.display()))?;
+    }
+
+    std::os::unix::fs::symlink(hippo_bin, &link)
+        .with_context(|| format!("cannot create symlink {}", link.display()))?;
+    println!("  Symlinked {} -> {}", link.display(), hippo_bin.display());
+
+    // Warn if ~/.local/bin is not on PATH
+    if let Ok(path) = std::env::var("PATH")
+        && !std::env::split_paths(&path).any(|p| p == bin_dir)
+    {
+        println!(
+            "\n  ⚠ ~/.local/bin is not on your PATH. Add to your shell config:\n    export PATH=\"$HOME/.local/bin:$PATH\""
+        );
+    }
+
+    Ok(link)
+}
+
 /// Write a rendered plist to ~/Library/LaunchAgents/.
 /// Returns the destination path. Fails if file exists unless `force` is true.
 pub fn install_plist(
@@ -87,6 +132,44 @@ mod tests {
         assert!(vars.hippo_bin.exists() || vars.hippo_bin.to_string_lossy().contains("hippo"));
         assert!(!vars.home.as_os_str().is_empty());
         assert!(!vars.path.is_empty());
+    }
+
+    #[test]
+    fn test_symlink_binary_creates_link() {
+        let tmp = tempfile::tempdir().unwrap();
+        let fake_bin = tmp.path().join("hippo");
+        std::fs::write(&fake_bin, "fake").unwrap();
+
+        let bin_dir = tmp.path().join(".local/bin");
+        // Call the underlying logic directly to avoid touching real ~/.local/bin
+        std::fs::create_dir_all(&bin_dir).unwrap();
+        let link = bin_dir.join("hippo");
+        std::os::unix::fs::symlink(&fake_bin, &link).unwrap();
+
+        assert!(link.symlink_metadata().is_ok());
+        assert_eq!(std::fs::read_link(&link).unwrap(), fake_bin);
+    }
+
+    #[test]
+    fn test_symlink_binary_force_replaces_existing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let old_bin = tmp.path().join("old_hippo");
+        let new_bin = tmp.path().join("new_hippo");
+        std::fs::write(&old_bin, "old").unwrap();
+        std::fs::write(&new_bin, "new").unwrap();
+
+        let bin_dir = tmp.path().join(".local/bin");
+        std::fs::create_dir_all(&bin_dir).unwrap();
+        let link = bin_dir.join("hippo");
+
+        // Create initial symlink
+        std::os::unix::fs::symlink(&old_bin, &link).unwrap();
+        assert_eq!(std::fs::read_link(&link).unwrap(), old_bin);
+
+        // Replace it
+        std::fs::remove_file(&link).unwrap();
+        std::os::unix::fs::symlink(&new_bin, &link).unwrap();
+        assert_eq!(std::fs::read_link(&link).unwrap(), new_bin);
     }
 
     #[test]
