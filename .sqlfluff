@@ -1,0 +1,21 @@
+[sqlfluff]
+# Use SQLite dialect for formatting and linting
+dialect = sqlite
+
+# Keep line length high so sqlfluff doesn't aggressively wrap DDL lines
+max_line_length = 2000
+
+# Control rules: prefer uppercase keywords and do not force wrapping of long lists
+# We exclude a couple of wrapping/line-break rules that are known to be aggressive
+exclude_rules = L014,L010
+
+[sqlfluff:formatting]
+# Prefer spaces and 4-space indent units
+indent_unit = space
+tab_space_size = 4
+
+[sqlfluff:templater]
+templater = None
+
+# These settings aim to keep CREATE TABLE definitions compact and aligned
+
