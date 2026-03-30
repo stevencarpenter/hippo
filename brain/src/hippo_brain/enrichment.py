@@ -7,25 +7,30 @@ from hippo_brain.models import EnrichmentResult, validate_enrichment_data
 
 STALE_LOCK_TIMEOUT_MS = 5 * 60 * 1000
 
-SYSTEM_PROMPT = """You are a developer activity analyst. You receive shell command events and produce structured enrichment data.
+SYSTEM_PROMPT = """You are a developer activity analyst. You receive a sequence of shell command events from a single work session and produce structured enrichment data.
 
 Events are labeled with who executed them: "developer (human)" for commands the user typed,
 or "Claude Code (AI agent)" for commands executed by an AI coding assistant. Reflect this
 distinction in your summary — attribute actions to the correct actor.
 
-For each batch of events, output a JSON object with these fields:
-- summary: A concise description of what the developer was doing
+IMPORTANT: Be specific. Use actual file names, function names, error messages, and outcomes from the event data. Generic descriptions like "edited a Rust file" are unacceptable. Instead say "added build.rs to hippo-daemon that embeds git metadata via cargo:rustc-env".
+
+The embed_text field should read like a developer's work log entry — specific enough that searching for "embedding model configuration" or "clippy warning fix" would find it.
+
+Output a JSON object with these fields:
+- summary: Specific description of what was accomplished (not what tools were used)
 - intent: The developer's goal (e.g., "testing", "debugging", "deploying", "refactoring")
 - outcome: One of "success", "partial", "failure", "unknown"
+- key_decisions: List of decisions made and why (e.g., "Chose build.rs over vergen crate for zero dependencies")
+- problems_encountered: List of errors/failures and how they were resolved
 - entities: An object with lists of extracted entities:
   - projects: Project names mentioned or inferred
   - tools: CLI tools used (cargo, npm, git, docker, etc.)
-  - files: Specific files referenced
+  - files: Specific files referenced (use actual paths from the events)
   - services: Services interacted with (databases, APIs, etc.)
-  - errors: Error types or messages encountered
-- relationships: A list of {from, to, relationship} objects describing entity relationships
-- tags: A list of descriptive tags
-- embed_text: A natural language summary optimized for semantic search
+  - errors: Actual error messages encountered (not generic descriptions)
+- tags: Descriptive, specific tags (not "success" or "editing")
+- embed_text: A detailed paragraph a developer would write in a work log. Specific file names, error messages, and outcomes. Optimized for semantic search.
 
 Output ONLY valid JSON, no markdown fences or extra text."""
 
@@ -52,6 +57,10 @@ def build_enrichment_prompt(events: list[dict]) -> str:
             parts.append(f"  git_commit: {ev['git_commit']}")
         if ev.get("git_repo"):
             parts.append(f"  git_repo: {ev['git_repo']}")
+        if ev.get("stdout"):
+            parts.append(f"  stdout:\n{ev['stdout']}")
+        if ev.get("stderr"):
+            parts.append(f"  stderr:\n{ev['stderr']}")
         lines.append("\n".join(parts))
     return "\n\n".join(lines)
 
@@ -137,6 +146,120 @@ def claim_pending_events(conn, batch_size: int, worker_id: str) -> list[dict]:
     return events
 
 
+def claim_pending_events_by_session(
+    conn, max_per_chunk: int, worker_id: str, stale_secs: int = 120
+) -> list[list[dict]]:
+    """Claim pending events grouped by session. Returns list of event chunks.
+
+    Only processes sessions where the last event is older than stale_secs.
+    Long sessions are split into chunks at time gaps > 60s or at max_per_chunk.
+    """
+    now_ms = int(time.time() * 1000)
+    stale_threshold_ms = now_ms - (stale_secs * 1000)
+    stale_lock_ms = now_ms - STALE_LOCK_TIMEOUT_MS
+
+    cursor = conn.execute(
+        """
+        SELECT e.session_id, COUNT(*) as cnt
+        FROM enrichment_queue eq
+        JOIN events e ON eq.event_id = e.id
+        WHERE eq.status = 'pending'
+           OR (eq.status = 'processing' AND COALESCE(eq.locked_at, 0) <= ?)
+        GROUP BY e.session_id
+        HAVING MAX(e.timestamp) < ?
+        ORDER BY MIN(e.timestamp) ASC
+        """,
+        (stale_lock_ms, stale_threshold_ms),
+    )
+    sessions = cursor.fetchall()
+
+    all_chunks = []
+    for session_id, _ in sessions:
+        cursor = conn.execute(
+            """
+            UPDATE enrichment_queue
+            SET status = 'processing', locked_at = ?, locked_by = ?, updated_at = ?
+            WHERE id IN (
+                SELECT eq.id FROM enrichment_queue eq
+                JOIN events e ON eq.event_id = e.id
+                WHERE e.session_id = ?
+                  AND (eq.status = 'pending'
+                       OR (eq.status = 'processing' AND COALESCE(eq.locked_at, 0) <= ?))
+            )
+            RETURNING event_id
+            """,
+            (now_ms, worker_id, now_ms, session_id, stale_lock_ms),
+        )
+        event_ids = [row[0] for row in cursor.fetchall()]
+        conn.commit()
+
+        if not event_ids:
+            continue
+
+        placeholders = ",".join("?" * len(event_ids))
+        cursor = conn.execute(
+            f"""
+            SELECT id, session_id, timestamp, command, exit_code, duration_ms,
+                   cwd, hostname, shell, git_repo, git_branch, git_commit, git_dirty,
+                   stdout, stderr
+            FROM events
+            WHERE id IN ({placeholders})
+            ORDER BY timestamp ASC
+            """,
+            event_ids,
+        )
+
+        events = []
+        for row in cursor.fetchall():
+            events.append(
+                {
+                    "id": row[0],
+                    "session_id": row[1],
+                    "timestamp": row[2],
+                    "command": row[3],
+                    "exit_code": row[4],
+                    "duration_ms": row[5],
+                    "cwd": row[6],
+                    "hostname": row[7],
+                    "shell": row[8],
+                    "git_repo": row[9],
+                    "git_branch": row[10],
+                    "git_commit": row[11],
+                    "git_dirty": row[12],
+                    "stdout": row[13],
+                    "stderr": row[14],
+                }
+            )
+
+        chunks = _chunk_events(events, max_per_chunk)
+        all_chunks.extend(chunks)
+
+    return all_chunks
+
+
+def _chunk_events(events: list[dict], max_size: int) -> list[list[dict]]:
+    """Split events into chunks at time gaps > 60s or at max_size."""
+    if len(events) <= max_size:
+        return [events]
+
+    TIME_GAP_MS = 60_000
+    chunks = []
+    current = [events[0]]
+
+    for ev in events[1:]:
+        prev_ts = current[-1]["timestamp"]
+        gap = ev["timestamp"] - prev_ts
+        if gap > TIME_GAP_MS or len(current) >= max_size:
+            chunks.append(current)
+            current = [ev]
+        else:
+            current.append(ev)
+
+    if current:
+        chunks.append(current)
+    return chunks
+
+
 def write_knowledge_node(
     conn, result: EnrichmentResult, event_ids: list[int], model_name: str
 ) -> int:
@@ -153,8 +276,9 @@ def write_knowledge_node(
             "intent": result.intent,
             "outcome": result.outcome,
             "entities": result.entities,
-            "relationships": result.relationships,
             "tags": result.tags,
+            "key_decisions": result.key_decisions,
+            "problems_encountered": result.problems_encountered,
         }
     )
     tags_json = json.dumps(result.tags)
@@ -217,28 +341,6 @@ def write_knowledge_node(
                     VALUES (?, ?) ON CONFLICT DO NOTHING
                     """,
                     (node_id, entity_id),
-                )
-
-        # Populate relationships table
-        for rel in result.relationships:
-            from_canonical = rel.get("from", "").lower().strip()
-            to_canonical = rel.get("to", "").lower().strip()
-            relationship = rel.get("relationship", "")
-            if not (from_canonical and to_canonical and relationship):
-                continue
-            from_id = conn.execute(
-                "SELECT id FROM entities WHERE canonical = ?", (from_canonical,)
-            ).fetchone()
-            to_id = conn.execute(
-                "SELECT id FROM entities WHERE canonical = ?", (to_canonical,)
-            ).fetchone()
-            if from_id and to_id:
-                conn.execute(
-                    """INSERT INTO relationships (from_entity_id, to_entity_id, relationship)
-                       VALUES (?, ?, ?)
-                       ON CONFLICT (from_entity_id, to_entity_id, relationship)
-                       DO UPDATE SET evidence_count = evidence_count + 1, last_seen = ?""",
-                    (from_id[0], to_id[0], relationship, int(time.time() * 1000)),
                 )
 
         # Mark events as enriched

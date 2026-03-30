@@ -47,7 +47,8 @@ def test_main_serve_dispatches(monkeypatch):
                     "enrichment_model": "",
                     "embedding_model": "",
                     "poll_interval_secs": 5,
-                    "enrichment_batch_size": 10,
+                    "max_events_per_chunk": 10,
+                    "session_stale_secs": 120,
                     "port": 9175,
                 },
             ):
@@ -61,6 +62,7 @@ def test_main_serve_dispatches(monkeypatch):
         embedding_model="",
         poll_interval_secs=5,
         enrichment_batch_size=10,
+        session_stale_secs=120,
     )
     mock_uvicorn.run.assert_called_once_with("fake-app", host="127.0.0.1", port=9175)
 
@@ -78,7 +80,8 @@ def test_main_serve_uses_config_runtime_settings(monkeypatch):
         "enrichment_model": "local-model",
         "embedding_model": "local-embed",
         "poll_interval_secs": 9,
-        "enrichment_batch_size": 3,
+        "max_events_per_chunk": 3,
+        "session_stale_secs": 60,
         "port": 9444,
     }
 
@@ -95,6 +98,7 @@ def test_main_serve_uses_config_runtime_settings(monkeypatch):
         embedding_model="local-embed",
         poll_interval_secs=9,
         enrichment_batch_size=3,
+        session_stale_secs=60,
     )
     mock_uvicorn.run.assert_called_once_with("fake-app", host="127.0.0.1", port=9444)
 
