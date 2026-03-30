@@ -440,6 +440,10 @@ echo "==> Restart brain to begin re-enrichment:"
 echo "  mise run start"
 """
 
+[tasks.monitor]
+description = "Live enrichment pipeline monitor (refreshes every 5s)"
+run = "scripts/hippo-monitor.sh ${1:-5}"
+
 # ── Clean ────────────────────────────────────────────────────────────
 
 [tasks.clean]
