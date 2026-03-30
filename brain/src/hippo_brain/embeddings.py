@@ -19,10 +19,11 @@ KNOWLEDGE_SCHEMA = pa.schema(
         pa.field("entities_json", pa.string()),
         pa.field("embed_text", pa.string()),
         pa.field("summary", pa.string()),
+        pa.field("key_decisions", pa.string()),
+        pa.field("problems_encountered", pa.string()),
         pa.field("vec_knowledge", pa.list_(pa.float32(), EMBED_DIM)),
         pa.field("vec_command", pa.list_(pa.float32(), EMBED_DIM)),
         pa.field("enrichment_model", pa.string()),
-        pa.field("enrichment_version", pa.int32()),
     ]
 )
 
@@ -84,10 +85,11 @@ async def embed_knowledge_node(
         "entities_json": json.dumps(node_dict.get("entities", {})),
         "embed_text": embed_text,
         "summary": node_dict.get("summary", ""),
+        "key_decisions": json.dumps(node_dict.get("key_decisions", [])),
+        "problems_encountered": json.dumps(node_dict.get("problems_encountered", [])),
         "vec_knowledge": vec_knowledge,
         "vec_command": vec_command,
         "enrichment_model": node_dict.get("enrichment_model", ""),
-        "enrichment_version": node_dict.get("enrichment_version", 1),
     }
 
     table.add([row])
