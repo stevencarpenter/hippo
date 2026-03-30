@@ -410,6 +410,36 @@ asyncio.run(main())
 " "$1"
 """
 
+[tasks.re-enrich]
+description = "Nuke vectors and knowledge nodes, re-queue all events for enrichment"
+run = """
+#!/usr/bin/env bash
+set -euo pipefail
+
+DATA_DIR=~/.local/share/hippo
+DB="$DATA_DIR/hippo.db"
+
+echo "==> Stopping brain..."
+pkill -f 'hippo-brain' 2>/dev/null && sleep 1 || true
+
+echo "==> Deleting vector store..."
+rm -rf "$DATA_DIR/vectors"
+echo "  Removed $DATA_DIR/vectors/"
+
+echo "==> Resetting knowledge nodes and enrichment queue..."
+sqlite3 "$DB" 'DELETE FROM knowledge_node_events'
+sqlite3 "$DB" 'DELETE FROM knowledge_node_entities'
+sqlite3 "$DB" 'DELETE FROM knowledge_nodes'
+sqlite3 "$DB" "UPDATE enrichment_queue SET status = 'pending', retry_count = 0, error_message = NULL, locked_at = NULL, locked_by = NULL WHERE status IN ('done', 'failed', 'processing')"
+
+PENDING=$(sqlite3 "$DB" "SELECT COUNT(*) FROM enrichment_queue WHERE status = 'pending'")
+echo "  Re-enrichment queued: $PENDING events pending"
+
+echo ""
+echo "==> Restart brain to begin re-enrichment:"
+echo "  mise run start"
+"""
+
 # ── Clean ────────────────────────────────────────────────────────────
 
 [tasks.clean]
