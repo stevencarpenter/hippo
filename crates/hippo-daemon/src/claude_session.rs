@@ -8,6 +8,7 @@ use chrono::{DateTime, Utc};
 use hippo_core::events::{
     CapturedOutput, EventEnvelope, EventPayload, GitState, ShellEvent, ShellKind,
 };
+use tracing::{error, info, warn};
 use uuid::Uuid;
 
 use crate::commands::send_event_fire_and_forget;
@@ -329,7 +330,7 @@ pub async fn ingest_batch(
         let line = match line_result {
             Ok(l) => l,
             Err(e) => {
-                eprintln!("Warning: failed to read line {}: {}", line_num, e);
+                warn!(line_num, %e, "failed to read line");
                 errors += 1;
                 continue;
             }
@@ -338,7 +339,7 @@ pub async fn ingest_batch(
         let envelopes = match process_line(&line, &mut pending, &hostname) {
             Ok(envs) => envs,
             Err(e) => {
-                eprintln!("Warning: skipping line {}: {}", line_num, e);
+                warn!(line_num, %e, "skipping line");
                 errors += 1;
                 continue;
             }
@@ -349,11 +350,11 @@ pub async fn ingest_batch(
                 Ok(()) => {
                     sent += 1;
                     if sent.is_multiple_of(50) {
-                        println!("  {} events sent...", sent);
+                        info!(sent, "batch progress");
                     }
                 }
                 Err(e) => {
-                    eprintln!("Warning: failed to send event: {}", e);
+                    error!(%e, "failed to send event");
                     errors += 1;
                 }
             }
@@ -368,11 +369,11 @@ pub async fn ingest_batch(
             Ok(()) => {
                 sent += 1;
                 if sent.is_multiple_of(50) {
-                    println!("  {} events sent...", sent);
+                    info!(sent, "batch progress");
                 }
             }
             Err(e) => {
-                eprintln!("Warning: failed to send orphan event: {}", e);
+                error!(%e, "failed to send orphan event");
                 errors += 1;
             }
         }
@@ -392,6 +393,8 @@ pub async fn ingest_tail(path: &Path, socket_path: &Path, timeout_ms: u64) -> Re
     let hostname = hostname::get()
         .map(|h| h.to_string_lossy().to_string())
         .unwrap_or_else(|_| "unknown".to_string());
+    info!(path = %path.display(), position, "tailing session file");
+
     let mut pending: HashMap<String, PendingToolUse> = HashMap::new();
     let mut total_sent = 0usize;
     let mut total_errors = 0usize;
@@ -402,7 +405,7 @@ pub async fn ingest_tail(path: &Path, socket_path: &Path, timeout_ms: u64) -> Re
     loop {
         tokio::select! {
             _ = tokio::signal::ctrl_c() => {
-                println!("\nShutting down...");
+                info!("shutting down (ctrl+c)");
                 break;
             }
             _ = tokio::time::sleep(Duration::from_secs(1)) => {
@@ -411,7 +414,7 @@ pub async fn ingest_tail(path: &Path, socket_path: &Path, timeout_ms: u64) -> Re
                     // kill(pid, 0) checks if process exists without sending a signal
                     let alive = unsafe { libc::kill(pid as i32, 0) } == 0;
                     if !alive {
-                        println!("Watched process (pid {pid}) exited, draining remaining lines...");
+                        info!(pid, "watched process exited, draining remaining lines");
                         // One final read pass below, then break
                     }
                 }
@@ -420,7 +423,7 @@ pub async fn ingest_tail(path: &Path, socket_path: &Path, timeout_ms: u64) -> Re
                 let mut file = match std::fs::File::open(path) {
                     Ok(f) => f,
                     Err(e) => {
-                        eprintln!("Warning: failed to open file: {}", e);
+                        warn!(%e, "failed to open file");
                         continue;
                     }
                 };
@@ -428,20 +431,20 @@ pub async fn ingest_tail(path: &Path, socket_path: &Path, timeout_ms: u64) -> Re
                 let file_len = file.metadata().map(|m| m.len()).unwrap_or(0);
                 if file_len < position {
                     // File was truncated, reset
-                    eprintln!("File truncated, resetting position");
+                    warn!("file truncated, resetting position");
                     position = 0;
                 }
 
                 if file_len == position {
                     if watch_pid.is_some_and(|pid| unsafe { libc::kill(pid as i32, 0) } != 0) {
-                        println!("Drain complete, exiting.");
+                        info!("drain complete, exiting");
                         break;
                     }
                     continue;
                 }
 
                 if let Err(e) = file.seek(SeekFrom::Start(position)) {
-                    eprintln!("Warning: failed to seek: {}", e);
+                    warn!(%e, "failed to seek");
                     continue;
                 }
 
@@ -452,7 +455,7 @@ pub async fn ingest_tail(path: &Path, socket_path: &Path, timeout_ms: u64) -> Re
                     let line = match line_result {
                         Ok(l) => l,
                         Err(e) => {
-                            eprintln!("Warning: failed to read line: {}", e);
+                            warn!(%e, "failed to read line");
                             total_errors += 1;
                             break;
                         }
@@ -461,7 +464,7 @@ pub async fn ingest_tail(path: &Path, socket_path: &Path, timeout_ms: u64) -> Re
                     let envelopes = match process_line(&line, &mut pending, &hostname) {
                         Ok(envs) => envs,
                         Err(e) => {
-                            eprintln!("Warning: skipping line: {}", e);
+                            warn!(%e, "skipping line");
                             total_errors += 1;
                             continue;
                         }
@@ -474,7 +477,7 @@ pub async fn ingest_tail(path: &Path, socket_path: &Path, timeout_ms: u64) -> Re
                                 batch_sent += 1;
                             }
                             Err(e) => {
-                                eprintln!("Warning: failed to send event: {}", e);
+                                error!(%e, "failed to send event");
                                 total_errors += 1;
                             }
                         }
@@ -486,10 +489,7 @@ pub async fn ingest_tail(path: &Path, socket_path: &Path, timeout_ms: u64) -> Re
                 position = file_len;
 
                 if batch_sent > 0 {
-                    println!(
-                        "Sent {} events (total: {}, errors: {})",
-                        batch_sent, total_sent, total_errors
-                    );
+                    info!(batch_sent, total_sent, total_errors, "sent events");
                 }
             }
         }
@@ -498,23 +498,20 @@ pub async fn ingest_tail(path: &Path, socket_path: &Path, timeout_ms: u64) -> Re
     // Flush any pending tool_uses
     let orphans: Vec<PendingToolUse> = pending.into_values().collect();
     if !orphans.is_empty() {
-        println!("Flushing {} pending tool uses...", orphans.len());
+        info!(count = orphans.len(), "flushing pending tool uses");
         for orphan in orphans {
             let envelope = build_envelope(&orphan, None, false, None, &hostname);
             match send_event_fire_and_forget(socket_path, &envelope, timeout_ms).await {
                 Ok(()) => total_sent += 1,
                 Err(e) => {
-                    eprintln!("Warning: failed to send orphan event: {}", e);
+                    error!(%e, "failed to send orphan event");
                     total_errors += 1;
                 }
             }
         }
     }
 
-    println!(
-        "Summary: {} events sent, {} errors",
-        total_sent, total_errors
-    );
+    info!(total_sent, total_errors, "session tail complete");
 
     Ok(())
 }
