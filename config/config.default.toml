@@ -2,7 +2,8 @@
 base_url = "http://localhost:1234/v1"
 
 [models]
-enrichment = "qwen/qwen3.5-35b-a3b"
+enrichment = "qwen/qwen3.5-35b-a3b"                    # Daily enrichment (fast MoE)
+enrichment_bulk = ""                                    # Bulk re-enrichment (strongest available, e.g. gpt-oss-120b-mlx-crack)
 query = "qwen/qwen3.5-35b-a3b"
 embedding = "text-embedding-nomic-embed-text-v2-moe"
 
