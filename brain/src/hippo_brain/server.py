@@ -1,5 +1,4 @@
 import asyncio
-import json
 import logging
 import sqlite3
 import time
@@ -256,9 +255,10 @@ class BrainServer:
                                         messages=messages,
                                         model=self.enrichment_model,
                                     )
+                                    logger.debug("LLM raw response (%d chars): %s", len(raw or ""), repr(raw)[:200])
                                     result = parse_enrichment_response(raw)
                                     break
-                                except (json.JSONDecodeError, ValueError) as e:
+                                except Exception as e:
                                     last_err = e
                                     logger.warning(
                                         "enrichment parse attempt %d failed: %s",

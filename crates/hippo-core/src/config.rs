@@ -39,6 +39,8 @@ pub struct ModelsConfig {
     #[serde(default)]
     pub enrichment: String,
     #[serde(default)]
+    pub enrichment_bulk: String,
+    #[serde(default)]
     pub query: String,
     #[serde(default)]
     pub embedding: String,
