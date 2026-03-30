@@ -9,6 +9,7 @@ import pytest
 from starlette.testclient import TestClient
 
 from hippo_brain.server import BrainServer, create_app
+from hippo_brain.version import get_version
 
 
 def _make_server(db_path: str) -> BrainServer:
@@ -80,6 +81,8 @@ def test_health_endpoint(tmp_db):
     assert resp.status_code == 200
     data = resp.json()
     assert data["status"] == "ok"
+    assert "version" in data
+    assert data["version"] == get_version()
     assert "lmstudio_reachable" in data
     assert "enrichment_running" in data
     assert "db_reachable" in data
