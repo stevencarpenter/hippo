@@ -1,7 +1,9 @@
 use anyhow::Result;
 use chrono::Utc;
 use hippo_core::config::{ENV_ALLOWLIST, HippoConfig};
-use hippo_core::events::{EventEnvelope, EventPayload, GitState, ShellEvent, ShellKind};
+use hippo_core::events::{
+    CapturedOutput, EventEnvelope, EventPayload, GitState, ShellEvent, ShellKind,
+};
 use hippo_core::protocol::{DaemonRequest, DaemonResponse};
 use hippo_core::redaction::RedactionEngine;
 use hippo_core::storage;
@@ -257,6 +259,7 @@ pub async fn handle_send_event_shell(
     git_branch: Option<String>,
     git_commit: Option<String>,
     git_dirty: bool,
+    output: Option<String>,
 ) -> Result<()> {
     let session_id = std::env::var("HIPPO_SESSION_ID")
         .ok()
@@ -290,7 +293,11 @@ pub async fn handle_send_event_shell(
         cwd: PathBuf::from(cwd),
         hostname,
         shell: ShellKind::Zsh,
-        stdout: None,
+        stdout: output.as_ref().map(|o| CapturedOutput {
+            content: o.clone(),
+            truncated: false,
+            original_bytes: o.len(),
+        }),
         stderr: None,
         env_snapshot,
         git_state,
@@ -604,6 +611,7 @@ mod tests {
             Some("main".to_string()),
             None,
             false,
+            None,
         )
         .await
         .unwrap();
@@ -653,6 +661,7 @@ replacement = "***"
             None,
             None,
             false,
+            None,
         )
         .await
         .unwrap();

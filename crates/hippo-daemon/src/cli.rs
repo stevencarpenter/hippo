@@ -138,6 +138,9 @@ pub enum SendEventSource {
         /// Git dirty flag
         #[arg(long)]
         git_dirty: bool,
+        /// Captured stdout+stderr (truncated)
+        #[arg(long)]
+        output: Option<String>,
     },
 }
 
