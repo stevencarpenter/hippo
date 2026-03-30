@@ -35,6 +35,8 @@ def _load_runtime_settings() -> dict:
         "embedding_model": models.get("embedding", ""),
         "poll_interval_secs": brain.get("poll_interval_secs", 5),
         "enrichment_batch_size": brain.get("enrichment_batch_size", 10),
+        "max_events_per_chunk": brain.get("max_events_per_chunk", brain.get("enrichment_batch_size", 10)),
+        "session_stale_secs": brain.get("session_stale_secs", 120),
         "port": brain.get("port", 9175),
     }
 
@@ -59,7 +61,8 @@ def main() -> None:
             enrichment_model=settings["enrichment_model"],
             embedding_model=settings["embedding_model"],
             poll_interval_secs=settings["poll_interval_secs"],
-            enrichment_batch_size=settings["enrichment_batch_size"],
+            enrichment_batch_size=settings["max_events_per_chunk"],
+            session_stale_secs=settings["session_stale_secs"],
         )
         uvicorn.run(app, host="127.0.0.1", port=settings["port"])
     elif command == "enrich":

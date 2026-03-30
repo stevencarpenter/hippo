@@ -52,6 +52,10 @@ pub struct DaemonConfig {
     pub flush_batch_size: usize,
     #[serde(default = "default_socket_timeout_ms")]
     pub socket_timeout_ms: u64,
+    #[serde(default = "default_output_head_lines")]
+    pub output_head_lines: usize,
+    #[serde(default = "default_output_tail_lines")]
+    pub output_tail_lines: usize,
 }
 
 fn default_flush_interval_ms() -> u64 {
@@ -63,6 +67,12 @@ fn default_flush_batch_size() -> usize {
 fn default_socket_timeout_ms() -> u64 {
     100
 }
+fn default_output_head_lines() -> usize {
+    50
+}
+fn default_output_tail_lines() -> usize {
+    100
+}
 
 impl Default for DaemonConfig {
     fn default() -> Self {
@@ -70,6 +80,8 @@ impl Default for DaemonConfig {
             flush_interval_ms: default_flush_interval_ms(),
             flush_batch_size: default_flush_batch_size(),
             socket_timeout_ms: default_socket_timeout_ms(),
+            output_head_lines: default_output_head_lines(),
+            output_tail_lines: default_output_tail_lines(),
         }
     }
 }
@@ -84,6 +96,10 @@ pub struct BrainConfig {
     pub enrichment_batch_size: usize,
     #[serde(default = "default_max_queue_depth")]
     pub max_queue_depth: usize,
+    #[serde(default = "default_max_events_per_chunk")]
+    pub max_events_per_chunk: usize,
+    #[serde(default = "default_session_stale_secs")]
+    pub session_stale_secs: u64,
 }
 
 fn default_brain_port() -> u16 {
@@ -98,6 +114,12 @@ fn default_enrichment_batch_size() -> usize {
 fn default_max_queue_depth() -> usize {
     100
 }
+fn default_max_events_per_chunk() -> usize {
+    30
+}
+fn default_session_stale_secs() -> u64 {
+    120
+}
 
 impl Default for BrainConfig {
     fn default() -> Self {
@@ -106,6 +128,8 @@ impl Default for BrainConfig {
             poll_interval_secs: default_poll_interval_secs(),
             enrichment_batch_size: default_enrichment_batch_size(),
             max_queue_depth: default_max_queue_depth(),
+            max_events_per_chunk: default_max_events_per_chunk(),
+            session_stale_secs: default_session_stale_secs(),
         }
     }
 }

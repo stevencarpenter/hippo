@@ -1,22 +1,26 @@
 [lmstudio]
-base_url = "http://localhost:1234/v1"  # LM Studio local server
+base_url = "http://localhost:1234/v1"
 
 [models]
-enrichment = "nvidia/nemotron-3-nano-4b"  # Model name for knowledge enrichment (required for brain)
-query = "nvidia/nemotron-3-nano-4b"       # Model name for natural language queries (optional)
-embedding = "nvidia/nemotron-3-nano-4b"   # Model name for vector embeddings (optional)
+enrichment = "qwen/qwen3.5-35b-a3b"
+query = "qwen/qwen3.5-35b-a3b"
+embedding = "text-embedding-nomic-embed-text-v2-moe"
 
 [daemon]
-flush_interval_ms = 100    # Write buffer flush interval (ms)
-flush_batch_size = 50      # Max events per flush
-socket_timeout_ms = 100    # CLI-to-daemon socket timeout (ms)
+flush_interval_ms = 100
+flush_batch_size = 50
+socket_timeout_ms = 100
+output_head_lines = 50
+output_tail_lines = 100
 
 [brain]
-port = 9175                # Brain query server HTTP port
-poll_interval_secs = 5     # Enrichment queue poll interval
-enrichment_batch_size = 10 # Events per enrichment batch
-max_queue_depth = 100      # Max pending enrichment items
+port = 9175
+poll_interval_secs = 5
+enrichment_batch_size = 10
+max_events_per_chunk = 30
+max_queue_depth = 100
+session_stale_secs = 120
 
 [storage]
-# data_dir = "~/.local/share/hippo"    # Override data directory
-# config_dir = "~/.config/hippo"       # Override config directory
+# data_dir = "~/.local/share/hippo"
+# config_dir = "~/.config/hippo"
