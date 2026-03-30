@@ -2,8 +2,8 @@
 rust = "1.93"
 
 [env]
-HIPPO_DATA_DIR = "~/.local/share/hippo"
-HIPPO_CONFIG_DIR = "~/.config/hippo"
+# Paths are resolved via XDG defaults in the Rust config module.
+# Set XDG_DATA_HOME or XDG_CONFIG_HOME to override.
 
 # ── Build ────────────────────────────────────────────────────────────
 
@@ -286,7 +286,7 @@ launchctl bootout "$DOMAIN" ~/Library/LaunchAgents/com.hippo.brain.plist 2>/dev/
 
 [tasks.restart]
 description = "Restart hippo services"
-depends = ["stop", "start"]
+run = "mise run stop && mise run start"
 
 [tasks.nuke]
 description = "Kill all hippo processes (SIGKILL), unload LaunchAgents, remove socket"
@@ -322,11 +322,55 @@ run = "cargo run --bin hippo -- export-training --since 30d --out ."
 description = "Test a string against redaction patterns"
 run = "cargo run --bin hippo -- redact test \"$1\""
 
+# ── Vector Store ─────────────────────────────────────────────────────
+
+[tasks.vectors]
+description = "Show vector store contents and stats"
+run = """
+uv run --project brain python -c "
+from hippo_brain.embeddings import open_vector_db, get_or_create_table, EMBED_DIM
+table = get_or_create_table(open_vector_db('$HOME/.local/share/hippo'))
+t = table.to_arrow()
+print(f'Vector store: {t.num_rows} rows, {EMBED_DIM}d embeddings')
+print()
+for i in range(t.num_rows):
+    sid = t.column('session_id')[i].as_py()
+    s = str(t.column('summary')[i])[:100]
+    o = t.column('outcome')[i]
+    tags = t.column('tags')[i]
+    print(f'  [{o}] {s}')
+    print(f'         tags={tags}')
+"
+"""
+
+[tasks."vectors:search"]
+description = "Semantic search over the vector store"
+run = """
+#!/usr/bin/env bash
+set -euo pipefail
+if [ -z "${1:-}" ]; then echo "Usage: mise run vectors:search <query>"; exit 1; fi
+uv run --project brain python -c "
+import asyncio, sys
+from hippo_brain.embeddings import open_vector_db, get_or_create_table, search_similar
+from hippo_brain.client import LMStudioClient
+async def main():
+    client = LMStudioClient()
+    vecs = await client.embed([sys.argv[1]], model='$(grep "^embedding" ~/.config/hippo/config.toml | cut -d'"' -f2)')
+    table = get_or_create_table(open_vector_db('$HOME/.local/share/hippo'))
+    results = search_similar(table, vecs[0], limit=5)
+    for r in results:
+        d = r.get('_distance', 0)
+        s = str(r.get('summary', ''))[:120]
+        print(f'  [{d:.3f}] {s}')
+asyncio.run(main())
+" "$1"
+"""
+
 # ── Clean ────────────────────────────────────────────────────────────
 
 [tasks.clean]
 description = "Remove build artifacts"
 run = [
   "cargo clean",
-  "rm -rf brain/.venv brain/.pytest_cache brain/.ruff_cache brain/.venv",
+  "rm -rf brain/.venv brain/.pytest_cache brain/.ruff_cache",
 ]

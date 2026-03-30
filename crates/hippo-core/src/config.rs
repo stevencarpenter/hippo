@@ -118,16 +118,23 @@ pub struct StorageConfig {
     pub config_dir: PathBuf,
 }
 
+/// XDG-based data directory. We deliberately use ~/.local/share (not macOS's
+/// ~/Library/Application Support) so all components agree on a single path.
 fn default_data_dir() -> PathBuf {
-    dirs::data_local_dir()
-        .unwrap_or_else(|| PathBuf::from("~/.local/share"))
-        .join("hippo")
+    let base = std::env::var_os("XDG_DATA_HOME")
+        .map(PathBuf::from)
+        .or_else(|| dirs::home_dir().map(|h| h.join(".local/share")))
+        .unwrap_or_else(|| PathBuf::from(".local/share"));
+    base.join("hippo")
 }
 
+/// XDG-based config directory. Same rationale as default_data_dir.
 fn default_config_dir() -> PathBuf {
-    dirs::config_dir()
-        .unwrap_or_else(|| PathBuf::from("~/.config"))
-        .join("hippo")
+    let base = std::env::var_os("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .or_else(|| dirs::home_dir().map(|h| h.join(".config")))
+        .unwrap_or_else(|| PathBuf::from(".config"));
+    base.join("hippo")
 }
 
 impl Default for StorageConfig {

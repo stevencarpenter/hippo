@@ -49,10 +49,14 @@ WINDOW_NAME="hippo:${SHORT_ID}"
 # Spawn the tailer in a detached tmux window.
 # tmux new-window -d returns immediately — the tail loop runs inside the new window,
 # so this hook never blocks Claude Code from launching.
+# Pass Claude's PID so the tailer exits when Claude does.
+# The hook runs as a child of Claude Code, so PPID is the Claude process.
+CLAUDE_PID="$PPID"
+
 if tmux list-sessions &>/dev/null; then
-    tmux new-window -d -n "$WINDOW_NAME" "$HIPPO_BIN ingest claude-session --inline $TRANSCRIPT_PATH"
+    tmux new-window -d -n "$WINDOW_NAME" "HIPPO_WATCH_PID=$CLAUDE_PID $HIPPO_BIN ingest claude-session --inline $TRANSCRIPT_PATH"
 else
     # No tmux server — batch-import what's already in the file and exit.
     # Use setsid to fully detach from the hook's process group.
-    setsid "$HIPPO_BIN" ingest claude-session --batch "$TRANSCRIPT_PATH" &>/dev/null &
+    ("$HIPPO_BIN" ingest claude-session --batch "$TRANSCRIPT_PATH" &>/dev/null &)
 fi

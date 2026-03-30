@@ -22,7 +22,9 @@ async def test_mock_chat(mock_client):
 async def test_mock_embed(mock_client):
     vectors = await mock_client.embed(["test text"], model="embed-model")
     assert len(vectors) == 1
-    assert len(vectors[0]) == 384
+    from hippo_brain.embeddings import EMBED_DIM
+
+    assert len(vectors[0]) == EMBED_DIM
 
     # Check normalized magnitude is ~1.0
     magnitude = math.sqrt(sum(x * x for x in vectors[0]))

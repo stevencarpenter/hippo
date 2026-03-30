@@ -31,7 +31,7 @@ impl RedactionEngine {
         })
     }
 
-    pub fn from_config_path(path: &Path) -> Result<Self, Box<dyn std::error::Error>> {
+    pub fn from_config_path(path: &Path) -> anyhow::Result<Self> {
         let content = std::fs::read_to_string(path)?;
         let config: RedactConfig = toml::from_str(&content)?;
         Ok(Self::new(&config)?)
@@ -42,22 +42,22 @@ impl RedactionEngine {
     }
 
     pub fn redact(&self, input: &str) -> RedactionResult {
-        let matches: Vec<usize> = self.regex_set.matches(input).into_iter().collect();
-        if matches.is_empty() {
-            return RedactionResult {
+        self.regex_set.matches(input).into_iter().fold(
+            RedactionResult {
                 text: input.to_string(),
                 count: 0,
-            };
-        }
-        let mut text = input.to_string();
-        let mut count = 0u32;
-        for &idx in &matches {
-            let (regex, replacement) = &self.patterns[idx];
-            let hits = regex.find_iter(&text).count() as u32;
-            count += hits;
-            text = regex.replace_all(&text, replacement.as_str()).to_string();
-        }
-        RedactionResult { text, count }
+            },
+            |acc, idx| {
+                let (regex, replacement) = &self.patterns[idx];
+                let hits = regex.find_iter(&acc.text).count() as u32;
+                RedactionResult {
+                    text: regex
+                        .replace_all(&acc.text, replacement.as_str())
+                        .to_string(),
+                    count: acc.count + hits,
+                }
+            },
+        )
     }
 
     pub fn test_string(&self, input: &str) -> Vec<String> {

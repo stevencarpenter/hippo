@@ -14,10 +14,29 @@ use cli::{
 use hippo_core::config::HippoConfig;
 use tracing_subscriber::EnvFilter;
 
+async fn poll_socket_removal(socket: &std::path::Path, timeout: std::time::Duration) -> bool {
+    let deadline = tokio::time::Instant::now() + timeout;
+    loop {
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        if !socket.exists() {
+            return true;
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return false;
+        }
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
-    let config = HippoConfig::load_default().unwrap_or_default();
+    let config = match HippoConfig::load_default() {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("Warning: failed to load config: {e:#}. Using defaults.");
+            HippoConfig::default()
+        }
+    };
 
     match cli.command {
         Commands::Daemon { action } => match action {
@@ -31,7 +50,9 @@ async fn main() -> Result<()> {
                 daemon::run(config).await?;
             }
             DaemonAction::Start => {
-                println!("Use: launchctl load ~/Library/LaunchAgents/com.hippo.daemon.plist");
+                println!(
+                    "Use: launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.hippo.daemon.plist"
+                );
             }
             DaemonAction::Stop => {
                 let socket = config.socket_path();
@@ -43,29 +64,19 @@ async fn main() -> Result<()> {
                 {
                     Ok(_) => {
                         print!("Shutdown signal sent. Waiting for daemon to exit");
-                        let deadline =
-                            tokio::time::Instant::now() + std::time::Duration::from_secs(5);
-                        loop {
-                            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-                            if !socket.exists() {
-                                println!(" done.");
-                                break;
-                            }
-                            if tokio::time::Instant::now() >= deadline {
-                                println!(
-                                    " timed out.\nSocket still exists at {}. \
-                                     The daemon may still be shutting down, or you may need: \
-                                     pkill -9 -f 'hippo.*daemon'",
-                                    socket.display()
-                                );
-                                break;
-                            }
-                            print!(".");
-                            use std::io::Write;
-                            std::io::stdout().flush().ok();
+                        if poll_socket_removal(&socket, std::time::Duration::from_secs(5)).await {
+                            println!(" done.");
+                        } else {
+                            println!(
+                                " timed out.\nSocket still exists at {}. \
+                                 The daemon may still be shutting down, or you may need: \
+                                 pkill -9 -f 'hippo.*daemon'",
+                                socket.display()
+                            );
                         }
                     }
-                    Err(_) => {
+                    Err(e) => {
+                        eprintln!("Shutdown request failed: {e:#}");
                         match commands::probe_socket(&socket, config.daemon.socket_timeout_ms).await
                         {
                             commands::SocketProbeResult::Missing => {
@@ -106,20 +117,12 @@ async fn main() -> Result<()> {
                     )
                     .await;
 
-                    // Poll for shutdown (same logic as Stop, shorter timeout)
-                    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(3);
-                    loop {
-                        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-                        if !socket.exists() {
-                            break;
-                        }
-                        if tokio::time::Instant::now() >= deadline {
-                            eprintln!(
-                                "Warning: daemon did not stop within 3s. \
-                                 You may need: pkill -9 -f 'hippo.*daemon'"
-                            );
-                            std::process::exit(1);
-                        }
+                    if !poll_socket_removal(&socket, std::time::Duration::from_secs(3)).await {
+                        eprintln!(
+                            "Warning: daemon did not stop within 3s. \
+                             You may need: pkill -9 -f 'hippo.*daemon'"
+                        );
+                        std::process::exit(1);
                     }
                 }
 
@@ -161,8 +164,12 @@ async fn main() -> Result<()> {
 
                 println!();
                 println!("Load with:");
-                println!("  launchctl load ~/Library/LaunchAgents/com.hippo.daemon.plist");
-                println!("  launchctl load ~/Library/LaunchAgents/com.hippo.brain.plist");
+                println!(
+                    "  launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.hippo.daemon.plist"
+                );
+                println!(
+                    "  launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.hippo.brain.plist"
+                );
             }
         },
         Commands::Brain { action } => match action {
@@ -270,12 +277,11 @@ async fn main() -> Result<()> {
                 _ => eprintln!("Unexpected response"),
             }
         }
-        Commands::ExportTraining { out, since } => {
-            let since_ms = since
-                .as_deref()
-                .and_then(commands::parse_duration_to_since_ms);
-            println!("Export training data to {} (since_ms: {:?})", out, since_ms);
-            println!("Training export requires the brain server. Use: hippo-brain export");
+        Commands::ExportTraining { out: _, since: _ } => {
+            eprintln!(
+                "Training export is not yet implemented. Use: uv run --project brain hippo-brain export"
+            );
+            std::process::exit(1);
         }
         Commands::Config { action } => match action {
             ConfigAction::Edit => {
@@ -296,7 +302,8 @@ async fn main() -> Result<()> {
                 }
             }
             ConfigAction::Set { key, value } => {
-                println!("Setting {} = {} (not yet implemented)", key, value);
+                eprintln!("config set is not yet implemented (key={key}, value={value})");
+                std::process::exit(1);
             }
         },
         Commands::Redact { action } => match action {

@@ -52,6 +52,18 @@ pub enum ShellKind {
     Unknown(String),
 }
 
+impl ShellKind {
+    /// Stable string representation for database storage.
+    pub fn as_db_str(&self) -> &str {
+        match self {
+            Self::Zsh => "zsh",
+            Self::Bash => "bash",
+            Self::Fish => "fish",
+            Self::Unknown(s) => s,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GitState {
     pub repo: Option<String>,

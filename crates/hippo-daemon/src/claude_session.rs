@@ -90,21 +90,14 @@ fn format_tool_command(name: &str, input: &serde_json::Value) -> String {
 /// Extract text content from a tool_result content field.
 /// Content can be either a string or an array of content blocks.
 fn extract_result_content(content: &serde_json::Value) -> Option<String> {
-    if let Some(s) = content.as_str() {
-        return Some(s.to_string());
-    }
-    if let Some(arr) = content.as_array() {
-        let mut parts = Vec::new();
-        for block in arr {
-            if let Some(text) = block.get("text").and_then(|t| t.as_str()) {
-                parts.push(text.to_string());
-            }
-        }
-        if !parts.is_empty() {
-            return Some(parts.join("\n"));
-        }
-    }
-    None
+    content.as_str().map(str::to_string).or_else(|| {
+        let parts: Vec<&str> = content
+            .as_array()?
+            .iter()
+            .filter_map(|b| b.get("text").and_then(|t| t.as_str()))
+            .collect();
+        (!parts.is_empty()).then(|| parts.join("\n"))
+    })
 }
 
 /// Truncate a string to at most `max_bytes` on a char boundary.
@@ -204,18 +197,11 @@ fn process_line(
         _ => return Ok(vec![]),
     }
 
-    // Must have a message field
-    let message = match value.get("message") {
-        Some(m) => m,
-        None => return Ok(vec![]),
-    };
-
-    let content = match message.get("content") {
-        Some(c) => c,
-        None => return Ok(vec![]),
-    };
-
-    let content_array = match content.as_array() {
+    let content_array = match value
+        .get("message")
+        .and_then(|m| m.get("content"))
+        .and_then(|c| c.as_array())
+    {
         Some(arr) => arr,
         None => return Ok(vec![]),
     };
@@ -409,6 +395,9 @@ pub async fn ingest_tail(path: &Path, socket_path: &Path, timeout_ms: u64) -> Re
     let mut pending: HashMap<String, PendingToolUse> = HashMap::new();
     let mut total_sent = 0usize;
     let mut total_errors = 0usize;
+    let watch_pid = std::env::var("HIPPO_WATCH_PID")
+        .ok()
+        .and_then(|s| s.parse::<u32>().ok());
 
     loop {
         tokio::select! {
@@ -417,6 +406,16 @@ pub async fn ingest_tail(path: &Path, socket_path: &Path, timeout_ms: u64) -> Re
                 break;
             }
             _ = tokio::time::sleep(Duration::from_secs(1)) => {
+                // If we're watching a parent process, exit when it dies
+                if let Some(pid) = watch_pid {
+                    // kill(pid, 0) checks if process exists without sending a signal
+                    let alive = unsafe { libc::kill(pid as i32, 0) } == 0;
+                    if !alive {
+                        println!("Watched process (pid {pid}) exited, draining remaining lines...");
+                        // One final read pass below, then break
+                    }
+                }
+
                 // Read new lines from current position
                 let mut file = match std::fs::File::open(path) {
                     Ok(f) => f,
@@ -434,6 +433,10 @@ pub async fn ingest_tail(path: &Path, socket_path: &Path, timeout_ms: u64) -> Re
                 }
 
                 if file_len == position {
+                    if watch_pid.is_some_and(|pid| unsafe { libc::kill(pid as i32, 0) } != 0) {
+                        println!("Drain complete, exiting.");
+                        break;
+                    }
                     continue;
                 }
 

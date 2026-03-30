@@ -51,7 +51,9 @@ async def test_embed_and_search(vector_db, mock_client):
 
     # Search using the same text to get a matching vector
     vecs = await mock_client.embed(["cargo test hippo-core"])
-    query_vec = _pad_or_truncate(vecs[0], 2560)
+    from hippo_brain.embeddings import EMBED_DIM
+
+    query_vec = _pad_or_truncate(vecs[0], EMBED_DIM)
 
     results = search_similar(table, query_vec, column="vec_knowledge", limit=5)
     assert len(results) >= 1

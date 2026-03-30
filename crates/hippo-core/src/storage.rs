@@ -89,7 +89,7 @@ pub fn get_or_create_session(
 }
 
 fn stable_env_json(env: &HashMap<String, String>) -> Result<String> {
-    let ordered: BTreeMap<_, _> = env.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+    let ordered: BTreeMap<&str, &str> = env.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
     Ok(serde_json::to_string(&ordered)?)
 }
 
@@ -103,23 +103,19 @@ pub fn upsert_env_snapshot(
     let env_json = stable_env_json(env)?;
     let mut hasher = Sha256::new();
     hasher.update(env_json.as_bytes());
-    let content_hash = hasher
+    let content_hash: String = hasher
         .finalize()
         .iter()
-        .fold(String::with_capacity(64), |mut s, b| {
-            use std::fmt::Write;
-            write!(s, "{:02x}", b).unwrap();
-            s
-        });
+        .map(|b| format!("{:02x}", b))
+        .collect();
 
-    // Try to find existing
     let existing: Option<i64> = conn
         .query_row(
             "SELECT id FROM env_snapshots WHERE content_hash = ?1",
             [&content_hash],
             |row| row.get(0),
         )
-        .ok();
+        .optional()?;
 
     if let Some(id) = existing {
         return Ok(Some(id));
@@ -159,7 +155,7 @@ pub fn insert_event_at(
     env_snapshot_id: Option<i64>,
     envelope_id: Option<&str>,
 ) -> Result<i64> {
-    let shell_str = format!("{:?}", event.shell);
+    let shell_str = event.shell.as_db_str();
     let (git_repo, git_branch, git_commit, git_dirty) = match &event.git_state {
         Some(gs) => (
             gs.repo.as_deref(),
@@ -255,7 +251,7 @@ pub fn get_sessions(
             summary: row.get(6)?,
         })
     })?;
-    Ok(rows.filter_map(|r| r.ok()).collect())
+    Ok(rows.collect::<Result<Vec<_>, _>>()?)
 }
 
 pub fn get_events(
@@ -303,7 +299,7 @@ pub fn get_events(
             enriched: row.get::<_, i32>(8)? != 0,
         })
     })?;
-    Ok(rows.filter_map(|r| r.ok()).collect())
+    Ok(rows.collect::<Result<Vec<_>, _>>()?)
 }
 
 pub fn get_entities(
@@ -330,7 +326,7 @@ pub fn get_entities(
             last_seen: row.get(5)?,
         })
     })?;
-    Ok(rows.filter_map(|r| r.ok()).collect())
+    Ok(rows.collect::<Result<Vec<_>, _>>()?)
 }
 
 pub fn raw_query(conn: &Connection, text: &str) -> Result<Vec<crate::protocol::QueryHit>> {
@@ -348,7 +344,7 @@ pub fn raw_query(conn: &Connection, text: &str) -> Result<Vec<crate::protocol::Q
             relevance: "keyword".to_string(),
         })
     })?;
-    Ok(rows.filter_map(|r| r.ok()).collect())
+    Ok(rows.collect::<Result<Vec<_>, _>>()?)
 }
 
 pub fn get_status(conn: &Connection) -> Result<crate::protocol::StatusInfo> {

@@ -120,17 +120,7 @@ pub async fn send_event_fire_and_forget(
 }
 
 fn load_redaction_engine(config: &HippoConfig) -> RedactionEngine {
-    match RedactionEngine::from_config_path(&config.redact_path()) {
-        Ok(engine) => engine,
-        Err(err) => {
-            eprintln!(
-                "Warning: failed to load redaction config from {}: {}. Falling back to built-in patterns.",
-                config.redact_path().display(),
-                err
-            );
-            RedactionEngine::builtin()
-        }
-    }
+    crate::load_redaction_engine(config)
 }
 
 fn format_optional_brain_field(label: &str, value: Option<&str>) -> Option<String> {
@@ -181,22 +171,16 @@ async fn print_brain_health_details(config: &HippoConfig) {
                         "[OK] Brain queue depth: {} pending, {} failed",
                         queue_depth, queue_failed
                     );
-                    println!(
-                        "[OK] Brain LM Studio: {}",
-                        if lmstudio_reachable {
-                            "reachable"
-                        } else {
-                            "unreachable"
-                        }
-                    );
-                    println!(
-                        "[OK] Brain DB: {}",
-                        if db_reachable {
-                            "reachable"
-                        } else {
-                            "unreachable"
-                        }
-                    );
+                    if lmstudio_reachable {
+                        println!("[OK] Brain LM Studio: reachable");
+                    } else {
+                        println!("[!!] Brain LM Studio: unreachable");
+                    }
+                    if db_reachable {
+                        println!("[OK] Brain DB: reachable");
+                    } else {
+                        println!("[!!] Brain DB: unreachable");
+                    }
                     println!(
                         "[OK] Brain enrichment loop: {}",
                         if enrichment_running {
@@ -241,25 +225,11 @@ fn redacted_fallback_envelope(
         return envelope.clone();
     };
 
-    let mut redacted_shell = shell.clone();
-    let command = redaction.redact(&redacted_shell.command);
-    redacted_shell.command = command.text;
-    redacted_shell.redaction_count = command.count;
-    redacted_shell.env_snapshot = redacted_shell
-        .env_snapshot
-        .iter()
-        .filter(|(key, _)| ENV_ALLOWLIST.contains(&key.as_str()))
-        .map(|(key, value)| {
-            let redacted = redaction.redact(value);
-            (key.clone(), redacted.text)
-        })
-        .collect();
-
     EventEnvelope {
         envelope_id: envelope.envelope_id,
         producer_version: envelope.producer_version,
         timestamp: envelope.timestamp,
-        payload: EventPayload::Shell(redacted_shell),
+        payload: EventPayload::Shell(crate::redact_shell_event(shell, redaction)),
     }
 }
 

@@ -27,7 +27,8 @@ pub fn detect_vars(brain_dir: &Path) -> Result<PlistVars> {
     let uv_bin = which("uv").unwrap_or_else(|| PathBuf::from("/usr/local/bin/uv"));
     let home = dirs::home_dir().context("cannot determine home directory")?;
     let path = std::env::var("PATH").unwrap_or_default();
-    let data_dir = dirs::data_local_dir()
+    let data_dir = std::env::var_os("XDG_DATA_HOME")
+        .map(PathBuf::from)
         .unwrap_or_else(|| home.join(".local/share"))
         .join("hippo");
 

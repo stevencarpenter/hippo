@@ -80,7 +80,9 @@ class MockLMStudioClient(LMStudioClient):
 
     async def embed(self, texts: list[str], model: str = "") -> list[list[float]]:
         self.embed_calls.append({"texts": texts, "model": model})
-        return [self._deterministic_vector(text, 384) for text in texts]
+        from hippo_brain.embeddings import EMBED_DIM
+
+        return [self._deterministic_vector(text, EMBED_DIM) for text in texts]
 
     async def is_reachable(self) -> bool:
         return True

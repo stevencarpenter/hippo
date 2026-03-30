@@ -9,6 +9,10 @@ STALE_LOCK_TIMEOUT_MS = 5 * 60 * 1000
 
 SYSTEM_PROMPT = """You are a developer activity analyst. You receive shell command events and produce structured enrichment data.
 
+Events are labeled with who executed them: "developer (human)" for commands the user typed,
+or "Claude Code (AI agent)" for commands executed by an AI coding assistant. Reflect this
+distinction in your summary — attribute actions to the correct actor.
+
 For each batch of events, output a JSON object with these fields:
 - summary: A concise description of what the developer was doing
 - intent: The developer's goal (e.g., "testing", "debugging", "deploying", "refactoring")
@@ -26,11 +30,18 @@ For each batch of events, output a JSON object with these fields:
 Output ONLY valid JSON, no markdown fences or extra text."""
 
 
+def _actor_label(shell: str) -> str:
+    if shell in ("claude-code", "claude"):
+        return "Claude Code (AI agent)"
+    return "developer (human)"
+
+
 def build_enrichment_prompt(events: list[dict]) -> str:
     """Format events into the user prompt template."""
     lines = []
     for i, ev in enumerate(events, 1):
-        parts = [f"Event {i}:"]
+        actor = _actor_label(ev.get("shell", ""))
+        parts = [f"Event {i} (executed by {actor}):"]
         parts.append(f"  command: {ev.get('command', '')}")
         parts.append(f"  exit_code: {ev.get('exit_code', '')}")
         parts.append(f"  duration_ms: {ev.get('duration_ms', '')}")
@@ -80,10 +91,9 @@ def claim_pending_events(conn, batch_size: int, worker_id: str) -> list[dict]:
                          status = 'processing'
                              AND COALESCE(locked_at, 0) <= ?
                          )
-                     ORDER BY priority ASC, created_at ASC
-            LIMIT ?
-            )
-            RETURNING event_id
+                     ORDER BY priority, created_at
+                     LIMIT ?)
+        RETURNING event_id
         """,
         (now_ms, worker_id, now_ms, stale_before_ms, batch_size),
     )
@@ -254,7 +264,7 @@ def write_knowledge_node(
         raise
 
 
-def mark_queue_failed(conn, event_ids: list[int], error: str):
+def mark_queue_failed(conn, event_ids: list[int], error: str) -> None:
     """Increment retry_count; reset to pending if retries remain, failed if exhausted."""
     now_ms = int(time.time() * 1000)
     for event_id in event_ids:
