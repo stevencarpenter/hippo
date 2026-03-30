@@ -19,8 +19,11 @@ pub async fn read_frame(stream: &mut UnixStream) -> Result<Option<Vec<u8>>> {
 }
 
 pub async fn write_frame(stream: &mut UnixStream, data: &[u8]) -> Result<()> {
-    let len = (data.len() as u32).to_be_bytes();
-    stream.write_all(&len).await?;
+    let len: u32 = data
+        .len()
+        .try_into()
+        .map_err(|_| anyhow::anyhow!("frame too large: {} bytes", data.len()))?;
+    stream.write_all(&len.to_be_bytes()).await?;
     stream.write_all(data).await?;
     stream.flush().await?;
     Ok(())

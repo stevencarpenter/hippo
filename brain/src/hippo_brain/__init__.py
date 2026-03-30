@@ -29,15 +29,17 @@ def _load_runtime_settings() -> dict:
 
     return {
         "db_path": str(data_dir / "hippo.db"),
+        "data_dir": str(data_dir),
         "lmstudio_base_url": lmstudio.get("base_url", "http://localhost:1234/v1"),
         "enrichment_model": models.get("enrichment", ""),
+        "embedding_model": models.get("embedding", ""),
         "poll_interval_secs": brain.get("poll_interval_secs", 5),
         "enrichment_batch_size": brain.get("enrichment_batch_size", 10),
         "port": brain.get("port", 9175),
     }
 
 
-def main():
+def main() -> None:
     if len(sys.argv) < 2:
         print("Usage: hippo-brain <serve|enrich>")
         sys.exit(1)
@@ -52,8 +54,10 @@ def main():
         settings = _load_runtime_settings()
         app = create_app(
             db_path=settings["db_path"],
+            data_dir=settings["data_dir"],
             lmstudio_base_url=settings["lmstudio_base_url"],
             enrichment_model=settings["enrichment_model"],
+            embedding_model=settings["embedding_model"],
             poll_interval_secs=settings["poll_interval_secs"],
             enrichment_batch_size=settings["enrichment_batch_size"],
         )

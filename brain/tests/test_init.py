@@ -42,8 +42,10 @@ def test_main_serve_dispatches(monkeypatch):
                 "hippo_brain._load_runtime_settings",
                 return_value={
                     "db_path": "",
+                    "data_dir": "",
                     "lmstudio_base_url": "http://localhost:1234/v1",
                     "enrichment_model": "",
+                    "embedding_model": "",
                     "poll_interval_secs": 5,
                     "enrichment_batch_size": 10,
                     "port": 9175,
@@ -53,8 +55,10 @@ def test_main_serve_dispatches(monkeypatch):
 
     mock_create_app.assert_called_once_with(
         db_path="",
+        data_dir="",
         lmstudio_base_url="http://localhost:1234/v1",
         enrichment_model="",
+        embedding_model="",
         poll_interval_secs=5,
         enrichment_batch_size=10,
     )
@@ -69,8 +73,10 @@ def test_main_serve_uses_config_runtime_settings(monkeypatch):
     mock_uvicorn = MagicMock()
     runtime_settings = {
         "db_path": "/tmp/hippo.db",
+        "data_dir": "/tmp",
         "lmstudio_base_url": "http://localhost:2222/v1",
         "enrichment_model": "local-model",
+        "embedding_model": "local-embed",
         "poll_interval_secs": 9,
         "enrichment_batch_size": 3,
         "port": 9444,
@@ -83,8 +89,10 @@ def test_main_serve_uses_config_runtime_settings(monkeypatch):
 
     mock_create_app.assert_called_once_with(
         db_path="/tmp/hippo.db",
+        data_dir="/tmp",
         lmstudio_base_url="http://localhost:2222/v1",
         enrichment_model="local-model",
+        embedding_model="local-embed",
         poll_interval_secs=9,
         enrichment_batch_size=3,
     )

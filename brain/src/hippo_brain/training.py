@@ -10,8 +10,7 @@ SYSTEM_PROMPT = (
 )
 
 
-def _write_jsonl(path: Path, examples: list[dict]):
-    """Write a list of dicts as JSONL."""
+def _write_jsonl(path: Path, examples: list[dict]) -> None:
     with open(path, "w") as f:
         for ex in examples:
             f.write(json.dumps(ex) + "\n")
@@ -34,7 +33,7 @@ def export_training_data(
     sql = """
           SELECT kn.id, kn.content, kn.embed_text, kn.outcome, kn.tags
           FROM knowledge_nodes kn
-          WHERE kn.outcome IN ('success', 'partial') \
+          WHERE kn.outcome IN ('success', 'partial')
           """
     params = []
     if since_ms is not None:

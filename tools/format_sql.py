@@ -6,12 +6,12 @@
 ## ]
 ## ///
 
-"""Format SQL files using sqlparse with sensible defaults for SQLite.
+"""Format SQL files using sqlfluff with sensible defaults for SQLite.
 
 Usage:
   python tools/format_sql.py path/to/schema.sql [other files...]
 
-This script is intentionally small and depends on `sqlparse` which should be
+This script is intentionally small and depends on `sqlfluff` which should be
 installed in the project's Python environment (add to dev deps).
 """
 import argparse

@@ -11,6 +11,7 @@ from starlette.responses import JSONResponse
 from starlette.routing import Route
 
 from hippo_brain.client import LMStudioClient
+from hippo_brain.embeddings import embed_knowledge_node, get_or_create_table, open_vector_db
 from hippo_brain.enrichment import (
     SYSTEM_PROMPT,
     build_enrichment_prompt,
@@ -20,6 +21,7 @@ from hippo_brain.enrichment import (
     write_knowledge_node,
 )
 
+logging.basicConfig(level=logging.INFO, format="%(levelname)s:%(name)s:%(message)s")
 logger = logging.getLogger("hippo_brain")
 
 
@@ -27,20 +29,35 @@ class BrainServer:
     def __init__(
         self,
         db_path: str = "",
+        data_dir: str = "",
         lmstudio_base_url: str = "http://localhost:1234/v1",
         enrichment_model: str = "",
+        embedding_model: str = "",
         poll_interval_secs: int = 5,
         enrichment_batch_size: int = 10,
     ):
         if not db_path:
             db_path = str(Path.home() / ".local" / "share" / "hippo" / "hippo.db")
+        if not data_dir:
+            data_dir = str(Path.home() / ".local" / "share" / "hippo")
         self.db_path = db_path
+        self.data_dir = data_dir
         self.client = LMStudioClient(base_url=lmstudio_base_url)
         self.enrichment_model = enrichment_model
+        self.embedding_model = embedding_model
         self.poll_interval_secs = poll_interval_secs
         self.enrichment_batch_size = enrichment_batch_size
         self.enrichment_running = False
         self._enrichment_task = None
+        self._vector_db = None
+        self._vector_table = None
+        if self.embedding_model:
+            try:
+                self._vector_db = open_vector_db(self.data_dir)
+                self._vector_table = get_or_create_table(self._vector_db)
+                logger.info("vector store initialized: %s", self._vector_table)
+            except Exception as e:
+                logger.error("failed to initialize vector store: %s", e)
         self.last_success_at_ms: int | None = None
         self.last_error: str | None = None
         self.last_error_at_ms: int | None = None
@@ -155,7 +172,9 @@ class BrainServer:
                         continue
 
                     event_ids = [e["id"] for e in events]
+                    logger.info("claimed %d events: %s", len(event_ids), event_ids)
                     prompt = build_enrichment_prompt(events)
+                    logger.info("calling LM Studio (prompt len: %d chars)", len(prompt))
 
                     try:
                         raw = await self.client.chat(
@@ -166,11 +185,45 @@ class BrainServer:
                             model=self.enrichment_model,
                         )
                         result = parse_enrichment_response(raw)
-                        write_knowledge_node(conn, result, event_ids, self.enrichment_model)
+                        node_id = write_knowledge_node(
+                            conn, result, event_ids, self.enrichment_model
+                        )
                         self.last_success_at_ms = int(time.time() * 1000)
                         self.last_error = None
                         self.last_error_at_ms = None
-                        logger.info("enriched %d events -> node created", len(event_ids))
+                        logger.info("enriched %d events -> node %d", len(event_ids), node_id)
+
+                        if self.embedding_model:
+                            try:
+                                node_dict = {
+                                    "id": node_id,
+                                    "session_id": events[0].get("session_id", 0),
+                                    "captured_at": int(time.time() * 1000),
+                                    "commands_raw": " ; ".join(
+                                        e.get("command", "") for e in events
+                                    ),
+                                    "cwd": events[0].get("cwd", ""),
+                                    "git_branch": events[0].get("git_branch", ""),
+                                    "git_repo": "",
+                                    "outcome": result.outcome,
+                                    "tags": result.tags,
+                                    "entities": result.entities
+                                    if isinstance(result.entities, dict)
+                                    else {},
+                                    "embed_text": result.embed_text,
+                                    "summary": result.summary,
+                                    "enrichment_model": self.enrichment_model,
+                                    "enrichment_version": 1,
+                                }
+                                await embed_knowledge_node(
+                                    self.client,
+                                    self._vector_table,
+                                    node_dict,
+                                    embed_model=self.embedding_model,
+                                )
+                                logger.info("embedded node %d into vector store", node_id)
+                            except Exception as e:
+                                logger.warning("embedding failed (non-fatal): %s", e)
                     except Exception as e:
                         self.last_error = str(e)
                         self.last_error_at_ms = int(time.time() * 1000)
@@ -211,15 +264,19 @@ class BrainServer:
 
 def create_app(
     db_path: str = "",
+    data_dir: str = "",
     lmstudio_base_url: str = "http://localhost:1234/v1",
     enrichment_model: str = "",
+    embedding_model: str = "",
     poll_interval_secs: int = 5,
     enrichment_batch_size: int = 10,
 ) -> Starlette:
     server = BrainServer(
         db_path=db_path,
+        data_dir=data_dir,
         lmstudio_base_url=lmstudio_base_url,
         enrichment_model=enrichment_model,
+        embedding_model=embedding_model,
         poll_interval_secs=poll_interval_secs,
         enrichment_batch_size=enrichment_batch_size,
     )

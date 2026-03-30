@@ -1,5 +1,5 @@
 use anyhow::Result;
-use hippo_core::config::{ENV_ALLOWLIST, HippoConfig};
+use hippo_core::config::HippoConfig;
 use hippo_core::events::{EventEnvelope, EventPayload};
 use hippo_core::protocol::{DaemonRequest, DaemonResponse};
 use hippo_core::redaction::RedactionEngine;
@@ -147,26 +147,7 @@ pub async fn flush_events(state: &Arc<DaemonState>) {
 
     for envelope in &events {
         if let EventPayload::Shell(ref shell_event) = envelope.payload {
-            // Redact command
-            let redact_result = state.redaction.redact(&shell_event.command);
-            let mut redacted_event = shell_event.clone();
-            redacted_event.command = redact_result.text;
-            redacted_event.redaction_count = redact_result.count;
-
-            // Filter env to allowlist and redact values
-            let filtered_env: HashMap<String, String> = redacted_event
-                .env_snapshot
-                .iter()
-                .filter(|(k, _)| ENV_ALLOWLIST.contains(&k.as_str()))
-                .map(|(k, v)| {
-                    let rv = state.redaction.redact(v);
-                    (k.clone(), rv.text)
-                })
-                .collect();
-
-            // Build a redacted envelope for fallback paths -- never write
-            // the original (un-redacted) envelope to disk.
-            redacted_event.env_snapshot = filtered_env.clone();
+            let redacted_event = crate::redact_shell_event(shell_event, &state.redaction);
             let redacted_envelope = EventEnvelope {
                 envelope_id: envelope.envelope_id,
                 producer_version: envelope.producer_version,
@@ -174,12 +155,12 @@ pub async fn flush_events(state: &Arc<DaemonState>) {
                 payload: EventPayload::Shell(redacted_event.clone()),
             };
 
-            let shell_str = format!("{:?}", redacted_event.shell);
+            let shell_str = redacted_event.shell.as_db_str();
             let session_id = match storage::get_or_create_session(
                 &db,
                 &redacted_event.session_id.to_string(),
                 &redacted_event.hostname,
-                &shell_str,
+                shell_str,
                 &username,
                 &mut session_map,
             ) {
@@ -197,8 +178,8 @@ pub async fn flush_events(state: &Arc<DaemonState>) {
                 }
             };
 
-            let env_snapshot_id =
-                storage::upsert_env_snapshot(&db, &filtered_env).unwrap_or_else(|e| {
+            let env_snapshot_id = storage::upsert_env_snapshot(&db, &redacted_event.env_snapshot)
+                .unwrap_or_else(|e| {
                     warn!("env snapshot failed: {}", e);
                     None
                 });
@@ -229,17 +210,7 @@ pub async fn run(config: HippoConfig) -> Result<()> {
     let socket_path = config.socket_path();
     let db_path = config.db_path();
 
-    let redaction = match RedactionEngine::from_config_path(&config.redact_path()) {
-        Ok(engine) => engine,
-        Err(e) => {
-            warn!(
-                "failed to load custom redaction config from {}: {}; falling back to builtins",
-                config.redact_path().display(),
-                e
-            );
-            RedactionEngine::builtin()
-        }
-    };
+    let redaction = crate::load_redaction_engine(&config);
 
     // Only remove a socket we can prove is stale. Refuse to replace
     // responsive or ambiguous sockets to avoid orphaning a live daemon.

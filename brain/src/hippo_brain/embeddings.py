@@ -3,6 +3,8 @@ from pathlib import Path
 import lancedb
 import pyarrow as pa
 
+EMBED_DIM = 768
+
 KNOWLEDGE_SCHEMA = pa.schema(
     [
         pa.field("id", pa.int64()),
@@ -17,8 +19,8 @@ KNOWLEDGE_SCHEMA = pa.schema(
         pa.field("entities_json", pa.string()),
         pa.field("embed_text", pa.string()),
         pa.field("summary", pa.string()),
-        pa.field("vec_knowledge", pa.list_(pa.float32(), 2560)),
-        pa.field("vec_command", pa.list_(pa.float32(), 384)),
+        pa.field("vec_knowledge", pa.list_(pa.float32(), EMBED_DIM)),
+        pa.field("vec_command", pa.list_(pa.float32(), EMBED_DIM)),
         pa.field("enrichment_model", pa.string()),
         pa.field("enrichment_version", pa.int32()),
     ]
@@ -26,16 +28,15 @@ KNOWLEDGE_SCHEMA = pa.schema(
 
 
 def open_vector_db(data_dir: str | Path) -> lancedb.DBConnection:
-    """Open or create a LanceDB at data_dir/vectors/."""
     vectors_path = Path(data_dir) / "vectors"
     vectors_path.mkdir(parents=True, exist_ok=True)
     return lancedb.connect(str(vectors_path))
 
 
 def get_or_create_table(db: lancedb.DBConnection) -> lancedb.table.Table:
-    """Create the knowledge table if it doesn't exist."""
     existing = db.list_tables()
-    if "knowledge" in existing:
+    table_names = existing.tables if hasattr(existing, "tables") else existing
+    if "knowledge" in table_names:
         return db.open_table("knowledge")
 
     empty = pa.table(
@@ -46,7 +47,6 @@ def get_or_create_table(db: lancedb.DBConnection) -> lancedb.table.Table:
 
 
 def _pad_or_truncate(vec: list[float], target_dim: int) -> list[float]:
-    """Pad with zeros or truncate to target dimensions."""
     if len(vec) >= target_dim:
         return vec[:target_dim]
     return vec + [0.0] * (target_dim - len(vec))
@@ -59,18 +59,15 @@ async def embed_knowledge_node(
     embed_model: str = "",
     command_model: str = "",
 ):
-    """Get embeddings from client, pad/truncate, add row to table."""
     embed_text = node_dict.get("embed_text", "")
     commands_raw = node_dict.get("commands_raw", "")
 
-    # Get knowledge embedding (2560d)
     knowledge_vecs = await client.embed([embed_text], model=embed_model)
-    vec_knowledge = _pad_or_truncate(knowledge_vecs[0], 2560)
+    vec_knowledge = _pad_or_truncate(knowledge_vecs[0], EMBED_DIM)
 
-    # Get command embedding (384d)
     cmd_model = command_model or embed_model
     command_vecs = await client.embed([commands_raw or embed_text], model=cmd_model)
-    vec_command = _pad_or_truncate(command_vecs[0], 384)
+    vec_command = _pad_or_truncate(command_vecs[0], EMBED_DIM)
 
     import json
 
@@ -102,6 +99,5 @@ def search_similar(
     column: str = "vec_knowledge",
     limit: int = 10,
 ) -> list[dict]:
-    """Vector search on the given column."""
     results = table.search(query_vec, vector_column_name=column).limit(limit).to_list()
     return results

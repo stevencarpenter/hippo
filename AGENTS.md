@@ -75,7 +75,7 @@ Communication:
 ## Style
 
 - Rust: edition 2024, clippy clean, thiserror for lib errors, anyhow for bin errors
-- Python: 3.13+ required, ruff for lint+format, uv for package management
+- Python: 3.14+ required, ruff for lint+format, uv for package management
 - All timestamps: Unix epoch milliseconds (i64/INTEGER)
 - SQLite: WAL mode, PRAGMA foreign_keys=ON, PRAGMA busy_timeout=5000 on every connection
 - LanceDB: vector embeddings (2560d/384d) stored at ~/.local/share/hippo/lancedb/; see brain/src/hippo_brain/embeddings.py

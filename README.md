@@ -27,7 +27,7 @@ Two always-on processes share a SQLite database at `~/.local/share/hippo/hippo.d
 
 - macOS (launchd for service management)
 - [Rust](https://rustup.rs/) (edition 2024)
-- [Python](https://www.python.org/) 3.13+
+- [Python](https://www.python.org/) 3.14+
 - [uv](https://docs.astral.sh/uv/) (Python package manager)
 - [LM Studio](https://lmstudio.ai/) (local LLM inference)
 - [mise](https://mise.jdx.dev/) (optional, for task running)
@@ -35,21 +35,19 @@ Two always-on processes share a SQLite database at `~/.local/share/hippo/hippo.d
 ## Quick Start
 
 ```bash
-# Build everything
-mise run build:all
-
-# Install the LaunchAgent and start the daemon
+# Build, install, and start everything (release binary, LaunchAgents, config, symlink)
 mise run install
-mise run start
 
-# Source the shell hook in your .zshrc
-source /path/to/hippo/shell/hippo.zsh
+# Source the shell hooks (add to your shell config)
+source /path/to/hippo/shell/hippo-env.zsh   # in .zshenv
+source /path/to/hippo/shell/hippo.zsh       # in .zshrc
 
-# Start the brain server (or install its LaunchAgent)
-mise run run:brain
+# Set your LM Studio model
+hippo config edit
+# Fill in [models] enrichment = "your-model-name"
 
-# Check health
-mise run doctor
+# Verify
+hippo doctor
 ```
 
 ## Usage
@@ -93,39 +91,25 @@ All common workflows are defined in `mise.toml`:
 | `mise run lint`                       | Run all linters (clippy + ruff)  |
 | `mise run fmt`                        | Format all code                  |
 | `mise run fmt:check`                  | Check formatting without changes |
-| `mise run check`                      | Full CI: lint + format + test    |
+| `mise run check`                      | Alias for `test` (full CI suite) |
 | `mise run run:daemon`                 | Run daemon in foreground         |
 | `mise run run:brain`                  | Run brain server                 |
+| `mise run install`                    | Full clean-install from local repo state |
 | `mise run doctor`                     | Run diagnostic checks            |
-| `mise run start` / `stop` / `restart` | Manage launchd service           |
+| `mise run start` / `stop` / `restart` | Manage launchd services          |
+| `mise run nuke`                       | Kill everything (preserves data) |
 
 Run `mise tasks` for the full list.
 
 ## Configuration
 
-Config lives at `~/.config/hippo/config.toml`. See [`config/`](config/) for defaults.
+Runtime config: `~/.config/hippo/config.toml` (created by `mise run install`).
+Edit with `hippo config edit`. See [`config/config.default.toml`](./config/config.default.toml) for the template.
 
-Key settings:
+The `[models]` section must be configured for brain enrichment to work — set the model name
+to whatever LM Studio is serving (`curl -s http://localhost:1234/v1/models` to check).
 
-```toml
-[lmstudio]
-base_url = "http://localhost:1234/v1"
-
-[models]
-enrichment = ""   # Set to your preferred LM Studio model
-query = ""
-embedding = ""
-
-[daemon]
-flush_interval_ms = 100
-flush_batch_size = 50
-
-[brain]
-port = 9175
-poll_interval_secs = 5
-```
-
-Secret redaction patterns are configured in `~/.config/hippo/redact.toml`. See [
+Secret redaction patterns: `~/.config/hippo/redact.toml`. See [
 `config/redact.default.toml`](config/redact.default.toml).
 
 ## Project Structure
@@ -138,6 +122,7 @@ Secret redaction patterns are configured in `~/.config/hippo/redact.toml`. See [
 ├── shell/                # zsh hooks (preexec/precmd integration)
 ├── config/               # Default config templates
 ├── launchd/              # macOS LaunchAgent plist templates
+├── tools/                # Developer utility scripts (SQL formatting, etc.)
 └── docs/                 # Research and design docs
 ```
 

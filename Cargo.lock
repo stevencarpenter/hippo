@@ -525,6 +525,7 @@ dependencies = [
  "dirs",
  "hippo-core",
  "hostname",
+ "libc",
  "reqwest",
  "rusqlite",
  "serde_json",
