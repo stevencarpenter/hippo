@@ -126,7 +126,7 @@ CREATE TABLE IF NOT EXISTS enrichment_queue
     CHECK (status IN ('pending', 'processing', 'done', 'failed', 'skipped')),
     priority INTEGER NOT NULL DEFAULT 5,
     retry_count INTEGER NOT NULL DEFAULT 0,
-    max_retries INTEGER NOT NULL DEFAULT 3,
+    max_retries INTEGER NOT NULL DEFAULT 5,
     error_message TEXT,
     locked_at INTEGER,
     locked_by TEXT,
