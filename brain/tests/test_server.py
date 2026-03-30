@@ -109,9 +109,10 @@ def test_query_returns_matching_events(tmp_db):
     app = _make_app(str(db_path))
     client = TestClient(app)
 
-    resp = client.post("/query", json={"text": "cargo"})
+    resp = client.post("/query", json={"text": "cargo", "mode": "lexical"})
     assert resp.status_code == 200
     data = resp.json()
+    assert data["mode"] == "lexical"
     assert len(data["events"]) == 1
     assert data["events"][0]["command"] == "cargo test -p hippo-core"
 
@@ -123,9 +124,10 @@ def test_query_returns_matching_knowledge_nodes(tmp_db):
     app = _make_app(str(db_path))
     client = TestClient(app)
 
-    resp = client.post("/query", json={"text": "cargo"})
+    resp = client.post("/query", json={"text": "cargo", "mode": "lexical"})
     assert resp.status_code == 200
     data = resp.json()
+    assert data["mode"] == "lexical"
     assert len(data["nodes"]) == 1
     assert data["nodes"][0]["uuid"] == "uuid-1"
     assert "cargo test" in data["nodes"][0]["embed_text"]
@@ -137,9 +139,10 @@ def test_query_no_results(tmp_db):
     app = _make_app(str(db_path))
     client = TestClient(app)
 
-    resp = client.post("/query", json={"text": "nonexistent_xyz"})
+    resp = client.post("/query", json={"text": "nonexistent_xyz", "mode": "lexical"})
     assert resp.status_code == 200
     data = resp.json()
+    assert data["mode"] == "lexical"
     assert data["events"] == []
     assert data["nodes"] == []
 
@@ -233,6 +236,21 @@ def test_create_app_routes_work(tmp_db):
 # ---- Query error handling ----
 
 
+def test_query_semantic_fallback_to_lexical(tmp_db):
+    """When no embedding model, semantic mode falls back to lexical with a warning."""
+    conn, db_path = tmp_db
+    _seed_events(conn)
+    app = _make_app(str(db_path))
+    client = TestClient(app)
+
+    resp = client.post("/query", json={"text": "cargo"})
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["mode"] == "lexical"
+    assert "warning" in data
+    assert len(data["events"]) == 1
+
+
 def test_query_returns_500_on_db_error(tmp_db):
     """When _get_conn raises, query endpoint returns 500 with error message."""
     _, db_path = tmp_db
@@ -246,7 +264,7 @@ def test_query_returns_500_on_db_error(tmp_db):
     app = Starlette(routes=server.get_routes())
     client = TestClient(app, raise_server_exceptions=False)
 
-    resp = client.post("/query", json={"text": "hello"})
+    resp = client.post("/query", json={"text": "hello", "mode": "lexical"})
     assert resp.status_code == 500
     data = resp.json()
     assert "error" in data
@@ -258,24 +276,26 @@ def test_query_returns_500_on_db_error(tmp_db):
 async def test_enrichment_loop_processes_events(tmp_db):
     """_enrichment_loop processes one batch of pending events then we cancel."""
     conn, db_path = tmp_db
-    now_ms = int(time.time() * 1000)
+    # Use a timestamp old enough to be considered stale (> session_stale_secs ago)
+    old_ms = int(time.time() * 1000) - 300_000
 
     # Seed a session and event with queue entry
     conn.execute(
         "INSERT INTO sessions (id, start_time, shell, hostname, username) "
         "VALUES (1, ?, 'zsh', 'laptop', 'user')",
-        (now_ms,),
+        (old_ms,),
     )
     conn.execute(
         "INSERT INTO events (id, session_id, timestamp, command, exit_code, duration_ms, "
         "cwd, hostname, shell) VALUES (1, 1, ?, 'cargo test', 0, 1000, '/proj', 'laptop', 'zsh')",
-        (now_ms,),
+        (old_ms,),
     )
     conn.execute("INSERT INTO enrichment_queue (event_id) VALUES (1)")
     conn.commit()
 
     server = _make_server(str(db_path))
     server.poll_interval_secs = 0  # no delay
+    server.session_stale_secs = 120
 
     # Mock the LMStudio client to return a valid enrichment response
     mock_chat = AsyncMock(
@@ -307,23 +327,24 @@ async def test_enrichment_loop_processes_events(tmp_db):
 async def test_enrichment_loop_handles_chat_failure(tmp_db):
     """When client.chat raises, events get marked as failed/pending."""
     conn, db_path = tmp_db
-    now_ms = int(time.time() * 1000)
+    old_ms = int(time.time() * 1000) - 300_000
 
     conn.execute(
         "INSERT INTO sessions (id, start_time, shell, hostname, username) "
         "VALUES (1, ?, 'zsh', 'laptop', 'user')",
-        (now_ms,),
+        (old_ms,),
     )
     conn.execute(
         "INSERT INTO events (id, session_id, timestamp, command, exit_code, duration_ms, "
         "cwd, hostname, shell) VALUES (1, 1, ?, 'bad cmd', 1, 100, '/proj', 'laptop', 'zsh')",
-        (now_ms,),
+        (old_ms,),
     )
     conn.execute("INSERT INTO enrichment_queue (event_id, max_retries) VALUES (1, 3)")
     conn.commit()
 
     server = _make_server(str(db_path))
     server.poll_interval_secs = 0
+    server.session_stale_secs = 120
 
     # Make chat() raise
     server.client.chat = AsyncMock(side_effect=RuntimeError("model offline"))
@@ -403,10 +424,12 @@ def test_brain_server_rejects_wrong_schema_version(tmp_path):
 # ---- query alignment ----
 
 
-@pytest.mark.xfail(reason="semantic retrieval not yet wired into /query")
+@pytest.mark.xfail(reason="requires embedding model and vector data for true semantic match")
 def test_query_returns_semantically_related_result(tmp_db):
-    """When semantic retrieval is wired, querying 'version control' should
-    find events about 'git' even if 'version control' never appears literally."""
+    """When semantic retrieval is wired with an embedding model, querying
+    'version control' should find knowledge about 'git' even if 'version
+    control' never appears literally. Without an embedding model, falls back
+    to lexical (which won't find it)."""
     conn, db_path = tmp_db
     now_ms = int(time.time() * 1000)
 
@@ -438,7 +461,9 @@ def test_query_returns_semantically_related_result(tmp_db):
     resp = client.post("/query", json={"text": "version control"})
     assert resp.status_code == 200
     data = resp.json()
-    assert len(data["events"]) > 0, (
+    # Without embedding model, falls back to lexical — which won't find these
+    assert data["mode"] == "semantic"
+    assert len(data["results"]) > 0, (
         "Expected semantic search to find git commands for 'version control'"
     )
 

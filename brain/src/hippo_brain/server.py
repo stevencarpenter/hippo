@@ -12,11 +12,16 @@ from starlette.routing import Route
 
 from hippo_brain.client import LMStudioClient
 from hippo_brain.version import get_version
-from hippo_brain.embeddings import embed_knowledge_node, get_or_create_table, open_vector_db
+from hippo_brain.embeddings import (
+    embed_knowledge_node,
+    get_or_create_table,
+    open_vector_db,
+    search_similar,
+)
 from hippo_brain.enrichment import (
     SYSTEM_PROMPT,
     build_enrichment_prompt,
-    claim_pending_events,
+    claim_pending_events_by_session,
     mark_queue_failed,
     parse_enrichment_response,
     write_knowledge_node,
@@ -36,6 +41,7 @@ class BrainServer:
         embedding_model: str = "",
         poll_interval_secs: int = 5,
         enrichment_batch_size: int = 10,
+        session_stale_secs: int = 120,
     ):
         if not db_path:
             db_path = str(Path.home() / ".local" / "share" / "hippo" / "hippo.db")
@@ -48,6 +54,7 @@ class BrainServer:
         self.embedding_model = embedding_model
         self.poll_interval_secs = poll_interval_secs
         self.enrichment_batch_size = enrichment_batch_size
+        self.session_stale_secs = session_stale_secs
         self.enrichment_running = False
         self._enrichment_task = None
         self._vector_db = None
@@ -113,20 +120,11 @@ class BrainServer:
             }
         )
 
-    # Current implementation: lexical substring search over events.command and
-    # knowledge_nodes.content/embed_text. Semantic (vector) retrieval is available
-    # via the embeddings module but is not yet wired into this endpoint.
-    async def query(self, request: Request) -> JSONResponse:
-        body = await request.json()
-        text = body.get("text", "")
-        if not text:
-            return JSONResponse({"error": "text is required"}, status_code=400)
-
+    def _query_lexical(self, text: str) -> dict:
+        """Lexical substring search over events and knowledge nodes."""
+        conn = self._get_conn()
         try:
-            conn = self._get_conn()
             pattern = f"%{text}%"
-
-            # Search events
             cursor = conn.execute(
                 """SELECT id, command, cwd, timestamp
                    FROM events
@@ -139,7 +137,6 @@ class BrainServer:
                 for r in cursor.fetchall()
             ]
 
-            # Search knowledge nodes
             cursor = conn.execute(
                 """SELECT id, uuid, content, embed_text
                    FROM knowledge_nodes
@@ -152,12 +149,63 @@ class BrainServer:
                 {"id": r[0], "uuid": r[1], "content": r[2], "embed_text": r[3]}
                 for r in cursor.fetchall()
             ]
-
+            return {"mode": "lexical", "events": events, "nodes": nodes}
+        finally:
             conn.close()
-            return JSONResponse({"events": events, "nodes": nodes})
+
+    async def query(self, request: Request) -> JSONResponse:
+        body = await request.json()
+        text = body.get("text", "")
+        if not text:
+            return JSONResponse({"error": "text is required"}, status_code=400)
+
+        mode = body.get("mode", "semantic")
+
+        if mode == "lexical":
+            try:
+                return JSONResponse(self._query_lexical(text))
+            except Exception as e:
+                logger.error("query error: %s", e)
+                return JSONResponse({"error": str(e)}, status_code=500)
+
+        # Semantic mode — fall back to lexical if unavailable
+        if not self.embedding_model or self._vector_table is None:
+            try:
+                result = self._query_lexical(text)
+                result["warning"] = "semantic search unavailable, fell back to lexical"
+                return JSONResponse(result)
+            except Exception as e:
+                logger.error("query error: %s", e)
+                return JSONResponse({"error": str(e)}, status_code=500)
+
+        try:
+            vecs = await self.client.embed([text], model=self.embedding_model)
+            hits = search_similar(self._vector_table, vecs[0], limit=10)
+            results = [
+                {
+                    "score": round(1.0 - hit.get("_distance", 0.0), 4),
+                    "summary": hit.get("summary", ""),
+                    "tags": hit.get("tags", ""),
+                    "key_decisions": hit.get("key_decisions", ""),
+                    "problems_encountered": hit.get("problems_encountered", ""),
+                    "cwd": hit.get("cwd", ""),
+                    "git_branch": hit.get("git_branch", ""),
+                    "session_id": hit.get("session_id", 0),
+                    "commands_raw": hit.get("commands_raw", ""),
+                    "embed_text": hit.get("embed_text", ""),
+                }
+                for hit in hits
+            ]
+            return JSONResponse({"mode": "semantic", "results": results})
         except Exception as e:
-            logger.error("query error: %s", e)
-            return JSONResponse({"error": str(e)}, status_code=500)
+            logger.warning("semantic search failed, falling back to lexical: %s", e)
+            try:
+                result = self._query_lexical(text)
+                result["warning"] = f"semantic search failed: {e}"
+                return JSONResponse(result)
+            except Exception as e2:
+                logger.error("query error: %s", e2)
+                return JSONResponse({"error": str(e2)}, status_code=500)
 
     async def _enrichment_loop(self):
         """Background enrichment polling loop."""
@@ -168,73 +216,81 @@ class BrainServer:
                 try:
                     await asyncio.sleep(self.poll_interval_secs)
                     conn = self._get_conn()
-                    events = claim_pending_events(conn, self.enrichment_batch_size, worker_id)
-                    if not events:
+                    chunks = claim_pending_events_by_session(
+                        conn,
+                        self.enrichment_batch_size,
+                        worker_id,
+                        self.session_stale_secs,
+                    )
+                    if not chunks:
                         conn.close()
                         continue
 
-                    event_ids = [e["id"] for e in events]
-                    logger.info("claimed %d events: %s", len(event_ids), event_ids)
-                    prompt = build_enrichment_prompt(events)
-                    logger.info("calling LM Studio (prompt len: %d chars)", len(prompt))
+                    for events in chunks:
+                        event_ids = [e["id"] for e in events]
+                        logger.info("claimed %d events: %s", len(event_ids), event_ids)
+                        prompt = build_enrichment_prompt(events)
+                        logger.info("calling LM Studio (prompt len: %d chars)", len(prompt))
 
-                    try:
-                        raw = await self.client.chat(
-                            messages=[
-                                {"role": "system", "content": SYSTEM_PROMPT},
-                                {"role": "user", "content": prompt},
-                            ],
-                            model=self.enrichment_model,
-                        )
-                        result = parse_enrichment_response(raw)
-                        node_id = write_knowledge_node(
-                            conn, result, event_ids, self.enrichment_model
-                        )
-                        self.last_success_at_ms = int(time.time() * 1000)
-                        self.last_error = None
-                        self.last_error_at_ms = None
-                        logger.info("enriched %d events -> node %d", len(event_ids), node_id)
-
-                        if self.embedding_model:
-                            try:
-                                node_dict = {
-                                    "id": node_id,
-                                    "session_id": events[0].get("session_id", 0),
-                                    "captured_at": int(time.time() * 1000),
-                                    "commands_raw": " ; ".join(
-                                        e.get("command", "") for e in events
-                                    ),
-                                    "cwd": events[0].get("cwd", ""),
-                                    "git_branch": events[0].get("git_branch", ""),
-                                    "git_repo": "",
-                                    "outcome": result.outcome,
-                                    "tags": result.tags,
-                                    "entities": result.entities
-                                    if isinstance(result.entities, dict)
-                                    else {},
-                                    "embed_text": result.embed_text,
-                                    "summary": result.summary,
-                                    "enrichment_model": self.enrichment_model,
-                                    "enrichment_version": 1,
-                                }
-                                await embed_knowledge_node(
-                                    self.client,
-                                    self._vector_table,
-                                    node_dict,
-                                    embed_model=self.embedding_model,
-                                )
-                                logger.info("embedded node %d into vector store", node_id)
-                            except Exception as e:
-                                logger.warning("embedding failed (non-fatal): %s", e)
-                    except Exception as e:
-                        self.last_error = str(e)
-                        self.last_error_at_ms = int(time.time() * 1000)
-                        logger.error("enrichment failed: %s", e)
-                        retry_conn = self._get_conn()
                         try:
-                            mark_queue_failed(retry_conn, event_ids, str(e))
-                        finally:
-                            retry_conn.close()
+                            raw = await self.client.chat(
+                                messages=[
+                                    {"role": "system", "content": SYSTEM_PROMPT},
+                                    {"role": "user", "content": prompt},
+                                ],
+                                model=self.enrichment_model,
+                            )
+                            result = parse_enrichment_response(raw)
+                            node_id = write_knowledge_node(
+                                conn, result, event_ids, self.enrichment_model
+                            )
+                            self.last_success_at_ms = int(time.time() * 1000)
+                            self.last_error = None
+                            self.last_error_at_ms = None
+                            logger.info("enriched %d events -> node %d", len(event_ids), node_id)
+
+                            if self.embedding_model:
+                                try:
+                                    node_dict = {
+                                        "id": node_id,
+                                        "session_id": events[0].get("session_id", 0),
+                                        "captured_at": int(time.time() * 1000),
+                                        "commands_raw": " ; ".join(
+                                            e.get("command", "") for e in events
+                                        ),
+                                        "cwd": events[0].get("cwd", ""),
+                                        "git_branch": events[0].get("git_branch", ""),
+                                        "git_repo": "",
+                                        "outcome": result.outcome,
+                                        "tags": result.tags,
+                                        "key_decisions": result.key_decisions,
+                                        "problems_encountered": result.problems_encountered,
+                                        "entities": result.entities
+                                        if isinstance(result.entities, dict)
+                                        else {},
+                                        "embed_text": result.embed_text,
+                                        "summary": result.summary,
+                                        "enrichment_model": self.enrichment_model,
+                                        "enrichment_version": 1,
+                                    }
+                                    await embed_knowledge_node(
+                                        self.client,
+                                        self._vector_table,
+                                        node_dict,
+                                        embed_model=self.embedding_model,
+                                    )
+                                    logger.info("embedded node %d into vector store", node_id)
+                                except Exception as e:
+                                    logger.warning("embedding failed (non-fatal): %s", e)
+                        except Exception as e:
+                            self.last_error = str(e)
+                            self.last_error_at_ms = int(time.time() * 1000)
+                            logger.error("enrichment failed: %s", e)
+                            retry_conn = self._get_conn()
+                            try:
+                                mark_queue_failed(retry_conn, event_ids, str(e))
+                            finally:
+                                retry_conn.close()
 
                     conn.close()
                 except Exception as e:
@@ -272,6 +328,7 @@ def create_app(
     embedding_model: str = "",
     poll_interval_secs: int = 5,
     enrichment_batch_size: int = 10,
+    session_stale_secs: int = 120,
 ) -> Starlette:
     server = BrainServer(
         db_path=db_path,
@@ -281,6 +338,7 @@ def create_app(
         embedding_model=embedding_model,
         poll_interval_secs=poll_interval_secs,
         enrichment_batch_size=enrichment_batch_size,
+        session_stale_secs=session_stale_secs,
     )
 
     @asynccontextmanager
