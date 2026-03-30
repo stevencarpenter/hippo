@@ -167,6 +167,20 @@ async fn print_brain_health_details(config: &HippoConfig) {
                         .filter(|s| !s.is_empty())
                         .map(|s| s.to_string());
 
+                    let brain_version = json
+                        .get("version")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("unknown");
+                    let daemon_version = env!("HIPPO_VERSION_FULL");
+                    if brain_version == daemon_version {
+                        println!("[OK] Brain version match");
+                    } else {
+                        println!(
+                            "[!!] Brain version mismatch: brain={}, daemon={}",
+                            brain_version, daemon_version
+                        );
+                    }
+
                     println!(
                         "[OK] Brain queue depth: {} pending, {} failed",
                         queue_depth, queue_failed
@@ -485,6 +499,7 @@ pub fn handle_redact_test(config: &HippoConfig, input: &str) {
 pub async fn handle_doctor(config: &HippoConfig) -> Result<()> {
     println!("Hippo Doctor");
     println!("============");
+    println!("[OK] Daemon version: {}", env!("HIPPO_VERSION_FULL"));
 
     // Check daemon socket
     let socket = config.socket_path();
@@ -692,7 +707,10 @@ replacement = "***"
             let (mut stream, _) = listener.accept().await.unwrap();
             let mut buf = [0u8; 1024];
             let _ = stream.read(&mut buf).await.unwrap();
-            let body = r#"{"status":"ok","lmstudio_reachable":true,"enrichment_running":true,"db_reachable":true,"queue_depth":3,"queue_failed":1,"last_success_at_ms":123456,"last_error":"model offline"}"#;
+            let body = format!(
+                r#"{{"status":"ok","version":"{}","lmstudio_reachable":true,"enrichment_running":true,"db_reachable":true,"queue_depth":3,"queue_failed":1,"last_success_at_ms":123456,"last_error":"model offline"}}"#,
+                env!("HIPPO_VERSION_FULL")
+            );
             let response = format!(
                 "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
                 body.len(),
