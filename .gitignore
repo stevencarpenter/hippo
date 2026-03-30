@@ -1,4 +1,5 @@
 /target
+brain/src/hippo_brain/_version.py
 *.swp
 *.swo
 .DS_Store
