@@ -1,7 +1,7 @@
 use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
-#[command(name = "hippo", version, about = "Local knowledge capture daemon")]
+#[command(name = "hippo", version = env!("HIPPO_VERSION_FULL"), about = "Local knowledge capture daemon")]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Commands,
