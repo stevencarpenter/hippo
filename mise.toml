@@ -411,7 +411,7 @@ asyncio.run(main())
 """
 
 [tasks.re-enrich]
-description = "Nuke vectors and knowledge nodes, re-queue all events for enrichment"
+description = "Nuke and re-enrich all events using the bulk model"
 run = """
 #!/usr/bin/env bash
 set -euo pipefail
@@ -434,9 +434,13 @@ sqlite3 "$DB" "UPDATE enrichment_queue SET status = 'pending', retry_count = 0, 
 
 PENDING=$(sqlite3 "$DB" "SELECT COUNT(*) FROM enrichment_queue WHERE status = 'pending'")
 echo "  Re-enrichment queued: $PENDING events pending"
+echo ""
+
+echo "==> Running bulk enrichment..."
+uv run --project brain python scripts/hippo-bulk-enrich.py ${1:-}
 
 echo ""
-echo "==> Restart brain to begin re-enrichment:"
+echo "==> Restart brain for daily operation:"
 echo "  mise run start"
 """
 
