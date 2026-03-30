@@ -29,6 +29,12 @@ async fn poll_socket_removal(socket: &std::path::Path, timeout: std::time::Durat
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
+        )
+        .init();
+
     let cli = Cli::parse();
     let config = match HippoConfig::load_default() {
         Ok(c) => c,
@@ -41,12 +47,6 @@ async fn main() -> Result<()> {
     match cli.command {
         Commands::Daemon { action } => match action {
             DaemonAction::Run => {
-                tracing_subscriber::fmt()
-                    .with_env_filter(
-                        EnvFilter::try_from_default_env()
-                            .unwrap_or_else(|_| EnvFilter::new("info")),
-                    )
-                    .init();
                 daemon::run(config).await?;
             }
             DaemonAction::Start => {
@@ -126,13 +126,7 @@ async fn main() -> Result<()> {
                     }
                 }
 
-                println!("Starting daemon...");
-                tracing_subscriber::fmt()
-                    .with_env_filter(
-                        EnvFilter::try_from_default_env()
-                            .unwrap_or_else(|_| EnvFilter::new("info")),
-                    )
-                    .init();
+                tracing::info!("starting daemon...");
                 daemon::run(config).await?;
             }
             DaemonAction::Install { force } => {
