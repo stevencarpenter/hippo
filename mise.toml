@@ -17,11 +17,51 @@ run = "cargo build --release"
 
 [tasks."build:brain"]
 description = "Sync Python brain dependencies"
+depends = ["stamp:version"]
 run = "uv sync --project brain"
 
 [tasks."build:all"]
 description = "Build everything"
 depends = ["build", "build:brain"]
+
+[tasks."stamp:version"]
+description = "Stamp brain _version.py with git metadata (matches Rust build.rs)"
+run = """
+#!/usr/bin/env bash
+set -euo pipefail
+
+BASE_VERSION=$(grep '^version' Cargo.toml | head -1 | cut -d'"' -f2)
+RAW=$(git describe --tags --always --dirty --match 'v*' 2>/dev/null || echo "unknown")
+
+if [ "$RAW" = "v${BASE_VERSION}" ]; then
+    FULL_VERSION="$BASE_VERSION"
+elif [ "$RAW" = "v${BASE_VERSION}-dirty" ]; then
+    FULL_VERSION="${BASE_VERSION}+dirty"
+elif [[ "$RAW" == v* ]]; then
+    DIRTY=""
+    CLEAN="$RAW"
+    if [[ "$RAW" == *-dirty ]]; then
+        DIRTY=".dirty"
+        CLEAN="${RAW%-dirty}"
+    fi
+    # v0.1.0-3-g63ea88d -> count=3, sha=g63ea88d
+    COUNT=$(echo "$CLEAN" | sed 's/v[^-]*-\\([0-9]*\\)-.*/\\1/')
+    SHA=$(echo "$CLEAN" | sed 's/v[^-]*-[0-9]*-//')
+    FULL_VERSION="${BASE_VERSION}-dev.${COUNT}+${SHA}${DIRTY}"
+else
+    DIRTY=""
+    SHA="$RAW"
+    if [[ "$RAW" == *-dirty ]]; then
+        DIRTY=".dirty"
+        SHA="${RAW%-dirty}"
+    fi
+    FULL_VERSION="${BASE_VERSION}-dev+g${SHA}${DIRTY}"
+fi
+
+mkdir -p brain/src/hippo_brain
+echo "__version__ = \\"${FULL_VERSION}\\"" > brain/src/hippo_brain/_version.py
+echo "Stamped brain version: ${FULL_VERSION}"
+"""
 
 # ── Test ─────────────────────────────────────────────────────────────
 
@@ -215,6 +255,10 @@ rm -f "$DATA_DIR"/*.log
 # ── 3. Build release binary ─────────────────────────────────────────
 echo "==> Building release binary..."
 cargo build --release
+
+# ── 3b. Stamp brain version ───────────────────────────────────────
+echo "==> Stamping brain version..."
+mise run stamp:version
 
 # ── 4. Sync brain Python deps ───────────────────────────────────────
 echo "==> Syncing brain dependencies..."
