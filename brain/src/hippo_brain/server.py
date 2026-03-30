@@ -11,6 +11,7 @@ from starlette.responses import JSONResponse
 from starlette.routing import Route
 
 from hippo_brain.client import LMStudioClient
+from hippo_brain.version import get_version
 from hippo_brain.embeddings import embed_knowledge_node, get_or_create_table, open_vector_db
 from hippo_brain.enrichment import (
     SYSTEM_PROMPT,
@@ -100,6 +101,7 @@ class BrainServer:
         return JSONResponse(
             {
                 "status": "ok" if db_reachable else "degraded",
+                "version": get_version(),
                 "lmstudio_reachable": reachable,
                 "enrichment_running": self.enrichment_running,
                 "db_reachable": db_reachable,
