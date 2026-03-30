@@ -15,9 +15,10 @@ class EnrichmentResult:
             "errors": [],
         }
     )
-    relationships: list = field(default_factory=list)
     tags: list = field(default_factory=list)
     embed_text: str = ""
+    key_decisions: list = field(default_factory=list)
+    problems_encountered: list = field(default_factory=list)
 
 
 _VALID_OUTCOMES = {"success", "partial", "failure", "unknown"}
@@ -54,10 +55,17 @@ def validate_enrichment_data(data: dict) -> EnrichmentResult:
             raw_list = []
         entities[key] = [item for item in raw_list if isinstance(item, str)]
 
-    # Relationships must be a list (default to empty list if missing or wrong type)
-    relationships = data.get("relationships", [])
-    if not isinstance(relationships, list):
-        relationships = []
+    # Key decisions must be a list of strings (optional, default [])
+    raw_decisions = data.get("key_decisions", [])
+    if not isinstance(raw_decisions, list):
+        raw_decisions = []
+    key_decisions = [d for d in raw_decisions if isinstance(d, str)]
+
+    # Problems encountered must be a list of strings (optional, default [])
+    raw_problems = data.get("problems_encountered", [])
+    if not isinstance(raw_problems, list):
+        raw_problems = []
+    problems_encountered = [p for p in raw_problems if isinstance(p, str)]
 
     # Tags must be a list of strings (skip non-string items)
     raw_tags = data.get("tags", [])
@@ -70,9 +78,10 @@ def validate_enrichment_data(data: dict) -> EnrichmentResult:
         intent=data["intent"],
         outcome=outcome,
         entities=entities,
-        relationships=relationships,
         tags=tags,
         embed_text=data["embed_text"],
+        key_decisions=key_decisions,
+        problems_encountered=problems_encountered,
     )
 
 
@@ -93,19 +102,10 @@ ENRICHMENT_SCHEMA = {
                 "errors": {"type": "array", "items": {"type": "string"}},
             },
         },
-        "relationships": {
-            "type": "array",
-            "items": {
-                "type": "object",
-                "properties": {
-                    "from": {"type": "string"},
-                    "to": {"type": "string"},
-                    "relationship": {"type": "string"},
-                },
-            },
-        },
         "tags": {"type": "array", "items": {"type": "string"}},
         "embed_text": {"type": "string"},
+        "key_decisions": {"type": "array", "items": {"type": "string"}},
+        "problems_encountered": {"type": "array", "items": {"type": "string"}},
     },
 }
 
@@ -129,11 +129,10 @@ ENRICHMENT_FIXTURES = [
                 "services": [],
                 "errors": [],
             },
-            relationships=[
-                {"from": "cargo", "to": "hippo-core", "relationship": "tests"},
-            ],
             tags=["rust", "testing", "hippo-core"],
             embed_text="cargo test hippo-core: all tests passed in hippo project on main branch",
+            key_decisions=[],
+            problems_encountered=[],
         ),
     },
 ]
