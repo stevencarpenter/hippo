@@ -190,6 +190,7 @@ async fn main() -> Result<()> {
                 git_branch,
                 git_commit,
                 git_dirty,
+                output,
             } => {
                 commands::handle_send_event_shell(
                     &config,
@@ -200,6 +201,7 @@ async fn main() -> Result<()> {
                     git_branch,
                     git_commit,
                     git_dirty,
+                    output,
                 )
                 .await?;
             }
@@ -226,14 +228,67 @@ async fn main() -> Result<()> {
                 let client = reqwest::Client::new();
                 match client
                     .post(&brain_url)
-                    .json(&serde_json::json!({"text": text}))
-                    .timeout(std::time::Duration::from_secs(5))
+                    .json(&serde_json::json!({"text": text, "mode": "semantic"}))
+                    .timeout(std::time::Duration::from_secs(10))
                     .send()
                     .await
                 {
                     Ok(resp) if resp.status().is_success() => {
                         let body: serde_json::Value = resp.json().await?;
-                        println!("{}", serde_json::to_string_pretty(&body)?);
+
+                        if let Some(warning) = body.get("warning").and_then(|w| w.as_str()) {
+                            eprintln!("Warning: {warning}");
+                        }
+
+                        match body.get("mode").and_then(|m| m.as_str()) {
+                            Some("semantic") => {
+                                if let Some(results) = body.get("results").and_then(|r| r.as_array()) {
+                                    if results.is_empty() {
+                                        println!("No results found.");
+                                    } else {
+                                        for result in results {
+                                            let score = result.get("score")
+                                                .and_then(|s| s.as_f64())
+                                                .unwrap_or(0.0);
+                                            let summary = result.get("summary")
+                                                .and_then(|s| s.as_str())
+                                                .unwrap_or("(no summary)");
+                                            let cwd = result.get("cwd")
+                                                .and_then(|s| s.as_str())
+                                                .unwrap_or("");
+                                            let branch = result.get("git_branch")
+                                                .and_then(|s| s.as_str())
+                                                .unwrap_or("");
+                                            let tags = result.get("tags")
+                                                .and_then(|t| t.as_array())
+                                                .map(|arr| {
+                                                    let items: Vec<&str> = arr.iter()
+                                                        .filter_map(|v| v.as_str())
+                                                        .collect();
+                                                    format!("[{}]", items.join(", "))
+                                                });
+
+                                            println!("[{score:.2}] {summary}");
+                                            if !cwd.is_empty() || !branch.is_empty() {
+                                                let location = if branch.is_empty() {
+                                                    cwd.to_string()
+                                                } else {
+                                                    format!("{cwd} ({branch})")
+                                                };
+                                                println!("       {location}");
+                                            }
+                                            if let Some(ref tags_str) = tags {
+                                                println!("       tags={tags_str}");
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            _ => {
+                                // Lexical or unknown mode: print raw JSON
+                                println!("{}", serde_json::to_string_pretty(&body)?);
+                            }
+                        }
                     }
                     _ => {
                         eprintln!("Brain server unavailable, falling back to raw query...");
