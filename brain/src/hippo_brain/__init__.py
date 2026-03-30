@@ -35,7 +35,9 @@ def _load_runtime_settings() -> dict:
         "embedding_model": models.get("embedding", ""),
         "poll_interval_secs": brain.get("poll_interval_secs", 5),
         "enrichment_batch_size": brain.get("enrichment_batch_size", 10),
-        "max_events_per_chunk": brain.get("max_events_per_chunk", brain.get("enrichment_batch_size", 10)),
+        "max_events_per_chunk": brain.get(
+            "max_events_per_chunk", brain.get("enrichment_batch_size", 10)
+        ),
         "session_stale_secs": brain.get("session_stale_secs", 120),
         "port": brain.get("port", 9175),
     }

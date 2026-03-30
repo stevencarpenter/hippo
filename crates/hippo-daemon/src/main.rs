@@ -242,27 +242,35 @@ async fn main() -> Result<()> {
 
                         match body.get("mode").and_then(|m| m.as_str()) {
                             Some("semantic") => {
-                                if let Some(results) = body.get("results").and_then(|r| r.as_array()) {
+                                if let Some(results) =
+                                    body.get("results").and_then(|r| r.as_array())
+                                {
                                     if results.is_empty() {
                                         println!("No results found.");
                                     } else {
                                         for result in results {
-                                            let score = result.get("score")
+                                            let score = result
+                                                .get("score")
                                                 .and_then(|s| s.as_f64())
                                                 .unwrap_or(0.0);
-                                            let summary = result.get("summary")
+                                            let summary = result
+                                                .get("summary")
                                                 .and_then(|s| s.as_str())
                                                 .unwrap_or("(no summary)");
-                                            let cwd = result.get("cwd")
+                                            let cwd = result
+                                                .get("cwd")
                                                 .and_then(|s| s.as_str())
                                                 .unwrap_or("");
-                                            let branch = result.get("git_branch")
+                                            let branch = result
+                                                .get("git_branch")
                                                 .and_then(|s| s.as_str())
                                                 .unwrap_or("");
-                                            let tags = result.get("tags")
+                                            let tags = result
+                                                .get("tags")
                                                 .and_then(|t| t.as_array())
                                                 .map(|arr| {
-                                                    let items: Vec<&str> = arr.iter()
+                                                    let items: Vec<&str> = arr
+                                                        .iter()
                                                         .filter_map(|v| v.as_str())
                                                         .collect();
                                                     format!("[{}]", items.join(", "))
