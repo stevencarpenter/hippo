@@ -67,6 +67,8 @@ def build_enrichment_prompt(events: list[dict]) -> str:
 
 def parse_enrichment_response(raw: str) -> EnrichmentResult:
     """Strip markdown code fences if present, parse JSON, return dataclass."""
+    if not raw:
+        raise ValueError("model returned empty response")
     text = raw.strip()
     # Strip markdown code fences
     text = re.sub(r"^```(?:json)?\s*\n?", "", text)
