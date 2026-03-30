@@ -35,7 +35,7 @@ def test_parse_enrichment_response():
     raw = (
         '{"summary": "Ran tests", "intent": "testing", "outcome": "success", '
         '"entities": {"projects": ["hippo"], "tools": ["cargo"], "files": [], '
-        '"services": [], "errors": []}, "relationships": [], '
+        '"services": [], "errors": []}, '
         '"tags": ["rust"], "embed_text": "cargo test hippo"}'
     )
     result = parse_enrichment_response(raw)
@@ -49,7 +49,7 @@ def test_parse_enrichment_response_with_code_fences():
     raw = """```json
 {"summary": "Built project", "intent": "building", "outcome": "success",
  "entities": {"projects": [], "tools": [], "files": [], "services": [], "errors": []},
- "relationships": [], "tags": [], "embed_text": "build project"}
+ "tags": [], "embed_text": "build project"}
 ```"""
     result = parse_enrichment_response(raw)
     assert result.summary == "Built project"
@@ -69,7 +69,6 @@ def _valid_enrichment_dict(**overrides) -> dict:
             "services": [],
             "errors": [],
         },
-        "relationships": [],
         "tags": ["rust"],
         "embed_text": "cargo test hippo",
     }
@@ -161,7 +160,6 @@ def test_claim_and_write(tmp_db):
             "services": [],
             "errors": [],
         },
-        relationships=[],
         tags=["rust", "testing"],
         embed_text="cargo test and build hippo project",
     )
@@ -264,7 +262,6 @@ def _make_result():
             "services": [],
             "errors": [],
         },
-        relationships=[],
         tags=["rust"],
         embed_text="cargo test hippo",
     )
@@ -400,7 +397,7 @@ def test_batch_can_span_multiple_sessions(tmp_db):
     assert returned_sessions == {1, 2}
 
 
-def test_write_knowledge_node_populates_relationships(tmp_db):
+def test_write_knowledge_node_stores_key_decisions(tmp_db):
     conn, _ = tmp_db
     _seed_event_with_queue(conn, event_id=1)
 
@@ -415,76 +412,18 @@ def test_write_knowledge_node_populates_relationships(tmp_db):
             "services": [],
             "errors": [],
         },
-        relationships=[
-            {"from": "cargo", "to": "hippo", "relationship": "builds"},
-            {"from": "cargo", "to": "hippo", "relationship": "tests"},
-            # This one references an entity not in entities dict, should be skipped
-            {"from": "npm", "to": "hippo", "relationship": "manages"},
-            # Malformed entries should be skipped
-            {"from": "", "to": "hippo", "relationship": "builds"},
-            {"from": "cargo", "to": "", "relationship": "builds"},
-            {"from": "cargo", "to": "hippo", "relationship": ""},
-        ],
         tags=["rust"],
         embed_text="cargo build and test hippo",
+        key_decisions=["Chose build.rs over vergen for zero deps"],
+        problems_encountered=["clippy warning on unused import"],
     )
 
     node_id = write_knowledge_node(conn, result, [1], "test-model")
     assert node_id > 0
 
-    # Verify entities exist
-    entities = conn.execute("SELECT id, canonical FROM entities").fetchall()
-    entity_map = {row[1]: row[0] for row in entities}
-    assert "hippo" in entity_map
-    assert "cargo" in entity_map
+    row = conn.execute("SELECT content FROM knowledge_nodes WHERE id = ?", (node_id,)).fetchone()
+    import json
 
-    # Verify relationships table has the two valid rows (cargo->hippo builds, cargo->hippo tests)
-    rels = conn.execute(
-        "SELECT from_entity_id, to_entity_id, relationship, evidence_count FROM relationships"
-    ).fetchall()
-    assert len(rels) == 2
-
-    cargo_id = entity_map["cargo"]
-    hippo_id = entity_map["hippo"]
-    rel_set = {(r[0], r[1], r[2]) for r in rels}
-    assert (cargo_id, hippo_id, "builds") in rel_set
-    assert (cargo_id, hippo_id, "tests") in rel_set
-
-    # All evidence_count should be 1 on first insert
-    for r in rels:
-        assert r[3] == 1
-
-    # --- Call again with same relationships to verify ON CONFLICT path ---
-    _seed_event_with_queue(conn, event_id=2)
-    result2 = EnrichmentResult(
-        summary="Built hippo again",
-        intent="building",
-        outcome="success",
-        entities={
-            "projects": ["hippo"],
-            "tools": ["cargo"],
-            "files": [],
-            "services": [],
-            "errors": [],
-        },
-        relationships=[
-            {"from": "cargo", "to": "hippo", "relationship": "builds"},
-        ],
-        tags=["rust"],
-        embed_text="cargo build hippo again",
-    )
-    write_knowledge_node(conn, result2, [2], "test-model")
-
-    # The "builds" relationship should now have evidence_count = 2
-    row = conn.execute(
-        "SELECT evidence_count FROM relationships WHERE from_entity_id = ? AND to_entity_id = ? AND relationship = ?",
-        (cargo_id, hippo_id, "builds"),
-    ).fetchone()
-    assert row[0] == 2
-
-    # The "tests" relationship should still have evidence_count = 1
-    row = conn.execute(
-        "SELECT evidence_count FROM relationships WHERE from_entity_id = ? AND to_entity_id = ? AND relationship = ?",
-        (cargo_id, hippo_id, "tests"),
-    ).fetchone()
-    assert row[0] == 1
+    content = json.loads(row[0])
+    assert content["key_decisions"] == ["Chose build.rs over vergen for zero deps"]
+    assert content["problems_encountered"] == ["clippy warning on unused import"]

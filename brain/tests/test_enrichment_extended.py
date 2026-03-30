@@ -106,7 +106,6 @@ def test_write_knowledge_node_empty_entities(tmp_db):
         intent="misc",
         outcome="success",
         entities={},  # empty dict — line 88 path
-        relationships=[],
         tags=[],
         embed_text="echo hello",
     )
@@ -141,7 +140,6 @@ def test_write_knowledge_node_entities_not_dict(tmp_db):
         intent="misc",
         outcome="success",
         entities=["not", "a", "dict"],  # type: ignore
-        relationships=[],
         tags=[],
         embed_text="test",
     )

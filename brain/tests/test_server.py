@@ -282,7 +282,7 @@ async def test_enrichment_loop_processes_events(tmp_db):
         return_value=(
             '{"summary": "test cmd", "intent": "testing", "outcome": "success", '
             '"entities": {"projects": [], "tools": [], "files": [], "services": [], "errors": []}, '
-            '"relationships": [], "tags": ["test"], "embed_text": "test embed"}'
+            '"tags": ["test"], "embed_text": "test embed"}'
         )
     )
     server.client.chat = mock_chat

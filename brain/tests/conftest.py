@@ -44,7 +44,7 @@ def mock_lmstudio_response():
                 "index": 0,
                 "message": {
                     "role": "assistant",
-                    "content": '{"summary": "Ran cargo test", "intent": "testing", "outcome": "success", "entities": {"projects": ["hippo"], "tools": ["cargo"], "files": [], "services": [], "errors": []}, "relationships": [], "tags": ["rust", "testing"], "embed_text": "cargo test hippo-core all tests passed"}',
+                    "content": '{"summary": "Ran cargo test", "intent": "testing", "outcome": "success", "entities": {"projects": ["hippo"], "tools": ["cargo"], "files": [], "services": [], "errors": []}, "tags": ["rust", "testing"], "embed_text": "cargo test hippo-core all tests passed"}',
                 },
                 "finish_reason": "stop",
             }

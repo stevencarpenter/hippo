@@ -53,7 +53,7 @@ class MockLMStudioClient(LMStudioClient):
     CANNED_RESPONSE = (
         '{"summary": "test command", "intent": "testing", "outcome": "success", '
         '"entities": {"projects": [], "tools": [], "files": [], "services": [], "errors": []}, '
-        '"relationships": [], "tags": ["test"], "embed_text": "test embed text"}'
+        '"tags": ["test"], "embed_text": "test embed text"}'
     )
 
     def __init__(self, base_url: str = "http://mock:1234/v1", timeout: float = 1.0):
