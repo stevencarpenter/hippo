@@ -14,7 +14,7 @@ class LMStudioClient:
         messages: list[dict],
         model: str = "",
         temperature: float = 0.0,
-        max_tokens: int = 2048,
+        max_tokens: int = 16384,
     ) -> str:
         async with httpx.AsyncClient(timeout=self.timeout) as client:
             resp = await client.post(
@@ -66,7 +66,7 @@ class MockLMStudioClient(LMStudioClient):
         messages: list[dict],
         model: str = "",
         temperature: float = 0.0,
-        max_tokens: int = 2048,
+        max_tokens: int = 16384,
     ) -> str:
         self.chat_calls.append(
             {

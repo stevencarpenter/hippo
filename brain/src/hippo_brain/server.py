@@ -1,4 +1,5 @@
 import asyncio
+import json
 import logging
 import sqlite3
 import time
@@ -233,14 +234,39 @@ class BrainServer:
                         logger.info("calling LM Studio (prompt len: %d chars)", len(prompt))
 
                         try:
-                            raw = await self.client.chat(
-                                messages=[
-                                    {"role": "system", "content": SYSTEM_PROMPT},
-                                    {"role": "user", "content": prompt},
-                                ],
-                                model=self.enrichment_model,
-                            )
-                            result = parse_enrichment_response(raw)
+                            result = None
+                            last_err = None
+                            for attempt in range(3):
+                                try:
+                                    messages = [
+                                        {"role": "system", "content": SYSTEM_PROMPT},
+                                        {"role": "user", "content": prompt},
+                                    ]
+                                    if attempt > 0:
+                                        messages.append(
+                                            {
+                                                "role": "user",
+                                                "content": (
+                                                    "Your previous response was not valid JSON. "
+                                                    "Output ONLY a JSON object, no explanation or markdown."
+                                                ),
+                                            }
+                                        )
+                                    raw = await self.client.chat(
+                                        messages=messages,
+                                        model=self.enrichment_model,
+                                    )
+                                    result = parse_enrichment_response(raw)
+                                    break
+                                except (json.JSONDecodeError, ValueError) as e:
+                                    last_err = e
+                                    logger.warning(
+                                        "enrichment parse attempt %d failed: %s",
+                                        attempt + 1,
+                                        e,
+                                    )
+                            if result is None:
+                                raise last_err
                             node_id = write_knowledge_node(
                                 conn, result, event_ids, self.enrichment_model
                             )
