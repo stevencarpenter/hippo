@@ -180,6 +180,56 @@ class TestClaimPendingBrowserEvents:
         chunks = claim_pending_browser_events(db, "test-worker", stale_secs=60)
         assert chunks == []
 
+    def test_claim_skips_low_engagement_events(self, db):
+        """Events with low scroll and no search query are marked skipped."""
+        now_ms = int(time.time() * 1000)
+        stale_ts = now_ms - 120_000
+
+        # Low scroll, no search query — should be skipped
+        _insert_browser_event(
+            db,
+            1,
+            stale_ts,
+            url="https://so.com/q/1",
+            domain="so.com",
+            dwell_ms=5000,
+            scroll_depth=0.05,
+        )
+        # Good scroll — should be kept
+        _insert_browser_event(
+            db,
+            2,
+            stale_ts + 1000,
+            url="https://so.com/q/2",
+            domain="so.com",
+            dwell_ms=8000,
+            scroll_depth=0.80,
+        )
+        # Low scroll but has search query — should be kept
+        _insert_browser_event(
+            db,
+            3,
+            stale_ts + 2000,
+            url="https://so.com/q/3",
+            domain="so.com",
+            dwell_ms=4000,
+            scroll_depth=0.05,
+            search_query="rust help",
+        )
+
+        chunks = claim_pending_browser_events(db, "test-worker", stale_secs=60)
+        all_events = [e for chunk in chunks for e in chunk]
+        assert len(all_events) == 2
+        urls = [e["url"] for e in all_events]
+        assert "https://so.com/q/2" in urls
+        assert "https://so.com/q/3" in urls
+
+        # Verify the skipped event's queue status
+        status = db.execute(
+            "SELECT status FROM browser_enrichment_queue WHERE browser_event_id = 1"
+        ).fetchone()[0]
+        assert status == "skipped"
+
     def test_claim_splits_chunks_on_time_gap(self, db):
         """Events separated by >5 min gap should be in different chunks."""
         old_ts = int(time.time() * 1000) - 600_000  # 10 minutes ago
@@ -367,6 +417,52 @@ class TestWriteBrowserKnowledgeNode:
             "SELECT name FROM entities WHERE type = 'project' AND canonical = 'hippo'"
         ).fetchone()
         assert entity is not None
+
+    def test_domain_entities_created(self, db):
+        """Domains in enrichment result are stored as entity type 'domain'."""
+        old_ts = int(time.time() * 1000) - 120_000
+        _insert_browser_event(
+            db,
+            1,
+            old_ts,
+            url="https://docs.rs/serde",
+            domain="docs.rs",
+        )
+
+        result = EnrichmentResult(
+            summary="Browsed docs.rs and stackoverflow",
+            intent="research",
+            outcome="success",
+            entities={
+                "projects": [],
+                "tools": [],
+                "files": [],
+                "services": [],
+                "errors": [],
+                "domains": ["docs.rs", "stackoverflow.com"],
+            },
+            tags=["rust"],
+            embed_text="Visited docs.rs and stackoverflow for Rust research",
+        )
+
+        node_id = write_browser_knowledge_node(db, result, [1], "test-model")
+        assert node_id > 0
+
+        # Verify domain entities created with correct type
+        domains = db.execute(
+            "SELECT name FROM entities WHERE type = 'domain' ORDER BY name"
+        ).fetchall()
+        assert len(domains) == 2
+        domain_names = [d[0] for d in domains]
+        assert "docs.rs" in domain_names
+        assert "stackoverflow.com" in domain_names
+
+        # Verify linked to knowledge node
+        linked = db.execute(
+            "SELECT COUNT(*) FROM knowledge_node_entities WHERE knowledge_node_id = ?",
+            (node_id,),
+        ).fetchone()[0]
+        assert linked == 2
 
     def test_rollback_on_failure(self, db):
         """Verify transaction rolls back on error, leaving no partial state."""
