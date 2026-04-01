@@ -1691,6 +1691,62 @@ mod tests {
     }
 
     #[test]
+    fn test_insert_browser_event_no_extracted_text() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("test.db");
+        let conn = open_db(&db_path).unwrap();
+
+        let event = BrowserEvent {
+            url: "https://github.com/test".to_string(),
+            title: "Test".to_string(),
+            domain: "github.com".to_string(),
+            dwell_ms: 5000,
+            scroll_depth: 0.5,
+            extracted_text: None,
+            search_query: None,
+            referrer: None,
+            content_hash: None,
+        };
+
+        let id = insert_browser_event(&conn, &event, 1711900000000, Some("no-text-1")).unwrap();
+        assert!(id > 0);
+
+        let hash: Option<String> = conn
+            .query_row(
+                "SELECT content_hash FROM browser_events WHERE id = ?",
+                [id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(
+            hash.is_none(),
+            "content_hash should be None when extracted_text is None"
+        );
+    }
+
+    #[test]
+    fn test_insert_browser_event_no_envelope_id() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("test.db");
+        let conn = open_db(&db_path).unwrap();
+
+        let event = BrowserEvent {
+            url: "https://docs.rs/test".to_string(),
+            title: "Test".to_string(),
+            domain: "docs.rs".to_string(),
+            dwell_ms: 8000,
+            scroll_depth: 0.3,
+            extracted_text: None,
+            search_query: None,
+            referrer: None,
+            content_hash: None,
+        };
+
+        let id = insert_browser_event(&conn, &event, 1711900000000, None).unwrap();
+        assert!(id > 0);
+    }
+
+    #[test]
     fn test_insert_browser_event_dedup() {
         let dir = tempfile::tempdir().unwrap();
         let conn = open_db(&dir.path().join("test.db")).unwrap();

@@ -309,6 +309,29 @@ mod tests {
     }
 
     #[test]
+    fn test_domain_allowlist_matching() {
+        let allowed = ["github.com".to_string(), "stackoverflow.com".to_string()];
+
+        // Helper that matches the logic in run()
+        let is_allowed = |domain: &str| -> bool {
+            let domain_lower = domain.to_lowercase();
+            allowed.iter().any(|d| {
+                domain_lower == d.to_lowercase()
+                    || domain_lower.ends_with(&format!(".{}", d.to_lowercase()))
+            })
+        };
+
+        assert!(is_allowed("github.com"));
+        assert!(is_allowed("www.github.com"));
+        assert!(is_allowed("docs.github.com"));
+        assert!(is_allowed("GITHUB.COM"));
+        assert!(!is_allowed("notgithub.com"));
+        assert!(!is_allowed("evil-github.com"));
+        assert!(is_allowed("stackoverflow.com"));
+        assert!(!is_allowed("example.com"));
+    }
+
+    #[test]
     fn test_browser_visit_deserialize() {
         let json = r#"{
             "url": "https://docs.rs/serde/latest/serde/",

@@ -397,6 +397,37 @@ def test_batch_can_span_multiple_sessions(tmp_db):
     assert returned_sessions == {1, 2}
 
 
+def test_build_enrichment_prompt_with_browser_context():
+    events = [
+        {
+            "command": "cargo build",
+            "exit_code": 0,
+            "duration_ms": 1000,
+            "cwd": "/tmp",
+            "shell": "zsh",
+        }
+    ]
+    context = '\nBrowser Activity (concurrent):\n  stackoverflow.com - "Rust help" (read 5.0s, 80% scroll)'
+    prompt = build_enrichment_prompt(events, browser_context=context)
+    assert "cargo build" in prompt
+    assert "Browser Activity (concurrent):" in prompt
+    assert "stackoverflow.com" in prompt
+
+
+def test_build_enrichment_prompt_no_browser_context():
+    events = [
+        {
+            "command": "ls",
+            "exit_code": 0,
+            "duration_ms": 10,
+            "cwd": "/tmp",
+            "shell": "zsh",
+        }
+    ]
+    prompt = build_enrichment_prompt(events, browser_context="")
+    assert "Browser Activity" not in prompt
+
+
 def test_write_knowledge_node_stores_key_decisions(tmp_db):
     conn, _ = tmp_db
     _seed_event_with_queue(conn, event_id=1)
