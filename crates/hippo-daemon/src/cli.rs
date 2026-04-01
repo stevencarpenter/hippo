@@ -85,6 +85,8 @@ pub enum Commands {
         #[command(subcommand)]
         source: IngestSource,
     },
+    /// Run as Native Messaging host for Firefox extension
+    NativeMessagingHost,
     /// Run diagnostic checks
     Doctor,
 }

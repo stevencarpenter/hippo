@@ -180,11 +180,12 @@ pub async fn flush_events(state: &Arc<DaemonState>) {
                 };
 
                 let env_snapshot_id =
-                    storage::upsert_env_snapshot(&db, &redacted_event.env_snapshot)
-                        .unwrap_or_else(|e| {
+                    storage::upsert_env_snapshot(&db, &redacted_event.env_snapshot).unwrap_or_else(
+                        |e| {
                             warn!("env snapshot failed: {}", e);
                             None
-                        });
+                        },
+                    );
 
                 let eid = envelope.envelope_id.to_string();
                 if let Err(e) = storage::insert_event_at(
@@ -393,7 +394,9 @@ mod tests {
     use super::*;
 
     use hippo_core::config::HippoConfig;
-    use hippo_core::events::{BrowserEvent, EventEnvelope, EventPayload, GitState, ShellEvent, ShellKind};
+    use hippo_core::events::{
+        BrowserEvent, EventEnvelope, EventPayload, GitState, ShellEvent, ShellKind,
+    };
     use hippo_core::protocol::StatusInfo;
     use hippo_core::storage;
     use std::collections::HashMap;

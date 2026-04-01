@@ -2,6 +2,7 @@ pub mod claude_session;
 pub mod commands;
 pub mod daemon;
 pub mod framing;
+pub mod native_messaging;
 
 use hippo_core::config::ENV_ALLOWLIST;
 use hippo_core::events::ShellEvent;
