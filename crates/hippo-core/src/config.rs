@@ -14,6 +14,8 @@ pub struct HippoConfig {
     pub brain: BrainConfig,
     #[serde(default)]
     pub storage: StorageConfig,
+    #[serde(default)]
+    pub browser: BrowserConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -168,6 +170,117 @@ impl Default for StorageConfig {
         Self {
             data_dir: default_data_dir(),
             config_dir: default_config_dir(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BrowserConfig {
+    #[serde(default = "default_browser_enabled")]
+    pub enabled: bool,
+    #[serde(default = "default_min_dwell_ms")]
+    pub min_dwell_ms: u64,
+    #[serde(default = "default_scroll_depth_threshold")]
+    pub scroll_depth_threshold: f32,
+    #[serde(default = "default_dedup_window_minutes")]
+    pub dedup_window_minutes: u64,
+    #[serde(default = "default_correlation_window_ms")]
+    pub correlation_window_ms: u64,
+    #[serde(default = "default_browser_stale_session_secs")]
+    pub stale_session_secs: u64,
+    #[serde(default)]
+    pub allowlist: BrowserAllowlist,
+    #[serde(default)]
+    pub url_redaction: BrowserUrlRedaction,
+}
+
+fn default_browser_enabled() -> bool {
+    true
+}
+fn default_min_dwell_ms() -> u64 {
+    3000
+}
+fn default_scroll_depth_threshold() -> f32 {
+    0.15
+}
+fn default_dedup_window_minutes() -> u64 {
+    30
+}
+fn default_correlation_window_ms() -> u64 {
+    300_000
+}
+fn default_browser_stale_session_secs() -> u64 {
+    60
+}
+
+impl Default for BrowserConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_browser_enabled(),
+            min_dwell_ms: default_min_dwell_ms(),
+            scroll_depth_threshold: default_scroll_depth_threshold(),
+            dedup_window_minutes: default_dedup_window_minutes(),
+            correlation_window_ms: default_correlation_window_ms(),
+            stale_session_secs: default_browser_stale_session_secs(),
+            allowlist: BrowserAllowlist::default(),
+            url_redaction: BrowserUrlRedaction::default(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BrowserAllowlist {
+    #[serde(default = "default_browser_allowlist_domains")]
+    pub domains: Vec<String>,
+}
+
+fn default_browser_allowlist_domains() -> Vec<String> {
+    vec![
+        "github.com".to_string(),
+        "stackoverflow.com".to_string(),
+        "developer.mozilla.org".to_string(),
+        "docs.rs".to_string(),
+        "doc.rust-lang.org".to_string(),
+        "crates.io".to_string(),
+        "npmjs.com".to_string(),
+        "pypi.org".to_string(),
+        "docs.python.org".to_string(),
+        "man7.org".to_string(),
+        "wiki.archlinux.org".to_string(),
+    ]
+}
+
+impl Default for BrowserAllowlist {
+    fn default() -> Self {
+        Self {
+            domains: default_browser_allowlist_domains(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BrowserUrlRedaction {
+    #[serde(default = "default_browser_strip_params")]
+    pub strip_params: Vec<String>,
+}
+
+fn default_browser_strip_params() -> Vec<String> {
+    vec![
+        "token".to_string(),
+        "api_key".to_string(),
+        "password".to_string(),
+        "secret".to_string(),
+        "auth".to_string(),
+        "session".to_string(),
+        "key".to_string(),
+        "sig".to_string(),
+    ]
+}
+
+impl Default for BrowserUrlRedaction {
+    fn default() -> Self {
+        Self {
+            strip_params: default_browser_strip_params(),
         }
     }
 }
@@ -532,5 +645,61 @@ replacement = "***"
     fn test_redact_load_default_returns_ok() {
         let config = RedactConfig::load_default().unwrap();
         assert!(!config.patterns.is_empty());
+    }
+
+    #[test]
+    fn test_browser_config_defaults() {
+        let config = BrowserConfig::default();
+        assert!(config.enabled);
+        assert_eq!(config.min_dwell_ms, 3000);
+        assert!((config.scroll_depth_threshold - 0.15).abs() < f32::EPSILON);
+        assert_eq!(config.dedup_window_minutes, 30);
+        assert_eq!(config.correlation_window_ms, 300_000);
+        assert_eq!(config.stale_session_secs, 60);
+        assert!(config.allowlist.domains.contains(&"github.com".to_string()));
+        assert!(
+            config
+                .allowlist
+                .domains
+                .contains(&"stackoverflow.com".to_string())
+        );
+        assert!(
+            config
+                .url_redaction
+                .strip_params
+                .contains(&"token".to_string())
+        );
+    }
+
+    #[test]
+    fn test_browser_config_from_toml() {
+        let toml_str = r#"
+[browser]
+enabled = false
+min_dwell_ms = 5000
+
+[browser.allowlist]
+domains = ["example.com", "docs.rs"]
+
+[browser.url_redaction]
+strip_params = ["secret", "nonce"]
+"#;
+        let config: HippoConfig = toml::from_str(toml_str).unwrap();
+        assert!(!config.browser.enabled);
+        assert_eq!(config.browser.min_dwell_ms, 5000);
+        // Unspecified fields keep defaults
+        assert!((config.browser.scroll_depth_threshold - 0.15).abs() < f32::EPSILON);
+        assert_eq!(config.browser.dedup_window_minutes, 30);
+        assert_eq!(config.browser.correlation_window_ms, 300_000);
+        assert_eq!(config.browser.stale_session_secs, 60);
+        // Overridden sub-sections
+        assert_eq!(
+            config.browser.allowlist.domains,
+            vec!["example.com", "docs.rs"]
+        );
+        assert_eq!(
+            config.browser.url_redaction.strip_params,
+            vec!["secret", "nonce"]
+        );
     }
 }

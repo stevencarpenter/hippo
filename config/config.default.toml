@@ -25,3 +25,38 @@ session_stale_secs = 120
 [storage]
 # data_dir = "~/.local/share/hippo"
 # config_dir = "~/.config/hippo"
+
+[browser]
+enabled = true
+min_dwell_ms = 3000
+scroll_depth_threshold = 0.15
+dedup_window_minutes = 30
+correlation_window_ms = 300000
+stale_session_secs = 60
+
+[browser.allowlist]
+domains = [
+    "github.com",
+    "stackoverflow.com",
+    "developer.mozilla.org",
+    "docs.rs",
+    "doc.rust-lang.org",
+    "crates.io",
+    "npmjs.com",
+    "pypi.org",
+    "docs.python.org",
+    "man7.org",
+    "wiki.archlinux.org",
+]
+
+[browser.url_redaction]
+strip_params = [
+    "token",
+    "api_key",
+    "password",
+    "secret",
+    "auth",
+    "session",
+    "key",
+    "sig",
+]
