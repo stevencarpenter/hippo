@@ -1,4 +1,5 @@
 use anyhow::{Context, Result};
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
 /// Replace plist template placeholders with actual system values.
@@ -121,6 +122,52 @@ pub fn install_plist(
     std::fs::write(&dest, rendered)?;
     println!("  Installed {}", dest.display());
     Ok(dest)
+}
+
+/// Install the Firefox Native Messaging host manifest and wrapper script.
+///
+/// Creates `hippo_daemon.json` (the manifest) and `hippo-native-messaging` (a wrapper
+/// script that calls `hippo native-messaging-host`) in the Mozilla NativeMessagingHosts
+/// directory. Firefox requires the wrapper because Native Messaging launches the binary
+/// directly without subcommand arguments.
+pub fn install_native_messaging_manifest(hippo_bin: &Path, force: bool) -> Result<()> {
+    let nm_dir = dirs::home_dir()
+        .context("cannot determine home directory")?
+        .join("Library/Application Support/Mozilla/NativeMessagingHosts");
+    std::fs::create_dir_all(&nm_dir)?;
+
+    let manifest_path = nm_dir.join("hippo_daemon.json");
+    if manifest_path.exists() && !force {
+        anyhow::bail!(
+            "{} already exists. Use --force to overwrite.",
+            manifest_path.display()
+        );
+    }
+
+    // Write wrapper script
+    let wrapper_path = nm_dir.join("hippo-native-messaging");
+    let wrapper_content = format!(
+        "#!/bin/bash\nexec {} native-messaging-host\n",
+        hippo_bin.display()
+    );
+    std::fs::write(&wrapper_path, wrapper_content)?;
+    std::fs::set_permissions(&wrapper_path, std::fs::Permissions::from_mode(0o755))?;
+    println!("  Installed wrapper {}", wrapper_path.display());
+
+    // Write manifest JSON
+    let manifest = serde_json::json!({
+        "name": "hippo_daemon",
+        "description": "Hippo knowledge capture daemon - browser event bridge",
+        "path": wrapper_path.to_string_lossy(),
+        "type": "stdio",
+        "allowed_extensions": ["hippo-browser@local"]
+    });
+    let manifest_json =
+        serde_json::to_string_pretty(&manifest).context("cannot serialize manifest")?;
+    std::fs::write(&manifest_path, manifest_json)?;
+    println!("  Installed manifest {}", manifest_path.display());
+
+    Ok(())
 }
 
 #[cfg(test)]
