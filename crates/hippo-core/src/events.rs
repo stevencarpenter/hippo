@@ -18,6 +18,7 @@ pub enum EventPayload {
     Shell(Box<ShellEvent>),
     FsChange(FsChangeEvent),
     IdeAction(IdeActionEvent),
+    Browser(Box<BrowserEvent>),
     Raw(serde_json::Value),
 }
 
@@ -77,6 +78,19 @@ pub struct FsChangeEvent {
     pub path: PathBuf,
     pub change_type: String,
     pub timestamp: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BrowserEvent {
+    pub url: String,
+    pub title: String,
+    pub domain: String,
+    pub dwell_ms: u64,
+    pub scroll_depth: f32,
+    pub extracted_text: Option<String>,
+    pub search_query: Option<String>,
+    pub referrer: Option<String>,
+    pub content_hash: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -147,6 +161,72 @@ mod tests {
         assert_eq!(payload["type"], "Shell");
         assert!(payload["data"].is_object());
         assert_eq!(payload["data"]["command"], "cargo build");
+    }
+
+    fn sample_browser_event() -> BrowserEvent {
+        BrowserEvent {
+            url: "https://docs.rs/serde/latest/serde/".to_string(),
+            title: "serde - Rust".to_string(),
+            domain: "docs.rs".to_string(),
+            dwell_ms: 45000,
+            scroll_depth: 0.75,
+            extracted_text: Some("Serde is a framework for serializing...".to_string()),
+            search_query: Some("rust serde tutorial".to_string()),
+            referrer: Some("https://www.google.com/".to_string()),
+            content_hash: Some("abc123def456".to_string()),
+        }
+    }
+
+    #[test]
+    fn test_browser_event_roundtrip() {
+        let event = sample_browser_event();
+        let envelope = EventEnvelope {
+            envelope_id: Uuid::new_v4(),
+            producer_version: 1,
+            timestamp: Utc::now(),
+            payload: EventPayload::Browser(Box::new(event)),
+        };
+        let json = serde_json::to_string(&envelope).unwrap();
+        let parsed: EventEnvelope = serde_json::from_str(&json).unwrap();
+        match &parsed.payload {
+            EventPayload::Browser(browser) => {
+                assert_eq!(browser.url, "https://docs.rs/serde/latest/serde/");
+                assert_eq!(browser.title, "serde - Rust");
+                assert_eq!(browser.domain, "docs.rs");
+                assert_eq!(browser.dwell_ms, 45000);
+                assert!((browser.scroll_depth - 0.75).abs() < f32::EPSILON);
+                assert_eq!(
+                    browser.extracted_text.as_deref(),
+                    Some("Serde is a framework for serializing...")
+                );
+                assert_eq!(
+                    browser.search_query.as_deref(),
+                    Some("rust serde tutorial")
+                );
+                assert_eq!(
+                    browser.referrer.as_deref(),
+                    Some("https://www.google.com/")
+                );
+                assert_eq!(browser.content_hash.as_deref(), Some("abc123def456"));
+            }
+            _ => panic!("expected Browser payload"),
+        }
+    }
+
+    #[test]
+    fn test_browser_adjacently_tagged_json_shape() {
+        let event = sample_browser_event();
+        let envelope = EventEnvelope {
+            envelope_id: Uuid::new_v4(),
+            producer_version: 1,
+            timestamp: Utc::now(),
+            payload: EventPayload::Browser(Box::new(event)),
+        };
+        let value: serde_json::Value = serde_json::to_value(&envelope).unwrap();
+        let payload = &value["payload"];
+        assert_eq!(payload["type"], "Browser");
+        assert!(payload["data"].is_object());
+        assert_eq!(payload["data"]["domain"], "docs.rs");
     }
 
     #[test]
