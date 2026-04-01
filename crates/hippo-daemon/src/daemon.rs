@@ -146,27 +146,57 @@ pub async fn flush_events(state: &Arc<DaemonState>) {
     let mut session_map = state.session_map.lock().await;
 
     for envelope in &events {
-        if let EventPayload::Shell(ref shell_event) = envelope.payload {
-            let redacted_event = crate::redact_shell_event(shell_event, &state.redaction);
-            let redacted_envelope = EventEnvelope {
-                envelope_id: envelope.envelope_id,
-                producer_version: envelope.producer_version,
-                timestamp: envelope.timestamp,
-                payload: EventPayload::Shell(redacted_event.clone()),
-            };
+        match &envelope.payload {
+            EventPayload::Shell(shell_event) => {
+                let redacted_event = crate::redact_shell_event(shell_event, &state.redaction);
+                let redacted_envelope = EventEnvelope {
+                    envelope_id: envelope.envelope_id,
+                    producer_version: envelope.producer_version,
+                    timestamp: envelope.timestamp,
+                    payload: EventPayload::Shell(redacted_event.clone()),
+                };
 
-            let shell_str = redacted_event.shell.as_db_str();
-            let session_id = match storage::get_or_create_session(
-                &db,
-                &redacted_event.session_id.to_string(),
-                &redacted_event.hostname,
-                shell_str,
-                &username,
-                &mut session_map,
-            ) {
-                Ok(id) => id,
-                Err(e) => {
-                    warn!("session creation failed, falling back: {}", e);
+                let shell_str = redacted_event.shell.as_db_str();
+                let session_id = match storage::get_or_create_session(
+                    &db,
+                    &redacted_event.session_id.to_string(),
+                    &redacted_event.hostname,
+                    shell_str,
+                    &username,
+                    &mut session_map,
+                ) {
+                    Ok(id) => id,
+                    Err(e) => {
+                        warn!("session creation failed, falling back: {}", e);
+                        if let Err(fe) = storage::write_fallback_jsonl(
+                            &state.config.fallback_dir(),
+                            &redacted_envelope,
+                        ) {
+                            error!("fallback write failed: {}", fe);
+                        }
+                        state.drop_count.fetch_add(1, Ordering::Relaxed);
+                        continue;
+                    }
+                };
+
+                let env_snapshot_id =
+                    storage::upsert_env_snapshot(&db, &redacted_event.env_snapshot)
+                        .unwrap_or_else(|e| {
+                            warn!("env snapshot failed: {}", e);
+                            None
+                        });
+
+                let eid = envelope.envelope_id.to_string();
+                if let Err(e) = storage::insert_event_at(
+                    &db,
+                    session_id,
+                    &redacted_event,
+                    envelope.timestamp.timestamp_millis(),
+                    redacted_event.redaction_count,
+                    env_snapshot_id,
+                    Some(&eid),
+                ) {
+                    warn!("event insert failed, falling back: {}", e);
                     if let Err(fe) = storage::write_fallback_jsonl(
                         &state.config.fallback_dir(),
                         &redacted_envelope,
@@ -174,33 +204,22 @@ pub async fn flush_events(state: &Arc<DaemonState>) {
                         error!("fallback write failed: {}", fe);
                     }
                     state.drop_count.fetch_add(1, Ordering::Relaxed);
-                    continue;
                 }
-            };
-
-            let env_snapshot_id = storage::upsert_env_snapshot(&db, &redacted_event.env_snapshot)
-                .unwrap_or_else(|e| {
-                    warn!("env snapshot failed: {}", e);
-                    None
-                });
-
-            let eid = envelope.envelope_id.to_string();
-            if let Err(e) = storage::insert_event_at(
-                &db,
-                session_id,
-                &redacted_event,
-                envelope.timestamp.timestamp_millis(),
-                redacted_event.redaction_count,
-                env_snapshot_id,
-                Some(&eid),
-            ) {
-                warn!("event insert failed, falling back: {}", e);
-                if let Err(fe) =
-                    storage::write_fallback_jsonl(&state.config.fallback_dir(), &redacted_envelope)
-                {
-                    error!("fallback write failed: {}", fe);
+            }
+            EventPayload::Browser(browser_event) => {
+                let eid = envelope.envelope_id.to_string();
+                if let Err(e) = storage::insert_browser_event(
+                    &db,
+                    browser_event,
+                    envelope.timestamp.timestamp_millis(),
+                    Some(&eid),
+                ) {
+                    warn!("browser event insert failed: {}", e);
+                    state.drop_count.fetch_add(1, Ordering::Relaxed);
                 }
-                state.drop_count.fetch_add(1, Ordering::Relaxed);
+            }
+            _ => {
+                // FsChange, IdeAction, Raw — not yet handled
             }
         }
     }
@@ -374,7 +393,7 @@ mod tests {
     use super::*;
 
     use hippo_core::config::HippoConfig;
-    use hippo_core::events::{EventEnvelope, GitState, ShellEvent, ShellKind};
+    use hippo_core::events::{BrowserEvent, EventEnvelope, EventPayload, GitState, ShellEvent, ShellKind};
     use hippo_core::protocol::StatusInfo;
     use hippo_core::storage;
     use std::collections::HashMap;
@@ -855,6 +874,57 @@ replacement = "[CUSTOM]"
             state.event_buffer.lock().await.len(),
             8,
             "buffer should not grow past capacity"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_flush_browser_event() {
+        let config = test_config();
+        let state = test_state_with_config(config);
+
+        let browser_event = BrowserEvent {
+            url: "https://docs.rs/anyhow/latest".to_string(),
+            title: "anyhow - Rust".to_string(),
+            domain: "docs.rs".to_string(),
+            dwell_ms: 12000,
+            scroll_depth: 0.75,
+            extracted_text: Some("Flexible concrete Error type".to_string()),
+            search_query: Some("rust anyhow".to_string()),
+            referrer: Some("https://google.com".to_string()),
+            content_hash: None,
+        };
+
+        let envelope = EventEnvelope {
+            envelope_id: Uuid::new_v4(),
+            producer_version: 1,
+            timestamp: chrono::Utc::now(),
+            payload: EventPayload::Browser(Box::new(browser_event)),
+        };
+
+        {
+            let mut buffer = state.event_buffer.lock().await;
+            buffer.push(envelope);
+        }
+
+        flush_events(&state).await;
+
+        let db = state.write_db.lock().await;
+
+        let event_count: i64 = db
+            .query_row("SELECT COUNT(*) FROM browser_events", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(event_count, 1, "browser_events table should have 1 row");
+
+        let queue_count: i64 = db
+            .query_row(
+                "SELECT COUNT(*) FROM browser_enrichment_queue WHERE status = 'pending'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            queue_count, 1,
+            "browser_enrichment_queue should have 1 pending entry"
         );
     }
 }
