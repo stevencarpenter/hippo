@@ -199,14 +199,8 @@ mod tests {
                     browser.extracted_text.as_deref(),
                     Some("Serde is a framework for serializing...")
                 );
-                assert_eq!(
-                    browser.search_query.as_deref(),
-                    Some("rust serde tutorial")
-                );
-                assert_eq!(
-                    browser.referrer.as_deref(),
-                    Some("https://www.google.com/")
-                );
+                assert_eq!(browser.search_query.as_deref(), Some("rust serde tutorial"));
+                assert_eq!(browser.referrer.as_deref(), Some("https://www.google.com/"));
                 assert_eq!(browser.content_hash.as_deref(), Some("abc123def456"));
             }
             _ => panic!("expected Browser payload"),
