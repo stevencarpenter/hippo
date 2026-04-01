@@ -157,6 +157,10 @@ async fn main() -> Result<()> {
                 install::symlink_binary(&vars.hippo_bin, force)?;
 
                 println!();
+                println!("Installing Native Messaging manifest for Firefox...");
+                install::install_native_messaging_manifest(&vars.hippo_bin, force)?;
+
+                println!();
                 println!("Load with:");
                 println!(
                     "  launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.hippo.daemon.plist"
