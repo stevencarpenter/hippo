@@ -110,14 +110,12 @@ async def main():
         git_repo = event_rows[0][3] if event_rows else ""
         commands_raw = " ; ".join(r[4] for r in event_rows) if event_rows else ""
 
-        # Embed
-        knowledge_vecs = await client.embed([embed_text or ""], model=embedding_model)
-        vec_knowledge = _pad_or_truncate(knowledge_vecs[0], EMBED_DIM)
-
-        command_vecs = await client.embed(
-            [commands_raw or embed_text or ""], model=embedding_model
-        )
-        vec_command = _pad_or_truncate(command_vecs[0], EMBED_DIM)
+        # Embed both texts in a single API call
+        text_knowledge = embed_text or ""
+        text_command = commands_raw or embed_text or ""
+        vecs = await client.embed([text_knowledge, text_command], model=embedding_model)
+        vec_knowledge = _pad_or_truncate(vecs[0], EMBED_DIM)
+        vec_command = _pad_or_truncate(vecs[1], EMBED_DIM)
 
         row = {
             "id": node_id,

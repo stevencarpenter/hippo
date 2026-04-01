@@ -20,7 +20,7 @@ pub fn open_db(path: &Path) -> Result<Connection> {
          PRAGMA busy_timeout=5000;",
     )?;
     let version: i64 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
-    const EXPECTED_VERSION: i64 = 2;
+    const EXPECTED_VERSION: i64 = 3;
 
     // Migrate from v1 → v2: add envelope_id column for dedup
     if version == 1 {
@@ -29,6 +29,57 @@ pub fn open_db(path: &Path) -> Result<Connection> {
              CREATE UNIQUE INDEX IF NOT EXISTS idx_events_envelope_id
                  ON events (envelope_id) WHERE envelope_id IS NOT NULL;
              PRAGMA user_version = 2;",
+        )?;
+    }
+
+    // Migrate from v2 → v3: add Claude session tables
+    if version == 1 || version == 2 {
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS claude_sessions (
+                id INTEGER PRIMARY KEY,
+                session_id TEXT NOT NULL,
+                project_dir TEXT NOT NULL,
+                cwd TEXT NOT NULL,
+                git_branch TEXT,
+                segment_index INTEGER NOT NULL,
+                start_time INTEGER NOT NULL,
+                end_time INTEGER NOT NULL,
+                summary_text TEXT NOT NULL,
+                tool_calls_json TEXT,
+                user_prompts_json TEXT,
+                message_count INTEGER NOT NULL,
+                token_count INTEGER,
+                source_file TEXT NOT NULL,
+                is_subagent INTEGER NOT NULL DEFAULT 0,
+                parent_session_id TEXT,
+                enriched INTEGER NOT NULL DEFAULT 0,
+                created_at INTEGER NOT NULL DEFAULT (unixepoch('now', 'subsec') * 1000),
+                UNIQUE (session_id, segment_index)
+             );
+             CREATE TABLE IF NOT EXISTS knowledge_node_claude_sessions (
+                knowledge_node_id INTEGER NOT NULL REFERENCES knowledge_nodes (id),
+                claude_session_id INTEGER NOT NULL REFERENCES claude_sessions (id),
+                PRIMARY KEY (knowledge_node_id, claude_session_id)
+             );
+             CREATE TABLE IF NOT EXISTS claude_enrichment_queue (
+                id INTEGER PRIMARY KEY,
+                claude_session_id INTEGER NOT NULL UNIQUE REFERENCES claude_sessions (id),
+                status TEXT NOT NULL DEFAULT 'pending'
+                    CHECK (status IN ('pending', 'processing', 'done', 'failed', 'skipped')),
+                priority INTEGER NOT NULL DEFAULT 5,
+                retry_count INTEGER NOT NULL DEFAULT 0,
+                max_retries INTEGER NOT NULL DEFAULT 5,
+                error_message TEXT,
+                locked_at INTEGER,
+                locked_by TEXT,
+                created_at INTEGER NOT NULL DEFAULT (unixepoch('now', 'subsec') * 1000),
+                updated_at INTEGER NOT NULL DEFAULT (unixepoch('now', 'subsec') * 1000)
+             );
+             CREATE INDEX IF NOT EXISTS idx_claude_sessions_cwd ON claude_sessions (cwd);
+             CREATE INDEX IF NOT EXISTS idx_claude_sessions_session ON claude_sessions (session_id);
+             CREATE INDEX IF NOT EXISTS idx_claude_queue_pending ON claude_enrichment_queue (status, priority)
+                 WHERE status = 'pending';
+             PRAGMA user_version = 3;",
         )?;
     } else if version != 0 && version != EXPECTED_VERSION {
         anyhow::bail!(
@@ -1157,7 +1208,7 @@ mod tests {
         let v: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 2);
+        assert_eq!(v, 3);
     }
 
     #[test]
@@ -1222,12 +1273,12 @@ mod tests {
             )
             .unwrap();
         }
-        // open_db should migrate to v2
+        // open_db should migrate to v3 (v1 → v2 → v3)
         let conn = open_db(&db_path).unwrap();
         let v: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 2);
+        assert_eq!(v, 3);
         // Verify envelope_id column exists by inserting with it
         let sid = upsert_session(&conn, "mig-test", "host", "zsh", "user").unwrap();
         let eid = insert_event_at(

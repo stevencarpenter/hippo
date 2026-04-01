@@ -444,6 +444,52 @@ echo "==> Restart brain for daily operation:"
 echo "  mise run start"
 """
 
+[tasks."ingest:claude"]
+description = "Ingest Claude Code session logs into the knowledge base"
+run = "uv run --project brain python scripts/hippo-ingest-claude.py ${@}"
+
+[tasks."ingest:claude:enrich"]
+description = "Ingest + immediately enrich Claude session logs"
+run = "uv run --project brain python scripts/hippo-ingest-claude.py --enrich ${@}"
+
+[tasks."re-enrich:claude"]
+description = "Nuke Claude knowledge nodes, re-enrich 1:1, then re-embed everything"
+run = """
+#!/usr/bin/env bash
+set -euo pipefail
+
+DATA_DIR=~/.local/share/hippo
+DB="$DATA_DIR/hippo.db"
+
+echo "==> Stopping brain..."
+pkill -f 'hippo-brain' 2>/dev/null && sleep 1 || true
+
+echo "==> Resetting Claude knowledge nodes..."
+sqlite3 "$DB" "DELETE FROM knowledge_node_entities WHERE knowledge_node_id IN (SELECT knowledge_node_id FROM knowledge_node_claude_sessions)"
+sqlite3 "$DB" "DELETE FROM knowledge_node_claude_sessions"
+sqlite3 "$DB" "DELETE FROM knowledge_nodes WHERE id NOT IN (SELECT knowledge_node_id FROM knowledge_node_events)"
+sqlite3 "$DB" "UPDATE claude_sessions SET enriched = 0"
+sqlite3 "$DB" "UPDATE claude_enrichment_queue SET status = 'pending', retry_count = 0, error_message = NULL, locked_at = NULL, locked_by = NULL"
+
+PENDING=$(sqlite3 "$DB" "SELECT COUNT(*) FROM claude_enrichment_queue WHERE status = 'pending'")
+echo "  Queued $PENDING segments for 1:1 re-enrichment"
+echo ""
+
+echo "==> Running Claude enrichment (1:1, this will take a while)..."
+uv run --project brain python scripts/hippo-ingest-claude.py --enrich ${1:-}
+echo ""
+
+echo "==> Deleting vector store..."
+rm -rf "$DATA_DIR/vectors"
+
+echo "==> Re-embedding all knowledge nodes..."
+uv run --project brain python scripts/hippo-re-embed.py
+echo ""
+
+echo "=== Done ==="
+echo "Restart brain: mise run start"
+"""
+
 [tasks.re-embed]
 description = "Re-embed all knowledge nodes without re-enriching (use after changing embedding model)"
 run = """

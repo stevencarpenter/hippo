@@ -111,7 +111,7 @@ fn default_poll_interval_secs() -> u64 {
     5
 }
 fn default_enrichment_batch_size() -> usize {
-    10
+    30
 }
 fn default_max_queue_depth() -> usize {
     100
