@@ -30,6 +30,7 @@ async fn poll_socket_removal(socket: &std::path::Path, timeout: std::time::Durat
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt()
+        .with_writer(std::io::stderr)
         .with_env_filter(
             EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
         )
