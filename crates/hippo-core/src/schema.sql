@@ -51,7 +51,7 @@ CREATE TABLE IF NOT EXISTS entities
     id INTEGER PRIMARY KEY,
     type TEXT NOT NULL CHECK (type IN (
         'project', 'file', 'tool', 'service', 'repo', 'host', 'person',
-        'concept'
+        'concept', 'domain'
     )),
     name TEXT NOT NULL,
     canonical TEXT,
@@ -203,4 +203,56 @@ CREATE INDEX IF NOT EXISTS idx_claude_sessions_session ON claude_sessions (sessi
 CREATE INDEX IF NOT EXISTS idx_claude_queue_pending ON claude_enrichment_queue (status, priority)
 WHERE status = 'pending';
 
-PRAGMA user_version = 3;
+-- Browser activity events (captured via Firefox extension)
+CREATE TABLE IF NOT EXISTS browser_events
+(
+    id              INTEGER PRIMARY KEY,
+    timestamp       INTEGER NOT NULL,
+    url             TEXT NOT NULL,
+    title           TEXT,
+    domain          TEXT NOT NULL,
+    dwell_ms        INTEGER NOT NULL,
+    scroll_depth    REAL,
+    extracted_text  TEXT,
+    search_query    TEXT,
+    referrer        TEXT,
+    content_hash    TEXT,
+    envelope_id     TEXT,
+    enriched        INTEGER NOT NULL DEFAULT 0,
+    created_at      INTEGER NOT NULL DEFAULT (unixepoch('now', 'subsec') * 1000)
+);
+
+CREATE TABLE IF NOT EXISTS browser_enrichment_queue
+(
+    id                  INTEGER PRIMARY KEY,
+    browser_event_id    INTEGER NOT NULL UNIQUE REFERENCES browser_events(id),
+    status              TEXT NOT NULL DEFAULT 'pending'
+        CHECK (status IN ('pending', 'processing', 'done', 'failed', 'skipped')),
+    priority            INTEGER NOT NULL DEFAULT 5,
+    retry_count         INTEGER NOT NULL DEFAULT 0,
+    max_retries         INTEGER NOT NULL DEFAULT 5,
+    error_message       TEXT,
+    locked_at           INTEGER,
+    locked_by           TEXT,
+    created_at          INTEGER NOT NULL DEFAULT (unixepoch('now', 'subsec') * 1000),
+    updated_at          INTEGER NOT NULL DEFAULT (unixepoch('now', 'subsec') * 1000)
+);
+
+CREATE TABLE IF NOT EXISTS knowledge_node_browser_events
+(
+    knowledge_node_id   INTEGER NOT NULL REFERENCES knowledge_nodes(id),
+    browser_event_id    INTEGER NOT NULL REFERENCES browser_events(id),
+    PRIMARY KEY (knowledge_node_id, browser_event_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_browser_events_timestamp ON browser_events(timestamp DESC);
+CREATE INDEX IF NOT EXISTS idx_browser_events_domain ON browser_events(domain);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_browser_events_envelope_id ON browser_events(envelope_id)
+    WHERE envelope_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_browser_events_enriched ON browser_events(enriched)
+    WHERE enriched = 0;
+CREATE INDEX IF NOT EXISTS idx_browser_queue_pending ON browser_enrichment_queue(status, priority)
+    WHERE status = 'pending';
+CREATE INDEX IF NOT EXISTS idx_browser_events_ts_domain ON browser_events(timestamp, domain);
+
+PRAGMA user_version = 4;
