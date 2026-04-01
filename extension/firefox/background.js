@@ -104,6 +104,11 @@
 
   // --- Listen for messages from content scripts ---
   browser.runtime.onMessage.addListener((message, _sender) => {
+    // Domain allowlist pre-check — lets content scripts skip expensive work
+    if (message.type === "check_domain") {
+      return Promise.resolve(settings.enabled && isDomainAllowed(message.domain));
+    }
+
     if (message.type !== "page_visit") return;
 
     if (!settings.enabled) return;

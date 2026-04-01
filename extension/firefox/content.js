@@ -75,41 +75,49 @@
 
     sent = true;
 
-    // Extract main content via Readability
-    let extractedText = null;
-    try {
-      if (typeof Readability !== "undefined") {
-        const docClone = document.cloneNode(true);
-        const article = new Readability(docClone).parse();
-        if (article && article.textContent) {
-          extractedText = article.textContent;
-          // Truncate to MAX_TEXT_BYTES
-          if (extractedText.length > MAX_TEXT_BYTES) {
-            extractedText = extractedText.substring(0, MAX_TEXT_BYTES);
+    // Ask background script if this domain is allowlisted before doing
+    // expensive Readability extraction. The background script holds the
+    // runtime allowlist and enabled state.
+    browser.runtime
+      .sendMessage({ type: "check_domain", domain: location.hostname })
+      .then(function (allowed) {
+        if (!allowed) return;
+
+        // Extract main content via Readability
+        let extractedText = null;
+        try {
+          if (typeof Readability !== "undefined") {
+            const docClone = document.cloneNode(true);
+            const article = new Readability(docClone).parse();
+            if (article && article.textContent) {
+              extractedText = article.textContent;
+              // Truncate to MAX_TEXT_BYTES
+              if (extractedText.length > MAX_TEXT_BYTES) {
+                extractedText = extractedText.substring(0, MAX_TEXT_BYTES);
+              }
+            }
           }
+        } catch (_e) {
+          // Readability can fail on malformed DOMs — not critical
+          extractedText = null;
         }
-      }
-    } catch (_e) {
-      // Readability can fail on malformed DOMs — not critical
-      extractedText = null;
-    }
 
-    const message = {
-      type: "page_visit",
-      url: location.href,
-      title: document.title || "",
-      domain: location.hostname,
-      dwell_ms: Math.round(dwellMs),
-      scroll_depth: parseFloat(maxScrollDepth.toFixed(3)),
-      extracted_text: extractedText,
-      referrer: document.referrer || null,
-      timestamp: Date.now(),
-    };
+        const message = {
+          type: "page_visit",
+          url: location.href,
+          title: document.title || "",
+          domain: location.hostname,
+          dwell_ms: Math.round(dwellMs),
+          scroll_depth: parseFloat(maxScrollDepth.toFixed(3)),
+          extracted_text: extractedText,
+          referrer: document.referrer || null,
+          timestamp: Date.now(),
+        };
 
-    try {
-      browser.runtime.sendMessage(message);
-    } catch (_e) {
-      // Extension context may be invalidated — nothing we can do
-    }
+        browser.runtime.sendMessage(message);
+      })
+      .catch(function (_e) {
+        // Extension context may be invalidated — nothing we can do
+      });
   }
 })();
