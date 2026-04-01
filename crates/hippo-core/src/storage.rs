@@ -601,8 +601,8 @@ pub fn recover_fallback_files(
                 continue;
             }
             match serde_json::from_str::<crate::events::EventEnvelope>(line) {
-                Ok(envelope) => {
-                    if let crate::events::EventPayload::Shell(ref shell_event) = envelope.payload {
+                Ok(envelope) => match &envelope.payload {
+                    crate::events::EventPayload::Shell(shell_event) => {
                         let username =
                             std::env::var("USER").unwrap_or_else(|_| "unknown".to_string());
                         let session_id = get_or_create_session(
@@ -627,7 +627,23 @@ pub fn recover_fallback_files(
                             Err(_) => file_errors += 1,
                         }
                     }
-                }
+                    crate::events::EventPayload::Browser(browser_event) => {
+                        let eid = envelope.envelope_id.to_string();
+                        match insert_browser_event(
+                            conn,
+                            browser_event,
+                            envelope.timestamp.timestamp_millis(),
+                            Some(&eid),
+                        ) {
+                            Ok(_) => recovered += 1,
+                            Err(_) => file_errors += 1,
+                        }
+                    }
+                    _ => {
+                        // Other payload types not yet recoverable
+                        file_errors += 1;
+                    }
+                },
                 Err(_) => file_errors += 1,
             }
         }

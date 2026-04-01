@@ -215,7 +215,12 @@ pub async fn flush_events(state: &Arc<DaemonState>) {
                     envelope.timestamp.timestamp_millis(),
                     Some(&eid),
                 ) {
-                    warn!("browser event insert failed: {}", e);
+                    warn!("browser event insert failed, falling back: {}", e);
+                    if let Err(fe) =
+                        storage::write_fallback_jsonl(&state.config.fallback_dir(), envelope)
+                    {
+                        error!("fallback write failed: {}", fe);
+                    }
                     state.drop_count.fetch_add(1, Ordering::Relaxed);
                 }
             }
