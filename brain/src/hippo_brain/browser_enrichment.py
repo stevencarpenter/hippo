@@ -28,17 +28,23 @@ Output a JSON object with these fields:
   - files: Specific files referenced
   - services: Services or APIs referenced
   - errors: Error messages being researched
+  - domains: Key domains visited (e.g., "stackoverflow.com", "docs.rs")
 - tags: Descriptive, specific tags
 - embed_text: A detailed paragraph describing the research session. Specific topics, search queries, and sources. Optimized for semantic search.
 
 Output ONLY valid JSON, no markdown fences or extra text."""
 
 
-def claim_pending_browser_events(conn, worker_id: str, stale_secs: int = 60) -> list[list[dict]]:
+def claim_pending_browser_events(
+    conn, worker_id: str, stale_secs: int = 60, scroll_depth_threshold: float = 0.15
+) -> list[list[dict]]:
     """Atomically claim pending browser events and return them grouped into time-based chunks.
 
     Only claims events whose timestamp is older than stale_secs (to avoid
     processing events from an active browsing session).
+
+    Events with scroll_depth < scroll_depth_threshold AND no search_query are
+    marked 'skipped' and excluded from results.
     """
     now_ms = int(time.time() * 1000)
     stale_threshold_ms = now_ms - (stale_secs * 1000)
@@ -100,7 +106,27 @@ def claim_pending_browser_events(conn, worker_id: str, stale_secs: int = 60) -> 
             }
         )
 
-    return _chunk_by_time_gap(events)
+    # Filter out low-engagement events (low scroll AND no search query)
+    keep = []
+    skip_ids = []
+    for ev in events:
+        scroll = ev.get("scroll_depth") or 0.0
+        has_query = bool(ev.get("search_query"))
+        if scroll < scroll_depth_threshold and not has_query:
+            skip_ids.append(ev["id"])
+        else:
+            keep.append(ev)
+
+    if skip_ids:
+        skip_placeholders = ",".join("?" * len(skip_ids))
+        now_ms = int(time.time() * 1000)
+        conn.execute(
+            f"UPDATE browser_enrichment_queue SET status = 'skipped', updated_at = ? WHERE browser_event_id IN ({skip_placeholders})",
+            [now_ms, *skip_ids],
+        )
+        conn.commit()
+
+    return _chunk_by_time_gap(keep) if keep else []
 
 
 def _chunk_by_time_gap(events: list[dict], gap_ms: int = 300_000) -> list[list[dict]]:
@@ -277,6 +303,7 @@ def write_browser_knowledge_node(
             "files": "file",
             "services": "service",
             "errors": "concept",
+            "domains": "domain",
         }
         for key, entity_type in entity_type_map.items():
             for name in all_entities.get(key, []):

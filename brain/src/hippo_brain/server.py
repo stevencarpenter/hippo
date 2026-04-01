@@ -563,6 +563,46 @@ class BrainServer:
                                     len(event_ids),
                                     node_id,
                                 )
+
+                                if self.embedding_model:
+                                    try:
+                                        node_dict = {
+                                            "id": node_id,
+                                            "session_id": 0,
+                                            "captured_at": int(time.time() * 1000),
+                                            "commands_raw": " ; ".join(
+                                                e.get("url", "") for e in events
+                                            ),
+                                            "cwd": "",
+                                            "git_branch": "",
+                                            "git_repo": "",
+                                            "outcome": result.outcome,
+                                            "tags": result.tags,
+                                            "key_decisions": result.key_decisions,
+                                            "problems_encountered": result.problems_encountered,
+                                            "entities": result.entities
+                                            if isinstance(result.entities, dict)
+                                            else {},
+                                            "embed_text": result.embed_text,
+                                            "summary": result.summary,
+                                            "enrichment_model": self.enrichment_model,
+                                            "enrichment_version": 1,
+                                        }
+                                        await embed_knowledge_node(
+                                            self.client,
+                                            self._vector_table,
+                                            node_dict,
+                                            embed_model=self.embedding_model,
+                                        )
+                                        logger.info(
+                                            "embedded browser node %d into vector store",
+                                            node_id,
+                                        )
+                                    except Exception as e:
+                                        logger.warning(
+                                            "browser embedding failed (non-fatal): %s",
+                                            e,
+                                        )
                             except Exception as e:
                                 self.last_error = str(e)
                                 self.last_error_at_ms = int(time.time() * 1000)
