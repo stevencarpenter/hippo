@@ -28,13 +28,14 @@ session_stale_secs = 120
 
 [browser]
 enabled = true
-min_dwell_ms = 3000
-scroll_depth_threshold = 0.15
-dedup_window_minutes = 30
-correlation_window_ms = 300000
-stale_session_secs = 60
+min_dwell_ms = 3000                 # Skip visits shorter than this (ms)
+scroll_depth_threshold = 0.15       # Skip pages scrolled < 15% with no search query
+dedup_window_minutes = 30           # Same URL within this window = one logical visit
+correlation_window_ms = 300000      # ±5min window for correlating browser + shell events
+stale_session_secs = 60             # Wait this long before enriching browser sessions
 
 [browser.allowlist]
+# Only capture from these domains (subdomains included)
 domains = [
     "github.com",
     "stackoverflow.com",
@@ -50,6 +51,7 @@ domains = [
 ]
 
 [browser.url_redaction]
+# Query parameter names to strip from URLs before storage
 strip_params = [
     "token",
     "api_key",

@@ -13,6 +13,7 @@ local LLMs.
 - `shell/` - zsh hook scripts
 - `config/` - default config templates
 - `launchd/` - LaunchAgent plists
+- `extension/firefox/` - Firefox WebExtension for browser activity capture
 
 ## Commands
 
@@ -66,6 +67,24 @@ Communication:
 - CLI to daemon: request/response via same Unix socket
 - hippo query (non-raw) to brain: HTTP request to brain local server
 - Brain to SQLite: direct read/write (WAL mode, busy_timeout=5000)
+
+### Browser Source (Firefox)
+
+Firefox Developer Edition extension captures browsing activity from allowlisted domains and sends it to hippo-daemon via Native Messaging.
+
+**Setup:**
+1. Build: `cargo build --release`
+2. Install: `hippo daemon install --force` (installs LaunchAgents + Native Messaging manifest)
+3. Load extension: `about:debugging` → Load Temporary Add-on → `extension/firefox/manifest.json`
+
+**Key paths:**
+- Extension: `extension/firefox/`
+- Native Messaging manifest: `~/Library/Application Support/Mozilla/NativeMessagingHosts/hippo_daemon.json`
+- Config: `[browser]` section in `~/.config/hippo/config.toml`
+
+**CLI:** `hippo native-messaging-host` — stdin/stdout bridge invoked by Firefox, not run manually
+
+**Schema:** v4 adds `browser_events`, `browser_enrichment_queue`, `knowledge_node_browser_events`
 
 ## Style
 
