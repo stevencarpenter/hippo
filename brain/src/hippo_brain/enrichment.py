@@ -41,7 +41,7 @@ def _actor_label(shell: str) -> str:
     return "developer (human)"
 
 
-def build_enrichment_prompt(events: list[dict]) -> str:
+def build_enrichment_prompt(events: list[dict], browser_context: str = "") -> str:
     """Format events into the user prompt template."""
     lines = []
     for i, ev in enumerate(events, 1):
@@ -62,7 +62,10 @@ def build_enrichment_prompt(events: list[dict]) -> str:
         if ev.get("stderr"):
             parts.append(f"  stderr:\n{ev['stderr']}")
         lines.append("\n".join(parts))
-    return "\n\n".join(lines)
+    prompt = "\n\n".join(lines)
+    if browser_context:
+        prompt += "\n\n" + browser_context
+    return prompt
 
 
 def parse_enrichment_response(raw: str) -> EnrichmentResult:

@@ -26,6 +26,13 @@ from hippo_brain.enrichment import (
     parse_enrichment_response,
     write_knowledge_node,
 )
+from hippo_brain.browser_enrichment import (
+    BROWSER_SYSTEM_PROMPT,
+    build_browser_enrichment_prompt,
+    claim_pending_browser_events,
+    mark_browser_queue_failed,
+    write_browser_knowledge_node,
+)
 from hippo_brain.claude_sessions import (
     CLAUDE_SYSTEM_PROMPT,
     claim_pending_claude_segments,
@@ -82,8 +89,8 @@ class BrainServer:
         conn.execute("PRAGMA foreign_keys=ON")
         conn.execute("PRAGMA busy_timeout=5000")
         version = conn.execute("PRAGMA user_version").fetchone()[0]
-        EXPECTED_VERSION = 3
-        if version != EXPECTED_VERSION:
+        EXPECTED_VERSION = 4
+        if version not in (EXPECTED_VERSION, 3):
             conn.close()
             raise RuntimeError(
                 f"DB schema version mismatch: expected {EXPECTED_VERSION}, found {version}. "
@@ -98,6 +105,8 @@ class BrainServer:
         queue_failed = 0
         claude_queue_depth = 0
         claude_queue_failed = 0
+        browser_queue_depth = 0
+        browser_queue_failed = 0
         db_reachable = True
         try:
             conn = self._get_conn()
@@ -114,6 +123,16 @@ class BrainServer:
                 claude_queue_failed = conn.execute(
                     "SELECT COUNT(*) FROM claude_enrichment_queue WHERE status = 'failed'"
                 ).fetchone()[0]
+                try:
+                    browser_queue_depth = conn.execute(
+                        "SELECT COUNT(*) FROM browser_enrichment_queue WHERE status = 'pending'"
+                    ).fetchone()[0]
+                    browser_queue_failed = conn.execute(
+                        "SELECT COUNT(*) FROM browser_enrichment_queue WHERE status = 'failed'"
+                    ).fetchone()[0]
+                except Exception:
+                    browser_queue_depth = 0
+                    browser_queue_failed = 0
             finally:
                 conn.close()
         except Exception:
@@ -130,6 +149,8 @@ class BrainServer:
                 "queue_failed": queue_failed,
                 "claude_queue_depth": claude_queue_depth,
                 "claude_queue_failed": claude_queue_failed,
+                "browser_queue_depth": browser_queue_depth,
+                "browser_queue_failed": browser_queue_failed,
                 "last_success_at_ms": self.last_success_at_ms,
                 "last_error": self.last_error,
                 "last_error_at_ms": self.last_error_at_ms,
@@ -245,7 +266,25 @@ class BrainServer:
                     for events in chunks:
                         event_ids = [e["id"] for e in events]
                         logger.info("claimed %d events: %s", len(event_ids), event_ids)
-                        prompt = build_enrichment_prompt(events)
+
+                        browser_context = ""
+                        try:
+                            from hippo_brain.browser_enrichment import (
+                                get_correlated_browser_events,
+                                format_browser_context_for_shell_prompt,
+                            )
+
+                            if events:
+                                start_ts = min(e["timestamp"] for e in events)
+                                end_ts = max(e["timestamp"] for e in events)
+                                correlated = get_correlated_browser_events(conn, start_ts, end_ts)
+                                browser_context = format_browser_context_for_shell_prompt(
+                                    correlated
+                                )
+                        except Exception as e:
+                            logger.debug("browser correlation skipped: %s", e)
+
+                        prompt = build_enrichment_prompt(events, browser_context=browser_context)
                         logger.info("calling LM Studio (prompt len: %d chars)", len(prompt))
 
                         try:
@@ -463,6 +502,78 @@ class BrainServer:
                                     retry_conn.close()
                     except Exception as e:
                         logger.debug("no claude segments to process: %s", e)
+
+                    # Process browser events
+                    try:
+                        browser_batches = claim_pending_browser_events(
+                            conn, worker_id, stale_secs=60
+                        )
+                        for events in browser_batches:
+                            event_ids = [e["id"] for e in events]
+                            logger.info(
+                                "claimed %d browser events: %s",
+                                len(event_ids),
+                                event_ids,
+                            )
+                            prompt = build_browser_enrichment_prompt(events)
+
+                            try:
+                                result = None
+                                last_err = None
+                                for attempt in range(3):
+                                    try:
+                                        messages = [
+                                            {
+                                                "role": "system",
+                                                "content": BROWSER_SYSTEM_PROMPT,
+                                            },
+                                            {"role": "user", "content": prompt},
+                                        ]
+                                        if attempt > 0:
+                                            messages.append(
+                                                {
+                                                    "role": "user",
+                                                    "content": (
+                                                        "Your previous response was not valid JSON. "
+                                                        "Output ONLY a JSON object, no explanation or markdown."
+                                                    ),
+                                                }
+                                            )
+                                        raw = await self.client.chat(
+                                            messages=messages,
+                                            model=self.enrichment_model,
+                                        )
+                                        result = parse_enrichment_response(raw)
+                                        break
+                                    except Exception as e:
+                                        last_err = e
+                                        logger.warning(
+                                            "browser enrichment attempt %d failed: %s",
+                                            attempt + 1,
+                                            e,
+                                        )
+                                if result is None:
+                                    raise last_err
+                                node_id = write_browser_knowledge_node(
+                                    conn, result, event_ids, self.enrichment_model
+                                )
+                                self.last_success_at_ms = int(time.time() * 1000)
+                                logger.info(
+                                    "enriched %d browser events -> node %d",
+                                    len(event_ids),
+                                    node_id,
+                                )
+                            except Exception as e:
+                                self.last_error = str(e)
+                                self.last_error_at_ms = int(time.time() * 1000)
+                                logger.error("browser enrichment failed: %s", e)
+                                retry_conn = self._get_conn()
+                                try:
+                                    mark_browser_queue_failed(retry_conn, event_ids, str(e))
+                                finally:
+                                    retry_conn.close()
+                    except Exception as e:
+                        logger.warning("browser enrichment polling error: %s", e)
 
                     conn.close()
                 except Exception as e:
