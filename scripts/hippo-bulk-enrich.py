@@ -20,6 +20,7 @@ from hippo_brain.enrichment import (
     mark_queue_failed,
     parse_enrichment_response,
     write_knowledge_node,
+    claim_pending_events_by_cwd,
     claim_pending_events_by_session,
 )
 
@@ -53,7 +54,7 @@ async def main():
     )
     brain_config = config.get("brain", {})
     max_per_chunk = brain_config.get(
-        "max_events_per_chunk", brain_config.get("enrichment_batch_size", 10)
+        "max_events_per_chunk", brain_config.get("enrichment_batch_size", 30)
     )
 
     storage = config.get("storage", {})
@@ -86,13 +87,17 @@ async def main():
     worker_id = "bulk-enrichment"
     total_enriched = 0
     total_failed = 0
-    # Use stale_secs=0 to process ALL pending events including active sessions
-    stale_secs = 0
+
+    # Use --by-session flag to fall back to session-based grouping
+    use_cwd = "--by-session" not in sys.argv
 
     while True:
-        chunks = claim_pending_events_by_session(
-            conn, max_per_chunk, worker_id, stale_secs
-        )
+        if use_cwd:
+            chunks = claim_pending_events_by_cwd(conn, worker_id)
+        else:
+            chunks = claim_pending_events_by_session(
+                conn, max_per_chunk, worker_id, stale_secs=0
+            )
         if not chunks:
             break
 

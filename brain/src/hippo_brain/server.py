@@ -26,6 +26,12 @@ from hippo_brain.enrichment import (
     parse_enrichment_response,
     write_knowledge_node,
 )
+from hippo_brain.claude_sessions import (
+    CLAUDE_SYSTEM_PROMPT,
+    claim_pending_claude_segments,
+    mark_claude_queue_failed,
+    write_claude_knowledge_node,
+)
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s:%(name)s:%(message)s")
 logger = logging.getLogger("hippo_brain")
@@ -40,7 +46,7 @@ class BrainServer:
         enrichment_model: str = "",
         embedding_model: str = "",
         poll_interval_secs: int = 5,
-        enrichment_batch_size: int = 10,
+        enrichment_batch_size: int = 30,
         session_stale_secs: int = 120,
     ):
         if not db_path:
@@ -76,7 +82,7 @@ class BrainServer:
         conn.execute("PRAGMA foreign_keys=ON")
         conn.execute("PRAGMA busy_timeout=5000")
         version = conn.execute("PRAGMA user_version").fetchone()[0]
-        EXPECTED_VERSION = 2
+        EXPECTED_VERSION = 3
         if version != EXPECTED_VERSION:
             conn.close()
             raise RuntimeError(
@@ -90,6 +96,8 @@ class BrainServer:
 
         queue_depth = 0
         queue_failed = 0
+        claude_queue_depth = 0
+        claude_queue_failed = 0
         db_reachable = True
         try:
             conn = self._get_conn()
@@ -99,6 +107,12 @@ class BrainServer:
                 ).fetchone()[0]
                 queue_failed = conn.execute(
                     "SELECT COUNT(*) FROM enrichment_queue WHERE status = 'failed'"
+                ).fetchone()[0]
+                claude_queue_depth = conn.execute(
+                    "SELECT COUNT(*) FROM claude_enrichment_queue WHERE status = 'pending'"
+                ).fetchone()[0]
+                claude_queue_failed = conn.execute(
+                    "SELECT COUNT(*) FROM claude_enrichment_queue WHERE status = 'failed'"
                 ).fetchone()[0]
             finally:
                 conn.close()
@@ -114,6 +128,8 @@ class BrainServer:
                 "db_reachable": db_reachable,
                 "queue_depth": queue_depth,
                 "queue_failed": queue_failed,
+                "claude_queue_depth": claude_queue_depth,
+                "claude_queue_failed": claude_queue_failed,
                 "last_success_at_ms": self.last_success_at_ms,
                 "last_error": self.last_error,
                 "last_error_at_ms": self.last_error_at_ms,
@@ -255,7 +271,11 @@ class BrainServer:
                                         messages=messages,
                                         model=self.enrichment_model,
                                     )
-                                    logger.debug("LLM raw response (%d chars): %s", len(raw or ""), repr(raw)[:200])
+                                    logger.debug(
+                                        "LLM raw response (%d chars): %s",
+                                        len(raw or ""),
+                                        repr(raw)[:200],
+                                    )
                                     result = parse_enrichment_response(raw)
                                     break
                                 except Exception as e:
@@ -318,6 +338,132 @@ class BrainServer:
                             finally:
                                 retry_conn.close()
 
+                    # Process Claude session segments
+                    try:
+                        claude_batches = claim_pending_claude_segments(conn, worker_id)
+                        for segments in claude_batches:
+                            segment_ids = [s["id"] for s in segments]
+                            prompt = "\n---\n\n".join(s["summary_text"] for s in segments)
+                            logger.info(
+                                "claimed %d claude segments: %s",
+                                len(segment_ids),
+                                segment_ids,
+                            )
+
+                            try:
+                                result = None
+                                last_err = None
+                                for attempt in range(3):
+                                    try:
+                                        messages = [
+                                            {
+                                                "role": "system",
+                                                "content": CLAUDE_SYSTEM_PROMPT,
+                                            },
+                                            {"role": "user", "content": prompt},
+                                        ]
+                                        if attempt > 0:
+                                            messages.append(
+                                                {
+                                                    "role": "user",
+                                                    "content": (
+                                                        "Your previous response was not valid JSON. "
+                                                        "Output ONLY a JSON object, no explanation or markdown."
+                                                    ),
+                                                }
+                                            )
+                                        raw = await self.client.chat(
+                                            messages=messages,
+                                            model=self.enrichment_model,
+                                        )
+                                        result = parse_enrichment_response(raw)
+                                        break
+                                    except Exception as e:
+                                        last_err = e
+                                        logger.warning(
+                                            "claude enrichment parse attempt %d failed: %s",
+                                            attempt + 1,
+                                            e,
+                                        )
+                                if result is None:
+                                    raise last_err
+                                node_id = write_claude_knowledge_node(
+                                    conn,
+                                    result,
+                                    segment_ids,
+                                    self.enrichment_model,
+                                )
+                                self.last_success_at_ms = int(time.time() * 1000)
+                                self.last_error = None
+                                self.last_error_at_ms = None
+                                logger.info(
+                                    "enriched %d claude segments -> node %d",
+                                    len(segment_ids),
+                                    node_id,
+                                )
+
+                                if self.embedding_model:
+                                    try:
+                                        import json as _json
+
+                                        all_tools = []
+                                        for s in segments:
+                                            try:
+                                                tools = _json.loads(s.get("tool_calls_json", "[]"))
+                                                all_tools.extend(
+                                                    f"{t['name']}: {t['summary']}" for t in tools
+                                                )
+                                            except (
+                                                _json.JSONDecodeError,
+                                                KeyError,
+                                            ):
+                                                pass
+                                        node_dict = {
+                                            "id": node_id,
+                                            "session_id": 0,
+                                            "captured_at": int(time.time() * 1000),
+                                            "commands_raw": " ; ".join(all_tools[:50]),
+                                            "cwd": segments[0].get("cwd", ""),
+                                            "git_branch": segments[0].get("git_branch", ""),
+                                            "git_repo": "",
+                                            "outcome": result.outcome,
+                                            "tags": result.tags,
+                                            "key_decisions": result.key_decisions,
+                                            "problems_encountered": result.problems_encountered,
+                                            "entities": result.entities
+                                            if isinstance(result.entities, dict)
+                                            else {},
+                                            "embed_text": result.embed_text,
+                                            "summary": result.summary,
+                                            "enrichment_model": self.enrichment_model,
+                                        }
+                                        await embed_knowledge_node(
+                                            self.client,
+                                            self._vector_table,
+                                            node_dict,
+                                            embed_model=self.embedding_model,
+                                        )
+                                        logger.info(
+                                            "embedded claude node %d into vector store",
+                                            node_id,
+                                        )
+                                    except Exception as e:
+                                        logger.warning(
+                                            "claude embedding failed (non-fatal): %s",
+                                            e,
+                                        )
+                            except Exception as e:
+                                self.last_error = str(e)
+                                self.last_error_at_ms = int(time.time() * 1000)
+                                logger.error("claude enrichment failed: %s", e)
+                                retry_conn = self._get_conn()
+                                try:
+                                    mark_claude_queue_failed(retry_conn, segment_ids, str(e))
+                                finally:
+                                    retry_conn.close()
+                    except Exception as e:
+                        logger.debug("no claude segments to process: %s", e)
+
                     conn.close()
                 except Exception as e:
                     self.last_error = str(e)
@@ -353,7 +499,7 @@ def create_app(
     enrichment_model: str = "",
     embedding_model: str = "",
     poll_interval_secs: int = 5,
-    enrichment_batch_size: int = 10,
+    enrichment_batch_size: int = 30,
     session_stale_secs: int = 120,
 ) -> Starlette:
     server = BrainServer(

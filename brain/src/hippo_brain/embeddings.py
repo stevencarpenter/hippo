@@ -63,12 +63,20 @@ async def embed_knowledge_node(
     embed_text = node_dict.get("embed_text", "")
     commands_raw = node_dict.get("commands_raw", "")
 
-    knowledge_vecs = await client.embed([embed_text], model=embed_model)
-    vec_knowledge = _pad_or_truncate(knowledge_vecs[0], EMBED_DIM)
-
     cmd_model = command_model or embed_model
-    command_vecs = await client.embed([commands_raw or embed_text], model=cmd_model)
-    vec_command = _pad_or_truncate(command_vecs[0], EMBED_DIM)
+    cmd_text = commands_raw or embed_text
+
+    if cmd_model == embed_model:
+        # Single batched call for both vectors
+        vecs = await client.embed([embed_text, cmd_text], model=embed_model)
+        vec_knowledge = _pad_or_truncate(vecs[0], EMBED_DIM)
+        vec_command = _pad_or_truncate(vecs[1], EMBED_DIM)
+    else:
+        # Different models — two calls required
+        knowledge_vecs = await client.embed([embed_text], model=embed_model)
+        vec_knowledge = _pad_or_truncate(knowledge_vecs[0], EMBED_DIM)
+        command_vecs = await client.embed([cmd_text], model=cmd_model)
+        vec_command = _pad_or_truncate(command_vecs[0], EMBED_DIM)
 
     import json
 

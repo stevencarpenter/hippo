@@ -2,10 +2,10 @@
 base_url = "http://localhost:1234/v1"
 
 [models]
-enrichment = "qwen/qwen3.5-35b-a3b"                    # Daily enrichment (fast MoE)
-enrichment_bulk = ""                                    # Bulk re-enrichment (strongest available, e.g. gpt-oss-120b-mlx-crack)
-query = "qwen/qwen3.5-35b-a3b"
-embedding = "text-embedding-nomic-embed-text-v2-moe"
+enrichment = "gpt-oss-120b-mlx-crack"                    # Daily: MoE, 35B total, 3B active — fast
+enrichment_bulk = "gpt-oss-120b-mlx-crack"               # Bulk: strongest available — slow but reliable
+query = "gpt-oss-120b-mlx-crack"                          # Same model for query reformulation
+embedding = "text-embedding-nomic-embed-text-v2-moe"     # Purpose-built embedding model, 768d
 
 [daemon]
 flush_interval_ms = 100
@@ -17,7 +17,7 @@ output_tail_lines = 100
 [brain]
 port = 9175
 poll_interval_secs = 5
-enrichment_batch_size = 10
+enrichment_batch_size = 30
 max_events_per_chunk = 30
 max_queue_depth = 100
 session_stale_secs = 120

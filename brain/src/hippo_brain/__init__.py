@@ -11,7 +11,7 @@ def _load_runtime_settings() -> dict:
             "lmstudio_base_url": "http://localhost:1234/v1",
             "enrichment_model": "",
             "poll_interval_secs": 5,
-            "enrichment_batch_size": 10,
+            "enrichment_batch_size": 30,
             "port": 9175,
         }
 
