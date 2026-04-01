@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      width: 300px;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      font-size: 13px;
+      color: #d3c6aa;
+      background: #2d353b;
+      padding: 16px;
+    }
+    h1 {
+      font-size: 16px;
+      font-weight: 600;
+      margin-bottom: 12px;
+      color: #a7c080;
+    }
+    .row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 12px;
+    }
+    label {
+      cursor: pointer;
+      user-select: none;
+    }
+    .stat {
+      font-size: 12px;
+      color: #859289;
+    }
+    .stat strong {
+      color: #d3c6aa;
+    }
+    textarea {
+      width: 100%;
+      height: 120px;
+      background: #343f44;
+      border: 1px solid #475258;
+      border-radius: 4px;
+      color: #d3c6aa;
+      font-family: monospace;
+      font-size: 12px;
+      padding: 8px;
+      resize: vertical;
+      margin-bottom: 8px;
+    }
+    textarea:focus {
+      outline: none;
+      border-color: #a7c080;
+    }
+    .label-text {
+      font-size: 12px;
+      color: #859289;
+      margin-bottom: 4px;
+    }
+    button {
+      display: block;
+      width: 100%;
+      padding: 8px;
+      background: #a7c080;
+      color: #2d353b;
+      border: none;
+      border-radius: 4px;
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    button:hover {
+      background: #b5cf8e;
+    }
+    .saved {
+      text-align: center;
+      color: #a7c080;
+      font-size: 12px;
+      margin-top: 8px;
+      opacity: 0;
+      transition: opacity 0.2s;
+    }
+    .saved.show {
+      opacity: 1;
+    }
+  </style>
+</head>
+<body>
+  <h1>Hippo</h1>
+
+  <div class="row">
+    <label>
+      <input type="checkbox" id="enabled" checked>
+      Capture enabled
+    </label>
+  </div>
+
+  <div class="stat">
+    Pages captured: <strong id="count">0</strong>
+  </div>
+
+  <hr style="border: none; border-top: 1px solid #475258; margin: 12px 0;">
+
+  <div class="label-text">Allowed domains (one per line)</div>
+  <textarea id="allowlist"></textarea>
+
+  <button id="save">Save</button>
+  <div class="saved" id="saved">Settings saved</div>
+
+  <script src="popup.js"></script>
+</body>
+</html>

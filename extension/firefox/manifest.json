@@ -1,0 +1,32 @@
+{
+  "manifest_version": 2,
+  "name": "Hippo Browser Capture",
+  "version": "0.1.0",
+  "description": "Captures browsing activity for Hippo knowledge base",
+  "permissions": [
+    "nativeMessaging",
+    "tabs",
+    "activeTab",
+    "storage"
+  ],
+  "background": {
+    "scripts": ["background.js"],
+    "persistent": false
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["lib/Readability.js", "content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "browser_action": {
+    "default_popup": "popup.html",
+    "default_title": "Hippo"
+  },
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "hippo-browser@local"
+    }
+  }
+}
