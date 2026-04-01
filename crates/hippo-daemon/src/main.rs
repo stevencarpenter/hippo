@@ -425,6 +425,9 @@ async fn main() -> Result<()> {
                 }
             }
         },
+        Commands::NativeMessagingHost => {
+            hippo_daemon::native_messaging::run(&config).await?;
+        }
         Commands::Doctor => {
             commands::handle_doctor(&config).await?;
         }

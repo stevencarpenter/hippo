@@ -1587,7 +1587,11 @@ mod tests {
                     |row| row.get(0),
                 )
                 .unwrap();
-            assert!(exists, "table '{}' should exist after v3→v4 migration", table);
+            assert!(
+                exists,
+                "table '{}' should exist after v3→v4 migration",
+                table
+            );
         }
 
         // Close and re-open — should remain at v4 without error
@@ -1635,7 +1639,10 @@ mod tests {
         let mut rows = stmt.query([event_id]).unwrap();
         let row = rows.next().unwrap().expect("should have one row");
 
-        assert_eq!(row.get::<_, String>(0).unwrap(), "https://docs.rs/serde/latest/serde/");
+        assert_eq!(
+            row.get::<_, String>(0).unwrap(),
+            "https://docs.rs/serde/latest/serde/"
+        );
         assert_eq!(row.get::<_, String>(1).unwrap(), "serde - Rust");
         assert_eq!(row.get::<_, String>(2).unwrap(), "docs.rs");
         assert_eq!(row.get::<_, i64>(3).unwrap(), 45000);
@@ -1696,8 +1703,9 @@ mod tests {
         assert!(eid1 > 0);
 
         // Second insert with same envelope_id should return -1
-        let eid2 = insert_browser_event(&conn, &event, timestamp_ms + 1000, Some("dup-browser-env"))
-            .unwrap();
+        let eid2 =
+            insert_browser_event(&conn, &event, timestamp_ms + 1000, Some("dup-browser-env"))
+                .unwrap();
         assert_eq!(eid2, -1, "duplicate envelope_id should return -1");
 
         // Only one row in browser_events
@@ -1708,11 +1716,9 @@ mod tests {
 
         // Only one enrichment queue entry
         let q_count: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM browser_enrichment_queue",
-                [],
-                |r| r.get(0),
-            )
+            .query_row("SELECT COUNT(*) FROM browser_enrichment_queue", [], |r| {
+                r.get(0)
+            })
             .unwrap();
         assert_eq!(q_count, 1);
     }
