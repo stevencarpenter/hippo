@@ -5,7 +5,7 @@ use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 
-use crate::events::ShellEvent;
+use crate::events::{BrowserEvent, ShellEvent};
 
 const SCHEMA: &str = include_str!("schema.sql");
 
@@ -315,6 +315,63 @@ pub fn insert_event_at(
     // Auto-queue for enrichment (atomic with event insert — rolls back on failure)
     tx.execute(
         "INSERT INTO enrichment_queue (event_id) VALUES (?1)",
+        [event_id],
+    )?;
+
+    tx.commit()?;
+    Ok(event_id)
+}
+
+pub fn insert_browser_event(
+    conn: &Connection,
+    event: &BrowserEvent,
+    timestamp_ms: i64,
+    envelope_id: Option<&str>,
+) -> Result<i64> {
+    // Compute content_hash from extracted_text if present
+    let content_hash = event.extracted_text.as_ref().map(|text| {
+        let mut hasher = Sha256::new();
+        hasher.update(text.as_bytes());
+        hasher
+            .finalize()
+            .iter()
+            .map(|b| format!("{:02x}", b))
+            .collect::<String>()
+    });
+
+    let tx = conn.unchecked_transaction()?;
+
+    let rows = tx.execute(
+        "INSERT OR IGNORE INTO browser_events
+         (timestamp, url, title, domain, dwell_ms, scroll_depth,
+          extracted_text, search_query, referrer, content_hash, envelope_id)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+        rusqlite::params![
+            timestamp_ms,
+            event.url,
+            event.title,
+            event.domain,
+            event.dwell_ms as i64,
+            event.scroll_depth as f64,
+            event.extracted_text,
+            event.search_query,
+            event.referrer,
+            content_hash,
+            envelope_id,
+        ],
+    )?;
+
+    if rows == 0 {
+        // Duplicate envelope_id — skip enrichment queue too
+        tx.commit()?;
+        return Ok(-1);
+    }
+
+    let event_id = tx.last_insert_rowid();
+
+    // Auto-queue for enrichment (atomic with event insert — rolls back on failure)
+    tx.execute(
+        "INSERT INTO browser_enrichment_queue (browser_event_id) VALUES (?1)",
         [event_id],
     )?;
 
@@ -1540,5 +1597,123 @@ mod tests {
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
         assert_eq!(v2, 4);
+    }
+
+    fn sample_browser_event() -> BrowserEvent {
+        BrowserEvent {
+            url: "https://docs.rs/serde/latest/serde/".to_string(),
+            title: "serde - Rust".to_string(),
+            domain: "docs.rs".to_string(),
+            dwell_ms: 45000,
+            scroll_depth: 0.75,
+            extracted_text: Some("Serde is a framework for serializing...".to_string()),
+            search_query: Some("rust serde tutorial".to_string()),
+            referrer: Some("https://www.google.com/".to_string()),
+            content_hash: None, // will be computed by insert_browser_event
+        }
+    }
+
+    #[test]
+    fn test_insert_browser_event() {
+        let dir = tempfile::tempdir().unwrap();
+        let conn = open_db(&dir.path().join("test.db")).unwrap();
+
+        let event = sample_browser_event();
+        let timestamp_ms = chrono::Utc::now().timestamp_millis();
+        let event_id =
+            insert_browser_event(&conn, &event, timestamp_ms, Some("browser-env-1")).unwrap();
+        assert!(event_id > 0);
+
+        // Verify it's stored in browser_events with correct fields
+        let mut stmt = conn
+            .prepare(
+                "SELECT url, title, domain, dwell_ms, scroll_depth, extracted_text,
+                        search_query, referrer, content_hash, envelope_id
+                 FROM browser_events WHERE id = ?1",
+            )
+            .unwrap();
+        let mut rows = stmt.query([event_id]).unwrap();
+        let row = rows.next().unwrap().expect("should have one row");
+
+        assert_eq!(row.get::<_, String>(0).unwrap(), "https://docs.rs/serde/latest/serde/");
+        assert_eq!(row.get::<_, String>(1).unwrap(), "serde - Rust");
+        assert_eq!(row.get::<_, String>(2).unwrap(), "docs.rs");
+        assert_eq!(row.get::<_, i64>(3).unwrap(), 45000);
+        assert!((row.get::<_, f64>(4).unwrap() - 0.75).abs() < f64::EPSILON);
+        assert_eq!(
+            row.get::<_, Option<String>>(5).unwrap().as_deref(),
+            Some("Serde is a framework for serializing...")
+        );
+        assert_eq!(
+            row.get::<_, Option<String>>(6).unwrap().as_deref(),
+            Some("rust serde tutorial")
+        );
+        assert_eq!(
+            row.get::<_, Option<String>>(7).unwrap().as_deref(),
+            Some("https://www.google.com/")
+        );
+        assert_eq!(
+            row.get::<_, Option<String>>(9).unwrap().as_deref(),
+            Some("browser-env-1")
+        );
+
+        // Verify content_hash was computed from extracted_text via SHA256
+        let expected_hash = {
+            let mut hasher = Sha256::new();
+            hasher.update(b"Serde is a framework for serializing...");
+            hasher
+                .finalize()
+                .iter()
+                .map(|b| format!("{:02x}", b))
+                .collect::<String>()
+        };
+        let content_hash = row.get::<_, Option<String>>(8).unwrap();
+        assert_eq!(content_hash.as_deref(), Some(expected_hash.as_str()));
+
+        // Verify browser_enrichment_queue entry created with status 'pending'
+        let (queue_event_id, status): (i64, String) = conn
+            .query_row(
+                "SELECT browser_event_id, status FROM browser_enrichment_queue
+                 WHERE browser_event_id = ?1",
+                [event_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(queue_event_id, event_id);
+        assert_eq!(status, "pending");
+    }
+
+    #[test]
+    fn test_insert_browser_event_dedup() {
+        let dir = tempfile::tempdir().unwrap();
+        let conn = open_db(&dir.path().join("test.db")).unwrap();
+
+        let event = sample_browser_event();
+        let timestamp_ms = chrono::Utc::now().timestamp_millis();
+
+        let eid1 =
+            insert_browser_event(&conn, &event, timestamp_ms, Some("dup-browser-env")).unwrap();
+        assert!(eid1 > 0);
+
+        // Second insert with same envelope_id should return -1
+        let eid2 = insert_browser_event(&conn, &event, timestamp_ms + 1000, Some("dup-browser-env"))
+            .unwrap();
+        assert_eq!(eid2, -1, "duplicate envelope_id should return -1");
+
+        // Only one row in browser_events
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM browser_events", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 1);
+
+        // Only one enrichment queue entry
+        let q_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM browser_enrichment_queue",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(q_count, 1);
     }
 }
