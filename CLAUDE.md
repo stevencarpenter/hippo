@@ -108,6 +108,14 @@ Firefox Developer Edition extension captures browsing activity from allowlisted 
 
 **Schema:** v4 adds `browser_events`, `browser_enrichment_queue`, `knowledge_node_browser_events`
 
+### Claude Session Ingestion
+
+`shell/claude-session-hook.sh` is a Claude Code SessionStart hook that tails session JSONL files into hippo via a detached tmux window (`hippo:` prefix).
+
+**Key gotcha:** Claude Code wraps hook commands in an intermediate bash process (`claude → bash → hook.sh`). The hook must use the grandparent PID (the actual Claude process), not `$PPID` (the ephemeral bash). The Rust tailer's `kill(pid, 0)` check must distinguish ESRCH (process gone) from EPERM (process exists, no permission).
+
+**Batch import:** `hippo ingest claude-session --batch <path>` for one-shot import of completed sessions.
+
 ## Style
 
 - Rust: edition 2024, clippy clean, anyhow for errors, favor immutability and functional combinators

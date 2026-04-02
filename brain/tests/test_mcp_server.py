@@ -13,6 +13,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from hippo_brain.embeddings import EMBED_DIM
 from hippo_brain.mcp import (
     _get_conn,
     _load_config,
@@ -309,6 +310,37 @@ class TestSearchKnowledgeTool:
         assert metrics.lexical_fallbacks == old_fallbacks + 1
         assert metrics.lmstudio_errors == old_lm_errors + 1
 
+    def test_semantic_search_pads_query_vector_to_embed_dim(self, knowledge_db, monkeypatch):
+        conn, db_path = knowledge_db
+        _state.db_path = str(db_path)
+        _state.embedding_model = "test-model"
+        _state.vector_table = object()
+
+        mock_client = AsyncMock()
+        mock_client.embed.return_value = [[0.25] * 384]
+        _state.lm_client = mock_client
+
+        def fake_search_similar(table, query_vec, limit=10):
+            assert table is _state.vector_table
+            assert len(query_vec) == EMBED_DIM
+            return [
+                {
+                    "_distance": 0.1,
+                    "summary": "semantic result",
+                    "outcome": "success",
+                    "tags": "[]",
+                    "embed_text": "semantic result",
+                    "cwd": "/projects/hippo",
+                    "git_branch": "main",
+                }
+            ]
+
+        monkeypatch.setattr("hippo_brain.mcp.search_similar", fake_search_similar)
+
+        results = asyncio.run(search_knowledge("cargo", mode="semantic", limit=10))
+        assert len(results) == 1
+        assert results[0]["score"] == 0.9
+
     def test_empty_query_returns_all(self, knowledge_db):
         conn, db_path = knowledge_db
         _state.db_path = str(db_path)
@@ -317,6 +349,15 @@ class TestSearchKnowledgeTool:
 
         results = asyncio.run(search_knowledge("", mode="lexical", limit=10))
         assert len(results) == 1
+
+    def test_search_knowledge_negative_limit_is_clamped(self, knowledge_db):
+        conn, db_path = knowledge_db
+        _state.db_path = str(db_path)
+        _state.vector_table = None
+        _state.lm_client = None
+
+        results = asyncio.run(search_knowledge("cargo", mode="lexical", limit=-1))
+        assert results == []
 
     def test_limit_respected(self, knowledge_db):
         conn, db_path = knowledge_db
@@ -418,6 +459,13 @@ class TestSearchEventsTool:
         assert results[0]["source"] == "browser"
         assert "docs.rs" in results[0]["summary"]
 
+    def test_search_events_negative_limit_is_clamped(self, events_db):
+        conn, db_path = events_db
+        _state.db_path = str(db_path)
+
+        results = asyncio.run(search_events(query="cargo", source="shell", limit=-1))
+        assert results == []
+
 
 # ---------------------------------------------------------------------------
 # get_entities tool
@@ -477,6 +525,13 @@ class TestGetEntitiesTool:
         # Sorted by last_seen DESC
         assert results[0]["name"] == "rustc"
         assert results[1]["name"] == "cargo"
+
+    def test_get_entities_negative_limit_is_clamped(self, entities_db):
+        conn, db_path = entities_db
+        _state.db_path = str(db_path)
+
+        results = asyncio.run(get_entities(type="tool", limit=-1))
+        assert results == []
 
 
 # ---------------------------------------------------------------------------

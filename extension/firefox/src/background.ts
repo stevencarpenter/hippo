@@ -1,13 +1,15 @@
 /**
  * Hippo Browser Capture — background script.
  *
- * Receives page_visit messages from content scripts, filters by allowlist,
- * extracts search queries from referrers, and relays to the hippo_daemon
- * native messaging host.
+ * Dynamically registers content scripts on allowlisted domains via
+ * browser.contentScripts.register(). Receives page_visit messages from
+ * content scripts, filters by allowlist (defense-in-depth), extracts
+ * search queries from referrers, and relays to the hippo_daemon native
+ * messaging host.
  */
 
 import { DEFAULT_ALLOWLIST, MIN_DWELL_MS, NATIVE_HOST, SEARCH_ENGINES } from "./config";
-import type { BrowserVisit, ExtensionMessage, PageVisitMessage, Settings } from "./types";
+import type { BrowserVisit, PageVisitMessage, Settings } from "./types";
 
 // --- Runtime settings (loaded from storage) ---
 const settings: Settings = {
@@ -15,6 +17,9 @@ const settings: Settings = {
   allowlist: DEFAULT_ALLOWLIST.slice(),
   captureCount: 0,
 };
+
+// Serializes registration calls to prevent races on rapid allowlist changes
+let registrationChain: Promise<void> = Promise.resolve();
 
 // --- Load settings from storage ---
 function loadSettings(): Promise<void> {
@@ -43,6 +48,35 @@ function isDomainAllowed(domain: string): boolean {
     const entryLower = entry.toLowerCase();
     return domainLower === entryLower || domainLower.endsWith("." + entryLower);
   });
+}
+
+// --- Dynamic content script registration ---
+let registeredScript: browser.contentScripts.RegisteredContentScript | null = null;
+
+async function updateContentScripts(): Promise<void> {
+  // Unregister any existing content script registration
+  if (registeredScript) {
+    await registeredScript.unregister();
+    registeredScript = null;
+  }
+
+  if (!settings.enabled || settings.allowlist.length === 0) return;
+
+  // Build match patterns from allowlist domains
+  const patterns = settings.allowlist.flatMap((domain) => [
+    `*://${domain}/*`,
+    `*://*.${domain}/*`,
+  ]);
+
+  try {
+    registeredScript = await browser.contentScripts.register({
+      matches: patterns,
+      js: [{ file: "lib/Readability.js" }, { file: "dist/content.js" }],
+      runAt: "document_idle",
+    });
+  } catch (error) {
+    console.error("[hippo] content script registration failed:", error);
+  }
 }
 
 // --- Extract search query from a referrer URL ---
@@ -100,66 +134,80 @@ function isValidPageVisit(msg: unknown): msg is PageVisitMessage {
 
 // --- Listen for messages from content scripts ---
 browser.runtime.onMessage.addListener(
-  (message: any, sender: browser.runtime.MessageSender): void | Promise<unknown> => {
+  (message: unknown, sender: browser.runtime.MessageSender): void | Promise<unknown> => {
     // Reject messages from other extensions or web pages
     if (!isOwnExtension(sender)) return;
 
-    // Domain allowlist pre-check — lets content scripts skip expensive work
-    if (message.type === "check_domain") {
-      if (typeof message.domain !== "string") return Promise.resolve(false);
-      return Promise.resolve(settings.enabled && isDomainAllowed(message.domain));
-    }
+    if (typeof message !== "object" || message === null) return;
+    const msg = message as Record<string, unknown>;
+    if (msg.type !== "page_visit") return;
 
-    if (message.type !== "page_visit") return;
+    // Ensure settings are loaded before processing
+    return settingsReady.then(() => {
+      if (!settings.enabled) return;
 
-    if (!settings.enabled) return;
+      // Validate message structure before processing
+      if (!isValidPageVisit(message)) return;
 
-    // Validate message structure before processing
-    if (!isValidPageVisit(message)) return;
+      // Defense-in-depth: content scripts only run on allowlisted domains,
+      // but we re-check here in case of bugs or race conditions.
+      if (!isDomainAllowed(message.domain)) return;
 
-    if (!isDomainAllowed(message.domain)) return;
+      if (message.dwell_ms < MIN_DWELL_MS) return;
 
-    if (message.dwell_ms < MIN_DWELL_MS) return;
+      const searchQuery = extractSearchQuery(message.referrer);
 
-    const searchQuery = extractSearchQuery(message.referrer);
+      const visit: BrowserVisit = {
+        url: String(message.url),
+        title: String(message.title || ""),
+        domain: String(message.domain),
+        dwell_ms: Math.round(message.dwell_ms),
+        scroll_depth: parseFloat(message.scroll_depth.toFixed(3)),
+        extracted_text: typeof message.extracted_text === "string" ? message.extracted_text : null,
+        search_query: searchQuery,
+        referrer: typeof message.referrer === "string" ? message.referrer : null,
+        timestamp: Math.round(message.timestamp),
+      };
 
-    const visit: BrowserVisit = {
-      url: String(message.url),
-      title: String(message.title || ""),
-      domain: String(message.domain),
-      dwell_ms: Math.round(message.dwell_ms),
-      scroll_depth: parseFloat(message.scroll_depth.toFixed(3)),
-      extracted_text: typeof message.extracted_text === "string" ? message.extracted_text : null,
-      search_query: searchQuery,
-      referrer: typeof message.referrer === "string" ? message.referrer : null,
-      timestamp: Math.round(message.timestamp),
-    };
-
-    browser.runtime.sendNativeMessage(NATIVE_HOST, visit).then(
-      (_response) => {
-        settings.captureCount++;
-        persistCaptureCount();
-      },
-      (error) => {
-        console.error("[hippo] native messaging error:", error);
-      },
-    );
+      browser.runtime.sendNativeMessage(NATIVE_HOST, visit).then(
+        () => {
+          settings.captureCount++;
+          persistCaptureCount();
+          browser.storage.local.set({ lastSendOk: true, lastSendAt: Date.now() });
+        },
+        (error) => {
+          console.error("[hippo] native messaging error:", error);
+          browser.storage.local.set({
+            lastSendOk: false,
+            lastSendAt: Date.now(),
+            lastSendError: String(error),
+          });
+        },
+      );
+    });
   },
 );
 
 // --- Listen for storage changes (settings updated from popup) ---
 browser.storage.onChanged.addListener((changes, area) => {
   if (area !== "local") return;
+  let needsReregister = false;
   if (changes.enabled) {
     settings.enabled = changes.enabled.newValue as boolean;
+    needsReregister = true;
   }
   if (changes.allowlist) {
     settings.allowlist = changes.allowlist.newValue as string[];
+    needsReregister = true;
   }
   if (changes.captureCount) {
     settings.captureCount = changes.captureCount.newValue as number;
   }
+  if (needsReregister) {
+    registrationChain = registrationChain.then(() => updateContentScripts());
+  }
 });
 
 // --- Initialize ---
-loadSettings();
+const settingsReady: Promise<void> = loadSettings();
+settingsReady.then(() => updateContentScripts());

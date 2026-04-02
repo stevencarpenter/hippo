@@ -238,17 +238,38 @@ pub struct BrowserAllowlist {
 
 fn default_browser_allowlist_domains() -> Vec<String> {
     vec![
+        // Code forges & sharing
         "github.com".to_string(),
-        "stackoverflow.com".to_string(),
-        "developer.mozilla.org".to_string(),
-        "docs.rs".to_string(),
-        "doc.rust-lang.org".to_string(),
+        "github.io".to_string(),
+        "gitlab.com".to_string(),
+        // Package registries
         "crates.io".to_string(),
         "npmjs.com".to_string(),
         "pypi.org".to_string(),
+        "mvnrepository.com".to_string(),
+        "pkg.go.dev".to_string(),
+        // Language & framework docs
+        "docs.rs".to_string(),
+        "doc.rust-lang.org".to_string(),
         "docs.python.org".to_string(),
+        "developer.mozilla.org".to_string(),
+        "docs.astral.sh".to_string(),
+        "typescriptlang.org".to_string(),
+        "learn.microsoft.com".to_string(),
+        "kubernetes.io".to_string(),
+        "go.dev".to_string(),
+        "nodejs.org".to_string(),
+        // System & OS docs
         "man7.org".to_string(),
         "wiki.archlinux.org".to_string(),
+        // Q&A & community
+        "stackoverflow.com".to_string(),
+        "stackexchange.com".to_string(),
+        "reddit.com".to_string(),
+        "news.ycombinator.com".to_string(),
+        // Developer blogs & articles
+        "medium.com".to_string(),
+        "dev.to".to_string(),
     ]
 }
 

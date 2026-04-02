@@ -11,11 +11,25 @@ declare namespace browser {
     const onMessage: {
       addListener(
         callback: (
-          message: any,
+          message: unknown,
           sender: MessageSender,
         ) => void | Promise<unknown>,
       ): void;
     };
+  }
+  namespace contentScripts {
+    interface RegisteredContentScript {
+      unregister(): Promise<void>;
+    }
+    interface ContentScriptOptions {
+      matches: string[];
+      js?: Array<{ file: string }>;
+      css?: Array<{ file: string }>;
+      runAt?: "document_start" | "document_end" | "document_idle";
+    }
+    function register(
+      options: ContentScriptOptions,
+    ): Promise<RegisteredContentScript>;
   }
   namespace storage {
     interface StorageChange {
