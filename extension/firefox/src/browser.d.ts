@@ -11,7 +11,7 @@ declare namespace browser {
     const onMessage: {
       addListener(
         callback: (
-          message: any,
+          message: unknown,
           sender: MessageSender,
         ) => void | Promise<unknown>,
       ): void;
