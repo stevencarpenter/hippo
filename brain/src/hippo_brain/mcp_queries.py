@@ -10,6 +10,41 @@ import sqlite3
 import time
 
 
+MAX_LIMIT = 100
+
+
+def shape_semantic_results(hits: list[dict]) -> list[dict]:
+    """Transform raw LanceDB search hits into the spec-compliant result shape.
+
+    Strips internal fields (vector arrays, session_id, enrichment_model) and
+    maps to the canonical schema: score, summary, intent, outcome, tags,
+    embed_text, cwd, git_branch.
+    """
+    results = []
+    for hit in hits:
+        try:
+            tags = (
+                json.loads(hit.get("tags", "[]"))
+                if isinstance(hit.get("tags"), str)
+                else hit.get("tags", [])
+            )
+        except json.JSONDecodeError, TypeError:
+            tags = []
+        results.append(
+            {
+                "score": round(1.0 - hit.get("_distance", 0.0), 4),
+                "summary": hit.get("summary", ""),
+                "intent": "",
+                "outcome": hit.get("outcome", ""),
+                "tags": tags,
+                "embed_text": hit.get("embed_text", ""),
+                "cwd": hit.get("cwd", ""),
+                "git_branch": hit.get("git_branch", ""),
+            }
+        )
+    return results
+
+
 def parse_since(since: str) -> int:
     """Parse a duration string like '24h', '7d', '30m' into an epoch-ms threshold.
 
