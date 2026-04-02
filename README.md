@@ -1,27 +1,40 @@
 # Hippo
 
-Local knowledge capture daemon for macOS. Hippo watches your shell activity, redacts secrets, enriches events with local
-LLMs, and builds a searchable second brain — all without sending data off your machine.
+Local knowledge capture daemon for macOS. Hippo watches your shell activity, Claude Code sessions, and Firefox browsing,
+redacts secrets, enriches events with local LLMs, and builds a searchable second brain — all without sending data off
+your machine. An MCP server lets Claude query your knowledge base mid-conversation.
 
 ## Architecture
 
-Two always-on processes share a SQLite database at `~/.local/share/hippo/hippo.db`:
+Three sources feed into a Rust daemon that stores events in SQLite. A Python brain enriches
+them via local LLMs, writes vector embeddings, and an MCP server exposes it all to Claude.
 
 ```
-┌─────────┐  preexec/precmd  ┌──────────────┐  SQLite (WAL)  ┌──────────────┐
-│  zsh     │ ──────────────► │ hippo-daemon  │ ◄────────────► │ hippo-brain  │
-│  shell   │  Unix socket    │ (Rust)        │                │ (Python)     │
-└─────────┘                  └──────────────┘                └──────────────┘
-                                    │                               │
-                              captures events,                enriches via
-                              redacts secrets,                LM Studio,
-                              serves CLI queries              writes embeddings
+┌─────────┐                  ┌──────────────┐                ┌──────────────┐
+│  zsh     │  Unix socket    │              │  SQLite (WAL)  │              │
+│  shell   │ ──────────────► │              │ ◄────────────► │ hippo-brain  │
+└─────────┘                  │              │                │ (Python)     │
+┌─────────┐  JSONL ingest    │ hippo-daemon │                └──────┬───────┘
+│  Claude  │ ──────────────► │ (Rust)       │                       │
+│  Code    │                 │              │                ┌──────┴───────┐
+└─────────┘                  │              │                │  hippo-mcp   │
+┌─────────┐  Native Msg      │              │                │ (MCP server) │
+│  Firefox │ ──────────────► │              │                └──────────────┘
+│  ext.    │                 │              │                  ▲         │
+└─────────┘                  └──────────────┘           stdio │    SQLite│
+                                                       (JSONL)│  LanceDB│
+                                                              │   LM API│
+                                                        Claude Code / Desktop
 ```
 
-- **hippo-daemon** (Rust) — captures shell events via Unix socket, applies secret redaction, stores to SQLite, serves
-  CLI queries
-- **hippo-brain** (Python) — polls enrichment queue from SQLite, calls LM Studio for summarization, writes knowledge
-  nodes + embeddings to LanceDB, serves HTTP query API on port 9175
+- **hippo-daemon** (Rust) — captures events from shell hooks, Claude Code sessions, and Firefox
+  browsing via Unix socket and Native Messaging. Applies secret redaction, stores to SQLite, serves CLI queries.
+- **hippo-brain** (Python) — polls enrichment queues from SQLite, calls LM Studio for summarization,
+  correlates browser research with shell activity, writes knowledge nodes + embeddings to LanceDB,
+  serves HTTP query API on port 9175.
+- **hippo-mcp** (Python, MCP server) — exposes the knowledge base as MCP tools (`search_knowledge`,
+  `search_events`, `get_entities`) over stdio. Claude Code queries your personal knowledge base
+  mid-conversation. Reads SQLite + LanceDB directly, calls LM Studio for semantic search.
 
 ## Prerequisites
 
@@ -30,6 +43,7 @@ Two always-on processes share a SQLite database at `~/.local/share/hippo/hippo.d
 - [Python](https://www.python.org/) 3.14+
 - [uv](https://docs.astral.sh/uv/) (Python package manager)
 - [LM Studio](https://lmstudio.ai/) (local LLM inference)
+- [Firefox Developer Edition](https://www.mozilla.org/en-US/firefox/developer/) (optional, for browser capture)
 - [mise](https://mise.jdx.dev/) (optional, for task running)
 
 ## Quick Start
@@ -48,6 +62,20 @@ hippo config edit
 
 # Verify
 hippo doctor
+
+# (Optional) Enable MCP server for Claude Code
+# Add to ~/.config/mcp/mcp-master.json:
+# {
+#   "hippo": {
+#     "type": "stdio",
+#     "command": "uv",
+#     "args": ["run", "--project", "/path/to/hippo/brain", "hippo-mcp"],
+#     "autoApprove": ["search_knowledge", "search_events", "get_entities"]
+#   }
+# }
+
+# (Optional) Load Firefox extension for browser capture
+# about:debugging → Load Temporary Add-on → extension/firefox/manifest.json
 ```
 
 ## Usage
@@ -77,6 +105,38 @@ hippo export-training --since 30d --out ./export
 # Test redaction patterns
 hippo redact test "password=hunter2"
 ```
+
+## MCP Server
+
+The MCP server lets Claude Code (or any MCP client) query your knowledge base mid-conversation.
+Three tools are exposed over stdio transport:
+
+| Tool               | What it does                                                          |
+|--------------------|-----------------------------------------------------------------------|
+| `search_knowledge` | Semantic or lexical search over enriched knowledge nodes              |
+| `search_events`    | Search raw shell commands, Claude sessions, and browser visits        |
+| `get_entities`     | List known projects, tools, files, domains, and concepts              |
+
+```bash
+# Run standalone (for testing)
+uv run --project brain hippo-mcp
+
+# Configure for Claude Code — add to ~/.config/mcp/mcp-master.json:
+{
+  "hippo": {
+    "type": "stdio",
+    "command": "uv",
+    "args": ["run", "--project", "/path/to/hippo/brain", "hippo-mcp"],
+    "autoApprove": ["search_knowledge", "search_events", "get_entities"]
+  }
+}
+
+# Then propagate to all tools
+chezmoi apply   # or: sync-mcp-configs
+```
+
+The MCP server reads SQLite and LanceDB directly (no dependency on hippo-brain HTTP server).
+Logs go to stderr. Metrics are tracked via `MetricsCollector` for future OTel export.
 
 ## Task Runner (mise)
 
@@ -117,23 +177,25 @@ Secret redaction patterns: `~/.config/hippo/redact.toml`. See [
 ```
 ├── crates/
 │   ├── hippo-core/       # Shared library (types, config, storage, redaction)
-│   └── hippo-daemon/     # Binary (daemon + CLI)
-├── brain/                # Python enrichment + query server
+│   └── hippo-daemon/     # Binary (daemon + CLI + native messaging host)
+├── brain/                # Python enrichment, query server, and MCP server
+├── extension/
+│   └── firefox/          # Firefox WebExtension for browser activity capture
 ├── shell/                # zsh hooks (preexec/precmd integration)
 ├── config/               # Default config templates
 ├── launchd/              # macOS LaunchAgent plist templates
 ├── tools/                # Developer utility scripts (SQL formatting, etc.)
-└── docs/                 # Research and design docs
+└── docs/                 # Design specs, plans, and architecture diagrams
 ```
 
 ## Data Storage
 
-| Store   | Path                            | Purpose                               |
-|---------|---------------------------------|---------------------------------------|
-| SQLite  | `~/.local/share/hippo/hippo.db` | Events, sessions, enrichment queue    |
-| LanceDB | `~/.local/share/hippo/lancedb/` | Vector embeddings for semantic search |
-| Config  | `~/.config/hippo/config.toml`   | User configuration                    |
-| Logs    | `~/.local/share/hippo/*.log`    | Daemon and brain logs                 |
+| Store   | Path                              | Purpose                                          |
+|---------|-----------------------------------|--------------------------------------------------|
+| SQLite  | `~/.local/share/hippo/hippo.db`   | Events, sessions, browser visits, enrichment queue, knowledge nodes, entities |
+| LanceDB | `~/.local/share/hippo/vectors/`   | Vector embeddings for semantic search            |
+| Config  | `~/.config/hippo/config.toml`     | User configuration                               |
+| Logs    | `~/.local/share/hippo/*.log`      | Daemon and brain logs                            |
 
 ## License
 
