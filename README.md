@@ -62,21 +62,30 @@ hippo config edit
 
 # Verify
 hippo doctor
-
-# (Optional) Enable MCP server for Claude Code
-# Add to ~/.config/mcp/mcp-master.json:
-# {
-#   "hippo": {
-#     "type": "stdio",
-#     "command": "uv",
-#     "args": ["run", "--project", "/path/to/hippo/brain", "hippo-mcp"],
-#     "autoApprove": ["search_knowledge", "search_events", "get_entities"]
-#   }
-# }
-
-# (Optional) Load Firefox extension for browser capture
-# about:debugging → Load Temporary Add-on → extension/firefox/manifest.json
 ```
+
+## (Optional) Enable MCP server for Claude Code
+ Add to `~/.config/mcp/mcp-master.json`:
+```json
+ {
+   "hippo": {
+     "type": "stdio",
+     "command": "uv",
+     "args": ["run", "--project", "/path/to/hippo/brain", "hippo-mcp"],
+     "autoApprove": ["search_knowledge", "search_events", "get_entities"]
+   }
+ }
+```
+## (Optional) Install Firefox extension for browser capture
+
+```bash
+cd extension/firefox && npx web-ext build --overwrite-dest
+```
+
+1. In Firefox Dev Edition: `about:config` → set `xpinstall.signatures.required` to `false`
+2. `about:addons` → gear icon → Install Add-on From File → select the `.zip` from `web-ext-artifacts/`
+
+See [`extension/firefox/README.md`](extension/firefox/README.md) for full setup.
 
 ## Usage
 

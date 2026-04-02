@@ -15,13 +15,44 @@ This creates:
 - Wrapper script: `~/Library/Application Support/Mozilla/NativeMessagingHosts/hippo-native-messaging`
 - Host manifest: `~/Library/Application Support/Mozilla/NativeMessagingHosts/hippo_daemon.json`
 
-### 2. Load Extension in Firefox Developer Edition
+### 2. Install Extension in Firefox Developer Edition
+
+#### Build the .xpi
+
+```bash
+cd extension/firefox
+npx web-ext build --overwrite-dest
+```
+
+This creates `web-ext-artifacts/hippo_browser_capture-0.1.0.zip`.
+
+#### Enable unsigned extension install (one-time)
+
+1. Open `about:config` in Firefox Developer Edition
+2. Search for `xpinstall.signatures.required`
+3. Set it to **`false`**
+
+This setting is only available in Developer Edition and Nightly — it allows installing
+locally-built extensions without Mozilla signing.
+
+#### Install permanently
+
+1. Open `about:addons` (or Cmd+Shift+A)
+2. Click the gear icon → **Install Add-on From File...**
+3. Select `extension/firefox/web-ext-artifacts/hippo_browser_capture-0.1.0.zip`
+4. Click **Add** when prompted
+
+The extension persists across Firefox restarts. No more temporary loading via `about:debugging`.
+
+#### Alternative: temporary loading (for development)
+
+If you're actively editing the extension code:
 
 1. Navigate to `about:debugging#/runtime/this-firefox`
 2. Click **Load Temporary Add-on**
 3. Select `extension/firefox/manifest.json`
 
-The extension icon appears in the toolbar. Click it to toggle capture or edit the domain allowlist.
+This loads the source directly (no build step) but doesn't survive Firefox restarts.
 
 ### 3. Verify
 

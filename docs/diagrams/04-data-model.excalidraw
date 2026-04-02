@@ -1,0 +1,28 @@
+{
+  "type": "excalidraw",
+  "version": 2,
+  "source": "hippo",
+  "elements": [
+    {"type":"text","id":"dt1","x":225,"y":5,"text":"Data Model — Schema v4","fontSize":26,"strokeColor":"#1e1e1e","width":320,"height":32},
+    {"type":"text","id":"dt2","x":140,"y":35,"text":"Knowledge nodes bridge all source types with unified enrichment","fontSize":14,"strokeColor":"#757575","width":450,"height":20},
+    {"type":"rectangle","id":"ev","x":20,"y":85,"width":195,"height":80,"backgroundColor":"#a5d8ff","fillStyle":"solid","roundness":{"type":3},"strokeColor":"#4a9eed","label":{"text":"events (Shell)\n\ncmd, exit, cwd\ngit branch, stdout","fontSize":12}},
+    {"type":"text","id":"evd","x":30,"y":142,"text":"cmd, exit, cwd, git, stdout","fontSize":12,"strokeColor":"#757575","width":200,"height":16},
+    {"type":"rectangle","id":"cl","x":20,"y":185,"width":195,"height":80,"backgroundColor":"#d0bfff","fillStyle":"solid","roundness":{"type":3},"strokeColor":"#8b5cf6","label":{"text":"claude_sessions\n\nprompts, tools\nsegment_idx","fontSize":12}},
+    {"type":"text","id":"cld","x":30,"y":242,"text":"prompts, tools, segment_idx","fontSize":12,"strokeColor":"#757575","width":200,"height":16},
+    {"type":"rectangle","id":"br","x":20,"y":285,"width":195,"height":80,"backgroundColor":"#ffd8a8","fillStyle":"solid","roundness":{"type":3},"strokeColor":"#f59e0b","label":{"text":"browser_events\n\nurl, dwell, scroll\nreadability_score","fontSize":12}},
+    {"type":"text","id":"brd","x":30,"y":342,"text":"url, dwell, scroll, content","fontSize":12,"strokeColor":"#757575","width":200,"height":16},
+    {"type":"arrow","id":"da1","x":215,"y":125,"width":130,"height":0,"points":[[0,0],[130,0]],"strokeColor":"#4a9eed","strokeWidth":2.5,"endArrowhead":"arrow","label":{"text":"→ kn_events","fontSize":12}},
+    {"type":"arrow","id":"da2","x":215,"y":225,"width":130,"height":0,"points":[[0,0],[130,0]],"strokeColor":"#8b5cf6","strokeWidth":2.5,"endArrowhead":"arrow","label":{"text":"→ kn_claude","fontSize":12}},
+    {"type":"arrow","id":"da3","x":215,"y":325,"width":130,"height":0,"points":[[0,0],[130,0]],"strokeColor":"#f59e0b","strokeWidth":2.5,"endArrowhead":"arrow","label":{"text":"→ kn_browser","fontSize":12}},
+    {"type":"rectangle","id":"kn","x":345,"y":100,"width":240,"height":230,"backgroundColor":"#b2f2bb","fillStyle":"solid","roundness":{"type":3},"strokeColor":"#22c55e","label":{"text":"knowledge_nodes\n\nsummary, intent, outcome\nembed_text, tags\nenrichment_model\nprocessed_at timestamp","fontSize":12}},
+    {"type":"arrow","id":"da4","x":585,"y":220,"width":80,"height":0,"points":[[0,0],[80,0]],"strokeColor":"#22c55e","strokeWidth":2.5,"endArrowhead":"arrow","label":{"text":"→ entities","fontSize":12}},
+    {"type":"rectangle","id":"en","x":665,"y":115,"width":140,"height":200,"backgroundColor":"#c3fae8","fillStyle":"solid","roundness":{"type":3},"strokeColor":"#06b6d4","label":{"text":"entities\n\nproject\ntool\nfile\ndomain\nconcept","fontSize":12}},
+    {"type":"text","id":"ql","x":45,"y":395,"text":"Enrichment Queues (pending → processing → done|failed|skipped)","fontSize":14,"strokeColor":"#1e1e1e","fontWeight":"bold","width":450,"height":20},
+    {"type":"rectangle","id":"q1","x":30,"y":425,"width":220,"height":50,"backgroundColor":"#dbe4ff","fillStyle":"solid","roundness":{"type":3},"strokeColor":"#4a9eed","strokeWidth":2,"label":{"text":"enrichment_queue\n(shell sources)","fontSize":12}},
+    {"type":"rectangle","id":"q2","x":280,"y":425,"width":220,"height":50,"backgroundColor":"#e5dbff","fillStyle":"solid","roundness":{"type":3},"strokeColor":"#8b5cf6","strokeWidth":2,"label":{"text":"claude_enrichment_queue\n(session logs)","fontSize":12}},
+    {"type":"rectangle","id":"q3","x":530,"y":425,"width":220,"height":50,"backgroundColor":"#fff3bf","fillStyle":"solid","roundness":{"type":3},"strokeColor":"#f59e0b","strokeWidth":2,"label":{"text":"browser_enrichment_queue\n(browser events)","fontSize":12}},
+    {"type":"rectangle","id":"vc","x":315,"y":505,"width":310,"height":55,"backgroundColor":"#eebefa","fillStyle":"solid","roundness":{"type":3},"strokeColor":"#8b5cf6","label":{"text":"LanceDB  (Vector Store)\n2560d embeddings + metadata for semantic search","fontSize":12}},
+    {"type":"arrow","id":"da5","x":465,"y":330,"width":0,"height":175,"points":[[0,0],[0,175]],"strokeColor":"#8b5cf6","strokeWidth":2.5,"endArrowhead":"arrow"}
+  ],
+  "appState": {"viewBackgroundColor":"#ffffff"}
+}
