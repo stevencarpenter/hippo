@@ -19,7 +19,7 @@ declare namespace browser {
   }
   namespace contentScripts {
     interface RegisteredContentScript {
-      unregister(): void;
+      unregister(): Promise<void>;
     }
     interface ContentScriptOptions {
       matches: string[];

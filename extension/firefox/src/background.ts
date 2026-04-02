@@ -18,8 +18,8 @@ const settings: Settings = {
   captureCount: 0,
 };
 
-// Settings readiness gate — blocks message handling until storage is loaded
-let settingsReady: Promise<void> = Promise.resolve();
+// Serializes registration calls to prevent races on rapid allowlist changes
+let registrationChain: Promise<void> = Promise.resolve();
 
 // --- Load settings from storage ---
 function loadSettings(): Promise<void> {
@@ -56,7 +56,7 @@ let registeredScript: browser.contentScripts.RegisteredContentScript | null = nu
 async function updateContentScripts(): Promise<void> {
   // Unregister any existing content script registration
   if (registeredScript) {
-    registeredScript.unregister();
+    await registeredScript.unregister();
     registeredScript = null;
   }
 
@@ -68,11 +68,15 @@ async function updateContentScripts(): Promise<void> {
     `*://*.${domain}/*`,
   ]);
 
-  registeredScript = await browser.contentScripts.register({
-    matches: patterns,
-    js: [{ file: "lib/Readability.js" }, { file: "dist/content.js" }],
-    runAt: "document_idle",
-  });
+  try {
+    registeredScript = await browser.contentScripts.register({
+      matches: patterns,
+      js: [{ file: "lib/Readability.js" }, { file: "dist/content.js" }],
+      runAt: "document_idle",
+    });
+  } catch (error) {
+    console.error("[hippo] content script registration failed:", error);
+  }
 }
 
 // --- Extract search query from a referrer URL ---
@@ -134,6 +138,7 @@ browser.runtime.onMessage.addListener(
     // Reject messages from other extensions or web pages
     if (!isOwnExtension(sender)) return;
 
+    if (typeof message !== "object" || message === null) return;
     const msg = message as Record<string, unknown>;
     if (msg.type !== "page_visit") return;
 
@@ -199,10 +204,10 @@ browser.storage.onChanged.addListener((changes, area) => {
     settings.captureCount = changes.captureCount.newValue as number;
   }
   if (needsReregister) {
-    updateContentScripts();
+    registrationChain = registrationChain.then(() => updateContentScripts());
   }
 });
 
 // --- Initialize ---
-settingsReady = loadSettings();
+const settingsReady: Promise<void> = loadSettings();
 settingsReady.then(() => updateContentScripts());
