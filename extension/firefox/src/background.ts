@@ -7,7 +7,7 @@
  */
 
 import { DEFAULT_ALLOWLIST, MIN_DWELL_MS, NATIVE_HOST, SEARCH_ENGINES } from "./config";
-import type { BrowserVisit, ExtensionMessage, PageVisitMessage, Settings } from "./types";
+import type { BrowserVisit, PageVisitMessage, Settings } from "./types";
 
 // --- Runtime settings (loaded from storage) ---
 const settings: Settings = {
@@ -15,6 +15,13 @@ const settings: Settings = {
   allowlist: DEFAULT_ALLOWLIST.slice(),
   captureCount: 0,
 };
+
+// Settings readiness gate — blocks message handling until storage is loaded
+let settingsReady: Promise<void>;
+
+function initSettings(): void {
+  settingsReady = loadSettings();
+}
 
 // --- Load settings from storage ---
 function loadSettings(): Promise<void> {
@@ -104,46 +111,49 @@ browser.runtime.onMessage.addListener(
     // Reject messages from other extensions or web pages
     if (!isOwnExtension(sender)) return;
 
-    // Domain allowlist pre-check — lets content scripts skip expensive work
-    if (message.type === "check_domain") {
-      if (typeof message.domain !== "string") return Promise.resolve(false);
-      return Promise.resolve(settings.enabled && isDomainAllowed(message.domain));
-    }
+    // Ensure settings are loaded before processing any message
+    return settingsReady.then(() => {
+      // Domain allowlist pre-check — lets content scripts skip expensive work
+      if (message.type === "check_domain") {
+        if (typeof message.domain !== "string") return false;
+        return settings.enabled && isDomainAllowed(message.domain);
+      }
 
-    if (message.type !== "page_visit") return;
+      if (message.type !== "page_visit") return;
 
-    if (!settings.enabled) return;
+      if (!settings.enabled) return;
 
-    // Validate message structure before processing
-    if (!isValidPageVisit(message)) return;
+      // Validate message structure before processing
+      if (!isValidPageVisit(message)) return;
 
-    if (!isDomainAllowed(message.domain)) return;
+      if (!isDomainAllowed(message.domain)) return;
 
-    if (message.dwell_ms < MIN_DWELL_MS) return;
+      if (message.dwell_ms < MIN_DWELL_MS) return;
 
-    const searchQuery = extractSearchQuery(message.referrer);
+      const searchQuery = extractSearchQuery(message.referrer);
 
-    const visit: BrowserVisit = {
-      url: String(message.url),
-      title: String(message.title || ""),
-      domain: String(message.domain),
-      dwell_ms: Math.round(message.dwell_ms),
-      scroll_depth: parseFloat(message.scroll_depth.toFixed(3)),
-      extracted_text: typeof message.extracted_text === "string" ? message.extracted_text : null,
-      search_query: searchQuery,
-      referrer: typeof message.referrer === "string" ? message.referrer : null,
-      timestamp: Math.round(message.timestamp),
-    };
+      const visit: BrowserVisit = {
+        url: String(message.url),
+        title: String(message.title || ""),
+        domain: String(message.domain),
+        dwell_ms: Math.round(message.dwell_ms),
+        scroll_depth: parseFloat(message.scroll_depth.toFixed(3)),
+        extracted_text: typeof message.extracted_text === "string" ? message.extracted_text : null,
+        search_query: searchQuery,
+        referrer: typeof message.referrer === "string" ? message.referrer : null,
+        timestamp: Math.round(message.timestamp),
+      };
 
-    browser.runtime.sendNativeMessage(NATIVE_HOST, visit).then(
-      (_response) => {
-        settings.captureCount++;
-        persistCaptureCount();
-      },
-      (error) => {
-        console.error("[hippo] native messaging error:", error);
-      },
-    );
+      browser.runtime.sendNativeMessage(NATIVE_HOST, visit).then(
+        (_response) => {
+          settings.captureCount++;
+          persistCaptureCount();
+        },
+        (error) => {
+          console.error("[hippo] native messaging error:", error);
+        },
+      );
+    });
   },
 );
 
@@ -162,4 +172,4 @@ browser.storage.onChanged.addListener((changes, area) => {
 });
 
 // --- Initialize ---
-loadSettings();
+initSettings();
