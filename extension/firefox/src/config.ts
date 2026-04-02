@@ -2,17 +2,38 @@ import type { SearchEngine } from "./types";
 
 /** Default domain allowlist — seeded on first install, overridden by browser.storage.local. */
 export const DEFAULT_ALLOWLIST: string[] = [
+  // Code forges & sharing
   "github.com",
-  "stackoverflow.com",
-  "developer.mozilla.org",
-  "docs.rs",
-  "doc.rust-lang.org",
+  "github.io",
+  "gitlab.com",
+  // Package registries
   "crates.io",
   "npmjs.com",
   "pypi.org",
+  "mvnrepository.com",
+  "pkg.go.dev",
+  // Language & framework docs
+  "docs.rs",
+  "doc.rust-lang.org",
   "docs.python.org",
+  "developer.mozilla.org",
+  "docs.astral.sh",
+  "typescriptlang.org",
+  "learn.microsoft.com",
+  "kubernetes.io",
+  "go.dev",
+  "nodejs.org",
+  // System & OS docs
   "man7.org",
   "wiki.archlinux.org",
+  // Q&A & community
+  "stackoverflow.com",
+  "stackexchange.com",
+  "reddit.com",
+  "news.ycombinator.com",
+  // Developer blogs & articles
+  "medium.com",
+  "dev.to",
 ];
 
 /** Minimum visible dwell time (ms) before capturing a page visit. */
