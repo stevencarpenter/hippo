@@ -9,7 +9,13 @@ from pathlib import Path
 from mcp.server.fastmcp import FastMCP
 
 from hippo_brain.client import LMStudioClient
-from hippo_brain.embeddings import get_or_create_table, open_vector_db, search_similar
+from hippo_brain.embeddings import (
+    EMBED_DIM,
+    _pad_or_truncate,
+    get_or_create_table,
+    open_vector_db,
+    search_similar,
+)
 from hippo_brain.mcp_logging import MetricsCollector, setup_logging
 from hippo_brain.mcp_queries import (
     MAX_LIMIT,
@@ -72,6 +78,11 @@ class _ServerState:
 _state = _ServerState()
 
 
+def _clamp_limit(limit: int) -> int:
+    """Keep tool limits within the supported inclusive range."""
+    return max(0, min(limit, MAX_LIMIT))
+
+
 def _get_conn(db_path: str = "") -> sqlite3.Connection:
     """Open a SQLite connection with WAL mode and busy timeout."""
     path = db_path or _state.db_path
@@ -129,7 +140,7 @@ async def search_knowledge(
               Defaults to "semantic"; falls back to lexical on embedding failure.
         limit: Maximum number of results to return (default 10).
     """
-    limit = min(limit, MAX_LIMIT)
+    limit = _clamp_limit(limit)
     metrics.tool_calls += 1
     t0 = time.monotonic()
     logger.info("search_knowledge called: query=%r mode=%s limit=%d", query, mode, limit)
@@ -139,7 +150,8 @@ async def search_knowledge(
             metrics.semantic_searches += 1
             try:
                 vecs = await _state.lm_client.embed([query], model=_state.embedding_model)
-                hits = search_similar(_state.vector_table, vecs[0], limit=limit)
+                query_vec = _pad_or_truncate(vecs[0], EMBED_DIM)
+                hits = search_similar(_state.vector_table, query_vec, limit=limit)
                 results = shape_semantic_results(hits)
                 elapsed = time.monotonic() - t0
                 logger.info(
@@ -192,7 +204,7 @@ async def search_events(
         project: Filter by project directory (substring match on cwd).
         limit: Maximum number of results (default 20).
     """
-    limit = min(limit, MAX_LIMIT)
+    limit = _clamp_limit(limit)
     metrics.tool_calls += 1
     t0 = time.monotonic()
     logger.info(
@@ -238,7 +250,7 @@ async def get_entities(
         query: Filter entities whose name matches this substring.
         limit: Maximum number of results (default 50).
     """
-    limit = min(limit, MAX_LIMIT)
+    limit = _clamp_limit(limit)
     metrics.tool_calls += 1
     t0 = time.monotonic()
     logger.info("get_entities called: type=%r query=%r limit=%d", type, query, limit)

@@ -411,8 +411,14 @@ pub async fn ingest_tail(path: &Path, socket_path: &Path, timeout_ms: u64) -> Re
             _ = tokio::time::sleep(Duration::from_secs(1)) => {
                 // If we're watching a parent process, exit when it dies
                 if let Some(pid) = watch_pid {
-                    // kill(pid, 0) checks if process exists without sending a signal
-                    let alive = unsafe { libc::kill(pid as i32, 0) } == 0;
+                    // kill(pid, 0) returns 0 if alive and we can signal it,
+                    // -1/EPERM if alive but we lack permission, -1/ESRCH if gone.
+                    let alive = unsafe {
+                        let ret = libc::kill(pid as i32, 0);
+                        ret == 0
+                            || std::io::Error::last_os_error().raw_os_error()
+                                != Some(libc::ESRCH)
+                    };
                     if !alive {
                         info!(pid, "watched process exited, draining remaining lines");
                         // One final read pass below, then break
@@ -436,7 +442,11 @@ pub async fn ingest_tail(path: &Path, socket_path: &Path, timeout_ms: u64) -> Re
                 }
 
                 if file_len == position {
-                    if watch_pid.is_some_and(|pid| unsafe { libc::kill(pid as i32, 0) } != 0) {
+                    if watch_pid.is_some_and(|pid| unsafe {
+                        libc::kill(pid as i32, 0) == -1
+                            && std::io::Error::last_os_error().raw_os_error()
+                                == Some(libc::ESRCH)
+                    }) {
                         info!("drain complete, exiting");
                         break;
                     }

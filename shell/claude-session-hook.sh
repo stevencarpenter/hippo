@@ -50,8 +50,12 @@ WINDOW_NAME="hippo:${SHORT_ID}"
 # tmux new-window -d returns immediately — the tail loop runs inside the new window,
 # so this hook never blocks Claude Code from launching.
 # Pass Claude's PID so the tailer exits when Claude does.
-# The hook runs as a child of Claude Code, so PPID is the Claude process.
-CLAUDE_PID="$PPID"
+# Claude Code spawns an intermediate bash to run this hook, so $PPID is that
+# ephemeral bash — not the long-lived Claude process. Walk up one level.
+CLAUDE_PID="$(ps -o ppid= -p "$PPID" 2>/dev/null | tr -d ' ')"
+if [ -z "$CLAUDE_PID" ] || [ "$CLAUDE_PID" = "1" ]; then
+    CLAUDE_PID="$PPID"
+fi
 
 if tmux list-sessions &>/dev/null; then
     tmux new-window -d -n "$WINDOW_NAME" "HIPPO_WATCH_PID=$CLAUDE_PID $HIPPO_BIN ingest claude-session --inline $TRANSCRIPT_PATH"
