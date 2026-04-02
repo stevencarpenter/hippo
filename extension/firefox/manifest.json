@@ -1,7 +1,7 @@
 {
   "manifest_version": 2,
   "name": "Hippo Browser Capture",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Captures browsing activity for Hippo knowledge base",
   "permissions": [
     "nativeMessaging",
@@ -9,13 +9,13 @@
   ],
   "content_security_policy": "script-src 'self'; object-src 'self'",
   "background": {
-    "scripts": ["background.js"],
+    "scripts": ["dist/background.js"],
     "persistent": false
   },
   "content_scripts": [
     {
       "matches": ["<all_urls>"],
-      "js": ["lib/Readability.js", "content.js"],
+      "js": ["lib/Readability.js", "dist/content.js"],
       "run_at": "document_idle"
     }
   ],
