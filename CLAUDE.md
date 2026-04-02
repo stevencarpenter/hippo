@@ -48,17 +48,20 @@ local LLMs.
     uv run --project brain hippo-mcp    # Start MCP server (stdio transport)
 
 The MCP server exposes three tools: `search_knowledge`, `search_events`, `get_entities`.
-Configure in `~/.config/mcp/mcp-master.json` (or via mcp-sync):
+Configure in `~/.config/mcp/mcp-master.json` (or via mcp-sync). The `autoApprove` array allows tool calls without manual confirmation:
 
 ```json
 {
   "hippo": {
     "type": "stdio",
     "command": "uv",
-    "args": ["run", "--project", "/path/to/hippo/brain", "hippo-mcp"]
+    "args": ["run", "--project", "/path/to/hippo/brain", "hippo-mcp"],
+    "autoApprove": ["search_knowledge", "search_events", "get_entities"]
   }
 }
 ```
+
+After editing `mcp-master.json`, run `chezmoi apply` or `sync-mcp-configs` to propagate the config to all MCP-aware tools (Claude Code, Copilot, etc.).
 
 Logs go to stderr. Metrics available via `MetricsCollector.snapshot()` for future OTel export.
 

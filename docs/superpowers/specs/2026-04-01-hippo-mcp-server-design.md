@@ -36,6 +36,8 @@ Claude Code / Claude Desktop / any MCP client
 
 The MCP server is **read-only** — it queries the knowledge base but never writes to it. The brain remains the sole writer (enrichment, embedding). SQLite WAL mode safely supports concurrent readers alongside the brain's writer.
 
+**Transport protocol note:** The stdio transport uses newline-delimited JSON (JSONL) — one JSON-RPC message per line, not HTTP Content-Length framing. This is the wire format used by MCP SDK v1.x for stdio-based servers.
+
 ## Tools
 
 ### 1. `search_knowledge`

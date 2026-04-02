@@ -33,6 +33,26 @@ uv run --project brain ruff check brain/
 uv run --project brain ruff format --check brain/
 ```
 
+## MCP Server
+
+The brain also includes an MCP server that exposes Hippo's knowledge base as tools for Claude Code and other MCP clients.
+
+```bash
+uv run --project brain hippo-mcp
+```
+
+**Tools:**
+
+| Tool | Description |
+|------|-------------|
+| `search_knowledge` | Semantic or lexical search over enriched knowledge nodes |
+| `search_events` | Search raw events (shell commands, Claude sessions, browser visits) |
+| `get_entities` | List extracted entities (projects, tools, files, domains, concepts) |
+
+**Transport:** stdio using newline-delimited JSON (JSONL) — one JSON-RPC message per line. This is the default for MCP SDK v1.x stdio transport.
+
+**Configuration:** See the MCP Server section in the project root `CLAUDE.md` for mcp-master.json setup and config propagation steps.
+
 ## Modules
 
 | Module          | Purpose                                                                 |
