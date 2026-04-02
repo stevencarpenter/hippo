@@ -17,6 +17,20 @@ declare namespace browser {
       ): void;
     };
   }
+  namespace contentScripts {
+    interface RegisteredContentScript {
+      unregister(): void;
+    }
+    interface ContentScriptOptions {
+      matches: string[];
+      js?: Array<{ file: string }>;
+      css?: Array<{ file: string }>;
+      runAt?: "document_start" | "document_end" | "document_idle";
+    }
+    function register(
+      options: ContentScriptOptions,
+    ): Promise<RegisteredContentScript>;
+  }
   namespace storage {
     interface StorageChange {
       oldValue?: unknown;

@@ -11,15 +11,6 @@ export interface PageVisitMessage {
   timestamp: number;
 }
 
-/** Message sent from content script to check domain allowlist. */
-export interface CheckDomainMessage {
-  type: "check_domain";
-  domain: string;
-}
-
-/** Union of all messages the background script handles. */
-export type ExtensionMessage = PageVisitMessage | CheckDomainMessage;
-
 /** Payload sent to the hippo_daemon native messaging host. */
 export interface BrowserVisit {
   url: string;
