@@ -3,7 +3,7 @@
   "name": "hippo-browser-capture",
   "version": "0.2.0",
   "scripts": {
-    "build": "node build.mjs",
+    "build": "tsc --noEmit && node build.mjs",
     "watch": "node build.mjs --watch",
     "typecheck": "tsc --noEmit",
     "package": "node build.mjs && npx web-ext build --overwrite-dest --ignore-files src/ build.mjs tsconfig.json package.json package-lock.json README.md"
