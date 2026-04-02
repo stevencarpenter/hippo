@@ -1,9 +1,11 @@
 /**
  * Hippo Browser Capture — background script.
  *
- * Receives page_visit messages from content scripts, filters by allowlist,
- * extracts search queries from referrers, and relays to the hippo_daemon
- * native messaging host.
+ * Dynamically registers content scripts on allowlisted domains via
+ * browser.contentScripts.register(). Receives page_visit messages from
+ * content scripts, filters by allowlist (defense-in-depth), extracts
+ * search queries from referrers, and relays to the hippo_daemon native
+ * messaging host.
  */
 
 import { DEFAULT_ALLOWLIST, MIN_DWELL_MS, NATIVE_HOST, SEARCH_ENGINES } from "./config";
@@ -17,11 +19,7 @@ const settings: Settings = {
 };
 
 // Settings readiness gate — blocks message handling until storage is loaded
-let settingsReady: Promise<void>;
-
-function initSettings(): void {
-  settingsReady = loadSettings();
-}
+let settingsReady: Promise<void> = Promise.resolve();
 
 // --- Load settings from storage ---
 function loadSettings(): Promise<void> {
@@ -49,6 +47,31 @@ function isDomainAllowed(domain: string): boolean {
   return settings.allowlist.some((entry) => {
     const entryLower = entry.toLowerCase();
     return domainLower === entryLower || domainLower.endsWith("." + entryLower);
+  });
+}
+
+// --- Dynamic content script registration ---
+let registeredScript: browser.contentScripts.RegisteredContentScript | null = null;
+
+async function updateContentScripts(): Promise<void> {
+  // Unregister any existing content script registration
+  if (registeredScript) {
+    registeredScript.unregister();
+    registeredScript = null;
+  }
+
+  if (!settings.enabled || settings.allowlist.length === 0) return;
+
+  // Build match patterns from allowlist domains
+  const patterns = settings.allowlist.flatMap((domain) => [
+    `*://${domain}/*`,
+    `*://*.${domain}/*`,
+  ]);
+
+  registeredScript = await browser.contentScripts.register({
+    matches: patterns,
+    js: [{ file: "lib/Readability.js" }, { file: "dist/content.js" }],
+    runAt: "document_idle",
   });
 }
 
@@ -111,21 +134,17 @@ browser.runtime.onMessage.addListener(
     // Reject messages from other extensions or web pages
     if (!isOwnExtension(sender)) return;
 
-    // Ensure settings are loaded before processing any message
+    if (message.type !== "page_visit") return;
+
+    // Ensure settings are loaded before processing
     return settingsReady.then(() => {
-      // Domain allowlist pre-check — lets content scripts skip expensive work
-      if (message.type === "check_domain") {
-        if (typeof message.domain !== "string") return false;
-        return settings.enabled && isDomainAllowed(message.domain);
-      }
-
-      if (message.type !== "page_visit") return;
-
       if (!settings.enabled) return;
 
       // Validate message structure before processing
       if (!isValidPageVisit(message)) return;
 
+      // Defense-in-depth: content scripts only run on allowlisted domains,
+      // but we re-check here in case of bugs or race conditions.
       if (!isDomainAllowed(message.domain)) return;
 
       if (message.dwell_ms < MIN_DWELL_MS) return;
@@ -160,16 +179,23 @@ browser.runtime.onMessage.addListener(
 // --- Listen for storage changes (settings updated from popup) ---
 browser.storage.onChanged.addListener((changes, area) => {
   if (area !== "local") return;
+  let needsReregister = false;
   if (changes.enabled) {
     settings.enabled = changes.enabled.newValue as boolean;
+    needsReregister = true;
   }
   if (changes.allowlist) {
     settings.allowlist = changes.allowlist.newValue as string[];
+    needsReregister = true;
   }
   if (changes.captureCount) {
     settings.captureCount = changes.captureCount.newValue as number;
   }
+  if (needsReregister) {
+    updateContentScripts();
+  }
 });
 
 // --- Initialize ---
-initSettings();
+settingsReady = loadSettings();
+settingsReady.then(() => updateContentScripts());

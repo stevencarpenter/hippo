@@ -1,16 +1,17 @@
 /**
  * Hippo Browser Capture — content script.
  *
- * Runs on every page at document_idle. Tracks engagement signals (dwell time,
- * scroll depth) and extracts main content via Readability on page departure.
- * Sends a "page_visit" message to the background script for allowlist
- * filtering and native messaging relay.
+ * Dynamically injected only on allowlisted domains via
+ * browser.contentScripts.register() in the background script.
+ * Tracks engagement signals (dwell time, scroll depth) and extracts
+ * main content via Readability on page departure. Sends a "page_visit"
+ * message to the background script for native messaging relay.
  */
 
 import { MIN_DWELL_MS, MAX_TEXT_BYTES } from "./config";
 import type { PageVisitMessage } from "./types";
 
-/** Readability is loaded before this script via manifest.json content_scripts. */
+/** Readability is loaded before this script via dynamic content script registration. */
 declare class Readability {
   constructor(doc: Document);
   parse(): { title: string; textContent: string; content: string } | null;
@@ -76,48 +77,34 @@ function maybeSend(): void {
 
   sent = true;
 
-  // Ask background script if this domain is allowlisted before doing
-  // expensive Readability extraction. The background script holds the
-  // runtime allowlist and enabled state.
-  browser.runtime
-    .sendMessage({ type: "check_domain", domain: location.hostname })
-    .then((allowed) => {
-      if (!allowed) return;
-
-      // Extract main content via Readability
-      let extractedText: string | null = null;
-      try {
-        if (typeof Readability !== "undefined") {
-          const docClone = document.cloneNode(true) as Document;
-          const article = new Readability(docClone).parse();
-          if (article && article.textContent) {
-            extractedText = article.textContent;
-            // Truncate to MAX_TEXT_BYTES
-            if (extractedText.length > MAX_TEXT_BYTES) {
-              extractedText = extractedText.substring(0, MAX_TEXT_BYTES);
-            }
-          }
-        }
-      } catch (_e) {
-        // Readability can fail on malformed DOMs — not critical
-        extractedText = null;
+  // Extract main content via Readability
+  let extractedText: string | null = null;
+  try {
+    if (typeof Readability !== "undefined") {
+      const docClone = document.cloneNode(true) as Document;
+      const article = new Readability(docClone).parse();
+      if (article?.textContent) {
+        extractedText = article.textContent.substring(0, MAX_TEXT_BYTES);
       }
+    }
+  } catch {
+    // Readability can fail on malformed DOMs — not critical
+    extractedText = null;
+  }
 
-      const message: PageVisitMessage = {
-        type: "page_visit",
-        url: location.href,
-        title: document.title || "",
-        domain: location.hostname,
-        dwell_ms: Math.round(dwellMs),
-        scroll_depth: parseFloat(maxScrollDepth.toFixed(3)),
-        extracted_text: extractedText,
-        referrer: document.referrer || null,
-        timestamp: Date.now(),
-      };
+  const message: PageVisitMessage = {
+    type: "page_visit",
+    url: location.href,
+    title: document.title || "",
+    domain: location.hostname,
+    dwell_ms: Math.round(dwellMs),
+    scroll_depth: parseFloat(maxScrollDepth.toFixed(3)),
+    extracted_text: extractedText,
+    referrer: document.referrer || null,
+    timestamp: Date.now(),
+  };
 
-      browser.runtime.sendMessage(message);
-    })
-    .catch((_e: unknown) => {
-      // Extension context may be invalidated — nothing we can do
-    });
+  browser.runtime.sendMessage(message).catch(() => {
+    // Extension context may be invalidated
+  });
 }
