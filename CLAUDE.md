@@ -43,6 +43,25 @@ local LLMs.
     uv run --project brain ruff check brain/
     uv run --project brain ruff format --check brain/
 
+### MCP Server
+
+    uv run --project brain hippo-mcp    # Start MCP server (stdio transport)
+
+The MCP server exposes three tools: `search_knowledge`, `search_events`, `get_entities`.
+Configure in `~/.config/mcp/mcp-master.json` (or via mcp-sync):
+
+```json
+{
+  "hippo": {
+    "type": "stdio",
+    "command": "uv",
+    "args": ["run", "--project", "/path/to/hippo/brain", "hippo-mcp"]
+  }
+}
+```
+
+Logs go to stderr. Metrics available via `MetricsCollector.snapshot()` for future OTel export.
+
 ## Path Conventions
 
 All paths use XDG defaults (not macOS-native ~/Library paths):
