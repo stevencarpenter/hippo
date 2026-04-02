@@ -1,0 +1,15 @@
+{
+  "private": true,
+  "name": "hippo-browser-capture",
+  "version": "0.2.0",
+  "scripts": {
+    "build": "node build.mjs",
+    "watch": "node build.mjs --watch",
+    "typecheck": "tsc --noEmit",
+    "package": "node build.mjs && npx web-ext build --overwrite-dest"
+  },
+  "devDependencies": {
+    "esbuild": "^0.25",
+    "typescript": "^5.8"
+  }
+}
