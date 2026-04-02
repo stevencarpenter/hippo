@@ -62,3 +62,9 @@ strip_params = [
     "key",
     "sig",
 ]
+
+[telemetry]
+# Set enabled = true and run `mise run otel:up` to start the observability stack.
+# endpoint is the OTel Collector gRPC address.
+enabled = false
+endpoint = "http://localhost:4317"

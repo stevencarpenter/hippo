@@ -16,6 +16,8 @@ pub struct HippoConfig {
     pub storage: StorageConfig,
     #[serde(default)]
     pub browser: BrowserConfig,
+    #[serde(default)]
+    pub telemetry: TelemetryConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -281,6 +283,27 @@ impl Default for BrowserUrlRedaction {
     fn default() -> Self {
         Self {
             strip_params: default_browser_strip_params(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TelemetryConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_telemetry_endpoint")]
+    pub endpoint: String,
+}
+
+fn default_telemetry_endpoint() -> String {
+    "http://localhost:4317".to_string()
+}
+
+impl Default for TelemetryConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            endpoint: default_telemetry_endpoint(),
         }
     }
 }
@@ -645,6 +668,25 @@ replacement = "***"
     fn test_redact_load_default_returns_ok() {
         let config = RedactConfig::load_default().unwrap();
         assert!(!config.patterns.is_empty());
+    }
+
+    #[test]
+    fn test_telemetry_defaults() {
+        let config = HippoConfig::default();
+        assert!(!config.telemetry.enabled);
+        assert_eq!(config.telemetry.endpoint, "http://localhost:4317");
+    }
+
+    #[test]
+    fn test_telemetry_from_toml() {
+        let toml_str = r#"
+[telemetry]
+enabled = true
+endpoint = "http://collector:4317"
+"#;
+        let config: HippoConfig = toml::from_str(toml_str).unwrap();
+        assert!(config.telemetry.enabled);
+        assert_eq!(config.telemetry.endpoint, "http://collector:4317");
     }
 
     #[test]

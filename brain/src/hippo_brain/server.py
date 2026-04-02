@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import os
 import sqlite3
 import time
 from contextlib import asynccontextmanager, suppress
@@ -42,6 +43,18 @@ from hippo_brain.claude_sessions import (
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s:%(name)s:%(message)s")
 logger = logging.getLogger("hippo_brain")
+
+
+def _get_tracer():
+    """Get OTel tracer if available, else return None."""
+    try:
+        if os.environ.get("HIPPO_OTEL_ENABLED", "").strip() != "1":
+            return None
+        from opentelemetry import trace
+
+        return trace.get_tracer("hippo-brain")
+    except ImportError:
+        return None
 
 
 class BrainServer:
@@ -287,118 +300,26 @@ class BrainServer:
                         prompt = build_enrichment_prompt(events, browser_context=browser_context)
                         logger.info("calling LM Studio (prompt len: %d chars)", len(prompt))
 
-                        try:
-                            result = None
-                            last_err = None
-                            for attempt in range(3):
-                                try:
-                                    messages = [
-                                        {"role": "system", "content": SYSTEM_PROMPT},
-                                        {"role": "user", "content": prompt},
-                                    ]
-                                    if attempt > 0:
-                                        messages.append(
-                                            {
-                                                "role": "user",
-                                                "content": (
-                                                    "Your previous response was not valid JSON. "
-                                                    "Output ONLY a JSON object, no explanation or markdown."
-                                                ),
-                                            }
-                                        )
-                                    raw = await self.client.chat(
-                                        messages=messages,
-                                        model=self.enrichment_model,
-                                    )
-                                    logger.debug(
-                                        "LLM raw response (%d chars): %s",
-                                        len(raw or ""),
-                                        repr(raw)[:200],
-                                    )
-                                    result = parse_enrichment_response(raw)
-                                    break
-                                except Exception as e:
-                                    last_err = e
-                                    logger.warning(
-                                        "enrichment parse attempt %d failed: %s",
-                                        attempt + 1,
-                                        e,
-                                    )
-                            if result is None:
-                                raise last_err
-                            node_id = write_knowledge_node(
-                                conn, result, event_ids, self.enrichment_model
+                        tracer = _get_tracer()
+                        _shell_span = (
+                            tracer.start_as_current_span(
+                                "enrichment.shell",
+                                attributes={
+                                    "hippo.event_count": len(event_ids),
+                                    "hippo.model": self.enrichment_model,
+                                },
                             )
-                            self.last_success_at_ms = int(time.time() * 1000)
-                            self.last_error = None
-                            self.last_error_at_ms = None
-                            logger.info("enriched %d events -> node %d", len(event_ids), node_id)
-
-                            if self.embedding_model:
-                                try:
-                                    node_dict = {
-                                        "id": node_id,
-                                        "session_id": events[0].get("session_id", 0),
-                                        "captured_at": int(time.time() * 1000),
-                                        "commands_raw": " ; ".join(
-                                            e.get("command", "") for e in events
-                                        ),
-                                        "cwd": events[0].get("cwd", ""),
-                                        "git_branch": events[0].get("git_branch", ""),
-                                        "git_repo": "",
-                                        "outcome": result.outcome,
-                                        "tags": result.tags,
-                                        "key_decisions": result.key_decisions,
-                                        "problems_encountered": result.problems_encountered,
-                                        "entities": result.entities
-                                        if isinstance(result.entities, dict)
-                                        else {},
-                                        "embed_text": result.embed_text,
-                                        "summary": result.summary,
-                                        "enrichment_model": self.enrichment_model,
-                                        "enrichment_version": 1,
-                                    }
-                                    await embed_knowledge_node(
-                                        self.client,
-                                        self._vector_table,
-                                        node_dict,
-                                        embed_model=self.embedding_model,
-                                    )
-                                    logger.info("embedded node %d into vector store", node_id)
-                                except Exception as e:
-                                    logger.warning("embedding failed (non-fatal): %s", e)
-                        except Exception as e:
-                            self.last_error = str(e)
-                            self.last_error_at_ms = int(time.time() * 1000)
-                            logger.error("enrichment failed: %s", e)
-                            retry_conn = self._get_conn()
-                            try:
-                                mark_queue_failed(retry_conn, event_ids, str(e))
-                            finally:
-                                retry_conn.close()
-
-                    # Process Claude session segments
-                    try:
-                        claude_batches = claim_pending_claude_segments(conn, worker_id)
-                        for segments in claude_batches:
-                            segment_ids = [s["id"] for s in segments]
-                            prompt = "\n---\n\n".join(s["summary_text"] for s in segments)
-                            logger.info(
-                                "claimed %d claude segments: %s",
-                                len(segment_ids),
-                                segment_ids,
-                            )
-
+                            if tracer
+                            else suppress()
+                        )
+                        with _shell_span:
                             try:
                                 result = None
                                 last_err = None
                                 for attempt in range(3):
                                     try:
                                         messages = [
-                                            {
-                                                "role": "system",
-                                                "content": CLAUDE_SYSTEM_PROMPT,
-                                            },
+                                            {"role": "system", "content": SYSTEM_PROMPT},
                                             {"role": "user", "content": prompt},
                                         ]
                                         if attempt > 0:
@@ -415,166 +336,43 @@ class BrainServer:
                                             messages=messages,
                                             model=self.enrichment_model,
                                         )
+                                        logger.debug(
+                                            "LLM raw response (%d chars): %s",
+                                            len(raw or ""),
+                                            repr(raw)[:200],
+                                        )
                                         result = parse_enrichment_response(raw)
                                         break
                                     except Exception as e:
                                         last_err = e
                                         logger.warning(
-                                            "claude enrichment parse attempt %d failed: %s",
+                                            "enrichment parse attempt %d failed: %s",
                                             attempt + 1,
                                             e,
                                         )
                                 if result is None:
                                     raise last_err
-                                node_id = write_claude_knowledge_node(
-                                    conn,
-                                    result,
-                                    segment_ids,
-                                    self.enrichment_model,
+                                node_id = write_knowledge_node(
+                                    conn, result, event_ids, self.enrichment_model
                                 )
                                 self.last_success_at_ms = int(time.time() * 1000)
                                 self.last_error = None
                                 self.last_error_at_ms = None
                                 logger.info(
-                                    "enriched %d claude segments -> node %d",
-                                    len(segment_ids),
-                                    node_id,
-                                )
-
-                                if self.embedding_model:
-                                    try:
-                                        import json as _json
-
-                                        all_tools = []
-                                        for s in segments:
-                                            try:
-                                                tools = _json.loads(s.get("tool_calls_json", "[]"))
-                                                all_tools.extend(
-                                                    f"{t['name']}: {t['summary']}" for t in tools
-                                                )
-                                            except (
-                                                _json.JSONDecodeError,
-                                                KeyError,
-                                            ):
-                                                pass
-                                        node_dict = {
-                                            "id": node_id,
-                                            "session_id": 0,
-                                            "captured_at": int(time.time() * 1000),
-                                            "commands_raw": " ; ".join(all_tools[:50]),
-                                            "cwd": segments[0].get("cwd", ""),
-                                            "git_branch": segments[0].get("git_branch", ""),
-                                            "git_repo": "",
-                                            "outcome": result.outcome,
-                                            "tags": result.tags,
-                                            "key_decisions": result.key_decisions,
-                                            "problems_encountered": result.problems_encountered,
-                                            "entities": result.entities
-                                            if isinstance(result.entities, dict)
-                                            else {},
-                                            "embed_text": result.embed_text,
-                                            "summary": result.summary,
-                                            "enrichment_model": self.enrichment_model,
-                                        }
-                                        await embed_knowledge_node(
-                                            self.client,
-                                            self._vector_table,
-                                            node_dict,
-                                            embed_model=self.embedding_model,
-                                        )
-                                        logger.info(
-                                            "embedded claude node %d into vector store",
-                                            node_id,
-                                        )
-                                    except Exception as e:
-                                        logger.warning(
-                                            "claude embedding failed (non-fatal): %s",
-                                            e,
-                                        )
-                            except Exception as e:
-                                self.last_error = str(e)
-                                self.last_error_at_ms = int(time.time() * 1000)
-                                logger.error("claude enrichment failed: %s", e)
-                                retry_conn = self._get_conn()
-                                try:
-                                    mark_claude_queue_failed(retry_conn, segment_ids, str(e))
-                                finally:
-                                    retry_conn.close()
-                    except Exception as e:
-                        logger.debug("no claude segments to process: %s", e)
-
-                    # Process browser events
-                    try:
-                        browser_batches = claim_pending_browser_events(
-                            conn, worker_id, stale_secs=60
-                        )
-                        for events in browser_batches:
-                            event_ids = [e["id"] for e in events]
-                            logger.info(
-                                "claimed %d browser events: %s",
-                                len(event_ids),
-                                event_ids,
-                            )
-                            prompt = build_browser_enrichment_prompt(events)
-
-                            try:
-                                result = None
-                                last_err = None
-                                for attempt in range(3):
-                                    try:
-                                        messages = [
-                                            {
-                                                "role": "system",
-                                                "content": BROWSER_SYSTEM_PROMPT,
-                                            },
-                                            {"role": "user", "content": prompt},
-                                        ]
-                                        if attempt > 0:
-                                            messages.append(
-                                                {
-                                                    "role": "user",
-                                                    "content": (
-                                                        "Your previous response was not valid JSON. "
-                                                        "Output ONLY a JSON object, no explanation or markdown."
-                                                    ),
-                                                }
-                                            )
-                                        raw = await self.client.chat(
-                                            messages=messages,
-                                            model=self.enrichment_model,
-                                        )
-                                        result = parse_enrichment_response(raw)
-                                        break
-                                    except Exception as e:
-                                        last_err = e
-                                        logger.warning(
-                                            "browser enrichment attempt %d failed: %s",
-                                            attempt + 1,
-                                            e,
-                                        )
-                                if result is None:
-                                    raise last_err
-                                node_id = write_browser_knowledge_node(
-                                    conn, result, event_ids, self.enrichment_model
-                                )
-                                self.last_success_at_ms = int(time.time() * 1000)
-                                logger.info(
-                                    "enriched %d browser events -> node %d",
-                                    len(event_ids),
-                                    node_id,
+                                    "enriched %d events -> node %d", len(event_ids), node_id
                                 )
 
                                 if self.embedding_model:
                                     try:
                                         node_dict = {
                                             "id": node_id,
-                                            "session_id": 0,
+                                            "session_id": events[0].get("session_id", 0),
                                             "captured_at": int(time.time() * 1000),
                                             "commands_raw": " ; ".join(
-                                                e.get("url", "") for e in events
+                                                e.get("command", "") for e in events
                                             ),
-                                            "cwd": "",
-                                            "git_branch": "",
+                                            "cwd": events[0].get("cwd", ""),
+                                            "git_branch": events[0].get("git_branch", ""),
                                             "git_repo": "",
                                             "outcome": result.outcome,
                                             "tags": result.tags,
@@ -595,23 +393,284 @@ class BrainServer:
                                             embed_model=self.embedding_model,
                                         )
                                         logger.info(
-                                            "embedded browser node %d into vector store",
-                                            node_id,
+                                            "embedded node %d into vector store", node_id
                                         )
                                     except Exception as e:
-                                        logger.warning(
-                                            "browser embedding failed (non-fatal): %s",
-                                            e,
-                                        )
+                                        logger.warning("embedding failed (non-fatal): %s", e)
                             except Exception as e:
                                 self.last_error = str(e)
                                 self.last_error_at_ms = int(time.time() * 1000)
-                                logger.error("browser enrichment failed: %s", e)
+                                logger.error("enrichment failed: %s", e)
                                 retry_conn = self._get_conn()
                                 try:
-                                    mark_browser_queue_failed(retry_conn, event_ids, str(e))
+                                    mark_queue_failed(retry_conn, event_ids, str(e))
                                 finally:
                                     retry_conn.close()
+
+                    # Process Claude session segments
+                    try:
+                        claude_batches = claim_pending_claude_segments(conn, worker_id)
+                        for segments in claude_batches:
+                            segment_ids = [s["id"] for s in segments]
+                            prompt = "\n---\n\n".join(s["summary_text"] for s in segments)
+                            logger.info(
+                                "claimed %d claude segments: %s",
+                                len(segment_ids),
+                                segment_ids,
+                            )
+
+                            tracer = _get_tracer()
+                            _claude_span = (
+                                tracer.start_as_current_span(
+                                    "enrichment.claude",
+                                    attributes={
+                                        "hippo.event_count": len(segment_ids),
+                                        "hippo.model": self.enrichment_model,
+                                    },
+                                )
+                                if tracer
+                                else suppress()
+                            )
+                            with _claude_span:
+                                try:
+                                    result = None
+                                    last_err = None
+                                    for attempt in range(3):
+                                        try:
+                                            messages = [
+                                                {
+                                                    "role": "system",
+                                                    "content": CLAUDE_SYSTEM_PROMPT,
+                                                },
+                                                {"role": "user", "content": prompt},
+                                            ]
+                                            if attempt > 0:
+                                                messages.append(
+                                                    {
+                                                        "role": "user",
+                                                        "content": (
+                                                            "Your previous response was not valid JSON. "
+                                                            "Output ONLY a JSON object, no explanation or markdown."
+                                                        ),
+                                                    }
+                                                )
+                                            raw = await self.client.chat(
+                                                messages=messages,
+                                                model=self.enrichment_model,
+                                            )
+                                            result = parse_enrichment_response(raw)
+                                            break
+                                        except Exception as e:
+                                            last_err = e
+                                            logger.warning(
+                                                "claude enrichment parse attempt %d failed: %s",
+                                                attempt + 1,
+                                                e,
+                                            )
+                                    if result is None:
+                                        raise last_err
+                                    node_id = write_claude_knowledge_node(
+                                        conn,
+                                        result,
+                                        segment_ids,
+                                        self.enrichment_model,
+                                    )
+                                    self.last_success_at_ms = int(time.time() * 1000)
+                                    self.last_error = None
+                                    self.last_error_at_ms = None
+                                    logger.info(
+                                        "enriched %d claude segments -> node %d",
+                                        len(segment_ids),
+                                        node_id,
+                                    )
+
+                                    if self.embedding_model:
+                                        try:
+                                            import json as _json
+
+                                            all_tools = []
+                                            for s in segments:
+                                                try:
+                                                    tools = _json.loads(
+                                                        s.get("tool_calls_json", "[]")
+                                                    )
+                                                    all_tools.extend(
+                                                        f"{t['name']}: {t['summary']}"
+                                                        for t in tools
+                                                    )
+                                                except (
+                                                    _json.JSONDecodeError,
+                                                    KeyError,
+                                                ):
+                                                    pass
+                                            node_dict = {
+                                                "id": node_id,
+                                                "session_id": 0,
+                                                "captured_at": int(time.time() * 1000),
+                                                "commands_raw": " ; ".join(all_tools[:50]),
+                                                "cwd": segments[0].get("cwd", ""),
+                                                "git_branch": segments[0].get("git_branch", ""),
+                                                "git_repo": "",
+                                                "outcome": result.outcome,
+                                                "tags": result.tags,
+                                                "key_decisions": result.key_decisions,
+                                                "problems_encountered": result.problems_encountered,
+                                                "entities": result.entities
+                                                if isinstance(result.entities, dict)
+                                                else {},
+                                                "embed_text": result.embed_text,
+                                                "summary": result.summary,
+                                                "enrichment_model": self.enrichment_model,
+                                            }
+                                            await embed_knowledge_node(
+                                                self.client,
+                                                self._vector_table,
+                                                node_dict,
+                                                embed_model=self.embedding_model,
+                                            )
+                                            logger.info(
+                                                "embedded claude node %d into vector store",
+                                                node_id,
+                                            )
+                                        except Exception as e:
+                                            logger.warning(
+                                                "claude embedding failed (non-fatal): %s",
+                                                e,
+                                            )
+                                except Exception as e:
+                                    self.last_error = str(e)
+                                    self.last_error_at_ms = int(time.time() * 1000)
+                                    logger.error("claude enrichment failed: %s", e)
+                                    retry_conn = self._get_conn()
+                                    try:
+                                        mark_claude_queue_failed(retry_conn, segment_ids, str(e))
+                                    finally:
+                                        retry_conn.close()
+                    except Exception as e:
+                        logger.debug("no claude segments to process: %s", e)
+
+                    # Process browser events
+                    try:
+                        browser_batches = claim_pending_browser_events(
+                            conn, worker_id, stale_secs=60
+                        )
+                        for events in browser_batches:
+                            event_ids = [e["id"] for e in events]
+                            logger.info(
+                                "claimed %d browser events: %s",
+                                len(event_ids),
+                                event_ids,
+                            )
+                            prompt = build_browser_enrichment_prompt(events)
+
+                            tracer = _get_tracer()
+                            _browser_span = (
+                                tracer.start_as_current_span(
+                                    "enrichment.browser",
+                                    attributes={
+                                        "hippo.event_count": len(event_ids),
+                                        "hippo.model": self.enrichment_model,
+                                    },
+                                )
+                                if tracer
+                                else suppress()
+                            )
+                            with _browser_span:
+                                try:
+                                    result = None
+                                    last_err = None
+                                    for attempt in range(3):
+                                        try:
+                                            messages = [
+                                                {
+                                                    "role": "system",
+                                                    "content": BROWSER_SYSTEM_PROMPT,
+                                                },
+                                                {"role": "user", "content": prompt},
+                                            ]
+                                            if attempt > 0:
+                                                messages.append(
+                                                    {
+                                                        "role": "user",
+                                                        "content": (
+                                                            "Your previous response was not valid JSON. "
+                                                            "Output ONLY a JSON object, no explanation or markdown."
+                                                        ),
+                                                    }
+                                                )
+                                            raw = await self.client.chat(
+                                                messages=messages,
+                                                model=self.enrichment_model,
+                                            )
+                                            result = parse_enrichment_response(raw)
+                                            break
+                                        except Exception as e:
+                                            last_err = e
+                                            logger.warning(
+                                                "browser enrichment attempt %d failed: %s",
+                                                attempt + 1,
+                                                e,
+                                            )
+                                    if result is None:
+                                        raise last_err
+                                    node_id = write_browser_knowledge_node(
+                                        conn, result, event_ids, self.enrichment_model
+                                    )
+                                    self.last_success_at_ms = int(time.time() * 1000)
+                                    logger.info(
+                                        "enriched %d browser events -> node %d",
+                                        len(event_ids),
+                                        node_id,
+                                    )
+
+                                    if self.embedding_model:
+                                        try:
+                                            node_dict = {
+                                                "id": node_id,
+                                                "session_id": 0,
+                                                "captured_at": int(time.time() * 1000),
+                                                "commands_raw": " ; ".join(
+                                                    e.get("url", "") for e in events
+                                                ),
+                                                "cwd": "",
+                                                "git_branch": "",
+                                                "git_repo": "",
+                                                "outcome": result.outcome,
+                                                "tags": result.tags,
+                                                "key_decisions": result.key_decisions,
+                                                "problems_encountered": result.problems_encountered,
+                                                "entities": result.entities
+                                                if isinstance(result.entities, dict)
+                                                else {},
+                                                "embed_text": result.embed_text,
+                                                "summary": result.summary,
+                                                "enrichment_model": self.enrichment_model,
+                                                "enrichment_version": 1,
+                                            }
+                                            await embed_knowledge_node(
+                                                self.client,
+                                                self._vector_table,
+                                                node_dict,
+                                                embed_model=self.embedding_model,
+                                            )
+                                            logger.info(
+                                                "embedded browser node %d into vector store",
+                                                node_id,
+                                            )
+                                        except Exception as e:
+                                            logger.warning(
+                                                "browser embedding failed (non-fatal): %s",
+                                                e,
+                                            )
+                                except Exception as e:
+                                    self.last_error = str(e)
+                                    self.last_error_at_ms = int(time.time() * 1000)
+                                    logger.error("browser enrichment failed: %s", e)
+                                    retry_conn = self._get_conn()
+                                    try:
+                                        mark_browser_queue_failed(retry_conn, event_ids, str(e))
+                                    finally:
+                                        retry_conn.close()
                     except Exception as e:
                         logger.warning("browser enrichment polling error: %s", e)
 
