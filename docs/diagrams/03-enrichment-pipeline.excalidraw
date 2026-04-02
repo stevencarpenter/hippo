@@ -1,0 +1,22 @@
+{
+  "type": "excalidraw",
+  "version": 2,
+  "source": "hippo",
+  "elements": [
+    {"type":"text","id":"et1","x":210,"y":2,"text":"Enrichment Pipeline","fontSize":26,"strokeColor":"#1e1e1e","width":300,"height":32},
+    {"type":"text","id":"et2","x":140,"y":36,"text":"Three source queues → correlated enrichment → dual outputs","fontSize":16,"strokeColor":"#757575","width":500,"height":20},
+    {"type":"rectangle","id":"eq1","x":50,"y":75,"width":185,"height":65,"backgroundColor":"#a5d8ff","fillStyle":"solid","roundness":{"type":3},"strokeColor":"#4a9eed","label":{"text":"Shell Queue\nCommand history\nExit codes & cwd","fontSize":14}},
+    {"type":"rectangle","id":"eq2","x":288,"y":75,"width":185,"height":65,"backgroundColor":"#d0bfff","fillStyle":"solid","roundness":{"type":3},"strokeColor":"#8b5cf6","label":{"text":"Claude Queue\nSession logs\nCode context","fontSize":14}},
+    {"type":"rectangle","id":"eq3","x":526,"y":75,"width":185,"height":65,"backgroundColor":"#ffd8a8","fillStyle":"solid","roundness":{"type":3},"strokeColor":"#f59e0b","label":{"text":"Browser Queue\nURLs · scroll · dwell\nPage content","fontSize":14}},
+    {"type":"arrow","id":"ea1","x":142,"y":150,"width":0,"height":25,"points":[[0,0],[0,25]],"strokeColor":"#4a9eed","strokeWidth":2,"endArrowhead":"arrow"},
+    {"type":"arrow","id":"ea2","x":380,"y":150,"width":0,"height":25,"points":[[0,0],[0,25]],"strokeColor":"#8b5cf6","strokeWidth":2,"endArrowhead":"arrow"},
+    {"type":"arrow","id":"ea3","x":618,"y":150,"width":0,"height":25,"points":[[0,0],[0,25]],"strokeColor":"#f59e0b","strokeWidth":2,"endArrowhead":"arrow"},
+    {"type":"rectangle","id":"brn","x":50,"y":175,"width":660,"height":145,"backgroundColor":"#ffd8a8","fillStyle":"solid","roundness":{"type":3},"strokeColor":"#f59e0b","label":{"text":"hippo-brain  (Python Enrichment Engine)\n\nClaim → Build Prompt → LLM Call → Parse Response → Write KN\n→ Tag Extraction → Generate Embeddings → Store","fontSize":14}},
+    {"type":"rectangle","id":"ecn","x":80,"y":330,"width":600,"height":50,"backgroundColor":"#fff3bf","fillStyle":"solid","roundness":{"type":3},"strokeColor":"#f59e0b","strokeWidth":2,"opacity":60,"label":{"text":"Shell enrichment includes correlated browser activity  (±5min window)  ·  Cross-source context window","fontSize":13}},
+    {"type":"arrow","id":"ea4","x":230,"y":390,"width":0,"height":25,"points":[[0,0],[0,25]],"strokeColor":"#22c55e","strokeWidth":2,"endArrowhead":"arrow"},
+    {"type":"arrow","id":"ea5","x":530,"y":390,"width":0,"height":25,"points":[[0,0],[0,25]],"strokeColor":"#8b5cf6","strokeWidth":2,"endArrowhead":"arrow"},
+    {"type":"rectangle","id":"eo1","x":80,"y":415,"width":280,"height":70,"backgroundColor":"#b2f2bb","fillStyle":"solid","roundness":{"type":3},"strokeColor":"#22c55e","label":{"text":"Knowledge Nodes + Entities\nStores intent, outcome, tags\nReady for lexical query","fontSize":13}},
+    {"type":"rectangle","id":"eo2","x":400,"y":415,"width":280,"height":70,"backgroundColor":"#eebefa","fillStyle":"solid","roundness":{"type":3},"strokeColor":"#8b5cf6","label":{"text":"LanceDB Vectors (2560d)\nFlat embeddings + metadata\nEnabled for semantic search","fontSize":13}}
+  ],
+  "appState": {"viewBackgroundColor":"#ffffff"}
+}
