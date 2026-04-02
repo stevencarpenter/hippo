@@ -1,0 +1,30 @@
+{
+  "type": "excalidraw",
+  "version": 2,
+  "source": "hippo",
+  "elements": [
+    {"type":"text","id":"t1","x":195,"y":2,"text":"Hippo — System Architecture","fontSize":26,"strokeColor":"#1e1e1e","width":400,"height":32},
+    {"type":"text","id":"t2","x":218,"y":36,"text":"Local knowledge capture for macOS","fontSize":16,"strokeColor":"#757575","width":300,"height":20},
+    {"type":"rectangle","id":"s1","x":30,"y":80,"width":200,"height":55,"backgroundColor":"#a5d8ff","fillStyle":"solid","roundness":{"type":3},"strokeColor":"#4a9eed","label":{"text":"Shell Hooks","fontSize":18}},
+    {"type":"text","id":"s1a","x":65,"y":137,"text":"zsh preexec / precmd","fontSize":14,"strokeColor":"#757575","width":200,"height":18},
+    {"type":"rectangle","id":"s2","x":280,"y":80,"width":200,"height":55,"backgroundColor":"#a5d8ff","fillStyle":"solid","roundness":{"type":3},"strokeColor":"#4a9eed","label":{"text":"Claude Code","fontSize":18}},
+    {"type":"text","id":"s2a","x":310,"y":137,"text":"JSONL session logs","fontSize":14,"strokeColor":"#757575","width":200,"height":18},
+    {"type":"rectangle","id":"s3","x":530,"y":80,"width":200,"height":55,"backgroundColor":"#a5d8ff","fillStyle":"solid","roundness":{"type":3},"strokeColor":"#4a9eed","label":{"text":"Firefox Extension","fontSize":18}},
+    {"type":"text","id":"s3a","x":560,"y":137,"text":"Native Messaging","fontSize":14,"strokeColor":"#757575","width":200,"height":18},
+    {"type":"arrow","id":"a1","x":130,"y":155,"width":0,"height":40,"points":[[0,0],[0,40]],"strokeColor":"#4a9eed","strokeWidth":2,"endArrowhead":"arrow"},
+    {"type":"arrow","id":"a2","x":380,"y":155,"width":0,"height":40,"points":[[0,0],[0,40]],"strokeColor":"#4a9eed","strokeWidth":2,"endArrowhead":"arrow"},
+    {"type":"arrow","id":"a3","x":630,"y":155,"width":0,"height":40,"points":[[0,0],[0,40]],"strokeColor":"#4a9eed","strokeWidth":2,"endArrowhead":"arrow"},
+    {"type":"rectangle","id":"d1","x":30,"y":195,"width":700,"height":65,"backgroundColor":"#d0bfff","fillStyle":"solid","roundness":{"type":3},"strokeColor":"#8b5cf6","label":{"text":"hippo-daemon  (Rust)","fontSize":20}},
+    {"type":"text","id":"d1a","x":135,"y":262,"text":"Unix Socket  ·  Event Buffer  ·  Flush  ·  Fallback","fontSize":14,"strokeColor":"#757575","width":500,"height":18},
+    {"type":"arrow","id":"a4","x":380,"y":280,"width":0,"height":30,"points":[[0,0],[0,30]],"strokeColor":"#8b5cf6","strokeWidth":2,"endArrowhead":"arrow"},
+    {"type":"rectangle","id":"db","x":220,"y":310,"width":320,"height":60,"backgroundColor":"#c3fae8","fillStyle":"solid","roundness":{"type":3},"strokeColor":"#22c55e","label":{"text":"SQLite  (WAL · Schema v4)","fontSize":18}},
+    {"type":"arrow","id":"a5","x":380,"y":370,"width":0,"height":30,"points":[[0,0],[0,30]],"strokeColor":"#22c55e","strokeWidth":2,"endArrowhead":"arrow"},
+    {"type":"rectangle","id":"b1","x":30,"y":400,"width":700,"height":65,"backgroundColor":"#ffd8a8","fillStyle":"solid","roundness":{"type":3},"strokeColor":"#f59e0b","label":{"text":"hippo-brain  (Python)","fontSize":20}},
+    {"type":"text","id":"b1a","x":155,"y":467,"text":"Poll Queue  ·  Enrich via LLM  ·  Embed Vectors","fontSize":14,"strokeColor":"#757575","width":500,"height":18},
+    {"type":"arrow","id":"a6","x":190,"y":485,"width":0,"height":30,"points":[[0,0],[0,30]],"strokeColor":"#f59e0b","strokeWidth":2,"endArrowhead":"arrow"},
+    {"type":"arrow","id":"a7","x":570,"y":485,"width":0,"height":30,"points":[[0,0],[0,30]],"strokeColor":"#f59e0b","strokeWidth":2,"endArrowhead":"arrow"},
+    {"type":"rectangle","id":"o1","x":60,"y":515,"width":260,"height":55,"backgroundColor":"#ffc9c9","fillStyle":"solid","roundness":{"type":3},"strokeColor":"#ef4444","label":{"text":"LM Studio  (local LLM)","fontSize":18}},
+    {"type":"rectangle","id":"o2","x":440,"y":515,"width":260,"height":55,"backgroundColor":"#eebefa","fillStyle":"solid","roundness":{"type":3},"strokeColor":"#8b5cf6","label":{"text":"LanceDB  (vectors)","fontSize":18}}
+  ],
+  "appState": {"viewBackgroundColor":"#ffffff"}
+}

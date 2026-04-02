@@ -1,0 +1,22 @@
+{
+  "type": "excalidraw",
+  "version": 2,
+  "source": "hippo",
+  "elements": [
+    {"type":"text","id":"et1","x":210,"y":2,"text":"Enrichment Pipeline","fontSize":26,"strokeColor":"#1e1e1e","width":300,"height":32},
+    {"type":"text","id":"et2","x":195,"y":36,"text":"Three source queues, correlated enrichment","fontSize":16,"strokeColor":"#757575","width":400,"height":20},
+    {"type":"rectangle","id":"eq1","x":50,"y":75,"width":185,"height":50,"backgroundColor":"#a5d8ff","fillStyle":"solid","roundness":{"type":3},"strokeColor":"#4a9eed","label":{"text":"Shell Queue","fontSize":18}},
+    {"type":"rectangle","id":"eq2","x":288,"y":75,"width":185,"height":50,"backgroundColor":"#d0bfff","fillStyle":"solid","roundness":{"type":3},"strokeColor":"#8b5cf6","label":{"text":"Claude Queue","fontSize":18}},
+    {"type":"rectangle","id":"eq3","x":526,"y":75,"width":185,"height":50,"backgroundColor":"#ffd8a8","fillStyle":"solid","roundness":{"type":3},"strokeColor":"#f59e0b","label":{"text":"Browser Queue","fontSize":18}},
+    {"type":"arrow","id":"ea1","x":142,"y":125,"width":0,"height":30,"points":[[0,0],[0,30]],"strokeColor":"#4a9eed","strokeWidth":2,"endArrowhead":"arrow"},
+    {"type":"arrow","id":"ea2","x":380,"y":125,"width":0,"height":30,"points":[[0,0],[0,30]],"strokeColor":"#8b5cf6","strokeWidth":2,"endArrowhead":"arrow"},
+    {"type":"arrow","id":"ea3","x":618,"y":125,"width":0,"height":30,"points":[[0,0],[0,30]],"strokeColor":"#f59e0b","strokeWidth":2,"endArrowhead":"arrow"},
+    {"type":"rectangle","id":"brn","x":50,"y":155,"width":660,"height":120,"backgroundColor":"#ffd8a8","fillStyle":"solid","roundness":{"type":3},"strokeColor":"#f59e0b","label":{"text":"hippo-brain  (Python)\n\nClaim → Build Prompt → LLM Call → Parse → Write → Embed","fontSize":18}},
+    {"type":"rectangle","id":"ecn","x":100,"y":295,"width":560,"height":38,"backgroundColor":"#fff3bf","fillStyle":"solid","roundness":{"type":3},"strokeColor":"#f59e0b","strokeWidth":1,"opacity":50,"label":{"text":"Shell prompts include correlated browser activity  (±5min window)","fontSize":14}},
+    {"type":"arrow","id":"ea4","x":230,"y":333,"width":0,"height":30,"points":[[0,0],[0,30]],"strokeColor":"#22c55e","strokeWidth":2,"endArrowhead":"arrow"},
+    {"type":"arrow","id":"ea5","x":530,"y":333,"width":0,"height":30,"points":[[0,0],[0,30]],"strokeColor":"#8b5cf6","strokeWidth":2,"endArrowhead":"arrow"},
+    {"type":"rectangle","id":"eo1","x":80,"y":363,"width":280,"height":55,"backgroundColor":"#b2f2bb","fillStyle":"solid","roundness":{"type":3},"strokeColor":"#22c55e","label":{"text":"Knowledge Nodes + Entities","fontSize":18}},
+    {"type":"rectangle","id":"eo2","x":400,"y":363,"width":260,"height":55,"backgroundColor":"#eebefa","fillStyle":"solid","roundness":{"type":3},"strokeColor":"#8b5cf6","label":{"text":"LanceDB Vectors","fontSize":18}}
+  ],
+  "appState": {"viewBackgroundColor":"#ffffff"}
+}
