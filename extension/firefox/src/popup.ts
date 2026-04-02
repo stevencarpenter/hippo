@@ -17,7 +17,7 @@ const savedIndicator = document.getElementById("saved") as HTMLElement;
 
 // --- Load current settings ---
 browser.storage.local
-  .get(["enabled", "allowlist", "captureCount"])
+  .get(["enabled", "allowlist", "captureCount", "lastSendOk", "lastSendAt"])
   .then((result) => {
     enabledCheckbox.checked =
       typeof result.enabled === "boolean" ? result.enabled : true;
@@ -30,6 +30,21 @@ browser.storage.local
     allowlistTextarea.value = domains.join("\n");
 
     countDisplay.textContent = String(result.captureCount ?? 0);
+
+    // Show daemon connection status
+    const statusEl = document.getElementById("status");
+    if (statusEl) {
+      if (result.lastSendAt == null) {
+        statusEl.textContent = "No data sent yet";
+        statusEl.style.color = "#859289";
+      } else if (result.lastSendOk) {
+        statusEl.textContent = "Connected";
+        statusEl.style.color = "#a7c080";
+      } else {
+        statusEl.textContent = "Daemon unreachable";
+        statusEl.style.color = "#e67e80";
+      }
+    }
   });
 
 // --- Toggle enabled state immediately on change ---
@@ -42,7 +57,10 @@ saveButton.addEventListener("click", () => {
   const lines = allowlistTextarea.value
     .split("\n")
     .map((line) => line.trim().toLowerCase())
-    .filter((line) => line.length > 0);
+    .map((line) => line.replace(/^https?:\/\//, ""))  // strip protocol
+    .map((line) => line.replace(/^\*\./, ""))          // strip wildcard prefix
+    .map((line) => line.replace(/\/.*$/, ""))          // strip path
+    .filter((line) => line.length > 0 && line.includes(".")); // must look like a domain
 
   // Deduplicate
   const unique = [...new Set(lines)];

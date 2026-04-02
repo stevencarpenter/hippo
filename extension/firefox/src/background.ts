@@ -130,11 +130,12 @@ function isValidPageVisit(msg: unknown): msg is PageVisitMessage {
 
 // --- Listen for messages from content scripts ---
 browser.runtime.onMessage.addListener(
-  (message: any, sender: browser.runtime.MessageSender): void | Promise<unknown> => {
+  (message: unknown, sender: browser.runtime.MessageSender): void | Promise<unknown> => {
     // Reject messages from other extensions or web pages
     if (!isOwnExtension(sender)) return;
 
-    if (message.type !== "page_visit") return;
+    const msg = message as Record<string, unknown>;
+    if (msg.type !== "page_visit") return;
 
     // Ensure settings are loaded before processing
     return settingsReady.then(() => {
@@ -164,12 +165,18 @@ browser.runtime.onMessage.addListener(
       };
 
       browser.runtime.sendNativeMessage(NATIVE_HOST, visit).then(
-        (_response) => {
+        () => {
           settings.captureCount++;
           persistCaptureCount();
+          browser.storage.local.set({ lastSendOk: true, lastSendAt: Date.now() });
         },
         (error) => {
           console.error("[hippo] native messaging error:", error);
+          browser.storage.local.set({
+            lastSendOk: false,
+            lastSendAt: Date.now(),
+            lastSendError: String(error),
+          });
         },
       );
     });
