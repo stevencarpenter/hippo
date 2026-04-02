@@ -1,6 +1,5 @@
 """Hippo MCP Server — expose the knowledge base as tools for Claude Code."""
 
-import os
 import sqlite3
 import time
 import tomllib
@@ -20,21 +19,10 @@ from hippo_brain.mcp_queries import (
     search_knowledge_lexical,
     shape_semantic_results,
 )
+from hippo_brain.telemetry import get_tracer as _get_tracer
 
 logger = setup_logging("hippo-mcp")
 metrics = MetricsCollector()
-
-
-def _get_tracer():
-    """Get OTel tracer if available, else return None."""
-    try:
-        if os.environ.get("HIPPO_OTEL_ENABLED", "").strip() != "1":
-            return None
-        from opentelemetry import trace
-
-        return trace.get_tracer("hippo-brain")
-    except ImportError:
-        return None
 
 
 def _load_config() -> dict:

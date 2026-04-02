@@ -74,7 +74,11 @@ def main() -> None:
             enrichment_batch_size=settings["max_events_per_chunk"],
             session_stale_secs=settings["session_stale_secs"],
         )
-        uvicorn.run(app, host="127.0.0.1", port=settings["port"])
+        try:
+            uvicorn.run(app, host="127.0.0.1", port=settings["port"])
+        finally:
+            if _otel_shutdown:
+                _otel_shutdown()
     elif command == "enrich":
         print("Enrichment worker not yet implemented as standalone command.")
     else:

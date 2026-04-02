@@ -1,9 +1,8 @@
 import asyncio
 import logging
-import os
 import sqlite3
 import time
-from contextlib import asynccontextmanager, suppress
+from contextlib import asynccontextmanager, nullcontext, suppress
 from pathlib import Path
 
 from starlette.applications import Starlette
@@ -40,21 +39,10 @@ from hippo_brain.claude_sessions import (
     mark_claude_queue_failed,
     write_claude_knowledge_node,
 )
+from hippo_brain.telemetry import get_tracer as _get_tracer
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s:%(name)s:%(message)s")
 logger = logging.getLogger("hippo_brain")
-
-
-def _get_tracer():
-    """Get OTel tracer if available, else return None."""
-    try:
-        if os.environ.get("HIPPO_OTEL_ENABLED", "").strip() != "1":
-            return None
-        from opentelemetry import trace
-
-        return trace.get_tracer("hippo-brain")
-    except ImportError:
-        return None
 
 
 class BrainServer:
@@ -310,7 +298,7 @@ class BrainServer:
                                 },
                             )
                             if tracer
-                            else suppress()
+                            else nullcontext()
                         )
                         with _shell_span:
                             try:
@@ -429,7 +417,7 @@ class BrainServer:
                                     },
                                 )
                                 if tracer
-                                else suppress()
+                                else nullcontext()
                             )
                             with _claude_span:
                                 try:
@@ -573,7 +561,7 @@ class BrainServer:
                                     },
                                 )
                                 if tracer
-                                else suppress()
+                                else nullcontext()
                             )
                             with _browser_span:
                                 try:

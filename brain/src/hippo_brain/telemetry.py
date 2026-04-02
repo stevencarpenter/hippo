@@ -69,3 +69,15 @@ def init_telemetry(
         logger_provider.shutdown()
 
     return shutdown
+
+
+def get_tracer(name: str = "hippo-brain"):
+    """Get OTel tracer if available, else return None."""
+    if not _is_otel_enabled():
+        return None
+    try:
+        from opentelemetry import trace
+
+        return trace.get_tracer(name)
+    except ImportError:
+        return None
