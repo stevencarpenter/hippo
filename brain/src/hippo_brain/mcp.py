@@ -11,7 +11,13 @@ from mcp.server.fastmcp import FastMCP
 from hippo_brain.client import LMStudioClient
 from hippo_brain.embeddings import get_or_create_table, open_vector_db, search_similar
 from hippo_brain.mcp_logging import MetricsCollector, setup_logging
-from hippo_brain.mcp_queries import get_entities_impl, search_events_impl, search_knowledge_lexical
+from hippo_brain.mcp_queries import (
+    MAX_LIMIT,
+    get_entities_impl,
+    search_events_impl,
+    search_knowledge_lexical,
+    shape_semantic_results,
+)
 
 logger = setup_logging("hippo-mcp")
 metrics = MetricsCollector()
@@ -123,6 +129,7 @@ async def search_knowledge(
               Defaults to "semantic"; falls back to lexical on embedding failure.
         limit: Maximum number of results to return (default 10).
     """
+    limit = min(limit, MAX_LIMIT)
     metrics.tool_calls += 1
     t0 = time.monotonic()
     logger.info("search_knowledge called: query=%r mode=%s limit=%d", query, mode, limit)
@@ -132,7 +139,8 @@ async def search_knowledge(
             metrics.semantic_searches += 1
             try:
                 vecs = await _state.lm_client.embed([query], model=_state.embedding_model)
-                results = search_similar(_state.vector_table, vecs[0], limit=limit)
+                hits = search_similar(_state.vector_table, vecs[0], limit=limit)
+                results = shape_semantic_results(hits)
                 elapsed = time.monotonic() - t0
                 logger.info(
                     "search_knowledge completed: %d results in %.3fs (semantic)",
@@ -184,8 +192,8 @@ async def search_events(
         project: Filter by project directory (substring match on cwd).
         limit: Maximum number of results (default 20).
     """
+    limit = min(limit, MAX_LIMIT)
     metrics.tool_calls += 1
-    metrics.events_searched += 1
     t0 = time.monotonic()
     logger.info(
         "search_events called: query=%r source=%s since=%r project=%r limit=%d",
@@ -206,6 +214,7 @@ async def search_events(
             conn.close()
 
         elapsed = time.monotonic() - t0
+        metrics.events_searched += len(results)
         logger.info("search_events completed: %d results in %.3fs", len(results), elapsed)
         return results
 
@@ -224,13 +233,13 @@ async def get_entities(
     """List entities from the Hippo knowledge graph.
 
     Args:
-        type: Filter by entity type (e.g. "tool", "project", "service", "file", "error").
+        type: Filter by entity type: "project", "tool", "file", "domain", "concept", "service".
               Empty means all types.
         query: Filter entities whose name matches this substring.
         limit: Maximum number of results (default 50).
     """
+    limit = min(limit, MAX_LIMIT)
     metrics.tool_calls += 1
-    metrics.entities_returned += 1
     t0 = time.monotonic()
     logger.info("get_entities called: type=%r query=%r limit=%d", type, query, limit)
 
@@ -241,6 +250,7 @@ async def get_entities(
         finally:
             conn.close()
 
+        metrics.entities_returned += len(results)
         elapsed = time.monotonic() - t0
         logger.info("get_entities completed: %d results in %.3fs", len(results), elapsed)
         return results

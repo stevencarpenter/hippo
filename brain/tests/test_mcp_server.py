@@ -153,9 +153,7 @@ class TestLoadConfig:
         """Missing sections fall back to defaults."""
         config_dir = tmp_path / ".config" / "hippo"
         config_dir.mkdir(parents=True)
-        (config_dir / "config.toml").write_text(
-            '[lmstudio]\nbase_url = "http://other:9999/v1"\n'
-        )
+        (config_dir / "config.toml").write_text('[lmstudio]\nbase_url = "http://other:9999/v1"\n')
         monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
         config = _load_config()
         # storage section missing → defaults
@@ -176,7 +174,7 @@ def knowledge_db(tmp_db):
     conn.execute(
         "INSERT INTO knowledge_nodes (uuid, content, embed_text, outcome, tags) "
         "VALUES ('u1', "
-        "'{\"summary\":\"Fixed cargo build error\",\"intent\":\"debugging\"}', "
+        '\'{"summary":"Fixed cargo build error","intent":"debugging"}\', '
         "'Fixed cargo build error by adding missing dependency', "
         "'success', '[\"rust\",\"cargo\"]')"
     )
@@ -326,7 +324,7 @@ class TestSearchKnowledgeTool:
         conn.execute(
             "INSERT INTO knowledge_nodes (uuid, content, embed_text, outcome, tags) "
             "VALUES ('u2', "
-            "'{\"summary\":\"cargo clippy clean\",\"intent\":\"linting\"}', "
+            '\'{"summary":"cargo clippy clean","intent":"linting"}\', '
             "'cargo clippy all clean', 'success', '[\"rust\"]')"
         )
         conn.commit()
@@ -363,9 +361,7 @@ class TestSearchEventsTool:
         conn, db_path = events_db
         _state.db_path = str(db_path)
 
-        results = asyncio.run(
-            search_events(query="nonexistent_xyz", source="shell", limit=10)
-        )
+        results = asyncio.run(search_events(query="nonexistent_xyz", source="shell", limit=10))
         assert results == []
 
     def test_search_events_claude_source(self, events_db):
@@ -397,9 +393,7 @@ class TestSearchEventsTool:
         conn, db_path = events_db
         _state.db_path = str(db_path)
 
-        results = asyncio.run(
-            search_events(query="", source="shell", project="hippo", limit=10)
-        )
+        results = asyncio.run(search_events(query="", source="shell", project="hippo", limit=10))
         assert len(results) == 1
 
         results = asyncio.run(
