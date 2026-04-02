@@ -29,7 +29,18 @@ pub struct DaemonState {
     pub shutdown_tx: watch::Sender<bool>,
 }
 
+#[tracing::instrument(skip(state), fields(request_type))]
 pub async fn handle_request(state: &Arc<DaemonState>, request: DaemonRequest) -> DaemonResponse {
+    let request_type = match &request {
+        DaemonRequest::IngestEvent(_) => "ingest_event",
+        DaemonRequest::GetStatus => "get_status",
+        DaemonRequest::GetSessions { .. } => "get_sessions",
+        DaemonRequest::GetEvents { .. } => "get_events",
+        DaemonRequest::GetEntities { .. } => "get_entities",
+        DaemonRequest::RawQuery { .. } => "raw_query",
+        DaemonRequest::Shutdown => "shutdown",
+    };
+    tracing::Span::current().record("request_type", request_type);
     match request {
         DaemonRequest::IngestEvent(envelope) => {
             let mut buffer = state.event_buffer.lock().await;
@@ -130,12 +141,14 @@ pub async fn handle_request(state: &Arc<DaemonState>, request: DaemonRequest) ->
     }
 }
 
+#[tracing::instrument(skip(state), fields(event_count))]
 pub async fn flush_events(state: &Arc<DaemonState>) {
     let events: Vec<EventEnvelope> = {
         let mut buffer = state.event_buffer.lock().await;
         let n = buffer.len().min(state.config.daemon.flush_batch_size);
         buffer.drain(..n).collect()
     };
+    tracing::Span::current().record("event_count", events.len());
 
     if events.is_empty() {
         return;
@@ -370,6 +383,7 @@ pub async fn run(config: HippoConfig) -> Result<()> {
     Ok(())
 }
 
+#[tracing::instrument(skip_all)]
 async fn handle_connection(state: Arc<DaemonState>, mut stream: UnixStream) -> Result<()> {
     while let Some(frame) = read_frame(&mut stream).await? {
         let request: DaemonRequest = serde_json::from_slice(&frame)?;

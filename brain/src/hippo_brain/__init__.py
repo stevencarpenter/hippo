@@ -26,6 +26,7 @@ def _load_runtime_settings() -> dict:
     lmstudio = config.get("lmstudio", {})
     models = config.get("models", {})
     brain = config.get("brain", {})
+    telemetry = config.get("telemetry", {})
 
     return {
         "db_path": str(data_dir / "hippo.db"),
@@ -41,6 +42,7 @@ def _load_runtime_settings() -> dict:
         ),
         "session_stale_secs": brain.get("session_stale_secs", 120),
         "port": brain.get("port", 9175),
+        "telemetry_endpoint": telemetry.get("endpoint", "http://localhost:4318"),
     }
 
 
@@ -55,8 +57,13 @@ def main() -> None:
         import uvicorn
 
         from hippo_brain.server import create_app
+        from hippo_brain.telemetry import init_telemetry
 
         settings = _load_runtime_settings()
+
+        otel_endpoint = settings.get("telemetry_endpoint", "")
+        _otel_shutdown = init_telemetry("hippo-brain", endpoint=otel_endpoint)
+
         app = create_app(
             db_path=settings["db_path"],
             data_dir=settings["data_dir"],
@@ -67,7 +74,11 @@ def main() -> None:
             enrichment_batch_size=settings["max_events_per_chunk"],
             session_stale_secs=settings["session_stale_secs"],
         )
-        uvicorn.run(app, host="127.0.0.1", port=settings["port"])
+        try:
+            uvicorn.run(app, host="127.0.0.1", port=settings["port"])
+        finally:
+            if _otel_shutdown:
+                _otel_shutdown()
     elif command == "enrich":
         print("Enrichment worker not yet implemented as standalone command.")
     else:

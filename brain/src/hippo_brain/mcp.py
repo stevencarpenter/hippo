@@ -3,6 +3,7 @@
 import sqlite3
 import time
 import tomllib
+from contextlib import nullcontext
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -24,6 +25,7 @@ from hippo_brain.mcp_queries import (
     search_knowledge_lexical,
     shape_semantic_results,
 )
+from hippo_brain.telemetry import get_tracer as _get_tracer
 
 logger = setup_logging("hippo-mcp")
 metrics = MetricsCollector()
@@ -145,46 +147,56 @@ async def search_knowledge(
     t0 = time.monotonic()
     logger.info("search_knowledge called: query=%r mode=%s limit=%d", query, mode, limit)
 
-    try:
-        if mode == "semantic" and _state.lm_client and _state.vector_table:
-            metrics.semantic_searches += 1
-            try:
-                vecs = await _state.lm_client.embed([query], model=_state.embedding_model)
-                query_vec = _pad_or_truncate(vecs[0], EMBED_DIM)
-                hits = search_similar(_state.vector_table, query_vec, limit=limit)
-                results = shape_semantic_results(hits)
-                elapsed = time.monotonic() - t0
-                logger.info(
-                    "search_knowledge completed: %d results in %.3fs (semantic)",
-                    len(results),
-                    elapsed,
-                )
-                return results
-            except Exception:
-                logger.exception("Semantic search failed, falling back to lexical")
-                metrics.lexical_fallbacks += 1
-                metrics.lmstudio_errors += 1
-
-        # Lexical search (explicit mode or fallback)
-        metrics.lexical_searches += 1
-        conn = _get_conn()
-        try:
-            results = search_knowledge_lexical(conn, query, limit=limit)
-        finally:
-            conn.close()
-
-        elapsed = time.monotonic() - t0
-        logger.info(
-            "search_knowledge completed: %d results in %.3fs (lexical)",
-            len(results),
-            elapsed,
+    tracer = _get_tracer()
+    span_ctx = (
+        tracer.start_as_current_span(
+            "mcp.search_knowledge",
+            attributes={"hippo.query": query, "hippo.mode": mode},
         )
-        return results
+        if tracer
+        else nullcontext()
+    )
+    with span_ctx:
+        try:
+            if mode == "semantic" and _state.lm_client and _state.vector_table:
+                metrics.semantic_searches += 1
+                try:
+                    vecs = await _state.lm_client.embed([query], model=_state.embedding_model)
+                    query_vec = _pad_or_truncate(vecs[0], EMBED_DIM)
+                hits = search_similar(_state.vector_table, query_vec, limit=limit)
+                    results = shape_semantic_results(hits)
+                    elapsed = time.monotonic() - t0
+                    logger.info(
+                        "search_knowledge completed: %d results in %.3fs (semantic)",
+                        len(results),
+                        elapsed,
+                    )
+                    return results
+                except Exception:
+                    logger.exception("Semantic search failed, falling back to lexical")
+                    metrics.lexical_fallbacks += 1
+                    metrics.lmstudio_errors += 1
 
-    except Exception:
-        metrics.tool_errors += 1
-        logger.exception("search_knowledge failed")
-        raise
+            # Lexical search (explicit mode or fallback)
+            metrics.lexical_searches += 1
+            conn = _get_conn()
+            try:
+                results = search_knowledge_lexical(conn, query, limit=limit)
+            finally:
+                conn.close()
+
+            elapsed = time.monotonic() - t0
+            logger.info(
+                "search_knowledge completed: %d results in %.3fs (lexical)",
+                len(results),
+                elapsed,
+            )
+            return results
+
+        except Exception:
+            metrics.tool_errors += 1
+            logger.exception("search_knowledge failed")
+            raise
 
 
 @mcp.tool()
@@ -216,24 +228,34 @@ async def search_events(
         limit,
     )
 
-    try:
-        conn = _get_conn()
+    tracer = _get_tracer()
+    span_ctx = (
+        tracer.start_as_current_span(
+            "mcp.search_events",
+            attributes={"hippo.query": query, "hippo.mode": source},
+        )
+        if tracer
+        else nullcontext()
+    )
+    with span_ctx:
         try:
-            results = search_events_impl(
-                conn, query=query, source=source, since=since, project=project, limit=limit
-            )
-        finally:
-            conn.close()
+            conn = _get_conn()
+            try:
+                results = search_events_impl(
+                    conn, query=query, source=source, since=since, project=project, limit=limit
+                )
+            finally:
+                conn.close()
 
-        elapsed = time.monotonic() - t0
-        metrics.events_searched += len(results)
-        logger.info("search_events completed: %d results in %.3fs", len(results), elapsed)
-        return results
+            elapsed = time.monotonic() - t0
+            metrics.events_searched += len(results)
+            logger.info("search_events completed: %d results in %.3fs", len(results), elapsed)
+            return results
 
-    except Exception:
-        metrics.tool_errors += 1
-        logger.exception("search_events failed")
-        raise
+        except Exception:
+            metrics.tool_errors += 1
+            logger.exception("search_events failed")
+            raise
 
 
 @mcp.tool()
@@ -255,22 +277,32 @@ async def get_entities(
     t0 = time.monotonic()
     logger.info("get_entities called: type=%r query=%r limit=%d", type, query, limit)
 
-    try:
-        conn = _get_conn()
+    tracer = _get_tracer()
+    span_ctx = (
+        tracer.start_as_current_span(
+            "mcp.get_entities",
+            attributes={"hippo.query": query, "hippo.mode": type},
+        )
+        if tracer
+        else nullcontext()
+    )
+    with span_ctx:
         try:
-            results = get_entities_impl(conn, entity_type=type, query=query, limit=limit)
-        finally:
-            conn.close()
+            conn = _get_conn()
+            try:
+                results = get_entities_impl(conn, entity_type=type, query=query, limit=limit)
+            finally:
+                conn.close()
 
-        metrics.entities_returned += len(results)
-        elapsed = time.monotonic() - t0
-        logger.info("get_entities completed: %d results in %.3fs", len(results), elapsed)
-        return results
+            metrics.entities_returned += len(results)
+            elapsed = time.monotonic() - t0
+            logger.info("get_entities completed: %d results in %.3fs", len(results), elapsed)
+            return results
 
-    except Exception:
-        metrics.tool_errors += 1
-        logger.exception("get_entities failed")
-        raise
+        except Exception:
+            metrics.tool_errors += 1
+            logger.exception("get_entities failed")
+            raise
 
 
 def main() -> None:
