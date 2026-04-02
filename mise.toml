@@ -516,3 +516,53 @@ run = [
   "cargo clean",
   "rm -rf brain/.venv brain/.pytest_cache brain/.ruff_cache",
 ]
+
+# ── Observability (OTel) ────────────────────────────────────────────
+
+[tasks."otel:up"]
+description = "Start the OTel observability stack (Grafana, Tempo, Loki, Prometheus, Collector)"
+run = """
+#!/usr/bin/env bash
+set -euo pipefail
+cd otel
+docker compose up -d
+echo ""
+echo "=== OTel stack running ==="
+echo "  Grafana:        http://localhost:3000 (admin/hippo)"
+echo "  OTel Collector: localhost:4317 (gRPC) / localhost:4318 (HTTP)"
+echo "  Collector health: http://localhost:13133"
+echo ""
+echo "To send telemetry from hippo services:"
+echo "  Daemon: cargo build --features otel && set [telemetry] enabled = true"
+echo "  Brain:  export HIPPO_OTEL_ENABLED=1"
+"""
+
+[tasks."otel:down"]
+description = "Stop the OTel observability stack"
+run = "cd otel && docker compose down"
+
+[tasks."otel:logs"]
+description = "Tail OTel stack logs"
+run = "cd otel && docker compose logs -f --tail 50"
+
+[tasks."otel:reset"]
+description = "Stop the OTel stack and delete all stored data"
+run = """
+#!/usr/bin/env bash
+set -euo pipefail
+cd otel
+docker compose down -v
+echo "OTel stack stopped and all data volumes removed."
+"""
+
+[tasks."otel:status"]
+description = "Show OTel stack container status"
+run = "cd otel && docker compose ps"
+
+[tasks."build:otel"]
+description = "Build daemon with OTel instrumentation"
+run = "cargo build -p hippo-daemon --features otel"
+
+[tasks."build:otel:release"]
+description = "Build daemon with OTel instrumentation (release)"
+run = "cargo build -p hippo-daemon --features otel --release"

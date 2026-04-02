@@ -1,0 +1,62 @@
+name: hippo-otel
+
+services:
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.120.0
+    command: ["--config", "/etc/otelcol/config.yml"]
+    volumes:
+      - ./otelcol-config.yml:/etc/otelcol/config.yml:ro
+    ports:
+      - "4317:4317"
+      - "4318:4318"
+      - "13133:13133"
+    depends_on:
+      - tempo
+      - loki
+
+  tempo:
+    image: grafana/tempo:2.7.2
+    command: ["-config.file=/etc/tempo/config.yml"]
+    volumes:
+      - ./tempo-config.yml:/etc/tempo/config.yml:ro
+      - tempo-data:/var/tempo
+
+  loki:
+    image: grafana/loki:3.4.2
+    command: ["-config.file=/etc/loki/config.yml"]
+    volumes:
+      - ./loki-config.yml:/etc/loki/config.yml:ro
+      - loki-data:/loki
+
+  prometheus:
+    image: prom/prometheus:v3.2.1
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--storage.tsdb.retention.time=7d"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+
+  grafana:
+    image: grafana/grafana:11.5.2
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=hippo
+      - GF_AUTH_ANONYMOUS_ENABLED=true
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Admin
+    volumes:
+      - ./grafana/datasources.yml:/etc/grafana/provisioning/datasources/datasources.yml:ro
+      - ./grafana/dashboards:/etc/grafana/provisioning/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    ports:
+      - "3000:3000"
+    depends_on:
+      - tempo
+      - loki
+      - prometheus
+
+volumes:
+  tempo-data:
+  loki-data:
+  prometheus-data:
+  grafana-data:

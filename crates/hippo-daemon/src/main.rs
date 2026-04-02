@@ -29,6 +29,43 @@ async fn poll_socket_removal(socket: &std::path::Path, timeout: std::time::Durat
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // Load config early — needed for telemetry init before CLI parsing
+    let config = match HippoConfig::load_default() {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("Warning: failed to load config: {e:#}. Using defaults.");
+            HippoConfig::default()
+        }
+    };
+
+    // Initialize telemetry — OTel if feature-enabled and config says so, else plain fmt
+    #[cfg(feature = "otel")]
+    let _otel_guard = if config.telemetry.enabled {
+        match hippo_daemon::telemetry::init("hippo-daemon", &config.telemetry.endpoint) {
+            Ok(guard) => Some(guard),
+            Err(e) => {
+                tracing_subscriber::fmt()
+                    .with_writer(std::io::stderr)
+                    .with_env_filter(
+                        EnvFilter::try_from_default_env()
+                            .unwrap_or_else(|_| EnvFilter::new("info")),
+                    )
+                    .init();
+                tracing::warn!("OTel init failed, using plain logging: {e}");
+                None
+            }
+        }
+    } else {
+        tracing_subscriber::fmt()
+            .with_writer(std::io::stderr)
+            .with_env_filter(
+                EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
+            )
+            .init();
+        None
+    };
+
+    #[cfg(not(feature = "otel"))]
     tracing_subscriber::fmt()
         .with_writer(std::io::stderr)
         .with_env_filter(
@@ -37,13 +74,6 @@ async fn main() -> Result<()> {
         .init();
 
     let cli = Cli::parse();
-    let config = match HippoConfig::load_default() {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("Warning: failed to load config: {e:#}. Using defaults.");
-            HippoConfig::default()
-        }
-    };
 
     match cli.command {
         Commands::Daemon { action } => match action {
@@ -436,6 +466,12 @@ async fn main() -> Result<()> {
         Commands::Doctor => {
             commands::handle_doctor(&config).await?;
         }
+    }
+
+    // Shutdown OTel providers
+    #[cfg(feature = "otel")]
+    if let Some(guard) = _otel_guard {
+        guard.shutdown();
     }
 
     Ok(())

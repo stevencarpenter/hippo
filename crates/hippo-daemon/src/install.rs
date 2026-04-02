@@ -11,6 +11,8 @@ pub fn render_plist(template: &str, vars: &PlistVars) -> String {
         .replace("__HOME__", &vars.home.to_string_lossy())
         .replace("__PATH__", &vars.path)
         .replace("__DATA_DIR__", &vars.data_dir.to_string_lossy())
+        .replace("__HIPPO_OTEL_ENABLED__", &vars.otel_enabled)
+        .replace("__OTEL_ENDPOINT__", &vars.otel_endpoint)
 }
 
 pub struct PlistVars {
@@ -20,6 +22,8 @@ pub struct PlistVars {
     pub home: PathBuf,
     pub path: String,
     pub data_dir: PathBuf,
+    pub otel_enabled: String,
+    pub otel_endpoint: String,
 }
 
 /// Auto-detect system paths for plist variable substitution.
@@ -33,6 +37,10 @@ pub fn detect_vars(brain_dir: &Path) -> Result<PlistVars> {
         .unwrap_or_else(|| home.join(".local/share"))
         .join("hippo");
 
+    let telemetry = hippo_core::config::HippoConfig::load_default()
+        .map(|c| c.telemetry)
+        .unwrap_or_default();
+
     Ok(PlistVars {
         hippo_bin,
         uv_bin,
@@ -40,6 +48,12 @@ pub fn detect_vars(brain_dir: &Path) -> Result<PlistVars> {
         home,
         path,
         data_dir,
+        otel_enabled: if telemetry.enabled {
+            "1".to_string()
+        } else {
+            "0".to_string()
+        },
+        otel_endpoint: telemetry.endpoint.replace("4317", "4318"),
     })
 }
 
@@ -227,7 +241,9 @@ mod tests {
 <string>__BRAIN_DIR__</string>
 <string>__HOME__</string>
 <string>__PATH__</string>
-<string>__DATA_DIR__</string>"#;
+<string>__DATA_DIR__</string>
+<string>__HIPPO_OTEL_ENABLED__</string>
+<string>__OTEL_ENDPOINT__</string>"#;
 
         let vars = PlistVars {
             hippo_bin: PathBuf::from("/usr/local/bin/hippo"),
@@ -236,6 +252,8 @@ mod tests {
             home: PathBuf::from("/Users/me"),
             path: "/usr/local/bin:/usr/bin:/bin".to_string(),
             data_dir: PathBuf::from("/Users/me/.local/share/hippo"),
+            otel_enabled: "0".to_string(),
+            otel_endpoint: "http://localhost:4318".to_string(),
         };
 
         let result = render_plist(template, &vars);
@@ -245,7 +263,10 @@ mod tests {
         assert!(!result.contains("__HOME__"));
         assert!(!result.contains("__PATH__"));
         assert!(!result.contains("__DATA_DIR__"));
+        assert!(!result.contains("__HIPPO_OTEL_ENABLED__"));
+        assert!(!result.contains("__OTEL_ENDPOINT__"));
         assert!(result.contains("/usr/local/bin/hippo"));
         assert!(result.contains("/usr/local/bin/uv"));
+        assert!(result.contains("http://localhost:4318"));
     }
 }
