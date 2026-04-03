@@ -7,6 +7,19 @@ fn main() {
     let version = git_describe_version(&base);
     println!("cargo:rustc-env=HIPPO_VERSION_FULL={version}");
 
+    // Embed the expected session hook path so `hippo doctor` can verify it
+    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap();
+    let repo_root = std::path::Path::new(&manifest_dir)
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap();
+    let hook_path = repo_root.join("shell/claude-session-hook.sh");
+    println!(
+        "cargo:rustc-env=HIPPO_SESSION_HOOK_PATH={}",
+        hook_path.display()
+    );
+
     // Rebuild when git state changes
     println!("cargo:rerun-if-changed=../../.git/HEAD");
     println!("cargo:rerun-if-changed=../../.git/refs/");

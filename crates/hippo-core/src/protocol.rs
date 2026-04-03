@@ -40,6 +40,8 @@ pub enum DaemonResponse {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StatusInfo {
+    #[serde(default)]
+    pub version: String,
     pub uptime_secs: u64,
     pub events_today: u64,
     pub sessions_today: u64,
@@ -134,6 +136,7 @@ mod tests {
         let responses = vec![
             DaemonResponse::Ack,
             DaemonResponse::Status(StatusInfo {
+                version: "0.5.0-dev.3+gfaa08aa".to_string(),
                 uptime_secs: 3600,
                 events_today: 42,
                 sessions_today: 3,
@@ -187,6 +190,16 @@ mod tests {
             let parsed: DaemonResponse = serde_json::from_str(&json).unwrap();
             let json2 = serde_json::to_string(&parsed).unwrap();
             assert_eq!(json, json2);
+        }
+    }
+
+    #[test]
+    fn test_status_info_deserializes_without_version_field() {
+        let json = r#"{"type":"Status","data":{"uptime_secs":100,"events_today":5,"sessions_today":1,"queue_depth":0,"queue_failed":0,"drop_count":0,"lmstudio_reachable":false,"brain_reachable":false,"db_size_bytes":0,"fallback_files_pending":0}}"#;
+        let resp: DaemonResponse = serde_json::from_str(json).unwrap();
+        match resp {
+            DaemonResponse::Status(status) => assert!(status.version.is_empty()),
+            other => panic!("expected Status, got {:?}", other),
         }
     }
 }

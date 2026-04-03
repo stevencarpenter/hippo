@@ -79,9 +79,11 @@ Override with `XDG_DATA_HOME` / `XDG_CONFIG_HOME` env vars.
 
 Two processes share a SQLite database at ~/.local/share/hippo/hippo.db:
 
-1. hippo-daemon (Rust) - captures shell events via Unix socket, redacts secrets, writes to SQLite, serves CLI queries
-2. hippo-brain (Python) - polls enrichment queue from SQLite, calls LM Studio API, writes knowledge nodes + embeddings
-   to LanceDB
+1. hippo-daemon (Rust) - captures shell events via Unix socket, redacts secrets, writes to SQLite, serves CLI queries.
+   `hippo doctor` checks version alignment between CLI, running daemon, and brain.
+2. hippo-brain (Python) - polls enrichment queues from SQLite, calls LM Studio API, writes knowledge nodes + embeddings
+   to LanceDB. Shell, Claude, and browser sources are enriched concurrently via `asyncio.gather()`;
+   embeddings run as background tasks to overlap with LLM inference.
 
 Communication:
 
@@ -115,6 +117,8 @@ Firefox Developer Edition extension captures browsing activity from allowlisted 
 **Key gotcha:** Claude Code wraps hook commands in an intermediate bash process (`claude → bash → hook.sh`). The hook must use the grandparent PID (the actual Claude process), not `$PPID` (the ephemeral bash). The Rust tailer's `kill(pid, 0)` check must distinguish ESRCH (process gone) from EPERM (process exists, no permission).
 
 **Batch import:** `hippo ingest claude-session --batch <path>` for one-shot import of completed sessions.
+
+**Hook config:** Add to `~/.claude/settings.json` under `hooks.SessionStart` (see `shell/claude-session-hook.sh` header for exact JSON). `hippo doctor` verifies the hook path matches the repo.
 
 ## Style
 

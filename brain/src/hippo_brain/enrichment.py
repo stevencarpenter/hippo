@@ -7,6 +7,40 @@ from hippo_brain.models import EnrichmentResult, validate_enrichment_data
 
 STALE_LOCK_TIMEOUT_MS = 5 * 60 * 1000
 
+SHELL_ENTITY_TYPE_MAP = {
+    "projects": "project",
+    "tools": "tool",
+    "files": "file",
+    "services": "service",
+    "errors": "concept",
+}
+
+
+def upsert_entities(conn, node_id: int, entities_dict, entity_type_map: dict, now_ms: int):
+    """Upsert entities and link to a knowledge node. Shared across all enrichment sources."""
+    all_entities = entities_dict if isinstance(entities_dict, dict) else {}
+    entity_ids = []
+    for key, entity_type in entity_type_map.items():
+        for name in all_entities.get(key, []):
+            canonical = name.lower().strip()
+            cursor = conn.execute(
+                """
+                INSERT INTO entities (type, name, canonical, first_seen, last_seen, created_at)
+                VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT (type, canonical) DO
+                UPDATE SET last_seen = excluded.last_seen
+                RETURNING id
+                """,
+                (entity_type, name, canonical, now_ms, now_ms, now_ms),
+            )
+            entity_ids.append(cursor.fetchone()[0])
+    if entity_ids:
+        conn.executemany(
+            "INSERT INTO knowledge_node_entities (knowledge_node_id, entity_id) "
+            "VALUES (?, ?) ON CONFLICT DO NOTHING",
+            [(node_id, eid) for eid in entity_ids],
+        )
+
+
 SYSTEM_PROMPT = """You are a developer activity analyst. You receive a sequence of shell command events from a single work session and produce structured enrichment data.
 
 Events are labeled with who executed them: "developer (human)" for commands the user typed,
@@ -454,42 +488,13 @@ def write_knowledge_node(
         node_id = cursor.lastrowid
 
         # Link to events
-        for event_id in event_ids:
-            conn.execute(
-                "INSERT INTO knowledge_node_events (knowledge_node_id, event_id) VALUES (?, ?)",
-                (node_id, event_id),
-            )
+        conn.executemany(
+            "INSERT INTO knowledge_node_events (knowledge_node_id, event_id) VALUES (?, ?)",
+            [(node_id, eid) for eid in event_ids],
+        )
 
         # Upsert entities
-        all_entities = result.entities if isinstance(result.entities, dict) else {}
-        entity_type_map = {
-            "projects": "project",
-            "tools": "tool",
-            "files": "file",
-            "services": "service",
-            "errors": "concept",
-        }
-        for key, entity_type in entity_type_map.items():
-            for name in all_entities.get(key, []):
-                canonical = name.lower().strip()
-                cursor = conn.execute(
-                    """
-                    INSERT INTO entities (type, name, canonical, first_seen, last_seen, created_at)
-                    VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT (type, canonical) DO
-                    UPDATE SET
-                        last_seen = excluded.last_seen
-                        RETURNING id
-                    """,
-                    (entity_type, name, canonical, now_ms, now_ms, now_ms),
-                )
-                entity_id = cursor.fetchone()[0]
-                conn.execute(
-                    """
-                    INSERT INTO knowledge_node_entities (knowledge_node_id, entity_id)
-                    VALUES (?, ?) ON CONFLICT DO NOTHING
-                    """,
-                    (node_id, entity_id),
-                )
+        upsert_entities(conn, node_id, result.entities, SHELL_ENTITY_TYPE_MAP, now_ms)
 
         # Mark events as enriched
         placeholders = ",".join("?" * len(event_ids))

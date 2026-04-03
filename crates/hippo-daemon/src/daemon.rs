@@ -61,6 +61,7 @@ pub async fn handle_request(state: &Arc<DaemonState>, request: DaemonRequest) ->
                 }
             };
 
+            status.version = env!("HIPPO_VERSION_FULL").to_string();
             status.uptime_secs = state.start_time.elapsed().as_secs();
             status.drop_count = state.drop_count.load(Ordering::Relaxed);
             status.db_size_bytes = std::fs::metadata(state.config.db_path())

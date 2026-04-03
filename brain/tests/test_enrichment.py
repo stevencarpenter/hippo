@@ -281,6 +281,11 @@ class _FailingConn:
             raise RuntimeError("injected mid-write failure")
         return result
 
+    def executemany(self, sql, *args, **kwargs):
+        if self._fail_on in str(sql):
+            raise RuntimeError("injected mid-write failure")
+        return self._conn.executemany(sql, *args, **kwargs)
+
     def commit(self):
         return self._conn.commit()
 

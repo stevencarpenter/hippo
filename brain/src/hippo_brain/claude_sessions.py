@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
+from hippo_brain.enrichment import SHELL_ENTITY_TYPE_MAP, upsert_entities
 from hippo_brain.models import EnrichmentResult
 
 STALE_LOCK_TIMEOUT_MS = 5 * 60 * 1000
@@ -621,11 +622,10 @@ def write_claude_knowledge_node(
         node_id = cursor.lastrowid
 
         # Link to claude sessions
-        for seg_id in segment_ids:
-            conn.execute(
-                "INSERT INTO knowledge_node_claude_sessions (knowledge_node_id, claude_session_id) VALUES (?, ?)",
-                (node_id, seg_id),
-            )
+        conn.executemany(
+            "INSERT INTO knowledge_node_claude_sessions (knowledge_node_id, claude_session_id) VALUES (?, ?)",
+            [(node_id, sid) for sid in segment_ids],
+        )
 
         # Mark segments as enriched
         placeholders = ",".join("?" * len(segment_ids))
@@ -643,35 +643,8 @@ def write_claude_knowledge_node(
             [now_ms, *segment_ids],
         )
 
-        # Upsert entities (same logic as shell event enrichment)
-        all_entities = result.entities if isinstance(result.entities, dict) else {}
-        entity_type_map = {
-            "projects": "project",
-            "tools": "tool",
-            "files": "file",
-            "services": "service",
-            "errors": "concept",
-        }
-        for key, entity_type in entity_type_map.items():
-            for name in all_entities.get(key, []):
-                canonical = name.lower().strip()
-                cursor = conn.execute(
-                    """
-                    INSERT INTO entities (type, name, canonical, first_seen, last_seen, created_at)
-                    VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT (type, canonical) DO
-                    UPDATE SET last_seen = excluded.last_seen
-                    RETURNING id
-                    """,
-                    (entity_type, name, canonical, now_ms, now_ms, now_ms),
-                )
-                entity_id = cursor.fetchone()[0]
-                conn.execute(
-                    """
-                    INSERT INTO knowledge_node_entities (knowledge_node_id, entity_id)
-                    VALUES (?, ?) ON CONFLICT DO NOTHING
-                    """,
-                    (node_id, entity_id),
-                )
+        # Upsert entities
+        upsert_entities(conn, node_id, result.entities, SHELL_ENTITY_TYPE_MAP, now_ms)
 
         conn.commit()
         return node_id

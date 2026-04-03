@@ -541,6 +541,7 @@ pub fn get_status(conn: &Connection) -> Result<crate::protocol::StatusInfo> {
     )?;
 
     Ok(crate::protocol::StatusInfo {
+        version: String::new(),
         uptime_secs: 0,
         events_today,
         sessions_today,

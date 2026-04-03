@@ -5,7 +5,7 @@ import httpx
 
 
 class LMStudioClient:
-    def __init__(self, base_url: str = "http://localhost:1234/v1", timeout: float = 30.0):
+    def __init__(self, base_url: str = "http://localhost:1234/v1", timeout: float = 120.0):
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
 
