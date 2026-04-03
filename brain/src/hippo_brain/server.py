@@ -337,6 +337,7 @@ class BrainServer:
                                             "enrichment parse attempt %d failed: %s",
                                             attempt + 1,
                                             e,
+                                            exc_info=True,
                                         )
                                 if result is None:
                                     raise last_err
@@ -384,14 +385,15 @@ class BrainServer:
                                             "embedded node %d into vector store", node_id
                                         )
                                     except Exception as e:
-                                        logger.warning("embedding failed (non-fatal): %s", e)
+                                        logger.warning("embedding failed (non-fatal): %s", e, exc_info=True)
                             except Exception as e:
-                                self.last_error = str(e)
+                                err_msg = str(e) or type(e).__name__
+                                self.last_error = err_msg
                                 self.last_error_at_ms = int(time.time() * 1000)
-                                logger.error("enrichment failed: %s", e)
+                                logger.error("enrichment failed: %s", e, exc_info=True)
                                 retry_conn = self._get_conn()
                                 try:
-                                    mark_queue_failed(retry_conn, event_ids, str(e))
+                                    mark_queue_failed(retry_conn, event_ids, err_msg)
                                 finally:
                                     retry_conn.close()
 
@@ -454,6 +456,7 @@ class BrainServer:
                                                 "claude enrichment parse attempt %d failed: %s",
                                                 attempt + 1,
                                                 e,
+                                                exc_info=True,
                                             )
                                     if result is None:
                                         raise last_err
@@ -524,14 +527,16 @@ class BrainServer:
                                             logger.warning(
                                                 "claude embedding failed (non-fatal): %s",
                                                 e,
+                                                exc_info=True,
                                             )
                                 except Exception as e:
-                                    self.last_error = str(e)
+                                    err_msg = str(e) or type(e).__name__
+                                    self.last_error = err_msg
                                     self.last_error_at_ms = int(time.time() * 1000)
-                                    logger.error("claude enrichment failed: %s", e)
+                                    logger.error("claude enrichment failed: %s", e, exc_info=True)
                                     retry_conn = self._get_conn()
                                     try:
-                                        mark_claude_queue_failed(retry_conn, segment_ids, str(e))
+                                        mark_claude_queue_failed(retry_conn, segment_ids, err_msg)
                                     finally:
                                         retry_conn.close()
                     except Exception as e:
@@ -598,6 +603,7 @@ class BrainServer:
                                                 "browser enrichment attempt %d failed: %s",
                                                 attempt + 1,
                                                 e,
+                                                exc_info=True,
                                             )
                                     if result is None:
                                         raise last_err
@@ -649,24 +655,26 @@ class BrainServer:
                                             logger.warning(
                                                 "browser embedding failed (non-fatal): %s",
                                                 e,
+                                                exc_info=True,
                                             )
                                 except Exception as e:
-                                    self.last_error = str(e)
+                                    err_msg = str(e) or type(e).__name__
+                                    self.last_error = err_msg
                                     self.last_error_at_ms = int(time.time() * 1000)
-                                    logger.error("browser enrichment failed: %s", e)
+                                    logger.error("browser enrichment failed: %s", e, exc_info=True)
                                     retry_conn = self._get_conn()
                                     try:
-                                        mark_browser_queue_failed(retry_conn, event_ids, str(e))
+                                        mark_browser_queue_failed(retry_conn, event_ids, err_msg)
                                     finally:
                                         retry_conn.close()
                     except Exception as e:
-                        logger.warning("browser enrichment polling error: %s", e)
+                        logger.warning("browser enrichment polling error: %s", e, exc_info=True)
 
                     conn.close()
                 except Exception as e:
-                    self.last_error = str(e)
+                    self.last_error = str(e) or type(e).__name__
                     self.last_error_at_ms = int(time.time() * 1000)
-                    logger.error("enrichment loop error: %s", e)
+                    logger.error("enrichment loop error: %s", e, exc_info=True)
                     await asyncio.sleep(self.poll_interval_secs)
         finally:
             self.enrichment_running = False
