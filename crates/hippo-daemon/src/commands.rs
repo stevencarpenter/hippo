@@ -504,15 +504,29 @@ pub fn handle_redact_test(config: &HippoConfig, input: &str) {
 }
 
 pub async fn handle_doctor(config: &HippoConfig) -> Result<()> {
+    let cli_version = env!("HIPPO_VERSION_FULL");
     println!("Hippo Doctor");
     println!("============");
-    println!("[OK] Daemon version: {}", env!("HIPPO_VERSION_FULL"));
+    println!("[OK] CLI version: {}", cli_version);
 
-    // Check daemon socket
+    // Check daemon socket and version
     let socket = config.socket_path();
     if socket.exists() {
         match send_request(&socket, &DaemonRequest::GetStatus).await {
-            Ok(DaemonResponse::Status(_)) => println!("[OK] Daemon is running"),
+            Ok(DaemonResponse::Status(status)) => {
+                println!("[OK] Daemon is running (uptime {}s)", status.uptime_secs);
+                if status.version.is_empty() {
+                    println!("[!!] Daemon too old to report version — restart recommended");
+                } else if status.version == cli_version {
+                    println!("[OK] Daemon version matches CLI");
+                } else {
+                    println!(
+                        "[!!] Daemon version mismatch: running={}, cli={}",
+                        status.version, cli_version
+                    );
+                    println!("     Run: mise run restart");
+                }
+            }
             _ => println!("[!!] Socket exists but daemon not responding"),
         }
     } else {
@@ -566,7 +580,68 @@ pub async fn handle_doctor(config: &HippoConfig) -> Result<()> {
         println!("[OK] Embedding model: {}", config.models.embedding);
     }
 
+    // Check Claude session hook
+    check_claude_session_hook();
+
     Ok(())
+}
+
+fn check_claude_session_hook() {
+    let expected = env!("HIPPO_SESSION_HOOK_PATH");
+    let settings_path = dirs::home_dir()
+        .map(|h| h.join(".claude/settings.json"))
+        .unwrap_or_default();
+
+    let content = match std::fs::read_to_string(&settings_path) {
+        Ok(c) => c,
+        Err(_) => {
+            println!("[--] Claude settings not found (session hook not configured)");
+            return;
+        }
+    };
+
+    let json: serde_json::Value = match serde_json::from_str(&content) {
+        Ok(v) => v,
+        Err(_) => {
+            println!("[!!] Claude settings.json is malformed");
+            return;
+        }
+    };
+
+    // Navigate: hooks -> SessionStart -> [].hooks -> [].command
+    let configured_cmd = json
+        .get("hooks")
+        .and_then(|h| h.get("SessionStart"))
+        .and_then(|ss| ss.as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(|entry| entry.get("hooks"))
+        .filter_map(|hooks| hooks.as_array())
+        .flatten()
+        .filter_map(|hook| hook.get("command"))
+        .find_map(|cmd| cmd.as_str().map(String::from));
+
+    match configured_cmd {
+        Some(cmd) if cmd == expected => {
+            if std::path::Path::new(expected).exists() {
+                println!("[OK] Claude session hook configured");
+            } else {
+                println!(
+                    "[!!] Claude session hook configured but script missing: {}",
+                    expected
+                );
+            }
+        }
+        Some(cmd) => {
+            println!("[!!] Claude session hook path mismatch");
+            println!("     configured: {}", cmd);
+            println!("     expected:   {}", expected);
+        }
+        None => {
+            println!("[--] Claude session hook not configured");
+            println!("     expected: {}", expected);
+        }
+    }
 }
 
 pub fn parse_duration_to_since_ms(s: &str) -> Option<i64> {

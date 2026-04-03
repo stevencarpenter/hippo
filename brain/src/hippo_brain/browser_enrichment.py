@@ -4,6 +4,7 @@ import json
 import time
 import uuid
 
+from hippo_brain.enrichment import SHELL_ENTITY_TYPE_MAP, upsert_entities
 from hippo_brain.models import EnrichmentResult
 
 STALE_LOCK_TIMEOUT_MS = 5 * 60 * 1000
@@ -289,42 +290,14 @@ def write_browser_knowledge_node(
         node_id = cursor.lastrowid
 
         # Link to browser events
-        for event_id in event_ids:
-            conn.execute(
-                "INSERT INTO knowledge_node_browser_events (knowledge_node_id, browser_event_id) VALUES (?, ?)",
-                (node_id, event_id),
-            )
+        conn.executemany(
+            "INSERT INTO knowledge_node_browser_events (knowledge_node_id, browser_event_id) VALUES (?, ?)",
+            [(node_id, eid) for eid in event_ids],
+        )
 
-        # Upsert entities
-        all_entities = result.entities if isinstance(result.entities, dict) else {}
-        entity_type_map = {
-            "projects": "project",
-            "tools": "tool",
-            "files": "file",
-            "services": "service",
-            "errors": "concept",
-            "domains": "domain",
-        }
-        for key, entity_type in entity_type_map.items():
-            for name in all_entities.get(key, []):
-                canonical = name.lower().strip()
-                cursor = conn.execute(
-                    """
-                    INSERT INTO entities (type, name, canonical, first_seen, last_seen, created_at)
-                    VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT (type, canonical) DO
-                    UPDATE SET last_seen = excluded.last_seen
-                    RETURNING id
-                    """,
-                    (entity_type, name, canonical, now_ms, now_ms, now_ms),
-                )
-                entity_id = cursor.fetchone()[0]
-                conn.execute(
-                    """
-                    INSERT INTO knowledge_node_entities (knowledge_node_id, entity_id)
-                    VALUES (?, ?) ON CONFLICT DO NOTHING
-                    """,
-                    (node_id, entity_id),
-                )
+        # Upsert entities (browser adds "domains" to the standard map)
+        browser_entity_map = {**SHELL_ENTITY_TYPE_MAP, "domains": "domain"}
+        upsert_entities(conn, node_id, result.entities, browser_entity_map, now_ms)
 
         # Mark browser events as enriched
         placeholders = ",".join("?" * len(event_ids))

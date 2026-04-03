@@ -163,7 +163,7 @@ async def search_knowledge(
                 try:
                     vecs = await _state.lm_client.embed([query], model=_state.embedding_model)
                     query_vec = _pad_or_truncate(vecs[0], EMBED_DIM)
-                hits = search_similar(_state.vector_table, query_vec, limit=limit)
+                    hits = search_similar(_state.vector_table, query_vec, limit=limit)
                     results = shape_semantic_results(hits)
                     elapsed = time.monotonic() - t0
                     logger.info(
