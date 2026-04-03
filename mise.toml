@@ -238,12 +238,33 @@ BRAIN_PLIST=~/Library/LaunchAgents/com.hippo.brain.plist
 DATA_DIR=~/.local/share/hippo
 CONFIG_DIR=~/.config/hippo
 
-# ── 1. Stop everything ──────────────────────────────────────────────
+wait_for_exit() {
+    local pattern="$1" max_wait="${2:-10}"
+    local waited=0
+    while pgrep -f "$pattern" >/dev/null 2>&1; do
+        if [ "$waited" -ge "$max_wait" ]; then
+            echo "  WARN: $pattern still alive after ${max_wait}s, sending SIGKILL"
+            pkill -9 -f "$pattern" 2>/dev/null || true
+            sleep 1
+            return
+        fi
+        sleep 1
+        waited=$((waited + 1))
+    done
+}
+
+# ── 1. Stop everything and wait for exit ────────────────────────────
 echo "==> Stopping services..."
 launchctl bootout "$DOMAIN" "$DAEMON_PLIST" 2>/dev/null && echo "  Unloaded daemon" || true
 launchctl bootout "$DOMAIN" "$BRAIN_PLIST" 2>/dev/null && echo "  Unloaded brain" || true
-pkill -f 'hippo.*(daemon|send-event)' 2>/dev/null || true
-pkill -f 'hippo-brain' 2>/dev/null || true
+DAEMON_PATTERN='hippo.*(daemon|send-event)'
+BRAIN_PATTERN='hippo-brain'
+pkill -f "$DAEMON_PATTERN" 2>/dev/null || true
+pkill -f "$BRAIN_PATTERN" 2>/dev/null || true
+echo "  Waiting for processes to exit..."
+wait_for_exit "$DAEMON_PATTERN"
+wait_for_exit "$BRAIN_PATTERN"
+echo "  All processes stopped"
 
 # ── 2. Clean stale artifacts ────────────────────────────────────────
 echo "==> Cleaning stale artifacts..."
@@ -260,9 +281,11 @@ cargo build --release
 echo "==> Stamping brain version..."
 mise run stamp:version
 
-# ── 4. Sync brain Python deps ───────────────────────────────────────
-echo "==> Syncing brain dependencies..."
+# ── 4. Rebuild brain venv from scratch ──────────────────────────────
+echo "==> Rebuilding brain venv..."
+rm -rf brain/.venv
 uv sync --project brain
+echo "  venv ready at brain/.venv"
 
 # ── 5. Install plists + symlink ─────────────────────────────────────
 echo "==> Installing LaunchAgents + symlink..."
@@ -293,9 +316,27 @@ launchctl bootstrap "$DOMAIN" "$DAEMON_PLIST" && echo "  Loaded daemon" || echo 
 launchctl bootstrap "$DOMAIN" "$BRAIN_PLIST" && echo "  Loaded brain" || echo "  Failed to load brain"
 
 # ── 9. Verify ────────────────────────────────────────────────────────
-echo "==> Verifying (waiting for daemon to initialize)..."
+echo "==> Verifying..."
 sleep 1
 ~/.local/bin/hippo doctor || true
+
+# Wait for brain to confirm LM Studio connectivity
+echo "  Checking brain health..."
+for i in $(seq 1 10); do
+    if health=$(curl -sf http://localhost:9175/health 2>/dev/null); then
+        reachable=$(echo "$health" | python3 -c "import sys,json; print(json.load(sys.stdin).get('lmstudio_reachable',''))" 2>/dev/null)
+        if [ "$reachable" = "True" ]; then
+            echo "  Brain healthy, LM Studio reachable"
+            break
+        fi
+    fi
+    if [ "$i" -eq 10 ]; then
+        echo "  WARN: Brain did not confirm LM Studio connectivity within 10s"
+        echo "  Check: curl http://localhost:9175/health"
+        break
+    fi
+    sleep 1
+done
 
 echo ""
 echo "=== Install complete ==="
