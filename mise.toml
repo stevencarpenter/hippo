@@ -275,7 +275,7 @@ rm -f "$DATA_DIR"/*.log
 
 # ── 3. Build release binary ─────────────────────────────────────────
 echo "==> Building release binary..."
-cargo build --release
+cargo build --release --features otel
 
 # ── 3b. Stamp brain version ───────────────────────────────────────
 echo "==> Stamping brain version..."

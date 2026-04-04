@@ -61,7 +61,8 @@ def main() -> None:
 
         settings = _load_runtime_settings()
 
-        otel_endpoint = settings.get("telemetry_endpoint", "")
+        # Brain uses HTTP OTLP (port 4318); config stores the gRPC endpoint (4317)
+        otel_endpoint = settings.get("telemetry_endpoint", "").replace(":4317", ":4318")
         _otel_shutdown = init_telemetry("hippo-brain", endpoint=otel_endpoint)
 
         app = create_app(
