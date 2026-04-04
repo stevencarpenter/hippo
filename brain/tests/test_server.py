@@ -594,6 +594,17 @@ async def test_resolve_model_empty_preferred_uses_first(tmp_db):
     assert server.enrichment_model == "llama-3-8b"
 
 
+async def test_resolve_model_empty_model_list(tmp_db):
+    """When LM Studio returns an empty model list, returns False."""
+    server = await _make_server_with_models(
+        tmp_db,
+        preferred="qwen3.5-35b-a3b",
+        loaded=[],
+    )
+    result = await server._resolve_model()
+    assert result is False
+
+
 def test_health_exposes_enrichment_model(tmp_db):
     """Health endpoint includes enrichment_model and enrichment_model_preferred."""
     _, db_path = tmp_db
