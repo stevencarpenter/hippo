@@ -64,6 +64,7 @@ class BrainServer:
         self.db_path = db_path
         self.data_dir = data_dir
         self.client = LMStudioClient(base_url=lmstudio_base_url)
+        self._preferred_model = enrichment_model
         self.enrichment_model = enrichment_model
         self.embedding_model = embedding_model
         self.poll_interval_secs = poll_interval_secs
@@ -152,6 +153,8 @@ class BrainServer:
                 "claude_queue_failed": claude_queue_failed,
                 "browser_queue_depth": browser_queue_depth,
                 "browser_queue_failed": browser_queue_failed,
+                "enrichment_model": self.enrichment_model,
+                "enrichment_model_preferred": self._preferred_model,
                 "last_success_at_ms": self.last_success_at_ms,
                 "last_error": self.last_error,
                 "last_error_at_ms": self.last_error_at_ms,
@@ -245,6 +248,39 @@ class BrainServer:
                 logger.error("query error: %s", e2)
                 return JSONResponse({"error": str(e2)}, status_code=500)
 
+    async def _resolve_model(self) -> bool:
+        """Pick the best available enrichment model. Returns False if none found."""
+        try:
+            loaded = await self.client.list_models()
+        except Exception:
+            return False
+
+        # Filter out embedding models
+        embedding_hints = ("embed", "nomic", "modernbert")
+        chat_models = [m for m in loaded if not any(h in m.lower() for h in embedding_hints)]
+
+        if not chat_models:
+            return False
+
+        # Preferred model available — use it
+        if self._preferred_model and self._preferred_model in chat_models:
+            if self.enrichment_model != self._preferred_model:
+                logger.info("enrichment model restored: %s", self._preferred_model)
+                self.enrichment_model = self._preferred_model
+            return True
+
+        # Preferred model not loaded — fall back
+        fallback = chat_models[0]
+        if self.enrichment_model != fallback:
+            logger.info(
+                "enrichment model fallback: %s -> %s (preferred %s not loaded)",
+                self.enrichment_model,
+                fallback,
+                self._preferred_model,
+            )
+            self.enrichment_model = fallback
+        return True
+
     async def _enrichment_loop(self):
         """Background enrichment polling loop.
 
@@ -259,6 +295,10 @@ class BrainServer:
             while True:
                 try:
                     await asyncio.sleep(self.poll_interval_secs)
+
+                    if not await self._resolve_model():
+                        continue
+
                     conn = self._get_conn()
                     try:
                         # Claim all work upfront (sequential — avoids SQLite write contention)
