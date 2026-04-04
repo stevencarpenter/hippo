@@ -486,3 +486,127 @@ def test_create_app_starts_and_stops_enrichment_task(tmp_db):
         resp = client.get("/health")
         assert resp.status_code == 200
         assert resp.json()["status"] == "ok"
+
+
+# ---- _resolve_model ----
+
+
+async def _make_server_with_models(tmp_db, preferred: str, loaded: list[str]) -> BrainServer:
+    """Helper: server whose mock client returns `loaded` from list_models."""
+    from hippo_brain.client import MockLMStudioClient
+
+    _, db_path = tmp_db
+    server = _make_server(str(db_path))
+    server._preferred_model = preferred
+    server.enrichment_model = preferred
+
+    class _MockWithModels(MockLMStudioClient):
+        async def list_models(self):
+            return loaded
+
+    server.client = _MockWithModels()
+    return server
+
+
+async def test_resolve_model_preferred_available(tmp_db):
+    """When preferred model is loaded, enrichment_model stays as preferred."""
+    server = await _make_server_with_models(
+        tmp_db,
+        preferred="qwen3.5-35b-a3b",
+        loaded=["qwen3.5-35b-a3b", "text-embedding-nomic"],
+    )
+    result = await server._resolve_model()
+    assert result is True
+    assert server.enrichment_model == "qwen3.5-35b-a3b"
+
+
+async def test_resolve_model_fallback_when_preferred_missing(tmp_db):
+    """When preferred model is not loaded, falls back to first available chat model."""
+    server = await _make_server_with_models(
+        tmp_db,
+        preferred="qwen3.5-35b-a3b",
+        loaded=["gemma-4-26b", "text-embedding-nomic"],
+    )
+    result = await server._resolve_model()
+    assert result is True
+    assert server.enrichment_model == "gemma-4-26b"
+
+
+async def test_resolve_model_restores_preferred(tmp_db):
+    """When preferred becomes available again, switches back from fallback."""
+    server = await _make_server_with_models(
+        tmp_db,
+        preferred="qwen3.5-35b-a3b",
+        loaded=["gemma-4-26b", "text-embedding-nomic"],
+    )
+    await server._resolve_model()
+    assert server.enrichment_model == "gemma-4-26b"
+
+    # Now preferred comes back online
+    from hippo_brain.client import MockLMStudioClient
+
+    class _PreferredBack(MockLMStudioClient):
+        async def list_models(self):
+            return ["qwen3.5-35b-a3b", "gemma-4-26b", "text-embedding-nomic"]
+
+    server.client = _PreferredBack()
+    result = await server._resolve_model()
+    assert result is True
+    assert server.enrichment_model == "qwen3.5-35b-a3b"
+
+
+async def test_resolve_model_no_chat_models(tmp_db):
+    """When only embedding models are loaded, returns False."""
+    server = await _make_server_with_models(
+        tmp_db,
+        preferred="qwen3.5-35b-a3b",
+        loaded=["text-embedding-nomic", "nomic-embed-v2", "modernbert-base"],
+    )
+    result = await server._resolve_model()
+    assert result is False
+
+
+async def test_resolve_model_lmstudio_unreachable(tmp_db):
+    """When list_models raises (LM Studio down), returns False."""
+    from hippo_brain.client import MockLMStudioClient
+
+    _, db_path = tmp_db
+    server = _make_server(str(db_path))
+
+    class _Unreachable(MockLMStudioClient):
+        async def list_models(self):
+            raise ConnectionError("LM Studio not running")
+
+    server.client = _Unreachable()
+    result = await server._resolve_model()
+    assert result is False
+
+
+async def test_resolve_model_empty_preferred_uses_first(tmp_db):
+    """When no preferred model configured, uses first available chat model."""
+    server = await _make_server_with_models(
+        tmp_db,
+        preferred="",
+        loaded=["llama-3-8b", "text-embedding-nomic"],
+    )
+    result = await server._resolve_model()
+    assert result is True
+    assert server.enrichment_model == "llama-3-8b"
+
+
+def test_health_exposes_enrichment_model(tmp_db):
+    """Health endpoint includes enrichment_model and enrichment_model_preferred."""
+    _, db_path = tmp_db
+    app = create_app(
+        db_path=str(db_path),
+        lmstudio_base_url="http://localhost:1234/v1",
+        enrichment_model="my-model",
+        poll_interval_secs=9999,
+        enrichment_batch_size=5,
+    )
+    with TestClient(app) as client:
+        resp = client.get("/health")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["enrichment_model"] == "my-model"
+        assert data["enrichment_model_preferred"] == "my-model"
