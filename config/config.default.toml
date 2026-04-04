@@ -2,9 +2,9 @@
 base_url = "http://localhost:1234/v1"
 
 [models]
-enrichment = ""                    # Set to your loaded LM Studio chat model ID; hippo falls back to first available
-enrichment_bulk = ""               # Bulk enrichment model (defaults to enrichment if empty)
-query = ""                         # Query reformulation model (defaults to enrichment if empty)
+enrichment = "qwen3.5-35b-a3b"     # Preferred model; hippo falls back to first available if not loaded
+enrichment_bulk = "qwen3.5-35b-a3b"
+query = "qwen3.5-35b-a3b"
 embedding = "text-embedding-nomic-embed-text-v2-moe"     # Purpose-built embedding model, 768d
 
 [daemon]
