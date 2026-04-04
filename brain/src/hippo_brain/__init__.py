@@ -61,7 +61,11 @@ def main() -> None:
 
         settings = _load_runtime_settings()
 
-        # Brain uses HTTP OTLP (port 4318); config stores the gRPC endpoint (4317)
+        # Brain uses HTTP OTLP (port 4318); config.toml stores the daemon's gRPC
+        # endpoint (4317) as the single [telemetry] endpoint key. This replace
+        # is a local-stack convenience — if you run a remote collector with a
+        # non-standard port, set OTEL_EXPORTER_OTLP_ENDPOINT=http://host:PORT
+        # in the brain LaunchAgent env to bypass this substitution.
         otel_endpoint = settings.get("telemetry_endpoint", "").replace(":4317", ":4318")
         _otel_shutdown = init_telemetry("hippo-brain", endpoint=otel_endpoint)
 

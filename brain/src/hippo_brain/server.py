@@ -390,6 +390,9 @@ class BrainServer:
         self.last_error_at_ms = None
 
     def _record_error(self, e):
+        # last-writer-wins: concurrent shell/claude/browser batches may overwrite
+        # each other's error state. The health endpoint reflects the most recent
+        # writer, not necessarily the most recent error chronologically.
         err_msg = str(e) or type(e).__name__
         self.last_error = err_msg
         self.last_error_at_ms = int(time.time() * 1000)
