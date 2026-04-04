@@ -40,11 +40,17 @@ class LMStudioClient:
             data = resp.json()
             return [item["embedding"] for item in data["data"]]
 
+    async def list_models(self) -> list[str]:
+        """Return IDs of all models currently loaded in LM Studio."""
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.get(f"{self.base_url}/models")
+            resp.raise_for_status()
+            return [m["id"] for m in resp.json().get("data", [])]
+
     async def is_reachable(self) -> bool:
         try:
-            async with httpx.AsyncClient(timeout=5.0) as client:
-                resp = await client.get(f"{self.base_url}/models")
-                return resp.status_code == 200
+            await self.list_models()
+            return True
         except Exception:
             return False
 
@@ -83,6 +89,9 @@ class MockLMStudioClient(LMStudioClient):
         from hippo_brain.embeddings import EMBED_DIM
 
         return [self._deterministic_vector(text, EMBED_DIM) for text in texts]
+
+    async def list_models(self) -> list[str]:
+        return ["mock-model", "text-embedding-mock"]
 
     async def is_reachable(self) -> bool:
         return True

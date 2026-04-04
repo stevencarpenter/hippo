@@ -18,8 +18,10 @@ processors:
         action: upsert
 
 exporters:
-  otlphttp/tempo:
-    endpoint: http://tempo:3200
+  otlp/tempo:
+    endpoint: tempo:4318
+    tls:
+      insecure: true
 
   loki:
     endpoint: http://loki:3100/loki/api/v1/push
@@ -38,7 +40,7 @@ service:
     traces:
       receivers: [otlp]
       processors: [batch, resource]
-      exporters: [otlphttp/tempo]
+      exporters: [otlp/tempo]
     logs:
       receivers: [otlp]
       processors: [batch, resource]

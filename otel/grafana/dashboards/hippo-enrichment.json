@@ -1,0 +1,217 @@
+{
+  "uid": "hippo-enrichment",
+  "title": "Hippo Enrichment Performance",
+  "tags": ["hippo", "enrichment", "performance"],
+  "schemaVersion": 39,
+  "version": 2,
+  "editable": true,
+  "graphTooltip": 1,
+  "time": {
+    "from": "now-6h",
+    "to": "now"
+  },
+  "timepicker": {},
+  "refresh": "30s",
+  "panels": [
+    {
+      "id": 1,
+      "title": "Enrichment Activity",
+      "description": "Log count of enrichment events (claimed, enriched, embedded) per minute",
+      "type": "timeseries",
+      "gridPos": { "x": 0, "y": 0, "w": 12, "h": 8 },
+      "datasource": { "type": "loki", "uid": "loki" },
+      "targets": [
+        {
+          "refId": "claimed",
+          "datasource": { "type": "loki", "uid": "loki" },
+          "expr": "count_over_time({service_name=\"hippo-brain\"} |~ \"claimed\" [1m])",
+          "legendFormat": "claimed"
+        },
+        {
+          "refId": "enriched",
+          "datasource": { "type": "loki", "uid": "loki" },
+          "expr": "count_over_time({service_name=\"hippo-brain\"} |~ \"enriched\" [1m])",
+          "legendFormat": "enriched"
+        },
+        {
+          "refId": "embedded",
+          "datasource": { "type": "loki", "uid": "loki" },
+          "expr": "count_over_time({service_name=\"hippo-brain\"} |~ \"embedded\" [1m])",
+          "legendFormat": "embedded"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "bars",
+            "fillOpacity": 60,
+            "lineWidth": 0,
+            "stacking": { "mode": "normal", "group": "A" }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom" },
+        "tooltip": { "mode": "multi", "sort": "none" }
+      }
+    },
+    {
+      "id": 2,
+      "title": "Enrichment Traces (Duration)",
+      "description": "Duration of enrichment spans from Tempo — shows LLM call latency",
+      "type": "table",
+      "gridPos": { "x": 12, "y": 0, "w": 12, "h": 8 },
+      "datasource": { "type": "tempo", "uid": "tempo" },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "tempo", "uid": "tempo" },
+          "queryType": "traceql",
+          "query": "{resource.service.name = \"hippo-brain\" && name =~ \"enrichment.*\"}",
+          "tableType": "traces",
+          "limit": 50
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "options": {
+        "footer": { "show": false },
+        "showHeader": true
+      }
+    },
+    {
+      "id": 3,
+      "title": "Daemon Event Flushes",
+      "description": "Daemon flush_events trace durations",
+      "type": "table",
+      "gridPos": { "x": 0, "y": 8, "w": 12, "h": 8 },
+      "datasource": { "type": "tempo", "uid": "tempo" },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "tempo", "uid": "tempo" },
+          "queryType": "traceql",
+          "query": "{resource.service.name = \"hippo-daemon\" && name = \"flush_events\"}",
+          "tableType": "traces",
+          "limit": 30
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "options": {
+        "footer": { "show": false },
+        "showHeader": true
+      }
+    },
+    {
+      "id": 4,
+      "title": "MCP Tool Traces",
+      "description": "MCP server tool call traces (search_knowledge, search_events, get_entities)",
+      "type": "table",
+      "gridPos": { "x": 12, "y": 8, "w": 12, "h": 8 },
+      "datasource": { "type": "tempo", "uid": "tempo" },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "tempo", "uid": "tempo" },
+          "queryType": "traceql",
+          "query": "{resource.service.name = \"hippo-brain\" && name =~ \"mcp.*\"}",
+          "tableType": "traces",
+          "limit": 30
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "options": {
+        "footer": { "show": false },
+        "showHeader": true
+      }
+    },
+    {
+      "id": 5,
+      "title": "LM Studio Calls",
+      "description": "Brain LLM call logs — shows prompt size and node creation",
+      "type": "logs",
+      "gridPos": { "x": 0, "y": 16, "w": 24, "h": 8 },
+      "datasource": { "type": "loki", "uid": "loki" },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "loki", "uid": "loki" },
+          "expr": "{service_name=\"hippo-brain\"} |~ \"claimed|enriched|calling LM Studio|embedded|failed\"",
+          "legendFormat": ""
+        }
+      ],
+      "options": {
+        "dedupStrategy": "none",
+        "enableLogDetails": true,
+        "prettifyLogMessage": false,
+        "showCommonLabels": false,
+        "showLabels": false,
+        "showTime": true,
+        "sortOrder": "Descending",
+        "wrapLogMessage": false
+      }
+    },
+    {
+      "id": 6,
+      "title": "Daemon Request Traces",
+      "description": "CLI-to-daemon socket request traces",
+      "type": "table",
+      "gridPos": { "x": 0, "y": 24, "w": 12, "h": 8 },
+      "datasource": { "type": "tempo", "uid": "tempo" },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "tempo", "uid": "tempo" },
+          "queryType": "traceql",
+          "query": "{resource.service.name = \"hippo-daemon\" && name =~ \"handle_request|handle_connection\"}",
+          "tableType": "traces",
+          "limit": 20
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "options": {
+        "footer": { "show": false },
+        "showHeader": true
+      }
+    },
+    {
+      "id": 7,
+      "title": "Errors & Warnings",
+      "description": "All error and warning logs from hippo services",
+      "type": "logs",
+      "gridPos": { "x": 12, "y": 24, "w": 12, "h": 8 },
+      "datasource": { "type": "loki", "uid": "loki" },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "loki", "uid": "loki" },
+          "expr": "{service_name=~\"hippo.*\"} |~ \"(?i)error|warn|failed|panic\"",
+          "legendFormat": ""
+        }
+      ],
+      "options": {
+        "dedupStrategy": "none",
+        "enableLogDetails": true,
+        "prettifyLogMessage": false,
+        "showCommonLabels": false,
+        "showLabels": true,
+        "showTime": true,
+        "sortOrder": "Descending",
+        "wrapLogMessage": false
+      }
+    }
+  ]
+}
