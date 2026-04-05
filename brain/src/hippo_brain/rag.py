@@ -15,6 +15,9 @@ _SYSTEM_PROMPT = (
     "reference actual commands, file paths, error messages, and details from the "
     "context. If the context doesn't contain enough information to answer fully, "
     "say what you can and note what's missing.\n\n"
+    "Keep your answer concise and direct — a few short paragraphs at most. "
+    "Use plain text, not markdown. When listing steps or items, use simple dashes. "
+    "Prefer inline code references (`like this`) over code blocks.\n\n"
     "Do not make up information. Do not hallucinate commands or paths."
 )
 
@@ -24,19 +27,34 @@ def _format_timestamp(ts_ms: int) -> str:
     return datetime.fromtimestamp(ts_ms / 1000, tz=timezone.utc).strftime("%Y-%m-%d")
 
 
-def _shape_rag_sources(hits: list[dict]) -> list[dict]:
-    """Transform raw LanceDB hits into the response source shape."""
-    return [
-        {
-            "score": round(1.0 - hit.get("_distance", 1.0), 4),
-            "summary": hit.get("summary", ""),
-            "cwd": hit.get("cwd", ""),
-            "git_branch": hit.get("git_branch", ""),
-            "timestamp": hit.get("captured_at", 0),
-            "commands_raw": hit.get("commands_raw", ""),
-        }
-        for hit in hits
-    ]
+def _shape_rag_sources(hits: list[dict], min_score: float = 0.0) -> list[dict]:
+    """Transform raw LanceDB hits into the response source shape.
+
+    Filters out sources below min_score and caps at 5 results.
+    """
+    sources = []
+    for hit in hits:
+        score = round(1.0 - hit.get("_distance", 1.0), 4)
+        if score < min_score:
+            continue
+        sources.append(
+            {
+                "score": score,
+                "summary": _truncate(hit.get("summary", ""), 120),
+                "cwd": hit.get("cwd", ""),
+                "git_branch": hit.get("git_branch", ""),
+                "timestamp": hit.get("captured_at", 0),
+                "commands_raw": hit.get("commands_raw", ""),
+            }
+        )
+    return sources[:5]
+
+
+def _truncate(text: str, max_len: int) -> str:
+    """Truncate text to max_len, adding ellipsis if needed."""
+    if len(text) <= max_len:
+        return text
+    return text[: max_len - 1] + "…"
 
 
 def _build_rag_prompt(question: str, hits: list[dict]) -> list[dict]:
@@ -91,8 +109,9 @@ def format_rag_response(result: dict) -> str:
 
     sources = result.get("sources", [])
     if sources:
-        parts.append("\n---\nSources:")
-        for src in sources:
+        parts.append("")
+        parts.append("Sources:")
+        for i, src in enumerate(sources, 1):
             score = src.get("score", 0)
             summary = src.get("summary", "")
             cwd = src.get("cwd", "")
@@ -100,7 +119,6 @@ def format_rag_response(result: dict) -> str:
             ts = src.get("timestamp", 0)
             date_str = _format_timestamp(ts) if ts else ""
 
-            parts.append(f"  [{score:.2f}] {summary}")
             location_parts = []
             if cwd:
                 location_parts.append(cwd)
@@ -111,12 +129,11 @@ def format_rag_response(result: dict) -> str:
                     location_parts.append(f"({branch})")
             if date_str:
                 location_parts.append(date_str)
-            if location_parts:
-                parts.append(f"         {' — '.join(location_parts)}")
 
-    model = result.get("model", "")
-    if model:
-        parts.append(f"\nModel: {model}")
+            loc = " — ".join(location_parts) if location_parts else ""
+            parts.append(f"  {i}. [{score:.0%}] {summary}")
+            if loc:
+                parts.append(f"     {loc}")
 
     return "\n".join(parts)
 

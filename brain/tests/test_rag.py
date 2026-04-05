@@ -78,6 +78,20 @@ class TestShapeRagSources:
         assert src["cwd"] == ""
         assert src["timestamp"] == 0
 
+    def test_filters_low_score_sources(self):
+        hits = [
+            {"_distance": 0.08, "summary": "good"},
+            {"_distance": 1.5, "summary": "bad"},  # score = -0.5
+        ]
+        sources = _shape_rag_sources(hits)
+        assert len(sources) == 1
+        assert sources[0]["summary"] == "good"
+
+    def test_caps_at_five_sources(self):
+        hits = [{"_distance": 0.1, "summary": f"hit {i}"} for i in range(10)]
+        sources = _shape_rag_sources(hits)
+        assert len(sources) == 5
+
 
 class TestBuildRagPrompt:
     def test_returns_system_and_user_messages(self):
@@ -126,9 +140,8 @@ class TestFormatRagResponse:
         }
         text = format_rag_response(result)
         assert "You set it up by running install." in text
-        assert "[0.92]" in text
+        assert "[92%]" in text
         assert "Configured Firefox native messaging" in text
-        assert "test-model" in text
 
     def test_formats_error_result(self):
         result = {"error": "LM Studio down", "sources": [], "model": "test-model"}
@@ -139,6 +152,16 @@ class TestFormatRagResponse:
         result = {"answer": "No data found.", "sources": [], "model": "m"}
         text = format_rag_response(result)
         assert "No data found." in text
+
+    def test_sources_are_numbered(self):
+        result = {
+            "answer": "answer",
+            "sources": _shape_rag_sources(SAMPLE_HITS),
+            "model": "m",
+        }
+        text = format_rag_response(result)
+        assert "  1. [" in text
+        assert "  2. [" in text
 
 
 class TestAsk:
