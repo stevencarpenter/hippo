@@ -105,7 +105,10 @@ def format_rag_response(result: dict) -> str:
             if cwd:
                 location_parts.append(cwd)
             if branch:
-                location_parts[-1] = f"{location_parts[-1]} ({branch})" if location_parts else f"({branch})"
+                if location_parts:
+                    location_parts[-1] = f"{location_parts[-1]} ({branch})"
+                else:
+                    location_parts.append(f"({branch})")
             if date_str:
                 location_parts.append(date_str)
             if location_parts:
