@@ -202,10 +202,11 @@ def test_brain_server_get_routes(tmp_db):
     _, db_path = tmp_db
     server = _make_server(str(db_path))
     routes = server.get_routes()
-    assert len(routes) == 2
+    assert len(routes) == 3
     paths = [r.path for r in routes]
     assert "/health" in paths
     assert "/query" in paths
+    assert "/ask" in paths
 
 
 # ---- create_app ----
