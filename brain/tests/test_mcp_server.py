@@ -18,7 +18,6 @@ from hippo_brain.mcp import (
     _get_conn,
     _load_config,
     _state,
-    ask,
     get_entities,
     mcp,
     metrics,

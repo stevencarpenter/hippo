@@ -65,7 +65,7 @@ def _build_rag_prompt(question: str, hits: list[dict]) -> list[dict]:
         if isinstance(tags, str) and tags:
             try:
                 tags = json.loads(tags)
-            except (json.JSONDecodeError, TypeError):
+            except json.JSONDecodeError, TypeError:
                 tags = []
         if tags and isinstance(tags, list):
             lines.append(f"Tags: {', '.join(tags)}")
