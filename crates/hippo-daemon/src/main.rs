@@ -365,26 +365,15 @@ async fn main() -> Result<()> {
                     {
                         println!("\nSources:");
                         for src in sources {
-                            let score = src
-                                .get("score")
-                                .and_then(|s| s.as_f64())
-                                .unwrap_or(0.0);
+                            let score = src.get("score").and_then(|s| s.as_f64()).unwrap_or(0.0);
                             let summary = src
                                 .get("summary")
                                 .and_then(|s| s.as_str())
                                 .unwrap_or("(no summary)");
-                            let cwd = src
-                                .get("cwd")
-                                .and_then(|s| s.as_str())
-                                .unwrap_or("");
-                            let branch = src
-                                .get("git_branch")
-                                .and_then(|s| s.as_str())
-                                .unwrap_or("");
-                            let ts = src
-                                .get("timestamp")
-                                .and_then(|t| t.as_i64())
-                                .unwrap_or(0);
+                            let cwd = src.get("cwd").and_then(|s| s.as_str()).unwrap_or("");
+                            let branch =
+                                src.get("git_branch").and_then(|s| s.as_str()).unwrap_or("");
+                            let ts = src.get("timestamp").and_then(|t| t.as_i64()).unwrap_or(0);
                             let date = if ts > 0 {
                                 chrono::DateTime::from_timestamp_millis(ts)
                                     .map(|dt| dt.format("%Y-%m-%d").to_string())
