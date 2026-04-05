@@ -25,6 +25,7 @@ from hippo_brain.mcp_queries import (
     search_knowledge_lexical,
     shape_semantic_results,
 )
+from hippo_brain.rag import ask as rag_ask, format_rag_response
 from hippo_brain.telemetry import get_tracer as _get_tracer
 
 logger = setup_logging("hippo-mcp")
@@ -126,8 +127,9 @@ mcp = FastMCP(
     "hippo",
     instructions=(
         "Hippo is a local knowledge base capturing shell activity, Claude sessions, "
-        "and browser history. Use search_knowledge for semantic or lexical search over "
-        "enriched knowledge nodes. Use search_events for raw event history. "
+        "and browser history. Use ask to get synthesized answers about past activity. "
+        "Use search_knowledge for raw semantic or lexical search over knowledge nodes. "
+        "Use search_events for raw event history. "
         "Use get_entities to explore the knowledge graph."
     ),
 )
@@ -202,6 +204,47 @@ async def search_knowledge(
             metrics.tool_errors += 1
             logger.exception("search_knowledge failed")
             raise
+
+
+@mcp.tool()
+async def ask(question: str, limit: int = 10) -> str:
+    """Ask a question and get a synthesized answer from your knowledge base.
+
+    Uses semantic search to find relevant knowledge nodes, then synthesizes
+    a conversational answer using a local LLM. Returns the answer along
+    with source references.
+
+    Use this tool when you need to understand past activity, recall specific
+    commands or decisions, or answer questions about work history.
+
+    Args:
+        question: The natural language question to answer.
+        limit: Number of knowledge nodes to retrieve for context (default 10).
+    """
+    limit = _clamp_limit(limit)
+    metrics.tool_calls += 1
+    t0 = time.monotonic()
+    logger.info("ask called: question=%r limit=%d", question, limit)
+
+    if not _state.lm_client or not _state.vector_table:
+        return "Error: Semantic search not available (LM Studio or vector store not initialized)"
+
+    if not _state.query_model:
+        return "Error: No query model configured (set models.query in config.toml)"
+
+    result = await rag_ask(
+        question=question,
+        lm_client=_state.lm_client,
+        vector_table=_state.vector_table,
+        query_model=_state.query_model,
+        embedding_model=_state.embedding_model,
+        limit=limit,
+    )
+
+    elapsed = time.monotonic() - t0
+    logger.info("ask completed in %.3fs", elapsed)
+
+    return format_rag_response(result)
 
 
 @mcp.tool()

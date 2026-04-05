@@ -18,6 +18,7 @@ from hippo_brain.mcp import (
     _get_conn,
     _load_config,
     _state,
+    ask,
     get_entities,
     mcp,
     metrics,
@@ -36,8 +37,11 @@ class TestToolRegistration:
     def test_get_entities_registered(self):
         assert "get_entities" in mcp._tool_manager._tools
 
-    def test_exactly_three_tools(self):
-        assert len(mcp._tool_manager._tools) == 3
+    def test_ask_registered(self):
+        assert "ask" in mcp._tool_manager._tools
+
+    def test_exactly_four_tools(self):
+        assert len(mcp._tool_manager._tools) == 4
 
 
 class TestGetConn:
