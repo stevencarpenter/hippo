@@ -18,6 +18,7 @@ from hippo_brain.embeddings import (
     open_vector_db,
     search_similar,
 )
+from hippo_brain.rag import ask as rag_ask
 from hippo_brain.enrichment import (
     SYSTEM_PROMPT,
     build_enrichment_prompt,
@@ -249,6 +250,41 @@ class BrainServer:
             except Exception as e2:
                 logger.error("query error: %s", e2)
                 return JSONResponse({"error": str(e2)}, status_code=500)
+
+    async def ask(self, request: Request) -> JSONResponse:
+        """RAG endpoint: retrieve relevant knowledge and synthesize an answer."""
+        body = await request.json()
+        question = body.get("question", "")
+        if not question:
+            return JSONResponse({"error": "question is required"}, status_code=400)
+
+        limit = body.get("limit", 10)
+
+        if not self.embedding_model or self._vector_table is None:
+            return JSONResponse(
+                {"error": "Semantic search unavailable (no embedding model or vector store)"},
+                status_code=503,
+            )
+
+        # Use query_model, fall back to dynamically-resolved enrichment model
+        model = self.query_model or self.enrichment_model
+        if not model:
+            return JSONResponse(
+                {"error": "No query model configured (set models.query in config.toml)"},
+                status_code=503,
+            )
+
+        result = await rag_ask(
+            question=question,
+            lm_client=self.client,
+            vector_table=self._vector_table,
+            query_model=model,
+            embedding_model=self.embedding_model,
+            limit=limit,
+        )
+
+        status = 200 if "answer" in result else 502
+        return JSONResponse(result, status_code=status)
 
     async def _resolve_model(self) -> bool:
         """Pick the best available enrichment model. Returns False if none found."""
@@ -676,6 +712,7 @@ class BrainServer:
         return [
             Route("/health", self.health, methods=["GET"]),
             Route("/query", self.query, methods=["POST"]),
+            Route("/ask", self.ask, methods=["POST"]),
         ]
 
 
