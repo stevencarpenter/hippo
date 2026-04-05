@@ -340,6 +340,93 @@ async fn main() -> Result<()> {
                 }
             }
         }
+        Commands::Ask { question } => {
+            let brain_url = format!("http://localhost:{}/ask", config.brain.port);
+            let client = reqwest::Client::new();
+            match client
+                .post(&brain_url)
+                .json(&serde_json::json!({"question": question}))
+                .timeout(std::time::Duration::from_secs(120))
+                .send()
+                .await
+            {
+                Ok(resp) if resp.status().is_success() => {
+                    let body: serde_json::Value = resp.json().await?;
+
+                    if let Some(answer) = body.get("answer").and_then(|a| a.as_str()) {
+                        println!("{answer}");
+                    }
+                    if let Some(error) = body.get("error").and_then(|e| e.as_str()) {
+                        eprintln!("Error: {error}");
+                    }
+
+                    if let Some(sources) = body.get("sources").and_then(|s| s.as_array())
+                        && !sources.is_empty()
+                    {
+                        println!("\nSources:");
+                        for src in sources {
+                            let score = src
+                                .get("score")
+                                .and_then(|s| s.as_f64())
+                                .unwrap_or(0.0);
+                            let summary = src
+                                .get("summary")
+                                .and_then(|s| s.as_str())
+                                .unwrap_or("(no summary)");
+                            let cwd = src
+                                .get("cwd")
+                                .and_then(|s| s.as_str())
+                                .unwrap_or("");
+                            let branch = src
+                                .get("git_branch")
+                                .and_then(|s| s.as_str())
+                                .unwrap_or("");
+                            let ts = src
+                                .get("timestamp")
+                                .and_then(|t| t.as_i64())
+                                .unwrap_or(0);
+                            let date = if ts > 0 {
+                                chrono::DateTime::from_timestamp_millis(ts)
+                                    .map(|dt| dt.format("%Y-%m-%d").to_string())
+                                    .unwrap_or_default()
+                            } else {
+                                String::new()
+                            };
+
+                            println!("  [{score:.2}] {summary}");
+                            let mut location = String::new();
+                            if !cwd.is_empty() {
+                                location.push_str(cwd);
+                            }
+                            if !branch.is_empty() {
+                                location.push_str(&format!(" ({branch})"));
+                            }
+                            if !date.is_empty() {
+                                if !location.is_empty() {
+                                    location.push_str(" — ");
+                                }
+                                location.push_str(&date);
+                            }
+                            if !location.is_empty() {
+                                println!("         {location}");
+                            }
+                        }
+                    }
+                }
+                Ok(resp) => {
+                    let status = resp.status();
+                    let body = resp.text().await.unwrap_or_default();
+                    eprintln!("Brain server error ({status}): {body}");
+                }
+                Err(_) => {
+                    eprintln!(
+                        "Brain server not reachable at localhost:{}. Is hippo-brain running?",
+                        config.brain.port
+                    );
+                    eprintln!("Run: hippo doctor");
+                }
+            }
+        }
         Commands::Entities { entity_type } => {
             let response = commands::send_request(
                 &config.socket_path(),
