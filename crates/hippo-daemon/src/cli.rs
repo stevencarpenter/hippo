@@ -55,6 +55,11 @@ pub enum Commands {
         #[arg(long)]
         raw: bool,
     },
+    /// Ask a question and get a synthesized answer from the knowledge base
+    Ask {
+        /// The question to ask
+        question: String,
+    },
     /// List known entities
     Entities {
         /// Filter by entity type
