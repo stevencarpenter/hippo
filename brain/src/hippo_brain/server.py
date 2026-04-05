@@ -53,6 +53,7 @@ class BrainServer:
         lmstudio_base_url: str = "http://localhost:1234/v1",
         enrichment_model: str = "",
         embedding_model: str = "",
+        query_model: str = "",
         poll_interval_secs: int = 5,
         enrichment_batch_size: int = 30,
         session_stale_secs: int = 120,
@@ -67,6 +68,7 @@ class BrainServer:
         self._preferred_model = enrichment_model
         self.enrichment_model = enrichment_model
         self.embedding_model = embedding_model
+        self.query_model = query_model
         self.poll_interval_secs = poll_interval_secs
         self.enrichment_batch_size = enrichment_batch_size
         self.session_stale_secs = session_stale_secs
@@ -683,6 +685,7 @@ def create_app(
     lmstudio_base_url: str = "http://localhost:1234/v1",
     enrichment_model: str = "",
     embedding_model: str = "",
+    query_model: str = "",
     poll_interval_secs: int = 5,
     enrichment_batch_size: int = 30,
     session_stale_secs: int = 120,
@@ -693,6 +696,7 @@ def create_app(
         lmstudio_base_url=lmstudio_base_url,
         enrichment_model=enrichment_model,
         embedding_model=embedding_model,
+        query_model=query_model,
         poll_interval_secs=poll_interval_secs,
         enrichment_batch_size=enrichment_batch_size,
         session_stale_secs=session_stale_secs,
