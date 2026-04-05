@@ -364,7 +364,7 @@ async fn main() -> Result<()> {
                         && !sources.is_empty()
                     {
                         println!("\nSources:");
-                        for src in sources {
+                        for (i, src) in sources.iter().enumerate() {
                             let score = src.get("score").and_then(|s| s.as_f64()).unwrap_or(0.0);
                             let summary = src
                                 .get("summary")
@@ -382,7 +382,14 @@ async fn main() -> Result<()> {
                                 String::new()
                             };
 
-                            println!("  [{score:.2}] {summary}");
+                            // Truncate long summaries
+                            let display_summary = if summary.len() > 120 {
+                                format!("{}…", &summary[..119])
+                            } else {
+                                summary.to_string()
+                            };
+
+                            println!("  {}. [{:.0}%] {}", i + 1, score * 100.0, display_summary);
                             let mut location = String::new();
                             if !cwd.is_empty() {
                                 location.push_str(cwd);
@@ -397,7 +404,7 @@ async fn main() -> Result<()> {
                                 location.push_str(&date);
                             }
                             if !location.is_empty() {
-                                println!("         {location}");
+                                println!("     {location}");
                             }
                         }
                     }
