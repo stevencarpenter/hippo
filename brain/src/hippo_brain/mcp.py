@@ -34,7 +34,7 @@ metrics = MetricsCollector()
 def _load_config() -> dict:
     """Load Hippo config from ~/.config/hippo/config.toml.
 
-    Returns a dict with db_path, data_dir, lmstudio_base_url, embedding_model.
+    Returns a dict with db_path, data_dir, lmstudio_base_url, embedding_model, query_model.
     """
     config_path = Path.home() / ".config" / "hippo" / "config.toml"
     defaults = {
@@ -42,6 +42,7 @@ def _load_config() -> dict:
         "data_dir": str(Path.home() / ".local" / "share" / "hippo"),
         "lmstudio_base_url": "http://localhost:1234/v1",
         "embedding_model": "",
+        "query_model": "",
     }
 
     if not config_path.exists():
@@ -64,6 +65,7 @@ def _load_config() -> dict:
         "data_dir": str(data_dir),
         "lmstudio_base_url": lmstudio.get("base_url", "http://localhost:1234/v1"),
         "embedding_model": models.get("embedding", ""),
+        "query_model": models.get("query", "") or models.get("enrichment", ""),
     }
 
 
@@ -74,6 +76,7 @@ class _ServerState:
     db_path: str = ""
     lm_client: LMStudioClient | None = None
     embedding_model: str = ""
+    query_model: str = ""
     vector_table: object | None = None  # lancedb.table.Table
 
 
@@ -100,6 +103,7 @@ def _init_state() -> None:
     config = _load_config()
     _state.db_path = config["db_path"]
     _state.embedding_model = config["embedding_model"]
+    _state.query_model = config["query_model"]
     _state.lm_client = LMStudioClient(base_url=config["lmstudio_base_url"])
 
     try:
@@ -111,9 +115,10 @@ def _init_state() -> None:
         _state.vector_table = None
 
     logger.info(
-        "Hippo MCP server initialized (db=%s, embedding_model=%s)",
+        "Hippo MCP server initialized (db=%s, embedding_model=%s, query_model=%s)",
         _state.db_path,
         _state.embedding_model or "<none>",
+        _state.query_model or "<none>",
     )
 
 

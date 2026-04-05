@@ -35,6 +35,7 @@ def _load_runtime_settings() -> dict:
         "enrichment_model": models.get("enrichment", ""),
         "enrichment_bulk": models.get("enrichment_bulk", ""),
         "embedding_model": models.get("embedding", ""),
+        "query_model": models.get("query", "") or models.get("enrichment", ""),
         "poll_interval_secs": brain.get("poll_interval_secs", 5),
         "enrichment_batch_size": brain.get("enrichment_batch_size", 10),
         "max_events_per_chunk": brain.get(
@@ -75,6 +76,7 @@ def main() -> None:
             lmstudio_base_url=settings["lmstudio_base_url"],
             enrichment_model=settings["enrichment_model"],
             embedding_model=settings["embedding_model"],
+            query_model=settings["query_model"],
             poll_interval_secs=settings["poll_interval_secs"],
             enrichment_batch_size=settings["max_events_per_chunk"],
             session_stale_secs=settings["session_stale_secs"],
