@@ -15,100 +15,16 @@ from hippo_brain.browser_enrichment import (
     write_browser_knowledge_node,
 )
 from hippo_brain.models import EnrichmentResult
-
-# Minimal schema for browser enrichment tests — NOT the full hippo schema.
-_MINIMAL_SCHEMA = """
-CREATE TABLE IF NOT EXISTS events (
-    id INTEGER PRIMARY KEY,
-    session_id INTEGER NOT NULL,
-    timestamp INTEGER NOT NULL,
-    command TEXT NOT NULL,
-    exit_code INTEGER,
-    duration_ms INTEGER NOT NULL,
-    cwd TEXT NOT NULL,
-    hostname TEXT NOT NULL,
-    shell TEXT NOT NULL,
-    enriched INTEGER NOT NULL DEFAULT 0
-);
-
-CREATE TABLE IF NOT EXISTS browser_events (
-    id INTEGER PRIMARY KEY,
-    timestamp INTEGER NOT NULL,
-    url TEXT NOT NULL,
-    title TEXT,
-    domain TEXT NOT NULL,
-    dwell_ms INTEGER NOT NULL,
-    scroll_depth REAL,
-    extracted_text TEXT,
-    search_query TEXT,
-    referrer TEXT,
-    content_hash TEXT,
-    envelope_id TEXT,
-    enriched INTEGER NOT NULL DEFAULT 0,
-    created_at INTEGER NOT NULL DEFAULT 0
-);
-
-CREATE TABLE IF NOT EXISTS browser_enrichment_queue (
-    id INTEGER PRIMARY KEY,
-    browser_event_id INTEGER NOT NULL UNIQUE REFERENCES browser_events(id),
-    status TEXT NOT NULL DEFAULT 'pending'
-        CHECK (status IN ('pending', 'processing', 'done', 'failed', 'skipped')),
-    priority INTEGER NOT NULL DEFAULT 5,
-    retry_count INTEGER NOT NULL DEFAULT 0,
-    max_retries INTEGER NOT NULL DEFAULT 5,
-    error_message TEXT,
-    locked_at INTEGER,
-    locked_by TEXT,
-    created_at INTEGER NOT NULL DEFAULT 0,
-    updated_at INTEGER NOT NULL DEFAULT 0
-);
-
-CREATE TABLE IF NOT EXISTS knowledge_nodes (
-    id INTEGER PRIMARY KEY,
-    uuid TEXT NOT NULL UNIQUE,
-    content TEXT NOT NULL,
-    embed_text TEXT NOT NULL,
-    node_type TEXT NOT NULL DEFAULT 'observation',
-    outcome TEXT,
-    tags TEXT,
-    enrichment_model TEXT,
-    enrichment_version INTEGER NOT NULL DEFAULT 1,
-    created_at INTEGER NOT NULL DEFAULT 0,
-    updated_at INTEGER NOT NULL DEFAULT 0
-);
-
-CREATE TABLE IF NOT EXISTS knowledge_node_browser_events (
-    knowledge_node_id INTEGER NOT NULL REFERENCES knowledge_nodes(id),
-    browser_event_id INTEGER NOT NULL REFERENCES browser_events(id),
-    PRIMARY KEY (knowledge_node_id, browser_event_id)
-);
-
-CREATE TABLE IF NOT EXISTS entities (
-    id INTEGER PRIMARY KEY,
-    type TEXT NOT NULL,
-    name TEXT NOT NULL,
-    canonical TEXT,
-    metadata TEXT,
-    first_seen INTEGER NOT NULL DEFAULT 0,
-    last_seen INTEGER NOT NULL DEFAULT 0,
-    created_at INTEGER NOT NULL DEFAULT 0,
-    UNIQUE (type, canonical)
-);
-
-CREATE TABLE IF NOT EXISTS knowledge_node_entities (
-    knowledge_node_id INTEGER NOT NULL REFERENCES knowledge_nodes(id),
-    entity_id INTEGER NOT NULL REFERENCES entities(id),
-    PRIMARY KEY (knowledge_node_id, entity_id)
-);
-"""
+from tests.conftest import SCHEMA_PATH
 
 
 @pytest.fixture
 def db():
-    """In-memory SQLite with minimal browser enrichment schema."""
+    """In-memory SQLite with the full hippo schema."""
+    schema = SCHEMA_PATH.read_text()
     conn = sqlite3.connect(":memory:")
     conn.execute("PRAGMA foreign_keys=ON")
-    conn.executescript(_MINIMAL_SCHEMA)
+    conn.executescript(schema)
     conn.commit()
     yield conn
     conn.close()

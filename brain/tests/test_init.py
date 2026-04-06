@@ -48,9 +48,11 @@ def test_main_serve_dispatches(monkeypatch):
                     "embedding_model": "",
                     "query_model": "",
                     "poll_interval_secs": 5,
+                    "enrichment_batch_size": 10,
                     "max_events_per_chunk": 10,
                     "session_stale_secs": 120,
                     "port": 9175,
+                    "telemetry_endpoint": "http://localhost:4318",
                 },
             ):
                 hippo_brain.main()
@@ -83,9 +85,11 @@ def test_main_serve_uses_config_runtime_settings(monkeypatch):
         "embedding_model": "local-embed",
         "query_model": "local-query",
         "poll_interval_secs": 9,
+        "enrichment_batch_size": 3,
         "max_events_per_chunk": 3,
         "session_stale_secs": 60,
         "port": 9444,
+        "telemetry_endpoint": "http://localhost:4318",
     }
 
     with patch.dict("sys.modules", {"uvicorn": mock_uvicorn}):

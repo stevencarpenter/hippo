@@ -5,8 +5,6 @@ import sqlite3
 import tempfile
 from pathlib import Path
 
-import pytest
-
 from hippo_brain.claude_sessions import (
     SessionFile,
     SessionSegment,
@@ -274,30 +272,8 @@ class TestBuildClaudeEnrichmentPrompt:
 
 
 class TestInsertAndClaim:
-    @pytest.fixture
-    def db_conn(self):
-        from tests.conftest import SCHEMA_PATH
-
-        schema = SCHEMA_PATH.read_text()
-        tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
-        tmp.close()
-        db_path = Path(tmp.name)
-
-        conn = sqlite3.connect(str(db_path))
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("PRAGMA foreign_keys=ON")
-        conn.execute("PRAGMA busy_timeout=5000")
-        conn.executescript(schema)
-        conn.commit()
-
-        yield conn
-
-        conn.close()
-        db_path.unlink(missing_ok=True)
-        db_path.with_suffix(".db-wal").unlink(missing_ok=True)
-        db_path.with_suffix(".db-shm").unlink(missing_ok=True)
-
-    def test_insert_segment(self, db_conn):
+    def test_insert_segment(self, tmp_db):
+        db_conn, _ = tmp_db
         seg = SessionSegment(
             session_id="test-session",
             project_dir="proj",
@@ -329,7 +305,8 @@ class TestInsertAndClaim:
         ).fetchone()
         assert queue[0] == "pending"
 
-    def test_insert_duplicate_skipped(self, db_conn):
+    def test_insert_duplicate_skipped(self, tmp_db):
+        db_conn, _ = tmp_db
         seg = SessionSegment(
             session_id="dup-session",
             project_dir="proj",
@@ -348,7 +325,8 @@ class TestInsertAndClaim:
         second = insert_segment(db_conn, seg)
         assert second is None
 
-    def test_claim_groups_by_cwd(self, db_conn):
+    def test_claim_groups_by_cwd(self, tmp_db):
+        db_conn, _ = tmp_db
         for i, cwd in enumerate(["/proj-a", "/proj-a", "/proj-b"]):
             seg = SessionSegment(
                 session_id=f"s{i}",
@@ -365,12 +343,13 @@ class TestInsertAndClaim:
             insert_segment(db_conn, seg)
 
         batches = claim_pending_claude_segments(db_conn, "test-worker")
-        # Should have 2 batches: one for /proj-a (2 segments), one for /proj-b (1 segment)
-        assert len(batches) >= 1
+        # Each segment becomes its own batch (1:1 enrichment)
+        assert len(batches) == 3
         total_segments = sum(len(b) for b in batches)
         assert total_segments == 3
 
-    def test_write_claude_knowledge_node(self, db_conn):
+    def test_write_claude_knowledge_node(self, tmp_db):
+        db_conn, _ = tmp_db
         seg = SessionSegment(
             session_id="kn-session",
             project_dir="proj",
@@ -437,7 +416,8 @@ class TestInsertAndClaim:
         ).fetchone()
         assert entity is not None
 
-    def test_mark_claude_queue_failed(self, db_conn):
+    def test_mark_claude_queue_failed(self, tmp_db):
+        db_conn, _ = tmp_db
         seg = SessionSegment(
             session_id="fail-session",
             project_dir="proj",
