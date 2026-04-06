@@ -119,7 +119,7 @@ Firefox Developer Edition extension captures browsing activity from allowlisted 
 
 `shell/claude-session-hook.sh` is a Claude Code SessionStart hook that tails session JSONL files into hippo via a detached tmux window (`hippo:` prefix).
 
-**Key gotcha:** Claude Code wraps hook commands in an intermediate bash process (`claude → bash → hook.sh`). The hook must use the grandparent PID (the actual Claude process), not `$PPID` (the ephemeral bash). The Rust tailer's `kill(pid, 0)` check must distinguish ESRCH (process gone) from EPERM (process exists, no permission).
+**Key gotcha:** The hook script runs as a direct child of Claude (`claude → hook.sh`), so `$PPID` IS the Claude process PID — use it directly as `HIPPO_WATCH_PID`. Also, Claude fires the SessionStart hook before creating the transcript JSONL file, so the hook must poll briefly for the file to appear. The Rust tailer's `kill(pid, 0)` check must distinguish ESRCH (process gone) from EPERM (process exists, no permission).
 
 **Batch import:** `hippo ingest claude-session --batch <path>` for one-shot import of completed sessions.
 

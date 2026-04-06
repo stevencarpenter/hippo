@@ -24,7 +24,17 @@ INPUT=$(cat)
 # Extract transcript_path from the JSON
 TRANSCRIPT_PATH=$(echo "$INPUT" | python3 -c "import sys,json; print(json.load(sys.stdin).get('transcript_path',''))" 2>/dev/null)
 
-if [ -z "$TRANSCRIPT_PATH" ] || [ ! -f "$TRANSCRIPT_PATH" ]; then
+if [ -z "$TRANSCRIPT_PATH" ]; then
+    exit 0
+fi
+
+# Wait briefly for the transcript file to be created (Claude fires the hook before writing it)
+for i in 1 2 3 4 5; do
+    [ -f "$TRANSCRIPT_PATH" ] && break
+    sleep 0.2
+done
+
+if [ ! -f "$TRANSCRIPT_PATH" ]; then
     exit 0
 fi
 
@@ -50,12 +60,9 @@ WINDOW_NAME="hippo:${SHORT_ID}"
 # tmux new-window -d returns immediately — the tail loop runs inside the new window,
 # so this hook never blocks Claude Code from launching.
 # Pass Claude's PID so the tailer exits when Claude does.
-# Claude Code spawns an intermediate bash to run this hook, so $PPID is that
-# ephemeral bash — not the long-lived Claude process. Walk up one level.
-CLAUDE_PID="$(ps -o ppid= -p "$PPID" 2>/dev/null | tr -d ' ')"
-if [ -z "$CLAUDE_PID" ] || [ "$CLAUDE_PID" = "1" ]; then
-    CLAUDE_PID="$PPID"
-fi
+# The hook script runs as a direct child of Claude (no intermediate wrapper),
+# so $PPID is the Claude process PID.
+CLAUDE_PID="$PPID"
 
 if tmux list-sessions &>/dev/null; then
     tmux new-window -d -n "$WINDOW_NAME" "HIPPO_WATCH_PID=$CLAUDE_PID $HIPPO_BIN ingest claude-session --inline $TRANSCRIPT_PATH"
