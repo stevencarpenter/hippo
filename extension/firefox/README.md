@@ -24,7 +24,7 @@ cd extension/firefox
 npx web-ext build --overwrite-dest
 ```
 
-This creates `web-ext-artifacts/hippo_browser_capture-0.1.0.zip`.
+This creates `web-ext-artifacts/hippo_browser_capture-0.2.0.zip`.
 
 #### Enable unsigned extension install (one-time)
 
@@ -39,7 +39,7 @@ locally-built extensions without Mozilla signing.
 
 1. Open `about:addons` (or Cmd+Shift+A)
 2. Click the gear icon → **Install Add-on From File...**
-3. Select `extension/firefox/web-ext-artifacts/hippo_browser_capture-0.1.0.zip`
+3. Select `extension/firefox/web-ext-artifacts/hippo_browser_capture-0.2.0.zip`
 4. Click **Add** when prompted
 
 The extension persists across Firefox restarts. No more temporary loading via `about:debugging`.
@@ -104,7 +104,7 @@ Or edit the allowlist directly from the extension popup.
 | File | Purpose |
 |------|---------|
 | `manifest.json` | WebExtension manifest (MV2) |
-| `content.js` | Page-level dwell/scroll/content capture |
-| `background.js` | Allowlist filtering, search query extraction, Native Messaging |
-| `popup.html/js` | Extension popup UI (toggle, stats, allowlist editor) |
+| `content.ts` | Page-level dwell/scroll/content capture |
+| `background.ts` | Allowlist filtering, search query extraction, Native Messaging |
+| `popup.html/ts` | Extension popup UI (toggle, stats, allowlist editor) |
 | `lib/Readability.js` | Mozilla Readability v0.6.0 (vendored) |
