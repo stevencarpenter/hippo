@@ -4,7 +4,7 @@ import time
 
 from hippo_brain.enrichment import (
     build_enrichment_prompt,
-    claim_pending_events,
+    claim_pending_events_by_session,
     write_knowledge_node,
 )
 from hippo_brain.models import EnrichmentResult
@@ -44,26 +44,26 @@ def test_build_enrichment_prompt_without_optional_git_fields():
 
 
 def test_claim_pending_events_empty_queue(tmp_db):
-    """claim_pending_events on empty queue returns empty list."""
+    """claim_pending_events_by_session on empty queue returns empty list."""
     conn, _ = tmp_db
-    result = claim_pending_events(conn, batch_size=10, worker_id="worker")
+    result = claim_pending_events_by_session(conn, max_per_chunk=10, worker_id="worker")
     assert result == []
 
 
 def test_claim_pending_events_reclaims_stale_processing_lock(tmp_db):
     conn, _ = tmp_db
-    now_ms = int(time.time() * 1000)
-    stale_ms = now_ms - (10 * 60 * 1000)
+    past_ms = int(time.time() * 1000) - 10_000
+    stale_ms = past_ms - (10 * 60 * 1000)
 
     conn.execute(
         "INSERT INTO sessions (id, start_time, shell, hostname, username) "
         "VALUES (1, ?, 'zsh', 'laptop', 'user')",
-        (now_ms,),
+        (past_ms,),
     )
     conn.execute(
         "INSERT INTO events (id, session_id, timestamp, command, exit_code, duration_ms, "
         "cwd, hostname, shell) VALUES (1, 1, ?, 'cargo test', 0, 1000, '/tmp', 'laptop', 'zsh')",
-        (now_ms,),
+        (past_ms,),
     )
     conn.execute(
         """
@@ -74,9 +74,12 @@ def test_claim_pending_events_reclaims_stale_processing_lock(tmp_db):
     )
     conn.commit()
 
-    events = claim_pending_events(conn, batch_size=10, worker_id="new-worker")
+    chunks = claim_pending_events_by_session(
+        conn, max_per_chunk=10, worker_id="new-worker", stale_secs=1
+    )
 
-    assert [event["id"] for event in events] == [1]
+    all_events = [e for chunk in chunks for e in chunk]
+    assert [event["id"] for event in all_events] == [1]
     row = conn.execute(
         "SELECT status, locked_by FROM enrichment_queue WHERE event_id = 1"
     ).fetchone()

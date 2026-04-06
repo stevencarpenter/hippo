@@ -6,17 +6,17 @@ from hippo_brain.mcp_logging import setup_logging, MetricsCollector
 def test_setup_logging_returns_logger():
     logger = setup_logging("test-mcp")
     assert isinstance(logger, logging.Logger)
-    assert logger.name == "hippo.mcp"
+    assert logger.name == "test-mcp"
     assert logger.level == logging.INFO
 
 
 def test_setup_logging_writes_to_stderr(capsys):
     # Clear any cached handlers so setup_logging creates a fresh one
     # that points to the capsys-wrapped sys.stderr.
-    logger = logging.getLogger("hippo.mcp")
+    logger = logging.getLogger("test-mcp-stderr")
     logger.handlers.clear()
 
-    logger = setup_logging("test-mcp")
+    logger = setup_logging("test-mcp-stderr")
     logger.info("hello from test")
     captured = capsys.readouterr()
     assert captured.out == "", "logging must not write to stdout (reserved for MCP stdio)"

@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 import lancedb
@@ -77,8 +78,6 @@ async def embed_knowledge_node(
         vec_knowledge = _pad_or_truncate(knowledge_vecs[0], EMBED_DIM)
         command_vecs = await client.embed([cmd_text], model=cmd_model)
         vec_command = _pad_or_truncate(command_vecs[0], EMBED_DIM)
-
-    import json
 
     row = {
         "id": node_dict.get("id", 0),

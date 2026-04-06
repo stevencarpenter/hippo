@@ -552,34 +552,6 @@ def claim_pending_claude_segments(conn, worker_id: str) -> list[list[dict]]:
     return all_batches
 
 
-def _chunk_by_budget(segments: list[dict], token_budget: int) -> list[list[dict]]:
-    """Split segments into batches that fit within a token budget.
-
-    Currently unused — claim_pending_claude_segments uses 1:1 enrichment.
-    Kept for future use if batching is reintroduced.
-    """
-    batches = []
-    current_batch: list[dict] = []
-    current_tokens = 0
-
-    for seg in segments:
-        seg_chars = len(seg.get("summary_text", ""))
-        seg_tokens = seg_chars // 4  # rough estimate
-
-        if current_batch and current_tokens + seg_tokens > token_budget:
-            batches.append(current_batch)
-            current_batch = []
-            current_tokens = 0
-
-        current_batch.append(seg)
-        current_tokens += seg_tokens
-
-    if current_batch:
-        batches.append(current_batch)
-
-    return batches
-
-
 def write_claude_knowledge_node(
     conn, result: EnrichmentResult, segment_ids: list[int], model_name: str
 ) -> int:

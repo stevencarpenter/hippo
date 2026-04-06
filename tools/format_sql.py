@@ -20,12 +20,6 @@ import subprocess
 import sys
 from pathlib import Path
 
-try:
-    import sqlfluff  # noqa: F401
-except Exception:
-    sqlfluff = None
-
-
 def run_sqlfluff_fix(path: Path) -> int:
     # Prefer using sqlfluff if available on PATH (installed in the project's env)
     sqlfluff_exe = shutil.which("sqlfluff")
@@ -62,8 +56,8 @@ def main(argv: list[str]) -> int:
 
         # Try sqlfluff first (preferred for consistent team formatting)
         rc = run_sqlfluff_fix(p)
-        if rc == 0:
-            continue
+        if rc != 0:
+            exit_code = max(exit_code, rc)
 
     return exit_code
 
