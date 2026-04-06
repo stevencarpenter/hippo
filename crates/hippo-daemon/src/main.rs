@@ -422,15 +422,21 @@ async fn main() -> Result<()> {
 
                     if use_glow {
                         use std::io::Write;
-                        let mut child = std::process::Command::new("glow")
+                        match std::process::Command::new("glow")
                             .args(["-", "--width", "100"])
                             .stdin(std::process::Stdio::piped())
                             .spawn()
-                            .expect("failed to spawn glow");
-                        if let Some(mut stdin) = child.stdin.take() {
-                            let _ = stdin.write_all(output.as_bytes());
+                        {
+                            Ok(mut child) => {
+                                if let Some(mut stdin) = child.stdin.take() {
+                                    let _ = stdin.write_all(output.as_bytes());
+                                }
+                                let _ = child.wait();
+                            }
+                            Err(_) => {
+                                print!("{output}");
+                            }
                         }
-                        let _ = child.wait();
                     } else {
                         print!("{output}");
                     }
@@ -479,10 +485,7 @@ async fn main() -> Result<()> {
             }
         }
         Commands::ExportTraining { out: _, since: _ } => {
-            eprintln!(
-                "Training export is not yet implemented. Use: uv run --project brain hippo-brain export"
-            );
-            std::process::exit(1);
+            anyhow::bail!("Training export is not yet implemented. Use: uv run --project brain hippo-brain export");
         }
         Commands::Config { action } => match action {
             ConfigAction::Edit => {
@@ -503,8 +506,7 @@ async fn main() -> Result<()> {
                 }
             }
             ConfigAction::Set { key, value } => {
-                eprintln!("config set is not yet implemented (key={key}, value={value})");
-                std::process::exit(1);
+                anyhow::bail!("config set is not yet implemented (key={key}, value={value})");
             }
         },
         Commands::Redact { action } => match action {
