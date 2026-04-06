@@ -30,7 +30,13 @@ while true; do
             COALESCE(SUM(CASE WHEN status='processing' THEN 1 ELSE 0 END),0),
             COALESCE(SUM(CASE WHEN status='done' THEN 1 ELSE 0 END),0),
             COALESCE(SUM(CASE WHEN status='failed' THEN 1 ELSE 0 END),0)
-        FROM enrichment_queue;
+        FROM (
+            SELECT status FROM enrichment_queue
+            UNION ALL
+            SELECT status FROM claude_enrichment_queue
+            UNION ALL
+            SELECT status FROM browser_enrichment_queue
+        );
     " | tr '|' ' ')"
     total=$((pending + processing + done + failed))
 

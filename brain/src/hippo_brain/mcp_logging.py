@@ -11,7 +11,7 @@ from dataclasses import dataclass
 
 def setup_logging(server_name: str) -> logging.Logger:
     """Configure structured logging to stderr for the MCP server."""
-    logger = logging.getLogger("hippo.mcp")
+    logger = logging.getLogger(server_name)
     logger.setLevel(logging.INFO)
 
     if not logger.handlers:

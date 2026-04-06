@@ -31,6 +31,8 @@ from hippo_brain.browser_enrichment import (
     BROWSER_SYSTEM_PROMPT,
     build_browser_enrichment_prompt,
     claim_pending_browser_events,
+    format_browser_context_for_shell_prompt,
+    get_correlated_browser_events,
     mark_browser_queue_failed,
     write_browser_knowledge_node,
 )
@@ -382,7 +384,6 @@ class BrainServer:
 
     async def _call_llm_with_retries(self, system_prompt, prompt, source_label):
         """Call LM Studio with up to 3 retries on parse failure."""
-        result = None
         last_err = None
         for attempt in range(3):
             try:
@@ -447,11 +448,6 @@ class BrainServer:
 
             browser_context = ""
             try:
-                from hippo_brain.browser_enrichment import (
-                    get_correlated_browser_events,
-                    format_browser_context_for_shell_prompt,
-                )
-
                 start_ts = min(e["timestamp"] for e in events)
                 end_ts = max(e["timestamp"] for e in events)
                 correlated = get_correlated_browser_events(claim_conn, start_ts, end_ts)

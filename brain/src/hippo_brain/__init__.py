@@ -34,7 +34,6 @@ def _load_runtime_settings() -> dict:
         "data_dir": str(data_dir),
         "lmstudio_base_url": lmstudio.get("base_url", "http://localhost:1234/v1"),
         "enrichment_model": models.get("enrichment", ""),
-        "enrichment_bulk": models.get("enrichment_bulk", ""),
         "embedding_model": models.get("embedding", ""),
         "query_model": models.get("query", "") or models.get("enrichment", ""),
         "poll_interval_secs": brain.get("poll_interval_secs", 5),

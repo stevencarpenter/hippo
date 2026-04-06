@@ -5,7 +5,7 @@ import pytest
 
 from hippo_brain.enrichment import (
     build_enrichment_prompt,
-    claim_pending_events,
+    claim_pending_events_by_session,
     mark_queue_failed,
     parse_enrichment_response,
     write_knowledge_node,
@@ -116,12 +116,12 @@ def test_parse_rejects_invalid_json():
 
 def test_claim_and_write(tmp_db):
     conn, _ = tmp_db
-    now_ms = int(time.time() * 1000)
+    past_ms = int(time.time() * 1000) - 5000
 
     # Insert session
     conn.execute(
         "INSERT INTO sessions (id, start_time, shell, hostname, username) VALUES (1, ?, 'zsh', 'laptop', 'user')",
-        (now_ms,),
+        (past_ms,),
     )
 
     # Insert events
@@ -129,13 +129,13 @@ def test_claim_and_write(tmp_db):
         """INSERT INTO events (id, session_id, timestamp, command, exit_code, duration_ms,
                                cwd, hostname, shell)
            VALUES (1, 1, ?, 'cargo test', 0, 1000, '/project', 'laptop', 'zsh')""",
-        (now_ms,),
+        (past_ms,),
     )
     conn.execute(
         """INSERT INTO events (id, session_id, timestamp, command, exit_code, duration_ms,
                                cwd, hostname, shell)
            VALUES (2, 1, ?, 'cargo build', 0, 2000, '/project', 'laptop', 'zsh')""",
-        (now_ms,),
+        (past_ms + 100,),
     )
 
     # Insert queue entries
@@ -143,8 +143,12 @@ def test_claim_and_write(tmp_db):
     conn.execute("INSERT INTO enrichment_queue (event_id) VALUES (2)")
     conn.commit()
 
-    # Claim events
-    events = claim_pending_events(conn, batch_size=10, worker_id="test-worker")
+    # Claim events (grouped by session)
+    chunks = claim_pending_events_by_session(
+        conn, max_per_chunk=10, worker_id="test-worker", stale_secs=1
+    )
+    assert len(chunks) == 1
+    events = chunks[0]
     assert len(events) == 2
     event_ids = [e["id"] for e in events]
 
@@ -333,16 +337,16 @@ def test_retry_after_rollback_writes_clean_node(tmp_db):
 
 def test_batch_events_returned_in_timestamp_order(tmp_db):
     conn, _ = tmp_db
-    now_ms = int(time.time() * 1000)
+    past_ms = int(time.time() * 1000) - 10_000
 
     conn.execute(
         "INSERT INTO sessions (id, start_time, shell, hostname, username) "
         "VALUES (1, ?, 'zsh', 'laptop', 'user')",
-        (now_ms,),
+        (past_ms,),
     )
 
     # Insert events with out-of-order timestamps
-    timestamps = [now_ms + 300, now_ms + 100, now_ms + 200]
+    timestamps = [past_ms + 300, past_ms + 100, past_ms + 200]
     for i, ts in enumerate(timestamps, 1):
         conn.execute(
             """INSERT INTO events (id, session_id, timestamp, command, exit_code,
@@ -353,26 +357,28 @@ def test_batch_events_returned_in_timestamp_order(tmp_db):
         conn.execute("INSERT INTO enrichment_queue (event_id) VALUES (?)", (i,))
     conn.commit()
 
-    events = claim_pending_events(conn, batch_size=10, worker_id="test")
+    chunks = claim_pending_events_by_session(conn, max_per_chunk=10, worker_id="test", stale_secs=1)
+    assert len(chunks) == 1
+    events = chunks[0]
     returned_timestamps = [e["timestamp"] for e in events]
     assert returned_timestamps == sorted(returned_timestamps)
-    assert returned_timestamps == [now_ms + 100, now_ms + 200, now_ms + 300]
+    assert returned_timestamps == [past_ms + 100, past_ms + 200, past_ms + 300]
 
 
-def test_batch_can_span_multiple_sessions(tmp_db):
+def test_multiple_sessions_produce_separate_chunks(tmp_db):
     conn, _ = tmp_db
-    now_ms = int(time.time() * 1000)
+    past_ms = int(time.time() * 1000) - 10_000
 
     # Two sessions
     conn.execute(
         "INSERT INTO sessions (id, start_time, shell, hostname, username) "
         "VALUES (1, ?, 'zsh', 'laptop', 'user')",
-        (now_ms,),
+        (past_ms,),
     )
     conn.execute(
         "INSERT INTO sessions (id, start_time, shell, hostname, username) "
         "VALUES (2, ?, 'zsh', 'laptop', 'user')",
-        (now_ms,),
+        (past_ms,),
     )
 
     # Events from session 1
@@ -380,7 +386,7 @@ def test_batch_can_span_multiple_sessions(tmp_db):
         """INSERT INTO events (id, session_id, timestamp, command, exit_code,
                                duration_ms, cwd, hostname, shell)
            VALUES (1, 1, ?, 'cmd1', 0, 100, '/p', 'laptop', 'zsh')""",
-        (now_ms,),
+        (past_ms,),
     )
     conn.execute("INSERT INTO enrichment_queue (event_id) VALUES (1)")
 
@@ -389,17 +395,20 @@ def test_batch_can_span_multiple_sessions(tmp_db):
         """INSERT INTO events (id, session_id, timestamp, command, exit_code,
                                duration_ms, cwd, hostname, shell)
            VALUES (2, 2, ?, 'cmd2', 0, 100, '/p', 'laptop', 'zsh')""",
-        (now_ms + 100,),
+        (past_ms + 100,),
     )
     conn.execute("INSERT INTO enrichment_queue (event_id) VALUES (2)")
     conn.commit()
 
-    events = claim_pending_events(conn, batch_size=10, worker_id="test")
-    returned_ids = {e["id"] for e in events}
-    assert returned_ids == {1, 2}
-    # Verify they come from different sessions
-    returned_sessions = {e["session_id"] for e in events}
-    assert returned_sessions == {1, 2}
+    chunks = claim_pending_events_by_session(conn, max_per_chunk=10, worker_id="test", stale_secs=1)
+    # Two sessions produce two separate chunks
+    assert len(chunks) == 2
+    all_ids = {e["id"] for chunk in chunks for e in chunk}
+    assert all_ids == {1, 2}
+    # Each chunk has events from a single session
+    for chunk in chunks:
+        session_ids = {e["session_id"] for e in chunk}
+        assert len(session_ids) == 1
 
 
 def test_build_enrichment_prompt_with_browser_context():

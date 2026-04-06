@@ -20,17 +20,22 @@ class ProvenanceHookError(RuntimeError):
     pass
 
 
-def http_request(method, host, port, location, *, body: Optional[bytes] = None, headers={}, timeout=None,
-                 wait_for_response=False) -> bytes:
+def http_request(method, host, port, location, *, body: Optional[bytes] = None, headers=None, timeout=None,
+                 wait_for_response=False) -> bytes | None:
+    if headers is None:
+        headers = {}
     with closing(HTTPConnection(host, port, timeout=timeout)) as connection:
         connection.request(method, location, body=body, headers=headers)
         if wait_for_response:
             response = connection.getresponse()
-            responseText = response.read()
+            return response.read()
+    return None
 
 
 def get_server_port():
     claude_root = os.getenv("CLAUDE_PROJECT_DIR")
+    if claude_root is None:
+        raise ProvenanceHookError("CLAUDE_PROJECT_DIR not set")
     path_hash = hashlib.md5(claude_root.encode('utf-8')).hexdigest()
     port_file = Path(tempfile.gettempdir()) / (path_hash + PORT_FILE_SUFFIX)
 

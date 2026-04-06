@@ -263,7 +263,4 @@ async def run_enrichment(config: dict, model_override: str, db_path: Path, data_
 
 
 if __name__ == "__main__":
-    # Need json for enrichment path
-    import json
-
     main()
