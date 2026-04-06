@@ -26,6 +26,7 @@ local LLMs.
     mise run nuke             # Kill everything (SIGKILL), preserves data
     hippo doctor              # Health check
     hippo config edit         # Edit runtime config
+    hippo ask "<question>"    # RAG query: synthesized answer from knowledge base
 
 ### Rust (daemon + CLI)
 
@@ -47,7 +48,7 @@ local LLMs.
 
     uv run --project brain hippo-mcp    # Start MCP server (stdio transport)
 
-The MCP server exposes three tools: `search_knowledge`, `search_events`, `get_entities`.
+The MCP server exposes four tools: `ask`, `search_knowledge`, `search_events`, `get_entities`.
 Configure in `~/.config/mcp/mcp-master.json` (or via mcp-sync). The `autoApprove` array allows tool calls without manual confirmation:
 
 ```json
@@ -56,12 +57,16 @@ Configure in `~/.config/mcp/mcp-master.json` (or via mcp-sync). The `autoApprove
     "type": "stdio",
     "command": "uv",
     "args": ["run", "--project", "/path/to/hippo/brain", "hippo-mcp"],
-    "autoApprove": ["search_knowledge", "search_events", "get_entities"]
+    "autoApprove": ["ask", "search_knowledge", "search_events", "get_entities"]
   }
 }
 ```
 
 After editing `mcp-master.json`, run `chezmoi apply` or `sync-mcp-configs` to propagate the config to all MCP-aware tools (Claude Code, Copilot, etc.).
+
+The `ask` tool performs RAG: embeds the question, retrieves relevant knowledge nodes from LanceDB,
+synthesizes an answer via a local LLM (`models.query` in config.toml), and returns the answer with
+scored source references. Requires `glow` for rendered CLI output (`brew install glow`).
 
 Logs go to stderr. Metrics available via `MetricsCollector.snapshot()` for future OTel export.
 
