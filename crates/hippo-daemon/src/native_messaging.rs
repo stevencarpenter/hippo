@@ -113,12 +113,12 @@ pub fn strip_sensitive_params(url_str: &str, strip_params: &[String]) -> String 
 /// The UUID is derived from the URL and a time bucket (url + timestamp
 /// truncated to `dedup_window_minutes` intervals). Same URL visited within
 /// the same time window produces the same envelope ID.
-pub fn make_envelope_id(url: &str, dedup_window_minutes: u64) -> Uuid {
-    let now_minutes = Utc::now().timestamp() as u64 / 60;
+pub fn make_envelope_id(url: &str, dedup_window_minutes: u64, timestamp_ms: i64) -> Uuid {
+    let visit_minutes = (timestamp_ms / 1000) as u64 / 60;
     let bucket = if dedup_window_minutes > 0 {
-        now_minutes / dedup_window_minutes
+        visit_minutes / dedup_window_minutes
     } else {
-        now_minutes
+        visit_minutes
     };
     let key = format!("{url}:{bucket}");
     Uuid::new_v5(&BROWSER_NS, key.as_bytes())
@@ -187,7 +187,7 @@ pub async fn run(config: &HippoConfig) -> Result<()> {
         });
         if !allowed {
             debug!(domain = %visit.domain, "domain not in allowlist — dropping");
-            send_response("dropped", Some("domain not in allowlist".into()));
+            send_response("filtered", None);
             continue;
         }
 
@@ -198,7 +198,7 @@ pub async fn run(config: &HippoConfig) -> Result<()> {
             .as_deref()
             .map(|r| strip_sensitive_params(r, strip_params));
 
-        let envelope_id = make_envelope_id(&clean_url, dedup_window);
+        let envelope_id = make_envelope_id(&clean_url, dedup_window, visit.timestamp);
 
         let timestamp: DateTime<Utc> = Utc
             .timestamp_millis_opt(visit.timestamp)
@@ -283,11 +283,12 @@ mod tests {
 
     #[test]
     fn test_make_envelope_id_deterministic() {
-        let id1 = make_envelope_id("https://example.com/page", 30);
-        let id2 = make_envelope_id("https://example.com/page", 30);
+        let ts = 1711900000000i64;
+        let id1 = make_envelope_id("https://example.com/page", 30, ts);
+        let id2 = make_envelope_id("https://example.com/page", 30, ts);
         assert_eq!(id1, id2, "same URL and window should produce same UUID");
 
-        let id3 = make_envelope_id("https://example.com/other", 30);
+        let id3 = make_envelope_id("https://example.com/other", 30, ts);
         assert_ne!(id1, id3, "different URL should produce different UUID");
     }
 

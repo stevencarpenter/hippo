@@ -53,7 +53,14 @@ pub fn detect_vars(brain_dir: &Path) -> Result<PlistVars> {
         } else {
             "0".to_string()
         },
-        otel_endpoint: telemetry.endpoint.replace("4317", "4318"),
+        otel_endpoint: {
+            let mut parsed = url::Url::parse(&telemetry.endpoint)
+                .unwrap_or_else(|_| url::Url::parse("http://localhost:4318").unwrap());
+            if parsed.port() == Some(4317) {
+                let _ = parsed.set_port(Some(4318));
+            }
+            parsed.to_string()
+        },
     })
 }
 

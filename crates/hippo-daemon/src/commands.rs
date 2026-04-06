@@ -1,9 +1,7 @@
 use anyhow::Result;
 use chrono::Utc;
 use hippo_core::config::{ENV_ALLOWLIST, HippoConfig};
-use hippo_core::events::{
-    CapturedOutput, EventEnvelope, EventPayload, GitState, ShellEvent, ShellKind,
-};
+use hippo_core::events::{CapturedOutput, EventEnvelope, EventPayload, GitState, ShellEvent};
 use hippo_core::protocol::{DaemonRequest, DaemonResponse};
 use hippo_core::redaction::RedactionEngine;
 use hippo_core::storage;
@@ -131,9 +129,9 @@ fn format_optional_brain_field(label: &str, value: Option<&str>) -> Option<Strin
         .map(|s| format!("[OK] Brain {}: {}", label, s))
 }
 
-async fn print_brain_health_details(config: &HippoConfig) {
+async fn print_brain_health_details(config: &HippoConfig, client: &reqwest::Client) {
     let brain_url = format!("http://localhost:{}/health", config.brain.port);
-    match reqwest::get(&brain_url).await {
+    match client.get(&brain_url).send().await {
         Ok(resp) if resp.status().is_success() => {
             println!("[OK] Brain server reachable");
 
@@ -292,7 +290,7 @@ pub async fn handle_send_event_shell(
         duration_ms,
         cwd: PathBuf::from(cwd),
         hostname,
-        shell: ShellKind::Zsh,
+        shell: crate::detect_shell_kind(),
         stdout: output.as_ref().map(|o| CapturedOutput {
             content: o.clone(),
             truncated: false,
@@ -505,6 +503,10 @@ pub fn handle_redact_test(config: &HippoConfig, input: &str) {
 
 pub async fn handle_doctor(config: &HippoConfig) -> Result<()> {
     let cli_version = env!("HIPPO_VERSION_FULL");
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(2))
+        .build()
+        .unwrap_or_default();
     println!("Hippo Doctor");
     println!("============");
     println!("[OK] CLI version: {}", cli_version);
@@ -552,7 +554,7 @@ pub async fn handle_doctor(config: &HippoConfig) -> Result<()> {
 
     // Check LM Studio
     let lm_url = format!("{}/models", config.lmstudio.base_url);
-    match reqwest::get(&lm_url).await {
+    match client.get(&lm_url).send().await {
         Ok(r) if r.status().is_success() => println!("[OK] LM Studio reachable"),
         _ => println!(
             "[!!] LM Studio not reachable at {}",
@@ -561,7 +563,7 @@ pub async fn handle_doctor(config: &HippoConfig) -> Result<()> {
     }
 
     // Check brain
-    print_brain_health_details(config).await;
+    print_brain_health_details(config, &client).await;
 
     // Check fallback files
     let fallback_files = storage::list_fallback_files(&config.fallback_dir())
@@ -808,7 +810,11 @@ replacement = "***"
         config.storage.config_dir = temp.path().join("config");
         config.brain.port = addr.port();
 
-        print_brain_health_details(&config).await;
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(2))
+            .build()
+            .unwrap();
+        print_brain_health_details(&config, &client).await;
 
         server.await.unwrap();
     }

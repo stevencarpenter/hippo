@@ -10,6 +10,21 @@ use hippo_core::config::ENV_ALLOWLIST;
 use hippo_core::events::ShellEvent;
 use hippo_core::redaction::{RedactionEngine, RedactionResult};
 
+pub fn detect_shell_kind() -> hippo_core::events::ShellKind {
+    std::env::var("SHELL")
+        .ok()
+        .and_then(|s| {
+            let base = std::path::Path::new(&s).file_name()?.to_str()?;
+            Some(match base {
+                "zsh" => hippo_core::events::ShellKind::Zsh,
+                "bash" => hippo_core::events::ShellKind::Bash,
+                "fish" => hippo_core::events::ShellKind::Fish,
+                other => hippo_core::events::ShellKind::Unknown(other.to_string()),
+            })
+        })
+        .unwrap_or(hippo_core::events::ShellKind::Zsh)
+}
+
 pub fn load_redaction_engine(config: &hippo_core::config::HippoConfig) -> RedactionEngine {
     let redact_path = config.redact_path();
     match RedactionEngine::from_config_path(&redact_path) {
