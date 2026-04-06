@@ -211,23 +211,16 @@ pub fn upsert_env_snapshot(
         .map(|b| format!("{:02x}", b))
         .collect();
 
-    let existing: Option<i64> = conn
-        .query_row(
-            "SELECT id FROM env_snapshots WHERE content_hash = ?1",
-            [&content_hash],
-            |row| row.get(0),
-        )
-        .optional()?;
-
-    if let Some(id) = existing {
-        return Ok(Some(id));
-    }
-
     conn.execute(
-        "INSERT INTO env_snapshots (content_hash, env_json) VALUES (?1, ?2)",
+        "INSERT OR IGNORE INTO env_snapshots (content_hash, env_json) VALUES (?1, ?2)",
         rusqlite::params![content_hash, env_json],
     )?;
-    Ok(Some(conn.last_insert_rowid()))
+    let id: i64 = conn.query_row(
+        "SELECT id FROM env_snapshots WHERE content_hash = ?1",
+        [&content_hash],
+        |row| row.get(0),
+    )?;
+    Ok(Some(id))
 }
 
 pub fn insert_event(
@@ -610,7 +603,7 @@ pub fn recover_fallback_files(
                             conn,
                             &shell_event.session_id.to_string(),
                             &shell_event.hostname,
-                            &format!("{:?}", shell_event.shell),
+                            shell_event.shell.as_db_str(),
                             &username,
                             session_map,
                         )?;

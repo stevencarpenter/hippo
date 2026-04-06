@@ -331,11 +331,21 @@ impl Default for TelemetryConfig {
 
 impl HippoConfig {
     pub fn load(path: &Path) -> Result<Self> {
-        if !path.exists() {
-            return Ok(Self::default());
-        }
-        let content = std::fs::read_to_string(path)?;
-        let config: Self = toml::from_str(&content)?;
+        let content = match std::fs::read_to_string(path) {
+            Ok(c) => c,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(Self::default());
+            }
+            Err(e) => {
+                return Err(anyhow::anyhow!(
+                    "failed to read config from {}: {}",
+                    path.display(),
+                    e
+                ));
+            }
+        };
+        let config: Self = toml::from_str(&content)
+            .map_err(|e| anyhow::anyhow!("failed to parse config at {}: {}", path.display(), e))?;
         Ok(config)
     }
 
@@ -395,11 +405,22 @@ fn default_replacement() -> String {
 
 impl RedactConfig {
     pub fn load(path: &Path) -> Result<Self> {
-        if !path.exists() {
-            return Ok(Self::builtin());
-        }
-        let content = std::fs::read_to_string(path)?;
-        let config: Self = toml::from_str(&content)?;
+        let content = match std::fs::read_to_string(path) {
+            Ok(c) => c,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(Self::builtin());
+            }
+            Err(e) => {
+                return Err(anyhow::anyhow!(
+                    "failed to read redact config from {}: {}",
+                    path.display(),
+                    e
+                ));
+            }
+        };
+        let config: Self = toml::from_str(&content).map_err(|e| {
+            anyhow::anyhow!("failed to parse redact config at {}: {}", path.display(), e)
+        })?;
         Ok(config)
     }
 
