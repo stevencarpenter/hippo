@@ -52,9 +52,14 @@ def init_telemetry(
     trace.set_tracer_provider(tracer_provider)
 
     # Logs — bridge stdlib logging to OTel
+    # timeout=30: default 10s is too short during long LLM calls
+    # schedule_delay_millis=15000: export every 15s instead of 5s to reduce
+    # pressure on the collector when the brain is busy with synthesis
     logger_provider = LoggerProvider(resource=resource)
-    log_exporter = OTLPLogExporter(endpoint=f"{endpoint}/v1/logs")
-    logger_provider.add_log_record_processor(BatchLogRecordProcessor(log_exporter))
+    log_exporter = OTLPLogExporter(endpoint=f"{endpoint}/v1/logs", timeout=30)
+    logger_provider.add_log_record_processor(
+        BatchLogRecordProcessor(log_exporter, schedule_delay_millis=15000)
+    )
     handler = LoggingHandler(logger_provider=logger_provider)
     logging.getLogger().addHandler(handler)
 
