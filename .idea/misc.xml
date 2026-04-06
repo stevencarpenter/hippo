@@ -3,7 +3,7 @@
   <component name="Black">
     <option name="sdkName" value="uv (brain)" />
   </component>
-  <component name="ProjectRootManager" version="2">
+  <component name="ProjectRootManager" version="2" languageLevel="JDK_26" project-jdk-name="uv (brain)" project-jdk-type="Python SDK">
     <output url="file://$PROJECT_DIR$/out" />
   </component>
 </project>
