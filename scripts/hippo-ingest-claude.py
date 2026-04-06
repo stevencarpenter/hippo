@@ -2,6 +2,7 @@
 """Ingest Claude Code session logs into Hippo's knowledge base."""
 
 import asyncio
+import json
 import sqlite3
 import sys
 import time
