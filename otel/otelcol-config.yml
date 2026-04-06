@@ -11,12 +11,6 @@ processors:
     timeout: 5s
     send_batch_size: 512
 
-  resource:
-    attributes:
-      - key: host.name
-        from_attribute: host.name
-        action: upsert
-
 exporters:
   otlphttp/tempo:
     endpoint: http://tempo:4318
@@ -37,13 +31,13 @@ service:
   pipelines:
     traces:
       receivers: [otlp]
-      processors: [batch, resource]
+      processors: [batch]
       exporters: [otlphttp/tempo]
     logs:
       receivers: [otlp]
-      processors: [batch, resource]
+      processors: [batch]
       exporters: [loki]
     metrics:
       receivers: [otlp]
-      processors: [batch, resource]
+      processors: [batch]
       exporters: [prometheus]

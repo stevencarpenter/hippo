@@ -72,7 +72,7 @@ hippo doctor
      "type": "stdio",
      "command": "uv",
      "args": ["run", "--project", "/path/to/hippo/brain", "hippo-mcp"],
-     "autoApprove": ["search_knowledge", "search_events", "get_entities"]
+     "autoApprove": ["ask", "search_knowledge", "search_events", "get_entities"]
    }
  }
 ```
@@ -99,10 +99,10 @@ hippo sessions --today
 # List recent events
 hippo events --since 2h
 
-# Query the knowledge base (via brain server)
-hippo query "how did I fix that cargo build error"
+# RAG query (via brain server)
+hippo ask "how did I fix that cargo build error"
 
-# Raw keyword search (no brain server needed)
+# Raw lexical search (no brain server needed)
 hippo query --raw "cargo build"
 
 # List known entities
@@ -136,7 +136,7 @@ uv run --project brain hippo-mcp
     "type": "stdio",
     "command": "uv",
     "args": ["run", "--project", "/path/to/hippo/brain", "hippo-mcp"],
-    "autoApprove": ["search_knowledge", "search_events", "get_entities"]
+    "autoApprove": ["ask", "search_knowledge", "search_events", "get_entities"]
   }
 }
 
