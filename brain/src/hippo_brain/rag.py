@@ -16,8 +16,8 @@ _SYSTEM_PROMPT = (
     "context. If the context doesn't contain enough information to answer fully, "
     "say what you can and note what's missing.\n\n"
     "Keep your answer concise and direct — a few short paragraphs at most. "
-    "Use plain text, not markdown. When listing steps or items, use simple dashes. "
-    "Prefer inline code references (`like this`) over code blocks.\n\n"
+    "Use markdown formatting: headers for sections, backticks for commands and paths, "
+    "code blocks for multi-line commands.\n\n"
     "Do not make up information. Do not hallucinate commands or paths."
 )
 

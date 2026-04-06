@@ -353,8 +353,11 @@ async fn main() -> Result<()> {
                 Ok(resp) if resp.status().is_success() => {
                     let body: serde_json::Value = resp.json().await?;
 
+                    // Build the full output as a string
+                    let mut output = String::new();
+
                     if let Some(answer) = body.get("answer").and_then(|a| a.as_str()) {
-                        println!("{answer}");
+                        output.push_str(answer);
                     }
                     if let Some(error) = body.get("error").and_then(|e| e.as_str()) {
                         eprintln!("Error: {error}");
@@ -363,7 +366,7 @@ async fn main() -> Result<()> {
                     if let Some(sources) = body.get("sources").and_then(|s| s.as_array())
                         && !sources.is_empty()
                     {
-                        println!("\nSources:");
+                        output.push_str("\n\n---\n\n**Sources:**\n");
                         for (i, src) in sources.iter().enumerate() {
                             let score = src.get("score").and_then(|s| s.as_f64()).unwrap_or(0.0);
                             let summary = src
@@ -382,14 +385,18 @@ async fn main() -> Result<()> {
                                 String::new()
                             };
 
-                            // Truncate long summaries
                             let display_summary = if summary.len() > 120 {
                                 format!("{}…", &summary[..119])
                             } else {
                                 summary.to_string()
                             };
 
-                            println!("  {}. [{:.0}%] {}", i + 1, score * 100.0, display_summary);
+                            output.push_str(&format!(
+                                "{}. **[{:.0}%]** {}\n",
+                                i + 1,
+                                score * 100.0,
+                                display_summary
+                            ));
                             let mut location = String::new();
                             if !cwd.is_empty() {
                                 location.push_str(cwd);
@@ -404,9 +411,28 @@ async fn main() -> Result<()> {
                                 location.push_str(&date);
                             }
                             if !location.is_empty() {
-                                println!("     {location}");
+                                output.push_str(&format!("   {location}\n"));
                             }
                         }
+                    }
+
+                    // Pipe through glow if available and stdout is a TTY
+                    let use_glow = std::io::IsTerminal::is_terminal(&std::io::stdout())
+                        && which::which("glow").is_ok();
+
+                    if use_glow {
+                        use std::io::Write;
+                        let mut child = std::process::Command::new("glow")
+                            .args(["-", "--width", "100"])
+                            .stdin(std::process::Stdio::piped())
+                            .spawn()
+                            .expect("failed to spawn glow");
+                        if let Some(mut stdin) = child.stdin.take() {
+                            let _ = stdin.write_all(output.as_bytes());
+                        }
+                        let _ = child.wait();
+                    } else {
+                        print!("{output}");
                     }
                 }
                 Ok(resp) => {
