@@ -280,10 +280,9 @@ class _FailingConn:
         self._fail_on = fail_on
 
     def execute(self, sql, *args, **kwargs):
-        result = self._conn.execute(sql, *args, **kwargs)
         if self._fail_on in str(sql):
             raise RuntimeError("injected mid-write failure")
-        return result
+        return self._conn.execute(sql, *args, **kwargs)
 
     def executemany(self, sql, *args, **kwargs):
         if self._fail_on in str(sql):
