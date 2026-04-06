@@ -164,12 +164,6 @@ pub async fn flush_events(state: &Arc<DaemonState>) -> usize {
         match &envelope.payload {
             EventPayload::Shell(shell_event) => {
                 let redacted_event = crate::redact_shell_event(shell_event, &state.redaction);
-                let redacted_envelope = EventEnvelope {
-                    envelope_id: envelope.envelope_id,
-                    producer_version: envelope.producer_version,
-                    timestamp: envelope.timestamp,
-                    payload: EventPayload::Shell(redacted_event.clone()),
-                };
 
                 let shell_str = redacted_event.shell.as_db_str();
                 let session_id = match storage::get_or_create_session(
@@ -183,6 +177,12 @@ pub async fn flush_events(state: &Arc<DaemonState>) -> usize {
                     Ok(id) => id,
                     Err(e) => {
                         warn!("session creation failed, falling back: {}", e);
+                        let redacted_envelope = EventEnvelope {
+                            envelope_id: envelope.envelope_id,
+                            producer_version: envelope.producer_version,
+                            timestamp: envelope.timestamp,
+                            payload: EventPayload::Shell(redacted_event.clone()),
+                        };
                         if let Err(fe) = storage::write_fallback_jsonl(
                             &state.config.fallback_dir(),
                             &redacted_envelope,
@@ -213,6 +213,12 @@ pub async fn flush_events(state: &Arc<DaemonState>) -> usize {
                     Some(&eid),
                 ) {
                     warn!("event insert failed, falling back: {}", e);
+                    let redacted_envelope = EventEnvelope {
+                        envelope_id: envelope.envelope_id,
+                        producer_version: envelope.producer_version,
+                        timestamp: envelope.timestamp,
+                        payload: EventPayload::Shell(redacted_event.clone()),
+                    };
                     if let Err(fe) = storage::write_fallback_jsonl(
                         &state.config.fallback_dir(),
                         &redacted_envelope,
@@ -240,7 +246,7 @@ pub async fn flush_events(state: &Arc<DaemonState>) -> usize {
                 }
             }
             _ => {
-                // FsChange, IdeAction, Raw — not yet handled
+                tracing::warn!("unknown event payload type, skipping");
             }
         }
     }
