@@ -48,9 +48,7 @@ export const NATIVE_HOST = "hippo_daemon";
 /** Search engine patterns for extracting queries from referrer URLs. */
 export const SEARCH_ENGINES: SearchEngine[] = [
   { domain: "google.com", param: "q" },
-  { domain: "www.google.com", param: "q" },
   { domain: "duckduckgo.com", param: "q" },
   { domain: "bing.com", param: "q" },
-  { domain: "www.bing.com", param: "q" },
   { domain: "github.com", param: "q", pathPrefix: "/search" },
 ];
