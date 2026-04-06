@@ -409,20 +409,14 @@ pub async fn ingest_tail(path: &Path, socket_path: &Path, timeout_ms: u64) -> Re
                 break;
             }
             _ = tokio::time::sleep(Duration::from_secs(1)) => {
-                // If we're watching a parent process, exit when it dies
-                if let Some(pid) = watch_pid {
-                    // kill(pid, 0) returns 0 if alive and we can signal it,
-                    // -1/EPERM if alive but we lack permission, -1/ESRCH if gone.
-                    let alive = unsafe {
-                        let ret = libc::kill(pid as i32, 0);
-                        ret == 0
-                            || std::io::Error::last_os_error().raw_os_error()
-                                != Some(libc::ESRCH)
-                    };
-                    if !alive {
-                        info!(pid, "watched process exited, draining remaining lines");
-                        // One final read pass below, then break
-                    }
+                // Single process-death check per tick
+                let process_dead = watch_pid.is_some_and(|pid| unsafe {
+                    let ret = libc::kill(pid as i32, 0);
+                    ret == -1 && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH)
+                });
+
+                if process_dead {
+                    info!(watch_pid, "watched process exited, performing final drain");
                 }
 
                 // Read new lines from current position
@@ -430,23 +424,19 @@ pub async fn ingest_tail(path: &Path, socket_path: &Path, timeout_ms: u64) -> Re
                     Ok(f) => f,
                     Err(e) => {
                         warn!(%e, "failed to open file");
+                        if process_dead { break; }
                         continue;
                     }
                 };
 
                 let file_len = file.metadata().map(|m| m.len()).unwrap_or(0);
                 if file_len < position {
-                    // File was truncated, reset
                     warn!("file truncated, resetting position");
                     position = 0;
                 }
 
                 if file_len == position {
-                    if watch_pid.is_some_and(|pid| unsafe {
-                        libc::kill(pid as i32, 0) == -1
-                            && std::io::Error::last_os_error().raw_os_error()
-                                == Some(libc::ESRCH)
-                    }) {
+                    if process_dead {
                         info!("drain complete, exiting");
                         break;
                     }
@@ -455,6 +445,7 @@ pub async fn ingest_tail(path: &Path, socket_path: &Path, timeout_ms: u64) -> Re
 
                 if let Err(e) = file.seek(SeekFrom::Start(position)) {
                     warn!(%e, "failed to seek");
+                    if process_dead { break; }
                     continue;
                 }
 
@@ -462,44 +453,51 @@ pub async fn ingest_tail(path: &Path, socket_path: &Path, timeout_ms: u64) -> Re
                 let mut batch_sent = 0usize;
 
                 for line_result in reader.lines() {
-                    let line = match line_result {
-                        Ok(l) => l,
-                        Err(e) => {
-                            warn!(%e, "failed to read line");
-                            total_errors += 1;
-                            break;
-                        }
-                    };
+                    match line_result {
+                        Ok(line) => {
+                            let envelopes = match process_line(&line, &mut pending, &hostname) {
+                                Ok(envs) => envs,
+                                Err(e) => {
+                                    warn!(%e, "skipping line");
+                                    total_errors += 1;
+                                    // Advance past this line even on parse error
+                                    position += line.len() as u64 + 1;
+                                    continue;
+                                }
+                            };
 
-                    let envelopes = match process_line(&line, &mut pending, &hostname) {
-                        Ok(envs) => envs,
-                        Err(e) => {
-                            warn!(%e, "skipping line");
-                            total_errors += 1;
-                            continue;
-                        }
-                    };
+                            for envelope in envelopes {
+                                match send_event_fire_and_forget(socket_path, &envelope, timeout_ms).await {
+                                    Ok(()) => {
+                                        total_sent += 1;
+                                        batch_sent += 1;
+                                    }
+                                    Err(e) => {
+                                        error!(%e, "failed to send event");
+                                        total_errors += 1;
+                                    }
+                                }
+                            }
 
-                    for envelope in envelopes {
-                        match send_event_fire_and_forget(socket_path, &envelope, timeout_ms).await {
-                            Ok(()) => {
-                                total_sent += 1;
-                                batch_sent += 1;
-                            }
-                            Err(e) => {
-                                error!(%e, "failed to send event");
-                                total_errors += 1;
-                            }
+                            // Advance position past this line (+1 for newline)
+                            position += line.len() as u64 + 1;
+                        }
+                        Err(e) => {
+                            warn!(%e, "error reading line, stopping at current position");
+                            total_errors += 1;
+                            break; // Don't advance past unread data
                         }
                     }
                 }
 
-                // Use file_len as position — we read to EOF, so this avoids
-                // off-by-one from newline counting with BufReader::lines()
-                position = file_len;
-
                 if batch_sent > 0 {
                     info!(batch_sent, total_sent, total_errors, "sent events");
+                }
+
+                // Break AFTER final read if process is dead
+                if process_dead {
+                    info!(batch_sent, "final drain complete, exiting");
+                    break;
                 }
             }
         }

@@ -143,16 +143,17 @@ pub async fn handle_request(state: &Arc<DaemonState>, request: DaemonRequest) ->
 }
 
 #[tracing::instrument(skip(state), fields(event_count))]
-pub async fn flush_events(state: &Arc<DaemonState>) {
+pub async fn flush_events(state: &Arc<DaemonState>) -> usize {
     let events: Vec<EventEnvelope> = {
         let mut buffer = state.event_buffer.lock().await;
         let n = buffer.len().min(state.config.daemon.flush_batch_size);
         buffer.drain(..n).collect()
     };
-    tracing::Span::current().record("event_count", events.len());
+    let count = events.len();
+    tracing::Span::current().record("event_count", count);
 
     if events.is_empty() {
-        return;
+        return 0;
     }
 
     let username = std::env::var("USER").unwrap_or_else(|_| "unknown".to_string());
@@ -243,6 +244,8 @@ pub async fn flush_events(state: &Arc<DaemonState>) {
             }
         }
     }
+
+    count
 }
 
 pub async fn run(config: HippoConfig) -> Result<()> {
@@ -321,8 +324,11 @@ pub async fn run(config: HippoConfig) -> Result<()> {
                     flush_events(&flush_state).await;
                 }
                 _ = flush_shutdown_rx.changed() => {
-                    // Final flush before exiting
-                    flush_events(&flush_state).await;
+                    // Drain all remaining events on shutdown
+                    loop {
+                        let flushed = flush_events(&flush_state).await;
+                        if flushed == 0 { break; }
+                    }
                     break;
                 }
             }
@@ -366,11 +372,17 @@ pub async fn run(config: HippoConfig) -> Result<()> {
         }
     }
 
-    // Final flush before exit
-    flush_events(&state).await;
-
     if let Err(e) = flush_task.await {
         warn!("flush task join error: {}", e);
+    }
+
+    // Final drain for events buffered by connections that finished after the
+    // flush task exited. No race: flush task is already joined above.
+    loop {
+        let flushed = flush_events(&state).await;
+        if flushed == 0 {
+            break;
+        }
     }
 
     // Remove socket file so `daemon stop` polling sees shutdown
