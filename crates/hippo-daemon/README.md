@@ -24,12 +24,16 @@ cargo run --bin hippo -- daemon start
 | `hippo status`                             | Show daemon status         |
 | `hippo sessions [--today] [--since 7d]`    | List sessions              |
 | `hippo events [--session ID] [--since 2h]` | List events                |
-| `hippo query <text> [--raw]`               | Search the knowledge base  |
+| `hippo ask <question>`                     | RAG query via brain server |
+| `hippo query <text> [--raw]`               | Lexical search             |
 | `hippo entities [--type TYPE]`             | List known entities        |
 | `hippo export-training [--since 30d]`      | Export JSONL training data |
 | `hippo config edit`                        | Open config in editor      |
 | `hippo config set KEY VALUE`               | Set a config value         |
 | `hippo redact test <string>`               | Test redaction patterns    |
+| `hippo ingest claude-session`              | Ingest Claude session logs |
+| `hippo native-messaging-host`              | Firefox native messaging bridge |
+| `hippo brain stop`                         | Stop the brain server      |
 | `hippo doctor`                             | Run diagnostic checks      |
 
 ## Modules
@@ -41,6 +45,10 @@ cargo run --bin hippo -- daemon start
 | `daemon.rs`   | Daemon loop, Unix socket listener                       |
 | `commands.rs` | CLI command handlers                                    |
 | `framing.rs`  | Length-prefixed message framing for the socket protocol |
+| `claude_session.rs` | Claude session JSONL ingestion                  |
+| `install.rs`  | LaunchAgent installation                                |
+| `native_messaging.rs` | Firefox Native Messaging host               |
+| `telemetry.rs` | OpenTelemetry integration                              |
 
 ## Testing
 

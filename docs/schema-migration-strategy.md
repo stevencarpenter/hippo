@@ -2,7 +2,7 @@
 
 ## Current Version
 
-The schema version is tracked via SQLite's `PRAGMA user_version`. The current version is **2**.
+The schema version is tracked via SQLite's `PRAGMA user_version`. The current version is **4**.
 
 Both `hippo-daemon` (Rust) and `hippo-brain` (Python) check the version on every connection. If the version does not match, the process refuses to open the database and exits with an error message.
 

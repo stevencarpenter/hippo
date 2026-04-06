@@ -50,7 +50,7 @@ uv run --project brain hippo-brain serve
 
 ## Architecture
 
-Two processes share a SQLite database at ~/.local/share/hippo/hippo.db and a LanceDB vector store at ~/.local/share/hippo/lancedb/:
+Two processes share a SQLite database at ~/.local/share/hippo/hippo.db and a LanceDB vector store at ~/.local/share/hippo/vectors/:
 
 1. hippo-daemon (Rust) - captures shell events via Unix socket, redacts secrets, writes to SQLite, serves CLI queries
 2. hippo-brain (Python) - polls enrichment queue from SQLite, calls LM Studio API, writes knowledge nodes + vector embeddings to LanceDB
@@ -61,22 +61,22 @@ Communication:
 - CLI to daemon: request/response via same Unix socket
 - hippo query (non-raw) to brain: HTTP request to brain local server
 - Brain to SQLite: direct read/write (WAL mode, busy_timeout=5000)
-- Brain to LanceDB: direct read/write for vector embeddings (semantic search pipeline implemented, not yet wired to /query)
+- Brain to LanceDB: direct read/write for vector embeddings (semantic search + RAG via /ask)
 
 ## Data Storage
 
 | Store   | Path                            | Purpose                               |
 |---------|---------------------------------|---------------------------------------|
 | SQLite  | `~/.local/share/hippo/hippo.db` | Events, sessions, enrichment queue    |
-| LanceDB | `~/.local/share/hippo/lancedb/` | Vector embeddings for semantic search |
+| LanceDB | `~/.local/share/hippo/vectors/` | Vector embeddings for semantic search |
 | Config  | `~/.config/hippo/config.toml`   | User configuration                    |
 | Logs    | `~/.local/share/hippo/*.log`    | Daemon and brain logs                 |
 
 ## Style
 
-- Rust: edition 2024, clippy clean, thiserror for lib errors, anyhow for bin errors
+- Rust: edition 2024, clippy clean, anyhow for errors
 - Python: 3.14+ required, ruff for lint+format, uv for package management
 - All timestamps: Unix epoch milliseconds (i64/INTEGER)
 - SQLite: WAL mode, PRAGMA foreign_keys=ON, PRAGMA busy_timeout=5000 on every connection
-- LanceDB: vector embeddings (2560d/384d) stored at ~/.local/share/hippo/lancedb/; see brain/src/hippo_brain/embeddings.py
-- Semantic search pipeline is implemented (see embeddings.py, test_embeddings.py), but /query endpoint currently performs lexical search only
+- LanceDB: vector embeddings (768d) stored at ~/.local/share/hippo/vectors/; see brain/src/hippo_brain/embeddings.py
+- Semantic search and RAG pipeline are live — see rag.py, mcp.py, and the /ask endpoint

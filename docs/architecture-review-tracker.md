@@ -125,7 +125,7 @@ The main weaknesses are operational rather than conceptual:
 
 ### ARCH-R01 — Single SQLite connection serializes daemon DB work
 
-- Status: `planned`
+- Status: `done`
 - Severity: `High`
 - Effort: `M`
 - Confidence: `High`
