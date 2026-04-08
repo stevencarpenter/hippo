@@ -30,7 +30,7 @@ jobs:
         os: [ubuntu-latest, macos-latest]
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Install ripgrep (Ubuntu)
         if: runner.os == 'Linux'
