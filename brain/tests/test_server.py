@@ -2,7 +2,7 @@
 
 import asyncio
 import time
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -308,14 +308,15 @@ async def test_enrichment_loop_processes_events(tmp_db):
     )
     server.client.chat = mock_chat
 
-    # Run the enrichment loop and cancel after a short time
-    task = asyncio.create_task(server._enrichment_loop())
-    await asyncio.sleep(0.1)
-    task.cancel()
-    try:
-        await task
-    except asyncio.CancelledError:
-        pass
+    # Bypass model resolution — this test is about enrichment processing, not model discovery
+    with patch.object(server, "_resolve_model", new_callable=AsyncMock, return_value=True):
+        task = asyncio.create_task(server._enrichment_loop())
+        await asyncio.sleep(0.2)
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
 
     assert server.enrichment_running is False
     mock_chat.assert_called()
@@ -350,13 +351,15 @@ async def test_enrichment_loop_handles_chat_failure(tmp_db):
     # Make chat() raise
     server.client.chat = AsyncMock(side_effect=RuntimeError("model offline"))
 
-    task = asyncio.create_task(server._enrichment_loop())
-    await asyncio.sleep(0.1)
-    task.cancel()
-    try:
-        await task
-    except asyncio.CancelledError:
-        pass
+    # Bypass model resolution — this test is about error handling, not model discovery
+    with patch.object(server, "_resolve_model", new_callable=AsyncMock, return_value=True):
+        task = asyncio.create_task(server._enrichment_loop())
+        await asyncio.sleep(0.2)
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
 
     # Queue entry was retried; with poll_interval_secs=0 all 3 retries may exhaust
     row = conn.execute(
