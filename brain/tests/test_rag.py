@@ -21,7 +21,7 @@ SAMPLE_HITS = [
         "summary": "Configured Firefox native messaging",
         "embed_text": "Set up NM host manifest for hippo daemon",
         "commands_raw": "cargo build --release && hippo daemon install --force",
-        "cwd": "/Users/carpenter/projects/hippo",
+        "cwd": "/home/user/projects/hippo",
         "git_branch": "main",
         "captured_at": 1743379200000,  # 2025-03-31
         "outcome": "success",
@@ -34,7 +34,7 @@ SAMPLE_HITS = [
         "summary": "Added browser event schema v4",
         "embed_text": "Created browser_events table and enrichment queue",
         "commands_raw": "cargo test -p hippo-core",
-        "cwd": "/Users/carpenter/projects/hippo",
+        "cwd": "/home/user/projects/hippo",
         "git_branch": "main",
         "captured_at": 1743292800000,  # 2025-03-30
         "outcome": "success",
@@ -63,7 +63,7 @@ class TestShapeRagSources:
         sources = _shape_rag_sources(SAMPLE_HITS)
         src = sources[0]
         assert src["summary"] == "Configured Firefox native messaging"
-        assert src["cwd"] == "/Users/carpenter/projects/hippo"
+        assert src["cwd"] == "/home/user/projects/hippo"
         assert src["git_branch"] == "main"
         assert src["timestamp"] == 1743379200000
         assert "cargo build" in src["commands_raw"]
@@ -116,7 +116,7 @@ class TestBuildRagPrompt:
         user = messages[1]["content"]
         assert "Configured Firefox native messaging" in user
         assert "cargo build --release" in user
-        assert "/Users/carpenter/projects/hippo" in user
+        assert "/home/user/projects/hippo" in user
 
     def test_context_blocks_are_numbered(self):
         messages = _build_rag_prompt("test", SAMPLE_HITS)

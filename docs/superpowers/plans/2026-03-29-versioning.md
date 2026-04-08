@@ -109,7 +109,7 @@ fn git_describe_version(base: &str) -> String {
 
 Run:
 ```bash
-cd /Users/carpenter/projects/hippo && cargo build -p hippo-daemon 2>&1 | tail -5
+cd ~/projects/hippo && cargo build -p hippo-daemon 2>&1 | tail -5
 ```
 Expected: Build succeeds with no errors.
 
@@ -151,7 +151,7 @@ to:
 
 Run:
 ```bash
-cd /Users/carpenter/projects/hippo && cargo build -p hippo-daemon && ./target/debug/hippo --version
+cd ~/projects/hippo && cargo build -p hippo-daemon && ./target/debug/hippo --version
 ```
 Expected: `hippo 0.1.0-dev+g<sha>` (the full version string with git metadata).
 
@@ -205,7 +205,7 @@ def get_version() -> str:
 
 Run:
 ```bash
-cd /Users/carpenter/projects/hippo && uv run --project brain python -c "from hippo_brain.version import get_version; print(get_version())"
+cd ~/projects/hippo && uv run --project brain python -c "from hippo_brain.version import get_version; print(get_version())"
 ```
 Expected: `0.1.0` (falls back to pyproject.toml since `_version.py` doesn't exist yet).
 
@@ -272,7 +272,7 @@ echo "Stamped brain version: ${FULL_VERSION}"
 
 Run:
 ```bash
-cd /Users/carpenter/projects/hippo && mise run stamp:version
+cd ~/projects/hippo && mise run stamp:version
 ```
 Expected output: `Stamped brain version: 0.1.0-dev+g<sha>` (or similar).
 
@@ -350,7 +350,7 @@ In `test_health_endpoint` (around line 82), after `assert data["status"] == "ok"
 
 Run:
 ```bash
-cd /Users/carpenter/projects/hippo && uv run --project brain pytest brain/tests/test_server.py::test_health_endpoint -v
+cd ~/projects/hippo && uv run --project brain pytest brain/tests/test_server.py::test_health_endpoint -v
 ```
 Expected: FAIL with `KeyError: 'version'` or `AssertionError`.
 
@@ -387,7 +387,7 @@ The rest of the dict stays the same.
 
 Run:
 ```bash
-cd /Users/carpenter/projects/hippo && uv run --project brain pytest brain/tests/test_server.py::test_health_endpoint -v
+cd ~/projects/hippo && uv run --project brain pytest brain/tests/test_server.py::test_health_endpoint -v
 ```
 Expected: PASS.
 
@@ -395,7 +395,7 @@ Expected: PASS.
 
 Run:
 ```bash
-cd /Users/carpenter/projects/hippo && uv run --project brain pytest brain/tests -v
+cd ~/projects/hippo && uv run --project brain pytest brain/tests -v
 ```
 Expected: All tests pass. If any other test that hits `/health` fails because it doesn't expect the `version` field, note that the existing tests only check for the presence of specific keys (not the absence of others), so they should pass.
 
@@ -486,7 +486,7 @@ This ensures the mock brain reports the same version as the daemon, so the test 
 
 Run:
 ```bash
-cd /Users/carpenter/projects/hippo && cargo test -p hippo-daemon -- doctor
+cd ~/projects/hippo && cargo test -p hippo-daemon -- doctor
 ```
 Expected: `test_doctor_reports_brain_health_details_from_json` passes.
 
@@ -494,7 +494,7 @@ Expected: `test_doctor_reports_brain_health_details_from_json` passes.
 
 Run:
 ```bash
-cd /Users/carpenter/projects/hippo && cargo test
+cd ~/projects/hippo && cargo test
 ```
 Expected: All tests pass.
 
@@ -515,7 +515,7 @@ git commit -m "feat(version): add daemon version to doctor, compare with brain v
 
 Run:
 ```bash
-cd /Users/carpenter/projects/hippo && cargo clippy --all-targets -- -D warnings && cargo fmt --check
+cd ~/projects/hippo && cargo clippy --all-targets -- -D warnings && cargo fmt --check
 ```
 Expected: No warnings or format issues.
 
@@ -523,7 +523,7 @@ Expected: No warnings or format issues.
 
 Run:
 ```bash
-cd /Users/carpenter/projects/hippo && uv run --project brain ruff check brain/ && uv run --project brain ruff format --check brain/
+cd ~/projects/hippo && uv run --project brain ruff check brain/ && uv run --project brain ruff format --check brain/
 ```
 Expected: No lint or format issues.
 
@@ -531,7 +531,7 @@ Expected: No lint or format issues.
 
 Run:
 ```bash
-cd /Users/carpenter/projects/hippo && cargo test && uv run --project brain pytest brain/tests -v
+cd ~/projects/hippo && cargo test && uv run --project brain pytest brain/tests -v
 ```
 Expected: All Rust and Python tests pass.
 
@@ -539,14 +539,14 @@ Expected: All Rust and Python tests pass.
 
 Run:
 ```bash
-cd /Users/carpenter/projects/hippo && git tag v0.1.0
+cd ~/projects/hippo && git tag v0.1.0
 ```
 
 - [ ] **Step 5: Verify tagged version**
 
 Run:
 ```bash
-cd /Users/carpenter/projects/hippo && cargo build -p hippo-daemon && ./target/debug/hippo --version
+cd ~/projects/hippo && cargo build -p hippo-daemon && ./target/debug/hippo --version
 ```
 Expected: `hippo 0.1.0` (exactly at the tag, no dev suffix).
 
@@ -555,7 +555,7 @@ Expected: `hippo 0.1.0` (exactly at the tag, no dev suffix).
 Make a trivial commit to move past the tag, then rebuild:
 
 ```bash
-cd /Users/carpenter/projects/hippo && cargo build -p hippo-daemon && ./target/debug/hippo --version
+cd ~/projects/hippo && cargo build -p hippo-daemon && ./target/debug/hippo --version
 ```
 Expected: `hippo 0.1.0-dev.N+g<sha>` where N is the number of commits after v0.1.0.
 
@@ -563,7 +563,7 @@ Expected: `hippo 0.1.0-dev.N+g<sha>` where N is the number of commits after v0.1
 
 Run:
 ```bash
-cd /Users/carpenter/projects/hippo && mise run stamp:version && cat brain/src/hippo_brain/_version.py
+cd ~/projects/hippo && mise run stamp:version && cat brain/src/hippo_brain/_version.py
 ```
 Expected: The version string in `_version.py` matches what `hippo --version` shows.
 
@@ -571,6 +571,6 @@ Expected: The version string in `_version.py` matches what `hippo --version` sho
 
 Run:
 ```bash
-cd /Users/carpenter/projects/hippo && echo "# temp" >> README.md && cargo build -p hippo-daemon && ./target/debug/hippo --version && git checkout README.md
+cd ~/projects/hippo && echo "# temp" >> README.md && cargo build -p hippo-daemon && ./target/debug/hippo --version && git checkout README.md
 ```
 Expected: Version includes `.dirty` suffix, e.g. `hippo 0.1.0-dev.N+g<sha>.dirty`. After checkout, working tree is clean again.

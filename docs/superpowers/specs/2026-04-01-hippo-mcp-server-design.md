@@ -166,7 +166,7 @@ dependencies = [
   "hippo": {
     "type": "stdio",
     "command": "uv",
-    "args": ["run", "--project", "/Users/carpenter/projects/hippo/brain", "hippo-mcp"],
+    "args": ["run", "--project", "~/projects/hippo/brain", "hippo-mcp"],
     "disabled": false,
     "autoApprove": ["search_knowledge", "search_events", "get_entities"]
   }
