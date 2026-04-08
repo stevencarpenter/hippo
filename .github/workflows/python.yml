@@ -84,8 +84,5 @@ jobs:
       - name: Run tests
         run: uv run --project brain pytest brain/tests -v --cov=hippo_brain --cov-report=term-missing
 
-      - name: Install pip-audit
-        run: uv tool install pip-audit
-
       - name: Audit Python dependencies
-        run: uv run --project brain pip-audit
+        run: uvx pip-audit brain

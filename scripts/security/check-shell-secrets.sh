@@ -25,7 +25,7 @@ while IFS= read -r file; do
     continue
   fi
   TARGETS+=("${file}")
-done < <(rg --files -g '*.sh' scripts shell)
+done < <(rg --files -g '*.sh' -g '*.zsh' scripts shell)
 
 if [[ "${#TARGETS[@]}" -eq 0 ]]; then
   echo "[shell-secrets] no shell scripts found."
