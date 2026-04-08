@@ -1,0 +1,37 @@
+name: Security Guardrails
+
+on:
+  pull_request:
+    paths:
+      - "scripts/**"
+      - "shell/**"
+      - ".github/workflows/**"
+  push:
+    branches: [main]
+    paths:
+      - "scripts/**"
+      - "shell/**"
+      - ".github/workflows/**"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  shell-secret-leak-check:
+    name: Shell Secret Leak Check
+    runs-on: blacksmith-2vcpu-ubuntu-2404
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install ripgrep
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ripgrep
+
+      - name: Check shell scripts for secret leakage patterns
+        run: ./scripts/security/check-shell-secrets.sh
