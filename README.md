@@ -1,7 +1,7 @@
 # Hippo
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![macOS](https://img.shields.io/badge/platform-macOS-lightgrey.svg)]()
+![macOS](https://img.shields.io/badge/platform-macOS-lightgrey.svg)
 [![Rust](https://img.shields.io/badge/rust-edition_2024-orange.svg)](https://www.rust-lang.org/)
 [![Python](https://img.shields.io/badge/python-3.14%2B-blue.svg)](https://www.python.org/)
 
