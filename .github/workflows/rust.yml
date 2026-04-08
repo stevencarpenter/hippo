@@ -49,13 +49,18 @@ jobs:
         run: cargo fmt --check
 
   build-and-test:
-    name: Build & Test
-    runs-on: ubuntu-latest
+    name: Build & Test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install system dependencies
+      - name: Install zsh (Ubuntu)
+        if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y zsh
 
       - name: Install Rust toolchain
@@ -66,7 +71,7 @@ jobs:
       - name: Setup Rust cache
         uses: Swatinem/rust-cache@v2
         with:
-          shared-key: rust-ci-${{ github.base_ref || github.ref_name }}
+          shared-key: rust-ci-${{ matrix.os }}-${{ github.base_ref || github.ref_name }}
           cache-on-failure: true
 
       - name: Build all targets

@@ -20,8 +20,12 @@ permissions:
 
 jobs:
   typecheck:
-    name: Typecheck & Build
-    runs-on: ubuntu-latest
+    name: Typecheck & Build (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
