@@ -1,211 +1,239 @@
 # Hippo
 
-Local knowledge capture daemon for macOS. Hippo watches your shell activity, Claude Code sessions, and Firefox browsing,
-redacts secrets, enriches events with local LLMs, and builds a searchable second brain — all without sending data off
-your machine. An MCP server lets Claude query your knowledge base mid-conversation.
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![macOS](https://img.shields.io/badge/platform-macOS-lightgrey.svg)]()
+[![Rust](https://img.shields.io/badge/rust-edition_2024-orange.svg)](https://www.rust-lang.org/)
+[![Python](https://img.shields.io/badge/python-3.14%2B-blue.svg)](https://www.python.org/)
+
+Local knowledge capture daemon for macOS. Hippo watches your shell activity, Claude Code sessions,
+and Firefox browsing, redacts secrets, enriches events with local LLMs, and builds a searchable
+second brain -- all without sending data off your machine.
 
 ## Architecture
 
-Three sources feed into a Rust daemon that stores events in SQLite. A Python brain enriches
-them via local LLMs, writes vector embeddings, and an MCP server exposes it all to Claude.
-
 ```
-┌─────────┐                  ┌──────────────┐                ┌──────────────┐
-│  zsh     │  Unix socket    │              │  SQLite (WAL)  │              │
-│  shell   │ ──────────────► │              │ ◄────────────► │ hippo-brain  │
-└─────────┘                  │              │                │ (Python)     │
-┌─────────┐  JSONL ingest    │ hippo-daemon │                └──────┬───────┘
-│  Claude  │ ──────────────► │ (Rust)       │                       │
-│  Code    │                 │              │                ┌──────┴───────┐
-└─────────┘                  │              │                │  hippo-mcp   │
-┌─────────┐  Native Msg      │              │                │ (MCP server) │
-│  Firefox │ ──────────────► │              │                └──────────────┘
-│  ext.    │                 │              │                  ▲         │
-└─────────┘                  └──────────────┘           stdio │    SQLite│
-                                                       (JSONL)│  LanceDB│
-                                                              │   LM API│
-                                                        Claude Code / Desktop
++-----------+                  +--------------+                +--------------+
+|  zsh      |  Unix socket     |              |  SQLite (WAL)  |              |
+|  shell    | ---------------> |              | <------------> | hippo-brain  |
++-----------+                  |              |                | (Python)     |
++-----------+  JSONL ingest    | hippo-daemon |                +------+-------+
+|  Claude   | ---------------> | (Rust)       |                       |
+|  Code     |                  |              |                +------+-------+
++-----------+                  |              |                |  hippo-mcp   |
++-----------+  Native Msg      |              |                | (MCP server) |
+|  Firefox  | ---------------> |              |                +--------------+
+|  ext.     |                  |              |                  ^         |
++-----------+                  +--------------+           stdio  |  SQLite |
+                                                        (JSONL) | LanceDB |
+                                                                |  LM API |
+                                                          Claude Code / Desktop
 ```
 
-- **hippo-daemon** (Rust) — captures events from shell hooks, Claude Code sessions, and Firefox
-  browsing via Unix socket and Native Messaging. Applies secret redaction, stores to SQLite, serves CLI queries.
-- **hippo-brain** (Python) — polls enrichment queues from SQLite, calls LM Studio for summarization,
-  correlates browser research with shell activity, writes knowledge nodes + embeddings to LanceDB,
-  serves HTTP query API on port 9175.
-- **hippo-mcp** (Python, MCP server) — exposes the knowledge base as MCP tools (`search_knowledge`,
-  `search_events`, `get_entities`) over stdio. Claude Code queries your personal knowledge base
-  mid-conversation. Reads SQLite + LanceDB directly, calls LM Studio for semantic search.
+| Component | Language | Role |
+|-----------|----------|------|
+| **hippo-daemon** | Rust | Captures events via Unix socket and Native Messaging. Applies secret redaction, stores to SQLite, serves CLI queries. |
+| **hippo-brain** | Python | Polls enrichment queues, calls LM Studio for summarization, correlates browser research with shell activity, writes knowledge nodes + vector embeddings to LanceDB. |
+| **hippo-mcp** | Python | MCP server exposing the knowledge base over stdio. Claude Code queries your personal knowledge base mid-conversation. |
 
 ## Prerequisites
 
-- macOS (launchd for service management)
-- [Rust](https://rustup.rs/) (edition 2024)
-- [Python](https://www.python.org/) 3.14+
-- [uv](https://docs.astral.sh/uv/) (Python package manager)
-- [LM Studio](https://lmstudio.ai/) (local LLM inference)
-- [Firefox Developer Edition](https://www.mozilla.org/en-US/firefox/developer/) (optional, for browser capture)
-- [mise](https://mise.jdx.dev/) (optional, for task running)
+| Dependency | Required | Notes |
+|------------|----------|-------|
+| macOS | Yes | Uses launchd for service management |
+| [Rust](https://rustup.rs/) | Yes | Edition 2024 (1.85+) |
+| [Python](https://www.python.org/) | Yes | 3.14+ |
+| [uv](https://docs.astral.sh/uv/) | Yes | Python package manager |
+| [LM Studio](https://lmstudio.ai/) | Yes | Local LLM inference -- load any model that supports chat + embedding |
+| [mise](https://mise.jdx.dev/) | Recommended | Task runner; all workflows are defined in `mise.toml` |
+| [glow](https://github.com/charmbracelet/glow) | Recommended | Renders `hippo ask` markdown output in the terminal |
+| [Firefox Dev Edition](https://www.mozilla.org/en-US/firefox/developer/) | Optional | Browser activity capture |
 
 ## Quick Start
 
 ```bash
-# Build, install, and start everything (release binary, LaunchAgents, config, symlink)
+# Clone or fork hippo and enter the repo
+git clone https://github.com/stevencarpenter/hippo.git # or clone your fork of course
+cd hippo
+
+# Build and install everything (release binary, LaunchAgents, config, symlink)
 mise run install
 
-# Source the shell hooks (add to your shell config)
-source /path/to/hippo/shell/hippo-env.zsh   # in .zshenv
-source /path/to/hippo/shell/hippo.zsh       # in .zshrc
+# Add shell hooks to your zsh config
+echo 'source /path/to/hippo/shell/hippo-env.zsh' >> ~/.zshenv
+echo 'source /path/to/hippo/shell/hippo.zsh'     >> ~/.zshrc
+exec zsh  # reload
 
-# Set your LM Studio model
+# Configure your LM Studio model
 hippo config edit
-# Fill in [models] enrichment = "your-model-name"
-
-# Verify
-hippo doctor
 ```
 
-## (Optional) Enable MCP server for Claude Code
- Add to `~/.config/mcp/mcp-master.json`:
-```json
- {
-   "hippo": {
-     "type": "stdio",
-     "command": "uv",
-     "args": ["run", "--project", "/path/to/hippo/brain", "hippo-mcp"],
-     "autoApprove": ["ask", "search_knowledge", "search_events", "get_entities"]
-   }
- }
+In the config editor, set the `[models]` section to match a model loaded in LM Studio:
+
+```toml
+[models]
+enrichment = "your-model-name"       # check: curl -s localhost:1234/v1/models
+enrichment_bulk = "your-model-name"
+query = "your-model-name"
+embedding = "text-embedding-nomic-embed-text-v2-moe"
 ```
-## (Optional) Install Firefox extension for browser capture
+
+Verify everything is wired up:
 
 ```bash
-cd extension/firefox && npx web-ext build --overwrite-dest
+hippo doctor
 ```
-
-1. In Firefox Dev Edition: `about:config` → set `xpinstall.signatures.required` to `false`
-2. `about:addons` → gear icon → Install Add-on From File → select the `.zip` from `web-ext-artifacts/`
-
-See [`extension/firefox/README.md`](extension/firefox/README.md) for full setup.
 
 ## Usage
 
 ```bash
-# Check daemon status
-hippo status
-
-# List today's sessions
-hippo sessions --today
-
-# List recent events
-hippo events --since 2h
-
-# RAG query (via brain server)
-hippo ask "how did I fix that cargo build error"
-
-# Raw lexical search (no brain server needed)
-hippo query --raw "cargo build"
-
-# List known entities
-hippo entities
-
-# Export training data
-hippo export-training --since 30d --out ./export
-
-# Test redaction patterns
-hippo redact test "password=hunter2"
+hippo status                            # Daemon status
+hippo sessions --today                  # List today's sessions
+hippo events --since 2h                 # Recent shell events
+hippo ask "how did I fix that build error"  # RAG query (synthesized answer)
+hippo query --raw "cargo build"         # Raw lexical search (no brain needed)
+hippo entities                          # Known projects, tools, files, concepts
+hippo export-training --since 30d --out ./export  # Export training data
+hippo redact test "password=hunter2"    # Test redaction patterns
 ```
 
 ## MCP Server
 
 The MCP server lets Claude Code (or any MCP client) query your knowledge base mid-conversation.
-Three tools are exposed over stdio transport:
 
-| Tool               | What it does                                                          |
-|--------------------|-----------------------------------------------------------------------|
-| `search_knowledge` | Semantic or lexical search over enriched knowledge nodes              |
-| `search_events`    | Search raw shell commands, Claude sessions, and browser visits        |
-| `get_entities`     | List known projects, tools, files, domains, and concepts              |
+| Tool | Description |
+|------|-------------|
+| `ask` | RAG query -- synthesizes an answer from relevant knowledge nodes |
+| `search_knowledge` | Semantic or lexical search over enriched knowledge nodes |
+| `search_events` | Search raw shell commands, Claude sessions, and browser visits |
+| `get_entities` | List known projects, tools, files, domains, and concepts |
 
-```bash
-# Run standalone (for testing)
-uv run --project brain hippo-mcp
+Add to your Claude Code MCP config (e.g., `~/.claude/settings.json` or your MCP config file):
 
-# Configure for Claude Code — add to ~/.config/mcp/mcp-master.json:
+```json
 {
-  "hippo": {
-    "type": "stdio",
-    "command": "uv",
-    "args": ["run", "--project", "/path/to/hippo/brain", "hippo-mcp"],
-    "autoApprove": ["ask", "search_knowledge", "search_events", "get_entities"]
+  "mcpServers": {
+    "hippo": {
+      "type": "stdio",
+      "command": "uv",
+      "args": ["run", "--project", "/path/to/hippo/brain", "hippo-mcp"]
+    }
   }
 }
-
-# Then propagate to all tools
-chezmoi apply   # or: sync-mcp-configs
 ```
 
-The MCP server reads SQLite and LanceDB directly (no dependency on hippo-brain HTTP server).
-Logs go to stderr. Metrics are tracked via `MetricsCollector` for future OTel export.
+Replace `/path/to/hippo` with the absolute path to your clone.
 
-## Task Runner (mise)
+The MCP server reads SQLite and LanceDB directly (no dependency on the brain HTTP server).
 
-All common workflows are defined in `mise.toml`:
+## Firefox Extension (Optional)
 
-| Task                                  | Description                      |
-|---------------------------------------|----------------------------------|
-| `mise run build`                      | Build Rust crates (debug)        |
-| `mise run build:release`              | Build Rust crates (release)      |
-| `mise run build:brain`                | Sync Python dependencies         |
-| `mise run test`                       | Run all tests (Rust + Python)    |
-| `mise run lint`                       | Run all linters (clippy + ruff)  |
-| `mise run fmt`                        | Format all code                  |
-| `mise run fmt:check`                  | Check formatting without changes |
-| `mise run check`                      | Alias for `test` (full CI suite) |
-| `mise run run:daemon`                 | Run daemon in foreground         |
-| `mise run run:brain`                  | Run brain server                 |
-| `mise run install`                    | Full clean-install from local repo state |
-| `mise run doctor`                     | Run diagnostic checks            |
-| `mise run start` / `stop` / `restart` | Manage launchd services          |
-| `mise run nuke`                       | Kill everything (preserves data) |
+Captures browsing activity from allowlisted developer domains and sends it to the daemon via
+Native Messaging.
 
-Run `mise tasks` for the full list.
+```bash
+# Install the native messaging host (included in `mise run install`)
+hippo daemon install --force
+
+# Build the extension
+cd extension/firefox && npx web-ext build --overwrite-dest && cd ../..
+```
+
+1. In Firefox Dev Edition: `about:config` -> set `xpinstall.signatures.required` to `false`
+2. `about:addons` -> gear icon -> **Install Add-on From File** -> select the `.zip` from `web-ext-artifacts/`
+
+See [`extension/firefox/README.md`](extension/firefox/README.md) for full details.
 
 ## Configuration
 
-Runtime config: `~/.config/hippo/config.toml` (created by `mise run install`).
-Edit with `hippo config edit`. See [`config/config.default.toml`](./config/config.default.toml) for the template.
+| File | Purpose |
+|------|---------|
+| `~/.config/hippo/config.toml` | Runtime config (models, ports, browser allowlist, telemetry) |
+| `~/.config/hippo/redact.toml` | Secret redaction patterns (regex-based) |
 
-The `[models]` section must be configured for brain enrichment to work — set the model name
-to whatever LM Studio is serving (`curl -s http://localhost:1234/v1/models` to check).
+Created automatically by `mise run install`. Edit with `hippo config edit`.
+See [`config/config.default.toml`](config/config.default.toml) and
+[`config/redact.default.toml`](config/redact.default.toml) for the templates.
 
-Secret redaction patterns: `~/.config/hippo/redact.toml`. See [
-`config/redact.default.toml`](config/redact.default.toml).
+The `[models]` section must be configured for enrichment to work. Set the model name to
+whatever LM Studio is serving:
+
+```bash
+curl -s http://localhost:1234/v1/models | python3 -m json.tool
+```
+
+## Development
+
+### With mise (recommended)
+
+```bash
+mise run build              # Build Rust crates (debug)
+mise run build:release      # Build Rust crates (release)
+mise run build:brain        # Sync Python dependencies
+mise run test               # Full test suite (Rust + Python + lint + format check)
+mise run lint               # clippy + ruff check
+mise run fmt                # Format all code
+mise run doctor             # Diagnostic checks
+```
+
+Run `mise tasks` for the complete list.
+
+### Without mise
+
+```bash
+# Rust
+cargo build
+cargo test
+cargo clippy --all-targets -- -D warnings
+cargo fmt --check
+
+# Python
+uv sync --project brain
+uv run --project brain pytest brain/tests -v
+uv run --project brain ruff check brain/
+uv run --project brain ruff format --check brain/
+
+# MCP server
+uv run --project brain hippo-mcp
+```
+
+### Service management
+
+```bash
+mise run start              # Start daemon + brain via launchd
+mise run stop               # Stop both services
+mise run restart            # Stop + start
+mise run nuke               # SIGKILL everything (preserves data)
+```
 
 ## Project Structure
 
 ```
-├── crates/
-│   ├── hippo-core/       # Shared library (types, config, storage, redaction)
-│   └── hippo-daemon/     # Binary (daemon + CLI + native messaging host)
-├── brain/                # Python enrichment, query server, and MCP server
-├── extension/
-│   └── firefox/          # Firefox WebExtension for browser activity capture
-├── shell/                # zsh hooks (preexec/precmd integration)
-├── config/               # Default config templates
-├── launchd/              # macOS LaunchAgent plist templates
-├── tools/                # Developer utility scripts (SQL formatting, etc.)
-└── docs/                 # Design specs, plans, and architecture diagrams
+crates/
+  hippo-core/              Shared library (types, config, storage, redaction)
+  hippo-daemon/            Binary (daemon + CLI + native messaging host)
+brain/                     Python enrichment, query server, and MCP server
+extension/
+  firefox/                 Firefox WebExtension for browser activity capture
+shell/                     zsh hooks (preexec/precmd integration)
+config/                    Default config templates
+launchd/                   macOS LaunchAgent plist templates
+scripts/                   Utility scripts (bulk enrich, re-embed, monitor)
+otel/                      OpenTelemetry observability stack (docker-compose)
+docs/                      Design specs, plans, and architecture diagrams
+tools/                     Developer utilities (SQL formatting)
 ```
 
 ## Data Storage
 
-| Store   | Path                              | Purpose                                          |
-|---------|-----------------------------------|--------------------------------------------------|
-| SQLite  | `~/.local/share/hippo/hippo.db`   | Events, sessions, browser visits, enrichment queue, knowledge nodes, entities |
-| LanceDB | `~/.local/share/hippo/vectors/`   | Vector embeddings for semantic search            |
-| Config  | `~/.config/hippo/config.toml`     | User configuration                               |
-| Logs    | `~/.local/share/hippo/*.log`      | Daemon and brain logs                            |
+All paths follow XDG defaults. Override with `XDG_DATA_HOME` / `XDG_CONFIG_HOME`.
+
+| Store | Path | Purpose |
+|-------|------|---------|
+| SQLite | `~/.local/share/hippo/hippo.db` | Events, sessions, browser visits, enrichment queue, knowledge nodes, entities |
+| LanceDB | `~/.local/share/hippo/vectors/` | Vector embeddings for semantic search |
+| Config | `~/.config/hippo/config.toml` | User configuration |
+| Logs | `~/.local/share/hippo/*.log` | Daemon and brain logs |
 
 ## License
 
-MIT
+[MIT](LICENSE)

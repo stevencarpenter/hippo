@@ -33,12 +33,10 @@ brain/.venv/
 *.vsix
 
 ### JetBrains / IntelliJ IDEA ###
-# .idea/ is tracked for clone-and-go project setup.
-# User-specific and local state is excluded via .idea/.gitignore.
-# Committed files: modules.xml, *.iml, misc.xml, vcs.xml, dataSources.xml,
-#   data_source_mapping.xml, sqldialects.xml, codeStyles/, fileWatchers.xml,
-#   mise.xml, git_toolbox_prj.xml
+# Run `tools/setup-idea.sh` to generate project config after cloning.
+.idea/
 *.iws
+*.iml
 out/
 
 ### Rust template

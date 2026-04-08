@@ -673,7 +673,7 @@ mod tests {
             "uuid": "fed2b3ee-0000-0000-0000-000000000000",
             "timestamp": "2026-03-28T11:33:45.146Z",
             "sessionId": "dcb2cf8e-0000-0000-0000-000000000000",
-            "cwd": "/Users/carpenter/projects/hippo",
+            "cwd": "/home/user/projects/hippo",
             "gitBranch": "main",
             "message": {
                 "role": "assistant",
@@ -688,7 +688,7 @@ mod tests {
         assert!(pending.contains_key("toolu_01KjQTmoDtKU3G"));
         let p = &pending["toolu_01KjQTmoDtKU3G"];
         assert_eq!(p.name, "Read");
-        assert_eq!(p.cwd, "/Users/carpenter/projects/hippo");
+        assert_eq!(p.cwd, "/home/user/projects/hippo");
         assert_eq!(p.git_branch.as_deref(), Some("main"));
     }
 

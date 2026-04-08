@@ -123,9 +123,9 @@ which writes the NM manifest to ~/Library/Application Support/Mozilla/...
 
 Sources:
   [0.92] Configured Firefox native messaging host for hippo
-         /Users/carpenter/projects/hippo (main) — 2026-03-31
+         ~/projects/hippo (main) — 2026-03-31
   [0.87] Built and installed hippo with browser support
-         /Users/carpenter/projects/hippo (main) — 2026-03-31
+         ~/projects/hippo (main) — 2026-03-31
 ```
 
 ## System Prompt for Synthesis
@@ -148,7 +148,7 @@ The retrieved knowledge nodes are formatted as numbered context blocks:
 [1] (score: 0.92, 2026-03-31)
 Summary: Configured Firefox native messaging host for hippo
 Commands: cargo build --release && hippo daemon install --force
-CWD: /Users/carpenter/projects/hippo
+CWD: ~/projects/hippo
 Branch: main
 Outcome: success
 Tags: firefox, native-messaging, install
@@ -163,7 +163,7 @@ Tags: firefox, native-messaging, install
     {
       "score": 0.92,
       "summary": "Configured Firefox native messaging host for hippo",
-      "cwd": "/Users/carpenter/projects/hippo",
+      "cwd": "~/projects/hippo",
       "git_branch": "main",
       "timestamp": 1717012345000,
       "commands_raw": "cargo build --release && hippo daemon install --force"
