@@ -210,7 +210,7 @@ Update the `create_app()` call (around line 55):
 
 - [ ] **Step 5: Run Rust tests**
 
-Run: `cd /Users/carpenter/projects/hippo && cargo test -p hippo-core && cargo clippy --all-targets -- -D warnings`
+Run: `cd ~/projects/hippo && cargo test -p hippo-core && cargo clippy --all-targets -- -D warnings`
 Expected: All pass.
 
 - [ ] **Step 6: Commit**
@@ -368,7 +368,7 @@ ENRICHMENT_FIXTURES = [
 
 - [ ] **Step 4: Run Python tests**
 
-Run: `cd /Users/carpenter/projects/hippo && uv run --project brain pytest brain/tests -v`
+Run: `cd ~/projects/hippo && uv run --project brain pytest brain/tests -v`
 Expected: All pass.
 
 - [ ] **Step 5: Commit**
@@ -595,7 +595,7 @@ add-zsh-hook precmd _hippo_precmd
 
 - [ ] **Step 5: Build and run Rust tests**
 
-Run: `cd /Users/carpenter/projects/hippo && cargo test && cargo clippy --all-targets -- -D warnings`
+Run: `cd ~/projects/hippo && cargo test && cargo clippy --all-targets -- -D warnings`
 Expected: All pass.
 
 - [ ] **Step 6: Commit**
@@ -805,7 +805,7 @@ Delete the entire "Populate relationships table" block (lines 222-242).
 
 - [ ] **Step 5: Run Python tests and lint**
 
-Run: `cd /Users/carpenter/projects/hippo && uv run --project brain pytest brain/tests -v && uv run --project brain ruff check brain/ && uv run --project brain ruff format --check brain/`
+Run: `cd ~/projects/hippo && uv run --project brain pytest brain/tests -v && uv run --project brain ruff check brain/ && uv run --project brain ruff format --check brain/`
 Expected: All pass, clean lint.
 
 - [ ] **Step 6: Commit**
@@ -878,7 +878,7 @@ Replace the `row` dict in `embed_knowledge_node` (line 74):
 
 - [ ] **Step 3: Run tests**
 
-Run: `cd /Users/carpenter/projects/hippo && uv run --project brain pytest brain/tests -v`
+Run: `cd ~/projects/hippo && uv run --project brain pytest brain/tests -v`
 Expected: All pass.
 
 - [ ] **Step 4: Commit**
@@ -1100,7 +1100,7 @@ In the enrichment loop where `node_dict` is built (around line 200), add the new
 
 - [ ] **Step 6: Run tests and lint**
 
-Run: `cd /Users/carpenter/projects/hippo && uv run --project brain pytest brain/tests -v && uv run --project brain ruff check brain/ && uv run --project brain ruff format --check brain/`
+Run: `cd ~/projects/hippo && uv run --project brain pytest brain/tests -v && uv run --project brain ruff check brain/ && uv run --project brain ruff format --check brain/`
 Expected: All pass. Some query tests may need updating for the new response format.
 
 - [ ] **Step 7: Commit**
@@ -1203,7 +1203,7 @@ Replace the `Commands::Query` match arm (line 220):
 
 - [ ] **Step 2: Build and test**
 
-Run: `cd /Users/carpenter/projects/hippo && cargo build -p hippo-daemon && cargo clippy --all-targets -- -D warnings`
+Run: `cd ~/projects/hippo && cargo build -p hippo-daemon && cargo clippy --all-targets -- -D warnings`
 Expected: Clean build.
 
 - [ ] **Step 3: Commit**
@@ -1271,31 +1271,31 @@ git commit -m "feat(mise): add re-enrich task to reset and re-process all events
 
 - [ ] **Step 1: Run all Rust checks**
 
-Run: `cd /Users/carpenter/projects/hippo && cargo clippy --all-targets -- -D warnings && cargo fmt --check && cargo test`
+Run: `cd ~/projects/hippo && cargo clippy --all-targets -- -D warnings && cargo fmt --check && cargo test`
 Expected: All clean, all pass.
 
 - [ ] **Step 2: Run all Python checks**
 
-Run: `cd /Users/carpenter/projects/hippo && uv run --project brain ruff check brain/ && uv run --project brain ruff format --check brain/ && uv run --project brain pytest brain/tests -v`
+Run: `cd ~/projects/hippo && uv run --project brain ruff check brain/ && uv run --project brain ruff format --check brain/ && uv run --project brain pytest brain/tests -v`
 Expected: All clean, all pass.
 
 - [ ] **Step 3: Run re-enrich**
 
-Run: `cd /Users/carpenter/projects/hippo && mise run re-enrich`
+Run: `cd ~/projects/hippo && mise run re-enrich`
 Expected: Vectors deleted, enrichment queue reset, pending count shown.
 
 - [ ] **Step 4: Start services and verify enrichment**
 
-Run: `cd /Users/carpenter/projects/hippo && mise run start`
+Run: `cd ~/projects/hippo && mise run start`
 Wait ~30 seconds, then: `mise run vectors`
 Expected: New rows with specific summaries.
 
 - [ ] **Step 5: Test semantic search**
 
-Run: `cd /Users/carpenter/projects/hippo && hippo query "version embedding"`
+Run: `cd ~/projects/hippo && hippo query "version embedding"`
 Expected: Semantic results with similarity scores.
 
 - [ ] **Step 6: Test raw query fallback**
 
-Run: `cd /Users/carpenter/projects/hippo && hippo query --raw "cargo"`
+Run: `cd ~/projects/hippo && hippo query --raw "cargo"`
 Expected: Lexical substring results.

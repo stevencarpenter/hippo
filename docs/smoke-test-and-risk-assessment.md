@@ -221,7 +221,7 @@ RUST_LOG=info cargo run --bin hippo -- daemon run
 
 **Expected output:**
 ```
-INFO daemon listening on "/Users/carpenter/.local/share/hippo/daemon.sock"
+INFO daemon listening on "~/.local/share/hippo/daemon.sock"
 ```
 
 **Verify from a second terminal:**
