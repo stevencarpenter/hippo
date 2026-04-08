@@ -1,0 +1,35 @@
+name: Extension CI
+
+on:
+  pull_request:
+    paths:
+      - "extension/firefox/**"
+      - ".github/workflows/extension.yml"
+  push:
+    branches: [main]
+    paths:
+      - "extension/firefox/**"
+      - ".github/workflows/extension.yml"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  typecheck:
+    name: Typecheck & Build
+    runs-on: blacksmith-2vcpu-ubuntu-2404
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        working-directory: extension/firefox
+        run: npm ci
+
+      - name: Typecheck and build
+        working-directory: extension/firefox
+        run: npm run build
