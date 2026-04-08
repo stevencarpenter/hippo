@@ -1,4 +1,3 @@
 node_modules/
 dist/
 web-ext-artifacts/
-package-lock.json
