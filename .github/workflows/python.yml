@@ -83,3 +83,6 @@ jobs:
 
       - name: Run tests
         run: uv run --project brain pytest brain/tests -v --cov=hippo_brain --cov-report=term-missing
+
+      # TODO: Re-enable pip-audit when Python 3.14 support lands
+      # (upstream ensurepip SIGABRT on macOS arm64). Dependabot covers CVEs meanwhile.
