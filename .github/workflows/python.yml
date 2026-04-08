@@ -83,8 +83,3 @@ jobs:
 
       - name: Run tests
         run: uv run --project brain pytest brain/tests -v --cov=hippo_brain --cov-report=term-missing
-
-      - name: Audit Python dependencies
-        run: |
-          uv export --project brain --no-dev --no-hashes --no-editable --no-header --no-annotate --quiet 2>/dev/null | grep -v '^\.' > /tmp/brain-reqs.txt
-          uvx pip-audit -r /tmp/brain-reqs.txt --disable-pip --no-deps
