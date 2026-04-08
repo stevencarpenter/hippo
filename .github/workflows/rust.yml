@@ -32,7 +32,7 @@ permissions:
 jobs:
   format:
     name: Format
-    runs-on: blacksmith-2vcpu-ubuntu-2404
+    runs-on: ubuntu-latest
     if: github.event_name == 'pull_request'
     timeout-minutes: 5
     steps:
@@ -48,7 +48,7 @@ jobs:
 
   build-and-test:
     name: Build & Test
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
@@ -59,7 +59,7 @@ jobs:
           components: clippy
 
       - name: Setup Rust cache
-        uses: useblacksmith/rust-cache@v3
+        uses: Swatinem/rust-cache@v2
         with:
           shared-key: rust-ci-${{ github.base_ref || github.ref_name }}
           cache-on-failure: true
