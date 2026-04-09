@@ -22,8 +22,12 @@ TMUX_SESSION="hippo"
 LOG_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/hippo"
 DEBUG_LOG="$LOG_DIR/session-hook-debug.log"
 
+# Ensure log directory exists; make logging best-effort so the hook
+# still runs if the directory can't be created.
+mkdir -p "$LOG_DIR" 2>/dev/null || true
+
 log() {
-    echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) $*" >> "$DEBUG_LOG"
+    echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) $*" >> "$DEBUG_LOG" 2>/dev/null || true
 }
 
 # Read hook JSON from stdin
@@ -77,17 +81,18 @@ WINDOW_NAME="hippo:${SHORT_ID}"
 CLAUDE_PID="$PPID"
 log "claude_pid=$CLAUDE_PID window_name=$WINDOW_NAME"
 
+# Build the tmux command with properly quoted paths (handles spaces/metacharacters).
+TMUX_CMD="HIPPO_WATCH_PID=${CLAUDE_PID} $(printf '%q' "$HIPPO_BIN") ingest claude-session --inline $(printf '%q' "$TRANSCRIPT_PATH")"
+
 # Spawn the tailer in a detached tmux window.
 # tmux new-window -d returns immediately — the tail loop runs inside the new window,
 # so this hook never blocks Claude Code from launching.
 if tmux has-session -t "$TMUX_SESSION" 2>/dev/null; then
-    tmux new-window -d -t "$TMUX_SESSION" -n "$WINDOW_NAME" \
-        "HIPPO_WATCH_PID=$CLAUDE_PID $HIPPO_BIN ingest claude-session --inline $TRANSCRIPT_PATH"
+    tmux new-window -d -t "$TMUX_SESSION" -n "$WINDOW_NAME" "$TMUX_CMD"
     log "spawned tmux window in session=$TMUX_SESSION"
 elif tmux list-sessions &>/dev/null; then
     # hippo session doesn't exist but tmux is running — create it
-    tmux new-session -d -s "$TMUX_SESSION" -n "$WINDOW_NAME" \
-        "HIPPO_WATCH_PID=$CLAUDE_PID $HIPPO_BIN ingest claude-session --inline $TRANSCRIPT_PATH"
+    tmux new-session -d -s "$TMUX_SESSION" -n "$WINDOW_NAME" "$TMUX_CMD"
     log "created tmux session=$TMUX_SESSION with tailer window"
 else
     # No tmux server — batch-import what's already in the file and exit.
