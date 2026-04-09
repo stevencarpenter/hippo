@@ -54,13 +54,14 @@ def test_telemetry_enabled_creates_meter_provider():
         from hippo_brain.telemetry import init_telemetry
 
         shutdown = init_telemetry("test-service", endpoint="http://localhost:4318")
-        if shutdown is not None:
-            # Verify we can get a meter (doesn't raise)
+        assert shutdown is not None, "OTel packages are installed; init should succeed"
+        try:
             from opentelemetry import metrics as otel_metrics
 
             meter = otel_metrics.get_meter("test")
             counter = meter.create_counter("test.counter")
             counter.add(1)  # Should not raise
+        finally:
             shutdown()
 
 
