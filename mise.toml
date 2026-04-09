@@ -257,21 +257,53 @@ wait_for_exit() {
 echo "==> Stopping services..."
 launchctl bootout "$DOMAIN" "$DAEMON_PLIST" 2>/dev/null && echo "  Unloaded daemon" || true
 launchctl bootout "$DOMAIN" "$BRAIN_PLIST" 2>/dev/null && echo "  Unloaded brain" || true
+
+# Kill ALL hippo processes — daemon, brain, session tailers, MCP servers.
+# After a clean install, nothing should be running from a previous build.
 DAEMON_PATTERN='hippo.*(daemon|send-event)'
+TAILER_PATTERN='hippo ingest claude-session'
 BRAIN_PATTERN='hippo-brain'
+MCP_PATTERN='hippo-mcp'
 pkill -f "$DAEMON_PATTERN" 2>/dev/null || true
+pkill -f "$TAILER_PATTERN" 2>/dev/null || true
 pkill -f "$BRAIN_PATTERN" 2>/dev/null || true
+pkill -f "$MCP_PATTERN" 2>/dev/null || true
 echo "  Waiting for processes to exit..."
 wait_for_exit "$DAEMON_PATTERN"
+wait_for_exit "$TAILER_PATTERN" 5
 wait_for_exit "$BRAIN_PATTERN"
+wait_for_exit "$MCP_PATTERN" 5
 echo "  All processes stopped"
 
-# ── 2. Clean stale artifacts ────────────────────────────────────────
-echo "==> Cleaning stale artifacts..."
-rm -f "$DATA_DIR/daemon.sock" /tmp/hippo-daemon.sock
-rm -f "$DAEMON_PLIST" "$BRAIN_PLIST"
-rm -f ~/.local/bin/hippo
-rm -f "$DATA_DIR"/*.log
+# ── 2. Clean artifacts ──────────────────────────────────────────────
+if [[ "${1:-}" == "--clean" ]]; then
+    echo "==> Purging ALL build and install artifacts (preserving data)..."
+    # Rust build
+    cargo clean 2>/dev/null && echo "  Cleaned cargo target/" || true
+    # Python
+    rm -rf brain/.venv brain/.pytest_cache brain/.ruff_cache
+    echo "  Cleaned brain venv + caches"
+    # Firefox extension
+    rm -rf extension/firefox/dist extension/firefox/node_modules extension/firefox/web-ext-artifacts
+    echo "  Cleaned firefox extension build artifacts"
+    # Installed files
+    rm -f ~/.local/bin/hippo
+    rm -f "$DAEMON_PLIST" "$BRAIN_PLIST"
+    NM_DIR="$HOME/Library/Application Support/Mozilla/NativeMessagingHosts"
+    rm -f "$NM_DIR/hippo_daemon.json" "$NM_DIR/hippo-native-messaging"
+    echo "  Removed installed plists, symlink, native messaging manifest"
+    # Runtime artifacts (not data)
+    rm -f "$DATA_DIR/daemon.sock" /tmp/hippo-daemon.sock
+    rm -f "$DATA_DIR"/*.log
+    echo "  Cleaned runtime artifacts (socket, logs)"
+    echo "  Preserved: hippo.db, vectors/, fallback/, config/"
+else
+    echo "==> Cleaning stale artifacts..."
+    rm -f "$DATA_DIR/daemon.sock" /tmp/hippo-daemon.sock
+    rm -f "$DAEMON_PLIST" "$BRAIN_PLIST"
+    rm -f ~/.local/bin/hippo
+    rm -f "$DATA_DIR"/*.log
+fi
 
 # ── 3. Build release binary ─────────────────────────────────────────
 echo "==> Building release binary..."
@@ -289,7 +321,7 @@ echo "  venv ready at brain/.venv"
 
 # ── 5. Install plists + symlink ─────────────────────────────────────
 echo "==> Installing LaunchAgents + symlink..."
-cargo run --release --bin hippo -- daemon install --force
+cargo run --release --features otel --bin hippo -- daemon install --force
 
 # ── 6. Bootstrap config files (preserve existing) ───────────────────
 echo "==> Ensuring config files..."
@@ -387,7 +419,9 @@ launchctl bootout "$DOMAIN" ~/Library/LaunchAgents/com.hippo.brain.plist 2>/dev/
 
 echo "Killing all hippo processes (SIGKILL)..."
 pkill -9 -f 'hippo.*(daemon|send-event)' 2>/dev/null && echo "  Killed daemon processes" || echo "  No daemon processes found"
+pkill -9 -f 'hippo ingest claude-session' 2>/dev/null && echo "  Killed session tailers" || echo "  No session tailers found"
 pkill -9 -f 'hippo-brain' 2>/dev/null && echo "  Killed brain processes" || echo "  No brain processes found"
+pkill -9 -f 'hippo-mcp' 2>/dev/null && echo "  Killed MCP servers" || echo "  No MCP servers found"
 
 echo "Cleaning up socket..."
 rm -f ~/.local/share/hippo/daemon.sock /tmp/hippo-daemon.sock

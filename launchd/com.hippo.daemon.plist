@@ -16,6 +16,10 @@
         <string>__HOME__</string>
         <key>PATH</key>
         <string>__PATH__</string>
+        <key>HIPPO_OTEL_ENABLED</key>
+        <string>__HIPPO_OTEL_ENABLED__</string>
+        <key>OTEL_EXPORTER_OTLP_ENDPOINT</key>
+        <string>__OTEL_ENDPOINT__</string>
     </dict>
     <key>KeepAlive</key>
     <true/>
