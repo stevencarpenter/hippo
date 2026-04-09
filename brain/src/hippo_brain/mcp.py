@@ -17,7 +17,8 @@ from hippo_brain.embeddings import (
     open_vector_db,
     search_similar,
 )
-from hippo_brain.mcp_logging import MetricsCollector, setup_logging
+from hippo_brain.mcp_logging import setup_logging
+from hippo_brain.telemetry import get_meter
 from hippo_brain.mcp_queries import (
     MAX_LIMIT,
     get_entities_impl,
@@ -29,7 +30,22 @@ from hippo_brain.rag import ask as rag_ask, format_rag_response
 from hippo_brain.telemetry import get_tracer as _get_tracer
 
 logger = setup_logging("hippo-mcp")
-metrics = MetricsCollector()
+
+_meter = get_meter()
+
+_tool_calls = _meter.create_counter("hippo.brain.mcp.tool_calls", description="MCP tool invocations") if _meter else None
+_tool_errors = _meter.create_counter("hippo.brain.mcp.tool_errors", description="MCP tool failures") if _meter else None
+_tool_duration = _meter.create_histogram("hippo.brain.mcp.tool_duration_ms", description="MCP tool latency in ms", unit="ms") if _meter else None
+
+
+def _add(counter, value=1, **attrs):
+    if counter:
+        counter.add(value, attrs)
+
+
+def _hist(histogram, value, **attrs):
+    if histogram:
+        histogram.record(value, attrs)
 
 
 def _load_config() -> dict:
@@ -150,7 +166,7 @@ async def search_knowledge(
         limit: Maximum number of results to return (default 10).
     """
     limit = _clamp_limit(limit)
-    metrics.tool_calls += 1
+    _add(_tool_calls, tool="search_knowledge")
     t0 = time.monotonic()
     logger.info("search_knowledge called: query=%r mode=%s limit=%d", query, mode, limit)
 
@@ -166,13 +182,13 @@ async def search_knowledge(
     with span_ctx:
         try:
             if mode == "semantic" and _state.lm_client and _state.vector_table:
-                metrics.semantic_searches += 1
                 try:
                     vecs = await _state.lm_client.embed([query], model=_state.embedding_model)
                     query_vec = _pad_or_truncate(vecs[0], EMBED_DIM)
                     hits = search_similar(_state.vector_table, query_vec, limit=limit)
                     results = shape_semantic_results(hits)
                     elapsed = time.monotonic() - t0
+                    _hist(_tool_duration, elapsed * 1000, tool="search_knowledge")
                     logger.info(
                         "search_knowledge completed: %d results in %.3fs (semantic)",
                         len(results),
@@ -181,11 +197,9 @@ async def search_knowledge(
                     return results
                 except Exception:
                     logger.exception("Semantic search failed, falling back to lexical")
-                    metrics.lexical_fallbacks += 1
-                    metrics.lmstudio_errors += 1
+                    _add(_tool_errors, tool="search_knowledge")
 
             # Lexical search (explicit mode or fallback)
-            metrics.lexical_searches += 1
             conn = _get_conn()
             try:
                 results = search_knowledge_lexical(conn, query, limit=limit)
@@ -193,6 +207,7 @@ async def search_knowledge(
                 conn.close()
 
             elapsed = time.monotonic() - t0
+            _hist(_tool_duration, elapsed * 1000, tool="search_knowledge")
             logger.info(
                 "search_knowledge completed: %d results in %.3fs (lexical)",
                 len(results),
@@ -201,7 +216,7 @@ async def search_knowledge(
             return results
 
         except Exception:
-            metrics.tool_errors += 1
+            _add(_tool_errors, tool="search_knowledge")
             logger.exception("search_knowledge failed")
             raise
 
@@ -222,7 +237,7 @@ async def ask(question: str, limit: int = 10) -> str:
         limit: Number of knowledge nodes to retrieve for context (default 10).
     """
     limit = _clamp_limit(limit)
-    metrics.tool_calls += 1
+    _add(_tool_calls, tool="ask")
     t0 = time.monotonic()
     logger.info("ask called: question=%r limit=%d", question, limit)
 
@@ -242,6 +257,7 @@ async def ask(question: str, limit: int = 10) -> str:
     )
 
     elapsed = time.monotonic() - t0
+    _hist(_tool_duration, elapsed * 1000, tool="ask")
     logger.info("ask completed in %.3fs", elapsed)
 
     return format_rag_response(result)
@@ -265,7 +281,7 @@ async def search_events(
         limit: Maximum number of results (default 20).
     """
     limit = _clamp_limit(limit)
-    metrics.tool_calls += 1
+    _add(_tool_calls, tool="search_events")
     t0 = time.monotonic()
     logger.info(
         "search_events called: query=%r source=%s since=%r project=%r limit=%d",
@@ -296,12 +312,12 @@ async def search_events(
                 conn.close()
 
             elapsed = time.monotonic() - t0
-            metrics.events_searched += len(results)
+            _hist(_tool_duration, elapsed * 1000, tool="search_events")
             logger.info("search_events completed: %d results in %.3fs", len(results), elapsed)
             return results
 
         except Exception:
-            metrics.tool_errors += 1
+            _add(_tool_errors, tool="search_events")
             logger.exception("search_events failed")
             raise
 
@@ -321,7 +337,7 @@ async def get_entities(
         limit: Maximum number of results (default 50).
     """
     limit = _clamp_limit(limit)
-    metrics.tool_calls += 1
+    _add(_tool_calls, tool="get_entities")
     t0 = time.monotonic()
     logger.info("get_entities called: type=%r query=%r limit=%d", type, query, limit)
 
@@ -342,13 +358,13 @@ async def get_entities(
             finally:
                 conn.close()
 
-            metrics.entities_returned += len(results)
             elapsed = time.monotonic() - t0
+            _hist(_tool_duration, elapsed * 1000, tool="get_entities")
             logger.info("get_entities completed: %d results in %.3fs", len(results), elapsed)
             return results
 
         except Exception:
-            metrics.tool_errors += 1
+            _add(_tool_errors, tool="get_entities")
             logger.exception("get_entities failed")
             raise
 
