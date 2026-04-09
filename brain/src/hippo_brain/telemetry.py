@@ -31,11 +31,15 @@ def init_telemetry(
         endpoint = os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT", DEFAULT_ENDPOINT)
 
     try:
+        from opentelemetry import metrics as otel_metrics
         from opentelemetry import trace
         from opentelemetry.exporter.otlp.proto.http._log_exporter import OTLPLogExporter
+        from opentelemetry.exporter.otlp.proto.http.metric_exporter import OTLPMetricExporter
         from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
         from opentelemetry.sdk._logs import LoggerProvider, LoggingHandler
         from opentelemetry.sdk._logs.export import BatchLogRecordProcessor
+        from opentelemetry.sdk.metrics import MeterProvider
+        from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader
         from opentelemetry.sdk.resources import Resource
         from opentelemetry.sdk.trace import TracerProvider
         from opentelemetry.sdk.trace.export import BatchSpanProcessor
@@ -63,6 +67,12 @@ def init_telemetry(
     handler = LoggingHandler(logger_provider=logger_provider)
     logging.getLogger().addHandler(handler)
 
+    # Metrics
+    metric_exporter = OTLPMetricExporter(endpoint=f"{endpoint}/v1/metrics")
+    metric_reader = PeriodicExportingMetricReader(metric_exporter, export_interval_millis=15000)
+    meter_provider = MeterProvider(resource=resource, metric_readers=[metric_reader])
+    otel_metrics.set_meter_provider(meter_provider)
+
     logger.info(
         "OpenTelemetry initialized: endpoint=%s, service=%s",
         endpoint,
@@ -72,6 +82,7 @@ def init_telemetry(
     def shutdown() -> None:
         tracer_provider.shutdown()
         logger_provider.shutdown()
+        meter_provider.shutdown()
 
     return shutdown
 
@@ -84,5 +95,17 @@ def get_tracer(name: str = "hippo-brain"):
         from opentelemetry import trace
 
         return trace.get_tracer(name)
+    except ImportError:
+        return None
+
+
+def get_meter(name: str = "hippo-brain"):
+    """Get OTel meter if available, else return None."""
+    if not _is_otel_enabled():
+        return None
+    try:
+        from opentelemetry import metrics as otel_metrics
+
+        return otel_metrics.get_meter(name)
     except ImportError:
         return None
