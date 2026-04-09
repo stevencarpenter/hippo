@@ -1,43 +1,430 @@
 {
   "uid": "hippo-enrichment",
-  "title": "Hippo Enrichment Performance",
+  "title": "Hippo Enrichment Pipeline",
   "tags": ["hippo", "enrichment", "performance"],
   "schemaVersion": 39,
-  "version": 2,
+  "version": 1,
   "editable": true,
   "graphTooltip": 1,
-  "time": {
-    "from": "now-6h",
-    "to": "now"
-  },
+  "time": { "from": "now-6h", "to": "now" },
   "timepicker": {},
   "refresh": "30s",
   "panels": [
     {
       "id": 1,
-      "title": "Enrichment Activity",
-      "description": "Log count of enrichment events (claimed, enriched, embedded) per minute",
+      "title": "Queue Depth by Source",
       "type": "timeseries",
-      "gridPos": { "x": 0, "y": 0, "w": 12, "h": 8 },
-      "datasource": { "type": "loki", "uid": "loki" },
+      "gridPos": { "x": 0, "y": 0, "w": 8, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
       "targets": [
         {
-          "refId": "claimed",
-          "datasource": { "type": "loki", "uid": "loki" },
-          "expr": "count_over_time({service_name=\"hippo-brain\"} |~ \"claimed\" [1m])",
-          "legendFormat": "claimed"
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "hippo_brain_enrichment_queue_depth{status=\"pending\",source=\"shell\"}",
+          "legendFormat": "{{source}}",
+          "editorMode": "code"
         },
         {
-          "refId": "enriched",
-          "datasource": { "type": "loki", "uid": "loki" },
-          "expr": "count_over_time({service_name=\"hippo-brain\"} |~ \"enriched\" [1m])",
-          "legendFormat": "enriched"
+          "refId": "B",
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "hippo_brain_enrichment_queue_depth{status=\"pending\",source=\"claude\"}",
+          "legendFormat": "{{source}}",
+          "editorMode": "code"
         },
         {
-          "refId": "embedded",
-          "datasource": { "type": "loki", "uid": "loki" },
-          "expr": "count_over_time({service_name=\"hippo-brain\"} |~ \"embedded\" [1m])",
-          "legendFormat": "embedded"
+          "refId": "C",
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "hippo_brain_enrichment_queue_depth{status=\"pending\",source=\"browser\"}",
+          "legendFormat": "{{source}}",
+          "editorMode": "code"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "lineWidth": 1
+          }
+        }
+      },
+      "options": {
+        "tooltip": { "mode": "multi" },
+        "legend": { "displayMode": "list", "placement": "bottom" }
+      }
+    },
+    {
+      "id": 2,
+      "title": "Failed Queue Items",
+      "type": "stat",
+      "gridPos": { "x": 8, "y": 0, "w": 4, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum(hippo_brain_enrichment_queue_depth{status=\"failed\"}) or vector(0)",
+          "legendFormat": "",
+          "editorMode": "code"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "red", "value": 1 }
+            ]
+          }
+        }
+      },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"] },
+        "orientation": "auto",
+        "textMode": "auto",
+        "colorMode": "background"
+      }
+    },
+    {
+      "id": 3,
+      "title": "Events Claimed / min",
+      "type": "timeseries",
+      "gridPos": { "x": 12, "y": 0, "w": 12, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "rate(hippo_brain_enrichment_events_claimed_total{source=\"shell\"}[5m]) * 60",
+          "legendFormat": "shell",
+          "editorMode": "code"
+        },
+        {
+          "refId": "B",
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "rate(hippo_brain_enrichment_events_claimed_total{source=\"claude\"}[5m]) * 60",
+          "legendFormat": "claude",
+          "editorMode": "code"
+        },
+        {
+          "refId": "C",
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "rate(hippo_brain_enrichment_events_claimed_total{source=\"browser\"}[5m]) * 60",
+          "legendFormat": "browser",
+          "editorMode": "code"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "lineWidth": 1,
+            "stacking": { "mode": "normal", "group": "A" }
+          }
+        }
+      },
+      "options": {
+        "tooltip": { "mode": "multi" },
+        "legend": { "displayMode": "list", "placement": "bottom" }
+      }
+    },
+    {
+      "id": 4,
+      "title": "LM Studio Latency",
+      "type": "timeseries",
+      "gridPos": { "x": 0, "y": 8, "w": 8, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "histogram_quantile(0.5, sum(rate(hippo_brain_lmstudio_request_duration_milliseconds_bucket{method=\"chat\"}[5m])) by (le))",
+          "legendFormat": "p50",
+          "editorMode": "code"
+        },
+        {
+          "refId": "B",
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "histogram_quantile(0.95, sum(rate(hippo_brain_lmstudio_request_duration_milliseconds_bucket{method=\"chat\"}[5m])) by (le))",
+          "legendFormat": "p95",
+          "editorMode": "code"
+        },
+        {
+          "refId": "C",
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "histogram_quantile(0.99, sum(rate(hippo_brain_lmstudio_request_duration_milliseconds_bucket{method=\"chat\"}[5m])) by (le))",
+          "legendFormat": "p99",
+          "editorMode": "code"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "lineWidth": 1
+          }
+        }
+      },
+      "options": {
+        "tooltip": { "mode": "multi" },
+        "legend": { "displayMode": "list", "placement": "bottom" }
+      }
+    },
+    {
+      "id": 5,
+      "title": "LM Studio Errors / min",
+      "type": "timeseries",
+      "gridPos": { "x": 8, "y": 8, "w": 8, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum(rate(hippo_brain_lmstudio_errors_total[5m])) by (method) * 60",
+          "legendFormat": "{{method}}",
+          "editorMode": "code"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "lineWidth": 1
+          }
+        }
+      },
+      "options": {
+        "tooltip": { "mode": "multi" },
+        "legend": { "displayMode": "list", "placement": "bottom" }
+      }
+    },
+    {
+      "id": 6,
+      "title": "Prompt Size",
+      "type": "timeseries",
+      "gridPos": { "x": 16, "y": 8, "w": 8, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "histogram_quantile(0.5, sum(rate(hippo_brain_lmstudio_prompt_tokens_bucket[5m])) by (le))",
+          "legendFormat": "p50",
+          "editorMode": "code"
+        },
+        {
+          "refId": "B",
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "histogram_quantile(0.95, sum(rate(hippo_brain_lmstudio_prompt_tokens_bucket[5m])) by (le))",
+          "legendFormat": "p95",
+          "editorMode": "code"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "lineWidth": 1
+          }
+        }
+      },
+      "options": {
+        "tooltip": { "mode": "multi" },
+        "legend": { "displayMode": "list", "placement": "bottom" }
+      }
+    },
+    {
+      "id": 7,
+      "title": "Embedding Duration",
+      "type": "timeseries",
+      "gridPos": { "x": 0, "y": 16, "w": 6, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "histogram_quantile(0.5, sum(rate(hippo_brain_embedding_duration_milliseconds_bucket[5m])) by (le))",
+          "legendFormat": "p50",
+          "editorMode": "code"
+        },
+        {
+          "refId": "B",
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "histogram_quantile(0.95, sum(rate(hippo_brain_embedding_duration_milliseconds_bucket[5m])) by (le))",
+          "legendFormat": "p95",
+          "editorMode": "code"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "lineWidth": 1
+          }
+        }
+      },
+      "options": {
+        "tooltip": { "mode": "multi" },
+        "legend": { "displayMode": "list", "placement": "bottom" }
+      }
+    },
+    {
+      "id": 8,
+      "title": "Embedding Failures",
+      "type": "stat",
+      "gridPos": { "x": 6, "y": 16, "w": 3, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum(hippo_brain_embedding_failures_total) or vector(0)",
+          "legendFormat": "",
+          "editorMode": "code"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "red", "value": 1 }
+            ]
+          }
+        }
+      },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"] },
+        "orientation": "auto",
+        "textMode": "auto",
+        "colorMode": "background"
+      }
+    },
+    {
+      "id": 9,
+      "title": "RAG Latency by Stage",
+      "type": "timeseries",
+      "gridPos": { "x": 9, "y": 16, "w": 8, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "histogram_quantile(0.5, sum(rate(hippo_brain_rag_duration_milliseconds_bucket[5m])) by (le, stage))",
+          "legendFormat": "{{stage}} p50",
+          "editorMode": "code"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "lineWidth": 1
+          }
+        }
+      },
+      "options": {
+        "tooltip": { "mode": "multi" },
+        "legend": { "displayMode": "list", "placement": "bottom" }
+      }
+    },
+    {
+      "id": 10,
+      "title": "RAG Retrieval Hits",
+      "type": "timeseries",
+      "gridPos": { "x": 17, "y": 16, "w": 7, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "histogram_quantile(0.5, sum(rate(hippo_brain_rag_retrieval_hits_bucket[5m])) by (le))",
+          "legendFormat": "p50",
+          "editorMode": "code"
+        },
+        {
+          "refId": "B",
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "histogram_quantile(0.95, sum(rate(hippo_brain_rag_retrieval_hits_bucket[5m])) by (le))",
+          "legendFormat": "p95",
+          "editorMode": "code"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "lineWidth": 1
+          }
+        }
+      },
+      "options": {
+        "tooltip": { "mode": "multi" },
+        "legend": { "displayMode": "list", "placement": "bottom" }
+      }
+    },
+    {
+      "id": 11,
+      "title": "MCP Tool Latency",
+      "type": "timeseries",
+      "gridPos": { "x": 0, "y": 24, "w": 8, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "histogram_quantile(0.95, sum(rate(hippo_brain_mcp_tool_duration_milliseconds_bucket[5m])) by (le, tool))",
+          "legendFormat": "{{tool}} p95",
+          "editorMode": "code"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "lineWidth": 1
+          }
+        }
+      },
+      "options": {
+        "tooltip": { "mode": "multi" },
+        "legend": { "displayMode": "list", "placement": "bottom" }
+      }
+    },
+    {
+      "id": 12,
+      "title": "MCP Tool Calls / min",
+      "type": "timeseries",
+      "gridPos": { "x": 8, "y": 24, "w": 8, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum(rate(hippo_brain_mcp_tool_calls_total[5m])) by (tool) * 60",
+          "legendFormat": "{{tool}}",
+          "editorMode": "code"
         }
       ],
       "fieldConfig": {
@@ -49,20 +436,18 @@
             "lineWidth": 0,
             "stacking": { "mode": "normal", "group": "A" }
           }
-        },
-        "overrides": []
+        }
       },
       "options": {
-        "legend": { "displayMode": "list", "placement": "bottom" },
-        "tooltip": { "mode": "multi", "sort": "none" }
+        "tooltip": { "mode": "multi" },
+        "legend": { "displayMode": "list", "placement": "bottom" }
       }
     },
     {
-      "id": 2,
-      "title": "Enrichment Traces (Duration)",
-      "description": "Duration of enrichment spans from Tempo — shows LLM call latency",
+      "id": 13,
+      "title": "Enrichment Traces",
       "type": "table",
-      "gridPos": { "x": 12, "y": 0, "w": 12, "h": 8 },
+      "gridPos": { "x": 16, "y": 24, "w": 8, "h": 8 },
       "datasource": { "type": "tempo", "uid": "tempo" },
       "targets": [
         {
@@ -71,146 +456,13 @@
           "queryType": "traceql",
           "query": "{resource.service.name = \"hippo-brain\" && name =~ \"enrichment.*\"}",
           "tableType": "traces",
-          "limit": 50
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {},
-        "overrides": []
-      },
-      "options": {
-        "footer": { "show": false },
-        "showHeader": true
-      }
-    },
-    {
-      "id": 3,
-      "title": "Daemon Event Flushes",
-      "description": "Daemon flush_events trace durations",
-      "type": "table",
-      "gridPos": { "x": 0, "y": 8, "w": 12, "h": 8 },
-      "datasource": { "type": "tempo", "uid": "tempo" },
-      "targets": [
-        {
-          "refId": "A",
-          "datasource": { "type": "tempo", "uid": "tempo" },
-          "queryType": "traceql",
-          "query": "{resource.service.name = \"hippo-daemon\" && name = \"flush_events\"}",
-          "tableType": "traces",
-          "limit": 30
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {},
-        "overrides": []
-      },
-      "options": {
-        "footer": { "show": false },
-        "showHeader": true
-      }
-    },
-    {
-      "id": 4,
-      "title": "MCP Tool Traces",
-      "description": "MCP server tool call traces (search_knowledge, search_events, get_entities)",
-      "type": "table",
-      "gridPos": { "x": 12, "y": 8, "w": 12, "h": 8 },
-      "datasource": { "type": "tempo", "uid": "tempo" },
-      "targets": [
-        {
-          "refId": "A",
-          "datasource": { "type": "tempo", "uid": "tempo" },
-          "queryType": "traceql",
-          "query": "{resource.service.name = \"hippo-brain\" && name =~ \"mcp.*\"}",
-          "tableType": "traces",
-          "limit": 30
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {},
-        "overrides": []
-      },
-      "options": {
-        "footer": { "show": false },
-        "showHeader": true
-      }
-    },
-    {
-      "id": 5,
-      "title": "LM Studio Calls",
-      "description": "Brain LLM call logs — shows prompt size and node creation",
-      "type": "logs",
-      "gridPos": { "x": 0, "y": 16, "w": 24, "h": 8 },
-      "datasource": { "type": "loki", "uid": "loki" },
-      "targets": [
-        {
-          "refId": "A",
-          "datasource": { "type": "loki", "uid": "loki" },
-          "expr": "{service_name=\"hippo-brain\"} |~ \"claimed|enriched|calling LM Studio|embedded|failed\"",
-          "legendFormat": ""
-        }
-      ],
-      "options": {
-        "dedupStrategy": "none",
-        "enableLogDetails": true,
-        "prettifyLogMessage": false,
-        "showCommonLabels": false,
-        "showLabels": false,
-        "showTime": true,
-        "sortOrder": "Descending",
-        "wrapLogMessage": false
-      }
-    },
-    {
-      "id": 6,
-      "title": "Daemon Request Traces",
-      "description": "CLI-to-daemon socket request traces",
-      "type": "table",
-      "gridPos": { "x": 0, "y": 24, "w": 12, "h": 8 },
-      "datasource": { "type": "tempo", "uid": "tempo" },
-      "targets": [
-        {
-          "refId": "A",
-          "datasource": { "type": "tempo", "uid": "tempo" },
-          "queryType": "traceql",
-          "query": "{resource.service.name = \"hippo-daemon\" && name =~ \"handle_request|handle_connection\"}",
-          "tableType": "traces",
           "limit": 20
         }
       ],
-      "fieldConfig": {
-        "defaults": {},
-        "overrides": []
-      },
+      "fieldConfig": { "defaults": {}, "overrides": [] },
       "options": {
         "footer": { "show": false },
         "showHeader": true
-      }
-    },
-    {
-      "id": 7,
-      "title": "Errors & Warnings",
-      "description": "All error and warning logs from hippo services",
-      "type": "logs",
-      "gridPos": { "x": 12, "y": 24, "w": 12, "h": 8 },
-      "datasource": { "type": "loki", "uid": "loki" },
-      "targets": [
-        {
-          "refId": "A",
-          "datasource": { "type": "loki", "uid": "loki" },
-          "expr": "{service_name=~\"hippo.*\"} |~ \"(?i)error|warn|failed|panic\"",
-          "legendFormat": ""
-        }
-      ],
-      "options": {
-        "dedupStrategy": "none",
-        "enableLogDetails": true,
-        "prettifyLogMessage": false,
-        "showCommonLabels": false,
-        "showLabels": true,
-        "showTime": true,
-        "sortOrder": "Descending",
-        "wrapLogMessage": false
       }
     }
   ]

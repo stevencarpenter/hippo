@@ -2,7 +2,7 @@ name: hippo-otel
 
 services:
   otel-collector:
-    image: otel/opentelemetry-collector-contrib:0.120.0
+    image: otel/opentelemetry-collector-contrib:0.149.0
     command: ["--config", "/etc/otelcol/config.yml"]
     volumes:
       - ./otelcol-config.yml:/etc/otelcol/config.yml:ro
@@ -15,21 +15,21 @@ services:
       - loki
 
   tempo:
-    image: grafana/tempo:2.7.2
+    image: grafana/tempo:2.10.3
     command: ["-config.file=/etc/tempo/config.yml"]
     volumes:
       - ./tempo-config.yml:/etc/tempo/config.yml:ro
       - tempo-data:/var/tempo
 
   loki:
-    image: grafana/loki:3.4.2
+    image: grafana/loki:3.7.1
     command: ["-config.file=/etc/loki/config.yml"]
     volumes:
       - ./loki-config.yml:/etc/loki/config.yml:ro
       - loki-data:/loki
 
   prometheus:
-    image: prom/prometheus:v3.2.1
+    image: prom/prometheus:v3.11.1
     command:
       - "--config.file=/etc/prometheus/prometheus.yml"
       - "--storage.tsdb.path=/prometheus"
@@ -39,7 +39,7 @@ services:
       - prometheus-data:/prometheus
 
   grafana:
-    image: grafana/grafana:11.5.2
+    image: grafana/grafana:12.4.2
     environment:
       - GF_SECURITY_ADMIN_PASSWORD=hippo
       - GF_AUTH_ANONYMOUS_ENABLED=true

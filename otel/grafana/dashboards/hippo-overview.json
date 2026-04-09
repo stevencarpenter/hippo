@@ -3,122 +3,249 @@
   "title": "Hippo Overview",
   "tags": ["hippo", "observability"],
   "schemaVersion": 39,
-  "version": 2,
+  "version": 1,
   "editable": true,
   "graphTooltip": 1,
-  "time": {
-    "from": "now-1h",
-    "to": "now"
-  },
+  "time": { "from": "now-1h", "to": "now" },
   "timepicker": {},
   "refresh": "30s",
   "panels": [
     {
       "id": 1,
-      "title": "Log Volume by Service",
-      "type": "timeseries",
-      "gridPos": { "x": 0, "y": 0, "w": 12, "h": 8 },
-      "datasource": { "type": "loki", "uid": "loki" },
+      "title": "Events Ingested / min",
+      "type": "stat",
+      "gridPos": { "x": 0, "y": 0, "w": 6, "h": 4 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
       "targets": [
         {
           "refId": "A",
-          "datasource": { "type": "loki", "uid": "loki" },
-          "expr": "sum by(service_name) (count_over_time({service_name=~\"hippo.*\"} [1m]))",
-          "legendFormat": "{{service_name}}",
-          "instant": false,
-          "range": true
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum(rate(hippo_daemon_events_ingested_total[5m])) * 60",
+          "legendFormat": "",
+          "editorMode": "code"
         }
       ],
       "fieldConfig": {
         "defaults": {
-          "custom": {
-            "drawStyle": "bars",
-            "fillOpacity": 60,
-            "lineWidth": 0,
-            "stacking": { "mode": "normal", "group": "A" }
-          },
-          "unit": "short"
-        },
-        "overrides": []
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [{ "color": "green", "value": null }]
+          }
+        }
       },
       "options": {
-        "legend": { "displayMode": "list", "placement": "bottom" },
-        "tooltip": { "mode": "multi", "sort": "none" }
+        "reduceOptions": { "calcs": ["lastNotNull"] },
+        "orientation": "auto",
+        "textMode": "auto",
+        "colorMode": "background"
       }
     },
     {
       "id": 2,
-      "title": "Error Logs",
-      "type": "logs",
-      "gridPos": { "x": 12, "y": 0, "w": 12, "h": 8 },
-      "datasource": { "type": "loki", "uid": "loki" },
+      "title": "Events Dropped",
+      "type": "stat",
+      "gridPos": { "x": 6, "y": 0, "w": 6, "h": 4 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
       "targets": [
         {
           "refId": "A",
-          "datasource": { "type": "loki", "uid": "loki" },
-          "expr": "{service_name=~\"hippo.*\"} |~ \"(?i)error|warn|failed|panic\"",
-          "legendFormat": ""
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum(hippo_daemon_events_dropped_total) or vector(0)",
+          "legendFormat": "",
+          "editorMode": "code"
         }
       ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "red", "value": 1 }
+            ]
+          }
+        }
+      },
       "options": {
-        "dedupStrategy": "none",
-        "enableLogDetails": true,
-        "prettifyLogMessage": false,
-        "showCommonLabels": false,
-        "showLabels": true,
-        "showTime": true,
-        "sortOrder": "Descending",
-        "wrapLogMessage": false
+        "reduceOptions": { "calcs": ["lastNotNull"] },
+        "orientation": "auto",
+        "textMode": "auto",
+        "colorMode": "background"
       }
     },
     {
       "id": 3,
-      "title": "Recent Traces",
-      "type": "table",
-      "gridPos": { "x": 0, "y": 8, "w": 24, "h": 10 },
-      "datasource": { "type": "tempo", "uid": "tempo" },
+      "title": "Queue Depth",
+      "type": "stat",
+      "gridPos": { "x": 12, "y": 0, "w": 6, "h": 4 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
       "targets": [
         {
           "refId": "A",
-          "datasource": { "type": "tempo", "uid": "tempo" },
-          "queryType": "traceql",
-          "query": "{resource.service.name =~ \"hippo.*\"}",
-          "tableType": "traces",
-          "limit": 20
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum(hippo_brain_enrichment_queue_depth{status=\"pending\"}) or vector(0)",
+          "legendFormat": "",
+          "editorMode": "code"
         }
       ],
       "fieldConfig": {
-        "defaults": {},
-        "overrides": []
+        "defaults": {
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 50 },
+              { "color": "red", "value": 200 }
+            ]
+          }
+        }
       },
       "options": {
-        "footer": { "show": false },
-        "showHeader": true
+        "reduceOptions": { "calcs": ["lastNotNull"] },
+        "orientation": "auto",
+        "textMode": "auto",
+        "colorMode": "background"
+      }
+    },
+    {
+      "id": 4,
+      "title": "Nodes Created / hr",
+      "type": "stat",
+      "gridPos": { "x": 18, "y": 0, "w": 6, "h": 4 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum(rate(hippo_brain_enrichment_nodes_created_total[1h])) * 3600",
+          "legendFormat": "",
+          "editorMode": "code"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [{ "color": "green", "value": null }]
+          }
+        }
+      },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"] },
+        "orientation": "auto",
+        "textMode": "auto",
+        "colorMode": "background"
       }
     },
     {
       "id": 5,
-      "title": "Service Logs (Live)",
+      "title": "Ingestion vs Enrichment Rate",
+      "type": "timeseries",
+      "gridPos": { "x": 0, "y": 4, "w": 8, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum(rate(hippo_daemon_events_ingested_total[5m])) * 60",
+          "legendFormat": "ingested/min",
+          "editorMode": "code"
+        },
+        {
+          "refId": "B",
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum(rate(hippo_brain_enrichment_events_claimed_total[5m])) * 60",
+          "legendFormat": "enriched/min",
+          "editorMode": "code"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "lineWidth": 1
+          }
+        }
+      },
+      "options": {
+        "tooltip": { "mode": "multi" },
+        "legend": { "displayMode": "list", "placement": "bottom" }
+      }
+    },
+    {
+      "id": 6,
+      "title": "Error Rate",
+      "type": "timeseries",
+      "gridPos": { "x": 8, "y": 4, "w": 8, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum(rate(hippo_brain_lmstudio_errors_total[5m])) * 60",
+          "legendFormat": "LM Studio",
+          "editorMode": "code"
+        },
+        {
+          "refId": "B",
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum(rate(hippo_brain_enrichment_failures_total[5m])) * 60",
+          "legendFormat": "enrichment",
+          "editorMode": "code"
+        },
+        {
+          "refId": "C",
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum(rate(hippo_daemon_events_dropped_total[5m])) * 60",
+          "legendFormat": "dropped",
+          "editorMode": "code"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "lineWidth": 1
+          }
+        }
+      },
+      "options": {
+        "tooltip": { "mode": "multi" },
+        "legend": { "displayMode": "list", "placement": "bottom" }
+      }
+    },
+    {
+      "id": 7,
+      "title": "Error Logs",
       "type": "logs",
-      "gridPos": { "x": 0, "y": 18, "w": 24, "h": 10 },
+      "gridPos": { "x": 16, "y": 4, "w": 8, "h": 8 },
       "datasource": { "type": "loki", "uid": "loki" },
       "targets": [
         {
           "refId": "A",
           "datasource": { "type": "loki", "uid": "loki" },
-          "expr": "{service_name=~\"hippo.*\"}",
-          "legendFormat": ""
+          "expr": "{service_name=~\"hippo.*\"} |~ \"(?i)error|failed|panic\"",
+          "queryType": "range"
         }
       ],
+      "fieldConfig": { "defaults": {} },
       "options": {
-        "dedupStrategy": "none",
-        "enableLogDetails": true,
-        "prettifyLogMessage": false,
-        "showCommonLabels": false,
-        "showLabels": true,
         "showTime": true,
-        "sortOrder": "Descending",
-        "wrapLogMessage": false
+        "showLabels": false,
+        "showCommonLabels": false,
+        "wrapLogMessage": false,
+        "prettifyLogMessage": false,
+        "enableLogDetails": true,
+        "dedupStrategy": "none",
+        "sortOrder": "Descending"
       }
     }
   ]

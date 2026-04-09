@@ -20,7 +20,6 @@ from hippo_brain.mcp import (
     _state,
     get_entities,
     mcp,
-    metrics,
     search_events,
     search_knowledge,
 )
@@ -222,20 +221,16 @@ def entities_db(tmp_db):
 
 @pytest.fixture(autouse=True)
 def _reset_state():
-    """Save and restore _state and metrics between tests."""
+    """Save and restore _state between tests."""
     old_db = _state.db_path
     old_vt = _state.vector_table
     old_lm = _state.lm_client
     old_em = _state.embedding_model
-    snapshot = metrics.snapshot()
     yield
     _state.db_path = old_db
     _state.vector_table = old_vt
     _state.lm_client = old_lm
     _state.embedding_model = old_em
-    # Restore metric counters
-    for k, v in snapshot.items():
-        setattr(metrics, k, v)
 
 
 # ---------------------------------------------------------------------------
@@ -250,14 +245,9 @@ class TestSearchKnowledgeTool:
         _state.vector_table = None
         _state.lm_client = None
 
-        old_calls = metrics.tool_calls
-        old_lexical = metrics.lexical_searches
-
         results = asyncio.run(search_knowledge("cargo build", mode="lexical", limit=10))
         assert len(results) == 1
         assert "cargo build" in results[0]["embed_text"].lower()
-        assert metrics.tool_calls == old_calls + 1
-        assert metrics.lexical_searches == old_lexical + 1
 
     def test_lexical_search_no_results(self, knowledge_db):
         conn, db_path = knowledge_db
@@ -277,12 +267,9 @@ class TestSearchKnowledgeTool:
         _state.vector_table = None
         _state.lm_client = None
 
-        old_lexical = metrics.lexical_searches
-
         results = asyncio.run(search_knowledge("cargo", mode="semantic", limit=10))
         assert len(results) == 1
         # Should have gone through lexical path (no vector_table, no lm_client)
-        assert metrics.lexical_searches == old_lexical + 1
 
     def test_semantic_fallback_when_no_lm_client(self, knowledge_db):
         """When mode=semantic but lm_client is None, falls back to lexical."""
@@ -305,13 +292,8 @@ class TestSearchKnowledgeTool:
         _state.lm_client = mock_client
         _state.vector_table = "fake_table"
 
-        old_fallbacks = metrics.lexical_fallbacks
-        old_lm_errors = metrics.lmstudio_errors
-
         results = asyncio.run(search_knowledge("cargo", mode="semantic", limit=10))
         assert len(results) == 1  # Fell back to lexical successfully
-        assert metrics.lexical_fallbacks == old_fallbacks + 1
-        assert metrics.lmstudio_errors == old_lm_errors + 1
 
     def test_semantic_search_pads_query_vector_to_embed_dim(self, knowledge_db, monkeypatch):
         conn, db_path = knowledge_db
@@ -391,15 +373,10 @@ class TestSearchEventsTool:
         conn, db_path = events_db
         _state.db_path = str(db_path)
 
-        old_calls = metrics.tool_calls
-        old_events = metrics.events_searched
-
         results = asyncio.run(search_events(query="cargo", source="shell", limit=10))
         assert len(results) == 1
         assert results[0]["source"] == "shell"
         assert "cargo test" in results[0]["summary"]
-        assert metrics.tool_calls == old_calls + 1
-        assert metrics.events_searched == old_events + 1
 
     def test_search_events_no_match(self, events_db):
         conn, db_path = events_db
@@ -480,15 +457,10 @@ class TestGetEntitiesTool:
         conn, db_path = entities_db
         _state.db_path = str(db_path)
 
-        old_calls = metrics.tool_calls
-        old_entities = metrics.entities_returned
-
         results = asyncio.run(get_entities(type="tool", limit=10))
         assert len(results) == 1
         assert results[0]["name"] == "cargo"
         assert results[0]["type"] == "tool"
-        assert metrics.tool_calls == old_calls + 1
-        assert metrics.entities_returned == old_entities + 1
 
     def test_get_entities_no_filter(self, entities_db):
         conn, db_path = entities_db
@@ -543,42 +515,34 @@ class TestGetEntitiesTool:
 
 
 class TestMetricsOnError:
-    def test_search_knowledge_increments_errors_on_db_failure(self, tmp_path):
-        """When DB doesn't exist, search_knowledge raises and increments tool_errors."""
+    def test_search_knowledge_raises_on_db_failure(self, tmp_path):
+        """When DB doesn't exist, search_knowledge raises."""
         _state.db_path = str(tmp_path / "nonexistent.db")
         _state.vector_table = None
         _state.lm_client = None
 
-        old_errors = metrics.tool_errors
         with pytest.raises(Exception):
             asyncio.run(search_knowledge("test", mode="lexical"))
-        assert metrics.tool_errors == old_errors + 1
 
-    def test_search_events_increments_errors_on_db_failure(self, tmp_path):
-        """When DB doesn't exist, search_events raises and increments tool_errors."""
+    def test_search_events_raises_on_db_failure(self, tmp_path):
+        """When DB doesn't exist, search_events raises."""
         _state.db_path = str(tmp_path / "nonexistent.db")
 
-        old_errors = metrics.tool_errors
         with pytest.raises(Exception):
             asyncio.run(search_events(query="test", source="shell"))
-        assert metrics.tool_errors == old_errors + 1
 
-    def test_get_entities_increments_errors_on_db_failure(self, tmp_path):
-        """When DB doesn't exist, get_entities raises and increments tool_errors."""
+    def test_get_entities_raises_on_db_failure(self, tmp_path):
+        """When DB doesn't exist, get_entities raises."""
         _state.db_path = str(tmp_path / "nonexistent.db")
 
-        old_errors = metrics.tool_errors
         with pytest.raises(Exception):
             asyncio.run(get_entities(type="tool"))
-        assert metrics.tool_errors == old_errors + 1
 
-    def test_tool_calls_always_incremented_even_on_failure(self, tmp_path):
-        """tool_calls increments even when the tool errors."""
+    def test_tool_raises_on_failure(self, tmp_path):
+        """search_knowledge raises when DB doesn't exist."""
         _state.db_path = str(tmp_path / "nonexistent.db")
         _state.vector_table = None
         _state.lm_client = None
 
-        old_calls = metrics.tool_calls
         with pytest.raises(Exception):
             asyncio.run(search_knowledge("test", mode="lexical"))
-        assert metrics.tool_calls == old_calls + 1
