@@ -46,10 +46,36 @@ from hippo_brain.telemetry import get_tracer as _get_tracer
 from hippo_brain.telemetry import get_meter
 
 _meter = get_meter()
-_events_claimed = _meter.create_counter("hippo.brain.enrichment.events_claimed", description="Events pulled from enrichment queue") if _meter else None
-_nodes_created = _meter.create_counter("hippo.brain.enrichment.nodes_created", description="Knowledge nodes written") if _meter else None
-_enrichment_failures = _meter.create_counter("hippo.brain.enrichment.failures", description="Enrichment batch failures") if _meter else None
-_loop_duration = _meter.create_histogram("hippo.brain.enrichment.loop_duration_ms", description="Enrichment cycle wall clock", unit="ms") if _meter else None
+_events_claimed = (
+    _meter.create_counter(
+        "hippo.brain.enrichment.events_claimed", description="Events pulled from enrichment queue"
+    )
+    if _meter
+    else None
+)
+_nodes_created = (
+    _meter.create_counter(
+        "hippo.brain.enrichment.nodes_created", description="Knowledge nodes written"
+    )
+    if _meter
+    else None
+)
+_enrichment_failures = (
+    _meter.create_counter(
+        "hippo.brain.enrichment.failures", description="Enrichment batch failures"
+    )
+    if _meter
+    else None
+)
+_loop_duration = (
+    _meter.create_histogram(
+        "hippo.brain.enrichment.loop_duration_ms",
+        description="Enrichment cycle wall clock",
+        unit="ms",
+    )
+    if _meter
+    else None
+)
 
 
 def _add(counter, value=1, **attrs):
@@ -786,7 +812,9 @@ def create_app(
                         for status in ("pending", "failed"):
                             try:
                                 count = conn.execute(sql, (status,)).fetchone()[0]
-                                yield otel_metrics.Observation(count, {"source": source, "status": status})
+                                yield otel_metrics.Observation(
+                                    count, {"source": source, "status": status}
+                                )
                             except Exception:
                                 pass
                 finally:
@@ -795,6 +823,7 @@ def create_app(
                 pass
 
         import opentelemetry.metrics as otel_metrics
+
         _meter.create_observable_gauge(
             "hippo.brain.enrichment.queue_depth",
             callbacks=[_observe_queue_depths],

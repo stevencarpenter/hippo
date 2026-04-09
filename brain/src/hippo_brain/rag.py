@@ -9,8 +9,20 @@ from hippo_brain.embeddings import EMBED_DIM, _pad_or_truncate, search_similar
 from hippo_brain.telemetry import get_meter
 
 _meter = get_meter()
-_rag_duration = _meter.create_histogram("hippo.brain.rag.duration_ms", description="RAG stage latency", unit="ms") if _meter else None
-_rag_hits = _meter.create_histogram("hippo.brain.rag.retrieval_hits", description="Vector search result count") if _meter else None
+_rag_duration = (
+    _meter.create_histogram(
+        "hippo.brain.rag.duration_ms", description="RAG stage latency", unit="ms"
+    )
+    if _meter
+    else None
+)
+_rag_hits = (
+    _meter.create_histogram(
+        "hippo.brain.rag.retrieval_hits", description="Vector search result count"
+    )
+    if _meter
+    else None
+)
 
 logger = logging.getLogger("hippo_brain.rag")
 
@@ -89,7 +101,7 @@ def _build_rag_prompt(question: str, hits: list[dict]) -> list[dict]:
         if isinstance(tags, str) and tags:
             try:
                 tags = json.loads(tags)
-            except (json.JSONDecodeError, TypeError):
+            except json.JSONDecodeError, TypeError:
                 tags = []
         if tags and isinstance(tags, list):
             lines.append(f"Tags: {', '.join(tags)}")

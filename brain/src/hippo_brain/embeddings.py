@@ -8,8 +8,18 @@ import pyarrow as pa
 from hippo_brain.telemetry import get_meter
 
 _meter = get_meter()
-_embed_duration = _meter.create_histogram("hippo.brain.embedding.duration_ms", description="Time to embed a knowledge node", unit="ms") if _meter else None
-_embed_failures = _meter.create_counter("hippo.brain.embedding.failures", description="Failed embedding attempts") if _meter else None
+_embed_duration = (
+    _meter.create_histogram(
+        "hippo.brain.embedding.duration_ms", description="Time to embed a knowledge node", unit="ms"
+    )
+    if _meter
+    else None
+)
+_embed_failures = (
+    _meter.create_counter("hippo.brain.embedding.failures", description="Failed embedding attempts")
+    if _meter
+    else None
+)
 
 EMBED_DIM = 768
 

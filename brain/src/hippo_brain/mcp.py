@@ -33,9 +33,23 @@ logger = setup_logging("hippo-mcp")
 
 _meter = get_meter()
 
-_tool_calls = _meter.create_counter("hippo.brain.mcp.tool_calls", description="MCP tool invocations") if _meter else None
-_tool_errors = _meter.create_counter("hippo.brain.mcp.tool_errors", description="MCP tool failures") if _meter else None
-_tool_duration = _meter.create_histogram("hippo.brain.mcp.tool_duration_ms", description="MCP tool latency in ms", unit="ms") if _meter else None
+_tool_calls = (
+    _meter.create_counter("hippo.brain.mcp.tool_calls", description="MCP tool invocations")
+    if _meter
+    else None
+)
+_tool_errors = (
+    _meter.create_counter("hippo.brain.mcp.tool_errors", description="MCP tool failures")
+    if _meter
+    else None
+)
+_tool_duration = (
+    _meter.create_histogram(
+        "hippo.brain.mcp.tool_duration_ms", description="MCP tool latency in ms", unit="ms"
+    )
+    if _meter
+    else None
+)
 
 
 def _add(counter, value=1, **attrs):

@@ -7,9 +7,25 @@ import httpx
 from hippo_brain.telemetry import get_meter
 
 _meter = get_meter()
-_request_duration = _meter.create_histogram("hippo.brain.lmstudio.request_duration_ms", description="LM Studio API latency", unit="ms") if _meter else None
-_lm_errors = _meter.create_counter("hippo.brain.lmstudio.errors", description="Failed LM Studio calls") if _meter else None
-_prompt_tokens = _meter.create_histogram("hippo.brain.lmstudio.prompt_tokens", description="Prompt size in chars") if _meter else None
+_request_duration = (
+    _meter.create_histogram(
+        "hippo.brain.lmstudio.request_duration_ms", description="LM Studio API latency", unit="ms"
+    )
+    if _meter
+    else None
+)
+_lm_errors = (
+    _meter.create_counter("hippo.brain.lmstudio.errors", description="Failed LM Studio calls")
+    if _meter
+    else None
+)
+_prompt_tokens = (
+    _meter.create_histogram(
+        "hippo.brain.lmstudio.prompt_tokens", description="Prompt size in chars"
+    )
+    if _meter
+    else None
+)
 
 
 class LMStudioClient:
