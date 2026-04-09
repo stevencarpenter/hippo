@@ -1,0 +1,44 @@
+name: Extension CI
+
+on:
+  pull_request:
+    paths:
+      - "extension/firefox/**"
+      - ".github/workflows/extension.yml"
+  push:
+    branches: [main]
+    paths:
+      - "extension/firefox/**"
+      - ".github/workflows/extension.yml"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  typecheck:
+    name: Typecheck & Build (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+
+      - name: Install dependencies
+        working-directory: extension/firefox
+        run: npm ci
+
+      - name: Typecheck and build
+        working-directory: extension/firefox
+        run: npm run build

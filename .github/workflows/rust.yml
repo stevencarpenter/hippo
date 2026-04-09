@@ -1,0 +1,89 @@
+name: Rust CI
+
+on:
+  pull_request:
+    paths:
+      - "crates/**"
+      - "shell/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/rust.yml"
+  push:
+    branches: [main]
+    paths:
+      - "crates/**"
+      - "shell/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/rust.yml"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  CARGO_NET_RETRY: 10
+  RUST_BACKTRACE: short
+  RUSTUP_MAX_RETRIES: 10
+
+permissions:
+  contents: read
+
+jobs:
+  format:
+    name: Format
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+
+      - name: Check formatting
+        run: cargo fmt --check
+
+  build-and-test:
+    name: Build & Test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install zsh (Ubuntu)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y zsh
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Setup Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: rust-ci-${{ matrix.os }}-${{ github.base_ref || github.ref_name }}
+          cache-on-failure: true
+
+      - name: Build all targets
+        run: cargo build --all-targets --locked
+
+      - name: Run clippy
+        run: cargo clippy --all-targets --locked --no-deps -- -D warnings
+
+      - name: Run tests
+        run: cargo test --locked --no-fail-fast
+
+      - name: Install cargo-audit
+        uses: taiki-e/install-action@cargo-audit
+
+      - name: Audit Rust dependencies
+        run: cargo audit --file Cargo.lock
