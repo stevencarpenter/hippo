@@ -786,10 +786,11 @@ def create_app(
             "claude": "claude_enrichment_queue",
             "browser": "browser_enrichment_queue",
         }
+        _resolved_db_path = server.db_path
 
         def _observe_queue_depths(callback_options):
             try:
-                conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+                conn = sqlite3.connect(f"file:{_resolved_db_path}?mode=ro", uri=True)
                 try:
                     for source, table in _QUEUE_TABLES.items():
                         # table is from a hardcoded whitelist — no user input involved.

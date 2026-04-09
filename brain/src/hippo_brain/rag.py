@@ -10,9 +10,7 @@ from hippo_brain.telemetry import get_meter
 
 _meter = get_meter()
 _rag_duration = (
-    _meter.create_histogram(
-        "hippo.brain.rag.duration", description="RAG stage latency", unit="ms"
-    )
+    _meter.create_histogram("hippo.brain.rag.duration", description="RAG stage latency", unit="ms")
     if _meter
     else None
 )

@@ -201,7 +201,6 @@ async def search_knowledge(
                     return results
                 except Exception:
                     logger.exception("Semantic search failed, falling back to lexical")
-                    _add(_tool_errors, tool="search_knowledge")
 
             # Lexical search (explicit mode or fallback)
             conn = _get_conn()

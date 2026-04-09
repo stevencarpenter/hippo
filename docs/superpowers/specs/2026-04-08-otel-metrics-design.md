@@ -37,13 +37,13 @@ All metrics use the `hippo.brain` namespace.
 | `hippo.brain.enrichment.nodes_created` | Counter | `source` | Knowledge nodes written |
 | `hippo.brain.enrichment.failures` | Counter | `source` | Enrichment batch failures |
 | `hippo.brain.enrichment.queue_depth` | ObservableGauge | `source`, `status` (pending/failed) | Queue sizes polled from SQLite |
-| `hippo.brain.enrichment.loop_duration_ms` | Histogram | -- | Wall clock per enrichment cycle |
+| `hippo.brain.enrichment.loop_duration` | Histogram | -- | Wall clock per enrichment cycle |
 
 #### client.py (LM Studio)
 
 | Metric | Type | Labels | Description |
 |--------|------|--------|-------------|
-| `hippo.brain.lmstudio.request_duration_ms` | Histogram | `method` (chat/embed) | LLM and embedding API latency |
+| `hippo.brain.lmstudio.request_duration` | Histogram | `method` (chat/embed) | LLM and embedding API latency |
 | `hippo.brain.lmstudio.errors` | Counter | `method` | Failed LM Studio calls |
 | `hippo.brain.lmstudio.prompt_tokens` | Histogram | -- | Prompt size in chars |
 
@@ -51,14 +51,14 @@ All metrics use the `hippo.brain` namespace.
 
 | Metric | Type | Labels | Description |
 |--------|------|--------|-------------|
-| `hippo.brain.embedding.duration_ms` | Histogram | -- | Time to embed a knowledge node |
+| `hippo.brain.embedding.duration` | Histogram | -- | Time to embed a knowledge node |
 | `hippo.brain.embedding.failures` | Counter | -- | Failed embedding attempts |
 
 #### rag.py
 
 | Metric | Type | Labels | Description |
 |--------|------|--------|-------------|
-| `hippo.brain.rag.duration_ms` | Histogram | `stage` (embed/retrieve/synthesize) | Per-stage RAG latency |
+| `hippo.brain.rag.duration` | Histogram | `stage` (embed/retrieve/synthesize) | Per-stage RAG latency |
 | `hippo.brain.rag.retrieval_hits` | Histogram | -- | Number of vector search results |
 
 #### mcp.py
@@ -67,7 +67,7 @@ All metrics use the `hippo.brain` namespace.
 |--------|------|--------|-------------|
 | `hippo.brain.mcp.tool_calls` | Counter | `tool` (ask/search_knowledge/search_events/get_entities) | MCP tool invocations |
 | `hippo.brain.mcp.tool_errors` | Counter | `tool` | MCP tool failures |
-| `hippo.brain.mcp.tool_duration_ms` | Histogram | `tool` | Per-tool latency |
+| `hippo.brain.mcp.tool_duration` | Histogram | `tool` | Per-tool latency |
 
 ### Queue Depth Implementation
 
@@ -109,7 +109,7 @@ All metrics use the `hippo.daemon` namespace.
 | Metric | Type | Labels | Description |
 |--------|------|--------|-------------|
 | `hippo.daemon.flush.events` | Counter | -- | Events written to SQLite per flush |
-| `hippo.daemon.flush.duration_ms` | Histogram | -- | Time per flush batch |
+| `hippo.daemon.flush.duration` | Histogram | -- | Time per flush batch |
 | `hippo.daemon.flush.batch_size` | Histogram | -- | Events per flush batch |
 
 #### Requests (daemon.rs)
@@ -117,7 +117,7 @@ All metrics use the `hippo.daemon` namespace.
 | Metric | Type | Labels | Description |
 |--------|------|--------|-------------|
 | `hippo.daemon.requests` | Counter | `type` (GetStatus/GetSessions/GetEvents/...) | Socket request count |
-| `hippo.daemon.request.duration_ms` | Histogram | `type` | Per-request-type latency |
+| `hippo.daemon.request.duration` | Histogram | `type` | Per-request-type latency |
 
 #### Redaction (daemon.rs)
 
