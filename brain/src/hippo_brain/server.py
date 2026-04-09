@@ -43,6 +43,24 @@ from hippo_brain.claude_sessions import (
     write_claude_knowledge_node,
 )
 from hippo_brain.telemetry import get_tracer as _get_tracer
+from hippo_brain.telemetry import get_meter
+
+_meter = get_meter()
+_events_claimed = _meter.create_counter("hippo.brain.enrichment.events_claimed", description="Events pulled from enrichment queue") if _meter else None
+_nodes_created = _meter.create_counter("hippo.brain.enrichment.nodes_created", description="Knowledge nodes written") if _meter else None
+_enrichment_failures = _meter.create_counter("hippo.brain.enrichment.failures", description="Enrichment batch failures") if _meter else None
+_loop_duration = _meter.create_histogram("hippo.brain.enrichment.loop_duration_ms", description="Enrichment cycle wall clock", unit="ms") if _meter else None
+
+
+def _add(counter, value=1, **attrs):
+    if counter:
+        counter.add(value, attrs)
+
+
+def _hist(histogram, value, **attrs):
+    if histogram:
+        histogram.record(value, attrs)
+
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s:%(name)s:%(message)s")
 logger = logging.getLogger("hippo_brain")
@@ -367,11 +385,13 @@ class BrainServer:
                         # Process all sources concurrently — each method uses its own
                         # DB connection for writes so they don't block each other.
                         # Shell receives the claim conn for read-only browser correlation.
+                        t0 = time.monotonic()
                         await asyncio.gather(
                             self._enrich_shell_batches(shell_chunks, conn),
                             self._enrich_claude_batches(claude_batches),
                             self._enrich_browser_batches(browser_batches),
                         )
+                        _hist(_loop_duration, (time.monotonic() - t0) * 1000)
                     finally:
                         conn.close()
                 except Exception as e:
@@ -445,6 +465,7 @@ class BrainServer:
         for events in chunks:
             event_ids = [e["id"] for e in events]
             logger.info("claimed %d events: %s", len(event_ids), event_ids)
+            _add(_events_claimed, len(event_ids), source="shell")
 
             browser_context = ""
             try:
@@ -480,6 +501,7 @@ class BrainServer:
                         )
                     finally:
                         conn.close()
+                    _add(_nodes_created, source="shell")
                     self._record_success()
                     logger.info("enriched %d events -> node %d", len(event_ids), node_id)
 
@@ -507,6 +529,7 @@ class BrainServer:
                             asyncio.create_task(self._embed_node(node_id, node_dict, "shell"))
                         )
                 except Exception as e:
+                    _add(_enrichment_failures, source="shell")
                     err_msg = self._record_error(e)
                     logger.error("enrichment failed: %s", e, exc_info=True)
                     retry_conn = self._get_conn()
@@ -527,6 +550,7 @@ class BrainServer:
             segment_ids = [s["id"] for s in segments]
             prompt = "\n---\n\n".join(s["summary_text"] for s in segments)
             logger.info("claimed %d claude segments: %s", len(segment_ids), segment_ids)
+            _add(_events_claimed, len(segment_ids), source="claude")
 
             tracer = _get_tracer()
             span = (
@@ -552,6 +576,7 @@ class BrainServer:
                         )
                     finally:
                         conn.close()
+                    _add(_nodes_created, source="claude")
                     self._record_success()
                     logger.info(
                         "enriched %d claude segments -> node %d",
@@ -592,6 +617,7 @@ class BrainServer:
                             asyncio.create_task(self._embed_node(node_id, node_dict, "claude"))
                         )
                 except Exception as e:
+                    _add(_enrichment_failures, source="claude")
                     err_msg = self._record_error(e)
                     logger.error("claude enrichment failed: %s", e, exc_info=True)
                     retry_conn = self._get_conn()
@@ -611,6 +637,7 @@ class BrainServer:
         for events in batches:
             event_ids = [e["id"] for e in events]
             logger.info("claimed %d browser events: %s", len(event_ids), event_ids)
+            _add(_events_claimed, len(event_ids), source="browser")
             prompt = build_browser_enrichment_prompt(events)
 
             tracer = _get_tracer()
@@ -637,6 +664,7 @@ class BrainServer:
                         )
                     finally:
                         conn.close()
+                    _add(_nodes_created, source="browser")
                     self._record_success()
                     logger.info(
                         "enriched %d browser events -> node %d",
@@ -668,6 +696,7 @@ class BrainServer:
                             asyncio.create_task(self._embed_node(node_id, node_dict, "browser"))
                         )
                 except Exception as e:
+                    _add(_enrichment_failures, source="browser")
                     err_msg = self._record_error(e)
                     logger.error("browser enrichment failed: %s", e, exc_info=True)
                     retry_conn = self._get_conn()
@@ -734,6 +763,43 @@ def create_app(
         enrichment_batch_size=enrichment_batch_size,
         session_stale_secs=session_stale_secs,
     )
+
+    if _meter:
+        _QUEUE_TABLES = {
+            "shell": "enrichment_queue",
+            "claude": "claude_enrichment_queue",
+            "browser": "browser_enrichment_queue",
+        }
+
+        def _observe_queue_depths(callback_options):
+            try:
+                conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+                try:
+                    for source, table in _QUEUE_TABLES.items():
+                        # table is from a hardcoded whitelist — no user input involved.
+                        # Use a pre-built mapping to keep the query fixed-form.
+                        sql = {
+                            "enrichment_queue": "SELECT COUNT(*) FROM enrichment_queue WHERE status = ?",
+                            "claude_enrichment_queue": "SELECT COUNT(*) FROM claude_enrichment_queue WHERE status = ?",
+                            "browser_enrichment_queue": "SELECT COUNT(*) FROM browser_enrichment_queue WHERE status = ?",
+                        }[table]
+                        for status in ("pending", "failed"):
+                            try:
+                                count = conn.execute(sql, (status,)).fetchone()[0]
+                                yield otel_metrics.Observation(count, {"source": source, "status": status})
+                            except Exception:
+                                pass
+                finally:
+                    conn.close()
+            except Exception:
+                pass
+
+        import opentelemetry.metrics as otel_metrics
+        _meter.create_observable_gauge(
+            "hippo.brain.enrichment.queue_depth",
+            callbacks=[_observe_queue_depths],
+            description="Enrichment queue sizes",
+        )
 
     @asynccontextmanager
     async def lifespan(_app: Starlette):
