@@ -247,20 +247,26 @@ async def ask(question: str, limit: int = 10) -> str:
     if not _state.query_model:
         return "Error: No query model configured (set models.query in config.toml)"
 
-    result = await rag_ask(
-        question=question,
-        lm_client=_state.lm_client,
-        vector_table=_state.vector_table,
-        query_model=_state.query_model,
-        embedding_model=_state.embedding_model,
-        limit=limit,
-    )
+    try:
+        result = await rag_ask(
+            question=question,
+            lm_client=_state.lm_client,
+            vector_table=_state.vector_table,
+            query_model=_state.query_model,
+            embedding_model=_state.embedding_model,
+            limit=limit,
+        )
 
-    elapsed = time.monotonic() - t0
-    _hist(_tool_duration, elapsed * 1000, tool="ask")
-    logger.info("ask completed in %.3fs", elapsed)
+        elapsed = time.monotonic() - t0
+        _hist(_tool_duration, elapsed * 1000, tool="ask")
+        logger.info("ask completed in %.3fs", elapsed)
 
-    return format_rag_response(result)
+        return format_rag_response(result)
+
+    except Exception:
+        _add(_tool_errors, tool="ask")
+        logger.exception("ask failed")
+        raise
 
 
 @mcp.tool()
