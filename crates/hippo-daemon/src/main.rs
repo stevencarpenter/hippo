@@ -485,7 +485,9 @@ async fn main() -> Result<()> {
             }
         }
         Commands::ExportTraining { out: _, since: _ } => {
-            anyhow::bail!("Training export is not yet implemented. Use: uv run --project brain hippo-brain export");
+            anyhow::bail!(
+                "Training export is not yet implemented. Use: uv run --project brain hippo-brain export"
+            );
         }
         Commands::Config { action } => match action {
             ConfigAction::Edit => {
