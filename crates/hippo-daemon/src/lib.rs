@@ -5,6 +5,8 @@ pub mod framing;
 pub mod native_messaging;
 #[cfg(feature = "otel")]
 pub mod telemetry;
+#[cfg(feature = "otel")]
+pub mod metrics;
 
 use hippo_core::config::ENV_ALLOWLIST;
 use hippo_core::events::ShellEvent;
