@@ -10,7 +10,7 @@ from hippo_brain.telemetry import get_meter
 _meter = get_meter()
 _embed_duration = (
     _meter.create_histogram(
-        "hippo.brain.embedding.duration_ms", description="Time to embed a knowledge node", unit="ms"
+        "hippo.brain.embedding.duration", description="Time to embed a knowledge node", unit="ms"
     )
     if _meter
     else None

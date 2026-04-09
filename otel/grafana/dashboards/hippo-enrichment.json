@@ -143,21 +143,21 @@
         {
           "refId": "A",
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "histogram_quantile(0.5, sum(rate(hippo_brain_lmstudio_request_duration_ms_bucket{method=\"chat\"}[5m])) by (le))",
+          "expr": "histogram_quantile(0.5, sum(rate(hippo_brain_lmstudio_request_duration_milliseconds_bucket{method=\"chat\"}[5m])) by (le))",
           "legendFormat": "p50",
           "editorMode": "code"
         },
         {
           "refId": "B",
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "histogram_quantile(0.95, sum(rate(hippo_brain_lmstudio_request_duration_ms_bucket{method=\"chat\"}[5m])) by (le))",
+          "expr": "histogram_quantile(0.95, sum(rate(hippo_brain_lmstudio_request_duration_milliseconds_bucket{method=\"chat\"}[5m])) by (le))",
           "legendFormat": "p95",
           "editorMode": "code"
         },
         {
           "refId": "C",
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "histogram_quantile(0.99, sum(rate(hippo_brain_lmstudio_request_duration_ms_bucket{method=\"chat\"}[5m])) by (le))",
+          "expr": "histogram_quantile(0.99, sum(rate(hippo_brain_lmstudio_request_duration_milliseconds_bucket{method=\"chat\"}[5m])) by (le))",
           "legendFormat": "p99",
           "editorMode": "code"
         }
@@ -254,14 +254,14 @@
         {
           "refId": "A",
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "histogram_quantile(0.5, sum(rate(hippo_brain_embedding_duration_ms_bucket[5m])) by (le))",
+          "expr": "histogram_quantile(0.5, sum(rate(hippo_brain_embedding_duration_milliseconds_bucket[5m])) by (le))",
           "legendFormat": "p50",
           "editorMode": "code"
         },
         {
           "refId": "B",
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "histogram_quantile(0.95, sum(rate(hippo_brain_embedding_duration_ms_bucket[5m])) by (le))",
+          "expr": "histogram_quantile(0.95, sum(rate(hippo_brain_embedding_duration_milliseconds_bucket[5m])) by (le))",
           "legendFormat": "p95",
           "editorMode": "code"
         }
@@ -325,7 +325,7 @@
         {
           "refId": "A",
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "histogram_quantile(0.5, sum(rate(hippo_brain_rag_duration_ms_bucket[5m])) by (le, stage))",
+          "expr": "histogram_quantile(0.5, sum(rate(hippo_brain_rag_duration_milliseconds_bucket[5m])) by (le, stage))",
           "legendFormat": "{{stage}} p50",
           "editorMode": "code"
         }
@@ -392,7 +392,7 @@
         {
           "refId": "A",
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "histogram_quantile(0.95, sum(rate(hippo_brain_mcp_tool_duration_ms_bucket[5m])) by (le, tool))",
+          "expr": "histogram_quantile(0.95, sum(rate(hippo_brain_mcp_tool_duration_milliseconds_bucket[5m])) by (le, tool))",
           "legendFormat": "{{tool}} p95",
           "editorMode": "code"
         }

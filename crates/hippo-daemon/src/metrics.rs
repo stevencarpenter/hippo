@@ -37,7 +37,7 @@ pub static FLUSH_EVENTS: LazyLock<Counter<u64>> = LazyLock::new(|| {
 
 pub static FLUSH_DURATION_MS: LazyLock<Histogram<f64>> = LazyLock::new(|| {
     METER
-        .f64_histogram("hippo.daemon.flush.duration_ms")
+        .f64_histogram("hippo.daemon.flush.duration")
         .with_description("Time per flush batch")
         .with_unit("ms")
         .build()
@@ -61,7 +61,7 @@ pub static REQUESTS: LazyLock<Counter<u64>> = LazyLock::new(|| {
 
 pub static REQUEST_DURATION_MS: LazyLock<Histogram<f64>> = LazyLock::new(|| {
     METER
-        .f64_histogram("hippo.daemon.request.duration_ms")
+        .f64_histogram("hippo.daemon.request.duration")
         .with_description("Per-request-type latency")
         .with_unit("ms")
         .build()

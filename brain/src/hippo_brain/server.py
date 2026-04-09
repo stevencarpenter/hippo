@@ -69,7 +69,7 @@ _enrichment_failures = (
 )
 _loop_duration = (
     _meter.create_histogram(
-        "hippo.brain.enrichment.loop_duration_ms",
+        "hippo.brain.enrichment.loop_duration",
         description="Enrichment cycle wall clock",
         unit="ms",
     )

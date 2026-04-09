@@ -9,7 +9,7 @@ from hippo_brain.telemetry import get_meter
 _meter = get_meter()
 _request_duration = (
     _meter.create_histogram(
-        "hippo.brain.lmstudio.request_duration_ms", description="LM Studio API latency", unit="ms"
+        "hippo.brain.lmstudio.request_duration", description="LM Studio API latency", unit="ms"
     )
     if _meter
     else None

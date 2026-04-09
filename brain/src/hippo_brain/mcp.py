@@ -45,7 +45,7 @@ _tool_errors = (
 )
 _tool_duration = (
     _meter.create_histogram(
-        "hippo.brain.mcp.tool_duration_ms", description="MCP tool latency in ms", unit="ms"
+        "hippo.brain.mcp.tool_duration", description="MCP tool latency", unit="ms"
     )
     if _meter
     else None
