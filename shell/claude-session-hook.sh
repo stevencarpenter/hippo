@@ -18,15 +18,27 @@ set -euo pipefail
 #     }
 #   }
 
+TMUX_SESSION="hippo"
+LOG_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/hippo"
+DEBUG_LOG="$LOG_DIR/session-hook-debug.log"
+
+log() {
+    echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) $*" >> "$DEBUG_LOG"
+}
+
 # Read hook JSON from stdin
 INPUT=$(cat)
+log "hook invoked, input=${INPUT}"
 
 # Extract transcript_path from the JSON
 TRANSCRIPT_PATH=$(echo "$INPUT" | python3 -c "import sys,json; print(json.load(sys.stdin).get('transcript_path',''))" 2>/dev/null)
 
 if [ -z "$TRANSCRIPT_PATH" ]; then
+    log "no transcript_path in input, exiting"
     exit 0
 fi
+
+log "transcript_path=$TRANSCRIPT_PATH"
 
 # Wait briefly for the transcript file to be created (Claude fires the hook before writing it)
 for i in 1 2 3 4 5; do
@@ -35,6 +47,7 @@ for i in 1 2 3 4 5; do
 done
 
 if [ ! -f "$TRANSCRIPT_PATH" ]; then
+    log "transcript file not found after waiting, exiting"
     exit 0
 fi
 
@@ -48,26 +61,37 @@ if [ ! -x "$HIPPO_BIN" ]; then
     HIPPO_BIN="$(command -v hippo 2>/dev/null || true)"
 fi
 if [ -z "$HIPPO_BIN" ]; then
+    log "hippo binary not found, exiting"
     exit 0
 fi
+
+log "hippo_bin=$HIPPO_BIN"
 
 # Derive a short window name from the session file
 SESSION_NAME="$(basename "$TRANSCRIPT_PATH" .jsonl)"
 SHORT_ID="${SESSION_NAME:0:8}"
 WINDOW_NAME="hippo:${SHORT_ID}"
 
+# Resolve Claude's PID. The hook runs as a direct child of Claude Code,
+# so $PPID is the Claude process PID.
+CLAUDE_PID="$PPID"
+log "claude_pid=$CLAUDE_PID window_name=$WINDOW_NAME"
+
 # Spawn the tailer in a detached tmux window.
 # tmux new-window -d returns immediately — the tail loop runs inside the new window,
 # so this hook never blocks Claude Code from launching.
-# Pass Claude's PID so the tailer exits when Claude does.
-# The hook script runs as a direct child of Claude (no intermediate wrapper),
-# so $PPID is the Claude process PID.
-CLAUDE_PID="$PPID"
-
-if tmux list-sessions &>/dev/null; then
-    tmux new-window -d -n "$WINDOW_NAME" "HIPPO_WATCH_PID=$CLAUDE_PID $HIPPO_BIN ingest claude-session --inline $TRANSCRIPT_PATH"
+if tmux has-session -t "$TMUX_SESSION" 2>/dev/null; then
+    tmux new-window -d -t "$TMUX_SESSION" -n "$WINDOW_NAME" \
+        "HIPPO_WATCH_PID=$CLAUDE_PID $HIPPO_BIN ingest claude-session --inline $TRANSCRIPT_PATH"
+    log "spawned tmux window in session=$TMUX_SESSION"
+elif tmux list-sessions &>/dev/null; then
+    # hippo session doesn't exist but tmux is running — create it
+    tmux new-session -d -s "$TMUX_SESSION" -n "$WINDOW_NAME" \
+        "HIPPO_WATCH_PID=$CLAUDE_PID $HIPPO_BIN ingest claude-session --inline $TRANSCRIPT_PATH"
+    log "created tmux session=$TMUX_SESSION with tailer window"
 else
     # No tmux server — batch-import what's already in the file and exit.
     # Use setsid to fully detach from the hook's process group.
     ("$HIPPO_BIN" ingest claude-session --batch "$TRANSCRIPT_PATH" &>/dev/null &)
+    log "no tmux server, batch-imported"
 fi
