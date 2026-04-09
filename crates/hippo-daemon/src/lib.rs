@@ -2,6 +2,8 @@ pub mod claude_session;
 pub mod commands;
 pub mod daemon;
 pub mod framing;
+#[cfg(feature = "otel")]
+pub mod metrics;
 pub mod native_messaging;
 #[cfg(feature = "otel")]
 pub mod telemetry;

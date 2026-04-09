@@ -2,9 +2,25 @@
 
 import json
 import logging
+import time
 from datetime import datetime, timezone
 
 from hippo_brain.embeddings import EMBED_DIM, _pad_or_truncate, search_similar
+from hippo_brain.telemetry import get_meter
+
+_meter = get_meter()
+_rag_duration = (
+    _meter.create_histogram("hippo.brain.rag.duration", description="RAG stage latency", unit="ms")
+    if _meter
+    else None
+)
+_rag_hits = (
+    _meter.create_histogram(
+        "hippo.brain.rag.retrieval_hits", description="Vector search result count"
+    )
+    if _meter
+    else None
+)
 
 logger = logging.getLogger("hippo_brain.rag")
 
@@ -153,7 +169,10 @@ async def ask(
     """
     # 1. Embed the question
     try:
+        _t0 = time.monotonic()
         vecs = await lm_client.embed([question], model=embedding_model)
+        if _rag_duration:
+            _rag_duration.record((time.monotonic() - _t0) * 1000, {"stage": "embed"})
     except Exception as e:
         logger.error("RAG embed failed: %s", e)
         return {"error": f"Embedding failed: {e}", "sources": [], "model": query_model}
@@ -161,7 +180,12 @@ async def ask(
     query_vec = _pad_or_truncate(vecs[0], EMBED_DIM)
 
     # 2. Retrieve relevant knowledge nodes
+    _t1 = time.monotonic()
     hits = search_similar(vector_table, query_vec, limit=limit)
+    if _rag_duration:
+        _rag_duration.record((time.monotonic() - _t1) * 1000, {"stage": "retrieve"})
+    if _rag_hits:
+        _rag_hits.record(len(hits))
 
     if not hits:
         return {
@@ -177,7 +201,10 @@ async def ask(
     messages = _build_rag_prompt(question, hits)
 
     try:
+        _t2 = time.monotonic()
         answer = await lm_client.chat(messages, model=query_model)
+        if _rag_duration:
+            _rag_duration.record((time.monotonic() - _t2) * 1000, {"stage": "synthesize"})
     except Exception as e:
         logger.error("RAG synthesis failed: %s", e)
         return {"error": f"Synthesis failed: {e}", "sources": sources, "model": query_model}

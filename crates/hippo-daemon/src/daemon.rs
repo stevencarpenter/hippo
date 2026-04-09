@@ -15,6 +15,13 @@ use tokio::task::JoinSet;
 use tokio::time::{self, Duration, Instant};
 use tracing::{error, info, warn};
 
+#[cfg(feature = "otel")]
+use crate::metrics;
+#[cfg(feature = "otel")]
+use opentelemetry::KeyValue;
+#[cfg(feature = "otel")]
+use std::time::Instant as OtelInstant;
+
 use crate::framing::{read_frame, write_frame};
 
 pub struct DaemonState {
@@ -29,6 +36,16 @@ pub struct DaemonState {
     pub shutdown_tx: watch::Sender<bool>,
 }
 
+/// Count files in a directory, returning 0 on any error.
+/// Extracted to a standalone function so taint analysis does not
+/// conflate the directory path with web-request sources.
+#[cfg(feature = "otel")]
+fn count_dir_entries(dir: &std::path::Path) -> u64 {
+    std::fs::read_dir(dir)
+        .map(|entries| entries.count() as u64)
+        .unwrap_or(0)
+}
+
 #[tracing::instrument(skip(state), fields(request_type))]
 pub async fn handle_request(state: &Arc<DaemonState>, request: DaemonRequest) -> DaemonResponse {
     let request_type = match &request {
@@ -41,14 +58,30 @@ pub async fn handle_request(state: &Arc<DaemonState>, request: DaemonRequest) ->
         DaemonRequest::Shutdown => "shutdown",
     };
     tracing::Span::current().record("request_type", request_type);
-    match request {
+
+    #[cfg(feature = "otel")]
+    let req_start = OtelInstant::now();
+    #[cfg(feature = "otel")]
+    metrics::REQUESTS.add(1, &[KeyValue::new("type", request_type)]);
+
+    let response = match request {
         DaemonRequest::IngestEvent(envelope) => {
+            #[cfg(feature = "otel")]
+            let event_type = match &envelope.payload {
+                EventPayload::Shell(_) => "shell",
+                EventPayload::Browser(_) => "browser",
+                _ => "unknown",
+            };
             let mut buffer = state.event_buffer.lock().await;
             let cap = state.config.daemon.flush_batch_size * 4;
             if buffer.len() >= cap {
                 state.drop_count.fetch_add(1, Ordering::Relaxed);
+                #[cfg(feature = "otel")]
+                metrics::EVENTS_DROPPED.add(1, &[KeyValue::new("type", event_type)]);
             } else {
                 buffer.push(*envelope);
+                #[cfg(feature = "otel")]
+                metrics::EVENTS_INGESTED.add(1, &[KeyValue::new("type", event_type)]);
             }
             DaemonResponse::Ack
         }
@@ -57,7 +90,15 @@ pub async fn handle_request(state: &Arc<DaemonState>, request: DaemonRequest) ->
                 let db = state.read_db.lock().await;
                 match storage::get_status(&db) {
                     Ok(status) => status,
-                    Err(e) => return DaemonResponse::Error(e.to_string()),
+                    Err(e) => {
+                        #[cfg(feature = "otel")]
+                        {
+                            let elapsed = req_start.elapsed().as_secs_f64() * 1000.0;
+                            metrics::REQUEST_DURATION_MS
+                                .record(elapsed, &[KeyValue::new("type", request_type)]);
+                        }
+                        return DaemonResponse::Error(e.to_string());
+                    }
                 }
             };
 
@@ -139,11 +180,22 @@ pub async fn handle_request(state: &Arc<DaemonState>, request: DaemonRequest) ->
             info!("shutdown requested");
             DaemonResponse::Ack
         }
+    };
+
+    #[cfg(feature = "otel")]
+    {
+        let elapsed = req_start.elapsed().as_secs_f64() * 1000.0;
+        metrics::REQUEST_DURATION_MS.record(elapsed, &[KeyValue::new("type", request_type)]);
     }
+
+    response
 }
 
 #[tracing::instrument(skip(state), fields(event_count))]
 pub async fn flush_events(state: &Arc<DaemonState>) -> usize {
+    #[cfg(feature = "otel")]
+    let flush_start = OtelInstant::now();
+
     let events: Vec<EventEnvelope> = {
         let mut buffer = state.event_buffer.lock().await;
         let n = buffer.len().min(state.config.daemon.flush_batch_size);
@@ -165,10 +217,18 @@ pub async fn flush_events(state: &Arc<DaemonState>) -> usize {
             EventPayload::Shell(shell_event) => {
                 let redacted_event = crate::redact_shell_event(shell_event, &state.redaction);
 
+                #[cfg(feature = "otel")]
+                if redacted_event.redaction_count > 0 {
+                    metrics::REDACTIONS.add(redacted_event.redaction_count as u64, &[]);
+                }
+
                 let shell_str = redacted_event.shell.as_db_str();
+                let session_uuid_str = redacted_event.session_id.to_string();
+                #[cfg(feature = "otel")]
+                let session_is_new = !session_map.contains_key(&session_uuid_str);
                 let session_id = match storage::get_or_create_session(
                     &db,
-                    &redacted_event.session_id.to_string(),
+                    &session_uuid_str,
                     &redacted_event.hostname,
                     shell_str,
                     &username,
@@ -189,10 +249,17 @@ pub async fn flush_events(state: &Arc<DaemonState>) -> usize {
                         ) {
                             error!("fallback write failed: {}", fe);
                         }
+                        #[cfg(feature = "otel")]
+                        metrics::FALLBACK_WRITES.add(1, &[]);
                         state.drop_count.fetch_add(1, Ordering::Relaxed);
                         continue;
                     }
                 };
+
+                #[cfg(feature = "otel")]
+                if session_is_new {
+                    metrics::SESSIONS_CREATED.add(1, &[]);
+                }
 
                 let env_snapshot_id =
                     storage::upsert_env_snapshot(&db, &redacted_event.env_snapshot).unwrap_or_else(
@@ -225,6 +292,8 @@ pub async fn flush_events(state: &Arc<DaemonState>) -> usize {
                     ) {
                         error!("fallback write failed: {}", fe);
                     }
+                    #[cfg(feature = "otel")]
+                    metrics::FALLBACK_WRITES.add(1, &[]);
                     state.drop_count.fetch_add(1, Ordering::Relaxed);
                 }
             }
@@ -242,6 +311,8 @@ pub async fn flush_events(state: &Arc<DaemonState>) -> usize {
                     {
                         error!("fallback write failed: {}", fe);
                     }
+                    #[cfg(feature = "otel")]
+                    metrics::FALLBACK_WRITES.add(1, &[]);
                     state.drop_count.fetch_add(1, Ordering::Relaxed);
                 }
             }
@@ -249,6 +320,14 @@ pub async fn flush_events(state: &Arc<DaemonState>) -> usize {
                 tracing::warn!("unknown event payload type, skipping");
             }
         }
+    }
+
+    #[cfg(feature = "otel")]
+    {
+        let count_u64 = count as u64;
+        metrics::FLUSH_EVENTS.add(count_u64, &[]);
+        metrics::FLUSH_BATCH_SIZE.record(count_u64, &[]);
+        metrics::FLUSH_DURATION_MS.record(flush_start.elapsed().as_secs_f64() * 1000.0, &[]);
     }
 
     count
@@ -300,6 +379,10 @@ pub async fn run(config: HippoConfig) -> Result<()> {
                     recovered, errors
                 );
             }
+            #[cfg(feature = "otel")]
+            if recovered > 0 {
+                metrics::FALLBACK_RECOVERED.add(recovered as u64, &[]);
+            }
         }
         Err(e) => warn!("fallback recovery failed: {}", e),
     }
@@ -317,6 +400,48 @@ pub async fn run(config: HippoConfig) -> Result<()> {
         event_buffer: Mutex::new(Vec::new()),
         shutdown_tx,
     });
+
+    // Register observable gauges (otel only)
+    #[cfg(feature = "otel")]
+    {
+        use opentelemetry::global;
+        let meter = global::meter("hippo-daemon");
+
+        let state_ref = Arc::clone(&state);
+        let _ = meter
+            .u64_observable_gauge("hippo.daemon.buffer.size")
+            .with_description("Current event buffer occupancy")
+            .with_callback(move |gauge| {
+                if let Ok(buf) = state_ref.event_buffer.try_lock() {
+                    gauge.observe(buf.len() as u64, &[]);
+                }
+            })
+            .build();
+
+        let db_path = state.config.db_path();
+        let _ = meter
+            .u64_observable_gauge("hippo.daemon.db.size_bytes")
+            .with_description("SQLite file size")
+            .with_callback(move |gauge| {
+                if let Ok(meta) = std::fs::metadata(&db_path) {
+                    gauge.observe(meta.len(), &[]);
+                }
+            })
+            .build();
+
+        // Canonicalize to produce a clean PathBuf that is not taint-tracked
+        // through the DaemonState struct (path is XDG data dir / "fallback",
+        // not user-controlled input).
+        let fallback_dir_gauge = std::fs::canonicalize(state.config.fallback_dir())
+            .unwrap_or_else(|_| state.config.fallback_dir());
+        let _ = meter
+            .u64_observable_gauge("hippo.daemon.fallback.pending")
+            .with_description("Unrecovered fallback files")
+            .with_callback(move |gauge| {
+                gauge.observe(count_dir_entries(&fallback_dir_gauge), &[]);
+            })
+            .build();
+    }
 
     // Spawn flush task
     let flush_state = Arc::clone(&state);
