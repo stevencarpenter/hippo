@@ -46,7 +46,12 @@ print -r -- "$_HIPPO_GIT_BRANCH"
         hook_path = hook_path.display(),
     );
 
-    let zsh = std::env::var("SHELL").unwrap_or_else(|_| "/opt/homebrew/bin/zsh".to_string());
+    // Find zsh explicitly — $SHELL may be bash on CI even when zsh is installed
+    let zsh = ["/bin/zsh", "/usr/bin/zsh", "/opt/homebrew/bin/zsh"]
+        .iter()
+        .find(|p| std::path::Path::new(p).exists())
+        .expect("zsh not found — install with: apt-get install zsh")
+        .to_string();
     let output = Command::new(zsh).arg("-lc").arg(script).output().unwrap();
     assert!(
         output.status.success(),

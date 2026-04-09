@@ -1,0 +1,88 @@
+name: Python CI
+
+on:
+  pull_request:
+    paths:
+      - "brain/**"
+      - ".github/workflows/python.yml"
+  push:
+    branches: [main]
+    paths:
+      - "brain/**"
+      - ".github/workflows/python.yml"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  lint-and-test:
+    name: Lint & Test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+
+      - name: Install Python
+        run: uv python install 3.14
+
+      - name: Sync dependencies
+        run: uv sync --project brain
+
+      - name: Stamp version
+        run: |
+          set -euo pipefail
+          BASE_VERSION=$(grep '^version' Cargo.toml | head -1 | cut -d'"' -f2)
+          RAW=$(git describe --tags --always --dirty --match 'v*' 2>/dev/null || echo "unknown")
+
+          if [ "$RAW" = "v${BASE_VERSION}" ]; then
+              FULL_VERSION="$BASE_VERSION"
+          elif [ "$RAW" = "v${BASE_VERSION}-dirty" ]; then
+              FULL_VERSION="${BASE_VERSION}+dirty"
+          elif [[ "$RAW" == v* ]]; then
+              DIRTY=""
+              CLEAN="$RAW"
+              if [[ "$RAW" == *-dirty ]]; then
+                  DIRTY=".dirty"
+                  CLEAN="${RAW%-dirty}"
+              fi
+              COUNT=$(echo "$CLEAN" | sed 's/v[^-]*-\([0-9]*\)-.*/\1/')
+              SHA=$(echo "$CLEAN" | sed 's/v[^-]*-[0-9]*-//')
+              FULL_VERSION="${BASE_VERSION}-dev.${COUNT}+${SHA}${DIRTY}"
+          else
+              DIRTY=""
+              SHA="$RAW"
+              if [[ "$RAW" == *-dirty ]]; then
+                  DIRTY=".dirty"
+                  SHA="${RAW%-dirty}"
+              fi
+              FULL_VERSION="${BASE_VERSION}-dev+g${SHA}${DIRTY}"
+          fi
+
+          mkdir -p brain/src/hippo_brain
+          echo "__version__ = \"${FULL_VERSION}\"" > brain/src/hippo_brain/_version.py
+          echo "Stamped brain version: ${FULL_VERSION}"
+
+      - name: Ruff check
+        run: uv run --project brain ruff check brain/
+
+      - name: Ruff format check
+        run: uv run --project brain ruff format --check brain/src brain/tests
+
+      - name: Run tests
+        run: uv run --project brain pytest brain/tests -v --cov=hippo_brain --cov-report=term-missing
+
+      # TODO: Re-enable pip-audit when Python 3.14 support lands
+      # (upstream ensurepip SIGABRT on macOS arm64). Dependabot covers CVEs meanwhile.
