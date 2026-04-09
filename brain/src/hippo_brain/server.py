@@ -43,7 +43,7 @@ from hippo_brain.claude_sessions import (
     write_claude_knowledge_node,
 )
 from hippo_brain.telemetry import get_tracer as _get_tracer
-from hippo_brain.telemetry import get_meter
+from hippo_brain.telemetry import add as _add, get_meter, hist as _hist
 
 _meter = get_meter()
 _events_claimed = (
@@ -76,16 +76,6 @@ _loop_duration = (
     if _meter
     else None
 )
-
-
-def _add(counter, value=1, **attrs):
-    if counter:
-        counter.add(value, attrs)
-
-
-def _hist(histogram, value, **attrs):
-    if histogram:
-        histogram.record(value, attrs)
 
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s:%(name)s:%(message)s")

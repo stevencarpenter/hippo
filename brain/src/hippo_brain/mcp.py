@@ -18,7 +18,7 @@ from hippo_brain.embeddings import (
     search_similar,
 )
 from hippo_brain.mcp_logging import setup_logging
-from hippo_brain.telemetry import get_meter
+from hippo_brain.telemetry import add as _add, get_meter, hist as _hist
 from hippo_brain.mcp_queries import (
     MAX_LIMIT,
     get_entities_impl,
@@ -50,16 +50,6 @@ _tool_duration = (
     if _meter
     else None
 )
-
-
-def _add(counter, value=1, **attrs):
-    if counter:
-        counter.add(value, attrs)
-
-
-def _hist(histogram, value, **attrs):
-    if histogram:
-        histogram.record(value, attrs)
 
 
 def _load_config() -> dict:

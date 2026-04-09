@@ -59,7 +59,7 @@ class LMStudioClient:
                 _request_duration.record((time.monotonic() - t0) * 1000, {"method": "chat"})
             if _prompt_tokens:
                 total_chars = sum(len(m.get("content", "")) for m in messages)
-                _prompt_tokens.record(total_chars, {"method": "chat"})
+                _prompt_tokens.record(total_chars)
             return result
         except Exception:
             if _lm_errors:

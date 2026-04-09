@@ -100,7 +100,12 @@ def get_tracer(name: str = "hippo-brain"):
 
 
 def get_meter(name: str = "hippo-brain"):
-    """Get OTel meter if available, else return None."""
+    """Get OTel meter if available, else return None.
+
+    The returned meter is a global proxy — instruments created against it
+    will pick up the real MeterProvider once ``init_telemetry()`` calls
+    ``set_meter_provider()``.
+    """
     if not _is_otel_enabled():
         return None
     try:
@@ -109,3 +114,15 @@ def get_meter(name: str = "hippo-brain"):
         return otel_metrics.get_meter(name)
     except ImportError:
         return None
+
+
+def add(counter, value=1, **attrs):
+    """Increment an OTel counter if it exists (no-op when ``None``)."""
+    if counter:
+        counter.add(value, attrs)
+
+
+def hist(histogram, value, **attrs):
+    """Record an OTel histogram value if it exists (no-op when ``None``)."""
+    if histogram:
+        histogram.record(value, attrs)
