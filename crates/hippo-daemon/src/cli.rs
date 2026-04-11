@@ -176,6 +176,9 @@ pub enum IngestSource {
         /// Run inline instead of spawning a tmux window (used internally)
         #[arg(long)]
         inline: bool,
+        /// Wait up to N seconds for the file to appear before tailing (default: 0 = no wait)
+        #[arg(long, default_value_t = 0)]
+        wait_for_file: u64,
     },
 }
 

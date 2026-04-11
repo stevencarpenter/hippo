@@ -87,7 +87,12 @@ pub fn init(service_name: &str, endpoint: &str) -> Result<TelemetryGuard> {
     // Build the tracing subscriber with OTel layers.
     // EnvFilter must come last so that OpenTelemetryLayer sees a Subscriber that
     // still implements LookupSpan (which EnvFilter wrapping would hide).
-    let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+    // Suppress OTel SDK export errors from stderr — these fire every batch interval
+    // when the collector is unreachable and are not actionable application errors.
+    // Note: RUST_LOG, if set, replaces this default entirely (including suppressions).
+    let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| {
+        EnvFilter::new("info,opentelemetry_sdk=off,opentelemetry_otlp=off,opentelemetry_http=off")
+    });
 
     let fmt_layer = tracing_subscriber::fmt::layer().with_writer(std::io::stderr);
 

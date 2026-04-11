@@ -521,11 +521,30 @@ async fn main() -> Result<()> {
                 path,
                 batch,
                 inline,
+                wait_for_file,
             } => {
                 let path = std::path::Path::new(&path);
                 if !path.exists() {
-                    eprintln!("File not found: {}", path.display());
-                    std::process::exit(1);
+                    if wait_for_file > 0 {
+                        let deadline = std::time::Instant::now()
+                            + std::time::Duration::from_secs(wait_for_file);
+                        eprint!("Waiting for {}...", path.display());
+                        while !path.exists() {
+                            if std::time::Instant::now() >= deadline {
+                                eprintln!(
+                                    "\nFile not found after {}s: {}",
+                                    wait_for_file,
+                                    path.display()
+                                );
+                                std::process::exit(1);
+                            }
+                            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                        }
+                        eprintln!(" found.");
+                    } else {
+                        eprintln!("File not found: {}", path.display());
+                        std::process::exit(1);
+                    }
                 }
                 let socket = config.socket_path();
                 let timeout = config.daemon.socket_timeout_ms;
@@ -546,11 +565,20 @@ async fn main() -> Result<()> {
                         .unwrap_or("session");
                     let short_id = &session_name[..8.min(session_name.len())];
                     let window_name = format!("hippo:{}", short_id);
-                    let cmd = format!(
-                        "{} ingest claude-session --inline {}",
-                        hippo_bin.display(),
-                        path.display()
-                    );
+                    let cmd = if wait_for_file > 0 {
+                        format!(
+                            "{} ingest claude-session --inline --wait-for-file {} {}",
+                            hippo_bin.display(),
+                            wait_for_file,
+                            path.display()
+                        )
+                    } else {
+                        format!(
+                            "{} ingest claude-session --inline {}",
+                            hippo_bin.display(),
+                            path.display()
+                        )
+                    };
                     let status = std::process::Command::new("tmux")
                         .args(["new-window", "-n", &window_name, &cmd])
                         .status();
