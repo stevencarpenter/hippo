@@ -565,19 +565,19 @@ async fn main() -> Result<()> {
                         .unwrap_or("session");
                     let short_id = &session_name[..8.min(session_name.len())];
                     let window_name = format!("hippo:{}", short_id);
-                    let cmd = if wait_for_file > 0 {
-                        format!(
-                            "{} ingest claude-session --inline --wait-for-file {} {}",
-                            hippo_bin.display(),
-                            wait_for_file,
-                            path.display()
-                        )
-                    } else {
-                        format!(
-                            "{} ingest claude-session --inline {}",
-                            hippo_bin.display(),
-                            path.display()
-                        )
+                    let cmd = {
+                        // Shell-quote paths to handle spaces/metacharacters.
+                        // Wrap in single quotes, escaping embedded quotes.
+                        let sq = |s: &str| format!("'{}'", s.replace('\'', "'\\''"));
+                        let q_bin = sq(&hippo_bin.to_string_lossy());
+                        let q_path = sq(&path.to_string_lossy());
+                        if wait_for_file > 0 {
+                            format!(
+                                "{q_bin} ingest claude-session --inline --wait-for-file {wait_for_file} {q_path}"
+                            )
+                        } else {
+                            format!("{q_bin} ingest claude-session --inline {q_path}")
+                        }
                     };
                     let status = std::process::Command::new("tmux")
                         .args(["new-window", "-n", &window_name, &cmd])
