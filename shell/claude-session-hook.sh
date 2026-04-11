@@ -33,13 +33,9 @@ log() {
 INPUT=$(cat)
 log "hook invoked, input=${INPUT}"
 
-# Extract transcript_path and cwd from the JSON
-eval "$(echo "$INPUT" | python3 -c "
-import sys,json
-d=json.load(sys.stdin)
-print('TRANSCRIPT_PATH=' + repr(d.get('transcript_path','')))
-print('HOOK_CWD=' + repr(d.get('cwd','')))
-" 2>/dev/null)"
+# Extract transcript_path and cwd from the JSON (two invocations to avoid eval)
+TRANSCRIPT_PATH=$(echo "$INPUT" | python3 -c "import sys,json; print(json.load(sys.stdin).get('transcript_path',''))" 2>/dev/null)
+HOOK_CWD=$(echo "$INPUT" | python3 -c "import sys,json; print(json.load(sys.stdin).get('cwd',''))" 2>/dev/null)
 
 if [ -z "$TRANSCRIPT_PATH" ]; then
     log "no transcript_path in input, exiting"
@@ -68,9 +64,12 @@ log "hippo_bin=$HIPPO_BIN"
 # so $PPID is the Claude process PID.
 CLAUDE_PID="$PPID"
 
-# Derive the window name: 🦛 + project directory name from hook CWD.
+# Derive the window name: 🦛 + project directory name + short session ID.
+# The session ID suffix disambiguates multiple sessions in the same project.
 PROJECT_NAME="$(basename "${HOOK_CWD:-unknown}")"
-WINDOW_NAME="🦛 ${PROJECT_NAME}"
+SESSION_NAME="$(basename "$TRANSCRIPT_PATH" .jsonl)"
+SHORT_ID="${SESSION_NAME:0:6}"
+WINDOW_NAME="🦛 ${PROJECT_NAME}·${SHORT_ID}"
 
 # Detect the tmux session Claude is running in so we create the window there.
 TMUX_TARGET_SESSION=""
@@ -96,7 +95,7 @@ elif tmux list-sessions &>/dev/null; then
     tmux new-session -d -s hippo -n "$WINDOW_NAME" "$TMUX_CMD"
     log "created fallback tmux session=hippo with tailer window"
 else
-    # No tmux server — batch-import what's already in the file and exit.
-    ("$HIPPO_BIN" ingest claude-session --batch "$TRANSCRIPT_PATH" &>/dev/null &)
-    log "no tmux server, batch-imported"
+    # No tmux server — wait for the file then batch-import in the background.
+    ("$HIPPO_BIN" ingest claude-session --batch --wait-for-file 30 "$TRANSCRIPT_PATH" &>/dev/null &)
+    log "no tmux server, batch-import (background, wait-for-file 30)"
 fi
