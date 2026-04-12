@@ -91,9 +91,15 @@ if [ -n "$TMUX_TARGET_SESSION" ]; then
     tmux new-window -d -t "$TMUX_TARGET_SESSION" -n "$WINDOW_NAME" "$TMUX_CMD"
     log "spawned tmux window in session=$TMUX_TARGET_SESSION"
 elif tmux list-sessions &>/dev/null; then
-    # Not inside tmux but a tmux server is running — create a hippo session
-    tmux new-session -d -s hippo -n "$WINDOW_NAME" "$TMUX_CMD"
-    log "created fallback tmux session=hippo with tailer window"
+    # Not inside tmux but a tmux server is running — reuse the hippo session
+    # if it already exists (from a prior fallback spawn), otherwise create it.
+    if tmux has-session -t hippo 2>/dev/null; then
+        tmux new-window -d -t hippo -n "$WINDOW_NAME" "$TMUX_CMD"
+        log "spawned fallback tmux window in existing session=hippo"
+    else
+        tmux new-session -d -s hippo -n "$WINDOW_NAME" "$TMUX_CMD"
+        log "created fallback tmux session=hippo with tailer window"
+    fi
 else
     # No tmux server — wait for the file then batch-import in the background.
     ("$HIPPO_BIN" ingest claude-session --batch --wait-for-file 30 "$TRANSCRIPT_PATH" &>/dev/null &)
