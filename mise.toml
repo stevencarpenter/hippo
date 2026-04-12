@@ -24,6 +24,151 @@ run = "uv sync --project brain"
 description = "Build everything"
 depends = ["build", "build:brain"]
 
+[tasks."build:ext"]
+description = "Build and package the Firefox extension as an .xpi"
+run = """
+#!/usr/bin/env bash
+set -euo pipefail
+
+cd extension/firefox
+
+if ! command -v npm >/dev/null 2>&1; then
+    echo "npm not found; skipping extension build"
+    exit 0
+fi
+
+if [ ! -d node_modules ]; then
+    echo "==> Installing extension dependencies..."
+    if [ -f package-lock.json ]; then
+        npm ci --silent
+    else
+        npm install --silent
+    fi
+fi
+
+echo "==> Building extension..."
+npm run package --silent
+
+# web-ext emits a .zip; Firefox loads it just fine as an .xpi.
+ARTIFACT=$(ls -t web-ext-artifacts/*.zip 2>/dev/null | head -1)
+if [ -z "$ARTIFACT" ]; then
+    echo "ERROR: web-ext did not produce an artifact"
+    exit 1
+fi
+echo "  Built: $ARTIFACT"
+"""
+
+[tasks."install:ext"]
+description = "Side-load the Firefox extension into Firefox Developer Edition"
+depends = ["build:ext"]
+run = """
+#!/usr/bin/env bash
+set -euo pipefail
+
+FIREFOX_ROOT="$HOME/Library/Application Support/Firefox"
+PROFILES_INI="$FIREFOX_ROOT/profiles.ini"
+if [ ! -f "$PROFILES_INI" ]; then
+    echo "Firefox profiles.ini not found; skipping extension install"
+    exit 0
+fi
+
+# Resolve the Firefox Developer Edition profile directory. Strategy:
+#   1. Parse profiles.ini with Python's configparser (handles IsRelative=0/1
+#      and all the edge cases awk would miss).
+#   2. Prefer the profile with Name=dev-edition-default.
+#   3. Fall back to any profile whose path contains "dev-edition".
+#   4. Bail if none found.
+PROFILE_DIR=$(FIREFOX_ROOT="$FIREFOX_ROOT" PROFILES_INI="$PROFILES_INI" python3 - <<'PY'
+import configparser, os, sys
+cp = configparser.ConfigParser()
+try:
+    cp.read(os.environ["PROFILES_INI"])
+except Exception as e:
+    print(f"ERROR parsing profiles.ini: {e}", file=sys.stderr)
+    sys.exit(0)
+
+root = os.environ["FIREFOX_ROOT"]
+def resolve(section):
+    path = cp[section].get("Path", "")
+    if not path: return ""
+    is_rel = cp[section].get("IsRelative", "1") == "1"
+    return os.path.join(root, path) if is_rel else path
+
+# Pass 1: exact name match.
+for s in cp.sections():
+    if not s.startswith("Profile"): continue
+    if cp[s].get("Name", "") == "dev-edition-default":
+        print(resolve(s)); sys.exit(0)
+
+# Pass 2: any profile whose path looks like dev-edition.
+for s in cp.sections():
+    if not s.startswith("Profile"): continue
+    if "dev-edition" in cp[s].get("Path", ""):
+        print(resolve(s)); sys.exit(0)
+PY
+)
+
+if [ -z "$PROFILE_DIR" ]; then
+    echo "No Firefox Developer Edition profile found in profiles.ini; skipping extension install"
+    exit 0
+fi
+if [ ! -d "$PROFILE_DIR" ]; then
+    echo "Profile directory not found: $PROFILE_DIR; skipping extension install"
+    exit 0
+fi
+
+# Extract the gecko extension ID from manifest.json. Handle missing file or
+# malformed structure with a concise error rather than a Python stack trace.
+MANIFEST="extension/firefox/manifest.json"
+if [ ! -f "$MANIFEST" ]; then
+    echo "ERROR: $MANIFEST not found"
+    exit 1
+fi
+EXT_ID=$(python3 - "$MANIFEST" <<'PY' 2>/dev/null
+import json, sys
+try:
+    with open(sys.argv[1]) as f:
+        print(json.load(f)["browser_specific_settings"]["gecko"]["id"])
+except (OSError, ValueError, KeyError):
+    sys.exit(1)
+PY
+)
+if [ -z "$EXT_ID" ]; then
+    echo "ERROR: could not read browser_specific_settings.gecko.id from $MANIFEST"
+    exit 1
+fi
+
+ARTIFACT=$(ls -t extension/firefox/web-ext-artifacts/*.zip 2>/dev/null | head -1)
+if [ -z "$ARTIFACT" ]; then
+    echo "No extension artifact found; run 'mise run build:ext' first"
+    exit 1
+fi
+
+DEST="$PROFILE_DIR/extensions/${EXT_ID}.xpi"
+mkdir -p "$PROFILE_DIR/extensions"
+cp "$ARTIFACT" "$DEST"
+echo "==> Installed extension: $DEST"
+
+# Verify xpinstall.signatures.required is set to false. If it isn't,
+# Firefox will silently delete the unsigned .xpi on startup.
+PREFS="$PROFILE_DIR/prefs.js"
+if [ -f "$PREFS" ]; then
+    # Match: user_pref("xpinstall.signatures.required", false);
+    if ! grep -Eq '^user_pref\\("xpinstall\\.signatures\\.required",[[:space:]]*false\\)' "$PREFS"; then
+        echo ""
+        echo "  WARN: xpinstall.signatures.required is not set to false in prefs.js."
+        echo "        Firefox will reject this unsigned extension on startup."
+        echo "        In about:config, set xpinstall.signatures.required = false, then restart Firefox."
+    fi
+fi
+
+# Warn if Firefox is running — it won't re-scan the extensions dir until restart.
+if pgrep -f "Firefox Developer Edition" >/dev/null 2>&1 || pgrep -f "Firefox.app/Contents/MacOS/firefox" >/dev/null 2>&1; then
+    echo ""
+    echo "  NOTE: Firefox is running. Restart it for the updated extension to load."
+fi
+"""
+
 [tasks."stamp:version"]
 description = "Stamp brain _version.py with git metadata (matches Rust build.rs)"
 run = """
@@ -346,6 +491,10 @@ mkdir -p "$DATA_DIR"
 echo "==> Starting services..."
 launchctl bootstrap "$DOMAIN" "$DAEMON_PLIST" && echo "  Loaded daemon" || echo "  Failed to load daemon"
 launchctl bootstrap "$DOMAIN" "$BRAIN_PLIST" && echo "  Loaded brain" || echo "  Failed to load brain"
+
+# ── 8b. Install Firefox extension (side-load into Developer Edition) ────
+echo "==> Installing Firefox extension..."
+mise run install:ext || echo "  WARN: extension install failed (non-fatal)"
 
 # ── 9. Verify ────────────────────────────────────────────────────────
 echo "==> Verifying..."

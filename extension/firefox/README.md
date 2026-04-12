@@ -17,16 +17,7 @@ This creates:
 
 ### 2. Install Extension in Firefox Developer Edition
 
-#### Build the .xpi
-
-```bash
-cd extension/firefox
-npx web-ext build --overwrite-dest
-```
-
-This creates `web-ext-artifacts/hippo_browser_capture-0.2.0.zip`.
-
-#### Enable unsigned extension install (one-time)
+#### One-time: enable unsigned extension install
 
 1. Open `about:config` in Firefox Developer Edition
 2. Search for `xpinstall.signatures.required`
@@ -35,14 +26,18 @@ This creates `web-ext-artifacts/hippo_browser_capture-0.2.0.zip`.
 This setting is only available in Developer Edition and Nightly — it allows installing
 locally-built extensions without Mozilla signing.
 
-#### Install permanently
+#### Automated install
 
-1. Open `about:addons` (or Cmd+Shift+A)
-2. Click the gear icon → **Install Add-on From File...**
-3. Select `extension/firefox/web-ext-artifacts/hippo_browser_capture-0.2.0.zip`
-4. Click **Add** when prompted
+```bash
+mise run install:ext
+```
 
-The extension persists across Firefox restarts. No more temporary loading via `about:debugging`.
+This builds the extension, packages it as an .xpi, and side-loads it into the
+`dev-edition-default` Firefox profile at
+`~/Library/Application Support/Firefox/Profiles/*.dev-edition-default/extensions/hippo-browser@local.xpi`.
+
+`mise run install` (the full hippo installer) invokes this automatically. If Firefox is
+running when the task completes, restart it to pick up changes.
 
 #### Alternative: temporary loading (for development)
 
