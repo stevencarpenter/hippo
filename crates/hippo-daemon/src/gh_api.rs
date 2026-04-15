@@ -5,6 +5,8 @@ use reqwest::{Client, StatusCode, header};
 use serde::Deserialize;
 use std::time::Duration;
 
+pub const DEFAULT_PER_PAGE: u32 = 20;
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct WorkflowRun {
     pub id: i64,
@@ -58,6 +60,7 @@ pub struct GhApi {
 
 impl GhApi {
     pub fn new(base_url: String, token: String) -> Self {
+        let base_url = base_url.trim_end_matches('/').to_string();
         let http = Client::builder()
             .user_agent(concat!("hippo-gh-poll/", env!("CARGO_PKG_VERSION")))
             .timeout(Duration::from_secs(30))
@@ -67,6 +70,8 @@ impl GhApi {
     }
 
     async fn get_json<T: for<'de> Deserialize<'de>>(&self, url: &str) -> Result<T> {
+        const MAX_RETRIES: u8 = 8;
+        let mut attempts: u8 = 0;
         loop {
             let resp = self
                 .http
@@ -78,14 +83,17 @@ impl GhApi {
                 .await?;
 
             let status = resp.status();
-            if status == StatusCode::TOO_MANY_REQUESTS
+
+            // 403 with retry-after = secondary rate limit; 403 without = permission error (don't retry).
+            let is_rate_limited = status == StatusCode::TOO_MANY_REQUESTS
                 || (status == StatusCode::FORBIDDEN
-                    && resp
-                        .headers()
-                        .get("x-ratelimit-remaining")
-                        .and_then(|v| v.to_str().ok())
-                        == Some("0"))
-            {
+                    && resp.headers().get("retry-after").is_some());
+
+            if is_rate_limited {
+                attempts += 1;
+                if attempts > MAX_RETRIES {
+                    bail!("GitHub rate-limited after {MAX_RETRIES} retries: {status}");
+                }
                 let wait = resp
                     .headers()
                     .get("retry-after")
@@ -95,6 +103,7 @@ impl GhApi {
                 tokio::time::sleep(Duration::from_secs(wait)).await;
                 continue;
             }
+
             if !status.is_success() {
                 let body = resp.text().await.unwrap_or_default();
                 bail!("GitHub API {status}: {body}");
@@ -109,7 +118,7 @@ impl GhApi {
             workflow_runs: Vec<WorkflowRun>,
         }
 
-        let per_page = q.per_page.unwrap_or(20);
+        let per_page = q.per_page.unwrap_or(DEFAULT_PER_PAGE);
         let mut url = format!(
             "{}/repos/{repo}/actions/runs?per_page={per_page}",
             self.base_url
@@ -154,11 +163,16 @@ impl GhApi {
             .header(header::AUTHORIZATION, format!("Bearer {}", self.token))
             .send()
             .await?;
+        let status = resp.status();
+        if !status.is_success() {
+            let body = resp.text().await.unwrap_or_default();
+            bail!("GitHub log API {status}: {body}");
+        }
         let bytes = resp.bytes().await?;
         if bytes.len() <= max_bytes {
-            return Ok((String::from_utf8_lossy(&bytes).to_string(), false));
+            return Ok((String::from_utf8_lossy(&bytes).into_owned(), false));
         }
         let tail = &bytes[bytes.len() - max_bytes..];
-        Ok((String::from_utf8_lossy(tail).to_string(), true))
+        Ok((String::from_utf8_lossy(tail).into_owned(), true))
     }
 }
