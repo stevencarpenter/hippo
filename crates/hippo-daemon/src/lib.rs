@@ -2,6 +2,7 @@ pub mod claude_session;
 pub mod commands;
 pub mod daemon;
 pub mod framing;
+pub mod gh_api;
 #[cfg(feature = "otel")]
 pub mod metrics;
 pub mod native_messaging;
