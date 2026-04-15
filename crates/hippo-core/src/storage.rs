@@ -20,7 +20,7 @@ pub fn open_db(path: &Path) -> Result<Connection> {
          PRAGMA busy_timeout=5000;",
     )?;
     let version: i64 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
-    const EXPECTED_VERSION: i64 = 4;
+    const EXPECTED_VERSION: i64 = 5;
 
     // Migrate from v1 → v2: add envelope_id column for dedup
     if version == 1 {
@@ -131,6 +131,118 @@ pub fn open_db(path: &Path) -> Result<Connection> {
                  WHERE status = 'pending';
              CREATE INDEX IF NOT EXISTS idx_browser_events_ts_domain ON browser_events(timestamp, domain);
              PRAGMA user_version = 4;",
+        )?;
+    }
+
+    // Migrate v4 → v5: GitHub Actions tables
+    if (1..=4).contains(&version) {
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS workflow_runs (
+                id              INTEGER PRIMARY KEY,
+                repo            TEXT NOT NULL,
+                head_sha        TEXT NOT NULL,
+                head_branch     TEXT,
+                event           TEXT NOT NULL,
+                status          TEXT NOT NULL,
+                conclusion      TEXT,
+                started_at      INTEGER,
+                completed_at    INTEGER,
+                html_url        TEXT NOT NULL,
+                actor           TEXT,
+                raw_json        TEXT NOT NULL,
+                first_seen_at   INTEGER NOT NULL,
+                last_seen_at    INTEGER NOT NULL,
+                enriched        INTEGER NOT NULL DEFAULT 0
+             );
+             CREATE INDEX IF NOT EXISTS idx_workflow_runs_sha ON workflow_runs(head_sha);
+             CREATE INDEX IF NOT EXISTS idx_workflow_runs_repo_started ON workflow_runs(repo, started_at);
+             CREATE TABLE IF NOT EXISTS workflow_jobs (
+                id              INTEGER PRIMARY KEY,
+                run_id          INTEGER NOT NULL REFERENCES workflow_runs(id) ON DELETE CASCADE,
+                name            TEXT NOT NULL,
+                status          TEXT NOT NULL,
+                conclusion      TEXT,
+                started_at      INTEGER,
+                completed_at    INTEGER,
+                runner_name     TEXT,
+                raw_json        TEXT NOT NULL
+             );
+             CREATE INDEX IF NOT EXISTS idx_workflow_jobs_run ON workflow_jobs(run_id);
+             CREATE TABLE IF NOT EXISTS workflow_annotations (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                job_id          INTEGER NOT NULL REFERENCES workflow_jobs(id) ON DELETE CASCADE,
+                level           TEXT NOT NULL,
+                tool            TEXT,
+                rule_id         TEXT,
+                path            TEXT,
+                start_line      INTEGER,
+                message         TEXT NOT NULL
+             );
+             CREATE INDEX IF NOT EXISTS idx_workflow_annotations_job ON workflow_annotations(job_id);
+             CREATE INDEX IF NOT EXISTS idx_workflow_annotations_tool_rule ON workflow_annotations(tool, rule_id);
+             CREATE TABLE IF NOT EXISTS workflow_log_excerpts (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                job_id          INTEGER NOT NULL REFERENCES workflow_jobs(id) ON DELETE CASCADE,
+                step_name       TEXT,
+                excerpt         TEXT NOT NULL,
+                truncated       INTEGER NOT NULL DEFAULT 0
+             );
+             CREATE TABLE IF NOT EXISTS sha_watchlist (
+                sha             TEXT NOT NULL,
+                repo            TEXT NOT NULL,
+                created_at      INTEGER NOT NULL,
+                expires_at      INTEGER NOT NULL,
+                terminal_status TEXT,
+                notified        INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (sha, repo)
+             );
+             CREATE INDEX IF NOT EXISTS idx_sha_watchlist_expires ON sha_watchlist(expires_at);
+             CREATE TABLE IF NOT EXISTS workflow_enrichment_queue (
+                run_id          INTEGER PRIMARY KEY REFERENCES workflow_runs(id) ON DELETE CASCADE,
+                status          TEXT NOT NULL DEFAULT 'pending'
+                                    CHECK (status IN ('pending','processing','done','failed','skipped')),
+                priority        INTEGER NOT NULL DEFAULT 5,
+                retry_count     INTEGER NOT NULL DEFAULT 0,
+                max_retries     INTEGER NOT NULL DEFAULT 5,
+                error_message   TEXT,
+                enqueued_at     INTEGER NOT NULL,
+                updated_at      INTEGER NOT NULL
+             );
+             CREATE INDEX IF NOT EXISTS idx_workflow_queue_pending ON workflow_enrichment_queue(status, priority);
+             CREATE TABLE IF NOT EXISTS lessons (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                repo            TEXT NOT NULL,
+                tool            TEXT,
+                rule_id         TEXT,
+                path_prefix     TEXT,
+                summary         TEXT NOT NULL,
+                fix_hint        TEXT,
+                occurrences     INTEGER NOT NULL DEFAULT 1,
+                first_seen_at   INTEGER NOT NULL,
+                last_seen_at    INTEGER NOT NULL,
+                UNIQUE(repo, tool, rule_id, path_prefix)
+             );
+             CREATE INDEX IF NOT EXISTS idx_lessons_repo ON lessons(repo);
+             CREATE TABLE IF NOT EXISTS lesson_pending (
+                repo            TEXT NOT NULL,
+                tool            TEXT,
+                rule_id         TEXT,
+                path_prefix     TEXT,
+                count           INTEGER NOT NULL DEFAULT 1,
+                first_seen_at   INTEGER NOT NULL,
+                UNIQUE(repo, tool, rule_id, path_prefix)
+             );
+             CREATE TABLE IF NOT EXISTS knowledge_node_workflow_runs (
+                knowledge_node_id INTEGER NOT NULL REFERENCES knowledge_nodes(id),
+                run_id            INTEGER NOT NULL REFERENCES workflow_runs(id) ON DELETE CASCADE,
+                PRIMARY KEY (knowledge_node_id, run_id)
+             );
+             CREATE TABLE IF NOT EXISTS knowledge_node_lessons (
+                knowledge_node_id INTEGER NOT NULL REFERENCES knowledge_nodes(id),
+                lesson_id         INTEGER NOT NULL REFERENCES lessons(id) ON DELETE CASCADE,
+                PRIMARY KEY (knowledge_node_id, lesson_id)
+             );
+             PRAGMA user_version = 5;",
         )?;
     } else if version != 0 && version != EXPECTED_VERSION {
         anyhow::bail!(
@@ -1326,7 +1438,7 @@ mod tests {
         let v: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 4);
+        assert_eq!(v, 5);
     }
 
     #[test]
@@ -1391,12 +1503,12 @@ mod tests {
             )
             .unwrap();
         }
-        // open_db should migrate to v4 (v1 → v2 → v3 → v4)
+        // open_db should migrate to v5 (v1 → v2 → v3 → v4 → v5)
         let conn = open_db(&db_path).unwrap();
         let v: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 4);
+        assert_eq!(v, 5);
         // Verify envelope_id column exists by inserting with it
         let sid = upsert_session(&conn, "mig-test", "host", "zsh", "user").unwrap();
         let eid = insert_event_at(
@@ -1479,7 +1591,7 @@ mod tests {
         let v: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 4);
+        assert_eq!(v, 5);
     }
 
     #[test]
@@ -1576,12 +1688,12 @@ mod tests {
             .unwrap();
         }
 
-        // open_db should migrate v3 → v4
+        // open_db should migrate v3 → v5
         let conn = open_db(&db_path).unwrap();
         let v: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 4);
+        assert_eq!(v, 5);
 
         // Verify browser tables exist
         let browser_tables = [
@@ -1604,13 +1716,13 @@ mod tests {
             );
         }
 
-        // Close and re-open — should remain at v4 without error
+        // Close and re-open — should remain at v5 without error
         drop(conn);
         let conn2 = open_db(&db_path).unwrap();
         let v2: i64 = conn2
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v2, 4);
+        assert_eq!(v2, 5);
     }
 
     fn sample_browser_event() -> BrowserEvent {
