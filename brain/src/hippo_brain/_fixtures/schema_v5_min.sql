@@ -63,3 +63,13 @@ CREATE TABLE IF NOT EXISTS lessons (
     last_seen_at    INTEGER NOT NULL,
     UNIQUE(repo, tool, rule_id, path_prefix)
 );
+
+CREATE TABLE IF NOT EXISTS lesson_pending (
+    repo            TEXT NOT NULL,
+    tool            TEXT NOT NULL DEFAULT '',
+    rule_id         TEXT NOT NULL DEFAULT '',
+    path_prefix     TEXT NOT NULL DEFAULT '',
+    count           INTEGER NOT NULL DEFAULT 1,
+    first_seen_at   INTEGER NOT NULL,
+    UNIQUE(repo, tool, rule_id, path_prefix)
+);
