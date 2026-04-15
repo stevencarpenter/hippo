@@ -19,10 +19,19 @@ fn upsert_then_resolve() {
     assert_eq!(active.len(), 1);
     assert_eq!(active[0].sha, "abc123");
 
-    watchlist::mark_terminal(&conn, "abc123", "me/repo", "failure").unwrap();
+    let hit = watchlist::mark_terminal(&conn, "abc123", "me/repo", "failure").unwrap();
+    assert!(hit, "mark_terminal should return true when row exists");
     let pending = watchlist::pending_notifications(&conn).unwrap();
     assert_eq!(pending.len(), 1);
     assert_eq!(pending[0].terminal_status.as_deref(), Some("failure"));
+}
+
+#[test]
+fn mark_terminal_unknown_sha_returns_false() {
+    let tmp = TempDir::new().unwrap();
+    let conn = open_db(&tmp.path().join("hippo.db")).unwrap();
+    let hit = watchlist::mark_terminal(&conn, "nope", "me/repo", "failure").unwrap();
+    assert!(!hit);
 }
 
 #[test]

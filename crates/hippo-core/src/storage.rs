@@ -1910,7 +1910,7 @@ pub mod watchlist {
     use anyhow::Result;
     use rusqlite::{Connection, params};
 
-    #[derive(Debug, Clone)]
+    #[derive(Debug, Clone, PartialEq, Eq)]
     pub struct WatchEntry {
         pub sha: String,
         pub repo: String,
@@ -1918,6 +1918,17 @@ pub mod watchlist {
         pub expires_at: i64,
         pub terminal_status: Option<String>,
         pub notified: bool,
+    }
+
+    fn from_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<WatchEntry> {
+        Ok(WatchEntry {
+            sha: r.get(0)?,
+            repo: r.get(1)?,
+            created_at: r.get(2)?,
+            expires_at: r.get(3)?,
+            terminal_status: r.get(4)?,
+            notified: r.get::<_, i32>(5)? != 0,
+        })
     }
 
     pub fn upsert(
@@ -1944,16 +1955,7 @@ pub mod watchlist {
              ORDER BY created_at DESC",
         )?;
         let rows = stmt
-            .query_map([now_ms], |r| {
-                Ok(WatchEntry {
-                    sha: r.get(0)?,
-                    repo: r.get(1)?,
-                    created_at: r.get(2)?,
-                    expires_at: r.get(3)?,
-                    terminal_status: r.get(4)?,
-                    notified: r.get::<_, i64>(5)? != 0,
-                })
-            })?
+            .query_map([now_ms], from_row)?
             .collect::<Result<Vec<_>, _>>()?;
         Ok(rows)
     }
@@ -1963,13 +1965,13 @@ pub mod watchlist {
         sha: &str,
         repo: &str,
         status: &str,
-    ) -> Result<()> {
-        conn.execute(
-            "UPDATE sha_watchlist SET terminal_status = ?3
-             WHERE sha = ?1 AND repo = ?2",
-            params![sha, repo, status],
+    ) -> Result<bool> {
+        let n = conn.execute(
+            "UPDATE sha_watchlist SET terminal_status = ?1
+             WHERE sha = ?2 AND repo = ?3",
+            params![status, sha, repo],
         )?;
-        Ok(())
+        Ok(n > 0)
     }
 
     pub fn pending_notifications(conn: &Connection) -> Result<Vec<WatchEntry>> {
@@ -1979,16 +1981,7 @@ pub mod watchlist {
              WHERE terminal_status IN ('failure', 'cancelled') AND notified = 0",
         )?;
         let rows = stmt
-            .query_map([], |r| {
-                Ok(WatchEntry {
-                    sha: r.get(0)?,
-                    repo: r.get(1)?,
-                    created_at: r.get(2)?,
-                    expires_at: r.get(3)?,
-                    terminal_status: r.get(4)?,
-                    notified: r.get::<_, i64>(5)? != 0,
-                })
-            })?
+            .query_map([], from_row)?
             .collect::<Result<Vec<_>, _>>()?;
         Ok(rows)
     }
