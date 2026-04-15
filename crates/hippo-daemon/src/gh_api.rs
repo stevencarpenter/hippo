@@ -7,7 +7,7 @@ use std::time::Duration;
 
 pub const DEFAULT_PER_PAGE: u32 = 20;
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, Deserialize)]
 pub struct WorkflowRun {
     pub id: i64,
     pub head_sha: String,
@@ -21,12 +21,12 @@ pub struct WorkflowRun {
     pub actor: Option<Actor>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, Deserialize)]
 pub struct Actor {
     pub login: String,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, Deserialize)]
 pub struct Job {
     pub id: i64,
     pub name: String,
