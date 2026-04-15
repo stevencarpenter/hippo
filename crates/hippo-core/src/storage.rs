@@ -1994,3 +1994,135 @@ pub mod watchlist {
         Ok(())
     }
 }
+
+pub mod workflow_store {
+    use anyhow::Result;
+    use rusqlite::{Connection, params};
+
+    use crate::gh_annotations::parse as parse_annotation;
+
+    pub struct RunRow<'a> {
+        pub id: i64,
+        pub repo: &'a str,
+        pub head_sha: &'a str,
+        pub head_branch: Option<&'a str>,
+        pub event: &'a str,
+        pub status: &'a str,
+        pub conclusion: Option<&'a str>,
+        pub started_at: Option<i64>,
+        pub completed_at: Option<i64>,
+        pub html_url: &'a str,
+        pub actor: Option<&'a str>,
+        pub raw_json: &'a str,
+    }
+
+    pub fn upsert_run(conn: &Connection, run: &RunRow, now_ms: i64) -> Result<()> {
+        conn.execute(
+            "INSERT INTO workflow_runs
+                (id, repo, head_sha, head_branch, event, status, conclusion,
+                 started_at, completed_at, html_url, actor, raw_json,
+                 first_seen_at, last_seen_at)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?13)
+             ON CONFLICT(id) DO UPDATE SET
+                status=excluded.status, conclusion=excluded.conclusion,
+                completed_at=excluded.completed_at, last_seen_at=excluded.last_seen_at,
+                raw_json=excluded.raw_json",
+            params![
+                run.id,
+                run.repo,
+                run.head_sha,
+                run.head_branch,
+                run.event,
+                run.status,
+                run.conclusion,
+                run.started_at,
+                run.completed_at,
+                run.html_url,
+                run.actor,
+                run.raw_json,
+                now_ms,
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub struct JobRow<'a> {
+        pub id: i64,
+        pub run_id: i64,
+        pub name: &'a str,
+        pub status: &'a str,
+        pub conclusion: Option<&'a str>,
+        pub started_at: Option<i64>,
+        pub completed_at: Option<i64>,
+        pub runner_name: Option<&'a str>,
+        pub raw_json: &'a str,
+    }
+
+    pub fn upsert_job(conn: &Connection, job: &JobRow) -> Result<()> {
+        conn.execute(
+            "INSERT INTO workflow_jobs
+                (id, run_id, name, status, conclusion, started_at, completed_at,
+                 runner_name, raw_json)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)
+             ON CONFLICT(id) DO UPDATE SET
+                status=excluded.status, conclusion=excluded.conclusion,
+                completed_at=excluded.completed_at, raw_json=excluded.raw_json",
+            params![
+                job.id,
+                job.run_id,
+                job.name,
+                job.status,
+                job.conclusion,
+                job.started_at,
+                job.completed_at,
+                job.runner_name,
+                job.raw_json,
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn insert_annotation(
+        conn: &Connection,
+        job_id: i64,
+        job_name: &str,
+        level: &str,
+        message: &str,
+        path: Option<&str>,
+        start_line: Option<i64>,
+    ) -> Result<()> {
+        let parsed = parse_annotation(job_name, message);
+        conn.execute(
+            "INSERT INTO workflow_annotations
+                (job_id, level, tool, rule_id, path, start_line, message)
+             VALUES (?1,?2,?3,?4,?5,?6,?7)",
+            params![job_id, level, parsed.tool, parsed.rule_id, path, start_line, message,],
+        )?;
+        Ok(())
+    }
+
+    pub fn insert_log_excerpt(
+        conn: &Connection,
+        job_id: i64,
+        step_name: Option<&str>,
+        excerpt: &str,
+        truncated: bool,
+    ) -> Result<()> {
+        conn.execute(
+            "INSERT INTO workflow_log_excerpts (job_id, step_name, excerpt, truncated)
+             VALUES (?1,?2,?3,?4)",
+            params![job_id, step_name, excerpt, truncated as i64],
+        )?;
+        Ok(())
+    }
+
+    pub fn enqueue_enrichment(conn: &Connection, run_id: i64, now_ms: i64) -> Result<()> {
+        conn.execute(
+            "INSERT INTO workflow_enrichment_queue (run_id, enqueued_at, updated_at)
+             VALUES (?1, ?2, ?2)
+             ON CONFLICT(run_id) DO NOTHING",
+            params![run_id, now_ms],
+        )?;
+        Ok(())
+    }
+}
