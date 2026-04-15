@@ -309,6 +309,7 @@ CREATE TABLE IF NOT EXISTS workflow_log_excerpts (
     excerpt         TEXT NOT NULL,
     truncated       INTEGER NOT NULL DEFAULT 0
 );
+CREATE INDEX IF NOT EXISTS idx_workflow_log_excerpts_job ON workflow_log_excerpts(job_id);
 
 CREATE TABLE IF NOT EXISTS sha_watchlist (
     sha             TEXT NOT NULL,
@@ -321,6 +322,7 @@ CREATE TABLE IF NOT EXISTS sha_watchlist (
 );
 CREATE INDEX IF NOT EXISTS idx_sha_watchlist_expires ON sha_watchlist(expires_at);
 
+-- 1:1 with workflow_runs; no separate id surrogate, run_id is the PK.
 CREATE TABLE IF NOT EXISTS workflow_enrichment_queue (
     run_id          INTEGER PRIMARY KEY REFERENCES workflow_runs(id) ON DELETE CASCADE,
     status          TEXT NOT NULL DEFAULT 'pending'
@@ -329,6 +331,8 @@ CREATE TABLE IF NOT EXISTS workflow_enrichment_queue (
     retry_count     INTEGER NOT NULL DEFAULT 0,
     max_retries     INTEGER NOT NULL DEFAULT 5,
     error_message   TEXT,
+    locked_at       INTEGER,
+    locked_by       TEXT,
     enqueued_at     INTEGER NOT NULL,
     updated_at      INTEGER NOT NULL
 );
@@ -337,9 +341,9 @@ CREATE INDEX IF NOT EXISTS idx_workflow_queue_pending ON workflow_enrichment_que
 CREATE TABLE IF NOT EXISTS lessons (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     repo            TEXT NOT NULL,
-    tool            TEXT,
-    rule_id         TEXT,
-    path_prefix     TEXT,
+    tool            TEXT NOT NULL DEFAULT '',
+    rule_id         TEXT NOT NULL DEFAULT '',
+    path_prefix     TEXT NOT NULL DEFAULT '',
     summary         TEXT NOT NULL,
     fix_hint        TEXT,
     occurrences     INTEGER NOT NULL DEFAULT 1,
@@ -351,9 +355,9 @@ CREATE INDEX IF NOT EXISTS idx_lessons_repo ON lessons(repo);
 
 CREATE TABLE IF NOT EXISTS lesson_pending (
     repo            TEXT NOT NULL,
-    tool            TEXT,
-    rule_id         TEXT,
-    path_prefix     TEXT,
+    tool            TEXT NOT NULL DEFAULT '',
+    rule_id         TEXT NOT NULL DEFAULT '',
+    path_prefix     TEXT NOT NULL DEFAULT '',
     count           INTEGER NOT NULL DEFAULT 1,
     first_seen_at   INTEGER NOT NULL,
     UNIQUE(repo, tool, rule_id, path_prefix)

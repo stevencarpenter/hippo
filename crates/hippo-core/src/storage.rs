@@ -134,8 +134,9 @@ pub fn open_db(path: &Path) -> Result<Connection> {
         )?;
     }
 
-    // Migrate v4 → v5: GitHub Actions tables
+    // Migrate from v4 → v5: GitHub Actions tables
     if (1..=4).contains(&version) {
+        // Keep in sync with the v5 block in schema.sql.
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS workflow_runs (
                 id              INTEGER PRIMARY KEY,
@@ -187,6 +188,7 @@ pub fn open_db(path: &Path) -> Result<Connection> {
                 excerpt         TEXT NOT NULL,
                 truncated       INTEGER NOT NULL DEFAULT 0
              );
+             CREATE INDEX IF NOT EXISTS idx_workflow_log_excerpts_job ON workflow_log_excerpts(job_id);
              CREATE TABLE IF NOT EXISTS sha_watchlist (
                 sha             TEXT NOT NULL,
                 repo            TEXT NOT NULL,
@@ -205,6 +207,8 @@ pub fn open_db(path: &Path) -> Result<Connection> {
                 retry_count     INTEGER NOT NULL DEFAULT 0,
                 max_retries     INTEGER NOT NULL DEFAULT 5,
                 error_message   TEXT,
+                locked_at       INTEGER,
+                locked_by       TEXT,
                 enqueued_at     INTEGER NOT NULL,
                 updated_at      INTEGER NOT NULL
              );
@@ -212,9 +216,9 @@ pub fn open_db(path: &Path) -> Result<Connection> {
              CREATE TABLE IF NOT EXISTS lessons (
                 id              INTEGER PRIMARY KEY AUTOINCREMENT,
                 repo            TEXT NOT NULL,
-                tool            TEXT,
-                rule_id         TEXT,
-                path_prefix     TEXT,
+                tool            TEXT NOT NULL DEFAULT '',
+                rule_id         TEXT NOT NULL DEFAULT '',
+                path_prefix     TEXT NOT NULL DEFAULT '',
                 summary         TEXT NOT NULL,
                 fix_hint        TEXT,
                 occurrences     INTEGER NOT NULL DEFAULT 1,
@@ -225,9 +229,9 @@ pub fn open_db(path: &Path) -> Result<Connection> {
              CREATE INDEX IF NOT EXISTS idx_lessons_repo ON lessons(repo);
              CREATE TABLE IF NOT EXISTS lesson_pending (
                 repo            TEXT NOT NULL,
-                tool            TEXT,
-                rule_id         TEXT,
-                path_prefix     TEXT,
+                tool            TEXT NOT NULL DEFAULT '',
+                rule_id         TEXT NOT NULL DEFAULT '',
+                path_prefix     TEXT NOT NULL DEFAULT '',
                 count           INTEGER NOT NULL DEFAULT 1,
                 first_seen_at   INTEGER NOT NULL,
                 UNIQUE(repo, tool, rule_id, path_prefix)
