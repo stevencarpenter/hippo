@@ -2001,6 +2001,8 @@ pub mod workflow_store {
 
     use crate::gh_annotations::parse as parse_annotation;
 
+    /// Storage-layer projection of a workflow_run for upsert.
+    /// Distinct from `hippo_daemon::gh_api::WorkflowRun` (the API response type).
     pub struct RunRow<'a> {
         pub id: i64,
         pub repo: &'a str,
@@ -2027,6 +2029,8 @@ pub mod workflow_store {
                 status=excluded.status, conclusion=excluded.conclusion,
                 completed_at=excluded.completed_at, last_seen_at=excluded.last_seen_at,
                 raw_json=excluded.raw_json",
+            // `?13` is bound once for both first_seen_at (initial insert) and
+            // last_seen_at (update). If you reorder params, keep them paired.
             params![
                 run.id,
                 run.repo,
@@ -2046,6 +2050,8 @@ pub mod workflow_store {
         Ok(())
     }
 
+    /// Storage-layer projection of a workflow_job for upsert.
+    /// Distinct from `hippo_daemon::gh_api::Job` (the API response type).
     pub struct JobRow<'a> {
         pub id: i64,
         pub run_id: i64,
@@ -2111,7 +2117,7 @@ pub mod workflow_store {
         conn.execute(
             "INSERT INTO workflow_log_excerpts (job_id, step_name, excerpt, truncated)
              VALUES (?1,?2,?3,?4)",
-            params![job_id, step_name, excerpt, truncated as i64],
+            params![job_id, step_name, excerpt, truncated as i32],
         )?;
         Ok(())
     }

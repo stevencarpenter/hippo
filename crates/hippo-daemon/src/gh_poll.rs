@@ -1,6 +1,6 @@
 //! Orchestrates a single poll pass over watched repos.
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use chrono::Utc;
 use hippo_core::storage::{open_db, watchlist, workflow_store};
 use std::path::Path;
@@ -31,7 +31,8 @@ pub async fn run_once(api: &GhApi, db_path: &Path, cfg: &PollConfig) -> Result<(
                     ..Default::default()
                 },
             )
-            .await?;
+            .await
+            .with_context(|| format!("list_runs for {repo}"))?;
 
         for run in runs {
             let actor = run.actor.as_ref().map(|a| a.login.as_str());
@@ -60,7 +61,14 @@ pub async fn run_once(api: &GhApi, db_path: &Path, cfg: &PollConfig) -> Result<(
                     let _ = watchlist::mark_terminal(&conn, &run.head_sha, repo, concl)?;
                 }
 
-                let jobs = api.list_jobs(repo, run.id).await?;
+                let jobs = match api.list_jobs(repo, run.id).await {
+                    Ok(jobs) => jobs,
+                    Err(e) => {
+                        // TODO: replace with structured logging
+                        eprintln!("warn: list_jobs failed for {repo} run {}: {e}", run.id);
+                        continue; // skip this run, try the next
+                    }
+                };
                 for job in &jobs {
                     let job_raw = serde_json::to_string(job).unwrap_or_default();
                     workflow_store::upsert_job(
@@ -79,7 +87,14 @@ pub async fn run_once(api: &GhApi, db_path: &Path, cfg: &PollConfig) -> Result<(
                     )?;
 
                     if let Some(cru) = &job.check_run_url {
-                        let annotations = api.get_annotations(cru).await.unwrap_or_default();
+                        // TODO: replace with structured logging
+                        let annotations = match api.get_annotations(cru).await {
+                            Ok(a) => a,
+                            Err(e) => {
+                                eprintln!("warn: get_annotations failed for {cru}: {e}");
+                                Vec::new()
+                            }
+                        };
                         for a in annotations {
                             workflow_store::insert_annotation(
                                 &conn,
@@ -97,12 +112,17 @@ pub async fn run_once(api: &GhApi, db_path: &Path, cfg: &PollConfig) -> Result<(
                         job.conclusion.as_deref(),
                         Some("failure") | Some("cancelled")
                     ) {
-                        if let Ok((excerpt, truncated)) =
-                            api.get_log_tail(repo, job.id, cfg.log_excerpt_max_bytes).await
-                        {
-                            workflow_store::insert_log_excerpt(
-                                &conn, job.id, None, &excerpt, truncated,
-                            )?;
+                        // TODO: replace with structured logging
+                        match api.get_log_tail(repo, job.id, cfg.log_excerpt_max_bytes).await {
+                            Ok((excerpt, truncated)) => {
+                                workflow_store::insert_log_excerpt(
+                                    &conn, job.id, None, &excerpt, truncated,
+                                )?;
+                            }
+                            Err(e) => eprintln!(
+                                "warn: get_log_tail failed for {repo} job {}: {e}",
+                                job.id
+                            ),
                         }
                     }
                 }
