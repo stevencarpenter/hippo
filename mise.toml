@@ -498,7 +498,7 @@ mise run install:ext || echo "  WARN: extension install failed (non-fatal)"
 
 # ── 8c. Install Claude Code skill ───────────────────────────────────────
 echo "==> Installing Claude Code skill..."
-mise run install:skill
+mise run install:skill || echo "  WARN: skill install failed (non-fatal)"
 
 # ── 9. Verify ────────────────────────────────────────────────────────
 echo "==> Verifying..."
