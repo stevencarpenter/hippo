@@ -9,7 +9,7 @@ import re
 import sqlite3
 import time
 
-from hippo_brain.models import CIAnnotation, CIJob, CIStatus
+from hippo_brain.models import CIAnnotation, CIJob, CIStatus, Lesson
 
 
 MAX_LIMIT = 100
@@ -272,6 +272,51 @@ def get_entities_impl(
             "last_seen": row[4],
         }
         for row in rows
+    ]
+
+
+def get_lessons_impl(
+    db_path: str,
+    repo: str | None = None,
+    path: str | None = None,
+    tool: str | None = None,
+    limit: int = 10,
+) -> list[Lesson]:
+    """Return distilled past-mistake lessons matching the filters.
+
+    Ordered by occurrences DESC, then last_seen_at DESC.
+    """
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    try:
+        rows = conn.execute(
+            """SELECT id, repo, tool, rule_id, path_prefix, summary, fix_hint,
+                      occurrences, first_seen_at, last_seen_at
+               FROM lessons
+               WHERE (? IS NULL OR repo = ?)
+                 AND (? IS NULL OR tool = ?)
+                 AND (? IS NULL OR path_prefix = ?)
+               ORDER BY occurrences DESC, last_seen_at DESC
+               LIMIT ?""",
+            (repo, repo, tool, tool, path, path, min(limit, MAX_LIMIT)),
+        ).fetchall()
+    finally:
+        conn.close()
+
+    return [
+        Lesson(
+            id=r["id"],
+            repo=r["repo"],
+            tool=r["tool"],
+            rule_id=r["rule_id"],
+            path_prefix=r["path_prefix"],
+            summary=r["summary"],
+            fix_hint=r["fix_hint"],
+            occurrences=r["occurrences"],
+            first_seen_at=r["first_seen_at"],
+            last_seen_at=r["last_seen_at"],
+        )
+        for r in rows
     ]
 
 

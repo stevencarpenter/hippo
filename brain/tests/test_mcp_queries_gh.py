@@ -63,3 +63,40 @@ def test_get_ci_status_by_branch(db_with_run: Path):
 def test_get_ci_status_requires_sha_or_branch(db_with_run: Path):
     with pytest.raises(ValueError):
         get_ci_status_impl(str(db_with_run), repo="me/r")
+
+
+def test_get_lessons_filters(db_with_run: Path):
+    conn = sqlite3.connect(db_with_run)
+    conn.execute("""
+        INSERT INTO lessons
+          (repo, tool, rule_id, path_prefix, summary, fix_hint,
+           occurrences, first_seen_at, last_seen_at)
+        VALUES
+          ('me/r', 'ruff', 'F401', 'brain/',
+           'unused imports in brain/', 'remove import', 4, 1000, 5000),
+          ('me/r', 'pytest', '', 'brain/tests/',
+           'flaky ordering', NULL, 2, 3000, 7000)
+    """)
+    conn.commit()
+    conn.close()
+
+    from hippo_brain.mcp_queries import get_lessons_impl
+
+    all_ = get_lessons_impl(str(db_with_run), repo="me/r")
+    assert len(all_) == 2
+    assert all_[0].occurrences == 4  # ordered by occurrences DESC
+
+    only_ruff = get_lessons_impl(str(db_with_run), tool="ruff")
+    assert len(only_ruff) == 1
+    assert only_ruff[0].rule_id == "F401"
+
+    by_path = get_lessons_impl(str(db_with_run), path="brain/tests/")
+    assert len(by_path) == 1
+    assert by_path[0].tool == "pytest"
+
+
+def test_get_lessons_empty_when_no_match(db_with_run: Path):
+    from hippo_brain.mcp_queries import get_lessons_impl
+
+    result = get_lessons_impl(str(db_with_run), repo="nonexistent/repo")
+    assert result == []
