@@ -4,6 +4,8 @@
 # Matcher (in settings.json): tool_name == "Bash" && command matches 'git push'
 set -euo pipefail
 
+command -v jq >/dev/null || exit 0
+
 input=$(cat)
 cmd=$(echo "$input" | jq -r '.tool_input.command // ""')
 if [[ "$cmd" != *"git push"* ]]; then

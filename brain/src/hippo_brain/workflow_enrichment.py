@@ -40,17 +40,31 @@ def enrich_one(
         now = int(time.time() * 1000)
         started = run["started_at"] or now
 
-        # Co-temporal shell events (by SHA or time window)
+        # Co-temporal shell events: prefer exact SHA match; only fall back to time
+        # window for push-related commands from the same repo.
+        head_sha = run["head_sha"]
+        repo_name = run["repo"]
+
         shell_rows = conn.execute(
             """SELECT id, command, git_commit FROM events
-               WHERE git_commit = ? OR (timestamp BETWEEN ? AND ?)
+               WHERE git_commit = ?
                LIMIT 20""",
-            (
-                run["head_sha"],
-                started - CORRELATION_WINDOW_MS,
-                started + CORRELATION_WINDOW_MS,
-            ),
+            (head_sha,),
         ).fetchall()
+
+        if not shell_rows:
+            shell_rows = conn.execute(
+                """SELECT id, command, git_commit FROM events
+                   WHERE timestamp BETWEEN ? AND ?
+                     AND command LIKE '%git push%'
+                     AND (git_repo IS NULL OR git_repo = ?)
+                   LIMIT 20""",
+                (
+                    started - CORRELATION_WINDOW_MS,
+                    started + CORRELATION_WINDOW_MS,
+                    repo_name,
+                ),
+            ).fetchall()
 
         # Co-temporal Claude sessions
         claude_rows = conn.execute(
@@ -78,7 +92,7 @@ def enrich_one(
         summary = lm.complete(model=query_model, prompt=prompt, max_tokens=300)
 
         node_uuid = str(uuid.uuid4())
-        title = f"{run['repo']}@{run['head_sha'][:7]} — {run['conclusion']}"
+        title = f"{repo_name}@{head_sha[:7]} — {run['conclusion']}"
         # Write knowledge node
         cur = conn.execute(
             """INSERT INTO knowledge_nodes
@@ -129,7 +143,7 @@ def enrich_one(
             upsert_cluster(
                 db_path,
                 ClusterKey(
-                    repo=run["repo"],
+                    repo=repo_name,
                     tool=a["tool"] or "",
                     rule_id=a["rule_id"] or "",
                     path_prefix=path_prefix or "",
@@ -163,17 +177,31 @@ async def enrich_one_async(
         now = int(time.time() * 1000)
         started = run["started_at"] or now
 
-        # Co-temporal shell events (by SHA or time window)
+        # Co-temporal shell events: prefer exact SHA match; only fall back to time
+        # window for push-related commands from the same repo.
+        head_sha = run["head_sha"]
+        repo_name = run["repo"]
+
         shell_rows = conn.execute(
             """SELECT id, command, git_commit FROM events
-               WHERE git_commit = ? OR (timestamp BETWEEN ? AND ?)
+               WHERE git_commit = ?
                LIMIT 20""",
-            (
-                run["head_sha"],
-                started - CORRELATION_WINDOW_MS,
-                started + CORRELATION_WINDOW_MS,
-            ),
+            (head_sha,),
         ).fetchall()
+
+        if not shell_rows:
+            shell_rows = conn.execute(
+                """SELECT id, command, git_commit FROM events
+                   WHERE timestamp BETWEEN ? AND ?
+                     AND command LIKE '%git push%'
+                     AND (git_repo IS NULL OR git_repo = ?)
+                   LIMIT 20""",
+                (
+                    started - CORRELATION_WINDOW_MS,
+                    started + CORRELATION_WINDOW_MS,
+                    repo_name,
+                ),
+            ).fetchall()
 
         # Co-temporal Claude sessions
         claude_rows = conn.execute(
@@ -210,7 +238,7 @@ async def enrich_one_async(
         )
 
         node_uuid = str(uuid.uuid4())
-        title = f"{run['repo']}@{run['head_sha'][:7]} — {run['conclusion']}"
+        title = f"{repo_name}@{head_sha[:7]} — {run['conclusion']}"
         # Write knowledge node
         cur = conn.execute(
             """INSERT INTO knowledge_nodes
@@ -261,7 +289,7 @@ async def enrich_one_async(
             upsert_cluster(
                 db_path,
                 ClusterKey(
-                    repo=run["repo"],
+                    repo=repo_name,
                     tool=a["tool"] or "",
                     rule_id=a["rule_id"] or "",
                     path_prefix=path_prefix or "",

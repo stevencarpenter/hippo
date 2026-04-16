@@ -3,6 +3,8 @@
 # Invoked by Claude Code with JSON on stdin: { cwd, ... }
 set -euo pipefail
 
+command -v jq >/dev/null || exit 0
+
 input=$(cat)
 cwd=$(echo "$input" | jq -r '.cwd // ""')
 [[ -n "$cwd" ]] || exit 0

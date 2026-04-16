@@ -1969,14 +1969,16 @@ pub mod watchlist {
         Ok(n > 0)
     }
 
-    pub fn pending_notifications(conn: &Connection) -> Result<Vec<WatchEntry>> {
+    pub fn pending_notifications(conn: &Connection, now_ms: i64) -> Result<Vec<WatchEntry>> {
         let mut stmt = conn.prepare(
             "SELECT sha, repo, created_at, expires_at, terminal_status, notified
              FROM sha_watchlist
-             WHERE terminal_status IN ('failure', 'cancelled') AND notified = 0",
+             WHERE terminal_status IN ('failure', 'cancelled')
+               AND notified = 0
+               AND expires_at > ?1",
         )?;
         let rows = stmt
-            .query_map([], from_row)?
+            .query_map([now_ms], from_row)?
             .collect::<Result<Vec<_>, _>>()?;
         Ok(rows)
     }
@@ -2111,11 +2113,26 @@ pub mod watchlist {
             mark_terminal(&conn, "sha_fail", "me/repo", "failure").unwrap();
             mark_terminal(&conn, "sha_cancel", "me/repo", "cancelled").unwrap();
             mark_terminal(&conn, "sha_success", "me/repo", "success").unwrap();
-            let pending = pending_notifications(&conn).unwrap();
+            let pending = pending_notifications(&conn, now + 1).unwrap();
             assert_eq!(pending.len(), 2);
             let shas: Vec<&str> = pending.iter().map(|e| e.sha.as_str()).collect();
             assert!(shas.contains(&"sha_fail"));
             assert!(shas.contains(&"sha_cancel"));
+        }
+
+        #[test]
+        fn pending_notifications_excludes_expired() {
+            let conn = open_test_db();
+            let now = 1_000_000i64;
+            let ttl = now + 9999;
+            upsert(&conn, "sha_fail", "me/repo", now, ttl).unwrap();
+            mark_terminal(&conn, "sha_fail", "me/repo", "failure").unwrap();
+            // Before expiry: visible
+            let pending = pending_notifications(&conn, now + 1).unwrap();
+            assert_eq!(pending.len(), 1);
+            // After expiry: excluded
+            let pending = pending_notifications(&conn, ttl + 1).unwrap();
+            assert!(pending.is_empty());
         }
 
         #[test]
@@ -2128,7 +2145,7 @@ pub mod watchlist {
             mark_terminal(&conn, "sha_a", "me/repo", "failure").unwrap();
             mark_terminal(&conn, "sha_b", "me/repo", "failure").unwrap();
             mark_notified(&conn, "sha_a", "me/repo").unwrap();
-            let pending = pending_notifications(&conn).unwrap();
+            let pending = pending_notifications(&conn, now + 1).unwrap();
             assert_eq!(pending.len(), 1);
             assert_eq!(pending[0].sha, "sha_b");
         }
@@ -2153,7 +2170,7 @@ pub mod watchlist {
         #[test]
         fn pending_notifications_empty_when_none_qualify() {
             let conn = open_test_db();
-            let pending = pending_notifications(&conn).unwrap();
+            let pending = pending_notifications(&conn, 1_000_000).unwrap();
             assert!(pending.is_empty());
         }
     }

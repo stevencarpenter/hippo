@@ -168,7 +168,7 @@ async fn main() -> Result<()> {
                     .expect("cannot determine project root");
                 let brain_dir = project_root.join("brain");
 
-                let mut vars = install::detect_vars(&brain_dir)?;
+                let vars = install::detect_vars(&brain_dir)?;
 
                 println!("Installing LaunchAgents...");
                 println!("  hippo binary: {}", vars.hippo_bin.display());
@@ -186,25 +186,22 @@ async fn main() -> Result<()> {
 
                 // GitHub Actions poller plist — only written when github source is enabled.
                 let gh_poll_installed = if config.github.enabled {
-                    let github_token = std::env::var(&config.github.token_env).ok();
-                    match github_token {
-                        None => {
-                            anyhow::bail!(
-                                "{} must be set to enable the github source",
-                                config.github.token_env
-                            );
-                        }
-                        Some(token) => {
-                            vars.github_token = token;
-                            install::install_plist(
-                                "com.hippo.gh-poll",
-                                gh_poll_template,
-                                &vars,
-                                force,
-                            )?;
-                            true
-                        }
+                    // Verify the token env var is set at install time so the user
+                    // gets an early error, but don't embed it in the plist.
+                    if std::env::var(&config.github.token_env).is_err() {
+                        anyhow::bail!(
+                            "{} must be set to enable the github source",
+                            config.github.token_env
+                        );
                     }
+                    install::install_gh_poll_wrapper(
+                        &vars.hippo_bin,
+                        &config.github.token_env,
+                        &vars.data_dir,
+                        force,
+                    )?;
+                    install::install_plist("com.hippo.gh-poll", gh_poll_template, &vars, force)?;
+                    true
                 } else {
                     println!("  (github source disabled; skipping gh-poll plist)");
                     false
@@ -658,7 +655,8 @@ async fn main() -> Result<()> {
         }
         Commands::GhPendingNotifications { repo, ack } => {
             let db = hippo_core::storage::open_db(&config.db_path())?;
-            let pending = hippo_core::storage::watchlist::pending_notifications(&db)?;
+            let now = chrono::Utc::now().timestamp_millis();
+            let pending = hippo_core::storage::watchlist::pending_notifications(&db, now)?;
             let matching: Vec<_> = pending.iter().filter(|e| e.repo == repo).collect();
 
             for entry in &matching {

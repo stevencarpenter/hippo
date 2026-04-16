@@ -21,7 +21,7 @@ fn upsert_then_resolve() {
 
     let hit = watchlist::mark_terminal(&conn, "abc123", "me/repo", "failure").unwrap();
     assert!(hit, "mark_terminal should return true when row exists");
-    let pending = watchlist::pending_notifications(&conn).unwrap();
+    let pending = watchlist::pending_notifications(&conn, 1_700_000_000_000).unwrap();
     assert_eq!(pending.len(), 1);
     assert_eq!(pending[0].terminal_status.as_deref(), Some("failure"));
 }

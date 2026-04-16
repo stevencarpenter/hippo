@@ -141,14 +141,13 @@ async fn get_log_tail_bails_on_http_error() {
 }
 
 #[tokio::test]
-async fn forbidden_without_retry_after_bails_immediately() {
+async fn forbidden_permission_error_bails_immediately() {
+    // A bare 403 with no rate-limit headers is a permission error — bail, don't retry.
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/repos/me/repo/actions/runs"))
         .respond_with(
-            ResponseTemplate::new(403)
-                .insert_header("x-ratelimit-remaining", "0")
-                .set_body_string(r#"{"message":"Resource not accessible"}"#),
+            ResponseTemplate::new(403).set_body_string(r#"{"message":"Resource not accessible"}"#),
         )
         .mount(&server)
         .await;
@@ -159,7 +158,48 @@ async fn forbidden_without_retry_after_bails_immediately() {
     assert!(result.is_err());
     assert!(
         start.elapsed().as_secs() < 5,
-        "permission 403 (no retry-after) must not retry"
+        "permission 403 (no rate-limit headers) must not retry"
+    );
+}
+
+#[tokio::test]
+async fn forbidden_with_ratelimit_remaining_zero_retries() {
+    // 403 + x-ratelimit-remaining: 0 is a primary rate limit — should retry.
+    let server = MockServer::start().await;
+
+    let reset_ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+        + 1; // reset 1 second from now
+
+    Mock::given(method("GET"))
+        .and(path("/repos/me/repo/actions/runs"))
+        .respond_with(
+            ResponseTemplate::new(403)
+                .insert_header("x-ratelimit-remaining", "0")
+                .insert_header("x-ratelimit-reset", reset_ts.to_string()),
+        )
+        .up_to_n_times(1)
+        .mount(&server)
+        .await;
+
+    Mock::given(method("GET"))
+        .and(path("/repos/me/repo/actions/runs"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "total_count": 0, "workflow_runs": []
+        })))
+        .mount(&server)
+        .await;
+
+    let api = GhApi::new(server.uri(), "test-token".into());
+    let runs = api
+        .list_runs("me/repo", &ListRunsQuery::default())
+        .await
+        .unwrap();
+    assert!(
+        runs.is_empty(),
+        "should succeed after retrying 403+x-ratelimit-remaining:0"
     );
 }
 

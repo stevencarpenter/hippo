@@ -13,7 +13,6 @@ pub fn render_plist(template: &str, vars: &PlistVars) -> String {
         .replace("__DATA_DIR__", &vars.data_dir.to_string_lossy())
         .replace("__HIPPO_OTEL_ENABLED__", &vars.otel_enabled)
         .replace("__OTEL_ENDPOINT__", &vars.otel_endpoint)
-        .replace("__GITHUB_TOKEN__", &vars.github_token)
 }
 
 pub struct PlistVars {
@@ -25,9 +24,6 @@ pub struct PlistVars {
     pub data_dir: PathBuf,
     pub otel_enabled: String,
     pub otel_endpoint: String,
-    /// GitHub API token injected into com.hippo.gh-poll.plist.
-    /// Empty string for plists that don't use it (substitute is a no-op).
-    pub github_token: String,
 }
 
 /// Auto-detect system paths for plist variable substitution.
@@ -65,7 +61,6 @@ pub fn detect_vars(brain_dir: &Path) -> Result<PlistVars> {
             }
             parsed.to_string()
         },
-        github_token: String::new(),
     })
 }
 
@@ -76,6 +71,49 @@ fn which(binary: &str) -> Option<PathBuf> {
             candidate.is_file().then_some(candidate)
         })
     })
+}
+
+/// Write a wrapper script for gh-poll that sources the GitHub token at runtime.
+///
+/// Reads the token from `$HIPPO_GITHUB_TOKEN` or, if unset, from the user's
+/// env file (`~/.config/zsh/.env`). This avoids embedding the plaintext token
+/// in the LaunchAgent plist.
+pub fn install_gh_poll_wrapper(
+    hippo_bin: &Path,
+    token_env: &str,
+    data_dir: &Path,
+    force: bool,
+) -> Result<PathBuf> {
+    std::fs::create_dir_all(data_dir)?;
+    let wrapper = data_dir.join("gh-poll-wrapper.sh");
+    if wrapper.exists() && !force {
+        anyhow::bail!(
+            "{} already exists. Use --force to overwrite.",
+            wrapper.display()
+        );
+    }
+    let content = format!(
+        r#"#!/bin/bash
+# Wrapper for hippo gh-poll LaunchAgent.
+# Sources the GitHub token at runtime to avoid embedding secrets in plists.
+set -euo pipefail
+
+# Try env var first; fall back to sourcing the encrypted-env-deployed file.
+if [ -z "${{{token_env}:-}}" ] && [ -f "$HOME/.config/zsh/.env" ]; then
+    set -a
+    source "$HOME/.config/zsh/.env"
+    set +a
+fi
+
+exec {hippo_bin} gh-poll
+"#,
+        token_env = token_env,
+        hippo_bin = hippo_bin.display(),
+    );
+    std::fs::write(&wrapper, content)?;
+    std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o700))?;
+    println!("  Installed wrapper {}", wrapper.display());
+    Ok(wrapper)
 }
 
 /// Symlink the hippo binary into ~/.local/bin so it's on PATH for shell hooks.
@@ -267,7 +305,6 @@ mod tests {
             data_dir: PathBuf::from("/Users/me/.local/share/hippo"),
             otel_enabled: "0".to_string(),
             otel_endpoint: "http://localhost:4318".to_string(),
-            github_token: String::new(),
         };
 
         let result = render_plist(template, &vars);

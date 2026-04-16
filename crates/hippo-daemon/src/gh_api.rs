@@ -87,23 +87,50 @@ impl GhApi {
                 .await?;
 
             let status = resp.status();
+            let headers = resp.headers().clone();
 
-            // 403 with retry-after = secondary rate limit; 403 without = permission error (don't retry).
-            let is_rate_limited = status == StatusCode::TOO_MANY_REQUESTS
-                || (status == StatusCode::FORBIDDEN && resp.headers().get("retry-after").is_some());
+            // Secondary rate limit: 429 or 403 with retry-after header.
+            let has_retry_after = headers.get("retry-after").is_some();
+            let is_secondary_rate_limit = status == StatusCode::TOO_MANY_REQUESTS
+                || (status == StatusCode::FORBIDDEN && has_retry_after);
 
-            if is_rate_limited {
+            // Primary rate limit: 403 with x-ratelimit-remaining: 0.
+            let is_primary_rate_limit = status == StatusCode::FORBIDDEN
+                && !has_retry_after
+                && headers
+                    .get("x-ratelimit-remaining")
+                    .and_then(|v| v.to_str().ok())
+                    .and_then(|v| v.parse::<u64>().ok())
+                    == Some(0);
+
+            if is_secondary_rate_limit || is_primary_rate_limit {
                 attempts += 1;
                 if attempts > MAX_RETRIES {
                     bail!("GitHub rate-limited after {MAX_RETRIES} retries: {status}");
                 }
-                let wait = resp
-                    .headers()
+                let wait = if let Some(retry_after) = headers
                     .get("retry-after")
                     .and_then(|v| v.to_str().ok())
                     .and_then(|v| v.parse::<u64>().ok())
-                    .unwrap_or(60);
-                tokio::time::sleep(Duration::from_secs(wait)).await;
+                {
+                    retry_after
+                } else if let Some(reset) = headers
+                    .get("x-ratelimit-reset")
+                    .and_then(|v| v.to_str().ok())
+                    .and_then(|v| v.parse::<u64>().ok())
+                {
+                    // x-ratelimit-reset is a Unix timestamp; sleep until then + 1s buffer.
+                    let now = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_secs();
+                    reset.saturating_sub(now).max(1) + 1
+                } else {
+                    60
+                };
+                // Cap wait to 5 minutes to avoid unbounded sleeps from clock skew.
+                let capped = wait.min(300);
+                tokio::time::sleep(Duration::from_secs(capped)).await;
                 continue;
             }
 
@@ -150,6 +177,11 @@ impl GhApi {
         self.get_json(&url).await
     }
 
+    /// Download the tail of a job's plain-text log.
+    ///
+    /// Uses the per-job endpoint (`/actions/jobs/{id}/logs`) which returns a
+    /// redirect to a plain-text log file. (The per-*run* endpoint returns a ZIP
+    /// archive — we intentionally use per-job to avoid decompression overhead.)
     pub async fn get_log_tail(
         &self,
         repo: &str,
@@ -169,6 +201,13 @@ impl GhApi {
             bail!("GitHub log API {status}: {body}");
         }
         let bytes = resp.bytes().await?;
+
+        // Defensive: per-job endpoint should return plain text, but bail
+        // gracefully if we get a ZIP archive (PK\x03\x04 magic bytes).
+        if bytes.len() >= 4 && bytes[..4] == [0x50, 0x4b, 0x03, 0x04] {
+            bail!("GitHub log API returned a ZIP archive for job {job_id}; expected plain text");
+        }
+
         if bytes.len() <= max_bytes {
             return Ok((String::from_utf8_lossy(&bytes).into_owned(), false));
         }

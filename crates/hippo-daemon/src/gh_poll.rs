@@ -77,7 +77,18 @@ pub async fn run_once(api: &GhApi, db_path: &Path, cfg: &PollConfig) -> Result<(
 
             if run.status == "completed" {
                 if let Some(concl) = run.conclusion.as_deref() {
-                    let _ = watchlist::mark_terminal(&conn, &run.head_sha, repo, concl)?;
+                    match concl {
+                        "failure" | "cancelled" => {
+                            let _ = watchlist::mark_terminal(&conn, &run.head_sha, repo, concl)?;
+                        }
+                        _ => {
+                            // Success rows don't need notification — delete immediately.
+                            let _ = conn.execute(
+                                "DELETE FROM sha_watchlist WHERE sha = ?1 AND repo = ?2",
+                                rusqlite::params![&run.head_sha, repo],
+                            );
+                        }
+                    }
                 }
 
                 // Skip drill-down if this run was already enriched (fully processed).
@@ -158,6 +169,11 @@ pub async fn run_once(api: &GhApi, db_path: &Path, cfg: &PollConfig) -> Result<(
                         {
                             Ok((excerpt, truncated)) => {
                                 let redacted_excerpt = redactor.redact(&excerpt).text;
+                                // Clear stale excerpts from a previous poll pass before re-inserting.
+                                conn.execute(
+                                    "DELETE FROM workflow_log_excerpts WHERE job_id = ?1",
+                                    [job.id],
+                                )?;
                                 workflow_store::insert_log_excerpt(
                                     &conn,
                                     job.id,
