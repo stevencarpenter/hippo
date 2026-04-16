@@ -85,7 +85,16 @@ strip_params = [
 ]
 
 [telemetry]
-# Set enabled = true and run `mise run otel:up` to start the observability stack.
-# endpoint is the OTel Collector gRPC address.
+# OpenTelemetry observability: traces, metrics, and logs to Grafana/Tempo/Loki/Prometheus.
+#
+# To enable telemetry:
+#   1. Start the observability stack: mise run otel:up
+#   2. Set enabled = true (below)
+#   3. Rebuild daemon: cargo build --release --features otel
+#   4. Reinstall: mise run install
+#   5. Verify: hippo doctor
+#
+# Access Grafana: http://localhost:3000 (admin/hippo)
+# OTel Collector health: http://localhost:13133
 enabled = false
 endpoint = "http://localhost:4317"
