@@ -606,38 +606,35 @@ async fn check_otel_status(config: &HippoConfig, client: &reqwest::Client) {
     // Check if telemetry is enabled in config
     let config_enabled = config.telemetry.enabled;
 
-    // Check if OTel collector is reachable
-    let collector_grpc = format!(
-        "{}/v1/traces",
-        config.telemetry.endpoint.replace(":4317", ":4318")
-    );
+    // Check if OTel collector is reachable via its health-check extension
+    let collector_health_url = "http://localhost:13133/";
     let collector_reachable = client
-        .get(&collector_grpc)
+        .get(collector_health_url)
         .send()
         .await
-        .map(|r| r.status().as_u16())
-        .unwrap_or(0);
+        .map(|r| r.status().is_success())
+        .unwrap_or(false);
 
     // Determine status and provide actionable feedback
     match (config_enabled, collector_reachable) {
-        (true, status) if status == 200 || status == 404 || status == 405 => {
+        (true, true) => {
             println!("[OK] OpenTelemetry: enabled and collector reachable");
         }
-        (true, _) => {
+        (true, false) => {
             println!(
                 "[!!] OpenTelemetry: enabled but collector unreachable at {}",
-                config.telemetry.endpoint
+                collector_health_url
             );
             println!("     Start the stack: mise run otel:up");
         }
-        (false, status) if status == 200 || status == 404 || status == 405 => {
+        (false, true) => {
             println!("[!!] OpenTelemetry: collector available but disabled in config");
             println!(
                 "     Enable it: Set [telemetry] enabled = true in ~/.config/hippo/config.toml"
             );
             println!("     Then restart: mise run restart");
         }
-        (false, _) => {
+        (false, false) => {
             println!("[--] OpenTelemetry: disabled (start with: mise run otel:up)");
         }
     }

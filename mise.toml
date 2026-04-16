@@ -535,9 +535,17 @@ fi
 
 # ── 10. Check OTel stack availability ───────────────────────────────
 echo ""
-OTEL_ENABLED=$(grep "^enabled = " "$CONFIG_DIR/config.toml" 2>/dev/null | grep -q "true" && echo "1" || echo "0")
+OTEL_ENABLED=$(awk '
+    BEGIN { in_telemetry = 0; enabled = "0" }
+    /^[[:space:]]*\[telemetry\][[:space:]]*$/ { in_telemetry = 1; next }
+    in_telemetry && /^[[:space:]]*\[/ { exit }
+    in_telemetry && /^[[:space:]]*#/ { next }
+    in_telemetry && /^[[:space:]]*enabled[[:space:]]*=[[:space:]]*true[[:space:]]*$/ { enabled = "1"; exit }
+    in_telemetry && /^[[:space:]]*enabled[[:space:]]*=[[:space:]]*false[[:space:]]*$/ { enabled = "0"; exit }
+    END { print enabled }
+' "$CONFIG_DIR/config.toml" 2>/dev/null || echo "0")
 OTEL_COLLECTOR_UP="0"
-if curl -sf http://localhost:13133 >/dev/null 2>&1 || curl -sf http://localhost:4318/v1/traces >/dev/null 2>&1; then
+if curl -sf http://localhost:13133/ >/dev/null 2>&1; then
     OTEL_COLLECTOR_UP="1"
 fi
 
