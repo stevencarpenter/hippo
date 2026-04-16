@@ -1,7 +1,7 @@
 mod cli;
 mod install;
 
-use hippo_daemon::{claude_session, commands, daemon};
+use hippo_daemon::{claude_session, commands, daemon, gh_api, gh_poll};
 
 use std::path::PathBuf;
 
@@ -168,7 +168,7 @@ async fn main() -> Result<()> {
                     .expect("cannot determine project root");
                 let brain_dir = project_root.join("brain");
 
-                let vars = install::detect_vars(&brain_dir)?;
+                let mut vars = install::detect_vars(&brain_dir)?;
 
                 println!("Installing LaunchAgents...");
                 println!("  hippo binary: {}", vars.hippo_bin.display());
@@ -179,9 +179,42 @@ async fn main() -> Result<()> {
 
                 let daemon_template = include_str!("../../../launchd/com.hippo.daemon.plist");
                 let brain_template = include_str!("../../../launchd/com.hippo.brain.plist");
+                let gh_poll_template = include_str!("../../../launchd/com.hippo.gh-poll.plist");
 
                 install::install_plist("com.hippo.daemon", daemon_template, &vars, force)?;
                 install::install_plist("com.hippo.brain", brain_template, &vars, force)?;
+
+                // GitHub Actions poller plist — gated on token availability.
+                let github_token = std::env::var(&config.github.token_env).ok();
+                let gh_poll_installed = if config.github.enabled {
+                    match github_token {
+                        None => {
+                            anyhow::bail!(
+                                "{} must be set to enable the github source",
+                                config.github.token_env
+                            );
+                        }
+                        Some(token) => {
+                            vars.github_token = token;
+                            install::install_plist(
+                                "com.hippo.gh-poll",
+                                gh_poll_template,
+                                &vars,
+                                force,
+                            )?;
+                            true
+                        }
+                    }
+                } else if let Some(token) = github_token {
+                    // Token is set but github source is disabled — write the plist
+                    // anyway so the user can enable it without re-running install.
+                    vars.github_token = token;
+                    install::install_plist("com.hippo.gh-poll", gh_poll_template, &vars, force)?;
+                    println!("  (github source disabled; plist written, not loaded)");
+                    false
+                } else {
+                    false
+                };
 
                 println!();
                 println!("Symlink binary...");
@@ -199,6 +232,11 @@ async fn main() -> Result<()> {
                 println!(
                     "  launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.hippo.brain.plist"
                 );
+                if gh_poll_installed {
+                    println!(
+                        "  launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.hippo.gh-poll.plist"
+                    );
+                }
             }
         },
         Commands::Brain { action } => match action {
@@ -601,6 +639,20 @@ async fn main() -> Result<()> {
                 }
             }
         },
+        Commands::GhPoll { repo } => {
+            let token = std::env::var(&config.github.token_env)
+                .map_err(|_| anyhow::anyhow!("{} is not set", config.github.token_env))?;
+            let api = gh_api::GhApi::new("https://api.github.com".into(), token);
+            let watched_repos = match repo {
+                Some(r) => vec![r],
+                None => config.github.watched_repos.clone(),
+            };
+            let poll_cfg = gh_poll::PollConfig {
+                watched_repos,
+                log_excerpt_max_bytes: config.github.log_excerpt_max_bytes,
+            };
+            gh_poll::run_once(&api, &config.db_path(), &poll_cfg).await?;
+        }
         Commands::NativeMessagingHost => {
             hippo_daemon::native_messaging::run(&config).await?;
         }

@@ -13,6 +13,7 @@ pub fn render_plist(template: &str, vars: &PlistVars) -> String {
         .replace("__DATA_DIR__", &vars.data_dir.to_string_lossy())
         .replace("__HIPPO_OTEL_ENABLED__", &vars.otel_enabled)
         .replace("__OTEL_ENDPOINT__", &vars.otel_endpoint)
+        .replace("__GITHUB_TOKEN__", &vars.github_token)
 }
 
 pub struct PlistVars {
@@ -24,6 +25,9 @@ pub struct PlistVars {
     pub data_dir: PathBuf,
     pub otel_enabled: String,
     pub otel_endpoint: String,
+    /// GitHub API token injected into com.hippo.gh-poll.plist.
+    /// Empty string for plists that don't use it (substitute is a no-op).
+    pub github_token: String,
 }
 
 /// Auto-detect system paths for plist variable substitution.
@@ -61,6 +65,7 @@ pub fn detect_vars(brain_dir: &Path) -> Result<PlistVars> {
             }
             parsed.to_string()
         },
+        github_token: String::new(),
     })
 }
 
@@ -102,6 +107,7 @@ pub fn symlink_binary(hippo_bin: &Path, force: bool) -> Result<PathBuf> {
             .with_context(|| format!("cannot remove existing {}", link.display()))?;
     }
 
+    // nosemgrep
     std::os::unix::fs::symlink(hippo_bin, &link)
         .with_context(|| format!("cannot create symlink {}", link.display()))?;
     println!("  Symlinked {} -> {}", link.display(), hippo_bin.display());
@@ -261,6 +267,7 @@ mod tests {
             data_dir: PathBuf::from("/Users/me/.local/share/hippo"),
             otel_enabled: "0".to_string(),
             otel_endpoint: "http://localhost:4318".to_string(),
+            github_token: String::new(),
         };
 
         let result = render_plist(template, &vars);
