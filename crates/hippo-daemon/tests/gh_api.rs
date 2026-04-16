@@ -31,7 +31,10 @@ async fn list_runs_returns_deserialized_runs() {
         .await;
 
     let api = GhApi::new(server.uri(), "test-token".into());
-    let runs = api.list_runs("me/repo", &ListRunsQuery::default()).await.unwrap();
+    let runs = api
+        .list_runs("me/repo", &ListRunsQuery::default())
+        .await
+        .unwrap();
 
     assert_eq!(runs.len(), 1);
     assert_eq!(runs[0].id, 999);
@@ -62,9 +65,15 @@ async fn rate_limit_respects_reset_header() {
 
     let api = GhApi::new(server.uri(), "test-token".into());
     let start = std::time::Instant::now();
-    let runs = api.list_runs("me/repo", &ListRunsQuery::default()).await.unwrap();
+    let runs = api
+        .list_runs("me/repo", &ListRunsQuery::default())
+        .await
+        .unwrap();
     assert!(runs.is_empty());
-    assert!(start.elapsed().as_secs() >= 1, "should have waited at least 1s");
+    assert!(
+        start.elapsed().as_secs() >= 1,
+        "should have waited at least 1s"
+    );
 }
 
 #[tokio::test]
@@ -119,15 +128,16 @@ async fn get_log_tail_bails_on_http_error() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/repos/me/repo/actions/jobs/42/logs"))
-        .respond_with(
-            ResponseTemplate::new(404).set_body_string(r#"{"message":"Not Found"}"#),
-        )
+        .respond_with(ResponseTemplate::new(404).set_body_string(r#"{"message":"Not Found"}"#))
         .mount(&server)
         .await;
 
     let api = GhApi::new(server.uri(), "test-token".into());
     let result = api.get_log_tail("me/repo", 42, 1024).await;
-    assert!(result.is_err(), "404 must produce an error, not silently store the JSON body");
+    assert!(
+        result.is_err(),
+        "404 must produce an error, not silently store the JSON body"
+    );
 }
 
 #[tokio::test]
@@ -172,7 +182,10 @@ async fn list_runs_with_created_since_appends_filter() {
         created_since: Some("2026-04-01T00:00:00Z".into()),
     };
     let runs = api.list_runs("me/repo", &q).await.unwrap();
-    assert!(runs.is_empty(), "created_since with no matching runs returns empty vec");
+    assert!(
+        runs.is_empty(),
+        "created_since with no matching runs returns empty vec"
+    );
 }
 
 #[tokio::test]
@@ -204,9 +217,7 @@ async fn forbidden_with_retry_after_header_retries_and_succeeds() {
     // 403 + retry-after header = secondary rate limit (should retry).
     Mock::given(method("GET"))
         .and(path("/repos/me/repo/actions/runs"))
-        .respond_with(
-            ResponseTemplate::new(403).insert_header("retry-after", "0"),
-        )
+        .respond_with(ResponseTemplate::new(403).insert_header("retry-after", "0"))
         .up_to_n_times(1)
         .mount(&server)
         .await;
@@ -220,8 +231,14 @@ async fn forbidden_with_retry_after_header_retries_and_succeeds() {
         .await;
 
     let api = GhApi::new(server.uri(), "test-token".into());
-    let runs = api.list_runs("me/repo", &ListRunsQuery::default()).await.unwrap();
-    assert!(runs.is_empty(), "should succeed after retrying 403+retry-after");
+    let runs = api
+        .list_runs("me/repo", &ListRunsQuery::default())
+        .await
+        .unwrap();
+    assert!(
+        runs.is_empty(),
+        "should succeed after retrying 403+retry-after"
+    );
 }
 
 #[tokio::test]

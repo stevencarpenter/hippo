@@ -41,7 +41,6 @@ async fn register_watch_sha_creates_row() {
         .unwrap();
     assert_eq!(count, 1, "sha_watchlist should have one row for abc123");
 
-    let _ =
-        hippo_daemon::commands::send_request(&socket_path, &DaemonRequest::Shutdown).await;
+    let _ = hippo_daemon::commands::send_request(&socket_path, &DaemonRequest::Shutdown).await;
     let _ = daemon_handle.await;
 }

@@ -4,7 +4,8 @@ use tempfile::TempDir;
 
 fn seed_v4(path: &std::path::Path) {
     let conn = Connection::open(path).unwrap();
-    conn.execute_batch(include_str!("fixtures/schema_v4.sql")).unwrap();
+    conn.execute_batch(include_str!("fixtures/schema_v4.sql"))
+        .unwrap();
     conn.pragma_update(None, "user_version", 4).unwrap();
 }
 

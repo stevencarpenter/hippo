@@ -66,7 +66,11 @@ impl GhApi {
             .timeout(Duration::from_secs(30))
             .build()
             .expect("reqwest client");
-        Self { base_url, token, http }
+        Self {
+            base_url,
+            token,
+            http,
+        }
     }
 
     async fn get_json<T: for<'de> Deserialize<'de>>(&self, url: &str) -> Result<T> {
@@ -86,8 +90,7 @@ impl GhApi {
 
             // 403 with retry-after = secondary rate limit; 403 without = permission error (don't retry).
             let is_rate_limited = status == StatusCode::TOO_MANY_REQUESTS
-                || (status == StatusCode::FORBIDDEN
-                    && resp.headers().get("retry-after").is_some());
+                || (status == StatusCode::FORBIDDEN && resp.headers().get("retry-after").is_some());
 
             if is_rate_limited {
                 attempts += 1;
@@ -135,10 +138,7 @@ impl GhApi {
         struct Envelope {
             jobs: Vec<Job>,
         }
-        let url = format!(
-            "{}/repos/{repo}/actions/runs/{run_id}/jobs",
-            self.base_url
-        );
+        let url = format!("{}/repos/{repo}/actions/runs/{run_id}/jobs", self.base_url);
         let env: Envelope = self.get_json(&url).await?;
         Ok(env.jobs)
     }

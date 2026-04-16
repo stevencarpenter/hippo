@@ -152,11 +152,18 @@ pub async fn run_once(api: &GhApi, db_path: &Path, cfg: &PollConfig) -> Result<(
                         Some("failure") | Some("cancelled")
                     ) {
                         // TODO: replace with structured logging
-                        match api.get_log_tail(repo, job.id, cfg.log_excerpt_max_bytes).await {
+                        match api
+                            .get_log_tail(repo, job.id, cfg.log_excerpt_max_bytes)
+                            .await
+                        {
                             Ok((excerpt, truncated)) => {
                                 let redacted_excerpt = redactor.redact(&excerpt).text;
                                 workflow_store::insert_log_excerpt(
-                                    &conn, job.id, None, &redacted_excerpt, truncated,
+                                    &conn,
+                                    job.id,
+                                    None,
+                                    &redacted_excerpt,
+                                    truncated,
                                 )?;
                             }
                             Err(e) => eprintln!(

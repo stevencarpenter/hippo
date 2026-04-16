@@ -4,10 +4,8 @@ use regex::Regex;
 use std::sync::LazyLock;
 
 // Covers all ruff prefixes: E, W, F, B, N, I, S, ANN, UP, SIM, PTH, RET, RUF, etc.
-static RUFF_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"\b([A-Z]{1,4}\d{3,4})\b").unwrap());
-static CARGO_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"error\[(E\d{4})\]").unwrap());
+static RUFF_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\b([A-Z]{1,4}\d{3,4})\b").unwrap());
+static CARGO_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"error\[(E\d{4})\]").unwrap());
 // Match both mypy lowercase ([arg-type]) and pyright PascalCase
 // ([reportAttributeAccessIssue]). {7,} on the inner group (min 8 total chars)
 // filters common noise tokens like [stderr], [error], [warning], [info].
@@ -48,7 +46,11 @@ pub fn parse(job_name: &str, message: &str) -> ParsedAnnotation {
     if (job_lower.contains("type") || job_lower.contains("mypy") || job_lower.contains("pyright"))
         && let Some(c) = MYPY_RE.captures(message)
     {
-        let tool = if job_lower.contains("pyright") { "pyright" } else { "mypy" };
+        let tool = if job_lower.contains("pyright") {
+            "pyright"
+        } else {
+            "mypy"
+        };
         return ParsedAnnotation {
             tool: Some(tool.into()),
             rule_id: Some(c[1].to_string()),
@@ -65,14 +67,19 @@ pub fn parse(job_name: &str, message: &str) -> ParsedAnnotation {
         };
     }
 
-    ParsedAnnotation { tool: None, rule_id: None }
+    ParsedAnnotation {
+        tool: None,
+        rule_id: None,
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn call(job: &str, msg: &str) -> ParsedAnnotation { parse(job, msg) }
+    fn call(job: &str, msg: &str) -> ParsedAnnotation {
+        parse(job, msg)
+    }
 
     #[test]
     fn ruff_rule_from_message() {
@@ -97,7 +104,10 @@ mod tests {
 
     #[test]
     fn mypy_error_with_code() {
-        let got = call("typecheck", "error: Argument 1 has incompatible type [arg-type]");
+        let got = call(
+            "typecheck",
+            "error: Argument 1 has incompatible type [arg-type]",
+        );
         assert_eq!(got.tool.as_deref(), Some("mypy"));
         assert_eq!(got.rule_id.as_deref(), Some("arg-type"));
     }
@@ -118,14 +128,20 @@ mod tests {
 
     #[test]
     fn ruff_extended_namespace_b006() {
-        let got = call("lint", "B006 Do not use mutable data structures for argument defaults");
+        let got = call(
+            "lint",
+            "B006 Do not use mutable data structures for argument defaults",
+        );
         assert_eq!(got.tool.as_deref(), Some("ruff"));
         assert_eq!(got.rule_id.as_deref(), Some("B006"));
     }
 
     #[test]
     fn pyright_native_code() {
-        let got = call("pyright", r#"Cannot access attribute "foo" for class "Bar" [reportAttributeAccessIssue]"#);
+        let got = call(
+            "pyright",
+            r#"Cannot access attribute "foo" for class "Bar" [reportAttributeAccessIssue]"#,
+        );
         assert_eq!(got.tool.as_deref(), Some("pyright"));
         assert_eq!(got.rule_id.as_deref(), Some("reportAttributeAccessIssue"));
     }

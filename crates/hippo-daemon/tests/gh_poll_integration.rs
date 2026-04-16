@@ -1,6 +1,6 @@
 use hippo_core::storage::open_db;
 use hippo_daemon::gh_api::GhApi;
-use hippo_daemon::gh_poll::{run_once, PollConfig};
+use hippo_daemon::gh_poll::{PollConfig, run_once};
 use serde_json::json;
 use tempfile::TempDir;
 use wiremock::matchers::{method, path};
@@ -92,7 +92,9 @@ async fn single_pass_inserts_runs_jobs_annotations() {
     assert_eq!(jobs, 1);
 
     let annotations: i64 = conn
-        .query_row("SELECT count(*) FROM workflow_annotations", [], |r| r.get(0))
+        .query_row("SELECT count(*) FROM workflow_annotations", [], |r| {
+            r.get(0)
+        })
         .unwrap();
     assert_eq!(annotations, 1);
 
@@ -108,11 +110,9 @@ async fn single_pass_inserts_runs_jobs_annotations() {
     assert_eq!(rule.as_deref(), Some("F401"));
 
     let logs: i64 = conn
-        .query_row(
-            "SELECT count(*) FROM workflow_log_excerpts",
-            [],
-            |r| r.get(0),
-        )
+        .query_row("SELECT count(*) FROM workflow_log_excerpts", [], |r| {
+            r.get(0)
+        })
         .unwrap();
     assert_eq!(logs, 1);
 
@@ -301,15 +301,22 @@ async fn get_annotations_failure_still_saves_job_and_logs() {
     let jobs: i64 = conn
         .query_row("SELECT count(*) FROM workflow_jobs", [], |r| r.get(0))
         .unwrap();
-    assert_eq!(jobs, 1, "job should be saved even when annotations fetch fails");
+    assert_eq!(
+        jobs, 1,
+        "job should be saved even when annotations fetch fails"
+    );
 
     let annotations: i64 = conn
-        .query_row("SELECT count(*) FROM workflow_annotations", [], |r| r.get(0))
+        .query_row("SELECT count(*) FROM workflow_annotations", [], |r| {
+            r.get(0)
+        })
         .unwrap();
     assert_eq!(annotations, 0, "no annotations when fetch fails");
 
     let logs: i64 = conn
-        .query_row("SELECT count(*) FROM workflow_log_excerpts", [], |r| r.get(0))
+        .query_row("SELECT count(*) FROM workflow_log_excerpts", [], |r| {
+            r.get(0)
+        })
         .unwrap();
     assert_eq!(logs, 1, "log excerpt should still be saved");
 }
@@ -377,7 +384,9 @@ async fn get_log_tail_failure_skips_excerpt_but_saves_job() {
     assert_eq!(jobs, 1, "job should still be stored");
 
     let logs: i64 = conn
-        .query_row("SELECT count(*) FROM workflow_log_excerpts", [], |r| r.get(0))
+        .query_row("SELECT count(*) FROM workflow_log_excerpts", [], |r| {
+            r.get(0)
+        })
         .unwrap();
     assert_eq!(logs, 0, "no log excerpt when fetch fails");
 }

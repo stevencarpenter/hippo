@@ -177,7 +177,11 @@ pub async fn handle_request(state: &Arc<DaemonState>, request: DaemonRequest) ->
                 Err(e) => DaemonResponse::Error(e.to_string()),
             }
         }
-        DaemonRequest::RegisterWatchSha { sha, repo, ttl_secs } => {
+        DaemonRequest::RegisterWatchSha {
+            sha,
+            repo,
+            ttl_secs,
+        } => {
             let now = chrono::Utc::now().timestamp_millis();
             let expires = now + (ttl_secs as i64) * 1000;
             let db = state.write_db.lock().await;

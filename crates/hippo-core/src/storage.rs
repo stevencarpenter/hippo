@@ -1960,12 +1960,7 @@ pub mod watchlist {
         Ok(rows)
     }
 
-    pub fn mark_terminal(
-        conn: &Connection,
-        sha: &str,
-        repo: &str,
-        status: &str,
-    ) -> Result<bool> {
+    pub fn mark_terminal(conn: &Connection, sha: &str, repo: &str, status: &str) -> Result<bool> {
         let n = conn.execute(
             "UPDATE sha_watchlist SET terminal_status = ?1
              WHERE sha = ?2 AND repo = ?3",
@@ -2040,7 +2035,11 @@ pub mod watchlist {
                     |r| r.get(0),
                 )
                 .unwrap();
-            assert_eq!(expires, now + 1_200_000, "expires_at should be updated on conflict");
+            assert_eq!(
+                expires,
+                now + 1_200_000,
+                "expires_at should be updated on conflict"
+            );
             let count: i64 = conn
                 .query_row("SELECT count(*) FROM sha_watchlist", [], |r| r.get(0))
                 .unwrap();
@@ -2267,7 +2266,15 @@ pub mod workflow_store {
             "INSERT INTO workflow_annotations
                 (job_id, level, tool, rule_id, path, start_line, message)
              VALUES (?1,?2,?3,?4,?5,?6,?7)",
-            params![job_id, level, parsed.tool, parsed.rule_id, path, start_line, message,],
+            params![
+                job_id,
+                level,
+                parsed.tool,
+                parsed.rule_id,
+                path,
+                start_line,
+                message,
+            ],
         )?;
         Ok(())
     }
