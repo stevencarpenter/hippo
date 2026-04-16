@@ -21,6 +21,54 @@ class EnrichmentResult:
     problems_encountered: list = field(default_factory=list)
 
 
+@dataclass
+class CIAnnotation:
+    level: str
+    tool: str | None
+    rule_id: str | None
+    path: str | None
+    start_line: int | None
+    message: str
+
+
+@dataclass
+class CIJob:
+    id: int
+    name: str
+    conclusion: str | None
+    started_at: int | None
+    completed_at: int | None
+    annotations: list[CIAnnotation] = field(default_factory=list)
+
+
+@dataclass
+class CIStatus:
+    run_id: int
+    repo: str
+    head_sha: str
+    head_branch: str | None
+    status: str
+    conclusion: str | None
+    started_at: int | None
+    completed_at: int | None
+    html_url: str
+    jobs: list[CIJob] = field(default_factory=list)
+
+
+@dataclass
+class Lesson:
+    id: int
+    repo: str
+    tool: str
+    rule_id: str
+    path_prefix: str
+    summary: str
+    fix_hint: str | None
+    occurrences: int
+    first_seen_at: int
+    last_seen_at: int
+
+
 _VALID_OUTCOMES = {"success", "partial", "failure", "unknown"}
 _ENTITY_KEYS = ("projects", "tools", "files", "services", "errors")
 
