@@ -75,6 +75,7 @@ async fn single_pass_inserts_runs_jobs_annotations() {
     let cfg = PollConfig {
         watched_repos: vec!["me/repo".into()],
         log_excerpt_max_bytes: 1024,
+        redact_config_path: None,
     };
 
     run_once(&api, &db_path, &cfg).await.unwrap();
@@ -160,6 +161,7 @@ async fn in_progress_run_does_not_fetch_jobs() {
     let cfg = PollConfig {
         watched_repos: vec!["me/repo".into()],
         log_excerpt_max_bytes: 1024,
+        redact_config_path: None,
     };
 
     run_once(&api, &db_path, &cfg).await.unwrap();
@@ -214,6 +216,7 @@ async fn list_jobs_failure_is_swallowed_and_run_continues() {
     let cfg = PollConfig {
         watched_repos: vec!["me/repo".into()],
         log_excerpt_max_bytes: 1024,
+        redact_config_path: None,
     };
 
     // list_jobs failure must not propagate as an error from run_once
@@ -289,6 +292,7 @@ async fn get_annotations_failure_still_saves_job_and_logs() {
     let cfg = PollConfig {
         watched_repos: vec!["me/repo".into()],
         log_excerpt_max_bytes: 1024,
+        redact_config_path: None,
     };
 
     run_once(&api, &db_path, &cfg).await.unwrap();
@@ -361,6 +365,7 @@ async fn get_log_tail_failure_skips_excerpt_but_saves_job() {
     let cfg = PollConfig {
         watched_repos: vec!["me/repo".into()],
         log_excerpt_max_bytes: 1024,
+        redact_config_path: None,
     };
 
     run_once(&api, &db_path, &cfg).await.unwrap();
@@ -375,4 +380,128 @@ async fn get_log_tail_failure_skips_excerpt_but_saves_job() {
         .query_row("SELECT count(*) FROM workflow_log_excerpts", [], |r| r.get(0))
         .unwrap();
     assert_eq!(logs, 0, "no log excerpt when fetch fails");
+}
+
+#[tokio::test]
+async fn annotations_are_redacted_before_storage() {
+    let server = MockServer::start().await;
+
+    // Use a pattern that won't match any builtin rule, so we know
+    // the custom redact_config_path is driving the redaction.
+    let secret = "HIPPOTEST_SECRET_DEADBEEF123";
+    let annotation_msg = format!("build failed: token={secret} is invalid");
+    let log_content = format!("Error: credential {secret} rejected by server");
+
+    Mock::given(method("GET"))
+        .and(path("/repos/me/repo/actions/runs"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "total_count": 1,
+            "workflow_runs": [{
+                "id": 3001,
+                "head_sha": "cafebabe",
+                "head_branch": "main",
+                "status": "completed",
+                "conclusion": "failure",
+                "event": "push",
+                "html_url": "https://github.com/me/repo/actions/runs/3001",
+                "run_started_at": "2026-04-15T12:00:00Z",
+                "updated_at": "2026-04-15T12:08:00Z",
+                "actor": {"login": "me"}
+            }]
+        })))
+        .mount(&server)
+        .await;
+
+    Mock::given(method("GET"))
+        .and(path("/repos/me/repo/actions/runs/3001/jobs"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "total_count": 1,
+            "jobs": [{
+                "id": 4001, "name": "build",
+                "status": "completed", "conclusion": "failure",
+                "started_at": "2026-04-15T12:00:00Z",
+                "completed_at": "2026-04-15T12:01:00Z",
+                "runner_name": "ubuntu-latest",
+                "check_run_url": format!("{}/repos/me/repo/check-runs/4001", server.uri())
+            }]
+        })))
+        .mount(&server)
+        .await;
+
+    Mock::given(method("GET"))
+        .and(path("/repos/me/repo/check-runs/4001/annotations"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([{
+            "annotation_level": "failure",
+            "message": annotation_msg,
+            "path": "config.yml",
+            "start_line": 10
+        }])))
+        .mount(&server)
+        .await;
+
+    Mock::given(method("GET"))
+        .and(path("/repos/me/repo/actions/jobs/4001/logs"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(log_content))
+        .mount(&server)
+        .await;
+
+    let tmp = TempDir::new().unwrap();
+    let db_path = tmp.path().join("hippo.db");
+    open_db(&db_path).unwrap();
+
+    // Write a custom redact config that matches our fake secret pattern.
+    let redact_path = tmp.path().join("redact.toml");
+    std::fs::write(
+        &redact_path,
+        r#"
+[[patterns]]
+name = "hippotest_secret"
+regex = "HIPPOTEST_SECRET_[A-Z0-9]+"
+replacement = "[REDACTED]"
+"#,
+    )
+    .unwrap();
+
+    let api = GhApi::new(server.uri(), "test-token".into());
+    let cfg = PollConfig {
+        watched_repos: vec!["me/repo".into()],
+        log_excerpt_max_bytes: 1024,
+        redact_config_path: Some(redact_path),
+    };
+
+    run_once(&api, &db_path, &cfg).await.unwrap();
+
+    let conn = rusqlite::Connection::open(&db_path).unwrap();
+
+    let stored_msg: String = conn
+        .query_row(
+            "SELECT message FROM workflow_annotations LIMIT 1",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(
+        !stored_msg.contains("HIPPOTEST_SECRET_DEADBEEF123"),
+        "annotation message must not contain the raw secret; got: {stored_msg}"
+    );
+    assert!(
+        stored_msg.contains("[REDACTED]"),
+        "annotation message must contain the redaction placeholder; got: {stored_msg}"
+    );
+
+    let stored_excerpt: String = conn
+        .query_row(
+            "SELECT excerpt FROM workflow_log_excerpts LIMIT 1",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(
+        !stored_excerpt.contains("HIPPOTEST_SECRET_DEADBEEF123"),
+        "log excerpt must not contain the raw secret; got: {stored_excerpt}"
+    );
+    assert!(
+        stored_excerpt.contains("[REDACTED]"),
+        "log excerpt must contain the redaction placeholder; got: {stored_excerpt}"
+    );
 }

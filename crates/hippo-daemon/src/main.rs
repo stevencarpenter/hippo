@@ -658,6 +658,7 @@ async fn main() -> Result<()> {
             let poll_cfg = gh_poll::PollConfig {
                 watched_repos,
                 log_excerpt_max_bytes: config.github.log_excerpt_max_bytes,
+                redact_config_path: Some(config.redact_path()),
             };
             gh_poll::run_once(&api, &config.db_path(), &poll_cfg).await?;
         }

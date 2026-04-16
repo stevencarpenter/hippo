@@ -2,8 +2,9 @@
 
 use anyhow::{Context, Result};
 use chrono::Utc;
+use hippo_core::redaction::RedactionEngine;
 use hippo_core::storage::{open_db, watchlist, workflow_store};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::gh_api::{GhApi, ListRunsQuery};
 
@@ -11,6 +12,8 @@ use crate::gh_api::{GhApi, ListRunsQuery};
 pub struct PollConfig {
     pub watched_repos: Vec<String>,
     pub log_excerpt_max_bytes: usize,
+    /// Path to `redact.toml`. `None` → builtin patterns only.
+    pub redact_config_path: Option<PathBuf>,
 }
 
 fn parse_ts(s: Option<&str>) -> Option<i64> {
@@ -21,6 +24,20 @@ fn parse_ts(s: Option<&str>) -> Option<i64> {
 pub async fn run_once(api: &GhApi, db_path: &Path, cfg: &PollConfig) -> Result<()> {
     let conn = open_db(db_path)?;
     let now = Utc::now().timestamp_millis();
+
+    let redactor = match &cfg.redact_config_path {
+        Some(path) => match RedactionEngine::from_config_path(path) {
+            Ok(engine) => engine,
+            Err(e) => {
+                eprintln!(
+                    "warn: failed to load redact config {}: {e}. Using builtin patterns.",
+                    path.display()
+                );
+                RedactionEngine::builtin()
+            }
+        },
+        None => RedactionEngine::builtin(),
+    };
 
     for repo in &cfg.watched_repos {
         let runs = api
@@ -36,7 +53,9 @@ pub async fn run_once(api: &GhApi, db_path: &Path, cfg: &PollConfig) -> Result<(
 
         for run in runs {
             let actor = run.actor.as_ref().map(|a| a.login.as_str());
-            let raw = serde_json::to_string(&run).unwrap_or_default();
+            let raw = redactor
+                .redact(&serde_json::to_string(&run).unwrap_or_default())
+                .text;
             workflow_store::upsert_run(
                 &conn,
                 &workflow_store::RunRow {
@@ -70,7 +89,9 @@ pub async fn run_once(api: &GhApi, db_path: &Path, cfg: &PollConfig) -> Result<(
                     }
                 };
                 for job in &jobs {
-                    let job_raw = serde_json::to_string(job).unwrap_or_default();
+                    let job_raw = redactor
+                        .redact(&serde_json::to_string(job).unwrap_or_default())
+                        .text;
                     workflow_store::upsert_job(
                         &conn,
                         &workflow_store::JobRow {
@@ -96,12 +117,13 @@ pub async fn run_once(api: &GhApi, db_path: &Path, cfg: &PollConfig) -> Result<(
                             }
                         };
                         for a in annotations {
+                            let redacted_message = redactor.redact(&a.message).text;
                             workflow_store::insert_annotation(
                                 &conn,
                                 job.id,
                                 &job.name,
                                 &a.annotation_level,
-                                &a.message,
+                                &redacted_message,
                                 a.path.as_deref(),
                                 a.start_line,
                             )?;
@@ -115,8 +137,9 @@ pub async fn run_once(api: &GhApi, db_path: &Path, cfg: &PollConfig) -> Result<(
                         // TODO: replace with structured logging
                         match api.get_log_tail(repo, job.id, cfg.log_excerpt_max_bytes).await {
                             Ok((excerpt, truncated)) => {
+                                let redacted_excerpt = redactor.redact(&excerpt).text;
                                 workflow_store::insert_log_excerpt(
-                                    &conn, job.id, None, &excerpt, truncated,
+                                    &conn, job.id, None, &redacted_excerpt, truncated,
                                 )?;
                             }
                             Err(e) => eprintln!(
