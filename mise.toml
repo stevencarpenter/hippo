@@ -496,6 +496,10 @@ launchctl bootstrap "$DOMAIN" "$BRAIN_PLIST" && echo "  Loaded brain" || echo " 
 echo "==> Installing Firefox extension..."
 mise run install:ext || echo "  WARN: extension install failed (non-fatal)"
 
+# ── 8c. Install Claude Code skill ───────────────────────────────────────
+echo "==> Installing Claude Code skill..."
+mise run install:skill || echo "  WARN: skill install failed (non-fatal)"
+
 # ── 9. Verify ────────────────────────────────────────────────────────
 echo "==> Verifying..."
 sleep 1
@@ -790,3 +794,18 @@ run = "cargo build -p hippo-daemon --features otel"
 [tasks."build:otel:release"]
 description = "Build daemon with OTel instrumentation (release)"
 run = "cargo build -p hippo-daemon --features otel --release"
+
+[tasks."install:skill"]
+description = "Install the using-hippo-brain Claude Code skill into ~/.claude/skills/"
+run = """
+#!/usr/bin/env bash
+set -euo pipefail
+SKILL_SRC="$(pwd)/extension/claude-skill/using-hippo-brain"
+SKILL_DST="$HOME/.claude/skills/using-hippo-brain"
+mkdir -p "$(dirname "$SKILL_DST")"
+if [ -L "$SKILL_DST" ] || [ -e "$SKILL_DST" ]; then
+    rm -rf "$SKILL_DST"
+fi
+ln -s "$SKILL_SRC" "$SKILL_DST"
+echo "Installed skill: $SKILL_DST -> $SKILL_SRC"
+"""

@@ -1,7 +1,7 @@
 mod cli;
 mod install;
 
-use hippo_daemon::{claude_session, commands, daemon};
+use hippo_daemon::{claude_session, commands, daemon, gh_api, gh_poll};
 
 use std::path::PathBuf;
 
@@ -179,9 +179,33 @@ async fn main() -> Result<()> {
 
                 let daemon_template = include_str!("../../../launchd/com.hippo.daemon.plist");
                 let brain_template = include_str!("../../../launchd/com.hippo.brain.plist");
+                let gh_poll_template = include_str!("../../../launchd/com.hippo.gh-poll.plist");
 
                 install::install_plist("com.hippo.daemon", daemon_template, &vars, force)?;
                 install::install_plist("com.hippo.brain", brain_template, &vars, force)?;
+
+                // GitHub Actions poller plist — only written when github source is enabled.
+                let gh_poll_installed = if config.github.enabled {
+                    // Verify the token env var is set at install time so the user
+                    // gets an early error, but don't embed it in the plist.
+                    if std::env::var(&config.github.token_env).is_err() {
+                        anyhow::bail!(
+                            "{} must be set to enable the github source",
+                            config.github.token_env
+                        );
+                    }
+                    install::install_gh_poll_wrapper(
+                        &vars.hippo_bin,
+                        &config.github.token_env,
+                        &vars.data_dir,
+                        force,
+                    )?;
+                    install::install_plist("com.hippo.gh-poll", gh_poll_template, &vars, force)?;
+                    true
+                } else {
+                    println!("  (github source disabled; skipping gh-poll plist)");
+                    false
+                };
 
                 println!();
                 println!("Symlink binary...");
@@ -199,6 +223,11 @@ async fn main() -> Result<()> {
                 println!(
                     "  launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.hippo.brain.plist"
                 );
+                if gh_poll_installed {
+                    println!(
+                        "  launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.hippo.gh-poll.plist"
+                    );
+                }
             }
         },
         Commands::Brain { action } => match action {
@@ -239,6 +268,14 @@ async fn main() -> Result<()> {
                     output,
                 )
                 .await?;
+            }
+            SendEventSource::Watchlist { sha, repo, ttl } => {
+                let request = hippo_core::protocol::DaemonRequest::RegisterWatchSha {
+                    sha,
+                    repo,
+                    ttl_secs: ttl,
+                };
+                commands::send_request(&config.socket_path(), &request).await?;
             }
         },
         Commands::Status => {
@@ -601,6 +638,42 @@ async fn main() -> Result<()> {
                 }
             }
         },
+        Commands::GhPoll { repo } => {
+            let token = std::env::var(&config.github.token_env)
+                .map_err(|_| anyhow::anyhow!("{} is not set", config.github.token_env))?;
+            let api = gh_api::GhApi::new("https://api.github.com".into(), token);
+            let watched_repos = match repo {
+                Some(r) => vec![r],
+                None => config.github.watched_repos.clone(),
+            };
+            let poll_cfg = gh_poll::PollConfig {
+                watched_repos,
+                log_excerpt_max_bytes: config.github.log_excerpt_max_bytes,
+                redact_config_path: Some(config.redact_path()),
+            };
+            gh_poll::run_once(&api, &config.db_path(), &poll_cfg).await?;
+        }
+        Commands::GhPendingNotifications { repo, ack } => {
+            let db = hippo_core::storage::open_db(&config.db_path())?;
+            let now = chrono::Utc::now().timestamp_millis();
+            let pending = hippo_core::storage::watchlist::pending_notifications(&db, now)?;
+            let matching: Vec<_> = pending.iter().filter(|e| e.repo == repo).collect();
+
+            for entry in &matching {
+                println!(
+                    "CI {} on SHA {} (repo: {})",
+                    entry.terminal_status.as_deref().unwrap_or("unknown"),
+                    entry.sha,
+                    entry.repo
+                );
+            }
+
+            if ack {
+                for entry in &matching {
+                    hippo_core::storage::watchlist::mark_notified(&db, &entry.sha, &entry.repo)?;
+                }
+            }
+        }
         Commands::NativeMessagingHost => {
             hippo_daemon::native_messaging::run(&config).await?;
         }

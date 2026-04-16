@@ -90,6 +90,20 @@ pub enum Commands {
         #[command(subcommand)]
         source: IngestSource,
     },
+    /// Run one pass of the GitHub Actions poller.
+    GhPoll {
+        /// Override watched repos; mainly for testing.
+        #[arg(long)]
+        repo: Option<String>,
+    },
+    /// List (and ack) pending CI failure notifications for a repo.
+    GhPendingNotifications {
+        #[arg(long)]
+        repo: String,
+        /// Mark retrieved notifications as acknowledged.
+        #[arg(long)]
+        ack: bool,
+    },
     /// Run as Native Messaging host for Firefox extension
     NativeMessagingHost,
     /// Run diagnostic checks
@@ -148,6 +162,15 @@ pub enum SendEventSource {
         /// Captured stdout+stderr (truncated)
         #[arg(long)]
         output: Option<String>,
+    },
+    /// Register a SHA in the watchlist for CI tracking.
+    Watchlist {
+        #[arg(long)]
+        sha: String,
+        #[arg(long)]
+        repo: String,
+        #[arg(long, default_value = "1200")]
+        ttl: u64,
     },
 }
 

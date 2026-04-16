@@ -20,7 +20,7 @@ pub fn open_db(path: &Path) -> Result<Connection> {
          PRAGMA busy_timeout=5000;",
     )?;
     let version: i64 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
-    const EXPECTED_VERSION: i64 = 4;
+    const EXPECTED_VERSION: i64 = 5;
 
     // Migrate from v1 → v2: add envelope_id column for dedup
     if version == 1 {
@@ -131,6 +131,122 @@ pub fn open_db(path: &Path) -> Result<Connection> {
                  WHERE status = 'pending';
              CREATE INDEX IF NOT EXISTS idx_browser_events_ts_domain ON browser_events(timestamp, domain);
              PRAGMA user_version = 4;",
+        )?;
+    }
+
+    // Migrate from v4 → v5: GitHub Actions tables
+    if (1..=4).contains(&version) {
+        // Keep in sync with the v5 block in schema.sql.
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS workflow_runs (
+                id              INTEGER PRIMARY KEY,
+                repo            TEXT NOT NULL,
+                head_sha        TEXT NOT NULL,
+                head_branch     TEXT,
+                event           TEXT NOT NULL,
+                status          TEXT NOT NULL,
+                conclusion      TEXT,
+                started_at      INTEGER,
+                completed_at    INTEGER,
+                html_url        TEXT NOT NULL,
+                actor           TEXT,
+                raw_json        TEXT NOT NULL,
+                first_seen_at   INTEGER NOT NULL,
+                last_seen_at    INTEGER NOT NULL,
+                enriched        INTEGER NOT NULL DEFAULT 0
+             );
+             CREATE INDEX IF NOT EXISTS idx_workflow_runs_sha ON workflow_runs(head_sha);
+             CREATE INDEX IF NOT EXISTS idx_workflow_runs_repo_started ON workflow_runs(repo, started_at);
+             CREATE TABLE IF NOT EXISTS workflow_jobs (
+                id              INTEGER PRIMARY KEY,
+                run_id          INTEGER NOT NULL REFERENCES workflow_runs(id) ON DELETE CASCADE,
+                name            TEXT NOT NULL,
+                status          TEXT NOT NULL,
+                conclusion      TEXT,
+                started_at      INTEGER,
+                completed_at    INTEGER,
+                runner_name     TEXT,
+                raw_json        TEXT NOT NULL
+             );
+             CREATE INDEX IF NOT EXISTS idx_workflow_jobs_run ON workflow_jobs(run_id);
+             CREATE TABLE IF NOT EXISTS workflow_annotations (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                job_id          INTEGER NOT NULL REFERENCES workflow_jobs(id) ON DELETE CASCADE,
+                level           TEXT NOT NULL,
+                tool            TEXT,
+                rule_id         TEXT,
+                path            TEXT,
+                start_line      INTEGER,
+                message         TEXT NOT NULL
+             );
+             CREATE INDEX IF NOT EXISTS idx_workflow_annotations_job ON workflow_annotations(job_id);
+             CREATE INDEX IF NOT EXISTS idx_workflow_annotations_tool_rule ON workflow_annotations(tool, rule_id);
+             CREATE TABLE IF NOT EXISTS workflow_log_excerpts (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                job_id          INTEGER NOT NULL REFERENCES workflow_jobs(id) ON DELETE CASCADE,
+                step_name       TEXT,
+                excerpt         TEXT NOT NULL,
+                truncated       INTEGER NOT NULL DEFAULT 0
+             );
+             CREATE INDEX IF NOT EXISTS idx_workflow_log_excerpts_job ON workflow_log_excerpts(job_id);
+             CREATE TABLE IF NOT EXISTS sha_watchlist (
+                sha             TEXT NOT NULL,
+                repo            TEXT NOT NULL,
+                created_at      INTEGER NOT NULL,
+                expires_at      INTEGER NOT NULL,
+                terminal_status TEXT,
+                notified        INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (sha, repo)
+             );
+             CREATE INDEX IF NOT EXISTS idx_sha_watchlist_expires ON sha_watchlist(expires_at);
+             CREATE TABLE IF NOT EXISTS workflow_enrichment_queue (
+                run_id          INTEGER PRIMARY KEY REFERENCES workflow_runs(id) ON DELETE CASCADE,
+                status          TEXT NOT NULL DEFAULT 'pending'
+                                    CHECK (status IN ('pending','processing','done','failed','skipped')),
+                priority        INTEGER NOT NULL DEFAULT 5,
+                retry_count     INTEGER NOT NULL DEFAULT 0,
+                max_retries     INTEGER NOT NULL DEFAULT 5,
+                error_message   TEXT,
+                locked_at       INTEGER,
+                locked_by       TEXT,
+                enqueued_at     INTEGER NOT NULL,
+                updated_at      INTEGER NOT NULL
+             );
+             CREATE INDEX IF NOT EXISTS idx_workflow_queue_pending ON workflow_enrichment_queue(status, priority);
+             CREATE TABLE IF NOT EXISTS lessons (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                repo            TEXT NOT NULL,
+                tool            TEXT NOT NULL DEFAULT '',
+                rule_id         TEXT NOT NULL DEFAULT '',
+                path_prefix     TEXT NOT NULL DEFAULT '',
+                summary         TEXT NOT NULL,
+                fix_hint        TEXT,
+                occurrences     INTEGER NOT NULL DEFAULT 1,
+                first_seen_at   INTEGER NOT NULL,
+                last_seen_at    INTEGER NOT NULL,
+                UNIQUE(repo, tool, rule_id, path_prefix)
+             );
+             CREATE INDEX IF NOT EXISTS idx_lessons_repo ON lessons(repo);
+             CREATE TABLE IF NOT EXISTS lesson_pending (
+                repo            TEXT NOT NULL,
+                tool            TEXT NOT NULL DEFAULT '',
+                rule_id         TEXT NOT NULL DEFAULT '',
+                path_prefix     TEXT NOT NULL DEFAULT '',
+                count           INTEGER NOT NULL DEFAULT 1,
+                first_seen_at   INTEGER NOT NULL,
+                UNIQUE(repo, tool, rule_id, path_prefix)
+             );
+             CREATE TABLE IF NOT EXISTS knowledge_node_workflow_runs (
+                knowledge_node_id INTEGER NOT NULL REFERENCES knowledge_nodes(id),
+                run_id            INTEGER NOT NULL REFERENCES workflow_runs(id) ON DELETE CASCADE,
+                PRIMARY KEY (knowledge_node_id, run_id)
+             );
+             CREATE TABLE IF NOT EXISTS knowledge_node_lessons (
+                knowledge_node_id INTEGER NOT NULL REFERENCES knowledge_nodes(id),
+                lesson_id         INTEGER NOT NULL REFERENCES lessons(id) ON DELETE CASCADE,
+                PRIMARY KEY (knowledge_node_id, lesson_id)
+             );
+             PRAGMA user_version = 5;",
         )?;
     } else if version != 0 && version != EXPECTED_VERSION {
         anyhow::bail!(
@@ -1326,7 +1442,7 @@ mod tests {
         let v: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 4);
+        assert_eq!(v, 5);
     }
 
     #[test]
@@ -1391,12 +1507,12 @@ mod tests {
             )
             .unwrap();
         }
-        // open_db should migrate to v4 (v1 → v2 → v3 → v4)
+        // open_db should migrate to v5 (v1 → v2 → v3 → v4 → v5)
         let conn = open_db(&db_path).unwrap();
         let v: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 4);
+        assert_eq!(v, 5);
         // Verify envelope_id column exists by inserting with it
         let sid = upsert_session(&conn, "mig-test", "host", "zsh", "user").unwrap();
         let eid = insert_event_at(
@@ -1479,7 +1595,7 @@ mod tests {
         let v: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 4);
+        assert_eq!(v, 5);
     }
 
     #[test]
@@ -1576,12 +1692,12 @@ mod tests {
             .unwrap();
         }
 
-        // open_db should migrate v3 → v4
+        // open_db should migrate v3 → v5
         let conn = open_db(&db_path).unwrap();
         let v: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 4);
+        assert_eq!(v, 5);
 
         // Verify browser tables exist
         let browser_tables = [
@@ -1604,13 +1720,13 @@ mod tests {
             );
         }
 
-        // Close and re-open — should remain at v4 without error
+        // Close and re-open — should remain at v5 without error
         drop(conn);
         let conn2 = open_db(&db_path).unwrap();
         let v2: i64 = conn2
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v2, 4);
+        assert_eq!(v2, 5);
     }
 
     fn sample_browser_event() -> BrowserEvent {
@@ -1787,5 +1903,421 @@ mod tests {
             })
             .unwrap();
         assert_eq!(q_count, 1);
+    }
+}
+
+pub mod watchlist {
+    use anyhow::Result;
+    use rusqlite::{Connection, params};
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct WatchEntry {
+        pub sha: String,
+        pub repo: String,
+        pub created_at: i64,
+        pub expires_at: i64,
+        pub terminal_status: Option<String>,
+        pub notified: bool,
+    }
+
+    fn from_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<WatchEntry> {
+        Ok(WatchEntry {
+            sha: r.get(0)?,
+            repo: r.get(1)?,
+            created_at: r.get(2)?,
+            expires_at: r.get(3)?,
+            terminal_status: r.get(4)?,
+            notified: r.get::<_, i32>(5)? != 0,
+        })
+    }
+
+    pub fn upsert(
+        conn: &Connection,
+        sha: &str,
+        repo: &str,
+        created_at: i64,
+        expires_at: i64,
+    ) -> Result<()> {
+        conn.execute(
+            "INSERT INTO sha_watchlist (sha, repo, created_at, expires_at)
+             VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(sha, repo) DO UPDATE SET expires_at = excluded.expires_at",
+            params![sha, repo, created_at, expires_at],
+        )?;
+        Ok(())
+    }
+
+    pub fn list_active(conn: &Connection, now_ms: i64) -> Result<Vec<WatchEntry>> {
+        let mut stmt = conn.prepare(
+            "SELECT sha, repo, created_at, expires_at, terminal_status, notified
+             FROM sha_watchlist
+             WHERE expires_at > ?1 AND terminal_status IS NULL
+             ORDER BY created_at DESC",
+        )?;
+        let rows = stmt
+            .query_map([now_ms], from_row)?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
+    pub fn mark_terminal(conn: &Connection, sha: &str, repo: &str, status: &str) -> Result<bool> {
+        let n = conn.execute(
+            "UPDATE sha_watchlist SET terminal_status = ?1
+             WHERE sha = ?2 AND repo = ?3",
+            params![status, sha, repo],
+        )?;
+        Ok(n > 0)
+    }
+
+    pub fn pending_notifications(conn: &Connection, now_ms: i64) -> Result<Vec<WatchEntry>> {
+        let mut stmt = conn.prepare(
+            "SELECT sha, repo, created_at, expires_at, terminal_status, notified
+             FROM sha_watchlist
+             WHERE terminal_status IN ('failure', 'cancelled')
+               AND notified = 0
+               AND expires_at > ?1",
+        )?;
+        let rows = stmt
+            .query_map([now_ms], from_row)?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
+    pub fn mark_notified(conn: &Connection, sha: &str, repo: &str) -> Result<()> {
+        conn.execute(
+            "UPDATE sha_watchlist SET notified = 1 WHERE sha = ?1 AND repo = ?2",
+            params![sha, repo],
+        )?;
+        Ok(())
+    }
+
+    /// Delete watchlist rows that are expired, terminal, and already notified.
+    pub fn cleanup_expired(conn: &Connection, now_ms: i64) -> Result<usize> {
+        let n = conn.execute(
+            "DELETE FROM sha_watchlist
+             WHERE expires_at < ?1 AND terminal_status IS NOT NULL AND notified = 1",
+            [now_ms],
+        )?;
+        Ok(n)
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        fn open_test_db() -> rusqlite::Connection {
+            super::super::open_memory().unwrap()
+        }
+
+        #[test]
+        fn upsert_creates_row() {
+            let conn = open_test_db();
+            let now = 1_000_000i64;
+            upsert(&conn, "abc123", "me/repo", now, now + 1_200_000).unwrap();
+            let count: i64 = conn
+                .query_row(
+                    "SELECT count(*) FROM sha_watchlist WHERE sha='abc123' AND repo='me/repo'",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(count, 1);
+        }
+
+        #[test]
+        fn upsert_updates_expires_at_on_conflict() {
+            let conn = open_test_db();
+            let now = 1_000_000i64;
+            upsert(&conn, "abc123", "me/repo", now, now + 600_000).unwrap();
+            upsert(&conn, "abc123", "me/repo", now, now + 1_200_000).unwrap();
+            let expires: i64 = conn
+                .query_row(
+                    "SELECT expires_at FROM sha_watchlist WHERE sha='abc123'",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(
+                expires,
+                now + 1_200_000,
+                "expires_at should be updated on conflict"
+            );
+            let count: i64 = conn
+                .query_row("SELECT count(*) FROM sha_watchlist", [], |r| r.get(0))
+                .unwrap();
+            assert_eq!(count, 1, "should remain one row");
+        }
+
+        #[test]
+        fn list_active_returns_non_expired_non_terminal_entries() {
+            let conn = open_test_db();
+            let now = 1_000_000i64;
+            let future = now + 3_600_000;
+            let past = now - 1;
+            upsert(&conn, "sha_live", "me/repo", now, future).unwrap();
+            upsert(&conn, "sha_expired", "me/repo", now, past).unwrap();
+            let active = list_active(&conn, now).unwrap();
+            assert_eq!(active.len(), 1);
+            assert_eq!(active[0].sha, "sha_live");
+            assert_eq!(active[0].repo, "me/repo");
+            assert_eq!(active[0].terminal_status, None);
+            assert!(!active[0].notified);
+        }
+
+        #[test]
+        fn list_active_excludes_terminal_entries() {
+            let conn = open_test_db();
+            let now = 1_000_000i64;
+            let future = now + 3_600_000;
+            upsert(&conn, "sha_pending", "me/repo", now, future).unwrap();
+            upsert(&conn, "sha_done", "me/repo", now, future).unwrap();
+            mark_terminal(&conn, "sha_done", "me/repo", "success").unwrap();
+            let active = list_active(&conn, now).unwrap();
+            assert_eq!(active.len(), 1);
+            assert_eq!(active[0].sha, "sha_pending");
+        }
+
+        #[test]
+        fn mark_terminal_returns_true_when_row_exists() {
+            let conn = open_test_db();
+            let now = 1_000_000i64;
+            upsert(&conn, "sha_x", "me/repo", now, now + 9999).unwrap();
+            let updated = mark_terminal(&conn, "sha_x", "me/repo", "success").unwrap();
+            assert!(updated, "should return true when a row is updated");
+            let status: Option<String> = conn
+                .query_row(
+                    "SELECT terminal_status FROM sha_watchlist WHERE sha='sha_x'",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(status.as_deref(), Some("success"));
+        }
+
+        #[test]
+        fn mark_terminal_returns_false_when_no_matching_row() {
+            let conn = open_test_db();
+            let updated = mark_terminal(&conn, "nonexistent", "me/repo", "failure").unwrap();
+            assert!(!updated, "should return false when no row was updated");
+        }
+
+        #[test]
+        fn pending_notifications_returns_unnotified_failures_and_cancellations() {
+            let conn = open_test_db();
+            let now = 1_000_000i64;
+            let ttl = now + 9999;
+            upsert(&conn, "sha_fail", "me/repo", now, ttl).unwrap();
+            upsert(&conn, "sha_cancel", "me/repo", now, ttl).unwrap();
+            upsert(&conn, "sha_success", "me/repo", now, ttl).unwrap();
+            upsert(&conn, "sha_pending", "me/repo", now, ttl).unwrap();
+            mark_terminal(&conn, "sha_fail", "me/repo", "failure").unwrap();
+            mark_terminal(&conn, "sha_cancel", "me/repo", "cancelled").unwrap();
+            mark_terminal(&conn, "sha_success", "me/repo", "success").unwrap();
+            let pending = pending_notifications(&conn, now + 1).unwrap();
+            assert_eq!(pending.len(), 2);
+            let shas: Vec<&str> = pending.iter().map(|e| e.sha.as_str()).collect();
+            assert!(shas.contains(&"sha_fail"));
+            assert!(shas.contains(&"sha_cancel"));
+        }
+
+        #[test]
+        fn pending_notifications_excludes_expired() {
+            let conn = open_test_db();
+            let now = 1_000_000i64;
+            let ttl = now + 9999;
+            upsert(&conn, "sha_fail", "me/repo", now, ttl).unwrap();
+            mark_terminal(&conn, "sha_fail", "me/repo", "failure").unwrap();
+            // Before expiry: visible
+            let pending = pending_notifications(&conn, now + 1).unwrap();
+            assert_eq!(pending.len(), 1);
+            // After expiry: excluded
+            let pending = pending_notifications(&conn, ttl + 1).unwrap();
+            assert!(pending.is_empty());
+        }
+
+        #[test]
+        fn pending_notifications_excludes_already_notified() {
+            let conn = open_test_db();
+            let now = 1_000_000i64;
+            let ttl = now + 9999;
+            upsert(&conn, "sha_a", "me/repo", now, ttl).unwrap();
+            upsert(&conn, "sha_b", "me/repo", now, ttl).unwrap();
+            mark_terminal(&conn, "sha_a", "me/repo", "failure").unwrap();
+            mark_terminal(&conn, "sha_b", "me/repo", "failure").unwrap();
+            mark_notified(&conn, "sha_a", "me/repo").unwrap();
+            let pending = pending_notifications(&conn, now + 1).unwrap();
+            assert_eq!(pending.len(), 1);
+            assert_eq!(pending[0].sha, "sha_b");
+        }
+
+        #[test]
+        fn mark_notified_sets_notified_flag() {
+            let conn = open_test_db();
+            let now = 1_000_000i64;
+            upsert(&conn, "sha_n", "me/repo", now, now + 9999).unwrap();
+            mark_terminal(&conn, "sha_n", "me/repo", "failure").unwrap();
+            mark_notified(&conn, "sha_n", "me/repo").unwrap();
+            let notified: i32 = conn
+                .query_row(
+                    "SELECT notified FROM sha_watchlist WHERE sha='sha_n'",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(notified, 1);
+        }
+
+        #[test]
+        fn pending_notifications_empty_when_none_qualify() {
+            let conn = open_test_db();
+            let pending = pending_notifications(&conn, 1_000_000).unwrap();
+            assert!(pending.is_empty());
+        }
+    }
+}
+
+pub mod workflow_store {
+    use anyhow::Result;
+    use rusqlite::{Connection, params};
+
+    use crate::gh_annotations::parse as parse_annotation;
+
+    /// Storage-layer projection of a workflow_run for upsert.
+    /// Distinct from `hippo_daemon::gh_api::WorkflowRun` (the API response type).
+    pub struct RunRow<'a> {
+        pub id: i64,
+        pub repo: &'a str,
+        pub head_sha: &'a str,
+        pub head_branch: Option<&'a str>,
+        pub event: &'a str,
+        pub status: &'a str,
+        pub conclusion: Option<&'a str>,
+        pub started_at: Option<i64>,
+        pub completed_at: Option<i64>,
+        pub html_url: &'a str,
+        pub actor: Option<&'a str>,
+        pub raw_json: &'a str,
+    }
+
+    pub fn upsert_run(conn: &Connection, run: &RunRow, now_ms: i64) -> Result<()> {
+        conn.execute(
+            "INSERT INTO workflow_runs
+                (id, repo, head_sha, head_branch, event, status, conclusion,
+                 started_at, completed_at, html_url, actor, raw_json,
+                 first_seen_at, last_seen_at)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?13)
+             ON CONFLICT(id) DO UPDATE SET
+                status=excluded.status, conclusion=excluded.conclusion,
+                completed_at=excluded.completed_at, last_seen_at=excluded.last_seen_at,
+                raw_json=excluded.raw_json",
+            // `?13` is bound once for both first_seen_at (initial insert) and
+            // last_seen_at (update). If you reorder params, keep them paired.
+            params![
+                run.id,
+                run.repo,
+                run.head_sha,
+                run.head_branch,
+                run.event,
+                run.status,
+                run.conclusion,
+                run.started_at,
+                run.completed_at,
+                run.html_url,
+                run.actor,
+                run.raw_json,
+                now_ms,
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Storage-layer projection of a workflow_job for upsert.
+    /// Distinct from `hippo_daemon::gh_api::Job` (the API response type).
+    pub struct JobRow<'a> {
+        pub id: i64,
+        pub run_id: i64,
+        pub name: &'a str,
+        pub status: &'a str,
+        pub conclusion: Option<&'a str>,
+        pub started_at: Option<i64>,
+        pub completed_at: Option<i64>,
+        pub runner_name: Option<&'a str>,
+        pub raw_json: &'a str,
+    }
+
+    pub fn upsert_job(conn: &Connection, job: &JobRow) -> Result<()> {
+        conn.execute(
+            "INSERT INTO workflow_jobs
+                (id, run_id, name, status, conclusion, started_at, completed_at,
+                 runner_name, raw_json)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)
+             ON CONFLICT(id) DO UPDATE SET
+                status=excluded.status, conclusion=excluded.conclusion,
+                completed_at=excluded.completed_at, raw_json=excluded.raw_json",
+            params![
+                job.id,
+                job.run_id,
+                job.name,
+                job.status,
+                job.conclusion,
+                job.started_at,
+                job.completed_at,
+                job.runner_name,
+                job.raw_json,
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn insert_annotation(
+        conn: &Connection,
+        job_id: i64,
+        job_name: &str,
+        level: &str,
+        message: &str,
+        path: Option<&str>,
+        start_line: Option<i64>,
+    ) -> Result<()> {
+        let parsed = parse_annotation(job_name, message);
+        conn.execute(
+            "INSERT INTO workflow_annotations
+                (job_id, level, tool, rule_id, path, start_line, message)
+             VALUES (?1,?2,?3,?4,?5,?6,?7)",
+            params![
+                job_id,
+                level,
+                parsed.tool,
+                parsed.rule_id,
+                path,
+                start_line,
+                message,
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn insert_log_excerpt(
+        conn: &Connection,
+        job_id: i64,
+        step_name: Option<&str>,
+        excerpt: &str,
+        truncated: bool,
+    ) -> Result<()> {
+        conn.execute(
+            "INSERT INTO workflow_log_excerpts (job_id, step_name, excerpt, truncated)
+             VALUES (?1,?2,?3,?4)",
+            params![job_id, step_name, excerpt, truncated as i32],
+        )?;
+        Ok(())
+    }
+
+    pub fn enqueue_enrichment(conn: &Connection, run_id: i64, now_ms: i64) -> Result<()> {
+        conn.execute(
+            "INSERT INTO workflow_enrichment_queue (run_id, enqueued_at, updated_at)
+             VALUES (?1, ?2, ?2)
+             ON CONFLICT(run_id) DO NOTHING",
+            params![run_id, now_ms],
+        )?;
+        Ok(())
     }
 }
