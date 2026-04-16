@@ -347,7 +347,7 @@ def get_ci_status_impl(
                        started_at, completed_at, html_url
                 FROM workflow_runs
                 WHERE repo = ? AND head_sha = ?
-                ORDER BY started_at DESC LIMIT 1
+                ORDER BY COALESCE(started_at, last_seen_at) DESC LIMIT 1
                 """,
                 (repo, sha),
             )
@@ -358,7 +358,7 @@ def get_ci_status_impl(
                        started_at, completed_at, html_url
                 FROM workflow_runs
                 WHERE repo = ? AND head_branch = ?
-                ORDER BY started_at DESC LIMIT 1
+                ORDER BY COALESCE(started_at, last_seen_at) DESC LIMIT 1
                 """,
                 (repo, branch),
             )

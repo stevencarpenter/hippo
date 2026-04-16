@@ -35,34 +35,34 @@ pub fn parse(job_name: &str, message: &str) -> ParsedAnnotation {
 
     // 2. Ruff rule-codes: job name is a strong prior.
     let job_lower = job_name.to_ascii_lowercase();
-    if job_lower.contains("ruff") || job_lower.contains("lint") {
-        if let Some(c) = RUFF_RE.captures(message) {
-            return ParsedAnnotation {
-                tool: Some("ruff".into()),
-                rule_id: Some(c[1].to_string()),
-            };
-        }
+    if (job_lower.contains("ruff") || job_lower.contains("lint"))
+        && let Some(c) = RUFF_RE.captures(message)
+    {
+        return ParsedAnnotation {
+            tool: Some("ruff".into()),
+            rule_id: Some(c[1].to_string()),
+        };
     }
 
     // 3. mypy / pyright: bracket-suffixed error code.
-    if job_lower.contains("type") || job_lower.contains("mypy") || job_lower.contains("pyright") {
-        if let Some(c) = MYPY_RE.captures(message) {
-            let tool = if job_lower.contains("pyright") { "pyright" } else { "mypy" };
-            return ParsedAnnotation {
-                tool: Some(tool.into()),
-                rule_id: Some(c[1].to_string()),
-            };
-        }
+    if (job_lower.contains("type") || job_lower.contains("mypy") || job_lower.contains("pyright"))
+        && let Some(c) = MYPY_RE.captures(message)
+    {
+        let tool = if job_lower.contains("pyright") { "pyright" } else { "mypy" };
+        return ParsedAnnotation {
+            tool: Some(tool.into()),
+            rule_id: Some(c[1].to_string()),
+        };
     }
 
     // 4. pytest: FAILED marker or AssertionError heuristic.
-    if job_lower.contains("pytest") || job_lower.contains("test") {
-        if message.contains("FAILED ") || message.contains("AssertionError") {
-            return ParsedAnnotation {
-                tool: Some("pytest".into()),
-                rule_id: None,
-            };
-        }
+    if (job_lower.contains("pytest") || job_lower.contains("test"))
+        && (message.contains("FAILED ") || message.contains("AssertionError"))
+    {
+        return ParsedAnnotation {
+            tool: Some("pytest".into()),
+            rule_id: None,
+        };
     }
 
     ParsedAnnotation { tool: None, rule_id: None }

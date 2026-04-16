@@ -11,6 +11,7 @@ For each completed workflow run in the enrichment queue:
 
 import sqlite3
 import time
+import uuid
 from pathlib import Path
 
 from hippo_brain.client import LMStudioClient
@@ -41,11 +42,11 @@ def enrich_one(
 
         # Co-temporal shell events (by SHA or time window)
         shell_rows = conn.execute(
-            """SELECT id, payload FROM events
-               WHERE payload LIKE ? OR (timestamp_ms BETWEEN ? AND ?)
+            """SELECT id, command, git_commit FROM events
+               WHERE git_commit = ? OR (timestamp BETWEEN ? AND ?)
                LIMIT 20""",
             (
-                f"%{run['head_sha']}%",
+                run["head_sha"],
                 started - CORRELATION_WINDOW_MS,
                 started + CORRELATION_WINDOW_MS,
             ),
@@ -76,13 +77,19 @@ def enrich_one(
         prompt = _build_prompt(run, shell_rows, claude_rows, ann_rows)
         summary = lm.complete(model=query_model, prompt=prompt, max_tokens=300)
 
+        node_uuid = str(uuid.uuid4())
+        title = f"{run['repo']}@{run['head_sha'][:7]} — {run['conclusion']}"
         # Write knowledge node
         cur = conn.execute(
-            """INSERT INTO knowledge_nodes (kind, title, body, created_at)
-               VALUES ('change_outcome', ?, ?, ?)""",
+            """INSERT INTO knowledge_nodes
+               (uuid, content, embed_text, node_type, outcome, created_at, updated_at)
+               VALUES (?, ?, ?, 'change_outcome', ?, ?, ?)""",
             (
-                f"{run['repo']}@{run['head_sha'][:7]} — {run['conclusion']}",
+                node_uuid,
                 summary,
+                title,
+                run["conclusion"],
+                now,
                 now,
             ),
         )
@@ -158,11 +165,11 @@ async def enrich_one_async(
 
         # Co-temporal shell events (by SHA or time window)
         shell_rows = conn.execute(
-            """SELECT id, payload FROM events
-               WHERE payload LIKE ? OR (timestamp_ms BETWEEN ? AND ?)
+            """SELECT id, command, git_commit FROM events
+               WHERE git_commit = ? OR (timestamp BETWEEN ? AND ?)
                LIMIT 20""",
             (
-                f"%{run['head_sha']}%",
+                run["head_sha"],
                 started - CORRELATION_WINDOW_MS,
                 started + CORRELATION_WINDOW_MS,
             ),
@@ -202,13 +209,19 @@ async def enrich_one_async(
             max_tokens=300,
         )
 
+        node_uuid = str(uuid.uuid4())
+        title = f"{run['repo']}@{run['head_sha'][:7]} — {run['conclusion']}"
         # Write knowledge node
         cur = conn.execute(
-            """INSERT INTO knowledge_nodes (kind, title, body, created_at)
-               VALUES ('change_outcome', ?, ?, ?)""",
+            """INSERT INTO knowledge_nodes
+               (uuid, content, embed_text, node_type, outcome, created_at, updated_at)
+               VALUES (?, ?, ?, 'change_outcome', ?, ?, ?)""",
             (
-                f"{run['repo']}@{run['head_sha'][:7]} — {run['conclusion']}",
+                node_uuid,
                 summary,
+                title,
+                run["conclusion"],
+                now,
                 now,
             ),
         )

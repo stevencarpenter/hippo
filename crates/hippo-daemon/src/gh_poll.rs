@@ -80,6 +80,18 @@ pub async fn run_once(api: &GhApi, db_path: &Path, cfg: &PollConfig) -> Result<(
                     let _ = watchlist::mark_terminal(&conn, &run.head_sha, repo, concl)?;
                 }
 
+                // Skip drill-down if this run was already enriched (fully processed).
+                let already_enriched: bool = conn
+                    .query_row(
+                        "SELECT enriched FROM workflow_runs WHERE id = ?1",
+                        [run.id],
+                        |r| r.get(0),
+                    )
+                    .unwrap_or(false);
+                if already_enriched {
+                    continue;
+                }
+
                 let jobs = match api.list_jobs(repo, run.id).await {
                     Ok(jobs) => jobs,
                     Err(e) => {
@@ -116,6 +128,11 @@ pub async fn run_once(api: &GhApi, db_path: &Path, cfg: &PollConfig) -> Result<(
                                 Vec::new()
                             }
                         };
+                        // Clear stale annotations from a previous poll pass before re-inserting.
+                        conn.execute(
+                            "DELETE FROM workflow_annotations WHERE job_id = ?1",
+                            [job.id],
+                        )?;
                         for a in annotations {
                             let redacted_message = redactor.redact(&a.message).text;
                             workflow_store::insert_annotation(
@@ -154,6 +171,9 @@ pub async fn run_once(api: &GhApi, db_path: &Path, cfg: &PollConfig) -> Result<(
             }
         }
     }
+
+    // Housekeeping: remove fully-processed, expired watchlist entries.
+    let _ = watchlist::cleanup_expired(&conn, now);
 
     Ok(())
 }

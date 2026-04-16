@@ -92,7 +92,7 @@ def test_get_lessons_filters(db_with_run: Path):
     by_path_specific = get_lessons_impl(str(db_with_run), path="brain/tests/test_x.py")
     assert len(by_path_specific) == 2
     assert by_path_specific[0].rule_id == "F401"  # brain/ ruff (occurrences=4) first
-    assert by_path_specific[1].tool == "pytest"    # brain/tests/ pytest (occurrences=2)
+    assert by_path_specific[1].tool == "pytest"  # brain/tests/ pytest (occurrences=2)
 
     by_path_outside = get_lessons_impl(str(db_with_run), path="brain/x.py")
     assert len(by_path_outside) == 1

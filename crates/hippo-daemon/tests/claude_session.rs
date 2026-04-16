@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use hippo_core::protocol::{DaemonRequest, DaemonResponse};
+use hippo_core::protocol::DaemonRequest;
 
 mod common;
 

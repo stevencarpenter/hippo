@@ -23,14 +23,44 @@ def enrichment_db(tmp_path: Path) -> str:
     conn = sqlite3.connect(db)
     conn.executescript(fixture.read_text())
 
-    # Need the full events + claude_sessions + knowledge_nodes tables.
+    # Need the full events + claude_sessions tables.
     # The fixture may not have events/claude_sessions — add them if missing:
     conn.executescript("""
         CREATE TABLE IF NOT EXISTS events (
             id INTEGER PRIMARY KEY,
-            session_id INTEGER,
-            timestamp_ms INTEGER NOT NULL,
-            payload TEXT NOT NULL
+            session_id INTEGER NOT NULL,
+            timestamp INTEGER NOT NULL,
+            command TEXT NOT NULL,
+            stdout TEXT,
+            stderr TEXT,
+            stdout_truncated INTEGER DEFAULT 0,
+            stderr_truncated INTEGER DEFAULT 0,
+            exit_code INTEGER,
+            duration_ms INTEGER NOT NULL,
+            cwd TEXT NOT NULL,
+            hostname TEXT NOT NULL,
+            shell TEXT NOT NULL,
+            git_repo TEXT,
+            git_branch TEXT,
+            git_commit TEXT,
+            git_dirty INTEGER,
+            env_snapshot_id INTEGER,
+            envelope_id TEXT,
+            enriched INTEGER NOT NULL DEFAULT 0,
+            redaction_count INTEGER NOT NULL DEFAULT 0,
+            archived_at INTEGER,
+            created_at INTEGER NOT NULL DEFAULT 0
+        );
+        CREATE TABLE IF NOT EXISTS sessions (
+            id INTEGER PRIMARY KEY,
+            start_time INTEGER NOT NULL,
+            end_time INTEGER,
+            terminal TEXT,
+            shell TEXT NOT NULL,
+            hostname TEXT NOT NULL,
+            username TEXT NOT NULL,
+            summary TEXT,
+            created_at INTEGER NOT NULL DEFAULT 0
         );
         CREATE TABLE IF NOT EXISTS knowledge_node_events (
             knowledge_node_id INTEGER NOT NULL,
@@ -98,10 +128,17 @@ def enrichment_db(tmp_path: Path) -> str:
         VALUES (1, 'pending', 1000, 1000)
     """)
 
-    # Co-temporal shell event (contains the SHA)
+    # Need a session row for the FK
     conn.execute("""
-        INSERT INTO events (id, timestamp_ms, payload)
-        VALUES (100, 1000, '{"command": "git push", "sha": "abc123"}')
+        INSERT INTO sessions (id, start_time, shell, hostname, username)
+        VALUES (1, 1000, 'zsh', 'localhost', 'test')
+    """)
+
+    # Co-temporal shell event (matches the SHA via git_commit)
+    conn.execute("""
+        INSERT INTO events (id, session_id, timestamp, command, duration_ms, cwd,
+                            hostname, shell, git_commit)
+        VALUES (100, 1, 1000, 'git push', 100, '/hippo', 'localhost', 'zsh', 'abc123')
     """)
 
     conn.commit()
@@ -117,11 +154,13 @@ def test_enrich_one_creates_knowledge_node(enrichment_db):
 
     conn = sqlite3.connect(enrichment_db)
     # Knowledge node created
-    node = conn.execute("SELECT kind, title, body FROM knowledge_nodes").fetchone()
+    node = conn.execute(
+        "SELECT node_type, embed_text, content, outcome FROM knowledge_nodes"
+    ).fetchone()
     assert node is not None
     assert node[0] == "change_outcome"
-    assert "abc123" in node[1]  # SHA in title
-    assert "ruff" in node[2].lower() or "F401" in node[2]  # LLM summary
+    assert "abc123" in node[1]  # SHA in embed_text (title)
+    assert "ruff" in node[2].lower() or "F401" in node[2]  # LLM summary in content
 
     # Linked to workflow run
     link = conn.execute("SELECT * FROM knowledge_node_workflow_runs").fetchone()
@@ -187,15 +226,13 @@ def test_enrich_one_async_creates_knowledge_node(enrichment_db):
     fake_lm = MagicMock()
     fake_lm.chat = AsyncMock(return_value="Async enrichment summary")
 
-    asyncio.run(
-        enrich_one_async(enrichment_db, run_id=1, lm=fake_lm, query_model="test-model")
-    )
+    asyncio.run(enrich_one_async(enrichment_db, run_id=1, lm=fake_lm, query_model="test-model"))
 
     conn = sqlite3.connect(enrichment_db)
-    node = conn.execute("SELECT kind, title, body FROM knowledge_nodes").fetchone()
+    node = conn.execute("SELECT node_type, embed_text, content FROM knowledge_nodes").fetchone()
     assert node is not None
     assert node[0] == "change_outcome"
-    assert "abc123" in node[1]
+    assert "abc123" in node[1]  # SHA in embed_text
 
     link = conn.execute("SELECT * FROM knowledge_node_workflow_runs").fetchone()
     assert link is not None
@@ -231,9 +268,7 @@ def test_enrich_one_async_links_claude_sessions(enrichment_db):
     fake_lm = MagicMock()
     fake_lm.chat = AsyncMock(return_value="Summary")
 
-    asyncio.run(
-        enrich_one_async(enrichment_db, run_id=1, lm=fake_lm, query_model="test-model")
-    )
+    asyncio.run(enrich_one_async(enrichment_db, run_id=1, lm=fake_lm, query_model="test-model"))
 
     conn = sqlite3.connect(enrichment_db)
     link = conn.execute("SELECT * FROM knowledge_node_claude_sessions").fetchone()
@@ -246,9 +281,7 @@ def test_enrich_one_async_skips_missing_run(enrichment_db):
     fake_lm = MagicMock()
     fake_lm.chat = AsyncMock()
 
-    asyncio.run(
-        enrich_one_async(enrichment_db, run_id=999, lm=fake_lm, query_model="test-model")
-    )
+    asyncio.run(enrich_one_async(enrichment_db, run_id=999, lm=fake_lm, query_model="test-model"))
 
     fake_lm.chat.assert_not_called()
 

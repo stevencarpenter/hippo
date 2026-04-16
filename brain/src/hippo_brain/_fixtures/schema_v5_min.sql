@@ -2,11 +2,17 @@
 -- Includes only the tables needed for GitHub Actions query tests.
 
 CREATE TABLE IF NOT EXISTS knowledge_nodes (
-    id          INTEGER PRIMARY KEY,
-    kind        TEXT,
-    title       TEXT,
-    body        TEXT,
-    created_at  INTEGER
+    id                  INTEGER PRIMARY KEY,
+    uuid                TEXT NOT NULL UNIQUE,
+    content             TEXT NOT NULL,
+    embed_text          TEXT NOT NULL,
+    node_type           TEXT NOT NULL DEFAULT 'observation',
+    outcome             TEXT,
+    tags                TEXT,
+    enrichment_model    TEXT,
+    enrichment_version  INTEGER NOT NULL DEFAULT 1,
+    created_at          INTEGER NOT NULL DEFAULT (unixepoch('now', 'subsec') * 1000),
+    updated_at          INTEGER NOT NULL DEFAULT (unixepoch('now', 'subsec') * 1000)
 );
 
 CREATE TABLE IF NOT EXISTS workflow_runs (

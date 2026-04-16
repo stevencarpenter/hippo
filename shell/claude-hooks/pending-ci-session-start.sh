@@ -9,7 +9,7 @@ cwd=$(echo "$input" | jq -r '.cwd // ""')
 cd "$cwd" || exit 0
 
 remote=$(git config --get remote.origin.url 2>/dev/null) || exit 0
-repo=$(echo "$remote" | sed -E 's#(git@github\.com:|https://github\.com/)(.*)\.git#\2#' | head -1)
+repo=$(echo "$remote" | sed -E 's#(git@github\.com:|https://github\.com/)##' | sed 's/\.git$//' | sed 's#/$##' | head -1)
 [[ -n "$repo" ]] || exit 0
 
 pending=$(hippo gh-pending-notifications --repo "$repo" --ack 2>/dev/null || echo "")

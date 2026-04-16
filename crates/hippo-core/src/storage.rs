@@ -1994,6 +1994,16 @@ pub mod watchlist {
         Ok(())
     }
 
+    /// Delete watchlist rows that are expired, terminal, and already notified.
+    pub fn cleanup_expired(conn: &Connection, now_ms: i64) -> Result<usize> {
+        let n = conn.execute(
+            "DELETE FROM sha_watchlist
+             WHERE expires_at < ?1 AND terminal_status IS NOT NULL AND notified = 1",
+            [now_ms],
+        )?;
+        Ok(n)
+    }
+
     #[cfg(test)]
     mod tests {
         use super::*;

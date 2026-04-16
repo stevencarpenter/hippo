@@ -438,7 +438,7 @@ async def get_lessons(
 
     Args:
         repo: Filter by repository in 'owner/repo' format.
-        path: Filter by path prefix (exact match on stored path_prefix).
+        path: Filter by file path — returns lessons whose stored path_prefix matches as a prefix of this path.
         tool: Filter by tool name (e.g. 'ruff', 'clippy').
         limit: Maximum number of results to return (default 10).
     """

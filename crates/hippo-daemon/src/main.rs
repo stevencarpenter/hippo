@@ -184,9 +184,9 @@ async fn main() -> Result<()> {
                 install::install_plist("com.hippo.daemon", daemon_template, &vars, force)?;
                 install::install_plist("com.hippo.brain", brain_template, &vars, force)?;
 
-                // GitHub Actions poller plist — gated on token availability.
-                let github_token = std::env::var(&config.github.token_env).ok();
+                // GitHub Actions poller plist — only written when github source is enabled.
                 let gh_poll_installed = if config.github.enabled {
+                    let github_token = std::env::var(&config.github.token_env).ok();
                     match github_token {
                         None => {
                             anyhow::bail!(
@@ -205,14 +205,8 @@ async fn main() -> Result<()> {
                             true
                         }
                     }
-                } else if let Some(token) = github_token {
-                    // Token is set but github source is disabled — write the plist
-                    // anyway so the user can enable it without re-running install.
-                    vars.github_token = token;
-                    install::install_plist("com.hippo.gh-poll", gh_poll_template, &vars, force)?;
-                    println!("  (github source disabled; plist written, not loaded)");
-                    false
                 } else {
+                    println!("  (github source disabled; skipping gh-poll plist)");
                     false
                 };
 
