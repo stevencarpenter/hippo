@@ -90,6 +90,12 @@ pub enum Commands {
         #[command(subcommand)]
         source: IngestSource,
     },
+    /// Run one pass of the GitHub Actions poller.
+    GhPoll {
+        /// Override watched repos; mainly for testing.
+        #[arg(long)]
+        repo: Option<String>,
+    },
     /// Run as Native Messaging host for Firefox extension
     NativeMessagingHost,
     /// Run diagnostic checks

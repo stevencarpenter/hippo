@@ -18,6 +18,8 @@ pub struct HippoConfig {
     pub browser: BrowserConfig,
     #[serde(default)]
     pub telemetry: TelemetryConfig,
+    #[serde(default)]
+    pub github: GithubConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -329,8 +331,71 @@ impl Default for TelemetryConfig {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct GithubConfig {
+    pub enabled: bool,
+    pub poll_interval_secs: u64,
+    pub tight_poll_interval_secs: u64,
+    pub watchlist_ttl_secs: u64,
+    pub log_excerpt_max_bytes: usize,
+    pub watched_repos: Vec<String>,
+    pub token_env: String,
+    pub lessons: LessonsConfig,
+}
+
+fn default_github_token_env() -> String {
+    "HIPPO_GITHUB_TOKEN".to_string()
+}
+fn default_poll_interval_secs_github() -> u64 {
+    300
+}
+fn default_tight_poll_interval_secs() -> u64 {
+    45
+}
+fn default_watchlist_ttl_secs() -> u64 {
+    1200
+}
+fn default_log_excerpt_max_bytes() -> usize {
+    51_200
+}
+
+impl Default for GithubConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            poll_interval_secs: default_poll_interval_secs_github(),
+            tight_poll_interval_secs: default_tight_poll_interval_secs(),
+            watchlist_ttl_secs: default_watchlist_ttl_secs(),
+            log_excerpt_max_bytes: default_log_excerpt_max_bytes(),
+            watched_repos: vec![],
+            token_env: default_github_token_env(),
+            lessons: LessonsConfig::default(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct LessonsConfig {
+    pub cluster_window_days: u32,
+    pub min_occurrences: u32,
+    pub path_prefix_segments: u32,
+}
+
+impl Default for LessonsConfig {
+    fn default() -> Self {
+        Self {
+            cluster_window_days: 30,
+            min_occurrences: 2,
+            path_prefix_segments: 2,
+        }
+    }
+}
+
 impl HippoConfig {
     pub fn load(path: &Path) -> Result<Self> {
+        // nosemgrep
         let content = match std::fs::read_to_string(path) {
             Ok(c) => c,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
@@ -405,6 +470,7 @@ fn default_replacement() -> String {
 
 impl RedactConfig {
     pub fn load(path: &Path) -> Result<Self> {
+        // nosemgrep
         let content = match std::fs::read_to_string(path) {
             Ok(c) => c,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
@@ -785,5 +851,25 @@ strip_params = ["secret", "nonce"]
             config.browser.url_redaction.strip_params,
             vec!["secret", "nonce"]
         );
+    }
+
+    #[test]
+    fn parses_github_section() {
+        let toml = r#"
+            [github]
+            enabled = true
+            watched_repos = ["sjcarpenter/hippo"]
+            [github.lessons]
+            min_occurrences = 3
+        "#;
+        let cfg: HippoConfig = toml::from_str(toml).unwrap();
+        assert!(cfg.github.enabled);
+        assert_eq!(cfg.github.watched_repos, vec!["sjcarpenter/hippo"]);
+        assert_eq!(cfg.github.lessons.min_occurrences, 3);
+        // defaults preserved for unset fields
+        assert_eq!(cfg.github.poll_interval_secs, 300);
+        assert_eq!(cfg.github.token_env, "HIPPO_GITHUB_TOKEN");
+        assert_eq!(cfg.github.lessons.cluster_window_days, 30);
+        assert_eq!(cfg.github.lessons.path_prefix_segments, 2);
     }
 }
