@@ -1,12 +1,18 @@
 """Tests for workflow_enrichment.enrich_one."""
 
+import asyncio
 import sqlite3
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from hippo_brain.workflow_enrichment import enrich_one
+from hippo_brain.workflow_enrichment import (
+    _path_prefix,
+    enrich_one,
+    enrich_one_async,
+    mark_workflow_queue_failed,
+)
 
 
 @pytest.fixture
@@ -144,3 +150,161 @@ def test_enrich_one_skips_missing_run(enrichment_db):
     fake_lm = MagicMock()
     enrich_one(enrichment_db, run_id=999, lm=fake_lm, query_model="test-model")
     fake_lm.complete.assert_not_called()
+
+
+def test_enrich_one_links_claude_sessions(enrichment_db):
+    """enrich_one links co-temporal Claude sessions to the knowledge node (line 106)."""
+    conn = sqlite3.connect(enrichment_db)
+    # start_time=100 <= started+window, end_time=2000 >= started-window → within ±15min
+    conn.execute("""
+        INSERT INTO claude_sessions
+          (id, session_id, project_dir, cwd, segment_index, start_time, end_time,
+           summary_text, message_count, source_file, enriched, created_at)
+        VALUES (200, 'sess-abc', '/hippo', '/hippo', 0, 100, 2000,
+                'Worked on CI fix', 1, 'sess.jsonl', 0, 1000)
+    """)
+    conn.commit()
+    conn.close()
+
+    fake_lm = MagicMock()
+    fake_lm.complete.return_value = "Summary with session context"
+
+    enrich_one(enrichment_db, run_id=1, lm=fake_lm, query_model="test-model")
+
+    conn = sqlite3.connect(enrichment_db)
+    link = conn.execute("SELECT * FROM knowledge_node_claude_sessions").fetchone()
+    assert link is not None
+    conn.close()
+
+
+# ---------------------------------------------------------------------------
+# enrich_one_async tests
+# ---------------------------------------------------------------------------
+
+
+def test_enrich_one_async_creates_knowledge_node(enrichment_db):
+    """enrich_one_async creates knowledge node, links run, marks queue done."""
+    fake_lm = MagicMock()
+    fake_lm.chat = AsyncMock(return_value="Async enrichment summary")
+
+    asyncio.run(
+        enrich_one_async(enrichment_db, run_id=1, lm=fake_lm, query_model="test-model")
+    )
+
+    conn = sqlite3.connect(enrichment_db)
+    node = conn.execute("SELECT kind, title, body FROM knowledge_nodes").fetchone()
+    assert node is not None
+    assert node[0] == "change_outcome"
+    assert "abc123" in node[1]
+
+    link = conn.execute("SELECT * FROM knowledge_node_workflow_runs").fetchone()
+    assert link is not None
+
+    event_link = conn.execute("SELECT * FROM knowledge_node_events").fetchone()
+    assert event_link is not None
+
+    q = conn.execute("SELECT status FROM workflow_enrichment_queue WHERE run_id=1").fetchone()
+    assert q[0] == "done"
+
+    r = conn.execute("SELECT enriched FROM workflow_runs WHERE id=1").fetchone()
+    assert r[0] == 1
+
+    pending = conn.execute("SELECT count FROM lesson_pending WHERE tool='ruff'").fetchone()
+    assert pending is not None and pending[0] == 1
+
+    conn.close()
+
+
+def test_enrich_one_async_links_claude_sessions(enrichment_db):
+    """enrich_one_async links co-temporal Claude sessions."""
+    conn = sqlite3.connect(enrichment_db)
+    conn.execute("""
+        INSERT INTO claude_sessions
+          (id, session_id, project_dir, cwd, segment_index, start_time, end_time,
+           summary_text, message_count, source_file, enriched, created_at)
+        VALUES (200, 'sess-xyz', '/hippo', '/hippo', 0, 100, 2000,
+                'CI debugging session', 1, 'sess.jsonl', 0, 1000)
+    """)
+    conn.commit()
+    conn.close()
+
+    fake_lm = MagicMock()
+    fake_lm.chat = AsyncMock(return_value="Summary")
+
+    asyncio.run(
+        enrich_one_async(enrichment_db, run_id=1, lm=fake_lm, query_model="test-model")
+    )
+
+    conn = sqlite3.connect(enrichment_db)
+    link = conn.execute("SELECT * FROM knowledge_node_claude_sessions").fetchone()
+    assert link is not None
+    conn.close()
+
+
+def test_enrich_one_async_skips_missing_run(enrichment_db):
+    """enrich_one_async is a no-op when run_id doesn't exist."""
+    fake_lm = MagicMock()
+    fake_lm.chat = AsyncMock()
+
+    asyncio.run(
+        enrich_one_async(enrichment_db, run_id=999, lm=fake_lm, query_model="test-model")
+    )
+
+    fake_lm.chat.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# mark_workflow_queue_failed tests
+# ---------------------------------------------------------------------------
+
+
+def test_mark_workflow_queue_failed_resets_to_pending(enrichment_db):
+    """mark_workflow_queue_failed increments retry_count and resets to pending."""
+    conn = sqlite3.connect(enrichment_db)
+    mark_workflow_queue_failed(conn, run_id=1, error="timeout")
+
+    row = conn.execute(
+        "SELECT status, retry_count, error_message FROM workflow_enrichment_queue WHERE run_id=1"
+    ).fetchone()
+    assert row[0] == "pending"
+    assert row[1] == 1
+    assert row[2] == "timeout"
+    conn.close()
+
+
+def test_mark_workflow_queue_failed_sets_failed_when_exhausted(enrichment_db):
+    """mark_workflow_queue_failed sets status=failed when retry_count reaches max_retries."""
+    conn = sqlite3.connect(enrichment_db)
+    # max_retries default is 5; set retry_count to 4 so next call exhausts it
+    conn.execute("UPDATE workflow_enrichment_queue SET retry_count=4 WHERE run_id=1")
+    conn.commit()
+
+    mark_workflow_queue_failed(conn, run_id=1, error="persistent failure")
+
+    row = conn.execute(
+        "SELECT status, retry_count FROM workflow_enrichment_queue WHERE run_id=1"
+    ).fetchone()
+    assert row[0] == "failed"
+    assert row[1] == 5
+    conn.close()
+
+
+# ---------------------------------------------------------------------------
+# _path_prefix edge case
+# ---------------------------------------------------------------------------
+
+
+def test_path_prefix_short_path():
+    """_path_prefix returns the original path when it has fewer segments than requested."""
+    # "x.py" has 1 part, segments=2 → shorter than requested, returns original path
+    assert _path_prefix("x.py", 2) == "x.py"
+
+
+def test_path_prefix_normal():
+    """_path_prefix extracts first N directory segments."""
+    assert _path_prefix("brain/src/x.py", 2) == "brain/src/"
+
+
+def test_path_prefix_none():
+    """_path_prefix returns empty string for None path."""
+    assert _path_prefix(None, 2) == ""
