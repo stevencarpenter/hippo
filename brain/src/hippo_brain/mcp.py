@@ -1,5 +1,6 @@
 """Hippo MCP Server — expose the knowledge base as tools for Claude Code."""
 
+import dataclasses
 import sqlite3
 import time
 import tomllib
@@ -21,7 +22,9 @@ from hippo_brain.mcp_logging import setup_logging
 from hippo_brain.telemetry import add as _add, get_meter, hist as _hist
 from hippo_brain.mcp_queries import (
     MAX_LIMIT,
+    get_ci_status_impl,
     get_entities_impl,
+    get_lessons_impl,
     search_events_impl,
     search_knowledge_lexical,
     shape_semantic_results,
@@ -375,6 +378,95 @@ async def get_entities(
         except Exception:
             _add(_tool_errors, tool="get_entities")
             logger.exception("get_entities failed")
+            raise
+
+
+@mcp.tool()
+async def get_ci_status(
+    repo: str,
+    sha: str | None = None,
+    branch: str | None = None,
+) -> dict:
+    """Return the most recent CI workflow run for a repo, filtered by SHA or branch.
+
+    Use this after a 'git push' to check whether CI passed. Returns structured
+    job and annotation data — prefer over `ask` for known-shape queries.
+
+    Args:
+        repo: Repository in 'owner/repo' format.
+        sha: Git commit SHA to look up.
+        branch: Branch name (used when sha is not provided).
+    """
+    _add(_tool_calls, tool="get_ci_status")
+    t0 = time.monotonic()
+    logger.info("get_ci_status called: repo=%r sha=%r branch=%r", repo, sha, branch)
+
+    tracer = _get_tracer()
+    span_ctx = (
+        tracer.start_as_current_span(
+            "mcp.get_ci_status",
+            attributes={"hippo.repo": repo},
+        )
+        if tracer
+        else nullcontext()
+    )
+    with span_ctx:
+        try:
+            status = get_ci_status_impl(_state.db_path, repo=repo, sha=sha, branch=branch)
+            result = dataclasses.asdict(status) if status else {}
+            elapsed = time.monotonic() - t0
+            _hist(_tool_duration, elapsed * 1000, tool="get_ci_status")
+            logger.info("get_ci_status completed: found=%s in %.3fs", status is not None, elapsed)
+            return result
+        except Exception:
+            _add(_tool_errors, tool="get_ci_status")
+            logger.exception("get_ci_status failed")
+            raise
+
+
+@mcp.tool()
+async def get_lessons(
+    repo: str | None = None,
+    path: str | None = None,
+    tool: str | None = None,
+    limit: int = 10,
+) -> list[dict]:
+    """Return distilled past-mistake lessons for the given filters.
+
+    Use pre-flight before editing code in a known failure-prone area. Lessons
+    only appear for patterns seen 2+ times (single failures do not graduate).
+
+    Args:
+        repo: Filter by repository in 'owner/repo' format.
+        path: Filter by path prefix (exact match on stored path_prefix).
+        tool: Filter by tool name (e.g. 'ruff', 'clippy').
+        limit: Maximum number of results to return (default 10).
+    """
+    limit = _clamp_limit(limit)
+    _add(_tool_calls, tool="get_lessons")
+    t0 = time.monotonic()
+    logger.info("get_lessons called: repo=%r path=%r tool=%r limit=%d", repo, path, tool, limit)
+
+    tracer = _get_tracer()
+    span_ctx = (
+        tracer.start_as_current_span(
+            "mcp.get_lessons",
+            attributes={"hippo.repo": repo or ""},
+        )
+        if tracer
+        else nullcontext()
+    )
+    with span_ctx:
+        try:
+            lessons = get_lessons_impl(_state.db_path, repo=repo, path=path, tool=tool, limit=limit)
+            result = [dataclasses.asdict(lesson) for lesson in lessons]
+            elapsed = time.monotonic() - t0
+            _hist(_tool_duration, elapsed * 1000, tool="get_lessons")
+            logger.info("get_lessons completed: %d results in %.3fs", len(result), elapsed)
+            return result
+        except Exception:
+            _add(_tool_errors, tool="get_lessons")
+            logger.exception("get_lessons failed")
             raise
 
 

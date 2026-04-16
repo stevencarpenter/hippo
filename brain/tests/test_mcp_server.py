@@ -38,8 +38,8 @@ class TestToolRegistration:
     def test_ask_registered(self):
         assert "ask" in mcp._tool_manager._tools
 
-    def test_exactly_four_tools(self):
-        assert len(mcp._tool_manager._tools) == 4
+    def test_exactly_six_tools(self):
+        assert len(mcp._tool_manager._tools) == 6
 
 
 class TestGetConn:
