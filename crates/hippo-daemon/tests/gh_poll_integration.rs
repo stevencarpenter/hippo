@@ -124,3 +124,255 @@ async fn single_pass_inserts_runs_jobs_annotations() {
         .unwrap();
     assert_eq!(queued, 1);
 }
+
+#[tokio::test]
+async fn in_progress_run_does_not_fetch_jobs() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("GET"))
+        .and(path("/repos/me/repo/actions/runs"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "total_count": 1,
+            "workflow_runs": [{
+                "id": 5001,
+                "head_sha": "aabbccdd",
+                "head_branch": "feature",
+                "status": "in_progress",
+                "conclusion": null,
+                "event": "push",
+                "html_url": "https://github.com/me/repo/actions/runs/5001",
+                "run_started_at": "2026-04-15T12:00:00Z",
+                "updated_at": "2026-04-15T12:00:00Z",
+                "actor": {"login": "me"}
+            }]
+        })))
+        .mount(&server)
+        .await;
+
+    // No jobs mock — any attempt to hit the jobs endpoint would return a 501 fallback
+    // which would cause run_once to error, surfacing the bug.
+
+    let tmp = TempDir::new().unwrap();
+    let db_path = tmp.path().join("hippo.db");
+    open_db(&db_path).unwrap();
+
+    let api = GhApi::new(server.uri(), "test-token".into());
+    let cfg = PollConfig {
+        watched_repos: vec!["me/repo".into()],
+        log_excerpt_max_bytes: 1024,
+    };
+
+    run_once(&api, &db_path, &cfg).await.unwrap();
+
+    let conn = rusqlite::Connection::open(&db_path).unwrap();
+    let runs: i64 = conn
+        .query_row("SELECT count(*) FROM workflow_runs", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(runs, 1, "in-progress run should be saved");
+
+    let jobs: i64 = conn
+        .query_row("SELECT count(*) FROM workflow_jobs", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(jobs, 0, "jobs must not be fetched for an in-progress run");
+}
+
+#[tokio::test]
+async fn list_jobs_failure_is_swallowed_and_run_continues() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("GET"))
+        .and(path("/repos/me/repo/actions/runs"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "total_count": 1,
+            "workflow_runs": [{
+                "id": 6001,
+                "head_sha": "sha_fail_jobs",
+                "head_branch": "main",
+                "status": "completed",
+                "conclusion": "failure",
+                "event": "push",
+                "html_url": "https://github.com/me/repo/actions/runs/6001",
+                "run_started_at": "2026-04-15T12:00:00Z",
+                "updated_at": "2026-04-15T12:05:00Z",
+                "actor": {"login": "me"}
+            }]
+        })))
+        .mount(&server)
+        .await;
+
+    Mock::given(method("GET"))
+        .and(path("/repos/me/repo/actions/runs/6001/jobs"))
+        .respond_with(ResponseTemplate::new(500).set_body_string("server error"))
+        .mount(&server)
+        .await;
+
+    let tmp = TempDir::new().unwrap();
+    let db_path = tmp.path().join("hippo.db");
+    open_db(&db_path).unwrap();
+
+    let api = GhApi::new(server.uri(), "test-token".into());
+    let cfg = PollConfig {
+        watched_repos: vec!["me/repo".into()],
+        log_excerpt_max_bytes: 1024,
+    };
+
+    // list_jobs failure must not propagate as an error from run_once
+    run_once(&api, &db_path, &cfg).await.unwrap();
+
+    let conn = rusqlite::Connection::open(&db_path).unwrap();
+    let runs: i64 = conn
+        .query_row("SELECT count(*) FROM workflow_runs", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(runs, 1, "run should still be stored despite jobs failure");
+
+    let jobs: i64 = conn
+        .query_row("SELECT count(*) FROM workflow_jobs", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(jobs, 0, "no jobs stored when list_jobs failed");
+}
+
+#[tokio::test]
+async fn get_annotations_failure_still_saves_job_and_logs() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("GET"))
+        .and(path("/repos/me/repo/actions/runs"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "total_count": 1,
+            "workflow_runs": [{
+                "id": 7001, "head_sha": "sha7", "head_branch": "main",
+                "status": "completed", "conclusion": "failure", "event": "push",
+                "html_url": "https://github.com/me/repo/actions/runs/7001",
+                "run_started_at": "2026-04-15T12:00:00Z",
+                "updated_at": "2026-04-15T12:05:00Z",
+                "actor": {"login": "me"}
+            }]
+        })))
+        .mount(&server)
+        .await;
+
+    Mock::given(method("GET"))
+        .and(path("/repos/me/repo/actions/runs/7001/jobs"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "total_count": 1,
+            "jobs": [{
+                "id": 8001, "name": "lint",
+                "status": "completed", "conclusion": "failure",
+                "started_at": "2026-04-15T12:00:00Z",
+                "completed_at": "2026-04-15T12:01:00Z",
+                "runner_name": "ubuntu-latest",
+                "check_run_url": format!("{}/repos/me/repo/check-runs/8001", server.uri())
+            }]
+        })))
+        .mount(&server)
+        .await;
+
+    // Annotations endpoint fails.
+    Mock::given(method("GET"))
+        .and(path("/repos/me/repo/check-runs/8001/annotations"))
+        .respond_with(ResponseTemplate::new(500).set_body_string("internal error"))
+        .mount(&server)
+        .await;
+
+    // Log tail succeeds normally.
+    Mock::given(method("GET"))
+        .and(path("/repos/me/repo/actions/jobs/8001/logs"))
+        .respond_with(ResponseTemplate::new(200).set_body_string("log output"))
+        .mount(&server)
+        .await;
+
+    let tmp = TempDir::new().unwrap();
+    let db_path = tmp.path().join("hippo.db");
+    open_db(&db_path).unwrap();
+
+    let api = GhApi::new(server.uri(), "test-token".into());
+    let cfg = PollConfig {
+        watched_repos: vec!["me/repo".into()],
+        log_excerpt_max_bytes: 1024,
+    };
+
+    run_once(&api, &db_path, &cfg).await.unwrap();
+
+    let conn = rusqlite::Connection::open(&db_path).unwrap();
+    let jobs: i64 = conn
+        .query_row("SELECT count(*) FROM workflow_jobs", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(jobs, 1, "job should be saved even when annotations fetch fails");
+
+    let annotations: i64 = conn
+        .query_row("SELECT count(*) FROM workflow_annotations", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(annotations, 0, "no annotations when fetch fails");
+
+    let logs: i64 = conn
+        .query_row("SELECT count(*) FROM workflow_log_excerpts", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(logs, 1, "log excerpt should still be saved");
+}
+
+#[tokio::test]
+async fn get_log_tail_failure_skips_excerpt_but_saves_job() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("GET"))
+        .and(path("/repos/me/repo/actions/runs"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "total_count": 1,
+            "workflow_runs": [{
+                "id": 9001, "head_sha": "sha9", "head_branch": "main",
+                "status": "completed", "conclusion": "failure", "event": "push",
+                "html_url": "https://github.com/me/repo/actions/runs/9001",
+                "run_started_at": "2026-04-15T12:00:00Z",
+                "updated_at": "2026-04-15T12:05:00Z",
+                "actor": {"login": "me"}
+            }]
+        })))
+        .mount(&server)
+        .await;
+
+    Mock::given(method("GET"))
+        .and(path("/repos/me/repo/actions/runs/9001/jobs"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "total_count": 1,
+            "jobs": [{
+                "id": 9101, "name": "build",
+                "status": "completed", "conclusion": "failure",
+                "started_at": "2026-04-15T12:00:00Z",
+                "completed_at": "2026-04-15T12:01:00Z",
+                "runner_name": "ubuntu-latest",
+                "check_run_url": null
+            }]
+        })))
+        .mount(&server)
+        .await;
+
+    // Log tail endpoint returns an error.
+    Mock::given(method("GET"))
+        .and(path("/repos/me/repo/actions/jobs/9101/logs"))
+        .respond_with(ResponseTemplate::new(403).set_body_string("forbidden"))
+        .mount(&server)
+        .await;
+
+    let tmp = TempDir::new().unwrap();
+    let db_path = tmp.path().join("hippo.db");
+    open_db(&db_path).unwrap();
+
+    let api = GhApi::new(server.uri(), "test-token".into());
+    let cfg = PollConfig {
+        watched_repos: vec!["me/repo".into()],
+        log_excerpt_max_bytes: 1024,
+    };
+
+    run_once(&api, &db_path, &cfg).await.unwrap();
+
+    let conn = rusqlite::Connection::open(&db_path).unwrap();
+    let jobs: i64 = conn
+        .query_row("SELECT count(*) FROM workflow_jobs", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(jobs, 1, "job should still be stored");
+
+    let logs: i64 = conn
+        .query_row("SELECT count(*) FROM workflow_log_excerpts", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(logs, 0, "no log excerpt when fetch fails");
+}

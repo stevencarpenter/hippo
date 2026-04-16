@@ -152,3 +152,119 @@ async fn forbidden_without_retry_after_bails_immediately() {
         "permission 403 (no retry-after) must not retry"
     );
 }
+
+#[tokio::test]
+async fn list_runs_with_created_since_appends_filter() {
+    let server = MockServer::start().await;
+
+    // Mount a catch-all mock — the important thing is the created_since branch runs.
+    Mock::given(method("GET"))
+        .and(path("/repos/me/repo/actions/runs"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "total_count": 0, "workflow_runs": []
+        })))
+        .mount(&server)
+        .await;
+
+    let api = GhApi::new(server.uri(), "test-token".into());
+    let q = ListRunsQuery {
+        per_page: Some(5),
+        created_since: Some("2026-04-01T00:00:00Z".into()),
+    };
+    let runs = api.list_runs("me/repo", &q).await.unwrap();
+    assert!(runs.is_empty(), "created_since with no matching runs returns empty vec");
+}
+
+#[tokio::test]
+async fn rate_limit_max_retries_exhausted_returns_error() {
+    let server = MockServer::start().await;
+
+    // Serve 9 rate-limited responses (MAX_RETRIES=8 → bail after 9th attempt).
+    // retry-after: 0 keeps the test instant.
+    Mock::given(method("GET"))
+        .and(path("/repos/me/repo/actions/runs"))
+        .respond_with(ResponseTemplate::new(429).insert_header("retry-after", "0"))
+        .mount(&server)
+        .await;
+
+    let api = GhApi::new(server.uri(), "test-token".into());
+    let result = api.list_runs("me/repo", &ListRunsQuery::default()).await;
+    assert!(result.is_err(), "should error after exhausting retries");
+    let msg = result.unwrap_err().to_string();
+    assert!(
+        msg.contains("rate-limited"),
+        "error message should mention rate-limited, got: {msg}"
+    );
+}
+
+#[tokio::test]
+async fn forbidden_with_retry_after_header_retries_and_succeeds() {
+    let server = MockServer::start().await;
+
+    // 403 + retry-after header = secondary rate limit (should retry).
+    Mock::given(method("GET"))
+        .and(path("/repos/me/repo/actions/runs"))
+        .respond_with(
+            ResponseTemplate::new(403).insert_header("retry-after", "0"),
+        )
+        .up_to_n_times(1)
+        .mount(&server)
+        .await;
+
+    Mock::given(method("GET"))
+        .and(path("/repos/me/repo/actions/runs"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "total_count": 0, "workflow_runs": []
+        })))
+        .mount(&server)
+        .await;
+
+    let api = GhApi::new(server.uri(), "test-token".into());
+    let runs = api.list_runs("me/repo", &ListRunsQuery::default()).await.unwrap();
+    assert!(runs.is_empty(), "should succeed after retrying 403+retry-after");
+}
+
+#[tokio::test]
+async fn get_annotations_returns_parsed_list() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("GET"))
+        .and(path("/repos/me/repo/check-runs/42/annotations"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
+            {
+                "annotation_level": "failure",
+                "message": "error[E0308]: mismatched types",
+                "path": "src/main.rs",
+                "start_line": 10
+            }
+        ])))
+        .mount(&server)
+        .await;
+
+    let api = GhApi::new(server.uri(), "test-token".into());
+    let annotations = api
+        .get_annotations(&format!("{}/repos/me/repo/check-runs/42", server.uri()))
+        .await
+        .unwrap();
+    assert_eq!(annotations.len(), 1);
+    assert_eq!(annotations[0].annotation_level, "failure");
+    assert_eq!(annotations[0].path.as_deref(), Some("src/main.rs"));
+    assert_eq!(annotations[0].start_line, Some(10));
+}
+
+#[tokio::test]
+async fn get_log_tail_non_truncated_path() {
+    let server = MockServer::start().await;
+    let body = "short log";
+    Mock::given(method("GET"))
+        .and(path("/repos/me/repo/actions/jobs/7/logs"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(body))
+        .mount(&server)
+        .await;
+
+    let api = GhApi::new(server.uri(), "test-token".into());
+    // max_bytes > body length → non-truncated path
+    let (content, truncated) = api.get_log_tail("me/repo", 7, 1024).await.unwrap();
+    assert_eq!(content, "short log");
+    assert!(!truncated);
+}

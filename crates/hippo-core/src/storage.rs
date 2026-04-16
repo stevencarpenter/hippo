@@ -1993,6 +1993,161 @@ pub mod watchlist {
         )?;
         Ok(())
     }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        fn open_test_db() -> rusqlite::Connection {
+            super::super::open_memory().unwrap()
+        }
+
+        #[test]
+        fn upsert_creates_row() {
+            let conn = open_test_db();
+            let now = 1_000_000i64;
+            upsert(&conn, "abc123", "me/repo", now, now + 1_200_000).unwrap();
+            let count: i64 = conn
+                .query_row(
+                    "SELECT count(*) FROM sha_watchlist WHERE sha='abc123' AND repo='me/repo'",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(count, 1);
+        }
+
+        #[test]
+        fn upsert_updates_expires_at_on_conflict() {
+            let conn = open_test_db();
+            let now = 1_000_000i64;
+            upsert(&conn, "abc123", "me/repo", now, now + 600_000).unwrap();
+            upsert(&conn, "abc123", "me/repo", now, now + 1_200_000).unwrap();
+            let expires: i64 = conn
+                .query_row(
+                    "SELECT expires_at FROM sha_watchlist WHERE sha='abc123'",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(expires, now + 1_200_000, "expires_at should be updated on conflict");
+            let count: i64 = conn
+                .query_row("SELECT count(*) FROM sha_watchlist", [], |r| r.get(0))
+                .unwrap();
+            assert_eq!(count, 1, "should remain one row");
+        }
+
+        #[test]
+        fn list_active_returns_non_expired_non_terminal_entries() {
+            let conn = open_test_db();
+            let now = 1_000_000i64;
+            let future = now + 3_600_000;
+            let past = now - 1;
+            upsert(&conn, "sha_live", "me/repo", now, future).unwrap();
+            upsert(&conn, "sha_expired", "me/repo", now, past).unwrap();
+            let active = list_active(&conn, now).unwrap();
+            assert_eq!(active.len(), 1);
+            assert_eq!(active[0].sha, "sha_live");
+            assert_eq!(active[0].repo, "me/repo");
+            assert_eq!(active[0].terminal_status, None);
+            assert!(!active[0].notified);
+        }
+
+        #[test]
+        fn list_active_excludes_terminal_entries() {
+            let conn = open_test_db();
+            let now = 1_000_000i64;
+            let future = now + 3_600_000;
+            upsert(&conn, "sha_pending", "me/repo", now, future).unwrap();
+            upsert(&conn, "sha_done", "me/repo", now, future).unwrap();
+            mark_terminal(&conn, "sha_done", "me/repo", "success").unwrap();
+            let active = list_active(&conn, now).unwrap();
+            assert_eq!(active.len(), 1);
+            assert_eq!(active[0].sha, "sha_pending");
+        }
+
+        #[test]
+        fn mark_terminal_returns_true_when_row_exists() {
+            let conn = open_test_db();
+            let now = 1_000_000i64;
+            upsert(&conn, "sha_x", "me/repo", now, now + 9999).unwrap();
+            let updated = mark_terminal(&conn, "sha_x", "me/repo", "success").unwrap();
+            assert!(updated, "should return true when a row is updated");
+            let status: Option<String> = conn
+                .query_row(
+                    "SELECT terminal_status FROM sha_watchlist WHERE sha='sha_x'",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(status.as_deref(), Some("success"));
+        }
+
+        #[test]
+        fn mark_terminal_returns_false_when_no_matching_row() {
+            let conn = open_test_db();
+            let updated = mark_terminal(&conn, "nonexistent", "me/repo", "failure").unwrap();
+            assert!(!updated, "should return false when no row was updated");
+        }
+
+        #[test]
+        fn pending_notifications_returns_unnotified_failures_and_cancellations() {
+            let conn = open_test_db();
+            let now = 1_000_000i64;
+            let ttl = now + 9999;
+            upsert(&conn, "sha_fail", "me/repo", now, ttl).unwrap();
+            upsert(&conn, "sha_cancel", "me/repo", now, ttl).unwrap();
+            upsert(&conn, "sha_success", "me/repo", now, ttl).unwrap();
+            upsert(&conn, "sha_pending", "me/repo", now, ttl).unwrap();
+            mark_terminal(&conn, "sha_fail", "me/repo", "failure").unwrap();
+            mark_terminal(&conn, "sha_cancel", "me/repo", "cancelled").unwrap();
+            mark_terminal(&conn, "sha_success", "me/repo", "success").unwrap();
+            let pending = pending_notifications(&conn).unwrap();
+            assert_eq!(pending.len(), 2);
+            let shas: Vec<&str> = pending.iter().map(|e| e.sha.as_str()).collect();
+            assert!(shas.contains(&"sha_fail"));
+            assert!(shas.contains(&"sha_cancel"));
+        }
+
+        #[test]
+        fn pending_notifications_excludes_already_notified() {
+            let conn = open_test_db();
+            let now = 1_000_000i64;
+            let ttl = now + 9999;
+            upsert(&conn, "sha_a", "me/repo", now, ttl).unwrap();
+            upsert(&conn, "sha_b", "me/repo", now, ttl).unwrap();
+            mark_terminal(&conn, "sha_a", "me/repo", "failure").unwrap();
+            mark_terminal(&conn, "sha_b", "me/repo", "failure").unwrap();
+            mark_notified(&conn, "sha_a", "me/repo").unwrap();
+            let pending = pending_notifications(&conn).unwrap();
+            assert_eq!(pending.len(), 1);
+            assert_eq!(pending[0].sha, "sha_b");
+        }
+
+        #[test]
+        fn mark_notified_sets_notified_flag() {
+            let conn = open_test_db();
+            let now = 1_000_000i64;
+            upsert(&conn, "sha_n", "me/repo", now, now + 9999).unwrap();
+            mark_terminal(&conn, "sha_n", "me/repo", "failure").unwrap();
+            mark_notified(&conn, "sha_n", "me/repo").unwrap();
+            let notified: i32 = conn
+                .query_row(
+                    "SELECT notified FROM sha_watchlist WHERE sha='sha_n'",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(notified, 1);
+        }
+
+        #[test]
+        fn pending_notifications_empty_when_none_qualify() {
+            let conn = open_test_db();
+            let pending = pending_notifications(&conn).unwrap();
+            assert!(pending.is_empty());
+        }
+    }
 }
 
 pub mod workflow_store {
