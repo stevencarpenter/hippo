@@ -42,6 +42,11 @@ from hippo_brain.claude_sessions import (
     mark_claude_queue_failed,
     write_claude_knowledge_node,
 )
+from hippo_brain.workflow_enrichment import (
+    claim_pending_workflow_runs,
+    enrich_one_async,
+    mark_workflow_queue_failed,
+)
 from hippo_brain.telemetry import get_tracer as _get_tracer
 from hippo_brain.telemetry import add as _add, get_meter, hist as _hist
 
@@ -148,6 +153,8 @@ class BrainServer:
         claude_queue_failed = 0
         browser_queue_depth = 0
         browser_queue_failed = 0
+        workflow_queue_depth = 0
+        workflow_queue_failed = 0
         db_reachable = True
         try:
             conn = self._get_conn()
@@ -174,6 +181,16 @@ class BrainServer:
                 except Exception:
                     browser_queue_depth = 0
                     browser_queue_failed = 0
+                try:
+                    workflow_queue_depth = conn.execute(
+                        "SELECT COUNT(*) FROM workflow_enrichment_queue WHERE status = 'pending'"
+                    ).fetchone()[0]
+                    workflow_queue_failed = conn.execute(
+                        "SELECT COUNT(*) FROM workflow_enrichment_queue WHERE status = 'failed'"
+                    ).fetchone()[0]
+                except Exception:
+                    workflow_queue_depth = 0
+                    workflow_queue_failed = 0
             finally:
                 conn.close()
         except Exception:
@@ -192,6 +209,8 @@ class BrainServer:
                 "claude_queue_failed": claude_queue_failed,
                 "browser_queue_depth": browser_queue_depth,
                 "browser_queue_failed": browser_queue_failed,
+                "workflow_queue_depth": workflow_queue_depth,
+                "workflow_queue_failed": workflow_queue_failed,
                 "enrichment_model": self.enrichment_model,
                 "enrichment_model_preferred": self._preferred_model,
                 "last_success_at_ms": self.last_success_at_ms,
@@ -394,8 +413,18 @@ class BrainServer:
                         except Exception as e:
                             logger.warning("browser claim error: %s", e, exc_info=True)
                             browser_batches = []
+                        try:
+                            workflow_run_ids = claim_pending_workflow_runs(conn, worker_id)
+                        except Exception as e:
+                            logger.warning("workflow claim error: %s", e, exc_info=True)
+                            workflow_run_ids = []
 
-                        if not shell_chunks and not claude_batches and not browser_batches:
+                        if (
+                            not shell_chunks
+                            and not claude_batches
+                            and not browser_batches
+                            and not workflow_run_ids
+                        ):
                             continue
 
                         # Process all sources concurrently — each method uses its own
@@ -406,6 +435,7 @@ class BrainServer:
                             self._enrich_shell_batches(shell_chunks, conn),
                             self._enrich_claude_batches(claude_batches),
                             self._enrich_browser_batches(browser_batches),
+                            self._enrich_workflow_runs(workflow_run_ids),
                         )
                         _hist(_loop_duration, (time.monotonic() - t0) * 1000)
                     finally:
@@ -723,6 +753,50 @@ class BrainServer:
 
         if embed_tasks:
             await asyncio.gather(*embed_tasks, return_exceptions=True)
+
+    async def _enrich_workflow_runs(self, run_ids: list[int]):
+        """Process workflow run enrichment — create change-outcome knowledge nodes."""
+        if not run_ids:
+            return
+        query_model = self.query_model or self.enrichment_model
+        for run_id in run_ids:
+            logger.info("enriching workflow run %d", run_id)
+            _add(_events_claimed, 1, source="workflow")
+
+            tracer = _get_tracer()
+            span = (
+                tracer.start_as_current_span(
+                    "enrichment.workflow",
+                    attributes={
+                        "hippo.run_id": run_id,
+                        "hippo.model": query_model,
+                    },
+                )
+                if tracer
+                else nullcontext()
+            )
+            with span:
+                try:
+                    await enrich_one_async(
+                        self.db_path,
+                        run_id=run_id,
+                        lm=self.client,
+                        query_model=query_model,
+                    )
+                    _add(_nodes_created, source="workflow")
+                    self._record_success()
+                    logger.info("enriched workflow run %d -> knowledge node", run_id)
+                except Exception as e:
+                    _add(_enrichment_failures, source="workflow")
+                    err_msg = self._record_error(e)
+                    logger.error(
+                        "workflow enrichment failed for run %d: %s", run_id, e, exc_info=True
+                    )
+                    retry_conn = self._get_conn()
+                    try:
+                        mark_workflow_queue_failed(retry_conn, run_id, err_msg)
+                    finally:
+                        retry_conn.close()
 
     async def _embed_node(self, node_id, node_dict, source_label):
         """Embed a knowledge node into the vector store (fire-and-forget safe)."""
