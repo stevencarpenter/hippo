@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from hippo_brain.mcp_queries import get_ci_status_impl
+from hippo_brain.mcp_queries import get_ci_status_impl, get_lessons_impl
 from hippo_brain.models import CIStatus
 
 
@@ -80,8 +80,6 @@ def test_get_lessons_filters(db_with_run: Path):
     conn.commit()
     conn.close()
 
-    from hippo_brain.mcp_queries import get_lessons_impl
-
     all_ = get_lessons_impl(str(db_with_run), repo="me/r")
     assert len(all_) == 2
     assert all_[0].occurrences == 4  # ordered by occurrences DESC
@@ -90,13 +88,17 @@ def test_get_lessons_filters(db_with_run: Path):
     assert len(only_ruff) == 1
     assert only_ruff[0].rule_id == "F401"
 
-    by_path = get_lessons_impl(str(db_with_run), path="brain/tests/")
-    assert len(by_path) == 1
-    assert by_path[0].tool == "pytest"
+    # A specific test file matches both the brain/ lesson AND the brain/tests/ lesson
+    by_path_specific = get_lessons_impl(str(db_with_run), path="brain/tests/test_x.py")
+    assert len(by_path_specific) == 2
+    assert by_path_specific[0].rule_id == "F401"  # brain/ ruff (occurrences=4) first
+    assert by_path_specific[1].tool == "pytest"    # brain/tests/ pytest (occurrences=2)
+
+    by_path_outside = get_lessons_impl(str(db_with_run), path="brain/x.py")
+    assert len(by_path_outside) == 1
+    assert by_path_outside[0].rule_id == "F401"
 
 
 def test_get_lessons_empty_when_no_match(db_with_run: Path):
-    from hippo_brain.mcp_queries import get_lessons_impl
-
     result = get_lessons_impl(str(db_with_run), repo="nonexistent/repo")
     assert result == []

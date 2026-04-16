@@ -278,6 +278,14 @@ async fn main() -> Result<()> {
                 )
                 .await?;
             }
+            SendEventSource::Watchlist { sha, repo, ttl } => {
+                let request = hippo_core::protocol::DaemonRequest::RegisterWatchSha {
+                    sha,
+                    repo,
+                    ttl_secs: ttl,
+                };
+                commands::send_request(&config.socket_path(), &request).await?;
+            }
         },
         Commands::Status => {
             commands::handle_status(&config).await?;
@@ -652,6 +660,26 @@ async fn main() -> Result<()> {
                 log_excerpt_max_bytes: config.github.log_excerpt_max_bytes,
             };
             gh_poll::run_once(&api, &config.db_path(), &poll_cfg).await?;
+        }
+        Commands::GhPendingNotifications { repo, ack } => {
+            let db = hippo_core::storage::open_db(&config.db_path())?;
+            let pending = hippo_core::storage::watchlist::pending_notifications(&db)?;
+            let matching: Vec<_> = pending.iter().filter(|e| e.repo == repo).collect();
+
+            for entry in &matching {
+                println!(
+                    "CI {} on SHA {} (repo: {})",
+                    entry.terminal_status.as_deref().unwrap_or("unknown"),
+                    entry.sha,
+                    entry.repo
+                );
+            }
+
+            if ack {
+                for entry in &matching {
+                    hippo_core::storage::watchlist::mark_notified(&db, &entry.sha, &entry.repo)?;
+                }
+            }
         }
         Commands::NativeMessagingHost => {
             hippo_daemon::native_messaging::run(&config).await?;

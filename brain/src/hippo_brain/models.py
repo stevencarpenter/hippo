@@ -59,9 +59,9 @@ class CIStatus:
 class Lesson:
     id: int
     repo: str
-    tool: str | None
-    rule_id: str | None
-    path_prefix: str | None
+    tool: str
+    rule_id: str
+    path_prefix: str
     summary: str
     fix_hint: str | None
     occurrences: int

@@ -13,6 +13,7 @@ from hippo_brain.models import CIAnnotation, CIJob, CIStatus, Lesson
 
 
 MAX_LIMIT = 100
+MAX_ANNOTATIONS_PER_JOB = 10
 
 
 def shape_semantic_results(hits: list[dict]) -> list[dict]:
@@ -295,7 +296,7 @@ def get_lessons_impl(
                FROM lessons
                WHERE (? IS NULL OR repo = ?)
                  AND (? IS NULL OR tool = ?)
-                 AND (? IS NULL OR path_prefix = ?)
+                 AND (? IS NULL OR ? LIKE path_prefix || '%')
                ORDER BY occurrences DESC, last_seen_at DESC
                LIMIT ?""",
             (repo, repo, tool, tool, path, path, min(limit, MAX_LIMIT)),
@@ -396,9 +397,9 @@ def get_ci_status_impl(
             ann_cur = conn.execute(
                 """
                 SELECT level, tool, rule_id, path, start_line, message
-                FROM workflow_annotations WHERE job_id = ? LIMIT 10
+                FROM workflow_annotations WHERE job_id = ? LIMIT ?
                 """,
-                (j["id"],),
+                (j["id"], MAX_ANNOTATIONS_PER_JOB),
             )
             for a in ann_cur.fetchall():
                 job.annotations.append(
