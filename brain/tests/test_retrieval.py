@@ -44,6 +44,7 @@ CREATE TABLE events (
     id INTEGER PRIMARY KEY,
     timestamp INTEGER NOT NULL,
     cwd TEXT NOT NULL,
+    git_repo TEXT,
     git_branch TEXT
 );
 CREATE TABLE knowledge_node_events (
@@ -55,6 +56,7 @@ CREATE TABLE claude_sessions (
     id INTEGER PRIMARY KEY,
     start_time INTEGER NOT NULL,
     cwd TEXT NOT NULL,
+    project_dir TEXT,
     git_branch TEXT
 );
 CREATE TABLE knowledge_node_claude_sessions (
@@ -183,10 +185,11 @@ def _link_event(
     timestamp: int = 1_700_000_000_000,
     cwd: str = "/tmp",
     branch: str | None = None,
+    git_repo: str | None = None,
 ) -> None:
     conn.execute(
-        "INSERT INTO events (id, timestamp, cwd, git_branch) VALUES (?, ?, ?, ?)",
-        (event_id, timestamp, cwd, branch),
+        "INSERT INTO events (id, timestamp, cwd, git_repo, git_branch) VALUES (?, ?, ?, ?, ?)",
+        (event_id, timestamp, cwd, git_repo, branch),
     )
     conn.execute(
         "INSERT INTO knowledge_node_events (knowledge_node_id, event_id) VALUES (?, ?)",
@@ -202,10 +205,12 @@ def _link_claude(
     start_time: int = 1_700_000_000_000,
     cwd: str = "/tmp",
     branch: str | None = None,
+    project_dir: str | None = None,
 ) -> None:
     conn.execute(
-        "INSERT INTO claude_sessions (id, start_time, cwd, git_branch) VALUES (?, ?, ?, ?)",
-        (session_id, start_time, cwd, branch),
+        "INSERT INTO claude_sessions"
+        " (id, start_time, cwd, project_dir, git_branch) VALUES (?, ?, ?, ?, ?)",
+        (session_id, start_time, cwd, project_dir, branch),
     )
     conn.execute(
         "INSERT INTO knowledge_node_claude_sessions"
@@ -345,6 +350,50 @@ def test_project_filter_prunes_nodes_whose_cwd_does_not_match(conn):
         conn, "q", None, Filters(project="/work/hippo"), mode="lexical", limit=5, backend=backend
     )
     assert [r.uuid for r in results] == ["uuid-1"]
+
+
+def test_project_filter_matches_git_repo_and_project_dir_substrings(conn):
+    _insert_node(conn, 1, summary="via-git-repo")
+    _link_event(conn, 1, 10, cwd="/tmp", git_repo="owner/foo")
+    _insert_node(conn, 2, summary="via-project-dir")
+    _link_claude(conn, 2, 20, cwd="/tmp", project_dir="~/code/foo")
+    _insert_node(conn, 3, summary="via-cwd")
+    _link_event(conn, 3, 11, cwd="~/projects/foo")
+    _insert_node(conn, 4, summary="unrelated")
+    _link_event(conn, 4, 12, cwd="/other", git_repo="owner/bar")
+
+    backend = FakeBackend(fts=[(1, -1.0), (2, -1.0), (3, -1.0), (4, -1.0)])
+    results = search(
+        conn, "q", None, Filters(project="foo"), mode="lexical", limit=10, backend=backend
+    )
+    assert sorted(r.uuid for r in results) == ["uuid-1", "uuid-2", "uuid-3"]
+
+
+def test_project_filter_excludes_nonmatching(conn):
+    _insert_node(conn, 1, summary="a")
+    _link_event(conn, 1, 10, cwd="/tmp", git_repo="owner/bar")
+
+    backend = FakeBackend(fts=[(1, -1.0)])
+    results = search(
+        conn, "q", None, Filters(project="xyz"), mode="lexical", limit=5, backend=backend
+    )
+    assert results == []
+
+
+def test_lexical_mode_handles_punctuation_in_query(conn):
+    _insert_node(conn, 1, summary="ok")
+
+    backend = FakeBackend(fts=[(1, -1.0)])
+    for q in ["what is the retrieval stack?", "what's broken?", "foo-bar", 'say "hi"', "a:b*c"]:
+        results = search(conn, q, None, Filters(), mode="lexical", limit=5, backend=backend)
+        assert [r.uuid for r in results] == ["uuid-1"], f"query failed: {q!r}"
+
+
+def test_sanitize_fts_query_quotes_and_escapes():
+    from hippo_brain.retrieval import _sanitize_fts_query
+
+    assert _sanitize_fts_query("hello?") == '"hello?"'
+    assert _sanitize_fts_query('say "hi"') == '"say ""hi"""'
 
 
 def test_since_filter_respects_epoch_ms_lower_bound(conn):

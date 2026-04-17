@@ -88,10 +88,23 @@ def _call_knn(
     return [(r["knowledge_node_id"], float(r.get("distance", 0.0))) for r in raw]
 
 
+def _sanitize_fts_query(query: str) -> str:
+    """Wrap a free-text query as a quoted FTS5 phrase.
+
+    Natural-language questions contain characters FTS5 treats as operators
+    (``?``, ``:``, ``-``, ``*``, ``(``, ``"``). Quoting the entire query as a
+    phrase is the simplest way to let raw user input reach MATCH without
+    producing a syntax error. Embedded double-quotes are escaped by doubling
+    per FTS5's quoting rules.
+    """
+    escaped = query.replace('"', '""')
+    return f'"{escaped}"'
+
+
 def _call_fts(
     backend: _Backend, conn: sqlite3.Connection, query: str, limit: int
 ) -> list[tuple[int, float]]:
-    raw = backend.fts_search(conn, query, limit=limit)
+    raw = backend.fts_search(conn, _sanitize_fts_query(query), limit=limit)
     return [(r["knowledge_node_id"], float(r.get("bm25", 0.0))) for r in raw]
 
 
@@ -327,9 +340,11 @@ def _apply_filters(
         params.extend([filters.since_ms] * 4)
 
     if filters.project:
-        clauses.append("(e.cwd LIKE ? OR cs.cwd LIKE ?)")
-        pattern = f"{filters.project}%"
-        params.extend([pattern, pattern])
+        clauses.append(
+            "(e.cwd LIKE ? OR e.git_repo LIKE ? OR cs.cwd LIKE ? OR cs.project_dir LIKE ?)"
+        )
+        pattern = f"%{filters.project}%"
+        params.extend([pattern, pattern, pattern, pattern])
 
     if filters.branch:
         clauses.append("(e.git_branch = ? OR cs.git_branch = ?)")
