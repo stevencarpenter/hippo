@@ -45,8 +45,11 @@ first-stop knowledge shop:
   Studio preflight
 - Filter session-lifecycle noise at enrichment time (don't enrich
   session-start/end events, very short sessions)
-- Fix the pre-existing `except X, Y:` SyntaxError pattern in `rag.py` and
-  `mcp_queries.py` (Python-2 except syntax — would crash on execution)
+- Rewrite the ambiguous `except X, Y:` pattern in `rag.py` and
+  `mcp_queries.py` to the explicit `except (X, Y):` tuple form (correction:
+  empirical test in Python 3.14 shows this form IS parsed as a tuple-catch
+  and both exceptions are caught — it is not a SyntaxError as previously
+  believed. The rewrite is a clarity improvement, not a bug fix.)
 
 **Out of scope (future passes)**
 
@@ -112,7 +115,7 @@ Rust daemon does not need to load sqlite-vec — it only queries `knowledge_node
 ```python
 @dataclass
 class Filters:
-    project: str | None = None        # cwd prefix
+    project: str | None = None        # substring match across cwd + git_repo + project_dir
     since_ms: int | None = None       # epoch ms lower bound
     source: str | None = None         # "shell" | "claude" | "browser" | "workflow"
     branch: str | None = None
@@ -288,11 +291,23 @@ same checkout; file ownership is enforced by mission briefs below.
 
 ## Out-of-scope issues flagged
 
-- The `except X, Y:` Python-2 syntax in `rag.py:102` and `mcp_queries.py:34,
-  98, 201` is a SyntaxError in Python 3. Either those files have never been
-  executed (which means test coverage has a massive gap) OR the project is
-  running an older committed version. mcp-surface and synthesis agents must
-  verify and fix in their respective files.
+- The `except X, Y:` pattern in `rag.py:102` and `mcp_queries.py:34, 98, 201`
+  was originally flagged as a Python-2 SyntaxError. Empirical test in
+  Python 3.14 shows it parses as an implicit tuple — both exceptions are
+  caught. My initial reading was wrong; no import was broken, which is
+  why the running brain worked fine.
+- **Ruff py314 formatter regression (confirmed by storage with a test matrix):**
+  `ruff 0.15.8` with `target-version = "py314"` in brain/pyproject.toml
+  strips the parens from `except (A, B):` and rewrites to `except A, B:`
+  on every format run. py311/py312/py313 targets preserve parens. So
+  every agent who "fixed" the tuple-except form watched their fix silently
+  reverted by the next `ruff format` pass. The committed code ends up
+  unparenthesized. Python 3.14 still accepts this syntactically (tuple
+  interpretation), so nothing breaks functionally — but it's cosmetically
+  wrong and hostile to other Python versions.
+  Recommended short-term fix: pin `target-version = "py313"` in
+  brain/pyproject.toml and re-run `ruff format`. File upstream at
+  astral-sh/ruff as a py314 regression. See the follow-up task.
 - LanceDB vector-count-vs-knowledge-node-count drift has happened before
   (observed in prior sessions). The new scheme with triggers + single-DB
   transactional writes eliminates this class of bug.
