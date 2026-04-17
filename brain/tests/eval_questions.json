@@ -1,0 +1,56 @@
+{
+  "description": "Fixed evaluation set for the sqlite-vec retrieval overhaul. Questions are drawn from the project's recent work areas (LanceDB removal, enrichment pipeline, Claude session hook, Firefox source, OTel stack, fine-tuning, build status, hippo vision). Used by the retrieval benchmark at docs/superpowers/specs/2026-04-17-retrieval-benchmark.md.",
+  "created_at": "2026-04-17",
+  "questions": [
+    {
+      "id": "q01",
+      "question": "Why did we replace LanceDB with sqlite-vec?",
+      "expected_topics": ["motivation", "consolidation", "sqlite-vec", "lancedb"]
+    },
+    {
+      "id": "q02",
+      "question": "How does the enrichment pipeline run shell Claude and browser sources concurrently?",
+      "expected_topics": ["asyncio.gather", "enrichment", "concurrency"]
+    },
+    {
+      "id": "q03",
+      "question": "What fixed the Claude session hook PID problem?",
+      "expected_topics": ["PPID", "session hook", "claade wrapper", "grandparent PID"]
+    },
+    {
+      "id": "q04",
+      "question": "How does the Firefox browser source send events to the daemon?",
+      "expected_topics": ["native messaging", "firefox extension", "allowlist"]
+    },
+    {
+      "id": "q05",
+      "question": "What runs in the OTel observability stack locally?",
+      "expected_topics": ["grafana", "tempo", "loki", "prometheus", "docker"]
+    },
+    {
+      "id": "q06",
+      "question": "What is the north star vision for hippo?",
+      "expected_topics": ["local second brain", "open source", "MIT", "privacy"]
+    },
+    {
+      "id": "q07",
+      "question": "How are secrets redacted before storage?",
+      "expected_topics": ["redaction", "secrets", "env vars"]
+    },
+    {
+      "id": "q08",
+      "question": "What is the schema version and what changed in v6?",
+      "expected_topics": ["schema v6", "FTS5", "vec0", "migration"]
+    },
+    {
+      "id": "q09",
+      "question": "How does hybrid retrieval combine vector and lexical scores?",
+      "expected_topics": ["RRF", "MMR", "reciprocal rank fusion", "hybrid"]
+    },
+    {
+      "id": "q10",
+      "question": "What does the degraded-mode response from rag.ask look like?",
+      "expected_topics": ["degraded", "sources", "rag", "timeout", "error"]
+    }
+  ]
+}
