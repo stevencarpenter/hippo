@@ -36,7 +36,7 @@
 | 7 | `knowledge_vectors` (vec0) + `knowledge_fts` (FTS5) tables with triggers | ✅ **met** | `schema.sql` adds FTS5 + triggers at v6; vec0 created idempotently by `vector_store.open_conn`; integration test exercises both via real schema replay. |
 | 8 | LanceDB write path gone from brain code | ✅ **met** | `grep -r "import lance"` returns only docstring/comment references; no runtime imports, no function calls. The comments should eventually be tidied but don't execute anything. |
 | 9 | Enrichment queue shows `skipped` for noise events | ✅ **met** | `is_enrichment_eligible` wired at claim time in `enrichment.py:292`; queue row set to `status='skipped'` with reason in `error_message`. |
-| 10 | Full test suite + lint/fmt/clippy clean | ✅ **met** | See Phase A table. `enrichment.py` reformat caught during review — attributable to upstream ruff regression (task #7), not a builder error. |
+| 10 | Full test suite + lint/fmt/clippy clean | ✅ **met** | See Phase A table. `enrichment.py` reformat caught during review — ruff correctly canonicalizing py314 syntax, not a bug. |
 | 11 | Semgrep no findings (or all triaged) | ✅ **triaged** | See Semgrep triage above; all 11 findings are false-positive or pre-existing. |
 | 12 | Benchmark: hybrid ≥ LanceDB on 10-Q eval set | ⚠️ **partial** | Eval set created (`brain/tests/eval_questions.json`); hybrid-mode scored (see `2026-04-17-retrieval-benchmark.md`). LanceDB side skipped: removed on this branch (scope decision in spec's "Open questions" — not dual-written), so A/B against the old path would require either a main-branch worktree with real past-indexed data, or a re-embedding run we don't have infra time for. Documented as limitation; hybrid alone is qualitatively acceptable. |
 
@@ -44,7 +44,7 @@
 
 ## Follow-up tasks
 
-- **#7 Fix ruff py314 target-version formatter regression** — already filed; reference memory `reference_ruff_py314_regression.md`. Workaround: pin `target-version = "py313"` until ruff upstream fixes.
+- ~~**#7 Fix ruff py314 target-version formatter regression**~~ — closed as not-a-bug. Py314 supports parenthesisless tuple-catch natively; ruff is correctly canonicalizing. Pinning to py313 would be wrong (py313 doesn't parse the new syntax).
 - **#8 retrieval: sanitize FTS5 query for punctuation / operators** — high severity; `rag.ask` currently fails whenever a filter is active and the question contains `?` / `:` / `-` etc.
 - **#9 retrieval: project filter is prefix LIKE + misses git_repo** — high severity; filter semantics diverge between `retrieval.py` and `mcp_queries.py`, causing empty results for many natural project values.
 - **[NEW] Retrospective noise cleanup** — `is_enrichment_eligible` only gates NEW work. Historical noise knowledge nodes persist and will be re-embedded by `migrate-vectors.py`. Needs a purge/cleanup script.
@@ -54,11 +54,11 @@
 
 ## Brief items requested by team-lead
 
-1. **Ruff formatter claim verified empirically.** With `target-version = "py314"`, ruff 0.15.8 rewrites `except (A, B):` → `except A, B:` inside `brain/`. Standalone files outside the project (no target-version) are untouched. Task #7 tracks the workaround.
+1. **Ruff "regression" was not a regression — superseded.** Originally filed task #7 believing `ruff 0.15.8` with `target-version="py314"` was rewriting `except (A, B):` → `except A, B:` as a formatter bug. **Correction (post-review):** the unparenthesized form is a new Python 3.14 language feature (parenthesisless tuple-catch); ruff is correctly canonicalizing to it under py314, and errors correctly when `target-version` is pinned to py313 because py313 doesn't understand the syntax. Task #7 closed as not-a-bug. The committed unparenthesized form in `rag.py`, `mcp_queries.py`, etc. is valid and correct for `requires-python = ">=3.14"`.
 2. **test_server.py status:** 28 passed, 1 xfailed (`test_query_returns_semantically_related_result`) — storage's report matches. The xfail is pre-existing, not a regression.
-3. **Storage's `except Exception` workaround in `embeddings.py._safe_json`:** formatter regression is real → the workaround stands. When task #7 lands (or `target-version` is pinned to py313), tighten to `except ValueError` (covers `JSONDecodeError`).
+3. **Storage's `except Exception` workaround in `embeddings.py._safe_json`:** well-intentioned but unnecessary — can be tightened to `except (ValueError, TypeError):` (ruff will canonicalize under py314, which is fine). Not a merge blocker.
 4. All four follow-up tasks from brief item #4 filed above.
-5. Spec correction re: `except X, Y:` semantics acknowledged. Scorecard treats both forms as semantically equivalent; no criteria blocked.
+5. Both forms of `except X, Y:` are semantically equivalent on Python 3.14; no criteria blocked.
 
 ## Verdict
 
