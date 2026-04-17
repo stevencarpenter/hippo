@@ -50,23 +50,82 @@ class SearchResult:
 
 
 class _Backend(Protocol):
+    """Shape of the vec0/FTS5 backend this module calls into.
+
+    Matches :mod:`hippo_brain.vector_store` at commit d93a9bb — both primitives
+    return dicts with ``knowledge_node_id`` + a pre-normalized ``score`` in
+    ``[0, 1]``. The retrieval layer only uses ``knowledge_node_id`` + rank for
+    RRF; ``distance`` is used for MMR diversification when available.
+    """
+
     def knn_search(
-        self, conn: sqlite3.Connection, query_vec: Sequence[float], k: int
-    ) -> list[tuple[int, float]]: ...
+        self,
+        conn: sqlite3.Connection,
+        query_vec: Sequence[float],
+        column: str = ...,
+        limit: int = ...,
+    ) -> list[dict]: ...
 
     def fts_search(
-        self, conn: sqlite3.Connection, query: str, k: int
-    ) -> list[tuple[int, float]]: ...
-
-    def get_vectors(
-        self, conn: sqlite3.Connection, node_ids: Sequence[int]
-    ) -> dict[int, list[float]]: ...
+        self,
+        conn: sqlite3.Connection,
+        query: str,
+        limit: int = ...,
+    ) -> list[dict]: ...
 
 
 def _default_backend() -> _Backend:
     from hippo_brain import vector_store  # lazy — storage agent owns this module
 
     return vector_store  # type: ignore[return-value]
+
+
+def _call_knn(
+    backend: _Backend, conn: sqlite3.Connection, query_vec: Sequence[float], limit: int
+) -> list[tuple[int, float]]:
+    """Adapt the backend's dict return to a ``(id, distance)`` list."""
+    raw = backend.knn_search(conn, query_vec, limit=limit)
+    return [(r["knowledge_node_id"], float(r.get("distance", 0.0))) for r in raw]
+
+
+def _call_fts(
+    backend: _Backend, conn: sqlite3.Connection, query: str, limit: int
+) -> list[tuple[int, float]]:
+    raw = backend.fts_search(conn, query, limit=limit)
+    return [(r["knowledge_node_id"], float(r.get("bm25", 0.0))) for r in raw]
+
+
+def _get_vectors(conn: sqlite3.Connection, node_ids: Sequence[int]) -> dict[int, list[float]]:
+    """Fetch knowledge vectors directly from the vec0 table.
+
+    Uses sqlite-vec's ``vec_to_json`` helper so we get back plain JSON arrays
+    we can deserialize. Returns ``{}`` on schema absence (e.g. unit tests
+    running against a fixture that omits ``knowledge_vectors``) — MMR treats
+    missing vectors as zero-similarity, which is a safe degradation.
+    """
+    if not node_ids:
+        return {}
+    placeholders = ",".join("?" for _ in node_ids)
+    try:
+        rows = conn.execute(  # nosemgrep
+            f"""
+            SELECT knowledge_node_id, vec_to_json(vec_knowledge)
+            FROM knowledge_vectors
+            WHERE knowledge_node_id IN ({placeholders})
+            """,
+            list(node_ids),
+        ).fetchall()
+    except sqlite3.OperationalError:
+        return {}
+    out: dict[int, list[float]] = {}
+    for nid, json_str in rows:
+        if not json_str:
+            continue
+        try:
+            out[nid] = json.loads(json_str)
+        except json.JSONDecodeError, TypeError:
+            continue
+    return out
 
 
 def search(
@@ -131,15 +190,13 @@ def _semantic(
 ) -> list[SearchResult]:
     if query_vec is None:
         raise ValueError("semantic mode requires a query_vec")
-    raw = backend.knn_search(conn, query_vec, CANDIDATE_POOL)
+    raw = _call_knn(backend, conn, query_vec, CANDIDATE_POOL)
     if not raw:
         return []
     allowed = _apply_filters(conn, [nid for nid, _ in raw], filters)
-    # Keep order from knn_search; filter to allowed set.
     ordered = [(nid, dist) for nid, dist in raw if nid in allowed]
     details = _fetch_details(conn, [nid for nid, _ in ordered])
-    # MMR diversification using vectors.
-    vecs = backend.get_vectors(conn, [nid for nid, _ in ordered])
+    vecs = _get_vectors(conn, [nid for nid, _ in ordered])
     scored = [(nid, _cosine_to_score(dist)) for nid, dist in ordered]
     picked = _mmr(scored, vecs, limit)
     return [_to_result(score, details.get(nid)) for nid, score in picked if nid in details]
@@ -154,7 +211,7 @@ def _lexical(
 ) -> list[SearchResult]:
     if not query:
         return []
-    raw = backend.fts_search(conn, query, CANDIDATE_POOL)
+    raw = _call_fts(backend, conn, query, CANDIDATE_POOL)
     if not raw:
         return []
     allowed = _apply_filters(conn, [nid for nid, _ in raw], filters)
@@ -181,7 +238,7 @@ def _recent(
     # "date-ordered with loose query match" — use FTS if query provided, else
     # pull most recent knowledge_nodes filtered by the same WHERE stack.
     if query:
-        raw = backend.fts_search(conn, query, CANDIDATE_POOL)
+        raw = _call_fts(backend, conn, query, CANDIDATE_POOL)
         candidate_ids = [nid for nid, _ in raw]
         if not candidate_ids:
             return []
@@ -209,8 +266,8 @@ def _hybrid(
         # Degrade to lexical if we don't have a vector.
         return _lexical(conn, query, filters, limit, backend)
 
-    vec_hits = backend.knn_search(conn, query_vec, CANDIDATE_POOL)
-    fts_hits = backend.fts_search(conn, query, CANDIDATE_POOL) if query else []
+    vec_hits = _call_knn(backend, conn, query_vec, CANDIDATE_POOL)
+    fts_hits = _call_fts(backend, conn, query, CANDIDATE_POOL) if query else []
 
     # RRF merge.
     rrf: dict[int, float] = {}
@@ -232,7 +289,7 @@ def _hybrid(
     top = scored[0][1] or 1.0
     scored = [(nid, s / top) for nid, s in scored]
 
-    vecs = backend.get_vectors(conn, [nid for nid, _ in scored])
+    vecs = _get_vectors(conn, [nid for nid, _ in scored])
     picked = _mmr(scored, vecs, limit)
     details = _fetch_details(conn, [nid for nid, _ in picked])
     return [_to_result(score, details.get(nid)) for nid, score in picked if nid in details]

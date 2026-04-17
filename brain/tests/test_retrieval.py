@@ -87,20 +87,59 @@ CREATE TABLE knowledge_node_entities (
 
 @dataclass
 class FakeBackend:
-    """Injectable backend used in place of vector_store for unit tests."""
+    """Injectable backend matching :mod:`hippo_brain.vector_store` shape.
+
+    Both primitives return dicts with ``knowledge_node_id`` + ``score``
+    (and ``distance``/``bm25`` for provenance) — the real backend does the
+    same.
+    """
 
     knn: list[tuple[int, float]] = field(default_factory=list)
     fts: list[tuple[int, float]] = field(default_factory=list)
-    vectors: dict[int, list[float]] = field(default_factory=dict)
 
-    def knn_search(self, _conn, _query_vec, k):
-        return self.knn[:k]
+    def knn_search(self, _conn, _query_vec, column="vec_knowledge", limit=10):
+        assert column in {"vec_knowledge", "vec_command"}
+        return [
+            {
+                "knowledge_node_id": nid,
+                "distance": dist,
+                "score": max(0.0, 1.0 - dist / 2.0),
+            }
+            for nid, dist in self.knn[:limit]
+        ]
 
-    def fts_search(self, _conn, _query, k):
-        return self.fts[:k]
+    def fts_search(self, _conn, _query, limit=10):
+        return [
+            {
+                "knowledge_node_id": nid,
+                "bm25": bm25,
+                "score": 1.0 / (1.0 + abs(bm25)),
+            }
+            for nid, bm25 in self.fts[:limit]
+        ]
 
-    def get_vectors(self, _conn, node_ids):
-        return {nid: self.vectors[nid] for nid in node_ids if nid in self.vectors}
+
+def _install_vec_fixture(conn: sqlite3.Connection, vectors: dict[int, list[float]]) -> None:
+    """Stand up a minimal ``knowledge_vectors`` table so MMR can fetch vecs.
+
+    Emulates :func:`sqlite_vec.vec_to_json` with a pure-Python wrapper — the
+    real extension isn't loaded in unit tests.
+    """
+    import json as _json
+
+    conn.execute(
+        "CREATE TABLE knowledge_vectors (knowledge_node_id INTEGER PRIMARY KEY, vec_knowledge TEXT)"
+    )
+
+    def vec_to_json(blob):
+        return blob
+
+    conn.create_function("vec_to_json", 1, vec_to_json)
+    for nid, vec in vectors.items():
+        conn.execute(
+            "INSERT INTO knowledge_vectors (knowledge_node_id, vec_knowledge) VALUES (?, ?)",
+            (nid, _json.dumps(vec)),
+        )
 
 
 def _insert_node(
@@ -196,10 +235,8 @@ def conn() -> sqlite3.Connection:
 def test_semantic_mode_normalizes_scores(conn):
     _insert_node(conn, 1, summary="node one", embed_text="alpha")
     _insert_node(conn, 2, summary="node two", embed_text="beta")
-    backend = FakeBackend(
-        knn=[(1, 0.2), (2, 1.8)],
-        vectors={1: [1.0, 0.0], 2: [0.0, 1.0]},
-    )
+    _install_vec_fixture(conn, {1: [1.0, 0.0], 2: [0.0, 1.0]})
+    backend = FakeBackend(knn=[(1, 0.2), (2, 1.8)])
 
     results = search(conn, "", [1.0, 0.0], Filters(), mode="semantic", limit=5, backend=backend)
 
@@ -225,10 +262,10 @@ def test_lexical_mode_returns_fts_ordered(conn):
 def test_hybrid_mode_rrf_merges_and_normalizes(conn):
     for i in range(1, 4):
         _insert_node(conn, i, summary=f"n{i}")
+    _install_vec_fixture(conn, {1: [1.0, 0.0], 2: [0.0, 1.0], 3: [1.0, 1.0]})
     backend = FakeBackend(
         knn=[(1, 0.1), (2, 0.2), (3, 0.3)],
         fts=[(3, -2.0), (2, -1.0), (1, -0.5)],
-        vectors={1: [1.0, 0.0], 2: [0.0, 1.0], 3: [1.0, 1.0]},
     )
 
     results = search(conn, "q", [1.0, 0.0], Filters(), mode="hybrid", limit=3, backend=backend)
@@ -378,14 +415,15 @@ def test_mmr_prefers_diverse_hits_over_near_duplicates(conn):
     # 2 has a slightly higher raw score than 3.
     for i in (1, 2, 3):
         _insert_node(conn, i, summary=f"n{i}")
-    backend = FakeBackend(
-        knn=[(1, 0.1), (2, 0.11), (3, 0.5)],
-        vectors={
+    _install_vec_fixture(
+        conn,
+        {
             1: [1.0, 0.0],
             2: [0.99, 0.01],  # nearly parallel to 1
             3: [0.0, 1.0],  # orthogonal to 1
         },
     )
+    backend = FakeBackend(knn=[(1, 0.1), (2, 0.11), (3, 0.5)])
 
     results = search(conn, "", [1.0, 0.0], Filters(), mode="semantic", limit=2, backend=backend)
 
