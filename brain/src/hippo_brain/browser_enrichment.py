@@ -4,7 +4,11 @@ import json
 import time
 import uuid
 
-from hippo_brain.enrichment import SHELL_ENTITY_TYPE_MAP, upsert_entities
+from hippo_brain.enrichment import (
+    SHELL_ENTITY_TYPE_MAP,
+    is_enrichment_eligible,
+    upsert_entities,
+)
 from hippo_brain.models import EnrichmentResult
 
 STALE_LOCK_TIMEOUT_MS = 5 * 60 * 1000
@@ -107,24 +111,32 @@ def claim_pending_browser_events(
             }
         )
 
-    # Filter out low-engagement events (low scroll AND no search query)
+    # Filter out ineligible events: short dwell (is_enrichment_eligible) and
+    # low-engagement (low scroll AND no search query).
     keep = []
-    skip_ids = []
+    skipped: list[tuple[int, str]] = []
     for ev in events:
+        ok, reason = is_enrichment_eligible(ev, "browser")
+        if not ok:
+            skipped.append((ev["id"], reason))
+            continue
         scroll = ev.get("scroll_depth") or 0.0
         has_query = bool(ev.get("search_query"))
         if scroll < scroll_depth_threshold and not has_query:
-            skip_ids.append(ev["id"])
-        else:
-            keep.append(ev)
+            skipped.append((ev["id"], f"low engagement: scroll={scroll:.2f} and no search_query"))
+            continue
+        keep.append(ev)
 
-    if skip_ids:
-        skip_placeholders = ",".join("?" * len(skip_ids))
+    if skipped:
         now_ms = int(time.time() * 1000)
-        conn.execute(
-            f"UPDATE browser_enrichment_queue SET status = 'skipped', updated_at = ? WHERE browser_event_id IN ({skip_placeholders})",
-            [now_ms, *skip_ids],
-        )
+        for bid, reason in skipped:
+            conn.execute(
+                "UPDATE browser_enrichment_queue "
+                "SET status = 'skipped', error_message = ?, "
+                "    locked_at = NULL, locked_by = NULL, updated_at = ? "
+                "WHERE browser_event_id = ?",
+                (reason, now_ms, bid),
+            )
         conn.commit()
 
     return _chunk_by_time_gap(keep) if keep else []

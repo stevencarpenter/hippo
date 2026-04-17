@@ -53,12 +53,13 @@ def is_enrichment_eligible(event_dict: dict, source: str) -> tuple[bool, str]:
         msg_count = event_dict.get("message_count") or 0
         tcj = event_dict.get("tool_calls_json")
         has_tool_calls = False
-        if tcj:
+        if isinstance(tcj, str) and tcj:
             try:
-                parsed = json.loads(tcj) if isinstance(tcj, str) else tcj
-                has_tool_calls = bool(parsed)
-            except json.JSONDecodeError, TypeError:
+                has_tool_calls = bool(json.loads(tcj))
+            except json.JSONDecodeError:
                 has_tool_calls = False
+        elif tcj:
+            has_tool_calls = bool(tcj)
         if msg_count < 3 and not has_tool_calls:
             return (
                 False,

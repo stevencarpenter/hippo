@@ -337,7 +337,8 @@ class TestInsertAndClaim:
                 start_time=1000 + i * 1000,
                 end_time=2000 + i * 1000,
                 user_prompts=[f"prompt {i}"],
-                message_count=1,
+                tool_calls=[{"name": "Read", "summary": "foo"}],
+                message_count=5,
                 source_file="/tmp/test.jsonl",
             )
             insert_segment(db_conn, seg)
@@ -490,3 +491,51 @@ class TestEnsureClaudeTables:
 
         conn.close()
         db_path.unlink(missing_ok=True)
+
+
+class TestClaudeEligibilityFilter:
+    def test_short_segment_no_tools_is_skipped(self, tmp_db):
+        db_conn, _ = tmp_db
+        seg = SessionSegment(
+            session_id="noise-s",
+            project_dir="p",
+            cwd="/proj",
+            git_branch=None,
+            segment_index=0,
+            start_time=1000,
+            end_time=2000,
+            user_prompts=["hi"],
+            tool_calls=[],
+            message_count=1,
+            source_file="/tmp/test.jsonl",
+        )
+        insert_segment(db_conn, seg)
+
+        batches = claim_pending_claude_segments(db_conn, "test-worker")
+        assert batches == []
+
+        row = db_conn.execute(
+            "SELECT status, error_message FROM claude_enrichment_queue"
+        ).fetchone()
+        assert row[0] == "skipped"
+        assert "message_count=1" in row[1]
+
+    def test_segment_with_tools_survives(self, tmp_db):
+        db_conn, _ = tmp_db
+        seg = SessionSegment(
+            session_id="real-s",
+            project_dir="p",
+            cwd="/proj",
+            git_branch=None,
+            segment_index=0,
+            start_time=1000,
+            end_time=2000,
+            user_prompts=["hi"],
+            tool_calls=[{"name": "Edit", "summary": "foo.py"}],
+            message_count=1,
+            source_file="/tmp/test.jsonl",
+        )
+        insert_segment(db_conn, seg)
+
+        batches = claim_pending_claude_segments(db_conn, "test-worker")
+        assert len(batches) == 1

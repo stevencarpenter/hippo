@@ -7,7 +7,11 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
-from hippo_brain.enrichment import SHELL_ENTITY_TYPE_MAP, upsert_entities
+from hippo_brain.enrichment import (
+    SHELL_ENTITY_TYPE_MAP,
+    is_enrichment_eligible,
+    upsert_entities,
+)
 from hippo_brain.models import EnrichmentResult
 
 STALE_LOCK_TIMEOUT_MS = 5 * 60 * 1000
@@ -546,10 +550,37 @@ def claim_pending_claude_segments(conn, worker_id: str) -> list[list[dict]]:
                 }
             )
 
+        segments = _skip_ineligible_claude_segments(conn, segments)
+
         # One segment = one knowledge node for maximum search granularity
         all_batches.extend([seg] for seg in segments)
 
     return all_batches
+
+
+def _skip_ineligible_claude_segments(conn, segments: list[dict]) -> list[dict]:
+    """Mark ineligible Claude session segments as skipped, return the rest."""
+    eligible = []
+    now_ms = int(time.time() * 1000)
+    for seg in segments:
+        ok, reason = is_enrichment_eligible(seg, "claude")
+        if ok:
+            eligible.append(seg)
+        else:
+            conn.execute(
+                "UPDATE claude_enrichment_queue "
+                "SET status = 'skipped', error_message = ?, "
+                "    locked_at = NULL, locked_by = NULL, updated_at = ? "
+                "WHERE claude_session_id = ?",
+                (reason, now_ms, seg["id"]),
+            )
+            conn.execute(
+                "UPDATE claude_sessions SET enriched = 1 WHERE id = ?",
+                (seg["id"],),
+            )
+    if len(eligible) != len(segments):
+        conn.commit()
+    return eligible
 
 
 def write_claude_knowledge_node(
