@@ -82,6 +82,11 @@ CREATE TABLE knowledge_node_entities (
     entity_id INTEGER NOT NULL,
     PRIMARY KEY (knowledge_node_id, entity_id)
 );
+CREATE TABLE knowledge_node_workflow_runs (
+    knowledge_node_id INTEGER NOT NULL,
+    workflow_run_id INTEGER NOT NULL,
+    PRIMARY KEY (knowledge_node_id, workflow_run_id)
+);
 """
 
 
@@ -206,6 +211,14 @@ def _link_claude(
         "INSERT INTO knowledge_node_claude_sessions"
         " (knowledge_node_id, claude_session_id) VALUES (?, ?)",
         (node_id, session_id),
+    )
+
+
+def _link_workflow(conn: sqlite3.Connection, node_id: int, run_id: int) -> None:
+    conn.execute(
+        "INSERT INTO knowledge_node_workflow_runs"
+        " (knowledge_node_id, workflow_run_id) VALUES (?, ?)",
+        (node_id, run_id),
     )
 
 
@@ -367,6 +380,19 @@ def test_source_filter_claude(conn):
     backend = FakeBackend(fts=[(1, -1.0), (2, -1.0)])
     results = search(
         conn, "q", None, Filters(source="claude"), mode="lexical", limit=5, backend=backend
+    )
+    assert [r.uuid for r in results] == ["uuid-2"]
+
+
+def test_source_filter_workflow_keeps_only_nodes_linked_to_workflow_runs(conn):
+    _insert_node(conn, 1, summary="shell")
+    _link_event(conn, 1, 10)
+    _insert_node(conn, 2, summary="workflow")
+    _link_workflow(conn, 2, 30)
+
+    backend = FakeBackend(fts=[(1, -1.0), (2, -1.0)])
+    results = search(
+        conn, "q", None, Filters(source="workflow"), mode="lexical", limit=5, backend=backend
     )
     assert [r.uuid for r in results] == ["uuid-2"]
 

@@ -384,10 +384,22 @@ def _apply_filters(
 
 def _source_clause(source: str) -> str:
     mapping = {
-        "shell": "e.id IS NOT NULL",
-        "claude": "cs.id IS NOT NULL",
-        "browser": "be.id IS NOT NULL",
-        "workflow": "kn.node_type = 'workflow'",
+        "shell": (
+            "EXISTS (SELECT 1 FROM knowledge_node_events kne_s "
+            "WHERE kne_s.knowledge_node_id = kn.id)"
+        ),
+        "claude": (
+            "EXISTS (SELECT 1 FROM knowledge_node_claude_sessions knc_s "
+            "WHERE knc_s.knowledge_node_id = kn.id)"
+        ),
+        "browser": (
+            "EXISTS (SELECT 1 FROM knowledge_node_browser_events knb_s "
+            "WHERE knb_s.knowledge_node_id = kn.id)"
+        ),
+        "workflow": (
+            "EXISTS (SELECT 1 FROM knowledge_node_workflow_runs knwr_s "
+            "WHERE knwr_s.knowledge_node_id = kn.id)"
+        ),
     }
     clause = mapping.get(source)
     if clause is None:
