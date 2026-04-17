@@ -1,56 +1,334 @@
 {
-  "description": "Fixed evaluation set for the sqlite-vec retrieval overhaul. Questions are drawn from the project's recent work areas (LanceDB removal, enrichment pipeline, Claude session hook, Firefox source, OTel stack, fine-tuning, build status, hippo vision). Used by the retrieval benchmark at docs/superpowers/specs/2026-04-17-retrieval-benchmark.md.",
+  "description": "Labeled evaluation set for hippo retrieval + synthesis. Questions drawn from hippo's own development history: past decisions, bug fixes, project state lookups, cross-source queries, and adversarial edge cases. Used by `hippo-eval` (brain/src/hippo_brain/eval.py).",
   "created_at": "2026-04-17",
+  "schema": {
+    "id": "stable unique id",
+    "question": "natural-language user query",
+    "intent": "why-decision | how-it-works | state-lookup | cross-source | adversarial",
+    "relevant_knowledge_node_uuids": "known-good node UUIDs (may be empty until corpus-analyst labels)",
+    "acceptable_answer_keywords": "at least one MUST appear in a good answer",
+    "source_bias": "shell | claude | browser | mixed"
+  },
   "questions": [
     {
       "id": "q01",
       "question": "Why did we replace LanceDB with sqlite-vec?",
-      "expected_topics": ["motivation", "consolidation", "sqlite-vec", "lancedb"]
+      "intent": "why-decision",
+      "relevant_knowledge_node_uuids": [],
+      "acceptable_answer_keywords": ["consolidation", "fragmentation", "drift", "single", "sqlite-vec"],
+      "source_bias": "claude"
     },
     {
       "id": "q02",
-      "question": "How does the enrichment pipeline run shell Claude and browser sources concurrently?",
-      "expected_topics": ["asyncio.gather", "enrichment", "concurrency"]
+      "question": "How does the enrichment pipeline run shell, claude, and browser sources concurrently?",
+      "intent": "how-it-works",
+      "relevant_knowledge_node_uuids": [],
+      "acceptable_answer_keywords": ["asyncio.gather", "concurrent", "gather"],
+      "source_bias": "claude"
     },
     {
       "id": "q03",
       "question": "What fixed the Claude session hook PID problem?",
-      "expected_topics": ["PPID", "session hook", "claade wrapper", "grandparent PID"]
+      "intent": "why-decision",
+      "relevant_knowledge_node_uuids": [],
+      "acceptable_answer_keywords": ["PPID", "grandparent", "claade", "parent"],
+      "source_bias": "claude"
     },
     {
       "id": "q04",
       "question": "How does the Firefox browser source send events to the daemon?",
-      "expected_topics": ["native messaging", "firefox extension", "allowlist"]
+      "intent": "how-it-works",
+      "relevant_knowledge_node_uuids": [],
+      "acceptable_answer_keywords": ["native messaging", "native-messaging", "extension", "manifest"],
+      "source_bias": "mixed"
     },
     {
       "id": "q05",
       "question": "What runs in the OTel observability stack locally?",
-      "expected_topics": ["grafana", "tempo", "loki", "prometheus", "docker"]
+      "intent": "state-lookup",
+      "relevant_knowledge_node_uuids": [],
+      "acceptable_answer_keywords": ["grafana", "tempo", "loki", "prometheus", "docker"],
+      "source_bias": "claude"
     },
     {
       "id": "q06",
       "question": "What is the north star vision for hippo?",
-      "expected_topics": ["local second brain", "open source", "MIT", "privacy"]
+      "intent": "why-decision",
+      "relevant_knowledge_node_uuids": [],
+      "acceptable_answer_keywords": ["local", "second brain", "open source", "MIT", "privacy"],
+      "source_bias": "claude"
     },
     {
       "id": "q07",
       "question": "How are secrets redacted before storage?",
-      "expected_topics": ["redaction", "secrets", "env vars"]
+      "intent": "how-it-works",
+      "relevant_knowledge_node_uuids": [],
+      "acceptable_answer_keywords": ["redact", "redaction", "redact.toml", "secret"],
+      "source_bias": "mixed"
     },
     {
       "id": "q08",
-      "question": "What is the schema version and what changed in v6?",
-      "expected_topics": ["schema v6", "FTS5", "vec0", "migration"]
+      "question": "What is the current schema version and what changed in v6?",
+      "intent": "state-lookup",
+      "relevant_knowledge_node_uuids": [],
+      "acceptable_answer_keywords": ["v6", "fts5", "vec0", "migration", "knowledge_vectors", "knowledge_fts"],
+      "source_bias": "mixed"
     },
     {
       "id": "q09",
       "question": "How does hybrid retrieval combine vector and lexical scores?",
-      "expected_topics": ["RRF", "MMR", "reciprocal rank fusion", "hybrid"]
+      "intent": "how-it-works",
+      "relevant_knowledge_node_uuids": [],
+      "acceptable_answer_keywords": ["rrf", "reciprocal rank", "mmr", "hybrid", "fusion"],
+      "source_bias": "claude"
     },
     {
       "id": "q10",
-      "question": "What does the degraded-mode response from rag.ask look like?",
-      "expected_topics": ["degraded", "sources", "rag", "timeout", "error"]
+      "question": "What does a degraded-mode response from rag.ask look like?",
+      "intent": "how-it-works",
+      "relevant_knowledge_node_uuids": [],
+      "acceptable_answer_keywords": ["degraded", "sources", "raw notes", "answer", "null"],
+      "source_bias": "claude"
+    },
+    {
+      "id": "q11",
+      "question": "Why did we choose Rust for the hippo daemon instead of Python?",
+      "intent": "why-decision",
+      "relevant_knowledge_node_uuids": [],
+      "acceptable_answer_keywords": ["performance", "hot path", "rust", "daemon"],
+      "source_bias": "claude"
+    },
+    {
+      "id": "q12",
+      "question": "How does the daemon know when a Claude Code transcript file appears?",
+      "intent": "how-it-works",
+      "relevant_knowledge_node_uuids": [],
+      "acceptable_answer_keywords": ["poll", "tail", "jsonl", "SessionStart"],
+      "source_bias": "claude"
+    },
+    {
+      "id": "q13",
+      "question": "Where does hippo store its SQLite database on disk?",
+      "intent": "state-lookup",
+      "relevant_knowledge_node_uuids": [],
+      "acceptable_answer_keywords": [".local/share/hippo", "hippo.db", "XDG"],
+      "source_bias": "mixed"
+    },
+    {
+      "id": "q14",
+      "question": "What MCP tools does the hippo brain expose?",
+      "intent": "state-lookup",
+      "relevant_knowledge_node_uuids": [],
+      "acceptable_answer_keywords": ["ask", "search_knowledge", "search_events", "get_entities", "search_hybrid"],
+      "source_bias": "claude"
+    },
+    {
+      "id": "q15",
+      "question": "How does the ESRCH vs EPERM distinction matter in the tailer's PID check?",
+      "intent": "why-decision",
+      "relevant_knowledge_node_uuids": [],
+      "acceptable_answer_keywords": ["ESRCH", "EPERM", "kill(pid, 0)", "permission"],
+      "source_bias": "claude"
+    },
+    {
+      "id": "q16",
+      "question": "What embedding dimension does hippo use?",
+      "intent": "state-lookup",
+      "relevant_knowledge_node_uuids": [],
+      "acceptable_answer_keywords": ["768", "embed_dim", "FLOAT[768]"],
+      "source_bias": "mixed"
+    },
+    {
+      "id": "q17",
+      "question": "Why did we reject a Postgres migration for the vector store?",
+      "intent": "why-decision",
+      "relevant_knowledge_node_uuids": [],
+      "acceptable_answer_keywords": ["sqlite", "single", "local", "overkill", "rejected"],
+      "source_bias": "claude"
+    },
+    {
+      "id": "q18",
+      "question": "How is enrichment-eligible work filtered from noise events?",
+      "intent": "how-it-works",
+      "relevant_knowledge_node_uuids": [],
+      "acceptable_answer_keywords": ["is_enrichment_eligible", "skipped", "noise", "session-start"],
+      "source_bias": "claude"
+    },
+    {
+      "id": "q19",
+      "question": "Which domains does the Firefox extension allowlist for browser capture?",
+      "intent": "state-lookup",
+      "relevant_knowledge_node_uuids": [],
+      "acceptable_answer_keywords": ["allowlist", "github", "domain", "stackoverflow"],
+      "source_bias": "mixed"
+    },
+    {
+      "id": "q20",
+      "question": "What does the `hippo doctor` command check?",
+      "intent": "how-it-works",
+      "relevant_knowledge_node_uuids": [],
+      "acceptable_answer_keywords": ["version", "alignment", "hook", "daemon", "brain"],
+      "source_bias": "mixed"
+    },
+    {
+      "id": "q21",
+      "question": "How is the LanceDB vs knowledge-node count drift prevented in the new scheme?",
+      "intent": "why-decision",
+      "relevant_knowledge_node_uuids": [],
+      "acceptable_answer_keywords": ["trigger", "transactional", "single", "drift"],
+      "source_bias": "claude"
+    },
+    {
+      "id": "q22",
+      "question": "What's the story with `except A, B:` syntax in Python 3.14?",
+      "intent": "adversarial",
+      "relevant_knowledge_node_uuids": [],
+      "acceptable_answer_keywords": ["3.14", "tuple", "parenthesis", "language feature", "ruff"],
+      "source_bias": "claude"
+    },
+    {
+      "id": "q23",
+      "question": "What's wrong with question marks in FTS5 queries, and how did we fix it?",
+      "intent": "why-decision",
+      "relevant_knowledge_node_uuids": [],
+      "acceptable_answer_keywords": ["sanitize", "phrase", "quote", "fts5", "syntax"],
+      "source_bias": "claude"
+    },
+    {
+      "id": "q24",
+      "question": "How does the retrieval module push filters down into the vec0 / FTS5 queries?",
+      "intent": "how-it-works",
+      "relevant_knowledge_node_uuids": [],
+      "acceptable_answer_keywords": ["where", "candidate", "join", "_apply_filters"],
+      "source_bias": "claude"
+    },
+    {
+      "id": "q25",
+      "question": "How does MMR pick diverse results?",
+      "intent": "how-it-works",
+      "relevant_knowledge_node_uuids": [],
+      "acceptable_answer_keywords": ["lambda", "diversity", "mmr", "cosine", "trade-off"],
+      "source_bias": "claude"
+    },
+    {
+      "id": "q26",
+      "question": "What does the Firefox extension do when Developer Edition is closed?",
+      "intent": "cross-source",
+      "relevant_knowledge_node_uuids": [],
+      "acceptable_answer_keywords": ["native messaging", "queue", "disconnect", "manifest"],
+      "source_bias": "browser"
+    },
+    {
+      "id": "q27",
+      "question": "How do we cap the context size sent to the synthesis LLM?",
+      "intent": "how-it-works",
+      "relevant_knowledge_node_uuids": [],
+      "acceptable_answer_keywords": ["8000", "max_context_chars", "truncate", "budget"],
+      "source_bias": "claude"
+    },
+    {
+      "id": "q28",
+      "question": "What package manager does the brain project use and why?",
+      "intent": "why-decision",
+      "relevant_knowledge_node_uuids": [],
+      "acceptable_answer_keywords": ["uv", "speed", "lockfile"],
+      "source_bias": "mixed"
+    },
+    {
+      "id": "q29",
+      "question": "How does the shell hook send events to the daemon?",
+      "intent": "how-it-works",
+      "relevant_knowledge_node_uuids": [],
+      "acceptable_answer_keywords": ["unix socket", "socket", "length-prefixed", "fire-and-forget"],
+      "source_bias": "shell"
+    },
+    {
+      "id": "q30",
+      "question": "Why does the Claude session hook use `$PPID` directly as the watch PID?",
+      "intent": "why-decision",
+      "relevant_knowledge_node_uuids": [],
+      "acceptable_answer_keywords": ["PPID", "child", "claade", "parent"],
+      "source_bias": "claude"
+    },
+    {
+      "id": "q31",
+      "question": "ask: how does rag handle a model that isn't loaded?",
+      "intent": "adversarial",
+      "relevant_knowledge_node_uuids": [],
+      "acceptable_answer_keywords": ["preflight", "health_check", "degraded"],
+      "source_bias": "claude"
+    },
+    {
+      "id": "q32",
+      "question": "What does `list_projects` return, and from which tables?",
+      "intent": "how-it-works",
+      "relevant_knowledge_node_uuids": [],
+      "acceptable_answer_keywords": ["git_repo", "cwd", "events", "claude_sessions"],
+      "source_bias": "claude"
+    },
+    {
+      "id": "q33",
+      "question": "Why does score normalization use `1 - distance / 2`?",
+      "intent": "why-decision",
+      "relevant_knowledge_node_uuids": [],
+      "acceptable_answer_keywords": ["cosine", "[0, 2]", "normalize", "distance"],
+      "source_bias": "claude"
+    },
+    {
+      "id": "q34",
+      "question": "How many knowledge nodes are currently in the live corpus?",
+      "intent": "state-lookup",
+      "relevant_knowledge_node_uuids": [],
+      "acceptable_answer_keywords": ["1,878", "1878", "observation"],
+      "source_bias": "mixed"
+    },
+    {
+      "id": "q35",
+      "question": "why are there 0 relationships in the knowledge graph, and what should happen next? (-:",
+      "intent": "adversarial",
+      "relevant_knowledge_node_uuids": [],
+      "acceptable_answer_keywords": ["empty", "graph", "relationship", "unpopulated"],
+      "source_bias": "claude"
+    },
+    {
+      "id": "q36",
+      "question": "What's the scorecard verdict on sqlite-vec migration?",
+      "intent": "state-lookup",
+      "relevant_knowledge_node_uuids": [],
+      "acceptable_answer_keywords": ["sign-off", "partial", "met", "scorecard", "conditions"],
+      "source_bias": "claude"
+    },
+    {
+      "id": "q37",
+      "question": "Explain the difference between `ask`, `search_knowledge`, and `search_hybrid`.",
+      "intent": "cross-source",
+      "relevant_knowledge_node_uuids": [],
+      "acceptable_answer_keywords": ["synthesis", "retrieval", "hybrid", "ask", "search_hybrid"],
+      "source_bias": "claude"
+    },
+    {
+      "id": "q38",
+      "question": "Quoting: does FTS5 treat a query like  \"schema\\\" design?  differently than `schema design` — why??",
+      "intent": "adversarial",
+      "relevant_knowledge_node_uuids": [],
+      "acceptable_answer_keywords": ["sanitize", "phrase", "fts5", "escape"],
+      "source_bias": "claude"
+    },
+    {
+      "id": "q39",
+      "question": "What environment variables override hippo data and config paths?",
+      "intent": "state-lookup",
+      "relevant_knowledge_node_uuids": [],
+      "acceptable_answer_keywords": ["XDG_DATA_HOME", "XDG_CONFIG_HOME", "XDG"],
+      "source_bias": "mixed"
+    },
+    {
+      "id": "q40",
+      "question": "When did the claude session hook start using the SessionStart event?",
+      "intent": "state-lookup",
+      "relevant_knowledge_node_uuids": [],
+      "acceptable_answer_keywords": ["SessionStart", "hook", "settings.json"],
+      "source_bias": "claude"
     }
   ]
 }
