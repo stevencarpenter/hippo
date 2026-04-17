@@ -20,7 +20,7 @@ pub fn open_db(path: &Path) -> Result<Connection> {
          PRAGMA busy_timeout=5000;",
     )?;
     let version: i64 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
-    const EXPECTED_VERSION: i64 = 5;
+    const EXPECTED_VERSION: i64 = 6;
 
     // Migrate from v1 → v2: add envelope_id column for dedup
     if version == 1 {
@@ -248,6 +248,80 @@ pub fn open_db(path: &Path) -> Result<Connection> {
              );
              PRAGMA user_version = 5;",
         )?;
+    }
+
+    // Migrate from v5 → v6: FTS5 index on knowledge_nodes + sync triggers.
+    // vec0 `knowledge_vectors` is created by the Python brain (which loads the
+    // sqlite-vec extension); the Rust daemon does not load vec0.
+    if (1..=5).contains(&version) {
+        // FTS index + triggers require the knowledge_nodes table. Very old
+        // test/dev DBs (pre-v2) never had it — in that case just stamp v6
+        // and let schema.sql handle FTS on a fresh DB.
+        let has_knowledge_nodes: i64 = conn.query_row(
+            "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='knowledge_nodes'",
+            [],
+            |r| r.get(0),
+        )?;
+        if has_knowledge_nodes == 0 {
+            conn.execute_batch("PRAGMA user_version = 6;")?;
+            return Ok(conn);
+        }
+        conn.execute_batch(
+            "CREATE VIRTUAL TABLE IF NOT EXISTS knowledge_fts USING fts5(
+                summary,
+                embed_text,
+                content,
+                tokenize = 'porter unicode61 remove_diacritics 2'
+             );
+             CREATE TRIGGER IF NOT EXISTS knowledge_nodes_fts_ai
+             AFTER INSERT ON knowledge_nodes
+             BEGIN
+                INSERT INTO knowledge_fts (rowid, summary, embed_text, content)
+                VALUES (
+                    NEW.id,
+                    COALESCE(CASE WHEN json_valid(NEW.content) THEN json_extract(NEW.content, '$.summary') END, ''),
+                    NEW.embed_text,
+                    NEW.content
+                );
+             END;
+             CREATE TRIGGER IF NOT EXISTS knowledge_nodes_fts_ad
+             AFTER DELETE ON knowledge_nodes
+             BEGIN
+                DELETE FROM knowledge_fts WHERE rowid = OLD.id;
+             END;
+             CREATE TRIGGER IF NOT EXISTS knowledge_nodes_fts_au
+             AFTER UPDATE ON knowledge_nodes
+             BEGIN
+                DELETE FROM knowledge_fts WHERE rowid = OLD.id;
+                INSERT INTO knowledge_fts (rowid, summary, embed_text, content)
+                VALUES (
+                    NEW.id,
+                    COALESCE(CASE WHEN json_valid(NEW.content) THEN json_extract(NEW.content, '$.summary') END, ''),
+                    NEW.embed_text,
+                    NEW.content
+                );
+             END;",
+        )?;
+        // Backfill FTS only if knowledge_nodes exists (it may not on very old
+        // DBs whose migration chain hasn't reached v2 yet — the base schema
+        // creates it at version 0).
+        let has_knowledge_nodes: i64 = conn.query_row(
+            "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='knowledge_nodes'",
+            [],
+            |r| r.get(0),
+        )?;
+        if has_knowledge_nodes > 0 {
+            conn.execute_batch(
+                "INSERT INTO knowledge_fts (rowid, summary, embed_text, content)
+                 SELECT id,
+                        COALESCE(CASE WHEN json_valid(content) THEN json_extract(content, '$.summary') END, ''),
+                        embed_text,
+                        content
+                 FROM knowledge_nodes
+                 WHERE id NOT IN (SELECT rowid FROM knowledge_fts);",
+            )?;
+        }
+        conn.execute_batch("PRAGMA user_version = 6;")?;
     } else if version != 0 && version != EXPECTED_VERSION {
         anyhow::bail!(
             "DB schema version mismatch: expected {}, found {}. \
@@ -1442,7 +1516,7 @@ mod tests {
         let v: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 5);
+        assert_eq!(v, 6);
     }
 
     #[test]
@@ -1507,12 +1581,12 @@ mod tests {
             )
             .unwrap();
         }
-        // open_db should migrate to v5 (v1 → v2 → v3 → v4 → v5)
+        // open_db should migrate to v6 (v1 → v2 → v3 → v4 → v5 → v6)
         let conn = open_db(&db_path).unwrap();
         let v: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 5);
+        assert_eq!(v, 6);
         // Verify envelope_id column exists by inserting with it
         let sid = upsert_session(&conn, "mig-test", "host", "zsh", "user").unwrap();
         let eid = insert_event_at(
@@ -1595,7 +1669,7 @@ mod tests {
         let v: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 5);
+        assert_eq!(v, 6);
     }
 
     #[test]
@@ -1692,12 +1766,12 @@ mod tests {
             .unwrap();
         }
 
-        // open_db should migrate v3 → v5
+        // open_db should migrate v3 → v6
         let conn = open_db(&db_path).unwrap();
         let v: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 5);
+        assert_eq!(v, 6);
 
         // Verify browser tables exist
         let browser_tables = [
@@ -1726,7 +1800,7 @@ mod tests {
         let v2: i64 = conn2
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v2, 5);
+        assert_eq!(v2, 6);
     }
 
     fn sample_browser_event() -> BrowserEvent {

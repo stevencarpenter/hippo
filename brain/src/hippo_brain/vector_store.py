@@ -103,8 +103,8 @@ def knn_search(
 
         {
             "knowledge_node_id": int,
-            "distance": float,   # raw cosine distance in [0, 2]
-            "score": float,      # normalized: 1 - distance/2, in [0, 1]
+            "distance": float,  # raw cosine distance in [0, 2]
+            "score": float,  # normalized: 1 - distance/2, in [0, 1]
         }
 
     Higher ``score`` is better. Joining against ``knowledge_nodes`` is the
@@ -114,9 +114,7 @@ def knn_search(
     if sql is None:
         raise ValueError(f"unsupported vector column: {column}")
     if len(query_vec) != EMBED_DIM:
-        raise ValueError(
-            f"query vector length {len(query_vec)} != expected {EMBED_DIM}"
-        )
+        raise ValueError(f"query vector length {len(query_vec)} != expected {EMBED_DIM}")
     rows = conn.execute(sql, (_vec_blob(query_vec), limit)).fetchall()
     return [
         {
@@ -139,8 +137,8 @@ def fts_search(
 
         {
             "knowledge_node_id": int,  # == fts rowid
-            "bm25": float,             # negative; lower = better match
-            "score": float,            # normalized: 1 / (1 + |bm25|) in (0, 1]
+            "bm25": float,  # negative; lower = better match
+            "score": float,  # normalized: 1 / (1 + |bm25|) in (0, 1]
         }
     """
     rows = conn.execute(_SQL_FTS_SEARCH, (query, limit)).fetchall()
