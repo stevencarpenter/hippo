@@ -296,18 +296,21 @@ same checkout; file ownership is enforced by mission briefs below.
   Python 3.14 shows it parses as an implicit tuple — both exceptions are
   caught. My initial reading was wrong; no import was broken, which is
   why the running brain worked fine.
-- **Ruff py314 formatter regression (confirmed by storage with a test matrix):**
-  `ruff 0.15.8` with `target-version = "py314"` in brain/pyproject.toml
-  strips the parens from `except (A, B):` and rewrites to `except A, B:`
-  on every format run. py311/py312/py313 targets preserve parens. So
-  every agent who "fixed" the tuple-except form watched their fix silently
-  reverted by the next `ruff format` pass. The committed code ends up
-  unparenthesized. Python 3.14 still accepts this syntactically (tuple
-  interpretation), so nothing breaks functionally — but it's cosmetically
-  wrong and hostile to other Python versions.
-  Recommended short-term fix: pin `target-version = "py313"` in
-  brain/pyproject.toml and re-run `ruff format`. File upstream at
-  astral-sh/ruff as a py314 regression. See the follow-up task.
+- **Ruff py314 parens-stripping is CORRECT BEHAVIOR, not a regression
+  (third correction in this session):**
+  Python 3.14 added `except A, B:` as a NEW syntax feature — unparenthesized
+  multi-exception catch that parses as a tuple. Ruff 0.15.8 with
+  `target-version = "py314"` correctly uses this new feature to strip
+  now-unnecessary parens, canonicalizing to the shorter form. With
+  `target-version ≤ py313`, ruff preserves parens because py313 requires
+  them (running ruff check at py313 target on the current code raises
+  `invalid-syntax: Multiple exception types must be parenthesized on
+  Python 3.13 (syntax was added in Python 3.14)`). Since this project
+  pins `requires-python = ">=3.14"`, py314 is the right target and the
+  unparenthesized form is the right canonical. My original "Python 2
+  syntax" claim was wrong, storage's "ruff regression" follow-up was
+  wrong, and my attempt to pin py313 was wrong — all three corrected here.
+  Task #7 closed as not-a-bug.
 - LanceDB vector-count-vs-knowledge-node-count drift has happened before
   (observed in prior sessions). The new scheme with triggers + single-DB
   transactional writes eliminates this class of bug.
