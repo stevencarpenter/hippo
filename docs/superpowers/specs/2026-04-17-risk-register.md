@@ -7,13 +7,17 @@
 
 ## TL;DR
 
-Wave 1 is structurally sound but ships three concrete correctness / scaling landmines that will bite under normal usage, not just edge cases:
+Wave 1 is structurally sound but ships several concrete correctness / scaling landmines that will bite under normal usage, not just edge cases. Cross-flag from corpus-analyst (R-16, R-21, R-22, R-23 added 2026-04-17 post-initial-draft) materially upgrades the picture — two additional HIGH/HIGH items and one MED/HIGH.
 
-1. **R-01 — `mcp.ask()` silently discards filter parameters.** The tool advertises `project`/`since`/`source`/`branch`, logs them, and then deliberately drops them (`_ = (project, since, source, branch)` at mcp.py:308). Anyone calling `ask` with filters is getting unfiltered results and won't know.
-2. **R-02 — vec0 is declared without an ANN index, so KNN is brute-force.** At the current 1.9K nodes this is a non-issue; at the stated 10x/100x corpus targets, every `search_hybrid` / `ask` call scans the whole vector table, twice (vec_knowledge + vec_command). Latency scales linearly.
-3. **R-03 — FTS5 "sanitize by quoting the entire query" trades crash-safety for recall.** `_sanitize_fts_query` wraps every query in a single phrase, so `"schema design"` now has to appear as a contiguous phrase in the FTS document. Most natural-language queries will return zero lexical hits, and hybrid mode collapses into pure semantic.
+**Top concerns (all HIGH/HIGH):**
 
-These three account for the bulk of the "feels broken after corpus grows" failure modes. Everything else is secondary.
+1. **R-01 — `mcp.ask()` silently discards filter parameters.** `_ = (project, since, source, branch)` at mcp.py:308. Live correctness bug.
+2. **R-02 — vec0 is declared without an ANN index, so KNN is brute-force.** Fine at 1.9K nodes; linear at 10x/100x.
+3. **R-03 — FTS5 "sanitize by quoting the entire query" trades crash-safety for recall.** Phrase-wrap kills multi-word queries.
+4. **R-16 — Entity canonicalization fragments at single-machine scale today.** `storage.rs` in 8 places, `.gitignore` in 12. Entity filter returns under-specified results now, worse at scale.
+5. **R-22 — Enrichment claim-batch has no watchdog.** Currently wedged on live corpus (417 rows held for 31+ min by one dead claim). Will wedge the v6 backfill too if LM Studio hiccups mid-re-embed.
+
+These five account for the bulk of the "feels broken after corpus grows" failure modes. Everything else is secondary.
 
 ## Summary table (sorted by severity × likelihood)
 
@@ -34,7 +38,10 @@ These three account for the bulk of the "feels broken after corpus grows" failur
 | R-13 | Concurrent writer + MCP DDL attempt → busy-timeout flakiness | MED | MED |
 | R-14 | MMR with missing vectors gives lexical-only hits a free pass | LOW | HIGH |
 | R-15 | `migrate-vectors.py` serial LM Studio calls, no parallelism | LOW | HIGH |
-| R-16 | Entity canonicalization pins to machine-specific absolute paths | MED | LOW |
+| R-16 | Entity canonicalization fragments even on a single machine | HIGH | HIGH |
+| R-21 | `relationships` table provisioned but never written | MED | HIGH |
+| R-22 | Enrichment claim-batch has no watchdog (currently wedged on live corpus) | HIGH | HIGH |
+| R-23 | `events.git_repo` is NULL corpus-wide → project filter silently half-works | MED | HIGH |
 | R-17 | Hardcoded `EMBED_DIM=768` rejects alternative embedding models | MED | LOW |
 | R-18 | `parse_since` silently returns 0 on bad input ("0h", "999d", "1m"-matches-minute-not-month) | LOW | MED |
 | R-19 | `_get_vectors` crash-bypass on vec0 absence turns into "all zero similarity" | LOW | MED |
@@ -215,15 +222,20 @@ These three account for the bulk of the "feels broken after corpus grows" failur
   - Resume already works (SQL re-selects only nodes missing vectors), so interruption is safe — good.
   - Progress logging is info-level per-run, not per-N rows — add `% complete` logging every 100 rows.
 
-### R-16 — Entity canonicalization pins to machine-specific absolute paths
+### R-16 — Entity canonicalization fragments even on a single machine
 
-- **Severity:** MED
-- **Likelihood:** LOW (depends on user sharing a DB across machines — rare)
-- **Scenario:** Entity canonical names include absolute paths like `/Users/carpenter/projects/hippo/...`. User moves to a new machine (or shares a DB snapshot for OSS reproducibility), entity dedup breaks: the same file appears under two different canonicals.
-- **Evidence:** observed in the live baseline — "file" entity type is 47% of the graph; typical OSS user on a different home path would balloon it further.
+- **Severity:** HIGH (upgraded from MED after corpus-analyst evidence)
+- **Likelihood:** HIGH (upgraded from LOW — already failing in the live 1.9K-node corpus)
+- **Scenario:** Entity canonicalization is effectively path-verbatim (lowercased). On the live corpus (corpus-analyst report §entity-canonicalization): `storage.rs` appears as **8 separate entities** across worktrees / absolute vs relative / basename-only; `.gitignore` as **12**; `.env` as **6**. At 10x corpus this fragmentation multiplies. The new `retrieval._apply_filters` entity pushdown (`ent.canonical = ? OR ent.name = ?`, retrieval.py:376) assumes canonical names are actually canonical. They are not. Entity-filtered queries return drastically under-specified results and users can't tell why.
+- **Evidence:**
+  - corpus-analyst report (`docs/superpowers/specs/2026-04-17-corpus-health-report.md` entity-fragmentation section)
+  - `retrieval.py:368-377` — entity filter path assumes `ent.canonical` is the dedup key
+  - This is not an OSS / cross-machine problem, as I originally scored it — it's **already broken at single-machine scale today**.
 - **Mitigation:**
-  - Store file entities as `${PROJECT_ROOT}/rel/path` with `${PROJECT_ROOT}` resolved at query time.
-  - Out-of-scope for this wave; call out in OSS README as a "single-user, single-machine assumption for now".
+  - **Pre-v6-merge:** document that `filter.entity` is currently under-specified and may miss canonical variants. The new MCP surface advertises entity filtering; shipping it without fixing canonicalization is user-hostile.
+  - **Structural fix:** normalise file entities to `${project_root_basename}:${rel_path}` before dedup. Pairs with R-11 (project filter also needs path-boundary awareness).
+  - **Retrospective cleanup:** one-shot canonicalization merge script that collapses known-equivalent entities and rewrites `knowledge_node_entities` links.
+  - **Scaling multiplier:** at 10x corpus, file entity count grows ~10x; at current fragmentation ratios that means ~40K+ `.gitignore` / `storage.rs`-style near-duplicates polluting `get_entities` output.
 
 ### R-17 — Hardcoded `EMBED_DIM=768` rejects alternative embedding models
 
@@ -265,6 +277,40 @@ These three account for the bulk of the "feels broken after corpus grows" failur
   - Keep as-is; py3.14 is the declared minimum and ruff canonicalises at that target (see session-handoff notes).
   - Document in CONTRIBUTING that 3.14 is hard-required.
   - Not a real risk — listed for completeness because it surfaced three times in session history.
+
+### R-21 — `relationships` table is schema-provisioned but never written
+
+- **Severity:** MED
+- **Likelihood:** HIGH (any consumer who assumes the table is live)
+- **Scenario:** Schema at `crates/hippo-core/src/schema.sql:65` provisions a `relationships` table with indexes (schema.sql:195-196). corpus-analyst confirms zero INSERT sites across `crates/` and `brain/`. The new MCP surface and the wider retrieval roadmap invite consumers to write graph-traversal queries — any such query returns silently empty, looking like "no data" rather than "feature not wired". The scorecard's "entity graph traversal queries" deferral was honest; the schema's quiet presence is not.
+- **Evidence:** `crates/hippo-core/src/schema.sql:65`, `schema.sql:195-196`; corpus-analyst report §relationships-table.
+- **Mitigation:**
+  - **Short term:** keep the table, but add a check in `hippo doctor` that warns when `relationships` is empty on a non-empty corpus and points at the unwired enrichment contract.
+  - **Medium term:** either wire it (enrichment JSON already has an `entities` field; extending to `relationships` is small) or **drop the table + indexes from v6**. Leaving it in place invites confusion.
+  - **Flag to any future retrieval consumer:** do not assume graph edges exist.
+
+### R-22 — Enrichment claim-batch has no watchdog → single bad batch wedges the queue
+
+- **Severity:** HIGH
+- **Likelihood:** HIGH (already happening on the live corpus — see corpus-analyst §enrichment-queue)
+- **Scenario:** corpus-analyst observed 417 `processing` rows all sharing `locked_at=2026-04-17 10:36:45`, a single claim batch stuck for 31+ minutes while `pending` kept growing (231 → 291 → 417). The underlying trigger is LM Studio returning 400, but the structural risk is that the claim-batch model has **no watchdog** — a bad endpoint or crashed worker keeps the lock indefinitely. This is not post-migration-specific, but the v6 backfill (R-15) will run the same claim-batch path against the same unpatched worker, so any LM Studio hiccup during backfill wedges the re-embed.
+- **Evidence:** corpus-analyst report §enrichment-queue; live DB showing 417 processing rows with identical lock_at.
+- **Mitigation:**
+  - **Immediate:** add a reaper that releases `processing` locks older than `p99 × 3` minutes back to `pending`, incrementing retry_count. Fail the row after N retries.
+  - **Preflight:** run `lm_client.health_check(model)` once per claim batch (rag.py already has this shape — reuse).
+  - **Cap claim-batch size** — 400+ rows per batch means one bad batch poisons a huge work slice.
+  - **Metric:** `hippo.brain.enrichment.oldest_lock_age` gauge. Page on > 5 min.
+
+### R-23 — `events.git_repo` is NULL for the entire live corpus → project filter silently half-works
+
+- **Severity:** MED
+- **Likelihood:** HIGH
+- **Scenario:** corpus-analyst reports `events.git_repo IS NULL` for all 6,790 rows in the live DB — the daemon never populates it. The new retrieval filter (`retrieval.py:343-347`) does `e.cwd LIKE ? OR e.git_repo LIKE ?`. The `git_repo` half never matches anything; `cwd` substring carries the whole filter silently. Users who assume "project=foo also matches if I'm in a worktree with different cwd but same origin" are wrong, and there's no indication. Fixing the daemon populates a column the filter already uses, unlocking correctness for free.
+- **Evidence:** corpus-analyst report; `crates/hippo-daemon/src/` lacks any write site for `events.git_repo`.
+- **Mitigation:**
+  - **Fix at source:** populate `git_repo` in the daemon's event writer (`git remote get-url origin` with caching) so the column isn't a dead LIKE clause.
+  - **Until then:** drop `e.git_repo LIKE ?` from the filter (don't pay the join cost for a dead clause) and document that project filter is cwd-substring-only.
+  - **Backfill:** one-shot script to populate `git_repo` on historical rows from `cwd → git_repo` mapping via `list_projects_impl`.
 
 ## Cross-cutting observations
 
