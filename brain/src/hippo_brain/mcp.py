@@ -22,9 +22,11 @@ from hippo_brain.mcp_logging import setup_logging
 from hippo_brain.telemetry import add as _add, get_meter, hist as _hist
 from hippo_brain.mcp_queries import (
     MAX_LIMIT,
+    format_context_block,
     get_ci_status_impl,
     get_entities_impl,
     get_lessons_impl,
+    list_projects_impl,
     search_events_impl,
     search_knowledge_lexical,
     shape_semantic_results,
@@ -163,6 +165,10 @@ async def search_knowledge(
     query: str,
     mode: str = "semantic",
     limit: int = 10,
+    project: str = "",
+    since: str = "",
+    source: str = "",
+    branch: str = "",
 ) -> list[dict]:
     """Search the Hippo knowledge base for enriched knowledge nodes.
 
@@ -171,11 +177,26 @@ async def search_knowledge(
         mode: "semantic" (vector similarity via LM Studio) or "lexical" (LIKE match).
               Defaults to "semantic"; falls back to lexical on embedding failure.
         limit: Maximum number of results to return (default 10).
+        project: Substring match on cwd or git_repo of linked events/sessions.
+        since: Window like "24h", "7d", "30m". Empty means no time filter.
+        source: Restrict to nodes linked to a specific source: "shell",
+                "claude", "browser", or "workflow". Empty means all sources.
+        branch: Exact match on git_branch of linked events/sessions.
     """
     limit = _clamp_limit(limit)
     _add(_tool_calls, tool="search_knowledge")
     t0 = time.monotonic()
-    logger.info("search_knowledge called: query=%r mode=%s limit=%d", query, mode, limit)
+    logger.info(
+        "search_knowledge called: query=%r mode=%s limit=%d project=%r since=%r "
+        "source=%r branch=%r",
+        query,
+        mode,
+        limit,
+        project,
+        since,
+        source,
+        branch,
+    )
 
     tracer = _get_tracer()
     span_ctx = (
@@ -193,7 +214,11 @@ async def search_knowledge(
                     vecs = await _state.lm_client.embed([query], model=_state.embedding_model)
                     query_vec = _pad_or_truncate(vecs[0], EMBED_DIM)
                     hits = search_similar(_state.vector_table, query_vec, limit=limit)
-                    results = shape_semantic_results(hits)
+                    conn = _get_conn()
+                    try:
+                        results = shape_semantic_results(hits, conn=conn)
+                    finally:
+                        conn.close()
                     elapsed = time.monotonic() - t0
                     _hist(_tool_duration, elapsed * 1000, tool="search_knowledge")
                     logger.info(
@@ -208,7 +233,15 @@ async def search_knowledge(
             # Lexical search (explicit mode or fallback)
             conn = _get_conn()
             try:
-                results = search_knowledge_lexical(conn, query, limit=limit)
+                results = search_knowledge_lexical(
+                    conn,
+                    query,
+                    limit=limit,
+                    project=project,
+                    since=since,
+                    source=source,
+                    branch=branch,
+                )
             finally:
                 conn.close()
 
@@ -228,7 +261,14 @@ async def search_knowledge(
 
 
 @mcp.tool()
-async def ask(question: str, limit: int = 10) -> str:
+async def ask(
+    question: str,
+    limit: int = 10,
+    project: str = "",
+    since: str = "",
+    source: str = "",
+    branch: str = "",
+) -> str:
     """Ask a question and get a synthesized answer from your knowledge base.
 
     Uses semantic search to find relevant knowledge nodes, then synthesizes
@@ -241,11 +281,31 @@ async def ask(question: str, limit: int = 10) -> str:
     Args:
         question: The natural language question to answer.
         limit: Number of knowledge nodes to retrieve for context (default 10).
+        project: Substring match on cwd/git_repo to narrow scope. Empty = all.
+        since: Window like "24h", "7d". Empty means no time filter.
+        source: Restrict to nodes linked to "shell", "claude", "browser",
+                or "workflow". Empty means all sources.
+        branch: Exact match on git_branch of linked events/sessions.
+
+    Note: Filters are forwarded to the synthesis pipeline once the retrieval
+    module lands. Until then, they are accepted but only ``limit`` is honored
+    by the underlying RAG retrieval.
     """
     limit = _clamp_limit(limit)
     _add(_tool_calls, tool="ask")
     t0 = time.monotonic()
-    logger.info("ask called: question=%r limit=%d", question, limit)
+    logger.info(
+        "ask called: question=%r limit=%d project=%r since=%r source=%r branch=%r",
+        question,
+        limit,
+        project,
+        since,
+        source,
+        branch,
+    )
+    # TODO(retrieval): plumb filters through rag.ask() once retrieval.search()
+    # is published by the retrieval agent.
+    _ = (project, since, source, branch)
 
     if not _state.lm_client or not _state.vector_table:
         return "Error: Semantic search not available (LM Studio or vector store not initialized)"
@@ -281,6 +341,7 @@ async def search_events(
     source: str = "all",
     since: str = "",
     project: str = "",
+    branch: str = "",
     limit: int = 20,
 ) -> list[dict]:
     """Search raw events across shell commands, Claude sessions, and browser history.
@@ -290,17 +351,19 @@ async def search_events(
         source: Filter by source: "shell", "claude", "browser", or "all" (default).
         since: Time window like "24h", "7d", "30m". Empty means no time filter.
         project: Filter by project directory (substring match on cwd).
+        branch: Exact-match git_branch filter (ignored for browser events).
         limit: Maximum number of results (default 20).
     """
     limit = _clamp_limit(limit)
     _add(_tool_calls, tool="search_events")
     t0 = time.monotonic()
     logger.info(
-        "search_events called: query=%r source=%s since=%r project=%r limit=%d",
+        "search_events called: query=%r source=%s since=%r project=%r branch=%r limit=%d",
         query,
         source,
         since,
         project,
+        branch,
         limit,
     )
 
@@ -318,7 +381,13 @@ async def search_events(
             conn = _get_conn()
             try:
                 results = search_events_impl(
-                    conn, query=query, source=source, since=since, project=project, limit=limit
+                    conn,
+                    query=query,
+                    source=source,
+                    since=since,
+                    project=project,
+                    branch=branch,
+                    limit=limit,
                 )
             finally:
                 conn.close()
@@ -339,6 +408,8 @@ async def get_entities(
     type: str = "",
     query: str = "",
     limit: int = 50,
+    project: str = "",
+    since: str = "",
 ) -> list[dict]:
     """List entities from the Hippo knowledge graph.
 
@@ -347,11 +418,20 @@ async def get_entities(
               Empty means all types.
         query: Filter entities whose name matches this substring.
         limit: Maximum number of results (default 50).
+        project: Substring match on cwd/git_repo of co-occurring knowledge nodes.
+        since: Window like "24h", "7d". Filters by entities.last_seen.
     """
     limit = _clamp_limit(limit)
     _add(_tool_calls, tool="get_entities")
     t0 = time.monotonic()
-    logger.info("get_entities called: type=%r query=%r limit=%d", type, query, limit)
+    logger.info(
+        "get_entities called: type=%r query=%r limit=%d project=%r since=%r",
+        type,
+        query,
+        limit,
+        project,
+        since,
+    )
 
     tracer = _get_tracer()
     span_ctx = (
@@ -366,7 +446,14 @@ async def get_entities(
         try:
             conn = _get_conn()
             try:
-                results = get_entities_impl(conn, entity_type=type, query=query, limit=limit)
+                results = get_entities_impl(
+                    conn,
+                    entity_type=type,
+                    query=query,
+                    limit=limit,
+                    project=project,
+                    since=since,
+                )
             finally:
                 conn.close()
 
@@ -468,6 +555,246 @@ async def get_lessons(
             _add(_tool_errors, tool="get_lessons")
             logger.exception("get_lessons failed")
             raise
+
+
+def _result_to_dict(result) -> dict:
+    """Convert a retrieval.SearchResult to the public MCP dict shape."""
+    return {
+        "uuid": result.uuid,
+        "score": result.score,
+        "summary": result.summary,
+        "embed_text": result.embed_text,
+        "outcome": result.outcome,
+        "tags": list(result.tags),
+        "cwd": result.cwd,
+        "git_branch": result.git_branch,
+        "captured_at": result.captured_at,
+        "linked_event_ids": list(result.linked_event_ids),
+    }
+
+
+async def _retrieve_filtered(
+    *,
+    query: str,
+    mode: str,
+    limit: int,
+    project: str,
+    since: str,
+    source: str,
+    branch: str,
+    entity: str = "",
+) -> list[dict]:
+    """Run a filtered retrieval, returning SearchResult-shaped dicts.
+
+    Delegates to :func:`hippo_brain.retrieval.search` when sqlite-vec is
+    available. Falls back to the SQL-only ``search_knowledge_lexical`` path
+    if vec0/FTS5 are not loadable (e.g. older DB or test fixtures).
+    """
+    from hippo_brain import retrieval as _retrieval
+
+    since_ms = _parse_since_ms(since)
+    filters = _retrieval.Filters(
+        project=project or None,
+        since_ms=since_ms or None,
+        source=source or None,
+        branch=branch or None,
+        entity=entity or None,
+    )
+
+    query_vec = None
+    if mode in ("hybrid", "semantic") and _state.lm_client and query:
+        try:
+            vecs = await _state.lm_client.embed([query], model=_state.embedding_model)
+            query_vec = _pad_or_truncate(vecs[0], EMBED_DIM)
+        except Exception:
+            logger.exception("query embedding failed in _retrieve_filtered")
+
+    conn = _open_retrieval_conn()
+    try:
+        try:
+            results = _retrieval.search(conn, query, query_vec, filters, mode=mode, limit=limit)
+            return [_result_to_dict(r) for r in results]
+        except Exception:
+            logger.exception("retrieval.search failed; falling back to lexical SQL")
+            return search_knowledge_lexical(
+                conn,
+                query,
+                limit=limit,
+                project=project,
+                since=since,
+                source=source,
+                branch=branch,
+            )
+    finally:
+        conn.close()
+
+
+def _parse_since_ms(since: str) -> int:
+    """Reuse the parse_since helper without importing it for one call."""
+    from hippo_brain.mcp_queries import parse_since
+
+    return parse_since(since)
+
+
+def _open_retrieval_conn() -> sqlite3.Connection:
+    """Open a sqlite3 connection with sqlite-vec loaded when available."""
+    try:
+        from hippo_brain.vector_store import open_conn
+
+        return open_conn(_state.db_path)
+    except Exception:
+        # vector_store may be missing in older deploys; fall back to plain conn
+        return _get_conn()
+
+
+@mcp.tool()
+async def search_hybrid(
+    query: str,
+    mode: str = "hybrid",
+    limit: int = 10,
+    project: str = "",
+    since: str = "",
+    source: str = "",
+    branch: str = "",
+    entity: str = "",
+) -> list[dict]:
+    """Hybrid retrieval over the knowledge base — no synthesis.
+
+    Returns SearchResult-shaped dicts (uuid, score, summary, embed_text,
+    outcome, tags, cwd, git_branch, captured_at, linked_event_ids,
+    linked_claude_session_ids, linked_browser_event_ids).
+
+    Args:
+        query: Natural language query.
+        mode: "hybrid" (default), "semantic", "lexical", or "recent".
+        limit: Maximum number of results (default 10).
+        project: Substring match on cwd/git_repo of linked events.
+        since: Window like "24h", "7d". Empty means no time filter.
+        source: "shell" | "claude" | "browser" | "workflow" | "" (all).
+        branch: Exact-match git_branch filter.
+        entity: Canonical entity name to require among linked entities.
+    """
+    limit = _clamp_limit(limit)
+    _add(_tool_calls, tool="search_hybrid")
+    t0 = time.monotonic()
+    logger.info(
+        "search_hybrid called: query=%r mode=%s limit=%d filters=%r",
+        query,
+        mode,
+        limit,
+        {
+            "project": project,
+            "since": since,
+            "source": source,
+            "branch": branch,
+            "entity": entity,
+        },
+    )
+
+    try:
+        results = await _retrieve_filtered(
+            query=query,
+            mode=mode,
+            limit=limit,
+            project=project,
+            since=since,
+            source=source,
+            branch=branch,
+            entity=entity,
+        )
+        elapsed = time.monotonic() - t0
+        _hist(_tool_duration, elapsed * 1000, tool="search_hybrid")
+        logger.info("search_hybrid completed: %d results in %.3fs", len(results), elapsed)
+        return results
+    except Exception:
+        _add(_tool_errors, tool="search_hybrid")
+        logger.exception("search_hybrid failed")
+        raise
+
+
+@mcp.tool()
+async def get_context(
+    query: str,
+    limit: int = 5,
+    project: str = "",
+    since: str = "",
+    source: str = "",
+) -> str:
+    """Return a Markdown context block ready to paste into an agent prompt.
+
+    Performs a hybrid retrieval and renders the top hits as a numbered list
+    with summary, outcome, cwd, branch, captured-at timestamp, and uuid.
+    Embed text is truncated per-hit to keep the block prompt-friendly.
+
+    Args:
+        query: Natural language query.
+        limit: Maximum number of sources to embed (default 5).
+        project: Substring match on cwd/git_repo of linked events.
+        since: Window like "24h", "7d". Empty means no time filter.
+        source: "shell" | "claude" | "browser" | "workflow" | "" (all).
+    """
+    limit = _clamp_limit(limit)
+    _add(_tool_calls, tool="get_context")
+    t0 = time.monotonic()
+    logger.info(
+        "get_context called: query=%r limit=%d project=%r since=%r source=%r",
+        query,
+        limit,
+        project,
+        since,
+        source,
+    )
+
+    try:
+        results = await _retrieve_filtered(
+            query=query,
+            mode="hybrid",
+            limit=limit,
+            project=project,
+            since=since,
+            source=source,
+            branch="",
+        )
+        block = format_context_block(query, results)
+        elapsed = time.monotonic() - t0
+        _hist(_tool_duration, elapsed * 1000, tool="get_context")
+        logger.info("get_context completed: %d sources in %.3fs", len(results), elapsed)
+        return block
+    except Exception:
+        _add(_tool_errors, tool="get_context")
+        logger.exception("get_context failed")
+        raise
+
+
+@mcp.tool()
+async def list_projects(limit: int = 50) -> list[dict]:
+    """Return distinct projects (git_repo + cwd_root) seen in the knowledge base.
+
+    Ordered by most recent activity first. Use this for discovery before
+    filtering other tools by ``project``.
+
+    Args:
+        limit: Maximum number of projects to return (default 50).
+    """
+    limit = _clamp_limit(limit)
+    _add(_tool_calls, tool="list_projects")
+    t0 = time.monotonic()
+    logger.info("list_projects called: limit=%d", limit)
+
+    try:
+        conn = _get_conn()
+        try:
+            results = list_projects_impl(conn, limit=limit)
+        finally:
+            conn.close()
+        elapsed = time.monotonic() - t0
+        _hist(_tool_duration, elapsed * 1000, tool="list_projects")
+        logger.info("list_projects completed: %d results in %.3fs", len(results), elapsed)
+        return results
+    except Exception:
+        _add(_tool_errors, tool="list_projects")
+        logger.exception("list_projects failed")
+        raise
 
 
 def main() -> None:

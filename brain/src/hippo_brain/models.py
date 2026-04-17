@@ -56,6 +56,30 @@ class CIStatus:
 
 
 @dataclass
+class SearchResult:
+    """Canonical hybrid-retrieval result shape, shared by retrieval + MCP layers.
+
+    Mirrors the ``Filters``/``SearchResult`` contract in the sqlite-vec
+    consolidation spec. ``score`` is a normalized [0, 1] cosine/RRF value.
+    ``linked_event_ids`` (and the claude/browser variants) let agents
+    follow up on a result by querying the underlying events.
+    """
+
+    uuid: str
+    score: float
+    summary: str
+    embed_text: str
+    outcome: str | None
+    tags: list[str] = field(default_factory=list)
+    cwd: str = ""
+    git_branch: str = ""
+    captured_at: int = 0
+    linked_event_ids: list[int] = field(default_factory=list)
+    linked_claude_session_ids: list[int] = field(default_factory=list)
+    linked_browser_event_ids: list[int] = field(default_factory=list)
+
+
+@dataclass
 class Lesson:
     id: int
     repo: str
