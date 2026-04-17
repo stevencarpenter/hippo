@@ -39,7 +39,7 @@ These five account for the bulk of the "feels broken after corpus grows" failure
 | R-14 | MMR with missing vectors gives lexical-only hits a free pass | LOW | HIGH |
 | R-15 | `migrate-vectors.py` serial LM Studio calls, no parallelism | LOW | HIGH |
 | R-16 | Entity canonicalization fragments even on a single machine | HIGH | HIGH |
-| R-21 | `relationships` table provisioned but never written | MED | HIGH |
+| R-21 | `relationships` table is a deprecated-feature vestige | MED | HIGH |
 | R-22 | Enrichment claim-batch has no watchdog (currently wedged on live corpus) | HIGH | HIGH |
 | R-23 | `events.git_repo` is NULL corpus-wide → project filter silently half-works | MED | HIGH |
 | R-17 | Hardcoded `EMBED_DIM=768` rejects alternative embedding models | MED | LOW |
@@ -278,16 +278,21 @@ These five account for the bulk of the "feels broken after corpus grows" failure
   - Document in CONTRIBUTING that 3.14 is hard-required.
   - Not a real risk — listed for completeness because it surfaced three times in session history.
 
-### R-21 — `relationships` table is schema-provisioned but never written
+### R-21 — `relationships` table is a deprecated-feature vestige
 
 - **Severity:** MED
 - **Likelihood:** HIGH (any consumer who assumes the table is live)
-- **Scenario:** Schema at `crates/hippo-core/src/schema.sql:65` provisions a `relationships` table with indexes (schema.sql:195-196). corpus-analyst confirms zero INSERT sites across `crates/` and `brain/`. The new MCP surface and the wider retrieval roadmap invite consumers to write graph-traversal queries — any such query returns silently empty, looking like "no data" rather than "feature not wired". The scorecard's "entity graph traversal queries" deferral was honest; the schema's quiet presence is not.
-- **Evidence:** `crates/hippo-core/src/schema.sql:65`, `schema.sql:195-196`; corpus-analyst report §relationships-table.
+- **Scenario:** Schema at `crates/hippo-core/src/schema.sql:65` provisions a `relationships` table with indexes (schema.sql:195-196). corpus-analyst confirms zero INSERT sites across `crates/` and `brain/`. **This is not an "unwired feature" — it was built and then deliberately removed** during a prior enrichment-pipeline task (hippo knowledge nodes `bd6c54b4` and `4dc7fbdb` document: "Implemented Task 4 of the enrichment pipeline by removing the now-obsolete relationships feature, updating the enrichment prompt, removing relationship fields from test suites"). The live schema is a vestige: the code stopped writing, but the table and its two indexes were never dropped. Any new MCP consumer who sees the table and writes graph-traversal queries against it gets silently empty results.
+- **Evidence:**
+  - `crates/hippo-core/src/schema.sql:65, 195-196` — table + indexes still in the authoritative schema
+  - corpus-analyst report §relationships-table — zero INSERT sites
+  - hippo knowledge nodes `bd6c54b4`, `4dc7fbdb` — authoritative provenance that the feature was deliberately retired
+  - Irony worth recording: hippo itself held the answer; an earlier "unwired feature" reading assumed the absence was accidental. corpus-analyst caught it by searching the knowledge base — exactly the workflow the tool is meant to enable.
 - **Mitigation:**
-  - **Short term:** keep the table, but add a check in `hippo doctor` that warns when `relationships` is empty on a non-empty corpus and points at the unwired enrichment contract.
-  - **Medium term:** either wire it (enrichment JSON already has an `entities` field; extending to `relationships` is small) or **drop the table + indexes from v6**. Leaving it in place invites confusion.
-  - **Flag to any future retrieval consumer:** do not assume graph edges exist.
+  - **Schema v7:** drop `relationships`, `idx_relationships_from`, `idx_relationships_to` outright. This is a deprecation cleanup, not a wiring task — do not resurrect the feature.
+  - **Audit MCP tool descriptions** for stale references to "relationship", "graph edges", "graph traversal", or similar language that would mislead an agent into assuming the table is live.
+  - **`hippo doctor`:** add a one-liner that warns if the table still exists on a v7-or-later DB (catches partial migrations).
+  - **Do not** add a wire-it-up path (risks re-litigating a deliberate decision).
 
 ### R-22 — Enrichment claim-batch has no watchdog → single bad batch wedges the queue
 
