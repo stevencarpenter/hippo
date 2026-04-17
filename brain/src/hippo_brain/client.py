@@ -99,6 +99,39 @@ class LMStudioClient:
         except Exception:
             return False
 
+    async def health_check(self, model: str) -> dict:
+        """Probe LM Studio and verify ``model`` is loaded.
+
+        Returns a dict:
+
+            {"ok": bool, "reason": str | None, "loaded_models": list[str]}
+
+        On unreachable endpoint or missing model, ``ok=False`` and ``reason``
+        describes the problem (exception type + message, or model-not-loaded
+        with the list of models that ARE loaded). Never raises.
+        """
+        try:
+            models = await self.list_models()
+        except Exception as e:
+            return {
+                "ok": False,
+                "reason": (
+                    f"LM Studio unreachable at {self.base_url} "
+                    f"[{type(e).__name__}]: {str(e) or repr(e)}"
+                ),
+                "loaded_models": [],
+            }
+        if model and model not in models:
+            return {
+                "ok": False,
+                "reason": (
+                    f"query model {model!r} not loaded in LM Studio at {self.base_url}. "
+                    f"Loaded: {models}"
+                ),
+                "loaded_models": models,
+            }
+        return {"ok": True, "reason": None, "loaded_models": models}
+
 
 class MockLMStudioClient(LMStudioClient):
     CANNED_RESPONSE = (
@@ -140,6 +173,16 @@ class MockLMStudioClient(LMStudioClient):
 
     async def is_reachable(self) -> bool:
         return True
+
+    async def health_check(self, model: str) -> dict:
+        models = await self.list_models()
+        if model and model not in models:
+            return {
+                "ok": False,
+                "reason": f"query model {model!r} not loaded. Loaded: {models}",
+                "loaded_models": models,
+            }
+        return {"ok": True, "reason": None, "loaded_models": models}
 
     @staticmethod
     def _deterministic_vector(text: str, dims: int) -> list[float]:
