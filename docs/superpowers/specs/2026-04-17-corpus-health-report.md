@@ -4,6 +4,8 @@
 **Source DB:** `~/.local/share/hippo/hippo.db` (schema v5, live; branch `postgres` is v6)
 **Method:** read-only SQL against the live corpus + static analysis of `brain/` and `crates/` source.
 
+> **Amendment 2026-04-17 (post-labeling):** §3 and the TL;DR below were partially wrong. See the **Amendment** section at the bottom of this document — `relationships` was deliberately deprecated, not un-wired by oversight, and the recommendation shifts accordingly. A new roadmap note on docs-only coverage gaps has also been added.
+
 ## TL;DR
 
 The corpus is **structurally sound** (no orphan knowledge nodes, clean KN→event link density, per-source enrichment rates
@@ -315,3 +317,74 @@ Claude source is clean and 1:1. Browser source is tiny (16 events) — 10 enrich
   `storage.rs` alone will have dozens of variants, and the UNIQUE(type, canonical) index grows linearly with no
   merging. Flag this in the risk register. Also flag: `relationships` being unpopulated means any risk analysis
   assuming graph expansion is moot — the feature is aspirational in code only.
+
+---
+
+## Amendment — 2026-04-17 (post-labeling correction)
+
+While labeling the 40-question evaluation set (brain/tests/eval_questions.json, commit 87e5573), I searched the
+corpus for "why are there 0 relationships?" (q35) and **found strong evidence that directly contradicts §3 of this
+report**. Correction below.
+
+### Correction to §3 — `relationships` was deliberately deprecated
+
+The original §3 claimed `relationships` "was schema-provisioned but never wired" — implying oversight. That was
+**wrong**. Two knowledge nodes document the actual history:
+
+- **`bd6c54b4-2840-4e4d-a28b-0537ecbb1c60`** — *"Implemented Task 4 of the enrichment pipeline by removing the
+  now-obsolete `relationships` feature, updating the enrichment prompt, adding new claim-pending helper functions,
+  and adjusting the knowledge node writer. Refactored `hippo_brain/enrichment.py` accordingly, updated client logic
+  in `hippo_brain/client.py`, and fixed all test suites to no longer reference the removed `relationships` fields."*
+
+- **`4dc7fbdb-4954-42d9-b0d2-36523b927542`** — *"Added the `key_decisions` and `problems_encountered` sections to
+  `brain/src/hippo_brain/models.py`, removed the obsolete `relationships` ..."*
+
+**Root cause of my original error:** a `grep` for `INSERT INTO relationships` across the current codebase found no
+hits and I concluded the feature was never built. The correct reading is that the feature was built, shipped,
+*then deliberately removed* during the enrichment overhaul — but the schema table and MCP endpoints survived the
+removal as vestigial artifacts. Git archaeology (`git log -S 'INSERT INTO relationships'`) would have caught this;
+static grep of HEAD did not.
+
+**Revised recommendation (replaces §3 original guidance):**
+
+| | Original | Revised |
+|---|---|---|
+| Framing | "Silent feature gap — wire it or drop it." | "Already-decided deprecation — execute the drop cleanly." |
+| Action | Wire enrichment to emit `(from, to, verb)` triples, OR drop table + endpoints. | **Schedule the drop for schema v7.** Remove the `relationships` CREATE TABLE in crates/hippo-core/src/schema.sql, drop any MCP tool endpoints that traverse it (verify none depend on it), and add a migration step for existing deployments (DROP TABLE IF EXISTS relationships). |
+| Severity | HIGH (silent feature-gap) | **MED** — no silent gap; the decision is made. Severity reflects "cleanup debt that will confuse future contributors if left." |
+
+**Do NOT re-wire the feature.** The enrichment team evaluated and removed it intentionally; resurrecting it would
+reverse a considered product decision.
+
+### Roadmap note — docs-only coverage gap pattern
+
+The labeling work surfaced a distinct class of coverage gap worth naming explicitly, separate from the
+branch-not-yet-enriched cases: **information that lives in code or documentation but never flowed through a shell
+command or Claude session, so enrichment never saw it.** Concrete examples from the eval set:
+
+- **q20** — what `hippo doctor` checks (documented in CLAUDE.md)
+- **q26** — Firefox extension offline behavior (documented in extension source + README)
+- **q39** — XDG_DATA_HOME / XDG_CONFIG_HOME overrides (documented in CLAUDE.md)
+
+These are not bugs in the enrichment pipeline — they are a **source-coverage limitation of the current design**.
+Hippo captures *activity* (what the user did), not *documentation* (what the project says about itself). When
+a user asks a question whose answer is "look at the README," retrieval will return weakly-related activity nodes
+and synthesis will either confabulate or produce a lukewarm answer.
+
+**Roadmap decision for the user:** should we add a new source type for repository documentation?
+
+- **Option A — Add docs source.** Index README.md / CLAUDE.md / docs/**/*.md per repo the user works in. Pros:
+  closes the gap directly; answers to "how does hippo doctor work?" become grounded. Cons: new source type,
+  new enrichment path, new redaction surface (docs often contain example secrets), risk of index bloat.
+- **Option B — Leave it, document the limitation.** Tell users hippo answers questions about what they *did*,
+  not about what their projects *are*. Pros: no scope creep; eval harness can segment these questions and
+  report "coverage: N/A — docs-only question" rather than penalizing retrieval. Cons: common user questions
+  land in the coverage hole.
+- **Option C (compromise) — Surface docs at query time, not enrichment time.** When a query's top-K retrieval
+  score is below threshold, fall back to reading README.md / CLAUDE.md for the nearest git_repo and inject
+  them as synthesis context. Pros: no persistent index; only touched when needed. Cons: slower queries;
+  requires git_repo to be populated (cf. R-23 daemon fix).
+
+I don't have a strong recommendation — this is a product-shape decision, not a retrieval-quality decision.
+**Surfacing it so it doesn't get lost.** If Option B is chosen, `eval.py` should add a `"docs_only"` question
+class and exclude it from retrieval-quality aggregates.
