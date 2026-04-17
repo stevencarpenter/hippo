@@ -290,6 +290,26 @@ def _pairwise_mean_cosine(vecs: Sequence[Sequence[float]], max_pairs: int = 2000
 # ---------------------------------------------------------------------------
 
 
+def _lookup_enrichment_models(conn: sqlite3.Connection | None, uuids: Sequence[str]) -> list[str]:
+    """Return the distinct enrichment_model values seen across ``uuids``.
+
+    Empty list when the column or table is missing, or when ``uuids`` is empty.
+    Used for per-vintage stratification (corpus-analyst #12).
+    """
+    if conn is None or not uuids:
+        return []
+    placeholders = ",".join("?" for _ in uuids)
+    sql = (
+        "SELECT DISTINCT enrichment_model FROM knowledge_nodes "
+        "WHERE uuid IN (" + placeholders + ") AND enrichment_model IS NOT NULL"
+    )
+    try:
+        rows = conn.execute(sql, list(uuids)).fetchall()  # nosemgrep
+    except sqlite3.OperationalError:
+        return []
+    return sorted({str(r[0]) for r in rows if r[0]})
+
+
 def derive_sources(conn: sqlite3.Connection | None, uuids: Sequence[str]) -> dict[str, list[str]]:
     """Return ``uuid -> [source_types]`` (shell/claude/browser/workflow).
 
@@ -379,6 +399,7 @@ class QuestionResult:
     groundedness: float
     keyword_hit: bool
     elapsed_ms: float
+    enrichment_models: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -471,6 +492,7 @@ async def score_question(
     scores = [h.score for h in hits]
     source_map = derive_sources(conn, retrieved_uuids)
     sources_per_hit = [source_map.get(uid, []) for uid in retrieved_uuids]
+    enrichment_models = _lookup_enrichment_models(conn, retrieved_uuids)
 
     answer: str | None = None
     degraded = False
@@ -523,6 +545,7 @@ async def score_question(
         groundedness=ground,
         keyword_hit=keyword_match(answer or "", q.acceptable_answer_keywords),
         elapsed_ms=elapsed,
+        enrichment_models=enrichment_models,
     )
 
 
@@ -593,6 +616,14 @@ def _median(values: Iterable[float]) -> float:
     return statistics.median(clean) if clean else float("nan")
 
 
+def _percentile(values: Sequence[float], p: float) -> float:
+    if not values:
+        return float("nan")
+    ordered = sorted(values)
+    idx = max(0, min(len(ordered) - 1, int(round(p * (len(ordered) - 1)))))
+    return ordered[idx]
+
+
 def render_markdown(report: ScoreReport) -> str:
     lines: list[str] = []
     lines.append("# Hippo Evaluation Scorecard")
@@ -627,6 +658,61 @@ def render_markdown(report: ScoreReport) -> str:
     ]
     for name, vals in summary_metrics:
         lines.append(f"| {name} | {_fmt(_mean(vals))} | {_fmt(_median(vals))} |")
+    latencies = [r.elapsed_ms for r in report.results if r.elapsed_ms]
+    if latencies:
+        p50 = statistics.median(latencies)
+        p95 = _percentile(latencies, 0.95)
+        lines.append(f"| latency_ms_p50 | {p50:.1f} | — |")
+        lines.append(f"| latency_ms_p95 | {p95:.1f} | — |")
+    lines.append("")
+
+    model_buckets: dict[str, list[QuestionResult]] = {}
+    for r in report.results:
+        if not r.enrichment_models:
+            model_buckets.setdefault("(unknown)", []).append(r)
+            continue
+        for m in r.enrichment_models:
+            model_buckets.setdefault(m, []).append(r)
+    if model_buckets and any(m != "(unknown)" for m in model_buckets):
+        lines.append("## Stratified by enrichment_model")
+        lines.append("")
+        lines.append("| model | n | mean recall@k | mean gap | mean ground |")
+        lines.append("|---|---:|---:|---:|---:|")
+        for model, bucket in sorted(model_buckets.items()):
+            lines.append(
+                f"| `{model}` | {len(bucket)} | "
+                f"{_fmt(_mean(r.recall_at_k for r in bucket))} | "
+                f"{_fmt(_mean(r.coverage_gap_score for r in bucket))} | "
+                f"{_fmt(_mean(r.groundedness for r in bucket))} |"
+            )
+        lines.append("")
+
+    lines.append("## Caveats")
+    lines.append("")
+    lines.append(
+        "- **FTS5 phrase-wrap (R-03)**: lexical mode wraps multi-word queries in "
+        "a single phrase, so recall on long natural-language questions is "
+        "pathologically low — not a ranking bug."
+    )
+    lines.append(
+        "- **RRF normalization (R-07)**: hybrid scores are normalized to top=1.0 "
+        "per query. Absolute score thresholds are not comparable across queries."
+    )
+    lines.append(
+        "- **vec0 brute-force (R-02)**: there is no ANN index on "
+        "`knowledge_vectors`. Latency is O(N); hybrid≥LanceDB will stop holding "
+        "once the corpus grows well past ~2K nodes."
+    )
+    lines.append(
+        "- **events.git_repo is NULL** across the live v5 corpus, so project "
+        "filtering silently falls back to cwd-prefix. Low recall on "
+        "project-filtered queries is a data bug, not a retrieval bug."
+    )
+    lines.append(
+        "- **Branch corpus coverage**: on the `postgres` branch only ~1.7% of "
+        "events have knowledge-node coverage (vs ~13.4% on main). Labels are "
+        "drawn from the main-hippo corpus until backfill runs."
+    )
     lines.append("")
 
     lines.append("## Per-question")
