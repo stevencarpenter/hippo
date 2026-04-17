@@ -1,3 +1,4 @@
+pub mod agentic;
 pub mod config;
 pub mod events;
 pub mod gh_annotations;
