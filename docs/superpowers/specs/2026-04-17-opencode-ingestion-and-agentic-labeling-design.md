@@ -238,7 +238,9 @@ Rendering logic (`format_tool_command`) is extracted into a shared module `crate
 
 ## Brain / Enrichment Changes
 
-### Schema migration v4 → v5
+### Schema migration v5 → v6
+
+(The current schema is already at v5 — v5 added GitHub Actions / lessons tables. The agentic work is v5 → v6. The migration helper lives in `crates/hippo-core/src/storage.rs` next to the existing v4→v5 block.)
 
 ```sql
 -- Rename Claude-specific tables to harness-agnostic
@@ -277,7 +279,7 @@ CREATE TABLE agentic_cursor (
     PRIMARY KEY (harness, source_key)
 );
 
-PRAGMA user_version = 5;
+PRAGMA user_version = 6;
 ```
 
 Existing rows get `harness = 'claude-code'` (the default), `model`/`provider`/etc. null — they can be backfilled by a separate one-shot re-parse of the source JSONLs if desired, but that is not required for this spec.
@@ -335,7 +337,7 @@ All new `AgenticToolCall` events flow through the existing redactor pipeline. Re
 - **`crates/hippo-daemon/src/codex_session.rs` unit tests:** port of the existing Claude test cases (`format_tool_command`, pairing, orphans, truncation, deterministic envelope IDs, malformed JSON, missing `session_meta`) against codex JSONL fixtures.
 - **`crates/hippo-daemon/src/claude_session.rs` existing tests:** updated to assert `AgenticToolCall` output instead of `ShellEvent`.
 - **`crates/hippo-core/src/agentic/render.rs` unit tests:** one per tool_name renderer (Bash, Read, Edit, Write, Grep, Glob, Agent, TaskCreate, TaskUpdate, exec_command, skill, unknown fallback).
-- **Migration golden test** (`crates/hippo-daemon/tests/migration_v4_to_v5.rs`): programmatically build a v4-shaped DB with a known `claude_sessions` row + related queue row + FK link, run the migration, assert (a) all data preserved, (b) `harness='claude-code'` default applied, (c) schema matches v5 spec, (d) `PRAGMA user_version = 5`.
+- **Migration golden test** (`crates/hippo-core/tests/schema_v6_migration.rs`): programmatically build a v4-shaped DB with a known `claude_sessions` row + related queue row + FK link, run the migration, assert (a) all data preserved, (b) `harness='claude-code'` default applied, (c) schema matches v5 spec, (d) `PRAGMA user_version = 5`.
 
 ### Python tests
 
@@ -372,7 +374,7 @@ All new `AgenticToolCall` events flow through the existing redactor pipeline. Re
 ## Rollout Plan (high level, for the implementation plan step)
 
 1. Land `AgenticToolCall` type + renderer module + tests. No behavioral change yet.
-2. Land schema v5 migration + Python module rename + backwards-read-only reads still working.
+2. Land schema v6 migration + Python module rename + backwards-read-only reads still working.
 3. Migrate Claude daemon pipeline to emit `AgenticToolCall`. Verify parity on real sessions.
 4. Land opencode poller (gated `enabled = false` by default). Dogfood with opt-in.
 5. Land Codex batch importer CLI.
