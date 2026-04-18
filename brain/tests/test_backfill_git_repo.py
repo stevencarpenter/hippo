@@ -195,3 +195,59 @@ def test_run_dry_run_does_not_mutate(tmp_path):
 def test_run_missing_db(tmp_path):
     result = run(tmp_path / "does_not_exist.db", dry_run=True)
     assert result == 1
+
+
+def test_run_sets_sqlite_pragmas(tmp_path, monkeypatch):
+    """Verify required pragmas are set on the connection (MED-1).
+
+    sqlite3.Connection.execute is a read-only C attribute, so we inject a
+    proxy module into sys.modules that wraps the real connection with tracking.
+    """
+    import sys
+    import types
+
+    db = _make_db(tmp_path)
+    pragma_calls: list[str] = []
+    real_sqlite3 = sys.modules["sqlite3"]
+
+    class _TrackingConn:
+        def __init__(self, conn: sqlite3.Connection) -> None:
+            self._c = conn
+
+        def execute(self, sql: str, *args, **kw):
+            pragma_calls.append(sql.strip())
+            return self._c.execute(sql, *args, **kw)
+
+        def executemany(self, sql: str, params, /):
+            return self._c.executemany(sql, params)
+
+        def close(self) -> None:
+            self._c.close()
+
+        def __enter__(self):
+            self._c.__enter__()
+            return self
+
+        def __exit__(self, *a):
+            return self._c.__exit__(*a)
+
+        @property
+        def row_factory(self):
+            return self._c.row_factory
+
+        @row_factory.setter
+        def row_factory(self, v) -> None:
+            self._c.row_factory = v
+
+    fake_sqlite3 = types.ModuleType("sqlite3")
+    fake_sqlite3.Row = real_sqlite3.Row  # type: ignore[attr-defined]
+    fake_sqlite3.OperationalError = real_sqlite3.OperationalError  # type: ignore[attr-defined]
+    fake_sqlite3.connect = lambda path, **kw: _TrackingConn(real_sqlite3.connect(path, **kw))  # type: ignore[attr-defined]
+
+    monkeypatch.setitem(sys.modules, "sqlite3", fake_sqlite3)
+
+    with patch.object(_mod, "resolve_git_repo", side_effect=_mock_resolve):
+        run(db, dry_run=True)
+
+    assert "PRAGMA foreign_keys=ON" in pragma_calls
+    assert "PRAGMA busy_timeout=5000" in pragma_calls

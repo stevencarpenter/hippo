@@ -1,10 +1,15 @@
 """Unit and integration tests for entity_resolver.canonicalize."""
 
+import logging
 import sqlite3
 import tempfile
 from pathlib import Path
 
-from hippo_brain.entity_resolver import canonicalize
+from hippo_brain.entity_resolver import (
+    _cached_fallback_roots,
+    _resolve_project_roots,
+    canonicalize,
+)
 
 SCHEMA_PATH = Path(__file__).parent.parent.parent / "crates" / "hippo-core" / "src" / "schema.sql"
 
@@ -83,10 +88,10 @@ class TestCanonicalizePathType:
         result = canonicalize("file", "/other/path/file.rs", project_roots=roots)
         assert result == "/other/path/file.rs"
 
-    def test_exact_root_match_returns_empty(self):
+    def test_exact_root_match_returns_basename(self):
         roots = ["/users/carpenter/projects/hippo"]
         result = canonicalize("file", "/users/carpenter/projects/hippo", project_roots=roots)
-        assert result == ""
+        assert result == "hippo"
 
     def test_empty_project_roots_leaves_path_as_is(self):
         result = canonicalize("file", "/some/absolute/path.rs", project_roots=[])
@@ -177,3 +182,89 @@ def test_dedup_merges_worktree_fragments(monkeypatch):
     db_path.unlink(missing_ok=True)
     db_path.with_suffix(".db-wal").unlink(missing_ok=True)
     db_path.with_suffix(".db-shm").unlink(missing_ok=True)
+
+
+# ---------------------------------------------------------------------------
+# Project root fallback chain tests (MED-2)
+# ---------------------------------------------------------------------------
+
+
+class TestProjectRootFallbackChain:
+    """Verify the env var > config.toml > auto-detect precedence chain."""
+
+    def setup_method(self):
+        _cached_fallback_roots.cache_clear()
+
+    def teardown_method(self):
+        _cached_fallback_roots.cache_clear()
+
+    def test_override_bypasses_env_and_config(self, monkeypatch):
+        monkeypatch.setenv("HIPPO_PROJECT_ROOTS", "/env/root")
+        roots = _resolve_project_roots(["/override/root"])
+        assert roots == ["/override/root"]
+
+    def test_env_var_takes_precedence_over_config_and_auto(self, monkeypatch):
+        monkeypatch.setenv("HIPPO_PROJECT_ROOTS", "/env/root")
+        monkeypatch.setattr(
+            "hippo_brain.entity_resolver._load_config_roots", lambda: ["/config/root"]
+        )
+        roots = _resolve_project_roots(None)
+        assert roots == ["/env/root"]
+
+    def test_config_takes_precedence_over_auto_detect(self, monkeypatch):
+        monkeypatch.delenv("HIPPO_PROJECT_ROOTS", raising=False)
+        monkeypatch.setattr(
+            "hippo_brain.entity_resolver._load_config_roots", lambda: ["/config/root"]
+        )
+        monkeypatch.setattr(
+            "hippo_brain.entity_resolver._auto_detect_roots", lambda: ["/auto/root"]
+        )
+        roots = _resolve_project_roots(None)
+        assert roots == ["/config/root"]
+
+    def test_auto_detect_fallback_finds_git_dirs(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("HIPPO_PROJECT_ROOTS", raising=False)
+        monkeypatch.setattr("hippo_brain.entity_resolver._load_config_roots", lambda: [])
+        proj_a = tmp_path / "proj-a"
+        proj_b = tmp_path / "proj-b"
+        (proj_a / ".git").mkdir(parents=True)
+        (proj_b / ".git").mkdir(parents=True)
+        monkeypatch.setattr(
+            "hippo_brain.entity_resolver._auto_detect_roots",
+            lambda: sorted([str(proj_a), str(proj_b)]),
+        )
+        roots = _resolve_project_roots(None)
+        assert str(proj_a) in roots
+        assert str(proj_b) in roots
+
+    def test_warning_logged_when_all_sources_empty(self, monkeypatch, caplog):
+        monkeypatch.delenv("HIPPO_PROJECT_ROOTS", raising=False)
+        monkeypatch.setattr("hippo_brain.entity_resolver._load_config_roots", lambda: [])
+        monkeypatch.setattr("hippo_brain.entity_resolver._auto_detect_roots", lambda: [])
+        with caplog.at_level(logging.WARNING, logger="hippo_brain.entity_resolver"):
+            roots = _resolve_project_roots(None)
+        assert roots == []
+        assert any("inactive" in r.message for r in caplog.records)
+
+
+# ---------------------------------------------------------------------------
+# LOW-2 guard: exact root match produces basename not ""
+# ---------------------------------------------------------------------------
+
+
+class TestExactRootMatchBasename:
+    def test_exact_root_match_produces_basename_not_empty(self):
+        roots = ["/users/carpenter/projects/hippo-postgres"]
+        result = canonicalize(
+            "file", "/users/carpenter/projects/hippo-postgres", project_roots=roots
+        )
+        assert result == "hippo-postgres"
+
+    def test_no_unique_constraint_violation_on_same_type(self):
+        # Two entities whose name IS the project root should both canonicalize to the
+        # same non-empty string (the basename), so only one row survives on conflict.
+        roots = ["/users/carpenter/projects/hippo"]
+        r1 = canonicalize("file", "/users/carpenter/projects/hippo", project_roots=roots)
+        r2 = canonicalize("directory", "/users/carpenter/projects/hippo", project_roots=roots)
+        assert r1 == r2 == "hippo"
+        assert r1 != ""

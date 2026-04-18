@@ -89,6 +89,13 @@ strip_params = [
     "sig",
 ]
 
+[entities]
+# Absolute paths to strip as prefixes when canonicalizing path-type entities.
+# Allows the same file under different worktree clones to collapse to one entity.
+# Leave empty to use auto-detection (scans ~/projects/*/.git) or set
+# HIPPO_PROJECT_ROOTS env var to override at runtime.
+project_roots = []
+
 [telemetry]
 # OpenTelemetry observability: traces, metrics, and logs to Grafana/Tempo/Loki/Prometheus.
 #

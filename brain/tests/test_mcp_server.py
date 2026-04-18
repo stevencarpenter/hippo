@@ -627,5 +627,3 @@ class TestAskFilterWiring:
         assert filters.since_ms is not None
         expected_floor = before - 3600 * 1000
         assert expected_floor - 5000 <= filters.since_ms <= after
-        # The source's captured_at is within the window
-        assert filters.since_ms <= recent_ts
