@@ -135,13 +135,24 @@ def main() -> None:
         help="Hippo data directory (default: XDG_DATA_HOME/hippo)",
     )
     parser.add_argument(
+        "--db",
+        type=Path,
+        default=None,
+        help="Path to the hippo SQLite DB (overrides --data-dir)",
+    )
+    parser.add_argument(
         "--dry-run",
         action="store_true",
         help="Print proposed merges without making changes",
     )
     args = parser.parse_args()
 
-    db_path = (args.data_dir / "hippo.db") if args.data_dir else _default_db_path()
+    if args.db is not None:
+        db_path = args.db
+    elif args.data_dir is not None:
+        db_path = args.data_dir / "hippo.db"
+    else:
+        db_path = _default_db_path()
 
     if not db_path.exists():
         log.error("Database not found: %s", db_path)

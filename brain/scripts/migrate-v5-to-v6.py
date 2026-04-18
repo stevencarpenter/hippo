@@ -682,9 +682,8 @@ def phase_entity_dedup(
     dry_run: bool,
     log: logging.Logger,
 ) -> None:
-    data_dir = db_path.parent
     script = _SCRIPTS_DIR / "dedup-entities.py"
-    cmd = [sys.executable, str(script), "--data-dir", str(data_dir)]
+    cmd = [sys.executable, str(script), "--db", str(db_path)]
     if dry_run:
         cmd.append("--dry-run")
     _run_subprocess(cmd, "entity-dedup", log, dry_run=False)  # always run; handles --dry-run itself
