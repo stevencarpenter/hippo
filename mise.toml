@@ -373,7 +373,7 @@ run = "cargo run --bin hippo -- entities"
 
 [tasks.install]
 description = "Full clean-install: stop, build, install, configure, start, verify"
-run = """
+run = '''
 #!/usr/bin/env bash
 set -euo pipefail
 
@@ -562,7 +562,7 @@ elif [ "$OTEL_ENABLED" = "0" ] && [ "$OTEL_COLLECTOR_UP" = "0" ]; then
     echo "        2. Edit ~/.config/hippo/config.toml and set [telemetry] enabled = true"
     echo "        3. Run: mise run restart"
 fi
-"""
+'''
 
 [tasks.start]
 description = "Start hippo services via launchd"
