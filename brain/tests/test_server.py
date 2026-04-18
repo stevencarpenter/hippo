@@ -203,9 +203,10 @@ def test_brain_server_get_routes(tmp_db):
     _, db_path = tmp_db
     server = _make_server(str(db_path))
     routes = server.get_routes()
-    assert len(routes) == 6
+    assert len(routes) == 7
     paths = [r.path for r in routes]
     assert "/health" in paths
+    assert "/sessions" in paths
     assert "/events" in paths
     assert "/knowledge" in paths
     assert "/query" in paths
@@ -712,8 +713,7 @@ def test_knowledge_list_routes_included(tmp_db):
     paths = [r.path for r in routes]
     assert "/knowledge" in paths
     assert "/knowledge/{id:int}" in paths
-    # Now 6 routes (+1 for /events)
-    assert len(routes) == 6
+    assert len(routes) == 7
 
 
 # ---- /knowledge/{id} ----
@@ -869,5 +869,126 @@ def test_events_list_routes_included(tmp_db):
     routes = server.get_routes()
     paths = [r.path for r in routes]
     assert "/events" in paths
-    # Now 6 routes (+1 for /events)
-    assert len(routes) == 6
+    # Now 7 routes (+1 for /sessions)
+    assert len(routes) == 7
+
+
+# ---- /sessions ----
+
+
+def _seed_sessions_for_list(conn):
+    """Insert multiple sessions with events for list testing."""
+    now_ms = int(time.time() * 1000)
+    sessions = [
+        (1, now_ms - 10000, "zsh", "laptop", "user"),
+        (2, now_ms - 5000, "bash", "desktop", "user"),
+        (3, now_ms, "zsh", "laptop", "user"),
+    ]
+    for sid, start, shell, host, user in sessions:
+        conn.execute(
+            "INSERT INTO sessions (id, start_time, shell, hostname, username) VALUES (?, ?, ?, ?, ?)",
+            (sid, start, shell, host, user),
+        )
+    events = [
+        (1, 1, now_ms - 10000, "cargo test", 0, 1000, "/projects/hippo"),
+        (2, 1, now_ms - 9000, "cargo build", 0, 2000, "/projects/hippo"),
+        (3, 2, now_ms - 5000, "make", 0, 500, "/projects/make"),
+        (4, 3, now_ms, "ls", 0, 10, "/home"),
+    ]
+    for eid, sid, ts, cmd, exit_code, dur, cwd in events:
+        conn.execute(
+            "INSERT INTO events (id, session_id, timestamp, command, exit_code, duration_ms, "
+            "cwd, hostname, shell) VALUES (?, ?, ?, ?, ?, ?, ?, 'laptop', 'zsh')",
+            (eid, sid, ts, cmd, exit_code, dur, cwd),
+        )
+    conn.commit()
+
+
+def test_sessions_list_default(tmp_db):
+    """GET /sessions returns sessions with default pagination."""
+    conn, db_path = tmp_db
+    _seed_sessions_for_list(conn)
+    app = _make_app(str(db_path))
+    client = TestClient(app)
+
+    resp = client.get("/sessions")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "sessions" in data
+    assert "total" in data
+    assert data["total"] == 3
+    assert len(data["sessions"]) == 3
+    session = data["sessions"][0]
+    assert "id" in session
+    assert "start_time" in session
+    assert "hostname" in session
+    assert "shell" in session
+    assert "event_count" in session
+
+
+def test_sessions_list_with_event_counts(tmp_db):
+    """GET /sessions returns correct event_count for each session."""
+    conn, db_path = tmp_db
+    _seed_sessions_for_list(conn)
+    app = _make_app(str(db_path))
+    client = TestClient(app)
+
+    resp = client.get("/sessions")
+    assert resp.status_code == 200
+    data = resp.json()
+    sessions = {s["id"]: s for s in data["sessions"]}
+    assert sessions[1]["event_count"] == 2
+    assert sessions[2]["event_count"] == 1
+    assert sessions[3]["event_count"] == 1
+
+
+def test_sessions_list_pagination(tmp_db):
+    """GET /sessions supports limit and offset params."""
+    conn, db_path = tmp_db
+    _seed_sessions_for_list(conn)
+    app = _make_app(str(db_path))
+    client = TestClient(app)
+
+    resp = client.get("/sessions?limit=2&offset=1")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert len(data["sessions"]) == 2
+    assert data["total"] == 3
+
+
+def test_sessions_list_filter_by_since_ms(tmp_db):
+    """GET /sessions supports since_ms filter."""
+    conn, db_path = tmp_db
+    _seed_sessions_for_list(conn)
+    app = _make_app(str(db_path))
+    client = TestClient(app)
+
+    now_ms = int(time.time() * 1000)
+    resp = client.get(f"/sessions?since_ms={now_ms - 15000}")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["total"] == 3
+    for session in data["sessions"]:
+        assert session["start_time"] > now_ms - 15000
+
+
+def test_sessions_list_invalid_params_returns_400(tmp_db):
+    """Invalid limit/offset params return 400."""
+    conn, db_path = tmp_db
+    _seed_sessions_for_list(conn)
+    app = _make_app(str(db_path))
+    client = TestClient(app)
+
+    resp = client.get("/sessions?limit=abc")
+    assert resp.status_code == 400
+    assert "error" in resp.json()
+
+
+def test_sessions_list_routes_included(tmp_db):
+    """The /sessions route is included in get_routes()."""
+    _, db_path = tmp_db
+    server = _make_server(str(db_path))
+    routes = server.get_routes()
+    paths = [r.path for r in routes]
+    assert "/sessions" in paths
+    assert len(routes) == 7

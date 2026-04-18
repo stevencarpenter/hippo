@@ -517,6 +517,70 @@ class BrainServer:
         finally:
             conn.close()
 
+    async def list_sessions(self, request: Request) -> JSONResponse:
+        """List sessions with event counts, pagination, and filtering."""
+        limit = request.query_params.get("limit", "20")
+        offset = request.query_params.get("offset", "0")
+        since_ms = request.query_params.get("since_ms")
+
+        try:
+            limit = int(limit)
+            offset = int(offset)
+        except ValueError:
+            return JSONResponse({"error": "limit and offset must be integers"}, status_code=400)
+
+        if since_ms:
+            try:
+                since_ms = int(since_ms)
+            except ValueError:
+                return JSONResponse({"error": "since_ms must be an integer"}, status_code=400)
+
+        conn = self._get_conn()
+        try:
+            sql = """
+                SELECT s.id, s.start_time, s.hostname, s.shell,
+                       (SELECT COUNT(*) FROM events e WHERE e.session_id = s.id) as event_count
+                FROM sessions s
+            """
+            params = []
+            conditions = []
+
+            if since_ms:
+                conditions.append("s.start_time > ?")
+                params.append(since_ms)
+
+            if conditions:
+                sql += " WHERE " + " AND ".join(conditions)
+
+            sql += " ORDER BY s.start_time DESC LIMIT ? OFFSET ?"
+            params.extend([limit, offset])
+
+            cursor = conn.execute(sql, params)
+            sessions = [
+                {
+                    "id": r[0],
+                    "start_time": r[1],
+                    "hostname": r[2],
+                    "shell": r[3],
+                    "event_count": r[4],
+                }
+                for r in cursor.fetchall()
+            ]
+
+            count_sql = "SELECT COUNT(*) FROM sessions s"
+            count_params = []
+            if conditions:
+                count_sql += " WHERE " + " AND ".join(conditions)
+                count_params = params[:-2]
+            total = conn.execute(count_sql, count_params).fetchone()[0]
+
+            return JSONResponse({"sessions": sessions, "total": total})
+        except Exception as e:
+            logger.error("list_sessions error: %s", e)
+            return JSONResponse({"error": str(e)}, status_code=500)
+        finally:
+            conn.close()
+
     async def ask(self, request: Request) -> JSONResponse:
         """RAG endpoint: retrieve relevant knowledge and synthesize an answer."""
         body = await request.json()
@@ -1129,6 +1193,7 @@ class BrainServer:
     def get_routes(self) -> list[Route]:
         return [
             Route("/health", self.health, methods=["GET"]),
+            Route("/sessions", self.list_sessions, methods=["GET"]),
             Route("/events", self.list_events, methods=["GET"]),
             Route("/knowledge", self.list_knowledge, methods=["GET"]),
             Route("/knowledge/{id:int}", self.get_knowledge, methods=["GET"]),
