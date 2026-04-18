@@ -178,7 +178,7 @@ Markdown scorecard with these sections:
 # default: scorecard against the live corpus
 uv run --project brain hippo-eval
 
-# dry-run without LM Studio:
+# retrieval-only (still requires LM Studio for semantic query embedding on main):
 uv run --project brain hippo-eval --no-synthesis --no-judge
 
 # save scorecard:

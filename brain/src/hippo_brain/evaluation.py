@@ -953,12 +953,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         # A single clear message here is better than per-question retrieval errors.
         run_synthesis = not args.no_synthesis
         run_judge = not args.no_judge
-        if lm_client is not None and (run_synthesis or run_judge):
+        if lm_client is not None and args.mode == "semantic":
             if not asyncio.run(lm_client.is_reachable()):
                 print(
-                    "LM Studio unreachable — disabling synthesis and judge. "
-                    "Semantic retrieval also requires LM Studio for query embedding, "
-                    "so the benchmark cannot continue.",
+                    "LM Studio unreachable — semantic retrieval requires LM Studio "
+                    "for query embeddings, so the benchmark is exiting early.",
                     file=sys.stderr,
                 )
                 return 1
@@ -980,7 +979,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         md = render_markdown(report)
         if args.out:
-            Path(args.out).write_text(md)
+            Path(args.out).write_text(md, encoding="utf-8")
         else:
             print(md)
         return 0
