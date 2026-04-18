@@ -209,7 +209,12 @@ async def search_knowledge(
     )
     with span_ctx:
         try:
-            if mode == "semantic" and _state.lm_client and _state.vector_table and not (project or since or source or branch):
+            if (
+                mode == "semantic"
+                and _state.lm_client
+                and _state.vector_table
+                and not (project or since or source or branch)
+            ):
                 try:
                     vecs = await _state.lm_client.embed([query], model=_state.embedding_model)
                     query_vec = _pad_or_truncate(vecs[0], EMBED_DIM)

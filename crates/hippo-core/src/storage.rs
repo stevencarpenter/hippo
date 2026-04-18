@@ -255,20 +255,23 @@ pub fn open_db(path: &Path) -> Result<Connection> {
     // sqlite-vec extension); the Rust daemon does not load vec0.
     if (1..=5).contains(&version) {
         // FTS index + triggers require the knowledge_nodes table. Very old
-        // test/dev DBs (pre-v2) never had it — in that case fail with an error
-        // rather than leaving the DB in an incomplete state.
-        let has_knowledge_nodes: i64 = conn.query_row(
-            "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='knowledge_nodes'",
-            [],
-            |r| r.get(0),
+        // databases (v1) predate it; create it now so the migration chain
+        // completes cleanly. Fresh databases (v0) get it from schema.sql.
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS knowledge_nodes (
+                id                   INTEGER PRIMARY KEY,
+                uuid                 TEXT NOT NULL UNIQUE,
+                content              TEXT NOT NULL,
+                embed_text           TEXT NOT NULL,
+                node_type            TEXT NOT NULL DEFAULT 'observation',
+                outcome              TEXT,
+                tags                 TEXT,
+                enrichment_model     TEXT,
+                enrichment_version   INTEGER NOT NULL DEFAULT 1,
+                created_at           INTEGER NOT NULL DEFAULT (unixepoch('now','subsec') * 1000),
+                updated_at           INTEGER NOT NULL DEFAULT (unixepoch('now','subsec') * 1000)
+             );",
         )?;
-        if has_knowledge_nodes == 0 {
-            anyhow::bail!(
-                "Cannot migrate to v6: knowledge_nodes table not found. \
-                 This database predates the schema migration. Please delete the database \
-                 or restore from a v5 backup to proceed."
-            );
-        }
         conn.execute_batch(
             "CREATE VIRTUAL TABLE IF NOT EXISTS knowledge_fts USING fts5(
                 summary,

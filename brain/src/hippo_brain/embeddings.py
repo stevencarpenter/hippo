@@ -68,7 +68,7 @@ def _safe_json(raw: str | None, default):
         return default
     try:
         return json.loads(raw)
-    except (json.JSONDecodeError, TypeError):
+    except json.JSONDecodeError, TypeError:
         return default
 
 

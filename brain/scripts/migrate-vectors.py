@@ -111,7 +111,12 @@ async def run(db_path: Path | None, data_dir: Path | None, config_path: Path) ->
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--db", type=Path, default=None, help="Path to hippo.db (if not specified, uses --data-dir/hippo.db)")
+    parser.add_argument(
+        "--db",
+        type=Path,
+        default=None,
+        help="Path to hippo.db (if not specified, uses --data-dir/hippo.db)",
+    )
     parser.add_argument("--data-dir", type=Path, default=_default_data_dir())
     parser.add_argument("--config", type=Path, default=_default_config_path())
     args = parser.parse_args()
