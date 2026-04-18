@@ -47,6 +47,12 @@ from hippo_brain.workflow_enrichment import (
     enrich_one_async,
     mark_workflow_queue_failed,
 )
+from hippo_brain.watchdog import (
+    DEFAULT_LOCK_TIMEOUT_MS,
+    DEFAULT_MAX_CLAIM_BATCH,
+    preflight_lm_studio,
+    reap_stale_locks,
+)
 from hippo_brain.telemetry import get_tracer as _get_tracer
 from hippo_brain.telemetry import add as _add, get_meter, hist as _hist
 
@@ -93,12 +99,15 @@ class BrainServer:
         db_path: str = "",
         data_dir: str = "",
         lmstudio_base_url: str = "http://localhost:1234/v1",
+        lmstudio_timeout_secs: float = 300.0,
         enrichment_model: str = "",
         embedding_model: str = "",
         query_model: str = "",
         poll_interval_secs: int = 5,
         enrichment_batch_size: int = 30,
         session_stale_secs: int = 120,
+        max_claim_batch: int = DEFAULT_MAX_CLAIM_BATCH,
+        lock_timeout_ms: int = DEFAULT_LOCK_TIMEOUT_MS,
     ):
         if not db_path:
             db_path = str(Path.home() / ".local" / "share" / "hippo" / "hippo.db")
@@ -106,7 +115,7 @@ class BrainServer:
             data_dir = str(Path.home() / ".local" / "share" / "hippo")
         self.db_path = db_path
         self.data_dir = data_dir
-        self.client = LMStudioClient(base_url=lmstudio_base_url)
+        self.client = LMStudioClient(base_url=lmstudio_base_url, timeout=lmstudio_timeout_secs)
         self._preferred_model = enrichment_model
         self.enrichment_model = enrichment_model
         self.embedding_model = embedding_model
@@ -114,8 +123,11 @@ class BrainServer:
         self.poll_interval_secs = poll_interval_secs
         self.enrichment_batch_size = enrichment_batch_size
         self.session_stale_secs = session_stale_secs
+        self.max_claim_batch = max_claim_batch
+        self.lock_timeout_ms = lock_timeout_ms
         self.enrichment_running = False
         self._enrichment_task = None
+        self._reaper_task = None
         self._vector_db = None
         self._vector_table = None
         if self.embedding_model:
@@ -341,28 +353,27 @@ class BrainServer:
         status = 200 if "answer" in result else 502
         return JSONResponse(result, status_code=status)
 
-    async def _resolve_model(self) -> bool:
-        """Pick the best available enrichment model. Returns False if none found."""
-        try:
-            loaded = await self.client.list_models()
-        except Exception:
-            return False
+    def _resolve_model_from_preflight(self, loaded: list[str]) -> bool:
+        """Sync model selection from preflight's already-fetched model list."""
+        return self._pick_enrichment_model(loaded)
 
-        # Filter out embedding models
+    def _pick_enrichment_model(self, loaded: list[str]) -> bool:
+        """Filter chat models from `loaded` and set self.enrichment_model.
+
+        Returns False when no chat models are available.
+        """
         embedding_hints = ("embed", "nomic", "modernbert")
         chat_models = [m for m in loaded if not any(h in m.lower() for h in embedding_hints)]
 
         if not chat_models:
             return False
 
-        # Preferred model available — use it
         if self._preferred_model and self._preferred_model in chat_models:
             if self.enrichment_model != self._preferred_model:
                 logger.info("enrichment model restored: %s", self._preferred_model)
                 self.enrichment_model = self._preferred_model
             return True
 
-        # Preferred model not loaded — fall back
         fallback = chat_models[0]
         if self.enrichment_model != fallback:
             logger.info(
@@ -389,7 +400,15 @@ class BrainServer:
                 try:
                     await asyncio.sleep(self.poll_interval_secs)
 
-                    if not await self._resolve_model():
+                    decision = await preflight_lm_studio(
+                        self.client, self._preferred_model or None, allow_fallback=True
+                    )
+                    if not decision.proceed:
+                        continue
+
+                    # Sync resolved enrichment_model from preflight result; falls
+                    # back to first chat model when preferred isn't loaded.
+                    if not self._resolve_model_from_preflight(decision.loaded_models):
                         continue
 
                     conn = self._get_conn()
@@ -400,21 +419,37 @@ class BrainServer:
                             self.enrichment_batch_size,
                             worker_id,
                             self.session_stale_secs,
+                            max_claim_batch=self.max_claim_batch,
+                            stale_lock_timeout_ms=self.lock_timeout_ms,
                         )
                         try:
-                            claude_batches = claim_pending_claude_segments(conn, worker_id)
+                            claude_batches = claim_pending_claude_segments(
+                                conn,
+                                worker_id,
+                                max_claim_batch=self.max_claim_batch,
+                                stale_lock_timeout_ms=self.lock_timeout_ms,
+                            )
                         except Exception as e:
                             logger.debug("no claude segments to process: %s", e)
                             claude_batches = []
                         try:
                             browser_batches = claim_pending_browser_events(
-                                conn, worker_id, stale_secs=60
+                                conn,
+                                worker_id,
+                                stale_secs=60,
+                                max_claim_batch=self.max_claim_batch,
+                                stale_lock_timeout_ms=self.lock_timeout_ms,
                             )
                         except Exception as e:
                             logger.warning("browser claim error: %s", e, exc_info=True)
                             browser_batches = []
                         try:
-                            workflow_run_ids = claim_pending_workflow_runs(conn, worker_id)
+                            workflow_run_ids = claim_pending_workflow_runs(
+                                conn,
+                                worker_id,
+                                stale_lock_timeout_ms=self.lock_timeout_ms,
+                                max_claim_batch=self.max_claim_batch,
+                            )
                         except Exception as e:
                             logger.warning("workflow claim error: %s", e, exc_info=True)
                             workflow_run_ids = []
@@ -503,6 +538,27 @@ class BrainServer:
         self.last_error_at_ms = int(time.time() * 1000)
         return err_msg
 
+    def _log_enrichment_failure(self, queue_name: str, stage: str, e: Exception, **fields) -> None:
+        """Emit a structured failure log so wedges are greppable in minutes.
+
+        Includes queue_name, claim_count, claim_age_ms, exception_type,
+        lm_studio_model, stage — the fields the R-22 spec calls for.
+        """
+        exc_type = type(e).__name__
+        msg_fields = {
+            "queue_name": queue_name,
+            "stage": stage,
+            "exception_type": exc_type,
+            "lm_studio_model": self.enrichment_model,
+            **fields,
+        }
+        logger.error(
+            "enrichment failed %s",
+            " ".join(f"{k}={v!r}" for k, v in msg_fields.items()),
+            exc_info=True,
+            extra=msg_fields,
+        )
+
     async def _enrich_shell_batches(self, chunks, claim_conn):
         """Process shell event batches with background embeddings."""
         if not chunks:
@@ -537,6 +593,7 @@ class BrainServer:
                 if tracer
                 else nullcontext()
             )
+            batch_start_ms = int(time.time() * 1000)
             with span:
                 try:
                     result = await self._call_llm_with_retries(SYSTEM_PROMPT, prompt, "shell")
@@ -577,7 +634,13 @@ class BrainServer:
                 except Exception as e:
                     _add(_enrichment_failures, source="shell")
                     err_msg = self._record_error(e)
-                    logger.error("enrichment failed: %s", e, exc_info=True)
+                    self._log_enrichment_failure(
+                        "enrichment_queue",
+                        "shell.chat",
+                        e,
+                        claim_count=len(event_ids),
+                        claim_age_ms=int(time.time() * 1000) - batch_start_ms,
+                    )
                     retry_conn = self._get_conn()
                     try:
                         mark_queue_failed(retry_conn, event_ids, err_msg)
@@ -610,6 +673,7 @@ class BrainServer:
                 if tracer
                 else nullcontext()
             )
+            batch_start_ms = int(time.time() * 1000)
             with span:
                 try:
                     result = await self._call_llm_with_retries(
@@ -665,7 +729,13 @@ class BrainServer:
                 except Exception as e:
                     _add(_enrichment_failures, source="claude")
                     err_msg = self._record_error(e)
-                    logger.error("claude enrichment failed: %s", e, exc_info=True)
+                    self._log_enrichment_failure(
+                        "claude_enrichment_queue",
+                        "claude.chat",
+                        e,
+                        claim_count=len(segment_ids),
+                        claim_age_ms=int(time.time() * 1000) - batch_start_ms,
+                    )
                     retry_conn = self._get_conn()
                     try:
                         mark_claude_queue_failed(retry_conn, segment_ids, err_msg)
@@ -698,6 +768,7 @@ class BrainServer:
                 if tracer
                 else nullcontext()
             )
+            batch_start_ms = int(time.time() * 1000)
             with span:
                 try:
                     result = await self._call_llm_with_retries(
@@ -744,7 +815,13 @@ class BrainServer:
                 except Exception as e:
                     _add(_enrichment_failures, source="browser")
                     err_msg = self._record_error(e)
-                    logger.error("browser enrichment failed: %s", e, exc_info=True)
+                    self._log_enrichment_failure(
+                        "browser_enrichment_queue",
+                        "browser.chat",
+                        e,
+                        claim_count=len(event_ids),
+                        claim_age_ms=int(time.time() * 1000) - batch_start_ms,
+                    )
                     retry_conn = self._get_conn()
                     try:
                         mark_browser_queue_failed(retry_conn, event_ids, err_msg)
@@ -775,6 +852,7 @@ class BrainServer:
                 if tracer
                 else nullcontext()
             )
+            batch_start_ms = int(time.time() * 1000)
             with span:
                 try:
                     await enrich_one_async(
@@ -789,8 +867,13 @@ class BrainServer:
                 except Exception as e:
                     _add(_enrichment_failures, source="workflow")
                     err_msg = self._record_error(e)
-                    logger.error(
-                        "workflow enrichment failed for run %d: %s", run_id, e, exc_info=True
+                    self._log_enrichment_failure(
+                        "workflow_enrichment_queue",
+                        "workflow.enrich",
+                        e,
+                        claim_count=1,
+                        run_id=run_id,
+                        claim_age_ms=int(time.time() * 1000) - batch_start_ms,
                     )
                     retry_conn = self._get_conn()
                     try:
@@ -811,17 +894,38 @@ class BrainServer:
         except Exception as e:
             logger.warning("%s embedding failed (non-fatal): %s", source_label, e, exc_info=True)
 
+    async def _reaper_loop(self):
+        """Independent reaper task — fires on its own timer regardless of gather state.
+
+        Decoupled from _enrichment_loop so stale locks are released even while
+        asyncio.gather() is blocked inside _call_llm_with_retries.
+        """
+        while True:
+            await asyncio.sleep(self.poll_interval_secs)
+            try:
+                conn = self._get_conn()
+                try:
+                    reap_stale_locks(conn, lock_timeout_ms=self.lock_timeout_ms)
+                finally:
+                    conn.close()
+            except Exception as e:
+                logger.warning("reaper loop error: %s", e, exc_info=True)
+
     def start_enrichment(self):
         self._enrichment_task = asyncio.create_task(self._enrichment_loop())
+        self._reaper_task = asyncio.create_task(self._reaper_loop())
 
     async def stop_enrichment(self):
-        if self._enrichment_task is None:
+        tasks = [t for t in (self._enrichment_task, self._reaper_task) if t is not None]
+        if not tasks:
             return
-
-        self._enrichment_task.cancel()
-        with suppress(asyncio.CancelledError):
-            await self._enrichment_task
+        for t in tasks:
+            t.cancel()
+        for t in tasks:
+            with suppress(asyncio.CancelledError):
+                await t
         self._enrichment_task = None
+        self._reaper_task = None
 
     def get_routes(self) -> list[Route]:
         return [
@@ -835,23 +939,29 @@ def create_app(
     db_path: str = "",
     data_dir: str = "",
     lmstudio_base_url: str = "http://localhost:1234/v1",
+    lmstudio_timeout_secs: float = 300.0,
     enrichment_model: str = "",
     embedding_model: str = "",
     query_model: str = "",
     poll_interval_secs: int = 5,
     enrichment_batch_size: int = 30,
     session_stale_secs: int = 120,
+    max_claim_batch: int = DEFAULT_MAX_CLAIM_BATCH,
+    lock_timeout_ms: int = DEFAULT_LOCK_TIMEOUT_MS,
 ) -> Starlette:
     server = BrainServer(
         db_path=db_path,
         data_dir=data_dir,
         lmstudio_base_url=lmstudio_base_url,
+        lmstudio_timeout_secs=lmstudio_timeout_secs,
         enrichment_model=enrichment_model,
         embedding_model=embedding_model,
         query_model=query_model,
         poll_interval_secs=poll_interval_secs,
         enrichment_batch_size=enrichment_batch_size,
         session_stale_secs=session_stale_secs,
+        max_claim_batch=max_claim_batch,
+        lock_timeout_ms=lock_timeout_ms,
     )
 
     if _meter:
@@ -874,7 +984,7 @@ def create_app(
                             "claude_enrichment_queue": "SELECT COUNT(*) FROM claude_enrichment_queue WHERE status = ?",
                             "browser_enrichment_queue": "SELECT COUNT(*) FROM browser_enrichment_queue WHERE status = ?",
                         }[table]
-                        for status in ("pending", "failed"):
+                        for status in ("pending", "processing", "failed"):
                             try:
                                 count = conn.execute(sql, (status,)).fetchone()[0]
                                 yield otel_metrics.Observation(

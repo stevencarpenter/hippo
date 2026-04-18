@@ -254,6 +254,7 @@ pub async fn handle_send_event_shell(
     exit: i32,
     cwd: String,
     duration_ms: u64,
+    git_repo: Option<String>,
     git_branch: Option<String>,
     git_commit: Option<String>,
     git_dirty: bool,
@@ -268,9 +269,16 @@ pub async fn handle_send_event_shell(
         .map(|h| h.to_string_lossy().to_string())
         .unwrap_or_else(|_| "unknown".to_string());
 
-    let git_state = if git_branch.is_some() || git_commit.is_some() {
+    // Caller-supplied value wins (shell hook caches it). Otherwise derive
+    // from cwd once per invocation — cheap, and the shell path only pays
+    // this when its cache misses or the hook is an older build.
+    let git_repo = git_repo
+        .filter(|s| !s.is_empty())
+        .or_else(|| crate::git_repo::derive_git_repo(std::path::Path::new(&cwd)));
+
+    let git_state = if git_repo.is_some() || git_branch.is_some() || git_commit.is_some() {
         Some(GitState {
-            repo: None,
+            repo: git_repo,
             branch: git_branch,
             commit: git_commit,
             is_dirty: git_dirty,
@@ -585,7 +593,59 @@ pub async fn handle_doctor(config: &HippoConfig) -> Result<()> {
     // Check Claude session hook
     check_claude_session_hook();
 
+    // Check OpenTelemetry configuration
+    check_otel_status(config, &client).await;
+
     Ok(())
+}
+
+async fn check_otel_status(config: &HippoConfig, client: &reqwest::Client) {
+    // Check if OTel feature is compiled in
+    #[cfg(feature = "otel")]
+    let otel_compiled = true;
+    #[cfg(not(feature = "otel"))]
+    let otel_compiled = false;
+
+    if !otel_compiled {
+        println!("[--] OpenTelemetry: not compiled (daemon built without --features otel)");
+        return;
+    }
+
+    // Check if telemetry is enabled in config
+    let config_enabled = config.telemetry.enabled;
+
+    // Check if OTel collector is reachable via its health-check extension
+    let collector_health_url = "http://localhost:13133/";
+    let collector_reachable = client
+        .get(collector_health_url)
+        .send()
+        .await
+        .map(|r| r.status().is_success())
+        .unwrap_or(false);
+
+    // Determine status and provide actionable feedback
+    match (config_enabled, collector_reachable) {
+        (true, true) => {
+            println!("[OK] OpenTelemetry: enabled and collector reachable");
+        }
+        (true, false) => {
+            println!(
+                "[!!] OpenTelemetry: enabled but collector unreachable at {}",
+                collector_health_url
+            );
+            println!("     Start the stack: mise run otel:up");
+        }
+        (false, true) => {
+            println!("[!!] OpenTelemetry: collector available but disabled in config");
+            println!(
+                "     Enable it: Set [telemetry] enabled = true in ~/.config/hippo/config.toml"
+            );
+            println!("     Then restart: mise run restart");
+        }
+        (false, false) => {
+            println!("[--] OpenTelemetry: disabled (start with: mise run otel:up)");
+        }
+    }
 }
 
 fn check_claude_session_hook() {
@@ -685,6 +745,7 @@ mod tests {
             0,
             "/tmp".to_string(),
             42,
+            None,
             Some("main".to_string()),
             None,
             false,
@@ -737,6 +798,7 @@ replacement = "***"
             42,
             None,
             None,
+            None,
             false,
             None,
         )
@@ -756,6 +818,101 @@ replacement = "***"
             EventPayload::Shell(shell) => {
                 assert!(shell.command.contains("***"));
                 assert!(!shell.command.contains("internal_ABCD1234"));
+            }
+            other => panic!("expected shell payload, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_handle_send_event_shell_derives_git_repo_from_cwd() {
+        let temp = tempdir().unwrap();
+        let mut config = HippoConfig::default();
+        config.storage.data_dir = temp.path().join("data");
+        config.storage.config_dir = temp.path().join("config");
+
+        // Create a git repo with a remote whose origin matches the owner/repo shape.
+        let repo_dir = temp.path().join("work");
+        std::fs::create_dir(&repo_dir).unwrap();
+        std::process::Command::new("git")
+            .arg("-C")
+            .arg(&repo_dir)
+            .args(["init", "--quiet", "-b", "main"])
+            .status()
+            .unwrap();
+        std::process::Command::new("git")
+            .arg("-C")
+            .arg(&repo_dir)
+            .args([
+                "remote",
+                "add",
+                "origin",
+                "git@github.com:sjcarpenter/hippo.git",
+            ])
+            .status()
+            .unwrap();
+
+        handle_send_event_shell(
+            &config,
+            "echo hi".to_string(),
+            0,
+            repo_dir.to_string_lossy().into_owned(),
+            10,
+            None,
+            Some("main".to_string()),
+            None,
+            false,
+            None,
+        )
+        .await
+        .unwrap();
+
+        let files = storage::list_fallback_files(&config.fallback_dir()).unwrap();
+        assert_eq!(files.len(), 1);
+        let content = std::fs::read_to_string(&files[0]).unwrap();
+        let envelope: EventEnvelope =
+            serde_json::from_str(content.lines().next().unwrap()).unwrap();
+        match envelope.payload {
+            EventPayload::Shell(shell) => {
+                let gs = shell.git_state.expect("git_state should be populated");
+                assert_eq!(gs.repo.as_deref(), Some("sjcarpenter/hippo"));
+                assert_eq!(gs.branch.as_deref(), Some("main"));
+            }
+            other => panic!("expected shell payload, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_handle_send_event_shell_prefers_caller_supplied_git_repo() {
+        let temp = tempdir().unwrap();
+        let mut config = HippoConfig::default();
+        config.storage.data_dir = temp.path().join("data");
+        config.storage.config_dir = temp.path().join("config");
+
+        // /tmp is not in a git repo, but the caller passes an explicit value.
+        handle_send_event_shell(
+            &config,
+            "echo hi".to_string(),
+            0,
+            "/tmp".to_string(),
+            10,
+            Some("acme/widget".to_string()),
+            None,
+            None,
+            false,
+            None,
+        )
+        .await
+        .unwrap();
+
+        let files = storage::list_fallback_files(&config.fallback_dir()).unwrap();
+        assert_eq!(files.len(), 1);
+        let content = std::fs::read_to_string(&files[0]).unwrap();
+        let envelope: EventEnvelope =
+            serde_json::from_str(content.lines().next().unwrap()).unwrap();
+        match envelope.payload {
+            EventPayload::Shell(shell) => {
+                let gs = shell.git_state.expect("git_state should be populated");
+                assert_eq!(gs.repo.as_deref(), Some("acme/widget"));
             }
             other => panic!("expected shell payload, got {:?}", other),
         }

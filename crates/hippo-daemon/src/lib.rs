@@ -4,6 +4,7 @@ pub mod daemon;
 pub mod framing;
 pub mod gh_api;
 pub mod gh_poll;
+pub mod git_repo;
 #[cfg(feature = "otel")]
 pub mod metrics;
 pub mod native_messaging;

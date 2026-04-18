@@ -44,6 +44,7 @@ def test_main_serve_dispatches(monkeypatch):
                     "db_path": "",
                     "data_dir": "",
                     "lmstudio_base_url": "http://localhost:1234/v1",
+                    "lmstudio_timeout_secs": 300.0,
                     "enrichment_model": "",
                     "embedding_model": "",
                     "query_model": "",
@@ -53,6 +54,8 @@ def test_main_serve_dispatches(monkeypatch):
                     "session_stale_secs": 120,
                     "port": 9175,
                     "telemetry_endpoint": "http://localhost:4318",
+                    "max_claim_batch": 10,
+                    "lock_timeout_secs": 600,
                 },
             ):
                 hippo_brain.main()
@@ -61,12 +64,15 @@ def test_main_serve_dispatches(monkeypatch):
         db_path="",
         data_dir="",
         lmstudio_base_url="http://localhost:1234/v1",
+        lmstudio_timeout_secs=300.0,
         enrichment_model="",
         embedding_model="",
         query_model="",
         poll_interval_secs=5,
         enrichment_batch_size=10,
         session_stale_secs=120,
+        max_claim_batch=10,
+        lock_timeout_ms=600_000,
     )
     mock_uvicorn.run.assert_called_once_with("fake-app", host="127.0.0.1", port=9175)
 
@@ -81,6 +87,7 @@ def test_main_serve_uses_config_runtime_settings(monkeypatch):
         "db_path": "/tmp/hippo.db",
         "data_dir": "/tmp",
         "lmstudio_base_url": "http://localhost:2222/v1",
+        "lmstudio_timeout_secs": 300.0,
         "enrichment_model": "local-model",
         "embedding_model": "local-embed",
         "query_model": "local-query",
@@ -90,6 +97,8 @@ def test_main_serve_uses_config_runtime_settings(monkeypatch):
         "session_stale_secs": 60,
         "port": 9444,
         "telemetry_endpoint": "http://localhost:4318",
+        "max_claim_batch": 7,
+        "lock_timeout_secs": 900,
     }
 
     with patch.dict("sys.modules", {"uvicorn": mock_uvicorn}):
@@ -101,12 +110,15 @@ def test_main_serve_uses_config_runtime_settings(monkeypatch):
         db_path="/tmp/hippo.db",
         data_dir="/tmp",
         lmstudio_base_url="http://localhost:2222/v1",
+        lmstudio_timeout_secs=300.0,
         enrichment_model="local-model",
         embedding_model="local-embed",
         query_model="local-query",
         poll_interval_secs=9,
         enrichment_batch_size=3,
         session_stale_secs=60,
+        max_claim_batch=7,
+        lock_timeout_ms=900_000,
     )
     mock_uvicorn.run.assert_called_once_with("fake-app", host="127.0.0.1", port=9444)
 

@@ -125,7 +125,8 @@ def db():
             PRIMARY KEY (knowledge_node_id, entity_id)
         );
     """)
-    return conn
+    yield conn
+    conn.close()
 
 
 class TestParseSince:

@@ -373,7 +373,7 @@ run = "cargo run --bin hippo -- entities"
 
 [tasks.install]
 description = "Full clean-install: stop, build, install, configure, start, verify"
-run = """
+run = '''
 #!/usr/bin/env bash
 set -euo pipefail
 
@@ -532,7 +532,37 @@ if ! command -v hippo &>/dev/null; then
     echo "hippo is not on your PATH yet. Run:"
     echo "  exec zsh"
 fi
-"""
+
+# ── 10. Check OTel stack availability ───────────────────────────────
+echo ""
+OTEL_ENABLED=$(awk '
+    BEGIN { in_telemetry = 0; enabled = "0" }
+    /^[[:space:]]*\[telemetry\][[:space:]]*$/ { in_telemetry = 1; next }
+    in_telemetry && /^[[:space:]]*\[/ { exit }
+    in_telemetry && /^[[:space:]]*#/ { next }
+    in_telemetry && /^[[:space:]]*enabled[[:space:]]*=[[:space:]]*true[[:space:]]*$/ { enabled = "1"; exit }
+    in_telemetry && /^[[:space:]]*enabled[[:space:]]*=[[:space:]]*false[[:space:]]*$/ { enabled = "0"; exit }
+    END { print enabled }
+' "$CONFIG_DIR/config.toml" 2>/dev/null || echo "0")
+OTEL_COLLECTOR_UP="0"
+if curl -sf http://localhost:13133/ >/dev/null 2>&1; then
+    OTEL_COLLECTOR_UP="1"
+fi
+
+if [ "$OTEL_ENABLED" = "0" ] && [ "$OTEL_COLLECTOR_UP" = "1" ]; then
+    echo "NOTE: OpenTelemetry collector is running but telemetry is disabled in config."
+    echo "      To enable observability:"
+    echo "        1. Edit ~/.config/hippo/config.toml and set [telemetry] enabled = true"
+    echo "        2. Run: mise run restart"
+    echo "        3. Access Grafana: http://localhost:3000 (admin/hippo)"
+elif [ "$OTEL_ENABLED" = "0" ] && [ "$OTEL_COLLECTOR_UP" = "0" ]; then
+    echo "NOTE: OpenTelemetry observability is disabled."
+    echo "      To enable it:"
+    echo "        1. Run: mise run otel:up"
+    echo "        2. Edit ~/.config/hippo/config.toml and set [telemetry] enabled = true"
+    echo "        3. Run: mise run restart"
+fi
+'''
 
 [tasks.start]
 description = "Start hippo services via launchd"

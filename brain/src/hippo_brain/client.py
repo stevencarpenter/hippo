@@ -29,7 +29,7 @@ _prompt_tokens = (
 
 
 class LMStudioClient:
-    def __init__(self, base_url: str = "http://localhost:1234/v1", timeout: float = 120.0):
+    def __init__(self, base_url: str = "http://localhost:1234/v1", timeout: float = 300.0):
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
 
@@ -87,7 +87,7 @@ class LMStudioClient:
 
     async def list_models(self) -> list[str]:
         """Return IDs of all models currently loaded in LM Studio."""
-        async with httpx.AsyncClient(timeout=5.0) as client:
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
             resp = await client.get(f"{self.base_url}/models")
             resp.raise_for_status()
             return [m["id"] for m in resp.json().get("data", [])]
