@@ -51,7 +51,7 @@ branch"` message until the sqlite-vec + FTS5 migration lands.
 
 ## Labeled Q/A set
 
-**File:** `brain/tests/eval_questions.json`
+**File:** `brain/src/hippo_brain/_fixtures/eval_questions.json`
 
 **Schema (per question):**
 
@@ -102,15 +102,16 @@ Implemented in `brain/src/hippo_brain/evaluation.py`.
 | `coverage_gap_score` | `(scores: list[float], threshold: float = 0.5) -> float` | Fraction of top-K scores below `threshold`. 0 = strong evidence, 1 = all weak |
 
 All functions handle edge cases (empty input, missing vectors) without
-raising; they return `float('nan')` where a metric is undefined.
+raising; they return `None` where a metric is undefined, and the scorecard
+renders `None` as `—`.
 
 ### Qualitative
 
 | Function | Signature | Notes |
 |---|---|---|
-| `groundedness` | `async (answer: str, sources: list[dict], lm_client, model) -> float` | LLM-judge prompt: "score 0.0–1.0 — every factual claim in answer backed by a source". Parse float from first line of response. Returns `nan` on any error. |
+| `groundedness` | `async (answer: str, sources: list[dict], lm_client, model) -> float | None` | LLM-judge prompt: "score 0.0–1.0 — every factual claim in answer backed by a source". Parse float from first line of response. Returns `None` on any error. |
 | `summary_coherence` | `(summary: str, entities: list[str]) -> bool` | Heuristic — case-insensitive substring match of at least one entity in the summary. Cheap, no LLM. |
-| `embedding_cohesion` | `(conn, project: str, sample: int = 200) -> float` | Mean cosine between vectors for a project divided by background mean cosine. **Requires the sqlite-vec `knowledge_vectors` table; returns `nan` on main.** |
+| `embedding_cohesion` | `(conn, project: str, sample: int = 200) -> float | None` | Mean cosine between vectors for a project divided by background mean cosine. **Requires the sqlite-vec `knowledge_vectors` table; returns `None` on main.** |
 
 ## Source-type derivation
 

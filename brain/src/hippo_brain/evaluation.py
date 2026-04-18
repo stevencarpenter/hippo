@@ -448,7 +448,7 @@ class ScoreReport:
 
 def load_questions(path: str | Path | Any) -> list[Question]:
     if isinstance(path, (str, Path)):
-        raw = Path(path).read_text()
+        raw = Path(path).read_text(encoding="utf-8")
     else:
         raw = path.read_text(encoding="utf-8")
     data = json.loads(raw)
@@ -588,8 +588,9 @@ async def score_question(
             elapsed_ms=elapsed,
         )
 
-    retrieved_uuids = [h.uuid for h in hits if h.uuid]
-    scores = [h.score for h in hits]
+    scored_hits = [h for h in hits if h.uuid]
+    retrieved_uuids = [h.uuid for h in scored_hits]
+    scores = [h.score for h in scored_hits]
     source_map = derive_sources(conn, retrieved_uuids)
     sources_per_hit = [source_map.get(uid, []) for uid in retrieved_uuids]
     enrichment_models = _lookup_enrichment_models(conn, retrieved_uuids)
@@ -599,7 +600,11 @@ async def score_question(
     error: str | None = None
     ground: float | None = None
 
-    if run_synthesis and lm_client is not None and query_model and vector_table is not None:
+    effective_synthesis = (
+        run_synthesis and lm_client is not None and query_model and vector_table is not None
+    )
+
+    if effective_synthesis:
         try:
             from hippo_brain.rag import ask as rag_ask
 
@@ -644,7 +649,7 @@ async def score_question(
         groundedness=ground,
         keyword_hit=(
             (1.0 if keyword_match(answer or "", q.acceptable_answer_keywords) else 0.0)
-            if run_synthesis
+            if effective_synthesis
             else None
         ),
         elapsed_ms=elapsed,
@@ -756,7 +761,7 @@ def render_markdown(report: ScoreReport) -> str:
     lines.append("")
     lines.append("| Metric | Mean | Median |")
     lines.append("|---|---:|---:|")
-    summary_metrics: list[tuple[str, list[float]]] = [
+    summary_metrics: list[tuple[str, list[float | None]]] = [
         ("recall@k", [r.recall_at_k for r in report.results]),
         ("mrr", [r.mrr for r in report.results]),
         ("ndcg@k", [r.ndcg_at_k for r in report.results]),
@@ -949,11 +954,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         if lm_client is not None and (run_synthesis or run_judge):
             if not asyncio.run(lm_client.is_reachable()):
                 print(
-                    "LM Studio unreachable — disabling synthesis and judge; "
-                    "reporting retrieval-only metrics.",
+                    "LM Studio unreachable — disabling synthesis and judge. "
+                    "Semantic retrieval also requires LM Studio for query embedding, "
+                    "so the benchmark cannot continue.",
                     file=sys.stderr,
                 )
-                lm_client = None
+                return 1
 
         report = asyncio.run(
             run_benchmark(

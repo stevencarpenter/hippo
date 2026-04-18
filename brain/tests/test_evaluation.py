@@ -228,9 +228,16 @@ def test_derive_sources_multi(mini_db):
     assert set(out["u3"]) == {"shell", "claude"}
 
 
-def test_derive_sources_empty_conn():
+def test_derive_sources_nil_conn():
     assert derive_sources(None, ["u1"]) == {}
-    assert derive_sources(sqlite3.connect(":memory:"), []) == {}
+
+
+def test_derive_sources_empty_uuids():
+    conn = sqlite3.connect(":memory:")
+    try:
+        assert derive_sources(conn, []) == {}
+    finally:
+        conn.close()
 
 
 # ---------------------------------------------------------------------------

@@ -575,3 +575,9 @@ def test_health_exposes_enrichment_model(tmp_db):
         data = resp.json()
         assert data["enrichment_model"] == "my-model"
         assert data["enrichment_model_preferred"] == "my-model"
+
+
+
+
+
+
