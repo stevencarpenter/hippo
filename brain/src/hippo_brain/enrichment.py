@@ -4,8 +4,9 @@ import time
 import uuid
 
 from hippo_brain.models import EnrichmentResult, validate_enrichment_data
+from hippo_brain.watchdog import DEFAULT_LOCK_TIMEOUT_MS
 
-STALE_LOCK_TIMEOUT_MS = 5 * 60 * 1000
+STALE_LOCK_TIMEOUT_MS = DEFAULT_LOCK_TIMEOUT_MS
 
 SHELL_ENTITY_TYPE_MAP = {
     "projects": "project",

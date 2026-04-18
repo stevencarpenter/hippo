@@ -9,8 +9,9 @@ from pathlib import Path
 
 from hippo_brain.enrichment import SHELL_ENTITY_TYPE_MAP, upsert_entities
 from hippo_brain.models import EnrichmentResult
+from hippo_brain.watchdog import DEFAULT_LOCK_TIMEOUT_MS
 
-STALE_LOCK_TIMEOUT_MS = 5 * 60 * 1000
+STALE_LOCK_TIMEOUT_MS = DEFAULT_LOCK_TIMEOUT_MS
 
 # 5-minute gap between user prompts = task boundary
 TASK_GAP_MS = 5 * 60 * 1000

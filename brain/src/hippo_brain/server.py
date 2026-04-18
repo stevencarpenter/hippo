@@ -352,16 +352,8 @@ class BrainServer:
         status = 200 if "answer" in result else 502
         return JSONResponse(result, status_code=status)
 
-    async def _resolve_model(self) -> bool:
-        """Pick the best available enrichment model. Returns False if none found."""
-        try:
-            loaded = await self.client.list_models()
-        except Exception:
-            return False
-        return self._pick_enrichment_model(loaded)
-
-    async def _resolve_model_from_preflight(self, loaded: list[str]) -> bool:
-        """Same as `_resolve_model` but reuses the already-fetched model list."""
+    def _resolve_model_from_preflight(self, loaded: list[str]) -> bool:
+        """Sync model selection from preflight's already-fetched model list."""
         return self._pick_enrichment_model(loaded)
 
     def _pick_enrichment_model(self, loaded: list[str]) -> bool:
@@ -410,6 +402,8 @@ class BrainServer:
                     # Watchdog: sweep stale locks before deciding whether to claim.
                     # Runs even when preflight fails below, so a wedged LM Studio
                     # can't strand held locks indefinitely.
+                    # Separate connection so the reaper commit is isolated from the
+                    # claim transaction that follows.
                     reaper_conn = self._get_conn()
                     try:
                         reap_stale_locks(reaper_conn, lock_timeout_ms=self.lock_timeout_ms)
@@ -417,14 +411,14 @@ class BrainServer:
                         reaper_conn.close()
 
                     decision = await preflight_lm_studio(
-                        self.client, self._preferred_model, allow_fallback=True
+                        self.client, self._preferred_model or None, allow_fallback=True
                     )
                     if not decision.proceed:
                         continue
 
                     # Sync resolved enrichment_model from preflight result; falls
                     # back to first chat model when preferred isn't loaded.
-                    if not await self._resolve_model_from_preflight(decision.loaded_models):
+                    if not self._resolve_model_from_preflight(decision.loaded_models):
                         continue
 
                     conn = self._get_conn()

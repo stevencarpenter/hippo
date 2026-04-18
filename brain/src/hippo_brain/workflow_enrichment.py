@@ -16,6 +16,7 @@ from pathlib import Path
 
 from hippo_brain.client import LMStudioClient
 from hippo_brain.lessons import ClusterKey, upsert_cluster
+from hippo_brain.watchdog import DEFAULT_LOCK_TIMEOUT_MS
 
 CORRELATION_WINDOW_MS = 15 * 60 * 1000  # ±15 minutes
 
@@ -306,7 +307,7 @@ async def enrich_one_async(
 def claim_pending_workflow_runs(
     conn: sqlite3.Connection,
     worker_id: str,
-    stale_lock_timeout_ms: int = 5 * 60 * 1000,
+    stale_lock_timeout_ms: int = DEFAULT_LOCK_TIMEOUT_MS,
     max_claim_batch: int | None = None,
 ) -> list[int]:
     """Atomically claim pending workflow enrichment queue entries.

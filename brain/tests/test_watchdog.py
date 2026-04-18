@@ -7,7 +7,8 @@ Covers:
   - `preflight_lm_studio` blocks when LM Studio is unreachable, when no
     chat models are loaded, and (when fallback is disabled) when the
     preferred model isn't loaded.
-  - `claim_pending_events_by_session` respects `max_claim_batch` so one
+  - `claim_pending_events_by_session`, `claim_pending_claude_segments`, and
+    `claim_pending_workflow_runs` each respect `max_claim_batch` so one
     cycle can't vacuum the whole backlog.
 """
 
@@ -15,12 +16,18 @@ import time
 
 import pytest
 
+from hippo_brain.claude_sessions import (
+    SessionSegment,
+    claim_pending_claude_segments,
+    insert_segment,
+)
 from hippo_brain.enrichment import claim_pending_events_by_session
 from hippo_brain.watchdog import (
     DEFAULT_LOCK_TIMEOUT_MS,
     preflight_lm_studio,
     reap_stale_locks,
 )
+from hippo_brain.workflow_enrichment import claim_pending_workflow_runs
 
 
 def _insert_event(conn, event_id: int, session_id: int = 1, ts: int | None = None):
@@ -280,3 +287,98 @@ def test_claim_unbounded_when_max_claim_batch_none(tmp_db):
     )
     claimed_ids = [e["id"] for chunk in chunks for e in chunk]
     assert len(claimed_ids) == 7
+
+
+def _insert_claude_segment(conn, session_id: str, cwd: str, idx: int = 0) -> int | None:
+    seg = SessionSegment(
+        session_id=session_id,
+        project_dir="proj",
+        cwd=cwd,
+        git_branch=None,
+        segment_index=idx,
+        start_time=1000 + idx * 1000,
+        end_time=2000 + idx * 1000,
+        user_prompts=[f"prompt {idx}"],
+        message_count=1,
+        source_file="/tmp/test.jsonl",
+    )
+    return insert_segment(conn, seg)
+
+
+def test_claim_claude_respects_max_claim_batch(tmp_db):
+    """claim_pending_claude_segments caps across all cwd groups."""
+    conn, _ = tmp_db
+    for i in range(8):
+        _insert_claude_segment(conn, f"s{i}", f"/proj-{i % 3}", idx=i)
+
+    batches = claim_pending_claude_segments(conn, "test", max_claim_batch=3)
+    assert len(batches) == 3
+
+    processing = conn.execute(
+        "SELECT COUNT(*) FROM claude_enrichment_queue WHERE status = 'processing'"
+    ).fetchone()[0]
+    assert processing == 3
+
+    pending = conn.execute(
+        "SELECT COUNT(*) FROM claude_enrichment_queue WHERE status = 'pending'"
+    ).fetchone()[0]
+    assert pending == 5
+
+
+def test_claim_claude_unbounded_when_max_claim_batch_none(tmp_db):
+    """claim_pending_claude_segments claims everything when cap is None."""
+    conn, _ = tmp_db
+    for i in range(5):
+        _insert_claude_segment(conn, f"s{i}", f"/proj-{i}", idx=i)
+
+    batches = claim_pending_claude_segments(conn, "test", max_claim_batch=None)
+    assert len(batches) == 5
+
+
+def _insert_workflow_run(conn, run_id: int) -> None:
+    now = int(time.time() * 1000)
+    conn.execute(
+        """INSERT INTO workflow_runs
+           (id, repo, head_sha, head_branch, event, status, conclusion,
+            html_url, raw_json, first_seen_at, last_seen_at, started_at)
+           VALUES (?, 'me/r', 'abc', 'main', 'push', 'completed', 'failure',
+                   'https://x', '{}', ?, ?, ?)""",
+        (run_id, now, now, now),
+    )
+    conn.execute(
+        "INSERT INTO workflow_enrichment_queue (run_id, status, enqueued_at, updated_at) "
+        "VALUES (?, 'pending', ?, ?)",
+        (run_id, now, now),
+    )
+
+
+def test_claim_workflow_respects_max_claim_batch(tmp_db):
+    """claim_pending_workflow_runs caps claimed rows per cycle."""
+    conn, _ = tmp_db
+    for i in range(1, 11):
+        _insert_workflow_run(conn, i)
+    conn.commit()
+
+    claimed = claim_pending_workflow_runs(conn, "test", max_claim_batch=4)
+    assert len(claimed) == 4
+
+    processing = conn.execute(
+        "SELECT COUNT(*) FROM workflow_enrichment_queue WHERE status = 'processing'"
+    ).fetchone()[0]
+    assert processing == 4
+
+    pending = conn.execute(
+        "SELECT COUNT(*) FROM workflow_enrichment_queue WHERE status = 'pending'"
+    ).fetchone()[0]
+    assert pending == 6
+
+
+def test_claim_workflow_unbounded_when_max_claim_batch_none(tmp_db):
+    """claim_pending_workflow_runs claims everything when cap is None."""
+    conn, _ = tmp_db
+    for i in range(1, 7):
+        _insert_workflow_run(conn, i)
+    conn.commit()
+
+    claimed = claim_pending_workflow_runs(conn, "test", max_claim_batch=None)
+    assert len(claimed) == 6

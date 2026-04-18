@@ -156,7 +156,7 @@ class PreflightDecision:
 
 async def preflight_lm_studio(
     client: LMStudioClient,
-    preferred_model: str,
+    preferred_model: str | None,
     allow_fallback: bool = True,
 ) -> PreflightDecision:
     """Verify LM Studio is reachable and a chat model is available.
