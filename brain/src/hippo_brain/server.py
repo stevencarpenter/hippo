@@ -318,6 +318,84 @@ class BrainServer:
                 logger.error("query error: %s", e2)
                 return JSONResponse({"error": str(e2)}, status_code=500)
 
+    async def list_knowledge(self, request: Request) -> JSONResponse:
+        """List knowledge nodes with pagination and filtering."""
+        import json
+
+        limit = request.query_params.get("limit", "20")
+        offset = request.query_params.get("offset", "0")
+        node_type = request.query_params.get("node_type")
+        since_ms = request.query_params.get("since_ms")
+
+        try:
+            limit = int(limit)
+            offset = int(offset)
+        except ValueError:
+            return JSONResponse({"error": "limit and offset must be integers"}, status_code=400)
+
+        if since_ms:
+            try:
+                since_ms = int(since_ms)
+            except ValueError:
+                return JSONResponse({"error": "since_ms must be an integer"}, status_code=400)
+
+        conn = self._get_conn()
+        try:
+            sql = (
+                "SELECT id, uuid, content, node_type, outcome, tags, created_at "
+                "FROM knowledge_nodes"
+            )
+            params = []
+            conditions = []
+
+            if node_type:
+                conditions.append("node_type = ?")
+                params.append(node_type)
+
+            if since_ms:
+                conditions.append("created_at > ?")
+                params.append(since_ms)
+
+            if conditions:
+                sql += " WHERE " + " AND ".join(conditions)
+
+            sql += " ORDER BY created_at DESC LIMIT ? OFFSET ?"
+            params.extend([limit, offset])
+
+            cursor = conn.execute(sql, params)
+            nodes = []
+            for r in cursor.fetchall():
+                try:
+                    content = json.loads(r[2]) if r[2] else {}
+                except (json.JSONDecodeError, TypeError):
+                    content = {}
+                try:
+                    tags = json.loads(r[5]) if r[5] else []
+                except (json.JSONDecodeError, TypeError):
+                    tags = []
+                nodes.append({
+                    "id": r[0],
+                    "uuid": r[1],
+                    "content": content,
+                    "node_type": r[3],
+                    "outcome": r[4],
+                    "tags": tags,
+                    "created_at": r[6],
+                })
+
+            count_sql = "SELECT COUNT(*) FROM knowledge_nodes"
+            count_params = params[:-2]
+            if conditions:
+                count_sql += " WHERE " + " AND ".join(conditions)
+            total = conn.execute(count_sql, count_params).fetchone()[0]
+
+            return JSONResponse({"nodes": nodes, "total": total})
+        except Exception as e:
+            logger.error("list_knowledge error: %s", e)
+            return JSONResponse({"error": str(e)}, status_code=500)
+        finally:
+            conn.close()
+
     async def ask(self, request: Request) -> JSONResponse:
         """RAG endpoint: retrieve relevant knowledge and synthesize an answer."""
         body = await request.json()
@@ -930,6 +1008,7 @@ class BrainServer:
     def get_routes(self) -> list[Route]:
         return [
             Route("/health", self.health, methods=["GET"]),
+            Route("/knowledge", self.list_knowledge, methods=["GET"]),
             Route("/query", self.query, methods=["POST"]),
             Route("/ask", self.ask, methods=["POST"]),
         ]

@@ -203,9 +203,10 @@ def test_brain_server_get_routes(tmp_db):
     _, db_path = tmp_db
     server = _make_server(str(db_path))
     routes = server.get_routes()
-    assert len(routes) == 3
+    assert len(routes) == 4
     paths = [r.path for r in routes]
     assert "/health" in paths
+    assert "/knowledge" in paths
     assert "/query" in paths
     assert "/ask" in paths
 
@@ -575,3 +576,139 @@ def test_health_exposes_enrichment_model(tmp_db):
         data = resp.json()
         assert data["enrichment_model"] == "my-model"
         assert data["enrichment_model_preferred"] == "my-model"
+
+
+# ---- /knowledge ----
+
+
+def _seed_knowledge_nodes_for_list(conn):
+    """Insert multiple knowledge nodes for list testing."""
+    import json
+
+    now_ms = int(time.time() * 1000)
+    nodes = [
+        {
+            "id": 1,
+            "uuid": "uuid-1",
+            "content": json.dumps({"summary": "First node", "key": "value1"}),
+            "embed_text": "first node embed text",
+            "node_type": "observation",
+            "outcome": "success",
+            "tags": json.dumps(["rust", "testing"]),
+            "created": now_ms,
+        },
+        {
+            "id": 2,
+            "uuid": "uuid-2",
+            "content": json.dumps({"summary": "Second node", "key": "value2"}),
+            "embed_text": "second node embed text",
+            "node_type": "concept",
+            "outcome": "success",
+            "tags": json.dumps(["python"]),
+            "created": now_ms + 1000,
+        },
+        {
+            "id": 3,
+            "uuid": "uuid-3",
+            "content": json.dumps({"summary": "Third node", "key": "value3"}),
+            "embed_text": "third node embed text",
+            "node_type": "observation",
+            "outcome": "failure",
+            "tags": json.dumps(["debug"]),
+            "created": now_ms + 2000,
+        },
+    ]
+    for node in nodes:
+        conn.execute(
+            "INSERT INTO knowledge_nodes (id, uuid, content, embed_text, node_type, outcome, tags, "
+            "enrichment_model, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, 'model', ?, ?)",
+            (
+                node["id"],
+                node["uuid"],
+                node["content"],
+                node["embed_text"],
+                node["node_type"],
+                node["outcome"],
+                node["tags"],
+                node["created"],
+                node["created"],
+            ),
+        )
+    conn.commit()
+
+
+def test_knowledge_list_default(tmp_db):
+    """GET /knowledge returns nodes with default pagination."""
+    conn, db_path = tmp_db
+    _seed_knowledge_nodes_for_list(conn)
+    app = _make_app(str(db_path))
+    client = TestClient(app)
+
+    resp = client.get("/knowledge")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "nodes" in data
+    assert "total" in data
+    assert data["total"] == 3
+    assert len(data["nodes"]) == 3
+    node = data["nodes"][0]
+    assert "id" in node
+    assert "uuid" in node
+    assert "content" in node
+    assert "node_type" in node
+    assert "outcome" in node
+    assert "tags" in node
+    assert "created_at" in node
+
+
+def test_knowledge_list_pagination(tmp_db):
+    """GET /knowledge supports limit and offset params."""
+    conn, db_path = tmp_db
+    _seed_knowledge_nodes_for_list(conn)
+    app = _make_app(str(db_path))
+    client = TestClient(app)
+
+    resp = client.get("/knowledge?limit=2&offset=1")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert len(data["nodes"]) == 2
+    assert data["total"] == 3
+    assert data["nodes"][0]["uuid"] == "uuid-2"
+
+
+def test_knowledge_list_filter_by_node_type(tmp_db):
+    """GET /knowledge supports node_type filter."""
+    conn, db_path = tmp_db
+    _seed_knowledge_nodes_for_list(conn)
+    app = _make_app(str(db_path))
+    client = TestClient(app)
+
+    resp = client.get("/knowledge?node_type=observation")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["total"] == 2
+    for node in data["nodes"]:
+        assert node["node_type"] == "observation"
+
+
+def test_knowledge_list_invalid_params_returns_400(tmp_db):
+    """Invalid limit/offset params return 400."""
+    conn, db_path = tmp_db
+    app = _make_app(str(db_path))
+    client = TestClient(app)
+
+    resp = client.get("/knowledge?limit=abc")
+    assert resp.status_code == 400
+    assert "error" in resp.json()
+
+
+def test_knowledge_list_routes_included(tmp_db):
+    """The /knowledge route is included in get_routes()."""
+    _, db_path = tmp_db
+    server = _make_server(str(db_path))
+    routes = server.get_routes()
+    paths = [r.path for r in routes]
+    assert "/knowledge" in paths
+    # Now 4 routes (+1 for /knowledge)
+    assert len(routes) == 4
