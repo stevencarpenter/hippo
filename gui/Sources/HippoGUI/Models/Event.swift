@@ -1,6 +1,6 @@
 import Foundation
 
-struct Event: Identifiable, Codable {
+struct Event: Identifiable, Codable, Hashable {
     let id: Int
     let sessionId: Int
     let timestamp: Int

@@ -129,7 +129,11 @@ actor BrainClient {
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
 
-        let body = ["question": question, "limit": limit]
+        struct AskRequest: Encodable {
+            let question: String
+            let limit: Int
+        }
+        let body = AskRequest(question: question, limit: limit)
         request.httpBody = try JSONEncoder().encode(body)
 
         let (data, response) = try await session.data(for: request)

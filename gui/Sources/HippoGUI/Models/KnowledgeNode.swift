@@ -1,6 +1,6 @@
 import Foundation
 
-struct KnowledgeNode: Identifiable, Codable {
+struct KnowledgeNode: Identifiable, Codable, Hashable {
     let id: Int
     let uuid: String
     let content: String

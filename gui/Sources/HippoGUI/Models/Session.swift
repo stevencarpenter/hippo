@@ -1,6 +1,6 @@
 import Foundation
 
-struct Session: Identifiable, Codable {
+struct Session: Identifiable, Codable, Hashable {
     let id: Int
     let startTime: Int
     let hostname: String
