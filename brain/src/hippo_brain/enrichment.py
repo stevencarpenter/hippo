@@ -3,10 +3,84 @@ import re
 import time
 import uuid
 
+from hippo_brain.entity_resolver import canonicalize
 from hippo_brain.models import EnrichmentResult, validate_enrichment_data
 from hippo_brain.watchdog import DEFAULT_LOCK_TIMEOUT_MS
 
 STALE_LOCK_TIMEOUT_MS = DEFAULT_LOCK_TIMEOUT_MS
+
+# Shell commands treated as session-lifecycle / no-op noise when paired with
+# no output and a sub-100ms duration. Kept small; the duration+output gate
+# prevents false positives (a real `clear` that errored still gets enriched).
+_TRIVIAL_SHELL_COMMANDS = frozenset(
+    {
+        "",
+        "clear",
+        "exit",
+        "exec zsh",
+        "exec bash",
+        "exec fish",
+        "exec sh",
+        "true",
+        ":",
+    }
+)
+_TRIVIAL_SHELL_REGEX = re.compile(r"^exec\s+[\w/.\-]+$")
+_SHELL_TRIVIAL_DURATION_MS = 100
+
+
+def is_enrichment_eligible(event_dict: dict, source: str) -> tuple[bool, str]:
+    """Return (eligible, reason) for an enrichment candidate.
+
+    Ineligible events are session-lifecycle noise or empty work units that
+    would pollute knowledge-node retrieval without adding signal. Reasons are
+    human-readable and stored in the queue's error_message for observability.
+    """
+    if source == "shell":
+        command = (event_dict.get("command") or "").strip()
+        stdout = event_dict.get("stdout") or ""
+        stderr = event_dict.get("stderr") or ""
+        duration = event_dict.get("duration_ms") or 0
+        trivial_cmd = (
+            command in _TRIVIAL_SHELL_COMMANDS or _TRIVIAL_SHELL_REGEX.match(command) is not None
+        )
+        if trivial_cmd and not stdout and not stderr and duration < _SHELL_TRIVIAL_DURATION_MS:
+            return (
+                False,
+                f"trivial shell command ({command!r}) with no output and {duration}ms duration",
+            )
+        return True, "eligible"
+
+    if source == "claude":
+        msg_count = event_dict.get("message_count") or 0
+        tcj = event_dict.get("tool_calls_json")
+        has_tool_calls = False
+        if isinstance(tcj, str) and tcj:
+            try:
+                has_tool_calls = bool(json.loads(tcj))
+            except json.JSONDecodeError:
+                has_tool_calls = False
+        elif tcj:
+            has_tool_calls = bool(tcj)
+        if msg_count < 3 and not has_tool_calls:
+            return (
+                False,
+                f"claude session message_count={msg_count} < 3 and no tool_calls",
+            )
+        return True, "eligible"
+
+    if source == "browser":
+        dwell_ms = event_dict.get("dwell_ms") or 0
+        if dwell_ms < 1000:
+            return False, f"browser dwell_ms={dwell_ms} < 1000"
+        return True, "eligible"
+
+    if source == "workflow":
+        # Workflow runs are infrequent and high-signal; no heuristic filter yet.
+        return True, "eligible"
+
+    return True, "unknown source, default eligible"
+
 
 SHELL_ENTITY_TYPE_MAP = {
     "projects": "project",
@@ -23,7 +97,7 @@ def upsert_entities(conn, node_id: int, entities_dict, entity_type_map: dict, no
     entity_ids = []
     for key, entity_type in entity_type_map.items():
         for name in all_entities.get(key, []):
-            canonical = name.lower().strip()
+            canonical = canonicalize(entity_type, name)
             cursor = conn.execute(
                 """
                 INSERT INTO entities (type, name, canonical, first_seen, last_seen, created_at)
@@ -186,44 +260,69 @@ def claim_pending_events_by_session(
             continue
 
         placeholders = ",".join("?" * len(event_ids))
-        cursor = conn.execute(
-            f"""
-            SELECT id, session_id, timestamp, command, exit_code, duration_ms,
-                   cwd, hostname, shell, git_repo, git_branch, git_commit, git_dirty,
-                   stdout, stderr
-            FROM events
-            WHERE id IN ({placeholders})
-            ORDER BY timestamp ASC
-            """,
+        rows = conn.execute(
+            f"""SELECT id, session_id, timestamp, command, exit_code, duration_ms,
+                       cwd, hostname, shell, git_repo, git_branch, git_commit, git_dirty,
+                       stdout, stderr
+                FROM events WHERE id IN ({placeholders})
+                ORDER BY timestamp ASC, id ASC""",
             event_ids,
-        )
+        ).fetchall()
+        events = [
+            {
+                "id": row[0],
+                "session_id": row[1],
+                "timestamp": row[2],
+                "command": row[3],
+                "exit_code": row[4],
+                "duration_ms": row[5],
+                "cwd": row[6],
+                "hostname": row[7],
+                "shell": row[8],
+                "git_repo": row[9],
+                "git_branch": row[10],
+                "git_commit": row[11],
+                "git_dirty": row[12],
+                "stdout": row[13],
+                "stderr": row[14],
+            }
+            for row in rows
+        ]
+        events.sort(key=lambda e: e["timestamp"])
+        events = _skip_ineligible_shell_events(conn, events)
 
-        events = []
-        for row in cursor.fetchall():
-            events.append(
-                {
-                    "id": row[0],
-                    "session_id": row[1],
-                    "timestamp": row[2],
-                    "command": row[3],
-                    "exit_code": row[4],
-                    "duration_ms": row[5],
-                    "cwd": row[6],
-                    "hostname": row[7],
-                    "shell": row[8],
-                    "git_repo": row[9],
-                    "git_branch": row[10],
-                    "git_commit": row[11],
-                    "git_dirty": row[12],
-                    "stdout": row[13],
-                    "stderr": row[14],
-                }
-            )
+        if not events:
+            continue
 
         chunks = _chunk_events(events, max_per_chunk)
         all_chunks.extend(chunks)
 
     return all_chunks
+
+
+def _skip_ineligible_shell_events(conn, events: list[dict]) -> list[dict]:
+    """Mark ineligible shell events as skipped in the queue, return the rest."""
+    eligible = []
+    now_ms = int(time.time() * 1000)
+    for ev in events:
+        ok, reason = is_enrichment_eligible(ev, "shell")
+        if ok:
+            eligible.append(ev)
+        else:
+            conn.execute(
+                "UPDATE enrichment_queue "
+                "SET status = 'skipped', error_message = ?, "
+                "    locked_at = NULL, locked_by = NULL, updated_at = ? "
+                "WHERE event_id = ?",
+                (reason, now_ms, ev["id"]),
+            )
+            conn.execute(
+                "UPDATE events SET enriched = 1 WHERE id = ?",
+                (ev["id"],),
+            )
+    if len(eligible) != len(events):
+        conn.commit()
+    return eligible
 
 
 def _chunk_events(events: list[dict], max_size: int) -> list[list[dict]]:
@@ -304,19 +403,15 @@ def write_knowledge_node(
         upsert_entities(conn, node_id, result.entities, SHELL_ENTITY_TYPE_MAP, now_ms)
 
         # Mark events as enriched
-        placeholders = ",".join("?" * len(event_ids))
-        conn.execute(
-            f"UPDATE events SET enriched = 1 WHERE id IN ({placeholders})",
-            event_ids,
+        conn.executemany(
+            "UPDATE events SET enriched = 1 WHERE id = ?",
+            [(eid,) for eid in event_ids],
         )
 
         # Mark queue entries done
-        conn.execute(
-            f"""
-            UPDATE enrichment_queue SET status = 'done', updated_at = ?
-            WHERE event_id IN ({placeholders})
-            """,
-            [now_ms, *event_ids],
+        conn.executemany(
+            "UPDATE enrichment_queue SET status = 'done', updated_at = ? WHERE event_id = ?",
+            [(now_ms, eid) for eid in event_ids],
         )
 
         conn.commit()

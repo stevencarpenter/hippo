@@ -1,0 +1,472 @@
+{
+  "description": "Labeled evaluation set for hippo retrieval + synthesis. Questions drawn from hippo's own development history: past decisions, bug fixes, project state lookups, cross-source queries, and adversarial edge cases. Used by `hippo-eval` (brain/src/hippo_brain/eval.py).",
+  "created_at": "2026-04-17",
+  "labeled_at": "2026-04-17",
+  "labeled_by": "corpus-analyst",
+  "schema": {
+    "id": "stable unique id",
+    "question": "natural-language user query",
+    "intent": "why-decision | how-it-works | state-lookup | cross-source | adversarial",
+    "relevant_knowledge_node_uuids": "known-good node UUIDs labeled by corpus-analyst against live schema-v5 corpus (~/.local/share/hippo/hippo.db) on 2026-04-17",
+    "acceptable_answer_keywords": "at least one MUST appear in a good answer",
+    "source_bias": "shell | claude | browser | mixed",
+    "coverage_gap_reason": "populated when relevant_knowledge_node_uuids is empty — explains why the corpus cannot answer"
+  },
+  "questions": [
+    {
+      "id": "q01",
+      "question": "Why did we replace LanceDB with sqlite-vec?",
+      "intent": "why-decision",
+      "relevant_knowledge_node_uuids": [
+        "e4397aa3-520d-4d5e-a1ab-56f9411bba2b",
+        "88063dbe-e999-4bd3-81cd-5dc868eeb37e",
+        "95aa4b11-0a90-4533-b4a2-8a3707dce60f"
+      ],
+      "acceptable_answer_keywords": ["consolidation", "fragmentation", "drift", "single", "sqlite-vec"],
+      "source_bias": "claude"
+    },
+    {
+      "id": "q02",
+      "question": "How does the enrichment pipeline run shell, claude, and browser sources concurrently?",
+      "intent": "how-it-works",
+      "relevant_knowledge_node_uuids": [
+        "207c0fe5-d1e9-41c9-9159-eaf83d0d9e03",
+        "7794d9ca-03fc-4a2a-880d-772763d7dd81",
+        "e9e43c3b-5c69-45ce-8b6c-7838a9745f21"
+      ],
+      "acceptable_answer_keywords": ["asyncio.gather", "concurrent", "gather"],
+      "source_bias": "claude"
+    },
+    {
+      "id": "q03",
+      "question": "What fixed the Claude session hook PID problem?",
+      "intent": "why-decision",
+      "relevant_knowledge_node_uuids": [
+        "fb582bbd-defd-49e5-97a8-62a68fef6fa9",
+        "06eb184b-1597-4e92-bdbd-313c6f3b78e2",
+        "ba9d24f5-7fcb-4446-b925-a3a9680c46fa"
+      ],
+      "acceptable_answer_keywords": ["PPID", "grandparent", "claade", "parent"],
+      "source_bias": "claude"
+    },
+    {
+      "id": "q04",
+      "question": "How does the Firefox browser source send events to the daemon?",
+      "intent": "how-it-works",
+      "relevant_knowledge_node_uuids": [
+        "9334dd21-05d7-4b1a-a2a1-e8fbb1dafb28",
+        "5eef3623-eb02-4726-912f-edd66cfd2d32",
+        "29e9dba9-f530-49ef-9d1b-f0e2c65610c6",
+        "0ed513ac-b6bf-49b5-b58f-b6141d183f28",
+        "ef5f9807-148b-4fcf-bfe5-ed86e740ec5f"
+      ],
+      "acceptable_answer_keywords": ["native messaging", "native-messaging", "extension", "manifest"],
+      "source_bias": "mixed"
+    },
+    {
+      "id": "q05",
+      "question": "What runs in the OTel observability stack locally?",
+      "intent": "state-lookup",
+      "relevant_knowledge_node_uuids": [
+        "58e3d005-8c31-4d81-865f-b8d08565017a",
+        "6a49642b-14dc-4276-9278-9cf933ce0e71",
+        "f41c176b-c429-40e9-981c-99bfb566fe5c",
+        "c376eb82-fee9-46cc-ba85-37db113b2970"
+      ],
+      "acceptable_answer_keywords": ["grafana", "tempo", "loki", "prometheus", "docker"],
+      "source_bias": "claude"
+    },
+    {
+      "id": "q06",
+      "question": "What is the north star vision for hippo?",
+      "intent": "why-decision",
+      "relevant_knowledge_node_uuids": [
+        "98b28caa-4ba6-41e8-b64d-30f613885d1e",
+        "fd6c056a-37f1-445a-b6b6-88b246453ab1",
+        "9bac09e3-9a8a-4807-b3bb-e018819f83bb"
+      ],
+      "acceptable_answer_keywords": ["local", "second brain", "open source", "MIT", "privacy"],
+      "source_bias": "claude"
+    },
+    {
+      "id": "q07",
+      "question": "How are secrets redacted before storage?",
+      "intent": "how-it-works",
+      "relevant_knowledge_node_uuids": [
+        "4842730c-c7fd-4d9c-a4f2-4cd6b7df5437",
+        "34233bfd-402b-4c5e-8b65-26c3cc36b1b7",
+        "3f2dc81d-afc0-437a-b846-3466424bc43a"
+      ],
+      "acceptable_answer_keywords": ["redact", "redaction", "redact.toml", "secret"],
+      "source_bias": "mixed"
+    },
+    {
+      "id": "q08",
+      "question": "What is the current schema version and what changed in v6?",
+      "intent": "state-lookup",
+      "relevant_knowledge_node_uuids": [
+        "7d94a0ba-9b35-4adc-9be0-5f560bbbdd7e",
+        "01f77714-38ed-4298-b9f8-74f0f1b0bede"
+      ],
+      "acceptable_answer_keywords": ["v6", "fts5", "vec0", "migration", "knowledge_vectors", "knowledge_fts"],
+      "source_bias": "mixed",
+      "coverage_gap_reason": "Partial coverage only: storage-interface handoff node mentions vec0/FTS5 but the live corpus is enriched against schema v5 — the v6 migration details (triggers, knowledge_vectors/knowledge_fts virtual tables) exist only in the branch's design spec and commits, which have not been enriched into knowledge_nodes yet."
+    },
+    {
+      "id": "q09",
+      "question": "How does hybrid retrieval combine vector and lexical scores?",
+      "intent": "how-it-works",
+      "relevant_knowledge_node_uuids": [
+        "928f8f75-d962-412b-b521-3176480757e9",
+        "88063dbe-e999-4bd3-81cd-5dc868eeb37e",
+        "d025a117-2740-415f-a89b-2641335bbddb"
+      ],
+      "acceptable_answer_keywords": ["rrf", "reciprocal rank", "mmr", "hybrid", "fusion"],
+      "source_bias": "claude"
+    },
+    {
+      "id": "q10",
+      "question": "What does a degraded-mode response from rag.ask look like?",
+      "intent": "how-it-works",
+      "relevant_knowledge_node_uuids": [
+        "c695234d-be10-4693-9733-daad2ce2290a",
+        "928f8f75-d962-412b-b521-3176480757e9"
+      ],
+      "acceptable_answer_keywords": ["degraded", "sources", "raw notes", "answer", "null"],
+      "source_bias": "claude",
+      "coverage_gap_reason": "Weak coverage: the synthesis-complete notification mentions degraded-mode in passing, but the exact response shape (null answer, raw_notes array, etc.) is described only in the branch spec and commit 99b57d7 — neither has been enriched into a knowledge node."
+    },
+    {
+      "id": "q11",
+      "question": "Why did we choose Rust for the hippo daemon instead of Python?",
+      "intent": "why-decision",
+      "relevant_knowledge_node_uuids": [
+        "9ede69a5-3daf-4f88-9d03-c8a6e5f5167b",
+        "9e512223-e9ef-40e3-abe7-734b2508021c"
+      ],
+      "acceptable_answer_keywords": ["performance", "hot path", "rust", "daemon"],
+      "source_bias": "claude",
+      "coverage_gap_reason": "Rationale is implicit in memory (feedback_performance.md) rather than in knowledge_nodes — hot-path instrumentation and daemon-arch review nodes establish that Rust handles the hot path but don't enumerate the Python-vs-Rust trade-off explicitly."
+    },
+    {
+      "id": "q12",
+      "question": "How does the daemon know when a Claude Code transcript file appears?",
+      "intent": "how-it-works",
+      "relevant_knowledge_node_uuids": [
+        "d0d3408a-bb59-46e6-8c50-6d984aef18b7",
+        "8bd08d48-173e-4417-80a7-7a6291aa65f8",
+        "ef645f94-d3a9-40f0-9811-9bbcdb1e5cba",
+        "fb582bbd-defd-49e5-97a8-62a68fef6fa9"
+      ],
+      "acceptable_answer_keywords": ["poll", "tail", "jsonl", "SessionStart"],
+      "source_bias": "claude"
+    },
+    {
+      "id": "q13",
+      "question": "Where does hippo store its SQLite database on disk?",
+      "intent": "state-lookup",
+      "relevant_knowledge_node_uuids": [
+        "bd207489-0e9d-4c7f-9d3c-271738eea769",
+        "493f1213-5601-4976-ae80-4915a52984b6",
+        "47a7b90e-c32b-4912-90cf-8998cb2d12ab"
+      ],
+      "acceptable_answer_keywords": [".local/share/hippo", "hippo.db", "XDG"],
+      "source_bias": "mixed"
+    },
+    {
+      "id": "q14",
+      "question": "What MCP tools does the hippo brain expose?",
+      "intent": "state-lookup",
+      "relevant_knowledge_node_uuids": [
+        "c77d0c04-37ac-46a4-8f5b-b13bb46eda22",
+        "251c58e2-b4c1-4a7d-a5cb-7e18a6546735",
+        "88063dbe-e999-4bd3-81cd-5dc868eeb37e",
+        "0eba58a7-5a61-4bdd-aaa6-0e1f0958c8ee"
+      ],
+      "acceptable_answer_keywords": ["ask", "search_knowledge", "search_events", "get_entities", "search_hybrid"],
+      "source_bias": "claude",
+      "coverage_gap_reason": "Historical MCP surface (ask/search_knowledge/search_events/get_entities) is well covered. The NEW `search_hybrid` tool added in branch commit c6ed1cd has no enriched node — partial answers expected."
+    },
+    {
+      "id": "q15",
+      "question": "How does the ESRCH vs EPERM distinction matter in the tailer's PID check?",
+      "intent": "why-decision",
+      "relevant_knowledge_node_uuids": [
+        "6c7b6bcb-a880-4cf0-abfb-9556b8ed24d0",
+        "3b6dee3a-e807-4e6a-8e8f-be988f6f020c",
+        "6f35915e-1c1e-4169-aa58-d99b20375300",
+        "c72c2fef-aff0-48f7-bfde-91ee01a0c451"
+      ],
+      "acceptable_answer_keywords": ["ESRCH", "EPERM", "kill(pid, 0)", "permission"],
+      "source_bias": "claude",
+      "coverage_gap_reason": "Nodes discuss the `kill(pid, 0)` race-condition fix in detail but do not name ESRCH vs EPERM explicitly — answer will describe the symptoms (infinite loop on process death, permission-denied confusion) without the exact errno mnemonic. CLAUDE.md is the authoritative source for the ESRCH/EPERM distinction."
+    },
+    {
+      "id": "q16",
+      "question": "What embedding dimension does hippo use?",
+      "intent": "state-lookup",
+      "relevant_knowledge_node_uuids": [
+        "aa252d0c-fb9a-492f-a353-fc39283d580b",
+        "98a04c82-52f0-4f5b-8613-fc47c0faf03b",
+        "e5c71dee-1c69-404c-98f2-0e204101c03b"
+      ],
+      "acceptable_answer_keywords": ["768", "embed_dim", "FLOAT[768]"],
+      "source_bias": "mixed"
+    },
+    {
+      "id": "q17",
+      "question": "Why did we reject a Postgres migration for the vector store?",
+      "intent": "why-decision",
+      "relevant_knowledge_node_uuids": [],
+      "acceptable_answer_keywords": ["sqlite", "single", "local", "overkill", "rejected"],
+      "source_bias": "claude",
+      "coverage_gap_reason": "No enriched node discusses a Postgres-vs-sqlite-vec decision. The branch is named `postgres` but that is incidental — the actual choice was LanceDB→sqlite-vec (see q01), not Postgres→sqlite-vec. This question should arguably be reworded; as stated, it is not answerable from the corpus."
+    },
+    {
+      "id": "q18",
+      "question": "How is enrichment-eligible work filtered from noise events?",
+      "intent": "how-it-works",
+      "relevant_knowledge_node_uuids": [
+        "1ca6bb60-3ba9-46fc-ad45-cb8e5b9b2856"
+      ],
+      "acceptable_answer_keywords": ["is_enrichment_eligible", "skipped", "noise", "session-start"],
+      "source_bias": "claude"
+    },
+    {
+      "id": "q19",
+      "question": "Which domains does the Firefox extension allowlist for browser capture?",
+      "intent": "state-lookup",
+      "relevant_knowledge_node_uuids": [
+        "32259e1e-cf29-4445-a680-45697b216080",
+        "6bfda361-80f3-4432-b976-0c56d2cc771f",
+        "5424f0ee-9e85-4f47-87c2-95b94fce3f00",
+        "80a69c55-0fd3-46a0-aa9c-a5d9d224bf43"
+      ],
+      "acceptable_answer_keywords": ["allowlist", "github", "domain", "stackoverflow"],
+      "source_bias": "mixed"
+    },
+    {
+      "id": "q20",
+      "question": "What does the `hippo doctor` command check?",
+      "intent": "how-it-works",
+      "relevant_knowledge_node_uuids": [
+        "bd207489-0e9d-4c7f-9d3c-271738eea769",
+        "e5a859c7-7288-4996-879a-0fc475f98ce6",
+        "1afa5056-2359-46cd-9e5f-5b133ad706f5"
+      ],
+      "acceptable_answer_keywords": ["version", "alignment", "hook", "daemon", "brain"],
+      "source_bias": "mixed",
+      "coverage_gap_reason": "Tangential coverage only: the three candidate nodes confirm hippo-doctor is *used* to verify install state but do not enumerate its check list (version alignment of CLI/daemon/brain, hook-path verification). CLAUDE.md is the authoritative source."
+    },
+    {
+      "id": "q21",
+      "question": "How is the LanceDB vs knowledge-node count drift prevented in the new scheme?",
+      "intent": "why-decision",
+      "relevant_knowledge_node_uuids": [],
+      "acceptable_answer_keywords": ["trigger", "transactional", "single", "drift"],
+      "source_bias": "claude",
+      "coverage_gap_reason": "The trigger-based drift prevention is a feature of schema v6 which is branch-only. No enriched knowledge node covers the AFTER INSERT/DELETE triggers on knowledge_nodes that keep knowledge_vectors and knowledge_fts in sync. Authoritative source is the design spec (docs/superpowers/specs/2026-04-17-sqlite-vec-consolidation-design.md) and crates/hippo-core/src/schema.sql on branch postgres."
+    },
+    {
+      "id": "q22",
+      "question": "What's the story with `except A, B:` syntax in Python 3.14?",
+      "intent": "adversarial",
+      "relevant_knowledge_node_uuids": [
+        "d461c276-1823-4e09-97ed-31089f93d176",
+        "c47d67b5-4a9e-45fa-b11f-3a4c6668a0ed",
+        "03de705a-b824-4e71-b0b4-ea78c5b8b268"
+      ],
+      "acceptable_answer_keywords": ["3.14", "tuple", "parenthesis", "language feature", "ruff"],
+      "source_bias": "claude"
+    },
+    {
+      "id": "q23",
+      "question": "What's wrong with question marks in FTS5 queries, and how did we fix it?",
+      "intent": "why-decision",
+      "relevant_knowledge_node_uuids": [],
+      "acceptable_answer_keywords": ["sanitize", "phrase", "quote", "fts5", "syntax"],
+      "source_bias": "claude",
+      "coverage_gap_reason": "The FTS5 punctuation-crash fix is commit 601168d on branch postgres — not enriched. Authoritative source is the commit + reviewer-scorecard (docs/superpowers/specs/…-scorecard) which exists on disk but has not reached knowledge_nodes."
+    },
+    {
+      "id": "q24",
+      "question": "How does the retrieval module push filters down into the vec0 / FTS5 queries?",
+      "intent": "how-it-works",
+      "relevant_knowledge_node_uuids": [
+        "928f8f75-d962-412b-b521-3176480757e9",
+        "88063dbe-e999-4bd3-81cd-5dc868eeb37e"
+      ],
+      "acceptable_answer_keywords": ["where", "candidate", "join", "_apply_filters"],
+      "source_bias": "claude",
+      "coverage_gap_reason": "Weak coverage: the two hits mention RRF/MMR and the retrieval-engine task existence but not the `_apply_filters` implementation detail (candidate-set building, WHERE-clause pushdown into the vec0 MATCH query). Branch-spec-only."
+    },
+    {
+      "id": "q25",
+      "question": "How does MMR pick diverse results?",
+      "intent": "how-it-works",
+      "relevant_knowledge_node_uuids": [
+        "928f8f75-d962-412b-b521-3176480757e9",
+        "88063dbe-e999-4bd3-81cd-5dc868eeb37e",
+        "d025a117-2740-415f-a89b-2641335bbddb"
+      ],
+      "acceptable_answer_keywords": ["lambda", "diversity", "mmr", "cosine", "trade-off"],
+      "source_bias": "claude",
+      "coverage_gap_reason": "Nodes mention MMR by name but not the lambda-weighted relevance/diversity trade-off math. Branch-spec-only for full detail."
+    },
+    {
+      "id": "q26",
+      "question": "What does the Firefox extension do when Developer Edition is closed?",
+      "intent": "cross-source",
+      "relevant_knowledge_node_uuids": [],
+      "acceptable_answer_keywords": ["native messaging", "queue", "disconnect", "manifest"],
+      "source_bias": "browser",
+      "coverage_gap_reason": "No enriched content covers the disconnect/offline behavior of the Firefox extension. Authoritative source is extension/firefox/background.ts and the daemon's native-messaging-host subcommand."
+    },
+    {
+      "id": "q27",
+      "question": "How do we cap the context size sent to the synthesis LLM?",
+      "intent": "how-it-works",
+      "relevant_knowledge_node_uuids": [],
+      "acceptable_answer_keywords": ["8000", "max_context_chars", "truncate", "budget"],
+      "source_bias": "claude",
+      "coverage_gap_reason": "The 8000-char budget + max_context_chars logic was added in commit 99b57d7 (synthesis reliability) on branch postgres — not enriched."
+    },
+    {
+      "id": "q28",
+      "question": "What package manager does the brain project use and why?",
+      "intent": "why-decision",
+      "relevant_knowledge_node_uuids": [
+        "0cd1f4af-097b-4c41-b064-f476c8a3215b",
+        "0fe7787d-7647-4a19-9967-a4b643c0a872",
+        "0e075b27-1552-4cfb-804d-243b61310c82"
+      ],
+      "acceptable_answer_keywords": ["uv", "speed", "lockfile"],
+      "source_bias": "mixed",
+      "coverage_gap_reason": "Nodes confirm `uv` is in active use (uv sync, uv run pytest, pyproject.toml with uv lockfile) but the *why* (speed, Rust-based resolver, uv.lock determinism) is implicit — no enriched node enumerates the rationale."
+    },
+    {
+      "id": "q29",
+      "question": "How does the shell hook send events to the daemon?",
+      "intent": "how-it-works",
+      "relevant_knowledge_node_uuids": [
+        "493f1213-5601-4976-ae80-4915a52984b6",
+        "2eb11756-3b4a-4217-9347-a9c354d6173b",
+        "0e075b27-1552-4cfb-804d-243b61310c82"
+      ],
+      "acceptable_answer_keywords": ["unix socket", "socket", "length-prefixed", "fire-and-forget"],
+      "source_bias": "shell"
+    },
+    {
+      "id": "q30",
+      "question": "Why does the Claude session hook use `$PPID` directly as the watch PID?",
+      "intent": "why-decision",
+      "relevant_knowledge_node_uuids": [
+        "fb582bbd-defd-49e5-97a8-62a68fef6fa9",
+        "ba9d24f5-7fcb-4446-b925-a3a9680c46fa"
+      ],
+      "acceptable_answer_keywords": ["PPID", "child", "claade", "parent"],
+      "source_bias": "claude"
+    },
+    {
+      "id": "q31",
+      "question": "ask: how does rag handle a model that isn't loaded?",
+      "intent": "adversarial",
+      "relevant_knowledge_node_uuids": [
+        "3fee744c-1eca-442e-9eb6-3423c68befaa",
+        "44ce8967-8fa6-46d6-acb3-6a641f45bffa",
+        "c7dbd8e3-fa09-4550-974f-b7e7774d389d"
+      ],
+      "acceptable_answer_keywords": ["preflight", "health_check", "degraded"],
+      "source_bias": "claude",
+      "coverage_gap_reason": "Partial: 3fee744c covers dynamic enrichment-model fallback (pattern for handling not-loaded models) but the specific `rag.ask()` preflight + degraded-mode logic from commit 99b57d7 is not enriched. Pattern-level answer only."
+    },
+    {
+      "id": "q32",
+      "question": "What does `list_projects` return, and from which tables?",
+      "intent": "how-it-works",
+      "relevant_knowledge_node_uuids": [],
+      "acceptable_answer_keywords": ["git_repo", "cwd", "events", "claude_sessions"],
+      "source_bias": "claude",
+      "coverage_gap_reason": "`list_projects` is a branch-new MCP tool (commit c6ed1cd). Not enriched. Note also: per the corpus-health report, `events.git_repo` is NULL for all 6,790 rows on the live machine, so any implementation relying on it will fall back to cwd parsing — itself an unreported footgun."
+    },
+    {
+      "id": "q33",
+      "question": "Why does score normalization use `1 - distance / 2`?",
+      "intent": "why-decision",
+      "relevant_knowledge_node_uuids": [],
+      "acceptable_answer_keywords": ["cosine", "[0, 2]", "normalize", "distance"],
+      "source_bias": "claude",
+      "coverage_gap_reason": "The cosine-distance→[0,1]-similarity transform is an implementation detail of branch commit 1c3bb91 (retrieval engine). Not enriched."
+    },
+    {
+      "id": "q34",
+      "question": "How many knowledge nodes are currently in the live corpus?",
+      "intent": "state-lookup",
+      "relevant_knowledge_node_uuids": [],
+      "acceptable_answer_keywords": ["1,878", "1878", "observation"],
+      "source_bias": "mixed",
+      "coverage_gap_reason": "State-lookup questions about live table counts cannot be answered from knowledge_nodes — this is a metric the eval harness should resolve via a direct SELECT COUNT(*), not via retrieval. Keep as an adversarial baseline to confirm the system doesn't hallucinate a count. Actual count at report time: 1,880 (baseline was 1,878 and has drifted slightly)."
+    },
+    {
+      "id": "q35",
+      "question": "why are there 0 relationships in the knowledge graph, and what should happen next? (-:",
+      "intent": "adversarial",
+      "relevant_knowledge_node_uuids": [
+        "bd6c54b4-2840-4e4d-a28b-0537ecbb1c60",
+        "4dc7fbdb-4954-42d9-b0d2-36523b927542"
+      ],
+      "acceptable_answer_keywords": ["empty", "graph", "relationship", "unpopulated"],
+      "source_bias": "claude",
+      "coverage_gap_reason": "Strong corpus coverage — but note the answer shape is the *opposite* of what the keywords suggest. Both nodes document that the `relationships` feature was DELIBERATELY REMOVED from the enrichment pipeline (Task 4 of the enrichment overhaul) and the prompt contract was updated to drop relationship emission. The table survives as schema vestige. A grounded answer should say 'relationships were removed, not forgotten; the table should probably be dropped in schema v7'."
+    },
+    {
+      "id": "q36",
+      "question": "What's the scorecard verdict on sqlite-vec migration?",
+      "intent": "state-lookup",
+      "relevant_knowledge_node_uuids": [],
+      "acceptable_answer_keywords": ["sign-off", "partial", "met", "scorecard", "conditions"],
+      "source_bias": "claude",
+      "coverage_gap_reason": "The reviewer's scorecard (9 met / 3 partial / 0 unmet) is in docs/superpowers/specs on branch postgres and was produced in commit 48ee6b7 — not enriched. Live corpus has nothing about it."
+    },
+    {
+      "id": "q37",
+      "question": "Explain the difference between `ask`, `search_knowledge`, and `search_hybrid`.",
+      "intent": "cross-source",
+      "relevant_knowledge_node_uuids": [],
+      "acceptable_answer_keywords": ["synthesis", "retrieval", "hybrid", "ask", "search_hybrid"],
+      "source_bias": "claude",
+      "coverage_gap_reason": "`search_hybrid` is a branch-new tool with 0 enriched nodes. Partial answers about ask vs search_knowledge are possible from historical MCP documentation nodes (see q14), but the three-way distinction cannot be synthesized without post-branch enrichment."
+    },
+    {
+      "id": "q38",
+      "question": "Quoting: does FTS5 treat a query like  \"schema\\\" design?  differently than `schema design` — why??",
+      "intent": "adversarial",
+      "relevant_knowledge_node_uuids": [],
+      "acceptable_answer_keywords": ["sanitize", "phrase", "fts5", "escape"],
+      "source_bias": "claude",
+      "coverage_gap_reason": "Same root as q23 — FTS5 query sanitization work is branch-only. This adversarial variant stress-tests the sanitizer itself; see scorecard finding on FTS5 punctuation-crash in commit 601168d."
+    },
+    {
+      "id": "q39",
+      "question": "What environment variables override hippo data and config paths?",
+      "intent": "state-lookup",
+      "relevant_knowledge_node_uuids": [],
+      "acceptable_answer_keywords": ["XDG_DATA_HOME", "XDG_CONFIG_HOME", "XDG"],
+      "source_bias": "mixed",
+      "coverage_gap_reason": "XDG env-var override is documented in CLAUDE.md but no knowledge node explicitly mentions XDG_DATA_HOME or XDG_CONFIG_HOME. This is a canonical case of 'information lives in code/docs but enrichment never captured it because no shell/claude activity exercised it'."
+    },
+    {
+      "id": "q40",
+      "question": "When did the claude session hook start using the SessionStart event?",
+      "intent": "state-lookup",
+      "relevant_knowledge_node_uuids": [
+        "35e5f3f8-fcad-4144-8f1c-f222f181d972",
+        "27d2a075-4b1a-4123-b33d-5bdf98ea7714",
+        "0f50eec2-fb1d-465d-b4c7-662c5fc9b686",
+        "a9d612f7-73cd-403a-b02a-6e9097989bed"
+      ],
+      "acceptable_answer_keywords": ["SessionStart", "hook", "settings.json"],
+      "source_bias": "claude"
+    }
+  ]
+}
