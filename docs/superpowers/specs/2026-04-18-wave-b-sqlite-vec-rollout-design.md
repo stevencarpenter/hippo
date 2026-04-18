@@ -119,20 +119,27 @@ as `docs/superpowers/specs/2026-04-18-eval-baseline-pre-cutover.md`.
 **Post-cutover eval.** Run `hippo-eval` on the migrated v6 corpus with `--mode hybrid`
 (full RRF+MMR). Archive as `2026-04-18-eval-baseline-post-cutover.md`.
 
-**Gate.** Post-cutover Recall@10 must be ≥ pre-cutover Recall@10 on the shared subset of
-the 40-Q set (not all 40 are comparable: some probe features that only exist post-cutover,
-like `search_hybrid`). Regression on any HIGH-priority question is a merge blocker.
+**Gate (revised 2026-04-18 post-baseline).** Pre-cutover Recall@10 measured at **0.000** on this
+machine because `knowledge_vectors` (vec0) is empty — v5 enrichment wrote to LanceDB which is
+gone here. Wave B is therefore not a "replace" operation but a "first-time populate" of vec0.
+The delta-gate in the original spec is trivially passed and unhelpful.
 
-LanceDB side is not re-runnable on this branch (removed), so the "did we beat LanceDB?"
-question is answered only if the user chooses to run pre-cutover eval against a
-main-branch worktree — filed as optional.
+**Revised absolute thresholds** (from pre-cutover scorecard `2026-04-18-eval-baseline-pre-cutover.md`):
+on the 28-question comparable subset (12 excluded as adversarial or branch-only content),
+post-cutover must achieve:
+
+- **Recall@10 ≥ 0.35**
+- **MRR ≥ 0.25**
+- **coverage_gap ≤ 0.60**
+
+Regression on any HIGH-priority question below these thresholds is a merge-blocker.
 
 ## Success criteria
 
 - [ ] R-01, R-06, R-16 fixed with regression tests; R-22 and R-23 audited against their original scenarios, any gaps filed
 - [ ] Migration script runs end-to-end on a copy of the live DB with zero manual intervention
 - [ ] Post-cutover `hippo doctor` passes; node/vec/FTS row counts match
-- [ ] Post-cutover eval scorecard shows no Recall@10 regression vs. pre-cutover baseline
+- [ ] Post-cutover eval scorecard meets absolute thresholds: Recall@10 ≥ 0.35, MRR ≥ 0.25, coverage_gap ≤ 0.60 on the 28-question comparable subset
 - [ ] Live corpus enrichment coverage returns to ≥88% within 24h of cutover (the level observed before LM Studio wedged)
 - [ ] Branch renamed to `sqlite-vec-rollout`; PR opened against `main`; sign-off from reviewer
 - [ ] `relationships` table and endpoints removed in schema v7 (if scoped in, else filed)
