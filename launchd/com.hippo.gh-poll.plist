@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.hippo.gh-poll</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>__DATA_DIR__/gh-poll-wrapper.sh</string>
+    </array>
+    <key>StartInterval</key>
+    <integer>300</integer>
+    <key>RunAtLoad</key>
+    <false/>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>HOME</key>
+        <string>__HOME__</string>
+        <key>PATH</key>
+        <string>__PATH__</string>
+    </dict>
+    <key>StandardOutPath</key>
+    <string>__DATA_DIR__/gh-poll.stdout.log</string>
+    <key>StandardErrorPath</key>
+    <string>__DATA_DIR__/gh-poll.stderr.log</string>
+    <key>WorkingDirectory</key>
+    <string>__HOME__</string>
+</dict>
+</plist>

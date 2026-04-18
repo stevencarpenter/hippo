@@ -9,8 +9,11 @@ import re
 import sqlite3
 import time
 
+from hippo_brain.models import CIAnnotation, CIJob, CIStatus, Lesson
+
 
 MAX_LIMIT = 100
+MAX_ANNOTATIONS_PER_JOB = 10
 
 
 def shape_semantic_results(hits: list[dict]) -> list[dict]:
@@ -140,29 +143,20 @@ def search_events_impl(
 def _search_shell_events(
     conn: sqlite3.Connection, query: str, since_ms: int, project: str, limit: int
 ) -> list[dict]:
-    conditions = []
-    params: list = []
-
-    if query:
-        conditions.append("command LIKE ?")
-        params.append(f"%{query}%")
-    if since_ms:
-        conditions.append("timestamp >= ?")
-        params.append(since_ms)
-    if project:
-        conditions.append("cwd LIKE ?")
-        params.append(f"%{project}%")
-
-    where = "WHERE " + " AND ".join(conditions) if conditions else ""
+    query_pat = f"%{query}%" if query else None
+    since_val = since_ms if since_ms else None
+    project_pat = f"%{project}%" if project else None
     rows = conn.execute(
-        f"""
+        """
         SELECT timestamp, command, exit_code, duration_ms, cwd, git_branch
         FROM events
-        {where}
+        WHERE (? IS NULL OR command LIKE ?)
+          AND (? IS NULL OR timestamp >= ?)
+          AND (? IS NULL OR cwd LIKE ?)
         ORDER BY timestamp DESC
         LIMIT ?
         """,
-        (*params, limit),
+        (query_pat, query_pat, since_val, since_val, project_pat, project_pat, limit),
     ).fetchall()
 
     return [
@@ -181,30 +175,21 @@ def _search_shell_events(
 def _search_claude_events(
     conn: sqlite3.Connection, query: str, since_ms: int, project: str, limit: int
 ) -> list[dict]:
-    conditions = []
-    params: list = []
-
-    if query:
-        conditions.append("summary_text LIKE ?")
-        params.append(f"%{query}%")
-    if since_ms:
-        conditions.append("start_time >= ?")
-        params.append(since_ms)
-    if project:
-        conditions.append("cwd LIKE ?")
-        params.append(f"%{project}%")
-
-    where = "WHERE " + " AND ".join(conditions) if conditions else ""
+    query_pat = f"%{query}%" if query else None
+    since_val = since_ms if since_ms else None
+    project_pat = f"%{project}%" if project else None
     rows = conn.execute(
-        f"""
+        """
         SELECT start_time, summary_text, cwd, git_branch, message_count,
                tool_calls_json
         FROM claude_sessions
-        {where}
+        WHERE (? IS NULL OR summary_text LIKE ?)
+          AND (? IS NULL OR start_time >= ?)
+          AND (? IS NULL OR cwd LIKE ?)
         ORDER BY start_time DESC
         LIMIT ?
         """,
-        (*params, limit),
+        (query_pat, query_pat, since_val, since_val, project_pat, project_pat, limit),
     ).fetchall()
 
     results = []
@@ -231,26 +216,18 @@ def _search_claude_events(
 def _search_browser_events(
     conn: sqlite3.Connection, query: str, since_ms: int, limit: int
 ) -> list[dict]:
-    conditions = []
-    params: list = []
-
-    if query:
-        conditions.append("(url LIKE ? OR title LIKE ?)")
-        params.extend([f"%{query}%", f"%{query}%"])
-    if since_ms:
-        conditions.append("timestamp >= ?")
-        params.append(since_ms)
-
-    where = "WHERE " + " AND ".join(conditions) if conditions else ""
+    query_pat = f"%{query}%" if query else None
+    since_val = since_ms if since_ms else None
     rows = conn.execute(
-        f"""
+        """
         SELECT timestamp, url, title, domain, dwell_ms, scroll_depth
         FROM browser_events
-        {where}
+        WHERE (? IS NULL OR (url LIKE ? OR title LIKE ?))
+          AND (? IS NULL OR timestamp >= ?)
         ORDER BY timestamp DESC
         LIMIT ?
         """,
-        (*params, limit),
+        (query_pat, query_pat, query_pat, since_val, since_val, limit),
     ).fetchall()
 
     return [
@@ -273,26 +250,18 @@ def get_entities_impl(
     limit: int = 50,
 ) -> list[dict]:
     """List entities from the knowledge graph."""
-    conditions = []
-    params: list = []
-
-    if entity_type:
-        conditions.append("type = ?")
-        params.append(entity_type)
-    if query:
-        conditions.append("name LIKE ?")
-        params.append(f"%{query}%")
-
-    where = "WHERE " + " AND ".join(conditions) if conditions else ""
+    type_val = entity_type if entity_type else None
+    query_pat = f"%{query}%" if query else None
     rows = conn.execute(
-        f"""
+        """
         SELECT type, name, canonical, first_seen, last_seen
         FROM entities
-        {where}
+        WHERE (? IS NULL OR type = ?)
+          AND (? IS NULL OR name LIKE ?)
         ORDER BY last_seen DESC
         LIMIT ?
         """,
-        (*params, limit),
+        (type_val, type_val, query_pat, query_pat, limit),
     ).fetchall()
 
     return [
@@ -305,3 +274,146 @@ def get_entities_impl(
         }
         for row in rows
     ]
+
+
+def get_lessons_impl(
+    db_path: str,
+    repo: str | None = None,
+    path: str | None = None,
+    tool: str | None = None,
+    limit: int = 10,
+) -> list[Lesson]:
+    """Return distilled past-mistake lessons matching the filters.
+
+    Ordered by occurrences DESC, then last_seen_at DESC.
+    """
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    try:
+        rows = conn.execute(
+            """SELECT id, repo, tool, rule_id, path_prefix, summary, fix_hint,
+                      occurrences, first_seen_at, last_seen_at
+               FROM lessons
+               WHERE (? IS NULL OR repo = ?)
+                 AND (? IS NULL OR tool = ?)
+                 AND (? IS NULL OR ? LIKE path_prefix || '%')
+               ORDER BY occurrences DESC, last_seen_at DESC
+               LIMIT ?""",
+            (repo, repo, tool, tool, path, path, min(limit, MAX_LIMIT)),
+        ).fetchall()
+    finally:
+        conn.close()
+
+    return [
+        Lesson(
+            id=r["id"],
+            repo=r["repo"],
+            tool=r["tool"],
+            rule_id=r["rule_id"],
+            path_prefix=r["path_prefix"],
+            summary=r["summary"],
+            fix_hint=r["fix_hint"],
+            occurrences=r["occurrences"],
+            first_seen_at=r["first_seen_at"],
+            last_seen_at=r["last_seen_at"],
+        )
+        for r in rows
+    ]
+
+
+def get_ci_status_impl(
+    db_path: str,
+    repo: str,
+    sha: str | None = None,
+    branch: str | None = None,
+) -> CIStatus | None:
+    """Return the most recent workflow run for (repo, sha|branch) with jobs and annotations.
+
+    If `sha` is given, prefer the latest run on that SHA.
+    If `branch` is given (no SHA), return the latest run on that branch.
+    Returns None if no matching run exists.
+    Raises ValueError if neither sha nor branch is provided.
+    """
+    if not sha and not branch:
+        raise ValueError("must supply sha or branch")
+
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    try:
+        if sha:
+            cur = conn.execute(
+                """
+                SELECT id, repo, head_sha, head_branch, status, conclusion,
+                       started_at, completed_at, html_url
+                FROM workflow_runs
+                WHERE repo = ? AND head_sha = ?
+                ORDER BY COALESCE(started_at, last_seen_at) DESC LIMIT 1
+                """,
+                (repo, sha),
+            )
+        else:
+            cur = conn.execute(
+                """
+                SELECT id, repo, head_sha, head_branch, status, conclusion,
+                       started_at, completed_at, html_url
+                FROM workflow_runs
+                WHERE repo = ? AND head_branch = ?
+                ORDER BY COALESCE(started_at, last_seen_at) DESC LIMIT 1
+                """,
+                (repo, branch),
+            )
+
+        row = cur.fetchone()
+        if row is None:
+            return None
+
+        status = CIStatus(
+            run_id=row["id"],
+            repo=row["repo"],
+            head_sha=row["head_sha"],
+            head_branch=row["head_branch"],
+            status=row["status"],
+            conclusion=row["conclusion"],
+            started_at=row["started_at"],
+            completed_at=row["completed_at"],
+            html_url=row["html_url"],
+        )
+
+        jobs_cur = conn.execute(
+            """
+            SELECT id, name, conclusion, started_at, completed_at
+            FROM workflow_jobs WHERE run_id = ? ORDER BY started_at
+            """,
+            (row["id"],),
+        )
+        for j in jobs_cur.fetchall():
+            job = CIJob(
+                id=j["id"],
+                name=j["name"],
+                conclusion=j["conclusion"],
+                started_at=j["started_at"],
+                completed_at=j["completed_at"],
+            )
+            ann_cur = conn.execute(
+                """
+                SELECT level, tool, rule_id, path, start_line, message
+                FROM workflow_annotations WHERE job_id = ? LIMIT ?
+                """,
+                (j["id"], MAX_ANNOTATIONS_PER_JOB),
+            )
+            for a in ann_cur.fetchall():
+                job.annotations.append(
+                    CIAnnotation(
+                        level=a["level"],
+                        tool=a["tool"],
+                        rule_id=a["rule_id"],
+                        path=a["path"],
+                        start_line=a["start_line"],
+                        message=a["message"],
+                    )
+                )
+            status.jobs.append(job)
+
+        return status
+    finally:
+        conn.close()

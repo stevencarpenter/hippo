@@ -23,6 +23,11 @@ pub enum DaemonRequest {
     RawQuery {
         text: String,
     },
+    RegisterWatchSha {
+        sha: String,
+        repo: String,
+        ttl_secs: u64,
+    },
     Shutdown,
 }
 

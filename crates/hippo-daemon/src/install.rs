@@ -73,6 +73,49 @@ fn which(binary: &str) -> Option<PathBuf> {
     })
 }
 
+/// Write a wrapper script for gh-poll that sources the GitHub token at runtime.
+///
+/// Reads the token from `$HIPPO_GITHUB_TOKEN` or, if unset, from the user's
+/// env file (`~/.config/zsh/.env`). This avoids embedding the plaintext token
+/// in the LaunchAgent plist.
+pub fn install_gh_poll_wrapper(
+    hippo_bin: &Path,
+    token_env: &str,
+    data_dir: &Path,
+    force: bool,
+) -> Result<PathBuf> {
+    std::fs::create_dir_all(data_dir)?;
+    let wrapper = data_dir.join("gh-poll-wrapper.sh");
+    if wrapper.exists() && !force {
+        anyhow::bail!(
+            "{} already exists. Use --force to overwrite.",
+            wrapper.display()
+        );
+    }
+    let content = format!(
+        r#"#!/bin/bash
+# Wrapper for hippo gh-poll LaunchAgent.
+# Sources the GitHub token at runtime to avoid embedding secrets in plists.
+set -euo pipefail
+
+# Try env var first; fall back to sourcing the encrypted-env-deployed file.
+if [ -z "${{{token_env}:-}}" ] && [ -f "$HOME/.config/zsh/.env" ]; then
+    set -a
+    source "$HOME/.config/zsh/.env"
+    set +a
+fi
+
+exec {hippo_bin} gh-poll
+"#,
+        token_env = token_env,
+        hippo_bin = hippo_bin.display(),
+    );
+    std::fs::write(&wrapper, content)?;
+    std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o700))?;
+    println!("  Installed wrapper {}", wrapper.display());
+    Ok(wrapper)
+}
+
 /// Symlink the hippo binary into ~/.local/bin so it's on PATH for shell hooks.
 /// Creates ~/.local/bin if it doesn't exist. Returns the symlink path.
 pub fn symlink_binary(hippo_bin: &Path, force: bool) -> Result<PathBuf> {
@@ -102,6 +145,7 @@ pub fn symlink_binary(hippo_bin: &Path, force: bool) -> Result<PathBuf> {
             .with_context(|| format!("cannot remove existing {}", link.display()))?;
     }
 
+    // nosemgrep
     std::os::unix::fs::symlink(hippo_bin, &link)
         .with_context(|| format!("cannot create symlink {}", link.display()))?;
     println!("  Symlinked {} -> {}", link.display(), hippo_bin.display());

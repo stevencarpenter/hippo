@@ -55,6 +55,7 @@ pub async fn handle_request(state: &Arc<DaemonState>, request: DaemonRequest) ->
         DaemonRequest::GetEvents { .. } => "get_events",
         DaemonRequest::GetEntities { .. } => "get_entities",
         DaemonRequest::RawQuery { .. } => "raw_query",
+        DaemonRequest::RegisterWatchSha { .. } => "register_watch_sha",
         DaemonRequest::Shutdown => "shutdown",
     };
     tracing::Span::current().record("request_type", request_type);
@@ -173,6 +174,19 @@ pub async fn handle_request(state: &Arc<DaemonState>, request: DaemonRequest) ->
             let db = state.read_db.lock().await;
             match storage::raw_query(&db, &text) {
                 Ok(hits) => DaemonResponse::QueryResult(hits),
+                Err(e) => DaemonResponse::Error(e.to_string()),
+            }
+        }
+        DaemonRequest::RegisterWatchSha {
+            sha,
+            repo,
+            ttl_secs,
+        } => {
+            let now = chrono::Utc::now().timestamp_millis();
+            let expires = now + (ttl_secs as i64) * 1000;
+            let db = state.write_db.lock().await;
+            match storage::watchlist::upsert(&db, &sha, &repo, now, expires) {
+                Ok(()) => DaemonResponse::Ack,
                 Err(e) => DaemonResponse::Error(e.to_string()),
             }
         }
