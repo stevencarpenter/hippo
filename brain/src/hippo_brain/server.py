@@ -93,6 +93,7 @@ class BrainServer:
         db_path: str = "",
         data_dir: str = "",
         lmstudio_base_url: str = "http://localhost:1234/v1",
+        lmstudio_timeout_secs: float = 300.0,
         enrichment_model: str = "",
         embedding_model: str = "",
         query_model: str = "",
@@ -106,7 +107,7 @@ class BrainServer:
             data_dir = str(Path.home() / ".local" / "share" / "hippo")
         self.db_path = db_path
         self.data_dir = data_dir
-        self.client = LMStudioClient(base_url=lmstudio_base_url)
+        self.client = LMStudioClient(base_url=lmstudio_base_url, timeout=lmstudio_timeout_secs)
         self._preferred_model = enrichment_model
         self.enrichment_model = enrichment_model
         self.embedding_model = embedding_model
@@ -835,6 +836,7 @@ def create_app(
     db_path: str = "",
     data_dir: str = "",
     lmstudio_base_url: str = "http://localhost:1234/v1",
+    lmstudio_timeout_secs: float = 300.0,
     enrichment_model: str = "",
     embedding_model: str = "",
     query_model: str = "",
@@ -846,6 +848,7 @@ def create_app(
         db_path=db_path,
         data_dir=data_dir,
         lmstudio_base_url=lmstudio_base_url,
+        lmstudio_timeout_secs=lmstudio_timeout_secs,
         enrichment_model=enrichment_model,
         embedding_model=embedding_model,
         query_model=query_model,
@@ -874,7 +877,7 @@ def create_app(
                             "claude_enrichment_queue": "SELECT COUNT(*) FROM claude_enrichment_queue WHERE status = ?",
                             "browser_enrichment_queue": "SELECT COUNT(*) FROM browser_enrichment_queue WHERE status = ?",
                         }[table]
-                        for status in ("pending", "failed"):
+                        for status in ("pending", "processing", "failed"):
                             try:
                                 count = conn.execute(sql, (status,)).fetchone()[0]
                                 yield otel_metrics.Observation(

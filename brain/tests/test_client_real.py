@@ -129,6 +129,6 @@ def test_client_init_strips_trailing_slash():
 
 
 def test_client_default_timeout():
-    """Default timeout is 120.0 (large prompts need time for local LLM inference)."""
+    """Default timeout is 300.0 (large prompts need time for local LLM inference)."""
     c = LMStudioClient()
-    assert c.timeout == 120.0
+    assert c.timeout == 300.0
