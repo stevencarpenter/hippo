@@ -25,6 +25,10 @@ struct PendingToolUse {
     session_id: String,
     cwd: String,
     git_branch: Option<String>,
+    /// Resolved once at insertion via a per-session `cwd -> owner/repo`
+    /// cache so we don't spawn `git` per envelope during batch imports
+    /// of long sessions.
+    git_repo: Option<String>,
 }
 
 /// Format a tool_use into a human-readable command string
@@ -135,12 +139,16 @@ fn build_envelope(
     let session_id = Uuid::parse_str(&pending.session_id)
         .unwrap_or_else(|_| Uuid::new_v5(&Uuid::NAMESPACE_URL, pending.session_id.as_bytes()));
 
-    let git_state = pending.git_branch.as_ref().map(|branch| GitState {
-        repo: None,
-        branch: Some(branch.clone()),
-        commit: None,
-        is_dirty: false,
-    });
+    let git_state = if pending.git_repo.is_some() || pending.git_branch.is_some() {
+        Some(GitState {
+            repo: pending.git_repo.clone(),
+            branch: pending.git_branch.clone(),
+            commit: None,
+            is_dirty: false,
+        })
+    } else {
+        None
+    };
 
     let stdout = result_content.map(|content| {
         let original_bytes = content.len();
@@ -178,9 +186,14 @@ fn build_envelope(
 }
 
 /// Process a single JSONL line. Returns envelopes for any completed tool uses.
+///
+/// `git_repo_cache` memoizes `cwd -> owner/repo` across a session so
+/// `git config --get` runs at most once per unique cwd rather than per
+/// envelope — matters for batch-importing long sessions.
 fn process_line(
     line: &str,
     pending: &mut HashMap<String, PendingToolUse>,
+    git_repo_cache: &mut HashMap<String, Option<String>>,
     hostname: &str,
 ) -> Result<Vec<EventEnvelope>> {
     let line = line.trim();
@@ -251,6 +264,10 @@ fn process_line(
                     .unwrap_or(serde_json::Value::Object(serde_json::Map::new()));
 
                 if !tool_use_id.is_empty() {
+                    let git_repo = git_repo_cache
+                        .entry(cwd.clone())
+                        .or_insert_with(|| crate::git_repo::derive_git_repo(Path::new(&cwd)))
+                        .clone();
                     pending.insert(
                         tool_use_id.clone(),
                         PendingToolUse {
@@ -261,6 +278,7 @@ fn process_line(
                             session_id: session_id.clone(),
                             cwd: cwd.clone(),
                             git_branch: git_branch.clone(),
+                            git_repo,
                         },
                     );
                 }
@@ -321,6 +339,7 @@ pub async fn ingest_batch(
         .map(|h| h.to_string_lossy().to_string())
         .unwrap_or_else(|_| "unknown".to_string());
     let mut pending: HashMap<String, PendingToolUse> = HashMap::new();
+    let mut git_repo_cache: HashMap<String, Option<String>> = HashMap::new();
     let mut sent = 0usize;
     let mut errors = 0usize;
     let mut line_num = 0usize;
@@ -336,7 +355,7 @@ pub async fn ingest_batch(
             }
         };
 
-        let envelopes = match process_line(&line, &mut pending, &hostname) {
+        let envelopes = match process_line(&line, &mut pending, &mut git_repo_cache, &hostname) {
             Ok(envs) => envs,
             Err(e) => {
                 warn!(line_num, %e, "skipping line");
@@ -396,6 +415,7 @@ pub async fn ingest_tail(path: &Path, socket_path: &Path, timeout_ms: u64) -> Re
     info!(path = %path.display(), position, "tailing session file");
 
     let mut pending: HashMap<String, PendingToolUse> = HashMap::new();
+    let mut git_repo_cache: HashMap<String, Option<String>> = HashMap::new();
     let mut total_sent = 0usize;
     let mut total_errors = 0usize;
     let watch_pid = std::env::var("HIPPO_WATCH_PID")
@@ -455,7 +475,7 @@ pub async fn ingest_tail(path: &Path, socket_path: &Path, timeout_ms: u64) -> Re
                 for line_result in reader.lines() {
                     match line_result {
                         Ok(line) => {
-                            let envelopes = match process_line(&line, &mut pending, &hostname) {
+                            let envelopes = match process_line(&line, &mut pending, &mut git_repo_cache, &hostname) {
                                 Ok(envs) => envs,
                                 Err(e) => {
                                     warn!(%e, "skipping line");
@@ -528,6 +548,17 @@ pub async fn ingest_tail(path: &Path, socket_path: &Path, timeout_ms: u64) -> Re
 mod tests {
     use super::*;
     use hippo_core::events::EventPayload;
+
+    /// Test wrapper — stubs out the per-session git_repo cache so individual
+    /// cases can stay focused. Cache correctness is covered separately.
+    fn process_line(
+        line: &str,
+        pending: &mut HashMap<String, PendingToolUse>,
+        hostname: &str,
+    ) -> Result<Vec<EventEnvelope>> {
+        let mut cache: HashMap<String, Option<String>> = HashMap::new();
+        super::process_line(line, pending, &mut cache, hostname)
+    }
 
     #[test]
     fn test_format_tool_command_bash() {
@@ -900,6 +931,7 @@ mod tests {
             session_id: "dcb2cf8e-0000-0000-0000-000000000000".to_string(),
             cwd: "/tmp".to_string(),
             git_branch: None,
+            git_repo: None,
         };
 
         let envelope = build_envelope(&pending, None, false, None, "test-host");
@@ -925,6 +957,7 @@ mod tests {
             session_id: "dcb2cf8e-0000-0000-0000-000000000000".to_string(),
             cwd: "/tmp".to_string(),
             git_branch: None,
+            git_repo: None,
         };
 
         let envelope = build_envelope(&pending, Some(&long_content), false, None, "test-host");
@@ -992,5 +1025,116 @@ mod tests {
             .collect();
         assert!(commands.contains(&"cargo test"));
         assert!(commands.contains(&"cargo clippy"));
+    }
+
+    #[test]
+    fn envelope_populates_git_repo_from_cwd() {
+        // Real git worktree with a github origin — build_envelope should pull
+        // `owner/repo` through the derive helper into git_state.repo.
+        let tmp = tempfile::tempdir().unwrap();
+        let cwd = tmp.path();
+        let status = std::process::Command::new("git")
+            .arg("-C")
+            .arg(cwd)
+            .args(["init", "--quiet", "-b", "main"])
+            .status()
+            .unwrap();
+        assert!(status.success());
+        let status = std::process::Command::new("git")
+            .arg("-C")
+            .arg(cwd)
+            .args([
+                "remote",
+                "add",
+                "origin",
+                "git@github.com:sjcarpenter/hippo.git",
+            ])
+            .status()
+            .unwrap();
+        assert!(status.success());
+
+        let mut pending = HashMap::new();
+        let assistant_line = format!(
+            r#"{{
+                "type": "assistant",
+                "timestamp": "2026-03-28T12:00:00.000Z",
+                "sessionId": "sess-git",
+                "cwd": "{}",
+                "gitBranch": "main",
+                "message": {{
+                    "role": "assistant",
+                    "content": [
+                        {{"type": "tool_use", "id": "toolu_git", "name": "Bash", "input": {{"command": "echo hi"}}}}
+                    ]
+                }}
+            }}"#,
+            cwd.display()
+        );
+        process_line(&assistant_line, &mut pending, "test-host").unwrap();
+
+        let user_line = format!(
+            r#"{{
+                "type": "user",
+                "timestamp": "2026-03-28T12:00:01.000Z",
+                "sessionId": "sess-git",
+                "cwd": "{}",
+                "message": {{
+                    "role": "user",
+                    "content": [
+                        {{"type": "tool_result", "tool_use_id": "toolu_git", "content": "hi"}}
+                    ]
+                }}
+            }}"#,
+            cwd.display()
+        );
+        let envelopes = process_line(&user_line, &mut pending, "test-host").unwrap();
+        assert_eq!(envelopes.len(), 1);
+
+        match &envelopes[0].payload {
+            EventPayload::Shell(shell) => {
+                let repo = shell.git_state.as_ref().and_then(|g| g.repo.as_deref());
+                assert_eq!(repo, Some("sjcarpenter/hippo"));
+            }
+            other => panic!("expected Shell payload, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn git_repo_cache_shared_across_envelopes() {
+        // Same cwd reused across many tool_uses should only populate the
+        // cache once — a regression here means we're re-spawning `git` per
+        // envelope during batch imports.
+        let tmp = tempfile::tempdir().unwrap();
+        let cwd = tmp.path();
+        let status = std::process::Command::new("git")
+            .arg("-C")
+            .arg(cwd)
+            .args(["init", "--quiet", "-b", "main"])
+            .status()
+            .unwrap();
+        assert!(status.success());
+
+        let mut pending = HashMap::new();
+        let mut cache: HashMap<String, Option<String>> = HashMap::new();
+        for i in 0..3 {
+            let line = format!(
+                r#"{{
+                    "type": "assistant",
+                    "timestamp": "2026-03-28T12:00:00.000Z",
+                    "sessionId": "sess-cache",
+                    "cwd": "{cwd}",
+                    "message": {{
+                        "role": "assistant",
+                        "content": [
+                            {{"type": "tool_use", "id": "toolu_{i}", "name": "Bash", "input": {{"command": "echo"}}}}
+                        ]
+                    }}
+                }}"#,
+                cwd = cwd.display(),
+                i = i
+            );
+            super::process_line(&line, &mut pending, &mut cache, "test-host").unwrap();
+        }
+        assert_eq!(cache.len(), 1, "cwd should be cached once across envelopes");
     }
 }
