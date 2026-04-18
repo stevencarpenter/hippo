@@ -27,7 +27,7 @@ def run_sqlfluff_fix(path: Path) -> int:
         return 2
 
     # Run `sqlfluff fix --force <file>`; --force overwrites the file
-    cmd = [sqlfluff_exe, "fix", "--dialect", "sqlite", "--force", str(path)]
+    cmd = [sqlfluff_exe, "fix", "--dialect", "sqlite", "--ignore", "parsing", "--force", str(path)]
     try:
         proc = subprocess.run(cmd, check=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         if proc.returncode == 0:

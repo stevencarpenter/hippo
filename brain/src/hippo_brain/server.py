@@ -333,6 +333,265 @@ class BrainServer:
                 logger.error("query error: %s", e2)
                 return JSONResponse({"error": str(e2)}, status_code=500)
 
+    async def list_knowledge(self, request: Request) -> JSONResponse:
+        """List knowledge nodes with pagination and filtering."""
+        import json
+
+        limit = request.query_params.get("limit", "20")
+        offset = request.query_params.get("offset", "0")
+        node_type = request.query_params.get("node_type")
+        since_ms = request.query_params.get("since_ms")
+
+        try:
+            limit = int(limit)
+            offset = int(offset)
+        except ValueError:
+            return JSONResponse({"error": "limit and offset must be integers"}, status_code=400)
+
+        if since_ms:
+            try:
+                since_ms = int(since_ms)
+            except ValueError:
+                return JSONResponse({"error": "since_ms must be an integer"}, status_code=400)
+
+        conn = self._get_conn()
+        try:
+            sql = (
+                "SELECT id, uuid, content, node_type, outcome, tags, created_at "
+                "FROM knowledge_nodes"
+            )
+            params = []
+            conditions = []
+
+            if node_type:
+                conditions.append("node_type = ?")
+                params.append(node_type)
+
+            if since_ms:
+                conditions.append("created_at > ?")
+                params.append(since_ms)
+
+            if conditions:
+                sql += " WHERE " + " AND ".join(conditions)
+
+            sql += " ORDER BY created_at DESC LIMIT ? OFFSET ?"
+            params.extend([limit, offset])
+
+            cursor = conn.execute(sql, params)
+            nodes = []
+            for r in cursor.fetchall():
+                try:
+                    tags = json.loads(r[5]) if r[5] else []
+                except json.JSONDecodeError, TypeError:
+                    tags = []
+                nodes.append(
+                    {
+                        "id": r[0],
+                        "uuid": r[1],
+                        "content": r[2] or "",
+                        "node_type": r[3],
+                        "outcome": r[4],
+                        "tags": tags,
+                        "created_at": r[6],
+                    }
+                )
+
+            count_sql = "SELECT COUNT(*) FROM knowledge_nodes"
+            count_params = params[:-2]
+            if conditions:
+                count_sql += " WHERE " + " AND ".join(conditions)
+            total = conn.execute(count_sql, count_params).fetchone()[0]
+
+            return JSONResponse({"nodes": nodes, "total": total})
+        except Exception as e:
+            logger.error("list_knowledge error: %s", e)
+            return JSONResponse({"error": str(e)}, status_code=500)
+        finally:
+            conn.close()
+
+    async def get_knowledge(self, request: Request) -> JSONResponse:
+        """Get a single knowledge node by ID."""
+        import json
+
+        node_id = request.path_params["id"]
+
+        conn = self._get_conn()
+        try:
+            cursor = conn.execute(
+                "SELECT id, uuid, content, embed_text, node_type, outcome, tags, created_at "
+                "FROM knowledge_nodes WHERE id = ?",
+                (node_id,),
+            )
+            row = cursor.fetchone()
+            if not row:
+                return JSONResponse({"error": "Knowledge node not found"}, status_code=404)
+
+            try:
+                tags = json.loads(row[6]) if row[6] else []
+            except json.JSONDecodeError, TypeError:
+                tags = []
+
+            return JSONResponse(
+                {
+                    "id": row[0],
+                    "uuid": row[1],
+                    "content": row[2] or "",
+                    "embed_text": row[3],
+                    "node_type": row[4],
+                    "outcome": row[5],
+                    "tags": tags,
+                    "created_at": row[7],
+                }
+            )
+        except Exception as e:
+            logger.error("get_knowledge error: %s", e)
+            return JSONResponse({"error": str(e)}, status_code=500)
+        finally:
+            conn.close()
+
+    async def list_events(self, request: Request) -> JSONResponse:
+        """List shell events with pagination and filtering."""
+        limit = request.query_params.get("limit", "20")
+        offset = request.query_params.get("offset", "0")
+        session_id = request.query_params.get("session_id")
+        since_ms = request.query_params.get("since_ms")
+        project = request.query_params.get("project")
+
+        try:
+            limit = int(limit)
+            offset = int(offset)
+        except ValueError:
+            return JSONResponse({"error": "limit and offset must be integers"}, status_code=400)
+
+        if since_ms:
+            try:
+                since_ms = int(since_ms)
+            except ValueError:
+                return JSONResponse({"error": "since_ms must be an integer"}, status_code=400)
+
+        conn = self._get_conn()
+        try:
+            sql = (
+                "SELECT id, session_id, timestamp, command, exit_code, duration_ms, cwd, git_branch "
+                "FROM events"
+            )
+            params = []
+            conditions = []
+
+            if session_id:
+                try:
+                    session_id = int(session_id)
+                except ValueError:
+                    return JSONResponse({"error": "session_id must be an integer"}, status_code=400)
+                conditions.append("session_id = ?")
+                params.append(session_id)
+
+            if since_ms:
+                conditions.append("timestamp > ?")
+                params.append(since_ms)
+
+            if project:
+                conditions.append("cwd LIKE ?")
+                params.append(f"%{project}%")
+
+            if conditions:
+                sql += " WHERE " + " AND ".join(conditions)
+
+            sql += " ORDER BY timestamp DESC LIMIT ? OFFSET ?"
+            params.extend([limit, offset])
+
+            cursor = conn.execute(sql, params)
+            events = [
+                {
+                    "id": r[0],
+                    "session_id": r[1],
+                    "timestamp": r[2],
+                    "command": r[3],
+                    "exit_code": r[4],
+                    "duration_ms": r[5],
+                    "cwd": r[6],
+                    "git_branch": r[7],
+                }
+                for r in cursor.fetchall()
+            ]
+
+            count_sql = "SELECT COUNT(*) FROM events"
+            count_params = params[:-2]
+            if conditions:
+                count_sql += " WHERE " + " AND ".join(conditions)
+            total = conn.execute(count_sql, count_params).fetchone()[0]
+
+            return JSONResponse({"events": events, "total": total})
+        except Exception as e:
+            logger.error("list_events error: %s", e)
+            return JSONResponse({"error": str(e)}, status_code=500)
+        finally:
+            conn.close()
+
+    async def list_sessions(self, request: Request) -> JSONResponse:
+        """List sessions with event counts, pagination, and filtering."""
+        limit = request.query_params.get("limit", "20")
+        offset = request.query_params.get("offset", "0")
+        since_ms = request.query_params.get("since_ms")
+
+        try:
+            limit = int(limit)
+            offset = int(offset)
+        except ValueError:
+            return JSONResponse({"error": "limit and offset must be integers"}, status_code=400)
+
+        if since_ms:
+            try:
+                since_ms = int(since_ms)
+            except ValueError:
+                return JSONResponse({"error": "since_ms must be an integer"}, status_code=400)
+
+        conn = self._get_conn()
+        try:
+            sql = """
+                SELECT s.id, s.start_time, s.hostname, s.shell,
+                       (SELECT COUNT(*) FROM events e WHERE e.session_id = s.id) as event_count
+                FROM sessions s
+            """
+            params = []
+            conditions = []
+
+            if since_ms:
+                conditions.append("s.start_time > ?")
+                params.append(since_ms)
+
+            if conditions:
+                sql += " WHERE " + " AND ".join(conditions)
+
+            sql += " ORDER BY s.start_time DESC LIMIT ? OFFSET ?"
+            params.extend([limit, offset])
+
+            cursor = conn.execute(sql, params)
+            sessions = [
+                {
+                    "id": r[0],
+                    "start_time": r[1],
+                    "hostname": r[2],
+                    "shell": r[3],
+                    "event_count": r[4],
+                }
+                for r in cursor.fetchall()
+            ]
+
+            count_sql = "SELECT COUNT(*) FROM sessions s"
+            count_params = []
+            if conditions:
+                count_sql += " WHERE " + " AND ".join(conditions)
+                count_params = params[:-2]
+            total = conn.execute(count_sql, count_params).fetchone()[0]
+
+            return JSONResponse({"sessions": sessions, "total": total})
+        except Exception as e:
+            logger.error("list_sessions error: %s", e)
+            return JSONResponse({"error": str(e)}, status_code=500)
+        finally:
+            conn.close()
+
     async def ask(self, request: Request) -> JSONResponse:
         """RAG endpoint: retrieve relevant knowledge and synthesize an answer."""
         body = await request.json()
@@ -945,6 +1204,10 @@ class BrainServer:
     def get_routes(self) -> list[Route]:
         return [
             Route("/health", self.health, methods=["GET"]),
+            Route("/sessions", self.list_sessions, methods=["GET"]),
+            Route("/events", self.list_events, methods=["GET"]),
+            Route("/knowledge", self.list_knowledge, methods=["GET"]),
+            Route("/knowledge/{id:int}", self.get_knowledge, methods=["GET"]),
             Route("/query", self.query, methods=["POST"]),
             Route("/ask", self.ask, methods=["POST"]),
         ]

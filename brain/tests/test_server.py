@@ -203,9 +203,12 @@ def test_brain_server_get_routes(tmp_db):
     _, db_path = tmp_db
     server = _make_server(str(db_path))
     routes = server.get_routes()
-    assert len(routes) == 3
+    assert len(routes) == 7
     paths = [r.path for r in routes]
     assert "/health" in paths
+    assert "/sessions" in paths
+    assert "/events" in paths
+    assert "/knowledge" in paths
     assert "/query" in paths
     assert "/ask" in paths
 
@@ -575,3 +578,428 @@ def test_health_exposes_enrichment_model(tmp_db):
         data = resp.json()
         assert data["enrichment_model"] == "my-model"
         assert data["enrichment_model_preferred"] == "my-model"
+
+
+# ---- /knowledge ----
+
+
+def _seed_knowledge_nodes_for_list(conn):
+    """Insert multiple knowledge nodes for list testing."""
+    import json
+
+    now_ms = int(time.time() * 1000)
+    nodes = [
+        {
+            "id": 1,
+            "uuid": "uuid-1",
+            "content": json.dumps({"summary": "First node", "key": "value1"}),
+            "embed_text": "first node embed text",
+            "node_type": "observation",
+            "outcome": "success",
+            "tags": json.dumps(["rust", "testing"]),
+            "created": now_ms,
+        },
+        {
+            "id": 2,
+            "uuid": "uuid-2",
+            "content": json.dumps({"summary": "Second node", "key": "value2"}),
+            "embed_text": "second node embed text",
+            "node_type": "concept",
+            "outcome": "success",
+            "tags": json.dumps(["python"]),
+            "created": now_ms + 1000,
+        },
+        {
+            "id": 3,
+            "uuid": "uuid-3",
+            "content": json.dumps({"summary": "Third node", "key": "value3"}),
+            "embed_text": "third node embed text",
+            "node_type": "observation",
+            "outcome": "failure",
+            "tags": json.dumps(["debug"]),
+            "created": now_ms + 2000,
+        },
+    ]
+    for node in nodes:
+        conn.execute(
+            "INSERT INTO knowledge_nodes (id, uuid, content, embed_text, node_type, outcome, tags, "
+            "enrichment_model, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, 'model', ?, ?)",
+            (
+                node["id"],
+                node["uuid"],
+                node["content"],
+                node["embed_text"],
+                node["node_type"],
+                node["outcome"],
+                node["tags"],
+                node["created"],
+                node["created"],
+            ),
+        )
+    conn.commit()
+
+
+def test_knowledge_list_default(tmp_db):
+    """GET /knowledge returns nodes with default pagination."""
+    conn, db_path = tmp_db
+    _seed_knowledge_nodes_for_list(conn)
+    app = _make_app(str(db_path))
+    client = TestClient(app)
+
+    resp = client.get("/knowledge")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "nodes" in data
+    assert "total" in data
+    assert data["total"] == 3
+    assert len(data["nodes"]) == 3
+    node = data["nodes"][0]
+    assert "id" in node
+    assert "uuid" in node
+    assert "content" in node
+    assert "node_type" in node
+    assert "outcome" in node
+    assert "tags" in node
+    assert "created_at" in node
+
+
+def test_knowledge_list_pagination(tmp_db):
+    """GET /knowledge supports limit and offset params."""
+    conn, db_path = tmp_db
+    _seed_knowledge_nodes_for_list(conn)
+    app = _make_app(str(db_path))
+    client = TestClient(app)
+
+    resp = client.get("/knowledge?limit=2&offset=1")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert len(data["nodes"]) == 2
+    assert data["total"] == 3
+    assert data["nodes"][0]["uuid"] == "uuid-2"
+
+
+def test_knowledge_list_filter_by_node_type(tmp_db):
+    """GET /knowledge supports node_type filter."""
+    conn, db_path = tmp_db
+    _seed_knowledge_nodes_for_list(conn)
+    app = _make_app(str(db_path))
+    client = TestClient(app)
+
+    resp = client.get("/knowledge?node_type=observation")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["total"] == 2
+    for node in data["nodes"]:
+        assert node["node_type"] == "observation"
+
+
+def test_knowledge_list_invalid_params_returns_400(tmp_db):
+    """Invalid limit/offset params return 400."""
+    conn, db_path = tmp_db
+    app = _make_app(str(db_path))
+    client = TestClient(app)
+
+    resp = client.get("/knowledge?limit=abc")
+    assert resp.status_code == 400
+    assert "error" in resp.json()
+
+
+def test_knowledge_list_routes_included(tmp_db):
+    """The /knowledge route is included in get_routes()."""
+    _, db_path = tmp_db
+    server = _make_server(str(db_path))
+    routes = server.get_routes()
+    paths = [r.path for r in routes]
+    assert "/knowledge" in paths
+    assert "/knowledge/{id:int}" in paths
+    assert len(routes) == 7
+
+
+# ---- /knowledge/{id} ----
+
+
+def test_get_knowledge_returns_full_details(tmp_db):
+    """GET /knowledge/{id} returns full node details including embed_text."""
+    conn, db_path = tmp_db
+    _seed_knowledge_nodes_for_list(conn)
+    app = _make_app(str(db_path))
+    client = TestClient(app)
+
+    resp = client.get("/knowledge/1")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["id"] == 1
+    assert data["uuid"] == "uuid-1"
+    assert "First node" in data["content"]
+    assert "embed_text" in data
+    assert data["embed_text"] == "first node embed text"
+    assert data["node_type"] == "observation"
+    assert data["outcome"] == "success"
+    assert data["tags"] == ["rust", "testing"]
+    assert "created_at" in data
+
+
+def test_get_knowledge_returns_404_for_missing_node(tmp_db):
+    """GET /knowledge/{id} returns 404 when node does not exist."""
+    conn, db_path = tmp_db
+    _seed_knowledge_nodes_for_list(conn)
+    app = _make_app(str(db_path))
+    client = TestClient(app)
+
+    resp = client.get("/knowledge/999")
+    assert resp.status_code == 404
+    assert "error" in resp.json()
+
+
+# ---- /events ----
+
+
+def _seed_events_for_list(conn):
+    """Insert multiple events for list testing."""
+    now_ms = int(time.time() * 1000)
+    conn.execute(
+        "INSERT INTO sessions (id, start_time, shell, hostname, username) "
+        "VALUES (1, ?, 'zsh', 'laptop', 'user')",
+        (now_ms,),
+    )
+    conn.execute(
+        "INSERT INTO sessions (id, start_time, shell, hostname, username) "
+        "VALUES (2, ?, 'zsh', 'laptop', 'user')",
+        (now_ms,),
+    )
+    events = [
+        (1, 1, now_ms, "cargo test -p hippo-core", 0, 3000, "/projects/hippo", "main"),
+        (2, 1, now_ms + 1, "npm run build", 0, 5000, "/projects/webapp", "main"),
+        (3, 2, now_ms + 2, "git status", 0, 100, "/projects/hippo", "feature-branch"),
+        (4, 2, now_ms + 3, "make lint", 1, 2000, "/projects/hippo", "feature-branch"),
+    ]
+    for eid, sid, ts, cmd, exit_code, dur, cwd, branch in events:
+        conn.execute(
+            "INSERT INTO events (id, session_id, timestamp, command, exit_code, duration_ms, "
+            "cwd, hostname, shell, git_branch) VALUES (?, ?, ?, ?, ?, ?, ?, 'laptop', 'zsh', ?)",
+            (eid, sid, ts, cmd, exit_code, dur, cwd, branch),
+        )
+    conn.commit()
+
+
+def test_events_list_default(tmp_db):
+    """GET /events returns events with default pagination."""
+    conn, db_path = tmp_db
+    _seed_events_for_list(conn)
+    app = _make_app(str(db_path))
+    client = TestClient(app)
+
+    resp = client.get("/events")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "events" in data
+    assert "total" in data
+    assert data["total"] == 4
+    assert len(data["events"]) == 4
+    event = data["events"][0]
+    assert "id" in event
+    assert "session_id" in event
+    assert "timestamp" in event
+    assert "command" in event
+    assert "exit_code" in event
+    assert "duration_ms" in event
+    assert "cwd" in event
+    assert "git_branch" in event
+
+
+def test_events_list_pagination(tmp_db):
+    """GET /events supports limit and offset params."""
+    conn, db_path = tmp_db
+    _seed_events_for_list(conn)
+    app = _make_app(str(db_path))
+    client = TestClient(app)
+
+    resp = client.get("/events?limit=2&offset=1")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert len(data["events"]) == 2
+    assert data["total"] == 4
+
+
+def test_events_list_filter_by_session_id(tmp_db):
+    """GET /events supports session_id filter."""
+    conn, db_path = tmp_db
+    _seed_events_for_list(conn)
+    app = _make_app(str(db_path))
+    client = TestClient(app)
+
+    resp = client.get("/events?session_id=1")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["total"] == 2
+    for event in data["events"]:
+        assert event["session_id"] == 1
+
+
+def test_events_list_filter_by_project(tmp_db):
+    """GET /events supports project filter (cwd LIKE)."""
+    conn, db_path = tmp_db
+    _seed_events_for_list(conn)
+    app = _make_app(str(db_path))
+    client = TestClient(app)
+
+    resp = client.get("/events?project=webapp")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["total"] == 1
+    assert data["events"][0]["command"] == "npm run build"
+
+
+def test_events_list_invalid_params_returns_400(tmp_db):
+    """Invalid limit/offset params return 400."""
+    conn, db_path = tmp_db
+    app = _make_app(str(db_path))
+    client = TestClient(app)
+
+    resp = client.get("/events?limit=abc")
+    assert resp.status_code == 400
+    assert "error" in resp.json()
+
+
+def test_events_list_invalid_session_id_returns_400(tmp_db):
+    """Non-integer session_id param returns 400."""
+    _, db_path = tmp_db
+    app = _make_app(str(db_path))
+    client = TestClient(app)
+
+    resp = client.get("/events?session_id=notanint")
+    assert resp.status_code == 400
+    assert "error" in resp.json()
+
+
+def test_events_list_routes_included(tmp_db):
+    """The /events route is included in get_routes()."""
+    _, db_path = tmp_db
+    server = _make_server(str(db_path))
+    routes = server.get_routes()
+    paths = [r.path for r in routes]
+    assert "/events" in paths
+    # Now 7 routes (+1 for /sessions)
+    assert len(routes) == 7
+
+
+# ---- /sessions ----
+
+
+def _seed_sessions_for_list(conn):
+    """Insert multiple sessions with events for list testing."""
+    now_ms = int(time.time() * 1000)
+    sessions = [
+        (1, now_ms - 10000, "zsh", "laptop", "user"),
+        (2, now_ms - 5000, "bash", "desktop", "user"),
+        (3, now_ms, "zsh", "laptop", "user"),
+    ]
+    for sid, start, shell, host, user in sessions:
+        conn.execute(
+            "INSERT INTO sessions (id, start_time, shell, hostname, username) VALUES (?, ?, ?, ?, ?)",
+            (sid, start, shell, host, user),
+        )
+    events = [
+        (1, 1, now_ms - 10000, "cargo test", 0, 1000, "/projects/hippo"),
+        (2, 1, now_ms - 9000, "cargo build", 0, 2000, "/projects/hippo"),
+        (3, 2, now_ms - 5000, "make", 0, 500, "/projects/make"),
+        (4, 3, now_ms, "ls", 0, 10, "/home"),
+    ]
+    for eid, sid, ts, cmd, exit_code, dur, cwd in events:
+        conn.execute(
+            "INSERT INTO events (id, session_id, timestamp, command, exit_code, duration_ms, "
+            "cwd, hostname, shell) VALUES (?, ?, ?, ?, ?, ?, ?, 'laptop', 'zsh')",
+            (eid, sid, ts, cmd, exit_code, dur, cwd),
+        )
+    conn.commit()
+
+
+def test_sessions_list_default(tmp_db):
+    """GET /sessions returns sessions with default pagination."""
+    conn, db_path = tmp_db
+    _seed_sessions_for_list(conn)
+    app = _make_app(str(db_path))
+    client = TestClient(app)
+
+    resp = client.get("/sessions")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "sessions" in data
+    assert "total" in data
+    assert data["total"] == 3
+    assert len(data["sessions"]) == 3
+    session = data["sessions"][0]
+    assert "id" in session
+    assert "start_time" in session
+    assert "hostname" in session
+    assert "shell" in session
+    assert "event_count" in session
+
+
+def test_sessions_list_with_event_counts(tmp_db):
+    """GET /sessions returns correct event_count for each session."""
+    conn, db_path = tmp_db
+    _seed_sessions_for_list(conn)
+    app = _make_app(str(db_path))
+    client = TestClient(app)
+
+    resp = client.get("/sessions")
+    assert resp.status_code == 200
+    data = resp.json()
+    sessions = {s["id"]: s for s in data["sessions"]}
+    assert sessions[1]["event_count"] == 2
+    assert sessions[2]["event_count"] == 1
+    assert sessions[3]["event_count"] == 1
+
+
+def test_sessions_list_pagination(tmp_db):
+    """GET /sessions supports limit and offset params."""
+    conn, db_path = tmp_db
+    _seed_sessions_for_list(conn)
+    app = _make_app(str(db_path))
+    client = TestClient(app)
+
+    resp = client.get("/sessions?limit=2&offset=1")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert len(data["sessions"]) == 2
+    assert data["total"] == 3
+
+
+def test_sessions_list_filter_by_since_ms(tmp_db):
+    """GET /sessions supports since_ms filter."""
+    conn, db_path = tmp_db
+    _seed_sessions_for_list(conn)
+    app = _make_app(str(db_path))
+    client = TestClient(app)
+
+    now_ms = int(time.time() * 1000)
+    resp = client.get(f"/sessions?since_ms={now_ms - 15000}")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["total"] == 3
+    for session in data["sessions"]:
+        assert session["start_time"] > now_ms - 15000
+
+
+def test_sessions_list_invalid_params_returns_400(tmp_db):
+    """Invalid limit/offset params return 400."""
+    conn, db_path = tmp_db
+    _seed_sessions_for_list(conn)
+    app = _make_app(str(db_path))
+    client = TestClient(app)
+
+    resp = client.get("/sessions?limit=abc")
+    assert resp.status_code == 400
+    assert "error" in resp.json()
+
+
+def test_sessions_list_routes_included(tmp_db):
+    """The /sessions route is included in get_routes()."""
+    _, db_path = tmp_db
+    server = _make_server(str(db_path))
+    routes = server.get_routes()
+    paths = [r.path for r in routes]
+    assert "/sessions" in paths
+    assert len(routes) == 7
