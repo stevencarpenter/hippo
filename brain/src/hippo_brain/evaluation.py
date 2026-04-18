@@ -883,7 +883,7 @@ def _corpus_stats(conn: sqlite3.Connection) -> dict:
 
 def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     p = argparse.ArgumentParser(prog="hippo-eval", description="Hippo retrieval eval harness")
-    p.add_argument("--questions", default=str(_DEFAULT_QUESTIONS))
+    p.add_argument("--questions", default=_DEFAULT_QUESTIONS)
     p.add_argument("--out", default="")
     p.add_argument(
         "--mode",
