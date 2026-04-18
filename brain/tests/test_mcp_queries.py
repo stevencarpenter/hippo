@@ -96,7 +96,8 @@ def db():
             UNIQUE (type, canonical)
         );
     """)
-    return conn
+    yield conn
+    conn.close()
 
 
 class TestParseSince:
