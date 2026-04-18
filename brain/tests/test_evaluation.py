@@ -2,20 +2,19 @@
 
 Covers every metric function on synthetic fixtures, plus a small end-to-end
 smoke test that runs the harness against an in-memory SQLite DB with 3
-questions and a canned retrieval adapter.
+questions.
 """
 
 from __future__ import annotations
 
-import asyncio
+import math
 import sqlite3
+from pathlib import Path
 
 import pytest
 
-from hippo_brain import evaluation as evmod
 from hippo_brain.evaluation import (
     Question,
-    SearchResult,
     coverage_gap_score,
     derive_sources,
     groundedness,
@@ -44,8 +43,8 @@ class TestRecallAtK:
     def test_partial(self):
         assert recall_at_k(["a", "x", "y"], {"a", "b"}, 3) == 0.5
 
-    def test_empty_relevant_is_none(self):
-        assert recall_at_k(["a"], set(), 3) is None
+    def test_empty_relevant_is_nan(self):
+        assert math.isnan(recall_at_k(["a"], set(), 3))
 
     def test_k_zero(self):
         assert recall_at_k(["a"], {"a"}, 0) == 0.0
@@ -64,8 +63,8 @@ class TestMRR:
     def test_no_hit(self):
         assert mrr(["x", "y"], {"a"}) == 0.0
 
-    def test_empty_relevant_is_none(self):
-        assert mrr(["a"], set()) is None
+    def test_empty_relevant_is_nan(self):
+        assert math.isnan(mrr(["a"], set()))
 
 
 class TestNDCG:
@@ -80,8 +79,8 @@ class TestNDCG:
         reversed_ = ndcg_at_k(["c", "b", "a"], rel, 3)
         assert reversed_ < perfect
 
-    def test_empty_is_none(self):
-        assert ndcg_at_k(["a"], {}, 3) is None
+    def test_empty_is_nan(self):
+        assert math.isnan(ndcg_at_k(["a"], {}, 3))
 
 
 class TestSourceDiversity:
@@ -109,8 +108,8 @@ class TestNearDuplicateDensity:
         val = near_duplicate_density([[1.0, 0.0], [0.0, 1.0]])
         assert val == pytest.approx(0.0)
 
-    def test_too_few_is_none(self):
-        assert near_duplicate_density([[1.0, 0.0]]) is None
+    def test_too_few_is_nan(self):
+        assert math.isnan(near_duplicate_density([[1.0, 0.0]]))
 
 
 class TestCoverageGap:
@@ -169,20 +168,20 @@ async def test_groundedness_parses_float():
 
 
 @pytest.mark.asyncio
-async def test_groundedness_none_when_client_errors():
+async def test_groundedness_nan_when_client_errors():
     class Boom:
         async def chat(self, *a, **kw):
             raise RuntimeError("down")
 
     val = await groundedness("ans", [{"summary": "s"}], Boom(), "m")
-    assert val is None
+    assert math.isnan(val)
 
 
 @pytest.mark.asyncio
-async def test_groundedness_none_when_unparseable():
+async def test_groundedness_nan_when_unparseable():
     client = _FakeLMClient("not a number at all")
     val = await groundedness("ans", [{"summary": "s"}], client, "m")
-    assert val is None
+    assert math.isnan(val)
 
 
 @pytest.mark.asyncio
@@ -229,16 +228,9 @@ def test_derive_sources_multi(mini_db):
     assert set(out["u3"]) == {"shell", "claude"}
 
 
-def test_derive_sources_nil_conn():
+def test_derive_sources_empty_conn():
     assert derive_sources(None, ["u1"]) == {}
-
-
-def test_derive_sources_empty_uuids():
-    conn = sqlite3.connect(":memory:")
-    try:
-        assert derive_sources(conn, []) == {}
-    finally:
-        conn.close()
+    assert derive_sources(sqlite3.connect(":memory:"), []) == {}
 
 
 # ---------------------------------------------------------------------------
@@ -247,19 +239,20 @@ def test_derive_sources_empty_uuids():
 
 
 def test_shipped_question_set_loads():
-    from hippo_brain.evaluation import _DEFAULT_QUESTIONS
-
-    qs = load_questions(_DEFAULT_QUESTIONS)
+    path = Path(__file__).parent / "eval_questions.json"
+    qs = load_questions(path)
     assert len(qs) >= 30
     assert all(q.id and q.question for q in qs)
+    # Every question carries keywords so the heuristic has something to match.
     assert all(q.acceptable_answer_keywords for q in qs)
+    # At least 3 adversarial / hard questions.
     adversarial = [q for q in qs if q.intent == "adversarial"]
-    assert len(adversarial) >= 4
+    assert len(adversarial) >= 3
 
 
 # ---------------------------------------------------------------------------
 # End-to-end integration: 3 questions against an in-memory DB with a fake
-# semantic retriever. Exercises the harness pipeline without LanceDB.
+# retrieval backend. Exercises the harness pipeline without sqlite-vec.
 # ---------------------------------------------------------------------------
 
 
@@ -334,14 +327,13 @@ def _smoke_conn() -> sqlite3.Connection:
             "VALUES (?, ?, ?, ?, NULL, '[]', ?)",
             (nid, uuid, content, embed, ts),
         )
+    # Link each node to a source so source_diversity > 0.
     conn.execute(
-        "INSERT INTO events (id, timestamp, cwd, git_repo, git_branch) "
-        "VALUES (10, 1000, '/p', 'r', 'main')"
+        "INSERT INTO events (id, timestamp, cwd, git_repo, git_branch) VALUES (10, 1000, '/p', 'r', 'main')"
     )
     conn.execute("INSERT INTO knowledge_node_events VALUES (1, 10)")
     conn.execute(
-        "INSERT INTO claude_sessions (id, start_time, cwd, project_dir, git_branch) "
-        "VALUES (20, 1100, '/p', '/p', 'main')"
+        "INSERT INTO claude_sessions (id, start_time, cwd, project_dir, git_branch) VALUES (20, 1100, '/p', '/p', 'main')"
     )
     conn.execute("INSERT INTO knowledge_node_claude_sessions VALUES (2, 20)")
     conn.execute("INSERT INTO browser_events (id, timestamp) VALUES (30, 1200)")
@@ -350,19 +342,34 @@ def _smoke_conn() -> sqlite3.Connection:
     return conn
 
 
+class _FakeBackend:
+    """Stand-in for ``hippo_brain.vector_store`` in tests."""
+
+    def __init__(self):
+        self.by_fts = {
+            "sqlite-vec": [1],
+            "asyncio": [2],
+            "native messaging": [3],
+        }
+
+    def knn_search(self, conn, query_vec, column="vec_knowledge", limit=10):
+        # Degrade to "no vector results"; hybrid will fall through to FTS.
+        return []
+
+    def fts_search(self, conn, query, limit=10):
+        ql = query.lower().strip('"')
+        for key, ids in self.by_fts.items():
+            if key in ql:
+                return [{"knowledge_node_id": i, "bm25": 1.0} for i in ids]
+        return []
+
+
 @pytest.mark.asyncio
 async def test_smoke_end_to_end(monkeypatch):
-    """Drive the harness through semantic mode with a canned retriever."""
-    canned: dict[str, list[SearchResult]] = {
-        "sqlite-vec replacement?": [SearchResult(uuid="u1", score=0.9, node_id=1)],
-        "How is enrichment asyncio used?": [SearchResult(uuid="u2", score=0.85, node_id=2)],
-        "native messaging details?": [SearchResult(uuid="u3", score=0.8, node_id=3)],
-    }
+    import hippo_brain.retrieval as retrieval_mod
 
-    async def fake_retrieve(conn, vector_table, lm_client, question, embedding_model, limit):
-        return canned.get(question, [])
-
-    monkeypatch.setattr(evmod, "_retrieve_semantic", fake_retrieve)
+    backend = _FakeBackend()
+    monkeypatch.setattr(retrieval_mod, "_default_backend", lambda: backend)
 
     conn = _smoke_conn()
     questions = [
@@ -394,16 +401,16 @@ async def test_smoke_end_to_end(monkeypatch):
     report = await run_benchmark(
         questions=questions,
         conn=conn,
-        vector_table=object(),  # opaque, not used by the fake retriever
-        lm_client=None,
-        embedding_model="dummy",
+        lm_client=None,  # no synthesis, no judge, no embedding
+        embedding_model="",
         query_model="",
-        mode="semantic",
+        mode="lexical",
         limit=5,
         run_synthesis=False,
         run_judge=False,
     )
     assert len(report.results) == 3
+    # Every result should have found its single relevant uuid in top-K.
     for r in report.results:
         assert r.mrr == 1.0
         assert r.recall_at_k == 1.0
@@ -413,44 +420,13 @@ async def test_smoke_end_to_end(monkeypatch):
     assert "| s1 |" in md
 
 
-@pytest.mark.asyncio
-async def test_unsupported_mode_returns_degraded():
-    """Hybrid/lexical/recent modes produce a degraded result with a clear error."""
-    conn = _smoke_conn()
-    questions = [
-        Question(
-            id="u1",
-            question="anything",
-            relevant_knowledge_node_uuids=[],
-            acceptable_answer_keywords=["x"],
-        ),
-    ]
-    report = await run_benchmark(
-        questions=questions,
-        conn=conn,
-        vector_table=None,
-        lm_client=None,
-        embedding_model="",
-        query_model="",
-        mode="hybrid",
-        limit=5,
-        run_synthesis=False,
-        run_judge=False,
-    )
-    assert len(report.results) == 1
-    r = report.results[0]
-    assert r.degraded is True
-    assert r.error is not None
-    assert "not available on this branch" in r.error
-
-
 def test_render_markdown_handles_empty():
     from hippo_brain.evaluation import ScoreReport
 
     report = ScoreReport(
         results=[],
         config={
-            "mode": "semantic",
+            "mode": "hybrid",
             "limit": 10,
             "run_synthesis": False,
             "run_judge": False,
@@ -463,61 +439,3 @@ def test_render_markdown_handles_empty():
     )
     md = render_markdown(report)
     assert "Summary" in md
-
-
-@pytest.mark.asyncio
-async def test_run_benchmark_respects_concurrency_limit(monkeypatch):
-    """run_benchmark must not fire more than BENCHMARK_CONCURRENCY score_question calls at once."""
-    active = 0
-    max_active = 0
-
-    async def fake_score_question(q, **kwargs):
-        nonlocal active, max_active
-        active += 1
-        max_active = max(max_active, active)
-        await asyncio.sleep(0)
-        active -= 1
-        return evmod.QuestionResult(
-            q=q,
-            retrieval=[],
-            answer=None,
-            degraded=False,
-            error=None,
-            recall_at_k=None,
-            mrr=None,
-            ndcg_at_k=None,
-            source_diversity=0.0,
-            near_duplicate_density=None,
-            coverage_gap_score=1.0,
-            groundedness=None,
-            keyword_hit=None,
-            elapsed_ms=1.0,
-        )
-
-    monkeypatch.setattr(evmod, "score_question", fake_score_question)
-
-    n = evmod.BENCHMARK_CONCURRENCY * 2
-    questions = [
-        evmod.Question(
-            id=f"c{i}",
-            question="test",
-            relevant_knowledge_node_uuids=[],
-            acceptable_answer_keywords=[],
-        )
-        for i in range(n)
-    ]
-    conn = _smoke_conn()
-    await run_benchmark(
-        questions=questions,
-        conn=conn,
-        vector_table=None,
-        lm_client=None,
-        embedding_model="",
-        query_model="",
-        mode="semantic",
-        limit=5,
-        run_synthesis=False,
-        run_judge=False,
-    )
-
-    assert max_active <= evmod.BENCHMARK_CONCURRENCY

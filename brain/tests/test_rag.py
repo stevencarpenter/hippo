@@ -2,15 +2,18 @@
 
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
 import pytest
 
 from hippo_brain.rag import (
+    DEFAULT_MAX_CONTEXT_CHARS,
     _build_rag_prompt,
     _format_timestamp,
     _shape_rag_sources,
     ask,
     format_rag_response,
 )
+from hippo_brain.retrieval import Filters, SearchResult
 
 
 # -- Fixtures ---------------------------------------------------------------
@@ -26,6 +29,7 @@ SAMPLE_HITS = [
         "captured_at": 1743379200000,  # 2025-03-31
         "outcome": "success",
         "tags": '["firefox", "native-messaging"]',
+        "uuid": "uuid-1",
         "key_decisions": "[]",
         "problems_encountered": "[]",
     },
@@ -39,10 +43,24 @@ SAMPLE_HITS = [
         "captured_at": 1743292800000,  # 2025-03-30
         "outcome": "success",
         "tags": '["schema", "browser"]',
+        "uuid": "uuid-2",
         "key_decisions": "[]",
         "problems_encountered": "[]",
     },
 ]
+
+
+def _healthy_client(chat_return="The answer is 42."):
+    """AsyncMock wired with a passing health_check + embed + chat."""
+    client = AsyncMock()
+    client.base_url = "http://mock:1234/v1"
+    client.health_check.return_value = {"ok": True, "reason": None, "loaded_models": ["m"]}
+    client.embed.return_value = [[0.1] * 768]
+    client.chat.return_value = chat_return
+    return client
+
+
+# -- Pure helpers -----------------------------------------------------------
 
 
 class TestFormatTimestamp:
@@ -67,6 +85,7 @@ class TestShapeRagSources:
         assert src["git_branch"] == "main"
         assert src["timestamp"] == 1743379200000
         assert "cargo build" in src["commands_raw"]
+        assert src["uuid"] == "uuid-1"
 
     def test_empty_hits(self):
         assert _shape_rag_sources([]) == []
@@ -130,6 +149,34 @@ class TestBuildRagPrompt:
         assert "firefox" in user
         assert "native-messaging" in user
 
+    def test_malformed_tags_do_not_crash(self):
+        hit = dict(SAMPLE_HITS[0])
+        hit["tags"] = "{{not json"
+        messages = _build_rag_prompt("test", [hit])
+        assert "Tags:" not in messages[1]["content"]
+
+    def test_context_budget_truncates_oversized_payload(self):
+        """Long fields must be truncated when total exceeds max_chars."""
+        huge = "X" * 50_000
+        hits = [
+            dict(SAMPLE_HITS[0], embed_text=huge, commands_raw=huge),
+            dict(SAMPLE_HITS[1], embed_text=huge, commands_raw=huge),
+        ]
+        messages = _build_rag_prompt("q", hits, max_chars=4000)
+        context = messages[1]["content"]
+        # Leave headroom for system message + question text.
+        assert len(context) < 4000 + 500
+        assert "Configured Firefox native messaging" in context  # structural preserved
+        assert "XXXX" in context  # payload truncated but still present
+        # Ellipsis sentinel indicating truncation occurred
+        assert "…" in context
+
+    def test_small_context_passes_through_unchanged(self):
+        messages = _build_rag_prompt("q", SAMPLE_HITS, max_chars=DEFAULT_MAX_CONTEXT_CHARS)
+        context = messages[1]["content"]
+        # No truncation ellipsis should appear for this small corpus
+        assert "…" not in context
+
 
 class TestFormatRagResponse:
     def test_formats_answer_and_sources(self):
@@ -137,11 +184,13 @@ class TestFormatRagResponse:
             "answer": "You set it up by running install.",
             "sources": _shape_rag_sources(SAMPLE_HITS),
             "model": "test-model",
+            "degraded": False,
         }
         text = format_rag_response(result)
         assert "You set it up by running install." in text
         assert "[92%]" in text
         assert "Configured Firefox native messaging" in text
+        assert "Sources:" in text
 
     def test_formats_error_result(self):
         result = {"error": "LM Studio down", "sources": [], "model": "test-model"}
@@ -158,78 +207,362 @@ class TestFormatRagResponse:
             "answer": "answer",
             "sources": _shape_rag_sources(SAMPLE_HITS),
             "model": "m",
+            "degraded": False,
         }
         text = format_rag_response(result)
         assert "  1. [" in text
         assert "  2. [" in text
 
+    def test_degraded_renders_raw_notes_header(self):
+        result = {
+            "answer": None,
+            "error": "synthesize failed [TimeoutException] model='m' endpoint=x: read timeout",
+            "sources": _shape_rag_sources(SAMPLE_HITS),
+            "model": "m",
+            "degraded": True,
+        }
+        text = format_rag_response(result)
+        assert "Raw notes" in text
+        assert "(degraded:" in text
+        assert "read timeout" in text
+        # Degraded output should surface commands so the agent still gets signal.
+        assert "cargo build" in text
+
+
+# -- ask() integration -------------------------------------------------------
+
 
 class TestAsk:
     @pytest.mark.asyncio
     async def test_returns_answer_and_sources(self):
-        mock_client = AsyncMock()
-        mock_client.embed.return_value = [[0.1] * 768]
-        mock_client.chat.return_value = "The answer is 42."
-
+        client = _healthy_client()
         with patch("hippo_brain.rag.search_similar", return_value=SAMPLE_HITS):
-            result = await ask(
-                "what is the answer?",
-                mock_client,
-                MagicMock(),
-                "test-model",
-                "embed-model",
-            )
+            result = await ask("what is the answer?", client, MagicMock(), "m", "e")
 
         assert result["answer"] == "The answer is 42."
-        assert result["model"] == "test-model"
+        assert result["model"] == "m"
+        assert result["degraded"] is False
         assert len(result["sources"]) == 2
         assert result["sources"][0]["score"] == 0.92
 
     @pytest.mark.asyncio
     async def test_passes_query_model_to_chat(self):
-        mock_client = AsyncMock()
-        mock_client.embed.return_value = [[0.1] * 768]
-        mock_client.chat.return_value = "answer"
-
+        client = _healthy_client(chat_return="answer")
         with patch("hippo_brain.rag.search_similar", return_value=SAMPLE_HITS):
-            await ask("q", mock_client, MagicMock(), "big-model", "embed-model")
+            await ask("q", client, MagicMock(), "big-model", "embed-model")
 
-        mock_client.chat.assert_called_once()
-        assert mock_client.chat.call_args.kwargs["model"] == "big-model"
+        client.chat.assert_called_once()
+        assert client.chat.call_args.kwargs["model"] == "big-model"
 
     @pytest.mark.asyncio
-    async def test_embed_failure_returns_error(self):
-        mock_client = AsyncMock()
-        mock_client.embed.side_effect = Exception("connection refused")
+    async def test_preflight_failure_returns_degraded_without_calling_embed(self):
+        client = _healthy_client()
+        client.health_check.return_value = {
+            "ok": False,
+            "reason": "query model 'big' not loaded. Loaded: ['small']",
+            "loaded_models": ["small"],
+        }
 
-        result = await ask("q", mock_client, MagicMock(), "m", "e")
+        result = await ask("q", client, MagicMock(), "big", "embed")
 
-        assert "error" in result
-        assert "connection refused" in result["error"]
+        assert result["degraded"] is True
+        assert result["answer"] is None
+        assert result["stage"] == "preflight"
+        assert "not loaded" in result["error"]
+        client.embed.assert_not_called()
+        client.chat.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_preflight_exception_is_trapped(self):
+        client = _healthy_client()
+        client.health_check.side_effect = RuntimeError("socket gone")
+
+        result = await ask("q", client, MagicMock(), "m", "e")
+
+        assert result["degraded"] is True
+        assert result["stage"] == "preflight"
+        assert "socket gone" in result["error"]
+        assert "RuntimeError" in result["error"]
+
+    @pytest.mark.asyncio
+    async def test_skip_preflight_bypasses_health_check(self):
+        client = _healthy_client()
+        with patch("hippo_brain.rag.search_similar", return_value=SAMPLE_HITS):
+            result = await ask("q", client, MagicMock(), "m", "e", skip_preflight=True)
+        assert result["degraded"] is False
+        client.health_check.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_embed_timeout_surfaces_type_model_endpoint(self):
+        client = _healthy_client()
+        client.embed.side_effect = httpx.TimeoutException("read timeout")
+
+        result = await ask("q", client, MagicMock(), "m", "e-model")
+
+        assert result["degraded"] is True
+        assert result["stage"] == "embed"
+        assert "TimeoutException" in result["error"]
+        assert "e-model" in result["error"]
+        assert "http://mock:1234/v1" in result["error"]
+        assert "read timeout" in result["error"]
         assert result["sources"] == []
 
     @pytest.mark.asyncio
-    async def test_chat_failure_returns_sources_without_answer(self):
-        mock_client = AsyncMock()
-        mock_client.embed.return_value = [[0.1] * 768]
-        mock_client.chat.side_effect = Exception("model not loaded")
+    async def test_embed_generic_exception_with_empty_message(self):
+        """Regression: the old code produced 'Synthesis failed: ' with no detail."""
+        client = _healthy_client()
+        # Exception with empty str — previously rendered as empty error.
+        client.embed.side_effect = Exception("")
+
+        result = await ask("q", client, MagicMock(), "m", "e")
+
+        assert result["degraded"] is True
+        # Even with empty str(e), error must carry structural info.
+        assert "Exception" in result["error"]
+        assert "embed" in result["error"]
+        assert result["error"].strip() != "embed failed:"
+
+    @pytest.mark.asyncio
+    async def test_embed_empty_response_degrades(self):
+        client = _healthy_client()
+        client.embed.return_value = []
+
+        result = await ask("q", client, MagicMock(), "m", "e")
+
+        assert result["degraded"] is True
+        assert result["stage"] == "embed"
+        assert "no vectors" in result["error"]
+
+    @pytest.mark.asyncio
+    async def test_synthesis_failure_returns_degraded_with_sources(self):
+        client = _healthy_client()
+        client.chat.side_effect = httpx.HTTPError("model not loaded")
 
         with patch("hippo_brain.rag.search_similar", return_value=SAMPLE_HITS):
-            result = await ask("q", mock_client, MagicMock(), "m", "e")
+            result = await ask("q", client, MagicMock(), "query-m", "e")
 
-        assert "error" in result
+        assert result["degraded"] is True
+        assert result["answer"] is None
+        assert result["stage"] == "synthesize"
+        assert "HTTPError" in result["error"]
+        assert "query-m" in result["error"]
         assert "model not loaded" in result["error"]
         assert len(result["sources"]) == 2
 
     @pytest.mark.asyncio
+    async def test_synthesis_empty_response_degrades(self):
+        client = _healthy_client(chat_return="   ")
+
+        with patch("hippo_brain.rag.search_similar", return_value=SAMPLE_HITS):
+            result = await ask("q", client, MagicMock(), "m", "e")
+
+        assert result["degraded"] is True
+        assert result["stage"] == "synthesize"
+        assert "empty" in result["error"].lower()
+        assert len(result["sources"]) == 2
+
+    @pytest.mark.asyncio
     async def test_no_results_returns_no_knowledge_message(self):
-        mock_client = AsyncMock()
-        mock_client.embed.return_value = [[0.1] * 768]
+        client = _healthy_client()
 
         with patch("hippo_brain.rag.search_similar", return_value=[]):
-            result = await ask("q", mock_client, MagicMock(), "m", "e")
+            result = await ask("q", client, MagicMock(), "m", "e")
 
-        assert "answer" in result
+        assert result["degraded"] is False
         assert "No relevant knowledge" in result["answer"]
         assert result["sources"] == []
-        mock_client.chat.assert_not_called()
+        client.chat.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_retrieval_exception_degrades(self):
+        client = _healthy_client()
+
+        with patch("hippo_brain.rag.search_similar", side_effect=RuntimeError("index corrupt")):
+            result = await ask("q", client, MagicMock(), "m", "e")
+
+        assert result["degraded"] is True
+        assert result["stage"] == "retrieve"
+        assert "index corrupt" in result["error"]
+        assert "RuntimeError" in result["error"]
+        client.chat.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_oversized_context_is_capped_before_chat(self):
+        """When retrieval returns huge hits, the chat prompt must respect the budget."""
+        client = _healthy_client(chat_return="ok")
+        huge_hit = dict(SAMPLE_HITS[0], embed_text="Z" * 100_000, commands_raw="Z" * 100_000)
+
+        with patch("hippo_brain.rag.search_similar", return_value=[huge_hit, huge_hit]):
+            await ask("q", client, MagicMock(), "m", "e", max_context_chars=3000)
+
+        messages = (
+            client.chat.call_args.args[0]
+            if client.chat.call_args.args
+            else client.chat.call_args.kwargs.get("messages")
+        )
+        if messages is None:
+            # chat was called as chat(messages, model=...)
+            messages = client.chat.call_args[0][0]
+        user_content = messages[1]["content"]
+        assert len(user_content) < 4500
+
+
+# -- Retrieval-router plumbing ----------------------------------------------
+
+
+def _fake_search_result(**overrides):
+    base = dict(
+        uuid="abc-123",
+        score=0.91,
+        summary="Filtered result",
+        embed_text="filtered embed",
+        outcome="success",
+        tags=["alpha", "beta"],
+        cwd="/home/user/projects/hippo",
+        git_branch="postgres",
+        captured_at=1743379200000,
+        linked_event_ids=[42, 43],
+    )
+    base.update(overrides)
+    return SearchResult(**base)
+
+
+class TestFilteredRetrievalRouting:
+    @pytest.mark.asyncio
+    async def test_flat_kwargs_route_through_retrieval_search(self):
+        """Passing flat filter kwargs routes via retrieval.search with a Filters."""
+        client = _healthy_client(chat_return="answered")
+        sentinel_conn = MagicMock(name="sqlite_conn")
+
+        with (
+            patch("hippo_brain.rag.retrieval_search") as retrieval_mock,
+            patch("hippo_brain.rag.search_similar") as legacy_mock,
+        ):
+            retrieval_mock.return_value = [_fake_search_result()]
+            result = await ask(
+                "q",
+                client,
+                None,
+                "m",
+                "e",
+                project="/home/user/projects/hippo",
+                since=1743292800000,
+                source="claude",
+                branch="postgres",
+                conn=sentinel_conn,
+            )
+
+        assert result["degraded"] is False
+        legacy_mock.assert_not_called()
+        retrieval_mock.assert_called_once()
+        kwargs = retrieval_mock.call_args.kwargs
+        assert retrieval_mock.call_args.args[0] is sentinel_conn
+        passed = kwargs["filters"]
+        assert isinstance(passed, Filters)
+        assert passed.project == "/home/user/projects/hippo"
+        assert passed.since_ms == 1743292800000
+        assert passed.source == "claude"
+        assert passed.branch == "postgres"
+        assert kwargs["mode"] == "hybrid"
+        assert kwargs["limit"] == 10
+
+    @pytest.mark.asyncio
+    async def test_filters_object_passed_through_unchanged(self):
+        """Explicit Filters object is used verbatim (not rebuilt)."""
+        client = _healthy_client(chat_return="ok")
+        sentinel_conn = MagicMock(name="sqlite_conn")
+        my_filters = Filters(project="/x", since_ms=100, source="shell")
+
+        with patch("hippo_brain.rag.retrieval_search") as retrieval_mock:
+            retrieval_mock.return_value = [_fake_search_result()]
+            await ask(
+                "q",
+                client,
+                None,
+                "m",
+                "e",
+                filters=my_filters,
+                conn=sentinel_conn,
+                mode="semantic",
+            )
+
+        assert retrieval_mock.call_args.kwargs["filters"] is my_filters
+        assert retrieval_mock.call_args.kwargs["mode"] == "semantic"
+
+    @pytest.mark.asyncio
+    async def test_no_filters_uses_legacy_search_similar(self):
+        """Backward-compat: with no filters set, legacy search_similar is called."""
+        client = _healthy_client(chat_return="legacy")
+        table = MagicMock(name="lancedb_table")
+
+        with (
+            patch("hippo_brain.rag.retrieval_search") as retrieval_mock,
+            patch("hippo_brain.rag.search_similar", return_value=SAMPLE_HITS) as legacy_mock,
+        ):
+            result = await ask("q", client, table, "m", "e")
+
+        assert result["answer"] == "legacy"
+        retrieval_mock.assert_not_called()
+        legacy_mock.assert_called_once()
+        assert legacy_mock.call_args.args[0] is table
+
+    @pytest.mark.asyncio
+    async def test_filters_path_surfaces_uuid_and_linked_events_in_sources(self):
+        """SearchResult fields (uuid, linked_event_ids) must flow into sources."""
+        client = _healthy_client(chat_return="ok")
+        sentinel_conn = MagicMock()
+
+        with patch("hippo_brain.rag.retrieval_search") as retrieval_mock:
+            retrieval_mock.return_value = [
+                _fake_search_result(uuid="u-1", linked_event_ids=[1, 2, 3]),
+                _fake_search_result(uuid="u-2", score=0.5, linked_event_ids=[]),
+            ]
+            result = await ask(
+                "q",
+                client,
+                None,
+                "m",
+                "e",
+                project="/home/user",
+                conn=sentinel_conn,
+            )
+
+        assert [s["uuid"] for s in result["sources"]] == ["u-1", "u-2"]
+        assert result["sources"][0]["linked_event_ids"] == [1, 2, 3]
+        assert result["sources"][1]["linked_event_ids"] == []
+        # Score round-trips from SearchResult.score through the _distance adapter.
+        assert result["sources"][0]["score"] == pytest.approx(0.91, abs=0.001)
+
+    @pytest.mark.asyncio
+    async def test_filters_without_connection_degrades(self):
+        """Filters requested but no conn (and vector_table is None) → degraded."""
+        client = _healthy_client()
+
+        with patch("hippo_brain.rag.retrieval_search") as retrieval_mock:
+            result = await ask("q", client, None, "m", "e", project="/x")
+
+        assert result["degraded"] is True
+        assert result["stage"] == "retrieve"
+        assert "no sqlite connection" in result["error"]
+        retrieval_mock.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_filters_path_degrades_when_retrieval_raises(self):
+        client = _healthy_client()
+        sentinel_conn = MagicMock()
+
+        with patch("hippo_brain.rag.retrieval_search", side_effect=RuntimeError("vec0 missing")):
+            result = await ask(
+                "q",
+                client,
+                None,
+                "m",
+                "e",
+                filters=Filters(project="/x"),
+                conn=sentinel_conn,
+            )
+
+        assert result["degraded"] is True
+        assert result["stage"] == "retrieve"
+        assert "vec0 missing" in result["error"]
+        client.chat.assert_not_called()

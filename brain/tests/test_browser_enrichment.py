@@ -428,3 +428,34 @@ class TestMarkBrowserQueueFailed:
         ).fetchone()
         assert row[0] == "failed"
         assert row[1] == 2
+
+
+class TestBrowserDwellFilter:
+    def test_short_dwell_events_are_skipped(self, db):
+        stale_ts = int(time.time() * 1000) - 120_000
+        _insert_browser_event(
+            db,
+            1,
+            stale_ts,
+            url="https://example.com/blip",
+            dwell_ms=500,
+            scroll_depth=0.9,
+        )
+        _insert_browser_event(
+            db,
+            2,
+            stale_ts + 1000,
+            url="https://example.com/read",
+            dwell_ms=4000,
+            scroll_depth=0.9,
+        )
+
+        chunks = claim_pending_browser_events(db, "test-worker", stale_secs=60)
+        all_events = [e for chunk in chunks for e in chunk]
+        assert [e["id"] for e in all_events] == [2]
+
+        row = db.execute(
+            "SELECT status, error_message FROM browser_enrichment_queue WHERE browser_event_id = 1"
+        ).fetchone()
+        assert row[0] == "skipped"
+        assert "dwell_ms=500" in row[1]

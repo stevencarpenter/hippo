@@ -1,16 +1,11 @@
 """Retrieval + synthesis evaluation harness.
 
 Exposes pure metric functions and a ``hippo-eval`` CLI. See the design spec
-at ``docs/eval-harness-design.md``.
+at ``docs/superpowers/specs/2026-04-17-eval-harness-design.md``.
 
-The CLI runs a labeled Q/A set against the live hippo corpus via main's
-LanceDB retrieval (:func:`hippo_brain.embeddings.search_similar`) and
-:func:`hippo_brain.rag.ask`, and emits a Markdown scorecard.
-
-Main-branch note: only ``--mode semantic`` is supported. The ``hybrid``,
-``lexical``, and ``recent`` modes require the sqlite-vec + FTS5 retrieval
-engine from the consolidation branch and will no-op with a clear message
-until that migration lands.
+The CLI runs a labeled Q/A set against the live hippo corpus via
+:func:`hippo_brain.retrieval.search` and :func:`hippo_brain.rag.ask`, and
+emits a Markdown scorecard.
 """
 
 from __future__ import annotations
@@ -26,28 +21,11 @@ import statistics
 import sys
 import time
 from dataclasses import dataclass, field
-from importlib.resources import files as _res_files  # nosemgrep
 from pathlib import Path
 from typing import Any, Iterable, Sequence
 
-
-# ---------------------------------------------------------------------------
-# Lightweight retrieval result
-# ---------------------------------------------------------------------------
-
-
-@dataclass
-class SearchResult:
-    """Minimal retrieval hit used by the eval harness.
-
-    ``uuid`` is the knowledge_nodes.uuid (stable across restarts). ``score``
-    is a cosine-similarity-like number in [0, 1] (higher = better). ``node_id``
-    is the LanceDB/SQLite row id and is kept for diagnostics.
-    """
-
-    uuid: str
-    score: float
-    node_id: int = 0
+from hippo_brain.retrieval import Filters, SearchResult
+from hippo_brain.retrieval import search as retrieval_search
 
 
 # ---------------------------------------------------------------------------
@@ -55,29 +33,29 @@ class SearchResult:
 # ---------------------------------------------------------------------------
 
 
-def recall_at_k(retrieved: Sequence[str], relevant: Iterable[str], k: int) -> float | None:
+def recall_at_k(retrieved: Sequence[str], relevant: Iterable[str], k: int) -> float:
     """Fraction of ``relevant`` uuids found in ``retrieved[:k]``.
 
-    Returns ``None`` if ``relevant`` is empty (metric undefined).
+    Returns ``nan`` if ``relevant`` is empty (metric undefined).
     """
     rel = {r for r in relevant if r}
     if not rel:
-        return None
+        return float("nan")
     if k <= 0:
         return 0.0
     hits = sum(1 for uid in retrieved[:k] if uid in rel)
     return hits / len(rel)
 
 
-def mrr(retrieved: Sequence[str], relevant: Iterable[str]) -> float | None:
+def mrr(retrieved: Sequence[str], relevant: Iterable[str]) -> float:
     """Reciprocal rank of the first relevant hit.
 
-    Returns ``None`` if ``relevant`` is empty; ``0.0`` if no relevant uuid
+    Returns ``nan`` if ``relevant`` is empty; ``0.0`` if no relevant uuid
     appears in ``retrieved``.
     """
     rel = {r for r in relevant if r}
     if not rel:
-        return None
+        return float("nan")
     for rank, uid in enumerate(retrieved, 1):
         if uid in rel:
             return 1.0 / rank
@@ -88,20 +66,20 @@ def ndcg_at_k(
     retrieved: Sequence[str],
     relevance: dict[str, float],
     k: int,
-) -> float | None:
+) -> float:
     """Normalized DCG at ``k``.
 
     ``relevance`` maps uuid → graded relevance (0 for anything not listed).
-    Returns ``None`` if no graded entries exist.
+    Returns ``nan`` if no graded entries exist.
     """
     if not relevance or k <= 0:
-        return None
+        return float("nan")
     gains = [relevance.get(uid, 0.0) for uid in retrieved[:k]]
     dcg = sum(g / math.log2(i + 2) for i, g in enumerate(gains))
     ideal = sorted(relevance.values(), reverse=True)[:k]
     idcg = sum(g / math.log2(i + 2) for i, g in enumerate(ideal))
     if idcg == 0.0:
-        return None
+        return float("nan")
     return dcg / idcg
 
 
@@ -122,21 +100,20 @@ def source_diversity(sources_per_hit: Sequence[Sequence[str]]) -> float:
     return entropy / max_entropy if max_entropy > 0 else 0.0
 
 
-def near_duplicate_density(vectors: Sequence[Sequence[float]]) -> float | None:
+def near_duplicate_density(vectors: Sequence[Sequence[float]]) -> float:
     """Mean pairwise cosine similarity across returned hits.
 
     Higher = more near-duplicates in the result set = worse.
-    Returns ``None`` when there are insufficient vectors to compute.
     """
     vecs = [list(v) for v in vectors if v]
     if len(vecs) < 2:
-        return None
+        return float("nan")
     sims: list[float] = []
     for i in range(len(vecs)):
         for j in range(i + 1, len(vecs)):
             sims.append(_cosine(vecs[i], vecs[j]))
     if not sims:
-        return None
+        return float("nan")
     return sum(sims) / len(sims)
 
 
@@ -180,13 +157,13 @@ async def groundedness(
     sources: Sequence[dict],
     lm_client: Any,
     model: str,
-) -> float | None:
+) -> float:
     """LLM-judge: does every factual claim in ``answer`` appear in ``sources``?
 
-    Returns ``None`` on any error (no LLM, parse failure, etc.).
+    Returns ``nan`` on any error (no LLM, parse failure, etc.).
     """
     if not answer or not sources or lm_client is None or not model:
-        return None
+        return float("nan")
     source_blob = "\n\n".join(
         f"[{i + 1}] {s.get('summary', '')} — {s.get('embed_text', '')}"
         for i, s in enumerate(sources)
@@ -201,17 +178,17 @@ async def groundedness(
     try:
         raw = await lm_client.chat(messages, model=model, temperature=0.0, max_tokens=32)
     except Exception:
-        return None
+        return float("nan")
     if not raw:
-        return None
+        return float("nan")
     first = raw.strip().splitlines()[0]
     match = re.search(r"([01](?:\.\d+)?|0?\.\d+)", first)
     if not match:
-        return None
+        return float("nan")
     try:
         val = float(match.group(1))
     except ValueError:
-        return None
+        return float("nan")
     return max(0.0, min(1.0, val))
 
 
@@ -235,11 +212,12 @@ def embedding_cohesion(
     conn: sqlite3.Connection,
     project: str,
     sample: int = 200,
-) -> float | None:
+) -> float:
     """Ratio of in-project mean cosine to random-pair mean cosine.
 
-    Requires the sqlite-vec ``knowledge_vectors`` table (schema v6+). On
-    main, vectors live in LanceDB not SQLite, so this returns ``None``.
+    Ratios > 1 mean nodes sharing a project cluster tighter than background.
+    Returns ``nan`` if either pool is too small or ``knowledge_vectors``
+    isn't loaded.
     """
     try:
         rows = conn.execute(
@@ -254,12 +232,12 @@ def embedding_cohesion(
             (f"%{project}%", f"%{project}%", sample),
         ).fetchall()
     except sqlite3.OperationalError:
-        return None
+        return float("nan")
 
     in_project = [_parse_vec(r[1]) for r in rows if r[1]]
     in_project = [v for v in in_project if v]
     if len(in_project) < 4:
-        return None
+        return float("nan")
 
     try:
         bg_rows = conn.execute(
@@ -267,16 +245,16 @@ def embedding_cohesion(
             (sample,),
         ).fetchall()
     except sqlite3.OperationalError:
-        return None
+        return float("nan")
     background = [_parse_vec(r[0]) for r in bg_rows if r[0]]
     background = [v for v in background if v]
     if len(background) < 4:
-        return None
+        return float("nan")
 
     in_mean = _pairwise_mean_cosine(in_project)
     bg_mean = _pairwise_mean_cosine(background)
     if bg_mean <= 0:
-        return None
+        return float("nan")
     return in_mean / bg_mean
 
 
@@ -316,6 +294,7 @@ def _lookup_enrichment_models(conn: sqlite3.Connection | None, uuids: Sequence[s
     """Return the distinct enrichment_model values seen across ``uuids``.
 
     Empty list when the column or table is missing, or when ``uuids`` is empty.
+    Used for per-vintage stratification (corpus-analyst #12).
     """
     if conn is None or not uuids:
         return []
@@ -339,6 +318,8 @@ def derive_sources(conn: sqlite3.Connection | None, uuids: Sequence[str]) -> dic
     if conn is None or not uuids:
         return {}
     placeholders = ",".join("?" for _ in uuids)
+    # SQL is composed of a fixed literal + a run of `?` placeholders whose
+    # count matches `uuids`; all user values are bound parameters.
     sql_lookup = "SELECT id, uuid FROM knowledge_nodes WHERE uuid IN (" + placeholders + ")"
     try:
         rows = conn.execute(sql_lookup, list(uuids)).fetchall()  # nosemgrep
@@ -351,6 +332,8 @@ def derive_sources(conn: sqlite3.Connection | None, uuids: Sequence[str]) -> dic
     id_ph = ",".join("?" for _ in ids)
     out: dict[str, list[str]] = {uid: [] for uid in id_to_uuid.values()}
 
+    # Fixed allow-list of (pre-composed SQL, label) pairs — no user input
+    # reaches the SQL except via bound parameters below.
     link_queries: list[tuple[str, str]] = [
         (
             "SELECT DISTINCT knowledge_node_id FROM knowledge_node_events "
@@ -385,19 +368,6 @@ def derive_sources(conn: sqlite3.Connection | None, uuids: Sequence[str]) -> dic
     return out
 
 
-def _lookup_uuids_by_id(conn: sqlite3.Connection | None, ids: Sequence[int]) -> dict[int, str]:
-    """Return ``{knowledge_nodes.id -> uuid}`` for the given ids."""
-    if conn is None or not ids:
-        return {}
-    placeholders = ",".join("?" for _ in ids)
-    sql = "SELECT id, uuid FROM knowledge_nodes WHERE id IN (" + placeholders + ")"
-    try:
-        rows = conn.execute(sql, list(ids)).fetchall()  # nosemgrep
-    except sqlite3.OperationalError:
-        return {}
-    return {row[0]: row[1] for row in rows if row[0] is not None and row[1]}
-
-
 # ---------------------------------------------------------------------------
 # Harness data classes
 # ---------------------------------------------------------------------------
@@ -420,14 +390,14 @@ class QuestionResult:
     answer: str | None
     degraded: bool
     error: str | None
-    recall_at_k: float | None
-    mrr: float | None
-    ndcg_at_k: float | None
+    recall_at_k: float
+    mrr: float
+    ndcg_at_k: float
     source_diversity: float
-    near_duplicate_density: float | None
+    near_duplicate_density: float
     coverage_gap_score: float
-    groundedness: float | None
-    keyword_hit: float | None  # 1.0=hit, 0.0=miss, None=synthesis disabled
+    groundedness: float
+    keyword_hit: bool
     elapsed_ms: float
     enrichment_models: list[str] = field(default_factory=list)
 
@@ -446,12 +416,8 @@ class ScoreReport:
 # ---------------------------------------------------------------------------
 
 
-def load_questions(path: str | Path | Any) -> list[Question]:
-    if isinstance(path, (str, Path)):
-        raw = Path(path).read_text(encoding="utf-8")
-    else:
-        raw = path.read_text(encoding="utf-8")
-    data = json.loads(raw)
+def load_questions(path: str | Path) -> list[Question]:
+    data = json.loads(Path(path).read_text())
     raw = data.get("questions", data) if isinstance(data, dict) else data
     questions: list[Question] = []
     for q in raw:
@@ -469,85 +435,14 @@ def load_questions(path: str | Path | Any) -> list[Question]:
 
 
 # ---------------------------------------------------------------------------
-# Retrieval adapter (main-branch: LanceDB semantic only)
-# ---------------------------------------------------------------------------
-
-
-SUPPORTED_MODES = ("semantic",)
-UNSUPPORTED_MODES = ("hybrid", "lexical", "recent")
-
-
-async def _retrieve_semantic(
-    conn: sqlite3.Connection,
-    vector_table: Any,
-    lm_client: Any,
-    question: str,
-    embedding_model: str,
-    limit: int,
-) -> list[SearchResult]:
-    """Main-branch semantic retrieval: embed + LanceDB cosine nearest-neighbor.
-
-    Returns a list of :class:`SearchResult` ordered by score descending.
-    Raises on any unrecoverable failure; callers wrap the call in try/except.
-    """
-    if vector_table is None or lm_client is None or not embedding_model:
-        raise RuntimeError("semantic retrieval requires vector_table + lm_client + embedding_model")
-
-    from hippo_brain.embeddings import EMBED_DIM, _pad_or_truncate, search_similar
-
-    vecs = await lm_client.embed([question], model=embedding_model)
-    if not vecs:
-        return []
-    query_vec = _pad_or_truncate(list(vecs[0]), EMBED_DIM)
-    hits = search_similar(vector_table, query_vec, limit=limit)
-
-    ids = [int(nid) for h in hits if (nid := h.get("id")) is not None]
-    id_to_uuid = _lookup_uuids_by_id(conn, ids)
-
-    results: list[SearchResult] = []
-    for h in hits:
-        nid_raw = h.get("id")
-        nid = int(nid_raw) if nid_raw is not None else 0
-        # LanceDB returns cosine distance; convert to a [0, 1] similarity.
-        distance = float(h.get("_distance", 1.0))
-        score = max(0.0, 1.0 - distance)
-        uid = id_to_uuid.get(nid, "")
-        results.append(SearchResult(uuid=uid, score=score, node_id=nid))
-    return results
-
-
-# ---------------------------------------------------------------------------
 # Harness core
 # ---------------------------------------------------------------------------
-
-
-def _unsupported_result(q: Question, mode: str, elapsed_ms: float) -> QuestionResult:
-    return QuestionResult(
-        q=q,
-        retrieval=[],
-        answer=None,
-        degraded=True,
-        error=(
-            f"mode={mode!r} is not available on this branch; only 'semantic' is supported "
-            "until the sqlite-vec consolidation migration lands"
-        ),
-        recall_at_k=None,
-        mrr=None,
-        ndcg_at_k=None,
-        source_diversity=0.0,
-        near_duplicate_density=None,
-        coverage_gap_score=1.0,
-        groundedness=None,
-        keyword_hit=None,
-        elapsed_ms=elapsed_ms,
-    )
 
 
 async def score_question(
     q: Question,
     *,
     conn: sqlite3.Connection,
-    vector_table: Any | None,
     lm_client: Any | None,
     embedding_model: str,
     query_model: str,
@@ -558,16 +453,21 @@ async def score_question(
 ) -> QuestionResult:
     """Score a single question end-to-end."""
     t0 = time.monotonic()
-
-    if mode not in SUPPORTED_MODES:
-        return _unsupported_result(q, mode, (time.monotonic() - t0) * 1000)
-
     relevant = set(q.relevant_knowledge_node_uuids)
     relevance_graded = {uid: 1.0 for uid in relevant}
 
+    query_vec: list[float] | None = None
+    if lm_client is not None and embedding_model:
+        try:
+            vecs = await lm_client.embed([q.question], model=embedding_model)
+            if vecs:
+                query_vec = list(vecs[0])
+        except Exception:
+            query_vec = None
+
     try:
-        hits = await _retrieve_semantic(
-            conn, vector_table, lm_client, q.question, embedding_model, limit
+        hits = retrieval_search(
+            conn, q.question, query_vec, filters=Filters(), mode=mode, limit=limit
         )
     except Exception as e:
         elapsed = (time.monotonic() - t0) * 1000
@@ -577,20 +477,19 @@ async def score_question(
             answer=None,
             degraded=True,
             error=f"retrieval: {type(e).__name__}: {e}",
-            recall_at_k=None,
-            mrr=None,
-            ndcg_at_k=None,
+            recall_at_k=float("nan"),
+            mrr=float("nan"),
+            ndcg_at_k=float("nan"),
             source_diversity=0.0,
-            near_duplicate_density=None,
+            near_duplicate_density=float("nan"),
             coverage_gap_score=1.0,
-            groundedness=None,
-            keyword_hit=None,
+            groundedness=float("nan"),
+            keyword_hit=False,
             elapsed_ms=elapsed,
         )
 
-    scored_hits = [h for h in hits if h.uuid]
-    retrieved_uuids = [h.uuid for h in scored_hits]
-    scores = [h.score for h in scored_hits]
+    retrieved_uuids = [h.uuid for h in hits]
+    scores = [h.score for h in hits]
     source_map = derive_sources(conn, retrieved_uuids)
     sources_per_hit = [source_map.get(uid, []) for uid in retrieved_uuids]
     enrichment_models = _lookup_enrichment_models(conn, retrieved_uuids)
@@ -598,34 +497,31 @@ async def score_question(
     answer: str | None = None
     degraded = False
     error: str | None = None
-    ground: float | None = None
+    ground = float("nan")
 
-    effective_synthesis = (
-        run_synthesis and lm_client is not None and query_model and vector_table is not None
-    )
-
-    if effective_synthesis:
+    if run_synthesis and lm_client is not None and query_model:
         try:
             from hippo_brain.rag import ask as rag_ask
 
             res = await rag_ask(
                 q.question,
                 lm_client,
-                vector_table,
+                conn,
                 query_model,
                 embedding_model,
                 limit=limit,
+                skip_preflight=True,
+                filters=Filters(),
+                mode=mode,
+                conn=conn,
             )
             answer = res.get("answer")
+            degraded = bool(res.get("degraded"))
             error = res.get("error")
-            sources = res.get("sources", [])
-            # Mark degraded if no answer, explicit error, or synthesis returned
-            # no sources (answer is evidence-free even if non-empty).
-            degraded = bool(error) or not answer or not sources or not hits
             if run_judge and answer and not degraded:
                 ground = await groundedness(
                     answer,
-                    sources,
+                    res.get("sources", []),
                     lm_client,
                     query_model,
                 )
@@ -644,46 +540,36 @@ async def score_question(
         mrr=mrr(retrieved_uuids, relevant),
         ndcg_at_k=ndcg_at_k(retrieved_uuids, relevance_graded, limit),
         source_diversity=source_diversity(sources_per_hit),
-        near_duplicate_density=None,  # TODO: fetch vectors post-retrieval once LanceDB search_similar exposes them
+        near_duplicate_density=float("nan"),
         coverage_gap_score=coverage_gap_score(scores),
         groundedness=ground,
-        keyword_hit=(
-            (1.0 if keyword_match(answer or "", q.acceptable_answer_keywords) else 0.0)
-            if effective_synthesis
-            else None
-        ),
+        keyword_hit=keyword_match(answer or "", q.acceptable_answer_keywords),
         elapsed_ms=elapsed,
         enrichment_models=enrichment_models,
     )
-
-
-BENCHMARK_CONCURRENCY = 4
 
 
 async def run_benchmark(
     *,
     questions: Sequence[Question],
     conn: sqlite3.Connection,
-    vector_table: Any | None,
     lm_client: Any | None,
     embedding_model: str,
     query_model: str,
-    mode: str = "semantic",
+    mode: str = "hybrid",
     limit: int = 10,
     run_synthesis: bool = True,
     run_judge: bool = True,
     corpus_stats: dict | None = None,
 ) -> ScoreReport:
-    """Score every question and return a :class:`ScoreReport`."""
+    """Score every question and return a ``ScoreReport``."""
     started = time.time()
-    sem = asyncio.Semaphore(BENCHMARK_CONCURRENCY)
-
-    async def _guarded(q: Question) -> QuestionResult:
-        async with sem:
-            return await score_question(
+    results: list[QuestionResult] = []
+    for q in questions:
+        results.append(
+            await score_question(
                 q,
                 conn=conn,
-                vector_table=vector_table,
                 lm_client=lm_client,
                 embedding_model=embedding_model,
                 query_model=query_model,
@@ -692,8 +578,7 @@ async def run_benchmark(
                 run_synthesis=run_synthesis,
                 run_judge=run_judge,
             )
-
-    results = list(await asyncio.gather(*[_guarded(q) for q in questions]))
+        )
     return ScoreReport(
         results=results,
         config={
@@ -715,27 +600,26 @@ async def run_benchmark(
 # ---------------------------------------------------------------------------
 
 
-def _fmt(x: float | None) -> str:
-    if x is None:
+def _fmt(x: float) -> str:
+    if x is None or (isinstance(x, float) and math.isnan(x)):
         return "—"
     return f"{x:.3f}"
 
 
-def _mean(values: Iterable[float | None]) -> float | None:
-    clean = [v for v in values if v is not None]
-    return statistics.mean(clean) if clean else None
+def _mean(values: Iterable[float]) -> float:
+    clean = [v for v in values if isinstance(v, float) and not math.isnan(v)]
+    return statistics.mean(clean) if clean else float("nan")
 
 
-def _median(values: Iterable[float | None]) -> float | None:
-    clean = [v for v in values if v is not None]
-    return statistics.median(clean) if clean else None
+def _median(values: Iterable[float]) -> float:
+    clean = [v for v in values if isinstance(v, float) and not math.isnan(v)]
+    return statistics.median(clean) if clean else float("nan")
 
 
-def _percentile(values: Sequence[float | None], p: float) -> float | None:
-    clean = [v for v in values if v is not None]
-    if not clean:
-        return None
-    ordered = sorted(clean)
+def _percentile(values: Sequence[float], p: float) -> float:
+    if not values:
+        return float("nan")
+    ordered = sorted(values)
     idx = max(0, min(len(ordered) - 1, int(round(p * (len(ordered) - 1)))))
     return ordered[idx]
 
@@ -763,14 +647,14 @@ def render_markdown(report: ScoreReport) -> str:
     lines.append("")
     lines.append("| Metric | Mean | Median |")
     lines.append("|---|---:|---:|")
-    summary_metrics: list[tuple[str, list[float | None]]] = [
+    summary_metrics: list[tuple[str, list[float]]] = [
         ("recall@k", [r.recall_at_k for r in report.results]),
         ("mrr", [r.mrr for r in report.results]),
         ("ndcg@k", [r.ndcg_at_k for r in report.results]),
         ("source_diversity", [r.source_diversity for r in report.results]),
         ("coverage_gap", [r.coverage_gap_score for r in report.results]),
         ("groundedness", [r.groundedness for r in report.results]),
-        ("keyword_hit_rate", [r.keyword_hit for r in report.results]),
+        ("keyword_hit_rate", [1.0 if r.keyword_hit else 0.0 for r in report.results]),
     ]
     for name, vals in summary_metrics:
         lines.append(f"| {name} | {_fmt(_mean(vals))} | {_fmt(_median(vals))} |")
@@ -806,9 +690,18 @@ def render_markdown(report: ScoreReport) -> str:
     lines.append("## Caveats")
     lines.append("")
     lines.append(
-        "- **Retrieval mode coverage**: only `semantic` (LanceDB cosine-NN) is available on "
-        "`main`. The `hybrid`, `lexical`, and `recent` modes require the sqlite-vec + FTS5 "
-        "retrieval engine from the consolidation branch and no-op with a clear error."
+        "- **FTS5 phrase-wrap (R-03)**: lexical mode wraps multi-word queries in "
+        "a single phrase, so recall on long natural-language questions is "
+        "pathologically low — not a ranking bug."
+    )
+    lines.append(
+        "- **RRF normalization (R-07)**: hybrid scores are normalized to top=1.0 "
+        "per query. Absolute score thresholds are not comparable across queries."
+    )
+    lines.append(
+        "- **vec0 brute-force (R-02)**: there is no ANN index on "
+        "`knowledge_vectors`. Latency is O(N); hybrid≥LanceDB will stop holding "
+        "once the corpus grows well past ~2K nodes."
     )
     lines.append(
         "- **events.git_repo is NULL** across the live v5 corpus, so project "
@@ -816,13 +709,9 @@ def render_markdown(report: ScoreReport) -> str:
         "project-filtered queries is a data bug, not a retrieval bug."
     )
     lines.append(
-        "- **Embedding cohesion** requires the sqlite-vec `knowledge_vectors` table, "
-        "which is not present on main. The metric returns `—` until migration lands."
-    )
-    lines.append(
-        "- **Near-duplicate density** is not populated — LanceDB hits do not carry "
-        "raw vectors through `search_similar`; a future extension can fetch vectors "
-        "for post-retrieval diversity scoring."
+        "- **Branch corpus coverage**: on the `postgres` branch only ~1.7% of "
+        "events have knowledge-node coverage (vs ~13.4% on main). Labels are "
+        "drawn from the main-hippo corpus until backfill runs."
     )
     lines.append("")
 
@@ -831,12 +720,11 @@ def render_markdown(report: ScoreReport) -> str:
     lines.append("| id | intent | top | gap | div | ground | kw | degraded |")
     lines.append("|---|---|---:|---:|---:|---:|:---:|:---:|")
     for r in report.results:
-        top = r.retrieval[0].score if r.retrieval else None
+        top = r.retrieval[0].score if r.retrieval else float("nan")
         lines.append(
             f"| {r.q.id} | {r.q.intent or '—'} | {_fmt(top)} | "
             f"{_fmt(r.coverage_gap_score)} | {_fmt(r.source_diversity)} | "
-            f"{_fmt(r.groundedness)} | "
-            f"{'—' if r.keyword_hit is None else ('✓' if r.keyword_hit else '✗')} | "
+            f"{_fmt(r.groundedness)} | {'✓' if r.keyword_hit else '✗'} | "
             f"{'⚠' if r.degraded else ''} |"
         )
     lines.append("")
@@ -864,7 +752,7 @@ def render_markdown(report: ScoreReport) -> str:
 # ---------------------------------------------------------------------------
 
 
-_DEFAULT_QUESTIONS = _res_files("hippo_brain").joinpath("_fixtures/eval_questions.json")
+_DEFAULT_QUESTIONS = Path(__file__).parent.parent.parent / "tests" / "eval_questions.json"
 
 
 def _corpus_stats(conn: sqlite3.Connection) -> dict:
@@ -883,17 +771,9 @@ def _corpus_stats(conn: sqlite3.Connection) -> dict:
 
 def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     p = argparse.ArgumentParser(prog="hippo-eval", description="Hippo retrieval eval harness")
-    p.add_argument("--questions", default=_DEFAULT_QUESTIONS)
+    p.add_argument("--questions", default=str(_DEFAULT_QUESTIONS))
     p.add_argument("--out", default="")
-    p.add_argument(
-        "--mode",
-        default="semantic",
-        choices=["semantic", *UNSUPPORTED_MODES],
-        help=(
-            "Retrieval mode. Only 'semantic' is available on main; hybrid/lexical/recent "
-            "require the sqlite-vec consolidation migration and will no-op."
-        ),
-    )
+    p.add_argument("--mode", default="hybrid", choices=["hybrid", "semantic", "lexical", "recent"])
     p.add_argument("--limit", type=int, default=10)
     p.add_argument("--no-synthesis", action="store_true")
     p.add_argument("--no-judge", action="store_true")
@@ -901,19 +781,11 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     return p.parse_args(argv)
 
 
-def _open_conn(db_path: str) -> sqlite3.Connection:
-    conn = sqlite3.connect(db_path)
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA foreign_keys=ON")
-    conn.execute("PRAGMA busy_timeout=5000")
-    return conn
-
-
 def main(argv: Sequence[str] | None = None) -> int:
     args = _parse_args(argv)
     from hippo_brain.client import LMStudioClient
-    from hippo_brain.embeddings import get_or_create_table, open_vector_db
-    from hippo_brain.mcp import _load_config  # private but intentional: shared config loader
+    from hippo_brain.mcp import _load_config
+    from hippo_brain.vector_store import open_conn
 
     cfg = _load_config()
     questions = load_questions(args.questions)
@@ -924,71 +796,33 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(f"No questions matched --subset {args.subset!r}", file=sys.stderr)
             return 2
 
-    if args.mode in UNSUPPORTED_MODES:
-        print(
-            f"mode={args.mode!r} is not available on this branch; only 'semantic' is "
-            "supported until the sqlite-vec consolidation migration lands. Re-run with "
-            "--mode semantic.",
-            file=sys.stderr,
-        )
-        return 0
-
-    conn = _open_conn(cfg["db_path"])
-    db: Any | None = None
+    conn = open_conn(cfg["db_path"])
+    lm_client: Any | None = None
     try:
-        lm_client: Any | None = None
-        try:
-            lm_client = LMStudioClient(base_url=cfg["lmstudio_base_url"])
-        except Exception as e:
-            print(f"LM Studio client unavailable: {e}", file=sys.stderr)
+        lm_client = LMStudioClient(base_url=cfg["lmstudio_base_url"])
+    except Exception as e:
+        print(f"LM Studio client unavailable: {e}", file=sys.stderr)
 
-        vector_table: Any | None = None
-        try:
-            db = open_vector_db(cfg["data_dir"])
-            vector_table = get_or_create_table(db)
-        except Exception as e:
-            print(f"Vector table unavailable: {e}", file=sys.stderr)
-
-        # Preflight: verify LM Studio is reachable before running 40 questions.
-        # A single clear message here is better than per-question retrieval errors.
-        run_synthesis = not args.no_synthesis
-        run_judge = not args.no_judge
-        if lm_client is not None and args.mode == "semantic":
-            if not asyncio.run(lm_client.is_reachable()):
-                print(
-                    "LM Studio unreachable — semantic retrieval requires LM Studio "
-                    "for query embeddings, so the benchmark is exiting early.",
-                    file=sys.stderr,
-                )
-                return 1
-
-        report = asyncio.run(
-            run_benchmark(
-                questions=questions,
-                conn=conn,
-                vector_table=vector_table,
-                lm_client=lm_client,
-                embedding_model=cfg["embedding_model"],
-                query_model=cfg["query_model"],
-                mode=args.mode,
-                limit=args.limit,
-                run_synthesis=run_synthesis,
-                run_judge=run_judge,
-                corpus_stats=_corpus_stats(conn),
-            )
+    report = asyncio.run(
+        run_benchmark(
+            questions=questions,
+            conn=conn,
+            lm_client=lm_client,
+            embedding_model=cfg["embedding_model"],
+            query_model=cfg["query_model"],
+            mode=args.mode,
+            limit=args.limit,
+            run_synthesis=not args.no_synthesis,
+            run_judge=not args.no_judge,
+            corpus_stats=_corpus_stats(conn),
         )
-        md = render_markdown(report)
-        if args.out:
-            Path(args.out).write_text(md, encoding="utf-8")
-        else:
-            print(md)
-        return 0
-    finally:
-        conn.close()
-        if db is not None:
-            close_fn = getattr(db, "close", None)
-            if callable(close_fn):
-                close_fn()
+    )
+    md = render_markdown(report)
+    if args.out:
+        Path(args.out).write_text(md)
+    else:
+        print(md)
+    return 0
 
 
 if __name__ == "__main__":
