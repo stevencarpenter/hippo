@@ -6,7 +6,14 @@
 
 use std::ffi::OsStr;
 use std::path::Path;
-use std::process::Command;
+use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
+
+/// Upper bound on any single `git` subprocess. `git config --get` and
+/// `git rev-parse` are local-only reads, but a stuck credential helper,
+/// hung filesystem, or exotic pager config can hang indefinitely — cap
+/// the hot path so a broken repo can't stall event capture.
+const GIT_TIMEOUT: Duration = Duration::from_millis(500);
 
 /// Derive a repo identifier for `cwd`.
 ///
@@ -24,15 +31,36 @@ pub fn derive_git_repo(cwd: &Path) -> Option<String> {
 }
 
 fn run_git(cwd: &Path, args: &[&str]) -> Option<String> {
-    let output = Command::new("git")
+    let mut child = Command::new("git")
         .arg("-C")
         .arg(cwd.as_os_str())
         .args(args)
-        .output()
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
         .ok()?;
-    if !output.status.success() {
+
+    let deadline = Instant::now() + GIT_TIMEOUT;
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(s)) => break s,
+            Ok(None) => {
+                if Instant::now() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return None;
+                }
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            Err(_) => return None,
+        }
+    };
+    if !status.success() {
         return None;
     }
+
+    let output = child.wait_with_output().ok()?;
     let s = String::from_utf8(output.stdout).ok()?;
     let trimmed = s.trim();
     if trimmed.is_empty() {
@@ -63,6 +91,14 @@ fn toplevel_basename(cwd: &Path) -> Option<String> {
 ///   - `ssh://git@github.com/owner/repo.git`
 ///
 /// Returns `None` for malformed input.
+///
+/// Note: for enterprise hosts with nested groups
+/// (e.g. `https://gitlab.example.com/group/subgroup/owner/repo`) this
+/// returns only the last two path segments (`owner/repo`) and drops the
+/// group hierarchy. GitHub.com — the primary target and the only shape
+/// `workflow_runs.repo` currently carries — has no groups, so the join
+/// stays correct. Enterprise GitLab users wanting full-path matching
+/// will need to revisit this.
 pub fn parse_owner_repo(url: &str) -> Option<String> {
     let trimmed = url.trim();
     let stripped = trimmed.strip_suffix(".git").unwrap_or(trimmed);

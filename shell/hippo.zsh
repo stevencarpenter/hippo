@@ -81,11 +81,18 @@ _hippo_precmd() {
                 # Handles git@host:owner/repo.git, https://host/owner/repo, ssh://host/owner/repo.
                 local slug="${origin_url%.git}"
                 slug="${slug##*:}"           # for scp-style git@host:owner/repo
-                local repo_name="${slug##*/}"
-                local owner_tail="${slug%/${repo_name}}"
-                local owner_name="${owner_tail##*/}"
-                if [[ -n "${owner_name}" && -n "${repo_name}" && "${owner_name}" != "${slug}" ]]; then
-                    _HIPPO_GIT_REPO="${owner_name}/${repo_name}"
+                # Require at least two path segments — reject single-segment
+                # slugs like a bare `repo.git` that would otherwise slip past
+                # the parameter expansion below.
+                if [[ "${slug}" == */* ]]; then
+                    local repo_name="${slug##*/}"
+                    local owner_tail="${slug%/${repo_name}}"
+                    local owner_name="${owner_tail##*/}"
+                    if [[ -n "${owner_name}" && -n "${repo_name}" ]]; then
+                        _HIPPO_GIT_REPO="${owner_name}/${repo_name}"
+                    else
+                        _HIPPO_GIT_REPO=""
+                    fi
                 else
                     _HIPPO_GIT_REPO=""
                 fi
