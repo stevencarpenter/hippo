@@ -1,0 +1,81 @@
+client:
+  name: basic
+  file-system: device-agnostic
+tools: {}
+targets:
+  "HippoGUI-arm64-apple-macosx-debug.exe": ["<HippoGUI-arm64-apple-macosx-debug.exe>"]
+  "HippoGUI-arm64-apple-macosx-debug.module": ["<HippoGUI-arm64-apple-macosx-debug.module>"]
+  "PackageStructure": ["<PackageStructure>"]
+  "main": ["<HippoGUI-arm64-apple-macosx-debug.exe>","<HippoGUI-arm64-apple-macosx-debug.module>"]
+  "test": ["<HippoGUI-arm64-apple-macosx-debug.exe>","<HippoGUI-arm64-apple-macosx-debug.module>"]
+default: "main"
+nodes:
+  "/Users/carpenter/projects/hippo/gui/Sources/HippoGUI/":
+    is-directory-structure: true
+    content-exclusion-patterns: [".git",".build"]
+  "/Users/carpenter/projects/hippo/gui/.build/arm64-apple-macosx/debug/HippoGUI":
+    is-mutated: true
+commands:
+  "/Users/carpenter/projects/hippo/gui/.build/arm64-apple-macosx/debug/HippoGUI-entitlement.plist":
+    tool: write-auxiliary-file
+    inputs: ["<entitlement-plist>","<com.apple.security.get-task-allow>"]
+    outputs: ["/Users/carpenter/projects/hippo/gui/.build/arm64-apple-macosx/debug/HippoGUI-entitlement.plist"]
+    description: "Write auxiliary file /Users/carpenter/projects/hippo/gui/.build/arm64-apple-macosx/debug/HippoGUI-entitlement.plist"
+
+  "/Users/carpenter/projects/hippo/gui/.build/arm64-apple-macosx/debug/HippoGUI.build/sources":
+    tool: write-auxiliary-file
+    inputs: ["<sources-file-list>","/Users/carpenter/projects/hippo/gui/Sources/HippoGUI/App/HippoGUIApp.swift","/Users/carpenter/projects/hippo/gui/Sources/HippoGUI/Views/ContentView.swift"]
+    outputs: ["/Users/carpenter/projects/hippo/gui/.build/arm64-apple-macosx/debug/HippoGUI.build/sources"]
+    description: "Write auxiliary file /Users/carpenter/projects/hippo/gui/.build/arm64-apple-macosx/debug/HippoGUI.build/sources"
+
+  "/Users/carpenter/projects/hippo/gui/.build/arm64-apple-macosx/debug/HippoGUI.product/Objects.LinkFileList":
+    tool: write-auxiliary-file
+    inputs: ["<link-file-list>","/Users/carpenter/projects/hippo/gui/.build/arm64-apple-macosx/debug/HippoGUI.build/ContentView.swift.o","/Users/carpenter/projects/hippo/gui/.build/arm64-apple-macosx/debug/HippoGUI.build/HippoGUIApp.swift.o"]
+    outputs: ["/Users/carpenter/projects/hippo/gui/.build/arm64-apple-macosx/debug/HippoGUI.product/Objects.LinkFileList"]
+    description: "Write auxiliary file /Users/carpenter/projects/hippo/gui/.build/arm64-apple-macosx/debug/HippoGUI.product/Objects.LinkFileList"
+
+  "/Users/carpenter/projects/hippo/gui/.build/arm64-apple-macosx/debug/swift-version--58304C5D6DBC2206.txt":
+    tool: write-auxiliary-file
+    inputs: ["<swift-get-version>","/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc"]
+    outputs: ["/Users/carpenter/projects/hippo/gui/.build/arm64-apple-macosx/debug/swift-version--58304C5D6DBC2206.txt"]
+    always-out-of-date: "true"
+    description: "Write auxiliary file /Users/carpenter/projects/hippo/gui/.build/arm64-apple-macosx/debug/swift-version--58304C5D6DBC2206.txt"
+
+  "<HippoGUI-arm64-apple-macosx-debug.exe>":
+    tool: phony
+    inputs: ["<HippoGUI-arm64-apple-macosx-debug.exe-CodeSigning>"]
+    outputs: ["<HippoGUI-arm64-apple-macosx-debug.exe>"]
+
+  "<HippoGUI-arm64-apple-macosx-debug.module>":
+    tool: phony
+    inputs: ["/Users/carpenter/projects/hippo/gui/.build/arm64-apple-macosx/debug/HippoGUI.build/HippoGUIApp.swift.o","/Users/carpenter/projects/hippo/gui/.build/arm64-apple-macosx/debug/HippoGUI.build/ContentView.swift.o","/Users/carpenter/projects/hippo/gui/.build/arm64-apple-macosx/debug/Modules/HippoGUI.swiftmodule"]
+    outputs: ["<HippoGUI-arm64-apple-macosx-debug.module>"]
+
+  "C.HippoGUI-arm64-apple-macosx-debug.exe":
+    tool: shell
+    inputs: ["/Users/carpenter/projects/hippo/gui/.build/arm64-apple-macosx/debug/HippoGUI.build/ContentView.swift.o","/Users/carpenter/projects/hippo/gui/.build/arm64-apple-macosx/debug/HippoGUI.build/HippoGUIApp.swift.o","/Users/carpenter/projects/hippo/gui/.build/arm64-apple-macosx/debug/HippoGUI.product/Objects.LinkFileList"]
+    outputs: ["/Users/carpenter/projects/hippo/gui/.build/arm64-apple-macosx/debug/HippoGUI"]
+    description: "Linking ./.build/arm64-apple-macosx/debug/HippoGUI"
+    args: ["/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc","-L","/Users/carpenter/projects/hippo/gui/.build/arm64-apple-macosx/debug","-o","/Users/carpenter/projects/hippo/gui/.build/arm64-apple-macosx/debug/HippoGUI","-module-name","HippoGUI","-Xlinker","-no_warn_duplicate_libraries","-emit-executable","-Xlinker","-alias","-Xlinker","_HippoGUI_main","-Xlinker","_main","-Xlinker","-rpath","-Xlinker","@loader_path","@/Users/carpenter/projects/hippo/gui/.build/arm64-apple-macosx/debug/HippoGUI.product/Objects.LinkFileList","-Xlinker","-rpath","-Xlinker","/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift-6.2/macosx","-target","arm64-apple-macosx14.0","-Xlinker","-add_ast_path","-Xlinker","/Users/carpenter/projects/hippo/gui/.build/arm64-apple-macosx/debug/Modules/HippoGUI.swiftmodule","-plugin-path","/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/host/plugins/testing","-sdk","/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.4.sdk","-F","/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks","-I","/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib","-L","/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib","-g"]
+
+  "C.HippoGUI-arm64-apple-macosx-debug.exe-entitlements":
+    tool: shell
+    inputs: ["/Users/carpenter/projects/hippo/gui/.build/arm64-apple-macosx/debug/HippoGUI","/Users/carpenter/projects/hippo/gui/.build/arm64-apple-macosx/debug/HippoGUI-entitlement.plist"]
+    outputs: ["<HippoGUI-arm64-apple-macosx-debug.exe-CodeSigning>"]
+    description: "Applying debug entitlements to ./.build/arm64-apple-macosx/debug/HippoGUI"
+    args: ["codesign","--force","--sign","-","--entitlements","/Users/carpenter/projects/hippo/gui/.build/arm64-apple-macosx/debug/HippoGUI-entitlement.plist","/Users/carpenter/projects/hippo/gui/.build/arm64-apple-macosx/debug/HippoGUI"]
+
+  "C.HippoGUI-arm64-apple-macosx-debug.module":
+    tool: shell
+    inputs: ["/Users/carpenter/projects/hippo/gui/Sources/HippoGUI/App/HippoGUIApp.swift","/Users/carpenter/projects/hippo/gui/Sources/HippoGUI/Views/ContentView.swift","/Users/carpenter/projects/hippo/gui/.build/arm64-apple-macosx/debug/swift-version--58304C5D6DBC2206.txt","/Users/carpenter/projects/hippo/gui/.build/arm64-apple-macosx/debug/HippoGUI.build/sources"]
+    outputs: ["/Users/carpenter/projects/hippo/gui/.build/arm64-apple-macosx/debug/HippoGUI.build/HippoGUIApp.swift.o","/Users/carpenter/projects/hippo/gui/.build/arm64-apple-macosx/debug/HippoGUI.build/ContentView.swift.o","/Users/carpenter/projects/hippo/gui/.build/arm64-apple-macosx/debug/Modules/HippoGUI.swiftmodule"]
+    description: "Compiling Swift Module 'HippoGUI' (2 sources)"
+    args: ["/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc","-module-name","HippoGUI","-emit-dependencies","-emit-module","-emit-module-path","/Users/carpenter/projects/hippo/gui/.build/arm64-apple-macosx/debug/Modules/HippoGUI.swiftmodule","-output-file-map","/Users/carpenter/projects/hippo/gui/.build/arm64-apple-macosx/debug/HippoGUI.build/output-file-map.json","-incremental","-c","@/Users/carpenter/projects/hippo/gui/.build/arm64-apple-macosx/debug/HippoGUI.build/sources","-I","/Users/carpenter/projects/hippo/gui/.build/arm64-apple-macosx/debug/Modules","-target","arm64-apple-macosx14.0","-incremental","-enable-batch-mode","-serialize-diagnostics","-index-store-path","/Users/carpenter/projects/hippo/gui/.build/arm64-apple-macosx/debug/index/store","-Onone","-enable-testing","-j18","-DSWIFT_PACKAGE","-DDEBUG","-DSWIFT_MODULE_RESOURCE_BUNDLE_UNAVAILABLE","-module-cache-path","/Users/carpenter/projects/hippo/gui/.build/arm64-apple-macosx/debug/ModuleCache","-parseable-output","-Xfrontend","-entry-point-function-name","-Xfrontend","HippoGUI_main","-swift-version","5","-plugin-path","/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/host/plugins/testing","-sdk","/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.4.sdk","-F","/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks","-I","/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib","-L","/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib","-g","-Xcc","-isysroot","-Xcc","/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.4.sdk","-Xcc","-F","-Xcc","/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks","-Xcc","-fPIC","-Xcc","-g","-package-name","gui"]
+
+  "PackageStructure":
+    tool: package-structure-tool
+    inputs: ["/Users/carpenter/projects/hippo/gui/Sources/HippoGUI/","/Users/carpenter/projects/hippo/gui/Package.swift","/Users/carpenter/projects/hippo/gui/Package.resolved"]
+    outputs: ["<PackageStructure>"]
+    description: "Planning build"
+    allow-missing-inputs: true
+
