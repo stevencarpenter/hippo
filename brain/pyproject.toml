@@ -26,6 +26,7 @@ dev = [
 [project.scripts]
 hippo-brain = "hippo_brain:main"
 hippo-mcp = "hippo_brain.mcp:main"
+hippo-eval = "hippo_brain.evaluation:main"
 
 [build-system]
 requires = ["hatchling"]
