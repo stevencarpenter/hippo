@@ -12,7 +12,8 @@ Phases
                        bump user_version to 6
 3. queue-cleanup     — release orphan processing locks; retry eligible failures
 4. noise-cleanup     — delete knowledge_nodes whose source events are ineligible
-                       (requires --yes-drop-noise; irreversible)
+                       (requires --yes-drop-noise; irreversible;
+                        requires --yes-extreme-deletion if >50% of nodes would be deleted)
 5. re-embed          — delegate to migrate-vectors.py subprocess
                        (requires --yes-reembed)
 6. git-repo-backfill — delegate to backfill-git-repo.py subprocess
@@ -199,8 +200,14 @@ def phase_preflight(
     log.info("[preflight] checking schema version")
     version = _schema_version(conn)
     if version != 5:
+        hint = (
+            " If schema was already bumped, resume with: "
+            "--skip-phase preflight --skip-phase schema-forward"
+            if version == 6
+            else ""
+        )
         raise RuntimeError(
-            f"preflight: expected schema_version=5, got {version}. Already migrated, or wrong DB?"
+            f"preflight: expected schema_version=5, got {version}. Already migrated, or wrong DB?{hint}"
         )
     log.info("[preflight] schema_version=5 ✓")
 
@@ -234,6 +241,18 @@ def phase_preflight(
     log.info(
         "[preflight] backup complete: %s (%.1f MB)", backup_path, backup_path.stat().st_size / 1e6
     )
+
+    verify_conn = sqlite3.connect(str(backup_path))
+    try:
+        result = verify_conn.execute("PRAGMA integrity_check").fetchone()
+        if result is None or result[0] != "ok":
+            raise RuntimeError(
+                f"[preflight] backup integrity check FAILED ({result}). "
+                "Do not proceed. Check disk space and retry."
+            )
+        log.info("[preflight] backup integrity check passed ✓")
+    finally:
+        verify_conn.close()
 
 
 # ---------------------------------------------------------------------------
@@ -292,6 +311,16 @@ _SQL_CREATE_VEC_TABLE = (
     "vec_command FLOAT[768] distance_metric=cosine)"
 )
 
+_SQL_FTS_BACKFILL = """
+INSERT INTO knowledge_fts (rowid, summary, embed_text, content)
+SELECT
+    id,
+    COALESCE(CASE WHEN json_valid(content) THEN json_extract(content, '$.summary') END, ''),
+    embed_text,
+    content
+FROM knowledge_nodes
+"""
+
 
 def phase_schema_forward(
     conn: sqlite3.Connection,
@@ -300,7 +329,10 @@ def phase_schema_forward(
 ) -> None:
     log.info("[schema-forward] applying v6 DDL (FTS5 + triggers + vec0)")
     if dry_run:
-        log.info("[schema-forward] --dry-run: would apply v6 DDL and bump user_version to 6")
+        log.info(
+            "[schema-forward] --dry-run: would apply v6 DDL, backfill FTS, "
+            "and bump user_version to 6"
+        )
         return
 
     with conn:
@@ -309,6 +341,25 @@ def phase_schema_forward(
         conn.execute("PRAGMA user_version = 6")
 
     log.info("[schema-forward] schema_version bumped to 6 ✓")
+
+    # AFTER INSERT triggers only fire for future inserts; backfill pre-existing rows.
+    node_count = conn.execute("SELECT COUNT(*) FROM knowledge_nodes").fetchone()[0]
+    fts_existing = conn.execute("SELECT COUNT(*) FROM knowledge_fts").fetchone()[0]
+    if fts_existing == 0 and node_count > 0:
+        log.info("[schema-forward] backfilling FTS for %d existing knowledge_nodes", node_count)
+        with conn:
+            conn.execute(_SQL_FTS_BACKFILL)
+        backfilled = conn.execute("SELECT COUNT(*) FROM knowledge_fts").fetchone()[0]
+        log.info("[schema-forward] FTS backfill complete: %d rows", backfilled)
+        if backfilled != node_count:
+            raise RuntimeError(
+                f"[schema-forward] FTS backfill incomplete: "
+                f"expected {node_count} rows, got {backfilled}"
+            )
+    else:
+        log.info(
+            "[schema-forward] FTS already populated (%d rows), skipping backfill", fts_existing
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -482,6 +533,7 @@ def phase_noise_cleanup(
     conn: sqlite3.Connection,
     dry_run: bool,
     yes_drop_noise: bool,
+    yes_extreme_deletion: bool,
     log: logging.Logger,
 ) -> None:
     log.info("[noise-cleanup] scanning knowledge_nodes for ineligible source events")
@@ -509,9 +561,17 @@ def phase_noise_cleanup(
         )
 
     if len(noise_ids) > 0.5 * len(node_ids):
+        if not yes_extreme_deletion:
+            raise RuntimeError(
+                f"[noise-cleanup] ABORTED: would delete {len(noise_ids)}/{len(node_ids)} nodes "
+                f"({100 * len(noise_ids) // len(node_ids)}% of corpus). "
+                "This exceeds the 50% safety threshold. "
+                "Inspect the noise list via --dry-run, then rerun with "
+                "--yes-drop-noise --yes-extreme-deletion to override."
+            )
         log.warning(
-            "[noise-cleanup] WARNING: deleting >50%% of nodes (%d/%d). "
-            "Inspect before proceeding. Continuing anyway.",
+            "[noise-cleanup] WARNING: deleting >50%% of nodes (%d/%d) — "
+            "--yes-extreme-deletion passed, proceeding.",
             len(noise_ids),
             len(node_ids),
         )
@@ -562,22 +622,17 @@ def _run_subprocess(
         stdout=subprocess.PIPE,
         text=True,
     )
-    assert proc.stdout is not None
-    assert proc.stderr is not None
+    stdout_data, stderr_data = proc.communicate()
 
-    # Stream stderr (where sub-scripts log) into our structured log.
-    for line in proc.stderr:
+    for line in stderr_data.splitlines():
         line = line.rstrip("\n")
         if line:
             log.info("[%s] %s", phase_label, line)
 
-    # Drain stdout too (some scripts may write there).
-    for line in proc.stdout:
+    for line in stdout_data.splitlines():
         line = line.rstrip("\n")
         if line:
             log.debug("[%s] stdout: %s", phase_label, line)
-
-    proc.wait()
     if proc.returncode != 0:
         raise RuntimeError(
             f"[{phase_label}] subprocess exited with code {proc.returncode}: {' '.join(cmd)}"
@@ -810,6 +865,14 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Acknowledge re-embed duration and LM Studio cost; required for phase 5.",
     )
     parser.add_argument(
+        "--yes-extreme-deletion",
+        action="store_true",
+        help=(
+            "Required when noise-cleanup would delete >50%% of the corpus. "
+            "Pass alongside --yes-drop-noise to override the 50%% safety gate."
+        ),
+    )
+    parser.add_argument(
         "--skip-phase",
         action="append",
         default=[],
@@ -878,7 +941,9 @@ def main(argv: list[str] | None = None) -> int:
 
         # Phase 4: noise-cleanup (requires --yes-drop-noise)
         if not _skip("noise-cleanup"):
-            phase_noise_cleanup(conn, args.dry_run, args.yes_drop_noise, log)
+            phase_noise_cleanup(
+                conn, args.dry_run, args.yes_drop_noise, args.yes_extreme_deletion, log
+            )
 
         # Phase 5: re-embed (requires --yes-reembed)
         if not _skip("re-embed"):

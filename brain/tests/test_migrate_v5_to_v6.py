@@ -224,6 +224,34 @@ class TestPreflight:
                 _mod.phase_preflight(conn, tmp_db, dry_run=False, yes_backup=True, log=_dummy_log())
         conn.close()
 
+    def test_backup_integrity_check_aborts_on_corruption(self, tmp_db: Path) -> None:
+        """phase_preflight aborts when backup integrity check returns non-ok."""
+        import sqlite3 as _real_sqlite3
+
+        backup_opens: list[str] = []
+        orig_connect = _real_sqlite3.connect
+
+        def tracking_connect(path: str, *args, **kwargs):
+            if "v5-backup" in str(path):
+                backup_opens.append(str(path))
+                if len(backup_opens) == 2:
+                    # Second open = integrity-check connection; return a mock that fails.
+                    mock_conn = MagicMock()
+                    mock_conn.execute.return_value.fetchone.return_value = (
+                        "integrity check: page 1: *** error ***",
+                    )
+                    return mock_conn
+            return orig_connect(path, *args, **kwargs)
+
+        conn = _open_v5(tmp_db)
+        with patch.object(_mod.sqlite3, "connect", tracking_connect):
+            with patch.object(_mod, "_daemon_is_running", return_value=False):
+                with pytest.raises(RuntimeError, match="backup integrity check FAILED"):
+                    _mod.phase_preflight(
+                        conn, tmp_db, dry_run=False, yes_backup=True, log=_dummy_log()
+                    )
+        conn.close()
+
 
 class TestSchemaForward:
     def test_dry_run_no_changes(self, tmp_db: Path) -> None:
@@ -243,6 +271,28 @@ class TestSchemaForward:
             "SELECT name FROM sqlite_master WHERE type='table' AND name='knowledge_fts'"
         ).fetchone()
         assert row is not None
+        conn.close()
+
+    def test_backfills_fts_for_preexisting_nodes(self, tmp_db: Path) -> None:
+        """After schema-forward, knowledge_fts row count must equal knowledge_nodes count."""
+        conn = _open_v5(tmp_db)
+        with patch.object(_mod, "_SQL_CREATE_VEC_TABLE", "SELECT 1"):
+            _mod.phase_schema_forward(conn, dry_run=False, log=_dummy_log())
+        kn_count = conn.execute("SELECT COUNT(*) FROM knowledge_nodes").fetchone()[0]
+        fts_count = conn.execute("SELECT COUNT(*) FROM knowledge_fts").fetchone()[0]
+        assert kn_count > 0, "fixture must contain knowledge_nodes rows"
+        assert kn_count == fts_count
+        conn.close()
+
+    def test_backfill_is_idempotent(self, tmp_db: Path) -> None:
+        """Running schema-forward twice must not create duplicate FTS rows."""
+        conn = _open_v5(tmp_db)
+        with patch.object(_mod, "_SQL_CREATE_VEC_TABLE", "SELECT 1"):
+            _mod.phase_schema_forward(conn, dry_run=False, log=_dummy_log())
+            _mod.phase_schema_forward(conn, dry_run=False, log=_dummy_log())
+        kn_count = conn.execute("SELECT COUNT(*) FROM knowledge_nodes").fetchone()[0]
+        fts_count = conn.execute("SELECT COUNT(*) FROM knowledge_fts").fetchone()[0]
+        assert kn_count == fts_count
         conn.close()
 
 
@@ -289,7 +339,9 @@ class TestNoiseCleanup:
     def test_dry_run_no_deletion(self, tmp_db: Path) -> None:
         _stub_eligibility_simple()
         conn = _open_v5(tmp_db)
-        _mod.phase_noise_cleanup(conn, dry_run=True, yes_drop_noise=False, log=_dummy_log())
+        _mod.phase_noise_cleanup(
+            conn, dry_run=True, yes_drop_noise=False, yes_extreme_deletion=False, log=_dummy_log()
+        )
         count = conn.execute("SELECT COUNT(*) FROM knowledge_nodes").fetchone()[0]
         assert count == 2
         conn.close()
@@ -298,13 +350,21 @@ class TestNoiseCleanup:
         _stub_eligibility_simple()
         conn = _open_v5(tmp_db)
         with pytest.raises(RuntimeError, match="--yes-drop-noise"):
-            _mod.phase_noise_cleanup(conn, dry_run=False, yes_drop_noise=False, log=_dummy_log())
+            _mod.phase_noise_cleanup(
+                conn,
+                dry_run=False,
+                yes_drop_noise=False,
+                yes_extreme_deletion=False,
+                log=_dummy_log(),
+            )
         conn.close()
 
     def test_deletes_noise_nodes(self, tmp_db: Path) -> None:
         _stub_eligibility_simple()
         conn = _open_v5(tmp_db)
-        _mod.phase_noise_cleanup(conn, dry_run=False, yes_drop_noise=True, log=_dummy_log())
+        _mod.phase_noise_cleanup(
+            conn, dry_run=False, yes_drop_noise=True, yes_extreme_deletion=False, log=_dummy_log()
+        )
         rows = conn.execute("SELECT uuid FROM knowledge_nodes ORDER BY id").fetchall()
         uuids = [r["uuid"] for r in rows]
         assert "uuid-keep" in uuids
@@ -314,9 +374,40 @@ class TestNoiseCleanup:
     def test_keeps_eligible_nodes(self, tmp_db: Path) -> None:
         _enrichment_stub.is_enrichment_eligible.side_effect = lambda *_: (True, "eligible")
         conn = _open_v5(tmp_db)
-        _mod.phase_noise_cleanup(conn, dry_run=False, yes_drop_noise=True, log=_dummy_log())
+        _mod.phase_noise_cleanup(
+            conn, dry_run=False, yes_drop_noise=True, yes_extreme_deletion=False, log=_dummy_log()
+        )
         count = conn.execute("SELECT COUNT(*) FROM knowledge_nodes").fetchone()[0]
         assert count == 2
+        conn.close()
+
+    def test_extreme_deletion_aborts_without_flag(self, tmp_db: Path) -> None:
+        """noise-cleanup raises if >50% of nodes would be deleted and flag absent."""
+        # All events ineligible → both nodes become noise (2/2 > 50%)
+        _enrichment_stub.is_enrichment_eligible.side_effect = lambda *_: (False, "ineligible")
+        conn = _open_v5(tmp_db)
+        with pytest.raises(RuntimeError, match="ABORTED"):
+            _mod.phase_noise_cleanup(
+                conn,
+                dry_run=False,
+                yes_drop_noise=True,
+                yes_extreme_deletion=False,
+                log=_dummy_log(),
+            )
+        # Nodes must be untouched
+        count = conn.execute("SELECT COUNT(*) FROM knowledge_nodes").fetchone()[0]
+        assert count == 2
+        conn.close()
+
+    def test_extreme_deletion_proceeds_with_flag(self, tmp_db: Path) -> None:
+        """noise-cleanup deletes all nodes when --yes-extreme-deletion is passed."""
+        _enrichment_stub.is_enrichment_eligible.side_effect = lambda *_: (False, "ineligible")
+        conn = _open_v5(tmp_db)
+        _mod.phase_noise_cleanup(
+            conn, dry_run=False, yes_drop_noise=True, yes_extreme_deletion=True, log=_dummy_log()
+        )
+        count = conn.execute("SELECT COUNT(*) FROM knowledge_nodes").fetchone()[0]
+        assert count == 0
         conn.close()
 
 
