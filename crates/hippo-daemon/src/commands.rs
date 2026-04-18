@@ -585,7 +585,59 @@ pub async fn handle_doctor(config: &HippoConfig) -> Result<()> {
     // Check Claude session hook
     check_claude_session_hook();
 
+    // Check OpenTelemetry configuration
+    check_otel_status(config, &client).await;
+
     Ok(())
+}
+
+async fn check_otel_status(config: &HippoConfig, client: &reqwest::Client) {
+    // Check if OTel feature is compiled in
+    #[cfg(feature = "otel")]
+    let otel_compiled = true;
+    #[cfg(not(feature = "otel"))]
+    let otel_compiled = false;
+
+    if !otel_compiled {
+        println!("[--] OpenTelemetry: not compiled (daemon built without --features otel)");
+        return;
+    }
+
+    // Check if telemetry is enabled in config
+    let config_enabled = config.telemetry.enabled;
+
+    // Check if OTel collector is reachable via its health-check extension
+    let collector_health_url = "http://localhost:13133/";
+    let collector_reachable = client
+        .get(collector_health_url)
+        .send()
+        .await
+        .map(|r| r.status().is_success())
+        .unwrap_or(false);
+
+    // Determine status and provide actionable feedback
+    match (config_enabled, collector_reachable) {
+        (true, true) => {
+            println!("[OK] OpenTelemetry: enabled and collector reachable");
+        }
+        (true, false) => {
+            println!(
+                "[!!] OpenTelemetry: enabled but collector unreachable at {}",
+                collector_health_url
+            );
+            println!("     Start the stack: mise run otel:up");
+        }
+        (false, true) => {
+            println!("[!!] OpenTelemetry: collector available but disabled in config");
+            println!(
+                "     Enable it: Set [telemetry] enabled = true in ~/.config/hippo/config.toml"
+            );
+            println!("     Then restart: mise run restart");
+        }
+        (false, false) => {
+            println!("[--] OpenTelemetry: disabled (start with: mise run otel:up)");
+        }
+    }
 }
 
 fn check_claude_session_hook() {

@@ -1,5 +1,6 @@
 [lmstudio]
 base_url = "http://localhost:1234/v1"
+timeout_secs = 300
 
 [models]
 enrichment = "qwen3.5-35b-a3b"     # Preferred model; hippo falls back to first available if not loaded
@@ -17,8 +18,7 @@ output_tail_lines = 100
 [brain]
 port = 9175
 poll_interval_secs = 5
-enrichment_batch_size = 30
-max_events_per_chunk = 30
+enrichment_batch_size = 10
 max_queue_depth = 100
 session_stale_secs = 120
 
@@ -85,7 +85,16 @@ strip_params = [
 ]
 
 [telemetry]
-# Set enabled = true and run `mise run otel:up` to start the observability stack.
-# endpoint is the OTel Collector gRPC address.
+# OpenTelemetry observability: traces, metrics, and logs to Grafana/Tempo/Loki/Prometheus.
+#
+# To enable telemetry:
+#   1. Start the observability stack: mise run otel:up
+#   2. Set enabled = true (below)
+#   3. Rebuild daemon: cargo build --release --features otel
+#   4. Reinstall: mise run install
+#   5. Verify: hippo doctor
+#
+# Access Grafana: http://localhost:3000 (admin/hippo)
+# OTel Collector health: http://localhost:13133
 enabled = false
 endpoint = "http://localhost:4317"
