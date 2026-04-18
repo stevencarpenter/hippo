@@ -18,6 +18,7 @@ from hippo_brain.embeddings import (
     open_vector_db,
     search_similar,
 )
+from hippo_brain.vector_store import get_stored_embed_model
 from hippo_brain.rag import ask as rag_ask
 from hippo_brain.enrichment import (
     SYSTEM_PROMPT,
@@ -208,9 +209,22 @@ class BrainServer:
         except Exception:
             db_reachable = False
 
+        embed_model_drift: str | None = None
+        if self._vector_db is not None and self.embedding_model:
+            try:
+                stored = get_stored_embed_model(self._vector_db)
+                if stored is not None and stored != self.embedding_model:
+                    embed_model_drift = f"stored={stored!r} live={self.embedding_model!r}"
+            except Exception:
+                pass
+
+        status = "ok" if db_reachable else "degraded"
+        if embed_model_drift:
+            status = "degraded"
+
         return JSONResponse(
             {
-                "status": "ok" if db_reachable else "degraded",
+                "status": status,
                 "version": get_version(),
                 "lmstudio_reachable": reachable,
                 "enrichment_running": self.enrichment_running,
@@ -225,6 +239,7 @@ class BrainServer:
                 "workflow_queue_failed": workflow_queue_failed,
                 "enrichment_model": self.enrichment_model,
                 "enrichment_model_preferred": self._preferred_model,
+                "embed_model_drift": embed_model_drift,
                 "last_success_at_ms": self.last_success_at_ms,
                 "last_error": self.last_error,
                 "last_error_at_ms": self.last_error_at_ms,

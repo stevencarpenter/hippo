@@ -25,7 +25,13 @@ from typing import Any
 
 from hippo_brain import vector_store
 from hippo_brain.telemetry import get_meter
-from hippo_brain.vector_store import EMBED_DIM, open_conn
+from hippo_brain.vector_store import (
+    EMBED_DIM,
+    EmbedDriftError,
+    check_embed_model_drift,
+    open_conn,
+    record_embed_model,
+)
 
 _meter = get_meter()
 _embed_duration = (
@@ -48,6 +54,7 @@ _embed_failures = (
 
 __all__ = [
     "EMBED_DIM",
+    "EmbedDriftError",
     "_pad_or_truncate",
     "open_vector_db",
     "get_or_create_table",
@@ -98,18 +105,32 @@ def get_or_create_table(handle: sqlite3.Connection) -> sqlite3.Connection:
     return handle
 
 
+def _check_vec_dim(vec: list[float], label: str) -> None:
+    if len(vec) != EMBED_DIM:
+        raise ValueError(
+            f"{label} vector has {len(vec)} dimensions; expected {EMBED_DIM}. "
+            "The embedding model may have changed — re-embed the corpus or "
+            "update config.embeddings.model to match the loaded model."
+        )
+
+
 async def embed_knowledge_node(
     client: Any,
     handle: sqlite3.Connection,
     node_dict: dict,
     embed_model: str = "",
     command_model: str = "",
+    *,
+    allow_embed_switch: bool = False,
 ) -> None:
     """Embed a knowledge node and persist both vectors to ``knowledge_vectors``.
 
     ``node_dict`` must carry at least ``id`` (the knowledge_nodes PK) and
     ``embed_text``. If ``node_dict["id"]`` is 0 or missing, nothing is
     written — the caller is responsible for providing the foreign key.
+
+    Raises ``EmbedDriftError`` if ``embed_model`` differs from the model used
+    to build the existing corpus (unless ``allow_embed_switch=True``).
     """
     t0 = time.monotonic()
     try:
@@ -120,6 +141,8 @@ async def embed_knowledge_node(
                 "knowledge_nodes primary key"
             )
 
+        check_embed_model_drift(handle, embed_model, allow_switch=allow_embed_switch)
+
         embed_text = node_dict.get("embed_text", "") or ""
         commands_raw = node_dict.get("commands_raw", "") or ""
 
@@ -128,15 +151,20 @@ async def embed_knowledge_node(
 
         if cmd_model == embed_model:
             vecs = await client.embed([embed_text, cmd_text], model=embed_model)
-            vec_knowledge = _pad_or_truncate(vecs[0], EMBED_DIM)
-            vec_command = _pad_or_truncate(vecs[1], EMBED_DIM)
+            _check_vec_dim(vecs[0], "knowledge")
+            _check_vec_dim(vecs[1], "command")
+            vec_knowledge = vecs[0]
+            vec_command = vecs[1]
         else:
             knowledge_vecs = await client.embed([embed_text], model=embed_model)
-            vec_knowledge = _pad_or_truncate(knowledge_vecs[0], EMBED_DIM)
+            _check_vec_dim(knowledge_vecs[0], "knowledge")
+            vec_knowledge = knowledge_vecs[0]
             command_vecs = await client.embed([cmd_text], model=cmd_model)
-            vec_command = _pad_or_truncate(command_vecs[0], EMBED_DIM)
+            _check_vec_dim(command_vecs[0], "command")
+            vec_command = command_vecs[0]
 
         vector_store.insert_vectors(handle, node_id, vec_knowledge, vec_command)
+        record_embed_model(handle, embed_model)
         handle.commit()
 
         if _embed_duration:

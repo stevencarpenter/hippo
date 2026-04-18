@@ -204,6 +204,14 @@ async fn print_brain_health_details(config: &HippoConfig, client: &reqwest::Clie
                         }
                     );
 
+                    if let Some(drift) = json
+                        .get("embed_model_drift")
+                        .and_then(|v| v.as_str())
+                        .filter(|s| !s.is_empty())
+                    {
+                        println!("[!!] Brain embed model drift: {}", drift);
+                    }
+
                     if let Some(line) = format_optional_brain_field(
                         "last success ms",
                         last_success_at_ms.as_deref(),
