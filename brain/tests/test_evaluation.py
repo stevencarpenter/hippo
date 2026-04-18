@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import math
 import sqlite3
-from pathlib import Path
 
 import pytest
 
@@ -241,13 +240,14 @@ def test_derive_sources_empty_conn():
 
 
 def test_shipped_question_set_loads():
-    path = Path(__file__).parent / "eval_questions.json"
-    qs = load_questions(path)
+    from hippo_brain.evaluation import _DEFAULT_QUESTIONS
+
+    qs = load_questions(_DEFAULT_QUESTIONS)
     assert len(qs) >= 30
     assert all(q.id and q.question for q in qs)
     assert all(q.acceptable_answer_keywords for q in qs)
     adversarial = [q for q in qs if q.intent == "adversarial"]
-    assert len(adversarial) >= 3
+    assert len(adversarial) >= 4
 
 
 # ---------------------------------------------------------------------------

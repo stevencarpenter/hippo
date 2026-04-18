@@ -26,6 +26,7 @@ import statistics
 import sys
 import time
 from dataclasses import dataclass, field
+from importlib.resources import files as _res_files  # nosemgrep
 from pathlib import Path
 from typing import Any, Iterable, Sequence
 
@@ -283,13 +284,13 @@ def _parse_vec(blob: str | None) -> list[float]:
         return []
     try:
         data = json.loads(blob)
-    except json.JSONDecodeError, TypeError:
+    except (json.JSONDecodeError, TypeError):
         return []
     if not isinstance(data, list):
         return []
     try:
         return [float(x) for x in data]
-    except TypeError, ValueError:
+    except (TypeError, ValueError):
         return []
 
 
@@ -425,7 +426,7 @@ class QuestionResult:
     near_duplicate_density: float
     coverage_gap_score: float
     groundedness: float
-    keyword_hit: bool
+    keyword_hit: float  # 1.0=hit, 0.0=miss, nan=synthesis disabled
     elapsed_ms: float
     enrichment_models: list[str] = field(default_factory=list)
 
@@ -444,8 +445,12 @@ class ScoreReport:
 # ---------------------------------------------------------------------------
 
 
-def load_questions(path: str | Path) -> list[Question]:
-    data = json.loads(Path(path).read_text())
+def load_questions(path: str | Path | Any) -> list[Question]:
+    if isinstance(path, (str, Path)):
+        raw = Path(path).read_text()
+    else:
+        raw = path.read_text(encoding="utf-8")
+    data = json.loads(raw)
     raw = data.get("questions", data) if isinstance(data, dict) else data
     questions: list[Question] = []
     for q in raw:
@@ -495,7 +500,7 @@ async def _retrieve_semantic(
     query_vec = _pad_or_truncate(list(vecs[0]), EMBED_DIM)
     hits = search_similar(vector_table, query_vec, limit=limit)
 
-    ids = [int(h.get("id")) for h in hits if h.get("id") is not None]
+    ids = [int(nid) for h in hits if (nid := h.get("id")) is not None]
     id_to_uuid = _lookup_uuids_by_id(conn, ids)
 
     results: list[SearchResult] = []
@@ -532,7 +537,7 @@ def _unsupported_result(q: Question, mode: str, elapsed_ms: float) -> QuestionRe
         near_duplicate_density=float("nan"),
         coverage_gap_score=1.0,
         groundedness=float("nan"),
-        keyword_hit=False,
+        keyword_hit=float("nan"),
         elapsed_ms=elapsed_ms,
     )
 
@@ -578,7 +583,7 @@ async def score_question(
             near_duplicate_density=float("nan"),
             coverage_gap_score=1.0,
             groundedness=float("nan"),
-            keyword_hit=False,
+            keyword_hit=float("nan"),
             elapsed_ms=elapsed,
         )
 
@@ -607,11 +612,14 @@ async def score_question(
             )
             answer = res.get("answer")
             error = res.get("error")
-            degraded = bool(error) or not answer
+            sources = res.get("sources", [])
+            # Mark degraded if no answer, explicit error, or synthesis returned
+            # no sources (answer is evidence-free even if non-empty).
+            degraded = bool(error) or not answer or not sources or not hits
             if run_judge and answer and not degraded:
                 ground = await groundedness(
                     answer,
-                    res.get("sources", []),
+                    sources,
                     lm_client,
                     query_model,
                 )
@@ -633,7 +641,11 @@ async def score_question(
         near_duplicate_density=float("nan"),
         coverage_gap_score=coverage_gap_score(scores),
         groundedness=ground,
-        keyword_hit=keyword_match(answer or "", q.acceptable_answer_keywords),
+        keyword_hit=(
+            (1.0 if keyword_match(answer or "", q.acceptable_answer_keywords) else 0.0)
+            if run_synthesis
+            else float("nan")
+        ),
         elapsed_ms=elapsed,
         enrichment_models=enrichment_models,
     )
@@ -655,22 +667,25 @@ async def run_benchmark(
 ) -> ScoreReport:
     """Score every question and return a :class:`ScoreReport`."""
     started = time.time()
-    results: list[QuestionResult] = []
-    for q in questions:
-        results.append(
-            await score_question(
-                q,
-                conn=conn,
-                vector_table=vector_table,
-                lm_client=lm_client,
-                embedding_model=embedding_model,
-                query_model=query_model,
-                mode=mode,
-                limit=limit,
-                run_synthesis=run_synthesis,
-                run_judge=run_judge,
-            )
+    results = list(
+        await asyncio.gather(
+            *[
+                score_question(
+                    q,
+                    conn=conn,
+                    vector_table=vector_table,
+                    lm_client=lm_client,
+                    embedding_model=embedding_model,
+                    query_model=query_model,
+                    mode=mode,
+                    limit=limit,
+                    run_synthesis=run_synthesis,
+                    run_judge=run_judge,
+                )
+                for q in questions
+            ]
         )
+    )
     return ScoreReport(
         results=results,
         config={
@@ -746,7 +761,7 @@ def render_markdown(report: ScoreReport) -> str:
         ("source_diversity", [r.source_diversity for r in report.results]),
         ("coverage_gap", [r.coverage_gap_score for r in report.results]),
         ("groundedness", [r.groundedness for r in report.results]),
-        ("keyword_hit_rate", [1.0 if r.keyword_hit else 0.0 for r in report.results]),
+        ("keyword_hit_rate", [r.keyword_hit for r in report.results]),
     ]
     for name, vals in summary_metrics:
         lines.append(f"| {name} | {_fmt(_mean(vals))} | {_fmt(_median(vals))} |")
@@ -811,7 +826,8 @@ def render_markdown(report: ScoreReport) -> str:
         lines.append(
             f"| {r.q.id} | {r.q.intent or '—'} | {_fmt(top)} | "
             f"{_fmt(r.coverage_gap_score)} | {_fmt(r.source_diversity)} | "
-            f"{_fmt(r.groundedness)} | {'✓' if r.keyword_hit else '✗'} | "
+            f"{_fmt(r.groundedness)} | "
+            f"{'—' if math.isnan(r.keyword_hit) else ('✓' if r.keyword_hit else '✗')} | "
             f"{'⚠' if r.degraded else ''} |"
         )
     lines.append("")
@@ -839,7 +855,7 @@ def render_markdown(report: ScoreReport) -> str:
 # ---------------------------------------------------------------------------
 
 
-_DEFAULT_QUESTIONS = Path(__file__).parent.parent.parent / "tests" / "eval_questions.json"
+_DEFAULT_QUESTIONS = _res_files("hippo_brain").joinpath("_fixtures/eval_questions.json")
 
 
 def _corpus_stats(conn: sqlite3.Connection) -> dict:
@@ -909,41 +925,61 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 0
 
     conn = _open_conn(cfg["db_path"])
-
-    lm_client: Any | None = None
+    db: Any | None = None
     try:
-        lm_client = LMStudioClient(base_url=cfg["lmstudio_base_url"])
-    except Exception as e:
-        print(f"LM Studio client unavailable: {e}", file=sys.stderr)
+        lm_client: Any | None = None
+        try:
+            lm_client = LMStudioClient(base_url=cfg["lmstudio_base_url"])
+        except Exception as e:
+            print(f"LM Studio client unavailable: {e}", file=sys.stderr)
 
-    vector_table: Any | None = None
-    try:
-        db = open_vector_db(cfg["data_dir"])
-        vector_table = get_or_create_table(db)
-    except Exception as e:
-        print(f"Vector table unavailable: {e}", file=sys.stderr)
+        vector_table: Any | None = None
+        try:
+            db = open_vector_db(cfg["data_dir"])
+            vector_table = get_or_create_table(db)
+        except Exception as e:
+            print(f"Vector table unavailable: {e}", file=sys.stderr)
 
-    report = asyncio.run(
-        run_benchmark(
-            questions=questions,
-            conn=conn,
-            vector_table=vector_table,
-            lm_client=lm_client,
-            embedding_model=cfg["embedding_model"],
-            query_model=cfg["query_model"],
-            mode=args.mode,
-            limit=args.limit,
-            run_synthesis=not args.no_synthesis,
-            run_judge=not args.no_judge,
-            corpus_stats=_corpus_stats(conn),
+        # Preflight: verify LM Studio is reachable before running 40 questions.
+        # A single clear message here is better than per-question retrieval errors.
+        run_synthesis = not args.no_synthesis
+        run_judge = not args.no_judge
+        if lm_client is not None and (run_synthesis or run_judge):
+            if not asyncio.run(lm_client.is_reachable()):
+                print(
+                    "LM Studio unreachable — disabling synthesis and judge; "
+                    "reporting retrieval-only metrics.",
+                    file=sys.stderr,
+                )
+                lm_client = None
+
+        report = asyncio.run(
+            run_benchmark(
+                questions=questions,
+                conn=conn,
+                vector_table=vector_table,
+                lm_client=lm_client,
+                embedding_model=cfg["embedding_model"],
+                query_model=cfg["query_model"],
+                mode=args.mode,
+                limit=args.limit,
+                run_synthesis=run_synthesis,
+                run_judge=run_judge,
+                corpus_stats=_corpus_stats(conn),
+            )
         )
-    )
-    md = render_markdown(report)
-    if args.out:
-        Path(args.out).write_text(md)
-    else:
-        print(md)
-    return 0
+        md = render_markdown(report)
+        if args.out:
+            Path(args.out).write_text(md)
+        else:
+            print(md)
+        return 0
+    finally:
+        conn.close()
+        if db is not None:
+            close_fn = getattr(db, "close", None)
+            if callable(close_fn):
+                close_fn()
 
 
 if __name__ == "__main__":

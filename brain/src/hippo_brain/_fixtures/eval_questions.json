@@ -1,5 +1,5 @@
 {
-  "description": "Labeled evaluation set for hippo retrieval + synthesis. Questions drawn from hippo's own development history: past decisions, bug fixes, project state lookups, cross-source queries, and adversarial edge cases. Used by `hippo-eval` (brain/src/hippo_brain/eval.py).",
+  "description": "Labeled evaluation set for hippo retrieval + synthesis. Questions drawn from hippo's own development history: past decisions, bug fixes, project state lookups, cross-source queries, and adversarial edge cases. Used by `hippo-eval` (brain/src/hippo_brain/evaluation.py).",
   "created_at": "2026-04-17",
   "labeled_at": "2026-04-17",
   "labeled_by": "corpus-analyst",
@@ -46,7 +46,7 @@
         "06eb184b-1597-4e92-bdbd-313c6f3b78e2",
         "ba9d24f5-7fcb-4446-b925-a3a9680c46fa"
       ],
-      "acceptable_answer_keywords": ["PPID", "grandparent", "claade", "parent"],
+      "acceptable_answer_keywords": ["PPID", "grandparent", "claude", "parent"],
       "source_bias": "claude"
     },
     {
@@ -364,7 +364,7 @@
         "fb582bbd-defd-49e5-97a8-62a68fef6fa9",
         "ba9d24f5-7fcb-4446-b925-a3a9680c46fa"
       ],
-      "acceptable_answer_keywords": ["PPID", "child", "claade", "parent"],
+      "acceptable_answer_keywords": ["PPID", "child", "claude", "parent"],
       "source_bias": "claude"
     },
     {

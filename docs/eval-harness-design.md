@@ -71,13 +71,13 @@ branch"` message until the sqlite-vec + FTS5 migration lands.
 Questions are drawn from memory files + recent specs + scorecard follow-ups.
 We group them in five buckets:
 
-| Bucket | Target count | Examples |
+| Bucket | Delivered | Examples |
 |---|---:|---|
-| Past technical decisions | 10 | "Why sqlite-vec over LanceDB?", "Why the grandparent-PID fix?" |
-| Known bug fixes | 8 | "How do we handle null LLM responses in enrichment?" |
-| Project state lookups | 8 | "What schema version is live?", "Which domains does the Firefox extension allowlist?" |
-| Cross-source queries | 6 | Questions that should pull from shell + claude + browser together |
-| Adversarial / hard | 8 | Punctuation-heavy questions (FTS5 trap), intentional ambiguity, multi-hop |
+| Past technical decisions (why-decision) | 11 | "Why sqlite-vec over LanceDB?", "Why the grandparent-PID fix?" |
+| Known bug fixes / how-it-works | 13 | "How do we handle null LLM responses in enrichment?" |
+| Project state lookups | 10 | "What schema version is live?", "Which domains does the Firefox extension allowlist?" |
+| Cross-source queries | 2 | Questions that should pull from shell + claude + browser together |
+| Adversarial / hard | 4 | Punctuation-heavy questions (FTS5 trap), intentional ambiguity, multi-hop |
 
 `relevant_knowledge_node_uuids` is empty on questions where the corpus
 demonstrably cannot answer — those questions still exercise the
