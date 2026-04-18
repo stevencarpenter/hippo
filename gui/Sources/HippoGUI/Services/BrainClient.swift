@@ -21,13 +21,20 @@ enum BrainClientError: Error, LocalizedError {
 }
 
 actor BrainClient {
-    private let baseURL = "http://localhost:8765"
+    private let baseURL: String
     private let session: URLSession
 
-    init() {
+    init(port: Int = 8765) {
+        self.baseURL = "http://localhost:\(port)"
         let config = URLSessionConfiguration.default
         config.timeoutIntervalForRequest = 30
         self.session = URLSession(configuration: config)
+    }
+
+    convenience init() async {
+        let configClient = ConfigClient()
+        let port = await configClient.loadPort()
+        self.init(port: port)
     }
 
     func listKnowledge(limit: Int = 20, offset: Int = 0, nodeType: String? = nil) async throws -> KnowledgeListResponse {
