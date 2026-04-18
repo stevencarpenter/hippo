@@ -1,5 +1,6 @@
 [lmstudio]
 base_url = "http://localhost:1234/v1"
+timeout_secs = 300
 
 [models]
 enrichment = "qwen3.5-35b-a3b"     # Preferred model; hippo falls back to first available if not loaded
@@ -17,8 +18,8 @@ output_tail_lines = 100
 [brain]
 port = 9175
 poll_interval_secs = 5
-enrichment_batch_size = 30
-max_events_per_chunk = 30
+enrichment_batch_size = 10
+max_events_per_chunk = 10
 max_queue_depth = 100
 session_stale_secs = 120
 
