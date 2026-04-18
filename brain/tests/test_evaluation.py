@@ -7,7 +7,6 @@ questions and a canned retrieval adapter.
 
 from __future__ import annotations
 
-import math
 import sqlite3
 
 import pytest
@@ -44,8 +43,8 @@ class TestRecallAtK:
     def test_partial(self):
         assert recall_at_k(["a", "x", "y"], {"a", "b"}, 3) == 0.5
 
-    def test_empty_relevant_is_nan(self):
-        assert math.isnan(recall_at_k(["a"], set(), 3))
+    def test_empty_relevant_is_none(self):
+        assert recall_at_k(["a"], set(), 3) is None
 
     def test_k_zero(self):
         assert recall_at_k(["a"], {"a"}, 0) == 0.0
@@ -64,8 +63,8 @@ class TestMRR:
     def test_no_hit(self):
         assert mrr(["x", "y"], {"a"}) == 0.0
 
-    def test_empty_relevant_is_nan(self):
-        assert math.isnan(mrr(["a"], set()))
+    def test_empty_relevant_is_none(self):
+        assert mrr(["a"], set()) is None
 
 
 class TestNDCG:
@@ -80,8 +79,8 @@ class TestNDCG:
         reversed_ = ndcg_at_k(["c", "b", "a"], rel, 3)
         assert reversed_ < perfect
 
-    def test_empty_is_nan(self):
-        assert math.isnan(ndcg_at_k(["a"], {}, 3))
+    def test_empty_is_none(self):
+        assert ndcg_at_k(["a"], {}, 3) is None
 
 
 class TestSourceDiversity:
@@ -109,8 +108,8 @@ class TestNearDuplicateDensity:
         val = near_duplicate_density([[1.0, 0.0], [0.0, 1.0]])
         assert val == pytest.approx(0.0)
 
-    def test_too_few_is_nan(self):
-        assert math.isnan(near_duplicate_density([[1.0, 0.0]]))
+    def test_too_few_is_none(self):
+        assert near_duplicate_density([[1.0, 0.0]]) is None
 
 
 class TestCoverageGap:
@@ -169,20 +168,20 @@ async def test_groundedness_parses_float():
 
 
 @pytest.mark.asyncio
-async def test_groundedness_nan_when_client_errors():
+async def test_groundedness_none_when_client_errors():
     class Boom:
         async def chat(self, *a, **kw):
             raise RuntimeError("down")
 
     val = await groundedness("ans", [{"summary": "s"}], Boom(), "m")
-    assert math.isnan(val)
+    assert val is None
 
 
 @pytest.mark.asyncio
-async def test_groundedness_nan_when_unparseable():
+async def test_groundedness_none_when_unparseable():
     client = _FakeLMClient("not a number at all")
     val = await groundedness("ans", [{"summary": "s"}], client, "m")
-    assert math.isnan(val)
+    assert val is None
 
 
 @pytest.mark.asyncio

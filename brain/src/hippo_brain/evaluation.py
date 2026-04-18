@@ -55,29 +55,29 @@ class SearchResult:
 # ---------------------------------------------------------------------------
 
 
-def recall_at_k(retrieved: Sequence[str], relevant: Iterable[str], k: int) -> float:
+def recall_at_k(retrieved: Sequence[str], relevant: Iterable[str], k: int) -> float | None:
     """Fraction of ``relevant`` uuids found in ``retrieved[:k]``.
 
-    Returns ``nan`` if ``relevant`` is empty (metric undefined).
+    Returns ``None`` if ``relevant`` is empty (metric undefined).
     """
     rel = {r for r in relevant if r}
     if not rel:
-        return float("nan")
+        return None
     if k <= 0:
         return 0.0
     hits = sum(1 for uid in retrieved[:k] if uid in rel)
     return hits / len(rel)
 
 
-def mrr(retrieved: Sequence[str], relevant: Iterable[str]) -> float:
+def mrr(retrieved: Sequence[str], relevant: Iterable[str]) -> float | None:
     """Reciprocal rank of the first relevant hit.
 
-    Returns ``nan`` if ``relevant`` is empty; ``0.0`` if no relevant uuid
+    Returns ``None`` if ``relevant`` is empty; ``0.0`` if no relevant uuid
     appears in ``retrieved``.
     """
     rel = {r for r in relevant if r}
     if not rel:
-        return float("nan")
+        return None
     for rank, uid in enumerate(retrieved, 1):
         if uid in rel:
             return 1.0 / rank
@@ -88,20 +88,20 @@ def ndcg_at_k(
     retrieved: Sequence[str],
     relevance: dict[str, float],
     k: int,
-) -> float:
+) -> float | None:
     """Normalized DCG at ``k``.
 
     ``relevance`` maps uuid → graded relevance (0 for anything not listed).
-    Returns ``nan`` if no graded entries exist.
+    Returns ``None`` if no graded entries exist.
     """
     if not relevance or k <= 0:
-        return float("nan")
+        return None
     gains = [relevance.get(uid, 0.0) for uid in retrieved[:k]]
     dcg = sum(g / math.log2(i + 2) for i, g in enumerate(gains))
     ideal = sorted(relevance.values(), reverse=True)[:k]
     idcg = sum(g / math.log2(i + 2) for i, g in enumerate(ideal))
     if idcg == 0.0:
-        return float("nan")
+        return None
     return dcg / idcg
 
 
@@ -122,20 +122,21 @@ def source_diversity(sources_per_hit: Sequence[Sequence[str]]) -> float:
     return entropy / max_entropy if max_entropy > 0 else 0.0
 
 
-def near_duplicate_density(vectors: Sequence[Sequence[float]]) -> float:
+def near_duplicate_density(vectors: Sequence[Sequence[float]]) -> float | None:
     """Mean pairwise cosine similarity across returned hits.
 
     Higher = more near-duplicates in the result set = worse.
+    Returns ``None`` when there are insufficient vectors to compute.
     """
     vecs = [list(v) for v in vectors if v]
     if len(vecs) < 2:
-        return float("nan")
+        return None
     sims: list[float] = []
     for i in range(len(vecs)):
         for j in range(i + 1, len(vecs)):
             sims.append(_cosine(vecs[i], vecs[j]))
     if not sims:
-        return float("nan")
+        return None
     return sum(sims) / len(sims)
 
 
@@ -179,13 +180,13 @@ async def groundedness(
     sources: Sequence[dict],
     lm_client: Any,
     model: str,
-) -> float:
+) -> float | None:
     """LLM-judge: does every factual claim in ``answer`` appear in ``sources``?
 
-    Returns ``nan`` on any error (no LLM, parse failure, etc.).
+    Returns ``None`` on any error (no LLM, parse failure, etc.).
     """
     if not answer or not sources or lm_client is None or not model:
-        return float("nan")
+        return None
     source_blob = "\n\n".join(
         f"[{i + 1}] {s.get('summary', '')} — {s.get('embed_text', '')}"
         for i, s in enumerate(sources)
@@ -200,17 +201,17 @@ async def groundedness(
     try:
         raw = await lm_client.chat(messages, model=model, temperature=0.0, max_tokens=32)
     except Exception:
-        return float("nan")
+        return None
     if not raw:
-        return float("nan")
+        return None
     first = raw.strip().splitlines()[0]
     match = re.search(r"([01](?:\.\d+)?|0?\.\d+)", first)
     if not match:
-        return float("nan")
+        return None
     try:
         val = float(match.group(1))
     except ValueError:
-        return float("nan")
+        return None
     return max(0.0, min(1.0, val))
 
 
@@ -234,11 +235,11 @@ def embedding_cohesion(
     conn: sqlite3.Connection,
     project: str,
     sample: int = 200,
-) -> float:
+) -> float | None:
     """Ratio of in-project mean cosine to random-pair mean cosine.
 
     Requires the sqlite-vec ``knowledge_vectors`` table (schema v6+). On
-    main, vectors live in LanceDB not SQLite, so this returns ``nan``.
+    main, vectors live in LanceDB not SQLite, so this returns ``None``.
     """
     try:
         rows = conn.execute(
@@ -253,12 +254,12 @@ def embedding_cohesion(
             (f"%{project}%", f"%{project}%", sample),
         ).fetchall()
     except sqlite3.OperationalError:
-        return float("nan")
+        return None
 
     in_project = [_parse_vec(r[1]) for r in rows if r[1]]
     in_project = [v for v in in_project if v]
     if len(in_project) < 4:
-        return float("nan")
+        return None
 
     try:
         bg_rows = conn.execute(
@@ -266,16 +267,16 @@ def embedding_cohesion(
             (sample,),
         ).fetchall()
     except sqlite3.OperationalError:
-        return float("nan")
+        return None
     background = [_parse_vec(r[0]) for r in bg_rows if r[0]]
     background = [v for v in background if v]
     if len(background) < 4:
-        return float("nan")
+        return None
 
     in_mean = _pairwise_mean_cosine(in_project)
     bg_mean = _pairwise_mean_cosine(background)
     if bg_mean <= 0:
-        return float("nan")
+        return None
     return in_mean / bg_mean
 
 
@@ -284,13 +285,13 @@ def _parse_vec(blob: str | None) -> list[float]:
         return []
     try:
         data = json.loads(blob)
-    except (json.JSONDecodeError, TypeError):
+    except json.JSONDecodeError, TypeError:
         return []
     if not isinstance(data, list):
         return []
     try:
         return [float(x) for x in data]
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return []
 
 
@@ -419,14 +420,14 @@ class QuestionResult:
     answer: str | None
     degraded: bool
     error: str | None
-    recall_at_k: float
-    mrr: float
-    ndcg_at_k: float
+    recall_at_k: float | None
+    mrr: float | None
+    ndcg_at_k: float | None
     source_diversity: float
-    near_duplicate_density: float
+    near_duplicate_density: float | None
     coverage_gap_score: float
-    groundedness: float
-    keyword_hit: float  # 1.0=hit, 0.0=miss, nan=synthesis disabled
+    groundedness: float | None
+    keyword_hit: float | None  # 1.0=hit, 0.0=miss, None=synthesis disabled
     elapsed_ms: float
     enrichment_models: list[str] = field(default_factory=list)
 
@@ -530,14 +531,14 @@ def _unsupported_result(q: Question, mode: str, elapsed_ms: float) -> QuestionRe
             f"mode={mode!r} is not available on this branch; only 'semantic' is supported "
             "until the sqlite-vec consolidation migration lands"
         ),
-        recall_at_k=float("nan"),
-        mrr=float("nan"),
-        ndcg_at_k=float("nan"),
+        recall_at_k=None,
+        mrr=None,
+        ndcg_at_k=None,
         source_diversity=0.0,
-        near_duplicate_density=float("nan"),
+        near_duplicate_density=None,
         coverage_gap_score=1.0,
-        groundedness=float("nan"),
-        keyword_hit=float("nan"),
+        groundedness=None,
+        keyword_hit=None,
         elapsed_ms=elapsed_ms,
     )
 
@@ -576,14 +577,14 @@ async def score_question(
             answer=None,
             degraded=True,
             error=f"retrieval: {type(e).__name__}: {e}",
-            recall_at_k=float("nan"),
-            mrr=float("nan"),
-            ndcg_at_k=float("nan"),
+            recall_at_k=None,
+            mrr=None,
+            ndcg_at_k=None,
             source_diversity=0.0,
-            near_duplicate_density=float("nan"),
+            near_duplicate_density=None,
             coverage_gap_score=1.0,
-            groundedness=float("nan"),
-            keyword_hit=float("nan"),
+            groundedness=None,
+            keyword_hit=None,
             elapsed_ms=elapsed,
         )
 
@@ -596,7 +597,7 @@ async def score_question(
     answer: str | None = None
     degraded = False
     error: str | None = None
-    ground = float("nan")
+    ground: float | None = None
 
     if run_synthesis and lm_client is not None and query_model and vector_table is not None:
         try:
@@ -638,13 +639,13 @@ async def score_question(
         mrr=mrr(retrieved_uuids, relevant),
         ndcg_at_k=ndcg_at_k(retrieved_uuids, relevance_graded, limit),
         source_diversity=source_diversity(sources_per_hit),
-        near_duplicate_density=float("nan"),
+        near_duplicate_density=None,
         coverage_gap_score=coverage_gap_score(scores),
         groundedness=ground,
         keyword_hit=(
             (1.0 if keyword_match(answer or "", q.acceptable_answer_keywords) else 0.0)
             if run_synthesis
-            else float("nan")
+            else None
         ),
         elapsed_ms=elapsed,
         enrichment_models=enrichment_models,
@@ -707,26 +708,27 @@ async def run_benchmark(
 # ---------------------------------------------------------------------------
 
 
-def _fmt(x: float) -> str:
-    if x is None or (isinstance(x, float) and math.isnan(x)):
+def _fmt(x: float | None) -> str:
+    if x is None:
         return "—"
     return f"{x:.3f}"
 
 
-def _mean(values: Iterable[float]) -> float:
-    clean = [v for v in values if isinstance(v, float) and not math.isnan(v)]
-    return statistics.mean(clean) if clean else float("nan")
+def _mean(values: Iterable[float | None]) -> float | None:
+    clean = [v for v in values if v is not None]
+    return statistics.mean(clean) if clean else None
 
 
-def _median(values: Iterable[float]) -> float:
-    clean = [v for v in values if isinstance(v, float) and not math.isnan(v)]
-    return statistics.median(clean) if clean else float("nan")
+def _median(values: Iterable[float | None]) -> float | None:
+    clean = [v for v in values if v is not None]
+    return statistics.median(clean) if clean else None
 
 
-def _percentile(values: Sequence[float], p: float) -> float:
-    if not values:
-        return float("nan")
-    ordered = sorted(values)
+def _percentile(values: Sequence[float | None], p: float) -> float | None:
+    clean = [v for v in values if v is not None]
+    if not clean:
+        return None
+    ordered = sorted(clean)
     idx = max(0, min(len(ordered) - 1, int(round(p * (len(ordered) - 1)))))
     return ordered[idx]
 
@@ -822,12 +824,12 @@ def render_markdown(report: ScoreReport) -> str:
     lines.append("| id | intent | top | gap | div | ground | kw | degraded |")
     lines.append("|---|---|---:|---:|---:|---:|:---:|:---:|")
     for r in report.results:
-        top = r.retrieval[0].score if r.retrieval else float("nan")
+        top = r.retrieval[0].score if r.retrieval else None
         lines.append(
             f"| {r.q.id} | {r.q.intent or '—'} | {_fmt(top)} | "
             f"{_fmt(r.coverage_gap_score)} | {_fmt(r.source_diversity)} | "
             f"{_fmt(r.groundedness)} | "
-            f"{'—' if math.isnan(r.keyword_hit) else ('✓' if r.keyword_hit else '✗')} | "
+            f"{'—' if r.keyword_hit is None else ('✓' if r.keyword_hit else '✗')} | "
             f"{'⚠' if r.degraded else ''} |"
         )
     lines.append("")
