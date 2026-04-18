@@ -150,6 +150,9 @@ pub enum SendEventSource {
         /// Duration in milliseconds
         #[arg(long)]
         duration_ms: u64,
+        /// Git repository identifier (owner/repo). If omitted, the daemon derives it from cwd.
+        #[arg(long)]
+        git_repo: Option<String>,
         /// Git branch
         #[arg(long)]
         git_branch: Option<String>,
