@@ -20,7 +20,7 @@ fn v4_db_migrates_to_v5_and_has_workflow_tables() {
     let version: i64 = conn
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .unwrap();
-    assert_eq!(version, 5);
+    assert_eq!(version, 6);
 
     for table in [
         "workflow_runs",
