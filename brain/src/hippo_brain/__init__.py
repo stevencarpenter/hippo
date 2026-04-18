@@ -3,18 +3,36 @@ import tomllib
 from pathlib import Path
 
 
+def _coerce_float(value: object, default: float) -> float:
+    try:
+        return float(value)  # type: ignore[arg-type]
+    except TypeError, ValueError:
+        return default
+
+
+def _default_settings() -> dict:
+    data_dir = Path.home() / ".local" / "share" / "hippo"
+    return {
+        "db_path": str(data_dir / "hippo.db"),
+        "data_dir": str(data_dir),
+        "lmstudio_base_url": "http://localhost:1234/v1",
+        "lmstudio_timeout_secs": 300.0,
+        "enrichment_model": "",
+        "embedding_model": "",
+        "query_model": "",
+        "poll_interval_secs": 5,
+        "enrichment_batch_size": 10,
+        "max_events_per_chunk": 10,
+        "session_stale_secs": 120,
+        "port": 9175,
+        "telemetry_endpoint": "http://localhost:4318",
+    }
+
+
 def _load_runtime_settings() -> dict:
     config_path = Path.home() / ".config" / "hippo" / "config.toml"
     if not config_path.exists():
-        return {
-            "db_path": "",
-            "lmstudio_base_url": "http://localhost:1234/v1",
-            "enrichment_model": "",
-            "query_model": "",
-            "poll_interval_secs": 5,
-            "enrichment_batch_size": 30,
-            "port": 9175,
-        }
+        return _default_settings()
 
     with config_path.open("rb") as f:
         config = tomllib.load(f)
@@ -33,6 +51,7 @@ def _load_runtime_settings() -> dict:
         "db_path": str(data_dir / "hippo.db"),
         "data_dir": str(data_dir),
         "lmstudio_base_url": lmstudio.get("base_url", "http://localhost:1234/v1"),
+        "lmstudio_timeout_secs": _coerce_float(lmstudio.get("timeout_secs"), 300.0),
         "enrichment_model": models.get("enrichment", ""),
         "embedding_model": models.get("embedding", ""),
         "query_model": models.get("query", "") or models.get("enrichment", ""),
@@ -74,6 +93,7 @@ def main() -> None:
             db_path=settings["db_path"],
             data_dir=settings["data_dir"],
             lmstudio_base_url=settings["lmstudio_base_url"],
+            lmstudio_timeout_secs=settings["lmstudio_timeout_secs"],
             enrichment_model=settings["enrichment_model"],
             embedding_model=settings["embedding_model"],
             query_model=settings["query_model"],
