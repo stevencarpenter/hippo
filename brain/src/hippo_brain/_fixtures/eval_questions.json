@@ -216,11 +216,11 @@
     {
       "id": "q17",
       "question": "Why did we reject a Postgres migration for the vector store?",
-      "intent": "why-decision",
+      "intent": "adversarial",
       "relevant_knowledge_node_uuids": [],
-      "acceptable_answer_keywords": ["sqlite", "single", "local", "overkill", "rejected"],
+      "acceptable_answer_keywords": ["LanceDB", "sqlite-vec", "no such decision", "not a postgres"],
       "source_bias": "claude",
-      "coverage_gap_reason": "No enriched node discusses a Postgres-vs-sqlite-vec decision. The branch is named `postgres` but that is incidental — the actual choice was LanceDB→sqlite-vec (see q01), not Postgres→sqlite-vec. This question should arguably be reworded; as stated, it is not answerable from the corpus."
+      "coverage_gap_reason": "No enriched node discusses a Postgres-vs-sqlite-vec decision — because none was made. The actual vector-store decision was LanceDB→sqlite-vec (see q01). A correct answer will clarify that no Postgres migration was rejected, redirecting to the actual LanceDB→sqlite-vec decision. This question tests that the system does not hallucinate a Postgres decision from the branch name."
     },
     {
       "id": "q18",

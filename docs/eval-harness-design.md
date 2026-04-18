@@ -94,8 +94,8 @@ Implemented in `brain/src/hippo_brain/evaluation.py`.
 
 | Function | Signature | Definition |
 |---|---|---|
-| `recall_at_k` | `(retrieved: list[str], relevant: set[str], k: int) -> float` | \|retrieved[:k] ∩ relevant\| / \|relevant\|; returns NaN if \|relevant\|=0 |
-| `mrr` | `(retrieved: list[str], relevant: set[str]) -> float` | 1/rank of first relevant hit, 0 if none; NaN if relevant empty |
+| `recall_at_k` | `(retrieved: list[str], relevant: set[str], k: int) -> float \| None` | \|retrieved[:k] ∩ relevant\| / \|relevant\|; returns `None` if \|relevant\|=0 |
+| `mrr` | `(retrieved: list[str], relevant: set[str]) -> float \| None` | 1/rank of first relevant hit, 0 if none; `None` if relevant empty |
 | `ndcg_at_k` | `(retrieved: list[str], relevance: dict[str,float], k: int) -> float` | DCG@k / IDCG@k; log2 discount, relevance score from dict (default 0) |
 | `source_diversity` | `(sources_per_hit: list[list[str]]) -> float` | Shannon entropy of source-type distribution (shell/claude/browser/workflow), normalized to [0, 1] |
 | `near_duplicate_density` | `(vectors: list[list[float]]) -> float` | Mean pairwise cosine similarity across returned hits; higher = more duplication = worse |
@@ -152,7 +152,7 @@ and `query_model` all come from the one source of truth.
 - If LM Studio is unreachable → skip synthesis + judge, report retrieval-only
 - If LanceDB is unreachable → synthesis + semantic retrieval both no-op
   cleanly with a `degraded=True` marker on each result
-- If a question has no `relevant_knowledge_node_uuids` → report NaN for
+- If a question has no `relevant_knowledge_node_uuids` → report `—` for
   recall/MRR/NDCG
 - If `--mode` is one of `hybrid|lexical|recent` → exit 0 with a stderr
   message explaining the mode is unavailable on this branch

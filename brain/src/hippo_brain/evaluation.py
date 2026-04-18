@@ -644,7 +644,7 @@ async def score_question(
         mrr=mrr(retrieved_uuids, relevant),
         ndcg_at_k=ndcg_at_k(retrieved_uuids, relevance_graded, limit),
         source_diversity=source_diversity(sources_per_hit),
-        near_duplicate_density=None,
+        near_duplicate_density=None,  # TODO: fetch vectors post-retrieval once LanceDB search_similar exposes them
         coverage_gap_score=coverage_gap_score(scores),
         groundedness=ground,
         keyword_hit=(
@@ -655,6 +655,9 @@ async def score_question(
         elapsed_ms=elapsed,
         enrichment_models=enrichment_models,
     )
+
+
+BENCHMARK_CONCURRENCY = 4
 
 
 async def run_benchmark(
@@ -673,25 +676,24 @@ async def run_benchmark(
 ) -> ScoreReport:
     """Score every question and return a :class:`ScoreReport`."""
     started = time.time()
-    results = list(
-        await asyncio.gather(
-            *[
-                score_question(
-                    q,
-                    conn=conn,
-                    vector_table=vector_table,
-                    lm_client=lm_client,
-                    embedding_model=embedding_model,
-                    query_model=query_model,
-                    mode=mode,
-                    limit=limit,
-                    run_synthesis=run_synthesis,
-                    run_judge=run_judge,
-                )
-                for q in questions
-            ]
-        )
-    )
+    sem = asyncio.Semaphore(BENCHMARK_CONCURRENCY)
+
+    async def _guarded(q: Question) -> QuestionResult:
+        async with sem:
+            return await score_question(
+                q,
+                conn=conn,
+                vector_table=vector_table,
+                lm_client=lm_client,
+                embedding_model=embedding_model,
+                query_model=query_model,
+                mode=mode,
+                limit=limit,
+                run_synthesis=run_synthesis,
+                run_judge=run_judge,
+            )
+
+    results = list(await asyncio.gather(*[_guarded(q) for q in questions]))
     return ScoreReport(
         results=results,
         config={
@@ -815,7 +817,7 @@ def render_markdown(report: ScoreReport) -> str:
     )
     lines.append(
         "- **Embedding cohesion** requires the sqlite-vec `knowledge_vectors` table, "
-        "which is not present on main. The metric returns NaN until migration lands."
+        "which is not present on main. The metric returns `—` until migration lands."
     )
     lines.append(
         "- **Near-duplicate density** is not populated — LanceDB hits do not carry "
@@ -911,7 +913,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = _parse_args(argv)
     from hippo_brain.client import LMStudioClient
     from hippo_brain.embeddings import get_or_create_table, open_vector_db
-    from hippo_brain.mcp import _load_config
+    from hippo_brain.mcp import _load_config  # private but intentional: shared config loader
 
     cfg = _load_config()
     questions = load_questions(args.questions)

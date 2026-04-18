@@ -7,6 +7,7 @@ questions and a canned retrieval adapter.
 
 from __future__ import annotations
 
+import asyncio
 import sqlite3
 
 import pytest
@@ -462,3 +463,61 @@ def test_render_markdown_handles_empty():
     )
     md = render_markdown(report)
     assert "Summary" in md
+
+
+@pytest.mark.asyncio
+async def test_run_benchmark_respects_concurrency_limit(monkeypatch):
+    """run_benchmark must not fire more than BENCHMARK_CONCURRENCY score_question calls at once."""
+    active = 0
+    max_active = 0
+
+    async def fake_score_question(q, **kwargs):
+        nonlocal active, max_active
+        active += 1
+        max_active = max(max_active, active)
+        await asyncio.sleep(0)
+        active -= 1
+        return evmod.QuestionResult(
+            q=q,
+            retrieval=[],
+            answer=None,
+            degraded=False,
+            error=None,
+            recall_at_k=None,
+            mrr=None,
+            ndcg_at_k=None,
+            source_diversity=0.0,
+            near_duplicate_density=None,
+            coverage_gap_score=1.0,
+            groundedness=None,
+            keyword_hit=None,
+            elapsed_ms=1.0,
+        )
+
+    monkeypatch.setattr(evmod, "score_question", fake_score_question)
+
+    n = evmod.BENCHMARK_CONCURRENCY * 2
+    questions = [
+        evmod.Question(
+            id=f"c{i}",
+            question="test",
+            relevant_knowledge_node_uuids=[],
+            acceptable_answer_keywords=[],
+        )
+        for i in range(n)
+    ]
+    conn = _smoke_conn()
+    await run_benchmark(
+        questions=questions,
+        conn=conn,
+        vector_table=None,
+        lm_client=None,
+        embedding_model="",
+        query_model="",
+        mode="semantic",
+        limit=5,
+        run_synthesis=False,
+        run_judge=False,
+    )
+
+    assert max_active <= evmod.BENCHMARK_CONCURRENCY
