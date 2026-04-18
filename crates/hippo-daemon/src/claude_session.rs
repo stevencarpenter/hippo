@@ -135,12 +135,17 @@ fn build_envelope(
     let session_id = Uuid::parse_str(&pending.session_id)
         .unwrap_or_else(|_| Uuid::new_v5(&Uuid::NAMESPACE_URL, pending.session_id.as_bytes()));
 
-    let git_state = pending.git_branch.as_ref().map(|branch| GitState {
-        repo: None,
-        branch: Some(branch.clone()),
-        commit: None,
-        is_dirty: false,
-    });
+    let git_repo = crate::git_repo::derive_git_repo(Path::new(&pending.cwd));
+    let git_state = if git_repo.is_some() || pending.git_branch.is_some() {
+        Some(GitState {
+            repo: git_repo,
+            branch: pending.git_branch.clone(),
+            commit: None,
+            is_dirty: false,
+        })
+    } else {
+        None
+    };
 
     let stdout = result_content.map(|content| {
         let original_bytes = content.len();

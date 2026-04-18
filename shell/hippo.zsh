@@ -10,6 +10,7 @@ autoload -Uz add-zsh-hook
 # Git state cache
 typeset -g _HIPPO_LAST_GIT_CWD=""
 typeset -g _HIPPO_LAST_GIT_TS=0
+typeset -g _HIPPO_GIT_REPO=""
 typeset -g _HIPPO_GIT_BRANCH=""
 typeset -g _HIPPO_GIT_COMMIT=""
 typeset -g _HIPPO_GIT_DIRTY=""
@@ -73,12 +74,31 @@ _hippo_precmd() {
         if git -C "${_HIPPO_CWD}" rev-parse --is-inside-work-tree &>/dev/null; then
             _HIPPO_GIT_BRANCH="$(git -C "${_HIPPO_CWD}" rev-parse --abbrev-ref HEAD 2>/dev/null)"
             _HIPPO_GIT_COMMIT="$(git -C "${_HIPPO_CWD}" rev-parse --short HEAD 2>/dev/null)"
+            local origin_url
+            origin_url="$(git -C "${_HIPPO_CWD}" config --get remote.origin.url 2>/dev/null)"
+            if [[ -n "${origin_url}" ]]; then
+                # Strip trailing .git and derive owner/repo from the last two path segments.
+                # Handles git@host:owner/repo.git, https://host/owner/repo, ssh://host/owner/repo.
+                local slug="${origin_url%.git}"
+                slug="${slug##*:}"           # for scp-style git@host:owner/repo
+                local repo_name="${slug##*/}"
+                local owner_tail="${slug%/${repo_name}}"
+                local owner_name="${owner_tail##*/}"
+                if [[ -n "${owner_name}" && -n "${repo_name}" && "${owner_name}" != "${slug}" ]]; then
+                    _HIPPO_GIT_REPO="${owner_name}/${repo_name}"
+                else
+                    _HIPPO_GIT_REPO=""
+                fi
+            else
+                _HIPPO_GIT_REPO="$(basename "$(git -C "${_HIPPO_CWD}" rev-parse --show-toplevel 2>/dev/null)" 2>/dev/null)"
+            fi
             if [[ -n "$(git -C "${_HIPPO_CWD}" status --porcelain 2>/dev/null | head -1)" ]]; then
                 _HIPPO_GIT_DIRTY=1
             else
                 _HIPPO_GIT_DIRTY=0
             fi
         else
+            _HIPPO_GIT_REPO=""
             _HIPPO_GIT_BRANCH=""
             _HIPPO_GIT_COMMIT=""
             _HIPPO_GIT_DIRTY=""
@@ -94,6 +114,9 @@ _hippo_precmd() {
         --duration-ms "${duration_ms}"
     )
 
+    if [[ -n "${_HIPPO_GIT_REPO}" ]]; then
+        args+=(--git-repo "${_HIPPO_GIT_REPO}")
+    fi
     if [[ -n "${_HIPPO_GIT_BRANCH}" ]]; then
         args+=(--git-branch "${_HIPPO_GIT_BRANCH}")
     fi
