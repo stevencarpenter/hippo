@@ -22,6 +22,9 @@ const GIT_TIMEOUT: Duration = Duration::from_millis(500);
 ///   2. basename of `git rev-parse --show-toplevel` (repo with no remote)
 ///   3. `None` when `cwd` is not inside a git worktree
 pub fn derive_git_repo(cwd: &Path) -> Option<String> {
+    if cwd.as_os_str().is_empty() {
+        return None;
+    }
     if let Some(url) = remote_origin_url(cwd)
         && let Some(slug) = parse_owner_repo(&url)
     {
@@ -113,7 +116,17 @@ pub fn parse_owner_repo(url: &str) -> Option<String> {
         return join_slug(owner, repo);
     }
 
-    // URL-like: owner and repo are the last two non-empty path segments.
+    // URL-like: only accept known remote schemes (https, http, ssh, git).
+    // Local paths (/home/me/repo) and file:// remotes don't match, so
+    // derive_git_repo falls through to toplevel_basename instead of
+    // storing a bogus owner/repo from filesystem path segments.
+    if !stripped.starts_with("https://")
+        && !stripped.starts_with("http://")
+        && !stripped.starts_with("ssh://")
+        && !stripped.starts_with("git://")
+    {
+        return None;
+    }
     let mut segments = stripped.rsplit('/').filter(|s| !s.is_empty());
     let repo = segments.next()?;
     let owner = segments.next()?;
@@ -208,6 +221,24 @@ mod tests {
     }
 
     #[test]
+    fn parse_rejects_local_absolute_path() {
+        assert_eq!(parse_owner_repo("/home/me/hippo"), None);
+        assert_eq!(parse_owner_repo("/home/me/hippo.git"), None);
+    }
+
+    #[test]
+    fn parse_rejects_file_url() {
+        assert_eq!(parse_owner_repo("file:///home/me/hippo"), None);
+        assert_eq!(parse_owner_repo("file:///home/me/hippo.git"), None);
+    }
+
+    #[test]
+    fn parse_rejects_relative_path() {
+        assert_eq!(parse_owner_repo("../sibling-repo"), None);
+        assert_eq!(parse_owner_repo("../sibling-repo.git"), None);
+    }
+
+    #[test]
     fn derive_uses_origin_when_configured() {
         let tmp = tempdir().unwrap();
         git_init(tmp.path());
@@ -233,5 +264,35 @@ mod tests {
     fn derive_returns_none_outside_worktree() {
         let tmp = tempdir().unwrap();
         assert_eq!(derive_git_repo(tmp.path()), None);
+    }
+
+    #[test]
+    fn derive_returns_none_for_empty_path() {
+        assert_eq!(derive_git_repo(Path::new("")), None);
+    }
+
+    #[test]
+    fn derive_falls_back_to_basename_for_local_path_remote() {
+        let tmp = tempdir().unwrap();
+
+        let bare = tmp.path().join("bare-upstream");
+        std::fs::create_dir(&bare).unwrap();
+        git_init(&bare);
+
+        let clone_dir = tmp.path().join("my-clone");
+        std::fs::create_dir(&clone_dir).unwrap();
+        git_init(&clone_dir);
+        let status = Command::new("git")
+            .arg("-C")
+            .arg(&clone_dir)
+            .args(["remote", "add", "origin"])
+            .arg(bare.to_str().unwrap())
+            .status()
+            .unwrap();
+        assert!(status.success(), "git remote add failed");
+
+        // Local path remote must not produce a bogus "owner/repo" slug —
+        // fall back to the clone directory basename instead.
+        assert_eq!(derive_git_repo(&clone_dir), Some("my-clone".into()));
     }
 }

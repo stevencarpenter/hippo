@@ -76,27 +76,28 @@ _hippo_precmd() {
             _HIPPO_GIT_COMMIT="$(git -C "${_HIPPO_CWD}" rev-parse --short HEAD 2>/dev/null)"
             local origin_url
             origin_url="$(git -C "${_HIPPO_CWD}" config --get remote.origin.url 2>/dev/null)"
-            if [[ -n "${origin_url}" ]]; then
-                # Strip trailing .git and derive owner/repo from the last two path segments.
-                # Handles git@host:owner/repo.git, https://host/owner/repo, ssh://host/owner/repo.
+            _HIPPO_GIT_REPO=""
+            # Only attempt owner/repo parsing for recognised remote URL shapes.
+            # Local path remotes (/path/to/repo, file:///...) are skipped so
+            # we don't store bogus filesystem path segments as owner/repo.
+            if [[ "${origin_url}" == https://* || "${origin_url}" == http://* || \
+                  "${origin_url}" == ssh://*   || "${origin_url}" == git://*  || \
+                  "${origin_url}" == *@*:* ]]; then
                 local slug="${origin_url%.git}"
-                slug="${slug##*:}"           # for scp-style git@host:owner/repo
-                # Require at least two path segments — reject single-segment
-                # slugs like a bare `repo.git` that would otherwise slip past
-                # the parameter expansion below.
+                slug="${slug%/}"             # strip trailing slash
+                slug="${slug##*:}"           # strip host prefix for scp-style: git@host:owner/repo
                 if [[ "${slug}" == */* ]]; then
                     local repo_name="${slug##*/}"
                     local owner_tail="${slug%/${repo_name}}"
                     local owner_name="${owner_tail##*/}"
                     if [[ -n "${owner_name}" && -n "${repo_name}" ]]; then
                         _HIPPO_GIT_REPO="${owner_name}/${repo_name}"
-                    else
-                        _HIPPO_GIT_REPO=""
                     fi
-                else
-                    _HIPPO_GIT_REPO=""
                 fi
-            else
+            fi
+            # Fall back to repo basename when there's no remote URL or URL parsing failed
+            # (e.g. local path remote, single-segment slug, unrecognised shape).
+            if [[ -z "${_HIPPO_GIT_REPO}" ]]; then
                 _HIPPO_GIT_REPO="$(basename "$(git -C "${_HIPPO_CWD}" rev-parse --show-toplevel 2>/dev/null)" 2>/dev/null)"
             fi
             if [[ -n "$(git -C "${_HIPPO_CWD}" status --porcelain 2>/dev/null | head -1)" ]]; then
