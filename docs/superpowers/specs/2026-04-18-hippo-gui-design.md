@@ -174,7 +174,7 @@ Response:
 ## SwiftUI Application Structure
 
 ```
-gui/
+hippo-gui/
 ├── Sources/
 │   └── HippoGUI/
 │       ├── App/

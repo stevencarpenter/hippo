@@ -368,13 +368,13 @@ git commit -m "feat(brain): add /events and /sessions endpoints for GUI"
 
 Create the SwiftUI app structure.
 
-### Task 2.1: Create gui/ directory structure
+### Task 2.1: Create hippo-gui/ directory structure
 
 **Files:**
-- Create: `gui/Package.swift`
-- Create: `gui/Sources/HippoGUI/App/HippoGUIApp.swift`
-- Create: `gui/Sources/HippoGUI/Views/ContentView.swift`
-- Create: `gui/Resources/Assets.xcassets/`
+- Create: `hippo-gui/Package.swift`
+- Create: `hippo-gui/Sources/HippoGUI/App/HippoGUIApp.swift`
+- Create: `hippo-gui/Sources/HippoGUI/Views/ContentView.swift`
+- Create: `hippo-gui/Resources/Assets.xcassets/`
 
 - [ ] **Step 1: Create Package.swift**
 
@@ -437,15 +437,15 @@ Expected: Builds successfully
 - [ ] **Step 4: Commit**
 
 ```bash
-git add gui/
+git add hippo-gui/
 git commit -m "feat(gui): scaffold SwiftUI application"
 ```
 
 ### Task 2.2: Create BrainClient service
 
 **Files:**
-- Create: `gui/Sources/HippoGUI/Services/BrainClient.swift`
-- Create: `gui/Sources/HippoGUI/Models/`
+- Create: `hippo-gui/Sources/HippoGUI/Services/BrainClient.swift`
+- Create: `hippo-gui/Sources/HippoGUI/Models/`
 
 - [ ] **Step 1: Create Models**
 
@@ -641,18 +641,18 @@ enum BrainClientError: Error {
 - [ ] **Step 3: Commit**
 
 ```bash
-git add gui/
+git add hippo-gui/
 git commit -m "feat(gui): add BrainClient and models"
 ```
 
 ### Task 2.3: Create Views
 
 **Files:**
-- Modify: `gui/Sources/HippoGUI/Views/ContentView.swift`
-- Create: `gui/Sources/HippoGUI/Views/QueryAskView.swift`
-- Create: `gui/Sources/HippoGUI/Views/KnowledgeView.swift`
-- Create: `gui/Sources/HippoGUI/Views/EventBrowserView.swift`
-- Create: `gui/Sources/HippoGUI/Views/StatusView.swift`
+- Modify: `hippo-gui/Sources/HippoGUI/Views/ContentView.swift`
+- Create: `hippo-gui/Sources/HippoGUI/Views/QueryAskView.swift`
+- Create: `hippo-gui/Sources/HippoGUI/Views/KnowledgeView.swift`
+- Create: `hippo-gui/Sources/HippoGUI/Views/EventBrowserView.swift`
+- Create: `hippo-gui/Sources/HippoGUI/Views/StatusView.swift`
 
 - [ ] **Step 1: Create QueryAskView**
 
@@ -958,7 +958,7 @@ struct ContentView: View {
 - [ ] **Step 6: Commit**
 
 ```bash
-git add gui/
+git add hippo-gui/
 git commit -m "feat(gui): add SwiftUI views for Query, Knowledge, Events, Status"
 ```
 
@@ -971,7 +971,7 @@ Add config file reading for brain port.
 ### Task 3.1: Create ConfigClient
 
 **Files:**
-- Create: `gui/Sources/HippoGUI/Services/ConfigClient.swift`
+- Create: `hippo-gui/Sources/HippoGUI/Services/ConfigClient.swift`
 
 - [ ] **Step 1: Create ConfigClient**
 
