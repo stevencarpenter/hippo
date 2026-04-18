@@ -702,6 +702,21 @@ echo "==> Restart brain for daily operation:"
 echo "  mise run start"
 """
 
+[tasks."re-enrich:failed"]
+description = "Redrive failed enrichment queue items (shell, Claude, browser, workflow) back to pending"
+run = """
+#!/usr/bin/env bash
+set -euo pipefail
+
+DB=~/.local/share/hippo/hippo.db
+
+for TABLE in enrichment_queue claude_enrichment_queue browser_enrichment_queue workflow_enrichment_queue; do
+    BEFORE=$(sqlite3 "$DB" "SELECT COUNT(*) FROM $TABLE WHERE status = 'failed'")
+    sqlite3 "$DB" "UPDATE $TABLE SET status = 'pending', retry_count = 0, error_message = NULL, locked_at = NULL, locked_by = NULL WHERE status = 'failed'"
+    echo "  $TABLE: requeued $BEFORE failed item(s)"
+done
+"""
+
 [tasks."ingest:claude"]
 description = "Ingest Claude Code session logs into the knowledge base"
 run = "uv run --project brain python scripts/hippo-ingest-claude.py ${@}"

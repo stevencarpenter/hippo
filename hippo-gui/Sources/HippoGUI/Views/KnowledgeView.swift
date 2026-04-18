@@ -58,7 +58,7 @@ struct KnowledgeView: View {
                 List(selection: $selectedNode) {
                     ForEach(nodes) { node in
                         VStack(alignment: .leading, spacing: 4) {
-                            Text(String(node.content.prefix(100)))
+                            Text(node.displaySummary)
                                 .lineLimit(2)
                                 .font(.body)
                             HStack {
@@ -69,8 +69,8 @@ struct KnowledgeView: View {
                                     .background(Color.accentColor.opacity(0.2))
                                     .clipShape(RoundedRectangle(cornerRadius: 4))
                                 Spacer()
-                                if let tags = node.tags, !tags.isEmpty {
-                                    Text(tags)
+                                if !node.tags.isEmpty {
+                                    Text(node.tags.joined(separator: ", "))
                                         .font(.caption2)
                                         .foregroundStyle(.secondary)
                                 }
@@ -116,9 +116,9 @@ struct KnowledgeView: View {
                                 }
                             }
 
-                            if let tags = node.tags, !tags.isEmpty {
+                            if !node.tags.isEmpty {
                                 LabeledContent("Tags") {
-                                    Text(tags)
+                                    Text(node.tags.joined(separator: ", "))
                                 }
                             }
 
@@ -144,6 +144,7 @@ struct KnowledgeView: View {
         }
     }
 
+    @MainActor
     private func loadKnowledge() async {
         isLoading = true
         errorMessage = nil
@@ -159,11 +160,14 @@ struct KnowledgeView: View {
         isLoading = false
     }
 
+    private static let dateFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateStyle = .medium
+        f.timeStyle = .short
+        return f
+    }()
+
     private func formatDate(_ timestamp: Int) -> String {
-        let date = Date(timeIntervalSince1970: Double(timestamp) / 1000)
-        let formatter = DateFormatter()
-        formatter.dateStyle = .medium
-        formatter.timeStyle = .short
-        return formatter.string(from: date)
+        Self.dateFormatter.string(from: Date(timeIntervalSince1970: Double(timestamp) / 1000))
     }
 }

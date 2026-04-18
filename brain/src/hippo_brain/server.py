@@ -366,18 +366,14 @@ class BrainServer:
             nodes = []
             for r in cursor.fetchall():
                 try:
-                    content = json.loads(r[2]) if r[2] else {}
-                except json.JSONDecodeError, TypeError:
-                    content = {}
-                try:
                     tags = json.loads(r[5]) if r[5] else []
-                except json.JSONDecodeError, TypeError:
+                except (json.JSONDecodeError, TypeError):
                     tags = []
                 nodes.append(
                     {
                         "id": r[0],
                         "uuid": r[1],
-                        "content": content,
+                        "content": r[2] or "",
                         "node_type": r[3],
                         "outcome": r[4],
                         "tags": tags,
@@ -416,19 +412,15 @@ class BrainServer:
                 return JSONResponse({"error": "Knowledge node not found"}, status_code=404)
 
             try:
-                content = json.loads(row[2]) if row[2] else {}
-            except json.JSONDecodeError, TypeError:
-                content = {}
-            try:
                 tags = json.loads(row[6]) if row[6] else []
-            except json.JSONDecodeError, TypeError:
+            except (json.JSONDecodeError, TypeError):
                 tags = []
 
             return JSONResponse(
                 {
                     "id": row[0],
                     "uuid": row[1],
-                    "content": content,
+                    "content": row[2] or "",
                     "embed_text": row[3],
                     "node_type": row[4],
                     "outcome": row[5],
@@ -472,8 +464,12 @@ class BrainServer:
             conditions = []
 
             if session_id:
+                try:
+                    session_id = int(session_id)
+                except ValueError:
+                    return JSONResponse({"error": "session_id must be an integer"}, status_code=400)
                 conditions.append("session_id = ?")
-                params.append(int(session_id))
+                params.append(session_id)
 
             if since_ms:
                 conditions.append("timestamp > ?")

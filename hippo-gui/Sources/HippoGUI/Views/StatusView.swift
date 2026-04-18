@@ -54,6 +54,7 @@ struct StatusView: View {
         }
     }
 
+    @MainActor
     private func checkHealth() async {
         isLoading = true
 

@@ -1,29 +1,39 @@
 import SwiftUI
 
 struct ContentView: View {
-    private let brainClient = BrainClient()
+    @State private var brainClient: BrainClient?
 
     var body: some View {
-        TabView {
-            QueryAskView(brainClient: brainClient)
-                .tabItem {
-                    Label("Query", systemImage: "questionmark.circle")
-                }
+        Group {
+            if let client = brainClient {
+                TabView {
+                    QueryAskView(brainClient: client)
+                        .tabItem {
+                            Label("Query", systemImage: "questionmark.circle")
+                        }
 
-            KnowledgeView(brainClient: brainClient)
-                .tabItem {
-                    Label("Knowledge", systemImage: "brain")
-                }
+                    KnowledgeView(brainClient: client)
+                        .tabItem {
+                            Label("Knowledge", systemImage: "brain")
+                        }
 
-            EventBrowserView(brainClient: brainClient)
-                .tabItem {
-                    Label("Events", systemImage: "terminal")
-                }
+                    EventBrowserView(brainClient: client)
+                        .tabItem {
+                            Label("Events", systemImage: "terminal")
+                        }
 
-            StatusView(brainClient: brainClient)
-                .tabItem {
-                    Label("Status", systemImage: "heart")
+                    StatusView(brainClient: client)
+                        .tabItem {
+                            Label("Status", systemImage: "heart")
+                        }
                 }
+            } else {
+                ProgressView("Connecting...")
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+        }
+        .task {
+            brainClient = await BrainClient.makeDefault()
         }
     }
 }

@@ -731,7 +731,7 @@ def test_get_knowledge_returns_full_details(tmp_db):
     data = resp.json()
     assert data["id"] == 1
     assert data["uuid"] == "uuid-1"
-    assert data["content"]["summary"] == "First node"
+    assert "First node" in data["content"]
     assert "embed_text" in data
     assert data["embed_text"] == "first node embed text"
     assert data["node_type"] == "observation"
@@ -858,6 +858,17 @@ def test_events_list_invalid_params_returns_400(tmp_db):
     client = TestClient(app)
 
     resp = client.get("/events?limit=abc")
+    assert resp.status_code == 400
+    assert "error" in resp.json()
+
+
+def test_events_list_invalid_session_id_returns_400(tmp_db):
+    """Non-integer session_id param returns 400."""
+    _, db_path = tmp_db
+    app = _make_app(str(db_path))
+    client = TestClient(app)
+
+    resp = client.get("/events?session_id=notanint")
     assert resp.status_code == 400
     assert "error" in resp.json()
 

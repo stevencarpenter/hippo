@@ -18,6 +18,7 @@ struct QueryAskView: View {
             HStack {
                 TextField("Ask a question...", text: $question)
                     .textFieldStyle(.roundedBorder)
+                    .disabled(isLoading)
                     .onSubmit {
                         Task { await askQuestion() }
                     }
@@ -83,8 +84,9 @@ struct QueryAskView: View {
         .padding()
     }
 
+    @MainActor
     private func askQuestion() async {
-        guard !question.isEmpty else { return }
+        guard !question.isEmpty, !isLoading else { return }
 
         isLoading = true
         errorMessage = nil

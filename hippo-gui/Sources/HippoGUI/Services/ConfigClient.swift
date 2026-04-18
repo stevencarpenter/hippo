@@ -9,7 +9,7 @@ struct HippoConfig: Codable {
 }
 
 actor ConfigClient {
-    static let defaultPort = 8765
+    static let defaultPort = 9175
     private let configPath: URL
 
     init() {
@@ -49,7 +49,13 @@ actor ConfigClient {
             if inBrainSection && trimmed.hasPrefix("port") && trimmed.contains("=") {
                 let parts = trimmed.split(separator: "=", maxSplits: 1)
                 if parts.count == 2 {
-                    let value = parts[1].trimmingCharacters(in: .whitespaces)
+                    // Strip inline comments and surrounding whitespace/quotes
+                    var value = parts[1].trimmingCharacters(in: .whitespaces)
+                    if let commentRange = value.range(of: "#") {
+                        value = String(value[value.startIndex..<commentRange.lowerBound])
+                            .trimmingCharacters(in: .whitespaces)
+                    }
+                    value = value.trimmingCharacters(in: CharacterSet(charactersIn: "\"'"))
                     return Int(value)
                 }
             }

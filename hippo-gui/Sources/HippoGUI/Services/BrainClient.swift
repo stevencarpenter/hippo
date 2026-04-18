@@ -24,17 +24,16 @@ actor BrainClient {
     private let baseURL: String
     private let session: URLSession
 
-    init(port: Int = 8765) {
+    init(port: Int = 9175) {
         self.baseURL = "http://localhost:\(port)"
         let config = URLSessionConfiguration.default
         config.timeoutIntervalForRequest = 30
         self.session = URLSession(configuration: config)
     }
 
-    convenience init() async {
-        let configClient = ConfigClient()
-        let port = await configClient.loadPort()
-        self.init(port: port)
+    static func makeDefault() async -> BrainClient {
+        let port = await ConfigClient().loadPort()
+        return BrainClient(port: port)
     }
 
     func listKnowledge(limit: Int = 20, offset: Int = 0, nodeType: String? = nil) async throws -> KnowledgeListResponse {
@@ -56,8 +55,7 @@ actor BrainClient {
         try validateResponse(response)
 
         do {
-            let decoder = JSONDecoder()
-            return try decoder.decode(KnowledgeListResponse.self, from: data)
+            return try JSONDecoder().decode(KnowledgeListResponse.self, from: data)
         } catch {
             throw BrainClientError.decodingError(error)
         }
@@ -72,8 +70,7 @@ actor BrainClient {
         try validateResponse(response)
 
         do {
-            let decoder = JSONDecoder()
-            return try decoder.decode(KnowledgeNode.self, from: data)
+            return try JSONDecoder().decode(KnowledgeNode.self, from: data)
         } catch {
             throw BrainClientError.decodingError(error)
         }
@@ -98,8 +95,7 @@ actor BrainClient {
         try validateResponse(response)
 
         do {
-            let decoder = JSONDecoder()
-            return try decoder.decode(EventListResponse.self, from: data)
+            return try JSONDecoder().decode(EventListResponse.self, from: data)
         } catch {
             throw BrainClientError.decodingError(error)
         }
@@ -120,8 +116,7 @@ actor BrainClient {
         try validateResponse(response)
 
         do {
-            let decoder = JSONDecoder()
-            return try decoder.decode(SessionListResponse.self, from: data)
+            return try JSONDecoder().decode(SessionListResponse.self, from: data)
         } catch {
             throw BrainClientError.decodingError(error)
         }
@@ -140,15 +135,13 @@ actor BrainClient {
             let question: String
             let limit: Int
         }
-        let body = AskRequest(question: question, limit: limit)
-        request.httpBody = try JSONEncoder().encode(body)
+        request.httpBody = try JSONEncoder().encode(AskRequest(question: question, limit: limit))
 
         let (data, response) = try await session.data(for: request)
         try validateResponse(response)
 
         do {
-            let decoder = JSONDecoder()
-            return try decoder.decode(AskResponse.self, from: data)
+            return try JSONDecoder().decode(AskResponse.self, from: data)
         } catch {
             throw BrainClientError.decodingError(error)
         }
@@ -163,9 +156,8 @@ actor BrainClient {
         try validateResponse(response)
 
         do {
-            let decoder = JSONDecoder()
-            let result = try decoder.decode([String: Bool].self, from: data)
-            return result["ok"] ?? false
+            let result = try JSONDecoder().decode([String: String].self, from: data)
+            return result["status"] == "ok"
         } catch {
             return false
         }
@@ -175,7 +167,6 @@ actor BrainClient {
         guard let httpResponse = response as? HTTPURLResponse else {
             return
         }
-
         guard (200...299).contains(httpResponse.statusCode) else {
             throw BrainClientError.serverError("HTTP \(httpResponse.statusCode)")
         }

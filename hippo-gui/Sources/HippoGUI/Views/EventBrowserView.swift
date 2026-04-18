@@ -180,6 +180,7 @@ struct EventBrowserView: View {
         }
     }
 
+    @MainActor
     private func loadSessions() async {
         isLoading = true
         errorMessage = nil
@@ -187,10 +188,8 @@ struct EventBrowserView: View {
         do {
             let response = try await brainClient.listSessions()
             sessions = response.sessions
-            if let first = sessions.first {
-                selectedSession = first
-                await loadEvents(sessionId: first.id)
-            }
+            selectedSession = sessions.first
+            // selectedSession change triggers loadEvents via .onChange
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -198,7 +197,9 @@ struct EventBrowserView: View {
         isLoading = false
     }
 
+    @MainActor
     private func loadEvents(sessionId: Int) async {
+        selectedEvent = nil
         do {
             let response = try await brainClient.listEvents(sessionId: sessionId)
             events = response.events
@@ -207,18 +208,24 @@ struct EventBrowserView: View {
         }
     }
 
+    private static let sessionDateFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateStyle = .medium
+        f.timeStyle = .short
+        return f
+    }()
+
+    private static let timestampFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.timeStyle = .medium
+        return f
+    }()
+
     private func formatSessionDate(_ timestamp: Int) -> String {
-        let date = Date(timeIntervalSince1970: Double(timestamp) / 1000)
-        let formatter = DateFormatter()
-        formatter.dateStyle = .medium
-        formatter.timeStyle = .short
-        return formatter.string(from: date)
+        Self.sessionDateFormatter.string(from: Date(timeIntervalSince1970: Double(timestamp) / 1000))
     }
 
     private func formatTimestamp(_ timestamp: Int) -> String {
-        let date = Date(timeIntervalSince1970: Double(timestamp) / 1000)
-        let formatter = DateFormatter()
-        formatter.timeStyle = .medium
-        return formatter.string(from: date)
+        Self.timestampFormatter.string(from: Date(timeIntervalSince1970: Double(timestamp) / 1000))
     }
 }
