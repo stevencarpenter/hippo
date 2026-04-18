@@ -367,7 +367,7 @@ class BrainServer:
             for r in cursor.fetchall():
                 try:
                     tags = json.loads(r[5]) if r[5] else []
-                except (json.JSONDecodeError, TypeError):
+                except json.JSONDecodeError, TypeError:
                     tags = []
                 nodes.append(
                     {
@@ -413,7 +413,7 @@ class BrainServer:
 
             try:
                 tags = json.loads(row[6]) if row[6] else []
-            except (json.JSONDecodeError, TypeError):
+            except json.JSONDecodeError, TypeError:
                 tags = []
 
             return JSONResponse(
