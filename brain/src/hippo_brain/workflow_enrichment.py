@@ -16,6 +16,7 @@ from pathlib import Path
 
 from hippo_brain.client import LMStudioClient
 from hippo_brain.lessons import ClusterKey, upsert_cluster
+from hippo_brain.watchdog import DEFAULT_LOCK_TIMEOUT_MS
 
 CORRELATION_WINDOW_MS = 15 * 60 * 1000  # ±15 minutes
 
@@ -306,14 +307,17 @@ async def enrich_one_async(
 def claim_pending_workflow_runs(
     conn: sqlite3.Connection,
     worker_id: str,
-    stale_lock_timeout_ms: int = 5 * 60 * 1000,
+    stale_lock_timeout_ms: int = DEFAULT_LOCK_TIMEOUT_MS,
+    max_claim_batch: int | None = None,
 ) -> list[int]:
     """Atomically claim pending workflow enrichment queue entries.
 
-    Returns a list of run_ids ready for enrichment.
+    Returns a list of run_ids ready for enrichment. `max_claim_batch` caps the
+    number of runs claimed per invocation; `None` disables the cap.
     """
     now_ms = int(time.time() * 1000)
     stale_lock_ms = now_ms - stale_lock_timeout_ms
+    claim_limit = max_claim_batch if max_claim_batch is not None else -1
 
     cursor = conn.execute(
         """
@@ -327,10 +331,11 @@ def claim_pending_workflow_runs(
             WHERE status = 'pending'
                OR (status = 'processing' AND COALESCE(locked_at, 0) <= ?)
             ORDER BY priority, enqueued_at
+            LIMIT ?
         )
         RETURNING run_id
         """,
-        (now_ms, worker_id, now_ms, stale_lock_ms),
+        (now_ms, worker_id, now_ms, stale_lock_ms, claim_limit),
     )
     run_ids = [row[0] for row in cursor.fetchall()]
     conn.commit()
