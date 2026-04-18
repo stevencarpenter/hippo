@@ -209,7 +209,7 @@ async def search_knowledge(
     )
     with span_ctx:
         try:
-            if mode == "semantic" and _state.lm_client and _state.vector_table:
+            if mode == "semantic" and _state.lm_client and _state.vector_table and not (project or since or source or branch):
                 try:
                     vecs = await _state.lm_client.embed([query], model=_state.embedding_model)
                     query_vec = _pad_or_truncate(vecs[0], EMBED_DIM)
@@ -230,7 +230,7 @@ async def search_knowledge(
                 except Exception:
                     logger.exception("Semantic search failed, falling back to lexical")
 
-            # Lexical search (explicit mode or fallback)
+            # Lexical search (explicit mode or fallback, or when filters are applied)
             conn = _get_conn()
             try:
                 results = search_knowledge_lexical(

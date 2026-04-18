@@ -140,6 +140,9 @@ def claim_pending_browser_events(
 
     if skipped:
         now_ms = int(time.time() * 1000)
+        skip_ids = [bid for bid, _ in skipped]
+        skip_placeholders = ",".join("?" * len(skip_ids))
+
         for bid, reason in skipped:
             conn.execute(
                 "UPDATE browser_enrichment_queue "
@@ -148,6 +151,11 @@ def claim_pending_browser_events(
                 "WHERE browser_event_id = ?",
                 (reason, now_ms, bid),
             )
+
+        conn.execute(
+            f"UPDATE browser_events SET enriched = 1 WHERE id IN ({skip_placeholders})",
+            skip_ids,
+        )
         conn.commit()
 
     return _chunk_by_time_gap(keep) if keep else []

@@ -259,36 +259,35 @@ def claim_pending_events_by_session(
         if not event_ids:
             continue
 
-        events = []
-        for eid in event_ids:
-            row = conn.execute(
-                """SELECT id, session_id, timestamp, command, exit_code, duration_ms,
-                          cwd, hostname, shell, git_repo, git_branch, git_commit, git_dirty,
-                          stdout, stderr
-                   FROM events WHERE id = ?""",
-                [eid],
-            ).fetchone()
-            if row is None:
-                continue
-            events.append(
-                {
-                    "id": row[0],
-                    "session_id": row[1],
-                    "timestamp": row[2],
-                    "command": row[3],
-                    "exit_code": row[4],
-                    "duration_ms": row[5],
-                    "cwd": row[6],
-                    "hostname": row[7],
-                    "shell": row[8],
-                    "git_repo": row[9],
-                    "git_branch": row[10],
-                    "git_commit": row[11],
-                    "git_dirty": row[12],
-                    "stdout": row[13],
-                    "stderr": row[14],
-                }
-            )
+        placeholders = ",".join("?" * len(event_ids))
+        rows = conn.execute(
+            f"""SELECT id, session_id, timestamp, command, exit_code, duration_ms,
+                       cwd, hostname, shell, git_repo, git_branch, git_commit, git_dirty,
+                       stdout, stderr
+                FROM events WHERE id IN ({placeholders})
+                ORDER BY timestamp ASC, id ASC""",
+            event_ids,
+        ).fetchall()
+        events = [
+            {
+                "id": row[0],
+                "session_id": row[1],
+                "timestamp": row[2],
+                "command": row[3],
+                "exit_code": row[4],
+                "duration_ms": row[5],
+                "cwd": row[6],
+                "hostname": row[7],
+                "shell": row[8],
+                "git_repo": row[9],
+                "git_branch": row[10],
+                "git_commit": row[11],
+                "git_dirty": row[12],
+                "stdout": row[13],
+                "stderr": row[14],
+            }
+            for row in rows
+        ]
         events.sort(key=lambda e: e["timestamp"])
         events = _skip_ineligible_shell_events(conn, events)
 

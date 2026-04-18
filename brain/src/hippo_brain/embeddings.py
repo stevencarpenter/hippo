@@ -68,10 +68,7 @@ def _safe_json(raw: str | None, default):
         return default
     try:
         return json.loads(raw)
-    except Exception:
-        # NOTE: ruff 0.15.8 with target-version=py314 strips parens from
-        # `except (ValueError, TypeError):` → invalid Python 3 syntax.
-        # Using bare Exception until the formatter bug is fixed.
+    except (json.JSONDecodeError, TypeError):
         return default
 
 

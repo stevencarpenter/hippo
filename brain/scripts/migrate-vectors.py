@@ -54,16 +54,21 @@ def _load_models(config_path: Path) -> tuple[str, str, str]:
     with config_path.open("rb") as f:
         cfg = tomllib.load(f)
     models = cfg.get("models", {})
-    base_url = cfg.get("lm_studio", {}).get("base_url", "http://localhost:1234/v1")
+    base_url = cfg.get("lmstudio", {}).get("base_url", "http://localhost:1234/v1")
     return (
         base_url,
-        models.get("embed", ""),
-        models.get("command_embed", models.get("embed", "")),
+        models.get("embedding", ""),
+        models.get("command_embedding", models.get("embedding", "")),
     )
 
 
-async def run(data_dir: Path, config_path: Path) -> int:
-    conn = open_vector_db(data_dir)
+async def run(db_path: Path | None, data_dir: Path | None, config_path: Path) -> int:
+    if db_path:
+        # If --db is provided, use its parent as data_dir (for config/etc)
+        actual_data_dir = db_path.parent
+        conn = open_vector_db(actual_data_dir)
+    else:
+        conn = open_vector_db(data_dir)
     base_url, embed_model, command_model = _load_models(config_path)
 
     rows = conn.execute(
@@ -106,10 +111,11 @@ async def run(data_dir: Path, config_path: Path) -> int:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--db", type=Path, default=None, help="Path to hippo.db (if not specified, uses --data-dir/hippo.db)")
     parser.add_argument("--data-dir", type=Path, default=_default_data_dir())
     parser.add_argument("--config", type=Path, default=_default_config_path())
     args = parser.parse_args()
-    return asyncio.run(run(args.data_dir, args.config))
+    return asyncio.run(run(args.db, args.data_dir, args.config))
 
 
 if __name__ == "__main__":

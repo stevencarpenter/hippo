@@ -652,13 +652,12 @@ def phase_re_embed(
             "Re-embedding ~1.9K nodes takes ~6 min and chews LM Studio capacity."
         )
 
-    data_dir = db_path.parent
     script = _SCRIPTS_DIR / "migrate-vectors.py"
     cmd = [
         sys.executable,
         str(script),
-        "--data-dir",
-        str(data_dir),
+        "--db",
+        str(db_path),
     ]
     _run_subprocess(cmd, "re-embed", log, dry_run)
 
