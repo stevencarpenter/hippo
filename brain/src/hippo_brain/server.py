@@ -367,21 +367,23 @@ class BrainServer:
             for r in cursor.fetchall():
                 try:
                     content = json.loads(r[2]) if r[2] else {}
-                except (json.JSONDecodeError, TypeError):
+                except json.JSONDecodeError, TypeError:
                     content = {}
                 try:
                     tags = json.loads(r[5]) if r[5] else []
-                except (json.JSONDecodeError, TypeError):
+                except json.JSONDecodeError, TypeError:
                     tags = []
-                nodes.append({
-                    "id": r[0],
-                    "uuid": r[1],
-                    "content": content,
-                    "node_type": r[3],
-                    "outcome": r[4],
-                    "tags": tags,
-                    "created_at": r[6],
-                })
+                nodes.append(
+                    {
+                        "id": r[0],
+                        "uuid": r[1],
+                        "content": content,
+                        "node_type": r[3],
+                        "outcome": r[4],
+                        "tags": tags,
+                        "created_at": r[6],
+                    }
+                )
 
             count_sql = "SELECT COUNT(*) FROM knowledge_nodes"
             count_params = params[:-2]
@@ -392,6 +394,50 @@ class BrainServer:
             return JSONResponse({"nodes": nodes, "total": total})
         except Exception as e:
             logger.error("list_knowledge error: %s", e)
+            return JSONResponse({"error": str(e)}, status_code=500)
+        finally:
+            conn.close()
+
+    async def get_knowledge(self, request: Request) -> JSONResponse:
+        """Get a single knowledge node by ID."""
+        import json
+
+        node_id = request.path_params["id"]
+
+        conn = self._get_conn()
+        try:
+            cursor = conn.execute(
+                "SELECT id, uuid, content, embed_text, node_type, outcome, tags, created_at "
+                "FROM knowledge_nodes WHERE id = ?",
+                (node_id,),
+            )
+            row = cursor.fetchone()
+            if not row:
+                return JSONResponse({"error": "Knowledge node not found"}, status_code=404)
+
+            try:
+                content = json.loads(row[2]) if row[2] else {}
+            except json.JSONDecodeError, TypeError:
+                content = {}
+            try:
+                tags = json.loads(row[6]) if row[6] else []
+            except json.JSONDecodeError, TypeError:
+                tags = []
+
+            return JSONResponse(
+                {
+                    "id": row[0],
+                    "uuid": row[1],
+                    "content": content,
+                    "embed_text": row[3],
+                    "node_type": row[4],
+                    "outcome": row[5],
+                    "tags": tags,
+                    "created_at": row[7],
+                }
+            )
+        except Exception as e:
+            logger.error("get_knowledge error: %s", e)
             return JSONResponse({"error": str(e)}, status_code=500)
         finally:
             conn.close()
@@ -1009,6 +1055,7 @@ class BrainServer:
         return [
             Route("/health", self.health, methods=["GET"]),
             Route("/knowledge", self.list_knowledge, methods=["GET"]),
+            Route("/knowledge/{id:int}", self.get_knowledge, methods=["GET"]),
             Route("/query", self.query, methods=["POST"]),
             Route("/ask", self.ask, methods=["POST"]),
         ]

@@ -710,5 +710,42 @@ def test_knowledge_list_routes_included(tmp_db):
     routes = server.get_routes()
     paths = [r.path for r in routes]
     assert "/knowledge" in paths
-    # Now 4 routes (+1 for /knowledge)
-    assert len(routes) == 4
+    assert "/knowledge/{id:int}" in paths
+    # Now 5 routes (+1 for /knowledge/{id})
+    assert len(routes) == 5
+
+
+# ---- /knowledge/{id} ----
+
+
+def test_get_knowledge_returns_full_details(tmp_db):
+    """GET /knowledge/{id} returns full node details including embed_text."""
+    conn, db_path = tmp_db
+    _seed_knowledge_nodes_for_list(conn)
+    app = _make_app(str(db_path))
+    client = TestClient(app)
+
+    resp = client.get("/knowledge/1")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["id"] == 1
+    assert data["uuid"] == "uuid-1"
+    assert data["content"]["summary"] == "First node"
+    assert "embed_text" in data
+    assert data["embed_text"] == "first node embed text"
+    assert data["node_type"] == "observation"
+    assert data["outcome"] == "success"
+    assert data["tags"] == ["rust", "testing"]
+    assert "created_at" in data
+
+
+def test_get_knowledge_returns_404_for_missing_node(tmp_db):
+    """GET /knowledge/{id} returns 404 when node does not exist."""
+    conn, db_path = tmp_db
+    _seed_knowledge_nodes_for_list(conn)
+    app = _make_app(str(db_path))
+    client = TestClient(app)
+
+    resp = client.get("/knowledge/999")
+    assert resp.status_code == 404
+    assert "error" in resp.json()
