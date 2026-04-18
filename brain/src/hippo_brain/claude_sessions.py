@@ -468,10 +468,20 @@ def insert_segment(conn, segment: SessionSegment) -> int | None:
         raise
 
 
-def claim_pending_claude_segments(conn, worker_id: str) -> list[list[dict]]:
-    """Claim pending Claude segments. Each segment becomes its own batch (1:1 enrichment)."""
+def claim_pending_claude_segments(
+    conn,
+    worker_id: str,
+    max_claim_batch: int | None = None,
+    stale_lock_timeout_ms: int = STALE_LOCK_TIMEOUT_MS,
+) -> list[list[dict]]:
+    """Claim pending Claude segments. Each segment becomes its own batch (1:1 enrichment).
+
+    `max_claim_batch` caps total segments claimed across all cwd groups so
+    one cycle can't drain the entire backlog. `None` disables the cap.
+    """
     now_ms = int(time.time() * 1000)
-    stale_before_ms = now_ms - STALE_LOCK_TIMEOUT_MS
+    stale_before_ms = now_ms - stale_lock_timeout_ms
+    remaining = max_claim_batch if max_claim_batch is not None else -1
 
     # Get pending segments grouped by cwd
     cursor = conn.execute(
@@ -490,7 +500,9 @@ def claim_pending_claude_segments(conn, worker_id: str) -> list[list[dict]]:
 
     all_batches = []
     for cwd, _ in cwd_groups:
-        # Claim all pending segments for this cwd
+        if remaining == 0:
+            break
+        limit = remaining if remaining > 0 else -1
         cursor = conn.execute(
             """
             UPDATE claude_enrichment_queue
@@ -501,13 +513,16 @@ def claim_pending_claude_segments(conn, worker_id: str) -> list[list[dict]]:
                 WHERE cs.cwd = ?
                   AND (ceq.status = 'pending'
                        OR (ceq.status = 'processing' AND COALESCE(ceq.locked_at, 0) <= ?))
+                LIMIT ?
             )
             RETURNING claude_session_id
             """,
-            (now_ms, worker_id, now_ms, cwd, stale_before_ms),
+            (now_ms, worker_id, now_ms, cwd, stale_before_ms, limit),
         )
         segment_ids = [row[0] for row in cursor.fetchall()]
         conn.commit()
+        if remaining > 0:
+            remaining -= len(segment_ids)
 
         if not segment_ids:
             continue

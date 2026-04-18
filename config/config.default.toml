@@ -21,6 +21,11 @@ poll_interval_secs = 5
 enrichment_batch_size = 10
 max_queue_depth = 100
 session_stale_secs = 120
+# Watchdog knobs (R-22): cap how many rows a single cycle may claim per queue so
+# a wedge can't strand an entire backlog, and define when a `processing` lock
+# is considered stale and gets reaped back to `pending`.
+max_claim_batch = 10
+lock_timeout_secs = 600
 
 [storage]
 # data_dir = "~/.local/share/hippo"

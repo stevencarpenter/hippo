@@ -117,16 +117,27 @@ def parse_enrichment_response(raw: str) -> EnrichmentResult:
 
 
 def claim_pending_events_by_session(
-    conn, max_per_chunk: int, worker_id: str, stale_secs: int = 120
+    conn,
+    max_per_chunk: int,
+    worker_id: str,
+    stale_secs: int = 120,
+    max_claim_batch: int | None = None,
+    stale_lock_timeout_ms: int = STALE_LOCK_TIMEOUT_MS,
 ) -> list[list[dict]]:
     """Claim pending events grouped by session. Returns list of event chunks.
 
     Only processes sessions where the last event is older than stale_secs.
     Long sessions are split into chunks at time gaps > 60s or at max_per_chunk.
+
+    `max_claim_batch` caps the total events claimed per invocation across all
+    sessions, so one cycle can't claim the entire backlog. When a session has
+    more events than the remaining budget, the remainder is left `pending`
+    for the next cycle. `None` means no cap.
     """
     now_ms = int(time.time() * 1000)
     stale_threshold_ms = now_ms - (stale_secs * 1000)
-    stale_lock_ms = now_ms - STALE_LOCK_TIMEOUT_MS
+    stale_lock_ms = now_ms - stale_lock_timeout_ms
+    remaining = max_claim_batch if max_claim_batch is not None else -1
 
     cursor = conn.execute(
         """
@@ -145,6 +156,9 @@ def claim_pending_events_by_session(
 
     all_chunks = []
     for session_id, _ in sessions:
+        if remaining == 0:
+            break
+        limit = remaining if remaining > 0 else -1
         cursor = conn.execute(
             """
             UPDATE enrichment_queue
@@ -155,13 +169,16 @@ def claim_pending_events_by_session(
                 WHERE e.session_id = ?
                   AND (eq.status = 'pending'
                        OR (eq.status = 'processing' AND COALESCE(eq.locked_at, 0) <= ?))
+                LIMIT ?
             )
             RETURNING event_id
             """,
-            (now_ms, worker_id, now_ms, session_id, stale_lock_ms),
+            (now_ms, worker_id, now_ms, session_id, stale_lock_ms, limit),
         )
         event_ids = [row[0] for row in cursor.fetchall()]
         conn.commit()
+        if remaining > 0:
+            remaining -= len(event_ids)
 
         if not event_ids:
             continue

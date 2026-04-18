@@ -26,6 +26,8 @@ def _default_settings() -> dict:
         "session_stale_secs": 120,
         "port": 9175,
         "telemetry_endpoint": "http://localhost:4318",
+        "max_claim_batch": 10,
+        "lock_timeout_secs": 600,
     }
 
 
@@ -63,6 +65,8 @@ def _load_runtime_settings() -> dict:
         "session_stale_secs": brain.get("session_stale_secs", 120),
         "port": brain.get("port", 9175),
         "telemetry_endpoint": telemetry.get("endpoint", "http://localhost:4318"),
+        "max_claim_batch": brain.get("max_claim_batch", 10),
+        "lock_timeout_secs": brain.get("lock_timeout_secs", 600),
     }
 
 
@@ -100,6 +104,8 @@ def main() -> None:
             poll_interval_secs=settings["poll_interval_secs"],
             enrichment_batch_size=settings["max_events_per_chunk"],
             session_stale_secs=settings["session_stale_secs"],
+            max_claim_batch=settings["max_claim_batch"],
+            lock_timeout_ms=int(settings["lock_timeout_secs"]) * 1000,
         )
         try:
             uvicorn.run(app, host="127.0.0.1", port=settings["port"])

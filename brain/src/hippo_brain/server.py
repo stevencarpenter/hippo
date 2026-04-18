@@ -47,6 +47,12 @@ from hippo_brain.workflow_enrichment import (
     enrich_one_async,
     mark_workflow_queue_failed,
 )
+from hippo_brain.watchdog import (
+    DEFAULT_LOCK_TIMEOUT_MS,
+    DEFAULT_MAX_CLAIM_BATCH,
+    preflight_lm_studio,
+    reap_stale_locks,
+)
 from hippo_brain.telemetry import get_tracer as _get_tracer
 from hippo_brain.telemetry import add as _add, get_meter, hist as _hist
 
@@ -100,6 +106,8 @@ class BrainServer:
         poll_interval_secs: int = 5,
         enrichment_batch_size: int = 30,
         session_stale_secs: int = 120,
+        max_claim_batch: int = DEFAULT_MAX_CLAIM_BATCH,
+        lock_timeout_ms: int = DEFAULT_LOCK_TIMEOUT_MS,
     ):
         if not db_path:
             db_path = str(Path.home() / ".local" / "share" / "hippo" / "hippo.db")
@@ -115,6 +123,8 @@ class BrainServer:
         self.poll_interval_secs = poll_interval_secs
         self.enrichment_batch_size = enrichment_batch_size
         self.session_stale_secs = session_stale_secs
+        self.max_claim_batch = max_claim_batch
+        self.lock_timeout_ms = lock_timeout_ms
         self.enrichment_running = False
         self._enrichment_task = None
         self._vector_db = None
@@ -348,22 +358,29 @@ class BrainServer:
             loaded = await self.client.list_models()
         except Exception:
             return False
+        return self._pick_enrichment_model(loaded)
 
-        # Filter out embedding models
+    async def _resolve_model_from_preflight(self, loaded: list[str]) -> bool:
+        """Same as `_resolve_model` but reuses the already-fetched model list."""
+        return self._pick_enrichment_model(loaded)
+
+    def _pick_enrichment_model(self, loaded: list[str]) -> bool:
+        """Filter chat models from `loaded` and set self.enrichment_model.
+
+        Returns False when no chat models are available.
+        """
         embedding_hints = ("embed", "nomic", "modernbert")
         chat_models = [m for m in loaded if not any(h in m.lower() for h in embedding_hints)]
 
         if not chat_models:
             return False
 
-        # Preferred model available — use it
         if self._preferred_model and self._preferred_model in chat_models:
             if self.enrichment_model != self._preferred_model:
                 logger.info("enrichment model restored: %s", self._preferred_model)
                 self.enrichment_model = self._preferred_model
             return True
 
-        # Preferred model not loaded — fall back
         fallback = chat_models[0]
         if self.enrichment_model != fallback:
             logger.info(
@@ -390,7 +407,24 @@ class BrainServer:
                 try:
                     await asyncio.sleep(self.poll_interval_secs)
 
-                    if not await self._resolve_model():
+                    # Watchdog: sweep stale locks before deciding whether to claim.
+                    # Runs even when preflight fails below, so a wedged LM Studio
+                    # can't strand held locks indefinitely.
+                    reaper_conn = self._get_conn()
+                    try:
+                        reap_stale_locks(reaper_conn, lock_timeout_ms=self.lock_timeout_ms)
+                    finally:
+                        reaper_conn.close()
+
+                    decision = await preflight_lm_studio(
+                        self.client, self._preferred_model, allow_fallback=True
+                    )
+                    if not decision.proceed:
+                        continue
+
+                    # Sync resolved enrichment_model from preflight result; falls
+                    # back to first chat model when preferred isn't loaded.
+                    if not await self._resolve_model_from_preflight(decision.loaded_models):
                         continue
 
                     conn = self._get_conn()
@@ -401,21 +435,37 @@ class BrainServer:
                             self.enrichment_batch_size,
                             worker_id,
                             self.session_stale_secs,
+                            max_claim_batch=self.max_claim_batch,
+                            stale_lock_timeout_ms=self.lock_timeout_ms,
                         )
                         try:
-                            claude_batches = claim_pending_claude_segments(conn, worker_id)
+                            claude_batches = claim_pending_claude_segments(
+                                conn,
+                                worker_id,
+                                max_claim_batch=self.max_claim_batch,
+                                stale_lock_timeout_ms=self.lock_timeout_ms,
+                            )
                         except Exception as e:
                             logger.debug("no claude segments to process: %s", e)
                             claude_batches = []
                         try:
                             browser_batches = claim_pending_browser_events(
-                                conn, worker_id, stale_secs=60
+                                conn,
+                                worker_id,
+                                stale_secs=60,
+                                max_claim_batch=self.max_claim_batch,
+                                stale_lock_timeout_ms=self.lock_timeout_ms,
                             )
                         except Exception as e:
                             logger.warning("browser claim error: %s", e, exc_info=True)
                             browser_batches = []
                         try:
-                            workflow_run_ids = claim_pending_workflow_runs(conn, worker_id)
+                            workflow_run_ids = claim_pending_workflow_runs(
+                                conn,
+                                worker_id,
+                                stale_lock_timeout_ms=self.lock_timeout_ms,
+                                max_claim_batch=self.max_claim_batch,
+                            )
                         except Exception as e:
                             logger.warning("workflow claim error: %s", e, exc_info=True)
                             workflow_run_ids = []
@@ -504,6 +554,27 @@ class BrainServer:
         self.last_error_at_ms = int(time.time() * 1000)
         return err_msg
 
+    def _log_enrichment_failure(self, queue_name: str, stage: str, e: Exception, **fields) -> None:
+        """Emit a structured failure log so wedges are greppable in minutes.
+
+        Includes queue_name, claim_count, claim_age_ms, exception_type,
+        lm_studio_model, stage — the fields the R-22 spec calls for.
+        """
+        exc_type = type(e).__name__
+        msg_fields = {
+            "queue_name": queue_name,
+            "stage": stage,
+            "exception_type": exc_type,
+            "lm_studio_model": self.enrichment_model,
+            **fields,
+        }
+        logger.error(
+            "enrichment failed %s",
+            " ".join(f"{k}={v!r}" for k, v in msg_fields.items()),
+            exc_info=True,
+            extra=msg_fields,
+        )
+
     async def _enrich_shell_batches(self, chunks, claim_conn):
         """Process shell event batches with background embeddings."""
         if not chunks:
@@ -538,6 +609,7 @@ class BrainServer:
                 if tracer
                 else nullcontext()
             )
+            batch_start_ms = int(time.time() * 1000)
             with span:
                 try:
                     result = await self._call_llm_with_retries(SYSTEM_PROMPT, prompt, "shell")
@@ -578,7 +650,13 @@ class BrainServer:
                 except Exception as e:
                     _add(_enrichment_failures, source="shell")
                     err_msg = self._record_error(e)
-                    logger.error("enrichment failed: %s", e, exc_info=True)
+                    self._log_enrichment_failure(
+                        "enrichment_queue",
+                        "shell.chat",
+                        e,
+                        claim_count=len(event_ids),
+                        claim_age_ms=int(time.time() * 1000) - batch_start_ms,
+                    )
                     retry_conn = self._get_conn()
                     try:
                         mark_queue_failed(retry_conn, event_ids, err_msg)
@@ -611,6 +689,7 @@ class BrainServer:
                 if tracer
                 else nullcontext()
             )
+            batch_start_ms = int(time.time() * 1000)
             with span:
                 try:
                     result = await self._call_llm_with_retries(
@@ -666,7 +745,13 @@ class BrainServer:
                 except Exception as e:
                     _add(_enrichment_failures, source="claude")
                     err_msg = self._record_error(e)
-                    logger.error("claude enrichment failed: %s", e, exc_info=True)
+                    self._log_enrichment_failure(
+                        "claude_enrichment_queue",
+                        "claude.chat",
+                        e,
+                        claim_count=len(segment_ids),
+                        claim_age_ms=int(time.time() * 1000) - batch_start_ms,
+                    )
                     retry_conn = self._get_conn()
                     try:
                         mark_claude_queue_failed(retry_conn, segment_ids, err_msg)
@@ -699,6 +784,7 @@ class BrainServer:
                 if tracer
                 else nullcontext()
             )
+            batch_start_ms = int(time.time() * 1000)
             with span:
                 try:
                     result = await self._call_llm_with_retries(
@@ -745,7 +831,13 @@ class BrainServer:
                 except Exception as e:
                     _add(_enrichment_failures, source="browser")
                     err_msg = self._record_error(e)
-                    logger.error("browser enrichment failed: %s", e, exc_info=True)
+                    self._log_enrichment_failure(
+                        "browser_enrichment_queue",
+                        "browser.chat",
+                        e,
+                        claim_count=len(event_ids),
+                        claim_age_ms=int(time.time() * 1000) - batch_start_ms,
+                    )
                     retry_conn = self._get_conn()
                     try:
                         mark_browser_queue_failed(retry_conn, event_ids, err_msg)
@@ -776,6 +868,7 @@ class BrainServer:
                 if tracer
                 else nullcontext()
             )
+            batch_start_ms = int(time.time() * 1000)
             with span:
                 try:
                     await enrich_one_async(
@@ -790,8 +883,13 @@ class BrainServer:
                 except Exception as e:
                     _add(_enrichment_failures, source="workflow")
                     err_msg = self._record_error(e)
-                    logger.error(
-                        "workflow enrichment failed for run %d: %s", run_id, e, exc_info=True
+                    self._log_enrichment_failure(
+                        "workflow_enrichment_queue",
+                        "workflow.enrich",
+                        e,
+                        claim_count=1,
+                        run_id=run_id,
+                        claim_age_ms=int(time.time() * 1000) - batch_start_ms,
                     )
                     retry_conn = self._get_conn()
                     try:
@@ -843,6 +941,8 @@ def create_app(
     poll_interval_secs: int = 5,
     enrichment_batch_size: int = 30,
     session_stale_secs: int = 120,
+    max_claim_batch: int = DEFAULT_MAX_CLAIM_BATCH,
+    lock_timeout_ms: int = DEFAULT_LOCK_TIMEOUT_MS,
 ) -> Starlette:
     server = BrainServer(
         db_path=db_path,
@@ -855,6 +955,8 @@ def create_app(
         poll_interval_secs=poll_interval_secs,
         enrichment_batch_size=enrichment_batch_size,
         session_stale_secs=session_stale_secs,
+        max_claim_batch=max_claim_batch,
+        lock_timeout_ms=lock_timeout_ms,
     )
 
     if _meter:
