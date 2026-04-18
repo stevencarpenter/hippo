@@ -471,3 +471,188 @@ def test_write_knowledge_node_stores_key_decisions(tmp_db):
     content = json.loads(row[0])
     assert content["key_decisions"] == ["Chose build.rs over vergen for zero deps"]
     assert content["problems_encountered"] == ["clippy warning on unused import"]
+
+
+# ---------------------------------------------------------------------------
+# Enrichment eligibility
+# ---------------------------------------------------------------------------
+from hippo_brain.enrichment import is_enrichment_eligible  # noqa: E402
+
+
+class TestEligibilityShell:
+    def test_exec_zsh_no_output_short_is_ineligible(self):
+        ok, reason = is_enrichment_eligible(
+            {"command": "exec zsh", "stdout": "", "stderr": "", "duration_ms": 5},
+            "shell",
+        )
+        assert ok is False
+        assert "exec zsh" in reason
+
+    def test_clear_no_output_short_is_ineligible(self):
+        ok, _ = is_enrichment_eligible(
+            {"command": "clear", "stdout": "", "stderr": "", "duration_ms": 10},
+            "shell",
+        )
+        assert ok is False
+
+    def test_empty_command_no_output_is_ineligible(self):
+        ok, _ = is_enrichment_eligible(
+            {"command": "", "stdout": "", "stderr": "", "duration_ms": 0},
+            "shell",
+        )
+        assert ok is False
+
+    def test_exec_zsh_with_stderr_is_eligible(self):
+        ok, _ = is_enrichment_eligible(
+            {
+                "command": "exec zsh",
+                "stdout": "",
+                "stderr": "not found",
+                "duration_ms": 5,
+            },
+            "shell",
+        )
+        assert ok is True
+
+    def test_exec_zsh_long_duration_is_eligible(self):
+        ok, _ = is_enrichment_eligible(
+            {"command": "exec zsh", "stdout": "", "stderr": "", "duration_ms": 500},
+            "shell",
+        )
+        assert ok is True
+
+    def test_real_command_is_eligible(self):
+        ok, _ = is_enrichment_eligible(
+            {
+                "command": "cargo test",
+                "stdout": "ok",
+                "stderr": "",
+                "duration_ms": 3000,
+            },
+            "shell",
+        )
+        assert ok is True
+
+
+class TestEligibilityClaude:
+    def test_short_segment_no_tools_is_ineligible(self):
+        ok, reason = is_enrichment_eligible(
+            {"message_count": 2, "tool_calls_json": "[]"},
+            "claude",
+        )
+        assert ok is False
+        assert "message_count=2" in reason
+
+    def test_short_segment_with_tools_is_eligible(self):
+        ok, _ = is_enrichment_eligible(
+            {
+                "message_count": 2,
+                "tool_calls_json": '[{"name": "Read", "summary": "foo"}]',
+            },
+            "claude",
+        )
+        assert ok is True
+
+    def test_long_segment_no_tools_is_eligible(self):
+        ok, _ = is_enrichment_eligible(
+            {"message_count": 10, "tool_calls_json": None},
+            "claude",
+        )
+        assert ok is True
+
+    def test_malformed_tool_calls_json_treated_as_empty(self):
+        ok, _ = is_enrichment_eligible(
+            {"message_count": 1, "tool_calls_json": "not json"},
+            "claude",
+        )
+        assert ok is False
+
+
+class TestEligibilityBrowser:
+    def test_short_dwell_is_ineligible(self):
+        ok, reason = is_enrichment_eligible({"dwell_ms": 500}, "browser")
+        assert ok is False
+        assert "dwell_ms=500" in reason
+
+    def test_long_dwell_is_eligible(self):
+        ok, _ = is_enrichment_eligible({"dwell_ms": 5000}, "browser")
+        assert ok is True
+
+    def test_missing_dwell_treated_as_zero(self):
+        ok, _ = is_enrichment_eligible({}, "browser")
+        assert ok is False
+
+
+class TestEligibilityWorkflow:
+    def test_workflow_always_eligible(self):
+        ok, _ = is_enrichment_eligible({}, "workflow")
+        assert ok is True
+
+
+def test_shell_claim_marks_noise_skipped(tmp_db):
+    """Ineligible shell events are marked skipped and excluded from chunks."""
+    conn, _ = tmp_db
+    past_ms = int(time.time() * 1000) - 5000
+
+    conn.execute(
+        "INSERT INTO sessions (id, start_time, shell, hostname, username) "
+        "VALUES (1, ?, 'zsh', 'laptop', 'user')",
+        (past_ms,),
+    )
+    # Event 1: noise (exec zsh, no output, 5ms)
+    conn.execute(
+        """INSERT INTO events (id, session_id, timestamp, command, exit_code, duration_ms,
+                               cwd, hostname, shell)
+           VALUES (1, 1, ?, 'exec zsh', 0, 5, '/project', 'laptop', 'zsh')""",
+        (past_ms,),
+    )
+    # Event 2: real work
+    conn.execute(
+        """INSERT INTO events (id, session_id, timestamp, command, exit_code, duration_ms,
+                               cwd, hostname, shell, stdout)
+           VALUES (2, 1, ?, 'cargo build', 0, 3000, '/project', 'laptop', 'zsh', 'compiling')""",
+        (past_ms + 100,),
+    )
+    conn.execute("INSERT INTO enrichment_queue (event_id) VALUES (1)")
+    conn.execute("INSERT INTO enrichment_queue (event_id) VALUES (2)")
+    conn.commit()
+
+    chunks = claim_pending_events_by_session(conn, max_per_chunk=10, worker_id="test", stale_secs=1)
+    # Only the real event survives
+    assert len(chunks) == 1
+    assert [e["id"] for e in chunks[0]] == [2]
+
+    # Noise event marked skipped with reason recorded
+    row = conn.execute(
+        "SELECT status, error_message FROM enrichment_queue WHERE event_id = 1"
+    ).fetchone()
+    assert row[0] == "skipped"
+    assert "exec zsh" in row[1]
+
+    # Noise event also flagged enriched so it isn't rescanned
+    assert conn.execute("SELECT enriched FROM events WHERE id = 1").fetchone()[0] == 1
+
+
+def test_shell_claim_whole_session_of_noise(tmp_db):
+    """A session containing only noise yields no chunks but skips all rows."""
+    conn, _ = tmp_db
+    past_ms = int(time.time() * 1000) - 5000
+
+    conn.execute(
+        "INSERT INTO sessions (id, start_time, shell, hostname, username) "
+        "VALUES (1, ?, 'zsh', 'laptop', 'user')",
+        (past_ms,),
+    )
+    conn.execute(
+        """INSERT INTO events (id, session_id, timestamp, command, exit_code, duration_ms,
+                               cwd, hostname, shell)
+           VALUES (1, 1, ?, 'exec zsh', 0, 5, '/p', 'l', 'zsh')""",
+        (past_ms,),
+    )
+    conn.execute("INSERT INTO enrichment_queue (event_id) VALUES (1)")
+    conn.commit()
+
+    chunks = claim_pending_events_by_session(conn, max_per_chunk=10, worker_id="test", stale_secs=1)
+    assert chunks == []
+    status = conn.execute("SELECT status FROM enrichment_queue WHERE event_id = 1").fetchone()[0]
+    assert status == "skipped"

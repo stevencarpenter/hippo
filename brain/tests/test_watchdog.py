@@ -329,7 +329,7 @@ def _insert_claude_segment(conn, session_id: str, cwd: str, idx: int = 0) -> int
         start_time=1000 + idx * 1000,
         end_time=2000 + idx * 1000,
         user_prompts=[f"prompt {idx}"],
-        message_count=1,
+        message_count=3,
         source_file="/tmp/test.jsonl",
     )
     return insert_segment(conn, seg)
