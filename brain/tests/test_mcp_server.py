@@ -9,7 +9,7 @@ import sys
 import tempfile
 import time
 from pathlib import Path
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -18,11 +18,13 @@ from hippo_brain.mcp import (
     _get_conn,
     _load_config,
     _state,
+    ask,
     get_entities,
     mcp,
     search_events,
     search_knowledge,
 )
+from hippo_brain.retrieval import SearchResult
 
 
 class TestToolRegistration:
@@ -235,11 +237,13 @@ def _reset_state():
     old_vt = _state.vector_table
     old_lm = _state.lm_client
     old_em = _state.embedding_model
+    old_qm = _state.query_model
     yield
     _state.db_path = old_db
     _state.vector_table = old_vt
     _state.lm_client = old_lm
     _state.embedding_model = old_em
+    _state.query_model = old_qm
 
 
 # ---------------------------------------------------------------------------
@@ -555,3 +559,73 @@ class TestMetricsOnError:
 
         with pytest.raises(Exception):
             asyncio.run(search_knowledge("test", mode="lexical"))
+
+
+# ---------------------------------------------------------------------------
+# ask() filter wiring (R-01)
+# ---------------------------------------------------------------------------
+
+
+class TestAskFilterWiring:
+    def _setup_state(self, db_path):
+        _state.db_path = str(db_path)
+        _state.query_model = "test-model"
+        _state.embedding_model = "embed-model"
+        _state.vector_table = object()
+
+        mock_client = AsyncMock()
+        mock_client.base_url = "http://mock:1234/v1"
+        mock_client.health_check.return_value = {
+            "ok": True,
+            "reason": None,
+            "loaded_models": ["test-model"],
+        }
+        mock_client.embed.return_value = [[0.1] * EMBED_DIM]
+        mock_client.chat.return_value = "Synthesized answer"
+        _state.lm_client = mock_client
+
+    def test_ask_respects_nonexistent_project_filter(self, tmp_db):
+        """Project filter forwarded to rag_ask — nonexistent project yields zero sources."""
+        _conn, db_path = tmp_db
+        self._setup_state(db_path)
+
+        with patch("hippo_brain.rag.retrieval_search", return_value=[]) as mock_retrieval:
+            result = asyncio.run(ask(question="what did I do?", project="nonexistent-xyz-project"))
+
+        assert mock_retrieval.called
+        filters = mock_retrieval.call_args.kwargs.get("filters") or mock_retrieval.call_args[0][3]
+        assert filters.project == "nonexistent-xyz-project"
+        assert "No relevant knowledge" in result
+
+    def test_ask_respects_since_filter(self, tmp_db):
+        """since kwarg is parsed to epoch-ms and forwarded; returned sources are within window."""
+        _conn, db_path = tmp_db
+        self._setup_state(db_path)
+
+        recent_ts = int(time.time() * 1000)
+        mock_result = SearchResult(
+            uuid="test-uuid",
+            score=0.9,
+            summary="recent node",
+            embed_text="recent embed text",
+            outcome="success",
+            tags=[],
+            cwd="/projects/test",
+            git_branch="main",
+            captured_at=recent_ts,
+        )
+
+        before = int(time.time() * 1000)
+        with patch(
+            "hippo_brain.rag.retrieval_search", return_value=[mock_result]
+        ) as mock_retrieval:
+            asyncio.run(ask(question="what did I do?", since="1h"))
+        after = int(time.time() * 1000)
+
+        assert mock_retrieval.called
+        filters = mock_retrieval.call_args.kwargs.get("filters") or mock_retrieval.call_args[0][3]
+        assert filters.since_ms is not None
+        expected_floor = before - 3600 * 1000
+        assert expected_floor - 5000 <= filters.since_ms <= after
+        # The source's captured_at is within the window
+        assert filters.since_ms <= recent_ts

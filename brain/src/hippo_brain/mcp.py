@@ -286,10 +286,6 @@ async def ask(
         source: Restrict to nodes linked to "shell", "claude", "browser",
                 or "workflow". Empty means all sources.
         branch: Exact match on git_branch of linked events/sessions.
-
-    Note: Filters are forwarded to the synthesis pipeline once the retrieval
-    module lands. Until then, they are accepted but only ``limit`` is honored
-    by the underlying RAG retrieval.
     """
     limit = _clamp_limit(limit)
     _add(_tool_calls, tool="ask")
@@ -303,9 +299,7 @@ async def ask(
         source,
         branch,
     )
-    # TODO(retrieval): plumb filters through rag.ask() once retrieval.search()
-    # is published by the retrieval agent.
-    _ = (project, since, source, branch)
+    since_ms = _parse_since_ms(since) if since else None
 
     if not _state.lm_client or not _state.vector_table:
         return "Error: Semantic search not available (LM Studio or vector store not initialized)"
@@ -313,6 +307,7 @@ async def ask(
     if not _state.query_model:
         return "Error: No query model configured (set models.query in config.toml)"
 
+    conn = _open_retrieval_conn()
     try:
         result = await rag_ask(
             question=question,
@@ -321,18 +316,24 @@ async def ask(
             query_model=_state.query_model,
             embedding_model=_state.embedding_model,
             limit=limit,
+            project=project or None,
+            since=since_ms,
+            source=source or None,
+            branch=branch or None,
+            conn=conn,
         )
-
-        elapsed = time.monotonic() - t0
-        _hist(_tool_duration, elapsed * 1000, tool="ask")
-        logger.info("ask completed in %.3fs", elapsed)
-
-        return format_rag_response(result)
-
     except Exception:
         _add(_tool_errors, tool="ask")
         logger.exception("ask failed")
         raise
+    finally:
+        conn.close()
+
+    elapsed = time.monotonic() - t0
+    _hist(_tool_duration, elapsed * 1000, tool="ask")
+    logger.info("ask completed in %.3fs", elapsed)
+
+    return format_rag_response(result)
 
 
 @mcp.tool()
