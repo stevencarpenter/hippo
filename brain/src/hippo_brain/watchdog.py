@@ -114,9 +114,16 @@ def reap_stale_locks(
             rows = cursor.fetchall()
             conn.commit()
         except sqlite3.OperationalError as e:
-            logger.debug("reaper skipped %s (%s): %s", spec.name, spec.table, e)
-            reaped[spec.name] = 0
-            continue
+            if "no such table" in str(e).lower():
+                logger.debug("reaper skipped %s (%s): %s", spec.name, spec.table, e)
+                reaped[spec.name] = 0
+                continue
+            logger.exception(
+                "reaper failed for %s (%s) due to sqlite operational error",
+                spec.name,
+                spec.table,
+            )
+            raise
 
         count = len(rows)
         reaped[spec.name] = count
@@ -199,8 +206,9 @@ async def preflight_lm_studio(
 
     if not allow_fallback and preferred_model:
         logger.warning(
-            "LM Studio preflight: preferred model not loaded preferred_model=%r loaded_models=%r",
+            "LM Studio preflight: preferred model not loaded preferred_model=%r loaded_models=%r chat_models=%r",
             preferred_model,
+            loaded,
             chat_models,
             extra={"stage": "preflight", "reason": "model_missing"},
         )

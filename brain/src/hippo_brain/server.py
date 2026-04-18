@@ -127,6 +127,7 @@ class BrainServer:
         self.lock_timeout_ms = lock_timeout_ms
         self.enrichment_running = False
         self._enrichment_task = None
+        self._reaper_task = None
         self._vector_db = None
         self._vector_table = None
         if self.embedding_model:
@@ -398,17 +399,6 @@ class BrainServer:
             while True:
                 try:
                     await asyncio.sleep(self.poll_interval_secs)
-
-                    # Watchdog: sweep stale locks before deciding whether to claim.
-                    # Runs even when preflight fails below, so a wedged LM Studio
-                    # can't strand held locks indefinitely.
-                    # Separate connection so the reaper commit is isolated from the
-                    # claim transaction that follows.
-                    reaper_conn = self._get_conn()
-                    try:
-                        reap_stale_locks(reaper_conn, lock_timeout_ms=self.lock_timeout_ms)
-                    finally:
-                        reaper_conn.close()
 
                     decision = await preflight_lm_studio(
                         self.client, self._preferred_model or None, allow_fallback=True
@@ -904,17 +894,38 @@ class BrainServer:
         except Exception as e:
             logger.warning("%s embedding failed (non-fatal): %s", source_label, e, exc_info=True)
 
+    async def _reaper_loop(self):
+        """Independent reaper task — fires on its own timer regardless of gather state.
+
+        Decoupled from _enrichment_loop so stale locks are released even while
+        asyncio.gather() is blocked inside _call_llm_with_retries.
+        """
+        while True:
+            await asyncio.sleep(self.poll_interval_secs)
+            try:
+                conn = self._get_conn()
+                try:
+                    reap_stale_locks(conn, lock_timeout_ms=self.lock_timeout_ms)
+                finally:
+                    conn.close()
+            except Exception as e:
+                logger.warning("reaper loop error: %s", e, exc_info=True)
+
     def start_enrichment(self):
         self._enrichment_task = asyncio.create_task(self._enrichment_loop())
+        self._reaper_task = asyncio.create_task(self._reaper_loop())
 
     async def stop_enrichment(self):
-        if self._enrichment_task is None:
+        tasks = [t for t in (self._enrichment_task, self._reaper_task) if t is not None]
+        if not tasks:
             return
-
-        self._enrichment_task.cancel()
-        with suppress(asyncio.CancelledError):
-            await self._enrichment_task
+        for t in tasks:
+            t.cancel()
+        for t in tasks:
+            with suppress(asyncio.CancelledError):
+                await t
         self._enrichment_task = None
+        self._reaper_task = None
 
     def get_routes(self) -> list[Route]:
         return [

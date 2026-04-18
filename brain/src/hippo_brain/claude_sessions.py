@@ -514,6 +514,7 @@ def claim_pending_claude_segments(
                 WHERE cs.cwd = ?
                   AND (ceq.status = 'pending'
                        OR (ceq.status = 'processing' AND COALESCE(ceq.locked_at, 0) <= ?))
+                ORDER BY cs.start_time ASC, ceq.id ASC
                 LIMIT ?
             )
             RETURNING claude_session_id

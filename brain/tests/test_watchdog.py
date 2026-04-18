@@ -12,6 +12,7 @@ Covers:
     cycle can't vacuum the whole backlog.
 """
 
+import sqlite3
 import time
 
 import pytest
@@ -154,6 +155,35 @@ def test_reaper_respects_pending_rows(tmp_db):
 
     result = reap_stale_locks(conn, lock_timeout_ms=DEFAULT_LOCK_TIMEOUT_MS, now_ms=now_ms)
     assert result["shell"] == 0
+
+
+def test_reaper_swallows_missing_table_error(tmp_db):
+    """'no such table' OperationalError → debug-logged, count=0, no raise."""
+    conn, _ = tmp_db
+    # Drop one of the queue tables to simulate an old schema.
+    conn.execute("DROP TABLE browser_enrichment_queue")
+    conn.commit()
+
+    now_ms = int(time.time() * 1000)
+    result = reap_stale_locks(conn, lock_timeout_ms=DEFAULT_LOCK_TIMEOUT_MS, now_ms=now_ms)
+
+    assert result["browser"] == 0
+    # Other queues that exist should still run.
+    assert "shell" in result
+
+
+def test_reaper_propagates_non_missing_table_operational_error():
+    """OperationalErrors other than 'no such table' must propagate."""
+
+    class _LockedConn:
+        def execute(self, *_a, **_kw):
+            raise sqlite3.OperationalError("database is locked")
+
+        def commit(self):
+            pass
+
+    with pytest.raises(sqlite3.OperationalError, match="database is locked"):
+        reap_stale_locks(_LockedConn(), lock_timeout_ms=DEFAULT_LOCK_TIMEOUT_MS)
 
 
 class _FakeClient:

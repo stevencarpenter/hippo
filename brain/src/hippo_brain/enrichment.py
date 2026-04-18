@@ -170,6 +170,7 @@ def claim_pending_events_by_session(
                 WHERE e.session_id = ?
                   AND (eq.status = 'pending'
                        OR (eq.status = 'processing' AND COALESCE(eq.locked_at, 0) <= ?))
+                ORDER BY e.timestamp ASC, eq.id ASC
                 LIMIT ?
             )
             RETURNING event_id
