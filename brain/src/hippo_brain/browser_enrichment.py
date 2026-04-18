@@ -6,8 +6,9 @@ import uuid
 
 from hippo_brain.enrichment import SHELL_ENTITY_TYPE_MAP, upsert_entities
 from hippo_brain.models import EnrichmentResult
+from hippo_brain.watchdog import DEFAULT_LOCK_TIMEOUT_MS
 
-STALE_LOCK_TIMEOUT_MS = 5 * 60 * 1000
+STALE_LOCK_TIMEOUT_MS = DEFAULT_LOCK_TIMEOUT_MS
 
 BROWSER_SYSTEM_PROMPT = """You are a developer activity analyst. You receive a sequence of web pages a developer visited during a browsing session.
 
@@ -37,7 +38,12 @@ Output ONLY valid JSON, no markdown fences or extra text."""
 
 
 def claim_pending_browser_events(
-    conn, worker_id: str, stale_secs: int = 60, scroll_depth_threshold: float = 0.15
+    conn,
+    worker_id: str,
+    stale_secs: int = 60,
+    scroll_depth_threshold: float = 0.15,
+    max_claim_batch: int | None = None,
+    stale_lock_timeout_ms: int = STALE_LOCK_TIMEOUT_MS,
 ) -> list[list[dict]]:
     """Atomically claim pending browser events and return them grouped into time-based chunks.
 
@@ -46,10 +52,14 @@ def claim_pending_browser_events(
 
     Events with scroll_depth < scroll_depth_threshold AND no search_query are
     marked 'skipped' and excluded from results.
+
+    `max_claim_batch` caps total events claimed per invocation; `None` disables
+    the cap. Enforced as `LIMIT ?` on the UPDATE's inner SELECT.
     """
     now_ms = int(time.time() * 1000)
     stale_threshold_ms = now_ms - (stale_secs * 1000)
-    stale_lock_ms = now_ms - STALE_LOCK_TIMEOUT_MS
+    stale_lock_ms = now_ms - stale_lock_timeout_ms
+    claim_limit = max_claim_batch if max_claim_batch is not None else -1
 
     cursor = conn.execute(
         """
@@ -67,10 +77,11 @@ def claim_pending_browser_events(
                        AND COALESCE(beq.locked_at, 0) <= ?))
               AND be.timestamp < ?
             ORDER BY beq.priority, beq.created_at
+            LIMIT ?
         )
         RETURNING browser_event_id
         """,
-        (now_ms, worker_id, now_ms, stale_lock_ms, stale_threshold_ms),
+        (now_ms, worker_id, now_ms, stale_lock_ms, stale_threshold_ms, claim_limit),
     )
     event_ids = [row[0] for row in cursor.fetchall()]
     conn.commit()
