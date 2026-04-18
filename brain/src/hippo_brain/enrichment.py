@@ -3,6 +3,7 @@ import re
 import time
 import uuid
 
+from hippo_brain.entity_resolver import canonicalize
 from hippo_brain.models import EnrichmentResult, validate_enrichment_data
 from hippo_brain.watchdog import DEFAULT_LOCK_TIMEOUT_MS
 
@@ -96,7 +97,7 @@ def upsert_entities(conn, node_id: int, entities_dict, entity_type_map: dict, no
     entity_ids = []
     for key, entity_type in entity_type_map.items():
         for name in all_entities.get(key, []):
-            canonical = name.lower().strip()
+            canonical = canonicalize(entity_type, name)
             cursor = conn.execute(
                 """
                 INSERT INTO entities (type, name, canonical, first_seen, last_seen, created_at)
@@ -258,21 +259,17 @@ def claim_pending_events_by_session(
         if not event_ids:
             continue
 
-        placeholders = ",".join("?" * len(event_ids))
-        cursor = conn.execute(
-            f"""
-            SELECT id, session_id, timestamp, command, exit_code, duration_ms,
-                   cwd, hostname, shell, git_repo, git_branch, git_commit, git_dirty,
-                   stdout, stderr
-            FROM events
-            WHERE id IN ({placeholders})
-            ORDER BY timestamp ASC
-            """,
-            event_ids,
-        )
-
         events = []
-        for row in cursor.fetchall():
+        for eid in event_ids:
+            row = conn.execute(
+                """SELECT id, session_id, timestamp, command, exit_code, duration_ms,
+                          cwd, hostname, shell, git_repo, git_branch, git_commit, git_dirty,
+                          stdout, stderr
+                   FROM events WHERE id = ?""",
+                [eid],
+            ).fetchone()
+            if row is None:
+                continue
             events.append(
                 {
                     "id": row[0],
@@ -292,7 +289,7 @@ def claim_pending_events_by_session(
                     "stderr": row[14],
                 }
             )
-
+        events.sort(key=lambda e: e["timestamp"])
         events = _skip_ineligible_shell_events(conn, events)
 
         if not events:
@@ -407,19 +404,15 @@ def write_knowledge_node(
         upsert_entities(conn, node_id, result.entities, SHELL_ENTITY_TYPE_MAP, now_ms)
 
         # Mark events as enriched
-        placeholders = ",".join("?" * len(event_ids))
-        conn.execute(
-            f"UPDATE events SET enriched = 1 WHERE id IN ({placeholders})",
-            event_ids,
+        conn.executemany(
+            "UPDATE events SET enriched = 1 WHERE id = ?",
+            [(eid,) for eid in event_ids],
         )
 
         # Mark queue entries done
-        conn.execute(
-            f"""
-            UPDATE enrichment_queue SET status = 'done', updated_at = ?
-            WHERE event_id IN ({placeholders})
-            """,
-            [now_ms, *event_ids],
+        conn.executemany(
+            "UPDATE enrichment_queue SET status = 'done', updated_at = ? WHERE event_id = ?",
+            [(now_ms, eid) for eid in event_ids],
         )
 
         conn.commit()
