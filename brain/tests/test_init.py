@@ -54,6 +54,8 @@ def test_main_serve_dispatches(monkeypatch):
                     "session_stale_secs": 120,
                     "port": 9175,
                     "telemetry_endpoint": "http://localhost:4318",
+                    "max_claim_batch": 10,
+                    "lock_timeout_secs": 600,
                 },
             ):
                 hippo_brain.main()
@@ -69,6 +71,8 @@ def test_main_serve_dispatches(monkeypatch):
         poll_interval_secs=5,
         enrichment_batch_size=10,
         session_stale_secs=120,
+        max_claim_batch=10,
+        lock_timeout_ms=600_000,
     )
     mock_uvicorn.run.assert_called_once_with("fake-app", host="127.0.0.1", port=9175)
 
@@ -93,6 +97,8 @@ def test_main_serve_uses_config_runtime_settings(monkeypatch):
         "session_stale_secs": 60,
         "port": 9444,
         "telemetry_endpoint": "http://localhost:4318",
+        "max_claim_batch": 7,
+        "lock_timeout_secs": 900,
     }
 
     with patch.dict("sys.modules", {"uvicorn": mock_uvicorn}):
@@ -111,6 +117,8 @@ def test_main_serve_uses_config_runtime_settings(monkeypatch):
         poll_interval_secs=9,
         enrichment_batch_size=3,
         session_stale_secs=60,
+        max_claim_batch=7,
+        lock_timeout_ms=900_000,
     )
     mock_uvicorn.run.assert_called_once_with("fake-app", host="127.0.0.1", port=9444)
 

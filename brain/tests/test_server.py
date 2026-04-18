@@ -10,6 +10,7 @@ from starlette.testclient import TestClient
 
 from hippo_brain.server import BrainServer, create_app
 from hippo_brain.version import get_version
+from hippo_brain.watchdog import PreflightDecision
 
 
 def _make_server(db_path: str) -> BrainServer:
@@ -308,8 +309,9 @@ async def test_enrichment_loop_processes_events(tmp_db):
     )
     server.client.chat = mock_chat
 
-    # Bypass model resolution — this test is about enrichment processing, not model discovery
-    with patch.object(server, "_resolve_model", new_callable=AsyncMock, return_value=True):
+    # Bypass preflight — this test is about enrichment processing, not model discovery
+    ok = PreflightDecision(proceed=True, reason="ok", loaded_models=["test-model"])
+    with patch("hippo_brain.server.preflight_lm_studio", new_callable=AsyncMock, return_value=ok):
         task = asyncio.create_task(server._enrichment_loop())
         await asyncio.sleep(0.2)
         task.cancel()
@@ -351,8 +353,9 @@ async def test_enrichment_loop_handles_chat_failure(tmp_db):
     # Make chat() raise
     server.client.chat = AsyncMock(side_effect=RuntimeError("model offline"))
 
-    # Bypass model resolution — this test is about error handling, not model discovery
-    with patch.object(server, "_resolve_model", new_callable=AsyncMock, return_value=True):
+    # Bypass preflight — this test is about error handling, not model discovery
+    ok = PreflightDecision(proceed=True, reason="ok", loaded_models=["test-model"])
+    with patch("hippo_brain.server.preflight_lm_studio", new_callable=AsyncMock, return_value=ok):
         task = asyncio.create_task(server._enrichment_loop())
         await asyncio.sleep(0.2)
         task.cancel()
@@ -492,120 +495,67 @@ def test_create_app_starts_and_stops_enrichment_task(tmp_db):
         assert resp.json()["status"] == "ok"
 
 
-# ---- _resolve_model ----
+# ---- _pick_enrichment_model ----
 
 
-async def _make_server_with_models(tmp_db, preferred: str, loaded: list[str]) -> BrainServer:
-    """Helper: server whose mock client returns `loaded` from list_models."""
-    from hippo_brain.client import MockLMStudioClient
-
+def _server_with_preferred(tmp_db, preferred: str) -> BrainServer:
     _, db_path = tmp_db
     server = _make_server(str(db_path))
     server._preferred_model = preferred
     server.enrichment_model = preferred
-
-    class _MockWithModels(MockLMStudioClient):
-        async def list_models(self):
-            return loaded
-
-    server.client = _MockWithModels()
     return server
 
 
-async def test_resolve_model_preferred_available(tmp_db):
+def test_resolve_model_preferred_available(tmp_db):
     """When preferred model is loaded, enrichment_model stays as preferred."""
-    server = await _make_server_with_models(
-        tmp_db,
-        preferred="qwen3.5-35b-a3b",
-        loaded=["qwen3.5-35b-a3b", "text-embedding-nomic"],
-    )
-    result = await server._resolve_model()
+    server = _server_with_preferred(tmp_db, "qwen3.5-35b-a3b")
+    result = server._pick_enrichment_model(["qwen3.5-35b-a3b", "text-embedding-nomic"])
     assert result is True
     assert server.enrichment_model == "qwen3.5-35b-a3b"
 
 
-async def test_resolve_model_fallback_when_preferred_missing(tmp_db):
+def test_resolve_model_fallback_when_preferred_missing(tmp_db):
     """When preferred model is not loaded, falls back to first available chat model."""
-    server = await _make_server_with_models(
-        tmp_db,
-        preferred="qwen3.5-35b-a3b",
-        loaded=["gemma-4-26b", "text-embedding-nomic"],
-    )
-    result = await server._resolve_model()
+    server = _server_with_preferred(tmp_db, "qwen3.5-35b-a3b")
+    result = server._pick_enrichment_model(["gemma-4-26b", "text-embedding-nomic"])
     assert result is True
     assert server.enrichment_model == "gemma-4-26b"
 
 
-async def test_resolve_model_restores_preferred(tmp_db):
+def test_resolve_model_restores_preferred(tmp_db):
     """When preferred becomes available again, switches back from fallback."""
-    server = await _make_server_with_models(
-        tmp_db,
-        preferred="qwen3.5-35b-a3b",
-        loaded=["gemma-4-26b", "text-embedding-nomic"],
-    )
-    await server._resolve_model()
+    server = _server_with_preferred(tmp_db, "qwen3.5-35b-a3b")
+    server._pick_enrichment_model(["gemma-4-26b", "text-embedding-nomic"])
     assert server.enrichment_model == "gemma-4-26b"
 
-    # Now preferred comes back online
-    from hippo_brain.client import MockLMStudioClient
-
-    class _PreferredBack(MockLMStudioClient):
-        async def list_models(self):
-            return ["qwen3.5-35b-a3b", "gemma-4-26b", "text-embedding-nomic"]
-
-    server.client = _PreferredBack()
-    result = await server._resolve_model()
+    result = server._pick_enrichment_model(
+        ["qwen3.5-35b-a3b", "gemma-4-26b", "text-embedding-nomic"]
+    )
     assert result is True
     assert server.enrichment_model == "qwen3.5-35b-a3b"
 
 
-async def test_resolve_model_no_chat_models(tmp_db):
+def test_resolve_model_no_chat_models(tmp_db):
     """When only embedding models are loaded, returns False."""
-    server = await _make_server_with_models(
-        tmp_db,
-        preferred="qwen3.5-35b-a3b",
-        loaded=["text-embedding-nomic", "nomic-embed-v2", "modernbert-base"],
+    server = _server_with_preferred(tmp_db, "qwen3.5-35b-a3b")
+    result = server._pick_enrichment_model(
+        ["text-embedding-nomic", "nomic-embed-v2", "modernbert-base"]
     )
-    result = await server._resolve_model()
     assert result is False
 
 
-async def test_resolve_model_lmstudio_unreachable(tmp_db):
-    """When list_models raises (LM Studio down), returns False."""
-    from hippo_brain.client import MockLMStudioClient
-
-    _, db_path = tmp_db
-    server = _make_server(str(db_path))
-
-    class _Unreachable(MockLMStudioClient):
-        async def list_models(self):
-            raise ConnectionError("LM Studio not running")
-
-    server.client = _Unreachable()
-    result = await server._resolve_model()
-    assert result is False
-
-
-async def test_resolve_model_empty_preferred_uses_first(tmp_db):
+def test_resolve_model_empty_preferred_uses_first(tmp_db):
     """When no preferred model configured, uses first available chat model."""
-    server = await _make_server_with_models(
-        tmp_db,
-        preferred="",
-        loaded=["llama-3-8b", "text-embedding-nomic"],
-    )
-    result = await server._resolve_model()
+    server = _server_with_preferred(tmp_db, "")
+    result = server._pick_enrichment_model(["llama-3-8b", "text-embedding-nomic"])
     assert result is True
     assert server.enrichment_model == "llama-3-8b"
 
 
-async def test_resolve_model_empty_model_list(tmp_db):
+def test_resolve_model_empty_model_list(tmp_db):
     """When LM Studio returns an empty model list, returns False."""
-    server = await _make_server_with_models(
-        tmp_db,
-        preferred="qwen3.5-35b-a3b",
-        loaded=[],
-    )
-    result = await server._resolve_model()
+    server = _server_with_preferred(tmp_db, "qwen3.5-35b-a3b")
+    result = server._pick_enrichment_model([])
     assert result is False
 
 
