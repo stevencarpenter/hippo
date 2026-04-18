@@ -115,11 +115,7 @@ pub fn strip_sensitive_params(url_str: &str, strip_params: &[String]) -> String 
 /// the same time window produces the same envelope ID.
 pub fn make_envelope_id(url: &str, dedup_window_minutes: u64, timestamp_ms: i64) -> Uuid {
     let visit_minutes = (timestamp_ms / 1000) as u64 / 60;
-    let bucket = if dedup_window_minutes > 0 {
-        visit_minutes / dedup_window_minutes
-    } else {
-        visit_minutes
-    };
+    let bucket = visit_minutes.checked_div(dedup_window_minutes).unwrap_or(visit_minutes);
     let key = format!("{url}:{bucket}");
     Uuid::new_v5(&BROWSER_NS, key.as_bytes())
 }
