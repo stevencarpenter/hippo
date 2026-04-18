@@ -4,6 +4,7 @@ brain/src/hippo_brain/_version.py
 *.swo
 .DS_Store
 .superpowers/
+.worktrees/
 __pycache__/
 *.pyc
 *.db
