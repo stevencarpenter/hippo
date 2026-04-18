@@ -305,6 +305,7 @@ These five account for the bulk of the "feels broken after corpus grows" failure
   - **Preflight:** run `lm_client.health_check(model)` once per claim batch (rag.py already has this shape — reuse).
   - **Cap claim-batch size** — 400+ rows per batch means one bad batch poisons a huge work slice.
   - **Metric:** `hippo.brain.enrichment.oldest_lock_age` gauge. Page on > 5 min.
+- **Status (2026-04-18): MITIGATED — commit 450ee38 (PR #23).** Reaper (`brain/src/hippo_brain/watchdog.py`) runs as an independent asyncio task every 5 s, configurable via `[brain] lock_timeout_secs` (default 600 s). Claim cap enforced on all four queues via `max_claim_batch` (default 10). All four audit scenarios verified met; see `docs/superpowers/specs/2026-04-18-r22-r23-audit.md`.
 
 ### R-23 — `events.git_repo` is NULL for the entire live corpus → project filter silently half-works
 
@@ -316,6 +317,7 @@ These five account for the bulk of the "feels broken after corpus grows" failure
   - **Fix at source:** populate `git_repo` in the daemon's event writer (`git remote get-url origin` with caching) so the column isn't a dead LIKE clause.
   - **Until then:** drop `e.git_repo LIKE ?` from the filter (don't pay the join cost for a dead clause) and document that project filter is cwd-substring-only.
   - **Backfill:** one-shot script to populate `git_repo` on historical rows from `cwd → git_repo` mapping via `list_projects_impl`.
+- **Status (2026-04-18): PARTIALLY MITIGATED — commit eccf617 (PR #25).** Forward-path fixed: new events receive `git_repo` via `derive_git_repo(cwd)` (remote-URL-based, correct for worktree case). Historical corpus (6,790 NULL rows) not yet backfilled. Backfill tracked as task #5 (merge-blocker); project filter remains cwd-substring-only for pre-fix events until that lands. See `docs/superpowers/specs/2026-04-18-r22-r23-audit.md`.
 
 ## Cross-cutting observations
 
