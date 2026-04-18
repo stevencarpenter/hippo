@@ -87,7 +87,7 @@ class LMStudioClient:
 
     async def list_models(self) -> list[str]:
         """Return IDs of all models currently loaded in LM Studio."""
-        async with httpx.AsyncClient(timeout=5.0) as client:
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
             resp = await client.get(f"{self.base_url}/models")
             resp.raise_for_status()
             return [m["id"] for m in resp.json().get("data", [])]

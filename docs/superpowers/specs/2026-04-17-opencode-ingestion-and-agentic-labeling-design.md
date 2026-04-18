@@ -337,7 +337,7 @@ All new `AgenticToolCall` events flow through the existing redactor pipeline. Re
 - **`crates/hippo-daemon/src/codex_session.rs` unit tests:** port of the existing Claude test cases (`format_tool_command`, pairing, orphans, truncation, deterministic envelope IDs, malformed JSON, missing `session_meta`) against codex JSONL fixtures.
 - **`crates/hippo-daemon/src/claude_session.rs` existing tests:** updated to assert `AgenticToolCall` output instead of `ShellEvent`.
 - **`crates/hippo-core/src/agentic/render.rs` unit tests:** one per tool_name renderer (Bash, Read, Edit, Write, Grep, Glob, Agent, TaskCreate, TaskUpdate, exec_command, skill, unknown fallback).
-- **Migration golden test** (`crates/hippo-core/tests/schema_v6_migration.rs`): programmatically build a v4-shaped DB with a known `claude_sessions` row + related queue row + FK link, run the migration, assert (a) all data preserved, (b) `harness='claude-code'` default applied, (c) schema matches v5 spec, (d) `PRAGMA user_version = 5`.
+- **Migration golden test** (`crates/hippo-core/tests/schema_v6_migration.rs`): programmatically build a v4-shaped DB with a known `claude_sessions` row + related queue row + FK link, run the migration, assert (a) all data preserved, (b) `harness='claude-code'` default applied, (c) schema matches v6 spec, (d) `PRAGMA user_version = 6`.
 
 ### Python tests
 

@@ -19,7 +19,6 @@ output_tail_lines = 100
 port = 9175
 poll_interval_secs = 5
 enrichment_batch_size = 10
-max_events_per_chunk = 10
 max_queue_depth = 100
 session_stale_secs = 120
 
