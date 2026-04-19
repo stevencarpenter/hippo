@@ -230,7 +230,11 @@ def test_derive_sources_multi(mini_db):
 
 def test_derive_sources_empty_conn():
     assert derive_sources(None, ["u1"]) == {}
-    assert derive_sources(sqlite3.connect(":memory:"), []) == {}
+    empty_conn = sqlite3.connect(":memory:")
+    try:
+        assert derive_sources(empty_conn, []) == {}
+    finally:
+        empty_conn.close()
 
 
 # ---------------------------------------------------------------------------
@@ -372,52 +376,55 @@ async def test_smoke_end_to_end(monkeypatch):
     monkeypatch.setattr(retrieval_mod, "_default_backend", lambda: backend)
 
     conn = _smoke_conn()
-    questions = [
-        Question(
-            id="s1",
-            question="sqlite-vec replacement?",
-            intent="why-decision",
-            relevant_knowledge_node_uuids=["u1"],
-            acceptable_answer_keywords=["sqlite"],
-            source_bias="claude",
-        ),
-        Question(
-            id="s2",
-            question="How is enrichment asyncio used?",
-            intent="how-it-works",
-            relevant_knowledge_node_uuids=["u2"],
-            acceptable_answer_keywords=["gather"],
-            source_bias="claude",
-        ),
-        Question(
-            id="s3",
-            question="native messaging details?",
-            intent="how-it-works",
-            relevant_knowledge_node_uuids=["u3"],
-            acceptable_answer_keywords=["native"],
-            source_bias="browser",
-        ),
-    ]
-    report = await run_benchmark(
-        questions=questions,
-        conn=conn,
-        lm_client=None,  # no synthesis, no judge, no embedding
-        embedding_model="",
-        query_model="",
-        mode="lexical",
-        limit=5,
-        run_synthesis=False,
-        run_judge=False,
-    )
-    assert len(report.results) == 3
-    # Every result should have found its single relevant uuid in top-K.
-    for r in report.results:
-        assert r.mrr == 1.0
-        assert r.recall_at_k == 1.0
-    md = render_markdown(report)
-    assert "Hippo Evaluation Scorecard" in md
-    assert "recall@k" in md
-    assert "| s1 |" in md
+    try:
+        questions = [
+            Question(
+                id="s1",
+                question="sqlite-vec replacement?",
+                intent="why-decision",
+                relevant_knowledge_node_uuids=["u1"],
+                acceptable_answer_keywords=["sqlite"],
+                source_bias="claude",
+            ),
+            Question(
+                id="s2",
+                question="How is enrichment asyncio used?",
+                intent="how-it-works",
+                relevant_knowledge_node_uuids=["u2"],
+                acceptable_answer_keywords=["gather"],
+                source_bias="claude",
+            ),
+            Question(
+                id="s3",
+                question="native messaging details?",
+                intent="how-it-works",
+                relevant_knowledge_node_uuids=["u3"],
+                acceptable_answer_keywords=["native"],
+                source_bias="browser",
+            ),
+        ]
+        report = await run_benchmark(
+            questions=questions,
+            conn=conn,
+            lm_client=None,  # no synthesis, no judge, no embedding
+            embedding_model="",
+            query_model="",
+            mode="lexical",
+            limit=5,
+            run_synthesis=False,
+            run_judge=False,
+        )
+        assert len(report.results) == 3
+        # Every result should have found its single relevant uuid in top-K.
+        for r in report.results:
+            assert r.mrr == 1.0
+            assert r.recall_at_k == 1.0
+        md = render_markdown(report)
+        assert "Hippo Evaluation Scorecard" in md
+        assert "recall@k" in md
+        assert "| s1 |" in md
+    finally:
+        conn.close()
 
 
 def test_render_markdown_handles_empty():

@@ -1,39 +1,42 @@
 import SwiftUI
 
 struct ContentView: View {
-    @State private var brainClient: BrainClient?
+    @AppStorage("selectedTab") private var selectedTabRawValue = SidebarSection.query.rawValue
+
+    private var selection: Binding<SidebarSection?> {
+        Binding(
+            get: { SidebarSection(rawValue: selectedTabRawValue) ?? .query },
+            set: { selectedTabRawValue = ($0 ?? .query).rawValue }
+        )
+    }
 
     var body: some View {
-        Group {
-            if let client = brainClient {
-                TabView {
-                    QueryAskView(brainClient: client)
-                        .tabItem {
-                            Label("Query", systemImage: "questionmark.circle")
-                        }
-
-                    KnowledgeView(brainClient: client)
-                        .tabItem {
-                            Label("Knowledge", systemImage: "brain")
-                        }
-
-                    EventBrowserView(brainClient: client)
-                        .tabItem {
-                            Label("Events", systemImage: "terminal")
-                        }
-
-                    StatusView(brainClient: client)
-                        .tabItem {
-                            Label("Status", systemImage: "heart")
-                        }
-                }
-            } else {
-                ProgressView("Connecting...")
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+        NavigationSplitView {
+            List(SidebarSection.allCases, selection: selection) { section in
+                Label(section.title, systemImage: section.systemImage)
+                    .tag(Optional(section))
+            }
+            .navigationTitle("Hippo")
+        } detail: {
+            switch SidebarSection(rawValue: selectedTabRawValue) ?? .query {
+            case .query:
+                QueryAskView()
+            case .knowledge:
+                KnowledgeView()
+            case .events:
+                EventBrowserView()
+            case .status:
+                StatusView()
             }
         }
-        .task {
-            brainClient = await BrainClient.makeDefault()
-        }
+        .navigationSplitViewStyle(.balanced)
+        .frame(minWidth: 800, minHeight: 500)
     }
 }
+
+#if DEBUG
+#Preview {
+    ContentView()
+        .brainClient(PreviewBrainClient())
+}
+#endif

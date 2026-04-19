@@ -180,9 +180,25 @@ async fn main() -> Result<()> {
                 let daemon_template = include_str!("../../../launchd/com.hippo.daemon.plist");
                 let brain_template = include_str!("../../../launchd/com.hippo.brain.plist");
                 let gh_poll_template = include_str!("../../../launchd/com.hippo.gh-poll.plist");
+                let xcode_claude_template =
+                    include_str!("../../../launchd/com.hippo.xcode-claude-ingest.plist");
+                let xcode_codex_template =
+                    include_str!("../../../launchd/com.hippo.xcode-codex-ingest.plist");
 
                 install::install_plist("com.hippo.daemon", daemon_template, &vars, force)?;
                 install::install_plist("com.hippo.brain", brain_template, &vars, force)?;
+                install::install_plist(
+                    "com.hippo.xcode-claude-ingest",
+                    xcode_claude_template,
+                    &vars,
+                    force,
+                )?;
+                install::install_plist(
+                    "com.hippo.xcode-codex-ingest",
+                    xcode_codex_template,
+                    &vars,
+                    force,
+                )?;
 
                 // GitHub Actions poller plist — only written when github source is enabled.
                 let gh_poll_installed = if config.github.enabled {

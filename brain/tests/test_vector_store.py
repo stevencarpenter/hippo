@@ -70,103 +70,127 @@ def _vec(seed: int) -> list[float]:
 def test_open_conn_creates_vec_table():
     with tempfile.TemporaryDirectory() as td:
         conn = vector_store.open_conn(Path(td) / "db.sqlite")
-        row = conn.execute(
-            "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='knowledge_vectors'"
-        ).fetchone()
-        assert row[0] == 1
+        try:
+            row = conn.execute(
+                "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='knowledge_vectors'"
+            ).fetchone()
+            assert row[0] == 1
+        finally:
+            conn.close()
 
 
 def test_insert_vectors_length_mismatch_raises():
     with tempfile.TemporaryDirectory() as td:
         conn = vector_store.open_conn(Path(td) / "db.sqlite")
-        with pytest.raises(ValueError):
-            vector_store.insert_vectors(conn, 1, [0.0], _vec(1))
+        try:
+            with pytest.raises(ValueError):
+                vector_store.insert_vectors(conn, 1, [0.0], _vec(1))
+        finally:
+            conn.close()
 
 
 def test_knn_search_roundtrip():
     with tempfile.TemporaryDirectory() as td:
         conn = _fresh_conn(Path(td))
-        conn.execute(
-            "INSERT INTO knowledge_nodes (id, uuid, content, embed_text) "
-            "VALUES (1, 'a', '{\"summary\":\"alpha\"}', 'body a'), "
-            "       (2, 'b', '{\"summary\":\"beta\"}',  'body b')"
-        )
-        vector_store.insert_vectors(conn, 1, _vec(0), _vec(100))
-        vector_store.insert_vectors(conn, 2, _vec(5), _vec(105))
-        conn.commit()
+        try:
+            conn.execute(
+                "INSERT INTO knowledge_nodes (id, uuid, content, embed_text) "
+                "VALUES (1, 'a', '{\"summary\":\"alpha\"}', 'body a'), "
+                "       (2, 'b', '{\"summary\":\"beta\"}',  'body b')"
+            )
+            vector_store.insert_vectors(conn, 1, _vec(0), _vec(100))
+            vector_store.insert_vectors(conn, 2, _vec(5), _vec(105))
+            conn.commit()
 
-        hits = vector_store.knn_search(conn, _vec(0), limit=5)
-        assert len(hits) == 2
-        assert hits[0]["knowledge_node_id"] == 1  # exact match on node 1
-        for h in hits:
-            assert 0.0 <= h["score"] <= 1.0
-            assert "distance" in h
+            hits = vector_store.knn_search(conn, _vec(0), limit=5)
+            assert len(hits) == 2
+            assert hits[0]["knowledge_node_id"] == 1  # exact match on node 1
+            for h in hits:
+                assert 0.0 <= h["score"] <= 1.0
+                assert "distance" in h
+        finally:
+            conn.close()
 
 
 def test_knn_search_command_column():
     with tempfile.TemporaryDirectory() as td:
         conn = _fresh_conn(Path(td))
-        conn.execute(
-            "INSERT INTO knowledge_nodes (id, uuid, content, embed_text) "
-            "VALUES (1, 'a', '{}', 'x'), (2, 'b', '{}', 'y')"
-        )
-        vector_store.insert_vectors(conn, 1, _vec(0), _vec(200))
-        vector_store.insert_vectors(conn, 2, _vec(50), _vec(210))
-        conn.commit()
+        try:
+            conn.execute(
+                "INSERT INTO knowledge_nodes (id, uuid, content, embed_text) "
+                "VALUES (1, 'a', '{}', 'x'), (2, 'b', '{}', 'y')"
+            )
+            vector_store.insert_vectors(conn, 1, _vec(0), _vec(200))
+            vector_store.insert_vectors(conn, 2, _vec(50), _vec(210))
+            conn.commit()
 
-        hits = vector_store.knn_search(conn, _vec(200), column="vec_command", limit=5)
-        assert hits[0]["knowledge_node_id"] == 1
+            hits = vector_store.knn_search(conn, _vec(200), column="vec_command", limit=5)
+            assert hits[0]["knowledge_node_id"] == 1
+        finally:
+            conn.close()
 
 
 def test_knn_search_rejects_unknown_column():
     with tempfile.TemporaryDirectory() as td:
         conn = vector_store.open_conn(Path(td) / "db.sqlite")
-        with pytest.raises(ValueError):
-            vector_store.knn_search(conn, _vec(0), column="vec_bogus")
+        try:
+            with pytest.raises(ValueError):
+                vector_store.knn_search(conn, _vec(0), column="vec_bogus")
+        finally:
+            conn.close()
 
 
 def test_fts_search_finds_inserted_rows():
     with tempfile.TemporaryDirectory() as td:
         conn = _fresh_conn(Path(td))
-        conn.execute(
-            "INSERT INTO knowledge_nodes (id, uuid, content, embed_text) "
-            "VALUES (1, 'a', '{\"summary\":\"sqlite-vec migration design\"}', "
-            "'hybrid retrieval over sqlite fts')"
-        )
-        conn.commit()
+        try:
+            conn.execute(
+                "INSERT INTO knowledge_nodes (id, uuid, content, embed_text) "
+                "VALUES (1, 'a', '{\"summary\":\"sqlite-vec migration design\"}', "
+                "'hybrid retrieval over sqlite fts')"
+            )
+            conn.commit()
 
-        hits = vector_store.fts_search(conn, "migration")
-        assert len(hits) == 1
-        assert hits[0]["knowledge_node_id"] == 1
-        assert hits[0]["score"] > 0.0
+            hits = vector_store.fts_search(conn, "migration")
+            assert len(hits) == 1
+            assert hits[0]["knowledge_node_id"] == 1
+            assert hits[0]["score"] > 0.0
+        finally:
+            conn.close()
 
 
 def test_fts_search_respects_limit():
     with tempfile.TemporaryDirectory() as td:
         conn = _fresh_conn(Path(td))
-        for i in range(5):
-            conn.execute(
-                "INSERT INTO knowledge_nodes (id, uuid, content, embed_text) "
-                "VALUES (?, ?, '{\"summary\":\"retrieval\"}', 'retrieval text')",
-                (i + 1, f"u-{i}"),
-            )
-        conn.commit()
+        try:
+            for i in range(5):
+                conn.execute(
+                    "INSERT INTO knowledge_nodes (id, uuid, content, embed_text) "
+                    "VALUES (?, ?, '{\"summary\":\"retrieval\"}', 'retrieval text')",
+                    (i + 1, f"u-{i}"),
+                )
+            conn.commit()
 
-        hits = vector_store.fts_search(conn, "retrieval", limit=3)
-        assert len(hits) == 3
+            hits = vector_store.fts_search(conn, "retrieval", limit=3)
+            assert len(hits) == 3
+        finally:
+            conn.close()
 
 
 def test_delete_vectors_removes_row():
     with tempfile.TemporaryDirectory() as td:
         conn = _fresh_conn(Path(td))
-        conn.execute(
-            "INSERT INTO knowledge_nodes (id, uuid, content, embed_text) VALUES (1, 'a', '{}', 'x')"
-        )
-        vector_store.insert_vectors(conn, 1, _vec(0), _vec(0))
-        conn.commit()
+        try:
+            conn.execute(
+                "INSERT INTO knowledge_nodes (id, uuid, content, embed_text) VALUES (1, 'a', '{}', 'x')"
+            )
+            vector_store.insert_vectors(conn, 1, _vec(0), _vec(0))
+            conn.commit()
 
-        vector_store.delete_vectors(conn, 1)
-        conn.commit()
+            vector_store.delete_vectors(conn, 1)
+            conn.commit()
 
-        hits = vector_store.knn_search(conn, _vec(0), limit=5)
-        assert hits == []
+            hits = vector_store.knn_search(conn, _vec(0), limit=5)
+            assert hits == []
+        finally:
+            conn.close()

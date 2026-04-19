@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.hippo.xcode-codex-ingest</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>__UV_BIN__</string>
+        <string>run</string>
+        <string>--project</string>
+        <string>__BRAIN_DIR__</string>
+        <string>python</string>
+        <string>__SCRIPTS_DIR__/hippo-ingest-codex.py</string>
+    </array>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>HOME</key>
+        <string>__HOME__</string>
+        <key>PATH</key>
+        <string>__PATH__</string>
+    </dict>
+    <!-- Codex writes to .../sessions/YYYY/MM/DD/rollout-*.jsonl. WatchPaths on
+         a directory only fires when that directory's own mtime changes, which
+         happens on file create/delete but NOT on appends to nested files.
+         WatchPaths gives a low-latency push when a new day folder appears;
+         StartInterval is the steady-state poll that catches everything else.
+         ThrottleInterval coalesces bursts so we don't re-run mid-ingest. -->
+    <key>WatchPaths</key>
+    <array>
+        <string>__HOME__/Library/Developer/Xcode/CodingAssistant/codex/sessions</string>
+    </array>
+    <key>StartInterval</key>
+    <integer>300</integer>
+    <key>ThrottleInterval</key>
+    <integer>60</integer>
+    <key>StandardOutPath</key>
+    <string>__DATA_DIR__/xcode-codex-ingest.stdout.log</string>
+    <key>StandardErrorPath</key>
+    <string>__DATA_DIR__/xcode-codex-ingest.stderr.log</string>
+    <key>WorkingDirectory</key>
+    <string>__HOME__</string>
+</dict>
+</plist>

@@ -45,10 +45,13 @@ def _apply_schema(conn: sqlite3.Connection) -> None:
 
 
 @pytest.fixture
-def db(tmp_path: Path) -> sqlite3.Connection:
+def db(tmp_path: Path):
     conn = vector_store.open_conn(tmp_path / "hippo.db")
     _apply_schema(conn)
-    return conn
+    try:
+        yield conn
+    finally:
+        conn.close()
 
 
 def _insert_node(

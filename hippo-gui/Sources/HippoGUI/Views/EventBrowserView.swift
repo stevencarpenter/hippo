@@ -1,14 +1,8 @@
 import SwiftUI
 
 struct EventBrowserView: View {
-    let brainClient: BrainClient
-
-    @State private var sessions: [Session] = []
-    @State private var events: [Event] = []
-    @State private var selectedSession: Session?
-    @State private var selectedEvent: Event?
-    @State private var isLoading: Bool = false
-    @State private var errorMessage: String?
+    @Environment(\.brainClient) private var brainClient
+    @State private var vm = EventBrowserViewModel()
 
     var body: some View {
         HSplitView {
@@ -20,32 +14,43 @@ struct EventBrowserView: View {
 
                     Spacer()
 
+                    Picker("Since", selection: $vm.sincePreset) {
+                        ForEach(TimeFilterPreset.allCases) { preset in
+                            Text(preset.title).tag(preset)
+                        }
+                    }
+                    .pickerStyle(.menu)
+                    .frame(width: 120)
+
                     Button {
-                        Task { await loadSessions() }
+                        Task { await vm.refresh() }
                     } label: {
                         Image(systemName: "arrow.clockwise")
                     }
-                    .disabled(isLoading)
+                    .disabled(vm.isLoadingSessions)
                 }
 
-                if isLoading {
+                if vm.isLoadingSessions {
                     HStack {
                         ProgressView()
                             .scaleEffect(0.8)
-                        Text("Loading...")
+                        Text("Loading sessions...")
                             .foregroundStyle(.secondary)
                     }
                 }
 
-                if let error = errorMessage {
-                    Text(error)
-                        .foregroundStyle(.red)
+                if let error = vm.errorMessage {
+                    ErrorBannerView(message: error) {
+                        await vm.refresh()
+                    }
                 }
 
-                List(selection: $selectedSession) {
-                    ForEach(sessions) { session in
+                List(selection: Binding(get: { vm.selectedSessionID }, set: { newValue in
+                    Task { await vm.selectSession(id: newValue) }
+                })) {
+                    ForEach(vm.sessions) { session in
                         VStack(alignment: .leading, spacing: 4) {
-                            Text(formatSessionDate(session.startTime))
+                            Text(formattedDate(session.startTime))
                                 .font(.body)
                             HStack {
                                 Text(session.hostname)
@@ -57,19 +62,32 @@ struct EventBrowserView: View {
                                     .foregroundStyle(.secondary)
                             }
                         }
-                        .tag(session)
+                        .tag(Optional(session.id))
+                    }
+
+                    if vm.canLoadMoreSessions {
+                        Button {
+                            Task { await vm.loadMoreSessions() }
+                        } label: {
+                            HStack {
+                                Spacer()
+                                if vm.isLoadingSessions {
+                                    ProgressView()
+                                        .controlSize(.small)
+                                } else {
+                                    Text("Load More Sessions")
+                                }
+                                Spacer()
+                            }
+                        }
+                        .buttonStyle(.plain)
                     }
                 }
                 .listStyle(.inset)
-                .onChange(of: selectedSession) { _, newSession in
-                    if let session = newSession {
-                        Task { await loadEvents(sessionId: session.id) }
-                    }
-                }
             }
-            .frame(minWidth: 200)
+            .frame(minWidth: 220)
 
-            if let session = selectedSession {
+            if let session = vm.selectedSession {
                 VStack(alignment: .leading, spacing: 12) {
                     HStack {
                         Text("Events")
@@ -80,10 +98,32 @@ struct EventBrowserView: View {
                             .foregroundStyle(.secondary)
                     }
 
-                    List(selection: $selectedEvent) {
-                        ForEach(events) { event in
+                    HStack {
+                        TextField("Project filter", text: $vm.project)
+                            .textFieldStyle(.roundedBorder)
+                            .onSubmit {
+                                Task { await vm.loadEvents(reset: true) }
+                            }
+
+                        Button("Apply") {
+                            Task { await vm.loadEvents(reset: true) }
+                        }
+                        .disabled(vm.isLoadingEvents)
+                    }
+
+                    if vm.isLoadingEvents {
+                        HStack {
+                            ProgressView()
+                                .scaleEffect(0.8)
+                            Text("Loading events...")
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+
+                    List(selection: Binding(get: { vm.selectedEventID }, set: { vm.selectedEventID = $0 })) {
+                        ForEach(vm.filteredEvents) { event in
                             VStack(alignment: .leading, spacing: 4) {
-                                Text(event.command.prefix(80))
+                                Text(event.command)
                                     .lineLimit(1)
                                     .font(.system(.body, design: .monospaced))
                                     .truncationMode(.middle)
@@ -97,19 +137,38 @@ struct EventBrowserView: View {
                                         .font(.caption2)
                                         .foregroundStyle(.secondary)
                                     Spacer()
-                                    Text(formatTimestamp(event.timestamp))
+                                    Text(formattedTime(event.timestamp))
                                         .font(.caption2)
                                         .foregroundStyle(.secondary)
                                 }
                             }
-                            .tag(event)
+                            .tag(Optional(event.id))
+                        }
+
+                        if vm.canLoadMoreEvents {
+                            Button {
+                                Task { await vm.loadMoreEvents() }
+                            } label: {
+                                HStack {
+                                    Spacer()
+                                    if vm.isLoadingEvents {
+                                        ProgressView()
+                                            .controlSize(.small)
+                                    } else {
+                                        Text("Load More Events")
+                                    }
+                                    Spacer()
+                                }
+                            }
+                            .buttonStyle(.plain)
                         }
                     }
                     .listStyle(.inset)
+                    .searchable(text: $vm.commandFilter, prompt: "Filter commands")
                 }
-                .frame(minWidth: 300)
+                .frame(minWidth: 320)
 
-                if let event = selectedEvent {
+                if let event = vm.selectedEvent {
                     VStack(alignment: .leading, spacing: 12) {
                         HStack {
                             Text("Event Details")
@@ -127,7 +186,7 @@ struct EventBrowserView: View {
                                 }
 
                                 LabeledContent("Timestamp") {
-                                    Text(formatTimestamp(event.timestamp))
+                                    Text(formattedDate(event.timestamp))
                                 }
 
                                 LabeledContent("Working Directory") {
@@ -163,69 +222,63 @@ struct EventBrowserView: View {
                                     .textSelection(.enabled)
                                     .padding(8)
                                     .frame(maxWidth: .infinity, alignment: .leading)
-                                    .background(Color.secondary.opacity(0.1))
-                                    .clipShape(RoundedRectangle(cornerRadius: 4))
+                                    .background(.quaternary, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
                             }
                         }
 
                         Spacer()
                     }
                     .padding()
-                    .frame(minWidth: 300)
+                    .frame(minWidth: 320)
+                } else {
+                    ContentUnavailableView("Select an Event", systemImage: "terminal", description: Text("Choose an event to inspect the full command details."))
                 }
+            } else {
+                ContentUnavailableView("Select a Session", systemImage: "rectangle.stack.person.crop", description: Text("Choose a captured session to browse its events."))
             }
         }
+        .onChange(of: vm.sincePreset) { _, _ in
+            Task { await vm.refresh() }
+        }
         .task {
-            await loadSessions()
+            vm.configure(client: brainClient)
+            await vm.refresh()
         }
     }
 
-    @MainActor
-    private func loadSessions() async {
-        isLoading = true
-        errorMessage = nil
-
-        do {
-            let response = try await brainClient.listSessions()
-            sessions = response.sessions
-            selectedSession = sessions.first
-            // selectedSession change triggers loadEvents via .onChange
-        } catch {
-            errorMessage = error.localizedDescription
-        }
-
-        isLoading = false
+    private func formattedDate(_ timestamp: Int) -> String {
+        Date(timeIntervalSince1970: Double(timestamp) / 1000)
+            .formatted(date: .abbreviated, time: .shortened)
     }
 
-    @MainActor
-    private func loadEvents(sessionId: Int) async {
-        selectedEvent = nil
-        do {
-            let response = try await brainClient.listEvents(sessionId: sessionId)
-            events = response.events
-        } catch {
-            errorMessage = error.localizedDescription
-        }
-    }
-
-    private static let sessionDateFormatter: DateFormatter = {
-        let f = DateFormatter()
-        f.dateStyle = .medium
-        f.timeStyle = .short
-        return f
-    }()
-
-    private static let timestampFormatter: DateFormatter = {
-        let f = DateFormatter()
-        f.timeStyle = .medium
-        return f
-    }()
-
-    private func formatSessionDate(_ timestamp: Int) -> String {
-        Self.sessionDateFormatter.string(from: Date(timeIntervalSince1970: Double(timestamp) / 1000))
-    }
-
-    private func formatTimestamp(_ timestamp: Int) -> String {
-        Self.timestampFormatter.string(from: Date(timeIntervalSince1970: Double(timestamp) / 1000))
+    private func formattedTime(_ timestamp: Int) -> String {
+        Date(timeIntervalSince1970: Double(timestamp) / 1000)
+            .formatted(date: .omitted, time: .shortened)
     }
 }
+
+#if DEBUG
+#Preview {
+    let sessions = SessionListResponse(
+        sessions: [
+            Session(id: 1, startTime: 1_713_404_800_000, hostname: "laptop", shell: "zsh", eventCount: 2)
+        ],
+        total: 1
+    )
+    let events = EventListResponse(
+        events: [
+            Event(id: 1, sessionId: 1, timestamp: 1_713_404_800_000, command: "swift test", exitCode: 0, durationMs: 820, cwd: "/Users/carpenter/projects/hippo", gitBranch: "main"),
+            Event(id: 2, sessionId: 1, timestamp: 1_713_404_860_000, command: "swift build", exitCode: 0, durationMs: 420, cwd: "/Users/carpenter/projects/hippo", gitBranch: "main")
+        ],
+        total: 2
+    )
+
+    EventBrowserView()
+        .brainClient(
+            PreviewBrainClient(
+                eventResponse: .success(events),
+                sessionResponse: .success(sessions)
+            )
+        )
+}
+#endif
