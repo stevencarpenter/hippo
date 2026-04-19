@@ -58,6 +58,7 @@ struct QueryAskView: View {
                         .font(.headline)
 
                     Text(vm.answerText)
+                        .textSelection(.enabled)
                         .padding()
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .background(.quaternary, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
@@ -176,6 +177,7 @@ struct QueryAskView: View {
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(.quaternary, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .textSelection(.enabled)
     }
 }
 
