@@ -111,14 +111,15 @@ shasum -a 256 -c HippoGUI-<version>-<build>.zip.sha256
 
 ## Previews and mocks
 
-SwiftUI previews are defined in the main view files and use `MockBrainClient` so they render without a live Hippo backend.
+SwiftUI previews are defined in the main view files and use `PreviewBrainClient` so they render without a live Hippo backend. Tests use a separate `MockBrainClient` under `Tests/` with recording/assertion helpers.
 
 Useful files:
 
-- `Sources/HippoGUI/Services/MockBrainClient.swift`
+- `Sources/HippoGUI/Services/PreviewBrainClient.swift` — preview-only stub inside `HippoGUIKit`
 - `Sources/HippoGUI/Services/BrainClientEnvironment.swift`
 - `Sources/HippoGUIPackageApp/HippoGUIPackageApp.swift`
 - `XcodeApp/HippoGUIXcodeApp.swift`
+- `Tests/HippoGUITests/MockBrainClient.swift` — test double with recorded calls
 - `Tests/HippoGUITests/ViewModelTests.swift`
 - `Tests/HippoGUITests/DecodingTests.swift`
 

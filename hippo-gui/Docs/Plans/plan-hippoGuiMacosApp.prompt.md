@@ -10,7 +10,7 @@ A phased plan to evolve HippoGUI from a basic functional prototype into a spec-c
 
 - `Package.swift` currently uses `// swift-tools-version: 6.3`, `.macOS(.v26)`, and `swiftLanguageModes: [.v6]`.
 - Dependency injection is implemented with a custom SwiftUI environment key via `.brainClient(...)` and `@Environment(\.brainClient)` rather than `.environment(brainClient)` / `@Environment(BrainClient.self)`.
-- ViewModels are `@Observable @MainActor`, previews use `MockBrainClient`, and tests live in `Tests/HippoGUITests/` using Swift Testing.
+- ViewModels are `@Observable @MainActor`. Previews use `PreviewBrainClient` (in `Sources/HippoGUI/Services/`); tests in `Tests/HippoGUITests/` use a separate `MockBrainClient` helper, all under Swift Testing.
 
 ---
 
@@ -89,7 +89,7 @@ A phased plan to evolve HippoGUI from a basic functional prototype into a spec-c
 
 - [x] **4.1 Extract `BrainClientProtocol`** — `BrainClientProtocol` now enables previews and tests to inject `MockBrainClient` without a live server.
 
-- [x] **4.2 Add SwiftUI Previews for all views** — The main views now include SwiftUI previews backed by `MockBrainClient`.
+- [x] **4.2 Add SwiftUI Previews for all views** — The main views now include SwiftUI previews backed by `PreviewBrainClient`.
 
 - [x] **4.3 Add a `HippoGUITests` test target using Swift Testing** — `Package.swift` now defines `HippoGUITests`, and the test suite uses the Swift Testing framework.
 

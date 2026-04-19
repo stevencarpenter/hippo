@@ -181,7 +181,7 @@ func drawIcon(size: Int) throws -> NSBitmapImageRep {
 
 func pngData(from bitmap: NSBitmapImageRep) throws -> Data {
     guard let png = bitmap.representation(using: .png, properties: [:]) else {
-        throw NSError(domain: "HippoGUIIcon", code: 1, userInfo: [NSLocalizedDescriptionKey: "Failed to encode PNG"]) 
+        throw NSError(domain: "HippoGUIIcon", code: 1, userInfo: [NSLocalizedDescriptionKey: "Failed to encode PNG"])
     }
     return png
 }
