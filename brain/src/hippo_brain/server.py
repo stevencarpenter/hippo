@@ -812,7 +812,7 @@ class BrainServer:
 
     async def _call_llm_with_retries(self, system_prompt, prompt, source_label):
         """Call LM Studio with up to 3 retries on parse failure."""
-        last_err = None
+        last_err: Exception = RuntimeError("no attempts made")
         for attempt in range(3):
             try:
                 messages = [

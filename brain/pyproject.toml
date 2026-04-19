@@ -49,3 +49,19 @@ asyncio_mode = "auto"
 markers = [
     "live: tests requiring a running LM Studio instance",
 ]
+
+[tool.coverage.run]
+source_pkgs = ["hippo_brain"]
+omit = [
+    "*/scripts/*",
+    "*/tests/*",
+]
+
+[tool.coverage.report]
+fail_under = 82
+exclude_also = [
+    "pragma: no cover",
+    "if __name__ == .__main__.:",
+    "if TYPE_CHECKING:",
+    "raise NotImplementedError",
+]
