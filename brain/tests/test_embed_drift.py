@@ -44,10 +44,13 @@ CREATE TABLE IF NOT EXISTS knowledge_nodes (
 def db_with_schema():
     with tempfile.TemporaryDirectory() as tmpdir:
         conn = open_vector_db(tmpdir)
-        conn.executescript(_SCHEMA_BOOTSTRAP)
-        conn.commit()
-        get_or_create_table(conn)
-        yield conn
+        try:
+            conn.executescript(_SCHEMA_BOOTSTRAP)
+            conn.commit()
+            get_or_create_table(conn)
+            yield conn
+        finally:
+            conn.close()
 
 
 @pytest.fixture
@@ -156,11 +159,14 @@ def test_vector_dim_mismatch_raises_clearly():
     """Wrong-dimension vectors from the LLM raise ValueError, not silent coercion."""
     with tempfile.TemporaryDirectory() as tmpdir:
         conn = vector_store.open_conn(Path(tmpdir) / "db.sqlite")
-        # insert_vectors already enforces dim; this tests the message is clear
-        short_vec = [0.1] * 64
-        full_vec = [0.1] * EMBED_DIM
-        with pytest.raises(ValueError, match="vector length mismatch"):
-            vector_store.insert_vectors(conn, 1, short_vec, full_vec)
+        try:
+            # insert_vectors already enforces dim; this tests the message is clear
+            short_vec = [0.1] * 64
+            full_vec = [0.1] * EMBED_DIM
+            with pytest.raises(ValueError, match="vector length mismatch"):
+                vector_store.insert_vectors(conn, 1, short_vec, full_vec)
+        finally:
+            conn.close()
 
 
 async def test_embed_node_raises_on_wrong_dim(db_with_schema):
@@ -185,26 +191,66 @@ def test_check_embed_model_drift_empty_corpus():
     """Empty corpus: check_embed_model_drift is a no-op for any model."""
     with tempfile.TemporaryDirectory() as tmpdir:
         conn = vector_store.open_conn(Path(tmpdir) / "db.sqlite")
-        check_embed_model_drift(conn, "any-model")  # must not raise
+        try:
+            check_embed_model_drift(conn, "any-model")  # must not raise
+        finally:
+            conn.close()
 
 
 def test_check_embed_model_drift_match():
     """Matching models: no-op."""
     with tempfile.TemporaryDirectory() as tmpdir:
         conn = vector_store.open_conn(Path(tmpdir) / "db.sqlite")
-        record_embed_model(conn, "nomic-embed-text")
-        conn.commit()
-        check_embed_model_drift(conn, "nomic-embed-text")  # must not raise
+        try:
+            record_embed_model(conn, "nomic-embed-text")
+            conn.commit()
+            check_embed_model_drift(conn, "nomic-embed-text")  # must not raise
+        finally:
+            conn.close()
+
+
+def test_check_embed_model_drift_empty_string_stored_is_noop():
+    """Legacy row with model='' must be treated as empty corpus, not a mismatch.
+
+    A row with an empty-string model used to brick all writes: every live
+    model name mismatched '' and raised EmbedDriftError. The guard now
+    treats falsy stored values the same as a missing row.
+    """
+    with tempfile.TemporaryDirectory() as tmpdir:
+        conn = vector_store.open_conn(Path(tmpdir) / "db.sqlite")
+        try:
+            # Bypass record_embed_model's guard to simulate a legacy bad row.
+            conn.execute("INSERT INTO embed_model_meta (id, model) VALUES (1, '')")
+            conn.commit()
+            check_embed_model_drift(conn, "any-live-model")  # must not raise
+        finally:
+            conn.close()
+
+
+def test_record_embed_model_rejects_empty():
+    """record_embed_model refuses empty / whitespace model names."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        conn = vector_store.open_conn(Path(tmpdir) / "db.sqlite")
+        try:
+            with pytest.raises(ValueError, match="non-empty"):
+                record_embed_model(conn, "")
+            with pytest.raises(ValueError, match="non-empty"):
+                record_embed_model(conn, "   ")
+        finally:
+            conn.close()
 
 
 def test_check_embed_model_drift_mismatch_raises():
     """Model mismatch without allow_switch raises EmbedDriftError."""
     with tempfile.TemporaryDirectory() as tmpdir:
         conn = vector_store.open_conn(Path(tmpdir) / "db.sqlite")
-        record_embed_model(conn, "nomic-embed-text")
-        conn.commit()
-        with pytest.raises(EmbedDriftError):
-            check_embed_model_drift(conn, "mxbai-embed-large")
+        try:
+            record_embed_model(conn, "nomic-embed-text")
+            conn.commit()
+            with pytest.raises(EmbedDriftError):
+                check_embed_model_drift(conn, "mxbai-embed-large")
+        finally:
+            conn.close()
 
 
 def test_pad_or_truncate_still_available_for_query_path():

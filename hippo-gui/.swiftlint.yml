@@ -1,0 +1,30 @@
+excluded:
+  - .swiftpm
+  - dist
+  - scripts
+
+disabled_rules:
+  - trailing_whitespace  # swift-format handles whitespace
+
+opt_in_rules:
+  - empty_count
+  - closure_spacing
+  - contains_over_filter_count
+  - first_where
+  - sorted_first_last
+
+line_length:
+  warning: 140
+  error: 200
+
+file_length:
+  warning: 600
+  error: 1000
+
+function_body_length:
+  warning: 60
+  error: 100
+
+type_body_length:
+  warning: 350
+  error: 500

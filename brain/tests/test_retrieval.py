@@ -239,10 +239,13 @@ def _link_entity(conn: sqlite3.Connection, node_id: int, entity_id: int, canonic
 
 
 @pytest.fixture
-def conn() -> sqlite3.Connection:
+def conn():
     c = sqlite3.connect(":memory:")
     c.executescript(SCHEMA)
-    return c
+    try:
+        yield c
+    finally:
+        c.close()
 
 
 # ---------------------------------------------------------------------------

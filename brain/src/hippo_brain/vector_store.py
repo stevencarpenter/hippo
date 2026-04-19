@@ -98,7 +98,13 @@ def record_embed_model(conn: sqlite3.Connection, model: str) -> None:
 
     Called after a successful ``insert_vectors`` so the meta table stays in
     sync with what was actually written to ``knowledge_vectors``.
+
+    Empty / whitespace-only model names are rejected — persisting one bricks
+    the drift guard (every subsequent live model becomes a "mismatch") and
+    has no legitimate caller.
     """
+    if not model or not model.strip():
+        raise ValueError("record_embed_model requires a non-empty model name")
     conn.execute(_SQL_UPSERT_EMBED_MODEL, (model,))
 
 
@@ -110,7 +116,8 @@ def check_embed_model_drift(
 ) -> None:
     """Compare ``live_model`` against the corpus's stored embedding model.
 
-    - Empty corpus (no stored model): no-op — first run, any model is valid.
+    - Empty corpus (no stored model, or a legacy empty-string row): no-op —
+      first run, any model is valid.
     - Models match: no-op.
     - Mismatch, ``allow_switch=False`` (default): raises ``EmbedDriftError``
       and logs an ERROR, refusing writes so stale vectors are never mixed with
@@ -119,7 +126,7 @@ def check_embed_model_drift(
       re-embedding migrations.
     """
     stored = get_stored_embed_model(conn)
-    if stored is None or stored == live_model:
+    if not stored or stored == live_model:
         return
     if allow_switch:
         logger.warning(

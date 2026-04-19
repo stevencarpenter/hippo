@@ -38,10 +38,13 @@ CREATE TABLE IF NOT EXISTS knowledge_nodes (
 def vector_db():
     with tempfile.TemporaryDirectory() as tmpdir:
         conn = open_vector_db(tmpdir)
-        conn.executescript(_SCHEMA_BOOTSTRAP)
-        conn.commit()
-        handle = get_or_create_table(conn)
-        yield conn, handle
+        try:
+            conn.executescript(_SCHEMA_BOOTSTRAP)
+            conn.commit()
+            handle = get_or_create_table(conn)
+            yield conn, handle
+        finally:
+            conn.close()
 
 
 @pytest.fixture

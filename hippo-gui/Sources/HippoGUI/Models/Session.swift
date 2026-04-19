@@ -1,6 +1,6 @@
 import Foundation
 
-struct Session: Identifiable, Codable, Hashable {
+struct Session: Identifiable, Codable, Hashable, Sendable {
     let id: Int
     let startTime: Int
     let hostname: String
@@ -13,7 +13,7 @@ struct Session: Identifiable, Codable, Hashable {
     }
 }
 
-struct SessionListResponse: Codable {
+struct SessionListResponse: Codable, Sendable {
     let sessions: [Session]
     let total: Int
 }
