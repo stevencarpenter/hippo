@@ -279,7 +279,7 @@ run = "uv run --project brain pytest brain/tests -v --cov=hippo_brain --cov-repo
 
 [tasks."gui:test"]
 description = "Run HippoGUI unit tests"
-run = "xcodebuild test -project hippo-gui/HippoGUI.xcodeproj -scheme HippoGUI -destination 'platform=macOS'"
+run = "xcodebuild test -quiet -project hippo-gui/HippoGUI.xcodeproj -scheme HippoGUI -destination 'platform=macOS' -derivedDataPath hippo-gui/build"
 
 # ── Lint ─────────────────────────────────────────────────────────────
 
@@ -811,7 +811,7 @@ run = [
 
 [tasks."gui:build"]
 description = "Build HippoGUI (release)"
-run = "xcodebuild -project hippo-gui/HippoGUI.xcodeproj -scheme HippoGUI -configuration Release build"
+run = "xcodebuild -quiet -project hippo-gui/HippoGUI.xcodeproj -scheme HippoGUI -configuration Release -derivedDataPath hippo-gui/build CONFIGURATION_BUILD_DIR=hippo-gui/build/Release build"
 
 # ── Observability (OTel) ────────────────────────────────────────────
 
