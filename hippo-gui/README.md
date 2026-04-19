@@ -38,6 +38,23 @@ The package includes a `HippoGUITests` target built with Swift Testing.
 
 For rapid iteration, prefer editing library code under `Sources/HippoGUI/` and validating with `swift test`. The native Xcode project only owns a tiny host file plus app metadata/resources.
 
+## mise tasks
+
+From the repo root, HippoGUI is also covered by `mise` tasks:
+
+```bash
+mise run gui:build
+mise run gui:test
+mise run gui:lint
+mise run gui:format
+mise run gui:open
+```
+
+Prerequisites:
+
+- `swiftlint` — `brew install swiftlint`
+- `swift-format` — `brew install swift-format`
+
 ## Release versioning
 
 - `HippoGUI` app bundle versions are stamped by `scripts/stamp-app-version.sh`
