@@ -161,14 +161,12 @@ async fn main() -> Result<()> {
                 daemon::run(config).await?;
             }
             DaemonAction::Install { force, brain_dir: brain_dir_arg } => {
-                let brain_dir = if let Some(arg) = brain_dir_arg {
-                    PathBuf::from(arg)
-                } else {
+                let brain_dir = brain_dir_arg.unwrap_or_else(|| {
                     // Default to ~/.local/share/hippo-brain
                     dirs::home_dir()
                         .expect("cannot determine home directory")
                         .join(".local/share/hippo-brain")
-                };
+                });
 
                 let vars = install::detect_vars(&brain_dir)?;
 

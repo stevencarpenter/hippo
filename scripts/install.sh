@@ -119,17 +119,17 @@ parse_checksum() {
     local filename="$2"
     local checksum
 
-    # Use exact filename match to avoid substring matches
-    checksum="$(grep "^[a-f0-9]* ${filename}$" "${checksums_file}" | awk '{print $1}')"
+    # Use exact filename match; shasum -c format is "<hash>  <filename>" (two spaces)
+    checksum="$(grep "^[a-f0-9][a-f0-9]*[[:space:]][[:space:]]*${filename}$" "${checksums_file}" | awk '{print $1}')"
 
     if [ -z "${checksum}" ]; then
         log_error "Checksum entry not found or ambiguous for: ${filename}"
         exit 1
     fi
 
-    # Verify we got exactly one match (word boundary ensures no substring matches)
+    # Verify we got exactly one match
     local match_count
-    match_count="$(grep -c "^[a-f0-9]* ${filename}$" "${checksums_file}")"
+    match_count="$(grep -c "^[a-f0-9][a-f0-9]*[[:space:]][[:space:]]*${filename}$" "${checksums_file}")"
     if [ "${match_count}" -ne 1 ]; then
         log_error "Ambiguous checksum entry for ${filename} (found ${match_count} matches)"
         exit 1
@@ -219,14 +219,9 @@ install_gui() {
     # Extract the .app from the zip
     unzip -q "${gui_path}" -d "${temp_dir}"
 
-    # Find the .app bundle (BSD/macOS find does not support -maxdepth, use -path with -prune)
+    # Find the .app bundle (BSD/macOS find does not support -maxdepth)
     local app_bundle
-    app_bundle="$(find "${temp_dir}" \( -path "*HippoGUI.app*" -prune \) -o -name "HippoGUI.app" -type d -print | head -n 1)"
-
-    # Fallback: search without depth limit if not found
-    if [ -z "${app_bundle}" ]; then
-        app_bundle="$(find "${temp_dir}" -name "HippoGUI.app" -type d | head -n 1)"
-    fi
+    app_bundle="$(find "${temp_dir}" -name "HippoGUI.app" -type d | head -n 1)"
 
     if [ -z "${app_bundle}" ] || [ ! -d "${app_bundle}" ]; then
         log_warning "HippoGUI.app not found in archive, skipping GUI installation"

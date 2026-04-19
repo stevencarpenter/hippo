@@ -133,7 +133,7 @@ pub enum DaemonAction {
         force: bool,
         /// Path to the brain project directory (defaults to XDG_DATA_HOME/hippo-brain or ~/.local/share/hippo-brain)
         #[arg(long)]
-        brain_dir: Option<String>,
+        brain_dir: Option<std::path::PathBuf>,
     },
 }
 
