@@ -41,7 +41,7 @@ Each release includes:
 | Artifact | Description | Example |
 |----------|-------------|---------|
 | `hippo-darwin-arm64` | Daemon binary for macOS Apple Silicon | `hippo-darwin-arm64` |
-| `hippo-brain-{version}.tar.gz` | Python brain package with all dependencies | `hippo-brain-0.12.0.tar.gz` |
+| `hippo-brain-{version}.tar.gz` | Python brain project (including uv.lock, scripts, and runtime dependencies resolved via `uv` during install) | `hippo-brain-0.12.0.tar.gz` |
 | `HippoGUI-{version}-{build}.zip` | GUI app bundle ready for `/Applications` | `HippoGUI-0.12.0-42.zip` |
 | `SHA256SUMS.txt` | Checksums for all artifacts | Contains SHA-256 hashes |
 | `install.sh` | One-liner installation script | Downloads and verifies all components |
@@ -58,7 +58,7 @@ The release workflow consists of three parallel build jobs and a final release j
 
 ### 2. `build-brain` (macOS runner)
 - Builds the Python brain package using `uv`
-- Creates a tarball with the wheel and source files
+- Creates a tarball with the wheel, source files, `uv.lock` (for reproducible installs), and runtime scripts
 - Generates SHA-256 checksum
 - Uploads artifact for release job
 

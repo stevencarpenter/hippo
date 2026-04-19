@@ -47,8 +47,12 @@ detect_platform() {
     fi
 
     case "${arch}" in
-        x86_64|arm64|aarch64)
-            echo "${arch}"
+        x86_64)
+            echo "x86_64"
+            ;;
+        arm64|aarch64)
+            # Normalize both to 'arm64' to match Rust's aarch64-apple-darwin build artifact naming
+            echo "arm64"
             ;;
         *)
             log_error "Unsupported architecture: ${arch}"
@@ -113,8 +117,25 @@ verify_checksum() {
 parse_checksum() {
     local checksums_file="$1"
     local filename="$2"
+    local checksum
 
-    grep "${filename}" "${checksums_file}" | awk '{print $1}'
+    # Use exact filename match to avoid substring matches
+    checksum="$(grep "^[a-f0-9]* ${filename}$" "${checksums_file}" | awk '{print $1}')"
+
+    if [ -z "${checksum}" ]; then
+        log_error "Checksum entry not found or ambiguous for: ${filename}"
+        exit 1
+    fi
+
+    # Verify we got exactly one match (word boundary ensures no substring matches)
+    local match_count
+    match_count="$(grep -c "^[a-f0-9]* ${filename}$" "${checksums_file}")"
+    if [ "${match_count}" -ne 1 ]; then
+        log_error "Ambiguous checksum entry for ${filename} (found ${match_count} matches)"
+        exit 1
+    fi
+
+    echo "${checksum}"
 }
 
 # Install daemon binary
@@ -129,12 +150,9 @@ install_daemon() {
 
     download_file "${tag}" "${daemon_filename}" "${daemon_path}"
 
-    local expected_checksum="$(parse_checksum "${checksums_file}" "${daemon_filename}")"
-    if [ -n "${expected_checksum}" ]; then
-        verify_checksum "${daemon_path}" "${expected_checksum}"
-    else
-        log_warning "No checksum found for ${daemon_filename}, skipping verification"
-    fi
+    local expected_checksum
+    expected_checksum="$(parse_checksum "${checksums_file}" "${daemon_filename}")"
+    verify_checksum "${daemon_path}" "${expected_checksum}"
 
     log_info "Installing daemon to ${BIN_DIR}/hippo..."
     mkdir -p "${BIN_DIR}"
@@ -156,12 +174,9 @@ install_brain() {
 
     download_file "${tag}" "${brain_filename}" "${brain_path}"
 
-    local expected_checksum="$(parse_checksum "${checksums_file}" "${brain_filename}")"
-    if [ -n "${expected_checksum}" ]; then
-        verify_checksum "${brain_path}" "${expected_checksum}"
-    else
-        log_warning "No checksum found for ${brain_filename}, skipping verification"
-    fi
+    local expected_checksum
+    expected_checksum="$(parse_checksum "${checksums_file}" "${brain_filename}")"
+    verify_checksum "${brain_path}" "${expected_checksum}"
 
     log_info "Installing brain to ${BRAIN_DIR}..."
     mkdir -p "$(dirname "${BRAIN_DIR}")"
@@ -195,20 +210,23 @@ install_gui() {
 
     download_file "${tag}" "${gui_filename}" "${gui_path}"
 
-    local expected_checksum="$(parse_checksum "${checksums_file}" "${gui_filename}")"
-    if [ -n "${expected_checksum}" ]; then
-        verify_checksum "${gui_path}" "${expected_checksum}"
-    else
-        log_warning "No checksum found for ${gui_filename}, skipping verification"
-    fi
+    local expected_checksum
+    expected_checksum="$(parse_checksum "${checksums_file}" "${gui_filename}")"
+    verify_checksum "${gui_path}" "${expected_checksum}"
 
     log_info "Installing HippoGUI to /Applications..."
 
     # Extract the .app from the zip
     unzip -q "${gui_path}" -d "${temp_dir}"
 
-    # Find the .app bundle
-    local app_bundle="$(find "${temp_dir}" -name "HippoGUI.app" -type d -maxdepth 2 | head -n 1)"
+    # Find the .app bundle (BSD/macOS find does not support -maxdepth, use -path with -prune)
+    local app_bundle
+    app_bundle="$(find "${temp_dir}" \( -path "*HippoGUI.app*" -prune \) -o -name "HippoGUI.app" -type d -print | head -n 1)"
+
+    # Fallback: search without depth limit if not found
+    if [ -z "${app_bundle}" ]; then
+        app_bundle="$(find "${temp_dir}" -name "HippoGUI.app" -type d | head -n 1)"
+    fi
 
     if [ -z "${app_bundle}" ] || [ ! -d "${app_bundle}" ]; then
         log_warning "HippoGUI.app not found in archive, skipping GUI installation"
@@ -247,9 +265,9 @@ install_services() {
     log_info "Installing LaunchAgents..."
 
     if [ -x "${BIN_DIR}/hippo" ]; then
-        "${BIN_DIR}/hippo" daemon install --force || {
+        "${BIN_DIR}/hippo" daemon install --force --brain-dir "${BRAIN_DIR}" || {
             log_warning "Failed to install LaunchAgents automatically"
-            log_info "You can install them manually later with: hippo daemon install"
+            log_info "You can install them manually later with: hippo daemon install --brain-dir '${BRAIN_DIR}'"
         }
     fi
 

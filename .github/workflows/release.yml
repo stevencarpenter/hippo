@@ -55,8 +55,8 @@ jobs:
       - name: Prepare artifact
         id: artifact
         run: |
-          ARCH="$(uname -m)"
-          ARTIFACT_NAME="hippo-darwin-${ARCH}"
+          # Derive artifact name from build target, not runner arch, to avoid mismatches when runner arch differs from built arch
+          ARTIFACT_NAME="hippo-darwin-arm64"
           cp target/aarch64-apple-darwin/release/hippo "${ARTIFACT_NAME}"
           chmod +x "${ARTIFACT_NAME}"
           echo "name=${ARTIFACT_NAME}" >> "${GITHUB_OUTPUT}"
@@ -120,10 +120,14 @@ jobs:
           # Copy source files needed for installation
           cp -r brain/src hippo-brain-release/brain/
           cp brain/pyproject.toml hippo-brain-release/brain/
+          cp brain/uv.lock hippo-brain-release/brain/
           cp brain/README.md hippo-brain-release/brain/ 2>/dev/null || true
 
+          # Copy runtime scripts used by installed LaunchAgents
+          cp -r scripts hippo-brain-release/
+
           # Create the tarball
-          tar -czf "${ARTIFACT_NAME}" -C hippo-brain-release brain
+          tar -czf "${ARTIFACT_NAME}" -C hippo-brain-release brain scripts
 
           echo "name=${ARTIFACT_NAME}" >> "${GITHUB_OUTPUT}"
           echo "Artifact: ${ARTIFACT_NAME}"
@@ -172,11 +176,6 @@ jobs:
           echo "HIPPO_BUILD_NUMBER=${GITHUB_RUN_NUMBER}" >> "${GITHUB_ENV}"
 
       - name: Build GUI app
-        run: |
-          cd hippo-gui
-          ./scripts/release-gui.sh release
-
-      - name: Extract artifact info
         id: artifact
         run: |
           cd hippo-gui
@@ -271,7 +270,7 @@ jobs:
 
           1. Download the appropriate artifacts for your system
           2. Verify checksums against \`SHA256SUMS.txt\`
-          3. Follow the installation instructions in the [README](https://github.com/stevencarpenter/hippo#quick-start)
+          3. Follow the installation instructions in the [README](https://github.com/stevencarpenter/hippo#manual-installation)
 
           ## Artifacts
 
@@ -297,14 +296,26 @@ jobs:
 
           echo "Release notes prepared"
 
-      - name: Create GitHub Release
+      - name: Create or update GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "${{ github.ref_name }}" \
-            --title "Release ${{ github.ref_name }}" \
-            --notes-file release-notes.md \
-            release-files/*
+          if gh release view "${{ github.ref_name }}" >/dev/null 2>&1; then
+            # Release exists; update its notes and re-upload artifacts with --clobber
+            gh release edit "${{ github.ref_name }}" \
+              --title "Release ${{ github.ref_name }}" \
+              --notes-file release-notes.md
+
+            gh release upload "${{ github.ref_name }}" \
+              release-files/* \
+              --clobber
+          else
+            # Release doesn't exist; create it
+            gh release create "${{ github.ref_name }}" \
+              --title "Release ${{ github.ref_name }}" \
+              --notes-file release-notes.md \
+              release-files/*
+          fi
 
       - name: Release summary
         run: |

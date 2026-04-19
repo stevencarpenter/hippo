@@ -131,6 +131,9 @@ pub enum DaemonAction {
         /// Overwrite existing plist files
         #[arg(long)]
         force: bool,
+        /// Path to the brain project directory (defaults to XDG_DATA_HOME/hippo-brain or ~/.local/share/hippo-brain)
+        #[arg(long)]
+        brain_dir: Option<String>,
     },
 }
 
