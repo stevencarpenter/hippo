@@ -8,7 +8,7 @@ rust = "1.95"
 # ── Build ────────────────────────────────────────────────────────────
 
 [tasks.build]
-description = "Build all Rust crates (debug) and HippoGUI"
+description = "Build all Rust crates and HippoGUI"
 depends = ["gui:build"]
 run = "cargo build"
 
@@ -212,7 +212,7 @@ echo "Stamped brain version: ${FULL_VERSION}"
 # ── Test ─────────────────────────────────────────────────────────────
 
 [tasks.test]
-description = "Run all tests (Rust unit + integration + Python) with lint and format checks"
+description = "Run all tests (Rust unit + integration + Python + GUI)"
 depends = ["gui:test"]
 run = """
 #!/usr/bin/env bash
@@ -279,7 +279,7 @@ run = "uv run --project brain pytest brain/tests -v --cov=hippo_brain --cov-repo
 
 [tasks."gui:test"]
 description = "Run HippoGUI unit tests"
-run = "xcodebuild test -quiet -project hippo-gui/HippoGUI.xcodeproj -scheme HippoGUI -destination 'platform=macOS' -derivedDataPath hippo-gui/build"
+run = "swift test --package-path hippo-gui"
 
 # ── Lint ─────────────────────────────────────────────────────────────
 
@@ -297,7 +297,7 @@ run = "uv run --project brain ruff check brain/"
 
 [tasks."gui:lint"]
 description = "Lint Swift sources with SwiftLint"
-run = "swiftlint lint hippo-gui/Sources"
+run = "swiftlint lint --config hippo-gui/.swiftlint.yml --path hippo-gui/Sources"
 
 # ── Fix (auto-correct lint + format) ────────────────────────────────
 
@@ -335,7 +335,7 @@ run = "uv run --project brain ruff format brain/"
 
 [tasks."gui:format"]
 description = "Format Swift sources with swift-format"
-run = "swift-format format -r -i hippo-gui/Sources"
+run = "swift-format format --configuration hippo-gui/.swift-format -r -i hippo-gui/Sources"
 
 [tasks."fmt:sql"]
 description = "Format SQL files with sqlfluff"
