@@ -44,6 +44,18 @@ local LLMs.
     uv run --project brain ruff check brain/
     uv run --project brain ruff format --check brain/
 
+### Swift (hippo-gui)
+
+    mise run gui:build
+    mise run gui:test
+    mise run gui:lint
+    mise run gui:format
+    mise run gui:open
+
+    # Tool prerequisites
+    brew install swiftlint
+    brew install swift-format
+
 ### MCP Server
 
     uv run --project brain hippo-mcp    # Start MCP server (stdio transport)
