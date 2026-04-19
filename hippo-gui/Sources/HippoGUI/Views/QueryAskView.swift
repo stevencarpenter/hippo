@@ -157,6 +157,7 @@ struct QueryAskView: View {
                 Text(summary)
                     .font(.body)
                     .multilineTextAlignment(.leading)
+                    .textSelection(.enabled)
                 Spacer(minLength: 8)
                 if let score {
                     Text(score.formatted(.number.precision(.fractionLength(2))))
@@ -170,6 +171,7 @@ struct QueryAskView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(2)
+                    .textSelection(.enabled)
             }
 
             extraContent()
@@ -177,7 +179,6 @@ struct QueryAskView: View {
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(.quaternary, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-        .textSelection(.enabled)
     }
 }
 
