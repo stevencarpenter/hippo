@@ -160,13 +160,16 @@ async fn main() -> Result<()> {
                 tracing::info!("starting daemon...");
                 daemon::run(config).await?;
             }
-            DaemonAction::Install { force } => {
-                let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-                let project_root = manifest_dir
-                    .parent()
-                    .and_then(|p| p.parent())
-                    .expect("cannot determine project root");
-                let brain_dir = project_root.join("brain");
+            DaemonAction::Install {
+                force,
+                brain_dir: brain_dir_arg,
+            } => {
+                let brain_dir = brain_dir_arg.unwrap_or_else(|| {
+                    // Default to ~/.local/share/hippo-brain
+                    dirs::home_dir()
+                        .expect("cannot determine home directory")
+                        .join(".local/share/hippo-brain")
+                });
 
                 let vars = install::detect_vars(&brain_dir)?;
 
