@@ -43,7 +43,7 @@ For rapid iteration, prefer editing library code under `Sources/HippoGUI/` and v
 - `HippoGUI` app bundle versions are stamped by `scripts/stamp-app-version.sh`
 - `CFBundleShortVersionString` is resolved with the following precedence:
   1. `HIPPO_MARKETING_VERSION` environment variable, if set
-  2. `hippo-gui/VERSION` file, if present (this PR adds it; `0.2.0` initially)
+  2. `hippo-gui/VERSION` file, if present (this PR adds it; `0.1.0` initially)
   3. The repo-wide version in `Cargo.toml` under `[workspace.package].version`
 - `CFBundleVersion` comes from `HIPPO_BUILD_NUMBER`, then `BUILD_NUMBER`, then the current git commit count
 - The same stamping flow is used by both `HippoGUI.xcodeproj` and `./scripts/build-native-app.sh`
