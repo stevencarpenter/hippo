@@ -12,7 +12,20 @@ struct DaemonSocketClient: Sendable {
         self.socketURL = socketURL
     }
 
-    func isResponsive(timeout: TimeInterval = 1) -> Bool {
+    /// Check whether the daemon socket is reachable.
+    ///
+    /// Internally dispatches the blocking `connect(2)` to a detached task so
+    /// callers on the main actor (e.g. SwiftUI view models) never block the UI.
+    func isResponsive(timeout: TimeInterval = 1) async -> Bool {
+        let captured = self
+        return await Task.detached(priority: .userInitiated) {
+            captured.isResponsiveBlocking(timeout: timeout)
+        }.value
+    }
+
+    /// Blocking implementation — do NOT call from the main actor.
+    /// Kept internal so tests can exercise it synchronously if needed.
+    func isResponsiveBlocking(timeout: TimeInterval = 1) -> Bool {
         guard FileManager.default.fileExists(atPath: socketURL.path) else {
             return false
         }

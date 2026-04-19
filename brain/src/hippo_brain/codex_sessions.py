@@ -13,6 +13,7 @@ Format: newline-delimited JSON with typed payloads:
 """
 
 import json
+import re
 import time
 from dataclasses import dataclass
 from datetime import datetime
@@ -23,6 +24,15 @@ from hippo_brain.claude_sessions import SessionSegment
 # 5-minute gap between user prompts = task boundary
 TASK_GAP_MS = 5 * 60 * 1000
 
+# Skip files still being written: require this much idle time since last mtime
+# before we'll ingest them. Prevents partial reads of active sessions.
+DEFAULT_MIN_IDLE_SECONDS = 60
+
+_XCODE_STATUS_PATTERN = re.compile(
+    r"The user (?:has (?:no )?(?:code selected|file currently open)|is currently inside this file:[^\n]*)\.?\n",
+    re.IGNORECASE,
+)
+
 
 @dataclass
 class CodexSessionFile:
@@ -31,8 +41,17 @@ class CodexSessionFile:
     project_dir: str  # slug (cwd basename or filename stem)
 
 
-def iter_codex_session_files(codex_dir: Path) -> list[CodexSessionFile]:
-    """Discover all Codex session JSONL files."""
+def iter_codex_session_files(
+    codex_dir: Path,
+    min_idle_seconds: float = DEFAULT_MIN_IDLE_SECONDS,
+) -> list[CodexSessionFile]:
+    """Discover all Codex session JSONL files.
+
+    Files modified within ``min_idle_seconds`` are skipped — they may still be
+    in flight and partial reads would freeze segments at the first observed
+    state (insert_segment dedups on segment_index and would reject later,
+    fuller versions).
+    """
     results = []
     if not codex_dir.is_dir():
         return results
@@ -41,7 +60,16 @@ def iter_codex_session_files(codex_dir: Path) -> list[CodexSessionFile]:
     if not sessions_dir.is_dir():
         return results
 
+    cutoff = time.time() - min_idle_seconds if min_idle_seconds > 0 else None
+
     for jsonl in sorted(sessions_dir.rglob("*.jsonl")):
+        if cutoff is not None:
+            try:
+                if jsonl.stat().st_mtime > cutoff:
+                    continue
+            except OSError:
+                continue
+
         # Peek at session_meta to get the canonical session ID and cwd
         session_id = jsonl.stem  # fallback: filename without extension
         project_dir = jsonl.stem
@@ -189,6 +217,7 @@ def extract_codex_segments(
                         start_time=ts or int(time.time() * 1000),
                         end_time=ts or int(time.time() * 1000),
                         source_file=str(session_file.path),
+                        source="codex",
                     )
 
                 if ts > 0:
@@ -254,25 +283,19 @@ def _extract_user_text_from_codex_message(message: str) -> str:
 
     The actual user text follows the last Xcode status line.
     """
-    import re
-
     # Strip "The user has [no] code selected.\n" and similar Xcode status lines
     # then take whatever follows as the actual user text
-    pattern = re.compile(
-        r"The user (?:has (?:no )?(?:code selected|file currently open)|is currently inside this file:[^\n]*)\.?\n",
-        re.IGNORECASE,
-    )
-    matches = list(pattern.finditer(message))
+    matches = list(_XCODE_STATUS_PATTERN.finditer(message))
     if matches:
         last_match = matches[-1]
-        candidate = message[last_match.end():].strip()
+        candidate = message[last_match.end() :].strip()
         if candidate:
             return candidate[:500]
 
     # Fallback: last paragraph after a blank line
     idx = message.rfind("\n\n")
     if idx != -1:
-        candidate = message[idx + 2:].strip()
+        candidate = message[idx + 2 :].strip()
         if candidate and not candidate.startswith("Project structure:"):
             return candidate[:500]
 

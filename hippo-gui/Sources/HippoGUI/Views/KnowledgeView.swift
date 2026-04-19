@@ -306,6 +306,7 @@ private struct ParsedKnowledgeContent {
     }
 }
 
+#if DEBUG
 #Preview {
     let nodeList = KnowledgeListResponse(
         nodes: [
@@ -323,9 +324,10 @@ private struct ParsedKnowledgeContent {
 
     KnowledgeView()
         .brainClient(
-            MockBrainClient(
+            PreviewBrainClient(
                 knowledgeResponse: .success(nodeList),
                 knowledgeDetails: [1: .success(nodeList.nodes[0])]
             )
         )
 }
+#endif

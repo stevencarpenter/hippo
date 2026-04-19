@@ -257,6 +257,7 @@ struct EventBrowserView: View {
     }
 }
 
+#if DEBUG
 #Preview {
     let sessions = SessionListResponse(
         sessions: [
@@ -274,9 +275,10 @@ struct EventBrowserView: View {
 
     EventBrowserView()
         .brainClient(
-            MockBrainClient(
+            PreviewBrainClient(
                 eventResponse: .success(events),
                 sessionResponse: .success(sessions)
             )
         )
 }
+#endif

@@ -197,6 +197,31 @@ def test_check_embed_model_drift_match():
         check_embed_model_drift(conn, "nomic-embed-text")  # must not raise
 
 
+def test_check_embed_model_drift_empty_string_stored_is_noop():
+    """Legacy row with model='' must be treated as empty corpus, not a mismatch.
+
+    A row with an empty-string model used to brick all writes: every live
+    model name mismatched '' and raised EmbedDriftError. The guard now
+    treats falsy stored values the same as a missing row.
+    """
+    with tempfile.TemporaryDirectory() as tmpdir:
+        conn = vector_store.open_conn(Path(tmpdir) / "db.sqlite")
+        # Bypass record_embed_model's guard to simulate a legacy bad row.
+        conn.execute("INSERT INTO embed_model_meta (id, model) VALUES (1, '')")
+        conn.commit()
+        check_embed_model_drift(conn, "any-live-model")  # must not raise
+
+
+def test_record_embed_model_rejects_empty():
+    """record_embed_model refuses empty / whitespace model names."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        conn = vector_store.open_conn(Path(tmpdir) / "db.sqlite")
+        with pytest.raises(ValueError, match="non-empty"):
+            record_embed_model(conn, "")
+        with pytest.raises(ValueError, match="non-empty"):
+            record_embed_model(conn, "   ")
+
+
 def test_check_embed_model_drift_mismatch_raises():
     """Model mismatch without allow_switch raises EmbedDriftError."""
     with tempfile.TemporaryDirectory() as tmpdir:

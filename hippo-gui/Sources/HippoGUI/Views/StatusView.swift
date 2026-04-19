@@ -141,7 +141,9 @@ struct StatusView: View {
     }
 }
 
+#if DEBUG
 #Preview {
     StatusView()
-        .brainClient(MockBrainClient(healthResponse: .success(.preview)))
+        .brainClient(PreviewBrainClient(healthResponse: .success(.preview)))
 }
+#endif

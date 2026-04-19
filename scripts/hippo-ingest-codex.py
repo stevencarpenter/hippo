@@ -21,6 +21,15 @@ def main():
         default="",
         help="Override Codex data directory (default: ~/Library/Developer/Xcode/CodingAssistant/codex)",
     )
+    parser.add_argument(
+        "--min-idle-seconds",
+        type=float,
+        default=None,
+        help=(
+            "Skip files modified within this many seconds. Prevents partial "
+            "reads of in-flight sessions (default: module default, ~60s)."
+        ),
+    )
     args = parser.parse_args()
 
     config_path = Path.home() / ".config" / "hippo" / "config.toml"
@@ -48,7 +57,8 @@ def main():
         print(f"Error: Codex directory not found at {codex_dir}")
         sys.exit(1)
 
-    session_files = iter_codex_session_files(codex_dir)
+    idle_kwargs = {} if args.min_idle_seconds is None else {"min_idle_seconds": args.min_idle_seconds}
+    session_files = iter_codex_session_files(codex_dir, **idle_kwargs)
     if not session_files:
         print("No Codex session files found.")
         return

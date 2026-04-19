@@ -72,6 +72,9 @@ class SessionSegment:
     source_file: str = ""
     is_subagent: bool = False
     parent_session_id: str | None = None
+    # Segment origin. "claude" (default) or "codex". Drives enrichment-prompt
+    # selection in insert_segment so Codex sessions don't get framed as Claude.
+    source: str = "claude"
 
 
 def iter_session_files(claude_projects_dir: Path) -> list[SessionFile]:
@@ -425,7 +428,12 @@ def ensure_claude_tables(conn) -> None:
 
 def insert_segment(conn, segment: SessionSegment) -> int | None:
     """Insert a session segment and queue it for enrichment. Returns segment id or None if duplicate."""
-    summary_text = build_claude_enrichment_prompt([segment])
+    if segment.source == "codex":
+        from hippo_brain.codex_sessions import build_codex_enrichment_summary
+
+        summary_text = build_codex_enrichment_summary([segment])
+    else:
+        summary_text = build_claude_enrichment_prompt([segment])
     tool_calls_json = json.dumps(segment.tool_calls)
     user_prompts_json = json.dumps(segment.user_prompts)
     now_ms = int(time.time() * 1000)

@@ -57,3 +57,30 @@ struct HealthResponse: Codable, Hashable, Sendable {
         queueFailed + claudeQueueFailed + browserQueueFailed + workflowQueueFailed
     }
 }
+
+#if DEBUG
+extension HealthResponse {
+    static let preview = HealthResponse(
+        status: "ok",
+        version: "preview",
+        lmstudioReachable: true,
+        enrichmentRunning: true,
+        dbReachable: true,
+        queueDepth: 3,
+        queueFailed: 1,
+        claudeQueueDepth: 2,
+        claudeQueueFailed: 0,
+        browserQueueDepth: 1,
+        browserQueueFailed: 0,
+        workflowQueueDepth: 0,
+        workflowQueueFailed: 0,
+        enrichmentModel: "qwen-preview",
+        enrichmentModelPreferred: "qwen-preview",
+        queryInflight: nil,
+        embedModelDrift: nil,
+        lastSuccessAtMs: 1_713_404_800_000,
+        lastError: nil,
+        lastErrorAtMs: nil
+    )
+}
+#endif

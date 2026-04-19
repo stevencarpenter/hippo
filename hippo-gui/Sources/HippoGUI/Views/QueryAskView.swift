@@ -179,10 +179,11 @@ struct QueryAskView: View {
     }
 }
 
+#if DEBUG
 #Preview {
     QueryAskView()
         .brainClient(
-            MockBrainClient(
+            PreviewBrainClient(
                 askResponse: .success(
                     AskResponse(
                         answer: "You ran `cargo test` and resolved a failing snapshot.",
@@ -213,3 +214,4 @@ struct QueryAskView: View {
             )
         )
 }
+#endif
