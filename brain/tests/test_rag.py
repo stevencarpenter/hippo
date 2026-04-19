@@ -106,10 +106,17 @@ class TestShapeRagSources:
         assert len(sources) == 1
         assert sources[0]["summary"] == "good"
 
-    def test_caps_at_five_sources(self):
-        hits = [{"_distance": 0.1, "summary": f"hit {i}"} for i in range(10)]
+    def test_caps_at_default_limit(self):
+        from hippo_brain.rag import DEFAULT_SOURCES_LIMIT
+
+        hits = [{"_distance": 0.1, "summary": f"hit {i}"} for i in range(DEFAULT_SOURCES_LIMIT + 5)]
         sources = _shape_rag_sources(hits)
-        assert len(sources) == 5
+        assert len(sources) == DEFAULT_SOURCES_LIMIT
+
+    def test_respects_explicit_limit(self):
+        hits = [{"_distance": 0.1, "summary": f"hit {i}"} for i in range(10)]
+        sources = _shape_rag_sources(hits, limit=3)
+        assert len(sources) == 3
 
 
 class TestBuildRagPrompt:
@@ -490,21 +497,46 @@ class TestFilteredRetrievalRouting:
         assert retrieval_mock.call_args.kwargs["mode"] == "semantic"
 
     @pytest.mark.asyncio
-    async def test_no_filters_uses_legacy_search_similar(self):
-        """Backward-compat: with no filters set, legacy search_similar is called."""
+    async def test_no_filters_with_non_sqlite_handle_uses_legacy(self):
+        """Backward-compat: if the handle isn't a sqlite3.Connection, fall back to legacy."""
         client = _healthy_client(chat_return="legacy")
         table = MagicMock(name="lancedb_table")
 
         with (
-            patch("hippo_brain.rag.retrieval_search") as retrieval_mock,
+            patch("hippo_brain.rag.retrieval_search") as rs_mock,
             patch("hippo_brain.rag.search_similar", return_value=SAMPLE_HITS) as legacy_mock,
         ):
             result = await ask("q", client, table, "m", "e")
 
         assert result["answer"] == "legacy"
-        retrieval_mock.assert_not_called()
+        rs_mock.assert_not_called()
         legacy_mock.assert_called_once()
         assert legacy_mock.call_args.args[0] is table
+
+    @pytest.mark.asyncio
+    async def test_no_filters_with_sqlite_conn_uses_hybrid(self):
+        """Issue #28 fix: vanilla ask with a real sqlite3.Connection must route
+        through retrieval.search (hybrid RRF + MMR) so diverse nodes surface
+        even when no filters are supplied. Prior behavior was pure-semantic KNN,
+        which biased toward a single cluster for broad questions.
+        """
+        import sqlite3
+
+        client = _healthy_client(chat_return="hybrid")
+        conn = sqlite3.connect(":memory:")
+
+        with (
+            patch("hippo_brain.rag.retrieval_search") as rs_mock,
+            patch("hippo_brain.rag.search_similar") as legacy_mock,
+        ):
+            rs_mock.return_value = [_fake_search_result()]
+            result = await ask("q", client, conn, "m", "e")
+
+        assert result["answer"] == "hybrid"
+        legacy_mock.assert_not_called()
+        rs_mock.assert_called_once()
+        assert rs_mock.call_args.kwargs["filters"] is None
+        assert rs_mock.call_args.kwargs["mode"] == "hybrid"
 
     @pytest.mark.asyncio
     async def test_filters_path_surfaces_uuid_and_linked_events_in_sources(self):
