@@ -9,6 +9,14 @@ Local knowledge capture daemon for macOS. Hippo watches your shell activity, Cla
 and Firefox browsing, redacts secrets, enriches events with local LLMs, and builds a searchable
 second brain -- all without sending data off your machine.
 
+## Quick Install
+
+```bash
+curl -fsSL https://github.com/stevencarpenter/hippo/releases/latest/download/install.sh | bash
+```
+
+This one-liner downloads and installs the daemon, brain, and GUI app with checksum verification. See [Manual Installation](#manual-installation) below for a step-by-step approach.
+
 ## Architecture
 
 ```
@@ -48,7 +56,7 @@ second brain -- all without sending data off your machine.
 | [glow](https://github.com/charmbracelet/glow) | Recommended | Renders `hippo ask` markdown output in the terminal |
 | [Firefox Dev Edition](https://www.mozilla.org/en-US/firefox/developer/) | Optional | Browser activity capture |
 
-## Quick Start
+## Manual Installation
 
 ```bash
 # Clone or fork hippo and enter the repo

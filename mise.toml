@@ -297,7 +297,7 @@ run = "uv run --project brain ruff check brain/"
 
 [tasks."gui:lint"]
 description = "Lint Swift sources with SwiftLint"
-run = "swiftlint lint --config hippo-gui/.swiftlint.yml --path hippo-gui/Sources"
+run = "swiftlint lint --config hippo-gui/.swiftlint.yml hippo-gui/Sources"
 
 # ── Fix (auto-correct lint + format) ────────────────────────────────
 
