@@ -1,0 +1,321 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  CARGO_NET_RETRY: 10
+  RUST_BACKTRACE: short
+  RUSTUP_MAX_RETRIES: 10
+
+jobs:
+  build-daemon:
+    name: Build Daemon Binary
+    runs-on: macos-latest
+    timeout-minutes: 30
+    outputs:
+      artifact_name: ${{ steps.artifact.outputs.name }}
+      checksum: ${{ steps.checksum.outputs.checksum }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+
+      - name: Setup Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: release-daemon-${{ github.ref_name }}
+          cache-on-failure: false
+
+      - name: Extract version from tag
+        id: version
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          echo "version=${VERSION}" >> "${GITHUB_OUTPUT}"
+          echo "Version: ${VERSION}"
+
+      - name: Build daemon binary (aarch64)
+        run: |
+          cargo build --release --target aarch64-apple-darwin --bin hippo --locked
+
+      - name: Strip binary
+        run: |
+          strip target/aarch64-apple-darwin/release/hippo
+
+      - name: Prepare artifact
+        id: artifact
+        run: |
+          ARCH="$(uname -m)"
+          ARTIFACT_NAME="hippo-darwin-${ARCH}"
+          cp target/aarch64-apple-darwin/release/hippo "${ARTIFACT_NAME}"
+          chmod +x "${ARTIFACT_NAME}"
+          echo "name=${ARTIFACT_NAME}" >> "${GITHUB_OUTPUT}"
+          echo "Artifact: ${ARTIFACT_NAME}"
+
+      - name: Generate checksum
+        id: checksum
+        run: |
+          ARTIFACT_NAME="${{ steps.artifact.outputs.name }}"
+          CHECKSUM="$(shasum -a 256 "${ARTIFACT_NAME}" | awk '{print $1}')"
+          echo "checksum=${CHECKSUM}" >> "${GITHUB_OUTPUT}"
+          echo "Checksum: ${CHECKSUM}"
+
+      - name: Upload daemon artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: daemon-binary
+          path: ${{ steps.artifact.outputs.name }}
+          if-no-files-found: error
+          retention-days: 7
+
+  build-brain:
+    name: Build Brain Package
+    runs-on: macos-latest
+    timeout-minutes: 20
+    outputs:
+      artifact_name: ${{ steps.artifact.outputs.name }}
+      checksum: ${{ steps.checksum.outputs.checksum }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          version: "latest"
+
+      - name: Extract version from tag
+        id: version
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          echo "version=${VERSION}" >> "${GITHUB_OUTPUT}"
+          echo "Version: ${VERSION}"
+
+      - name: Build brain package
+        run: |
+          cd brain
+          uv build
+
+      - name: Create brain tarball
+        id: artifact
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          ARTIFACT_NAME="hippo-brain-${VERSION}.tar.gz"
+
+          # Create a temporary directory with all necessary files
+          mkdir -p hippo-brain-release/brain
+
+          # Copy the built wheel and source distribution
+          cp -r brain/dist hippo-brain-release/brain/
+
+          # Copy source files needed for installation
+          cp -r brain/src hippo-brain-release/brain/
+          cp brain/pyproject.toml hippo-brain-release/brain/
+          cp brain/README.md hippo-brain-release/brain/ 2>/dev/null || true
+
+          # Create the tarball
+          tar -czf "${ARTIFACT_NAME}" -C hippo-brain-release brain
+
+          echo "name=${ARTIFACT_NAME}" >> "${GITHUB_OUTPUT}"
+          echo "Artifact: ${ARTIFACT_NAME}"
+
+      - name: Generate checksum
+        id: checksum
+        run: |
+          ARTIFACT_NAME="${{ steps.artifact.outputs.name }}"
+          CHECKSUM="$(shasum -a 256 "${ARTIFACT_NAME}" | awk '{print $1}')"
+          echo "checksum=${CHECKSUM}" >> "${GITHUB_OUTPUT}"
+          echo "Checksum: ${CHECKSUM}"
+
+      - name: Upload brain artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: brain-package
+          path: ${{ steps.artifact.outputs.name }}
+          if-no-files-found: error
+          retention-days: 7
+
+  build-gui:
+    name: Build GUI Application
+    runs-on: macos-latest
+    timeout-minutes: 30
+    outputs:
+      artifact_name: ${{ steps.artifact.outputs.name }}
+      checksum: ${{ steps.checksum.outputs.checksum }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup Xcode
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+
+      - name: Extract version from tag
+        id: version
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          echo "version=${VERSION}" >> "${GITHUB_OUTPUT}"
+          echo "Version: ${VERSION}"
+
+      - name: Set version environment
+        run: |
+          echo "HIPPO_MARKETING_VERSION=${{ steps.version.outputs.version }}" >> "${GITHUB_ENV}"
+          echo "HIPPO_BUILD_NUMBER=${GITHUB_RUN_NUMBER}" >> "${GITHUB_ENV}"
+
+      - name: Build GUI app
+        run: |
+          cd hippo-gui
+          ./scripts/release-gui.sh release
+
+      - name: Extract artifact info
+        id: artifact
+        run: |
+          cd hippo-gui
+          RELEASE_JSON="$(./scripts/release-gui.sh release --json)"
+          ARCHIVE_PATH="$(echo "${RELEASE_JSON}" | python3 -c 'import sys, json; print(json.load(sys.stdin)["archive_path"])')"
+          ARTIFACT_NAME="$(basename "${ARCHIVE_PATH}")"
+          echo "name=${ARTIFACT_NAME}" >> "${GITHUB_OUTPUT}"
+          echo "path=${ARCHIVE_PATH}" >> "${GITHUB_OUTPUT}"
+          echo "Artifact: ${ARTIFACT_NAME}"
+
+      - name: Generate checksum
+        id: checksum
+        run: |
+          ARCHIVE_PATH="${{ steps.artifact.outputs.path }}"
+          CHECKSUM="$(shasum -a 256 "${ARCHIVE_PATH}" | awk '{print $1}')"
+          echo "checksum=${CHECKSUM}" >> "${GITHUB_OUTPUT}"
+          echo "Checksum: ${CHECKSUM}"
+
+      - name: Upload GUI artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: gui-app
+          path: ${{ steps.artifact.outputs.path }}
+          if-no-files-found: error
+          retention-days: 7
+
+  release:
+    name: Create Release
+    needs: [build-daemon, build-brain, build-gui]
+    runs-on: macos-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: List downloaded artifacts
+        run: |
+          echo "Downloaded artifacts:"
+          find artifacts -type f -ls
+
+      - name: Prepare release files
+        id: prepare
+        run: |
+          mkdir -p release-files
+
+          # Move artifacts to release directory
+          mv artifacts/daemon-binary/${{ needs.build-daemon.outputs.artifact_name }} release-files/
+          mv artifacts/brain-package/${{ needs.build-brain.outputs.artifact_name }} release-files/
+          mv artifacts/gui-app/${{ needs.build-gui.outputs.artifact_name }} release-files/
+
+          # Copy install script
+          cp scripts/install.sh release-files/install.sh
+
+          echo "Release files prepared:"
+          ls -lh release-files/
+
+      - name: Generate checksums file
+        run: |
+          cd release-files
+          {
+            echo "${{ needs.build-daemon.outputs.checksum }}  ${{ needs.build-daemon.outputs.artifact_name }}"
+            echo "${{ needs.build-brain.outputs.checksum }}  ${{ needs.build-brain.outputs.artifact_name }}"
+            echo "${{ needs.build-gui.outputs.checksum }}  ${{ needs.build-gui.outputs.artifact_name }}"
+          } > SHA256SUMS.txt
+
+          # Verify checksums
+          shasum -a 256 -c SHA256SUMS.txt
+
+          echo "Generated checksums file:"
+          cat SHA256SUMS.txt
+
+      - name: Extract release notes
+        id: notes
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          cat > release-notes.md <<EOF
+          # Hippo ${VERSION}
+
+          ## Installation
+
+          ### Quick Install (macOS)
+
+          \`\`\`bash
+          curl -fsSL https://github.com/stevencarpenter/hippo/releases/download/${GITHUB_REF_NAME}/install.sh | bash
+          \`\`\`
+
+          ### Manual Installation
+
+          1. Download the appropriate artifacts for your system
+          2. Verify checksums against \`SHA256SUMS.txt\`
+          3. Follow the installation instructions in the [README](https://github.com/stevencarpenter/hippo#quick-start)
+
+          ## Artifacts
+
+          | Component | File | SHA-256 |
+          |-----------|------|---------|
+          | Daemon (CLI) | \`${{ needs.build-daemon.outputs.artifact_name }}\` | \`${{ needs.build-daemon.outputs.checksum }}\` |
+          | Brain (Python) | \`${{ needs.build-brain.outputs.artifact_name }}\` | \`${{ needs.build-brain.outputs.checksum }}\` |
+          | GUI (macOS App) | \`${{ needs.build-gui.outputs.artifact_name }}\` | \`${{ needs.build-gui.outputs.checksum }}\` |
+
+          ## Components
+
+          - **hippo-daemon**: Rust binary for shell capture, secret redaction, and CLI queries
+          - **hippo-brain**: Python enrichment server with LLM integration and vector embeddings
+          - **HippoGUI**: Native macOS SwiftUI app for browsing knowledge and events
+
+          ## Verification
+
+          \`\`\`bash
+          # Verify checksums
+          shasum -a 256 -c SHA256SUMS.txt
+          \`\`\`
+          EOF
+
+          echo "Release notes prepared"
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ github.ref_name }}" \
+            --title "Release ${{ github.ref_name }}" \
+            --notes-file release-notes.md \
+            release-files/*
+
+      - name: Release summary
+        run: |
+          echo "### Release ${{ github.ref_name }} Published! :rocket:" >> "${GITHUB_STEP_SUMMARY}"
+          echo "" >> "${GITHUB_STEP_SUMMARY}"
+          echo "#### Artifacts" >> "${GITHUB_STEP_SUMMARY}"
+          echo "- Daemon: \`${{ needs.build-daemon.outputs.artifact_name }}\`" >> "${GITHUB_STEP_SUMMARY}"
+          echo "- Brain: \`${{ needs.build-brain.outputs.artifact_name }}\`" >> "${GITHUB_STEP_SUMMARY}"
+          echo "- GUI: \`${{ needs.build-gui.outputs.artifact_name }}\`" >> "${GITHUB_STEP_SUMMARY}"
+          echo "" >> "${GITHUB_STEP_SUMMARY}"
+          echo "#### Quick Install" >> "${GITHUB_STEP_SUMMARY}"
+          echo '```bash' >> "${GITHUB_STEP_SUMMARY}"
+          echo "curl -fsSL https://github.com/stevencarpenter/hippo/releases/download/${{ github.ref_name }}/install.sh | bash" >> "${GITHUB_STEP_SUMMARY}"
+          echo '```' >> "${GITHUB_STEP_SUMMARY}"
