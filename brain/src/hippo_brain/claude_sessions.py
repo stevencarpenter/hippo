@@ -428,6 +428,10 @@ def ensure_claude_tables(conn) -> None:
 
 def insert_segment(conn, segment: SessionSegment) -> int | None:
     """Insert a session segment and queue it for enrichment. Returns segment id or None if duplicate."""
+    from hippo_brain.redaction import redact_segment_secrets
+
+    redact_segment_secrets(segment)
+
     if segment.source == "codex":
         from hippo_brain.codex_sessions import build_codex_enrichment_summary
 

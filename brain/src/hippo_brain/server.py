@@ -93,6 +93,17 @@ _loop_duration = (
 logging.basicConfig(level=logging.INFO, format="%(levelname)s:%(name)s:%(message)s")
 logger = logging.getLogger("hippo_brain")
 
+# Upper bound for `limit` on LM/embedding-bound endpoints (/ask, /query). Caps
+# pathological requests that would force expensive embedding lookups or
+# enormous result sets through the LM. Lower than MAX_LIST_LIMIT because the
+# downstream cost (embedding + LLM context) is super-linear in result count.
+MAX_QUERY_LIMIT = 100
+
+# Upper bound for `limit` on plain SQL list endpoints (/knowledge, /events,
+# /sessions). These are just bounded SELECTs, so the cap is mainly to avoid
+# accidentally serializing tens of thousands of rows into one response.
+MAX_LIST_LIMIT = 500
+
 
 class BrainServer:
     def __init__(
@@ -128,6 +139,10 @@ class BrainServer:
         self.lock_timeout_ms = lock_timeout_ms
         self.enrichment_running = False
         self._query_inflight: int = 0  # incremented while /ask is executing
+        # Set whenever a query is in flight; the enrichment loop sleeps on this
+        # event so it wakes immediately rather than waiting out the full poll
+        # interval before yielding to the LM.
+        self._query_arrived = asyncio.Event()
         self._enrichment_task = None
         self._reaper_task = None
         self._vector_db = None
@@ -297,6 +312,11 @@ class BrainServer:
 
         if limit <= 0:
             return JSONResponse({"error": "limit must be greater than 0"}, status_code=400)
+        if limit > MAX_QUERY_LIMIT:
+            return JSONResponse(
+                {"error": f"limit must be <= {MAX_QUERY_LIMIT}"},
+                status_code=400,
+            )
 
         if mode == "lexical":
             try:
@@ -358,6 +378,13 @@ class BrainServer:
             offset = int(offset)
         except ValueError:
             return JSONResponse({"error": "limit and offset must be integers"}, status_code=400)
+        if limit <= 0 or limit > MAX_LIST_LIMIT:
+            return JSONResponse(
+                {"error": f"limit must be in 1..{MAX_LIST_LIMIT}"},
+                status_code=400,
+            )
+        if offset < 0:
+            return JSONResponse({"error": "offset must be >= 0"}, status_code=400)
 
         if since_ms:
             try:
@@ -502,6 +529,13 @@ class BrainServer:
             offset = int(offset)
         except ValueError:
             return JSONResponse({"error": "limit and offset must be integers"}, status_code=400)
+        if limit <= 0 or limit > MAX_LIST_LIMIT:
+            return JSONResponse(
+                {"error": f"limit must be in 1..{MAX_LIST_LIMIT}"},
+                status_code=400,
+            )
+        if offset < 0:
+            return JSONResponse({"error": "offset must be >= 0"}, status_code=400)
 
         if since_ms:
             try:
@@ -579,6 +613,13 @@ class BrainServer:
             offset = int(offset)
         except ValueError:
             return JSONResponse({"error": "limit and offset must be integers"}, status_code=400)
+        if limit <= 0 or limit > MAX_LIST_LIMIT:
+            return JSONResponse(
+                {"error": f"limit must be in 1..{MAX_LIST_LIMIT}"},
+                status_code=400,
+            )
+        if offset < 0:
+            return JSONResponse({"error": "offset must be >= 0"}, status_code=400)
 
         if since_ms:
             try:
@@ -640,6 +681,17 @@ class BrainServer:
             return JSONResponse({"error": "question is required"}, status_code=400)
 
         limit = body.get("limit", 10)
+        try:
+            limit = int(limit)
+        except TypeError, ValueError:
+            return JSONResponse({"error": "limit must be an integer"}, status_code=400)
+        if limit <= 0:
+            return JSONResponse({"error": "limit must be greater than 0"}, status_code=400)
+        if limit > MAX_QUERY_LIMIT:
+            return JSONResponse(
+                {"error": f"limit must be <= {MAX_QUERY_LIMIT}"},
+                status_code=400,
+            )
 
         if not self.embedding_model or self._vector_table is None:
             return JSONResponse(
@@ -656,6 +708,7 @@ class BrainServer:
             )
 
         self._query_inflight += 1
+        self._query_arrived.set()
         try:
             result = await rag_ask(
                 question=question,
@@ -667,6 +720,8 @@ class BrainServer:
             )
         finally:
             self._query_inflight = max(0, self._query_inflight - 1)
+            if self._query_inflight == 0:
+                self._query_arrived.clear()
 
         status = 200 if "answer" in result else 502
         return JSONResponse(result, status_code=status)
@@ -716,16 +771,28 @@ class BrainServer:
         try:
             while True:
                 try:
-                    await asyncio.sleep(self.poll_interval_secs)
+                    # Sleep up to poll_interval_secs, waking early if a query
+                    # arrives mid-sleep. The event-based wake means we yield
+                    # to the LM Studio slot instead of waiting out the full
+                    # interval and starting a competing enrichment batch.
+                    try:
+                        await asyncio.wait_for(
+                            self._query_arrived.wait(),
+                            timeout=self.poll_interval_secs,
+                        )
+                    except TimeoutError:
+                        pass
 
-                    # Skip this iteration if a query is waiting on LM Studio so it
-                    # gets a clear slot rather than queueing behind a new batch.
-                    if self._query_inflight > 0:
+                    # If queries are running (or one just arrived), drain them
+                    # before claiming work. Polling at 100 ms granularity is
+                    # cheap and prevents a tight wait_for spin while the event
+                    # stays set across multiple in-flight queries.
+                    while self._query_inflight > 0:
                         logger.debug(
-                            "enrichment skipping iteration: %d query in flight",
+                            "enrichment waiting for %d in-flight queries to drain",
                             self._query_inflight,
                         )
-                        continue
+                        await asyncio.sleep(0.1)
 
                     decision = await preflight_lm_studio(
                         self.client, self._preferred_model or None, allow_fallback=True

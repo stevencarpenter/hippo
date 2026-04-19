@@ -728,3 +728,84 @@ def test_build_codex_enrichment_summary_includes_tools_and_assistant():
     assert "Bash: cargo test" in out
     assert "Assistant responses (excerpts):" in out
     assert "Sure, here's how." in out
+
+
+def test_build_codex_enrichment_summary_uses_utc_timestamps():
+    """Duration header must render in UTC, not local time, so summaries are
+    deterministic across timezones and consistent with epoch-ms storage."""
+    from hippo_brain.claude_sessions import SessionSegment
+
+    # 2026-01-15 14:30:00 UTC and 2026-01-15 15:45:00 UTC, exact ms values.
+    start_ms = 1768487400000
+    end_ms = 1768491900000
+    seg = SessionSegment(
+        session_id="s-utc",
+        project_dir="demo",
+        cwd="/projects/demo",
+        git_branch=None,
+        segment_index=0,
+        start_time=start_ms,
+        end_time=end_ms,
+        user_prompts=["hi"],
+        assistant_texts=[],
+        tool_calls=[],
+        message_count=1,
+        source="codex",
+    )
+    out = build_codex_enrichment_summary([seg])
+    assert "2026-01-15 14:30 – 15:45 UTC" in out, out
+
+
+def test_insert_segment_redacts_codex_secrets(tmp_path):
+    """End-to-end: a Codex segment carrying secrets in user_prompts,
+    assistant_texts, and tool_calls is redacted before being persisted to
+    SQLite. Catches regressions if redaction is moved or removed."""
+    from hippo_brain.claude_sessions import SessionSegment
+
+    secret_token = "ghp_" + "z" * 36
+    leaky_segment = SessionSegment(
+        session_id="leak-1",
+        project_dir="demo",
+        cwd="/projects/demo",
+        git_branch=None,
+        segment_index=0,
+        start_time=1768487400000,
+        end_time=1768491900000,
+        user_prompts=[f"please run gh auth using {secret_token} now"],
+        assistant_texts=[f"I will set Authorization: Bearer {secret_token}"],
+        tool_calls=[
+            {
+                "name": "shell",
+                "summary": f"curl -H 'Authorization: Bearer {secret_token}' api.example.com",
+            }
+        ],
+        message_count=3,
+        source="codex",
+    )
+
+    db_path = tmp_path / "redact-test.db"
+    conn = sqlite3.connect(str(db_path))
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA foreign_keys=ON")
+    conn.execute("PRAGMA busy_timeout=5000")
+    ensure_claude_tables(conn)
+
+    seg_id = insert_segment(conn, leaky_segment)
+    assert seg_id is not None
+
+    row = conn.execute(
+        "SELECT summary_text, tool_calls_json, user_prompts_json FROM claude_sessions WHERE id = ?",
+        (seg_id,),
+    ).fetchone()
+    summary_text, tool_calls_json, user_prompts_json = row
+
+    assert secret_token not in summary_text, summary_text
+    assert secret_token not in tool_calls_json, tool_calls_json
+    assert secret_token not in user_prompts_json, user_prompts_json
+    # The segment object passed in is mutated in place, so callers can't
+    # accidentally route the unredacted version elsewhere afterward.
+    assert secret_token not in leaky_segment.user_prompts[0]
+    assert secret_token not in leaky_segment.assistant_texts[0]
+    assert secret_token not in leaky_segment.tool_calls[0]["summary"]
+
+    conn.close()

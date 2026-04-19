@@ -47,7 +47,10 @@ actor BrainClient: BrainClientProtocol {
 
     init(port: Int? = nil, configClient: ConfigClient = ConfigClient(), session: URLSession? = nil) {
         let resolvedPort = port ?? configClient.loadPort()
-        self.baseURL = URL(string: "http://localhost:\(resolvedPort)") ?? URL(fileURLWithPath: "/")
+        guard let url = URL(string: "http://localhost:\(resolvedPort)") else {
+            preconditionFailure("Failed to build base URL for port \(resolvedPort) — should be impossible for a numeric localhost URL")
+        }
+        self.baseURL = url
         let config = URLSessionConfiguration.default
         config.timeoutIntervalForRequest = configClient.loadQueryTimeout()
         self.session = session ?? URLSession(configuration: config)

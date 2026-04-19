@@ -105,10 +105,13 @@ These items are **explicitly excluded from the MVP** per the design spec:
 
 - **Menu bar extra** — Future consideration.
 - **Keyboard shortcuts** — Future consideration.
-- **App icon** — Future consideration.
 - **Graph visualization** — For knowledge node relationships; requires graph layout work.
 - **Write operations** — App is strictly read-only for MVP.
 - **System notifications** — Future consideration (e.g. enrichment completion alerts).
+
+#### Implemented after spec
+
+- **App icon** — Initially out of scope; subsequently added (`Resources/Assets.xcassets/AppIcon.appiconset` plus the generator at `scripts/generate-app-icon.swift`).
 
 ---
 

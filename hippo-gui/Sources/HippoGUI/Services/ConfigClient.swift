@@ -14,9 +14,13 @@ struct ConfigClient: Sendable {
 
     private let configPath: URL
 
-    init() {
-        let homeDir = FileManager.default.homeDirectoryForCurrentUser
-        self.configPath = homeDir.appendingPathComponent(".config/hippo/config.toml")
+    init(configPath: URL? = nil) {
+        if let configPath {
+            self.configPath = configPath
+        } else {
+            let homeDir = FileManager.default.homeDirectoryForCurrentUser
+            self.configPath = homeDir.appendingPathComponent(".config/hippo/config.toml")
+        }
     }
 
     func loadPort() -> Int {
@@ -55,6 +59,14 @@ struct ConfigClient: Sendable {
         return parseValue(forKey: key, in: section, from: content)
     }
 
+    private func parseKey(from line: String) -> String? {
+        guard let eqIndex = line.firstIndex(of: "=") else {
+            return nil
+        }
+        let lhs = line[line.startIndex..<eqIndex].trimmingCharacters(in: .whitespaces)
+        return lhs.isEmpty ? nil : lhs
+    }
+
     private func parseValue(forKey key: String, in section: String, from content: String) -> String? {
         var activeSection: String?
 
@@ -70,7 +82,7 @@ struct ConfigClient: Sendable {
                 continue
             }
 
-            if activeSection == section && trimmed.hasPrefix(key) && trimmed.contains("=") {
+            if activeSection == section, let parsedKey = parseKey(from: trimmed), parsedKey == key {
                 let parts = trimmed.split(separator: "=", maxSplits: 1)
                 if parts.count == 2 {
                     var value = parts[1].trimmingCharacters(in: .whitespaces)

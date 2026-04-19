@@ -16,7 +16,7 @@ import json
 import re
 import time
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 from hippo_brain.claude_sessions import SessionSegment
@@ -308,9 +308,11 @@ def build_codex_enrichment_summary(segments: list[SessionSegment]) -> str:
     for seg in segments:
         header = f"GitHub Copilot (Codex) session (project: {seg.cwd})"
         if seg.start_time and seg.end_time:
-            start = datetime.fromtimestamp(seg.start_time / 1000).strftime("%Y-%m-%d %H:%M")
-            end = datetime.fromtimestamp(seg.end_time / 1000).strftime("%H:%M")
-            header += f"\nDuration: {start} – {end}"
+            start = datetime.fromtimestamp(seg.start_time / 1000, tz=timezone.utc).strftime(
+                "%Y-%m-%d %H:%M"
+            )
+            end = datetime.fromtimestamp(seg.end_time / 1000, tz=timezone.utc).strftime("%H:%M")
+            header += f"\nDuration: {start} – {end} UTC"
 
         lines = [header, ""]
 

@@ -35,8 +35,8 @@ struct PreviewBrainClient: BrainClientProtocol {
 
     func listKnowledge(limit: Int, offset: Int, nodeType: String?, sinceMs: Int?) async throws(BrainClientError) -> KnowledgeListResponse {
         switch knowledgeResponse {
-        case .success(let r): return r
-        case .failure(let e): throw e
+        case .success(let response): return response
+        case .failure(let error): throw error
         }
     }
 
@@ -45,46 +45,46 @@ struct PreviewBrainClient: BrainClientProtocol {
             return try detail.get()
         }
         switch knowledgeResponse {
-        case .success(let r):
-            if let node = r.nodes.first(where: { $0.id == id }) { return node }
+        case .success(let response):
+            if let node = response.nodes.first(where: { $0.id == id }) { return node }
             throw BrainClientError.serverError(statusCode: 404, message: "Knowledge node not found")
-        case .failure(let e):
-            throw e
+        case .failure(let error):
+            throw error
         }
     }
 
     func listEvents(limit: Int, offset: Int, sessionId: Int?, sinceMs: Int?, project: String?) async throws(BrainClientError) -> EventListResponse {
         switch eventResponse {
-        case .success(let r): return r
-        case .failure(let e): throw e
+        case .success(let response): return response
+        case .failure(let error): throw error
         }
     }
 
     func listSessions(limit: Int, offset: Int, sinceMs: Int?) async throws(BrainClientError) -> SessionListResponse {
         switch sessionResponse {
-        case .success(let r): return r
-        case .failure(let e): throw e
+        case .success(let response): return response
+        case .failure(let error): throw error
         }
     }
 
     func ask(question: String, limit: Int) async throws(BrainClientError) -> AskResponse {
         switch askResponse {
-        case .success(let r): return r
-        case .failure(let e): throw e
+        case .success(let response): return response
+        case .failure(let error): throw error
         }
     }
 
     func query(_ text: String, limit: Int) async throws(BrainClientError) -> QueryResponse {
         switch queryResponse {
-        case .success(let r): return r
-        case .failure(let e): throw e
+        case .success(let response): return response
+        case .failure(let error): throw error
         }
     }
 
     func health() async throws(BrainClientError) -> HealthResponse {
         switch healthResponse {
-        case .success(let r): return r
-        case .failure(let e): throw e
+        case .success(let response): return response
+        case .failure(let error): throw error
         }
     }
 }

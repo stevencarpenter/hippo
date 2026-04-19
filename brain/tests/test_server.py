@@ -190,6 +190,88 @@ def test_query_missing_text_returns_400(tmp_db):
     assert data["error"] == "text is required"
 
 
+def test_query_limit_above_max_returns_400(tmp_db):
+    """Cap on /query.limit prevents pathological semantic-search requests
+    from forcing expensive embedding lookups and oversized responses."""
+    from hippo_brain.server import MAX_QUERY_LIMIT
+
+    _, db_path = tmp_db
+    app = _make_app(str(db_path))
+    client = TestClient(app)
+
+    resp = client.post(
+        "/query", json={"text": "anything", "limit": MAX_QUERY_LIMIT + 1, "mode": "lexical"}
+    )
+    assert resp.status_code == 400
+    assert str(MAX_QUERY_LIMIT) in resp.json()["error"]
+
+
+def test_query_limit_at_max_is_accepted(tmp_db):
+    """The boundary case (limit == MAX_QUERY_LIMIT) must succeed — only
+    strictly greater is rejected."""
+    from hippo_brain.server import MAX_QUERY_LIMIT
+
+    _, db_path = tmp_db
+    app = _make_app(str(db_path))
+    client = TestClient(app)
+
+    resp = client.post(
+        "/query", json={"text": "anything", "limit": MAX_QUERY_LIMIT, "mode": "lexical"}
+    )
+    assert resp.status_code == 200, resp.text
+
+
+def test_ask_limit_validates_integer_and_range(tmp_db):
+    """/ask had zero limit validation prior to this change. Verify all
+    three guards: non-int, <= 0, > MAX_QUERY_LIMIT."""
+    from hippo_brain.server import MAX_QUERY_LIMIT
+
+    _, db_path = tmp_db
+    app = _make_app(str(db_path))
+    client = TestClient(app)
+
+    bad_inputs = [
+        ({"question": "hi", "limit": "not-a-number"}, "must be an integer"),
+        ({"question": "hi", "limit": 0}, "greater than 0"),
+        ({"question": "hi", "limit": -5}, "greater than 0"),
+        ({"question": "hi", "limit": MAX_QUERY_LIMIT + 1}, str(MAX_QUERY_LIMIT)),
+    ]
+    for body, expected_substring in bad_inputs:
+        resp = client.post("/ask", json=body)
+        assert resp.status_code == 400, f"input {body} should 400, got {resp.status_code}"
+        assert expected_substring in resp.json()["error"], (
+            f"input {body} error '{resp.json()['error']}' missing '{expected_substring}'"
+        )
+
+
+def test_list_endpoints_reject_oversized_limit(tmp_db):
+    """The list endpoints (/knowledge, /events, /sessions) cap limit at
+    MAX_LIST_LIMIT to bound response size."""
+    from hippo_brain.server import MAX_LIST_LIMIT
+
+    _, db_path = tmp_db
+    app = _make_app(str(db_path))
+    client = TestClient(app)
+
+    too_big = MAX_LIST_LIMIT + 1
+    for path in ("/knowledge", "/events", "/sessions"):
+        resp = client.get(path, params={"limit": too_big})
+        assert resp.status_code == 400, f"{path} should reject limit={too_big}"
+        assert str(MAX_LIST_LIMIT) in resp.json()["error"]
+
+
+def test_list_endpoints_reject_negative_offset(tmp_db):
+    """Negative offsets would produce undefined SQLite behavior; reject explicitly."""
+    _, db_path = tmp_db
+    app = _make_app(str(db_path))
+    client = TestClient(app)
+
+    for path in ("/knowledge", "/events", "/sessions"):
+        resp = client.get(path, params={"offset": -1})
+        assert resp.status_code == 400, f"{path} should reject offset=-1"
+        assert "offset" in resp.json()["error"]
+
+
 # ---- BrainServer init ----
 
 
@@ -428,6 +510,63 @@ async def test_start_enrichment_creates_task(tmp_db):
         await server._enrichment_task
     except asyncio.CancelledError:
         pass
+
+
+async def test_enrichment_loop_yields_to_arriving_query(tmp_db):
+    """If a query arrives during the poll sleep, the enrichment loop must
+    wake immediately and wait for the query to drain before running
+    preflight. After the query completes, the loop must proceed normally.
+    Validates the asyncio.Event wake mechanism plus the drain spin."""
+    _, db_path = tmp_db
+    server = _make_server(str(db_path))
+    # Long poll interval — only the Event wake should bring us back fast.
+    server.poll_interval_secs = 30
+
+    preflight_calls = 0
+
+    async def fake_preflight(*args, **kwargs):
+        nonlocal preflight_calls
+        preflight_calls += 1
+        return PreflightDecision(proceed=False, loaded_models=[])
+
+    with patch("hippo_brain.server.preflight_lm_studio", side_effect=fake_preflight):
+        task = asyncio.create_task(server._enrichment_loop())
+        try:
+            # Loop should be sleeping on its first wait_for.
+            await asyncio.sleep(0.1)
+            assert preflight_calls == 0, "loop should still be sleeping on its first iteration"
+
+            # Simulate /ask entry: increment counter, set event. The loop
+            # must wake from wait_for and enter the drain spin.
+            server._query_inflight += 1
+            server._query_arrived.set()
+
+            # While inflight > 0, the drain spin keeps the loop pinned and
+            # preflight cannot fire.
+            await asyncio.sleep(0.3)
+            assert preflight_calls == 0, "preflight must not run while a query is in flight"
+
+            # Simulate /ask exit: decrement, clear event. The drain spin
+            # exits next tick, preflight runs once, then wait_for blocks
+            # for the full 30s timeout (the test never sees a 2nd call).
+            server._query_inflight = max(0, server._query_inflight - 1)
+            if server._query_inflight == 0:
+                server._query_arrived.clear()
+
+            await asyncio.sleep(0.3)
+            assert preflight_calls == 1, (
+                "loop must proceed to preflight exactly once after the query drains"
+            )
+
+            # No further preflight calls without another event/timeout.
+            await asyncio.sleep(0.3)
+            assert preflight_calls == 1, "no more preflight while wait_for sleeps"
+        finally:
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
 
 
 # ---- schema version checks ----

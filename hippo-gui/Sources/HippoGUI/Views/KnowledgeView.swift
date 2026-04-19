@@ -307,18 +307,33 @@ private struct ParsedKnowledgeContent {
 }
 
 #if DEBUG
+private func previewKnowledgeNode() -> KnowledgeNode {
+    let json = """
+        {
+            "id": 1,
+            "uuid": "preview-node",
+            "content": "{\\"summary\\":\\"Preview summary\\",\\"tags\\":[\\"swift\\",\\"preview\\"],\\"key_decisions\\":[\\"Used NavigationSplitView\\"]}",
+            "embed_text": "Preview embed text",
+            "node_type": "observation",
+            "outcome": "success",
+            "tags": ["swift"],
+            "created_at": 1713404800000,
+            "related_entities": [{"id": 1, "name": "swift", "type": "tool"}],
+            "related_events": [{"id": 42, "command": "swift test"}]
+        }
+        """
+    do {
+        return try JSONDecoder().decode(KnowledgeNode.self, from: Data(json.utf8))
+    } catch {
+        // SwiftUI previews don't render anything if this fails — surface the
+        // decoding error visibly rather than silently rendering an empty list.
+        fatalError("preview knowledge node failed to decode: \(error)")
+    }
+}
+
 #Preview {
     let nodeList = KnowledgeListResponse(
-        nodes: [
-            try! JSONDecoder().decode(
-                KnowledgeNode.self,
-                from: Data(
-                    """
-                    {"id":1,"uuid":"preview-node","content":"{\"summary\":\"Preview summary\",\"tags\":[\"swift\",\"preview\"],\"key_decisions\":[\"Used NavigationSplitView\"]}","embed_text":"Preview embed text","node_type":"observation","outcome":"success","tags":["swift"],"created_at":1713404800000,"related_entities":[{"id":1,"name":"swift","type":"tool"}],"related_events":[{"id":42,"command":"swift test"}]}
-                    """.utf8
-                )
-            )
-        ],
+        nodes: [previewKnowledgeNode()],
         total: 1
     )
 

@@ -13,9 +13,14 @@ actor MockBrainClient: BrainClientProtocol {
     var queryResponse: Result<QueryResponse, BrainClientError>
     var healthResponse: Result<HealthResponse, BrainClientError>
 
+    // swiftlint:disable large_tuple
+    // Test-helper request snapshots. Tuples (rather than structs) keep the
+    // call sites in MockBrainClient compact and the field accessors (.limit,
+    // .offset, etc.) read identically in assertions.
     private(set) var lastKnowledgeRequest: (limit: Int, offset: Int, nodeType: String?, sinceMs: Int?)?
     private(set) var lastEventRequest: (limit: Int, offset: Int, sessionId: Int?, sinceMs: Int?, project: String?)?
     private(set) var lastSessionRequest: (limit: Int, offset: Int, sinceMs: Int?)?
+    // swiftlint:enable large_tuple
     private(set) var lastAskRequest: (question: String, limit: Int)?
     private(set) var lastQueryRequest: (text: String, limit: Int)?
 

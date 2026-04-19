@@ -20,10 +20,18 @@
         <key>PATH</key>
         <string>__PATH__</string>
     </dict>
+    <!-- Codex writes to .../sessions/YYYY/MM/DD/rollout-*.jsonl. WatchPaths on
+         a directory only fires when that directory's own mtime changes, which
+         happens on file create/delete but NOT on appends to nested files.
+         WatchPaths gives a low-latency push when a new day folder appears;
+         StartInterval is the steady-state poll that catches everything else.
+         ThrottleInterval coalesces bursts so we don't re-run mid-ingest. -->
     <key>WatchPaths</key>
     <array>
         <string>__HOME__/Library/Developer/Xcode/CodingAssistant/codex/sessions</string>
     </array>
+    <key>StartInterval</key>
+    <integer>300</integer>
     <key>ThrottleInterval</key>
     <integer>60</integer>
     <key>StandardOutPath</key>

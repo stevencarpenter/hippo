@@ -13,24 +13,24 @@ HippoGUI now uses a package-first architecture:
 - Open `hippo-gui/HippoGUI.xcodeproj` for the standard macOS app target experience
 - Open `hippo-gui/Package.swift` if you specifically want the Swift Package view
 
-Open the native app project from the terminal with:
+All paths below are relative to the repo root unless noted. Open the native app project from the terminal with:
 
 ```bash
-cd /Users/carpenter/projects/hippo/hippo-gui
+cd hippo-gui
 xed HippoGUI.xcodeproj
 ```
 
 Open the package view with:
 
 ```bash
-cd /Users/carpenter/projects/hippo/hippo-gui
+cd hippo-gui
 xed Package.swift
 ```
 
 ## Run tests
 
 ```bash
-cd /Users/carpenter/projects/hippo/hippo-gui
+cd hippo-gui
 swift test
 ```
 
@@ -41,22 +41,26 @@ For rapid iteration, prefer editing library code under `Sources/HippoGUI/` and v
 ## Release versioning
 
 - `HippoGUI` app bundle versions are stamped by `scripts/stamp-app-version.sh`
-- `CFBundleShortVersionString` comes from the repo-wide version in `/Users/carpenter/projects/hippo/Cargo.toml` under `[workspace.package].version`
+- `CFBundleShortVersionString` is resolved with the following precedence:
+  1. `HIPPO_MARKETING_VERSION` environment variable, if set
+  2. `hippo-gui/VERSION` file, if present (this PR adds it; `0.2.0` initially)
+  3. The repo-wide version in `Cargo.toml` under `[workspace.package].version`
 - `CFBundleVersion` comes from `HIPPO_BUILD_NUMBER`, then `BUILD_NUMBER`, then the current git commit count
 - The same stamping flow is used by both `HippoGUI.xcodeproj` and `./scripts/build-native-app.sh`
 - `./scripts/release-gui.sh` builds the native `.app`, creates a versioned `.zip`, writes sibling SHA-256 and Markdown release-notes files, and can emit CI-friendly JSON
 
-To cut the next release version, bump the root workspace version and rebuild:
+To cut the next release version, edit `hippo-gui/VERSION` for a GUI-specific bump, or update the root workspace version to keep the GUI in lockstep with the daemon. If both exist, `hippo-gui/VERSION` wins:
 
 ```bash
-cd /Users/carpenter/projects/hippo
-$EDITOR Cargo.toml
+$EDITOR hippo-gui/VERSION   # GUI-specific override
+# or
+$EDITOR Cargo.toml          # workspace-wide bump (used when VERSION absent)
 ```
 
 To inspect the stamped version in the script-built app:
 
 ```bash
-cd /Users/carpenter/projects/hippo/hippo-gui
+cd hippo-gui
 ./scripts/build-native-app.sh
 /usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' dist/debug/HippoGUI.app/Contents/Info.plist
 /usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' dist/debug/HippoGUI.app/Contents/Info.plist
@@ -65,7 +69,7 @@ cd /Users/carpenter/projects/hippo/hippo-gui
 To build a shareable release artifact bundle:
 
 ```bash
-cd /Users/carpenter/projects/hippo/hippo-gui
+cd hippo-gui
 ./scripts/release-gui.sh
 HIPPO_BUILD_NUMBER=501 ./scripts/release-gui.sh release
 ```
@@ -73,14 +77,14 @@ HIPPO_BUILD_NUMBER=501 ./scripts/release-gui.sh release
 To print release-notes Markdown instead of the human summary:
 
 ```bash
-cd /Users/carpenter/projects/hippo/hippo-gui
+cd hippo-gui
 ./scripts/release-gui.sh --markdown
 ```
 
 To emit CI-friendly JSON metadata:
 
 ```bash
-cd /Users/carpenter/projects/hippo/hippo-gui
+cd hippo-gui
 ./scripts/release-gui.sh --json
 ```
 
@@ -94,7 +98,7 @@ The release helper writes both:
 To verify the generated archive checksum later:
 
 ```bash
-cd /Users/carpenter/projects/hippo/hippo-gui/dist/release
+cd hippo-gui/dist/release
 shasum -a 256 -c HippoGUI-<version>-<build>.zip.sha256
 ```
 
