@@ -160,7 +160,10 @@ async fn main() -> Result<()> {
                 tracing::info!("starting daemon...");
                 daemon::run(config).await?;
             }
-            DaemonAction::Install { force, brain_dir: brain_dir_arg } => {
+            DaemonAction::Install {
+                force,
+                brain_dir: brain_dir_arg,
+            } => {
                 let brain_dir = brain_dir_arg.unwrap_or_else(|| {
                     // Default to ~/.local/share/hippo-brain
                     dirs::home_dir()
