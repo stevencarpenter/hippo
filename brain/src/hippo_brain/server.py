@@ -127,6 +127,7 @@ class BrainServer:
         self.max_claim_batch = max_claim_batch
         self.lock_timeout_ms = lock_timeout_ms
         self.enrichment_running = False
+        self._query_inflight: int = 0  # incremented while /ask is executing
         self._enrichment_task = None
         self._reaper_task = None
         self._vector_db = None
@@ -239,6 +240,7 @@ class BrainServer:
                 "workflow_queue_failed": workflow_queue_failed,
                 "enrichment_model": self.enrichment_model,
                 "enrichment_model_preferred": self._preferred_model,
+                "query_inflight": self._query_inflight,
                 "embed_model_drift": embed_model_drift,
                 "last_success_at_ms": self.last_success_at_ms,
                 "last_error": self.last_error,
@@ -246,7 +248,7 @@ class BrainServer:
             }
         )
 
-    def _query_lexical(self, text: str) -> dict:
+    def _query_lexical(self, text: str, limit: int = 10) -> dict:
         """Lexical substring search over events and knowledge nodes."""
         conn = self._get_conn()
         try:
@@ -255,8 +257,8 @@ class BrainServer:
                 """SELECT id, command, cwd, timestamp
                    FROM events
                    WHERE command LIKE ?
-                   ORDER BY timestamp DESC LIMIT 10""",
-                (pattern,),
+                   ORDER BY timestamp DESC LIMIT ?""",
+                (pattern, limit),
             )
             events = [
                 {"event_id": r[0], "command": r[1], "cwd": r[2], "timestamp": r[3]}
@@ -267,9 +269,9 @@ class BrainServer:
                 """SELECT id, uuid, content, embed_text
                    FROM knowledge_nodes
                    WHERE content LIKE ?
-                      OR embed_text LIKE ?
-                   ORDER BY created_at DESC LIMIT 10""",
-                (pattern, pattern),
+                       OR embed_text LIKE ?
+                   ORDER BY created_at DESC LIMIT ?""",
+                (pattern, pattern, limit),
             )
             nodes = [
                 {"id": r[0], "uuid": r[1], "content": r[2], "embed_text": r[3]}
@@ -286,10 +288,19 @@ class BrainServer:
             return JSONResponse({"error": "text is required"}, status_code=400)
 
         mode = body.get("mode", "semantic")
+        limit = body.get("limit", 10)
+
+        try:
+            limit = int(limit)
+        except TypeError, ValueError:
+            return JSONResponse({"error": "limit must be an integer"}, status_code=400)
+
+        if limit <= 0:
+            return JSONResponse({"error": "limit must be greater than 0"}, status_code=400)
 
         if mode == "lexical":
             try:
-                return JSONResponse(self._query_lexical(text))
+                return JSONResponse(self._query_lexical(text, limit=limit))
             except Exception as e:
                 logger.error("query error: %s", e)
                 return JSONResponse({"error": str(e)}, status_code=500)
@@ -297,7 +308,7 @@ class BrainServer:
         # Semantic mode — fall back to lexical if unavailable
         if not self.embedding_model or self._vector_table is None:
             try:
-                result = self._query_lexical(text)
+                result = self._query_lexical(text, limit=limit)
                 result["warning"] = "semantic search unavailable, fell back to lexical"
                 return JSONResponse(result)
             except Exception as e:
@@ -306,7 +317,7 @@ class BrainServer:
 
         try:
             vecs = await self.client.embed([text], model=self.embedding_model)
-            hits = search_similar(self._vector_table, vecs[0], limit=10)
+            hits = search_similar(self._vector_table, vecs[0], limit=limit)
             results = [
                 {
                     "score": round(1.0 - hit.get("_distance", 0.0), 4),
@@ -326,7 +337,7 @@ class BrainServer:
         except Exception as e:
             logger.warning("semantic search failed, falling back to lexical: %s", e)
             try:
-                result = self._query_lexical(text)
+                result = self._query_lexical(text, limit=limit)
                 result["warning"] = f"semantic search failed: {e}"
                 return JSONResponse(result)
             except Exception as e2:
@@ -431,6 +442,33 @@ class BrainServer:
             except json.JSONDecodeError, TypeError:
                 tags = []
 
+            related_entities = [
+                {"id": entity_id, "name": name, "type": entity_type}
+                for entity_id, name, entity_type in conn.execute(
+                    """
+                    SELECT e.id, e.name, e.type
+                    FROM entities e
+                    JOIN knowledge_node_entities kne ON kne.entity_id = e.id
+                    WHERE kne.knowledge_node_id = ?
+                    ORDER BY e.type, e.name
+                    """,
+                    (node_id,),
+                ).fetchall()
+            ]
+            related_events = [
+                {"id": event_id, "command": command}
+                for event_id, command in conn.execute(
+                    """
+                    SELECT ev.id, ev.command
+                    FROM events ev
+                    JOIN knowledge_node_events kne ON kne.event_id = ev.id
+                    WHERE kne.knowledge_node_id = ?
+                    ORDER BY ev.timestamp DESC
+                    """,
+                    (node_id,),
+                ).fetchall()
+            ]
+
             return JSONResponse(
                 {
                     "id": row[0],
@@ -441,6 +479,8 @@ class BrainServer:
                     "outcome": row[5],
                     "tags": tags,
                     "created_at": row[7],
+                    "related_entities": related_entities,
+                    "related_events": related_events,
                 }
             )
         except Exception as e:
@@ -615,14 +655,18 @@ class BrainServer:
                 status_code=503,
             )
 
-        result = await rag_ask(
-            question=question,
-            lm_client=self.client,
-            vector_table=self._vector_table,
-            query_model=model,
-            embedding_model=self.embedding_model,
-            limit=limit,
-        )
+        self._query_inflight += 1
+        try:
+            result = await rag_ask(
+                question=question,
+                lm_client=self.client,
+                vector_table=self._vector_table,
+                query_model=model,
+                embedding_model=self.embedding_model,
+                limit=limit,
+            )
+        finally:
+            self._query_inflight = max(0, self._query_inflight - 1)
 
         status = 200 if "answer" in result else 502
         return JSONResponse(result, status_code=status)
@@ -673,6 +717,15 @@ class BrainServer:
             while True:
                 try:
                     await asyncio.sleep(self.poll_interval_secs)
+
+                    # Skip this iteration if a query is waiting on LM Studio so it
+                    # gets a clear slot rather than queueing behind a new batch.
+                    if self._query_inflight > 0:
+                        logger.debug(
+                            "enrichment skipping iteration: %d query in flight",
+                            self._query_inflight,
+                        )
+                        continue
 
                     decision = await preflight_lm_studio(
                         self.client, self._preferred_model or None, allow_fallback=True

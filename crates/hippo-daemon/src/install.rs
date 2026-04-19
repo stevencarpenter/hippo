@@ -8,6 +8,7 @@ pub fn render_plist(template: &str, vars: &PlistVars) -> String {
         .replace("__HIPPO_BIN__", &vars.hippo_bin.to_string_lossy())
         .replace("__UV_BIN__", &vars.uv_bin.to_string_lossy())
         .replace("__BRAIN_DIR__", &vars.brain_dir.to_string_lossy())
+        .replace("__SCRIPTS_DIR__", &vars.scripts_dir.to_string_lossy())
         .replace("__HOME__", &vars.home.to_string_lossy())
         .replace("__PATH__", &vars.path)
         .replace("__DATA_DIR__", &vars.data_dir.to_string_lossy())
@@ -19,6 +20,7 @@ pub struct PlistVars {
     pub hippo_bin: PathBuf,
     pub uv_bin: PathBuf,
     pub brain_dir: PathBuf,
+    pub scripts_dir: PathBuf,
     pub home: PathBuf,
     pub path: String,
     pub data_dir: PathBuf,
@@ -41,10 +43,16 @@ pub fn detect_vars(brain_dir: &Path) -> Result<PlistVars> {
         .map(|c| c.telemetry)
         .unwrap_or_default();
 
+    let scripts_dir = brain_dir
+        .parent()
+        .map(|r| r.join("scripts"))
+        .unwrap_or_else(|| brain_dir.join("../scripts"));
+
     Ok(PlistVars {
         hippo_bin,
         uv_bin,
         brain_dir: brain_dir.to_path_buf(),
+        scripts_dir,
         home,
         path,
         data_dir,
@@ -290,6 +298,7 @@ mod tests {
         let template = r#"<string>__HIPPO_BIN__</string>
 <string>__UV_BIN__</string>
 <string>__BRAIN_DIR__</string>
+<string>__SCRIPTS_DIR__</string>
 <string>__HOME__</string>
 <string>__PATH__</string>
 <string>__DATA_DIR__</string>
@@ -300,6 +309,7 @@ mod tests {
             hippo_bin: PathBuf::from("/usr/local/bin/hippo"),
             uv_bin: PathBuf::from("/usr/local/bin/uv"),
             brain_dir: PathBuf::from("/Users/me/projects/hippo/brain"),
+            scripts_dir: PathBuf::from("/Users/me/projects/hippo/scripts"),
             home: PathBuf::from("/Users/me"),
             path: "/usr/local/bin:/usr/bin:/bin".to_string(),
             data_dir: PathBuf::from("/Users/me/.local/share/hippo"),
@@ -311,6 +321,7 @@ mod tests {
         assert!(!result.contains("__HIPPO_BIN__"));
         assert!(!result.contains("__UV_BIN__"));
         assert!(!result.contains("__BRAIN_DIR__"));
+        assert!(!result.contains("__SCRIPTS_DIR__"));
         assert!(!result.contains("__HOME__"));
         assert!(!result.contains("__PATH__"));
         assert!(!result.contains("__DATA_DIR__"));

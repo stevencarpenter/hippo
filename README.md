@@ -196,6 +196,19 @@ uv run --project brain ruff format --check brain/
 uv run --project brain hippo-mcp
 ```
 
+### HippoGUI
+
+`hippo-gui/` is a native macOS app project layered over a local Swift package library (`HippoGUIKit`) for browsing Hippo knowledge, events, sessions, and system status.
+
+```bash
+cd hippo-gui
+swift test
+xed HippoGUI.xcodeproj
+./scripts/build-native-app.sh
+```
+
+See [`hippo-gui/README.md`](hippo-gui/README.md) for app-specific notes on Xcode, previews, package tests, and bundle builds.
+
 ### Service management
 
 ```bash
@@ -212,6 +225,7 @@ crates/
   hippo-core/              Shared library (types, config, storage, redaction)
   hippo-daemon/            Binary (daemon + CLI + native messaging host)
 brain/                     Python enrichment, query server, and MCP server
+hippo-gui/                 SwiftUI macOS app (Swift Package)
 extension/
   firefox/                 Firefox WebExtension for browser activity capture
 shell/                     zsh hooks (preexec/precmd integration)

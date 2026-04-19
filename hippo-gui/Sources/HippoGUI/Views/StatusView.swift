@@ -1,10 +1,8 @@
 import SwiftUI
 
 struct StatusView: View {
-    let brainClient: BrainClient
-
-    @State private var isHealthy: Bool = false
-    @State private var isLoading: Bool = false
+    @Environment(\.brainClient) private var brainClient
+    @State private var vm = StatusViewModel()
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -12,58 +10,138 @@ struct StatusView: View {
                 .font(.title)
                 .fontWeight(.bold)
 
-            VStack(alignment: .leading, spacing: 12) {
-                HStack {
-                    Text("Brain Server")
+            if let error = vm.errorMessage {
+                ErrorBannerView(message: error) {
+                    await vm.refresh()
+                }
+            }
+
+            HStack(spacing: 16) {
+                statusCard(
+                    title: "Daemon Socket",
+                    isHealthy: vm.daemonResponsive,
+                    subtitle: vm.daemonResponsive ? "Responding" : "Not reachable"
+                )
+
+                statusCard(
+                    title: "Brain HTTP",
+                    isHealthy: vm.brainReachable,
+                    subtitle: vm.brainReachable ? "Responding" : "Not responding"
+                )
+            }
+
+            if let health = vm.health {
+                VStack(alignment: .leading, spacing: 12) {
+                    Text("Queue Summary")
                         .font(.headline)
 
-                    Spacer()
-
-                    if isLoading {
-                        ProgressView()
-                            .scaleEffect(0.6)
-                    } else {
-                        Circle()
-                            .fill(isHealthy ? Color.green : Color.red)
-                            .frame(width: 12, height: 12)
+                    Grid(alignment: .leading, horizontalSpacing: 24, verticalSpacing: 8) {
+                        GridRow {
+                            Text("Shell")
+                            Text("\(health.queueDepth) pending")
+                            Text("\(health.queueFailed) failed")
+                        }
+                        GridRow {
+                            Text("Claude")
+                            Text("\(health.claudeQueueDepth) pending")
+                            Text("\(health.claudeQueueFailed) failed")
+                        }
+                        GridRow {
+                            Text("Browser")
+                            Text("\(health.browserQueueDepth) pending")
+                            Text("\(health.browserQueueFailed) failed")
+                        }
+                        GridRow {
+                            Text("Workflow")
+                            Text("\(health.workflowQueueDepth) pending")
+                            Text("\(health.workflowQueueFailed) failed")
+                        }
+                        GridRow {
+                            Text("Total")
+                                .fontWeight(.semibold)
+                            Text("\(health.totalPendingQueueDepth) pending")
+                                .fontWeight(.semibold)
+                            Text("\(health.totalFailedQueueDepth) failed")
+                                .fontWeight(.semibold)
+                        }
                     }
                 }
+                .padding()
+                .background(.quaternary, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
 
-                Text(isHealthy ? "Running" : "Not responding")
-                    .foregroundStyle(.secondary)
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Last checked")
+                        .font(.headline)
+                    Text(vm.lastCheckedDescription)
+                        .foregroundStyle(.secondary)
+
+                    if let version = health.version {
+                        LabeledContent("Version") {
+                            Text(version)
+                        }
+                    }
+
+                    if let model = health.enrichmentModel, !model.isEmpty {
+                        LabeledContent("Enrichment Model") {
+                            Text(model)
+                        }
+                    }
+
+                    if let lastError = health.lastError, !lastError.isEmpty {
+                        LabeledContent("Last Error") {
+                            Text(lastError)
+                                .multilineTextAlignment(.trailing)
+                        }
+                    }
+                }
+                .padding()
+                .background(.quaternary, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
             }
-            .padding()
-            .background(Color.secondary.opacity(0.1))
-            .clipShape(RoundedRectangle(cornerRadius: 8))
 
             Button {
-                Task { await checkHealth() }
+                Task { await vm.refresh() }
             } label: {
                 HStack {
+                    if vm.isLoading {
+                        ProgressView()
+                            .controlSize(.small)
+                    }
                     Image(systemName: "arrow.clockwise")
                     Text("Refresh")
                 }
             }
-            .disabled(isLoading)
+            .disabled(vm.isLoading)
 
             Spacer()
         }
         .padding()
         .task {
-            await checkHealth()
+            vm.configure(client: brainClient)
+            await vm.autoRefresh()
         }
     }
 
-    @MainActor
-    private func checkHealth() async {
-        isLoading = true
+    private func statusCard(title: String, isHealthy: Bool, subtitle: String) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Text(title)
+                    .font(.headline)
+                Spacer()
+                Circle()
+                    .fill(isHealthy ? Color.green : Color.red)
+                    .frame(width: 12, height: 12)
+            }
 
-        do {
-            isHealthy = try await brainClient.health()
-        } catch {
-            isHealthy = false
+            Text(subtitle)
+                .foregroundStyle(.secondary)
         }
-
-        isLoading = false
+        .padding()
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.quaternary, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
     }
+}
+
+#Preview {
+    StatusView()
+        .brainClient(MockBrainClient(healthResponse: .success(.preview)))
 }

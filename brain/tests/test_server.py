@@ -148,6 +148,25 @@ def test_query_no_results(tmp_db):
     assert data["nodes"] == []
 
 
+def test_query_limit_is_applied(tmp_db):
+    conn, db_path = tmp_db
+    _seed_events(conn)
+    conn.execute(
+        "INSERT INTO events (id, session_id, timestamp, command, exit_code, duration_ms, cwd, hostname, shell) "
+        "VALUES (3, 1, ?, 'cargo build', 0, 1200, '/projects/hippo', 'laptop', 'zsh')",
+        (int(time.time() * 1000) + 2,),
+    )
+    conn.commit()
+
+    app = _make_app(str(db_path))
+    client = TestClient(app)
+
+    resp = client.post("/query", json={"text": "cargo", "mode": "lexical", "limit": 1})
+    assert resp.status_code == 200
+    data = resp.json()
+    assert len(data["events"]) == 1
+
+
 def test_query_empty_text_returns_400(tmp_db):
     conn, db_path = tmp_db
     app = _make_app(str(db_path))
@@ -723,6 +742,24 @@ def test_get_knowledge_returns_full_details(tmp_db):
     """GET /knowledge/{id} returns full node details including embed_text."""
     conn, db_path = tmp_db
     _seed_knowledge_nodes_for_list(conn)
+    now_ms = int(time.time() * 1000)
+    conn.execute(
+        "INSERT INTO entities (id, type, name, canonical, first_seen, last_seen, created_at) "
+        "VALUES (1, 'tool', 'swift', 'swift', ?, ?, ?)",
+        (now_ms, now_ms, now_ms),
+    )
+    conn.execute("INSERT INTO knowledge_node_entities (knowledge_node_id, entity_id) VALUES (1, 1)")
+    conn.execute(
+        "INSERT INTO sessions (id, start_time, shell, hostname, username) VALUES (99, ?, 'zsh', 'laptop', 'user')",
+        (now_ms,),
+    )
+    conn.execute(
+        "INSERT INTO events (id, session_id, timestamp, command, exit_code, duration_ms, cwd, hostname, shell) "
+        "VALUES (77, 99, ?, 'swift test', 0, 350, '/projects/hippo', 'laptop', 'zsh')",
+        (now_ms,),
+    )
+    conn.execute("INSERT INTO knowledge_node_events (knowledge_node_id, event_id) VALUES (1, 77)")
+    conn.commit()
     app = _make_app(str(db_path))
     client = TestClient(app)
 
@@ -738,6 +775,8 @@ def test_get_knowledge_returns_full_details(tmp_db):
     assert data["outcome"] == "success"
     assert data["tags"] == ["rust", "testing"]
     assert "created_at" in data
+    assert data["related_entities"] == [{"id": 1, "name": "swift", "type": "tool"}]
+    assert data["related_events"] == [{"id": 77, "command": "swift test"}]
 
 
 def test_get_knowledge_returns_404_for_missing_node(tmp_db):

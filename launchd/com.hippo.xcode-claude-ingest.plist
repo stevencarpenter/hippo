@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.hippo.xcode-claude-ingest</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>__UV_BIN__</string>
+        <string>run</string>
+        <string>--project</string>
+        <string>__BRAIN_DIR__</string>
+        <string>python</string>
+        <string>__SCRIPTS_DIR__/hippo-ingest-claude.py</string>
+        <string>--claude-dir</string>
+        <string>__HOME__/Library/Developer/Xcode/CodingAssistant/ClaudeAgentConfig/projects</string>
+    </array>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>HOME</key>
+        <string>__HOME__</string>
+        <key>PATH</key>
+        <string>__PATH__</string>
+    </dict>
+    <key>WatchPaths</key>
+    <array>
+        <string>__HOME__/Library/Developer/Xcode/CodingAssistant/ClaudeAgentConfig/projects</string>
+    </array>
+    <key>StandardOutPath</key>
+    <string>__DATA_DIR__/xcode-claude-ingest.stdout.log</string>
+    <key>StandardErrorPath</key>
+    <string>__DATA_DIR__/xcode-claude-ingest.stderr.log</string>
+    <key>WorkingDirectory</key>
+    <string>__HOME__</string>
+</dict>
+</plist>

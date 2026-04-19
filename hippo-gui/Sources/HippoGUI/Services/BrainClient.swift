@@ -1,43 +1,62 @@
 import Foundation
 
-enum BrainClientError: Error, LocalizedError {
-    case invalidURL
-    case networkError(Error)
-    case decodingError(Error)
-    case serverError(String)
+enum BrainClientError: Error, LocalizedError, Equatable, Sendable {
+    case invalidURL(String)
+    case invalidResponse
+    case encodingError(String)
+    case networkError(String)
+    case decodingError(String)
+    case serverError(statusCode: Int, message: String)
+    case notConfigured
 
     var errorDescription: String? {
         switch self {
-        case .invalidURL:
-            return "Invalid URL"
-        case .networkError(let error):
-            return "Network error: \(error.localizedDescription)"
-        case .decodingError(let error):
-            return "Decoding error: \(error.localizedDescription)"
-        case .serverError(let message):
-            return "Server error: \(message)"
+        case .invalidURL(let value):
+            return "Invalid URL: \(value)"
+        case .invalidResponse:
+            return "The server returned an invalid response."
+        case .encodingError(let message):
+            return "Encoding error: \(message)"
+        case .networkError(let message):
+            return "Network error: \(message)"
+        case .decodingError(let message):
+            return "Decoding error: \(message)"
+        case .serverError(let statusCode, let message):
+            return "Server error (HTTP \(statusCode)): \(message)"
+        case .notConfigured:
+            return "Brain client is not configured."
         }
     }
 }
 
-actor BrainClient {
-    private let baseURL: String
+protocol BrainClientProtocol: Sendable {
+    func listKnowledge(limit: Int, offset: Int, nodeType: String?, sinceMs: Int?) async throws(BrainClientError) -> KnowledgeListResponse
+    func getKnowledge(id: Int) async throws(BrainClientError) -> KnowledgeNode
+    func listEvents(limit: Int, offset: Int, sessionId: Int?, sinceMs: Int?, project: String?) async throws(BrainClientError) -> EventListResponse
+    func listSessions(limit: Int, offset: Int, sinceMs: Int?) async throws(BrainClientError) -> SessionListResponse
+    func ask(question: String, limit: Int) async throws(BrainClientError) -> AskResponse
+    func query(_ text: String, limit: Int) async throws(BrainClientError) -> QueryResponse
+    func health() async throws(BrainClientError) -> HealthResponse
+}
+
+actor BrainClient: BrainClientProtocol {
+    private let baseURL: URL
     private let session: URLSession
+    private let decoder = JSONDecoder()
+    private let encoder = JSONEncoder()
 
-    init(port: Int = 9175) {
-        self.baseURL = "http://localhost:\(port)"
+    init(port: Int? = nil, configClient: ConfigClient = ConfigClient(), session: URLSession? = nil) {
+        let resolvedPort = port ?? configClient.loadPort()
+        self.baseURL = URL(string: "http://localhost:\(resolvedPort)") ?? URL(fileURLWithPath: "/")
         let config = URLSessionConfiguration.default
-        config.timeoutIntervalForRequest = 30
-        self.session = URLSession(configuration: config)
+        config.timeoutIntervalForRequest = configClient.loadQueryTimeout()
+        self.session = session ?? URLSession(configuration: config)
     }
 
-    static func makeDefault() async -> BrainClient {
-        let port = await ConfigClient().loadPort()
-        return BrainClient(port: port)
-    }
-
-    func listKnowledge(limit: Int = 20, offset: Int = 0, nodeType: String? = nil) async throws -> KnowledgeListResponse {
-        var components = URLComponents(string: "\(baseURL)/knowledge")!
+    func listKnowledge(limit: Int = 20, offset: Int = 0, nodeType: String? = nil, sinceMs: Int? = nil) async throws(BrainClientError) -> KnowledgeListResponse {
+        guard var components = URLComponents(url: baseURL.appending(path: "knowledge"), resolvingAgainstBaseURL: false) else {
+            throw BrainClientError.invalidURL("\(baseURL.absoluteString)/knowledge")
+        }
         var queryItems = [
             URLQueryItem(name: "limit", value: String(limit)),
             URLQueryItem(name: "offset", value: String(offset))
@@ -45,39 +64,32 @@ actor BrainClient {
         if let nodeType = nodeType {
             queryItems.append(URLQueryItem(name: "node_type", value: nodeType))
         }
+        if let sinceMs {
+            queryItems.append(URLQueryItem(name: "since_ms", value: String(sinceMs)))
+        }
         components.queryItems = queryItems
 
         guard let url = components.url else {
-            throw BrainClientError.invalidURL
+            throw BrainClientError.invalidURL("\(baseURL.absoluteString)/knowledge")
         }
 
-        let (data, response) = try await session.data(from: url)
-        try validateResponse(response)
-
-        do {
-            return try JSONDecoder().decode(KnowledgeListResponse.self, from: data)
-        } catch {
-            throw BrainClientError.decodingError(error)
-        }
+        return try await get(url, as: KnowledgeListResponse.self)
     }
 
-    func getKnowledge(id: Int) async throws -> KnowledgeNode {
-        guard let url = URL(string: "\(baseURL)/knowledge/\(id)") else {
-            throw BrainClientError.invalidURL
-        }
-
-        let (data, response) = try await session.data(from: url)
-        try validateResponse(response)
-
-        do {
-            return try JSONDecoder().decode(KnowledgeNode.self, from: data)
-        } catch {
-            throw BrainClientError.decodingError(error)
-        }
+    func getKnowledge(id: Int) async throws(BrainClientError) -> KnowledgeNode {
+        try await get(baseURL.appending(path: "knowledge/\(id)"), as: KnowledgeNode.self)
     }
 
-    func listEvents(limit: Int = 20, offset: Int = 0, sessionId: Int? = nil) async throws -> EventListResponse {
-        var components = URLComponents(string: "\(baseURL)/events")!
+    func listEvents(
+        limit: Int = 20,
+        offset: Int = 0,
+        sessionId: Int? = nil,
+        sinceMs: Int? = nil,
+        project: String? = nil
+    ) async throws(BrainClientError) -> EventListResponse {
+        guard var components = URLComponents(url: baseURL.appending(path: "events"), resolvingAgainstBaseURL: false) else {
+            throw BrainClientError.invalidURL("\(baseURL.absoluteString)/events")
+        }
         var queryItems = [
             URLQueryItem(name: "limit", value: String(limit)),
             URLQueryItem(name: "offset", value: String(offset))
@@ -85,90 +97,112 @@ actor BrainClient {
         if let sessionId = sessionId {
             queryItems.append(URLQueryItem(name: "session_id", value: String(sessionId)))
         }
+        if let sinceMs {
+            queryItems.append(URLQueryItem(name: "since_ms", value: String(sinceMs)))
+        }
+        if let project, !project.isEmpty {
+            queryItems.append(URLQueryItem(name: "project", value: project))
+        }
         components.queryItems = queryItems
 
         guard let url = components.url else {
-            throw BrainClientError.invalidURL
+            throw BrainClientError.invalidURL("\(baseURL.absoluteString)/events")
         }
 
-        let (data, response) = try await session.data(from: url)
-        try validateResponse(response)
-
-        do {
-            return try JSONDecoder().decode(EventListResponse.self, from: data)
-        } catch {
-            throw BrainClientError.decodingError(error)
-        }
+        return try await get(url, as: EventListResponse.self)
     }
 
-    func listSessions(limit: Int = 20, offset: Int = 0) async throws -> SessionListResponse {
-        var components = URLComponents(string: "\(baseURL)/sessions")!
-        components.queryItems = [
+    func listSessions(limit: Int = 20, offset: Int = 0, sinceMs: Int? = nil) async throws(BrainClientError) -> SessionListResponse {
+        var queryItems = [
             URLQueryItem(name: "limit", value: String(limit)),
             URLQueryItem(name: "offset", value: String(offset))
         ]
+        if let sinceMs {
+            queryItems.append(URLQueryItem(name: "since_ms", value: String(sinceMs)))
+        }
+
+        guard var components = URLComponents(url: baseURL.appending(path: "sessions"), resolvingAgainstBaseURL: false) else {
+            throw BrainClientError.invalidURL("\(baseURL.absoluteString)/sessions")
+        }
+        components.queryItems = queryItems
 
         guard let url = components.url else {
-            throw BrainClientError.invalidURL
+            throw BrainClientError.invalidURL("\(baseURL.absoluteString)/sessions")
         }
 
-        let (data, response) = try await session.data(from: url)
-        try validateResponse(response)
-
-        do {
-            return try JSONDecoder().decode(SessionListResponse.self, from: data)
-        } catch {
-            throw BrainClientError.decodingError(error)
-        }
+        return try await get(url, as: SessionListResponse.self)
     }
 
-    func ask(question: String, limit: Int = 10) async throws -> AskResponse {
-        guard let url = URL(string: "\(baseURL)/ask") else {
-            throw BrainClientError.invalidURL
+    func ask(question: String, limit: Int = 10) async throws(BrainClientError) -> AskResponse {
+        struct AskRequest: Encodable, Sendable {
+            let question: String
+            let limit: Int
         }
 
+        return try await post(path: "ask", body: AskRequest(question: question, limit: limit), as: AskResponse.self)
+    }
+
+    func query(_ text: String, limit: Int = 10) async throws(BrainClientError) -> QueryResponse {
+        struct QueryRequest: Encodable, Sendable {
+            let text: String
+            let limit: Int
+        }
+
+        return try await post(path: "query", body: QueryRequest(text: text, limit: limit), as: QueryResponse.self)
+    }
+
+    func health() async throws(BrainClientError) -> HealthResponse {
+        try await get(baseURL.appending(path: "health"), as: HealthResponse.self)
+    }
+
+    private func get<T: Decodable>(_ url: URL, as type: T.Type) async throws(BrainClientError) -> T {
+        let request = URLRequest(url: url)
+        return try await execute(request, as: type)
+    }
+
+    private func post<Body: Encodable, T: Decodable>(path: String, body: Body, as type: T.Type) async throws(BrainClientError) -> T {
+        let url = baseURL.appending(path: path)
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
 
-        struct AskRequest: Encodable {
-            let question: String
-            let limit: Int
-        }
-        request.httpBody = try JSONEncoder().encode(AskRequest(question: question, limit: limit))
-
-        let (data, response) = try await session.data(for: request)
-        try validateResponse(response)
-
         do {
-            return try JSONDecoder().decode(AskResponse.self, from: data)
+            request.httpBody = try encoder.encode(body)
         } catch {
-            throw BrainClientError.decodingError(error)
+            throw BrainClientError.encodingError(error.localizedDescription)
+        }
+
+        return try await execute(request, as: type)
+    }
+
+    private func execute<T: Decodable>(_ request: URLRequest, as type: T.Type) async throws(BrainClientError) -> T {
+        do {
+            let (data, response) = try await session.data(for: request)
+            try validateResponse(response, data: data)
+
+            do {
+                return try decoder.decode(T.self, from: data)
+            } catch {
+                throw BrainClientError.decodingError(error.localizedDescription)
+            }
+        } catch let error as BrainClientError {
+            throw error
+        } catch {
+            throw BrainClientError.networkError(error.localizedDescription)
         }
     }
 
-    func health() async throws -> Bool {
-        guard let url = URL(string: "\(baseURL)/health") else {
-            throw BrainClientError.invalidURL
-        }
-
-        let (data, response) = try await session.data(from: url)
-        try validateResponse(response)
-
-        do {
-            let result = try JSONDecoder().decode([String: String].self, from: data)
-            return result["status"] == "ok"
-        } catch {
-            return false
-        }
-    }
-
-    private func validateResponse(_ response: URLResponse) throws {
+    private func validateResponse(_ response: URLResponse, data: Data) throws(BrainClientError) {
         guard let httpResponse = response as? HTTPURLResponse else {
-            return
+            throw BrainClientError.invalidResponse
         }
+
         guard (200...299).contains(httpResponse.statusCode) else {
-            throw BrainClientError.serverError("HTTP \(httpResponse.statusCode)")
+            let message = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines)
+            throw BrainClientError.serverError(
+                statusCode: httpResponse.statusCode,
+                message: message?.isEmpty == false ? message! : "Request failed"
+            )
         }
     }
 }
