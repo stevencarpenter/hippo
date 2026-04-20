@@ -175,6 +175,7 @@ fn build_envelope(
         env_snapshot: HashMap::new(),
         git_state,
         redaction_count: 0,
+        tool_name: Some(pending.name.clone()),
     };
 
     EventEnvelope {
