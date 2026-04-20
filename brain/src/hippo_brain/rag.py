@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import sqlite3
 import time
 from datetime import datetime, timezone
 
@@ -36,6 +37,7 @@ _rag_degraded = (
 logger = logging.getLogger("hippo_brain.rag")
 
 DEFAULT_MAX_CONTEXT_CHARS = 8000
+DEFAULT_SOURCES_LIMIT = 10
 _MIN_PER_HIT_FIELD_CHARS = 80
 
 _SYSTEM_PROMPT = (
@@ -66,10 +68,12 @@ def _truncate(text: str, max_len: int) -> str:
     return text[: max(max_len - 1, 1)] + "…"
 
 
-def _shape_rag_sources(hits: list[dict], min_score: float = 0.0) -> list[dict]:
+def _shape_rag_sources(
+    hits: list[dict], min_score: float = 0.0, limit: int = DEFAULT_SOURCES_LIMIT
+) -> list[dict]:
     """Transform raw retrieval hits into the response source shape.
 
-    Filters out sources below ``min_score`` and caps at 5 results.
+    Filters out sources below ``min_score`` and caps at ``limit`` results.
     """
     sources = []
     for hit in hits:
@@ -88,7 +92,7 @@ def _shape_rag_sources(hits: list[dict], min_score: float = 0.0) -> list[dict]:
                 "linked_event_ids": list(hit.get("linked_event_ids", []) or []),
             }
         )
-    return sources[:5]
+    return sources[:limit]
 
 
 def _hit_lines(index: int, hit: dict, embed_cap: int, cmd_cap: int) -> list[str]:
@@ -405,11 +409,12 @@ async def ask(
 
     # 2. Retrieve relevant knowledge nodes.
     #
-    # Filter-aware route: if any filter is set (either a full ``Filters`` or
-    # any of the flat kwargs), we go through the new ``retrieval.search``
-    # pipeline (hybrid RRF + MMR + filter pushdown) over a sqlite connection.
-    # Otherwise we keep the legacy LanceDB-style ``search_similar`` path so
-    # the existing ``mcp.ask`` callsite keeps working unchanged.
+    # Prefer ``retrieval.search`` (hybrid RRF + FTS5 + MMR diversification)
+    # whenever we have a real sqlite3.Connection. This applies regardless of
+    # whether filters are set, so vanilla ``ask`` calls also benefit from
+    # MMR's lexical+temporal diversity instead of pure-semantic KNN. The
+    # legacy ``search_similar`` path is kept for non-sqlite handles (e.g.
+    # LanceDB tables on deploys without sqlite-vec).
     effective_filters = _resolve_filters(
         filters,
         project=project,
@@ -418,22 +423,11 @@ async def ask(
         branch=branch,
         entity=entity,
     )
+    retrieval_conn = conn if conn is not None else vector_table
+    use_retrieval_search = isinstance(retrieval_conn, sqlite3.Connection)
     try:
         _t1 = time.monotonic()
-        if effective_filters is not None:
-            retrieval_conn = conn if conn is not None else vector_table
-            if retrieval_conn is None:
-                return _degraded_response(
-                    model=query_model,
-                    sources=[],
-                    error=(
-                        "retrieve failed [ConfigError] model="
-                        f"{query_model!r} endpoint={endpoint}: filters were requested "
-                        "but no sqlite connection was supplied (pass conn=... or ensure "
-                        "vector_table is a sqlite3.Connection)"
-                    ),
-                    stage="retrieve",
-                )
+        if use_retrieval_search:
             results = retrieval_search(
                 retrieval_conn,
                 question,
@@ -443,6 +437,18 @@ async def ask(
                 limit=limit,
             )
             hits = [_result_to_hit(r) for r in results]
+        elif effective_filters is not None:
+            return _degraded_response(
+                model=query_model,
+                sources=[],
+                error=(
+                    "retrieve failed [ConfigError] model="
+                    f"{query_model!r} endpoint={endpoint}: filters were requested "
+                    "but no sqlite connection was supplied (pass conn=... or ensure "
+                    "vector_table is a sqlite3.Connection)"
+                ),
+                stage="retrieve",
+            )
         else:
             hits = search_similar(vector_table, query_vec, limit=limit)
         if _rag_duration:
@@ -467,7 +473,7 @@ async def ask(
         }
 
     # 3. Shape sources (preserved even if synthesis fails).
-    sources = _shape_rag_sources(hits)
+    sources = _shape_rag_sources(hits, limit=limit)
     messages = _build_rag_prompt(question, hits, max_chars=max_context_chars)
 
     # 4. Synthesize.
