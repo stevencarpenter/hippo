@@ -1,0 +1,9 @@
+{
+  "$schema": "https://modelcontextprotocol.io/schema/config.json",
+  "mcpServers": {
+    "xcode-proxy": {
+      "type": "http",
+      "url": "http://localhost:9876/mcp"
+    }
+  }
+}
