@@ -71,7 +71,7 @@ jobs:
           echo "Checksum: ${CHECKSUM}"
 
       - name: Upload daemon artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: daemon-binary
           path: ${{ steps.artifact.outputs.name }}
@@ -141,7 +141,7 @@ jobs:
           echo "Checksum: ${CHECKSUM}"
 
       - name: Upload brain artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: brain-package
           path: ${{ steps.artifact.outputs.name }}
@@ -150,7 +150,7 @@ jobs:
 
   build-gui:
     name: Build GUI Application
-    runs-on: macos-latest
+    runs-on: macos-26
     timeout-minutes: 30
     outputs:
       artifact_name: ${{ steps.artifact.outputs.name }}
@@ -161,7 +161,7 @@ jobs:
       - name: Setup Xcode
         uses: maxim-lobanov/setup-xcode@v1
         with:
-          xcode-version: latest-stable
+          xcode-version: '26'
 
       - name: Extract version from tag
         id: version
