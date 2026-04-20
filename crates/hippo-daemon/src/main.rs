@@ -96,7 +96,11 @@ async fn main() -> Result<()> {
                         continue;
                     }
                     let status = std::process::Command::new("launchctl")
-                        .args(["bootstrap", &domain, plist.to_str().context("non-UTF-8 path")?])
+                        .args([
+                            "bootstrap",
+                            &domain,
+                            plist.to_str().context("non-UTF-8 path")?,
+                        ])
                         .status()
                         .context("launchctl failed")?;
                     if status.success() {
@@ -214,13 +218,16 @@ async fn main() -> Result<()> {
                 if brain_was_loaded {
                     print!("  Draining brain (waiting for in-flight requests)");
                     let _ = std::io::Write::flush(&mut std::io::stdout());
-                    let drained =
-                        install::drain_brain(std::time::Duration::from_secs(10));
-                    println!("{}", if drained { " done" } else { " timed out, proceeding" });
-                    install::service_bootout(
-                        &domain,
-                        &launch_agents.join("com.hippo.brain.plist"),
+                    let drained = install::drain_brain(std::time::Duration::from_secs(10));
+                    println!(
+                        "{}",
+                        if drained {
+                            " done"
+                        } else {
+                            " timed out, proceeding"
+                        }
                     );
+                    install::service_bootout(&domain, &launch_agents.join("com.hippo.brain.plist"));
                     println!("  Stopped brain");
                 }
                 if daemon_was_loaded {
@@ -312,13 +319,19 @@ async fn main() -> Result<()> {
                     println!();
                     println!("Load with:");
                     if !daemon_was_loaded {
-                        println!("  launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.hippo.daemon.plist");
+                        println!(
+                            "  launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.hippo.daemon.plist"
+                        );
                     }
                     if !brain_was_loaded {
-                        println!("  launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.hippo.brain.plist");
+                        println!(
+                            "  launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.hippo.brain.plist"
+                        );
                     }
                     if gh_poll_installed {
-                        println!("  launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.hippo.gh-poll.plist");
+                        println!(
+                            "  launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.hippo.gh-poll.plist"
+                        );
                     }
                 }
             }

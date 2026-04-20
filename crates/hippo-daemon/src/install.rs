@@ -259,14 +259,13 @@ pub fn drain_brain(timeout: std::time::Duration) -> bool {
     // nosemgrep
     unsafe { libc::kill(pid as i32, libc::SIGTERM) };
 
-    let exited = drain_poll(
+    drain_poll(
         // nosemgrep
         || unsafe { libc::kill(pid as i32, 0) } != 0,
         std::time::Duration::from_millis(500),
         timeout,
         true,
-    );
-    exited
+    )
 }
 
 /// Poll `is_done` every `interval` until it returns true or `timeout` elapses.
@@ -342,13 +341,18 @@ pub fn install_native_messaging_manifest(hippo_bin: &Path, force: bool) -> Resul
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::time::Duration;
 
     #[test]
     fn drain_poll_returns_true_immediately_when_already_done() {
-        let result = drain_poll(|| true, Duration::from_millis(1), Duration::from_secs(1), false);
+        let result = drain_poll(
+            || true,
+            Duration::from_millis(1),
+            Duration::from_secs(1),
+            false,
+        );
         assert!(result);
     }
 
@@ -387,7 +391,9 @@ mod tests {
 
     #[test]
     fn service_is_loaded_returns_false_for_unknown_label() {
-        assert!(!service_is_loaded("com.hippo.definitely-not-installed-xyzzy"));
+        assert!(!service_is_loaded(
+            "com.hippo.definitely-not-installed-xyzzy"
+        ));
     }
 
     #[test]
