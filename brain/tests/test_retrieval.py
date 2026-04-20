@@ -335,7 +335,9 @@ def test_recent_mode_with_query_no_fts_hits_falls_back_to_date_order(conn):
     _insert_node(conn, 3, summary="mid", created_at=50)
     backend = FakeBackend(fts=[])  # Empty FTS results
 
-    results = search(conn, "query with no hits", None, Filters(), mode="recent", limit=3, backend=backend)
+    results = search(
+        conn, "query with no hits", None, Filters(), mode="recent", limit=3, backend=backend
+    )
 
     assert [r.uuid for r in results] == ["uuid-2", "uuid-3", "uuid-1"]
 
