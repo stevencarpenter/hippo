@@ -410,11 +410,11 @@ async def ask(
     # 2. Retrieve relevant knowledge nodes.
     #
     # Prefer ``retrieval.search`` (hybrid RRF + FTS5 + MMR diversification)
-    # whenever we have a sqlite connection. This applies regardless of
+    # whenever we have a real sqlite3.Connection. This applies regardless of
     # whether filters are set, so vanilla ``ask`` calls also benefit from
     # MMR's lexical+temporal diversity instead of pure-semantic KNN. The
-    # legacy ``search_similar`` path is kept only for callers that pass a
-    # non-sqlite handle (e.g. test doubles).
+    # legacy ``search_similar`` path is kept for non-sqlite handles (e.g.
+    # LanceDB tables on deploys without sqlite-vec).
     effective_filters = _resolve_filters(
         filters,
         project=project,
@@ -424,24 +424,10 @@ async def ask(
         entity=entity,
     )
     retrieval_conn = conn if conn is not None else vector_table
-    use_retrieval_search = isinstance(retrieval_conn, sqlite3.Connection) or (
-        effective_filters is not None and retrieval_conn is not None
-    )
+    use_retrieval_search = isinstance(retrieval_conn, sqlite3.Connection)
     try:
         _t1 = time.monotonic()
         if use_retrieval_search:
-            if retrieval_conn is None:
-                return _degraded_response(
-                    model=query_model,
-                    sources=[],
-                    error=(
-                        "retrieve failed [ConfigError] model="
-                        f"{query_model!r} endpoint={endpoint}: filters were requested "
-                        "but no sqlite connection was supplied (pass conn=... or ensure "
-                        "vector_table is a sqlite3.Connection)"
-                    ),
-                    stage="retrieve",
-                )
             results = retrieval_search(
                 retrieval_conn,
                 question,

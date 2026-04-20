@@ -1,5 +1,6 @@
 """Tests for the Hippo RAG (retrieval-augmented generation) module."""
 
+import sqlite3
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
@@ -439,62 +440,66 @@ class TestFilteredRetrievalRouting:
     async def test_flat_kwargs_route_through_retrieval_search(self):
         """Passing flat filter kwargs routes via retrieval.search with a Filters."""
         client = _healthy_client(chat_return="answered")
-        sentinel_conn = MagicMock(name="sqlite_conn")
+        sentinel_conn = sqlite3.connect(":memory:")
+        try:
+            with (
+                patch("hippo_brain.rag.retrieval_search") as retrieval_mock,
+                patch("hippo_brain.rag.search_similar") as legacy_mock,
+            ):
+                retrieval_mock.return_value = [_fake_search_result()]
+                result = await ask(
+                    "q",
+                    client,
+                    None,
+                    "m",
+                    "e",
+                    project="/home/user/projects/hippo",
+                    since=1743292800000,
+                    source="claude",
+                    branch="postgres",
+                    conn=sentinel_conn,
+                )
 
-        with (
-            patch("hippo_brain.rag.retrieval_search") as retrieval_mock,
-            patch("hippo_brain.rag.search_similar") as legacy_mock,
-        ):
-            retrieval_mock.return_value = [_fake_search_result()]
-            result = await ask(
-                "q",
-                client,
-                None,
-                "m",
-                "e",
-                project="/home/user/projects/hippo",
-                since=1743292800000,
-                source="claude",
-                branch="postgres",
-                conn=sentinel_conn,
-            )
-
-        assert result["degraded"] is False
-        legacy_mock.assert_not_called()
-        retrieval_mock.assert_called_once()
-        kwargs = retrieval_mock.call_args.kwargs
-        assert retrieval_mock.call_args.args[0] is sentinel_conn
-        passed = kwargs["filters"]
-        assert isinstance(passed, Filters)
-        assert passed.project == "/home/user/projects/hippo"
-        assert passed.since_ms == 1743292800000
-        assert passed.source == "claude"
-        assert passed.branch == "postgres"
-        assert kwargs["mode"] == "hybrid"
-        assert kwargs["limit"] == 10
+            assert result["degraded"] is False
+            legacy_mock.assert_not_called()
+            retrieval_mock.assert_called_once()
+            kwargs = retrieval_mock.call_args.kwargs
+            assert retrieval_mock.call_args.args[0] is sentinel_conn
+            passed = kwargs["filters"]
+            assert isinstance(passed, Filters)
+            assert passed.project == "/home/user/projects/hippo"
+            assert passed.since_ms == 1743292800000
+            assert passed.source == "claude"
+            assert passed.branch == "postgres"
+            assert kwargs["mode"] == "hybrid"
+            assert kwargs["limit"] == 10
+        finally:
+            sentinel_conn.close()
 
     @pytest.mark.asyncio
     async def test_filters_object_passed_through_unchanged(self):
         """Explicit Filters object is used verbatim (not rebuilt)."""
         client = _healthy_client(chat_return="ok")
-        sentinel_conn = MagicMock(name="sqlite_conn")
+        sentinel_conn = sqlite3.connect(":memory:")
         my_filters = Filters(project="/x", since_ms=100, source="shell")
+        try:
+            with patch("hippo_brain.rag.retrieval_search") as retrieval_mock:
+                retrieval_mock.return_value = [_fake_search_result()]
+                await ask(
+                    "q",
+                    client,
+                    None,
+                    "m",
+                    "e",
+                    filters=my_filters,
+                    conn=sentinel_conn,
+                    mode="semantic",
+                )
 
-        with patch("hippo_brain.rag.retrieval_search") as retrieval_mock:
-            retrieval_mock.return_value = [_fake_search_result()]
-            await ask(
-                "q",
-                client,
-                None,
-                "m",
-                "e",
-                filters=my_filters,
-                conn=sentinel_conn,
-                mode="semantic",
-            )
-
-        assert retrieval_mock.call_args.kwargs["filters"] is my_filters
-        assert retrieval_mock.call_args.kwargs["mode"] == "semantic"
+            assert retrieval_mock.call_args.kwargs["filters"] is my_filters
+            assert retrieval_mock.call_args.kwargs["mode"] == "semantic"
+        finally:
+            sentinel_conn.close()
 
     @pytest.mark.asyncio
     async def test_no_filters_with_non_sqlite_handle_uses_legacy(self):
@@ -520,50 +525,52 @@ class TestFilteredRetrievalRouting:
         even when no filters are supplied. Prior behavior was pure-semantic KNN,
         which biased toward a single cluster for broad questions.
         """
-        import sqlite3
-
         client = _healthy_client(chat_return="hybrid")
         conn = sqlite3.connect(":memory:")
+        try:
+            with (
+                patch("hippo_brain.rag.retrieval_search") as rs_mock,
+                patch("hippo_brain.rag.search_similar") as legacy_mock,
+            ):
+                rs_mock.return_value = [_fake_search_result()]
+                result = await ask("q", client, conn, "m", "e")
 
-        with (
-            patch("hippo_brain.rag.retrieval_search") as rs_mock,
-            patch("hippo_brain.rag.search_similar") as legacy_mock,
-        ):
-            rs_mock.return_value = [_fake_search_result()]
-            result = await ask("q", client, conn, "m", "e")
-
-        assert result["answer"] == "hybrid"
-        legacy_mock.assert_not_called()
-        rs_mock.assert_called_once()
-        assert rs_mock.call_args.kwargs["filters"] is None
-        assert rs_mock.call_args.kwargs["mode"] == "hybrid"
+            assert result["answer"] == "hybrid"
+            legacy_mock.assert_not_called()
+            rs_mock.assert_called_once()
+            assert rs_mock.call_args.kwargs["filters"] is None
+            assert rs_mock.call_args.kwargs["mode"] == "hybrid"
+        finally:
+            conn.close()
 
     @pytest.mark.asyncio
     async def test_filters_path_surfaces_uuid_and_linked_events_in_sources(self):
         """SearchResult fields (uuid, linked_event_ids) must flow into sources."""
         client = _healthy_client(chat_return="ok")
-        sentinel_conn = MagicMock()
+        sentinel_conn = sqlite3.connect(":memory:")
+        try:
+            with patch("hippo_brain.rag.retrieval_search") as retrieval_mock:
+                retrieval_mock.return_value = [
+                    _fake_search_result(uuid="u-1", linked_event_ids=[1, 2, 3]),
+                    _fake_search_result(uuid="u-2", score=0.5, linked_event_ids=[]),
+                ]
+                result = await ask(
+                    "q",
+                    client,
+                    None,
+                    "m",
+                    "e",
+                    project="/home/user",
+                    conn=sentinel_conn,
+                )
 
-        with patch("hippo_brain.rag.retrieval_search") as retrieval_mock:
-            retrieval_mock.return_value = [
-                _fake_search_result(uuid="u-1", linked_event_ids=[1, 2, 3]),
-                _fake_search_result(uuid="u-2", score=0.5, linked_event_ids=[]),
-            ]
-            result = await ask(
-                "q",
-                client,
-                None,
-                "m",
-                "e",
-                project="/home/user",
-                conn=sentinel_conn,
-            )
-
-        assert [s["uuid"] for s in result["sources"]] == ["u-1", "u-2"]
-        assert result["sources"][0]["linked_event_ids"] == [1, 2, 3]
-        assert result["sources"][1]["linked_event_ids"] == []
-        # Score round-trips from SearchResult.score through the _distance adapter.
-        assert result["sources"][0]["score"] == pytest.approx(0.91, abs=0.001)
+            assert [s["uuid"] for s in result["sources"]] == ["u-1", "u-2"]
+            assert result["sources"][0]["linked_event_ids"] == [1, 2, 3]
+            assert result["sources"][1]["linked_event_ids"] == []
+            # Score round-trips from SearchResult.score through the _distance adapter.
+            assert result["sources"][0]["score"] == pytest.approx(0.91, abs=0.001)
+        finally:
+            sentinel_conn.close()
 
     @pytest.mark.asyncio
     async def test_filters_without_connection_degrades(self):
@@ -581,20 +588,24 @@ class TestFilteredRetrievalRouting:
     @pytest.mark.asyncio
     async def test_filters_path_degrades_when_retrieval_raises(self):
         client = _healthy_client()
-        sentinel_conn = MagicMock()
+        sentinel_conn = sqlite3.connect(":memory:")
+        try:
+            with patch(
+                "hippo_brain.rag.retrieval_search", side_effect=RuntimeError("vec0 missing")
+            ):
+                result = await ask(
+                    "q",
+                    client,
+                    None,
+                    "m",
+                    "e",
+                    filters=Filters(project="/x"),
+                    conn=sentinel_conn,
+                )
 
-        with patch("hippo_brain.rag.retrieval_search", side_effect=RuntimeError("vec0 missing")):
-            result = await ask(
-                "q",
-                client,
-                None,
-                "m",
-                "e",
-                filters=Filters(project="/x"),
-                conn=sentinel_conn,
-            )
-
-        assert result["degraded"] is True
-        assert result["stage"] == "retrieve"
-        assert "vec0 missing" in result["error"]
-        client.chat.assert_not_called()
+            assert result["degraded"] is True
+            assert result["stage"] == "retrieve"
+            assert "vec0 missing" in result["error"]
+            client.chat.assert_not_called()
+        finally:
+            sentinel_conn.close()
