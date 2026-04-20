@@ -615,6 +615,7 @@ mod tests {
                 is_dirty: false,
             }),
             redaction_count: 0,
+            tool_name: None,
         })
     }
 

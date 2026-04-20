@@ -1,0 +1,14 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/Users/carpenter/projects/hippo/hippo-gui/scripts/xcode-mcp-proxy.sh"
+          }
+        ]
+      }
+    ]
+  }
+}
