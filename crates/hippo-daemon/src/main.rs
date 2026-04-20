@@ -5,7 +5,7 @@ use hippo_daemon::{claude_session, commands, daemon, gh_api, gh_poll};
 
 use std::path::PathBuf;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::Parser;
 use cli::{
     BrainAction, Cli, Commands, ConfigAction, DaemonAction, IngestSource, RedactAction,
@@ -81,9 +81,30 @@ async fn main() -> Result<()> {
                 daemon::run(config).await?;
             }
             DaemonAction::Start => {
-                println!(
-                    "Use: launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.hippo.daemon.plist"
-                );
+                let uid = unsafe { libc::getuid() };
+                let domain = format!("gui/{uid}");
+                let launch_agents = dirs::home_dir()
+                    .context("cannot determine home directory")?
+                    .join("Library/LaunchAgents");
+                for label in &["com.hippo.daemon", "com.hippo.brain"] {
+                    let plist = launch_agents.join(format!("{label}.plist"));
+                    if !plist.exists() {
+                        eprintln!(
+                            "LaunchAgent not found: {}. Run: hippo daemon install",
+                            plist.display()
+                        );
+                        continue;
+                    }
+                    let status = std::process::Command::new("launchctl")
+                        .args(["bootstrap", &domain, plist.to_str().context("non-UTF-8 path")?])
+                        .status()
+                        .context("launchctl failed")?;
+                    if status.success() {
+                        println!("Started {label}");
+                    } else {
+                        println!("{label} already loaded or failed to start");
+                    }
+                }
             }
             DaemonAction::Stop => {
                 let socket = config.socket_path();
@@ -180,6 +201,36 @@ async fn main() -> Result<()> {
                 println!("  data dir:     {}", vars.data_dir.display());
                 println!();
 
+                // Detect which services are running so we can cycle them after writing
+                // new plists. Do this before touching anything on disk.
+                let uid = unsafe { libc::getuid() };
+                let domain = format!("gui/{uid}");
+                let launch_agents = dirs::home_dir()
+                    .context("cannot determine home directory")?
+                    .join("Library/LaunchAgents");
+                let daemon_was_loaded = install::service_is_loaded("com.hippo.daemon");
+                let brain_was_loaded = install::service_is_loaded("com.hippo.brain");
+
+                if brain_was_loaded {
+                    print!("  Draining brain (waiting for in-flight requests)");
+                    let _ = std::io::Write::flush(&mut std::io::stdout());
+                    let drained =
+                        install::drain_brain(std::time::Duration::from_secs(10));
+                    println!("{}", if drained { " done" } else { " timed out, proceeding" });
+                    install::service_bootout(
+                        &domain,
+                        &launch_agents.join("com.hippo.brain.plist"),
+                    );
+                    println!("  Stopped brain");
+                }
+                if daemon_was_loaded {
+                    install::service_bootout(
+                        &domain,
+                        &launch_agents.join("com.hippo.daemon.plist"),
+                    );
+                    println!("  Stopped daemon");
+                }
+
                 let daemon_template = include_str!("../../../launchd/com.hippo.daemon.plist");
                 let brain_template = include_str!("../../../launchd/com.hippo.brain.plist");
                 let gh_poll_template = include_str!("../../../launchd/com.hippo.gh-poll.plist");
@@ -234,18 +285,41 @@ async fn main() -> Result<()> {
                 println!("Installing Native Messaging manifest for Firefox...");
                 install::install_native_messaging_manifest(&vars.hippo_bin, force)?;
 
-                println!();
-                println!("Load with:");
-                println!(
-                    "  launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.hippo.daemon.plist"
-                );
-                println!(
-                    "  launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.hippo.brain.plist"
-                );
-                if gh_poll_installed {
-                    println!(
-                        "  launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.hippo.gh-poll.plist"
-                    );
+                // Reload services that were running before the upgrade.
+                if daemon_was_loaded || brain_was_loaded {
+                    println!();
+                    println!("Restarting services...");
+                    if daemon_was_loaded {
+                        install::service_bootstrap(
+                            &domain,
+                            &launch_agents.join("com.hippo.daemon.plist"),
+                        )?;
+                        println!("  Started daemon");
+                    }
+                    if brain_was_loaded {
+                        install::service_bootstrap(
+                            &domain,
+                            &launch_agents.join("com.hippo.brain.plist"),
+                        )?;
+                        println!("  Started brain");
+                    }
+                }
+
+                // Only print "Load with:" for services that weren't already cycled.
+                let needs_manual_start =
+                    !daemon_was_loaded || !brain_was_loaded || gh_poll_installed;
+                if needs_manual_start {
+                    println!();
+                    println!("Load with:");
+                    if !daemon_was_loaded {
+                        println!("  launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.hippo.daemon.plist");
+                    }
+                    if !brain_was_loaded {
+                        println!("  launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.hippo.brain.plist");
+                    }
+                    if gh_poll_installed {
+                        println!("  launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.hippo.gh-poll.plist");
+                    }
                 }
             }
         },
