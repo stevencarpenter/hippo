@@ -36,6 +36,14 @@ pub struct ShellEvent {
     pub env_snapshot: HashMap<String, String>,
     pub git_state: Option<GitState>,
     pub redaction_count: u32,
+    /// Name of the originating tool for events synthesized from a Claude
+    /// Code session (e.g. `"Bash"`, `"Agent"`, `"mcp__github__create_pull_request"`).
+    /// `None` for native shell events. `#[serde(default)]` keeps older JSON
+    /// envelopes deserializable; Rust callers constructing `ShellEvent`
+    /// directly must still supply the field (typically `None` for native
+    /// shell events).
+    #[serde(default)]
+    pub tool_name: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

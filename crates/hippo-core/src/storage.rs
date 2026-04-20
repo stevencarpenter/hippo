@@ -20,7 +20,7 @@ pub fn open_db(path: &Path) -> Result<Connection> {
          PRAGMA busy_timeout=5000;",
     )?;
     let version: i64 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
-    const EXPECTED_VERSION: i64 = 6;
+    const EXPECTED_VERSION: i64 = 7;
 
     // Migrate from v1 → v2: add envelope_id column for dedup
     if version == 1 {
@@ -328,6 +328,23 @@ pub fn open_db(path: &Path) -> Result<Connection> {
             )?;
         }
         conn.execute_batch("PRAGMA user_version = 6;")?;
+    }
+
+    // Migrate from v6 → v7: add source_kind + tool_name to events for the
+    // Claude tool enrichment policy. source_kind groups events by origin
+    // ('shell' vs 'claude-tool' vs future sources) so queries can filter
+    // synthesized rows; tool_name records the exact upstream tool name
+    // (e.g. 'Bash', 'Agent', 'mcp__github__create_pull_request') for rows
+    // that originated from a Claude Code session. Keep in sync with
+    // schema.sql.
+    if (1..=6).contains(&version) {
+        conn.execute_batch(
+            "ALTER TABLE events ADD COLUMN source_kind TEXT NOT NULL DEFAULT 'shell';
+             ALTER TABLE events ADD COLUMN tool_name TEXT;
+             CREATE INDEX IF NOT EXISTS idx_events_source_kind
+                 ON events (source_kind) WHERE source_kind != 'shell';
+             PRAGMA user_version = 7;",
+        )?;
     } else if version != 0 && version != EXPECTED_VERSION {
         anyhow::bail!(
             "DB schema version mismatch: expected {}, found {}. \
@@ -465,13 +482,23 @@ pub fn insert_event_at(
         None => (None, None),
     };
 
+    // Derive source_kind from tool_name presence. A populated tool_name
+    // means the event was synthesized from a Claude Code tool use; a
+    // missing one means it came from a native shell hook. Future sources
+    // (cursor, codex, ...) will need their own discriminator on ShellEvent.
+    let source_kind = if event.tool_name.is_some() {
+        "claude-tool"
+    } else {
+        "shell"
+    };
+
     let tx = conn.unchecked_transaction()?;
 
     let rows = tx.execute(
         "INSERT OR IGNORE INTO events (session_id, timestamp, command, stdout, stderr, stdout_truncated, stderr_truncated,
          exit_code, duration_ms, cwd, hostname, shell, git_repo, git_branch, git_commit, git_dirty,
-         env_snapshot_id, redaction_count, envelope_id)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)",
+         env_snapshot_id, redaction_count, envelope_id, source_kind, tool_name)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21)",
         rusqlite::params![
             session_id,
             timestamp,
@@ -492,6 +519,8 @@ pub fn insert_event_at(
             env_snapshot_id,
             redaction_count,
             envelope_id,
+            source_kind,
+            event.tool_name.as_deref(),
         ],
     )?;
     if rows == 0 {
@@ -765,6 +794,8 @@ pub fn list_fallback_files(fallback_dir: &Path) -> Result<Vec<std::path::PathBuf
     if !fallback_dir.exists() {
         return Ok(Vec::new());
     }
+    // fallback_dir is hippo's own XDG data dir, not user input.
+    // nosemgrep: rust.actix.path-traversal.tainted-path.tainted-path
     let mut files: Vec<std::path::PathBuf> = std::fs::read_dir(fallback_dir)?
         .filter_map(|e| e.ok())
         .map(|e| e.path())
@@ -784,6 +815,8 @@ pub fn recover_fallback_files(
     let mut errors = 0usize;
 
     for file_path in &files {
+        // file_path comes from list_fallback_files, which reads hippo's own XDG data dir.
+        // nosemgrep: rust.actix.path-traversal.tainted-path.tainted-path
         let content = std::fs::read_to_string(file_path)?;
         let mut file_errors = 0usize;
         for line in content.lines() {
@@ -890,6 +923,7 @@ mod tests {
                 is_dirty: false,
             }),
             redaction_count: 0,
+            tool_name: None,
         }
     }
 
@@ -1175,6 +1209,7 @@ mod tests {
             env_snapshot: HashMap::new(),
             git_state: None,
             redaction_count: 0,
+            tool_name: None,
         };
         let eid = insert_event(&conn, sid, &event, 0, None).unwrap();
         assert!(eid > 0);
@@ -1223,6 +1258,7 @@ mod tests {
                 is_dirty: true,
             }),
             redaction_count: 2,
+            tool_name: None,
         };
         let eid = insert_event(&conn, sid, &event, 2, None).unwrap();
         let (stdout_val, stderr_val, stdout_trunc, stderr_trunc, redact): (
@@ -1522,7 +1558,7 @@ mod tests {
         let v: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 6);
+        assert_eq!(v, 7);
     }
 
     #[test]
@@ -1587,12 +1623,12 @@ mod tests {
             )
             .unwrap();
         }
-        // open_db should migrate to v6 (v1 → v2 → v3 → v4 → v5 → v6)
+        // open_db should migrate through every step to the latest version
         let conn = open_db(&db_path).unwrap();
         let v: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 6);
+        assert_eq!(v, 7);
         // Verify envelope_id column exists by inserting with it
         let sid = upsert_session(&conn, "mig-test", "host", "zsh", "user").unwrap();
         let eid = insert_event_at(
@@ -1675,7 +1711,7 @@ mod tests {
         let v: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 6);
+        assert_eq!(v, 7);
     }
 
     #[test]
@@ -1772,12 +1808,12 @@ mod tests {
             .unwrap();
         }
 
-        // open_db should migrate v3 → v6
+        // open_db should migrate v3 through to the latest version
         let conn = open_db(&db_path).unwrap();
         let v: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 6);
+        assert_eq!(v, 7);
 
         // Verify browser tables exist
         let browser_tables = [
@@ -1806,7 +1842,7 @@ mod tests {
         let v2: i64 = conn2
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v2, 6);
+        assert_eq!(v2, 7);
     }
 
     fn sample_browser_event() -> BrowserEvent {

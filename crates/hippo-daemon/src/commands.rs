@@ -280,8 +280,10 @@ pub async fn handle_send_event_shell(
     // Caller-supplied value wins (shell hook caches it). Otherwise derive
     // from cwd once per invocation — cheap, and the shell path only pays
     // this when its cache misses or the hook is an older build.
+    // cwd comes from the local shell hook (this user's own $PWD), not a remote source.
     let git_repo = git_repo
         .filter(|s| !s.is_empty())
+        // nosemgrep: rust.actix.path-traversal.tainted-path.tainted-path
         .or_else(|| crate::git_repo::derive_git_repo(std::path::Path::new(&cwd)));
 
     let git_state = if git_repo.is_some() || git_branch.is_some() || git_commit.is_some() {
@@ -304,6 +306,8 @@ pub async fn handle_send_event_shell(
         command: cmd,
         exit_code: exit,
         duration_ms,
+        // cwd is the user's own $PWD forwarded from the local shell hook.
+        // nosemgrep: rust.actix.path-traversal.tainted-path.tainted-path
         cwd: PathBuf::from(cwd),
         hostname,
         shell: crate::detect_shell_kind(),
@@ -316,6 +320,7 @@ pub async fn handle_send_event_shell(
         env_snapshot,
         git_state,
         redaction_count: 0,
+        tool_name: None,
     };
 
     let envelope = EventEnvelope::shell(event);

@@ -40,6 +40,17 @@ CREATE TABLE IF NOT EXISTS events
     git_dirty INTEGER,
     env_snapshot_id INTEGER REFERENCES env_snapshots (id),
     envelope_id TEXT,
+    -- source_kind groups events by their origin so queries can separate
+    -- real shell activity from synthesized rows (e.g. Claude tool calls).
+    -- 'shell' = native shell hook; 'claude-tool' = tool call derived from
+    -- a Claude Code session. New sources (cursor, codex, etc.) take their
+    -- own label rather than reusing 'shell'.
+    source_kind TEXT NOT NULL DEFAULT 'shell',
+    -- tool_name is set only when source_kind != 'shell'. Holds the exact
+    -- tool name as the upstream producer reported it (e.g. 'Bash', 'Agent',
+    -- 'mcp__github__create_pull_request'). Used by the enrichment policy
+    -- to decide whether to enrich or skip a row.
+    tool_name TEXT,
     enriched INTEGER NOT NULL DEFAULT 0,
     redaction_count INTEGER NOT NULL DEFAULT 0,
     archived_at INTEGER,
@@ -189,6 +200,8 @@ CREATE INDEX IF NOT EXISTS idx_events_enriched ON events (enriched)
 WHERE enriched = 0;
 CREATE UNIQUE INDEX IF NOT EXISTS idx_events_envelope_id ON events (envelope_id)
 WHERE envelope_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_events_source_kind ON events (source_kind)
+WHERE source_kind != 'shell';
 CREATE INDEX IF NOT EXISTS idx_entities_type_name ON entities (type, name);
 CREATE INDEX IF NOT EXISTS idx_entities_canonical ON entities (canonical)
 WHERE canonical IS NOT NULL;
@@ -422,4 +435,4 @@ END;
 -- the Python brain loads. The brain creates `knowledge_vectors` idempotently
 -- on boot via hippo_brain.vector_store.ensure_vec_table().
 
-PRAGMA user_version = 6;
+PRAGMA user_version = 7;
