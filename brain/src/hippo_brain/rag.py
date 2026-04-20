@@ -473,7 +473,7 @@ async def ask(
         }
 
     # 3. Shape sources (preserved even if synthesis fails).
-    sources = _shape_rag_sources(hits)
+    sources = _shape_rag_sources(hits, limit=limit)
     messages = _build_rag_prompt(question, hits, max_chars=max_context_chars)
 
     # 4. Synthesize.

@@ -414,6 +414,17 @@ class TestAsk:
         user_content = messages[1]["content"]
         assert len(user_content) < 4500
 
+    @pytest.mark.asyncio
+    async def test_limit_caps_sources_returned(self):
+        """ask(limit=N) must forward N to source shaping so sources <= N."""
+        client = _healthy_client(chat_return="ok")
+        many_hits = [dict(SAMPLE_HITS[0], uuid=f"u-{i}") for i in range(8)]
+
+        with patch("hippo_brain.rag.search_similar", return_value=many_hits):
+            result = await ask("q", client, MagicMock(), "m", "e", limit=3)
+
+        assert len(result["sources"]) == 3
+
 
 # -- Retrieval-router plumbing ----------------------------------------------
 
