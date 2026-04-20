@@ -328,6 +328,18 @@ def test_recent_mode_without_query_uses_all_nodes(conn):
     assert [r.uuid for r in results] == ["uuid-2", "uuid-1"]
 
 
+def test_recent_mode_with_query_no_fts_hits_falls_back_to_date_order(conn):
+    """When FTS finds no hits, recent mode should fall back to date-ordered results."""
+    _insert_node(conn, 1, summary="old", created_at=1)
+    _insert_node(conn, 2, summary="new", created_at=100)
+    _insert_node(conn, 3, summary="mid", created_at=50)
+    backend = FakeBackend(fts=[])  # Empty FTS results
+
+    results = search(conn, "query with no hits", None, Filters(), mode="recent", limit=3, backend=backend)
+
+    assert [r.uuid for r in results] == ["uuid-2", "uuid-3", "uuid-1"]
+
+
 def test_unknown_mode_raises(conn):
     with pytest.raises(ValueError):
         search(conn, "q", None, Filters(), mode="banana", backend=FakeBackend())

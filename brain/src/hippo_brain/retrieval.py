@@ -253,9 +253,9 @@ def _recent(
     if query:
         raw = _call_fts(backend, conn, query, CANDIDATE_POOL)
         candidate_ids = [nid for nid, _ in raw]
-        if not candidate_ids:
-            return []
     else:
+        candidate_ids = []
+    if not candidate_ids:
         candidate_ids = _all_recent_ids(conn, CANDIDATE_POOL)
     allowed = _apply_filters(conn, candidate_ids, filters)
     details = _fetch_details(conn, list(allowed))
