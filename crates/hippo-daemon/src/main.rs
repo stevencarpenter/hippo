@@ -95,6 +95,9 @@ async fn main() -> Result<()> {
                         );
                         continue;
                     }
+                    if install::service_is_loaded(label) {
+                        continue;
+                    }
                     let status = std::process::Command::new("launchctl")
                         .args([
                             "bootstrap",
@@ -106,7 +109,7 @@ async fn main() -> Result<()> {
                     if status.success() {
                         println!("Started {label}");
                     } else {
-                        println!("{label} already loaded or failed to start");
+                        eprintln!("{label} failed to start");
                     }
                 }
             }

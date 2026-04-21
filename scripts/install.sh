@@ -412,6 +412,10 @@ install_services() {
             log_warning "Failed to install LaunchAgents automatically"
             log_info "You can install them manually later with: hippo daemon install --brain-dir '${BRAIN_DIR}'"
         }
+        # daemon install only restarts services that were already running (upgrade path).
+        # For fresh installs the plists are written but services aren't bootstrapped yet.
+        # daemon start is idempotent: skips services that are already loaded.
+        "${BIN_DIR}/hippo" daemon start || true
     fi
 
     log_success "Services installed"
