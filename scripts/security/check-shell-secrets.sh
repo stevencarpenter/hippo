@@ -1,5 +1,27 @@
 #!/usr/bin/env bash
+# Scans shell scripts in this repo for patterns that could leak secrets
+# (e.g., hardcoded tokens, secret-like env var assignments). Intended to
+# run in pre-commit and CI. Requires ripgrep.
 set -euo pipefail
+
+usage() {
+    cat <<'EOF'
+check-shell-secrets — scan repo shell scripts for secret-leak patterns
+
+USAGE:
+    check-shell-secrets.sh [--help]
+
+Takes no arguments. Scans all *.sh files under the repo root (excluding
+itself). Exits 0 on clean, non-zero on any suspected leak.
+
+REQUIREMENTS:
+    ripgrep (brew install ripgrep / apt install ripgrep)
+EOF
+}
+
+case "${1:-}" in
+    -h|--help) usage; exit 0 ;;
+esac
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "${ROOT}"

@@ -30,9 +30,13 @@ enum BrainClientError: Error, LocalizedError, Equatable, Sendable {
 }
 
 protocol BrainClientProtocol: Sendable {
-    func listKnowledge(limit: Int, offset: Int, nodeType: String?, sinceMs: Int?) async throws(BrainClientError) -> KnowledgeListResponse
+    func listKnowledge(
+        limit: Int, offset: Int, nodeType: String?, sinceMs: Int?
+    ) async throws(BrainClientError) -> KnowledgeListResponse
     func getKnowledge(id: Int) async throws(BrainClientError) -> KnowledgeNode
-    func listEvents(limit: Int, offset: Int, sessionId: Int?, sinceMs: Int?, project: String?) async throws(BrainClientError) -> EventListResponse
+    func listEvents(
+        limit: Int, offset: Int, sessionId: Int?, sinceMs: Int?, project: String?
+    ) async throws(BrainClientError) -> EventListResponse
     func listSessions(limit: Int, offset: Int, sinceMs: Int?) async throws(BrainClientError) -> SessionListResponse
     func ask(question: String, limit: Int) async throws(BrainClientError) -> AskResponse
     func query(_ text: String, limit: Int) async throws(BrainClientError) -> QueryResponse
@@ -48,7 +52,8 @@ actor BrainClient: BrainClientProtocol {
     init(port: Int? = nil, configClient: ConfigClient = ConfigClient(), session: URLSession? = nil) {
         let resolvedPort = port ?? configClient.loadPort()
         guard let url = URL(string: "http://localhost:\(resolvedPort)") else {
-            preconditionFailure("Failed to build base URL for port \(resolvedPort) — should be impossible for a numeric localhost URL")
+            preconditionFailure(
+                "Failed to build base URL for port \(resolvedPort) — should be impossible for a numeric localhost URL")
         }
         self.baseURL = url
         let config = URLSessionConfiguration.default
@@ -56,8 +61,11 @@ actor BrainClient: BrainClientProtocol {
         self.session = session ?? URLSession(configuration: config)
     }
 
-    func listKnowledge(limit: Int = 20, offset: Int = 0, nodeType: String? = nil, sinceMs: Int? = nil) async throws(BrainClientError) -> KnowledgeListResponse {
-        guard var components = URLComponents(url: baseURL.appending(path: "knowledge"), resolvingAgainstBaseURL: false) else {
+    func listKnowledge(
+        limit: Int = 20, offset: Int = 0, nodeType: String? = nil, sinceMs: Int? = nil
+    ) async throws(BrainClientError) -> KnowledgeListResponse {
+        guard var components = URLComponents(url: baseURL.appending(path: "knowledge"), resolvingAgainstBaseURL: false)
+        else {
             throw BrainClientError.invalidURL("\(baseURL.absoluteString)/knowledge")
         }
         var queryItems = [
@@ -90,7 +98,8 @@ actor BrainClient: BrainClientProtocol {
         sinceMs: Int? = nil,
         project: String? = nil
     ) async throws(BrainClientError) -> EventListResponse {
-        guard var components = URLComponents(url: baseURL.appending(path: "events"), resolvingAgainstBaseURL: false) else {
+        guard var components = URLComponents(url: baseURL.appending(path: "events"), resolvingAgainstBaseURL: false)
+        else {
             throw BrainClientError.invalidURL("\(baseURL.absoluteString)/events")
         }
         var queryItems = [
@@ -115,7 +124,9 @@ actor BrainClient: BrainClientProtocol {
         return try await get(url, as: EventListResponse.self)
     }
 
-    func listSessions(limit: Int = 20, offset: Int = 0, sinceMs: Int? = nil) async throws(BrainClientError) -> SessionListResponse {
+    func listSessions(
+        limit: Int = 20, offset: Int = 0, sinceMs: Int? = nil
+    ) async throws(BrainClientError) -> SessionListResponse {
         var queryItems = [
             URLQueryItem(name: "limit", value: String(limit)),
             URLQueryItem(name: "offset", value: String(offset))
@@ -124,7 +135,8 @@ actor BrainClient: BrainClientProtocol {
             queryItems.append(URLQueryItem(name: "since_ms", value: String(sinceMs)))
         }
 
-        guard var components = URLComponents(url: baseURL.appending(path: "sessions"), resolvingAgainstBaseURL: false) else {
+        guard var components = URLComponents(url: baseURL.appending(path: "sessions"), resolvingAgainstBaseURL: false)
+        else {
             throw BrainClientError.invalidURL("\(baseURL.absoluteString)/sessions")
         }
         components.queryItems = queryItems
@@ -163,7 +175,9 @@ actor BrainClient: BrainClientProtocol {
         return try await execute(request, as: type)
     }
 
-    private func post<Body: Encodable, T: Decodable>(path: String, body: Body, as type: T.Type) async throws(BrainClientError) -> T {
+    private func post<Body: Encodable, T: Decodable>(
+        path: String, body: Body, as type: T.Type
+    ) async throws(BrainClientError) -> T {
         let url = baseURL.appending(path: path)
         var request = URLRequest(url: url)
         request.httpMethod = "POST"

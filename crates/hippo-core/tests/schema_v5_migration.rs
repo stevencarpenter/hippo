@@ -10,7 +10,7 @@ fn seed_v4(path: &std::path::Path) {
 }
 
 #[test]
-fn v4_db_migrates_to_v5_and_has_workflow_tables() {
+fn v4_db_migrates_to_latest_and_has_workflow_tables() {
     let tmp = TempDir::new().unwrap();
     let db = tmp.path().join("hippo.db");
     seed_v4(&db);
@@ -20,7 +20,8 @@ fn v4_db_migrates_to_v5_and_has_workflow_tables() {
     let version: i64 = conn
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .unwrap();
-    assert_eq!(version, 6);
+    // v4 → full chain (v5, v6, v7); only the final version is exercised here.
+    assert_eq!(version, 7);
 
     for table in [
         "workflow_runs",

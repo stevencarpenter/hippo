@@ -8,6 +8,7 @@ pub mod git_repo;
 #[cfg(feature = "otel")]
 pub mod metrics;
 pub mod native_messaging;
+pub mod schema_handshake;
 #[cfg(feature = "otel")]
 pub mod telemetry;
 

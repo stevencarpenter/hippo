@@ -494,6 +494,23 @@ rm -rf brain/.venv
 uv sync --project brain
 echo "  venv ready at brain/.venv"
 
+# ── 4b. Sync brain tree to XDG install location ─────────────────────
+# The brain LaunchAgent runs `uv run --project ~/.local/share/hippo-brain`,
+# not from the repo. Without this sync, a rebuilt daemon running against
+# the installed brain sees a schema-version mismatch after any migration.
+# Keep --delete so removed files don't linger, but exclude dev caches.
+BRAIN_INSTALL_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/hippo-brain"
+echo "==> Syncing brain to ${BRAIN_INSTALL_DIR}..."
+mkdir -p "$BRAIN_INSTALL_DIR"
+rsync -a --delete \
+    --exclude='.venv' \
+    --exclude='__pycache__' \
+    --exclude='.ruff_cache' \
+    --exclude='.pytest_cache' \
+    brain/ "$BRAIN_INSTALL_DIR/"
+echo "==> Rebuilding brain venv at ${BRAIN_INSTALL_DIR}..."
+(cd "$BRAIN_INSTALL_DIR" && uv sync)
+
 # ── 5. Install plists + symlink ─────────────────────────────────────
 echo "==> Installing LaunchAgents + symlink..."
 cargo run --release --features otel --bin hippo -- daemon install --force

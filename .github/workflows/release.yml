@@ -123,14 +123,16 @@ jobs:
           cp brain/uv.lock hippo-brain-release/brain/
           cp brain/README.md hippo-brain-release/brain/ 2>/dev/null || true
 
-          # Copy runtime scripts used by installed LaunchAgents
-          cp -r scripts hippo-brain-release/
-
-          # Copy shell hook scripts so they're available after installation
+          # Copy runtime scripts AND shell hooks into the brain tree so
+          # they install under ${BRAIN_DIR}/{scripts,shell} rather than
+          # polluting ~/.local/share/ with generic top-level directories.
+          # Matches install.rs::detect_vars which computes
+          # scripts_dir = brain_dir.join("scripts").
+          cp -r scripts hippo-brain-release/brain/
           cp -r shell hippo-brain-release/brain/
 
-          # Create the tarball
-          tar -czf "${ARTIFACT_NAME}" -C hippo-brain-release brain scripts
+          # Create the tarball (single top-level entry: brain/)
+          tar -czf "${ARTIFACT_NAME}" -C hippo-brain-release brain
 
           echo "name=${ARTIFACT_NAME}" >> "${GITHUB_OUTPUT}"
           echo "Artifact: ${ARTIFACT_NAME}"

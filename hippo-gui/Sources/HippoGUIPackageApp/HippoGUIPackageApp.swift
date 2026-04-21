@@ -1,5 +1,5 @@
-import SwiftUI
 import HippoGUIKit
+import SwiftUI
 
 @main
 struct HippoGUIPackageApp: App {

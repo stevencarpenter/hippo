@@ -1,6 +1,19 @@
 #!/usr/bin/env python3
-"""Bulk enrichment: process all pending events using the bulk enrichment model."""
+"""Bulk enrichment: process all pending events using the bulk enrichment model.
 
+Reads ~/.config/hippo/config.toml for model settings and DB path, then claims
+pending events grouped by session and runs enrichment until the queue drains.
+
+Usage:
+    hippo-bulk-enrich.py [MODEL] [--help]
+
+Arguments:
+    MODEL           Override the enrichment model (defaults to
+                    config.models.enrichment_bulk or .enrichment)
+    --help / -h     Show this help and exit
+"""
+
+import argparse
 import asyncio
 import sqlite3
 import sys
@@ -17,15 +30,36 @@ from hippo_brain.embeddings import (
 from hippo_brain.enrichment import (
     SYSTEM_PROMPT,
     build_enrichment_prompt,
+    claim_pending_events_by_session,
     mark_queue_failed,
     parse_enrichment_response,
     write_knowledge_node,
-    claim_pending_events_by_cwd,
-    claim_pending_events_by_session,
 )
 
 
+def _parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        prog="hippo-bulk-enrich",
+        description=(
+            "Drain the hippo enrichment queue using the bulk enrichment model. "
+            "Reads ~/.config/hippo/config.toml for model + storage settings."
+        ),
+    )
+    parser.add_argument(
+        "model",
+        nargs="?",
+        default=None,
+        help=(
+            "Override the enrichment model "
+            "(defaults to config.models.enrichment_bulk or .enrichment)"
+        ),
+    )
+    return parser.parse_args()
+
+
 async def main():
+    args = _parse_args()
+
     config_path = Path.home() / ".config" / "hippo" / "config.toml"
     if not config_path.exists():
         print("Error: config not found at", config_path)
@@ -45,9 +79,8 @@ async def main():
         )
         sys.exit(1)
 
-    # Allow CLI override
-    if len(sys.argv) > 1:
-        enrichment_model = sys.argv[1]
+    if args.model:
+        enrichment_model = args.model
 
     lmstudio_url = config.get("lmstudio", {}).get(
         "base_url", "http://localhost:1234/v1"
@@ -88,16 +121,12 @@ async def main():
     total_enriched = 0
     total_failed = 0
 
-    # Use --by-session flag to fall back to session-based grouping
-    use_cwd = "--by-session" not in sys.argv
-
+    # stale_secs=0 drains everything including in-flight sessions — this is a
+    # one-shot backfill tool, not the normal pipeline.
     while True:
-        if use_cwd:
-            chunks = claim_pending_events_by_cwd(conn, worker_id)
-        else:
-            chunks = claim_pending_events_by_session(
-                conn, max_per_chunk, worker_id, stale_secs=0
-            )
+        chunks = claim_pending_events_by_session(
+            conn, max_per_chunk, worker_id, stale_secs=0
+        )
         if not chunks:
             break
 

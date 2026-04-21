@@ -20,7 +20,8 @@ struct PreviewBrainClient: BrainClientProtocol {
         knowledgeDetails: [Int: Result<KnowledgeNode, BrainClientError>] = [:],
         eventResponse: Result<EventListResponse, BrainClientError> = .success(.init(events: [], total: 0)),
         sessionResponse: Result<SessionListResponse, BrainClientError> = .success(.init(sessions: [], total: 0)),
-        askResponse: Result<AskResponse, BrainClientError> = .success(.init(answer: nil, sources: [], model: nil, error: nil, degraded: nil, stage: nil)),
+        askResponse: Result<AskResponse, BrainClientError> = .success(
+            .init(answer: nil, sources: [], model: nil, error: nil, degraded: nil, stage: nil)),
         queryResponse: Result<QueryResponse, BrainClientError> = .success(.init(mode: .search)),
         healthResponse: Result<HealthResponse, BrainClientError> = .success(.preview)
     ) {
@@ -33,7 +34,9 @@ struct PreviewBrainClient: BrainClientProtocol {
         self.healthResponse = healthResponse
     }
 
-    func listKnowledge(limit: Int, offset: Int, nodeType: String?, sinceMs: Int?) async throws(BrainClientError) -> KnowledgeListResponse {
+    func listKnowledge(
+        limit: Int, offset: Int, nodeType: String?, sinceMs: Int?
+    ) async throws(BrainClientError) -> KnowledgeListResponse {
         switch knowledgeResponse {
         case .success(let response): return response
         case .failure(let error): throw error
@@ -53,7 +56,9 @@ struct PreviewBrainClient: BrainClientProtocol {
         }
     }
 
-    func listEvents(limit: Int, offset: Int, sessionId: Int?, sinceMs: Int?, project: String?) async throws(BrainClientError) -> EventListResponse {
+    func listEvents(
+        limit: Int, offset: Int, sessionId: Int?, sinceMs: Int?, project: String?
+    ) async throws(BrainClientError) -> EventListResponse {
         switch eventResponse {
         case .success(let response): return response
         case .failure(let error): throw error
