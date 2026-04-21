@@ -1,5 +1,5 @@
-import Observation
 import Foundation
+import Observation
 
 @MainActor
 @Observable
@@ -84,9 +84,10 @@ final class KnowledgeViewModel {
             if reset {
                 nodes = response.nodes
             } else {
-                nodes.append(contentsOf: response.nodes.filter { incoming in
-                    !nodes.contains(where: { $0.id == incoming.id })
-                })
+                nodes.append(
+                    contentsOf: response.nodes.filter { incoming in
+                        !nodes.contains(where: { $0.id == incoming.id })
+                    })
             }
 
             total = response.total

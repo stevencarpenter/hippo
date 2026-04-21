@@ -1,5 +1,5 @@
-import Observation
 import Foundation
+import Observation
 
 @MainActor
 @Observable

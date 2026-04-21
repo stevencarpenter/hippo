@@ -38,11 +38,13 @@ struct AboutSettingsView: View {
                 }
 
                 Section("Release Workflow") {
-                    Text(metadata.isReleaseStamped
-                         ? "This app bundle is using stamped release metadata from the repo versioning flow."
-                         : "This launch path is not using a stamped app bundle, so fallback development metadata is shown.")
-                        .fixedSize(horizontal: false, vertical: true)
-                        .foregroundStyle(.secondary)
+                    Text(
+                        metadata.isReleaseStamped
+                            ? "This app bundle is using stamped release metadata from the repo versioning flow."
+                            : "This launch path is not using a stamped app bundle, so fallback development metadata is shown."
+                    )
+                    .fixedSize(horizontal: false, vertical: true)
+                    .foregroundStyle(.secondary)
                 }
             }
             .formStyle(.grouped)
@@ -59,7 +61,7 @@ struct AboutSettingsView: View {
                 "CFBundleDisplayName": "HippoGUI",
                 "CFBundleIdentifier": "com.hippo.HippoGUI",
                 "CFBundleShortVersionString": "0.11.0",
-                "CFBundleVersion": "189"
+                "CFBundleVersion": "189",
             ]
         )
     )

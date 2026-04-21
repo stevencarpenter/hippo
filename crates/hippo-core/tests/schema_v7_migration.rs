@@ -69,7 +69,10 @@ fn v6_db_migrates_to_v7_and_adds_source_kind_and_tool_name() {
             |r| r.get(0),
         )
         .unwrap();
-    assert_eq!(idx_exists, 1, "idx_events_source_kind missing after v7 migration");
+    assert_eq!(
+        idx_exists, 1,
+        "idx_events_source_kind missing after v7 migration"
+    );
 }
 
 #[test]

@@ -18,7 +18,9 @@ extension View {
 }
 
 private actor UnconfiguredBrainClient: BrainClientProtocol {
-    func listKnowledge(limit: Int, offset: Int, nodeType: String?, sinceMs: Int?) async throws(BrainClientError) -> KnowledgeListResponse {
+    func listKnowledge(
+        limit: Int, offset: Int, nodeType: String?, sinceMs: Int?
+    ) async throws(BrainClientError) -> KnowledgeListResponse {
         throw .notConfigured
     }
 
@@ -26,7 +28,9 @@ private actor UnconfiguredBrainClient: BrainClientProtocol {
         throw .notConfigured
     }
 
-    func listEvents(limit: Int, offset: Int, sessionId: Int?, sinceMs: Int?, project: String?) async throws(BrainClientError) -> EventListResponse {
+    func listEvents(
+        limit: Int, offset: Int, sessionId: Int?, sinceMs: Int?, project: String?
+    ) async throws(BrainClientError) -> EventListResponse {
         throw .notConfigured
     }
 

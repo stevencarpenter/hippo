@@ -336,8 +336,8 @@ pub async fn ingest_batch(
     // claude-session --batch`. This is a local CLI operating on the user's
     // own machine — no privilege boundary, no untrusted network input.
     // nosemgrep: rust.actix.path-traversal.tainted-path.tainted-path
-    let file = std::fs::File::open(path)
-        .with_context(|| format!("failed to open {}", path.display()))?;
+    let file =
+        std::fs::File::open(path).with_context(|| format!("failed to open {}", path.display()))?;
     let reader = std::io::BufReader::new(file);
 
     let hostname = hostname::get()
@@ -412,8 +412,8 @@ pub async fn ingest_tail(path: &Path, socket_path: &Path, timeout_ms: u64) -> Re
     // claude-session --follow`. Local CLI on the user's own machine — no
     // privilege boundary.
     // nosemgrep: rust.actix.path-traversal.tainted-path.tainted-path
-    let file = std::fs::File::open(path)
-        .with_context(|| format!("failed to open {}", path.display()))?;
+    let file =
+        std::fs::File::open(path).with_context(|| format!("failed to open {}", path.display()))?;
     let mut position = file.metadata()?.len();
     drop(file);
 

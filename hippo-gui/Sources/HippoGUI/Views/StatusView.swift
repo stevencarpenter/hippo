@@ -2,7 +2,7 @@ import SwiftUI
 
 struct StatusView: View {
     @Environment(\.brainClient) private var brainClient
-    @State private var vm = StatusViewModel()
+    @State private var svm = StatusViewModel()
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -10,27 +10,27 @@ struct StatusView: View {
                 .font(.title)
                 .fontWeight(.bold)
 
-            if let error = vm.errorMessage {
+            if let error = svm.errorMessage {
                 ErrorBannerView(message: error) {
-                    await vm.refresh()
+                    await svm.refresh()
                 }
             }
 
             HStack(spacing: 16) {
                 statusCard(
                     title: "Daemon Socket",
-                    isHealthy: vm.daemonResponsive,
-                    subtitle: vm.daemonResponsive ? "Responding" : "Not reachable"
+                    isHealthy: svm.daemonResponsive,
+                    subtitle: svm.daemonResponsive ? "Responding" : "Not reachable"
                 )
 
                 statusCard(
                     title: "Brain HTTP",
-                    isHealthy: vm.brainReachable,
-                    subtitle: vm.brainReachable ? "Responding" : "Not responding"
+                    isHealthy: svm.brainReachable,
+                    subtitle: svm.brainReachable ? "Responding" : "Not responding"
                 )
             }
 
-            if let health = vm.health {
+            if let health = svm.health {
                 VStack(alignment: .leading, spacing: 12) {
                     Text("Queue Summary")
                         .font(.headline)
@@ -72,7 +72,7 @@ struct StatusView: View {
                 VStack(alignment: .leading, spacing: 8) {
                     Text("Last checked")
                         .font(.headline)
-                    Text(vm.lastCheckedDescription)
+                    Text(svm.lastCheckedDescription)
                         .foregroundStyle(.secondary)
 
                     if let version = health.version {
@@ -99,10 +99,10 @@ struct StatusView: View {
             }
 
             Button {
-                Task { await vm.refresh() }
+                Task { await svm.refresh() }
             } label: {
                 HStack {
-                    if vm.isLoading {
+                    if svm.isLoading {
                         ProgressView()
                             .controlSize(.small)
                     }
@@ -110,14 +110,14 @@ struct StatusView: View {
                     Text("Refresh")
                 }
             }
-            .disabled(vm.isLoading)
+            .disabled(svm.isLoading)
 
             Spacer()
         }
         .padding()
         .task {
-            vm.configure(client: brainClient)
-            await vm.autoRefresh()
+            svm.configure(client: brainClient)
+            await svm.autoRefresh()
         }
     }
 

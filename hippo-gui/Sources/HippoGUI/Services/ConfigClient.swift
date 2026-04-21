@@ -33,7 +33,8 @@ struct ConfigClient: Sendable {
 
     func loadDataDirectory() -> URL {
         let homeDirectory = FileManager.default.homeDirectoryForCurrentUser
-        let configuredPath = loadValue(forKey: "data_dir", in: "storage")?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let configuredPath = loadValue(forKey: "data_dir", in: "storage")?.trimmingCharacters(
+            in: .whitespacesAndNewlines)
         let fallback = homeDirectory.appendingPathComponent(Self.defaultDataDirectory)
 
         guard let configuredPath, !configuredPath.isEmpty else {
