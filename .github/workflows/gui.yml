@@ -39,18 +39,18 @@ jobs:
         id: version
         run: |
           VERSION="$(python3 - <<'PY'
-import pathlib
-import re
-
-match = re.search(
-    r'^\s*version\s*=\s*"([^"]+)"\s*$',
-    pathlib.Path("Cargo.toml").read_text(),
-    re.MULTILINE,
-)
-if not match:
-    raise SystemExit("workspace version not found in Cargo.toml")
-print(match.group(1))
-PY
+          import pathlib
+          import re
+          
+          match = re.search(
+              r'^\s*version\s*=\s*"([^"]+)"\s*$',
+              pathlib.Path("Cargo.toml").read_text(),
+              re.MULTILINE,
+          )
+          if not match:
+              raise SystemExit("workspace version not found in Cargo.toml")
+          print(match.group(1))
+          PY
           )"
           echo "version=${VERSION}" >> "${GITHUB_OUTPUT}"
           echo "Workspace version: ${VERSION}"
