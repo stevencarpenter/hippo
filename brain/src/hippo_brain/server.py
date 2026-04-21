@@ -11,6 +11,7 @@ from starlette.responses import JSONResponse
 from starlette.routing import Route
 
 from hippo_brain.client import LMStudioClient
+from hippo_brain.schema_version import EXPECTED_SCHEMA_VERSION, ACCEPTED_READ_VERSIONS
 from hippo_brain.version import get_version
 from hippo_brain.embeddings import (
     embed_knowledge_node,
@@ -164,14 +165,10 @@ class BrainServer:
         conn.execute("PRAGMA foreign_keys=ON")
         conn.execute("PRAGMA busy_timeout=5000")
         version = conn.execute("PRAGMA user_version").fetchone()[0]
-        EXPECTED_VERSION = 7
-        # Accept the current version plus a trailing window of prior
-        # versions so the brain keeps reading while the daemon migrates
-        # the DB on startup. Older versions outside this window fail fast.
-        if version not in (EXPECTED_VERSION, 6, 5, 4, 3):
+        if version not in ACCEPTED_READ_VERSIONS:
             conn.close()
             raise RuntimeError(
-                f"DB schema version mismatch: expected {EXPECTED_VERSION}, found {version}. "
+                f"DB schema version mismatch: expected {EXPECTED_SCHEMA_VERSION}, found {version}. "
                 "Please run migrations or delete the database."
             )
         return conn
@@ -245,6 +242,8 @@ class BrainServer:
             {
                 "status": status,
                 "version": get_version(),
+                "expected_schema_version": EXPECTED_SCHEMA_VERSION,
+                "accepted_read_versions": sorted(ACCEPTED_READ_VERSIONS),
                 "lmstudio_reachable": reachable,
                 "enrichment_running": self.enrichment_running,
                 "db_reachable": db_reachable,
