@@ -213,7 +213,7 @@ echo "Stamped brain version: ${FULL_VERSION}"
 
 [tasks.test]
 description = "Run all tests (Rust unit + integration + Python + GUI)"
-depends = ["gui:test"]
+depends = ["gui:test", "gui:lint"]
 run = """
 #!/usr/bin/env bash
 set -euo pipefail
@@ -303,7 +303,7 @@ run = "swiftlint lint --config hippo-gui/.swiftlint.yml hippo-gui/Sources"
 
 [tasks.fix]
 description = "Auto-fix all lint and format issues"
-depends = ["fix:rust", "fix:python", "fmt:sql"]
+depends = ["fix:rust", "fix:python", "gui:fix", "fmt:sql"]
 
 [tasks."fix:rust"]
 description = "Auto-fix Rust clippy warnings and format"
@@ -318,6 +318,14 @@ run = [
   "uv run --project brain ruff check --fix brain/",
   "uv run --project brain ruff format brain/",
 ]
+
+[tasks."fix:swift"]
+description = "Auto-fix SwiftLint warnings in HippoGUI"
+run = "swiftlint lint --fix --config hippo-gui/.swiftlint.yml hippo-gui/Sources"
+
+[tasks."gui:fix"]
+description = "Auto-fix all HippoGUI lint and format issues (SwiftLint + swift-format)"
+depends = ["fix:swift", "gui:format"]
 
 # ── Format ───────────────────────────────────────────────────────────
 
@@ -343,7 +351,11 @@ run = "uv run --project brain python tools/format_sql.py crates/hippo-core/src/s
 
 [tasks."fmt:check"]
 description = "Check formatting without modifying files"
-run = ["cargo fmt --check", "uv run --project brain ruff format --check brain/"]
+run = [
+  "cargo fmt --check",
+  "uv run --project brain ruff format --check brain/",
+  "swift-format lint --configuration hippo-gui/.swift-format -r hippo-gui/Sources",
+]
 
 # ── Check (CI-equivalent) ───────────────────────────────────────────
 

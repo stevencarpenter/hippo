@@ -126,6 +126,9 @@ jobs:
           # Copy runtime scripts used by installed LaunchAgents
           cp -r scripts hippo-brain-release/
 
+          # Copy shell hook scripts so they're available after installation
+          cp -r shell hippo-brain-release/brain/
+
           # Create the tarball
           tar -czf "${ARTIFACT_NAME}" -C hippo-brain-release brain scripts
 
