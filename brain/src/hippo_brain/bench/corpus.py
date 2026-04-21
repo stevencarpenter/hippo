@@ -12,6 +12,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from hippo_brain.redaction import redact
+
 
 @dataclass
 class CorpusEntry:
@@ -160,4 +162,92 @@ def init_corpus(
     conn.close()
 
     write_corpus(selected, fixture_path, manifest_path, corpus_version, seed)
+    return selected
+
+
+_SOURCE_QUERIES = {
+    "shell": (
+        "SELECT id, command, stdout, stderr, duration_ms, exit_code, cwd FROM shell_events",
+        lambda row: json.dumps(
+            {
+                "command": row["command"],
+                "stdout": row["stdout"],
+                "stderr": row["stderr"],
+                "duration_ms": row["duration_ms"],
+                "exit_code": row["exit_code"],
+                "cwd": row["cwd"],
+            },
+            sort_keys=True,
+        ),
+    ),
+    "claude": (
+        "SELECT id, session_id, transcript, message_count, tool_calls_json FROM claude_sessions",
+        lambda row: json.dumps(
+            {
+                "session_id": row["session_id"],
+                "transcript": row["transcript"],
+                "message_count": row["message_count"],
+                "tool_calls_json": row["tool_calls_json"],
+            },
+            sort_keys=True,
+        ),
+    ),
+    "browser": (
+        "SELECT id, url, title, dwell_ms, scroll_depth FROM browser_events",
+        lambda row: json.dumps(
+            {
+                "url": row["url"],
+                "title": row["title"],
+                "dwell_ms": row["dwell_ms"],
+                "scroll_depth": row["scroll_depth"],
+            },
+            sort_keys=True,
+        ),
+    ),
+    "workflow": (
+        "SELECT id, repo, workflow_name, conclusion, annotations_json FROM workflow_runs",
+        lambda row: json.dumps(
+            {
+                "repo": row["repo"],
+                "workflow_name": row["workflow_name"],
+                "conclusion": row["conclusion"],
+                "annotations_json": row["annotations_json"],
+            },
+            sort_keys=True,
+        ),
+    ),
+}
+
+
+def sample_from_hippo_db(
+    db_path: Path, source_counts: dict[str, int], seed: int
+) -> list[CorpusEntry]:
+    """Stratified random sample from the real hippo.db schema."""
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    rng = random.Random(seed)
+    selected: list[CorpusEntry] = []
+    try:
+        for source, count in source_counts.items():
+            if count <= 0:
+                continue
+            query, shape = _SOURCE_QUERIES[source]
+            rows = conn.execute(query).fetchall()
+            if not rows:
+                continue
+            picked = rng.sample(rows, k=min(count, len(rows)))
+            picked.sort(key=lambda r: r["id"])
+            for row in picked:
+                raw_payload = shape(row)
+                redacted = redact(raw_payload)
+                selected.append(
+                    CorpusEntry(
+                        event_id=f"{source}-{row['id']}",
+                        source=source,
+                        redacted_content=redacted,
+                        reference_enrichment=None,
+                    )
+                )
+    finally:
+        conn.close()
     return selected

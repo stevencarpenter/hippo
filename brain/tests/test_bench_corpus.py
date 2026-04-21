@@ -7,6 +7,7 @@ from hippo_brain.bench.corpus import (
     CorpusEntry,
     init_corpus,
     load_corpus,
+    sample_from_hippo_db,
     verify_corpus,
     write_corpus,
 )
@@ -153,3 +154,67 @@ def test_init_corpus_is_deterministic_with_seed(tmp_path):
         seed=42,
     )
     assert [e.event_id for e in entries_a] == [e.event_id for e in entries_b]
+
+
+def _make_hippo_schema(db_path):
+    conn = sqlite3.connect(db_path)
+    conn.executescript(
+        """
+        CREATE TABLE shell_events (
+            id INTEGER PRIMARY KEY,
+            command TEXT, stdout TEXT, stderr TEXT, duration_ms INTEGER,
+            exit_code INTEGER, cwd TEXT, ts INTEGER
+        );
+        CREATE TABLE claude_sessions (
+            id INTEGER PRIMARY KEY,
+            session_id TEXT, transcript TEXT, message_count INTEGER,
+            tool_calls_json TEXT, ts INTEGER
+        );
+        CREATE TABLE browser_events (
+            id INTEGER PRIMARY KEY,
+            url TEXT, title TEXT, dwell_ms INTEGER, scroll_depth REAL, ts INTEGER
+        );
+        CREATE TABLE workflow_runs (
+            id INTEGER PRIMARY KEY,
+            repo TEXT, workflow_name TEXT, conclusion TEXT, annotations_json TEXT, ts INTEGER
+        );
+        """
+    )
+    return conn
+
+
+def test_sample_from_hippo_db_reads_each_source(tmp_path):
+    db_path = tmp_path / "hippo.db"
+    conn = _make_hippo_schema(db_path)
+    conn.execute(
+        "INSERT INTO shell_events (command, stdout, stderr, duration_ms, exit_code, cwd, ts) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        ("ls -la", "file listing", "", 42, 0, "/tmp", 0),
+    )
+    conn.execute(
+        "INSERT INTO claude_sessions (session_id, transcript, message_count, tool_calls_json, ts)"
+        " VALUES (?, ?, ?, ?, ?)",
+        ("s1", "hello world", 5, "[]", 0),
+    )
+    conn.execute(
+        "INSERT INTO browser_events (url, title, dwell_ms, scroll_depth, ts)"
+        " VALUES (?, ?, ?, ?, ?)",
+        ("https://docs.python.org/3/", "docs", 30_000, 0.8, 0),
+    )
+    conn.execute(
+        "INSERT INTO workflow_runs (repo, workflow_name, conclusion, annotations_json, ts)"
+        " VALUES (?, ?, ?, ?, ?)",
+        ("hippo", "ci", "success", "[]", 0),
+    )
+    conn.commit()
+    conn.close()
+
+    entries = sample_from_hippo_db(
+        db_path=db_path,
+        source_counts={"shell": 1, "claude": 1, "browser": 1, "workflow": 1},
+        seed=7,
+    )
+    sources = {e.source for e in entries}
+    assert sources == {"shell", "claude", "browser", "workflow"}
+    shell_entry = next(e for e in entries if e.source == "shell")
+    assert "ls -la" in shell_entry.redacted_content
