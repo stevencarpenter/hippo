@@ -1,0 +1,66 @@
+name: GUI CI
+
+on:
+  pull_request:
+    paths:
+      - "hippo-gui/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/gui.yml"
+  push:
+    branches: [main]
+    paths:
+      - "hippo-gui/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/gui.yml"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-package:
+    name: Build & Package
+    runs-on: macos-26
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup Xcode
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: "26"
+
+      - name: Extract workspace version
+        id: version
+        run: |
+          VERSION="$(python3 - <<'PY'
+import pathlib
+import re
+
+match = re.search(
+    r'^\s*version\s*=\s*"([^"]+)"\s*$',
+    pathlib.Path("Cargo.toml").read_text(),
+    re.MULTILINE,
+)
+if not match:
+    raise SystemExit("workspace version not found in Cargo.toml")
+print(match.group(1))
+PY
+          )"
+          echo "version=${VERSION}" >> "${GITHUB_OUTPUT}"
+          echo "Workspace version: ${VERSION}"
+
+      - name: Run GUI tests
+        run: swift test --package-path hippo-gui
+
+      - name: Package release app
+        working-directory: hippo-gui
+        env:
+          HIPPO_MARKETING_VERSION: ${{ steps.version.outputs.version }}
+          HIPPO_BUILD_NUMBER: ${{ github.run_number }}
+        run: ./scripts/release-gui.sh release --json

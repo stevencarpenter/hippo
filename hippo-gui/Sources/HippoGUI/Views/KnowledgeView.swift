@@ -291,7 +291,7 @@ private struct ParsedKnowledgeContent {
         } else {
             prettyPrintedRaw = raw
         }
-    1s1s0vi
+    }
 
     private static func render(_ value: Any) -> String {
         switch value {
