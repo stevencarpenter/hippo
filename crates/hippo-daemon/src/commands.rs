@@ -662,14 +662,17 @@ async fn check_otel_status(config: &HippoConfig, client: &reqwest::Client) {
 }
 
 fn check_claude_session_hook(config: &HippoConfig) {
-    // The brain is installed one level above the hippo data dir, e.g.
-    // data_dir = ~/.local/share/hippo  →  brain = ~/.local/share/hippo-brain
-    let expected = config
-        .storage
-        .data_dir
-        .parent()
-        .map(|p| p.join("hippo-brain/shell/claude-session-hook.sh"))
-        .unwrap_or_default();
+    let expected = match expected_claude_session_hook_path(&config.storage.data_dir) {
+        Some(path) => path,
+        None => {
+            println!("[--] Claude session hook check skipped");
+            println!(
+                "     unable to derive expected hook path from data_dir: {}",
+                config.storage.data_dir.display()
+            );
+            return;
+        }
+    };
 
     let settings_path = dirs::home_dir()
         .map(|h| h.join(".claude/settings.json"))
@@ -727,6 +730,15 @@ fn check_claude_session_hook(config: &HippoConfig) {
     }
 }
 
+fn expected_claude_session_hook_path(data_dir: &std::path::Path) -> Option<PathBuf> {
+    // The brain is installed as a sibling of the hippo data dir, e.g.
+    // data_dir = ~/.local/share/hippo  →  brain = ~/.local/share/hippo-brain
+    data_dir
+        .file_name()
+        .map(|_| data_dir.with_file_name("hippo-brain"))
+        .map(|brain_dir| brain_dir.join("shell/claude-session-hook.sh"))
+}
+
 pub fn parse_duration_to_since_ms(s: &str) -> Option<i64> {
     let s = s.trim();
     if s.len() < 2 {
@@ -752,6 +764,26 @@ mod tests {
     use tempfile::tempdir;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::{TcpListener, UnixListener};
+
+    #[test]
+    fn test_expected_claude_session_hook_path_with_absolute_data_dir() {
+        let data_dir = PathBuf::from("/tmp/hippo");
+        let expected = PathBuf::from("/tmp/hippo-brain/shell/claude-session-hook.sh");
+        assert_eq!(expected_claude_session_hook_path(&data_dir), Some(expected));
+    }
+
+    #[test]
+    fn test_expected_claude_session_hook_path_with_relative_data_dir() {
+        let data_dir = PathBuf::from("workspace/hippo");
+        let expected = PathBuf::from("workspace/hippo-brain/shell/claude-session-hook.sh");
+        assert_eq!(expected_claude_session_hook_path(&data_dir), Some(expected));
+    }
+
+    #[test]
+    fn test_expected_claude_session_hook_path_without_data_dir_component_returns_none() {
+        let data_dir = std::path::Path::new("/");
+        assert_eq!(expected_claude_session_hook_path(data_dir), None);
+    }
 
     #[tokio::test]
     async fn test_handle_send_event_shell_writes_redacted_fallback_when_daemon_unavailable() {
