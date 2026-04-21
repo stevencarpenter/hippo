@@ -9,7 +9,7 @@ fn seed_v5(path: &std::path::Path) {
 }
 
 #[test]
-fn v5_db_migrates_to_v6_and_has_fts_and_triggers() {
+fn v5_db_migrates_to_latest_and_has_fts_and_triggers() {
     let tmp = TempDir::new().unwrap();
     let db = tmp.path().join("hippo.db");
     seed_v5(&db);
@@ -159,7 +159,7 @@ fn deleting_knowledge_node_removes_fts_row() {
 }
 
 #[test]
-fn fresh_db_has_v6_and_fts_ready() {
+fn fresh_db_has_latest_schema_and_fts_ready() {
     let tmp = TempDir::new().unwrap();
     let db = tmp.path().join("hippo.db");
     let conn = open_db(&db).unwrap();

@@ -10,7 +10,7 @@ fn seed_v4(path: &std::path::Path) {
 }
 
 #[test]
-fn v4_db_migrates_to_v5_and_has_workflow_tables() {
+fn v4_db_migrates_to_latest_and_has_workflow_tables() {
     let tmp = TempDir::new().unwrap();
     let db = tmp.path().join("hippo.db");
     seed_v4(&db);

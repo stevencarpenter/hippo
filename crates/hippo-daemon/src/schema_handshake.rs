@@ -11,9 +11,10 @@
 //! daemon refuses to proceed and prints a clear remediation message
 //! instead of silently breaking the brain.
 //!
-//! If the brain isn't running (connection refused / timeout), we assume
-//! the user is doing a fresh install or brain-will-start-later and
-//! proceed without the guard.
+//! If the brain isn't running (connection refused), we assume the user
+//! is doing a fresh install or brain-will-start-later and proceed
+//! without the guard. Timeouts are treated as Unknown — a slow brain is
+//! not the same as an absent one.
 use anyhow::Result;
 use serde::Deserialize;
 use std::time::Duration;
@@ -61,9 +62,14 @@ pub async fn check_brain_schema_compat(
 
     let response = match client.get(&url).send().await {
         Ok(r) => r,
-        // Connection refused, DNS failure, timeout — treat as "brain not
-        // running". The brain LaunchAgent will start it later and do its
-        // own version check against the (by then) already-migrated DB.
+        // Timeout means brain's port is open but it's not responding in
+        // time — a slow or half-started brain, not an absent one. Return
+        // Unknown so the caller treats this with caution rather than
+        // silently proceeding as if brain were absent.
+        Err(e) if e.is_timeout() => return Ok(HandshakeResult::Unknown),
+        // Connection refused, DNS failure, etc. — brain is definitely not
+        // running. The LaunchAgent will start it later and its own version
+        // guard will catch any mismatch against the already-migrated DB.
         Err(_) => return Ok(HandshakeResult::BrainAbsent),
     };
 
@@ -131,9 +137,14 @@ mod tests {
 
     #[tokio::test]
     async fn brain_absent_when_port_closed() {
-        // Pick a high port that (almost certainly) isn't bound locally.
-        // If it happens to be in use, the test is vacuous; fine.
-        let result = check_brain_schema_compat(7, 59_321).await.unwrap();
+        // Bind an ephemeral port, record the number, then drop the listener
+        // so the OS releases it before we probe. This guarantees nothing is
+        // listening without relying on ambient port availability.
+        let port = {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            listener.local_addr().unwrap().port()
+        };
+        let result = check_brain_schema_compat(7, port).await.unwrap();
         assert!(matches!(
             result,
             HandshakeResult::BrainAbsent | HandshakeResult::Unknown
