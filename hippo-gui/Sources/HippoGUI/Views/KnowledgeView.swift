@@ -286,13 +286,12 @@ private struct ParsedKnowledgeContent {
             }
 
         if let prettyData = try? JSONSerialization.data(withJSONObject: object, options: [.prettyPrinted]),
-            let prettyString = String(data: prettyData, encoding: .utf8)
-        {
+            let prettyString = String(data: prettyData, encoding: .utf8) {
             prettyPrintedRaw = prettyString
         } else {
             prettyPrintedRaw = raw
         }
-    }
+    1s1s0
 
     private static func render(_ value: Any) -> String {
         switch value {
