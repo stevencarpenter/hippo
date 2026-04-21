@@ -99,3 +99,75 @@ def check_refusal_pathology(
         trivial_summary=trivial,
         echo_similarity=echo,
     )
+
+
+_PATH_LIKE = re.compile(r"[/\\]|^\.\w+$|\.\w{1,8}$")
+_WHITESPACE_WORDS = re.compile(r"\s+")
+
+
+@dataclass
+class EntitySanityResult:
+    passed: bool
+    per_category_rates: dict[str, float]
+    files_path_rate: float = 1.0
+    tools_sanity_rate: float = 1.0
+    projects_sanity_rate: float = 1.0
+
+
+def _file_looks_like_path(s: str) -> bool:
+    if not isinstance(s, str) or not s:
+        return False
+    if len(s) > 200:
+        return False
+    return bool(_PATH_LIKE.search(s))
+
+
+def _tool_looks_sane(s: str) -> bool:
+    if not isinstance(s, str) or not s:
+        return False
+    if len(s) > 40:
+        return False
+    words = _WHITESPACE_WORDS.findall(s)
+    if len(words) + 1 > 3:  # more than 3 tokens
+        return False
+    if s.rstrip().endswith((".", "!", "?")):
+        return False
+    return True
+
+
+def _project_looks_sane(s: str) -> bool:
+    if not isinstance(s, str) or not s:
+        return False
+    if len(s) > 80:
+        return False
+    return not any(c.isspace() for c in s if c not in "-_")
+
+
+_CATEGORY_CHECKERS = {
+    "files": _file_looks_like_path,
+    "tools": _tool_looks_sane,
+    "projects": _project_looks_sane,
+}
+
+
+def check_entity_sanity(parsed: dict, source: str, min_rate: float = 0.9) -> EntitySanityResult:
+    entities = parsed.get("entities") if isinstance(parsed, dict) else None
+    per_cat: dict[str, float] = {}
+    if not isinstance(entities, dict):
+        return EntitySanityResult(passed=True, per_category_rates={})
+
+    for cat, checker in _CATEGORY_CHECKERS.items():
+        values = entities.get(cat)
+        if not isinstance(values, list) or not values:
+            continue
+        hits = sum(1 for v in values if checker(v))
+        per_cat[cat] = hits / len(values)
+
+    all_pass = all(rate >= min_rate for rate in per_cat.values())
+    return EntitySanityResult(
+        passed=all_pass,
+        per_category_rates=per_cat,
+        files_path_rate=per_cat.get("files", 1.0),
+        tools_sanity_rate=per_cat.get("tools", 1.0),
+        projects_sanity_rate=per_cat.get("projects", 1.0),
+    )

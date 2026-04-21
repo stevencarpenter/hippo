@@ -1,4 +1,8 @@
-from hippo_brain.bench.gates import check_refusal_pathology, check_schema_validity
+from hippo_brain.bench.gates import (
+    check_entity_sanity,
+    check_refusal_pathology,
+    check_schema_validity,
+)
 
 
 def test_schema_validity_passes_valid_shell_payload():
@@ -111,3 +115,56 @@ def test_echo_similarity_low_when_output_distinct():
         parsed={"summary": "Ran tests"},
     )
     assert r.echo_similarity < 0.3
+
+
+def test_entity_sanity_accepts_path_like_files():
+    payload = {
+        "entities": {
+            "files": ["src/main.rs", "brain/src/hippo_brain/enrichment.py", ".env"],
+            "tools": ["cargo"],
+            "projects": ["hippo"],
+            "services": ["launchd"],
+            "errors": [],
+        }
+    }
+    r = check_entity_sanity(payload, "shell")
+    assert r.passed
+    assert r.files_path_rate >= 0.9
+
+
+def test_entity_sanity_flags_sentence_in_files():
+    payload = {
+        "entities": {
+            "files": ["The summary of this command output is a file", "ok.py"],
+            "tools": [],
+            "projects": [],
+            "services": [],
+            "errors": [],
+        }
+    }
+    r = check_entity_sanity(payload, "shell")
+    assert r.files_path_rate <= 0.5
+
+
+def test_entity_sanity_flags_long_tool_names():
+    payload = {
+        "entities": {
+            "files": [],
+            "tools": [
+                "cargo",
+                "This is a sentence pretending to be a tool name that should fail.",
+            ],
+            "projects": [],
+            "services": [],
+            "errors": [],
+        }
+    }
+    r = check_entity_sanity(payload, "shell")
+    assert r.tools_sanity_rate <= 0.6
+
+
+def test_entity_sanity_no_entities_is_vacuously_pass():
+    payload = {"entities": {}}
+    r = check_entity_sanity(payload, "shell")
+    assert r.passed
+    assert r.per_category_rates == {}
