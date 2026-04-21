@@ -12,6 +12,7 @@ dependencies = [
     "opentelemetry-sdk>=1.33",
     "opentelemetry-exporter-otlp-proto-http>=1.33",
     "opentelemetry-instrumentation-logging>=0.54b1",
+    "psutil>=6",
 ]
 
 [dependency-groups]
@@ -27,6 +28,7 @@ dev = [
 hippo-brain = "hippo_brain:main"
 hippo-mcp = "hippo_brain.mcp:main"
 hippo-eval = "hippo_brain.evaluation:main"
+hippo-bench = "hippo_brain.bench.cli:main"
 
 [build-system]
 requires = ["hatchling"]
