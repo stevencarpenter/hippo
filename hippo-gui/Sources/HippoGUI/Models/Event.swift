@@ -11,10 +11,13 @@ struct Event: Identifiable, Codable, Hashable, Sendable {
     let gitBranch: String?
 
     enum CodingKeys: String, CodingKey {
-        case id, sessionId = "session_id", timestamp, command
+        case id
+        case sessionId = "session_id"
+        case timestamp, command
         case exitCode = "exit_code"
         case durationMs = "duration_ms"
-        case cwd, gitBranch = "git_branch"
+        case cwd
+        case gitBranch = "git_branch"
     }
 }
 

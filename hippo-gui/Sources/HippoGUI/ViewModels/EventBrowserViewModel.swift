@@ -1,5 +1,5 @@
-import Observation
 import Foundation
+import Observation
 
 @MainActor
 @Observable
@@ -95,16 +95,18 @@ final class EventBrowserViewModel {
             if reset {
                 sessions = response.sessions
             } else {
-                sessions.append(contentsOf: response.sessions.filter { incoming in
-                    !sessions.contains(where: { $0.id == incoming.id })
-                })
+                sessions.append(
+                    contentsOf: response.sessions.filter { incoming in
+                        !sessions.contains(where: { $0.id == incoming.id })
+                    })
             }
             sessionTotal = response.total
             sessionOffset = sessions.count
 
-            let sessionToSelect = selectedSessionID.flatMap { id in
-                sessions.first(where: { $0.id == id })
-            } ?? sessions.first
+            let sessionToSelect =
+                selectedSessionID.flatMap { id in
+                    sessions.first(where: { $0.id == id })
+                } ?? sessions.first
 
             if let sessionToSelect {
                 selectedSessionID = sessionToSelect.id
@@ -164,9 +166,10 @@ final class EventBrowserViewModel {
             if reset {
                 events = response.events
             } else {
-                events.append(contentsOf: response.events.filter { incoming in
-                    !events.contains(where: { $0.id == incoming.id })
-                })
+                events.append(
+                    contentsOf: response.events.filter { incoming in
+                        !events.contains(where: { $0.id == incoming.id })
+                    })
             }
             eventTotal = response.total
             eventOffset = events.count

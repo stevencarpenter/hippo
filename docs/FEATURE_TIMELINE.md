@@ -106,6 +106,24 @@ This was a watershed moment for hippo, representing convergence of multiple majo
 
 ---
 
+## v0.13.0 (April 2026)
+**Release**: Claude tool enrichment policy groundwork
+
+### Features
+- **Claude tool event tagging**: `ShellEvent` carries a new `tool_name` field populated with the originating tool (e.g. `"Bash"`, `"Agent"`, `"mcp__github__create_pull_request"`) when an event is synthesized from a Claude Code session. Native shell events leave the field `None`. This is wire-level groundwork for a follow-up enrichment policy that routes or filters events by originating tool.
+- **Schema v6 → v7 migration**: `events` table gains `source_kind TEXT NOT NULL DEFAULT 'shell'` (discriminator for `'shell'` vs `'claude-tool'` vs future sources) plus `tool_name TEXT`, with a partial index on `source_kind` for rows where it differs from `'shell'`. Migration runs automatically on startup. One-way — downgrading to v0.12.x against a v7 database fails the version guard.
+- **Brain version guard**: widens to accept v7 as the expected version with v3–v6 as a backward-compat read window while the daemon migrates.
+
+### Deferred to follow-up
+- Brain-side consumer of `tool_name` / `source_kind` (the actual enrichment policy — filtering, routing, or differentiated prompts per tool). This PR ships only the plumbing.
+
+**Key Commits**:
+- `feat(core): tag Claude tool events with source_kind + tool_name`
+- `test(core): add tool_name field to test event fixture`
+- `chore: bump to v0.13.0 and align schema version checks`
+
+---
+
 ## Version Timeline Summary
 
 | Version | Release | Data Sources | Key Themes |
@@ -116,6 +134,7 @@ This was a watershed moment for hippo, representing convergence of multiple majo
 | **v0.10.1** | Jan 2026 | Shell, Claude, Browser, GitHub | Stability improvements, batching, timeouts |
 | **v0.11.0** | Apr 2026 | Shell, Claude, Browser, GitHub | **INFLECTION**: SQLite-vec engine, GUI, eval harness, watchdogs |
 | **v0.12.0** | Apr 2026 | Shell, Claude, Browser, GitHub | GUI completion and finalization |
+| **v0.13.0** | Apr 2026 | Shell, Claude, Browser, GitHub | Claude tool enrichment policy groundwork (`tool_name`, `source_kind`, schema v7) |
 
 ---
 

@@ -43,10 +43,7 @@ pub fn detect_vars(brain_dir: &Path) -> Result<PlistVars> {
         .map(|c| c.telemetry)
         .unwrap_or_default();
 
-    let scripts_dir = brain_dir
-        .parent()
-        .map(|r| r.join("scripts"))
-        .unwrap_or_else(|| brain_dir.join("../scripts"));
+    let scripts_dir = brain_dir.join("scripts");
 
     Ok(PlistVars {
         hippo_bin,
@@ -134,6 +131,13 @@ pub fn symlink_binary(hippo_bin: &Path, force: bool) -> Result<PathBuf> {
 
     let link = bin_dir.join("hippo");
 
+    // Binary is already at the target path (e.g., installed directly by the installer).
+    // Creating a symlink here would delete the real binary and create a self-referential loop.
+    if hippo_bin == link {
+        println!("  Binary already installed at {}", link.display());
+        return Ok(link);
+    }
+
     if link.exists() || link.symlink_metadata().is_ok() {
         if !force {
             // Check if it already points to the right place
@@ -197,6 +201,115 @@ pub fn install_plist(
     Ok(dest)
 }
 
+/// Returns true if a launchd service label is currently loaded in the user session.
+pub fn service_is_loaded(label: &str) -> bool {
+    std::process::Command::new("launchctl")
+        .args(["list", label])
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
+/// Unloads a launchd service (sends SIGTERM to the process if running, prevents restart).
+/// Ignores errors silently — a "not loaded" error is harmless.
+pub fn service_bootout(domain: &str, plist: &Path) {
+    let _ = std::process::Command::new("launchctl")
+        .args(["bootout", domain, plist.to_str().unwrap_or("")])
+        .status();
+}
+
+/// Loads a launchd service from its plist.
+pub fn service_bootstrap(domain: &str, plist: &Path) -> Result<()> {
+    let status = std::process::Command::new("launchctl")
+        .args(["bootstrap", domain, plist.to_str().unwrap_or("")])
+        .status()
+        .context("launchctl bootstrap failed")?;
+    if !status.success() {
+        anyhow::bail!("launchctl bootstrap failed for {}", plist.display());
+    }
+    Ok(())
+}
+
+/// Sends SIGTERM to the brain process and waits up to `timeout` for graceful exit.
+///
+/// Lets uvicorn finish in-flight HTTP requests before the process stops. Prints progress
+/// dots while waiting. Returns true if the process exited within the timeout.
+pub fn drain_brain(timeout: std::time::Duration) -> bool {
+    let Some(pid) = brain_managed_pid() else {
+        return true;
+    };
+
+    // nosemgrep
+    unsafe { libc::kill(pid as i32, libc::SIGTERM) };
+
+    drain_poll(
+        // nosemgrep
+        || unsafe { libc::kill(pid as i32, 0) } != 0,
+        std::time::Duration::from_millis(500),
+        timeout,
+        true,
+    )
+}
+
+/// Return the PID of the `com.hippo.brain` LaunchAgent's managed process,
+/// or `None` if the service isn't loaded or has no running process.
+///
+/// Uses `launchctl list com.hippo.brain` rather than `pgrep -f` because:
+///   1. The agent wraps the real brain inside `uv run --project ... hippo-brain
+///      serve`. `pgrep -f 'hippo-brain serve'` would match both the `uv run`
+///      wrapper AND the child python process (same substring in both argv
+///      strings) plus anything else a user has running with that substring.
+///   2. `launchctl list`'s PID is the single process launchd is actually
+///      managing — always the `uv run` wrapper. SIGTERM to the wrapper
+///      propagates to the child, which is the drain we want.
+fn brain_managed_pid() -> Option<u32> {
+    let output = std::process::Command::new("launchctl")
+        .args(["list", "com.hippo.brain"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    parse_launchctl_pid(&String::from_utf8_lossy(&output.stdout))
+}
+
+/// Extract the PID from the plist-like output of `launchctl list <label>`.
+/// The relevant line looks like `\t"PID" = 53990;`. If the service is
+/// loaded but no process is running, `PID` is absent — returns None.
+fn parse_launchctl_pid(output: &str) -> Option<u32> {
+    for line in output.lines() {
+        let trimmed = line.trim();
+        if let Some(rest) = trimmed.strip_prefix("\"PID\" = ") {
+            return rest.trim_end_matches(';').trim().parse().ok();
+        }
+    }
+    None
+}
+
+/// Poll `is_done` every `interval` until it returns true or `timeout` elapses.
+/// Prints progress dots when `verbose` is true. Returns true if `is_done` fired in time.
+fn drain_poll(
+    is_done: impl Fn() -> bool,
+    interval: std::time::Duration,
+    timeout: std::time::Duration,
+    verbose: bool,
+) -> bool {
+    let start = std::time::Instant::now();
+    loop {
+        std::thread::sleep(interval);
+        if is_done() {
+            return true;
+        }
+        if start.elapsed() >= timeout {
+            return false;
+        }
+        if verbose {
+            print!(".");
+            let _ = std::io::Write::flush(&mut std::io::stdout());
+        }
+    }
+}
+
 /// Install the Firefox Native Messaging host manifest and wrapper script.
 ///
 /// Creates `hippo_daemon.json` (the manifest) and `hippo-native-messaging` (a wrapper
@@ -246,6 +359,60 @@ pub fn install_native_messaging_manifest(hippo_bin: &Path, force: bool) -> Resul
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::time::Duration;
+
+    #[test]
+    fn drain_poll_returns_true_immediately_when_already_done() {
+        let result = drain_poll(
+            || true,
+            Duration::from_millis(1),
+            Duration::from_secs(1),
+            false,
+        );
+        assert!(result);
+    }
+
+    #[test]
+    fn drain_poll_returns_true_when_done_before_timeout() {
+        let alive = Arc::new(AtomicBool::new(true));
+        let alive2 = alive.clone();
+        // After the first sleep the closure fires, setting alive=false on the second call.
+        let calls = Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let calls2 = calls.clone();
+        let result = drain_poll(
+            move || {
+                let n = calls2.fetch_add(1, Ordering::SeqCst);
+                if n >= 1 {
+                    alive2.store(false, Ordering::SeqCst);
+                }
+                !alive.load(Ordering::SeqCst)
+            },
+            Duration::from_millis(1),
+            Duration::from_secs(5),
+            false,
+        );
+        assert!(result);
+    }
+
+    #[test]
+    fn drain_poll_returns_false_on_timeout() {
+        let result = drain_poll(
+            || false, // never done
+            Duration::from_millis(1),
+            Duration::from_millis(20),
+            false,
+        );
+        assert!(!result);
+    }
+
+    #[test]
+    fn service_is_loaded_returns_false_for_unknown_label() {
+        assert!(!service_is_loaded(
+            "com.hippo.definitely-not-installed-xyzzy"
+        ));
+    }
 
     #[test]
     fn test_detect_vars_finds_current_exe() {
@@ -253,6 +420,9 @@ mod tests {
         assert!(vars.hippo_bin.exists() || vars.hippo_bin.to_string_lossy().contains("hippo"));
         assert!(!vars.home.as_os_str().is_empty());
         assert!(!vars.path.is_empty());
+        // scripts_dir must be a child of brain_dir (installer packs scripts
+        // inside the brain tarball — see scripts/install.sh and release.yml).
+        assert_eq!(vars.scripts_dir, Path::new("/fake/brain/scripts"));
     }
 
     #[test]
@@ -330,5 +500,33 @@ mod tests {
         assert!(result.contains("/usr/local/bin/hippo"));
         assert!(result.contains("/usr/local/bin/uv"));
         assert!(result.contains("http://localhost:4318"));
+    }
+
+    #[test]
+    fn parse_launchctl_pid_extracts_running_process_pid() {
+        // Actual `launchctl list com.hippo.brain` output for a healthy service.
+        let sample = "{\n\
+            \t\"StandardOutPath\" = \"/Users/me/.local/share/hippo/brain.stdout.log\";\n\
+            \t\"Label\" = \"com.hippo.brain\";\n\
+            \t\"PID\" = 53990;\n\
+            \t\"Program\" = \"/opt/homebrew/bin/uv\";\n\
+            };";
+        assert_eq!(parse_launchctl_pid(sample), Some(53990));
+    }
+
+    #[test]
+    fn parse_launchctl_pid_returns_none_when_service_not_running() {
+        // Loaded-but-not-running services omit the PID key entirely.
+        let sample = "{\n\
+            \t\"Label\" = \"com.hippo.brain\";\n\
+            \t\"LastExitStatus\" = 0;\n\
+            };";
+        assert_eq!(parse_launchctl_pid(sample), None);
+    }
+
+    #[test]
+    fn parse_launchctl_pid_ignores_malformed_values() {
+        let sample = "\t\"PID\" = not-a-number;";
+        assert_eq!(parse_launchctl_pid(sample), None);
     }
 }
