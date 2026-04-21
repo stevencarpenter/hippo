@@ -1,15 +1,14 @@
-import subprocess
+import pytest
+
+from hippo_brain.bench.cli import main
 
 
-def test_cli_help_smoke():
+def test_cli_help_smoke(capsys):
     """hippo-bench --help exits 0 and mentions the three subcommands."""
-    result = subprocess.run(
-        ["uv", "run", "--project", "brain", "hippo-bench", "--help"],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    assert result.returncode == 0, result.stderr
-    assert "run" in result.stdout
-    assert "corpus" in result.stdout
-    assert "summary" in result.stdout
+    with pytest.raises(SystemExit) as exc:
+        main(["--help"])
+    assert exc.value.code == 0
+    out = capsys.readouterr().out
+    assert "run" in out
+    assert "corpus" in out
+    assert "summary" in out
