@@ -12,13 +12,16 @@ Hippo's daemon, brain, and GUI ship in lockstep: one tag → one GitHub Release
 with all three artifacts. Because the daemon and brain share a SQLite schema,
 their versions must move together (see CLAUDE.md for the rationale).
 
-1. Bump the version in **both** manifests to the same `X.Y.Z`:
+1. Bump the version in the shared manifests to the same `X.Y.Z`, and keep the GUI fallback version aligned:
    ```bash
    # Rust workspace (covers hippo-core + hippo-daemon)
    vim Cargo.toml                  # [workspace.package].version
 
    # Python brain
    vim brain/pyproject.toml        # [project].version
+
+   # GUI fallback version used by local packaging when HIPPO_MARKETING_VERSION is unset
+   vim hippo-gui/VERSION
    ```
    Lockfiles (`Cargo.lock`, `brain/uv.lock`) refresh on the next build.
 
@@ -77,6 +80,7 @@ The release workflow consists of three parallel build jobs and a final release j
 - Creates a versioned ZIP archive with the `.app` bundle
 - Generates SHA-256 checksum
 - Uploads artifact for release job
+- The same packaging path is now exercised on `main` and PRs by `GUI CI`
 
 ### 4. `release` (macOS runner)
 - Depends on all three build jobs
