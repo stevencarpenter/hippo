@@ -4,11 +4,15 @@ on:
   pull_request:
     paths:
       - "hippo-gui/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
       - ".github/workflows/gui.yml"
   push:
     branches: [main]
     paths:
       - "hippo-gui/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
       - ".github/workflows/gui.yml"
 
 concurrency:
