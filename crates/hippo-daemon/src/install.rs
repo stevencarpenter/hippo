@@ -235,21 +235,7 @@ pub fn service_bootstrap(domain: &str, plist: &Path) -> Result<()> {
 /// Lets uvicorn finish in-flight HTTP requests before the process stops. Prints progress
 /// dots while waiting. Returns true if the process exited within the timeout.
 pub fn drain_brain(timeout: std::time::Duration) -> bool {
-    let pid_output = std::process::Command::new("pgrep")
-        .args(["-f", "hippo-brain serve"])
-        .output();
-    let pid: Option<u32> = pid_output.ok().and_then(|o| {
-        if o.status.success() {
-            String::from_utf8_lossy(&o.stdout)
-                .lines()
-                .next()
-                .and_then(|s| s.trim().parse().ok())
-        } else {
-            None
-        }
-    });
-
-    let Some(pid) = pid else {
+    let Some(pid) = brain_managed_pid() else {
         return true;
     };
 
@@ -263,6 +249,41 @@ pub fn drain_brain(timeout: std::time::Duration) -> bool {
         timeout,
         true,
     )
+}
+
+/// Return the PID of the `com.hippo.brain` LaunchAgent's managed process,
+/// or `None` if the service isn't loaded or has no running process.
+///
+/// Uses `launchctl list com.hippo.brain` rather than `pgrep -f` because:
+///   1. The agent wraps the real brain inside `uv run --project ... hippo-brain
+///      serve`. `pgrep -f 'hippo-brain serve'` would match both the `uv run`
+///      wrapper AND the child python process (same substring in both argv
+///      strings) plus anything else a user has running with that substring.
+///   2. `launchctl list`'s PID is the single process launchd is actually
+///      managing — always the `uv run` wrapper. SIGTERM to the wrapper
+///      propagates to the child, which is the drain we want.
+fn brain_managed_pid() -> Option<u32> {
+    let output = std::process::Command::new("launchctl")
+        .args(["list", "com.hippo.brain"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    parse_launchctl_pid(&String::from_utf8_lossy(&output.stdout))
+}
+
+/// Extract the PID from the plist-like output of `launchctl list <label>`.
+/// The relevant line looks like `\t"PID" = 53990;`. If the service is
+/// loaded but no process is running, `PID` is absent — returns None.
+fn parse_launchctl_pid(output: &str) -> Option<u32> {
+    for line in output.lines() {
+        let trimmed = line.trim();
+        if let Some(rest) = trimmed.strip_prefix("\"PID\" = ") {
+            return rest.trim_end_matches(';').trim().parse().ok();
+        }
+    }
+    None
 }
 
 /// Poll `is_done` every `interval` until it returns true or `timeout` elapses.
@@ -479,5 +500,33 @@ mod tests {
         assert!(result.contains("/usr/local/bin/hippo"));
         assert!(result.contains("/usr/local/bin/uv"));
         assert!(result.contains("http://localhost:4318"));
+    }
+
+    #[test]
+    fn parse_launchctl_pid_extracts_running_process_pid() {
+        // Actual `launchctl list com.hippo.brain` output for a healthy service.
+        let sample = "{\n\
+            \t\"StandardOutPath\" = \"/Users/me/.local/share/hippo/brain.stdout.log\";\n\
+            \t\"Label\" = \"com.hippo.brain\";\n\
+            \t\"PID\" = 53990;\n\
+            \t\"Program\" = \"/opt/homebrew/bin/uv\";\n\
+            };";
+        assert_eq!(parse_launchctl_pid(sample), Some(53990));
+    }
+
+    #[test]
+    fn parse_launchctl_pid_returns_none_when_service_not_running() {
+        // Loaded-but-not-running services omit the PID key entirely.
+        let sample = "{\n\
+            \t\"Label\" = \"com.hippo.brain\";\n\
+            \t\"LastExitStatus\" = 0;\n\
+            };";
+        assert_eq!(parse_launchctl_pid(sample), None);
+    }
+
+    #[test]
+    fn parse_launchctl_pid_ignores_malformed_values() {
+        let sample = "\t\"PID\" = not-a-number;";
+        assert_eq!(parse_launchctl_pid(sample), None);
     }
 }

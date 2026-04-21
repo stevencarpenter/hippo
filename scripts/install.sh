@@ -294,11 +294,17 @@ install_brain() {
     mkdir -p "${brain_staging}"
     tar -xzf "${brain_path}" -C "${brain_staging}" --strip-components=1
 
-    if [ ! -d "${brain_staging}/scripts" ]; then
-        log_error "Brain tarball is missing expected scripts/ subdir"
-        rm -rf "${brain_staging}"
-        exit 1
-    fi
+    # Both scripts/ and shell/ are required: scripts/ is consumed by the
+    # xcode-ingest LaunchAgents, shell/ is sourced from the user's zsh
+    # config per the "Next steps" hint below. A tarball missing either
+    # would install silently and surface as a runtime failure later.
+    for required in scripts shell; do
+        if [ ! -d "${brain_staging}/${required}" ]; then
+            log_error "Brain tarball is missing expected ${required}/ subdir"
+            rm -rf "${brain_staging}"
+            exit 1
+        fi
+    done
 
     rm -rf "${BRAIN_DIR}"
     mv "${brain_staging}" "${BRAIN_DIR}"
