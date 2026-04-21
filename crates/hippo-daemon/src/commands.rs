@@ -662,6 +662,13 @@ async fn check_otel_status(config: &HippoConfig, client: &reqwest::Client) {
 }
 
 fn check_claude_session_hook(config: &HippoConfig) {
+    let settings_path = dirs::home_dir()
+        .map(|h| h.join(".claude/settings.json"))
+        .unwrap_or_default();
+    check_claude_session_hook_at(config, &settings_path);
+}
+
+fn check_claude_session_hook_at(config: &HippoConfig, settings_path: &std::path::Path) {
     let expected = match expected_claude_session_hook_path(&config.storage.data_dir) {
         Some(path) => path,
         None => {
@@ -674,11 +681,7 @@ fn check_claude_session_hook(config: &HippoConfig) {
         }
     };
 
-    let settings_path = dirs::home_dir()
-        .map(|h| h.join(".claude/settings.json"))
-        .unwrap_or_default();
-
-    let content = match std::fs::read_to_string(&settings_path) {
+    let content = match std::fs::read_to_string(settings_path) {
         Ok(c) => c,
         Err(_) => {
             println!("[--] Claude settings not found (session hook not configured)");
@@ -1027,5 +1030,77 @@ replacement = "***"
         print_brain_health_details(&config, &client).await;
 
         server.await.unwrap();
+    }
+
+    #[test]
+    fn test_hook_expected_path_derived_from_data_dir() {
+        let mut config = HippoConfig::default();
+        config.storage.data_dir = std::path::PathBuf::from("/home/user/.local/share/hippo");
+        // parent = /home/user/.local/share → brain dir = .../hippo-brain
+        let expected = config
+            .storage
+            .data_dir
+            .parent()
+            .map(|p| p.join("hippo-brain/shell/claude-session-hook.sh"))
+            .unwrap();
+        assert_eq!(
+            expected,
+            std::path::Path::new(
+                "/home/user/.local/share/hippo-brain/shell/claude-session-hook.sh"
+            )
+        );
+    }
+
+    #[test]
+    fn test_hook_check_not_configured() {
+        let temp = tempdir().unwrap();
+        let settings = temp.path().join("settings.json");
+        std::fs::write(&settings, r#"{"theme":"dark"}"#).unwrap();
+
+        let mut config = HippoConfig::default();
+        config.storage.data_dir = temp.path().join("hippo");
+        // Should not panic; prints [--] not configured
+        check_claude_session_hook_at(&config, &settings);
+    }
+
+    #[test]
+    fn test_hook_check_mismatch() {
+        let temp = tempdir().unwrap();
+        let settings = temp.path().join("settings.json");
+        let wrong_path = "/wrong/path/claude-session-hook.sh";
+        std::fs::write(
+            &settings,
+            format!(
+                r#"{{"hooks":{{"SessionStart":[{{"hooks":[{{"command":"{wrong_path}"}}]}}]}}}}"#
+            ),
+        )
+        .unwrap();
+
+        let mut config = HippoConfig::default();
+        config.storage.data_dir = temp.path().join("hippo");
+        // Should not panic; prints [!!] path mismatch
+        check_claude_session_hook_at(&config, &settings);
+    }
+
+    #[test]
+    fn test_hook_check_match_missing_script() {
+        let temp = tempdir().unwrap();
+        // Expected path: temp/hippo-brain/shell/claude-session-hook.sh
+        // data_dir parent = temp, so expected = temp/hippo-brain/shell/claude-session-hook.sh
+        let expected_path = temp.path().join("hippo-brain/shell/claude-session-hook.sh");
+        let settings = temp.path().join("settings.json");
+        std::fs::write(
+            &settings,
+            format!(
+                r#"{{"hooks":{{"SessionStart":[{{"hooks":[{{"command":"{}"}}]}}]}}}}"#,
+                expected_path.display()
+            ),
+        )
+        .unwrap();
+
+        let mut config = HippoConfig::default();
+        config.storage.data_dir = temp.path().join("hippo");
+        // Script doesn't exist on disk → prints [!!] configured but script missing
+        check_claude_session_hook_at(&config, &settings);
     }
 }
