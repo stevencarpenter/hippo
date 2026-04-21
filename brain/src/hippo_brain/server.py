@@ -164,8 +164,11 @@ class BrainServer:
         conn.execute("PRAGMA foreign_keys=ON")
         conn.execute("PRAGMA busy_timeout=5000")
         version = conn.execute("PRAGMA user_version").fetchone()[0]
-        EXPECTED_VERSION = 6
-        if version not in (EXPECTED_VERSION, 5, 4, 3):
+        EXPECTED_VERSION = 7
+        # Accept the current version plus a trailing window of prior
+        # versions so the brain keeps reading while the daemon migrates
+        # the DB on startup. Older versions outside this window fail fast.
+        if version not in (EXPECTED_VERSION, 6, 5, 4, 3):
             conn.close()
             raise RuntimeError(
                 f"DB schema version mismatch: expected {EXPECTED_VERSION}, found {version}. "
