@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import re
 from dataclasses import dataclass, field
 
@@ -170,4 +171,51 @@ def check_entity_sanity(parsed: dict, source: str, min_rate: float = 0.9) -> Ent
         files_path_rate=per_cat.get("files", 1.0),
         tools_sanity_rate=per_cat.get("tools", 1.0),
         projects_sanity_rate=per_cat.get("projects", 1.0),
+    )
+
+
+@dataclass
+class SelfConsistencyResult:
+    mean: float
+    min: float
+    max: float
+    per_event_scores: list[float]
+
+
+def _cosine(a: list[float], b: list[float]) -> float:
+    dot = sum(x * y for x, y in zip(a, b, strict=True))
+    na = math.sqrt(sum(x * x for x in a))
+    nb = math.sqrt(sum(x * x for x in b))
+    if na == 0.0 or nb == 0.0:
+        return 0.0
+    return dot / (na * nb)
+
+
+def mean_pairwise_cosine(vectors: list[list[float]]) -> float | None:
+    """Mean of cos(v_i, v_j) across all i < j. None if fewer than 2 vectors."""
+    if len(vectors) < 2:
+        return None
+    total = 0.0
+    count = 0
+    for i in range(len(vectors)):
+        for j in range(i + 1, len(vectors)):
+            total += _cosine(vectors[i], vectors[j])
+            count += 1
+    return total / count if count else 0.0
+
+
+def self_consistency_score(per_event_vectors: list[list[list[float]]]) -> SelfConsistencyResult:
+    """Given list of per-event vector lists, return aggregated self-consistency."""
+    per_event: list[float] = []
+    for vectors in per_event_vectors:
+        score = mean_pairwise_cosine(vectors)
+        if score is not None:
+            per_event.append(score)
+    if not per_event:
+        return SelfConsistencyResult(mean=0.0, min=0.0, max=0.0, per_event_scores=[])
+    return SelfConsistencyResult(
+        mean=sum(per_event) / len(per_event),
+        min=min(per_event),
+        max=max(per_event),
+        per_event_scores=per_event,
     )

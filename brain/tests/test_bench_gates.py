@@ -1,7 +1,13 @@
+import math
+
+import pytest
+
 from hippo_brain.bench.gates import (
     check_entity_sanity,
     check_refusal_pathology,
     check_schema_validity,
+    mean_pairwise_cosine,
+    self_consistency_score,
 )
 
 
@@ -168,3 +174,36 @@ def test_entity_sanity_no_entities_is_vacuously_pass():
     r = check_entity_sanity(payload, "shell")
     assert r.passed
     assert r.per_category_rates == {}
+
+
+def test_mean_pairwise_cosine_identical_vectors():
+    v = [1.0, 0.0, 0.0]
+    score = mean_pairwise_cosine([v, v, v, v])
+    assert math.isclose(score, 1.0, abs_tol=1e-6)
+
+
+def test_mean_pairwise_cosine_orthogonal_vectors():
+    a = [1.0, 0.0]
+    b = [0.0, 1.0]
+    score = mean_pairwise_cosine([a, b])
+    assert math.isclose(score, 0.0, abs_tol=1e-6)
+
+
+def test_mean_pairwise_cosine_single_vector_returns_nan_marker():
+    score = mean_pairwise_cosine([[1.0, 0.0]])
+    assert score is None
+
+
+def test_self_consistency_score_aggregates_per_event():
+    # Two events, each with three runs. First event converges; second diverges.
+    per_event_vectors = [
+        [[1.0, 0.0], [1.0, 0.0], [1.0, 0.0]],  # perfect
+        [[1.0, 0.0], [0.0, 1.0], [1.0, 0.0]],  # partial
+    ]
+    r = self_consistency_score(per_event_vectors)
+    assert 0.0 < r.mean < 1.0
+    assert r.min < r.mean
+    assert r.max > r.mean
+    # First event: all pairs identical → 1.0
+    # Second event: cos(a,b)=0, cos(a,a)=1, cos(b,a)=0 → mean = (0+1+0)/3 = 0.3333
+    assert r.per_event_scores == pytest.approx([1.0, 1 / 3], abs=0.05)
