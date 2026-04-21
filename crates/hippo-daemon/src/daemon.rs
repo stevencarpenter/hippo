@@ -23,6 +23,7 @@ use opentelemetry::KeyValue;
 use std::time::Instant as OtelInstant;
 
 use crate::framing::{read_frame, write_frame};
+use crate::schema_handshake::{HandshakeResult, check_brain_schema_compat, mismatch_advice};
 
 pub struct DaemonState {
     pub config: HippoConfig,
@@ -382,7 +383,6 @@ pub async fn run(config: HippoConfig) -> Result<()> {
     // If brain reports a different expected schema version, refuse to
     // proceed — `open_db` would run a migration that breaks every brain
     // query until brain is also upgraded.
-    use crate::schema_handshake::{HandshakeResult, check_brain_schema_compat, mismatch_advice};
     match check_brain_schema_compat(storage::EXPECTED_VERSION, config.brain.port).await {
         Ok(HandshakeResult::Compatible) => {}
         Ok(HandshakeResult::BrainAbsent) => {

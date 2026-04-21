@@ -822,6 +822,8 @@ def main() -> None:
             "process is waiting for MCP messages on stdin."
         ),
     )
+    # Parse only to honor -h/--help and reject unknown args. The return
+    # value has no fields and is intentionally discarded.
     parser.parse_args()
 
     _init_state()

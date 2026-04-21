@@ -310,7 +310,10 @@ install_brain() {
     # (a generic path). The new layout places them under ${BRAIN_DIR}/scripts.
     # Remove the orphaned legacy tree so it doesn't linger on disk.
     local legacy_scripts="${share_dir}/scripts"
-    if [ -d "${legacy_scripts}" ] && [ -f "${legacy_scripts}/hippo-ingest-claude.py" ]; then
+    # Only nuke the legacy path if it looks hippo-owned. Match ANY hippo-*.py
+    # rather than a single pinned filename so a future rename doesn't leave
+    # orphaned trees behind.
+    if [ -d "${legacy_scripts}" ] && [ -n "$(find "${legacy_scripts}" -maxdepth 1 -name 'hippo-*.py' -print -quit 2>/dev/null)" ]; then
         log_info "Removing legacy scripts directory at ${legacy_scripts}..."
         rm -rf "${legacy_scripts}"
     fi
@@ -360,21 +363,20 @@ install_gui() {
         return 0
     fi
 
-    # Stage inside /Applications (same filesystem) so the swap is a rename, not
-    # a cross-filesystem copy. Use a hidden staging *directory* rather than a
-    # hidden bundle path: Launch Services crawls /Applications/*.app regardless
-    # of dot-prefix, and would transiently register the staged bundle. A hidden
-    # subdirectory holding the bundle is not crawled. Clears any staging path
-    # left behind by a prior aborted run.
-    local gui_staging_dir="/Applications/.hippo-staging"
-    local gui_staging="${gui_staging_dir}/HippoGUI.app"
-    rm -rf "${gui_staging_dir}"
-    mkdir -p "${gui_staging_dir}"
-    cp -R "${app_bundle}" "${gui_staging}"
-
+    # Swap the bundle into /Applications from the unzipped copy in $TMPDIR.
+    # We deliberately do NOT stage inside /Applications: Launch Services
+    # crawls /Applications recursively, and whether a transient bundle
+    # inside a dot-prefixed subdirectory gets registered is not a
+    # guaranteed property of lsregister across macOS versions. A $TMPDIR
+    # staging path is outside Launch Services' scope entirely.
+    #
+    # On a standard macOS install, $TMPDIR (/var/folders/.../T) and
+    # /Applications both live on /System/Volumes/Data, so `mv` resolves
+    # to rename(2) and the swap is atomic. If a user's $TMPDIR is on a
+    # different volume (e.g., external disk), `mv` falls back to cp+rm;
+    # still correct, just non-atomic in the rm-then-mv window.
     rm -rf "/Applications/HippoGUI.app"
-    mv "${gui_staging}" "/Applications/HippoGUI.app"
-    rm -rf "${gui_staging_dir}"
+    mv "${app_bundle}" "/Applications/HippoGUI.app"
 
     write_receipt "gui" "${expected_checksum}"
     log_success "HippoGUI installed to /Applications"

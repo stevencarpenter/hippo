@@ -67,8 +67,13 @@ pub async fn check_brain_schema_compat(
         Err(_) => return Ok(HandshakeResult::BrainAbsent),
     };
 
+    // Non-2xx from brain means brain is *running* but unhealthy (e.g. half-
+    // started, DB locked). Treat as Unknown rather than Absent: a startup
+    // race against a half-started brain isn't the same as brain being off,
+    // and we'd rather the daemon log a warning and proceed than silently
+    // migrate as though brain weren't there.
     if !response.status().is_success() {
-        return Ok(HandshakeResult::BrainAbsent);
+        return Ok(HandshakeResult::Unknown);
     }
 
     let body: BrainHealth = match response.json().await {

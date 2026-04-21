@@ -73,6 +73,23 @@ fn v6_db_migrates_to_v7_and_adds_source_kind_and_tool_name() {
         idx_exists, 1,
         "idx_events_source_kind missing after v7 migration"
     );
+
+    // Partial index predicate is `WHERE source_kind != 'shell'`. Since every
+    // pre-migration row defaults to 'shell', the index must be empty — a
+    // cheap belt-and-suspenders assertion that the partial predicate was
+    // applied correctly (not a full index that the planner might accidentally
+    // populate with every row).
+    let idx_rows: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM events INDEXED BY idx_events_source_kind",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        idx_rows, 0,
+        "partial index should contain no pre-migration 'shell' rows"
+    );
 }
 
 #[test]
