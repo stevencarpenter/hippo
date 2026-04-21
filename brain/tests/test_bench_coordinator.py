@@ -14,17 +14,17 @@ def test_run_one_model_lifecycle(mock_warmup, mock_main, mock_sc, mock_sampler_c
     mock_sampler = MagicMock()
     mock_sampler.peak.return_value = {
         "lmstudio_rss_mb": 100.0,
-        "load_avg_5s": 1.0,
+        "load_avg_1m": 1.0,
         "mem_free_mb": 1000.0,
         "lmstudio_cpu_pct": 50.0,
     }
     mock_sampler.latest.return_value = MagicMock(
         lmstudio_rss_mb=100.0,
         lmstudio_cpu_pct=50.0,
-        load_avg_5s=1.0,
+        load_avg_1m=1.0,
         mem_free_mb=1000.0,
     )
-    mock_sampler._sample_once.return_value = MagicMock(load_avg_5s=0.5)
+    mock_sampler._sample_once.return_value = MagicMock(load_avg_1m=0.5)
     mock_sampler_cls.return_value = mock_sampler
     mock_main.return_value = []
     mock_sc.return_value = ([], [])
@@ -60,7 +60,7 @@ def test_run_one_model_unloads_on_exception(
     mock_sampler = MagicMock()
     mock_sampler.peak.return_value = {}
     mock_sampler.latest.return_value = None
-    mock_sampler._sample_once.return_value = MagicMock(load_avg_5s=0.5)
+    mock_sampler._sample_once.return_value = MagicMock(load_avg_1m=0.5)
     mock_sampler_cls.return_value = mock_sampler
     mock_lms.load.side_effect = None
     mock_main.side_effect = RuntimeError("boom")

@@ -15,8 +15,8 @@ class Snapshot:
     monotonic_ns: int
     lmstudio_rss_mb: float
     lmstudio_cpu_pct: float
-    load_avg_5s: float
-    mem_free_mb: float
+    load_avg_1m: float  # os.getloadavg()[0] — 1-minute kernel load average
+    mem_free_mb: float  # vm.available, not vm.free — kernel's user-accessible memory
 
 
 _LMSTUDIO_NAME_HINTS = ("lm studio", "lmstudio", "lms")
@@ -64,7 +64,7 @@ class MetricsSampler:
             monotonic_ns=time.monotonic_ns(),
             lmstudio_rss_mb=rss_mb,
             lmstudio_cpu_pct=cpu_pct,
-            load_avg_5s=load_1,
+            load_avg_1m=load_1,
             mem_free_mb=vm.available / (1024 * 1024),
         )
 
@@ -102,12 +102,12 @@ class MetricsSampler:
             return {
                 "lmstudio_rss_mb": 0.0,
                 "lmstudio_cpu_pct": 0.0,
-                "load_avg_5s": 0.0,
+                "load_avg_1m": 0.0,
                 "mem_free_mb": 0.0,
             }
         return {
             "lmstudio_rss_mb": max(s.lmstudio_rss_mb for s in self._samples),
             "lmstudio_cpu_pct": max(s.lmstudio_cpu_pct for s in self._samples),
-            "load_avg_5s": max(s.load_avg_5s for s in self._samples),
+            "load_avg_1m": max(s.load_avg_1m for s in self._samples),
             "mem_free_mb": min(s.mem_free_mb for s in self._samples),
         }

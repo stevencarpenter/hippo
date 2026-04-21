@@ -9,7 +9,10 @@ from dataclasses import dataclass, field
 
 from hippo_brain.bench.schemas import validate_against_schema
 
-_FENCE_RE = re.compile(r"^\s*```(?:json)?\s*\n(.*?)\n\s*```\s*$", re.DOTALL)
+_FENCE_WHOLE_RE = re.compile(r"^\s*```(?:json)?\s*\n(.*?)\n\s*```\s*$", re.DOTALL)
+# Match a fenced block ANYWHERE in the text — models routinely wrap JSON
+# between prose preamble ("Here is the JSON:") and a trailing note.
+_FENCE_ANY_RE = re.compile(r"```(?:json)?\s*\n(.*?)\n\s*```", re.DOTALL)
 
 
 @dataclass
@@ -20,17 +23,81 @@ class SchemaCheckResult:
 
 
 def _strip_code_fence(text: str) -> str:
-    m = _FENCE_RE.match(text)
-    return m.group(1) if m else text
+    m = _FENCE_WHOLE_RE.match(text)
+    if m:
+        return m.group(1)
+    m = _FENCE_ANY_RE.search(text)
+    if m:
+        return m.group(1)
+    return text
+
+
+def _extract_json_object(text: str) -> str | None:
+    """Find the first balanced top-level JSON object in text.
+
+    Handles the common case where a model emits `Here's the answer: {...}`.
+    We scan for the first `{` and find its matching `}` accounting for
+    string literals and escapes. Returns None if no balanced object found.
+    """
+    depth = 0
+    in_str = False
+    escape = False
+    start = -1
+    for i, c in enumerate(text):
+        if escape:
+            escape = False
+            continue
+        if c == "\\" and in_str:
+            escape = True
+            continue
+        if c == '"':
+            in_str = not in_str
+            continue
+        if in_str:
+            continue
+        if c == "{":
+            if depth == 0:
+                start = i
+            depth += 1
+        elif c == "}":
+            depth -= 1
+            if depth == 0 and start >= 0:
+                return text[start : i + 1]
+            if depth < 0:
+                return None
+    return None
 
 
 def check_schema_validity(raw_output: str, source: str) -> SchemaCheckResult:
-    """Parse raw LLM output and validate it against the source's schema."""
+    """Parse raw LLM output and validate it against the source's schema.
+
+    Recovery ladder (in order):
+      1. Strip wrapping code fence (` ```json ... ``` `)
+      2. Try to parse directly
+      3. If parse fails, extract first balanced {...} from the text
+      4. Re-parse that slice
+
+    This measures "can the model emit JSON that matches the schema" — not
+    "can the model emit JSON with zero prose". The contract asks for strict
+    JSON; we're lenient about a fence or preamble because real models
+    often add them despite the system prompt.
+    """
     text = _strip_code_fence(raw_output)
     try:
         parsed = json.loads(text)
     except json.JSONDecodeError as e:
-        return SchemaCheckResult(passed=False, parsed=None, errors=[f"json parse error: {e.msg}"])
+        # Fallback: try to find a balanced object in the raw text.
+        extracted = _extract_json_object(raw_output)
+        if extracted is None:
+            return SchemaCheckResult(
+                passed=False, parsed=None, errors=[f"json parse error: {e.msg}"]
+            )
+        try:
+            parsed = json.loads(extracted)
+        except json.JSONDecodeError as e2:
+            return SchemaCheckResult(
+                passed=False, parsed=None, errors=[f"json parse error: {e2.msg}"]
+            )
 
     if not isinstance(parsed, dict):
         return SchemaCheckResult(

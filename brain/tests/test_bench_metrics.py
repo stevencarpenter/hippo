@@ -8,7 +8,7 @@ def test_snapshot_shape():
         monotonic_ns=123,
         lmstudio_rss_mb=100.5,
         lmstudio_cpu_pct=50.0,
-        load_avg_5s=2.1,
+        load_avg_1m=2.1,
         mem_free_mb=1024.0,
     )
     assert s.lmstudio_rss_mb == 100.5
@@ -37,7 +37,7 @@ def test_sampler_aggregates_peak():
     peak = sampler.peak()
     assert peak["lmstudio_rss_mb"] == 200.0
     assert peak["lmstudio_cpu_pct"] == 90.0
-    assert peak["load_avg_5s"] == 1.5
+    assert peak["load_avg_1m"] == 1.5
 
 
 def test_sampler_latest_returns_most_recent():

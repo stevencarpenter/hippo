@@ -31,7 +31,7 @@ def _snapshot_fn(sampler: MetricsSampler):
         return {
             "lmstudio_rss_mb": s.lmstudio_rss_mb,
             "lmstudio_cpu_pct": s.lmstudio_cpu_pct,
-            "load_avg_5s": s.load_avg_5s,
+            "load_avg_1m": s.load_avg_1m,
             "mem_free_mb": s.mem_free_mb,
         }
 
@@ -72,6 +72,13 @@ def run_one_model(
     sampler.start()
     start = time.monotonic()
     cooldown_timeout = False
+    # Bind up-front so a mid-pass exception preserves whatever partial data
+    # was collected. Otherwise an exception in main_pass leaves `attempts`
+    # unbound and the ModelRunResult construction below crashes, losing
+    # every attempt that succeeded before the failure.
+    main_attempts: list[AttemptRecord] = []
+    sc_attempts: list[AttemptRecord] = []
+    per_event_vectors: list[list[list[float]]] = []
     try:
         main_attempts = run_model_main_pass(
             base_url=base_url,
@@ -91,8 +98,8 @@ def run_one_model(
             metrics_snapshot=_snapshot_fn(sampler),
             run_id=run_id,
         )
-        attempts = main_attempts + sc_attempts
     finally:
+        attempts = main_attempts + sc_attempts
         sampler.stop()
         wall_clock_sec = int(time.monotonic() - start)
         peak = sampler.peak()
@@ -101,10 +108,14 @@ def run_one_model(
         except lms.LmsError:
             pass
 
+    # Cooldown is load-driven, NOT thermal. A hot thermal state with low load
+    # can still throttle the next model's CPU/GPU, but we don't have a headless
+    # signal for that on macOS (powermetrics requires sudo). Document honestly:
+    # this loop waits for scheduling contention to drop, not for the SoC to cool.
     cooldown_start = time.monotonic()
     while time.monotonic() - cooldown_start < cooldown_max_sec:
-        s = sampler._sample_once(None)  # ad-hoc probe
-        if s.load_avg_5s < 2.0:
+        s = sampler._sample_once(None)  # ad-hoc probe; sampler already stopped
+        if s.load_avg_1m < 2.0:
             break
         time.sleep(2)
     else:
