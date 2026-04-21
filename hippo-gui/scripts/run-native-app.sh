@@ -1,5 +1,23 @@
 #!/usr/bin/env bash
+# Build (if needed) and open the HippoGUI native app bundle.
 set -euo pipefail
+
+usage() {
+    cat <<'EOF'
+run-native-app — build and open HippoGUI
+
+USAGE:
+    run-native-app.sh [debug|release]
+    run-native-app.sh --help
+
+ARGUMENTS:
+    debug|release   Build configuration (default: debug)
+EOF
+}
+
+case "${1:-}" in
+    -h|--help) usage; exit 0 ;;
+esac
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CONFIGURATION="${1:-debug}"

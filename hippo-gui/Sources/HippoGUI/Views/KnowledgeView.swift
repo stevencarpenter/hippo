@@ -2,7 +2,7 @@ import SwiftUI
 
 struct KnowledgeView: View {
     @Environment(\.brainClient) private var brainClient
-    @State private var vm = KnowledgeViewModel()
+    @State private var viewModel = KnowledgeViewModel()
 
     var body: some View {
         HSplitView {
@@ -14,7 +14,7 @@ struct KnowledgeView: View {
 
                     Spacer()
 
-                    Picker("Type", selection: $vm.nodeType) {
+                    Picker("Type", selection: $viewModel.nodeType) {
                         Text("All").tag("")
                         ForEach(KnowledgeViewModel.nodeTypes.dropFirst(), id: \.self) { type in
                             Text(type).tag(type)
@@ -23,7 +23,7 @@ struct KnowledgeView: View {
                     .pickerStyle(.menu)
                     .frame(width: 120)
 
-                    Picker("Since", selection: $vm.sincePreset) {
+                    Picker("Since", selection: $viewModel.sincePreset) {
                         ForEach(TimeFilterPreset.allCases) { preset in
                             Text(preset.title).tag(preset)
                         }
@@ -32,14 +32,14 @@ struct KnowledgeView: View {
                     .frame(width: 120)
 
                     Button {
-                        Task { await vm.refresh() }
+                        Task { await viewModel.refresh() }
                     } label: {
                         Image(systemName: "arrow.clockwise")
                     }
-                    .disabled(vm.isLoadingList)
+                    .disabled(viewModel.isLoadingList)
                 }
 
-                if vm.isLoadingList {
+                if viewModel.isLoadingList {
                     HStack {
                         ProgressView()
                             .scaleEffect(0.8)
@@ -48,16 +48,20 @@ struct KnowledgeView: View {
                     }
                 }
 
-                if let error = vm.errorMessage {
+                if let error = viewModel.errorMessage {
                     ErrorBannerView(message: error) {
-                        await vm.refresh()
+                        await viewModel.refresh()
                     }
                 }
 
-                List(selection: Binding(get: { vm.selectedNodeID }, set: { newValue in
-                    Task { await vm.selectNode(id: newValue) }
-                })) {
-                    ForEach(vm.filteredNodes) { node in
+                List(
+                    selection: Binding(
+                        get: { viewModel.selectedNodeID },
+                        set: { newValue in
+                            Task { await viewModel.selectNode(id: newValue) }
+                        })
+                ) {
+                    ForEach(viewModel.filteredNodes) { node in
                         VStack(alignment: .leading, spacing: 4) {
                             Text(node.displaySummary)
                                 .lineLimit(2)
@@ -80,13 +84,13 @@ struct KnowledgeView: View {
                         .tag(Optional(node.id))
                     }
 
-                    if vm.canLoadMore {
+                    if viewModel.canLoadMore {
                         Button {
-                            Task { await vm.loadMore() }
+                            Task { await viewModel.loadMore() }
                         } label: {
                             HStack {
                                 Spacer()
-                                if vm.isLoadingList {
+                                if viewModel.isLoadingList {
                                     ProgressView()
                                         .controlSize(.small)
                                 } else {
@@ -99,11 +103,11 @@ struct KnowledgeView: View {
                     }
                 }
                 .listStyle(.inset)
-                .searchable(text: $vm.searchText, prompt: "Search summaries or tags")
+                .searchable(text: $viewModel.searchText, prompt: "Search summaries or tags")
             }
             .frame(minWidth: 250)
 
-            if let node = vm.selectedNode {
+            if let node = viewModel.selectedNode {
                 let parsed = ParsedKnowledgeContent(raw: node.content)
                 VStack(alignment: .leading, spacing: 12) {
                     HStack {
@@ -117,7 +121,7 @@ struct KnowledgeView: View {
 
                     ScrollView {
                         VStack(alignment: .leading, spacing: 12) {
-                            if vm.isLoadingDetail {
+                            if viewModel.isLoadingDetail {
                                 ProgressView("Loading details…")
                             }
 
@@ -221,18 +225,20 @@ struct KnowledgeView: View {
                 .padding()
                 .frame(minWidth: 300)
             } else {
-                ContentUnavailableView("Select a Knowledge Node", systemImage: "brain.head.profile", description: Text("Choose an item from the list to inspect its details."))
+                ContentUnavailableView(
+                    "Select a Knowledge Node", systemImage: "brain.head.profile",
+                    description: Text("Choose an item from the list to inspect its details."))
             }
         }
-        .onChange(of: vm.nodeType) { _, _ in
-            Task { await vm.refresh() }
+        .onChange(of: viewModel.nodeType) { _, _ in
+            Task { await viewModel.refresh() }
         }
-        .onChange(of: vm.sincePreset) { _, _ in
-            Task { await vm.refresh() }
+        .onChange(of: viewModel.sincePreset) { _, _ in
+            Task { await viewModel.refresh() }
         }
         .task {
-            vm.configure(client: brainClient)
-            await vm.refresh()
+            viewModel.configure(client: brainClient)
+            await viewModel.refresh()
         }
     }
 
@@ -256,8 +262,9 @@ private struct ParsedKnowledgeContent {
 
     init(raw: String) {
         guard let data = raw.data(using: .utf8),
-              let object = try? JSONSerialization.jsonObject(with: data),
-              let dictionary = object as? [String: Any] else {
+            let object = try? JSONSerialization.jsonObject(with: data),
+            let dictionary = object as? [String: Any]
+        else {
             summary = nil
             outcome = nil
             tags = []
@@ -270,7 +277,8 @@ private struct ParsedKnowledgeContent {
         outcome = dictionary["outcome"] as? String
         tags = (dictionary["tags"] as? [String]) ?? []
 
-        additionalRows = dictionary
+        additionalRows =
+            dictionary
             .filter { key, _ in !["summary", "outcome", "tags"].contains(key) }
             .sorted { $0.key < $1.key }
             .map { key, value in
@@ -278,12 +286,12 @@ private struct ParsedKnowledgeContent {
             }
 
         if let prettyData = try? JSONSerialization.data(withJSONObject: object, options: [.prettyPrinted]),
-           let prettyString = String(data: prettyData, encoding: .utf8) {
+            let prettyString = String(data: prettyData, encoding: .utf8) {
             prettyPrintedRaw = prettyString
         } else {
             prettyPrintedRaw = raw
         }
-    }
+    1s1s0vi
 
     private static func render(_ value: Any) -> String {
         switch value {
@@ -296,7 +304,8 @@ private struct ParsedKnowledgeContent {
         case let array as [Any]:
             return array.map(render).joined(separator: ", ")
         case let dict as [String: Any]:
-            return dict
+            return
+                dict
                 .sorted { $0.key < $1.key }
                 .map { "\($0.key): \(render($0.value))" }
                 .joined(separator: "; ")

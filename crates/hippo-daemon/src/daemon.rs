@@ -23,6 +23,7 @@ use opentelemetry::KeyValue;
 use std::time::Instant as OtelInstant;
 
 use crate::framing::{read_frame, write_frame};
+use crate::schema_handshake::{HandshakeResult, check_brain_schema_compat, mismatch_advice};
 
 pub struct DaemonState {
     pub config: HippoConfig,
@@ -376,6 +377,38 @@ pub async fn run(config: HippoConfig) -> Result<()> {
     // Ensure data dir exists
     if let Some(parent) = socket_path.parent() {
         std::fs::create_dir_all(parent)?;
+    }
+
+    // Handshake with the running brain (if any) before touching the DB.
+    // If brain reports a different expected schema version, refuse to
+    // proceed — `open_db` would run a migration that breaks every brain
+    // query until brain is also upgraded.
+    match check_brain_schema_compat(storage::EXPECTED_VERSION, config.brain.port).await {
+        Ok(HandshakeResult::Compatible) => {}
+        Ok(HandshakeResult::BrainAbsent) => {
+            info!(
+                "brain not reachable on port {}; skipping schema handshake",
+                config.brain.port
+            );
+        }
+        Ok(HandshakeResult::Unknown) => {
+            warn!(
+                "brain responded but did not advertise a schema version; \
+                 proceeding — brain's own guard will catch any mismatch"
+            );
+        }
+        Ok(HandshakeResult::Incompatible {
+            daemon_expects,
+            brain_expects,
+        }) => {
+            anyhow::bail!("{}", mismatch_advice(daemon_expects, brain_expects));
+        }
+        Err(e) => {
+            warn!(
+                error = %e,
+                "schema handshake with brain failed unexpectedly; proceeding"
+            );
+        }
     }
 
     // Open database connections: one for writes (flush), one for reads (status/queries)

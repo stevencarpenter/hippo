@@ -9,6 +9,12 @@ use crate::events::{BrowserEvent, ShellEvent};
 
 const SCHEMA: &str = include_str!("schema.sql");
 
+/// Schema version the daemon expects a healthy DB to be at. Exposed so
+/// startup code (e.g. the brain handshake) can cross-check without
+/// re-declaring the value. Keep in sync with
+/// `brain/src/hippo_brain/schema_version.py::EXPECTED_SCHEMA_VERSION`.
+pub const EXPECTED_VERSION: i64 = 7;
+
 pub fn open_db(path: &Path) -> Result<Connection> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
@@ -20,7 +26,6 @@ pub fn open_db(path: &Path) -> Result<Connection> {
          PRAGMA busy_timeout=5000;",
     )?;
     let version: i64 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
-    const EXPECTED_VERSION: i64 = 7;
 
     // Migrate from v1 → v2: add envelope_id column for dedup
     if version == 1 {

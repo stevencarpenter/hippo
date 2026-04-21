@@ -332,6 +332,10 @@ pub async fn ingest_batch(
     socket_path: &Path,
     timeout_ms: u64,
 ) -> Result<(usize, usize)> {
+    // path is a Claude session JSONL supplied by the user via `hippo ingest
+    // claude-session --batch`. This is a local CLI operating on the user's
+    // own machine — no privilege boundary, no untrusted network input.
+    // nosemgrep: rust.actix.path-traversal.tainted-path.tainted-path
     let file =
         std::fs::File::open(path).with_context(|| format!("failed to open {}", path.display()))?;
     let reader = std::io::BufReader::new(file);
@@ -404,7 +408,10 @@ pub async fn ingest_batch(
 
 /// Run the importer in tail mode: skip to end, watch for new lines.
 pub async fn ingest_tail(path: &Path, socket_path: &Path, timeout_ms: u64) -> Result<()> {
-    // Seek to end of file to get initial position
+    // path is a Claude session JSONL supplied by the user via `hippo ingest
+    // claude-session --follow`. Local CLI on the user's own machine — no
+    // privilege boundary.
+    // nosemgrep: rust.actix.path-traversal.tainted-path.tainted-path
     let file =
         std::fs::File::open(path).with_context(|| format!("failed to open {}", path.display()))?;
     let mut position = file.metadata()?.len();

@@ -1,5 +1,26 @@
 #!/usr/bin/env bash
+# Live TUI-ish view of hippo enrichment progress. Polls the SQLite DB and
+# prints queue depths, recent activity, and session counts.
 set -euo pipefail
+
+usage() {
+    cat <<'EOF'
+hippo-monitor — live enrichment monitor
+
+USAGE:
+    hippo-monitor.sh [INTERVAL]
+    hippo-monitor.sh --help
+
+ARGUMENTS:
+    INTERVAL      Refresh interval in seconds (default: 5)
+
+Reads from ~/.local/share/hippo/hippo.db. Exits with Ctrl+C.
+EOF
+}
+
+case "${1:-}" in
+    -h|--help) usage; exit 0 ;;
+esac
 
 DB=~/.local/share/hippo/hippo.db
 INTERVAL=${1:-5}

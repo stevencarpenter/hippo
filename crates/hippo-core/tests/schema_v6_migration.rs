@@ -9,7 +9,7 @@ fn seed_v5(path: &std::path::Path) {
 }
 
 #[test]
-fn v5_db_migrates_to_v6_and_has_fts_and_triggers() {
+fn v5_db_migrates_to_latest_and_has_fts_and_triggers() {
     let tmp = TempDir::new().unwrap();
     let db = tmp.path().join("hippo.db");
     seed_v5(&db);
@@ -19,7 +19,8 @@ fn v5_db_migrates_to_v6_and_has_fts_and_triggers() {
     let version: i64 = conn
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .unwrap();
-    assert_eq!(version, 6);
+    // v5 → full chain (v6, v7); only the final version is exercised here.
+    assert_eq!(version, 7);
 
     let fts_exists: i64 = conn
         .query_row(
@@ -158,7 +159,7 @@ fn deleting_knowledge_node_removes_fts_row() {
 }
 
 #[test]
-fn fresh_db_has_v6_and_fts_ready() {
+fn fresh_db_has_latest_schema_and_fts_ready() {
     let tmp = TempDir::new().unwrap();
     let db = tmp.path().join("hippo.db");
     let conn = open_db(&db).unwrap();
@@ -166,7 +167,9 @@ fn fresh_db_has_v6_and_fts_ready() {
     let version: i64 = conn
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .unwrap();
-    assert_eq!(version, 6);
+    // Fresh DB applies the full SCHEMA + any subsequent migrations, so it
+    // lands at the latest version rather than v6.
+    assert_eq!(version, 7);
 
     conn.execute(
         "INSERT INTO knowledge_nodes (uuid, content, embed_text, node_type)

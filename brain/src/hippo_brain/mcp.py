@@ -805,6 +805,27 @@ async def list_projects(limit: int = 50) -> list[dict]:
 
 def main() -> None:
     """Entry point for the hippo-mcp script."""
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        prog="hippo-mcp",
+        description=(
+            "Hippo MCP server — exposes ask / search_knowledge / search_events "
+            "/ get_entities tools over stdio. Intended to be spawned by an MCP "
+            "client (e.g., Claude Code, Claude Desktop). Reads the hippo config "
+            "from ~/.config/hippo/config.toml and the SQLite DB from "
+            "~/.local/share/hippo/hippo.db."
+        ),
+        epilog=(
+            "This server communicates over stdio (newline-delimited JSON-RPC). "
+            "Running it interactively in a terminal will appear to hang — the "
+            "process is waiting for MCP messages on stdin."
+        ),
+    )
+    # Parse only to honor -h/--help and reject unknown args. The return
+    # value has no fields and is intentionally discarded.
+    parser.parse_args()
+
     _init_state()
     mcp.run(transport="stdio")
 
