@@ -5,7 +5,6 @@ from __future__ import annotations
 import argparse
 import datetime as _dt
 import platform
-import sys
 from pathlib import Path
 
 from hippo_brain.bench.corpus import (
@@ -62,9 +61,11 @@ def _cmd_run(args: argparse.Namespace) -> int:
 
 
 def _cmd_summary(args: argparse.Namespace) -> int:
-    # Implemented in Task 19.
-    print("hippo-bench summary — implemented in Task 19", file=sys.stderr)
-    return 1
+    from hippo_brain.bench.pretty import render_summary_text
+
+    text = render_summary_text(Path(args.run_file))
+    print(text)
+    return 0
 
 
 def main(argv: list[str] | None = None) -> int:
