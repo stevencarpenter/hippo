@@ -604,7 +604,7 @@ pub async fn handle_doctor(config: &HippoConfig) -> Result<()> {
     }
 
     // Check Claude session hook
-    check_claude_session_hook();
+    check_claude_session_hook(config);
 
     // Check OpenTelemetry configuration
     check_otel_status(config, &client).await;
@@ -661,8 +661,16 @@ async fn check_otel_status(config: &HippoConfig, client: &reqwest::Client) {
     }
 }
 
-fn check_claude_session_hook() {
-    let expected = env!("HIPPO_SESSION_HOOK_PATH");
+fn check_claude_session_hook(config: &HippoConfig) {
+    // The brain is installed one level above the hippo data dir, e.g.
+    // data_dir = ~/.local/share/hippo  →  brain = ~/.local/share/hippo-brain
+    let expected = config
+        .storage
+        .data_dir
+        .parent()
+        .map(|p| p.join("hippo-brain/shell/claude-session-hook.sh"))
+        .unwrap_or_default();
+
     let settings_path = dirs::home_dir()
         .map(|h| h.join(".claude/settings.json"))
         .unwrap_or_default();
@@ -697,24 +705,24 @@ fn check_claude_session_hook() {
         .find_map(|cmd| cmd.as_str().map(String::from));
 
     match configured_cmd {
-        Some(cmd) if cmd == expected => {
-            if std::path::Path::new(expected).exists() {
+        Some(ref cmd) if std::path::Path::new(cmd) == expected => {
+            if expected.exists() {
                 println!("[OK] Claude session hook configured");
             } else {
                 println!(
                     "[!!] Claude session hook configured but script missing: {}",
-                    expected
+                    expected.display()
                 );
             }
         }
         Some(cmd) => {
             println!("[!!] Claude session hook path mismatch");
             println!("     configured: {}", cmd);
-            println!("     expected:   {}", expected);
+            println!("     expected:   {}", expected.display());
         }
         None => {
             println!("[--] Claude session hook not configured");
-            println!("     expected: {}", expected);
+            println!("     expected: {}", expected.display());
         }
     }
 }

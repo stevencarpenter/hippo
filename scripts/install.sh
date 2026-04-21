@@ -491,8 +491,7 @@ main() {
     log_info "       echo 'source ${BRAIN_DIR}/shell/hippo.zsh' >> ~/.zshrc"
     log_info "       exec zsh  # reload shell"
     log_info "  2. Configure your LM Studio model: hippo config edit"
-    log_info "  3. Start services: hippo daemon start"
-    log_info "  4. Verify installation: hippo doctor"
+    log_info "  3. Verify installation: hippo doctor"
     echo ""
     log_info "For full documentation, visit: https://github.com/${REPO}"
 }
