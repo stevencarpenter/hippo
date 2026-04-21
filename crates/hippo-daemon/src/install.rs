@@ -43,10 +43,7 @@ pub fn detect_vars(brain_dir: &Path) -> Result<PlistVars> {
         .map(|c| c.telemetry)
         .unwrap_or_default();
 
-    let scripts_dir = brain_dir
-        .parent()
-        .map(|r| r.join("scripts"))
-        .unwrap_or_else(|| brain_dir.join("../scripts"));
+    let scripts_dir = brain_dir.join("scripts");
 
     Ok(PlistVars {
         hippo_bin,
@@ -402,6 +399,9 @@ mod tests {
         assert!(vars.hippo_bin.exists() || vars.hippo_bin.to_string_lossy().contains("hippo"));
         assert!(!vars.home.as_os_str().is_empty());
         assert!(!vars.path.is_empty());
+        // scripts_dir must be a child of brain_dir (installer packs scripts
+        // inside the brain tarball — see scripts/install.sh and release.yml).
+        assert_eq!(vars.scripts_dir, Path::new("/fake/brain/scripts"));
     }
 
     #[test]

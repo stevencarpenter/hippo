@@ -1,8 +1,56 @@
 #!/usr/bin/env bash
-# Hippo installer - downloads and installs all Hippo components
-# Usage: curl -fsSL https://github.com/stevencarpenter/hippo/releases/latest/download/install.sh | bash
+# Hippo installer - downloads and installs all Hippo components.
 
 set -euo pipefail
+
+usage() {
+    cat <<'EOF'
+Hippo installer
+
+Downloads and installs the daemon, brain, and GUI from the latest GitHub
+release. Re-running is safe: components whose installed checksum matches the
+release's SHA256SUMS.txt are skipped.
+
+USAGE:
+    curl -fsSL https://github.com/stevencarpenter/hippo/releases/latest/download/install.sh | bash
+    ./install.sh [--help]
+
+OPTIONS:
+    -h, --help    Show this help and exit
+
+ENVIRONMENT:
+    HIPPO_FORCE   When set to 1, true, yes (case-insensitive), force reinstall
+                  of every component even if the receipt matches. Useful for
+                  recovering from a partial install or a corrupted binary.
+                  Example: HIPPO_FORCE=1 ./install.sh
+
+INSTALL LOCATIONS:
+    ~/.local/bin/hippo                          daemon binary
+    ~/.local/share/hippo-brain/                 brain package (includes scripts/)
+    /Applications/HippoGUI.app                  macOS GUI
+    ~/.local/state/hippo/install-receipts/      per-component install receipts
+                                                (respects XDG_STATE_HOME)
+    ~/.config/hippo/                            config
+    ~/.local/share/hippo/                       runtime data (SQLite, logs)
+
+REQUIREMENTS:
+    macOS only. bash, curl, uv (Python package manager), python3.
+EOF
+}
+
+for arg in "$@"; do
+    case "${arg}" in
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        *)
+            printf "Unknown argument: %s\n\n" "${arg}" >&2
+            usage >&2
+            exit 2
+            ;;
+    esac
+done
 
 # Configuration
 REPO="stevencarpenter/hippo"
@@ -11,6 +59,9 @@ BIN_DIR="${INSTALL_DIR}/bin"
 BRAIN_DIR="${INSTALL_DIR}/share/hippo-brain"
 CONFIG_DIR="${HOME}/.config/hippo"
 DATA_DIR="${HOME}/.local/share/hippo"
+# Receipts live under XDG_STATE_HOME (not DATA_DIR) so a user wipe of Hippo's
+# runtime data doesn't desynchronize them from the actual installed binaries.
+RECEIPTS_DIR="${XDG_STATE_HOME:-${HOME}/.local/state}/hippo/install-receipts"
 
 # Colors for output
 RED='\033[0;31m'
@@ -138,6 +189,47 @@ parse_checksum() {
     echo "${checksum}"
 }
 
+# Check whether a component is already installed at the expected checksum.
+# Returns 0 (skip) if the receipt matches and the install target exists,
+# 1 otherwise. Set HIPPO_FORCE=1 (or true/yes) to bypass and always reinstall.
+check_receipt() {
+    local component="$1"
+    local expected_checksum="$2"
+    local target_path="$3"
+    local receipt="${RECEIPTS_DIR}/${component}.sha256"
+
+    case "${HIPPO_FORCE:-}" in
+        1|true|TRUE|True|yes|YES|Yes) return 1 ;;
+    esac
+
+    if [ ! -f "${receipt}" ] || [ ! -e "${target_path}" ]; then
+        return 1
+    fi
+
+    local stored
+    stored="$(cat "${receipt}" 2>/dev/null || true)"
+    [ "${stored}" = "${expected_checksum}" ]
+}
+
+# Record the artifact checksum that produced the current install of a component.
+# Writes atomically via a same-directory temp file + rename, so a crash mid-write
+# can never leave a truncated receipt. On any failure after mktemp, the orphan
+# temp file is cleaned up.
+write_receipt() {
+    local component="$1"
+    local checksum="$2"
+    local receipt="${RECEIPTS_DIR}/${component}.sha256"
+    local tmp
+
+    mkdir -p "${RECEIPTS_DIR}"
+    tmp="$(mktemp "${RECEIPTS_DIR}/.${component}.sha256.XXXXXX")"
+    if ! printf "%s\n" "${checksum}" > "${tmp}" || ! mv "${tmp}" "${receipt}"; then
+        rm -f "${tmp}"
+        log_error "Failed to write receipt for ${component}"
+        exit 1
+    fi
+}
+
 # Install daemon binary
 install_daemon() {
     local arch="$1"
@@ -146,18 +238,23 @@ install_daemon() {
     local temp_dir="$4"
 
     local daemon_filename="hippo-darwin-${arch}"
-    local daemon_path="${temp_dir}/${daemon_filename}"
-
-    download_file "${tag}" "${daemon_filename}" "${daemon_path}"
-
     local expected_checksum
     expected_checksum="$(parse_checksum "${checksums_file}" "${daemon_filename}")"
+
+    if check_receipt "daemon" "${expected_checksum}" "${BIN_DIR}/hippo"; then
+        log_info "Daemon already at ${tag}, skipping"
+        return 0
+    fi
+
+    local daemon_path="${temp_dir}/${daemon_filename}"
+    download_file "${tag}" "${daemon_filename}" "${daemon_path}"
     verify_checksum "${daemon_path}" "${expected_checksum}"
 
     log_info "Installing daemon to ${BIN_DIR}/hippo..."
     mkdir -p "${BIN_DIR}"
     install -m 755 "${daemon_path}" "${BIN_DIR}/hippo"
 
+    write_receipt "daemon" "${expected_checksum}"
     log_success "Daemon installed"
 }
 
@@ -170,22 +267,53 @@ install_brain() {
     # Extract version from tag (remove 'v' prefix)
     local version="${tag#v}"
     local brain_filename="hippo-brain-${version}.tar.gz"
-    local brain_path="${temp_dir}/${brain_filename}"
-
-    download_file "${tag}" "${brain_filename}" "${brain_path}"
-
     local expected_checksum
     expected_checksum="$(parse_checksum "${checksums_file}" "${brain_filename}")"
+
+    if check_receipt "brain" "${expected_checksum}" "${BRAIN_DIR}"; then
+        log_info "Brain already at ${tag}, skipping"
+        return 0
+    fi
+
+    local brain_path="${temp_dir}/${brain_filename}"
+    download_file "${tag}" "${brain_filename}" "${brain_path}"
     verify_checksum "${brain_path}" "${expected_checksum}"
 
     log_info "Installing brain to ${BRAIN_DIR}..."
-    mkdir -p "$(dirname "${BRAIN_DIR}")"
+    local share_dir
+    share_dir="$(dirname "${BRAIN_DIR}")"
+    mkdir -p "${share_dir}"
+
+    # Stage the new install alongside BRAIN_DIR (same filesystem) so the final
+    # swap is a single rename. The brain tarball has one top-level entry
+    # `brain/` which contains the python package plus a `scripts/` subdir
+    # consumed by LaunchAgents. Clears any staging path left behind by a
+    # prior aborted run.
+    local brain_staging="${BRAIN_DIR}.new"
+    rm -rf "${brain_staging}"
+    mkdir -p "${brain_staging}"
+    tar -xzf "${brain_path}" -C "${brain_staging}" --strip-components=1
+
+    if [ ! -d "${brain_staging}/scripts" ]; then
+        log_error "Brain tarball is missing expected scripts/ subdir"
+        rm -rf "${brain_staging}"
+        exit 1
+    fi
+
     rm -rf "${BRAIN_DIR}"
+    mv "${brain_staging}" "${BRAIN_DIR}"
 
-    tar -xzf "${brain_path}" -C "$(dirname "${BRAIN_DIR}")"
-    mv "$(dirname "${BRAIN_DIR}")/brain" "${BRAIN_DIR}"
-
+    write_receipt "brain" "${expected_checksum}"
     log_success "Brain installed"
+
+    # One-time cleanup: prior releases installed scripts at ~/.local/share/scripts/
+    # (a generic path). The new layout places them under ${BRAIN_DIR}/scripts.
+    # Remove the orphaned legacy tree so it doesn't linger on disk.
+    local legacy_scripts="${share_dir}/scripts"
+    if [ -d "${legacy_scripts}" ] && [ -f "${legacy_scripts}/hippo-ingest-claude.py" ]; then
+        log_info "Removing legacy scripts directory at ${legacy_scripts}..."
+        rm -rf "${legacy_scripts}"
+    fi
 }
 
 # Install GUI application
@@ -206,12 +334,16 @@ install_gui() {
         return 0
     fi
 
-    local gui_path="${temp_dir}/${gui_filename}"
-
-    download_file "${tag}" "${gui_filename}" "${gui_path}"
-
     local expected_checksum
     expected_checksum="$(parse_checksum "${checksums_file}" "${gui_filename}")"
+
+    if check_receipt "gui" "${expected_checksum}" "/Applications/HippoGUI.app"; then
+        log_info "HippoGUI already at ${tag}, skipping"
+        return 0
+    fi
+
+    local gui_path="${temp_dir}/${gui_filename}"
+    download_file "${tag}" "${gui_filename}" "${gui_path}"
     verify_checksum "${gui_path}" "${expected_checksum}"
 
     log_info "Installing HippoGUI to /Applications..."
@@ -228,15 +360,23 @@ install_gui() {
         return 0
     fi
 
-    # Remove existing app if present
-    if [ -d "/Applications/HippoGUI.app" ]; then
-        log_info "Removing existing HippoGUI.app..."
-        rm -rf "/Applications/HippoGUI.app"
-    fi
+    # Stage inside /Applications (same filesystem) so the swap is a rename, not
+    # a cross-filesystem copy. Use a hidden staging *directory* rather than a
+    # hidden bundle path: Launch Services crawls /Applications/*.app regardless
+    # of dot-prefix, and would transiently register the staged bundle. A hidden
+    # subdirectory holding the bundle is not crawled. Clears any staging path
+    # left behind by a prior aborted run.
+    local gui_staging_dir="/Applications/.hippo-staging"
+    local gui_staging="${gui_staging_dir}/HippoGUI.app"
+    rm -rf "${gui_staging_dir}"
+    mkdir -p "${gui_staging_dir}"
+    cp -R "${app_bundle}" "${gui_staging}"
 
-    # Copy to Applications
-    cp -R "${app_bundle}" "/Applications/"
+    rm -rf "/Applications/HippoGUI.app"
+    mv "${gui_staging}" "/Applications/HippoGUI.app"
+    rm -rf "${gui_staging_dir}"
 
+    write_receipt "gui" "${expected_checksum}"
     log_success "HippoGUI installed to /Applications"
 }
 

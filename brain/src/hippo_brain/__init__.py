@@ -1,4 +1,3 @@
-import sys
 import tomllib
 from pathlib import Path
 
@@ -71,11 +70,26 @@ def _load_runtime_settings() -> dict:
 
 
 def main() -> None:
-    if len(sys.argv) < 2:
-        print("Usage: hippo-brain <serve|enrich>")
-        sys.exit(1)
+    import argparse
 
-    command = sys.argv[1]
+    parser = argparse.ArgumentParser(
+        prog="hippo-brain",
+        description=(
+            "Hippo brain — enrichment + query server. Reads settings from "
+            "~/.config/hippo/config.toml and serves an HTTP API on 127.0.0.1."
+        ),
+    )
+    parser.add_argument(
+        "command",
+        choices=("serve", "enrich"),
+        help=(
+            "serve: run the HTTP enrichment+query server (default under the "
+            "LaunchAgent). enrich: run a one-shot enrichment pass "
+            "(not yet implemented as a standalone command)."
+        ),
+    )
+    args = parser.parse_args()
+    command = args.command
 
     if command == "serve":
         import uvicorn
@@ -114,6 +128,3 @@ def main() -> None:
                 _otel_shutdown()
     elif command == "enrich":
         print("Enrichment worker not yet implemented as standalone command.")
-    else:
-        print(f"Unknown command: {command}")
-        sys.exit(1)

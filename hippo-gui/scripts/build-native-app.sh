@@ -1,5 +1,27 @@
 #!/usr/bin/env bash
+# Build the HippoGUI .app bundle from the Swift sources via swift build +
+# bundle assembly. Stamps the marketing version via stamp-app-version.sh.
 set -euo pipefail
+
+usage() {
+    cat <<'EOF'
+build-native-app — build HippoGUI.app bundle
+
+USAGE:
+    build-native-app.sh [debug|release]
+    build-native-app.sh --help
+
+ARGUMENTS:
+    debug|release   Build configuration (default: debug)
+
+Outputs the bundle to hippo-gui/dist/<configuration>/HippoGUI.app and
+prints "Created native app bundle at: <path>" on success.
+EOF
+}
+
+case "${1:-}" in
+    -h|--help) usage; exit 0 ;;
+esac
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CONFIGURATION="${1:-debug}"
