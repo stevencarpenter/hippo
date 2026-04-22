@@ -3,9 +3,11 @@ from unittest.mock import MagicMock, patch
 from hippo_brain.bench.preflight import (
     CheckResult,
     check_disk_space,
+    check_hippo_services,
     check_lms_cli,
     check_lmstudio_reachable,
     check_power_plugged,
+    check_spotlight_idle,
     run_all_preflight,
 )
 
@@ -72,6 +74,27 @@ def test_check_power_plugged_pass_when_plugged():
         )
         r = check_power_plugged()
     assert r.status == "pass"
+
+
+def test_check_power_plugged_warns_when_pmset_missing():
+    with patch("subprocess.run", side_effect=FileNotFoundError("pmset")):
+        r = check_power_plugged()
+    assert r.status == "warn"
+    assert "pmset unavailable" in r.detail
+
+
+def test_check_hippo_services_warns_when_launchctl_missing():
+    with patch("subprocess.run", side_effect=FileNotFoundError("launchctl")):
+        r = check_hippo_services()
+    assert r.status == "warn"
+    assert "launchctl unavailable" in r.detail
+
+
+def test_check_spotlight_idle_warns_when_mdutil_missing():
+    with patch("subprocess.run", side_effect=FileNotFoundError("mdutil")):
+        r = check_spotlight_idle()
+    assert r.status == "warn"
+    assert "mdutil unavailable" in r.detail
 
 
 def test_run_all_preflight_aborts_on_hard_fail(tmp_path):

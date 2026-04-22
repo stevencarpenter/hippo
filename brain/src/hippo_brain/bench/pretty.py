@@ -6,6 +6,18 @@ import json
 from pathlib import Path
 
 
+def _format_float(value: int | float | None, fmt: str) -> str:
+    if value is None:
+        return "n/a"
+    return format(value, fmt)
+
+
+def _format_duration_sec(value: int | float | None) -> str:
+    if value is None:
+        return "n/a"
+    return f"{int(value):5d}s"
+
+
 def render_summary_text(run_file: Path) -> str:
     manifest: dict | None = None
     summaries: list[dict] = []
@@ -52,12 +64,12 @@ def render_summary_text(run_file: Path) -> str:
         lines.append(
             f"{s['model']['id'][:30]:30} "
             f"{'pass' if v['passed'] else 'fail':7} "
-            f"{g.get('schema_validity_rate', 0):6.2f} "
-            f"{g.get('refusal_rate', 0):6.2f} "
-            f"{g.get('latency_p95_ms', 0):7d} "
-            f"{g.get('self_consistency_mean', 0):8.3f} "
-            f"{g.get('entity_sanity_mean', 0):6.2f} "
-            f"{peak.get('wall_clock_sec', 0):5d}s"
+            f"{_format_float(g.get('schema_validity_rate'), '6.2f')} "
+            f"{_format_float(g.get('refusal_rate'), '6.2f')} "
+            f"{_format_float(g.get('latency_p95_ms'), '7.0f')} "
+            f"{_format_float(g.get('self_consistency_mean'), '8.3f')} "
+            f"{_format_float(g.get('entity_sanity_mean'), '6.2f')} "
+            f"{_format_duration_sec(peak.get('wall_clock_sec'))}"
         )
         if not v["passed"]:
             lines.append(f"  failed: {', '.join(v['failed_gates'])}")

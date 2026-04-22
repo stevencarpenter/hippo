@@ -75,3 +75,23 @@ def test_main_pass_marks_timeouts(mock_call):
         temperature=0.7,
     )
     assert attempts[0].timeout is True
+
+
+@patch("hippo_brain.bench.runner.time.monotonic_ns", return_value=123456789)
+@patch("hippo_brain.bench.runner.call_enrichment")
+def test_main_pass_captures_start_timestamps_before_call(mock_call, mock_monotonic):
+    def fake_call(**_kwargs):
+        return CallResult(raw_output="", ttft_ms=None, total_ms=10, timeout=True)
+
+    mock_call.side_effect = fake_call
+    entries = [CorpusEntry(event_id="e1", source="shell", redacted_content="ls")]
+    attempts = run_model_main_pass(
+        base_url="http://x",
+        model="m1",
+        entries=entries,
+        timeout_sec=1,
+        metrics_snapshot=lambda: {},
+        temperature=0.7,
+    )
+    assert attempts[0].timestamps["start_iso"]
+    assert attempts[0].timestamps["start_monotonic_ns"] == 123456789

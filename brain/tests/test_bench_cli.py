@@ -25,6 +25,7 @@ def test_cli_run_help_lists_temperature_and_filters(capsys):
     with pytest.raises(SystemExit):
         main(["run", "--help"])
     out = capsys.readouterr().out
+    assert "--models" in out
     assert "--temperature" in out
     assert "--self-consistency-events" in out
     assert "--self-consistency-runs" in out
@@ -121,8 +122,16 @@ def test_cli_run_returns_2_when_preflight_aborts(monkeypatch, tmp_path):
         )
 
     monkeypatch.setattr("hippo_brain.bench.cli.orchestrate_run", fake_orchestrate)
-    rc = main(["run", "--out", str(tmp_path / "r.jsonl")])
+    rc = main(["run", "--models", "m1", "--out", str(tmp_path / "r.jsonl")])
     assert rc == 2
+
+
+def test_cli_run_requires_models():
+    import pytest
+
+    with pytest.raises(SystemExit) as exc:
+        main(["run"])
+    assert exc.value.code == 2
 
 
 def _seed_minimal_db(db_path):

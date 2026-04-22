@@ -111,7 +111,7 @@ def _build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command", required=True)
 
     run = sub.add_parser("run", help="Run the bench against candidate models")
-    run.add_argument("--models", default="", help="Comma-separated model identifiers")
+    run.add_argument("--models", required=True, help="Comma-separated model identifiers")
     run.add_argument("--corpus-version", default="corpus-v1")
     run.add_argument("--base-url", default="http://localhost:1234/v1")
     run.add_argument("--embedding-model", default="text-embedding-nomic-embed-text-v2-moe")

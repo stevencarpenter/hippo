@@ -53,7 +53,10 @@ def check_lmstudio_reachable(url: str) -> CheckResult:
 
 
 def check_power_plugged() -> CheckResult:
-    proc = subprocess.run(["pmset", "-g", "batt"], capture_output=True, text=True, check=False)
+    try:
+        proc = subprocess.run(["pmset", "-g", "batt"], capture_output=True, text=True, check=False)
+    except OSError as e:
+        return CheckResult(name="power_plugged", status="warn", detail=f"pmset unavailable: {e}")
     if proc.returncode != 0:
         return CheckResult(name="power_plugged", status="warn", detail="pmset failed")
     out = proc.stdout
@@ -81,7 +84,14 @@ def check_disk_space(path: Path, min_gb: float = 2.0) -> CheckResult:
 
 
 def check_hippo_services() -> CheckResult:
-    proc = subprocess.run(["launchctl", "list"], capture_output=True, text=True, check=False)
+    try:
+        proc = subprocess.run(["launchctl", "list"], capture_output=True, text=True, check=False)
+    except OSError as e:
+        return CheckResult(
+            name="hippo_services",
+            status="warn",
+            detail=f"launchctl unavailable: {e}",
+        )
     if proc.returncode != 0:
         return CheckResult(name="hippo_services", status="warn", detail="launchctl list failed")
     running = [line for line in proc.stdout.splitlines() if "com.sjcarpenter.hippo" in line]
@@ -95,7 +105,10 @@ def check_hippo_services() -> CheckResult:
 
 
 def check_spotlight_idle() -> CheckResult:
-    proc = subprocess.run(["mdutil", "-s", "/"], capture_output=True, text=True, check=False)
+    try:
+        proc = subprocess.run(["mdutil", "-s", "/"], capture_output=True, text=True, check=False)
+    except OSError as e:
+        return CheckResult(name="spotlight", status="warn", detail=f"mdutil unavailable: {e}")
     if proc.returncode != 0:
         return CheckResult(name="spotlight", status="warn", detail="mdutil failed")
     if "Indexing enabled" in proc.stdout:

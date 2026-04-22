@@ -81,7 +81,7 @@ truth.
    g. Self-consistency: 5 events × 5 runs
    h. Stop sampler, flush records
    i. lms unload <model>
-   j. Cooldown until load_avg_5s settles (cap 90s)
+   j. Cooldown until load_avg_1m settles (cap 90s)
 
 4. Emit JSONL: one run_manifest + many attempt + one model_summary per model
 ```
@@ -188,7 +188,7 @@ A monitoring thread samples every **250ms** while a model is active:
 
 - LM Studio process RSS (MB) via `psutil`, PID discovered by process-name match
 - LM Studio process CPU% (single sample, non-blocking)
-- System `getloadavg()` 5-sec
+- System `getloadavg()` 1-minute load average (`os.getloadavg()[0]`)
 - `psutil.virtual_memory()` free + swap
 - Monotonic timestamp
 
@@ -210,7 +210,7 @@ Runs accumulate; never deleted automatically. A future
 
 ### Records
 
-Three `record_type` values in one JSONL file:
+Four `record_type` values in one JSONL file:
 
 **1. `run_manifest`** — first line, exactly one per file:
 
@@ -277,7 +277,7 @@ Three `record_type` values in one JSONL file:
   "system_snapshot": {
     "lmstudio_rss_mb": 18432,
     "lmstudio_cpu_pct": 87.2,
-    "load_avg_5s": 4.12,
+    "load_avg_1m": 4.12,
     "mem_free_mb": 5821
   }
 }
@@ -312,6 +312,19 @@ Three `record_type` values in one JSONL file:
     "failed_gates": [],
     "notes": []
   }
+}
+```
+
+**4. `run_end`** — terminal record, exactly one per file:
+
+```json
+{
+  "record_type": "run_end",
+  "run_id": "run-20260421T120000-mac-studio-01",
+  "finished_at_iso": "2026-04-21T13:42:11Z",
+  "models_completed": ["qwen3.5-35b-a3b"],
+  "models_errored": [],
+  "reason": "completed | dry_run | preflight_aborted | no_models"
 }
 ```
 
@@ -358,7 +371,7 @@ Per Section 4 above. Key invariants:
 - 3 warmup calls discarded
 - Monitoring thread stops between models (so inter-model cooldown isn't
   contaminated by the previous model's sampler)
-- Max cooldown 90s; if load_avg_5s doesn't settle below threshold, proceed
+- Max cooldown 90s; if load_avg_1m doesn't settle below threshold, proceed
   anyway but tag the model_summary with `cooldown_timeout: true`
 
 ### Abort / interrupt behavior

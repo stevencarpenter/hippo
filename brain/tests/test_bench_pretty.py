@@ -68,3 +68,34 @@ def test_render_summary_includes_per_model_rows(tmp_path):
     assert "pass" in text.lower()
     assert "fail" in text.lower()
     assert "0.95" in text  # schema validity
+
+
+def test_render_summary_handles_missing_numeric_fields(tmp_path):
+    f = tmp_path / "run.jsonl"
+    lines = [
+        json.dumps(
+            {"record_type": "run_manifest", "run_id": "r", "candidate_models": ["m1"]}
+        ),
+        json.dumps(
+            {
+                "record_type": "model_summary",
+                "run_id": "r",
+                "model": {"id": "m1"},
+                "events_attempted": 1,
+                "attempts_total": 1,
+                "gates": {
+                    "schema_validity_rate": None,
+                    "refusal_rate": None,
+                    "latency_p95_ms": None,
+                    "self_consistency_mean": None,
+                    "entity_sanity_mean": None,
+                },
+                "system_peak": {"wall_clock_sec": None},
+                "tier0_verdict": {"passed": False, "failed_gates": [], "notes": []},
+            }
+        ),
+    ]
+    f.write_text("\n".join(lines) + "\n")
+
+    text = render_summary_text(f)
+    assert "n/a" in text

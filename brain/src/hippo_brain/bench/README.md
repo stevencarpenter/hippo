@@ -91,7 +91,7 @@ active window and reported as peaks per model.
 ## CLI reference
 
 ```
-hippo-bench run [--models m1,m2,...] [--corpus-version v]
+hippo-bench run --models m1,m2,... [--corpus-version v]
                 [--base-url http://localhost:1234/v1]
                 [--embedding-model text-embedding-nomic-embed-text-v2-moe]
                 [--temperature 0.7]
@@ -134,7 +134,7 @@ hippo-bench summary <run-file>
 
 ## Output format
 
-Each run writes a JSONL file under `~/.local/share/hippo/bench/runs/`. Three
+Each run writes a JSONL file under `~/.local/share/hippo/bench/runs/`. Four
 record types, discriminated by `record_type`:
 
 ### 1. `run_manifest` (first line, exactly one per file)
