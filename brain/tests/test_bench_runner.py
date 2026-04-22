@@ -26,6 +26,7 @@ def test_main_pass_produces_one_attempt_per_event(mock_call):
         entries=entries,
         timeout_sec=10,
         metrics_snapshot=lambda: {"lmstudio_rss_mb": 100.0},
+        temperature=0.7,
     )
     assert len(attempts) == 2
     assert all(a.purpose == "main" for a in attempts)
@@ -54,6 +55,7 @@ def test_self_consistency_pass_embeds_each_output(mock_call, mock_embed):
         embedding_model="nomic",
         timeout_sec=10,
         metrics_snapshot=lambda: {"lmstudio_rss_mb": 0.0},
+        temperature=0.7,
     )
     assert len(attempts) == 2 * 3
     assert len(per_event_vectors) == 2
@@ -70,5 +72,6 @@ def test_main_pass_marks_timeouts(mock_call):
         entries=entries,
         timeout_sec=1,
         metrics_snapshot=lambda: {},
+        temperature=0.7,
     )
     assert attempts[0].timeout is True

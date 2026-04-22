@@ -183,6 +183,86 @@ def _make_hippo_schema(db_path):
     return conn
 
 
+def test_sample_from_hippo_db_filters_trivial_shell_events(tmp_path):
+    """Trivial shell commands (clear, exit, etc with no output) should be excluded by default."""
+    db_path = tmp_path / "hippo.db"
+    conn = _make_hippo_schema(db_path)
+    # Trivial: `clear` with no output, sub-100ms.
+    conn.execute(
+        "INSERT INTO shell_events (command, stdout, stderr, duration_ms, exit_code, cwd, ts) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        ("clear", "", "", 5, 0, "/tmp", 0),
+    )
+    # Real work: cargo test with output.
+    conn.execute(
+        "INSERT INTO shell_events (command, stdout, stderr, duration_ms, exit_code, cwd, ts) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        ("cargo test", "running 12 tests", "", 4200, 0, "/repo", 0),
+    )
+    conn.commit()
+    conn.close()
+
+    entries = sample_from_hippo_db(
+        db_path=db_path,
+        source_counts={"shell": 5, "claude": 0, "browser": 0, "workflow": 0},
+        seed=1,
+        filter_trivial=True,
+    )
+    assert len(entries) == 1
+    assert "cargo test" in entries[0].redacted_content
+
+
+def test_sample_from_hippo_db_no_filter_keeps_trivial(tmp_path):
+    """With filter disabled, trivial events come through."""
+    db_path = tmp_path / "hippo.db"
+    conn = _make_hippo_schema(db_path)
+    conn.execute(
+        "INSERT INTO shell_events (command, stdout, stderr, duration_ms, exit_code, cwd, ts) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        ("clear", "", "", 5, 0, "/tmp", 0),
+    )
+    conn.commit()
+    conn.close()
+
+    entries = sample_from_hippo_db(
+        db_path=db_path,
+        source_counts={"shell": 5, "claude": 0, "browser": 0, "workflow": 0},
+        seed=1,
+        filter_trivial=False,
+    )
+    assert len(entries) == 1
+
+
+def test_sample_from_hippo_db_skips_missing_table(tmp_path):
+    """If a source's table doesn't exist (schema drift), skip cleanly."""
+    db_path = tmp_path / "partial.db"
+    conn = sqlite3.connect(db_path)
+    conn.executescript(
+        """
+        CREATE TABLE shell_events (
+            id INTEGER PRIMARY KEY, command TEXT, stdout TEXT, stderr TEXT,
+            duration_ms INTEGER, exit_code INTEGER, cwd TEXT, ts INTEGER
+        );
+        """
+    )
+    conn.execute(
+        "INSERT INTO shell_events (command, stdout, stderr, duration_ms, exit_code, cwd, ts)"
+        " VALUES (?, ?, ?, ?, ?, ?, ?)",
+        ("ls", "x", "", 1000, 0, "/", 0),
+    )
+    conn.commit()
+    conn.close()
+
+    # Asking for browser/workflow/claude when those tables are absent.
+    entries = sample_from_hippo_db(
+        db_path=db_path,
+        source_counts={"shell": 1, "claude": 5, "browser": 5, "workflow": 5},
+        seed=1,
+        filter_trivial=False,
+    )
+    assert {e.source for e in entries} == {"shell"}
+
+
 def test_sample_from_hippo_db_reads_each_source(tmp_path):
     db_path = tmp_path / "hippo.db"
     conn = _make_hippo_schema(db_path)

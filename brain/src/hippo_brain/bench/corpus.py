@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from hippo_brain.enrichment import is_enrichment_eligible
 from hippo_brain.redaction import redact
 
 
@@ -165,10 +166,17 @@ def init_corpus(
     return selected
 
 
-_SOURCE_QUERIES = {
-    "shell": (
-        "SELECT id, command, stdout, stderr, duration_ms, exit_code, cwd FROM shell_events",
-        lambda row: json.dumps(
+# Per-source SELECT + payload-shape lambdas. The lambda receives a sqlite3.Row
+# and returns the serialized payload that goes into CorpusEntry.redacted_content.
+# A second `eligibility_dict` lambda extracts the fields needed by
+# is_enrichment_eligible(). They're separate because eligibility wants raw fields
+# (command, dwell_ms, ...) but the corpus stores the serialized JSON payload.
+_SOURCE_QUERIES: dict[str, dict] = {
+    "shell": {
+        "select": (
+            "SELECT id, command, stdout, stderr, duration_ms, exit_code, cwd FROM shell_events"
+        ),
+        "shape": lambda row: json.dumps(
             {
                 "command": row["command"],
                 "stdout": row["stdout"],
@@ -179,10 +187,18 @@ _SOURCE_QUERIES = {
             },
             sort_keys=True,
         ),
-    ),
-    "claude": (
-        "SELECT id, session_id, transcript, message_count, tool_calls_json FROM claude_sessions",
-        lambda row: json.dumps(
+        "eligibility_dict": lambda row: {
+            "command": row["command"],
+            "stdout": row["stdout"],
+            "stderr": row["stderr"],
+            "duration_ms": row["duration_ms"],
+        },
+    },
+    "claude": {
+        "select": (
+            "SELECT id, session_id, transcript, message_count, tool_calls_json FROM claude_sessions"
+        ),
+        "shape": lambda row: json.dumps(
             {
                 "session_id": row["session_id"],
                 "transcript": row["transcript"],
@@ -191,10 +207,14 @@ _SOURCE_QUERIES = {
             },
             sort_keys=True,
         ),
-    ),
-    "browser": (
-        "SELECT id, url, title, dwell_ms, scroll_depth FROM browser_events",
-        lambda row: json.dumps(
+        "eligibility_dict": lambda row: {
+            "message_count": row["message_count"],
+            "tool_calls_json": row["tool_calls_json"],
+        },
+    },
+    "browser": {
+        "select": "SELECT id, url, title, dwell_ms, scroll_depth FROM browser_events",
+        "shape": lambda row: json.dumps(
             {
                 "url": row["url"],
                 "title": row["title"],
@@ -203,10 +223,13 @@ _SOURCE_QUERIES = {
             },
             sort_keys=True,
         ),
-    ),
-    "workflow": (
-        "SELECT id, repo, workflow_name, conclusion, annotations_json FROM workflow_runs",
-        lambda row: json.dumps(
+        "eligibility_dict": lambda row: {"dwell_ms": row["dwell_ms"]},
+    },
+    "workflow": {
+        "select": (
+            "SELECT id, repo, workflow_name, conclusion, annotations_json FROM workflow_runs"
+        ),
+        "shape": lambda row: json.dumps(
             {
                 "repo": row["repo"],
                 "workflow_name": row["workflow_name"],
@@ -215,14 +238,30 @@ _SOURCE_QUERIES = {
             },
             sort_keys=True,
         ),
-    ),
+        # Workflow runs have no eligibility heuristic in production; always-eligible.
+        "eligibility_dict": lambda row: {},
+    },
 }
 
 
 def sample_from_hippo_db(
-    db_path: Path, source_counts: dict[str, int], seed: int
+    db_path: Path,
+    source_counts: dict[str, int],
+    seed: int,
+    filter_trivial: bool = True,
 ) -> list[CorpusEntry]:
-    """Stratified random sample from the real hippo.db schema."""
+    """Stratified random sample from the real hippo.db schema.
+
+    If filter_trivial is True (default), events that the production
+    enrichment pipeline would skip via `is_enrichment_eligible` are
+    excluded. This mirrors what real enrichment sees and prevents the
+    bench from flagging models for correctly emitting terse summaries on
+    trivial inputs (which the gates would call "trivial_summary").
+
+    If a source's table is missing (e.g., older schema), that source is
+    silently skipped — a cross-version corpus shouldn't crash on a fresh
+    schema migration.
+    """
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
     rng = random.Random(seed)
@@ -231,14 +270,26 @@ def sample_from_hippo_db(
         for source, count in source_counts.items():
             if count <= 0:
                 continue
-            query, shape = _SOURCE_QUERIES[source]
-            rows = conn.execute(query).fetchall()
+            spec = _SOURCE_QUERIES[source]
+            try:
+                rows = conn.execute(spec["select"]).fetchall()
+            except sqlite3.OperationalError:
+                # Table missing — schema mismatch. Skip this source.
+                continue
             if not rows:
                 continue
+            if filter_trivial:
+                rows = [
+                    r
+                    for r in rows
+                    if is_enrichment_eligible(spec["eligibility_dict"](r), source)[0]
+                ]
+                if not rows:
+                    continue
             picked = rng.sample(rows, k=min(count, len(rows)))
             picked.sort(key=lambda r: r["id"])
             for row in picked:
-                raw_payload = shape(row)
+                raw_payload = spec["shape"](row)
                 redacted = redact(raw_payload)
                 selected.append(
                     CorpusEntry(

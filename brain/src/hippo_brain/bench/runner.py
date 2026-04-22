@@ -55,15 +55,19 @@ def _build_attempt(
 
 
 def _compute_gates(call_result, entry: CorpusEntry) -> tuple[dict, dict | None]:
-    if call_result.timeout:
+    # Treat any failure (timeout, HTTP error, parse error) the same way:
+    # mark schema_invalid with the error class as the "schema error",
+    # leave parsed=None, and let downstream rate computation count it.
+    if call_result.timeout or call_result.error is not None:
         return (
             {
                 "schema_valid": False,
-                "schema_errors": ["timeout"],
+                "schema_errors": [call_result.error or "timeout"],
                 "refusal_detected": False,
                 "refusal_patterns_matched": [],
                 "echo_similarity": 0.0,
                 "entity_type_sanity": {},
+                "call_error": call_result.error,
             },
             None,
         )
@@ -99,8 +103,10 @@ def run_model_main_pass(
     entries: list[CorpusEntry],
     timeout_sec: int,
     metrics_snapshot: Callable[[], dict],
+    temperature: float,
     run_id: str = "run-local",
 ) -> list[AttemptRecord]:
+    """Single attempt per event. Headline metrics are computed over this pass."""
     model_dict = {"id": model}
     attempts: list[AttemptRecord] = []
     for entry in entries:
@@ -110,6 +116,7 @@ def run_model_main_pass(
             payload=entry.redacted_content,
             source=entry.source,
             timeout_sec=timeout_sec,
+            temperature=temperature,
         )
         gates, parsed = _compute_gates(cr, entry)
         attempts.append(
@@ -137,8 +144,15 @@ def run_self_consistency_pass(
     embedding_model: str,
     timeout_sec: int,
     metrics_snapshot: Callable[[], dict],
+    temperature: float,
     run_id: str = "run-local",
 ) -> tuple[list[AttemptRecord], list[list[list[float]]]]:
+    """N attempts per event; embed each successful output for cosine aggregation.
+
+    Self-consistency only makes sense at temperature > 0 — at T=0 the model
+    is near-deterministic and every output is identical. Caller is
+    responsible for passing a meaningful temperature.
+    """
     model_dict = {"id": model}
     attempts: list[AttemptRecord] = []
     per_event_vectors: list[list[list[float]]] = []
@@ -151,6 +165,7 @@ def run_self_consistency_pass(
                 payload=entry.redacted_content,
                 source=entry.source,
                 timeout_sec=timeout_sec,
+                temperature=temperature,
             )
             gates, parsed = _compute_gates(cr, entry)
             attempts.append(
@@ -166,7 +181,7 @@ def run_self_consistency_pass(
                     system_snapshot=metrics_snapshot(),
                 )
             )
-            if not cr.timeout and cr.raw_output:
+            if cr.error is None and cr.raw_output:
                 try:
                     vec = call_embedding(
                         base_url=base_url,

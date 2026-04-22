@@ -94,6 +94,7 @@ def orchestrate_run(
     self_consistency_runs: int,
     skip_checks: bool,
     dry_run: bool,
+    temperature: float = 0.7,
 ) -> OrchestrationResult:
     run_id = _build_run_id()
 
@@ -122,6 +123,7 @@ def orchestrate_run(
         self_consistency_spec={
             "events": self_consistency_events,
             "runs_per_event": self_consistency_runs,
+            "temperature": temperature,
         },
         lmstudio_version=_lms_version(),
     )
@@ -169,6 +171,7 @@ def orchestrate_run(
                 warmup_calls=3,
                 cooldown_max_sec=90,
                 run_id=run_id,
+                temperature=temperature,
             )
         except Exception as e:  # noqa: BLE001 — per-model isolation: never let one failure tank the run
             # Emit a model_summary with an explicit error note so the run record

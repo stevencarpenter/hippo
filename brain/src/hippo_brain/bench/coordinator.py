@@ -50,6 +50,7 @@ def run_one_model(
     warmup_calls: int,
     cooldown_max_sec: int,
     run_id: str,
+    temperature: float = 0.7,
 ) -> ModelRunResult:
     lms.unload_all()
     time.sleep(1)
@@ -64,6 +65,7 @@ def run_one_model(
                 payload="warmup",
                 source="shell",
                 timeout_sec=timeout_sec,
+                temperature=temperature,
             )
         except Exception:  # noqa: BLE001 — warmup failures don't block the run
             pass
@@ -86,6 +88,7 @@ def run_one_model(
             entries=entries,
             timeout_sec=timeout_sec,
             metrics_snapshot=_snapshot_fn(sampler),
+            temperature=temperature,
             run_id=run_id,
         )
         sc_attempts, per_event_vectors = run_self_consistency_pass(
@@ -96,6 +99,7 @@ def run_one_model(
             embedding_model=embedding_model,
             timeout_sec=timeout_sec,
             metrics_snapshot=_snapshot_fn(sampler),
+            temperature=temperature,
             run_id=run_id,
         )
     finally:
