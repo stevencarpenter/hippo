@@ -299,7 +299,10 @@ async fn main() -> Result<()> {
                 println!("Configuring Claude session hook...");
                 match install::configure_claude_session_hook(&brain_dir) {
                     Ok(()) => {}
-                    Err(e) => println!("  Warning: {e} — configure manually: {}/shell/claude-session-hook.sh", brain_dir.display()),
+                    Err(e) => println!(
+                        "  Warning: {e} — configure manually: {}/shell/claude-session-hook.sh",
+                        brain_dir.display()
+                    ),
                 }
 
                 // Reload services that were running before the upgrade.
