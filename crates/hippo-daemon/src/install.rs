@@ -333,8 +333,9 @@ fn configure_claude_session_hook_at(settings_path: &Path, brain_dir: &Path) -> R
     let mut root: serde_json::Value = if settings_path.exists() {
         let content = std::fs::read_to_string(settings_path)
             .context("failed to read ~/.claude/settings.json")?;
-        serde_json::from_str(&content)
-            .with_context(|| "~/.claude/settings.json is malformed JSON — fix it manually before running install")?
+        serde_json::from_str(&content).with_context(
+            || "~/.claude/settings.json is malformed JSON — fix it manually before running install",
+        )?
     } else {
         serde_json::json!({})
     };
@@ -357,16 +358,14 @@ fn configure_claude_session_hook_at(settings_path: &Path, brain_dir: &Path) -> R
 
     // Find the (matcher_idx, hook_idx) of the specific hippo hook command
     let hippo_location = matchers.iter().enumerate().find_map(|(mi, m)| {
-        m.get("hooks")
-            .and_then(|h| h.as_array())
-            .and_then(|hooks| {
-                hooks.iter().enumerate().find_map(|(hi, h)| {
-                    h.get("command")
-                        .and_then(|c| c.as_str())
-                        .filter(|cmd| cmd.contains("claude-session-hook.sh"))
-                        .map(|_| (mi, hi))
-                })
+        m.get("hooks").and_then(|h| h.as_array()).and_then(|hooks| {
+            hooks.iter().enumerate().find_map(|(hi, h)| {
+                h.get("command")
+                    .and_then(|c| c.as_str())
+                    .filter(|cmd| cmd.contains("claude-session-hook.sh"))
+                    .map(|_| (mi, hi))
             })
+        })
     });
 
     match hippo_location {
@@ -745,10 +744,12 @@ mod tests {
             matchers[0]["hooks"][0]["command"].as_str(),
             Some("/other/tool/hook.sh")
         );
-        assert!(matchers[1]["hooks"][0]["command"]
-            .as_str()
-            .unwrap()
-            .ends_with("claude-session-hook.sh"));
+        assert!(
+            matchers[1]["hooks"][0]["command"]
+                .as_str()
+                .unwrap()
+                .ends_with("claude-session-hook.sh")
+        );
     }
 
     #[test]
