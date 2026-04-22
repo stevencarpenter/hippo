@@ -1,0 +1,78 @@
+# Semgrep rules specific to hippo's capture-reliability contract.
+#
+# These rules encode patterns that historically caused or would have
+# caused silent data loss. They complement clippy (which cannot reason
+# about the semantics of capture paths) and rust-analyzer diagnostics
+# (which only see well-formed programs, not intent).
+#
+# The rules are scoped tightly to the capture layer so non-capture code
+# (tests, benchmarks, brain embeddings) can keep using the flagged idioms
+# where they are harmless.
+#
+# To run locally:
+#
+#     semgrep --config .semgrep.yml crates/ brain/
+#
+# Wiring this file into CI (extending .github/workflows/security.yml
+# beyond its current `shell/` path-scope) is tracked as a follow-up; the
+# rules are useful for local scans and code-review in the meantime.
+#
+# Reference: docs/capture-reliability/08-anti-patterns.md AP-11,
+#            docs/capture-reliability/09-test-matrix.md row F-17.
+
+rules:
+  - id: hippo-capture-silent-result-swallow
+    message: |
+      Silent swallowing of Result/Option via `.filter_map(|r| r.ok())` (or
+      equivalent) on a capture path drops failed events without a log or
+      metric, which is how the browser and Claude session sev1s went
+      undetected for weeks. Either:
+
+        1. Handle the error explicitly (log + metric + fallback write), or
+        2. Use `.collect::<Result<Vec<_>, _>>()?` to bubble it up, or
+        3. Add a `// nosemgrep: hippo-capture-silent-result-swallow` comment
+           with a one-line justification if the silent drop is genuinely
+           correct here.
+
+      See 08-anti-patterns.md AP-11 for the full rationale.
+    languages: [rust]
+    severity: WARNING
+    # Rustc's lexer is tolerant of unusual spacing; pattern-either covers
+    # the common shapes without requiring a full type analysis.
+    pattern-either:
+      - pattern: ".filter_map(|$X| $X.ok())"
+      - pattern: ".filter_map(Result::ok)"
+      - pattern: ".filter_map(|$X| $X.ok())"
+      - pattern: ".flatten()" # only hits on Result/Option chains inside these paths
+    paths:
+      include:
+        - crates/hippo-core/src/storage.rs
+        - crates/hippo-core/src/redaction.rs
+        - crates/hippo-daemon/src/daemon.rs
+        - crates/hippo-daemon/src/native_messaging.rs
+        - crates/hippo-daemon/src/claude_session.rs
+        - crates/hippo-daemon/src/commands.rs
+      # Rule is intentionally scoped to capture-path source. Tests and
+      # bench harnesses are expected to use these idioms freely.
+      exclude:
+        - "*/tests/*"
+        - "tests/semgrep/**"
+        - "target/**"
+
+  - id: hippo-capture-unwrap-in-flush-path
+    message: |
+      `.unwrap()` on the flush path panics the daemon on any transient
+      error. That is the worst possible failure mode for capture — a
+      daemon crash stops every source at once and there is no retry.
+      Prefer `?` or an explicit `if let Err(e)` handler that logs, bumps
+      a metric, and writes to fallback.
+    languages: [rust]
+    severity: WARNING
+    pattern: ".unwrap()"
+    paths:
+      include:
+        - crates/hippo-daemon/src/daemon.rs
+        - crates/hippo-daemon/src/native_messaging.rs
+      exclude:
+        - "*/tests/*"
+        - "target/**"
