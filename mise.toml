@@ -569,6 +569,35 @@ fi
 # ── 7. Ensure data dir ──────────────────────────────────────────────
 mkdir -p "$DATA_DIR"
 
+# ── 7b. Refresh OTel stack when enabled or already provisioned ──────
+OTEL_ENABLED=$(python3 - <<'PY'
+from pathlib import Path
+import os
+import tomllib
+
+config_path = Path(os.path.expanduser("~/.config/hippo/config.toml"))
+if not config_path.exists():
+    print("0")
+else:
+    config = tomllib.loads(config_path.read_text())
+    print("1" if config.get("telemetry", {}).get("enabled", False) else "0")
+PY
+)
+OTEL_STACK_PRESENT=0
+if command -v docker >/dev/null 2>&1; then
+    if docker ps -a 2>/dev/null | awk 'NR > 1 { print $NF }' | grep -q '^hippo-otel-'; then
+        OTEL_STACK_PRESENT=1
+    fi
+fi
+if [ "$OTEL_ENABLED" = "1" ] || [ "$OTEL_STACK_PRESENT" = "1" ]; then
+    if command -v docker >/dev/null 2>&1; then
+        echo "==> Refreshing OTel stack..."
+        mise run otel:up || echo "  WARN: OTel stack refresh failed (non-fatal)"
+    else
+        echo "  WARN: Docker not found; skipped OTel stack refresh"
+    fi
+fi
+
 # ── 8. Start services ───────────────────────────────────────────────
 echo "==> Starting services..."
 launchctl bootstrap "$DOMAIN" "$DAEMON_PLIST" && echo "  Loaded daemon" || echo "  Failed to load daemon"
@@ -895,13 +924,62 @@ description = "Start the OTel observability stack (Grafana, Tempo, Loki, Prometh
 run = """
 #!/usr/bin/env bash
 set -euo pipefail
+OTEL_DATA_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/hippo/otel"
+mkdir -p \
+    "$OTEL_DATA_DIR/tempo" \
+    "$OTEL_DATA_DIR/loki" \
+    "$OTEL_DATA_DIR/prometheus" \
+    "$OTEL_DATA_DIR/grafana" \
+    "$OTEL_DATA_DIR/backups"
+
+dir_empty() {
+    [ ! -d "$1" ] || [ -z "$(find "$1" -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null)" ]
+}
+
+migrate_legacy_volume() {
+    local volume_name="$1"
+    local target_dir="$2"
+    local mountpoint
+
+    if ! docker volume inspect "$volume_name" >/dev/null 2>&1; then
+        return 0
+    fi
+    if ! dir_empty "$target_dir"; then
+        return 0
+    fi
+
+    mountpoint="$(docker volume inspect "$volume_name" 2>/dev/null | python3 -c 'import json, sys; data = json.load(sys.stdin); print(data[0]["Mountpoint"] if data else "")' || true)"
+    if [ -n "$mountpoint" ] && [ -d "$mountpoint" ]; then
+        echo "Migrating legacy OTel data from $volume_name -> $target_dir"
+        rsync -a "$mountpoint"/ "$target_dir"/
+        return 0
+    fi
+
+    echo "Migrating legacy OTel data from $volume_name via helper container -> $target_dir"
+    docker run --rm \
+        -v "$volume_name:/from:ro" \
+        -v "$target_dir:/to" \
+        alpine:3.20 \
+        sh -c 'cp -a /from/. /to/'
+}
+
 cd otel
-docker compose up -d
+docker compose down --remove-orphans >/dev/null 2>&1 || true
+migrate_legacy_volume "hippo-otel_tempo-data" "$OTEL_DATA_DIR/tempo"
+migrate_legacy_volume "hippo-otel_loki-data" "$OTEL_DATA_DIR/loki"
+migrate_legacy_volume "hippo-otel_prometheus-data" "$OTEL_DATA_DIR/prometheus"
+migrate_legacy_volume "hippo-otel_grafana-data" "$OTEL_DATA_DIR/grafana"
+if ! docker compose pull; then
+    echo "WARN: failed to pull latest OTel images; using cached images if available" >&2
+fi
+docker compose up -d --remove-orphans
 echo ""
 echo "=== OTel stack running ==="
 echo "  Grafana:        http://localhost:3000 (admin/hippo)"
 echo "  OTel Collector: localhost:4317 (gRPC) / localhost:4318 (HTTP)"
 echo "  Collector health: http://localhost:13133"
+echo "  Data dir:       $OTEL_DATA_DIR"
+echo "  Metrics retention: ${HIPPO_OTEL_PROMETHEUS_RETENTION:-30d} (size cap ${HIPPO_OTEL_PROMETHEUS_RETENTION_SIZE:-10GB})"
 echo ""
 echo "To send telemetry from hippo services:"
 echo "  Daemon: cargo build --features otel && set [telemetry] enabled = true"
@@ -916,14 +994,54 @@ run = "cd otel && docker compose down"
 description = "Tail OTel stack logs"
 run = "cd otel && docker compose logs -f --tail 50"
 
+[tasks."otel:backup"]
+description = "Create a timestamped backup of persisted OTel data"
+run = """
+#!/usr/bin/env bash
+set -euo pipefail
+OTEL_DATA_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/hippo/otel"
+OTEL_BACKUP_DIR="$OTEL_DATA_DIR/backups"
+mkdir -p "$OTEL_BACKUP_DIR"
+
+if [ ! -d "$OTEL_DATA_DIR" ] || [ -z "$(find "$OTEL_DATA_DIR" -mindepth 1 -maxdepth 1 \\( -name tempo -o -name loki -o -name prometheus -o -name grafana \\) 2>/dev/null)" ]; then
+    echo "No persisted OTel data found under $OTEL_DATA_DIR"
+    exit 0
+fi
+
+STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
+ARCHIVE="$OTEL_BACKUP_DIR/hippo-otel-$STAMP.tar.gz"
+tar -C "$OTEL_DATA_DIR" -czf "$ARCHIVE" grafana loki prometheus tempo
+echo "Backed up OTel data to $ARCHIVE"
+"""
+
 [tasks."otel:reset"]
 description = "Stop the OTel stack and delete all stored data"
 run = """
 #!/usr/bin/env bash
 set -euo pipefail
+OTEL_DATA_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/hippo/otel"
+
+if [ "${HIPPO_OTEL_RESET_CONFIRM:-}" != "delete" ]; then
+    echo "Refusing to wipe OTel data without HIPPO_OTEL_RESET_CONFIRM=delete" >&2
+    echo "This command creates a backup, removes all Hippo OTel containers, and clears $OTEL_DATA_DIR." >&2
+    exit 1
+fi
+
+mise run otel:backup
 cd otel
-docker compose down -v
-echo "OTel stack stopped and all data volumes removed."
+docker compose down --volumes --remove-orphans
+rm -rf \
+    "$OTEL_DATA_DIR/tempo" \
+    "$OTEL_DATA_DIR/loki" \
+    "$OTEL_DATA_DIR/prometheus" \
+    "$OTEL_DATA_DIR/grafana"
+mkdir -p \
+    "$OTEL_DATA_DIR/tempo" \
+    "$OTEL_DATA_DIR/loki" \
+    "$OTEL_DATA_DIR/prometheus" \
+    "$OTEL_DATA_DIR/grafana" \
+    "$OTEL_DATA_DIR/backups"
+echo "OTel stack stopped. Backups kept under $OTEL_DATA_DIR/backups and live data was cleared."
 """
 
 [tasks."otel:status"]
