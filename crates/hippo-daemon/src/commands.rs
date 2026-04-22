@@ -697,8 +697,10 @@ fn check_claude_session_hook_at(config: &HippoConfig, settings_path: &std::path:
         }
     };
 
-    // Navigate: hooks -> SessionStart -> [].hooks -> [].command
-    let configured_cmd = json
+    // Collect all commands across all SessionStart matchers so a user with multiple
+    // hooks configured doesn't get a false mismatch when the hippo hook is present
+    // but not the first entry.
+    let all_commands: Vec<String> = json
         .get("hooks")
         .and_then(|h| h.get("SessionStart"))
         .and_then(|ss| ss.as_array())
@@ -708,10 +710,16 @@ fn check_claude_session_hook_at(config: &HippoConfig, settings_path: &std::path:
         .filter_map(|hooks| hooks.as_array())
         .flatten()
         .filter_map(|hook| hook.get("command"))
-        .find_map(|cmd| cmd.as_str().map(String::from));
+        .filter_map(|cmd| cmd.as_str().map(String::from))
+        .collect();
 
-    match configured_cmd {
-        Some(ref cmd) if std::path::Path::new(cmd) == expected => {
+    // Look specifically for the hippo hook among all configured commands
+    let hippo_cmd = all_commands
+        .iter()
+        .find(|cmd| cmd.contains("claude-session-hook.sh"));
+
+    match hippo_cmd {
+        Some(cmd) if std::path::Path::new(cmd.as_str()) == expected => {
             if expected.exists() {
                 println!("[OK] Claude session hook configured");
             } else {

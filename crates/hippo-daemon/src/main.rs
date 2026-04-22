@@ -297,11 +297,19 @@ async fn main() -> Result<()> {
 
                 println!();
                 println!("Configuring Claude session hook...");
-                match install::configure_claude_session_hook(&brain_dir) {
+                // Derive the hook's brain dir the same way `hippo doctor` does
+                // (sibling of data_dir) so install and doctor always agree on the
+                // expected path, regardless of what --brain-dir was passed.
+                let hook_brain_dir = vars
+                    .data_dir
+                    .parent()
+                    .map(|p| p.join("hippo-brain"))
+                    .unwrap_or_else(|| brain_dir.clone());
+                match install::configure_claude_session_hook(&hook_brain_dir) {
                     Ok(()) => {}
                     Err(e) => println!(
                         "  Warning: {e} — configure manually: {}/shell/claude-session-hook.sh",
-                        brain_dir.display()
+                        hook_brain_dir.display()
                     ),
                 }
 
