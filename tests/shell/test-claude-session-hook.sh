@@ -30,7 +30,7 @@ fi
 # server and so parallel CI runs cannot clobber each other.
 TMP_DIR="$(mktemp -d -t hippo-hook-test.XXXXXX)"
 TMUX_SOCKET="$TMP_DIR/tmux.sock"
-TMUX="tmux -S $TMUX_SOCKET"
+TMUX="tmux -f /dev/null -S $TMUX_SOCKET"
 
 cleanup() {
     $TMUX kill-server 2>/dev/null || true
@@ -63,8 +63,10 @@ assert() {
 # ---------------------------------------------------------------------------
 echo "Test 1: tmux -t 'session:' picks next free index (no 'index N in use')"
 
-$TMUX new-session -d -s "1" -n "existing-1" "sleep 30"
+$TMUX new-session -d -s "1" -n "bootstrap" "sleep 30"
 $TMUX set-option -t "1" base-index 1 >/dev/null
+$TMUX move-window -s "1:0" -t "1:1"
+$TMUX rename-window -t "1:1" "existing-1"
 
 # Representative env as set by the hook before the tmux branch.
 TMUX_TARGET_SESSION="1"
@@ -73,8 +75,11 @@ TMUX_CMD="sleep 30"
 
 # Exercise the exact invocation shape from the hook. Capture stderr to catch
 # the "index N in use" regression explicitly.
+hook_stderr_file="$TMP_DIR/test1-tmux-stderr.log"
+$TMUX new-window -d -t "${TMUX_TARGET_SESSION}:" -n "$WINDOW_NAME" "$TMUX_CMD" \
+    >/dev/null 2>"$hook_stderr_file" || true
 # shellcheck disable=SC2034  # hook_stderr is referenced inside `assert` eval strings
-hook_stderr="$($TMUX new-window -d -t "${TMUX_TARGET_SESSION}:" -n "$WINDOW_NAME" "$TMUX_CMD" 2>&1 1>/dev/null || true)"
+hook_stderr="$(cat "$hook_stderr_file")"
 
 assert "no 'index N in use' error from tmux" \
     "[ -z \"\$hook_stderr\" ]"
@@ -102,8 +107,10 @@ $TMUX kill-session -t "1"
 echo
 echo "Test 2: end-to-end hook invocation creates window in target session"
 
-$TMUX new-session -d -s "worksess" -n "filler" "sleep 30"
+$TMUX new-session -d -s "worksess" -n "bootstrap" "sleep 30"
 $TMUX set-option -t "worksess" base-index 1 >/dev/null
+$TMUX move-window -s "worksess:0" -t "worksess:1"
+$TMUX rename-window -t "worksess:1" "filler"
 
 # The hook wants a hippo binary to quote into the tmux command; a stub on
 # PATH satisfies the probe without requiring a real build.
@@ -152,7 +159,7 @@ fi
 
 cat >"$STUB_BIN/tmux" <<STUB
 #!/usr/bin/env bash
-exec "$REAL_TMUX" -S "$TMUX_SOCKET" "\$@"
+exec "$REAL_TMUX" -f /dev/null -S "$TMUX_SOCKET" "\$@"
 STUB
 chmod +x "$STUB_BIN/tmux"
 
