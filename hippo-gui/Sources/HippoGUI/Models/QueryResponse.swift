@@ -131,7 +131,8 @@ struct SemanticQueryResult: Codable, Identifiable, Hashable, Sendable {
 
         if let jsonString = try? container.decode(String.self, forKey: key),
             let data = jsonString.data(using: .utf8),
-            let decoded = try? JSONDecoder().decode([String].self, from: data) {
+            let decoded = try? JSONDecoder().decode([String].self, from: data)
+        {
             return decoded
         }
 
