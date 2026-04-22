@@ -422,8 +422,11 @@ fn configure_claude_session_hook_at(settings_path: &Path, brain_dir: &Path) -> R
     let tmp_path =
         settings_path.with_file_name(format!("settings.json.tmp.{}", std::process::id()));
     std::fs::write(&tmp_path, &pretty).context("failed to write temporary settings file")?;
-    std::fs::rename(&tmp_path, settings_path)
-        .context("failed to atomically update ~/.claude/settings.json")?;
+    if let Err(e) = std::fs::rename(&tmp_path, settings_path) {
+        let _ = std::fs::remove_file(&tmp_path);
+        return Err(anyhow::Error::new(e)
+            .context("failed to atomically update ~/.claude/settings.json"));
+    }
 
     Ok(())
 }
