@@ -19,24 +19,27 @@ services:
     command: ["-config.file=/etc/tempo/config.yml"]
     volumes:
       - ./tempo-config.yml:/etc/tempo/config.yml:ro
-      - tempo-data:/var/tempo
+      - ${HOME}/.local/share/hippo/otel/tempo:/var/tempo
 
   loki:
     image: grafana/loki:3.7.1
     command: ["-config.file=/etc/loki/config.yml"]
     volumes:
       - ./loki-config.yml:/etc/loki/config.yml:ro
-      - loki-data:/loki
+      - ${HOME}/.local/share/hippo/otel/loki:/loki
 
   prometheus:
     image: prom/prometheus:v3.11.1
     command:
       - "--config.file=/etc/prometheus/prometheus.yml"
       - "--storage.tsdb.path=/prometheus"
-      - "--storage.tsdb.retention.time=7d"
+      - "--storage.tsdb.retention.time=${HIPPO_OTEL_PROMETHEUS_RETENTION:-30d}"
+      - "--storage.tsdb.retention.size=${HIPPO_OTEL_PROMETHEUS_RETENTION_SIZE:-10GB}"
+    ports:
+      - "9090:9090"
     volumes:
       - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
-      - prometheus-data:/prometheus
+      - ${HOME}/.local/share/hippo/otel/prometheus:/prometheus
 
   grafana:
     image: grafana/grafana:12.4.2
@@ -47,16 +50,10 @@ services:
     volumes:
       - ./grafana/datasources.yml:/etc/grafana/provisioning/datasources/datasources.yml:ro
       - ./grafana/dashboards:/etc/grafana/provisioning/dashboards:ro
-      - grafana-data:/var/lib/grafana
+      - ${HOME}/.local/share/hippo/otel/grafana:/var/lib/grafana
     ports:
       - "3000:3000"
     depends_on:
       - tempo
       - loki
       - prometheus
-
-volumes:
-  tempo-data:
-  loki-data:
-  prometheus-data:
-  grafana-data:
