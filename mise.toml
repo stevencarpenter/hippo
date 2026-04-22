@@ -25,8 +25,8 @@ run = "uv sync --project brain"
 description = "Build everything"
 depends = ["build", "build:brain"]
 
-[tasks."build:ext"]
-description = "Build and package the Firefox extension as an .xpi"
+[tasks."build:ext:dist"]
+description = "Build the Firefox extension dist/ bundle (TypeScript -> dist/*.js)"
 run = """
 #!/usr/bin/env bash
 set -euo pipefail
@@ -34,8 +34,11 @@ set -euo pipefail
 cd extension/firefox
 
 if ! command -v npm >/dev/null 2>&1; then
-    echo "npm not found; skipping extension build"
-    exit 0
+    echo "WARN: npm not found; cannot build extension dist/"
+    echo "      manifest.json references dist/background.js and dist/content.js."
+    echo "      Install Node.js (e.g., 'brew install node') then rerun 'mise run build:ext:dist'."
+    echo "      Without dist/, the Firefox extension is a no-op when loaded via about:debugging."
+    exit 1
 fi
 
 if [ ! -d node_modules ]; then
@@ -47,7 +50,37 @@ if [ ! -d node_modules ]; then
     fi
 fi
 
-echo "==> Building extension..."
+echo "==> Building extension dist/..."
+npm run build --silent
+
+# Sanity check: manifest.json references these files directly. If they're
+# missing, the extension is silently a no-op when loaded as a temporary add-on.
+for f in dist/background.js dist/content.js; do
+    if [ ! -f "$f" ]; then
+        echo "ERROR: expected $f was not produced by the build"
+        exit 1
+    fi
+done
+echo "  Built: extension/firefox/dist/"
+"""
+
+[tasks."build:ext"]
+description = "Build and package the Firefox extension as an .xpi"
+depends = ["build:ext:dist"]
+run = """
+#!/usr/bin/env bash
+set -euo pipefail
+
+cd extension/firefox
+
+# dist/ is built by the build:ext:dist dep; this task produces the .xpi
+# for Firefox Developer Edition side-loading.
+if ! command -v npm >/dev/null 2>&1; then
+    echo "npm not found; skipping .xpi packaging"
+    exit 0
+fi
+
+echo "==> Packaging extension..."
 npm run package --silent
 
 # web-ext emits a .zip; Firefox loads it just fine as an .xpi.
@@ -539,11 +572,20 @@ echo "==> Starting services..."
 launchctl bootstrap "$DOMAIN" "$DAEMON_PLIST" && echo "  Loaded daemon" || echo "  Failed to load daemon"
 launchctl bootstrap "$DOMAIN" "$BRAIN_PLIST" && echo "  Loaded brain" || echo "  Failed to load brain"
 
-# ── 8b. Install Firefox extension (side-load into Developer Edition) ────
+# ── 8b. Build Firefox extension dist/ ───────────────────────────────────
+# manifest.json references dist/background.js and dist/content.js. These
+# MUST exist for the extension to work when loaded via about:debugging (the
+# documented setup). install:ext below builds dist/ too as part of .xpi
+# packaging, but it short-circuits if Firefox Developer Edition isn't
+# installed — leaving dist/ missing. Run the dist build unconditionally.
+echo "==> Building Firefox extension dist/..."
+mise run build:ext:dist || echo "  WARN: extension dist/ build failed — Firefox extension will be a no-op"
+
+# ── 8c. Install Firefox extension (side-load into Developer Edition) ────
 echo "==> Installing Firefox extension..."
 mise run install:ext || echo "  WARN: extension install failed (non-fatal)"
 
-# ── 8c. Install Claude Code skill ───────────────────────────────────────
+# ── 8d. Install Claude Code skill ───────────────────────────────────────
 echo "==> Installing Claude Code skill..."
 mise run install:skill || echo "  WARN: skill install failed (non-fatal)"
 
