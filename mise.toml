@@ -34,10 +34,10 @@ set -euo pipefail
 cd extension/firefox
 
 if ! command -v npm >/dev/null 2>&1; then
-    echo "WARN: npm not found; cannot build extension dist/"
-    echo "      manifest.json references dist/background.js and dist/content.js."
-    echo "      Install Node.js (e.g., 'brew install node') then rerun 'mise run build:ext:dist'."
-    echo "      Without dist/, the Firefox extension is a no-op when loaded via about:debugging."
+    echo "ERROR: npm not found; cannot build extension dist/" >&2
+    echo "       manifest.json references dist/background.js and dist/content.js." >&2
+    echo "       Install Node.js (e.g., 'brew install node') then rerun 'mise run build:ext:dist'." >&2
+    echo "       Without dist/, the Firefox extension is a no-op when loaded via about:debugging." >&2
     exit 1
 fi
 
@@ -66,19 +66,21 @@ echo "  Built: extension/firefox/dist/"
 
 [tasks."build:ext"]
 description = "Build and package the Firefox extension as an .xpi"
-depends = ["build:ext:dist"]
 run = """
 #!/usr/bin/env bash
 set -euo pipefail
 
-cd extension/firefox
-
-# dist/ is built by the build:ext:dist dep; this task produces the .xpi
-# for Firefox Developer Edition side-loading.
+# Preserve the historical no-op behavior when Node/npm is unavailable.
+# Only build dist/ and package the .xpi when npm exists.
 if ! command -v npm >/dev/null 2>&1; then
     echo "npm not found; skipping .xpi packaging"
     exit 0
 fi
+
+echo "==> Building extension dist/..."
+mise run build:ext:dist
+
+cd extension/firefox
 
 echo "==> Packaging extension..."
 npm run package --silent
@@ -574,10 +576,12 @@ launchctl bootstrap "$DOMAIN" "$BRAIN_PLIST" && echo "  Loaded brain" || echo " 
 
 # ── 8b. Build Firefox extension dist/ ───────────────────────────────────
 # manifest.json references dist/background.js and dist/content.js. These
-# MUST exist for the extension to work when loaded via about:debugging (the
-# documented setup). install:ext below builds dist/ too as part of .xpi
-# packaging, but it short-circuits if Firefox Developer Edition isn't
-# installed — leaving dist/ missing. Run the dist build unconditionally.
+# are required for the extension to work when loaded via about:debugging
+# (the documented setup). install:ext below also builds dist/ as part of
+# .xpi packaging, but it may short-circuit if Firefox Developer Edition
+# isn't installed. Run the dist build unconditionally as a best-effort
+# step; if it fails, install can continue but the Firefox extension may
+# remain non-functional.
 echo "==> Building Firefox extension dist/..."
 mise run build:ext:dist || echo "  WARN: extension dist/ build failed — Firefox extension will be a no-op"
 

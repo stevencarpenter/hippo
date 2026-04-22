@@ -840,7 +840,10 @@ fn check_firefox_extension_dist_at(ext_dir: &std::path::Path) {
         .copied()
         .collect();
     if missing.is_empty() {
-        println!("[OK] Firefox extension dist/ built ({})", ext_dir.display());
+        println!(
+            "[OK] Firefox extension dist/ built ({})",
+            ext_dir.join("dist").display()
+        );
     } else {
         println!(
             "[!!] Firefox extension dist/ missing: {}",
