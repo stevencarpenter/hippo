@@ -73,7 +73,7 @@ def check_power_plugged() -> CheckResult:
 
 def check_disk_space(path: Path, min_gb: float = 2.0) -> CheckResult:
     disk_usage_path = path
-    while not disk_usage_path.exists() and disk_usage_path != disk_usage_path.parent:
+    while not disk_usage_path.exists() and disk_usage_path.parent != disk_usage_path:
         disk_usage_path = disk_usage_path.parent
     usage = shutil.disk_usage(disk_usage_path)
     free_gb = usage.free / (1024**3)

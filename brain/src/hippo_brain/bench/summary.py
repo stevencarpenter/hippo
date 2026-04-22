@@ -66,7 +66,10 @@ def aggregate_model_summary(
 
     valid = sum(1 for a in main_attempts if a.gates.get("schema_valid"))
     refusals = sum(1 for a in main_attempts if a.gates.get("refusal_detected"))
-    echo_similarity_max = max(float(a.gates.get("echo_similarity", 0.0)) for a in main_attempts)
+    echo_similarity_max = max(
+        (float(a.gates.get("echo_similarity", 0.0)) for a in main_attempts),
+        default=0.0,
+    )
     latencies = [a.timestamps.get("total_ms", 0) for a in main_attempts]
 
     # Per-attempt mean first (avoids over-weighting attempts with more

@@ -111,7 +111,8 @@ def orchestrate_run(
     preflight = [] if skip_checks else run_all_preflight(out_dir, f"{base_url}/models")
     preflight_failed = any(c.status == "fail" for c in preflight)
 
-    with RunWriter(out_path) as writer:
+    writer = RunWriter(out_path)
+    try:
         manifest_record = RunManifestRecord(
             run_id=run_id,
             started_at_iso=_dt.datetime.now(tz=_dt.UTC).isoformat(),
@@ -242,6 +243,8 @@ def orchestrate_run(
                 models_errored=list(errored),
             )
         )
+    finally:
+        writer.close()
     return OrchestrationResult(
         run_id=run_id,
         out_path=out_path,
