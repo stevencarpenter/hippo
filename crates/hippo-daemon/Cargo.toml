@@ -36,7 +36,7 @@ tracing-opentelemetry = { workspace = true, optional = true }
 which = "8.0.2"
 
 [features]
-default = []
+default = ["otel"]
 otel = [
     "dep:opentelemetry",
     "dep:opentelemetry_sdk",
