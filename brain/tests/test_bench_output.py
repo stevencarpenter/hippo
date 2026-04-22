@@ -3,6 +3,7 @@ import json
 from hippo_brain.bench.output import (
     AttemptRecord,
     ModelSummaryRecord,
+    RunEndRecord,
     RunManifestRecord,
     RunWriter,
 )
@@ -57,6 +58,19 @@ def test_model_summary_serializes():
     )
     d = r.to_dict()
     assert d["record_type"] == "model_summary"
+
+
+def test_run_end_record_serializes():
+    r = RunEndRecord(
+        run_id="run-x",
+        finished_at_iso="2026-04-21T00:10:00Z",
+        models_completed=["m1"],
+        models_errored=["m2"],
+        reason="completed",
+    )
+    d = r.to_dict()
+    assert d["record_type"] == "run_end"
+    assert d["models_completed"] == ["m1"]
 
 
 def test_writer_emits_manifest_first(tmp_path):
@@ -121,3 +135,30 @@ def test_writer_appends_records(tmp_path):
     lines = out.read_text().splitlines()
     assert len(lines) == 2
     assert json.loads(lines[1])["record_type"] == "attempt"
+
+
+def test_writer_overwrites_existing_run_file(tmp_path):
+    out = tmp_path / "run.jsonl"
+    out.write_text('{"record_type":"old"}\n')
+
+    writer = RunWriter(out)
+    writer.write_manifest(
+        RunManifestRecord(
+            run_id="r",
+            started_at_iso="t",
+            finished_at_iso=None,
+            bench_version="0.1.0",
+            host={},
+            preflight_checks=[],
+            corpus_version="v",
+            corpus_content_hash="h",
+            candidate_models=[],
+            gate_thresholds={},
+            self_consistency_spec={},
+        )
+    )
+    writer.close()
+
+    lines = out.read_text().splitlines()
+    assert len(lines) == 1
+    assert json.loads(lines[0])["record_type"] == "run_manifest"

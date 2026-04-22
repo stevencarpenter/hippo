@@ -53,6 +53,7 @@ def aggregate_model_summary(
         return {
             "schema_validity_rate": 0.0,
             "refusal_rate": 0.0,
+            "echo_similarity_max": 0.0,
             "latency_p50_ms": 0,
             "latency_p95_ms": 0,
             "latency_p99_ms": 0,
@@ -65,6 +66,7 @@ def aggregate_model_summary(
 
     valid = sum(1 for a in main_attempts if a.gates.get("schema_valid"))
     refusals = sum(1 for a in main_attempts if a.gates.get("refusal_detected"))
+    echo_similarity_max = max(float(a.gates.get("echo_similarity", 0.0)) for a in main_attempts)
     latencies = [a.timestamps.get("total_ms", 0) for a in main_attempts]
 
     # Per-attempt mean first (avoids over-weighting attempts with more
@@ -80,6 +82,7 @@ def aggregate_model_summary(
     return {
         "schema_validity_rate": valid / total_main,
         "refusal_rate": refusals / total_main,
+        "echo_similarity_max": echo_similarity_max,
         "latency_p50_ms": int(_percentile(latencies, 0.50)),
         "latency_p95_ms": int(_percentile(latencies, 0.95)),
         "latency_p99_ms": int(_percentile(latencies, 0.99)),
@@ -120,6 +123,7 @@ def compute_verdict(gates: dict, thresholds: dict) -> dict:
 
     _check_min("schema_validity_rate", "schema_validity_min")
     _check_max("refusal_rate", "refusal_max")
+    _check_max("echo_similarity_max", "echo_similarity_max")
     _check_max("latency_p95_ms", "latency_p95_max_ms")
     _check_min("self_consistency_mean", "self_consistency_min")
     _check_min("entity_sanity_mean", "entity_sanity_min")

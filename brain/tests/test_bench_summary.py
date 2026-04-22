@@ -5,6 +5,7 @@ from hippo_brain.bench.summary import aggregate_model_summary, compute_verdict
 def _attempt(
     schema_valid=True,
     refusal=False,
+    echo_similarity=0.1,
     total_ms=1000,
     purpose="main",
     event_id="e1",
@@ -22,7 +23,7 @@ def _attempt(
         gates={
             "schema_valid": schema_valid,
             "refusal_detected": refusal,
-            "echo_similarity": 0.1,
+            "echo_similarity": echo_similarity,
             "entity_type_sanity": (
                 entity_cats if entity_cats is not None else {"files": 1.0, "tools": 1.0}
             ),
@@ -43,6 +44,7 @@ def test_aggregate_schema_validity_rate():
         self_consistency_min=0.8,
     )
     assert gates["schema_validity_rate"] == 2 / 3
+    assert gates["echo_similarity_max"] == 0.1
     assert gates["self_consistency_mean"] == 0.85
     assert gates["main_attempts_count"] == 3
     assert gates["sc_attempts_count"] == 0
@@ -63,11 +65,17 @@ def test_aggregate_excludes_sc_attempts_from_rates():
     """Self-consistency attempts must not distort main-pass rates."""
     attempts = [
         _attempt(schema_valid=True, purpose="main", event_id="e1"),
-        _attempt(schema_valid=True, purpose="main", event_id="e2"),
+        _attempt(schema_valid=True, purpose="main", event_id="e2", echo_similarity=0.2),
         # SC attempts on the same event — all fail schema. Must NOT pull down rate.
-        _attempt(schema_valid=False, purpose="self_consistency", event_id="e1"),
-        _attempt(schema_valid=False, purpose="self_consistency", event_id="e1"),
-        _attempt(schema_valid=False, purpose="self_consistency", event_id="e1"),
+        _attempt(
+            schema_valid=False, purpose="self_consistency", event_id="e1", echo_similarity=0.99
+        ),
+        _attempt(
+            schema_valid=False, purpose="self_consistency", event_id="e1", echo_similarity=0.99
+        ),
+        _attempt(
+            schema_valid=False, purpose="self_consistency", event_id="e1", echo_similarity=0.99
+        ),
     ]
     gates = aggregate_model_summary(
         attempts=attempts,
@@ -75,6 +83,7 @@ def test_aggregate_excludes_sc_attempts_from_rates():
         self_consistency_min=0.8,
     )
     assert gates["schema_validity_rate"] == 1.0  # main pass clean
+    assert gates["echo_similarity_max"] == 0.2
     assert gates["main_attempts_count"] == 2
     assert gates["sc_attempts_count"] == 3
 
@@ -121,6 +130,7 @@ def test_verdict_pass_when_all_gates_pass():
     thresholds = {
         "schema_validity_min": 0.95,
         "refusal_max": 0.0,
+        "echo_similarity_max": 0.5,
         "latency_p95_max_ms": 60_000,
         "self_consistency_min": 0.7,
         "entity_sanity_min": 0.9,
@@ -128,6 +138,7 @@ def test_verdict_pass_when_all_gates_pass():
     gates = {
         "schema_validity_rate": 1.0,
         "refusal_rate": 0.0,
+        "echo_similarity_max": 0.1,
         "latency_p95_ms": 30_000,
         "self_consistency_mean": 0.9,
         "entity_sanity_mean": 0.95,
@@ -142,6 +153,7 @@ def test_verdict_fail_lists_offending_gates():
     thresholds = {
         "schema_validity_min": 0.95,
         "refusal_max": 0.0,
+        "echo_similarity_max": 0.5,
         "latency_p95_max_ms": 60_000,
         "self_consistency_min": 0.7,
         "entity_sanity_min": 0.9,
@@ -149,6 +161,7 @@ def test_verdict_fail_lists_offending_gates():
     gates = {
         "schema_validity_rate": 0.90,
         "refusal_rate": 0.1,
+        "echo_similarity_max": 0.75,
         "latency_p95_ms": 30_000,
         "self_consistency_mean": 0.8,
         "entity_sanity_mean": 0.95,
@@ -157,6 +170,7 @@ def test_verdict_fail_lists_offending_gates():
     assert v["passed"] is False
     assert "schema_validity_rate" in v["failed_gates"]
     assert "refusal_rate" in v["failed_gates"]
+    assert "echo_similarity_max" in v["failed_gates"]
 
 
 def test_verdict_none_gate_is_skipped_not_failed():
@@ -164,6 +178,7 @@ def test_verdict_none_gate_is_skipped_not_failed():
     thresholds = {
         "schema_validity_min": 0.95,
         "refusal_max": 0.0,
+        "echo_similarity_max": 0.5,
         "latency_p95_max_ms": 60_000,
         "self_consistency_min": 0.7,
         "entity_sanity_min": 0.9,
@@ -171,6 +186,7 @@ def test_verdict_none_gate_is_skipped_not_failed():
     gates = {
         "schema_validity_rate": 1.0,
         "refusal_rate": 0.0,
+        "echo_similarity_max": 0.1,
         "latency_p95_ms": 30_000,
         "self_consistency_mean": None,  # not tested
         "entity_sanity_mean": 0.95,

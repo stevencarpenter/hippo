@@ -58,6 +58,15 @@ def test_check_disk_space_fail(tmp_path):
     assert r.status == "fail"
 
 
+def test_check_disk_space_uses_existing_parent_for_missing_path(tmp_path):
+    fake = MagicMock(free=10 * 1024**3)
+    missing = tmp_path / "nested" / "runs"
+    with patch("shutil.disk_usage", return_value=fake) as mock_usage:
+        r = check_disk_space(missing, min_gb=2.0)
+    assert r.status == "pass"
+    assert mock_usage.call_args.args[0] == tmp_path
+
+
 def test_check_power_plugged_warns_on_battery():
     with patch("subprocess.run") as mock_run:
         mock_run.return_value = MagicMock(

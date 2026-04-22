@@ -295,6 +295,7 @@ Four `record_type` values in one JSONL file:
   "gates": {
     "schema_validity_rate": 0.975,
     "refusal_rate": 0.0,
+    "echo_similarity_max": 0.18,
     "latency_p50_ms": 8432,
     "latency_p95_ms": 14201,
     "latency_p99_ms": 18000,
@@ -354,7 +355,7 @@ It sets up machine state so cross-day / cross-model runs are comparable.
 | `lms` CLI present | `which lms` | **fail → abort (hard requirement)** |
 | Power plugged, not low-power | `pmset -g batt` | warn |
 | Not thermally throttled at start | `sysctl` throttling counter / `pmset -g thermlog` | fail → abort |
-| Hippo services state | `launchctl list \| grep hippo` (labels: `com.sjcarpenter.hippo.daemon`, `com.sjcarpenter.hippo.brain`) | info only; **bench stops both** via `launchctl bootout` for the duration, re-bootstraps after (whether pass or fail) |
+| Hippo services state | `launchctl list \| grep hippo` (labels: `com.sjcarpenter.hippo.daemon`, `com.sjcarpenter.hippo.brain`) | info only; bench records whether they are running but **does not pause them in MVP** |
 | Other claude processes | `pgrep claude` | warn |
 | Docker heavy CPU | `docker stats --no-stream` | warn if > 50% |
 | Spotlight indexing | `mdutil -s /` | warn |

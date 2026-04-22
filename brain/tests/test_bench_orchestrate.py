@@ -69,6 +69,34 @@ def test_orchestrate_dry_run_produces_manifest_only(tmp_path):
     assert result.models_completed == []
 
 
+def test_orchestrate_creates_output_dir_before_preflight(tmp_path):
+    fixture = tmp_path / "corpus-v1.jsonl"
+    manifest = tmp_path / "corpus-v1.manifest.json"
+    fixture.write_text("")
+    manifest.write_text('{"corpus_content_hash": "sha256:empty", "corpus_version": "corpus-v1"}')
+    out = tmp_path / "nested" / "runs" / "run.jsonl"
+
+    with patch("hippo_brain.bench.orchestrate.run_all_preflight") as mock_pf:
+        mock_pf.return_value = []
+        orchestrate_run(
+            candidate_models=[],
+            corpus_version="corpus-v1",
+            fixture_path=fixture,
+            manifest_path=manifest,
+            base_url="http://localhost:1234/v1",
+            embedding_model="nomic",
+            out_path=out,
+            timeout_sec=60,
+            self_consistency_events=0,
+            self_consistency_runs=0,
+            skip_checks=False,
+            dry_run=True,
+        )
+
+    assert out.parent.exists()
+    assert mock_pf.call_args.args[0] == out.parent
+
+
 @patch("hippo_brain.bench.orchestrate.run_one_model")
 def test_orchestrate_isolates_failing_model(mock_run_one, tmp_path):
     """When one model raises, later models still run; JSONL gets an error record."""

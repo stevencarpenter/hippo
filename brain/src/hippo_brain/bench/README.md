@@ -8,7 +8,7 @@ emits one JSONL file per run that downstream tooling can rank.
 > spot-check TUI (Tier 2) are roadmap. See
 > [docs/superpowers/specs/2026-04-21-hippo-bench-design.md](../../../../docs/superpowers/specs/2026-04-21-hippo-bench-design.md)
 > for the full design and the
-> [veracity report in the audit commit](../../../../docs/superpowers/specs/2026-04-21-hippo-bench-design.md#veracity)
+> [veracity report in the audit commit](../../../../docs/superpowers/specs/2026-04-21-hippo-bench-design.md)
 > for honest caveats.
 
 ---
@@ -208,6 +208,7 @@ SC cosine score).
   "gates": {
     "schema_validity_rate": 0.975,
     "refusal_rate": 0.0,
+    "echo_similarity_max": 0.18,
     "latency_p50_ms": 8432, "latency_p95_ms": 14201, "latency_p99_ms": 18000,
     "self_consistency_mean": 0.82, "self_consistency_min": 0.71,
     "entity_sanity_mean": 0.94,

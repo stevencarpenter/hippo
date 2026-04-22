@@ -66,13 +66,27 @@ class ModelSummaryRecord:
         return d
 
 
+@dataclass
+class RunEndRecord:
+    run_id: str
+    finished_at_iso: str
+    models_completed: list[str]
+    models_errored: list[str]
+    reason: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        d: dict[str, Any] = {"record_type": "run_end"}
+        d.update(asdict(self))
+        return d
+
+
 class RunWriter:
-    """Append-only JSONL writer for a single bench run."""
+    """JSONL writer for a single bench run."""
 
     def __init__(self, path: Path):
         self.path = path
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self._f = self.path.open("a", encoding="utf-8")
+        self._f = self.path.open("w", encoding="utf-8")
 
     def _write(self, obj: dict) -> None:
         self._f.write(json.dumps(obj, sort_keys=True))
@@ -86,6 +100,9 @@ class RunWriter:
         self._write(r.to_dict())
 
     def write_model_summary(self, r: ModelSummaryRecord) -> None:
+        self._write(r.to_dict())
+
+    def write_run_end(self, r: RunEndRecord) -> None:
         self._write(r.to_dict())
 
     def close(self) -> None:
