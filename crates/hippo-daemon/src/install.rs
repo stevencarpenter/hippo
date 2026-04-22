@@ -310,6 +310,145 @@ fn drain_poll(
     }
 }
 
+/// Configure the Claude Code session hook in ~/.claude/settings.json.
+///
+/// Skips if the hook is already pointing at the expected path. Updates only the
+/// `command` field of the matching hook entry if the path has drifted (other fields
+/// on the matcher and hook objects are preserved). Appends a new matcher if no hippo
+/// hook exists at all. All other settings.json content is preserved.
+///
+/// Returns an error if the file exists but contains malformed JSON — never silently
+/// overwrites user settings with an empty object.
+///
+/// This step does not respect `--force` because it is fully idempotent: it only
+/// writes when the path has actually drifted, never destroys existing data, and the
+/// "already correct" check makes repeat runs a no-op.
+pub fn configure_claude_session_hook(brain_dir: &Path) -> Result<()> {
+    let settings_path = dirs::home_dir()
+        .context("cannot determine home directory")?
+        .join(".claude/settings.json");
+    configure_claude_session_hook_at(&settings_path, brain_dir)
+}
+
+fn configure_claude_session_hook_at(settings_path: &Path, brain_dir: &Path) -> Result<()> {
+    let hook_path = brain_dir.join("shell/claude-session-hook.sh");
+    let hook_path_str = hook_path
+        .to_str()
+        .context("hook path is not valid UTF-8")?
+        .to_string();
+
+    let mut root: serde_json::Value = if settings_path.exists() {
+        let content = std::fs::read_to_string(settings_path)
+            .context("failed to read ~/.claude/settings.json")?;
+        serde_json::from_str(&content).with_context(
+            || "~/.claude/settings.json is malformed JSON — fix it manually before running install",
+        )?
+    } else {
+        serde_json::json!({})
+    };
+
+    if !root.is_object() {
+        anyhow::bail!("~/.claude/settings.json root is not a JSON object");
+    }
+
+    let matchers = root
+        .as_object_mut()
+        .unwrap()
+        .entry("hooks")
+        .or_insert_with(|| serde_json::json!({}))
+        .as_object_mut()
+        .context("hooks is not an object")?
+        .entry("SessionStart")
+        .or_insert_with(|| serde_json::json!([]))
+        .as_array_mut()
+        .context("SessionStart is not an array")?;
+
+    // Find the (matcher_idx, hook_idx) of the specific hippo hook command
+    let hippo_location = matchers.iter().enumerate().find_map(|(mi, m)| {
+        m.get("hooks").and_then(|h| h.as_array()).and_then(|hooks| {
+            hooks.iter().enumerate().find_map(|(hi, h)| {
+                h.get("command")
+                    .and_then(|c| c.as_str())
+                    .filter(|cmd| cmd.contains("claude-session-hook.sh"))
+                    .map(|_| (mi, hi))
+            })
+        })
+    });
+
+    match hippo_location {
+        Some((mi, hi)) => {
+            let current = matchers[mi]
+                .get("hooks")
+                .and_then(|h| h.as_array())
+                .and_then(|hooks| hooks.get(hi))
+                .and_then(|h| h.get("command"))
+                .and_then(|c| c.as_str());
+            if current == Some(hook_path_str.as_str()) {
+                println!("  Claude session hook already correct, skipped");
+                return Ok(());
+            }
+            // Mutate only the command field — preserve all other hook/matcher fields
+            let hooks = matchers[mi]
+                .get_mut("hooks")
+                .and_then(|h| h.as_array_mut())
+                .context("existing matcher hooks is not an array")?;
+            let hook_obj = hooks
+                .get_mut(hi)
+                .and_then(|h| h.as_object_mut())
+                .context("existing hook entry is not an object")?;
+            hook_obj.insert(
+                "command".to_string(),
+                serde_json::Value::String(hook_path_str),
+            );
+            println!("  Updated Claude session hook: {}", hook_path.display());
+        }
+        None => {
+            matchers.push(serde_json::json!({
+                "hooks": [{ "type": "command", "command": hook_path_str }]
+            }));
+            println!("  Configured Claude session hook: {}", hook_path.display());
+        }
+    }
+
+    // Atomic write: PID-suffixed tmp sibling + rename so a crash mid-write cannot
+    // leave a truncated settings.json. The PID suffix avoids conflicts if two
+    // `daemon install` processes somehow run concurrently.
+    let parent = settings_path
+        .parent()
+        .context("~/.claude/settings.json has no parent directory")?;
+    std::fs::create_dir_all(parent)?;
+    let pretty =
+        serde_json::to_string_pretty(&root).context("failed to serialize settings.json")?;
+    let tmp_path =
+        settings_path.with_file_name(format!("settings.json.tmp.{}", std::process::id()));
+    std::fs::write(&tmp_path, &pretty).context("failed to write temporary settings file")?;
+
+    // Preserve the existing file's permissions across the rename so a user who
+    // locked down ~/.claude/settings.json (e.g. chmod 0600) keeps that mode.
+    // When the destination does not yet exist, default to 0600 — Claude settings
+    // may contain API keys and should not inherit an arbitrary umask.
+    let mode = std::fs::metadata(settings_path)
+        .map(|m| m.permissions().mode())
+        .unwrap_or(0o600);
+    if let Err(e) =
+        std::fs::set_permissions(&tmp_path, std::fs::Permissions::from_mode(mode & 0o7777))
+    {
+        let _ = std::fs::remove_file(&tmp_path);
+        return Err(
+            anyhow::Error::new(e).context("failed to set permissions on temporary settings file")
+        );
+    }
+
+    if let Err(e) = std::fs::rename(&tmp_path, settings_path) {
+        let _ = std::fs::remove_file(&tmp_path);
+        return Err(
+            anyhow::Error::new(e).context("failed to atomically update ~/.claude/settings.json")
+        );
+    }
+
+    Ok(())
+}
+
 /// Install the Firefox Native Messaging host manifest and wrapper script.
 ///
 /// Creates `hippo_daemon.json` (the manifest) and `hippo-native-messaging` (a wrapper
@@ -528,5 +667,164 @@ mod tests {
     fn parse_launchctl_pid_ignores_malformed_values() {
         let sample = "\t\"PID\" = not-a-number;";
         assert_eq!(parse_launchctl_pid(sample), None);
+    }
+
+    // ── configure_claude_session_hook ──────────────────────────────────────────
+
+    #[test]
+    fn configure_hook_adds_entry_when_none_exists() {
+        let tmp = tempfile::tempdir().unwrap();
+        let settings = tmp.path().join(".claude/settings.json");
+        std::fs::create_dir_all(settings.parent().unwrap()).unwrap();
+        std::fs::write(&settings, r#"{"theme":"dark"}"#).unwrap();
+
+        let brain_dir = tmp.path().join("hippo-brain");
+        configure_claude_session_hook_at(&settings, &brain_dir).unwrap();
+
+        let content = std::fs::read_to_string(&settings).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&content).unwrap();
+        let cmd = v["hooks"]["SessionStart"][0]["hooks"][0]["command"]
+            .as_str()
+            .unwrap();
+        assert!(cmd.ends_with("claude-session-hook.sh"));
+        // Unrelated field preserved
+        assert_eq!(v["theme"].as_str(), Some("dark"));
+    }
+
+    #[test]
+    fn configure_hook_skips_when_already_correct() {
+        let tmp = tempfile::tempdir().unwrap();
+        let settings = tmp.path().join(".claude/settings.json");
+        std::fs::create_dir_all(settings.parent().unwrap()).unwrap();
+
+        let brain_dir = tmp.path().join("hippo-brain");
+        let hook_path = brain_dir.join("shell/claude-session-hook.sh");
+        let initial = serde_json::json!({
+            "hooks": {
+                "SessionStart": [{
+                    "hooks": [{"type": "command", "command": hook_path.to_string_lossy()}]
+                }]
+            }
+        });
+        std::fs::write(&settings, serde_json::to_string(&initial).unwrap()).unwrap();
+        let mtime_before = std::fs::metadata(&settings).unwrap().modified().unwrap();
+
+        configure_claude_session_hook_at(&settings, &brain_dir).unwrap();
+
+        let mtime_after = std::fs::metadata(&settings).unwrap().modified().unwrap();
+        // File must not have been rewritten. APFS nanosecond mtime precision
+        // makes this reliable; HFS+ second granularity would need a sleep.
+        assert_eq!(mtime_before, mtime_after);
+    }
+
+    #[test]
+    fn configure_hook_updates_drifted_path_in_place() {
+        let tmp = tempfile::tempdir().unwrap();
+        let settings = tmp.path().join(".claude/settings.json");
+        std::fs::create_dir_all(settings.parent().unwrap()).unwrap();
+
+        let brain_dir = tmp.path().join("hippo-brain");
+        let initial = serde_json::json!({
+            "hooks": {
+                "SessionStart": [{
+                    "matcher": "some-filter",
+                    "hooks": [
+                        {"type": "command", "command": "/old/path/claude-session-hook.sh"}
+                    ]
+                }]
+            }
+        });
+        std::fs::write(&settings, serde_json::to_string(&initial).unwrap()).unwrap();
+
+        configure_claude_session_hook_at(&settings, &brain_dir).unwrap();
+
+        let content = std::fs::read_to_string(&settings).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&content).unwrap();
+        let matcher = &v["hooks"]["SessionStart"][0];
+        // matcher-level field preserved
+        assert_eq!(matcher["matcher"].as_str(), Some("some-filter"));
+        let cmd = matcher["hooks"][0]["command"].as_str().unwrap();
+        assert!(cmd.ends_with("claude-session-hook.sh"));
+        assert!(!cmd.starts_with("/old/path"));
+    }
+
+    #[test]
+    fn configure_hook_preserves_unrelated_session_start_matchers() {
+        let tmp = tempfile::tempdir().unwrap();
+        let settings = tmp.path().join(".claude/settings.json");
+        std::fs::create_dir_all(settings.parent().unwrap()).unwrap();
+
+        let brain_dir = tmp.path().join("hippo-brain");
+        let initial = serde_json::json!({
+            "hooks": {
+                "SessionStart": [
+                    {"hooks": [{"type": "command", "command": "/other/tool/hook.sh"}]}
+                ]
+            }
+        });
+        std::fs::write(&settings, serde_json::to_string(&initial).unwrap()).unwrap();
+
+        configure_claude_session_hook_at(&settings, &brain_dir).unwrap();
+
+        let content = std::fs::read_to_string(&settings).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&content).unwrap();
+        let matchers = v["hooks"]["SessionStart"].as_array().unwrap();
+        // Original matcher preserved, hippo matcher appended
+        assert_eq!(matchers.len(), 2);
+        assert_eq!(
+            matchers[0]["hooks"][0]["command"].as_str(),
+            Some("/other/tool/hook.sh")
+        );
+        assert!(
+            matchers[1]["hooks"][0]["command"]
+                .as_str()
+                .unwrap()
+                .ends_with("claude-session-hook.sh")
+        );
+    }
+
+    #[test]
+    fn configure_hook_preserves_file_permissions() {
+        let tmp = tempfile::tempdir().unwrap();
+        let settings = tmp.path().join(".claude/settings.json");
+        std::fs::create_dir_all(settings.parent().unwrap()).unwrap();
+        std::fs::write(&settings, r#"{"theme":"dark"}"#).unwrap();
+        std::fs::set_permissions(&settings, std::fs::Permissions::from_mode(0o600)).unwrap();
+
+        let brain_dir = tmp.path().join("hippo-brain");
+        configure_claude_session_hook_at(&settings, &brain_dir).unwrap();
+
+        let mode = std::fs::metadata(&settings).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "expected 0600, got {:o}", mode);
+    }
+
+    #[test]
+    fn configure_hook_creates_new_settings_with_0600() {
+        let tmp = tempfile::tempdir().unwrap();
+        let settings = tmp.path().join(".claude/settings.json");
+        // Parent exists, file does not — hook must default to 0600.
+
+        let brain_dir = tmp.path().join("hippo-brain");
+        configure_claude_session_hook_at(&settings, &brain_dir).unwrap();
+
+        let mode = std::fs::metadata(&settings).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "expected default 0600, got {:o}", mode);
+    }
+
+    #[test]
+    fn configure_hook_returns_error_on_malformed_json() {
+        let tmp = tempfile::tempdir().unwrap();
+        let settings = tmp.path().join(".claude/settings.json");
+        std::fs::create_dir_all(settings.parent().unwrap()).unwrap();
+        std::fs::write(&settings, "{ this is not json }").unwrap();
+
+        let brain_dir = tmp.path().join("hippo-brain");
+        let result = configure_claude_session_hook_at(&settings, &brain_dir);
+        assert!(result.is_err());
+        // File must not have been touched
+        assert_eq!(
+            std::fs::read_to_string(&settings).unwrap(),
+            "{ this is not json }"
+        );
     }
 }
