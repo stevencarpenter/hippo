@@ -25,6 +25,9 @@ mise run restart
 open http://localhost:3000
 ```
 
+Hippo persists OTEL data on the host under `~/.local/share/hippo/otel/`, so restarting or recreating
+the Docker Compose stack does not wipe Grafana, Prometheus, Loki, or Tempo state.
+
 ## Architecture
 
 ```
@@ -72,11 +75,26 @@ export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318
 ## Commands
 
 ```bash
-mise run otel:up       # Start stack
-mise run otel:down     # Stop stack
-mise run otel:logs     # Tail logs
-mise run otel:reset    # Stop + delete all data
-mise run otel:status   # Show container status
+mise run otel:up                                     # Pull latest images and start stack
+mise run otel:down                                   # Stop stack
+mise run otel:logs                                   # Tail logs
+mise run otel:backup                                 # Snapshot persisted OTEL data
+HIPPO_OTEL_RESET_CONFIRM=delete mise run otel:reset  # Backup, then stop + delete OTEL data
+mise run otel:status                                 # Show container status
+```
+
+## Storage and Retention
+
+- **Persistent data path:** `~/.local/share/hippo/otel/`
+- **Backups:** `~/.local/share/hippo/otel/backups/`
+- **Prometheus retention:** `30d` by default, capped at `10GB`
+
+You can override the Prometheus defaults before starting the stack:
+
+```bash
+export HIPPO_OTEL_PROMETHEUS_RETENTION=60d
+export HIPPO_OTEL_PROMETHEUS_RETENTION_SIZE=25GB
+mise run otel:up
 ```
 
 ## Reuse

@@ -609,10 +609,185 @@ pub async fn handle_doctor(config: &HippoConfig) -> Result<()> {
     // Check Firefox extension build + Native Messaging manifest
     check_firefox_extension();
 
+    // Per-source capture-freshness audit (one line per raw data source
+    // hippo is supposed to collect). Bridge until the `source_health`
+    // table (docs/capture-reliability/01-source-health.md, P0.1) lands.
+    check_source_freshness(config);
+
     // Check OpenTelemetry configuration
     check_otel_status(config, &client).await;
 
     Ok(())
+}
+
+/// Per-source capture-freshness doctor check.
+///
+/// Emits one line per source, color-coded by how long since the freshest
+/// row (staleness threshold per source — see
+/// `docs/capture-reliability/10-source-audit.md`). Queries the underlying
+/// tables directly so it works without the `source_health` table (which
+/// is still a P0.1 roadmap item).
+fn check_source_freshness(config: &HippoConfig) {
+    let db_path = config.db_path();
+    if !db_path.exists() {
+        println!("[--] Source freshness: database not created yet");
+        return;
+    }
+
+    let conn = match hippo_core::storage::open_db(&db_path) {
+        Ok(c) => c,
+        Err(e) => {
+            println!("[!!] Source freshness: failed to open DB: {e}");
+            return;
+        }
+    };
+
+    let now_ms = chrono::Utc::now().timestamp_millis();
+    for probe in source_freshness_probes() {
+        let (count, max_ts): (i64, Option<i64>) = conn
+            .query_row(probe.query, [], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap_or((0, None));
+
+        println!(
+            "{}",
+            source_freshness_verdict(probe.name, count, max_ts, now_ms, probe.thresholds)
+        );
+    }
+}
+
+/// Soft/hard staleness thresholds in milliseconds.
+///
+/// - `soft` → `[WW]` warning (source is dozing; probably fine overnight).
+/// - `hard` → `[!!]` red alert (capture chain almost certainly broken).
+/// - Zero rows EVER → always `[--]` (distinct from "rows but stale").
+#[derive(Clone, Copy)]
+pub struct FreshnessThresholds {
+    pub soft_ms: i64,
+    pub hard_ms: i64,
+}
+
+pub struct SourceFreshnessProbe {
+    pub name: &'static str,
+    /// Must return two columns: `count(*)`, `max(<ts>)`.
+    pub query: &'static str,
+    pub thresholds: FreshnessThresholds,
+}
+
+const HOUR_MS: i64 = 60 * 60 * 1000;
+const DAY_MS: i64 = 24 * HOUR_MS;
+
+/// Every raw-data source hippo is supposed to collect, with the query
+/// that answers "when did we last see a row?" and a soft/hard threshold
+/// tuned to how long that source can legitimately sit idle.
+pub fn source_freshness_probes() -> Vec<SourceFreshnessProbe> {
+    vec![
+        SourceFreshnessProbe {
+            name: "shell",
+            query: "SELECT COUNT(*), MAX(timestamp) FROM events WHERE source_kind = 'shell'",
+            thresholds: FreshnessThresholds {
+                soft_ms: 24 * HOUR_MS,
+                hard_ms: 7 * DAY_MS,
+            },
+        },
+        SourceFreshnessProbe {
+            name: "claude-tool",
+            query: "SELECT COUNT(*), MAX(timestamp) FROM events WHERE source_kind = 'claude-tool'",
+            thresholds: FreshnessThresholds {
+                soft_ms: 24 * HOUR_MS,
+                hard_ms: 7 * DAY_MS,
+            },
+        },
+        SourceFreshnessProbe {
+            name: "claude-session (main)",
+            query: "SELECT COUNT(*), MAX(start_time) FROM claude_sessions WHERE is_subagent = 0",
+            thresholds: FreshnessThresholds {
+                soft_ms: 12 * HOUR_MS,
+                hard_ms: 7 * DAY_MS,
+            },
+        },
+        SourceFreshnessProbe {
+            name: "claude-session (subagent)",
+            query: "SELECT COUNT(*), MAX(start_time) FROM claude_sessions WHERE is_subagent = 1",
+            thresholds: FreshnessThresholds {
+                soft_ms: 7 * DAY_MS,
+                hard_ms: 30 * DAY_MS,
+            },
+        },
+        SourceFreshnessProbe {
+            name: "browser",
+            query: "SELECT COUNT(*), MAX(timestamp) FROM browser_events",
+            thresholds: FreshnessThresholds {
+                soft_ms: 48 * HOUR_MS,
+                hard_ms: 14 * DAY_MS,
+            },
+        },
+        SourceFreshnessProbe {
+            name: "workflow",
+            query: "SELECT COUNT(*), MAX(started_at) FROM workflow_runs",
+            thresholds: FreshnessThresholds {
+                soft_ms: 3 * DAY_MS,
+                hard_ms: 30 * DAY_MS,
+            },
+        },
+    ]
+}
+
+/// Format a single source-freshness line.
+///
+/// Pulled out of `check_source_freshness` so the doctor tests can
+/// exercise the verdict logic without spinning up a daemon.
+pub fn source_freshness_verdict(
+    name: &str,
+    count: i64,
+    max_ts: Option<i64>,
+    now_ms: i64,
+    thresholds: FreshnessThresholds,
+) -> String {
+    if count == 0 {
+        return format!("[--] Source freshness {name}: zero rows ever");
+    }
+
+    let Some(ts) = max_ts else {
+        // Row count > 0 but no timestamp column — shouldn't happen with
+        // the probes above, but play it safe.
+        return format!("[!!] Source freshness {name}: {count} rows, no max timestamp");
+    };
+
+    let age_ms = (now_ms - ts).max(0);
+    let human = format_duration_ms(age_ms);
+    if age_ms > thresholds.hard_ms {
+        format!(
+            "[!!] Source freshness {name}: freshest {human} ago (> {})",
+            format_duration_ms(thresholds.hard_ms)
+        )
+    } else if age_ms > thresholds.soft_ms {
+        format!(
+            "[WW] Source freshness {name}: freshest {human} ago (> {})",
+            format_duration_ms(thresholds.soft_ms)
+        )
+    } else {
+        format!("[OK] Source freshness {name}: {count} rows, freshest {human} ago")
+    }
+}
+
+fn format_duration_ms(ms: i64) -> String {
+    if ms < 0 {
+        return "future".to_string();
+    }
+    let secs = ms / 1000;
+    if secs < 60 {
+        return format!("{secs}s");
+    }
+    let mins = secs / 60;
+    if mins < 60 {
+        return format!("{mins}m");
+    }
+    let hours = mins / 60;
+    if hours < 48 {
+        return format!("{hours}h");
+    }
+    let days = hours / 24;
+    format!("{days}d")
 }
 
 async fn check_otel_status(config: &HippoConfig, client: &reqwest::Client) {
