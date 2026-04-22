@@ -304,7 +304,7 @@ async fn main() -> Result<()> {
                     .data_dir
                     .parent()
                     .map(|p| p.join("hippo-brain"))
-                    .unwrap_or_else(|| brain_dir.clone());
+                    .context("data_dir has no parent — cannot derive brain dir for hook")?;
                 match install::configure_claude_session_hook(&hook_brain_dir) {
                     Ok(()) => {}
                     Err(e) => println!(

@@ -331,7 +331,7 @@ fn configure_claude_session_hook_at(settings_path: &Path, brain_dir: &Path) -> R
     let hook_path_str = hook_path.to_string_lossy().to_string();
 
     let mut root: serde_json::Value = if settings_path.exists() {
-        let content = std::fs::read_to_string(&settings_path)
+        let content = std::fs::read_to_string(settings_path)
             .context("failed to read ~/.claude/settings.json")?;
         serde_json::from_str(&content)
             .with_context(|| "~/.claude/settings.json is malformed JSON — fix it manually before running install")?
@@ -414,7 +414,7 @@ fn configure_claude_session_hook_at(settings_path: &Path, brain_dir: &Path) -> R
         serde_json::to_string_pretty(&root).context("failed to serialize settings.json")?;
     let tmp_path = settings_path.with_extension("json.tmp");
     std::fs::write(&tmp_path, &pretty).context("failed to write temporary settings file")?;
-    std::fs::rename(&tmp_path, &settings_path)
+    std::fs::rename(&tmp_path, settings_path)
         .context("failed to atomically update ~/.claude/settings.json")?;
 
     Ok(())
