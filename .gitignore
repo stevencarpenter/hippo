@@ -422,8 +422,9 @@ Network Trash Folder
 Temporary Items
 .apdisk
 
-
 # hippo-bench — corpus fixtures and run outputs MUST NOT enter git
 .local/share/hippo/bench/
 **/bench-fixtures/
 **/bench-runs/
+
+.claude

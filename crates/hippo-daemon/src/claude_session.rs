@@ -8,6 +8,8 @@ use chrono::{DateTime, Utc};
 use hippo_core::events::{
     CapturedOutput, EventEnvelope, EventPayload, GitState, ShellEvent, ShellKind,
 };
+use hippo_core::redaction::RedactionEngine;
+use rusqlite::{Connection, params};
 use tracing::{error, info, warn};
 use uuid::Uuid;
 
@@ -15,6 +17,20 @@ use crate::commands::send_event_fire_and_forget;
 
 /// Maximum bytes to store in CapturedOutput
 const MAX_OUTPUT_BYTES: usize = 4096;
+
+/// Gap between user prompts that forces a new segment (5 minutes in ms).
+///
+/// Kept in lockstep with `TASK_GAP_MS` in
+/// `brain/src/hippo_brain/claude_sessions.py`. Tasks separated by more than
+/// this gap are considered distinct work units and get their own enrichment.
+const SEGMENT_GAP_MS: i64 = 5 * 60 * 1000;
+
+/// Maximum accumulated free-text chars before forcing a segment split.
+///
+/// Matches `max_prompt_chars` default in the Python `extract_segments`.
+/// Prevents runaway single segments from exceeding the enrichment model's
+/// context window.
+const MAX_SEGMENT_CHARS: usize = 12_000;
 
 /// Pending tool use waiting for its result
 struct PendingToolUse {
@@ -325,13 +341,618 @@ fn process_line(
     Ok(envelopes)
 }
 
+/// A parsed conversation segment to upsert into the `claude_sessions` table.
+///
+/// Mirrors the Python `SessionSegment` in
+/// `brain/src/hippo_brain/claude_sessions.py`. Populated directly from a
+/// Claude Code JSONL transcript without going through the daemon socket so
+/// the batch importer can survive without brain running.
+#[derive(Debug, Clone)]
+struct SessionSegment {
+    session_id: String,
+    project_dir: String,
+    cwd: String,
+    git_branch: Option<String>,
+    segment_index: i64,
+    start_time: i64,
+    end_time: i64,
+    user_prompts: Vec<String>,
+    assistant_texts: Vec<String>,
+    tool_calls: Vec<ToolCallSummary>,
+    message_count: i64,
+    token_count: i64,
+    source_file: String,
+    is_subagent: bool,
+    parent_session_id: Option<String>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+struct ToolCallSummary {
+    name: String,
+    summary: String,
+}
+
+/// Describes how a JSONL path decomposes into the fields the `claude_sessions`
+/// row needs. We derive these from the filesystem layout Claude Code uses:
+///
+/// ```text
+/// <projects-root>/<project-encoded>/<session-uuid>.jsonl              (main)
+/// <projects-root>/<project-encoded>/<parent-uuid>/subagents/<id>.jsonl (subagent)
+/// ```
+///
+/// `project_dir` is the encoded project directory name (e.g.
+/// `-Users-carpenter-projects-hippo`). We keep the encoded form because the
+/// Python ingester uses the same value — mixing encodings between paths would
+/// make dedupe-by-(session_id, segment_index) lookups miss.
+struct SessionFile<'a> {
+    path: &'a Path,
+    project_dir: String,
+    session_id: String,
+    is_subagent: bool,
+    parent_session_id: Option<String>,
+}
+
+impl<'a> SessionFile<'a> {
+    fn from_path(path: &'a Path) -> Self {
+        let session_id = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("")
+            .to_string();
+
+        // Detect `<project>/<parent-uuid>/subagents/<id>.jsonl`.
+        let parent = path.parent();
+        let is_subagent =
+            parent.and_then(|p| p.file_name()).and_then(|n| n.to_str()) == Some("subagents");
+
+        let (project_dir, parent_session_id) = if is_subagent {
+            // parent = <project>/<parent-uuid>/subagents
+            // grandparent = <project>/<parent-uuid>
+            // great-grandparent = <project>
+            let grandparent = parent.and_then(|p| p.parent());
+            let project = grandparent.and_then(|p| p.parent());
+            let parent_uuid = grandparent
+                .and_then(|p| p.file_name())
+                .and_then(|n| n.to_str())
+                .map(|s| s.to_string());
+            let project_name = project
+                .and_then(|p| p.file_name())
+                .and_then(|n| n.to_str())
+                .unwrap_or("")
+                .to_string();
+            (project_name, parent_uuid)
+        } else {
+            // parent = <project>
+            let project_name = parent
+                .and_then(|p| p.file_name())
+                .and_then(|n| n.to_str())
+                .unwrap_or("")
+                .to_string();
+            (project_name, None)
+        };
+
+        Self {
+            path,
+            project_dir,
+            session_id,
+            is_subagent,
+            parent_session_id,
+        }
+    }
+}
+
+/// Extract a concise summary from a `tool_use` content block. Port of the
+/// Python `_extract_tool_summary`.
+fn extract_tool_summary(block: &serde_json::Value) -> Option<ToolCallSummary> {
+    let name = block.get("name").and_then(|v| v.as_str()).unwrap_or("");
+    if name.is_empty() {
+        return None;
+    }
+    let inp = block
+        .get("input")
+        .cloned()
+        .unwrap_or(serde_json::Value::Object(Default::default()));
+
+    let summary = match name {
+        "Bash" => inp
+            .get("command")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .chars()
+            .take(200)
+            .collect::<String>(),
+        "Read" | "Write" | "Edit" => inp
+            .get("file_path")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
+        "Grep" => {
+            let pattern = inp.get("pattern").and_then(|v| v.as_str()).unwrap_or("");
+            let path = inp.get("path").and_then(|v| v.as_str()).unwrap_or("");
+            if path.is_empty() {
+                pattern.to_string()
+            } else {
+                format!("{} in {}", pattern, path)
+            }
+        }
+        "Glob" => inp
+            .get("pattern")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
+        "Agent" => inp
+            .get("description")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .chars()
+            .take(100)
+            .collect::<String>(),
+        _ => {
+            // Generic: stringify first key=value pair, trimmed to 80 chars.
+            if let Some(obj) = inp.as_object()
+                && let Some((k, v)) = obj.iter().next()
+            {
+                let v_str = match v {
+                    serde_json::Value::String(s) => s.clone(),
+                    other => other.to_string(),
+                };
+                let truncated: String = v_str.chars().take(80).collect();
+                format!("{}={}", k, truncated)
+            } else {
+                String::new()
+            }
+        }
+    };
+
+    Some(ToolCallSummary {
+        name: name.to_string(),
+        summary,
+    })
+}
+
+/// Extract human-typed text from a `user` message, filtering out
+/// system/tool-result content. Port of the Python `_extract_user_text`.
+fn extract_user_text(msg: &serde_json::Value) -> Option<String> {
+    // msg can be a JSON string, or a dict with `content` that is either a
+    // string or an array of content blocks. Skip anything that looks like
+    // Claude-Code tooling noise (wrapped in `<...>` tags).
+    if let Some(s) = msg.as_str() {
+        let trimmed = s.trim();
+        if trimmed.is_empty() || trimmed.starts_with('<') {
+            return None;
+        }
+        return Some(trimmed.to_string());
+    }
+
+    let content = msg.get("content")?;
+    if let Some(s) = content.as_str() {
+        let trimmed = s.trim();
+        if trimmed.is_empty() || trimmed.starts_with('<') {
+            return None;
+        }
+        return Some(trimmed.to_string());
+    }
+
+    if let Some(arr) = content.as_array() {
+        let texts: Vec<String> = arr
+            .iter()
+            .filter_map(|block| {
+                if block.get("type").and_then(|t| t.as_str()) == Some("text") {
+                    let text = block.get("text").and_then(|t| t.as_str()).unwrap_or("");
+                    let trimmed = text.trim();
+                    if !trimmed.is_empty() && !trimmed.starts_with('<') {
+                        Some(trimmed.to_string())
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            })
+            .collect();
+        if texts.is_empty() {
+            None
+        } else {
+            Some(texts.join("\n"))
+        }
+    } else {
+        None
+    }
+}
+
+/// Extract text excerpts and tool calls from an assistant message. Port of
+/// the Python `_extract_assistant_text`.
+fn extract_assistant_content(msg: &serde_json::Value) -> (Vec<String>, Vec<ToolCallSummary>) {
+    let mut texts = Vec::new();
+    let mut tools = Vec::new();
+    let arr = match msg.get("content").and_then(|c| c.as_array()) {
+        Some(a) => a,
+        None => return (texts, tools),
+    };
+    for block in arr {
+        let ty = block.get("type").and_then(|t| t.as_str()).unwrap_or("");
+        if ty == "text" {
+            let text = block
+                .get("text")
+                .and_then(|t| t.as_str())
+                .unwrap_or("")
+                .trim();
+            if text.len() > 20 {
+                // Truncate long reasoning blocks.
+                let truncated: String = text.chars().take(300).collect();
+                texts.push(truncated);
+            }
+        } else if ty == "tool_use"
+            && let Some(tc) = extract_tool_summary(block)
+        {
+            tools.push(tc);
+        }
+    }
+    (texts, tools)
+}
+
+/// Stream a session JSONL and split it into task-boundary segments.
+///
+/// This is the Rust port of `extract_segments` in
+/// `brain/src/hippo_brain/claude_sessions.py`. The split rule matches the
+/// Python side (5-minute gap between user prompts OR accumulated content
+/// over `MAX_SEGMENT_CHARS`) so that backfills from this path produce the
+/// same `claude_sessions` rows a fresh brain scan would.
+///
+/// `redaction` — applied to `user_prompts`, `assistant_texts`, and each
+/// tool-call summary. Matches the Python `redact_segment_secrets` step; the
+/// builtin pattern set is shared with `hippo_brain.redaction`.
+fn extract_segments(
+    session_file: &SessionFile,
+    redaction: &RedactionEngine,
+) -> Result<Vec<SessionSegment>> {
+    let file = std::fs::File::open(session_file.path)
+        .with_context(|| format!("failed to open {}", session_file.path.display()))?;
+    let reader = std::io::BufReader::new(file);
+
+    let mut segments: Vec<SessionSegment> = Vec::new();
+    let mut current: Option<SessionSegment> = None;
+    let mut current_chars: usize = 0;
+    let mut last_user_time_ms: i64 = 0;
+
+    for line_result in reader.lines() {
+        let line = match line_result {
+            Ok(l) => l,
+            Err(_) => continue,
+        };
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let entry: serde_json::Value = match serde_json::from_str(line) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+
+        let entry_type = entry.get("type").and_then(|v| v.as_str()).unwrap_or("");
+
+        // Skip noise entries that Python filters out. Keep this list in
+        // sync with the Python `extract_segments` skip list.
+        if matches!(
+            entry_type,
+            "file-history-snapshot" | "progress" | "queue-operation" | "last-prompt"
+        ) {
+            continue;
+        }
+
+        let ts_ms = entry
+            .get("timestamp")
+            .and_then(|v| v.as_str())
+            .and_then(|s| s.parse::<DateTime<Utc>>().ok())
+            .map(|dt| dt.timestamp_millis())
+            .unwrap_or(0);
+
+        let cwd = entry
+            .get("cwd")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        let git_branch = entry
+            .get("gitBranch")
+            .and_then(|v| v.as_str())
+            .map(String::from);
+
+        // Initialize first segment on any meaningful entry.
+        if current.is_none() && matches!(entry_type, "user" | "assistant" | "system") {
+            let now_ms = if ts_ms > 0 {
+                ts_ms
+            } else {
+                Utc::now().timestamp_millis()
+            };
+            current = Some(SessionSegment {
+                session_id: session_file.session_id.clone(),
+                project_dir: session_file.project_dir.clone(),
+                cwd: cwd.clone(),
+                git_branch: git_branch.clone(),
+                segment_index: segments.len() as i64,
+                start_time: now_ms,
+                end_time: now_ms,
+                user_prompts: Vec::new(),
+                assistant_texts: Vec::new(),
+                tool_calls: Vec::new(),
+                message_count: 0,
+                token_count: 0,
+                source_file: session_file.path.to_string_lossy().into_owned(),
+                is_subagent: session_file.is_subagent,
+                parent_session_id: session_file.parent_session_id.clone(),
+            });
+        }
+
+        let seg = match current.as_mut() {
+            Some(s) => s,
+            None => continue,
+        };
+
+        // Check task boundary on user messages.
+        if entry_type == "user" && last_user_time_ms > 0 && ts_ms > 0 {
+            let gap = ts_ms - last_user_time_ms;
+            if gap > SEGMENT_GAP_MS || current_chars > MAX_SEGMENT_CHARS {
+                let has_content = !seg.user_prompts.is_empty()
+                    || !seg.tool_calls.is_empty()
+                    || !seg.assistant_texts.is_empty();
+                if has_content {
+                    let finished = current.take().expect("seg exists");
+                    let next_index = segments.len() as i64 + 1;
+                    segments.push(finished);
+                    current = Some(SessionSegment {
+                        session_id: session_file.session_id.clone(),
+                        project_dir: session_file.project_dir.clone(),
+                        cwd: if cwd.is_empty() {
+                            segments.last().map(|s| s.cwd.clone()).unwrap_or_default()
+                        } else {
+                            cwd.clone()
+                        },
+                        git_branch: git_branch
+                            .clone()
+                            .or_else(|| segments.last().and_then(|s| s.git_branch.clone())),
+                        segment_index: next_index - 1,
+                        start_time: ts_ms,
+                        end_time: ts_ms,
+                        user_prompts: Vec::new(),
+                        assistant_texts: Vec::new(),
+                        tool_calls: Vec::new(),
+                        message_count: 0,
+                        token_count: 0,
+                        source_file: session_file.path.to_string_lossy().into_owned(),
+                        is_subagent: session_file.is_subagent,
+                        parent_session_id: session_file.parent_session_id.clone(),
+                    });
+                    current_chars = 0;
+                }
+            }
+        }
+
+        let seg = match current.as_mut() {
+            Some(s) => s,
+            None => continue,
+        };
+
+        if ts_ms > 0 {
+            seg.end_time = seg.end_time.max(ts_ms);
+        }
+        seg.message_count += 1;
+
+        if !cwd.is_empty() {
+            seg.cwd = cwd;
+        }
+
+        if entry_type == "user" {
+            if ts_ms > 0 {
+                last_user_time_ms = ts_ms;
+            }
+            let msg = entry
+                .get("message")
+                .cloned()
+                .unwrap_or_else(|| entry.get("content").cloned().unwrap_or_default());
+            if let Some(text) = extract_user_text(&msg) {
+                let truncated: String = text.chars().take(500).collect();
+                current_chars += truncated.len();
+                seg.user_prompts.push(redaction.redact(&truncated).text);
+            }
+            if let Some(usage) = msg.get("usage")
+                && let Some(input_tokens) = usage.get("input_tokens").and_then(|v| v.as_i64())
+            {
+                seg.token_count += input_tokens;
+            }
+        } else if entry_type == "assistant" {
+            let msg = entry.get("message").cloned().unwrap_or_default();
+            let (texts, tools) = extract_assistant_content(&msg);
+            current_chars += texts.iter().map(|t| t.len()).sum::<usize>();
+            current_chars += tools.iter().map(|t| t.summary.len()).sum::<usize>();
+            for t in texts {
+                seg.assistant_texts.push(redaction.redact(&t).text);
+            }
+            for t in tools {
+                seg.tool_calls.push(ToolCallSummary {
+                    name: t.name,
+                    summary: redaction.redact(&t.summary).text,
+                });
+            }
+            if let Some(usage) = msg.get("usage")
+                && let Some(output_tokens) = usage.get("output_tokens").and_then(|v| v.as_i64())
+            {
+                seg.token_count += output_tokens;
+            }
+        }
+    }
+
+    // Finalize trailing segment if it has any content.
+    if let Some(last) = current
+        && (!last.user_prompts.is_empty()
+            || !last.tool_calls.is_empty()
+            || !last.assistant_texts.is_empty())
+    {
+        segments.push(last);
+    }
+
+    Ok(segments)
+}
+
+/// Build the human-readable `summary_text` column shipped to enrichment.
+///
+/// Match the Python `build_claude_enrichment_prompt` shape: a labeled header
+/// line, optional timestamp range, a bullet-list of user prompts, a
+/// bullet-list of tool calls, and a joined assistant-text blob. The brain
+/// consumes this text directly as the LLM prompt so the format needs to
+/// stay stable across Rust and Python writers.
+fn build_summary_text(seg: &SessionSegment) -> String {
+    let mut out = String::new();
+    let branch = seg.git_branch.as_deref().unwrap_or("unknown");
+    out.push_str(&format!(
+        "Claude Code session segment (project: {}, branch: {})\n",
+        seg.cwd, branch
+    ));
+    if seg.start_time > 0 && seg.end_time > 0 {
+        let start = DateTime::<Utc>::from_timestamp_millis(seg.start_time)
+            .map(|d| d.format("%Y-%m-%d %H:%M").to_string())
+            .unwrap_or_default();
+        let end = DateTime::<Utc>::from_timestamp_millis(seg.end_time)
+            .map(|d| d.format("%H:%M").to_string())
+            .unwrap_or_default();
+        out.push_str(&format!("Time: {} - {}\n", start, end));
+    }
+    if !seg.user_prompts.is_empty() {
+        out.push_str("\nUser prompts:\n");
+        for p in &seg.user_prompts {
+            out.push_str(&format!("- {}\n", p));
+        }
+    }
+    if !seg.tool_calls.is_empty() {
+        out.push_str(&format!("\nTool calls ({}):\n", seg.tool_calls.len()));
+        for t in &seg.tool_calls {
+            out.push_str(&format!("- {}: {}\n", t.name, t.summary));
+        }
+    }
+    if !seg.assistant_texts.is_empty() {
+        out.push_str("\nAssistant reasoning:\n");
+        out.push_str(&seg.assistant_texts.join("\n\n"));
+        out.push('\n');
+    }
+    out
+}
+
+/// Insert extracted segments into `claude_sessions` + enqueue them for
+/// enrichment. Returns `(inserted, skipped)`.
+///
+/// `INSERT OR IGNORE` handles re-imports idempotently against the
+/// `UNIQUE (session_id, segment_index)` constraint — same semantics as the
+/// Python `insert_segment` which swallows `UNIQUE constraint` errors.
+fn insert_segments(conn: &Connection, segments: &[SessionSegment]) -> Result<(usize, usize)> {
+    let mut inserted = 0usize;
+    let mut skipped = 0usize;
+    let now_ms = Utc::now().timestamp_millis();
+
+    for seg in segments {
+        let summary_text = build_summary_text(seg);
+        let tool_calls_json =
+            serde_json::to_string(&seg.tool_calls).unwrap_or_else(|_| "[]".into());
+        let user_prompts_json =
+            serde_json::to_string(&seg.user_prompts).unwrap_or_else(|_| "[]".into());
+        let is_subagent_int: i64 = if seg.is_subagent { 1 } else { 0 };
+
+        let res = conn.execute(
+            "INSERT OR IGNORE INTO claude_sessions
+                (session_id, project_dir, cwd, git_branch, segment_index,
+                 start_time, end_time, summary_text, tool_calls_json,
+                 user_prompts_json, message_count, token_count, source_file,
+                 is_subagent, parent_session_id, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
+            params![
+                seg.session_id,
+                seg.project_dir,
+                seg.cwd,
+                seg.git_branch,
+                seg.segment_index,
+                seg.start_time,
+                seg.end_time,
+                summary_text,
+                tool_calls_json,
+                user_prompts_json,
+                seg.message_count,
+                seg.token_count,
+                seg.source_file,
+                is_subagent_int,
+                seg.parent_session_id,
+                now_ms,
+            ],
+        )?;
+
+        if res == 0 {
+            // UNIQUE (session_id, segment_index) collided — already ingested.
+            skipped += 1;
+            continue;
+        }
+
+        let claude_session_id = conn.last_insert_rowid();
+        // Enqueue for enrichment. OR IGNORE so a replay doesn't trip the
+        // UNIQUE (claude_session_id) constraint — belt-and-suspenders since
+        // the parent INSERT was also OR IGNORE.
+        conn.execute(
+            "INSERT OR IGNORE INTO claude_enrichment_queue (claude_session_id, created_at)
+             VALUES (?1, ?2)",
+            params![claude_session_id, now_ms],
+        )?;
+        inserted += 1;
+    }
+
+    Ok((inserted, skipped))
+}
+
+/// Extract segments from a JSONL and upsert them into `claude_sessions`.
+///
+/// Logs but does not fail the caller on per-segment insert errors — the
+/// batch importer should still report event-sender progress honestly even
+/// if a single segment row fails.
+fn write_session_segments(db_path: &Path, path: &Path) -> (usize, usize, usize) {
+    let redaction = RedactionEngine::builtin();
+    let session_file = SessionFile::from_path(path);
+
+    let segments = match extract_segments(&session_file, &redaction) {
+        Ok(s) => s,
+        Err(e) => {
+            warn!(path = %path.display(), %e, "failed to extract session segments");
+            return (0, 0, 1);
+        }
+    };
+
+    if segments.is_empty() {
+        return (0, 0, 0);
+    }
+
+    let conn = match hippo_core::storage::open_db(db_path) {
+        Ok(c) => c,
+        Err(e) => {
+            error!(db = %db_path.display(), %e, "failed to open DB for segment write");
+            return (0, 0, 1);
+        }
+    };
+
+    match insert_segments(&conn, &segments) {
+        Ok((inserted, skipped)) => (inserted, skipped, 0),
+        Err(e) => {
+            error!(%e, "failed to insert claude_sessions segments");
+            (0, 0, 1)
+        }
+    }
+}
+
 /// Run the importer in batch mode: read all lines, send all events, exit.
 /// Returns (events_sent, errors).
 pub async fn ingest_batch(
     path: &Path,
     socket_path: &Path,
     timeout_ms: u64,
+    db_path: &Path,
 ) -> Result<(usize, usize)> {
+    // path is a Claude session JSONL supplied by the user via `hippo ingest
+    // claude-session --batch`. This is a local CLI operating on the user's
+    // own machine — no privilege boundary, no untrusted network input.
+    // nosemgrep: rust.actix.path-traversal.tainted-path.tainted-path
     let file =
         std::fs::File::open(path).with_context(|| format!("failed to open {}", path.display()))?;
     let reader = std::io::BufReader::new(file);
@@ -399,12 +1020,31 @@ pub async fn ingest_batch(
         }
     }
 
+    // Second pass: extract conversation segments and upsert into
+    // `claude_sessions`. This is the population path that was missing in
+    // #58 — tool-call events were flowing into `events` but the session
+    // rows needed for enrichment never got written. We go direct to SQLite
+    // (instead of through the daemon socket) because segments don't map
+    // onto the existing event wire protocol and the daemon shares the DB.
+    let (segments_inserted, segments_skipped, segment_errors) =
+        write_session_segments(db_path, path);
+    if segments_inserted > 0 || segments_skipped > 0 || segment_errors > 0 {
+        info!(
+            segments_inserted,
+            segments_skipped, segment_errors, "claude_sessions segments upserted"
+        );
+    }
+    errors += segment_errors;
+
     Ok((sent, errors))
 }
 
 /// Run the importer in tail mode: skip to end, watch for new lines.
 pub async fn ingest_tail(path: &Path, socket_path: &Path, timeout_ms: u64) -> Result<()> {
-    // Seek to end of file to get initial position
+    // path is a Claude session JSONL supplied by the user via `hippo ingest
+    // claude-session --follow`. Local CLI on the user's own machine — no
+    // privilege boundary.
+    // nosemgrep: rust.actix.path-traversal.tainted-path.tainted-path
     let file =
         std::fs::File::open(path).with_context(|| format!("failed to open {}", path.display()))?;
     let mut position = file.metadata()?.len();

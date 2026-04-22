@@ -8,8 +8,10 @@ struct Session: Identifiable, Codable, Hashable, Sendable {
     let eventCount: Int
 
     enum CodingKeys: String, CodingKey {
-        case id, startTime = "start_time"
-        case hostname, shell, eventCount = "event_count"
+        case id
+        case startTime = "start_time"
+        case hostname, shell
+        case eventCount = "event_count"
     }
 }
 

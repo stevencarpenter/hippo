@@ -1,5 +1,5 @@
-import Foundation
 import Darwin
+import Foundation
 
 struct DaemonSocketClient: Sendable {
     let socketURL: URL
@@ -30,23 +30,23 @@ struct DaemonSocketClient: Sendable {
             return false
         }
 
-        let fd = Darwin.socket(AF_UNIX, SOCK_STREAM, 0)
-        guard fd >= 0 else {
+        let fileDescriptor = Darwin.socket(AF_UNIX, SOCK_STREAM, 0)
+        guard fileDescriptor >= 0 else {
             return false
         }
-        defer { Darwin.close(fd) }
+        defer { Darwin.close(fileDescriptor) }
 
         var timeoutValue = timeval(tv_sec: Int(timeout), tv_usec: Int32((timeout - floor(timeout)) * 1_000_000))
         withUnsafePointer(to: &timeoutValue) { pointer in
             _ = Darwin.setsockopt(
-                fd,
+                fileDescriptor,
                 SOL_SOCKET,
                 SO_RCVTIMEO,
                 pointer,
                 socklen_t(MemoryLayout<timeval>.size)
             )
             _ = Darwin.setsockopt(
-                fd,
+                fileDescriptor,
                 SOL_SOCKET,
                 SO_SNDTIMEO,
                 pointer,
@@ -76,7 +76,7 @@ struct DaemonSocketClient: Sendable {
 
         return withUnsafePointer(to: &address) { pointer in
             pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) { sockaddrPointer in
-                Darwin.connect(fd, sockaddrPointer, socklen_t(MemoryLayout<sockaddr_un>.size)) == 0
+                Darwin.connect(fileDescriptor, sockaddrPointer, socklen_t(MemoryLayout<sockaddr_un>.size)) == 0
             }
         }
     }

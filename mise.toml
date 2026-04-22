@@ -25,8 +25,8 @@ run = "uv sync --project brain"
 description = "Build everything"
 depends = ["build", "build:brain"]
 
-[tasks."build:ext"]
-description = "Build and package the Firefox extension as an .xpi"
+[tasks."build:ext:dist"]
+description = "Build the Firefox extension dist/ bundle (TypeScript -> dist/*.js)"
 run = """
 #!/usr/bin/env bash
 set -euo pipefail
@@ -34,8 +34,11 @@ set -euo pipefail
 cd extension/firefox
 
 if ! command -v npm >/dev/null 2>&1; then
-    echo "npm not found; skipping extension build"
-    exit 0
+    echo "ERROR: npm not found; cannot build extension dist/" >&2
+    echo "       manifest.json references dist/background.js and dist/content.js." >&2
+    echo "       Install Node.js (e.g., 'brew install node') then rerun 'mise run build:ext:dist'." >&2
+    echo "       Without dist/, the Firefox extension is a no-op when loaded via about:debugging." >&2
+    exit 1
 fi
 
 if [ ! -d node_modules ]; then
@@ -47,7 +50,39 @@ if [ ! -d node_modules ]; then
     fi
 fi
 
-echo "==> Building extension..."
+echo "==> Building extension dist/..."
+npm run build --silent
+
+# Sanity check: manifest.json references these files directly. If they're
+# missing, the extension is silently a no-op when loaded as a temporary add-on.
+for f in dist/background.js dist/content.js; do
+    if [ ! -f "$f" ]; then
+        echo "ERROR: expected $f was not produced by the build"
+        exit 1
+    fi
+done
+echo "  Built: extension/firefox/dist/"
+"""
+
+[tasks."build:ext"]
+description = "Build and package the Firefox extension as an .xpi"
+run = """
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Preserve the historical no-op behavior when Node/npm is unavailable.
+# Only build dist/ and package the .xpi when npm exists.
+if ! command -v npm >/dev/null 2>&1; then
+    echo "npm not found; skipping .xpi packaging"
+    exit 0
+fi
+
+echo "==> Building extension dist/..."
+mise run build:ext:dist
+
+cd extension/firefox
+
+echo "==> Packaging extension..."
 npm run package --silent
 
 # web-ext emits a .zip; Firefox loads it just fine as an .xpi.
@@ -213,7 +248,7 @@ echo "Stamped brain version: ${FULL_VERSION}"
 
 [tasks.test]
 description = "Run all tests (Rust unit + integration + Python + GUI)"
-depends = ["gui:test"]
+depends = ["gui:test", "gui:lint"]
 run = """
 #!/usr/bin/env bash
 set -euo pipefail
@@ -303,7 +338,7 @@ run = "swiftlint lint --config hippo-gui/.swiftlint.yml hippo-gui/Sources"
 
 [tasks.fix]
 description = "Auto-fix all lint and format issues"
-depends = ["fix:rust", "fix:python", "fmt:sql"]
+depends = ["fix:rust", "fix:python", "gui:fix", "fmt:sql"]
 
 [tasks."fix:rust"]
 description = "Auto-fix Rust clippy warnings and format"
@@ -318,6 +353,14 @@ run = [
   "uv run --project brain ruff check --fix brain/",
   "uv run --project brain ruff format brain/",
 ]
+
+[tasks."fix:swift"]
+description = "Auto-fix SwiftLint warnings in HippoGUI"
+run = "swiftlint lint --fix --config hippo-gui/.swiftlint.yml hippo-gui/Sources"
+
+[tasks."gui:fix"]
+description = "Auto-fix all HippoGUI lint and format issues (SwiftLint + swift-format)"
+depends = ["fix:swift", "gui:format"]
 
 # ── Format ───────────────────────────────────────────────────────────
 
@@ -343,7 +386,11 @@ run = "uv run --project brain python tools/format_sql.py crates/hippo-core/src/s
 
 [tasks."fmt:check"]
 description = "Check formatting without modifying files"
-run = ["cargo fmt --check", "uv run --project brain ruff format --check brain/"]
+run = [
+  "cargo fmt --check",
+  "uv run --project brain ruff format --check brain/",
+  "swift-format lint --configuration hippo-gui/.swift-format -r hippo-gui/Sources",
+]
 
 # ── Check (CI-equivalent) ───────────────────────────────────────────
 
@@ -482,6 +529,23 @@ rm -rf brain/.venv
 uv sync --project brain
 echo "  venv ready at brain/.venv"
 
+# ── 4b. Sync brain tree to XDG install location ─────────────────────
+# The brain LaunchAgent runs `uv run --project ~/.local/share/hippo-brain`,
+# not from the repo. Without this sync, a rebuilt daemon running against
+# the installed brain sees a schema-version mismatch after any migration.
+# Keep --delete so removed files don't linger, but exclude dev caches.
+BRAIN_INSTALL_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/hippo-brain"
+echo "==> Syncing brain to ${BRAIN_INSTALL_DIR}..."
+mkdir -p "$BRAIN_INSTALL_DIR"
+rsync -a --delete \
+    --exclude='.venv' \
+    --exclude='__pycache__' \
+    --exclude='.ruff_cache' \
+    --exclude='.pytest_cache' \
+    brain/ "$BRAIN_INSTALL_DIR/"
+echo "==> Rebuilding brain venv at ${BRAIN_INSTALL_DIR}..."
+(cd "$BRAIN_INSTALL_DIR" && uv sync)
+
 # ── 5. Install plists + symlink ─────────────────────────────────────
 echo "==> Installing LaunchAgents + symlink..."
 cargo run --release --features otel --bin hippo -- daemon install --force
@@ -510,11 +574,22 @@ echo "==> Starting services..."
 launchctl bootstrap "$DOMAIN" "$DAEMON_PLIST" && echo "  Loaded daemon" || echo "  Failed to load daemon"
 launchctl bootstrap "$DOMAIN" "$BRAIN_PLIST" && echo "  Loaded brain" || echo "  Failed to load brain"
 
-# ── 8b. Install Firefox extension (side-load into Developer Edition) ────
+# ── 8b. Build Firefox extension dist/ ───────────────────────────────────
+# manifest.json references dist/background.js and dist/content.js. These
+# are required for the extension to work when loaded via about:debugging
+# (the documented setup). install:ext below also builds dist/ as part of
+# .xpi packaging, but it may short-circuit if Firefox Developer Edition
+# isn't installed. Run the dist build unconditionally as a best-effort
+# step; if it fails, install can continue but the Firefox extension may
+# remain non-functional.
+echo "==> Building Firefox extension dist/..."
+mise run build:ext:dist || echo "  WARN: extension dist/ build failed — Firefox extension will be a no-op"
+
+# ── 8c. Install Firefox extension (side-load into Developer Edition) ────
 echo "==> Installing Firefox extension..."
 mise run install:ext || echo "  WARN: extension install failed (non-fatal)"
 
-# ── 8c. Install Claude Code skill ───────────────────────────────────────
+# ── 8d. Install Claude Code skill ───────────────────────────────────────
 echo "==> Installing Claude Code skill..."
 mise run install:skill || echo "  WARN: skill install failed (non-fatal)"
 

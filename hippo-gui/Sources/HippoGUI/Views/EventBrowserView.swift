@@ -2,7 +2,7 @@ import SwiftUI
 
 struct EventBrowserView: View {
     @Environment(\.brainClient) private var brainClient
-    @State private var vm = EventBrowserViewModel()
+    @State private var viewModel = EventBrowserViewModel()
 
     var body: some View {
         HSplitView {
@@ -14,7 +14,7 @@ struct EventBrowserView: View {
 
                     Spacer()
 
-                    Picker("Since", selection: $vm.sincePreset) {
+                    Picker("Since", selection: $viewModel.sincePreset) {
                         ForEach(TimeFilterPreset.allCases) { preset in
                             Text(preset.title).tag(preset)
                         }
@@ -23,14 +23,14 @@ struct EventBrowserView: View {
                     .frame(width: 120)
 
                     Button {
-                        Task { await vm.refresh() }
+                        Task { await viewModel.refresh() }
                     } label: {
                         Image(systemName: "arrow.clockwise")
                     }
-                    .disabled(vm.isLoadingSessions)
+                    .disabled(viewModel.isLoadingSessions)
                 }
 
-                if vm.isLoadingSessions {
+                if viewModel.isLoadingSessions {
                     HStack {
                         ProgressView()
                             .scaleEffect(0.8)
@@ -39,16 +39,20 @@ struct EventBrowserView: View {
                     }
                 }
 
-                if let error = vm.errorMessage {
+                if let error = viewModel.errorMessage {
                     ErrorBannerView(message: error) {
-                        await vm.refresh()
+                        await viewModel.refresh()
                     }
                 }
 
-                List(selection: Binding(get: { vm.selectedSessionID }, set: { newValue in
-                    Task { await vm.selectSession(id: newValue) }
-                })) {
-                    ForEach(vm.sessions) { session in
+                List(
+                    selection: Binding(
+                        get: { viewModel.selectedSessionID },
+                        set: { newValue in
+                            Task { await viewModel.selectSession(id: newValue) }
+                        })
+                ) {
+                    ForEach(viewModel.sessions) { session in
                         VStack(alignment: .leading, spacing: 4) {
                             Text(formattedDate(session.startTime))
                                 .font(.body)
@@ -65,13 +69,13 @@ struct EventBrowserView: View {
                         .tag(Optional(session.id))
                     }
 
-                    if vm.canLoadMoreSessions {
+                    if viewModel.canLoadMoreSessions {
                         Button {
-                            Task { await vm.loadMoreSessions() }
+                            Task { await viewModel.loadMoreSessions() }
                         } label: {
                             HStack {
                                 Spacer()
-                                if vm.isLoadingSessions {
+                                if viewModel.isLoadingSessions {
                                     ProgressView()
                                         .controlSize(.small)
                                 } else {
@@ -87,7 +91,7 @@ struct EventBrowserView: View {
             }
             .frame(minWidth: 220)
 
-            if let session = vm.selectedSession {
+            if let session = viewModel.selectedSession {
                 VStack(alignment: .leading, spacing: 12) {
                     HStack {
                         Text("Events")
@@ -99,19 +103,19 @@ struct EventBrowserView: View {
                     }
 
                     HStack {
-                        TextField("Project filter", text: $vm.project)
+                        TextField("Project filter", text: $viewModel.project)
                             .textFieldStyle(.roundedBorder)
                             .onSubmit {
-                                Task { await vm.loadEvents(reset: true) }
+                                Task { await viewModel.loadEvents(reset: true) }
                             }
 
                         Button("Apply") {
-                            Task { await vm.loadEvents(reset: true) }
+                            Task { await viewModel.loadEvents(reset: true) }
                         }
-                        .disabled(vm.isLoadingEvents)
+                        .disabled(viewModel.isLoadingEvents)
                     }
 
-                    if vm.isLoadingEvents {
+                    if viewModel.isLoadingEvents {
                         HStack {
                             ProgressView()
                                 .scaleEffect(0.8)
@@ -120,8 +124,10 @@ struct EventBrowserView: View {
                         }
                     }
 
-                    List(selection: Binding(get: { vm.selectedEventID }, set: { vm.selectedEventID = $0 })) {
-                        ForEach(vm.filteredEvents) { event in
+                    List(
+                        selection: Binding(get: { viewModel.selectedEventID }, set: { viewModel.selectedEventID = $0 })
+                    ) {
+                        ForEach(viewModel.filteredEvents) { event in
                             VStack(alignment: .leading, spacing: 4) {
                                 Text(event.command)
                                     .lineLimit(1)
@@ -145,13 +151,13 @@ struct EventBrowserView: View {
                             .tag(Optional(event.id))
                         }
 
-                        if vm.canLoadMoreEvents {
+                        if viewModel.canLoadMoreEvents {
                             Button {
-                                Task { await vm.loadMoreEvents() }
+                                Task { await viewModel.loadMoreEvents() }
                             } label: {
                                 HStack {
                                     Spacer()
-                                    if vm.isLoadingEvents {
+                                    if viewModel.isLoadingEvents {
                                         ProgressView()
                                             .controlSize(.small)
                                     } else {
@@ -164,11 +170,11 @@ struct EventBrowserView: View {
                         }
                     }
                     .listStyle(.inset)
-                    .searchable(text: $vm.commandFilter, prompt: "Filter commands")
+                    .searchable(text: $viewModel.commandFilter, prompt: "Filter commands")
                 }
                 .frame(minWidth: 320)
 
-                if let event = vm.selectedEvent {
+                if let event = viewModel.selectedEvent {
                     VStack(alignment: .leading, spacing: 12) {
                         HStack {
                             Text("Event Details")
@@ -231,18 +237,22 @@ struct EventBrowserView: View {
                     .padding()
                     .frame(minWidth: 320)
                 } else {
-                    ContentUnavailableView("Select an Event", systemImage: "terminal", description: Text("Choose an event to inspect the full command details."))
+                    ContentUnavailableView(
+                        "Select an Event", systemImage: "terminal",
+                        description: Text("Choose an event to inspect the full command details."))
                 }
             } else {
-                ContentUnavailableView("Select a Session", systemImage: "rectangle.stack.person.crop", description: Text("Choose a captured session to browse its events."))
+                ContentUnavailableView(
+                    "Select a Session", systemImage: "rectangle.stack.person.crop",
+                    description: Text("Choose a captured session to browse its events."))
             }
         }
-        .onChange(of: vm.sincePreset) { _, _ in
-            Task { await vm.refresh() }
+        .onChange(of: viewModel.sincePreset) { _, _ in
+            Task { await viewModel.refresh() }
         }
         .task {
-            vm.configure(client: brainClient)
-            await vm.refresh()
+            viewModel.configure(client: brainClient)
+            await viewModel.refresh()
         }
     }
 
@@ -267,8 +277,12 @@ struct EventBrowserView: View {
     )
     let events = EventListResponse(
         events: [
-            Event(id: 1, sessionId: 1, timestamp: 1_713_404_800_000, command: "swift test", exitCode: 0, durationMs: 820, cwd: "/Users/carpenter/projects/hippo", gitBranch: "main"),
-            Event(id: 2, sessionId: 1, timestamp: 1_713_404_860_000, command: "swift build", exitCode: 0, durationMs: 420, cwd: "/Users/carpenter/projects/hippo", gitBranch: "main")
+            Event(
+                id: 1, sessionId: 1, timestamp: 1_713_404_800_000, command: "swift test", exitCode: 0, durationMs: 820,
+                cwd: "/Users/carpenter/projects/hippo", gitBranch: "main"),
+            Event(
+                id: 2, sessionId: 1, timestamp: 1_713_404_860_000, command: "swift build", exitCode: 0, durationMs: 420,
+                cwd: "/Users/carpenter/projects/hippo", gitBranch: "main")
         ],
         total: 2
     )

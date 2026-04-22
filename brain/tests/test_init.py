@@ -10,23 +10,26 @@ from hippo_brain import main
 
 
 def test_main_no_args_prints_usage_and_exits(capsys):
-    """No arguments -> prints usage and exits 1."""
+    """No arguments -> argparse prints a usage error and exits nonzero."""
     with patch.object(sys, "argv", ["hippo-brain"]):
         with pytest.raises(SystemExit) as exc_info:
             main()
-        assert exc_info.value.code == 1
+        # argparse uses exit code 2 for argument errors
+        assert exc_info.value.code == 2
     captured = capsys.readouterr()
-    assert "Usage:" in captured.out
+    # argparse writes the usage synopsis to stderr
+    assert "usage:" in captured.err.lower()
 
 
 def test_main_unknown_command_prints_error_and_exits(capsys):
-    """Unknown command -> prints error and exits 1."""
+    """Unknown command -> argparse prints 'invalid choice' and exits nonzero."""
     with patch.object(sys, "argv", ["hippo-brain", "bogus"]):
         with pytest.raises(SystemExit) as exc_info:
             main()
-        assert exc_info.value.code == 1
+        assert exc_info.value.code == 2
     captured = capsys.readouterr()
-    assert "Unknown command: bogus" in captured.out
+    assert "invalid choice" in captured.err.lower()
+    assert "bogus" in captured.err
 
 
 def test_main_serve_dispatches(monkeypatch):

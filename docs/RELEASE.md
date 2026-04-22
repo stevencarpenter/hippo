@@ -8,23 +8,36 @@ When a version tag is pushed (format: `v*.*.*`), GitHub Actions automatically bu
 
 ## Triggering a Release
 
-1. Ensure the version is updated in `Cargo.toml` (workspace version):
-   ```bash
-   # Edit the version
-   vim Cargo.toml  # Update [workspace.package].version
-   ```
+Hippo's daemon, brain, and GUI ship in lockstep: one tag → one GitHub Release
+with all three artifacts. Because the daemon and brain share a SQLite schema,
+their versions must move together (see CLAUDE.md for the rationale).
 
-2. Commit the version bump:
+1. Bump the version in the shared manifests to the same `X.Y.Z`, and keep the GUI fallback version aligned:
    ```bash
-   git commit -am "chore: bump version to X.Y.Z"
-   git push
-   ```
+   # Rust workspace (covers hippo-core + hippo-daemon)
+   vim Cargo.toml                  # [workspace.package].version
 
-3. Create and push a version tag:
-   ```bash
-   git tag v0.12.0
-   git push origin v0.12.0
+   # Python brain
+   vim brain/pyproject.toml        # [project].version
+
+   # GUI fallback version used by local packaging when HIPPO_MARKETING_VERSION is unset
+   vim hippo-gui/VERSION
    ```
+   Lockfiles (`Cargo.lock`, `brain/uv.lock`) refresh on the next build.
+
+2. Open a PR with the version bump and whatever feature work rides with the
+   release. Get it reviewed and merged to `main`.
+
+3. After the merge lands on `main`, tag `main` — **not the feature branch**:
+   ```bash
+   git checkout main && git pull
+   git tag vX.Y.Z                  # e.g. v0.13.0
+   git push origin vX.Y.Z
+   ```
+   Why tag `main` rather than the feature branch? The release workflow builds
+   from whatever the tag points at. Squash or rebase merges rewrite the SHA,
+   so a tag on the branch HEAD can point at a commit that isn't on `main` —
+   the release artifacts then diverge from what's actually shipped.
 
 4. The release workflow will automatically:
    - Build the daemon binary for macOS (aarch64)
@@ -41,8 +54,8 @@ Each release includes:
 | Artifact | Description | Example |
 |----------|-------------|---------|
 | `hippo-darwin-arm64` | Daemon binary for macOS Apple Silicon | `hippo-darwin-arm64` |
-| `hippo-brain-{version}.tar.gz` | Python brain project (including uv.lock, scripts, and runtime dependencies resolved via `uv` during install) | `hippo-brain-0.12.0.tar.gz` |
-| `HippoGUI-{version}-{build}.zip` | GUI app bundle ready for `/Applications` | `HippoGUI-0.12.0-42.zip` |
+| `hippo-brain-{version}.tar.gz` | Python brain project (including uv.lock, scripts, and runtime dependencies resolved via `uv` during install) | `hippo-brain-X.Y.Z.tar.gz` |
+| `HippoGUI-{version}-{build}.zip` | GUI app bundle ready for `/Applications` | `HippoGUI-X.Y.Z-N.zip` |
 | `SHA256SUMS.txt` | Checksums for all artifacts | Contains SHA-256 hashes |
 | `install.sh` | One-liner installation script | Downloads and verifies all components |
 
@@ -67,6 +80,7 @@ The release workflow consists of three parallel build jobs and a final release j
 - Creates a versioned ZIP archive with the `.app` bundle
 - Generates SHA-256 checksum
 - Uploads artifact for release job
+- The same packaging path is now exercised on `main` and PRs by `GUI CI`
 
 ### 4. `release` (macOS runner)
 - Depends on all three build jobs

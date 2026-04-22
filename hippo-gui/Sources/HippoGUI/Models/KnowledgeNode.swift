@@ -75,8 +75,9 @@ struct RelatedKnowledgeEvent: Codable, Hashable, Sendable, Identifiable {
 extension KnowledgeNode {
     var displaySummary: String {
         guard let data = content.data(using: .utf8),
-              let dict = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let summary = dict["summary"] as? String, !summary.isEmpty else {
+            let dict = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+            let summary = dict["summary"] as? String, !summary.isEmpty
+        else {
             return content
         }
         return summary

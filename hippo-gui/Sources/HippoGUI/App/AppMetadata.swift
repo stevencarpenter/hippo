@@ -11,7 +11,8 @@ struct AppMetadata: Sendable {
         let info = infoDictionary ?? bundle.infoDictionary ?? [:]
 
         displayName = Self.stringValue(for: ["CFBundleDisplayName", "CFBundleName"], in: info) ?? "HippoGUI"
-        bundleIdentifier = Self.stringValue(for: ["CFBundleIdentifier"], in: info)
+        bundleIdentifier =
+            Self.stringValue(for: ["CFBundleIdentifier"], in: info)
             ?? (isExplicitInfo ? nil : bundle.bundleIdentifier)
             ?? "development"
         marketingVersion = Self.stringValue(for: ["CFBundleShortVersionString"], in: info) ?? "Development"

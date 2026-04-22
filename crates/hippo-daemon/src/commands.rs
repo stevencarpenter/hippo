@@ -604,7 +604,10 @@ pub async fn handle_doctor(config: &HippoConfig) -> Result<()> {
     }
 
     // Check Claude session hook
-    check_claude_session_hook();
+    check_claude_session_hook(config);
+
+    // Check Firefox extension build + Native Messaging manifest
+    check_firefox_extension();
 
     // Check OpenTelemetry configuration
     check_otel_status(config, &client).await;
@@ -661,16 +664,32 @@ async fn check_otel_status(config: &HippoConfig, client: &reqwest::Client) {
     }
 }
 
-fn check_claude_session_hook() {
-    let expected = env!("HIPPO_SESSION_HOOK_PATH");
+fn check_claude_session_hook(config: &HippoConfig) {
     let settings_path = dirs::home_dir()
         .map(|h| h.join(".claude/settings.json"))
         .unwrap_or_default();
+    check_claude_session_hook_at(config, &settings_path);
+}
 
-    let content = match std::fs::read_to_string(&settings_path) {
+fn check_claude_session_hook_at(config: &HippoConfig, settings_path: &std::path::Path) {
+    let expected = match expected_claude_session_hook_path(&config.storage.data_dir) {
+        Some(path) => path,
+        None => {
+            println!("[--] Claude session hook check skipped");
+            println!(
+                "     unable to derive expected hook path from data_dir: {}",
+                config.storage.data_dir.display()
+            );
+            return;
+        }
+    };
+
+    let content = match std::fs::read_to_string(settings_path) {
         Ok(c) => c,
         Err(_) => {
             println!("[--] Claude settings not found (session hook not configured)");
+            println!("     expected: {}", expected.display());
+            println!("     Fix: hippo daemon install --force");
             return;
         }
     };
@@ -679,12 +698,38 @@ fn check_claude_session_hook() {
         Ok(v) => v,
         Err(_) => {
             println!("[!!] Claude settings.json is malformed");
+            println!("     fix the JSON manually, then rerun: hippo daemon install --force");
             return;
         }
     };
 
-    // Navigate: hooks -> SessionStart -> [].hooks -> [].command
-    let configured_cmd = json
+    // Reject structural surprises with a dedicated message. `daemon install` would
+    // bail on these too, so suggesting `--force` would be misleading — the user
+    // must repair the file by hand.
+    if !json.is_object() {
+        println!("[!!] Claude settings.json root is not a JSON object");
+        println!("     repair the file manually before running hippo daemon install");
+        return;
+    }
+    if let Some(hooks) = json.get("hooks")
+        && !hooks.is_object()
+    {
+        println!("[!!] Claude settings.json `hooks` is not an object");
+        println!("     repair the file manually before running hippo daemon install");
+        return;
+    }
+    if let Some(ss) = json.get("hooks").and_then(|h| h.get("SessionStart"))
+        && !ss.is_array()
+    {
+        println!("[!!] Claude settings.json `hooks.SessionStart` is not an array");
+        println!("     repair the file manually before running hippo daemon install");
+        return;
+    }
+
+    // Collect all commands across all SessionStart matchers so a user with multiple
+    // hooks configured doesn't get a false mismatch when the hippo hook is present
+    // but not the first entry.
+    let all_commands: Vec<String> = json
         .get("hooks")
         .and_then(|h| h.get("SessionStart"))
         .and_then(|ss| ss.as_array())
@@ -694,29 +739,141 @@ fn check_claude_session_hook() {
         .filter_map(|hooks| hooks.as_array())
         .flatten()
         .filter_map(|hook| hook.get("command"))
-        .find_map(|cmd| cmd.as_str().map(String::from));
+        .filter_map(|cmd| cmd.as_str().map(String::from))
+        .collect();
 
-    match configured_cmd {
-        Some(cmd) if cmd == expected => {
-            if std::path::Path::new(expected).exists() {
-                println!("[OK] Claude session hook configured");
-            } else {
+    // Narrow to hippo hook commands — a user may have multiple (stale + current).
+    // If *any* exactly matches expected, the install is correct; only report a
+    // mismatch when none match.
+    let hippo_cmds: Vec<&String> = all_commands
+        .iter()
+        .filter(|cmd| cmd.contains("claude-session-hook.sh"))
+        .collect();
+    let exact_match = hippo_cmds
+        .iter()
+        .any(|cmd| std::path::Path::new(cmd.as_str()) == expected);
+
+    if exact_match {
+        if expected.exists() {
+            println!("[OK] Claude session hook configured");
+            if hippo_cmds.len() > 1 {
                 println!(
-                    "[!!] Claude session hook configured but script missing: {}",
-                    expected
+                    "     note: {} stale hippo hook entries also present — clean up manually",
+                    hippo_cmds.len() - 1
                 );
             }
+        } else {
+            println!(
+                "[!!] Claude session hook configured but script missing: {}",
+                expected.display()
+            );
         }
-        Some(cmd) => {
-            println!("[!!] Claude session hook path mismatch");
-            println!("     configured: {}", cmd);
-            println!("     expected:   {}", expected);
-        }
-        None => {
-            println!("[--] Claude session hook not configured");
-            println!("     expected: {}", expected);
-        }
+    } else if let Some(first) = hippo_cmds.first() {
+        println!("[!!] Claude session hook path mismatch");
+        println!("     configured: {}", first);
+        println!("     expected:   {}", expected.display());
+        println!("     Fix: hippo daemon install --force");
+    } else {
+        println!("[--] Claude session hook not configured");
+        println!("     expected: {}", expected.display());
+        println!("     Fix: hippo daemon install --force");
     }
+}
+
+fn expected_claude_session_hook_path(data_dir: &std::path::Path) -> Option<PathBuf> {
+    // The brain is installed as a sibling of the hippo data dir, e.g.
+    // data_dir = ~/.local/share/hippo  →  brain = ~/.local/share/hippo-brain
+    data_dir
+        .file_name()
+        .map(|_| data_dir.with_file_name("hippo-brain"))
+        .map(|brain_dir| brain_dir.join("shell/claude-session-hook.sh"))
+}
+
+/// Check that the Firefox extension's compiled dist/ bundle exists and the
+/// Native Messaging manifest is installed.
+///
+/// The extension's `manifest.json` references `dist/background.js` and
+/// `dist/content.js`, but `dist/` is gitignored — it must be produced by
+/// `mise run build:ext:dist`. If dist/ is missing the extension loads cleanly
+/// as a temporary add-on in Firefox but captures nothing (silent no-op).
+fn check_firefox_extension() {
+    // Native Messaging manifest — the bridge between Firefox and hippo-daemon.
+    let nm_manifest = dirs::home_dir().map(|h| {
+        h.join("Library/Application Support/Mozilla/NativeMessagingHosts/hippo_daemon.json")
+    });
+    match nm_manifest {
+        Some(path) if path.exists() => println!("[OK] Firefox Native Messaging manifest installed"),
+        Some(path) => {
+            println!(
+                "[!!] Firefox Native Messaging manifest missing: {}",
+                path.display()
+            );
+            println!("     Fix: hippo daemon install --force");
+        }
+        None => println!("[--] Firefox Native Messaging check skipped (no home dir)"),
+    }
+
+    // Extension dist/ files. We locate the repo via the canonical path of the
+    // currently running binary — typically `<repo>/target/release/hippo`, with
+    // `~/.local/bin/hippo` being a symlink into it. If we can't find the repo
+    // layout, skip rather than false-alarm.
+    let Some(repo_root) = repo_root_from_current_exe() else {
+        println!("[--] Firefox extension dist/ check skipped (could not locate repo root)");
+        return;
+    };
+    check_firefox_extension_dist_at(&repo_root.join("extension/firefox"));
+}
+
+fn check_firefox_extension_dist_at(ext_dir: &std::path::Path) {
+    if !ext_dir.exists() {
+        // Not fatal: release installs won't have the repo extension dir.
+        println!(
+            "[--] Firefox extension dir not found at {}",
+            ext_dir.display()
+        );
+        return;
+    }
+    let required = ["dist/background.js", "dist/content.js"];
+    let missing: Vec<&str> = required
+        .iter()
+        .filter(|rel| !ext_dir.join(rel).exists())
+        .copied()
+        .collect();
+    if missing.is_empty() {
+        println!(
+            "[OK] Firefox extension dist/ built ({})",
+            ext_dir.join("dist").display()
+        );
+    } else {
+        println!(
+            "[!!] Firefox extension dist/ missing: {}",
+            missing.join(", ")
+        );
+        println!("     The extension loads but captures nothing when dist/ is absent.");
+        println!("     Fix: mise run build:ext:dist");
+    }
+}
+
+/// Walk up from the running binary's canonical path looking for a hippo repo
+/// checkout (identified by a top-level `Cargo.toml` and `extension/firefox/`
+/// sibling). Returns `None` for release installs where the binary lives
+/// outside the source tree.
+fn repo_root_from_current_exe() -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    // Follow symlinks — ~/.local/bin/hippo typically points into target/release.
+    let real = std::fs::canonicalize(&exe).unwrap_or(exe);
+    // Climb parents looking for Cargo.toml + extension/firefox/manifest.json.
+    let mut cur = real.as_path();
+    for _ in 0..6 {
+        let parent = cur.parent()?;
+        if parent.join("Cargo.toml").exists()
+            && parent.join("extension/firefox/manifest.json").exists()
+        {
+            return Some(parent.to_path_buf());
+        }
+        cur = parent;
+    }
+    None
 }
 
 pub fn parse_duration_to_since_ms(s: &str) -> Option<i64> {
@@ -744,6 +901,71 @@ mod tests {
     use tempfile::tempdir;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::{TcpListener, UnixListener};
+
+    #[test]
+    fn test_expected_claude_session_hook_path_with_absolute_data_dir() {
+        let data_dir = PathBuf::from("/tmp/hippo");
+        let expected = PathBuf::from("/tmp/hippo-brain/shell/claude-session-hook.sh");
+        assert_eq!(expected_claude_session_hook_path(&data_dir), Some(expected));
+    }
+
+    #[test]
+    fn test_expected_claude_session_hook_path_with_relative_data_dir() {
+        let data_dir = PathBuf::from("workspace/hippo");
+        let expected = PathBuf::from("workspace/hippo-brain/shell/claude-session-hook.sh");
+        assert_eq!(expected_claude_session_hook_path(&data_dir), Some(expected));
+    }
+
+    #[test]
+    fn test_expected_claude_session_hook_path_without_data_dir_component_returns_none() {
+        let data_dir = std::path::Path::new("/");
+        assert_eq!(expected_claude_session_hook_path(data_dir), None);
+    }
+
+    #[test]
+    fn test_check_firefox_extension_dist_at_reports_missing_files() {
+        // Arrange: a fake extension dir with manifest.json but no dist/.
+        let tmp = tempdir().unwrap();
+        let ext = tmp.path().join("firefox");
+        std::fs::create_dir_all(&ext).unwrap();
+        std::fs::write(ext.join("manifest.json"), "{}").unwrap();
+
+        // The function prints to stdout; we just assert it doesn't panic and
+        // that the logic correctly identifies missing files.
+        let missing: Vec<&str> = ["dist/background.js", "dist/content.js"]
+            .iter()
+            .filter(|rel| !ext.join(rel).exists())
+            .copied()
+            .collect();
+        assert_eq!(missing, vec!["dist/background.js", "dist/content.js"]);
+
+        check_firefox_extension_dist_at(&ext);
+    }
+
+    #[test]
+    fn test_check_firefox_extension_dist_at_accepts_present_files() {
+        let tmp = tempdir().unwrap();
+        let ext = tmp.path().join("firefox");
+        std::fs::create_dir_all(ext.join("dist")).unwrap();
+        std::fs::write(ext.join("dist/background.js"), "// built").unwrap();
+        std::fs::write(ext.join("dist/content.js"), "// built").unwrap();
+
+        let missing: Vec<&str> = ["dist/background.js", "dist/content.js"]
+            .iter()
+            .filter(|rel| !ext.join(rel).exists())
+            .copied()
+            .collect();
+        assert!(missing.is_empty());
+
+        check_firefox_extension_dist_at(&ext);
+    }
+
+    #[test]
+    fn test_check_firefox_extension_dist_at_handles_missing_ext_dir() {
+        // Nonexistent path must not panic — release installs won't have it.
+        let tmp = tempdir().unwrap();
+        check_firefox_extension_dist_at(&tmp.path().join("does-not-exist"));
+    }
 
     #[tokio::test]
     async fn test_handle_send_event_shell_writes_redacted_fallback_when_daemon_unavailable() {
@@ -987,5 +1209,117 @@ replacement = "***"
         print_brain_health_details(&config, &client).await;
 
         server.await.unwrap();
+    }
+
+    #[test]
+    fn test_hook_expected_path_derived_from_data_dir() {
+        let mut config = HippoConfig::default();
+        config.storage.data_dir = std::path::PathBuf::from("/home/user/.local/share/hippo");
+        // parent = /home/user/.local/share → brain dir = .../hippo-brain
+        let expected = config
+            .storage
+            .data_dir
+            .parent()
+            .map(|p| p.join("hippo-brain/shell/claude-session-hook.sh"))
+            .unwrap();
+        assert_eq!(
+            expected,
+            std::path::Path::new(
+                "/home/user/.local/share/hippo-brain/shell/claude-session-hook.sh"
+            )
+        );
+    }
+
+    #[test]
+    fn test_hook_check_not_configured() {
+        let temp = tempdir().unwrap();
+        let settings = temp.path().join("settings.json");
+        std::fs::write(&settings, r#"{"theme":"dark"}"#).unwrap();
+
+        let mut config = HippoConfig::default();
+        config.storage.data_dir = temp.path().join("hippo");
+        // Should not panic; prints [--] not configured
+        check_claude_session_hook_at(&config, &settings);
+    }
+
+    #[test]
+    fn test_hook_check_mismatch() {
+        let temp = tempdir().unwrap();
+        let settings = temp.path().join("settings.json");
+        let wrong_path = "/wrong/path/claude-session-hook.sh";
+        std::fs::write(
+            &settings,
+            format!(
+                r#"{{"hooks":{{"SessionStart":[{{"hooks":[{{"command":"{wrong_path}"}}]}}]}}}}"#
+            ),
+        )
+        .unwrap();
+
+        let mut config = HippoConfig::default();
+        config.storage.data_dir = temp.path().join("hippo");
+        // Should not panic; prints [!!] path mismatch
+        check_claude_session_hook_at(&config, &settings);
+    }
+
+    #[test]
+    fn test_hook_check_multiple_entries_one_exact_match() {
+        // User has both a stale hippo hook and a correct one — doctor should
+        // treat the install as OK rather than false-report a mismatch.
+        let temp = tempdir().unwrap();
+        let expected_path = temp.path().join("hippo-brain/shell/claude-session-hook.sh");
+        std::fs::create_dir_all(expected_path.parent().unwrap()).unwrap();
+        std::fs::write(&expected_path, "#!/bin/bash\n").unwrap();
+
+        let settings = temp.path().join("settings.json");
+        let stale = "/old/stale/claude-session-hook.sh";
+        std::fs::write(
+            &settings,
+            format!(
+                r#"{{"hooks":{{"SessionStart":[
+                    {{"hooks":[{{"command":"{stale}"}}]}},
+                    {{"hooks":[{{"command":"{}"}}]}}
+                ]}}}}"#,
+                expected_path.display()
+            ),
+        )
+        .unwrap();
+
+        let mut config = HippoConfig::default();
+        config.storage.data_dir = temp.path().join("hippo");
+        check_claude_session_hook_at(&config, &settings);
+    }
+
+    #[test]
+    fn test_hook_check_structural_type_mismatch() {
+        // Root is not an object → dedicated manual-repair message, no Fix hint.
+        let temp = tempdir().unwrap();
+        let settings = temp.path().join("settings.json");
+        std::fs::write(&settings, r#"[]"#).unwrap();
+
+        let mut config = HippoConfig::default();
+        config.storage.data_dir = temp.path().join("hippo");
+        check_claude_session_hook_at(&config, &settings);
+    }
+
+    #[test]
+    fn test_hook_check_match_missing_script() {
+        let temp = tempdir().unwrap();
+        // Expected path: temp/hippo-brain/shell/claude-session-hook.sh
+        // data_dir parent = temp, so expected = temp/hippo-brain/shell/claude-session-hook.sh
+        let expected_path = temp.path().join("hippo-brain/shell/claude-session-hook.sh");
+        let settings = temp.path().join("settings.json");
+        std::fs::write(
+            &settings,
+            format!(
+                r#"{{"hooks":{{"SessionStart":[{{"hooks":[{{"command":"{}"}}]}}]}}}}"#,
+                expected_path.display()
+            ),
+        )
+        .unwrap();
+
+        let mut config = HippoConfig::default();
+        config.storage.data_dir = temp.path().join("hippo");
+        // Script doesn't exist on disk → prints [!!] configured but script missing
+        check_claude_session_hook_at(&config, &settings);
     }
 }

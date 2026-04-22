@@ -2,15 +2,15 @@ import SwiftUI
 
 struct QueryAskView: View {
     @Environment(\.brainClient) private var brainClient
-    @State private var vm = QueryViewModel()
+    @State private var viewModel = QueryViewModel()
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text(vm.promptTitle)
+            Text(viewModel.promptTitle)
                 .font(.title)
                 .fontWeight(.bold)
 
-            Picker("Mode", selection: $vm.mode) {
+            Picker("Mode", selection: $viewModel.mode) {
                 Text("Ask").tag(QueryMode.ask)
                 Text("Search").tag(QueryMode.search)
             }
@@ -18,46 +18,48 @@ struct QueryAskView: View {
             .frame(maxWidth: 240)
 
             HStack {
-                TextField(vm.promptPlaceholder, text: $vm.queryText)
+                TextField(viewModel.promptPlaceholder, text: $viewModel.queryText)
                     .textFieldStyle(.roundedBorder)
-                    .disabled(vm.isLoading)
+                    .disabled(viewModel.isLoading)
                     .onSubmit {
-                        Task { await vm.submit() }
+                        Task { await viewModel.submit() }
                     }
 
-                Stepper(value: $vm.limit, in: 1...25) {
-                    Text("Top \(vm.limit)")
+                Stepper(value: $viewModel.limit, in: 1...25) {
+                    Text("Top \(viewModel.limit)")
                 }
                 .frame(maxWidth: 120)
 
-                Button(vm.buttonTitle) {
-                    Task { await vm.submit() }
+                Button(viewModel.buttonTitle) {
+                    Task { await viewModel.submit() }
                 }
-                .disabled(vm.queryText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || vm.isLoading)
+                .disabled(
+                    viewModel.queryText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || viewModel.isLoading
+                )
                 .keyboardShortcut(.defaultAction)
             }
 
-            if vm.isLoading {
+            if viewModel.isLoading {
                 HStack {
                     ProgressView()
                         .scaleEffect(0.8)
-                    Text(vm.mode.isSearchMode ? "Searching..." : "Thinking...")
+                    Text(viewModel.mode.isSearchMode ? "Searching..." : "Thinking...")
                         .foregroundStyle(.secondary)
                 }
             }
 
-            if let error = vm.errorMessage {
+            if let error = viewModel.errorMessage {
                 ErrorBannerView(message: error) {
-                    await vm.retry()
+                    await viewModel.retry()
                 }
             }
 
-            if !vm.answerText.isEmpty {
+            if !viewModel.answerText.isEmpty {
                 VStack(alignment: .leading, spacing: 8) {
                     Text("Answer")
                         .font(.headline)
 
-                    Text(vm.answerText)
+                    Text(viewModel.answerText)
                         .textSelection(.enabled)
                         .padding()
                         .frame(maxWidth: .infinity, alignment: .leading)
@@ -65,18 +67,18 @@ struct QueryAskView: View {
                 }
             }
 
-            if !vm.askSources.isEmpty {
+            if !viewModel.askSources.isEmpty {
                 VStack(alignment: .leading, spacing: 8) {
                     Text("Sources")
                         .font(.headline)
 
-                    ForEach(vm.askSources) { source in
+                    ForEach(viewModel.askSources) { source in
                         sourceCard(summary: source.summary, score: source.score, detail: source.cwd)
                     }
                 }
             }
 
-            if let searchResponse = vm.searchResponse {
+            if let searchResponse = viewModel.searchResponse {
                 if let warning = searchResponse.warning, !warning.isEmpty {
                     Text(warning)
                         .font(.caption)
@@ -133,7 +135,9 @@ struct QueryAskView: View {
                 }
 
                 if searchResponse.isEmpty {
-                    ContentUnavailableView("No Results", systemImage: "magnifyingglass", description: Text("Try broadening the search terms."))
+                    ContentUnavailableView(
+                        "No Results", systemImage: "magnifyingglass",
+                        description: Text("Try broadening the search terms."))
                 }
             }
 
@@ -141,7 +145,7 @@ struct QueryAskView: View {
         }
         .padding()
         .task {
-            vm.configure(client: brainClient)
+            viewModel.configure(client: brainClient)
         }
     }
 
@@ -191,7 +195,9 @@ struct QueryAskView: View {
                     AskResponse(
                         answer: "You ran `cargo test` and resolved a failing snapshot.",
                         sources: [
-                            AskSource(summary: "Ran cargo test for hippo-core", score: 0.96, cwd: "/Users/carpenter/projects/hippo")
+                            AskSource(
+                                summary: "Ran cargo test for hippo-core", score: 0.96,
+                                cwd: "/Users/carpenter/projects/hippo")
                         ],
                         model: "preview-model",
                         error: nil,
@@ -206,7 +212,7 @@ struct QueryAskView: View {
                             SemanticQueryResult(
                                 score: 0.88,
                                 summary: "Updated the GUI plan and added Swift 6 view models.",
-                                tags: ["swift", "mvvm"],
+                                tags: ["swift", "mvviewModel"],
                                 cwd: "/Users/carpenter/projects/hippo",
                                 gitBranch: "main",
                                 embedText: "Refactored the macOS app to use Observation and NavigationSplitView."

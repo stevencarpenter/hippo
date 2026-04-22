@@ -1,6 +1,16 @@
 #!/usr/bin/env python3
-"""Re-embed all knowledge nodes without re-enriching. Use after changing embedding models."""
+"""Re-embed all knowledge nodes without re-enriching.
 
+Use after changing embedding models in ~/.config/hippo/config.toml. Reads the
+current embedding model from config and re-embeds every knowledge_node row.
+Takes no CLI arguments.
+
+Usage:
+    uv run --project brain python scripts/hippo-re-embed.py
+    uv run --project brain python scripts/hippo-re-embed.py --help
+"""
+
+import argparse
 import asyncio
 import json
 import shutil
@@ -19,6 +29,14 @@ from hippo_brain.embeddings import (
 
 
 async def main():
+    argparse.ArgumentParser(
+        prog="hippo-re-embed",
+        description=(
+            "Re-embed all knowledge_nodes using the current embedding model in "
+            "~/.config/hippo/config.toml. Takes no arguments — run after "
+            "changing the embedding model to rebuild the vector index."
+        ),
+    ).parse_args()
     # Load config
     config_path = Path.home() / ".config" / "hippo" / "config.toml"
     if not config_path.exists():
