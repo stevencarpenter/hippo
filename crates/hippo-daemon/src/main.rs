@@ -295,6 +295,24 @@ async fn main() -> Result<()> {
                 println!("Installing Native Messaging manifest for Firefox...");
                 install::install_native_messaging_manifest(&vars.hippo_bin, force)?;
 
+                println!();
+                println!("Configuring Claude session hook...");
+                // Derive the hook's brain dir the same way `hippo doctor` does
+                // (sibling of data_dir) so install and doctor always agree on the
+                // expected path, regardless of what --brain-dir was passed.
+                let hook_brain_dir = vars
+                    .data_dir
+                    .parent()
+                    .map(|p| p.join("hippo-brain"))
+                    .context("data_dir has no parent — cannot derive brain dir for hook")?;
+                match install::configure_claude_session_hook(&hook_brain_dir) {
+                    Ok(()) => {}
+                    Err(e) => println!(
+                        "  Warning: {e} — configure manually: {}/shell/claude-session-hook.sh",
+                        hook_brain_dir.display()
+                    ),
+                }
+
                 // Reload services that were running before the upgrade.
                 if daemon_was_loaded || brain_was_loaded {
                     println!();

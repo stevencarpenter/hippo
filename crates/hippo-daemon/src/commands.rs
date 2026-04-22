@@ -685,6 +685,8 @@ fn check_claude_session_hook_at(config: &HippoConfig, settings_path: &std::path:
         Ok(c) => c,
         Err(_) => {
             println!("[--] Claude settings not found (session hook not configured)");
+            println!("     expected: {}", expected.display());
+            println!("     Fix: hippo daemon install --force");
             return;
         }
     };
@@ -693,12 +695,38 @@ fn check_claude_session_hook_at(config: &HippoConfig, settings_path: &std::path:
         Ok(v) => v,
         Err(_) => {
             println!("[!!] Claude settings.json is malformed");
+            println!("     fix the JSON manually, then rerun: hippo daemon install --force");
             return;
         }
     };
 
-    // Navigate: hooks -> SessionStart -> [].hooks -> [].command
-    let configured_cmd = json
+    // Reject structural surprises with a dedicated message. `daemon install` would
+    // bail on these too, so suggesting `--force` would be misleading — the user
+    // must repair the file by hand.
+    if !json.is_object() {
+        println!("[!!] Claude settings.json root is not a JSON object");
+        println!("     repair the file manually before running hippo daemon install");
+        return;
+    }
+    if let Some(hooks) = json.get("hooks")
+        && !hooks.is_object()
+    {
+        println!("[!!] Claude settings.json `hooks` is not an object");
+        println!("     repair the file manually before running hippo daemon install");
+        return;
+    }
+    if let Some(ss) = json.get("hooks").and_then(|h| h.get("SessionStart"))
+        && !ss.is_array()
+    {
+        println!("[!!] Claude settings.json `hooks.SessionStart` is not an array");
+        println!("     repair the file manually before running hippo daemon install");
+        return;
+    }
+
+    // Collect all commands across all SessionStart matchers so a user with multiple
+    // hooks configured doesn't get a false mismatch when the hippo hook is present
+    // but not the first entry.
+    let all_commands: Vec<String> = json
         .get("hooks")
         .and_then(|h| h.get("SessionStart"))
         .and_then(|ss| ss.as_array())
@@ -708,28 +736,44 @@ fn check_claude_session_hook_at(config: &HippoConfig, settings_path: &std::path:
         .filter_map(|hooks| hooks.as_array())
         .flatten()
         .filter_map(|hook| hook.get("command"))
-        .find_map(|cmd| cmd.as_str().map(String::from));
+        .filter_map(|cmd| cmd.as_str().map(String::from))
+        .collect();
 
-    match configured_cmd {
-        Some(ref cmd) if std::path::Path::new(cmd) == expected => {
-            if expected.exists() {
-                println!("[OK] Claude session hook configured");
-            } else {
+    // Narrow to hippo hook commands — a user may have multiple (stale + current).
+    // If *any* exactly matches expected, the install is correct; only report a
+    // mismatch when none match.
+    let hippo_cmds: Vec<&String> = all_commands
+        .iter()
+        .filter(|cmd| cmd.contains("claude-session-hook.sh"))
+        .collect();
+    let exact_match = hippo_cmds
+        .iter()
+        .any(|cmd| std::path::Path::new(cmd.as_str()) == expected);
+
+    if exact_match {
+        if expected.exists() {
+            println!("[OK] Claude session hook configured");
+            if hippo_cmds.len() > 1 {
                 println!(
-                    "[!!] Claude session hook configured but script missing: {}",
-                    expected.display()
+                    "     note: {} stale hippo hook entries also present — clean up manually",
+                    hippo_cmds.len() - 1
                 );
             }
+        } else {
+            println!(
+                "[!!] Claude session hook configured but script missing: {}",
+                expected.display()
+            );
         }
-        Some(cmd) => {
-            println!("[!!] Claude session hook path mismatch");
-            println!("     configured: {}", cmd);
-            println!("     expected:   {}", expected.display());
-        }
-        None => {
-            println!("[--] Claude session hook not configured");
-            println!("     expected: {}", expected.display());
-        }
+    } else if let Some(first) = hippo_cmds.first() {
+        println!("[!!] Claude session hook path mismatch");
+        println!("     configured: {}", first);
+        println!("     expected:   {}", expected.display());
+        println!("     Fix: hippo daemon install --force");
+    } else {
+        println!("[--] Claude session hook not configured");
+        println!("     expected: {}", expected.display());
+        println!("     Fix: hippo daemon install --force");
     }
 }
 
@@ -1079,6 +1123,46 @@ replacement = "***"
         let mut config = HippoConfig::default();
         config.storage.data_dir = temp.path().join("hippo");
         // Should not panic; prints [!!] path mismatch
+        check_claude_session_hook_at(&config, &settings);
+    }
+
+    #[test]
+    fn test_hook_check_multiple_entries_one_exact_match() {
+        // User has both a stale hippo hook and a correct one — doctor should
+        // treat the install as OK rather than false-report a mismatch.
+        let temp = tempdir().unwrap();
+        let expected_path = temp.path().join("hippo-brain/shell/claude-session-hook.sh");
+        std::fs::create_dir_all(expected_path.parent().unwrap()).unwrap();
+        std::fs::write(&expected_path, "#!/bin/bash\n").unwrap();
+
+        let settings = temp.path().join("settings.json");
+        let stale = "/old/stale/claude-session-hook.sh";
+        std::fs::write(
+            &settings,
+            format!(
+                r#"{{"hooks":{{"SessionStart":[
+                    {{"hooks":[{{"command":"{stale}"}}]}},
+                    {{"hooks":[{{"command":"{}"}}]}}
+                ]}}}}"#,
+                expected_path.display()
+            ),
+        )
+        .unwrap();
+
+        let mut config = HippoConfig::default();
+        config.storage.data_dir = temp.path().join("hippo");
+        check_claude_session_hook_at(&config, &settings);
+    }
+
+    #[test]
+    fn test_hook_check_structural_type_mismatch() {
+        // Root is not an object → dedicated manual-repair message, no Fix hint.
+        let temp = tempdir().unwrap();
+        let settings = temp.path().join("settings.json");
+        std::fs::write(&settings, r#"[]"#).unwrap();
+
+        let mut config = HippoConfig::default();
+        config.storage.data_dir = temp.path().join("hippo");
         check_claude_session_hook_at(&config, &settings);
     }
 
