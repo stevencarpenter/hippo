@@ -422,6 +422,23 @@ fn configure_claude_session_hook_at(settings_path: &Path, brain_dir: &Path) -> R
     let tmp_path =
         settings_path.with_file_name(format!("settings.json.tmp.{}", std::process::id()));
     std::fs::write(&tmp_path, &pretty).context("failed to write temporary settings file")?;
+
+    // Preserve the existing file's permissions across the rename so a user who
+    // locked down ~/.claude/settings.json (e.g. chmod 0600) keeps that mode.
+    // When the destination does not yet exist, default to 0600 — Claude settings
+    // may contain API keys and should not inherit an arbitrary umask.
+    let mode = std::fs::metadata(settings_path)
+        .map(|m| m.permissions().mode())
+        .unwrap_or(0o600);
+    if let Err(e) =
+        std::fs::set_permissions(&tmp_path, std::fs::Permissions::from_mode(mode & 0o7777))
+    {
+        let _ = std::fs::remove_file(&tmp_path);
+        return Err(
+            anyhow::Error::new(e).context("failed to set permissions on temporary settings file")
+        );
+    }
+
     if let Err(e) = std::fs::rename(&tmp_path, settings_path) {
         let _ = std::fs::remove_file(&tmp_path);
         return Err(
@@ -764,6 +781,34 @@ mod tests {
                 .unwrap()
                 .ends_with("claude-session-hook.sh")
         );
+    }
+
+    #[test]
+    fn configure_hook_preserves_file_permissions() {
+        let tmp = tempfile::tempdir().unwrap();
+        let settings = tmp.path().join(".claude/settings.json");
+        std::fs::create_dir_all(settings.parent().unwrap()).unwrap();
+        std::fs::write(&settings, r#"{"theme":"dark"}"#).unwrap();
+        std::fs::set_permissions(&settings, std::fs::Permissions::from_mode(0o600)).unwrap();
+
+        let brain_dir = tmp.path().join("hippo-brain");
+        configure_claude_session_hook_at(&settings, &brain_dir).unwrap();
+
+        let mode = std::fs::metadata(&settings).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "expected 0600, got {:o}", mode);
+    }
+
+    #[test]
+    fn configure_hook_creates_new_settings_with_0600() {
+        let tmp = tempfile::tempdir().unwrap();
+        let settings = tmp.path().join(".claude/settings.json");
+        // Parent exists, file does not — hook must default to 0600.
+
+        let brain_dir = tmp.path().join("hippo-brain");
+        configure_claude_session_hook_at(&settings, &brain_dir).unwrap();
+
+        let mode = std::fs::metadata(&settings).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "expected default 0600, got {:o}", mode);
     }
 
     #[test]
