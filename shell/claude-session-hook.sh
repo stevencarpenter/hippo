@@ -88,16 +88,21 @@ TMUX_CMD="HIPPO_WATCH_PID=${CLAUDE_PID} $(printf '%q' "$HIPPO_BIN") ingest claud
 # tmux new-window -d returns immediately — the tail loop runs inside the new window,
 # so this hook never blocks Claude Code from launching.
 if [ -n "$TMUX_TARGET_SESSION" ]; then
-    # We are inside tmux: create a new window in the current session. Omitting -t
-    # lets tmux pick the next free index rather than inserting relative to a specific
-    # window, which avoids "index N in use" errors with non-default base-index configs.
-    tmux new-window -d -n "$WINDOW_NAME" "$TMUX_CMD"
+    # Target Claude's tmux session. Trailing colon (`session:`) is the key: per
+    # tmux(1), "An empty window name specifies the next unused index if
+    # appropriate (for example the new-window ... commands)". A bare
+    # `-t session_name` would be parsed as a target-window and collide with
+    # the base-index (e.g. `index 1 in use` when base-index=1 and window 1
+    # exists), which is the regression fixed here. Omitting `-t` entirely is
+    # also wrong: this hook is a child of Claude Code, not of tmux, so $TMUX
+    # may not be set and tmux would have no current session to target.
+    tmux new-window -d -t "${TMUX_TARGET_SESSION}:" -n "$WINDOW_NAME" "$TMUX_CMD"
     log "spawned tmux window in session=$TMUX_TARGET_SESSION"
 elif tmux list-sessions &>/dev/null; then
     # Not inside tmux but a tmux server is running — reuse the hippo session
     # if it already exists (from a prior fallback spawn), otherwise create it.
     if tmux has-session -t hippo 2>/dev/null; then
-        tmux new-window -d -t hippo -n "$WINDOW_NAME" "$TMUX_CMD"
+        tmux new-window -d -t "hippo:" -n "$WINDOW_NAME" "$TMUX_CMD"
         log "spawned fallback tmux window in existing session=hippo"
     else
         tmux new-session -d -s hippo -n "$WINDOW_NAME" "$TMUX_CMD"
