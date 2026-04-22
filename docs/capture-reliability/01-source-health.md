@@ -21,6 +21,8 @@ CREATE TABLE IF NOT EXISTS source_health (
     expected_min_per_hour  INTEGER,          -- NULL = no threshold enforced; see rationale below
     probe_ok               INTEGER,          -- NULL if no probe exists for this source; 1=pass 0=fail
     probe_lag_ms           INTEGER,          -- round-trip ms of last probe; NULL if no probe
+    probe_last_run_ts      INTEGER,          -- epoch ms of last `hippo probe` execution; NULL if never
+    last_heartbeat_ts      INTEGER,          -- epoch ms of last extension heartbeat (browser only)
     updated_at             INTEGER NOT NULL  -- epoch ms of last write to this row
 );
 ```
@@ -40,6 +42,8 @@ CREATE TABLE IF NOT EXISTS source_health (
 | `expected_min_per_hour` | Configurable lower bound for `events_last_1h`. NULL means "no threshold" — see rationale. |
 | `probe_ok` | 1 if the most recent synthetic canary probe succeeded, 0 if it failed, NULL if no probe is defined for this source. Managed by the probe system (see `05-synthetic-probes.md`). |
 | `probe_lag_ms` | Round-trip latency of the most recent probe in milliseconds. NULL if no probe. |
+| `probe_last_run_ts` | Epoch ms of the most recent `hippo probe` execution for this source. NULL if never run. Used by invariant I-8 (probe freshness). |
+| `last_heartbeat_ts` | Epoch ms of the most recent Firefox extension heartbeat (only set on `source='browser'` row; NULL elsewhere). Used by I-4 (browser round-trip) to determine whether the extension is actively loaded in Firefox. |
 | `updated_at` | Epoch ms of the most recent write to this row by any path (success, error, or probe update). |
 
 **Rationale for nullable `expected_min_per_hour`:**
@@ -54,6 +58,7 @@ CREATE TABLE IF NOT EXISTS source_health (
 - `'browser'` — Firefox extension events (`browser_events`)
 - `'watchdog'` — reserved for watchdog self-heartbeat (see `04-watchdog.md`)
 - `'probe'` — reserved for probe subsystem metadata (see `05-synthetic-probes.md`)
+- `'claude-session-watcher'` — process-health heartbeat for the FS watcher (see `06-claude-session-watcher.md`); distinct from `'claude-session'` which is data-path health
 
 ## Migration (v7 → v8)
 
@@ -75,8 +80,15 @@ CREATE TABLE IF NOT EXISTS source_health (
     expected_min_per_hour  INTEGER,
     probe_ok               INTEGER,
     probe_lag_ms           INTEGER,
+    probe_last_run_ts      INTEGER,
+    last_heartbeat_ts      INTEGER,
     updated_at             INTEGER NOT NULL
 );
+
+-- Additional column migrations for probe_tag exclusion (see 05-synthetic-probes.md):
+ALTER TABLE events           ADD COLUMN probe_tag TEXT;
+ALTER TABLE claude_sessions  ADD COLUMN probe_tag TEXT;
+ALTER TABLE browser_events   ADD COLUMN probe_tag TEXT;
 
 -- Pre-seed one row per known source so queries never return empty.
 -- last_event_ts is back-filled from existing data (see Back-fill Behavior below).
