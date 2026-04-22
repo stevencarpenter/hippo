@@ -319,6 +319,10 @@ fn drain_poll(
 ///
 /// Returns an error if the file exists but contains malformed JSON — never silently
 /// overwrites user settings with an empty object.
+///
+/// This step does not respect `--force` because it is fully idempotent: it only
+/// writes when the path has actually drifted, never destroys existing data, and the
+/// "already correct" check makes repeat runs a no-op.
 pub fn configure_claude_session_hook(brain_dir: &Path) -> Result<()> {
     let settings_path = dirs::home_dir()
         .context("cannot determine home directory")?
@@ -328,7 +332,10 @@ pub fn configure_claude_session_hook(brain_dir: &Path) -> Result<()> {
 
 fn configure_claude_session_hook_at(settings_path: &Path, brain_dir: &Path) -> Result<()> {
     let hook_path = brain_dir.join("shell/claude-session-hook.sh");
-    let hook_path_str = hook_path.to_string_lossy().to_string();
+    let hook_path_str = hook_path
+        .to_str()
+        .context("hook path is not valid UTF-8")?
+        .to_string();
 
     let mut root: serde_json::Value = if settings_path.exists() {
         let content = std::fs::read_to_string(settings_path)
@@ -377,7 +384,7 @@ fn configure_claude_session_hook_at(settings_path: &Path, brain_dir: &Path) -> R
                 .and_then(|h| h.get("command"))
                 .and_then(|c| c.as_str());
             if current == Some(hook_path_str.as_str()) {
-                println!("  Claude session hook already correct, skipping");
+                println!("  Claude session hook already correct, skipped");
                 return Ok(());
             }
             // Mutate only the command field — preserve all other hook/matcher fields
@@ -403,15 +410,17 @@ fn configure_claude_session_hook_at(settings_path: &Path, brain_dir: &Path) -> R
         }
     }
 
-    // Atomic write: write to a sibling tmp file then rename into place so a crash
-    // mid-write cannot leave a truncated settings.json.
+    // Atomic write: PID-suffixed tmp sibling + rename so a crash mid-write cannot
+    // leave a truncated settings.json. The PID suffix avoids conflicts if two
+    // `daemon install` processes somehow run concurrently.
     let parent = settings_path
         .parent()
         .context("~/.claude/settings.json has no parent directory")?;
     std::fs::create_dir_all(parent)?;
     let pretty =
         serde_json::to_string_pretty(&root).context("failed to serialize settings.json")?;
-    let tmp_path = settings_path.with_extension("json.tmp");
+    let tmp_path =
+        settings_path.with_file_name(format!("settings.json.tmp.{}", std::process::id()));
     std::fs::write(&tmp_path, &pretty).context("failed to write temporary settings file")?;
     std::fs::rename(&tmp_path, settings_path)
         .context("failed to atomically update ~/.claude/settings.json")?;
@@ -682,7 +691,8 @@ mod tests {
         configure_claude_session_hook_at(&settings, &brain_dir).unwrap();
 
         let mtime_after = std::fs::metadata(&settings).unwrap().modified().unwrap();
-        // File must not have been rewritten
+        // File must not have been rewritten. APFS nanosecond mtime precision
+        // makes this reliable; HFS+ second granularity would need a sleep.
         assert_eq!(mtime_before, mtime_after);
     }
 
