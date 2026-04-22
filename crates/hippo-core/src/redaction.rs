@@ -173,4 +173,157 @@ replacement = "***"
         assert!(!result.text.contains("supersecretvalue123"));
         assert!(result.count >= 2);
     }
+
+    // -----------------------------------------------------------------------
+    // Negative cases for capture-reliability F-4 (issue #52).
+    //
+    // Goal: strings that LOOK secret-adjacent but are not secrets must pass
+    // through unredacted. Over-redaction is a silent data-loss bug — the
+    // enrichment pipeline cannot recover information from `[REDACTED]`, and
+    // the RAG layer returns degraded answers.
+    //
+    // Test matrix: docs/capture-reliability/09-test-matrix.md row F-4
+    // Invariant:   I-5 Redaction correctness
+    //
+    // One test per pattern class so a regression pinpoints exactly which
+    // real-world shape the redaction engine mis-classified.
+    // -----------------------------------------------------------------------
+
+    fn assert_not_redacted(input: &str) {
+        let result = engine().redact(input);
+        assert_eq!(
+            result.text, input,
+            "false-positive redaction on {input:?}: became {:?}",
+            result.text
+        );
+        assert_eq!(
+            result.count,
+            0,
+            "false-positive count > 0 on {input:?}: names={:?}",
+            engine().test_string(input)
+        );
+    }
+
+    #[test]
+    fn redact_preserves_uuid_v4() {
+        // Canonical UUID4 — appears in Claude session IDs, transcript
+        // paths, envelope IDs. A false-positive here would obliterate
+        // every session row.
+        assert_not_redacted("session_id=550e8400-e29b-41d4-a716-446655440000");
+    }
+
+    #[test]
+    fn redact_preserves_git_short_sha() {
+        // 7-char commit SHA — below the 8-char generic_secret_assignment
+        // threshold but close. "commit=abc1234" must stay readable so
+        // enrichment can link events to commits.
+        assert_not_redacted("commit=abc1234");
+    }
+
+    #[test]
+    fn redact_preserves_git_full_sha() {
+        // 40-char git SHA looks like a token but must not match any rule.
+        assert_not_redacted("HEAD is at 5f3a9c2e1b8d7f6a4c3e2d1b9a8f7e6d5c4b3a2e");
+    }
+
+    #[test]
+    fn redact_preserves_cargo_lockfile_checksum() {
+        // Representative Cargo.lock line — base16 digest, 64 chars.
+        // Users will run `cargo build` and see this in shell output.
+        assert_not_redacted(
+            "checksum = \"3a4b5c6d7e8f9012a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c5d6e7f80912\"",
+        );
+    }
+
+    #[test]
+    fn redact_preserves_jwt_lookalike_base64() {
+        // Random base64 in log output that does NOT have the JWT three-
+        // part shape. The `jwt` pattern must only fire on actual JWTs.
+        assert_not_redacted("data: dGhpc2lzbm90YWp3dGp1c3RhYmFzZTY0c3RyaW5n");
+    }
+
+    #[test]
+    fn redact_preserves_partial_aws_prefix() {
+        // "AKIA" prefix alone must not trigger — the rule requires 16
+        // subsequent [0-9A-Z]. "AKIA" followed by lowercase is a
+        // plausible false-positive shape.
+        assert_not_redacted("variable_name = AKIAlowercase_suffix");
+    }
+
+    #[test]
+    fn redact_preserves_ghp_short_prefix() {
+        // Only the literal prefix without 36 more chars. Users discussing
+        // "the ghp_ pattern" must not have their text redacted.
+        assert_not_redacted("the token prefix is ghp_ for personal access tokens");
+    }
+
+    #[test]
+    fn redact_preserves_harmless_api_mention() {
+        // "api key" mentioned in prose without an assignment that meets
+        // the 8-char minimum. The `\s*[=:]\s*\S{8,}` tail must enforce
+        // a separator + length; prose should pass through.
+        assert_not_redacted("we need to set the api_key before running");
+    }
+
+    #[test]
+    fn redact_preserves_bearer_token_word_in_prose() {
+        // "bearer" without the `authorization:` prefix must not trigger.
+        assert_not_redacted("this function returns a bearer record from the state");
+    }
+
+    #[test]
+    fn redact_preserves_private_key_path_reference() {
+        // A path mentioning a private key file is NOT key material.
+        assert_not_redacted("ssh -i ~/.ssh/id_ed25519 user@host");
+    }
+
+    #[test]
+    fn redact_preserves_public_key_pem_header() {
+        // `-----BEGIN PUBLIC KEY-----` must NOT be redacted — the pattern
+        // is deliberately scoped to `PRIVATE KEY`. This guards against a
+        // future over-broadening of the regex.
+        assert_not_redacted("-----BEGIN PUBLIC KEY-----");
+    }
+
+    #[test]
+    fn redact_preserves_hexadecimal_hash_in_url() {
+        // Long hex string as part of a URL path — common in artifact
+        // links, GitHub blob URLs, content-addressed storage.
+        assert_not_redacted(
+            "https://example.com/blob/1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9012/file.txt",
+        );
+    }
+
+    #[test]
+    fn redact_preserves_docker_image_digest() {
+        // `sha256:...` digest syntax — all valid in normal shell output.
+        assert_not_redacted(
+            "docker pull nginx@sha256:abc123def456789012345678901234567890abcdef123456789012345678901234",
+        );
+    }
+
+    #[test]
+    fn redact_preserves_auth_header_prose() {
+        // The word "authorization" in prose (no bearer token, no
+        // key=value pair with 8+ chars). The `bearer_header` rule is
+        // bearer-specific; this asserts it stays that way.
+        assert_not_redacted("the Authorization: header carries the credential");
+    }
+
+    #[test]
+    fn redact_count_stays_zero_on_plain_git_output() {
+        // Representative `git log --oneline` output — the top failure
+        // shape in #52. Many redaction regexes, zero secrets.
+        let sample = "abc1234 fix(install): configure Claude session hook\n\
+             def5678 feat: add source_health table\n\
+             0a1b2c3 docs: update capture reliability overview\n";
+        let result = engine().redact(sample);
+        assert_eq!(
+            result.count,
+            0,
+            "false positives on git output: names={:?}",
+            engine().test_string(sample)
+        );
+        assert_eq!(result.text, sample);
+    }
 }
