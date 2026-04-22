@@ -6,6 +6,8 @@ mod common;
 
 use common::{test_config, wait_for_daemon};
 
+const FIXTURE_SESSION_ID: &str = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+
 fn write_test_session_jsonl(dir: &std::path::Path) -> PathBuf {
     let path = dir.join("test-session.jsonl");
     let content = r#"{"type":"assistant","timestamp":"2026-03-28T10:00:00.000Z","sessionId":"aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee","cwd":"/projects/hippo","gitBranch":"main","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_test001","name":"Bash","input":{"command":"cargo test"}}]}}
@@ -38,6 +40,7 @@ async fn test_ingest_batch_full_pipeline() {
         &jsonl_path,
         &socket_path,
         config.daemon.socket_timeout_ms,
+        &db_path,
     )
     .await
     .unwrap();
@@ -192,6 +195,7 @@ async fn test_ingest_batch_dedup_on_reimport() {
         &jsonl_path,
         &socket_path,
         config.daemon.socket_timeout_ms,
+        &db_path,
     )
     .await
     .unwrap();
@@ -205,6 +209,7 @@ async fn test_ingest_batch_dedup_on_reimport() {
         &jsonl_path,
         &socket_path,
         config.daemon.socket_timeout_ms,
+        &db_path,
     )
     .await
     .unwrap();
@@ -227,6 +232,225 @@ async fn test_ingest_batch_dedup_on_reimport() {
     );
 
     // Shut down
+    let _ = hippo_daemon::commands::send_request(&socket_path, &DaemonRequest::Shutdown).await;
+    let _ = daemon_handle.await;
+}
+
+/// Regression test for #58: `hippo ingest claude-session --batch` must
+/// populate the `claude_sessions` table — not just `events`. Prior to the
+/// fix, the batch importer only fired tool-call events through the daemon
+/// socket and never wrote the session-segment rows that enrichment depends
+/// on, so the 272-session sev1 backfill reported success while landing
+/// zero rows.
+///
+/// This test writes a fixture session JSONL (with user prompts, assistant
+/// text, and 2 completed tool_use/tool_result pairs), ingests it with
+/// `ingest_batch`, and asserts both that:
+///
+/// 1. ≥1 row exists in `claude_sessions` with the fixture session_id.
+/// 2. The existing `source_kind='claude-tool'` event flow still fires.
+///
+/// If the segment-write half regresses, this test fails with 0 rows in
+/// `claude_sessions`.
+#[tokio::test]
+async fn test_ingest_batch_writes_claude_sessions_row() {
+    let config = test_config();
+    let socket_path = config.socket_path();
+    let db_path = config.db_path();
+
+    // Lay out the JSONL under a simulated `projects/<project>/<session>.jsonl`
+    // path so `SessionFile::from_path` can derive the project_dir from the
+    // parent directory name — same shape Claude Code uses in `~/.claude`.
+    let project_root = config
+        .storage
+        .data_dir
+        .parent()
+        .unwrap()
+        .join("projects")
+        .join("-home-user-projects-hippo");
+    std::fs::create_dir_all(&project_root).unwrap();
+    let jsonl_path = project_root.join(format!("{}.jsonl", FIXTURE_SESSION_ID));
+
+    // Complete session: a user prompt, an assistant message with reasoning
+    // plus a tool_use, a tool_result, a second assistant+tool_use, and a
+    // second tool_result. Matches the entry shapes parsed by
+    // `extract_segments` and `process_line`.
+    let content = format!(
+        r#"{{"type":"user","timestamp":"2026-03-28T10:00:00.000Z","sessionId":"{sid}","cwd":"/projects/hippo","message":{{"role":"user","content":[{{"type":"text","text":"please run the test suite and show me any failures"}}]}}}}
+{{"type":"assistant","timestamp":"2026-03-28T10:00:01.000Z","sessionId":"{sid}","cwd":"/projects/hippo","gitBranch":"main","message":{{"role":"assistant","content":[{{"type":"text","text":"I'll run the tests now to see the current state of the suite."}},{{"type":"tool_use","id":"toolu_r1","name":"Bash","input":{{"command":"cargo test -p hippo-core"}}}}]}}}}
+{{"type":"user","timestamp":"2026-03-28T10:00:03.000Z","sessionId":"{sid}","cwd":"/projects/hippo","message":{{"role":"user","content":[{{"type":"tool_result","tool_use_id":"toolu_r1","content":"running 12 tests\ntest result: ok. 12 passed"}}]}}}}
+{{"type":"assistant","timestamp":"2026-03-28T10:00:04.000Z","sessionId":"{sid}","cwd":"/projects/hippo","gitBranch":"main","message":{{"role":"assistant","content":[{{"type":"text","text":"All 12 tests passed. I'll also verify the daemon crate compiles cleanly."}},{{"type":"tool_use","id":"toolu_r2","name":"Bash","input":{{"command":"cargo build -p hippo-daemon"}}}}]}}}}
+{{"type":"user","timestamp":"2026-03-28T10:00:07.000Z","sessionId":"{sid}","cwd":"/projects/hippo","message":{{"role":"user","content":[{{"type":"tool_result","tool_use_id":"toolu_r2","content":"Compiling hippo-daemon\n    Finished"}}]}}}}
+"#,
+        sid = FIXTURE_SESSION_ID,
+    );
+    std::fs::write(&jsonl_path, content).unwrap();
+
+    // Start the daemon.
+    let run_config = config.clone();
+    let daemon_handle = tokio::spawn(async move { hippo_daemon::daemon::run(run_config).await });
+    wait_for_daemon(&socket_path).await;
+
+    // Run the batch ingest.
+    let (sent, errors) = hippo_daemon::claude_session::ingest_batch(
+        &jsonl_path,
+        &socket_path,
+        config.daemon.socket_timeout_ms,
+        &db_path,
+    )
+    .await
+    .unwrap();
+    assert_eq!(errors, 0, "batch should report zero errors");
+    assert_eq!(
+        sent, 2,
+        "should fire two shell-shaped tool-call events (one per tool_use/result pair)"
+    );
+
+    // Wait for the flush interval so the daemon can drain the event buffer
+    // into the `events` table (flush_interval_ms is set to 100 in the test
+    // harness).
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+
+    let conn = hippo_core::storage::open_db(&db_path).unwrap();
+
+    // Primary assertion: the fix must write at least one row into
+    // `claude_sessions` for the fixture session_id.
+    let segment_rows: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM claude_sessions WHERE session_id = ?1",
+            [FIXTURE_SESSION_ID],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(
+        segment_rows >= 1,
+        "expected ≥1 claude_sessions row for fixture session, got {}",
+        segment_rows
+    );
+
+    // Confirm the row has meaningful payload (we're writing real data, not
+    // a stub), so the enrichment queue actually has something to process.
+    let (message_count, tool_calls_json, project_dir): (i64, String, String) = conn
+        .query_row(
+            "SELECT message_count, tool_calls_json, project_dir FROM claude_sessions
+             WHERE session_id = ?1 ORDER BY segment_index ASC LIMIT 1",
+            [FIXTURE_SESSION_ID],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .unwrap();
+    assert!(
+        message_count > 0,
+        "segment should have a positive message_count, got {}",
+        message_count
+    );
+    assert!(
+        tool_calls_json.contains("cargo test") || tool_calls_json.contains("cargo build"),
+        "tool_calls_json should capture at least one tool invocation, got: {}",
+        tool_calls_json
+    );
+    assert_eq!(
+        project_dir, "-home-user-projects-hippo",
+        "project_dir should be derived from the parent directory name"
+    );
+
+    // Enrichment queue should have gotten an entry per segment, or the
+    // brain will never pick it up.
+    let queue_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM claude_enrichment_queue ceq
+             JOIN claude_sessions cs ON ceq.claude_session_id = cs.id
+             WHERE cs.session_id = ?1",
+            [FIXTURE_SESSION_ID],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        queue_count, segment_rows,
+        "every claude_sessions row must have a matching enrichment queue entry"
+    );
+
+    // Secondary assertion: we didn't break the original tool-call event
+    // flow. Events should still land in the `events` table as
+    // `source_kind='claude-tool'`.
+    let tool_event_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM events WHERE source_kind = 'claude-tool'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(
+        tool_event_count > 0,
+        "existing source_kind='claude-tool' event flow should still fire, got {}",
+        tool_event_count
+    );
+
+    // Shut down.
+    let _ = hippo_daemon::commands::send_request(&socket_path, &DaemonRequest::Shutdown).await;
+    let _ = daemon_handle.await;
+}
+
+/// Re-ingesting the same session file must be idempotent — the
+/// `UNIQUE (session_id, segment_index)` constraint plus `INSERT OR IGNORE`
+/// in the segment writer should leave the table unchanged on the second
+/// pass. Guards against a future refactor that swaps `INSERT OR IGNORE`
+/// for a plain `INSERT` and starts erroring (or, worse, double-writing).
+#[tokio::test]
+async fn test_ingest_batch_claude_sessions_is_idempotent() {
+    let config = test_config();
+    let socket_path = config.socket_path();
+    let db_path = config.db_path();
+
+    let project_root = config
+        .storage
+        .data_dir
+        .parent()
+        .unwrap()
+        .join("projects")
+        .join("-home-user-projects-hippo");
+    std::fs::create_dir_all(&project_root).unwrap();
+    let jsonl_path = project_root.join(format!("{}.jsonl", FIXTURE_SESSION_ID));
+
+    let content = format!(
+        r#"{{"type":"user","timestamp":"2026-03-28T10:00:00.000Z","sessionId":"{sid}","cwd":"/p","message":{{"role":"user","content":[{{"type":"text","text":"run the build"}}]}}}}
+{{"type":"assistant","timestamp":"2026-03-28T10:00:01.000Z","sessionId":"{sid}","cwd":"/p","gitBranch":"main","message":{{"role":"assistant","content":[{{"type":"text","text":"I'll start the build now and watch for any errors."}},{{"type":"tool_use","id":"toolu_x1","name":"Bash","input":{{"command":"cargo build"}}}}]}}}}
+{{"type":"user","timestamp":"2026-03-28T10:00:03.000Z","sessionId":"{sid}","cwd":"/p","message":{{"role":"user","content":[{{"type":"tool_result","tool_use_id":"toolu_x1","content":"ok"}}]}}}}
+"#,
+        sid = FIXTURE_SESSION_ID,
+    );
+    std::fs::write(&jsonl_path, content).unwrap();
+
+    let run_config = config.clone();
+    let daemon_handle = tokio::spawn(async move { hippo_daemon::daemon::run(run_config).await });
+    wait_for_daemon(&socket_path).await;
+
+    for _ in 0..2 {
+        hippo_daemon::claude_session::ingest_batch(
+            &jsonl_path,
+            &socket_path,
+            config.daemon.socket_timeout_ms,
+            &db_path,
+        )
+        .await
+        .unwrap();
+    }
+
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+
+    let conn = hippo_core::storage::open_db(&db_path).unwrap();
+    let segment_rows: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM claude_sessions WHERE session_id = ?1",
+            [FIXTURE_SESSION_ID],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        segment_rows, 1,
+        "re-ingesting should be idempotent — expected exactly 1 row, got {}",
+        segment_rows
+    );
+
     let _ = hippo_daemon::commands::send_request(&socket_path, &DaemonRequest::Shutdown).await;
     let _ = daemon_handle.await;
 }

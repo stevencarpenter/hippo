@@ -715,8 +715,9 @@ async fn main() -> Result<()> {
                 let socket = config.socket_path();
                 let timeout = config.daemon.socket_timeout_ms;
                 if batch {
+                    let db = config.db_path();
                     let (sent, errors) =
-                        claude_session::ingest_batch(path, &socket, timeout).await?;
+                        claude_session::ingest_batch(path, &socket, timeout, &db).await?;
                     println!(
                         "Batch import complete: {} events sent, {} errors",
                         sent, errors
