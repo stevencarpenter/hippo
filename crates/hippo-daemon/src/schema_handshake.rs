@@ -150,4 +150,55 @@ mod tests {
             HandshakeResult::BrainAbsent | HandshakeResult::Unknown
         ));
     }
+
+    // ------------------------------------------------------------------
+    // Capture-reliability F-16: schema version drift between daemon and brain.
+    //
+    // The v0.13.0 handshake incident was a brain built against schema v7 but
+    // a daemon that had been migrated to v8 (or the reverse). The load-bearing
+    // assertion is that `check_brain_schema_compat` returns Incompatible with
+    // both versions named, so the CLI can print the remediation message.
+    //
+    // Tracking: docs/capture-reliability/09-test-matrix.md row F-16.
+    // ------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn brain_reports_different_version_returns_incompatible() {
+        // Spin up a minimal HTTP server that answers /health with an
+        // `expected_schema_version` that does not match the daemon's.
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut buf = [0u8; 2048];
+            let _ = stream.read(&mut buf).await.unwrap();
+            let body = r#"{"status":"ok","expected_schema_version":6}"#;
+            let response = format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\n\
+                 content-length: {}\r\nconnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+            stream.flush().await.unwrap();
+        });
+
+        let result = check_brain_schema_compat(7, addr.port()).await.unwrap();
+        server.abort();
+        let _ = server.await;
+
+        match result {
+            HandshakeResult::Incompatible {
+                daemon_expects,
+                brain_expects,
+            } => {
+                assert_eq!(daemon_expects, 7);
+                assert_eq!(brain_expects, 6);
+            }
+            other => panic!("expected Incompatible, got {other:?}"),
+        }
+    }
 }
