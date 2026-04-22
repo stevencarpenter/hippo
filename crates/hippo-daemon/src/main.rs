@@ -295,6 +295,13 @@ async fn main() -> Result<()> {
                 println!("Installing Native Messaging manifest for Firefox...");
                 install::install_native_messaging_manifest(&vars.hippo_bin, force)?;
 
+                println!();
+                println!("Configuring Claude session hook...");
+                match install::configure_claude_session_hook(&brain_dir) {
+                    Ok(()) => {}
+                    Err(e) => println!("  Warning: {e} — configure manually: {}/shell/claude-session-hook.sh", brain_dir.display()),
+                }
+
                 // Reload services that were running before the upgrade.
                 if daemon_was_loaded || brain_was_loaded {
                     println!();

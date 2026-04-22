@@ -310,6 +310,92 @@ fn drain_poll(
     }
 }
 
+/// Configure the Claude Code session hook in ~/.claude/settings.json.
+///
+/// Skips if the hook is already pointing at the expected path. Updates only the
+/// hippo hook entry if the path has drifted (e.g. after a curl reinstall). Appends
+/// a new matcher if no hippo hook exists at all. All other settings.json content is
+/// preserved.
+pub fn configure_claude_session_hook(brain_dir: &Path) -> Result<()> {
+    let settings_path = dirs::home_dir()
+        .context("cannot determine home directory")?
+        .join(".claude/settings.json");
+
+    let hook_path = brain_dir.join("shell/claude-session-hook.sh");
+    let hook_path_str = hook_path.to_string_lossy().to_string();
+
+    let mut root: serde_json::Value = if settings_path.exists() {
+        let content = std::fs::read_to_string(&settings_path)
+            .context("failed to read ~/.claude/settings.json")?;
+        serde_json::from_str(&content).unwrap_or(serde_json::json!({}))
+    } else {
+        serde_json::json!({})
+    };
+
+    if !root.is_object() {
+        anyhow::bail!("~/.claude/settings.json root is not a JSON object");
+    }
+
+    let matchers = root
+        .as_object_mut()
+        .unwrap()
+        .entry("hooks")
+        .or_insert_with(|| serde_json::json!({}))
+        .as_object_mut()
+        .context("hooks is not an object")?
+        .entry("SessionStart")
+        .or_insert_with(|| serde_json::json!([]))
+        .as_array_mut()
+        .context("SessionStart is not an array")?;
+
+    // Find any existing hippo hook entry
+    let hippo_idx = matchers.iter().position(|m| {
+        m.get("hooks")
+            .and_then(|h| h.as_array())
+            .into_iter()
+            .flatten()
+            .filter_map(|h| h.get("command"))
+            .filter_map(|c| c.as_str())
+            .any(|cmd| cmd.contains("claude-session-hook.sh"))
+    });
+
+    let new_matcher = serde_json::json!({
+        "hooks": [{ "type": "command", "command": hook_path_str }]
+    });
+
+    match hippo_idx {
+        Some(i) => {
+            let current = matchers[i]
+                .get("hooks")
+                .and_then(|h| h.as_array())
+                .into_iter()
+                .flatten()
+                .find_map(|h| h.get("command").and_then(|c| c.as_str()).map(String::from));
+            if current.as_deref() == Some(&hook_path_str) {
+                println!("  Claude session hook already correct, skipping");
+                return Ok(());
+            }
+            matchers[i] = new_matcher;
+            println!("  Updated Claude session hook: {}", hook_path.display());
+        }
+        None => {
+            matchers.push(new_matcher);
+            println!("  Configured Claude session hook: {}", hook_path.display());
+        }
+    }
+
+    if let Some(parent) = settings_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(
+        &settings_path,
+        serde_json::to_string_pretty(&root).context("failed to serialize settings.json")?,
+    )
+    .context("failed to write ~/.claude/settings.json")?;
+
+    Ok(())
+}
+
 /// Install the Firefox Native Messaging host manifest and wrapper script.
 ///
 /// Creates `hippo_daemon.json` (the manifest) and `hippo-native-messaging` (a wrapper

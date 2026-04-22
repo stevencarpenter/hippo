@@ -725,10 +725,12 @@ fn check_claude_session_hook_at(config: &HippoConfig, settings_path: &std::path:
             println!("[!!] Claude session hook path mismatch");
             println!("     configured: {}", cmd);
             println!("     expected:   {}", expected.display());
+            println!("     Fix: hippo daemon install --force");
         }
         None => {
             println!("[--] Claude session hook not configured");
             println!("     expected: {}", expected.display());
+            println!("     Fix: hippo daemon install --force");
         }
     }
 }

@@ -88,7 +88,10 @@ TMUX_CMD="HIPPO_WATCH_PID=${CLAUDE_PID} $(printf '%q' "$HIPPO_BIN") ingest claud
 # tmux new-window -d returns immediately — the tail loop runs inside the new window,
 # so this hook never blocks Claude Code from launching.
 if [ -n "$TMUX_TARGET_SESSION" ]; then
-    tmux new-window -d -t "$TMUX_TARGET_SESSION" -n "$WINDOW_NAME" "$TMUX_CMD"
+    # We are inside tmux: create a new window in the current session. Omitting -t
+    # lets tmux pick the next free index rather than inserting relative to a specific
+    # window, which avoids "index N in use" errors with non-default base-index configs.
+    tmux new-window -d -n "$WINDOW_NAME" "$TMUX_CMD"
     log "spawned tmux window in session=$TMUX_TARGET_SESSION"
 elif tmux list-sessions &>/dev/null; then
     # Not inside tmux but a tmux server is running — reuse the hippo session
