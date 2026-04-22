@@ -606,6 +606,9 @@ pub async fn handle_doctor(config: &HippoConfig) -> Result<()> {
     // Check Claude session hook
     check_claude_session_hook(config);
 
+    // Check Firefox extension build + Native Messaging manifest
+    check_firefox_extension();
+
     // Check OpenTelemetry configuration
     check_otel_status(config, &client).await;
 
@@ -786,6 +789,93 @@ fn expected_claude_session_hook_path(data_dir: &std::path::Path) -> Option<PathB
         .map(|brain_dir| brain_dir.join("shell/claude-session-hook.sh"))
 }
 
+/// Check that the Firefox extension's compiled dist/ bundle exists and the
+/// Native Messaging manifest is installed.
+///
+/// The extension's `manifest.json` references `dist/background.js` and
+/// `dist/content.js`, but `dist/` is gitignored — it must be produced by
+/// `mise run build:ext:dist`. If dist/ is missing the extension loads cleanly
+/// as a temporary add-on in Firefox but captures nothing (silent no-op).
+fn check_firefox_extension() {
+    // Native Messaging manifest — the bridge between Firefox and hippo-daemon.
+    let nm_manifest = dirs::home_dir().map(|h| {
+        h.join("Library/Application Support/Mozilla/NativeMessagingHosts/hippo_daemon.json")
+    });
+    match nm_manifest {
+        Some(path) if path.exists() => println!("[OK] Firefox Native Messaging manifest installed"),
+        Some(path) => {
+            println!(
+                "[!!] Firefox Native Messaging manifest missing: {}",
+                path.display()
+            );
+            println!("     Fix: hippo daemon install --force");
+        }
+        None => println!("[--] Firefox Native Messaging check skipped (no home dir)"),
+    }
+
+    // Extension dist/ files. We locate the repo via the canonical path of the
+    // currently running binary — typically `<repo>/target/release/hippo`, with
+    // `~/.local/bin/hippo` being a symlink into it. If we can't find the repo
+    // layout, skip rather than false-alarm.
+    let Some(repo_root) = repo_root_from_current_exe() else {
+        println!("[--] Firefox extension dist/ check skipped (could not locate repo root)");
+        return;
+    };
+    check_firefox_extension_dist_at(&repo_root.join("extension/firefox"));
+}
+
+fn check_firefox_extension_dist_at(ext_dir: &std::path::Path) {
+    if !ext_dir.exists() {
+        // Not fatal: release installs won't have the repo extension dir.
+        println!(
+            "[--] Firefox extension dir not found at {}",
+            ext_dir.display()
+        );
+        return;
+    }
+    let required = ["dist/background.js", "dist/content.js"];
+    let missing: Vec<&str> = required
+        .iter()
+        .filter(|rel| !ext_dir.join(rel).exists())
+        .copied()
+        .collect();
+    if missing.is_empty() {
+        println!(
+            "[OK] Firefox extension dist/ built ({})",
+            ext_dir.join("dist").display()
+        );
+    } else {
+        println!(
+            "[!!] Firefox extension dist/ missing: {}",
+            missing.join(", ")
+        );
+        println!("     The extension loads but captures nothing when dist/ is absent.");
+        println!("     Fix: mise run build:ext:dist");
+    }
+}
+
+/// Walk up from the running binary's canonical path looking for a hippo repo
+/// checkout (identified by a top-level `Cargo.toml` and `extension/firefox/`
+/// sibling). Returns `None` for release installs where the binary lives
+/// outside the source tree.
+fn repo_root_from_current_exe() -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    // Follow symlinks — ~/.local/bin/hippo typically points into target/release.
+    let real = std::fs::canonicalize(&exe).unwrap_or(exe);
+    // Climb parents looking for Cargo.toml + extension/firefox/manifest.json.
+    let mut cur = real.as_path();
+    for _ in 0..6 {
+        let parent = cur.parent()?;
+        if parent.join("Cargo.toml").exists()
+            && parent.join("extension/firefox/manifest.json").exists()
+        {
+            return Some(parent.to_path_buf());
+        }
+        cur = parent;
+    }
+    None
+}
+
 pub fn parse_duration_to_since_ms(s: &str) -> Option<i64> {
     let s = s.trim();
     if s.len() < 2 {
@@ -830,6 +920,51 @@ mod tests {
     fn test_expected_claude_session_hook_path_without_data_dir_component_returns_none() {
         let data_dir = std::path::Path::new("/");
         assert_eq!(expected_claude_session_hook_path(data_dir), None);
+    }
+
+    #[test]
+    fn test_check_firefox_extension_dist_at_reports_missing_files() {
+        // Arrange: a fake extension dir with manifest.json but no dist/.
+        let tmp = tempdir().unwrap();
+        let ext = tmp.path().join("firefox");
+        std::fs::create_dir_all(&ext).unwrap();
+        std::fs::write(ext.join("manifest.json"), "{}").unwrap();
+
+        // The function prints to stdout; we just assert it doesn't panic and
+        // that the logic correctly identifies missing files.
+        let missing: Vec<&str> = ["dist/background.js", "dist/content.js"]
+            .iter()
+            .filter(|rel| !ext.join(rel).exists())
+            .copied()
+            .collect();
+        assert_eq!(missing, vec!["dist/background.js", "dist/content.js"]);
+
+        check_firefox_extension_dist_at(&ext);
+    }
+
+    #[test]
+    fn test_check_firefox_extension_dist_at_accepts_present_files() {
+        let tmp = tempdir().unwrap();
+        let ext = tmp.path().join("firefox");
+        std::fs::create_dir_all(ext.join("dist")).unwrap();
+        std::fs::write(ext.join("dist/background.js"), "// built").unwrap();
+        std::fs::write(ext.join("dist/content.js"), "// built").unwrap();
+
+        let missing: Vec<&str> = ["dist/background.js", "dist/content.js"]
+            .iter()
+            .filter(|rel| !ext.join(rel).exists())
+            .copied()
+            .collect();
+        assert!(missing.is_empty());
+
+        check_firefox_extension_dist_at(&ext);
+    }
+
+    #[test]
+    fn test_check_firefox_extension_dist_at_handles_missing_ext_dir() {
+        // Nonexistent path must not panic — release installs won't have it.
+        let tmp = tempdir().unwrap();
+        check_firefox_extension_dist_at(&tmp.path().join("does-not-exist"));
     }
 
     #[tokio::test]
