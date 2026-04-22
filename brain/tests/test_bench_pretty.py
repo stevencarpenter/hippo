@@ -73,9 +73,7 @@ def test_render_summary_includes_per_model_rows(tmp_path):
 def test_render_summary_handles_missing_numeric_fields(tmp_path):
     f = tmp_path / "run.jsonl"
     lines = [
-        json.dumps(
-            {"record_type": "run_manifest", "run_id": "r", "candidate_models": ["m1"]}
-        ),
+        json.dumps({"record_type": "run_manifest", "run_id": "r", "candidate_models": ["m1"]}),
         json.dumps(
             {
                 "record_type": "model_summary",
