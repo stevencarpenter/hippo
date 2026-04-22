@@ -26,7 +26,8 @@ ENVIRONMENT:
 
 INSTALL LOCATIONS:
     ~/.local/bin/hippo                          daemon binary
-    ~/.local/share/hippo-brain/                 brain package (includes scripts/)
+    ~/.local/share/hippo-brain/                 brain package (includes scripts/
+                                                and shell/)
     /Applications/HippoGUI.app                  macOS GUI
     ~/.local/state/hippo/install-receipts/      per-component install receipts
                                                 (respects XDG_STATE_HOME)
@@ -442,6 +443,55 @@ check_dependencies() {
     fi
 }
 
+# Warn if the user's zsh config still points at stale release-install paths.
+warn_on_stale_shell_hook_sources() {
+    local expected_env="${BRAIN_DIR}/shell/hippo-env.zsh"
+    local expected_hook="${BRAIN_DIR}/shell/hippo.zsh"
+    local stale_found=0
+    local config_path line source_path
+
+    scan_shell_source_file() {
+        local config_path="$1"
+        [ -f "${config_path}" ] || return 0
+
+        while IFS= read -r line; do
+            source_path="$(printf '%s\n' "${line}" | sed -nE "s/.*source[[:space:]]+['\"]?([^'\"[:space:]]*hippo(-env)?\\.zsh)['\"]?.*/\\1/p")"
+            [ -n "${source_path}" ] || continue
+
+            case "${source_path}" in
+                "${expected_env}"|"${expected_hook}")
+                    continue
+                    ;;
+                "${INSTALL_DIR}/share/shell/"*)
+                    stale_found=1
+                    log_warning "Shell config ${config_path} still uses legacy path: ${source_path}"
+                    ;;
+                *)
+                    if [ ! -e "${source_path}" ]; then
+                        stale_found=1
+                        log_warning "Shell config ${config_path} sources missing file: ${source_path}"
+                    fi
+                    ;;
+            esac
+        done < "${config_path}"
+    }
+
+    scan_shell_source_file "${HOME}/.zshenv"
+    scan_shell_source_file "${HOME}/.zshrc"
+
+    if [ -d "${HOME}/.config/zsh" ]; then
+        while IFS= read -r config_path; do
+            scan_shell_source_file "${config_path}"
+        done < <(find "${HOME}/.config/zsh" -type f 2>/dev/null)
+    fi
+
+    if [ "${stale_found}" -ne 0 ]; then
+        log_info "Release installs source shell hooks from:"
+        log_info "  source ${expected_env}"
+        log_info "  source ${expected_hook}"
+    fi
+}
+
 # Main installation flow
 main() {
     log_info "Hippo Installer"
@@ -471,6 +521,9 @@ main() {
     echo ""
 
     install_brain "${tag}" "${temp_dir}/SHA256SUMS.txt" "${temp_dir}"
+    echo ""
+
+    warn_on_stale_shell_hook_sources
     echo ""
 
     install_gui "${tag}" "${temp_dir}/SHA256SUMS.txt" "${temp_dir}"
