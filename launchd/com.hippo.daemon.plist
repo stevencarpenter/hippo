@@ -27,6 +27,8 @@
     <true/>
     <key>StandardOutPath</key>
     <string>__DATA_DIR__/daemon.stdout.log</string>
+    <!-- Runtime logs: __DATA_DIR__/daemon.YYYY-MM-DD.log (rolling 7 days via tracing-appender) -->
+    <!-- Pre-main crash output only: -->
     <key>StandardErrorPath</key>
     <string>__DATA_DIR__/daemon.stderr.log</string>
     <key>WorkingDirectory</key>

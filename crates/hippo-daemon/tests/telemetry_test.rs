@@ -13,7 +13,7 @@ mod otel_tests {
     /// background tasks that need a reactor.
     #[tokio::test]
     async fn test_telemetry_init_shutdown() {
-        let guard = telemetry::init("test-service", "http://localhost:19999")
+        let guard = telemetry::init("test-service", "http://localhost:19999", std::io::stderr)
             .expect("telemetry init should succeed even without a collector");
         guard.shutdown();
     }
