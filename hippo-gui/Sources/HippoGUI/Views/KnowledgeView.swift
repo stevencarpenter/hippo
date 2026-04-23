@@ -286,8 +286,7 @@ private struct ParsedKnowledgeContent {
             }
 
         if let prettyData = try? JSONSerialization.data(withJSONObject: object, options: [.prettyPrinted]),
-            let prettyString = String(data: prettyData, encoding: .utf8)
-        {
+            let prettyString = String(data: prettyData, encoding: .utf8) {
             prettyPrintedRaw = prettyString
         } else {
             prettyPrintedRaw = raw

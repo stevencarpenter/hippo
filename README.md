@@ -32,7 +32,7 @@ This one-liner downloads and installs the daemon, brain, and GUI app with checks
 |  Firefox  | ---------------> |              |                +--------------+
 |  ext.     |                  |              |                  ^         |
 +-----------+                  +--------------+           stdio  |  SQLite |
-                                                        (JSONL) | SQLite  |
+                                                        (JSONL) | sqlite-vec |
                                                                 |  LM API |
                                                           Claude Code / Desktop
 ```
