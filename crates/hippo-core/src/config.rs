@@ -20,6 +20,8 @@ pub struct HippoConfig {
     pub telemetry: TelemetryConfig,
     #[serde(default)]
     pub github: GithubConfig,
+    #[serde(default)]
+    pub watchdog: WatchdogConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -419,6 +421,33 @@ impl Default for LessonsConfig {
             cluster_window_days: 30,
             min_occurrences: 2,
             path_prefix_segments: 2,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WatchdogConfig {
+    #[serde(default = "default_watchdog_enabled")]
+    pub enabled: bool,
+    #[serde(default = "default_alarm_rate_limit_minutes")]
+    pub alarm_rate_limit_minutes: u64,
+    #[serde(default)]
+    pub notify_macos: bool,
+}
+
+fn default_watchdog_enabled() -> bool {
+    true
+}
+fn default_alarm_rate_limit_minutes() -> u64 {
+    15
+}
+
+impl Default for WatchdogConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_watchdog_enabled(),
+            alarm_rate_limit_minutes: default_alarm_rate_limit_minutes(),
+            notify_macos: false,
         }
     }
 }

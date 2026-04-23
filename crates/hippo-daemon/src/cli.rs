@@ -107,7 +107,11 @@ pub enum Commands {
     /// Run as Native Messaging host for Firefox extension
     NativeMessagingHost,
     /// Run diagnostic checks
-    Doctor,
+    Doctor {
+        /// Print remediation steps for each failing check
+        #[arg(long)]
+        explain: bool,
+    },
 }
 
 #[derive(Subcommand)]

@@ -522,7 +522,8 @@ pub fn handle_redact_test(config: &HippoConfig, input: &str) {
     println!("  {}", result.text);
 }
 
-pub async fn handle_doctor(config: &HippoConfig) -> Result<()> {
+pub async fn handle_doctor(config: &HippoConfig, explain: bool) -> Result<()> {
+    let mut fail_count: u32 = 0;
     let cli_version = env!("HIPPO_VERSION_FULL");
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(2))
@@ -540,6 +541,7 @@ pub async fn handle_doctor(config: &HippoConfig) -> Result<()> {
                 println!("[OK] Daemon is running (uptime {}s)", status.uptime_secs);
                 if status.version.is_empty() {
                     println!("[!!] Daemon too old to report version — restart recommended");
+                    fail_count += 1;
                 } else if status.version == cli_version {
                     println!("[OK] Daemon version matches CLI");
                 } else {
@@ -548,12 +550,17 @@ pub async fn handle_doctor(config: &HippoConfig) -> Result<()> {
                         status.version, cli_version
                     );
                     println!("     Run: mise run restart");
+                    fail_count += 1;
                 }
             }
-            _ => println!("[!!] Socket exists but daemon not responding"),
+            _ => {
+                println!("[!!] Socket exists but daemon not responding");
+                fail_count += 1;
+            }
         }
     } else {
         println!("[!!] Daemon socket not found at {:?}", socket);
+        fail_count += 1;
     }
 
     // Check database
@@ -577,10 +584,13 @@ pub async fn handle_doctor(config: &HippoConfig) -> Result<()> {
     let lm_url = format!("{}/models", config.lmstudio.base_url);
     match client.get(&lm_url).send().await {
         Ok(r) if r.status().is_success() => println!("[OK] LM Studio reachable"),
-        _ => println!(
-            "[!!] LM Studio not reachable at {}",
-            config.lmstudio.base_url
-        ),
+        _ => {
+            println!(
+                "[!!] LM Studio not reachable at {}",
+                config.lmstudio.base_url
+            );
+            fail_count += 1;
+        }
     }
 
     // Check brain
@@ -592,6 +602,7 @@ pub async fn handle_doctor(config: &HippoConfig) -> Result<()> {
         .unwrap_or(0);
     if fallback_files > 0 {
         println!("[!!] {} fallback files pending recovery", fallback_files);
+        fail_count += 1;
     } else {
         println!("[OK] No fallback files pending");
     }
@@ -599,6 +610,7 @@ pub async fn handle_doctor(config: &HippoConfig) -> Result<()> {
     // Check embedding model
     if config.models.embedding.is_empty() {
         println!("[!!] No embedding model configured");
+        fail_count += 1;
     } else {
         println!("[OK] Embedding model: {}", config.models.embedding);
     }
@@ -616,6 +628,23 @@ pub async fn handle_doctor(config: &HippoConfig) -> Result<()> {
 
     // Check OpenTelemetry configuration
     check_otel_status(config, &client).await;
+
+    // Check 1: Per-source staleness via source_health table (P0.1)
+    // Check 8: Watchdog heartbeat
+    if db_path.exists() && let Ok(conn) = hippo_core::storage::open_db(&db_path) {
+        fail_count += check_source_staleness(&conn, explain);
+        fail_count += check_watchdog_heartbeat(&conn, explain);
+    }
+
+    // Check 4: zsh hook sourced
+    fail_count += check_zsh_hook_sourced(explain);
+
+    // Check 7: Log file sizes
+    fail_count += check_log_file_sizes(config, explain);
+
+    if fail_count > 0 {
+        std::process::exit(1);
+    }
 
     Ok(())
 }
@@ -835,6 +864,427 @@ async fn check_otel_status(config: &HippoConfig, client: &reqwest::Client) {
         }
         (false, false) => {
             println!("[--] OpenTelemetry: disabled (start with: mise run otel:up)");
+        }
+    }
+}
+
+/// Check 1: Per-source staleness via the `source_health` table (requires P0.1 migration).
+///
+/// Returns the number of failing (hard-threshold) checks.
+fn check_source_staleness(db: &rusqlite::Connection, explain: bool) -> u32 {
+    // Query source_health — if the table doesn't exist yet, print a soft notice and bail.
+    let rows_result = db.prepare(
+        "SELECT source, last_event_ts, last_error_msg, consecutive_failures, events_last_1h, probe_ok \
+         FROM source_health \
+         WHERE source IN ('shell', 'browser', 'claude-session', 'claude-tool') \
+         ORDER BY source",
+    );
+
+    let mut stmt = match rows_result {
+        Ok(s) => s,
+        Err(e) => {
+            let msg = e.to_string();
+            if msg.contains("no such table") {
+                println!(
+                    "[--] source health             table not yet created (run hippo daemon install --force)"
+                );
+            } else {
+                println!("[!!] source health             DB error: {}", e);
+            }
+            return 0;
+        }
+    };
+
+    struct SourceRow {
+        source: String,
+        last_event_ts: Option<i64>,
+        probe_ok: Option<i64>,
+    }
+
+    let rows: Vec<SourceRow> = match stmt.query_map([], |row| {
+        Ok(SourceRow {
+            source: row.get(0)?,
+            last_event_ts: row.get(1)?,
+            // columns 2, 3, 4 are last_error_msg, consecutive_failures, events_last_1h — not used
+            probe_ok: row.get(5)?,
+        })
+    }) {
+        Ok(mapped) => mapped.flatten().collect(),
+        Err(e) => {
+            println!("[!!] source health             query error: {}", e);
+            return 0;
+        }
+    };
+
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as i64;
+
+    struct Thresholds {
+        warn_secs: i64,
+        fail_secs: i64,
+    }
+
+    let thresholds_for = |source: &str| -> Thresholds {
+        match source {
+            "shell" => Thresholds {
+                warn_secs: 60,
+                fail_secs: 300,
+            },
+            "claude-session" => Thresholds {
+                warn_secs: 300,
+                fail_secs: 1800,
+            },
+            "claude-tool" => Thresholds {
+                warn_secs: 300,
+                fail_secs: 600,
+            },
+            "browser" => Thresholds {
+                warn_secs: 120,
+                fail_secs: 600,
+            },
+            _ => Thresholds {
+                warn_secs: 300,
+                fail_secs: 1800,
+            },
+        }
+    };
+
+    // Check Firefox running (for browser suppression).
+    let firefox_running = || -> bool {
+        std::process::Command::new("pgrep")
+            .args(["-x", "firefox-bin"])
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+    };
+
+    // Check if there's a recent claude JSONL with mtime < 5 minutes (for claude-session suppression).
+    let recent_claude_session = || -> bool {
+        let projects_dir = match dirs::home_dir() {
+            Some(h) => h.join(".claude/projects"),
+            None => return false,
+        };
+        let five_min_ago = std::time::SystemTime::now()
+            .checked_sub(std::time::Duration::from_secs(300))
+            .unwrap_or(std::time::UNIX_EPOCH);
+        let Ok(entries) = std::fs::read_dir(&projects_dir) else {
+            return false;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) == Some("jsonl")
+                && let Ok(meta) = std::fs::metadata(&path)
+                && let Ok(modified) = meta.modified()
+                && modified > five_min_ago
+            {
+                return true;
+            }
+            // Also recurse one level (projects/*/session.jsonl layout).
+            if path.is_dir() && let Ok(sub) = std::fs::read_dir(&path) {
+                for sub_entry in sub.flatten() {
+                    let sub_path = sub_entry.path();
+                    if sub_path.extension().and_then(|e| e.to_str()) == Some("jsonl")
+                        && let Ok(meta) = std::fs::metadata(&sub_path)
+                        && let Ok(modified) = meta.modified()
+                        && modified > five_min_ago
+                    {
+                        return true;
+                    }
+                }
+            }
+        }
+        false
+    };
+
+    let mut fail_count: u32 = 0;
+
+    // All four expected sources — report missing ones too.
+    let all_sources = ["browser", "claude-session", "claude-tool", "shell"];
+    for source in all_sources {
+        let label = format!("{} events", source);
+        let padded = format!("{:<29}", label);
+
+        let row = rows.iter().find(|r| r.source == source);
+
+        let Some(row) = row else {
+            println!("[--] {}  no data", padded);
+            continue;
+        };
+
+        let Some(last_ts) = row.last_event_ts else {
+            println!("[--] {}  never seen", padded);
+            continue;
+        };
+
+        let age_secs = (now_ms - last_ts) / 1000;
+        let human = format_age_secs(age_secs);
+        let thresh = thresholds_for(source);
+
+        if age_secs < thresh.warn_secs {
+            println!("[OK] {}  {}", padded, human);
+        } else if age_secs < thresh.fail_secs {
+            println!("[WW] {}  {} (WARN)", padded, human);
+        } else {
+            // Check suppression conditions.
+            let suppressed = match source {
+                "shell" => row.probe_ok == Some(0),
+                "claude-session" => !recent_claude_session(),
+                "claude-tool" => row.probe_ok == Some(0),
+                "browser" => !firefox_running(),
+                _ => false,
+            };
+
+            if suppressed {
+                let reason = match source {
+                    "browser" => "no active Firefox session",
+                    "claude-session" => "no active session",
+                    _ => "probe disabled",
+                };
+                println!("[WW] {}  {} (suppressed — {})", padded, human, reason);
+            } else {
+                println!("[!!] {}  {} (FAIL)", padded, human);
+                fail_count += 1;
+                if explain {
+                    println!(
+                        "     CAUSE:  No events have landed in SQLite for this source"
+                    );
+                    println!(
+                        "     FIX:    Check source is running: hippo doctor (re-run); tail -f ~/.local/share/hippo/daemon.stderr.log"
+                    );
+                    println!("     DOC:    docs/capture-reliability/02-invariants.md");
+                }
+            }
+        }
+    }
+
+    fail_count
+}
+
+/// Format age in seconds to a human-readable string.
+fn format_age_secs(secs: i64) -> String {
+    if secs < 60 {
+        format!("{}s ago", secs)
+    } else if secs < 3600 {
+        format!("{}m ago", secs / 60)
+    } else if secs < 86400 {
+        format!("{}h ago", secs / 3600)
+    } else {
+        format!("{}d ago", secs / 86400)
+    }
+}
+
+/// Check 4: Verify that hippo.zsh is sourced in a zsh startup file.
+///
+/// Returns 1 if not found in any zshrc/zshenv, 0 otherwise.
+fn check_zsh_hook_sourced(explain: bool) -> u32 {
+    let home = match dirs::home_dir() {
+        Some(h) => h,
+        None => {
+            println!("[--] zsh hook sourced           cannot determine home dir");
+            return 0;
+        }
+    };
+
+    let candidates = [
+        home.join(".zshrc"),
+        home.join(".zshenv"),
+        home.join(".config/zsh/.zshrc"),
+        home.join(".config/zsh/.zshenv"),
+    ];
+
+    for candidate in &candidates {
+        if !candidate.exists() {
+            continue;
+        }
+        let content = match std::fs::read_to_string(candidate) {
+            Ok(c) => c,
+            Err(_) => continue,
+        };
+        for line in content.lines() {
+            if line.contains("hippo.zsh") {
+                // Extract the sourced path (the token after "source" or ".").
+                let sourced_path: Option<&str> = line
+                    .split_whitespace()
+                    .skip_while(|t| *t != "source" && *t != ".")
+                    .nth(1);
+                let script_exists = sourced_path
+                    .map(|p| {
+                        let expanded = if let Some(rest) = p.strip_prefix("~/") {
+                            home.join(rest)
+                        } else {
+                            std::path::PathBuf::from(p)
+                        };
+                        expanded.exists()
+                    })
+                    .unwrap_or(false);
+
+                let short_candidate = candidate
+                    .strip_prefix(&home)
+                    .map(|p| format!("~/{}", p.display()))
+                    .unwrap_or_else(|_| candidate.display().to_string());
+
+                if script_exists {
+                    println!(
+                        "[OK] {:<29}  found in {}",
+                        "zsh hook sourced", short_candidate
+                    );
+                } else {
+                    let path_str = sourced_path.unwrap_or("<unknown>");
+                    println!(
+                        "[WW] {:<29}  source line found but script missing at {}",
+                        "zsh hook sourced", path_str
+                    );
+                }
+                return 0;
+            }
+        }
+    }
+
+    println!(
+        "[!!] {:<29}  not found in any zshrc/zshenv",
+        "zsh hook sourced"
+    );
+    if explain {
+        println!("     CAUSE:  Shell hook not loaded — shell events cannot be captured");
+        println!("     FIX:    Add to ~/.zshrc: source ~/.local/share/hippo/hippo.zsh");
+        println!("     DOC:    docs/capture-reliability/08-anti-patterns.md");
+    }
+    1
+}
+
+/// Check 7: Warn/fail on large log files in the hippo data directory.
+///
+/// Returns 1 if any file exceeds 200 MB, 0 otherwise.
+fn check_log_file_sizes(config: &HippoConfig, explain: bool) -> u32 {
+    let data_dir = &config.storage.data_dir;
+    if !data_dir.exists() {
+        println!("[--] {:<29}  data dir not found", "log file sizes");
+        return 0;
+    }
+
+    let entries = match std::fs::read_dir(data_dir) {
+        Ok(e) => e,
+        Err(err) => {
+            println!(
+                "[--] {:<29}  cannot read data dir: {}",
+                "log file sizes", err
+            );
+            return 0;
+        }
+    };
+
+    let mut largest_warn: Option<(String, u64)> = None;
+    let mut largest_fail: Option<(String, u64)> = None;
+
+    const WARN_BYTES: u64 = 50 * 1024 * 1024; // 50 MB
+    const FAIL_BYTES: u64 = 200 * 1024 * 1024; // 200 MB
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+        if ext != "log" && ext != "jsonl" {
+            continue;
+        }
+        let Ok(meta) = std::fs::metadata(&path) else {
+            continue;
+        };
+        let size = meta.len();
+        let name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("?")
+            .to_string();
+
+        if size >= FAIL_BYTES {
+            match &largest_fail {
+                None => largest_fail = Some((name, size)),
+                Some((_, prev)) if size > *prev => largest_fail = Some((name, size)),
+                _ => {}
+            }
+        } else if size >= WARN_BYTES {
+            match &largest_warn {
+                None => largest_warn = Some((name, size)),
+                Some((_, prev)) if size > *prev => largest_warn = Some((name, size)),
+                _ => {}
+            }
+        }
+    }
+
+    if let Some((name, size)) = largest_fail {
+        let size_mb = size / (1024 * 1024);
+        println!("[!!] {:<29}  {}: {}MB", "log file sizes", name, size_mb);
+        if explain {
+            println!("     CAUSE:  Log file growing without rotation");
+            println!(
+                "     FIX:    Upgrade hippo to a version with log rotation, or: truncate -s 0 {}",
+                name
+            );
+            println!("     DOC:    docs/capture-reliability/07-roadmap.md");
+        }
+        return 1;
+    }
+
+    if let Some((name, size)) = largest_warn {
+        let size_mb = size / (1024 * 1024);
+        println!("[WW] {:<29}  {}: {}MB", "log file sizes", name, size_mb);
+        return 0;
+    }
+
+    println!("[OK] {:<29}  all under 50MB", "log file sizes");
+    0
+}
+
+/// Check 8: Watchdog heartbeat — verify the watchdog row in source_health is fresh.
+///
+/// Returns 1 if the watchdog row is stale (>= 180s), 0 otherwise.
+fn check_watchdog_heartbeat(db: &rusqlite::Connection, explain: bool) -> u32 {
+    let result = db.query_row(
+        "SELECT updated_at, (unixepoch('now')*1000 - updated_at)/1000 AS age_secs \
+         FROM source_health WHERE source = 'watchdog' LIMIT 1",
+        [],
+        |row| {
+            let _updated_at: i64 = row.get(0)?;
+            let age_secs: i64 = row.get(1)?;
+            Ok(age_secs)
+        },
+    );
+
+    match result {
+        Err(rusqlite::Error::QueryReturnedNoRows) => {
+            println!("[--] {:<29}  not installed", "watchdog heartbeat");
+            0
+        }
+        Err(e) => {
+            let msg = e.to_string();
+            // Treat "no such table" the same as "no row" — watchdog not yet installed.
+            let _ = msg;
+            println!("[--] {:<29}  not installed", "watchdog heartbeat");
+            0
+        }
+        Ok(age_secs) => {
+            if age_secs < 60 {
+                println!("[OK] {:<29}  {}s ago", "watchdog heartbeat", age_secs);
+                0
+            } else if age_secs < 180 {
+                println!(
+                    "[WW] {:<29}  {}s ago (WARN, expected < 60s)",
+                    "watchdog heartbeat", age_secs
+                );
+                0
+            } else {
+                println!(
+                    "[!!] {:<29}  stale {}s ago (FAIL)",
+                    "watchdog heartbeat", age_secs
+                );
+                if explain {
+                    println!("     CAUSE:  Watchdog has stopped sending heartbeats");
+                    println!("     FIX:    Restart the watchdog service: mise run restart");
+                    println!("     DOC:    docs/capture-reliability/07-roadmap.md");
+                }
+                1
+            }
         }
     }
 }
@@ -1496,5 +1946,60 @@ replacement = "***"
         config.storage.data_dir = temp.path().join("hippo");
         // Script doesn't exist on disk → prints [!!] configured but script missing
         check_claude_session_hook_at(&config, &settings);
+    }
+
+    #[test]
+    fn test_doctor_staleness_check() {
+        // Use a real temp-file DB. When P0.1 is merged this will pick up source_health
+        // from the full schema. Until then we create the table manually so the
+        // staleness logic can be exercised independently.
+        let tmp = tempdir().unwrap();
+        let db_path = tmp.path().join("hippo.db");
+        let conn = hippo_core::storage::open_db(&db_path).unwrap();
+
+        // Create source_health if the migration hasn't run yet (pre-P0.1 schema).
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS source_health (
+                source                 TEXT PRIMARY KEY,
+                last_event_ts          INTEGER,
+                last_success_ts        INTEGER,
+                last_error_ts          INTEGER,
+                last_error_msg         TEXT,
+                consecutive_failures   INTEGER NOT NULL DEFAULT 0,
+                events_last_1h         INTEGER NOT NULL DEFAULT 0,
+                events_last_24h        INTEGER NOT NULL DEFAULT 0,
+                expected_min_per_hour  INTEGER,
+                probe_ok               INTEGER,
+                probe_lag_ms           INTEGER,
+                probe_last_run_ts      INTEGER,
+                last_heartbeat_ts      INTEGER,
+                updated_at             INTEGER NOT NULL
+             );",
+        )
+        .unwrap();
+
+        // Seed a stale shell row: 1 hour ago (3600s past the 300s FAIL threshold).
+        conn.execute(
+            "INSERT OR REPLACE INTO source_health \
+             (source, last_event_ts, consecutive_failures, updated_at) \
+             VALUES ('shell', (unixepoch('now')-3600)*1000, 0, unixepoch('now')*1000)",
+            [],
+        )
+        .unwrap();
+
+        let fail = check_source_staleness(&conn, false);
+        assert_eq!(fail, 1, "stale shell row should return fail_count=1");
+
+        // Now seed a fresh shell row (1 second ago) and assert 0 failures.
+        conn.execute(
+            "INSERT OR REPLACE INTO source_health \
+             (source, last_event_ts, consecutive_failures, updated_at) \
+             VALUES ('shell', (unixepoch('now')-1)*1000, 0, unixepoch('now')*1000)",
+            [],
+        )
+        .unwrap();
+
+        let fail2 = check_source_staleness(&conn, false);
+        assert_eq!(fail2, 0, "fresh shell row should return fail_count=0");
     }
 }
