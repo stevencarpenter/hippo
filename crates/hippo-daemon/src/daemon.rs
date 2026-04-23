@@ -345,12 +345,7 @@ pub async fn flush_events(state: &Arc<DaemonState>) -> usize {
             EventPayload::Browser(browser_event) => {
                 let eid = envelope.envelope_id.to_string();
                 let event_ts = envelope.timestamp.timestamp_millis();
-                match storage::insert_browser_event(
-                    &db,
-                    browser_event,
-                    event_ts,
-                    Some(&eid),
-                ) {
+                match storage::insert_browser_event(&db, browser_event, event_ts, Some(&eid)) {
                     Ok(_) => {
                         let entry = source_latest_ts.entry("browser").or_insert(0);
                         if event_ts > *entry {
@@ -455,9 +450,7 @@ async fn recompute_rolling_counts(state: Arc<DaemonState>) {
         // Phase 1: gather counts from read_db — does not block flush_events.
         let counts = {
             let db = state.read_db.lock().await;
-            let read = |sql: &str| -> rusqlite::Result<i64> {
-                db.query_row(sql, [], |r| r.get(0))
-            };
+            let read = |sql: &str| -> rusqlite::Result<i64> { db.query_row(sql, [], |r| r.get(0)) };
             let result: rusqlite::Result<RollingCounts> = (|| {
                 Ok(RollingCounts {
                     shell_1h: read(

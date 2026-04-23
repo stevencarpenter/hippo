@@ -19,11 +19,12 @@ fn source_health_success_update_increments_counts_and_clears_failures() {
     let db_path = dir.path().join("hippo.db");
     let conn = storage::open_db(&db_path).unwrap();
 
-    // Pre-seed source_health row for 'shell' (mimics P0.1 migration seed).
-    // If source_health doesn't exist (pre-migration), this will fail, and
-    // that's acceptable — the test documents the post-migration contract.
+    // Pre-seed source_health row for 'shell' with known initial state.
+    // Use INSERT OR REPLACE because the v7→v8 migration already seeds one row
+    // per source; we need to overwrite it with a specific consecutive_failures=2
+    // to test that the success UPDATE clears it.
     conn.execute(
-        "INSERT INTO source_health (source, consecutive_failures, events_last_1h, events_last_24h, updated_at)
+        "INSERT OR REPLACE INTO source_health (source, consecutive_failures, events_last_1h, events_last_24h, updated_at)
          VALUES ('shell', 2, 0, 0, 0)",
         [],
     )
@@ -48,7 +49,10 @@ fn source_health_success_update_increments_counts_and_clears_failures() {
         )
         .unwrap();
 
-    assert_eq!(rows_affected, 1, "UPDATE should affect exactly the 'shell' row");
+    assert_eq!(
+        rows_affected, 1,
+        "UPDATE should affect exactly the 'shell' row"
+    );
 
     // Assert the row reflects the flush outcome.
     let (last_success_ts, consecutive_failures, events_last_1h, events_last_24h): (
@@ -97,7 +101,7 @@ fn source_health_error_update_increments_failure_counter() {
     let conn = storage::open_db(&db_path).unwrap();
 
     conn.execute(
-        "INSERT INTO source_health (source, consecutive_failures, updated_at)
+        "INSERT OR REPLACE INTO source_health (source, consecutive_failures, updated_at)
          VALUES ('browser', 0, 0)",
         [],
     )
@@ -118,7 +122,10 @@ fn source_health_error_update_increments_failure_counter() {
         )
         .unwrap();
 
-    assert_eq!(rows_affected, 1, "UPDATE should affect exactly the 'browser' row");
+    assert_eq!(
+        rows_affected, 1,
+        "UPDATE should affect exactly the 'browser' row"
+    );
 
     let (consecutive_failures, last_error_msg): (i64, Option<String>) = conn
         .query_row(
@@ -128,7 +135,10 @@ fn source_health_error_update_increments_failure_counter() {
         )
         .unwrap();
 
-    assert_eq!(consecutive_failures, 1, "first error should set consecutive_failures=1");
+    assert_eq!(
+        consecutive_failures, 1,
+        "first error should set consecutive_failures=1"
+    );
     assert_eq!(
         last_error_msg.as_deref(),
         Some("disk full"),
