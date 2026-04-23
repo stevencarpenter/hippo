@@ -75,7 +75,7 @@ Configure in your MCP config (e.g., `~/.claude/settings.json`):
 }
 ```
 
-The `ask` tool performs RAG: embeds the question, retrieves relevant knowledge nodes from LanceDB,
+The `ask` tool performs RAG: embeds the question, retrieves relevant knowledge nodes from SQLite via sqlite-vec (vec0) + FTS5 hybrid search,
 synthesizes an answer via a local LLM (`models.query` in config.toml), and returns the answer with
 scored source references. Requires `glow` for rendered CLI output (`brew install glow`).
 
@@ -85,7 +85,7 @@ Logs go to stderr. Metrics available via `MetricsCollector.snapshot()` for futur
 
 All paths use XDG defaults (not macOS-native ~/Library paths):
 
-- Data: `~/.local/share/hippo/` (DB, logs, socket, fallback, lancedb)
+- Data: `~/.local/share/hippo/` (DB, logs, socket, fallback)
 - Config: `~/.config/hippo/` (config.toml, redact.toml)
 - Binary: `~/.local/bin/hippo` (symlink to target/release/hippo)
 
@@ -98,7 +98,7 @@ Two processes share a SQLite database at ~/.local/share/hippo/hippo.db:
 1. hippo-daemon (Rust) - captures shell events via Unix socket, redacts secrets, writes to SQLite, serves CLI queries.
    `hippo doctor` checks version alignment between CLI, running daemon, and brain.
 2. hippo-brain (Python) - polls enrichment queues from SQLite, calls LM Studio API, writes knowledge nodes + embeddings
-   to LanceDB. Shell, Claude, and browser sources are enriched concurrently via `asyncio.gather()`;
+   to SQLite (sqlite-vec vec0 virtual tables + FTS5). Shell, Claude, and browser sources are enriched concurrently via `asyncio.gather()`;
    embeddings run as background tasks to overlap with LLM inference.
 
 Communication:

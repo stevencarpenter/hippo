@@ -9,7 +9,7 @@ local LLMs.
 
 - `crates/hippo-core/` - shared Rust library (types, config, storage, redaction)
 - `crates/hippo-daemon/` - Rust binary (daemon + CLI)
-- `brain/` - Python project (enrichment, embeddings, query server, LanceDB integration)
+- `brain/` - Python project (enrichment, embeddings, query server, sqlite-vec retrieval)
 - `shell/` - zsh hook scripts
 - `config/` - default config templates
 - `launchd/` - LaunchAgent plists
@@ -50,27 +50,25 @@ uv run --project brain hippo-brain serve
 
 ## Architecture
 
-Two processes share a SQLite database at ~/.local/share/hippo/hippo.db and a LanceDB vector store at ~/.local/share/hippo/vectors/:
+Two processes share a single SQLite database at ~/.local/share/hippo/hippo.db:
 
 1. hippo-daemon (Rust) - captures shell events via Unix socket, redacts secrets, writes to SQLite, serves CLI queries
-2. hippo-brain (Python) - polls enrichment queue from SQLite, calls LM Studio API, writes knowledge nodes + vector embeddings to LanceDB
+2. hippo-brain (Python) - polls enrichment queue from SQLite, calls LM Studio API, writes knowledge nodes + vector embeddings to SQLite via sqlite-vec (vec0 virtual tables + FTS5)
 
 Communication:
 
 - Shell hook to daemon: fire-and-forget via Unix socket (length-prefixed JSON)
 - CLI to daemon: request/response via same Unix socket
 - hippo query (non-raw) to brain: HTTP request to brain local server
-- Brain to SQLite: direct read/write (WAL mode, busy_timeout=5000)
-- Brain to LanceDB: direct read/write for vector embeddings (semantic search + RAG via /ask)
+- Brain to SQLite: direct read/write (WAL mode, busy_timeout=5000); vectors live in the same DB via sqlite-vec
 
 ## Data Storage
 
-| Store   | Path                            | Purpose                               |
-|---------|---------------------------------|---------------------------------------|
-| SQLite  | `~/.local/share/hippo/hippo.db` | Events, sessions, enrichment queue    |
-| LanceDB | `~/.local/share/hippo/vectors/` | Vector embeddings for semantic search |
-| Config  | `~/.config/hippo/config.toml`   | User configuration                    |
-| Logs    | `~/.local/share/hippo/*.log`    | Daemon and brain logs                 |
+| Store  | Path                            | Purpose                                                              |
+|--------|---------------------------------|----------------------------------------------------------------------|
+| SQLite | `~/.local/share/hippo/hippo.db` | Events, sessions, enrichment queue, knowledge nodes, vector embeddings (sqlite-vec vec0 + FTS5) |
+| Config | `~/.config/hippo/config.toml`   | User configuration                                                   |
+| Logs   | `~/.local/share/hippo/*.log`    | Daemon and brain logs                                                |
 
 ## Style
 
@@ -78,5 +76,5 @@ Communication:
 - Python: 3.14+ required, ruff for lint+format, uv for package management
 - All timestamps: Unix epoch milliseconds (i64/INTEGER)
 - SQLite: WAL mode, PRAGMA foreign_keys=ON, PRAGMA busy_timeout=5000 on every connection
-- LanceDB: vector embeddings (768d) stored at ~/.local/share/hippo/vectors/; see brain/src/hippo_brain/embeddings.py
-- Semantic search and RAG pipeline are live — see rag.py, mcp.py, and the /ask endpoint
+- Vectors: 768d embeddings in `knowledge_vectors` vec0 virtual table (sqlite-vec); see brain/src/hippo_brain/vector_store.py
+- Semantic search and RAG pipeline are live — see rag.py, retrieval.py, mcp.py, and the /ask endpoint
