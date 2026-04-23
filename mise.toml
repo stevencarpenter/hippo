@@ -360,7 +360,12 @@ run = "swiftlint lint --fix --config hippo-gui/.swiftlint.yml hippo-gui/Sources"
 
 [tasks."gui:fix"]
 description = "Auto-fix all HippoGUI lint and format issues (SwiftLint + swift-format)"
-depends = ["fix:swift", "gui:format"]
+# swift-format runs first to normalize, SwiftLint runs second to enforce preferences
+# (same-line braces). Sequential order matters — parallel execution causes races.
+run = [
+    "swift-format format --configuration hippo-gui/.swift-format -r -i hippo-gui/Sources",
+    "swiftlint lint --fix --config hippo-gui/.swiftlint.yml hippo-gui/Sources",
+]
 
 # ── Format ───────────────────────────────────────────────────────────
 
@@ -543,6 +548,9 @@ rsync -a --delete \
     --exclude='.ruff_cache' \
     --exclude='.pytest_cache' \
     brain/ "$BRAIN_INSTALL_DIR/"
+# Mirror the release tarball layout: shell/ lives alongside brain/ in the repo
+# but must land under $BRAIN_INSTALL_DIR/shell/ so doctor and the Claude hook find it.
+rsync -a --delete shell/ "$BRAIN_INSTALL_DIR/shell/"
 echo "==> Rebuilding brain venv at ${BRAIN_INSTALL_DIR}..."
 (cd "$BRAIN_INSTALL_DIR" && uv sync)
 

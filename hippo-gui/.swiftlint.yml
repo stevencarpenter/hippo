@@ -5,6 +5,7 @@ excluded:
 
 disabled_rules:
   - trailing_whitespace  # swift-format handles whitespace
+  - trailing_comma       # swift-format owns trailing commas via multiElementCollectionTrailingCommas
 
 opt_in_rules:
   - empty_count
