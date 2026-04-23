@@ -183,9 +183,12 @@ class TestClaimPendingBrowserEvents:
         assert all_events[0]["id"] == 1
 
         row = db.execute(
-            "SELECT status FROM browser_enrichment_queue WHERE browser_event_id = 2"
+            "SELECT status, error_message FROM browser_enrichment_queue WHERE browser_event_id = 2"
         ).fetchone()
         assert row[0] == "skipped"
+        assert row[1] is not None and "dwell=" in row[1], (
+            f"error_message must contain 'dwell=' for low-dwell skips, got: {row[1]!r}"
+        )
 
     def test_claim_splits_chunks_on_time_gap(self, db):
         """Events separated by >5 min gap should be in different chunks."""
