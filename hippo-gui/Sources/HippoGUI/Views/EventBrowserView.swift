@@ -282,7 +282,7 @@ struct EventBrowserView: View {
                 cwd: "/Users/carpenter/projects/hippo", gitBranch: "main"),
             Event(
                 id: 2, sessionId: 1, timestamp: 1_713_404_860_000, command: "swift build", exitCode: 0, durationMs: 420,
-                cwd: "/Users/carpenter/projects/hippo", gitBranch: "main"),
+                cwd: "/Users/carpenter/projects/hippo", gitBranch: "main")
         ],
         total: 2
     )
