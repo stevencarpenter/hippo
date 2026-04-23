@@ -196,6 +196,8 @@ pub struct BrowserConfig {
     pub allowlist: BrowserAllowlist,
     #[serde(default)]
     pub url_redaction: BrowserUrlRedaction,
+    #[serde(default = "default_long_dwell_bypass_ms")]
+    pub long_dwell_bypass_ms: u64,
 }
 
 fn default_browser_enabled() -> bool {
@@ -216,6 +218,9 @@ fn default_correlation_window_ms() -> u64 {
 fn default_browser_stale_session_secs() -> u64 {
     60
 }
+fn default_long_dwell_bypass_ms() -> u64 {
+    120_000
+}
 
 impl Default for BrowserConfig {
     fn default() -> Self {
@@ -228,6 +233,7 @@ impl Default for BrowserConfig {
             stale_session_secs: default_browser_stale_session_secs(),
             allowlist: BrowserAllowlist::default(),
             url_redaction: BrowserUrlRedaction::default(),
+            long_dwell_bypass_ms: default_long_dwell_bypass_ms(),
         }
     }
 }
@@ -826,6 +832,7 @@ endpoint = "http://collector:4317"
         assert_eq!(config.dedup_window_minutes, 30);
         assert_eq!(config.correlation_window_ms, 300_000);
         assert_eq!(config.stale_session_secs, 60);
+        assert_eq!(config.long_dwell_bypass_ms, 120_000);
         assert!(config.allowlist.domains.contains(&"github.com".to_string()));
         assert!(
             config
@@ -867,6 +874,7 @@ strip_params = ["secret", "nonce"]
         assert_eq!(config.browser.dedup_window_minutes, 30);
         assert_eq!(config.browser.correlation_window_ms, 300_000);
         assert_eq!(config.browser.stale_session_secs, 60);
+        assert_eq!(config.browser.long_dwell_bypass_ms, 120_000);
         // Overridden sub-sections
         assert_eq!(
             config.browser.allowlist.domains,
