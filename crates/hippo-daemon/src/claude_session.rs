@@ -912,7 +912,7 @@ fn insert_segments(conn: &Connection, segments: &[SessionSegment]) -> Result<(us
                          updated_at           = excluded.updated_at",
                     params![seg.start_time, now_ms],
                 ) {
-                    Err(health_err) if !is_missing_source_health_table_error(&health_err) => {
+                    Err(health_err) if !crate::is_missing_source_health_table_error(&health_err) => {
                         warn!(
                             error = %health_err,
                             "failed to update source_health on claude-session success"
@@ -937,7 +937,9 @@ fn insert_segments(conn: &Connection, segments: &[SessionSegment]) -> Result<(us
                          updated_at           = excluded.updated_at",
                     params![now_ms, err_512],
                 ) {
-                    Err(health_err) if !is_missing_source_health_table_error(&health_err) => {
+                    Err(health_err)
+                        if !crate::is_missing_source_health_table_error(&health_err) =>
+                    {
                         warn!(
                             error = %health_err,
                             "failed to update source_health on claude-session failure"
@@ -951,10 +953,6 @@ fn insert_segments(conn: &Connection, segments: &[SessionSegment]) -> Result<(us
     }
 
     Ok((inserted, skipped))
-}
-
-fn is_missing_source_health_table_error(err: &rusqlite::Error) -> bool {
-    err.to_string().contains("no such table: source_health")
 }
 
 /// Extract segments from a JSONL and upsert them into `claude_sessions`.

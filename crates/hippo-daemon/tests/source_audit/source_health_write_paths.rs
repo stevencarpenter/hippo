@@ -148,10 +148,10 @@ fn source_health_error_update_increments_failure_counter() {
 }
 
 /// Verify the idle-tick SQL: when the event buffer is empty flush_events advances
-/// daemon heartbeat (`last_heartbeat_ts`) for all daemon-managed sources without
-/// touching `last_success_ts` (successful ingest signal).
+/// `last_success_ts` for all daemon-managed sources without touching the
+/// browser-extension heartbeat column.
 #[test]
-fn source_health_idle_tick_advances_heartbeat_ts_not_success_ts() {
+fn source_health_idle_tick_advances_success_ts_not_heartbeat_ts() {
     let dir = tempfile::tempdir().unwrap();
     let db_path = dir.path().join("hippo.db");
     let conn = storage::open_db(&db_path).unwrap();
@@ -162,7 +162,7 @@ fn source_health_idle_tick_advances_heartbeat_ts_not_success_ts() {
     let rows_affected = conn
         .execute(
             "UPDATE source_health
-             SET last_heartbeat_ts = ?1, updated_at = ?1
+             SET last_success_ts = ?1, updated_at = ?1
              WHERE source IN ('shell', 'claude-tool', 'browser')",
             rusqlite::params![now_ms],
         )
@@ -184,13 +184,13 @@ fn source_health_idle_tick_advances_heartbeat_ts_not_success_ts() {
             .unwrap();
 
         assert_eq!(
-            last_heartbeat_ts,
+            last_success_ts,
             Some(now_ms),
-            "{source}: last_heartbeat_ts must advance on idle tick"
+            "{source}: last_success_ts must advance on idle tick"
         );
         assert_eq!(
-            last_success_ts, None,
-            "{source}: last_success_ts must not be touched by idle-tick flush"
+            last_heartbeat_ts, None,
+            "{source}: last_heartbeat_ts must not be touched by idle-tick flush"
         );
     }
 }
@@ -211,7 +211,7 @@ fn source_health_update_errors_when_table_missing() {
     // Production code silences this with `let _ =`.
     let result = conn.execute(
         "UPDATE source_health
-         SET last_heartbeat_ts = ?1, updated_at = ?1
+         SET last_success_ts = ?1, updated_at = ?1
          WHERE source IN ('shell', 'claude-tool', 'browser')",
         rusqlite::params![1_700_000_000_000_i64],
     );

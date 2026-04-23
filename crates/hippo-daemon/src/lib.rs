@@ -45,6 +45,10 @@ pub fn load_redaction_engine(config: &hippo_core::config::HippoConfig) -> Redact
     }
 }
 
+pub(crate) fn is_missing_source_health_table_error(err: &rusqlite::Error) -> bool {
+    err.to_string().contains("no such table: source_health")
+}
+
 /// Redact a shell event: scrub the command, filter env to allowlist, redact env values.
 /// Returns the redacted event and the command redaction result (for counting).
 pub fn redact_shell_event(event: &ShellEvent, redaction: &RedactionEngine) -> Box<ShellEvent> {

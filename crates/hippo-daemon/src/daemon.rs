@@ -207,13 +207,6 @@ pub async fn handle_request(state: &Arc<DaemonState>, request: DaemonRequest) ->
     response
 }
 
-/// Returns true when a rusqlite error is the expected "no such table: source_health"
-/// seen on pre-migration databases. All other errors are unexpected post-migration
-/// and should be logged.
-fn is_source_health_missing(e: &rusqlite::Error) -> bool {
-    e.to_string().contains("no such table: source_health")
-}
-
 #[tracing::instrument(skip(state), fields(event_count))]
 pub async fn flush_events(state: &Arc<DaemonState>) -> usize {
     #[cfg(feature = "otel")]
@@ -234,16 +227,17 @@ pub async fn flush_events(state: &Arc<DaemonState>) -> usize {
 
     if events.is_empty() {
         // Idle-tick: flush ran but the buffer was empty.
-        // Record daemon liveness via heartbeat without touching last_success_ts,
-        // which remains tied to successful event landings.
+        // Advancing last_success_ts on zero-event ticks distinguishes "daemon is
+        // healthy but quiet" from "flush loop stalled". last_heartbeat_ts remains
+        // reserved for actual browser-extension heartbeat signals.
         let db = state.write_db.lock().await;
         match db.execute(
             "UPDATE source_health
-             SET last_heartbeat_ts = ?1, updated_at = ?1
+             SET last_success_ts = ?1, updated_at = ?1
              WHERE source IN ('shell', 'claude-tool', 'browser')",
             rusqlite::params![now_ms],
         ) {
-            Err(e) if !is_source_health_missing(&e) => {
+            Err(e) if !crate::is_missing_source_health_table_error(&e) => {
                 warn!("source_health idle-tick update failed: {e}");
             }
             _ => {}
@@ -415,7 +409,7 @@ pub async fn flush_events(state: &Arc<DaemonState>) -> usize {
              WHERE source = ?4",
             rusqlite::params![latest_ts, now_ms, count, source],
         ) {
-            Err(e) if !is_source_health_missing(&e) => {
+            Err(e) if !crate::is_missing_source_health_table_error(&e) => {
                 warn!("source_health success update failed for {source}: {e}");
             }
             _ => {}
@@ -431,20 +425,31 @@ pub async fn flush_events(state: &Arc<DaemonState>) -> usize {
              WHERE source = ?3",
             rusqlite::params![now_ms, err_msg, source],
         ) {
-            Err(e) if !is_source_health_missing(&e) => {
+            Err(e) if !crate::is_missing_source_health_table_error(&e) => {
                 warn!("source_health error update failed for {source}: {e}");
             }
             _ => {}
         }
     }
 
-    // Heartbeat: flush tick completed for daemon-managed sources.
-    let _ = db.execute(
-        "UPDATE source_health
-         SET last_heartbeat_ts = ?1, updated_at = ?1
-         WHERE source IN ('shell', 'claude-tool', 'browser')",
-        rusqlite::params![now_ms],
-    );
+    // Record flush-tick liveness for daemon-managed sources that did not error,
+    // including sources that had zero events in this batch.
+    for source in ["shell", "claude-tool", "browser"] {
+        if source_errors.contains_key(source) {
+            continue;
+        }
+        match db.execute(
+            "UPDATE source_health
+             SET last_success_ts = ?1, updated_at = ?1
+             WHERE source = ?2",
+            rusqlite::params![now_ms, source],
+        ) {
+            Err(e) if !crate::is_missing_source_health_table_error(&e) => {
+                warn!("source_health liveness update failed for {source}: {e}");
+            }
+            _ => {}
+        }
+    }
     #[cfg(feature = "otel")]
     {
         let count_u64 = count as u64;
@@ -471,8 +476,8 @@ struct RollingCounts {
 /// Periodically recompute rolling event counts in source_health from the
 /// actual event tables. Runs every 5 minutes to correct incremental drift
 /// (e.g. from events flushed before source_health rows existed, or from
-/// overlapping flush windows). Silently discards errors — if source_health
-/// doesn't exist yet the UPDATE error is dropped via `let _`.
+/// overlapping flush windows). Missing-table errors are ignored for pre-migration
+/// databases; unexpected write failures are logged.
 ///
 /// Reads are performed on `read_db` (separate connection from `write_db`),
 /// so COUNT(*) scans over event tables do not block `flush_events`.
@@ -536,26 +541,23 @@ async fn recompute_rolling_counts(state: Arc<DaemonState>) {
 
         // Phase 2: write pre-computed values to write_db — no subquery scans.
         let db = state.write_db.lock().await;
-        let _ = db.execute(
-            "UPDATE source_health SET events_last_1h=?1, events_last_24h=?2, \
-             updated_at=unixepoch('now')*1000 WHERE source='shell'",
-            rusqlite::params![counts.shell_1h, counts.shell_24h],
-        );
-        let _ = db.execute(
-            "UPDATE source_health SET events_last_1h=?1, events_last_24h=?2, \
-             updated_at=unixepoch('now')*1000 WHERE source='claude-tool'",
-            rusqlite::params![counts.tool_1h, counts.tool_24h],
-        );
-        let _ = db.execute(
-            "UPDATE source_health SET events_last_1h=?1, events_last_24h=?2, \
-             updated_at=unixepoch('now')*1000 WHERE source='claude-session'",
-            rusqlite::params![counts.session_1h, counts.session_24h],
-        );
-        let _ = db.execute(
-            "UPDATE source_health SET events_last_1h=?1, events_last_24h=?2, \
-             updated_at=unixepoch('now')*1000 WHERE source='browser'",
-            rusqlite::params![counts.browser_1h, counts.browser_24h],
-        );
+        for (source, count_1h, count_24h) in [
+            ("shell", counts.shell_1h, counts.shell_24h),
+            ("claude-tool", counts.tool_1h, counts.tool_24h),
+            ("claude-session", counts.session_1h, counts.session_24h),
+            ("browser", counts.browser_1h, counts.browser_24h),
+        ] {
+            match db.execute(
+                "UPDATE source_health SET events_last_1h=?1, events_last_24h=?2, \
+                 updated_at=unixepoch('now')*1000 WHERE source=?3",
+                rusqlite::params![count_1h, count_24h, source],
+            ) {
+                Err(e) if !crate::is_missing_source_health_table_error(&e) => {
+                    warn!("source_health rolling-count update failed for {source}: {e}");
+                }
+                _ => {}
+            }
+        }
         // write_db lock released here.
     }
 }
