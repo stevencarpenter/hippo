@@ -6,16 +6,21 @@ export const DEFAULT_ALLOWLIST: string[] = [
   "github.com",
   "github.io",
   "gitlab.com",
+  "bitbucket.org",
   // Package registries
   "crates.io",
   "npmjs.com",
   "pypi.org",
   "mvnrepository.com",
   "pkg.go.dev",
+  "rubygems.org",
   // Language & framework docs
   "docs.rs",
   "doc.rust-lang.org",
+  "rust-lang.org",
   "docs.python.org",
+  "python.org",
+  "swift.org",
   "developer.mozilla.org",
   "docs.astral.sh",
   "typescriptlang.org",
@@ -23,17 +28,32 @@ export const DEFAULT_ALLOWLIST: string[] = [
   "kubernetes.io",
   "go.dev",
   "nodejs.org",
+  "ziglang.org",
+  // AI & ML
+  "anthropic.com",
+  "openai.com",
+  "huggingface.co",
+  "arxiv.org",
+  "lmstudio.ai",
   // System & OS docs
   "man7.org",
   "wiki.archlinux.org",
+  // Database & infra docs
+  "sqlite.org",
+  "postgresql.org",
+  "redis.io",
+  "docker.com",
   // Q&A & community
   "stackoverflow.com",
   "stackexchange.com",
   "reddit.com",
   "news.ycombinator.com",
-  // Developer blogs & articles
+  "lobste.rs",
+  // Developer content
   "medium.com",
   "dev.to",
+  "hackernoon.com",
+  "substack.com",
 ];
 
 /** Minimum visible dwell time (ms) before capturing a page visit. */

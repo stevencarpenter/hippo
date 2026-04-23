@@ -244,16 +244,21 @@ fn default_browser_allowlist_domains() -> Vec<String> {
         "github.com".to_string(),
         "github.io".to_string(),
         "gitlab.com".to_string(),
+        "bitbucket.org".to_string(),
         // Package registries
         "crates.io".to_string(),
         "npmjs.com".to_string(),
         "pypi.org".to_string(),
         "mvnrepository.com".to_string(),
         "pkg.go.dev".to_string(),
+        "rubygems.org".to_string(),
         // Language & framework docs
         "docs.rs".to_string(),
         "doc.rust-lang.org".to_string(),
+        "rust-lang.org".to_string(),
         "docs.python.org".to_string(),
+        "python.org".to_string(),
+        "swift.org".to_string(),
         "developer.mozilla.org".to_string(),
         "docs.astral.sh".to_string(),
         "typescriptlang.org".to_string(),
@@ -261,17 +266,32 @@ fn default_browser_allowlist_domains() -> Vec<String> {
         "kubernetes.io".to_string(),
         "go.dev".to_string(),
         "nodejs.org".to_string(),
+        "ziglang.org".to_string(),
+        // AI & ML
+        "anthropic.com".to_string(),
+        "openai.com".to_string(),
+        "huggingface.co".to_string(),
+        "arxiv.org".to_string(),
+        "lmstudio.ai".to_string(),
         // System & OS docs
         "man7.org".to_string(),
         "wiki.archlinux.org".to_string(),
+        // Database & infra docs
+        "sqlite.org".to_string(),
+        "postgresql.org".to_string(),
+        "redis.io".to_string(),
+        "docker.com".to_string(),
         // Q&A & community
         "stackoverflow.com".to_string(),
         "stackexchange.com".to_string(),
         "reddit.com".to_string(),
         "news.ycombinator.com".to_string(),
-        // Developer blogs & articles
+        "lobste.rs".to_string(),
+        // Developer content
         "medium.com".to_string(),
         "dev.to".to_string(),
+        "hackernoon.com".to_string(),
+        "substack.com".to_string(),
     ]
 }
 
@@ -813,6 +833,11 @@ endpoint = "http://collector:4317"
                 .domains
                 .contains(&"stackoverflow.com".to_string())
         );
+        assert!(config.allowlist.domains.contains(&"rust-lang.org".to_string()));
+        assert!(config.allowlist.domains.contains(&"anthropic.com".to_string()));
+        assert!(config.allowlist.domains.contains(&"arxiv.org".to_string()));
+        assert!(config.allowlist.domains.contains(&"sqlite.org".to_string()));
+        assert!(config.allowlist.domains.contains(&"lobste.rs".to_string()));
         assert!(
             config
                 .url_redaction
