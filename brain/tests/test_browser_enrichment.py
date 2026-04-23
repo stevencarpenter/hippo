@@ -140,11 +140,15 @@ class TestClaimPendingBrowserEvents:
         assert "https://so.com/q/2" in urls
         assert "https://so.com/q/3" in urls
 
-        # Verify the skipped event's queue status
-        status = db.execute(
-            "SELECT status FROM browser_enrichment_queue WHERE browser_event_id = 1"
-        ).fetchone()[0]
-        assert status == "skipped"
+        # Verify the skipped event's queue status and error message
+        row = db.execute(
+            "SELECT status, error_message FROM browser_enrichment_queue WHERE browser_event_id = 1"
+        ).fetchone()
+        assert row[0] == "skipped"
+        assert row[1] is not None and len(row[1]) > 0, (
+            "error_message must be set for skipped low-engagement events"
+        )
+        assert "scroll" in row[1], f"expected 'scroll' in error_message, got: {row[1]!r}"
 
     def test_long_dwell_bypasses_scroll_filter(self, db):
         """Events with low scroll but dwell >= long_dwell_bypass_ms are kept."""
