@@ -207,6 +207,13 @@ pub async fn handle_request(state: &Arc<DaemonState>, request: DaemonRequest) ->
     response
 }
 
+/// Returns true when a rusqlite error is the expected "no such table: source_health"
+/// seen on pre-migration databases. All other errors are unexpected post-migration
+/// and should be logged.
+fn is_source_health_missing(e: &rusqlite::Error) -> bool {
+    e.to_string().contains("no such table: source_health")
+}
+
 #[tracing::instrument(skip(state), fields(event_count))]
 pub async fn flush_events(state: &Arc<DaemonState>) -> usize {
     #[cfg(feature = "otel")]
@@ -230,12 +237,17 @@ pub async fn flush_events(state: &Arc<DaemonState>) -> usize {
         // Record daemon liveness via heartbeat without touching last_success_ts,
         // which remains tied to successful event landings.
         let db = state.write_db.lock().await;
-        let _ = db.execute(
+        match db.execute(
             "UPDATE source_health
              SET last_heartbeat_ts = ?1, updated_at = ?1
              WHERE source IN ('shell', 'claude-tool', 'browser')",
             rusqlite::params![now_ms],
-        );
+        ) {
+            Err(e) if !is_source_health_missing(&e) => {
+                warn!("source_health idle-tick update failed: {e}");
+            }
+            _ => {}
+        }
         return 0;
     }
 
@@ -392,7 +404,7 @@ pub async fn flush_events(state: &Arc<DaemonState>) -> usize {
             continue;
         }
         let count = source_counts.get(source).copied().unwrap_or(0);
-        let _ = db.execute(
+        match db.execute(
             "UPDATE source_health
              SET last_event_ts        = MAX(COALESCE(last_event_ts, 0), ?1),
                  last_success_ts      = ?2,
@@ -402,10 +414,15 @@ pub async fn flush_events(state: &Arc<DaemonState>) -> usize {
                  updated_at           = ?2
              WHERE source = ?4",
             rusqlite::params![latest_ts, now_ms, count, source],
-        );
+        ) {
+            Err(e) if !is_source_health_missing(&e) => {
+                warn!("source_health success update failed for {source}: {e}");
+            }
+            _ => {}
+        }
     }
     for (source, err_msg) in &source_errors {
-        let _ = db.execute(
+        match db.execute(
             "UPDATE source_health
              SET last_error_ts        = ?1,
                  last_error_msg       = ?2,
@@ -413,7 +430,12 @@ pub async fn flush_events(state: &Arc<DaemonState>) -> usize {
                  updated_at           = ?1
              WHERE source = ?3",
             rusqlite::params![now_ms, err_msg, source],
-        );
+        ) {
+            Err(e) if !is_source_health_missing(&e) => {
+                warn!("source_health error update failed for {source}: {e}");
+            }
+            _ => {}
+        }
     }
 
     // Heartbeat: flush tick completed for daemon-managed sources.
