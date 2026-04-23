@@ -196,6 +196,10 @@ pub struct BrowserConfig {
     pub allowlist: BrowserAllowlist,
     #[serde(default)]
     pub url_redaction: BrowserUrlRedaction,
+    /// Long-dwell bypass threshold (ms). Events with dwell_ms >= this value bypass
+    /// the scroll-depth filter in the Python brain enrichment layer. Stored here so
+    /// config.toml is the single source of truth — the daemon does not enforce this;
+    /// the brain reads it at startup via `[browser] long_dwell_bypass_ms`.
     #[serde(default = "default_long_dwell_bypass_ms")]
     pub long_dwell_bypass_ms: u64,
 }
@@ -859,6 +863,7 @@ endpoint = "http://collector:4317"
 [browser]
 enabled = false
 min_dwell_ms = 5000
+long_dwell_bypass_ms = 300000
 
 [browser.allowlist]
 domains = ["example.com", "docs.rs"]
@@ -874,7 +879,8 @@ strip_params = ["secret", "nonce"]
         assert_eq!(config.browser.dedup_window_minutes, 30);
         assert_eq!(config.browser.correlation_window_ms, 300_000);
         assert_eq!(config.browser.stale_session_secs, 60);
-        assert_eq!(config.browser.long_dwell_bypass_ms, 120_000);
+        // Explicitly set to non-default to prove custom values round-trip
+        assert_eq!(config.browser.long_dwell_bypass_ms, 300_000);
         // Overridden sub-sections
         assert_eq!(
             config.browser.allowlist.domains,

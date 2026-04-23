@@ -190,6 +190,38 @@ class TestClaimPendingBrowserEvents:
             f"error_message must contain 'dwell=' for low-dwell skips, got: {row[1]!r}"
         )
 
+    def test_long_dwell_bypass_boundary(self, db):
+        """Event at exactly long_dwell_bypass_ms is kept (boundary: dwell >= threshold bypasses)."""
+        stale_ts = int(time.time() * 1000) - 120_000
+
+        # Exactly at threshold — should be kept (>= not >)
+        _insert_browser_event(
+            db,
+            1,
+            stale_ts,
+            url="https://github.com/sjcarpenter/hippo/issues/3",
+            domain="github.com",
+            dwell_ms=120_000,
+            scroll_depth=0.05,
+        )
+        # One ms below threshold — should be skipped
+        _insert_browser_event(
+            db,
+            2,
+            stale_ts + 1000,
+            url="https://github.com/sjcarpenter/hippo/issues/4",
+            domain="github.com",
+            dwell_ms=119_999,
+            scroll_depth=0.05,
+        )
+
+        chunks = claim_pending_browser_events(
+            db, "test-worker", stale_secs=60, long_dwell_bypass_ms=120_000
+        )
+        all_events = [e for chunk in chunks for e in chunk]
+        assert len(all_events) == 1
+        assert all_events[0]["id"] == 1
+
     def test_claim_splits_chunks_on_time_gap(self, db):
         """Events separated by >5 min gap should be in different chunks."""
         old_ts = int(time.time() * 1000) - 600_000  # 10 minutes ago

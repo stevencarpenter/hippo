@@ -36,7 +36,7 @@ lock_timeout_secs = 600
 enabled = true
 min_dwell_ms = 3000                 # Skip visits shorter than this (ms)
 scroll_depth_threshold = 0.15       # Skip pages scrolled < 15% with no search query
-long_dwell_bypass_ms = 120000       # Keep pages with dwell >= this regardless of scroll (default: 2 min)
+long_dwell_bypass_ms = 120000       # Keep pages with dwell >= this regardless of scroll (default: 120 s / 2 min)
 dedup_window_minutes = 30           # Same URL within this window = one logical visit
 correlation_window_ms = 300000      # ±5min window for correlating browser + shell events
 stale_session_secs = 60             # Wait this long before enriching browser sessions
