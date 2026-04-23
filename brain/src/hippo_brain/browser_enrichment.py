@@ -48,14 +48,15 @@ def claim_pending_browser_events(
     scroll_depth_threshold: float = 0.15,
     max_claim_batch: int | None = None,
     stale_lock_timeout_ms: int = STALE_LOCK_TIMEOUT_MS,
+    long_dwell_bypass_ms: int = 120_000,
 ) -> list[list[dict]]:
     """Atomically claim pending browser events and return them grouped into time-based chunks.
 
     Only claims events whose timestamp is older than stale_secs (to avoid
     processing events from an active browsing session).
 
-    Events with scroll_depth < scroll_depth_threshold AND no search_query are
-    marked 'skipped' and excluded from results.
+    Events with scroll_depth < scroll_depth_threshold AND no search_query AND
+    dwell_ms < long_dwell_bypass_ms are marked 'skipped' and excluded from results.
 
     `max_claim_batch` caps total events claimed per invocation; `None` disables
     the cap. Enforced as `LIMIT ?` on the UPDATE's inner SELECT.
@@ -133,8 +134,14 @@ def claim_pending_browser_events(
             continue
         scroll = ev.get("scroll_depth") or 0.0
         has_query = bool(ev.get("search_query"))
-        if scroll < scroll_depth_threshold and not has_query:
-            skipped.append((ev["id"], f"low engagement: scroll={scroll:.2f} and no search_query"))
+        dwell_ms = ev.get("dwell_ms") or 0
+        if scroll < scroll_depth_threshold and not has_query and dwell_ms < long_dwell_bypass_ms:
+            skipped.append(
+                (
+                    ev["id"],
+                    f"low engagement: scroll={scroll:.2f}, no search_query, dwell={dwell_ms}ms",
+                )
+            )
             continue
         keep.append(ev)
 
