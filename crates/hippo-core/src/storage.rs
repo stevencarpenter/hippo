@@ -2080,12 +2080,21 @@ mod tests {
         let db_path = dir.path().join("test.db");
         let conn = open_db(&db_path).unwrap();
 
-        // Table must exist and be queryable
-        let count: i64 = conn
-            .query_row("SELECT COUNT(*) FROM source_health", [], |r| r.get(0))
-            .unwrap();
-        // Pre-seed inserts four rows (shell, claude-tool, claude-session, browser)
-        assert_eq!(count, 4, "source_health should be pre-seeded with 4 rows");
+        // Each expected source must have a pre-seeded row; use per-source
+        // assertions so adding a new source doesn't silently break this test.
+        for expected_source in &["shell", "claude-tool", "claude-session", "browser"] {
+            let exists: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM source_health WHERE source = ?1",
+                    [expected_source],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(
+                exists, 1,
+                "source_health missing pre-seeded row for '{expected_source}'"
+            );
+        }
 
         // Verify key columns exist via PRAGMA table_info
         let mut stmt = conn
