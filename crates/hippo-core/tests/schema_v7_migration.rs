@@ -27,7 +27,7 @@ fn v6_db_migrates_to_v7_and_adds_source_kind_and_tool_name() {
     let version: i64 = conn
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .unwrap();
-    assert_eq!(version, 7);
+    assert_eq!(version, 8);
 
     // events table must gain source_kind (NOT NULL default 'shell') and tool_name (TEXT).
     let columns: Vec<(String, String, i64, Option<String>)> = conn
@@ -131,7 +131,7 @@ fn existing_v6_rows_default_to_source_kind_shell() {
 }
 
 #[test]
-fn fresh_db_has_v7() {
+fn fresh_db_has_v8() {
     let tmp = TempDir::new().unwrap();
     let db = tmp.path().join("hippo.db");
     let conn = open_db(&db).unwrap();
@@ -139,7 +139,7 @@ fn fresh_db_has_v7() {
     let version: i64 = conn
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .unwrap();
-    assert_eq!(version, 7);
+    assert_eq!(version, 8);
 
     // source_kind / tool_name must exist on a fresh install too
     // (i.e. schema.sql itself must carry them, not just the migration).
