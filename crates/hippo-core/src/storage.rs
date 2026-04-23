@@ -357,6 +357,7 @@ pub fn open_db(path: &Path) -> Result<Connection> {
     // stamp the rows they inject without touching real-capture data.
     // Keep in sync with schema.sql.
     if (1..=7).contains(&version) {
+        // CREATE TABLE IF NOT EXISTS and INSERT OR IGNORE are idempotent — safe to batch.
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS source_health (
                 source                 TEXT PRIMARY KEY,
@@ -374,16 +375,29 @@ pub fn open_db(path: &Path) -> Result<Connection> {
                 last_heartbeat_ts      INTEGER,
                 updated_at             INTEGER NOT NULL
              );
-             ALTER TABLE events           ADD COLUMN probe_tag TEXT;
-             ALTER TABLE claude_sessions  ADD COLUMN probe_tag TEXT;
-             ALTER TABLE browser_events   ADD COLUMN probe_tag TEXT;
              INSERT OR IGNORE INTO source_health (source, last_event_ts, updated_at) VALUES
                  ('shell',         (SELECT MAX(timestamp)  FROM events          WHERE source_kind = 'shell'),   unixepoch('now') * 1000),
                  ('claude-tool',   (SELECT MAX(timestamp)  FROM events          WHERE source_kind = 'claude-tool'), unixepoch('now') * 1000),
                  ('claude-session',(SELECT MAX(start_time) FROM claude_sessions),                               unixepoch('now') * 1000),
-                 ('browser',       (SELECT MAX(timestamp)  FROM browser_events),                                unixepoch('now') * 1000);
-             PRAGMA user_version = 8;",
+                 ('browser',       (SELECT MAX(timestamp)  FROM browser_events),                                unixepoch('now') * 1000);",
         )?;
+        // ALTER TABLE doesn't support IF NOT EXISTS in SQLite.  A crash between the
+        // CREATE TABLE above and the PRAGMA user_version = 8 below would leave the DB
+        // at v7, causing a retry that errors on the already-added column.  Suppress
+        // "duplicate column name" so the migration is safe to re-run.
+        for alter in [
+            "ALTER TABLE events           ADD COLUMN probe_tag TEXT",
+            "ALTER TABLE claude_sessions  ADD COLUMN probe_tag TEXT",
+            "ALTER TABLE browser_events   ADD COLUMN probe_tag TEXT",
+        ] {
+            if let Err(e) = conn.execute_batch(alter) {
+                let is_dup = e.to_string().contains("duplicate column name");
+                if !is_dup {
+                    return Err(e.into());
+                }
+            }
+        }
+        conn.execute_batch("PRAGMA user_version = 8;")?;
     } else if version != 0 && version != EXPECTED_VERSION {
         anyhow::bail!(
             "DB schema version mismatch: expected {}, found {}. \
