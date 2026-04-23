@@ -220,7 +220,20 @@ pub async fn flush_events(state: &Arc<DaemonState>) -> usize {
     let count = events.len();
     tracing::Span::current().record("event_count", count);
 
+    let now_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as i64;
+
     if events.is_empty() {
+        // Heartbeat: daemon is alive even when the event buffer is empty.
+        let db = state.write_db.lock().await;
+        let _ = db.execute(
+            "UPDATE source_health
+             SET last_heartbeat_ts = ?1, updated_at = ?1
+             WHERE source IN ('shell', 'claude-tool', 'browser')",
+            rusqlite::params![now_ms],
+        );
         return 0;
     }
 
@@ -229,10 +242,6 @@ pub async fn flush_events(state: &Arc<DaemonState>) -> usize {
     let mut session_map = state.session_map.lock().await;
 
     // Track per-source outcome for source_health batch upsert at end.
-    let now_ms = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as i64;
     let mut source_latest_ts: HashMap<&'static str, i64> = HashMap::new();
     let mut source_counts: HashMap<&'static str, i64> = HashMap::new();
     let mut source_errors: HashMap<&'static str, String> = HashMap::new();
@@ -296,12 +305,7 @@ pub async fn flush_events(state: &Arc<DaemonState>) -> usize {
 
                 let eid = envelope.envelope_id.to_string();
                 let event_ts = envelope.timestamp.timestamp_millis();
-                // Determine source: claude-tool if tool_name present, else shell.
-                let source: &'static str = if redacted_event.tool_name.is_some() {
-                    "claude-tool"
-                } else {
-                    "shell"
-                };
+                let source: &'static str = storage::source_kind_of(&redacted_event);
                 match storage::insert_event_at(
                     &db,
                     session_id,
@@ -403,14 +407,6 @@ pub async fn flush_events(state: &Arc<DaemonState>) -> usize {
             rusqlite::params![now_ms, err_msg, source],
         );
     }
-    // Heartbeat: mark that a flush tick ran even if no events arrived for these sources.
-    let _ = db.execute(
-        "UPDATE source_health
-         SET last_success_ts = ?1, updated_at = ?1
-         WHERE source IN ('shell', 'claude-tool', 'browser')",
-        rusqlite::params![now_ms],
-    );
-
     #[cfg(feature = "otel")]
     {
         let count_u64 = count as u64;

@@ -507,6 +507,16 @@ pub fn insert_event(
     )
 }
 
+/// Derive the `source_kind` string for a shell event — same logic used by `insert_event_at`.
+/// Exposed so callers that need the kind for bookkeeping don't duplicate the derivation.
+pub fn source_kind_of(event: &ShellEvent) -> &'static str {
+    if event.tool_name.is_some() {
+        "claude-tool"
+    } else {
+        "shell"
+    }
+}
+
 pub fn insert_event_at(
     conn: &Connection,
     session_id: i64,
