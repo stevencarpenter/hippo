@@ -38,14 +38,31 @@ async fn main() -> Result<()> {
         }
     };
 
+    // Set up rolling file appender for runtime logs (7-day retention).
+    // The launchd StandardErrorPath still captures pre-main panics and OS-level
+    // launch output; runtime application logs go here exclusively.
+    let data_dir = config.storage.data_dir.clone();
+    std::fs::create_dir_all(&data_dir)
+        .unwrap_or_else(|e| eprintln!("Warning: could not create data dir {}: {e}", data_dir.display()));
+    let file_appender = tracing_appender::rolling::RollingFileAppender::builder()
+        .rotation(tracing_appender::rolling::Rotation::DAILY)
+        .filename_prefix("daemon")
+        .filename_suffix("log")
+        .max_log_files(7)
+        .build(&data_dir)
+        .expect("failed to initialize log appender");
+    let (non_blocking, _log_guard) = tracing_appender::non_blocking(file_appender);
+
     // Initialize telemetry — OTel if feature-enabled and config says so, else plain fmt
     #[cfg(feature = "otel")]
     let _otel_guard = if config.telemetry.enabled {
-        match hippo_daemon::telemetry::init("hippo-daemon", &config.telemetry.endpoint) {
+        // Clone so the fallback path below can reuse the same writer if OTel init fails.
+        let writer = non_blocking.clone();
+        match hippo_daemon::telemetry::init("hippo-daemon", &config.telemetry.endpoint, writer) {
             Ok(guard) => Some(guard),
             Err(e) => {
                 tracing_subscriber::fmt()
-                    .with_writer(std::io::stderr)
+                    .with_writer(non_blocking)
                     .with_env_filter(
                         EnvFilter::try_from_default_env()
                             .unwrap_or_else(|_| EnvFilter::new("info")),
@@ -57,7 +74,7 @@ async fn main() -> Result<()> {
         }
     } else {
         tracing_subscriber::fmt()
-            .with_writer(std::io::stderr)
+            .with_writer(non_blocking)
             .with_env_filter(
                 EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
             )
@@ -67,7 +84,7 @@ async fn main() -> Result<()> {
 
     #[cfg(not(feature = "otel"))]
     tracing_subscriber::fmt()
-        .with_writer(std::io::stderr)
+        .with_writer(non_blocking)
         .with_env_filter(
             EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
         )

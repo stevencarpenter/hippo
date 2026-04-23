@@ -44,7 +44,13 @@ impl TelemetryGuard {
 /// Initialize OTel tracing subscriber with OTLP exporters.
 /// Replaces the default `tracing_subscriber::fmt` when OTel is enabled.
 /// Returns a guard that must be held for the lifetime of the program.
-pub fn init(service_name: &str, endpoint: &str) -> Result<TelemetryGuard> {
+///
+/// `writer` is the log destination for the fmt layer (typically a
+/// `tracing_appender::non_blocking::NonBlocking` file writer).
+pub fn init<W>(service_name: &str, endpoint: &str, writer: W) -> Result<TelemetryGuard>
+where
+    W: for<'a> tracing_subscriber::fmt::MakeWriter<'a> + Send + Sync + 'static,
+{
     let res = resource(service_name);
 
     // Traces
@@ -94,7 +100,7 @@ pub fn init(service_name: &str, endpoint: &str) -> Result<TelemetryGuard> {
         EnvFilter::new("info,opentelemetry_sdk=off,opentelemetry_otlp=off,opentelemetry_http=off")
     });
 
-    let fmt_layer = tracing_subscriber::fmt::layer().with_writer(std::io::stderr);
+    let fmt_layer = tracing_subscriber::fmt::layer().with_writer(writer);
 
     let otel_trace_layer = OpenTelemetryLayer::new(tracer);
 
