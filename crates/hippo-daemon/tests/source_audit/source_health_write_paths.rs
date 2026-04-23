@@ -7,7 +7,8 @@
 //!
 //! Full end-to-end coverage (flush_events → source_health) requires
 //! the P0.1 migration to have run (so the table exists); until then
-//! the UPDATEs silently affect 0 rows, which is also tested here.
+//! UPDATEs against the missing table return an error that production
+//! code intentionally ignores via `let _ =`, which is also tested here.
 
 use hippo_core::storage;
 
@@ -146,11 +147,12 @@ fn source_health_error_update_increments_failure_counter() {
     );
 }
 
-/// Verify the idle-tick heartbeat SQL: when the event buffer is empty flush_events
-/// updates last_heartbeat_ts and last_success_ts for all known sources.
-/// This is the spec guarantee — "even if it processed zero events (idle tick)".
+/// Verify the idle-tick SQL: when the event buffer is empty flush_events advances
+/// last_success_ts for all known sources without touching last_heartbeat_ts.
+/// Spec guarantee: "even if it processed zero events (idle tick)" (01-source-health.md:36).
+/// last_heartbeat_ts is browser-only and is set only by the extension, not here.
 #[test]
-fn source_health_idle_tick_updates_heartbeat_and_success_ts() {
+fn source_health_idle_tick_advances_success_ts_not_heartbeat_ts() {
     let dir = tempfile::tempdir().unwrap();
     let db_path = dir.path().join("hippo.db");
     let conn = storage::open_db(&db_path).unwrap();
@@ -161,7 +163,7 @@ fn source_health_idle_tick_updates_heartbeat_and_success_ts() {
     let rows_affected = conn
         .execute(
             "UPDATE source_health
-             SET last_heartbeat_ts = ?1, last_success_ts = ?1, updated_at = ?1
+             SET last_success_ts = ?1, updated_at = ?1
              WHERE source IN ('shell', 'claude-tool', 'browser')",
             rusqlite::params![now_ms],
         )
@@ -183,33 +185,31 @@ fn source_health_idle_tick_updates_heartbeat_and_success_ts() {
             .unwrap();
 
         assert_eq!(
-            last_heartbeat_ts,
-            Some(now_ms),
-            "{source}: last_heartbeat_ts must be set on idle tick"
-        );
-        assert_eq!(
             last_success_ts,
             Some(now_ms),
-            "{source}: last_success_ts must be set on idle tick (spec: 'even if zero events')"
+            "{source}: last_success_ts must advance on idle tick"
+        );
+        assert_eq!(
+            last_heartbeat_ts, None,
+            "{source}: last_heartbeat_ts must not be touched by idle-tick flush (browser-extension-only column)"
         );
     }
 }
 
-/// Verify that the UPDATE is a silent no-op when source_health doesn't exist.
-/// This is the pre-migration safety guarantee: if P0.1 hasn't run yet, the
-/// daemon should not error — just affect 0 rows.
+/// Verify the pre-migration safety guarantee: when source_health is absent,
+/// UPDATE returns "no such table" which production code ignores via `let _ =`.
 #[test]
-fn source_health_update_is_noop_when_table_missing() {
+fn source_health_update_errors_when_table_missing() {
     let dir = tempfile::tempdir().unwrap();
     let db_path = dir.path().join("hippo.db");
     let conn = storage::open_db(&db_path).unwrap();
 
     // Drop source_health to simulate a pre-migration DB.
-    // open_db creates it via the migration, so we need to drop it.
-    // If source_health doesn't exist in the schema yet, this is a no-op drop.
-    let _ = conn.execute("DROP TABLE IF EXISTS source_health", []);
+    conn.execute("DROP TABLE IF EXISTS source_health", [])
+        .unwrap();
 
-    // The UPDATE should succeed (affecting 0 rows) without panicking.
+    // SQLite returns an error ("no such table") — not Ok(0).
+    // Production code silences this with `let _ =`.
     let result = conn.execute(
         "UPDATE source_health
          SET last_success_ts = ?1, updated_at = ?1
@@ -217,12 +217,5 @@ fn source_health_update_is_noop_when_table_missing() {
         rusqlite::params![1_700_000_000_000_i64],
     );
 
-    // If the table doesn't exist, rusqlite returns an Err — that matches the
-    // pre-migration scenario. If it does exist (P0.1 is merged), we expect Ok(0).
-    // Either outcome is acceptable; the key is flush_events uses `let _ =` to
-    // discard the error, so production code is safe either way.
-    match result {
-        Ok(rows) => assert_eq!(rows, 0, "no rows updated when table is empty"),
-        Err(_) => { /* pre-migration: table missing, error discarded by `let _ =` */ }
-    }
+    assert!(result.is_err(), "UPDATE on missing table must return Err");
 }

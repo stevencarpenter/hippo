@@ -226,17 +226,17 @@ pub async fn flush_events(state: &Arc<DaemonState>) -> usize {
         .as_millis() as i64;
 
     if events.is_empty() {
-        // Idle-tick heartbeat: flush ran but produced no events.
-        // last_success_ts is updated per spec ("even if it processed zero events").
+        // Idle-tick: flush ran but the buffer was empty.
+        // last_success_ts advances per spec even on zero-event ticks so that
+        // hippo doctor can distinguish "source quiet" from "flush loop stalled."
+        // last_heartbeat_ts is browser-only and is set by the extension, not here.
         let db = state.write_db.lock().await;
-        if let Err(e) = db.execute(
+        let _ = db.execute(
             "UPDATE source_health
-             SET last_heartbeat_ts = ?1, last_success_ts = ?1, updated_at = ?1
+             SET last_success_ts = ?1, updated_at = ?1
              WHERE source IN ('shell', 'claude-tool', 'browser')",
             rusqlite::params![now_ms],
-        ) {
-            tracing::warn!("source_health idle-tick heartbeat write failed: {}", e);
-        }
+        );
         return 0;
     }
 
@@ -318,14 +318,15 @@ pub async fn flush_events(state: &Arc<DaemonState>) -> usize {
                     env_snapshot_id,
                     Some(&eid),
                 ) {
-                    Ok(_) => {
-                        // Update per-source tracking.
+                    Ok(id) if id >= 0 => {
+                        // Update per-source tracking; skip Ok(-1) duplicate-ignored inserts.
                         let entry = source_latest_ts.entry(source).or_insert(0);
                         if event_ts > *entry {
                             *entry = event_ts;
                         }
                         *source_counts.entry(source).or_insert(0) += 1;
                     }
+                    Ok(_) => {} // duplicate envelope_id, already stored — no-op
                     Err(e) => {
                         warn!("event insert failed, falling back: {}", e);
                         source_errors
@@ -353,13 +354,14 @@ pub async fn flush_events(state: &Arc<DaemonState>) -> usize {
                 let eid = envelope.envelope_id.to_string();
                 let event_ts = envelope.timestamp.timestamp_millis();
                 match storage::insert_browser_event(&db, browser_event, event_ts, Some(&eid)) {
-                    Ok(_) => {
+                    Ok(id) if id >= 0 => {
                         let entry = source_latest_ts.entry("browser").or_insert(0);
                         if event_ts > *entry {
                             *entry = event_ts;
                         }
                         *source_counts.entry("browser").or_insert(0) += 1;
                     }
+                    Ok(_) => {} // duplicate envelope_id — no-op
                     Err(e) => {
                         warn!("browser event insert failed, falling back: {}", e);
                         source_errors
@@ -383,9 +385,13 @@ pub async fn flush_events(state: &Arc<DaemonState>) -> usize {
     }
 
     // Batch-upsert source_health — UPDATE only (rows pre-seeded by migration).
-    // If source_health doesn't exist yet (pre-migration), UPDATE affects 0 rows
-    // and that's intentional — no error.
+    // Skip sources that also have errors this tick: an error-present tick is not
+    // a clean success, so last_success_ts must not advance and consecutive_failures
+    // must not reset (the error UPDATE below will handle them instead).
     for (source, latest_ts) in &source_latest_ts {
+        if source_errors.contains_key(source) {
+            continue;
+        }
         let count = source_counts.get(source).copied().unwrap_or(0);
         let _ = db.execute(
             "UPDATE source_health
@@ -443,6 +449,9 @@ struct RollingCounts {
 /// so COUNT(*) scans over event tables do not block `flush_events`.
 async fn recompute_rolling_counts(state: Arc<DaemonState>) {
     let mut interval = tokio::time::interval(Duration::from_secs(300));
+    // Discard the immediate first tick so the task starts ~5 min after daemon start,
+    // not at startup when the DB may still be warming up.
+    interval.tick().await;
     loop {
         interval.tick().await;
 
@@ -687,9 +696,9 @@ pub async fn run(config: HippoConfig) -> Result<()> {
         }
     });
 
-    // Spawn rolling-count recompute task (every 5 minutes). Errors are
-    // silently discarded inside the function — pre-migration DBs are safe.
-    tokio::spawn(recompute_rolling_counts(Arc::clone(&state)));
+    // Spawn rolling-count recompute task (every 5 minutes). Keep the handle so
+    // we can abort it cleanly on shutdown rather than leaving an orphaned task.
+    let recompute_task = tokio::spawn(recompute_rolling_counts(Arc::clone(&state)));
 
     // Bind listener
     let listener = UnixListener::bind(&socket_path)?;
@@ -731,6 +740,10 @@ pub async fn run(config: HippoConfig) -> Result<()> {
     if let Err(e) = flush_task.await {
         warn!("flush task join error: {}", e);
     }
+
+    recompute_task.abort();
+    // Ignore JoinError::Cancelled — abort is intentional.
+    let _ = recompute_task.await;
 
     // Final drain for events buffered by connections that finished after the
     // flush task exited. No race: flush task is already joined above.
