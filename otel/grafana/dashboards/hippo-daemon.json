@@ -20,8 +20,8 @@
         {
           "refId": "A",
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "sum(rate(hippo_daemon_events_ingested_total[5m])) by (type) * 60",
-          "legendFormat": "{{type}}",
+          "expr": "sum(rate(hippo_daemon_events_ingested_total[5m])) by (source) * 60",
+          "legendFormat": "{{source}}",
           "editorMode": "code"
         }
       ],

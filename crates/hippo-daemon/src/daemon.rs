@@ -69,7 +69,7 @@ pub async fn handle_request(state: &Arc<DaemonState>, request: DaemonRequest) ->
     let response = match request {
         DaemonRequest::IngestEvent(envelope) => {
             #[cfg(feature = "otel")]
-            let event_type = match &envelope.payload {
+            let event_source = match &envelope.payload {
                 EventPayload::Shell(_) => "shell",
                 EventPayload::Browser(_) => "browser",
                 _ => "unknown",
@@ -79,11 +79,11 @@ pub async fn handle_request(state: &Arc<DaemonState>, request: DaemonRequest) ->
             if buffer.len() >= cap {
                 state.drop_count.fetch_add(1, Ordering::Relaxed);
                 #[cfg(feature = "otel")]
-                metrics::EVENTS_DROPPED.add(1, &[KeyValue::new("type", event_type)]);
+                metrics::EVENTS_DROPPED.add(1, &[KeyValue::new("source", event_source)]);
             } else {
                 buffer.push(*envelope);
                 #[cfg(feature = "otel")]
-                metrics::EVENTS_INGESTED.add(1, &[KeyValue::new("type", event_type)]);
+                metrics::EVENTS_INGESTED.add(1, &[KeyValue::new("source", event_source)]);
             }
             DaemonResponse::Ack
         }
@@ -340,6 +340,9 @@ pub async fn flush_events(state: &Arc<DaemonState>) -> usize {
     #[cfg(feature = "otel")]
     {
         let count_u64 = count as u64;
+        // TODO(P0.2): emit per-source counts once flush_events tracks per-source breakdown.
+        // For now this counter has no source attribute; use EVENTS_INGESTED{source=...} for
+        // per-source ingestion rates.
         metrics::FLUSH_EVENTS.add(count_u64, &[]);
         metrics::FLUSH_BATCH_SIZE.record(count_u64, &[]);
         metrics::FLUSH_DURATION_MS.record(flush_start.elapsed().as_secs_f64() * 1000.0, &[]);
