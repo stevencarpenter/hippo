@@ -41,3 +41,6 @@ mod xcode_codingassistant;
 
 #[path = "source_audit/doctor_freshness.rs"]
 mod doctor_freshness;
+
+#[path = "source_audit/source_health_write_paths.rs"]
+mod source_health_write_paths;

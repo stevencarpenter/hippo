@@ -855,7 +855,7 @@ fn insert_segments(conn: &Connection, segments: &[SessionSegment]) -> Result<(us
             serde_json::to_string(&seg.user_prompts).unwrap_or_else(|_| "[]".into());
         let is_subagent_int: i64 = if seg.is_subagent { 1 } else { 0 };
 
-        let res = conn.execute(
+        match conn.execute(
             "INSERT OR IGNORE INTO claude_sessions
                 (session_id, project_dir, cwd, git_branch, segment_index,
                  start_time, end_time, summary_text, tool_calls_json,
@@ -880,24 +880,58 @@ fn insert_segments(conn: &Connection, segments: &[SessionSegment]) -> Result<(us
                 seg.parent_session_id,
                 now_ms,
             ],
-        )?;
+        ) {
+            Ok(0) => {
+                // UNIQUE (session_id, segment_index) collided — already ingested.
+                skipped += 1;
+                continue;
+            }
+            Ok(_) => {
+                let claude_session_id = conn.last_insert_rowid();
+                // Enqueue for enrichment. OR IGNORE so a replay doesn't trip the
+                // UNIQUE (claude_session_id) constraint — belt-and-suspenders since
+                // the parent INSERT was also OR IGNORE.
+                conn.execute(
+                    "INSERT OR IGNORE INTO claude_enrichment_queue (claude_session_id, created_at)
+                     VALUES (?1, ?2)",
+                    params![claude_session_id, now_ms],
+                )?;
 
-        if res == 0 {
-            // UNIQUE (session_id, segment_index) collided — already ingested.
-            skipped += 1;
-            continue;
+                // Update source_health for claude-session (upsert — row may not exist
+                // yet on first ingest, or may not exist at all pre-migration; both are safe).
+                let _ = conn.execute(
+                    "INSERT INTO source_health
+                         (source, last_event_ts, last_success_ts, consecutive_failures, updated_at)
+                     VALUES ('claude-session', ?1, ?2, 0, ?2)
+                     ON CONFLICT(source) DO UPDATE SET
+                         last_event_ts        = MAX(COALESCE(last_event_ts, 0), excluded.last_event_ts),
+                         last_success_ts      = excluded.last_success_ts,
+                         events_last_1h       = events_last_1h + 1,
+                         events_last_24h      = events_last_24h + 1,
+                         consecutive_failures = 0,
+                         updated_at           = excluded.updated_at",
+                    params![seg.start_time, now_ms],
+                );
+
+                inserted += 1;
+            }
+            Err(e) => {
+                // Record the failure in source_health before propagating.
+                let err_512: String = e.to_string().chars().take(512).collect();
+                let _ = conn.execute(
+                    "INSERT INTO source_health
+                         (source, consecutive_failures, last_error_ts, last_error_msg, updated_at)
+                     VALUES ('claude-session', 1, ?1, ?2, ?1)
+                     ON CONFLICT(source) DO UPDATE SET
+                         consecutive_failures = source_health.consecutive_failures + 1,
+                         last_error_ts        = excluded.last_error_ts,
+                         last_error_msg       = excluded.last_error_msg,
+                         updated_at           = excluded.updated_at",
+                    params![now_ms, err_512],
+                );
+                return Err(e.into());
+            }
         }
-
-        let claude_session_id = conn.last_insert_rowid();
-        // Enqueue for enrichment. OR IGNORE so a replay doesn't trip the
-        // UNIQUE (claude_session_id) constraint — belt-and-suspenders since
-        // the parent INSERT was also OR IGNORE.
-        conn.execute(
-            "INSERT OR IGNORE INTO claude_enrichment_queue (claude_session_id, created_at)
-             VALUES (?1, ?2)",
-            params![claude_session_id, now_ms],
-        )?;
-        inserted += 1;
     }
 
     Ok((inserted, skipped))
