@@ -226,14 +226,17 @@ pub async fn flush_events(state: &Arc<DaemonState>) -> usize {
         .as_millis() as i64;
 
     if events.is_empty() {
-        // Heartbeat: daemon is alive even when the event buffer is empty.
+        // Idle-tick heartbeat: flush ran but produced no events.
+        // last_success_ts is updated per spec ("even if it processed zero events").
         let db = state.write_db.lock().await;
-        let _ = db.execute(
+        if let Err(e) = db.execute(
             "UPDATE source_health
-             SET last_heartbeat_ts = ?1, updated_at = ?1
+             SET last_heartbeat_ts = ?1, last_success_ts = ?1, updated_at = ?1
              WHERE source IN ('shell', 'claude-tool', 'browser')",
             rusqlite::params![now_ms],
-        );
+        ) {
+            tracing::warn!("source_health idle-tick heartbeat write failed: {}", e);
+        }
         return 0;
     }
 

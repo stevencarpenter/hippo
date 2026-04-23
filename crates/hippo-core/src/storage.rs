@@ -545,15 +545,7 @@ pub fn insert_event_at(
         None => (None, None),
     };
 
-    // Derive source_kind from tool_name presence. A populated tool_name
-    // means the event was synthesized from a Claude Code tool use; a
-    // missing one means it came from a native shell hook. Future sources
-    // (cursor, codex, ...) will need their own discriminator on ShellEvent.
-    let source_kind = if event.tool_name.is_some() {
-        "claude-tool"
-    } else {
-        "shell"
-    };
+    let source_kind = source_kind_of(event);
 
     let tx = conn.unchecked_transaction()?;
 

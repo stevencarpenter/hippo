@@ -146,6 +146,55 @@ fn source_health_error_update_increments_failure_counter() {
     );
 }
 
+/// Verify the idle-tick heartbeat SQL: when the event buffer is empty flush_events
+/// updates last_heartbeat_ts and last_success_ts for all known sources.
+/// This is the spec guarantee — "even if it processed zero events (idle tick)".
+#[test]
+fn source_health_idle_tick_updates_heartbeat_and_success_ts() {
+    let dir = tempfile::tempdir().unwrap();
+    let db_path = dir.path().join("hippo.db");
+    let conn = storage::open_db(&db_path).unwrap();
+
+    let now_ms: i64 = 1_700_000_000_000;
+
+    // Run the same UPDATE SQL the idle-tick branch in flush_events uses.
+    let rows_affected = conn
+        .execute(
+            "UPDATE source_health
+             SET last_heartbeat_ts = ?1, last_success_ts = ?1, updated_at = ?1
+             WHERE source IN ('shell', 'claude-tool', 'browser')",
+            rusqlite::params![now_ms],
+        )
+        .unwrap();
+
+    // Migration pre-seeds 'shell', 'claude-tool', 'browser' rows.
+    assert_eq!(
+        rows_affected, 3,
+        "idle-tick UPDATE should touch all 3 sources"
+    );
+
+    for source in &["shell", "claude-tool", "browser"] {
+        let (last_heartbeat_ts, last_success_ts): (Option<i64>, Option<i64>) = conn
+            .query_row(
+                "SELECT last_heartbeat_ts, last_success_ts FROM source_health WHERE source = ?1",
+                rusqlite::params![source],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+
+        assert_eq!(
+            last_heartbeat_ts,
+            Some(now_ms),
+            "{source}: last_heartbeat_ts must be set on idle tick"
+        );
+        assert_eq!(
+            last_success_ts,
+            Some(now_ms),
+            "{source}: last_success_ts must be set on idle tick (spec: 'even if zero events')"
+        );
+    }
+}
+
 /// Verify that the UPDATE is a silent no-op when source_health doesn't exist.
 /// This is the pre-migration safety guarantee: if P0.1 hasn't run yet, the
 /// daemon should not error — just affect 0 rows.
