@@ -427,46 +427,106 @@ pub async fn flush_events(state: &Arc<DaemonState>) -> usize {
     count
 }
 
+/// Rolling event counts gathered from read_db before writing to write_db.
+struct RollingCounts {
+    shell_1h: i64,
+    shell_24h: i64,
+    tool_1h: i64,
+    tool_24h: i64,
+    session_1h: i64,
+    session_24h: i64,
+    browser_1h: i64,
+    browser_24h: i64,
+}
+
 /// Periodically recompute rolling event counts in source_health from the
 /// actual event tables. Runs every 5 minutes to correct incremental drift
 /// (e.g. from events flushed before source_health rows existed, or from
 /// overlapping flush windows). Silently discards errors — if source_health
-/// doesn't exist yet the execute_batch error is dropped via `let _`.
+/// doesn't exist yet the UPDATE error is dropped via `let _`.
+///
+/// Reads are performed on `read_db` (separate connection from `write_db`),
+/// so COUNT(*) scans over event tables do not block `flush_events`.
 async fn recompute_rolling_counts(state: Arc<DaemonState>) {
     let mut interval = tokio::time::interval(Duration::from_secs(300));
     loop {
         interval.tick().await;
+
+        // Phase 1: gather counts from read_db — does not block flush_events.
+        let counts = {
+            let db = state.read_db.lock().await;
+            let read = |sql: &str| -> rusqlite::Result<i64> {
+                db.query_row(sql, [], |r| r.get(0))
+            };
+            let result: rusqlite::Result<RollingCounts> = (|| {
+                Ok(RollingCounts {
+                    shell_1h: read(
+                        "SELECT COUNT(*) FROM events WHERE source_kind = 'shell' \
+                         AND timestamp > (unixepoch('now') - 3600) * 1000",
+                    )?,
+                    shell_24h: read(
+                        "SELECT COUNT(*) FROM events WHERE source_kind = 'shell' \
+                         AND timestamp > (unixepoch('now') - 86400) * 1000",
+                    )?,
+                    tool_1h: read(
+                        "SELECT COUNT(*) FROM events WHERE source_kind = 'claude-tool' \
+                         AND timestamp > (unixepoch('now') - 3600) * 1000",
+                    )?,
+                    tool_24h: read(
+                        "SELECT COUNT(*) FROM events WHERE source_kind = 'claude-tool' \
+                         AND timestamp > (unixepoch('now') - 86400) * 1000",
+                    )?,
+                    session_1h: read(
+                        "SELECT COUNT(*) FROM claude_sessions \
+                         WHERE start_time > (unixepoch('now') - 3600) * 1000",
+                    )?,
+                    session_24h: read(
+                        "SELECT COUNT(*) FROM claude_sessions \
+                         WHERE start_time > (unixepoch('now') - 86400) * 1000",
+                    )?,
+                    browser_1h: read(
+                        "SELECT COUNT(*) FROM browser_events \
+                         WHERE timestamp > (unixepoch('now') - 3600) * 1000",
+                    )?,
+                    browser_24h: read(
+                        "SELECT COUNT(*) FROM browser_events \
+                         WHERE timestamp > (unixepoch('now') - 86400) * 1000",
+                    )?,
+                })
+            })();
+            match result {
+                Ok(v) => v,
+                Err(e) => {
+                    tracing::debug!("recompute_rolling_counts: read failed, skipping: {e}");
+                    continue;
+                }
+            }
+        };
+        // read_db lock released here.
+
+        // Phase 2: write pre-computed values to write_db — no subquery scans.
         let db = state.write_db.lock().await;
-        let _ = db.execute_batch(
-            "UPDATE source_health SET
-                events_last_1h  = (SELECT COUNT(*) FROM events WHERE source_kind = 'shell'
-                                    AND timestamp > (unixepoch('now') - 3600) * 1000),
-                events_last_24h = (SELECT COUNT(*) FROM events WHERE source_kind = 'shell'
-                                    AND timestamp > (unixepoch('now') - 86400) * 1000),
-                updated_at = unixepoch('now') * 1000
-             WHERE source = 'shell';
-             UPDATE source_health SET
-                events_last_1h  = (SELECT COUNT(*) FROM events WHERE source_kind = 'claude-tool'
-                                    AND timestamp > (unixepoch('now') - 3600) * 1000),
-                events_last_24h = (SELECT COUNT(*) FROM events WHERE source_kind = 'claude-tool'
-                                    AND timestamp > (unixepoch('now') - 86400) * 1000),
-                updated_at = unixepoch('now') * 1000
-             WHERE source = 'claude-tool';
-             UPDATE source_health SET
-                events_last_1h  = (SELECT COUNT(*) FROM claude_sessions
-                                    WHERE start_time > (unixepoch('now') - 3600) * 1000),
-                events_last_24h = (SELECT COUNT(*) FROM claude_sessions
-                                    WHERE start_time > (unixepoch('now') - 86400) * 1000),
-                updated_at = unixepoch('now') * 1000
-             WHERE source = 'claude-session';
-             UPDATE source_health SET
-                events_last_1h  = (SELECT COUNT(*) FROM browser_events
-                                    WHERE timestamp > (unixepoch('now') - 3600) * 1000),
-                events_last_24h = (SELECT COUNT(*) FROM browser_events
-                                    WHERE timestamp > (unixepoch('now') - 86400) * 1000),
-                updated_at = unixepoch('now') * 1000
-             WHERE source = 'browser';",
+        let _ = db.execute(
+            "UPDATE source_health SET events_last_1h=?1, events_last_24h=?2, \
+             updated_at=unixepoch('now')*1000 WHERE source='shell'",
+            rusqlite::params![counts.shell_1h, counts.shell_24h],
         );
+        let _ = db.execute(
+            "UPDATE source_health SET events_last_1h=?1, events_last_24h=?2, \
+             updated_at=unixepoch('now')*1000 WHERE source='claude-tool'",
+            rusqlite::params![counts.tool_1h, counts.tool_24h],
+        );
+        let _ = db.execute(
+            "UPDATE source_health SET events_last_1h=?1, events_last_24h=?2, \
+             updated_at=unixepoch('now')*1000 WHERE source='claude-session'",
+            rusqlite::params![counts.session_1h, counts.session_24h],
+        );
+        let _ = db.execute(
+            "UPDATE source_health SET events_last_1h=?1, events_last_24h=?2, \
+             updated_at=unixepoch('now')*1000 WHERE source='browser'",
+            rusqlite::params![counts.browser_1h, counts.browser_24h],
+        );
+        // write_db lock released here.
     }
 }
 

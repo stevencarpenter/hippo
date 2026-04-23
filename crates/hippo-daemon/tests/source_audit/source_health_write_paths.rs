@@ -13,10 +13,7 @@ use hippo_core::storage;
 
 /// Simulate what flush_events does after processing 3 successful shell events:
 /// pre-seed a source_health row, run the success UPDATE, and assert the result.
-///
-/// Requires P0.1 migration — ignored until `feat/p0.1-source-health-schema` merges.
 #[test]
-#[ignore = "requires P0.1 source_health schema migration to be merged first"]
 fn source_health_success_update_increments_counts_and_clears_failures() {
     let dir = tempfile::tempdir().unwrap();
     let db_path = dir.path().join("hippo.db");
@@ -93,10 +90,7 @@ fn source_health_success_update_increments_counts_and_clears_failures() {
 
 /// Simulate what flush_events does after a storage error: pre-seed a row,
 /// run the error UPDATE, and assert failure counters increment.
-///
-/// Requires P0.1 migration — ignored until `feat/p0.1-source-health-schema` merges.
 #[test]
-#[ignore = "requires P0.1 source_health schema migration to be merged first"]
 fn source_health_error_update_increments_failure_counter() {
     let dir = tempfile::tempdir().unwrap();
     let db_path = dir.path().join("hippo.db");
