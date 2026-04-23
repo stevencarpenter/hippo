@@ -21,7 +21,7 @@ As of 2026-03-27, your MacBook has **zero Hippo footprint**:
 | Step | Command | What It Does |
 |------|---------|--------------|
 | `build` | `cargo build` | Compiles Rust crates into `target/debug/`. Produces `target/debug/hippo` binary (~50 MB debug). Downloads/compiles crate dependencies on first run. |
-| `build:brain` | `uv sync --project brain` | Creates `brain/.venv/` virtualenv, installs Python dependencies (httpx, uvicorn, starlette, lancedb, etc.) |
+| `build:brain` | `uv sync --project brain` | Creates `brain/.venv/` virtualenv, installs Python dependencies (httpx, uvicorn, starlette, sqlite-vec, etc.) |
 
 ### Filesystem Impact (build only)
 
@@ -89,18 +89,16 @@ After build, the README suggests three additional steps. Here is what each does:
 
 **Filesystem created on first run:**
 
-| Path | Type | Purpose |
-|------|------|---------|
-| `~/.local/share/hippo/vectors/` | Directory | LanceDB vector store |
+Vectors are stored directly in `~/.local/share/hippo/hippo.db` via sqlite-vec (vec0 virtual table). No separate vector store directory is created.
 
 **Network:**
 - Binds `127.0.0.1:9175` (localhost only, not externally reachable)
 - Makes outbound HTTP to LM Studio (`localhost:1234/v1/chat/completions` and `/v1/embeddings`)
 
 **Resource usage:**
-- Memory: ~80-150 MB resident (Python, LanceDB, httpx)
+- Memory: ~80-150 MB resident (Python, sqlite-vec, httpx)
 - CPU: Near-zero idle. Polls enrichment queue every 5 seconds (cheap SQLite COUNT query). Spikes when calling LM Studio for enrichment.
-- Disk: LanceDB vectors grow with enrichment. ~2-5 KB per enriched event.
+- Disk: Vectors grow with enrichment inside hippo.db. ~2-5 KB per enriched event.
 
 ### Step 4: LaunchAgents (optional — auto-start on login)
 
@@ -337,7 +335,7 @@ After confirming each piece independently:
 | Risk | Impact | Mitigation |
 |------|--------|------------|
 | **LaunchAgent `KeepAlive: true` respawn loop** | If daemon crashes repeatedly, launchd will keep restarting it, potentially consuming CPU in a tight crash loop | launchd has built-in throttling (10-second minimum between restarts). If it's a problem: `launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.hippo.daemon.plist` |
-| **Brain server memory with large LanceDB** | Over time with heavy enrichment, the vector store could grow. LanceDB loads indexes into memory. | Monitor with `ls -lh ~/.local/share/hippo/vectors/`. For a year of shell commands this would still be small (~50-100 MB). |
+| **Brain server memory with large vector store** | Over time with heavy enrichment, the sqlite-vec table in hippo.db could grow. | Monitor with `du -h ~/.local/share/hippo/hippo.db`. For a year of shell commands this would still be small (~50-100 MB). |
 | **Sensitive command capture** | Commands containing passwords/tokens typed directly (e.g., `mysql -p password123`) will be captured. Redaction patterns catch common formats but not all. | Review `config/redact.default.toml` patterns. The allowlist approach for env vars is solid. Custom patterns can be added to `~/.config/hippo/redact.toml`. |
 
 ### Things That Are NOT Risks

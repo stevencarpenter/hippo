@@ -119,7 +119,7 @@ get_latest_release() {
     local tag
 
     if command -v curl >/dev/null 2>&1; then
-        tag="$(curl -fsSL "${url}" | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')"
+        tag="$(curl -fsSL "${url}" | grep '"tag_name":' | LC_ALL=C sed -E 's/.*"([^"]+)".*/\1/')"
     else
         log_error "curl is required but not installed"
         exit 1
@@ -455,7 +455,7 @@ warn_on_stale_shell_hook_sources() {
         [ -f "${config_path}" ] || return 0
 
         while IFS= read -r line; do
-            source_path="$(printf '%s\n' "${line}" | sed -nE "s/.*source[[:space:]]+['\"]?([^'\"[:space:]]*hippo(-env)?\\.zsh)['\"]?.*/\\1/p")"
+            source_path="$(printf '%s\n' "${line}" | LC_ALL=C sed -nE "s/.*source[[:space:]]+['\"]?([^'\"[:space:]]*hippo(-env)?\\.zsh)['\"]?.*/\\1/p")"
             [ -n "${source_path}" ] || continue
 
             case "${source_path}" in
