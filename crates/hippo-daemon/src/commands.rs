@@ -643,7 +643,7 @@ pub async fn handle_doctor(config: &HippoConfig, explain: bool) -> Result<()> {
     fail_count += check_log_file_sizes(config, explain);
 
     if fail_count > 0 {
-        std::process::exit(1);
+        std::process::exit(fail_count as i32);
     }
 
     Ok(())
