@@ -70,7 +70,7 @@ actor BrainClient: BrainClientProtocol {
         }
         var queryItems = [
             URLQueryItem(name: "limit", value: String(limit)),
-            URLQueryItem(name: "offset", value: String(offset))
+            URLQueryItem(name: "offset", value: String(offset)),
         ]
         if let nodeType = nodeType {
             queryItems.append(URLQueryItem(name: "node_type", value: nodeType))
@@ -104,7 +104,7 @@ actor BrainClient: BrainClientProtocol {
         }
         var queryItems = [
             URLQueryItem(name: "limit", value: String(limit)),
-            URLQueryItem(name: "offset", value: String(offset))
+            URLQueryItem(name: "offset", value: String(offset)),
         ]
         if let sessionId = sessionId {
             queryItems.append(URLQueryItem(name: "session_id", value: String(sessionId)))
@@ -129,7 +129,7 @@ actor BrainClient: BrainClientProtocol {
     ) async throws(BrainClientError) -> SessionListResponse {
         var queryItems = [
             URLQueryItem(name: "limit", value: String(limit)),
-            URLQueryItem(name: "offset", value: String(offset))
+            URLQueryItem(name: "offset", value: String(offset)),
         ]
         if let sinceMs {
             queryItems.append(URLQueryItem(name: "since_ms", value: String(sinceMs)))

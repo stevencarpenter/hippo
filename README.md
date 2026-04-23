@@ -32,7 +32,7 @@ This one-liner downloads and installs the daemon, brain, and GUI app with checks
 |  Firefox  | ---------------> |              |                +--------------+
 |  ext.     |                  |              |                  ^         |
 +-----------+                  +--------------+           stdio  |  SQLite |
-                                                        (JSONL) | LanceDB |
+                                                        (JSONL) | sqlite-vec |
                                                                 |  LM API |
                                                           Claude Code / Desktop
 ```
@@ -40,7 +40,7 @@ This one-liner downloads and installs the daemon, brain, and GUI app with checks
 | Component | Language | Role |
 |-----------|----------|------|
 | **hippo-daemon** | Rust | Captures events via Unix socket and Native Messaging. Applies secret redaction, stores to SQLite, serves CLI queries. |
-| **hippo-brain** | Python | Polls enrichment queues, calls LM Studio for summarization, correlates browser research with shell activity, writes knowledge nodes + vector embeddings to LanceDB. |
+| **hippo-brain** | Python | Polls enrichment queues, calls LM Studio for summarization, correlates browser research with shell activity, writes knowledge nodes + vector embeddings to SQLite via sqlite-vec. |
 | **hippo-mcp** | Python | MCP server exposing the knowledge base over stdio. Claude Code queries your personal knowledge base mid-conversation. |
 
 ## Prerequisites
@@ -131,7 +131,7 @@ Add to your Claude Code MCP config (e.g., `~/.claude/settings.json` or your MCP 
 
 Replace `/path/to/hippo` with the absolute path to your clone.
 
-The MCP server reads SQLite and LanceDB directly (no dependency on the brain HTTP server).
+The MCP server reads SQLite directly (vectors live in the same DB via sqlite-vec; no dependency on the brain HTTP server).
 
 ## Firefox Extension (Optional)
 
@@ -251,8 +251,7 @@ All paths follow XDG defaults. Override with `XDG_DATA_HOME` / `XDG_CONFIG_HOME`
 
 | Store | Path | Purpose |
 |-------|------|---------|
-| SQLite | `~/.local/share/hippo/hippo.db` | Events, sessions, browser visits, enrichment queue, knowledge nodes, entities |
-| LanceDB | `~/.local/share/hippo/vectors/` | Vector embeddings for semantic search |
+| SQLite | `~/.local/share/hippo/hippo.db` | Events, sessions, browser visits, enrichment queue, knowledge nodes, entities, vector embeddings (sqlite-vec) |
 | Config | `~/.config/hippo/config.toml` | User configuration |
 | Logs | `~/.local/share/hippo/*.log` | Daemon and brain logs |
 
