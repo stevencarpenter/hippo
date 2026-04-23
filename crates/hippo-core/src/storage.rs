@@ -2097,7 +2097,12 @@ mod tests {
             .filter_map(|r| r.ok())
             .collect();
 
-        for expected_col in &["source", "last_event_ts", "consecutive_failures", "updated_at"] {
+        for expected_col in &[
+            "source",
+            "last_event_ts",
+            "consecutive_failures",
+            "updated_at",
+        ] {
             assert!(
                 col_names.iter().any(|c| c == expected_col),
                 "column '{}' should exist in source_health; found: {:?}",
