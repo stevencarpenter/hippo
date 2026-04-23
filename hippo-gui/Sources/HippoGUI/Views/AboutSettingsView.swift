@@ -61,7 +61,7 @@ struct AboutSettingsView: View {
                 "CFBundleDisplayName": "HippoGUI",
                 "CFBundleIdentifier": "com.hippo.HippoGUI",
                 "CFBundleShortVersionString": "0.11.0",
-                "CFBundleVersion": "189",
+                "CFBundleVersion": "189"
             ]
         )
     )

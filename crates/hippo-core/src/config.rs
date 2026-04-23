@@ -196,6 +196,12 @@ pub struct BrowserConfig {
     pub allowlist: BrowserAllowlist,
     #[serde(default)]
     pub url_redaction: BrowserUrlRedaction,
+    /// Long-dwell bypass threshold (ms). Events with dwell_ms >= this value bypass
+    /// the scroll-depth filter in the Python brain enrichment layer. Stored here so
+    /// config.toml is the single source of truth — the daemon does not enforce this;
+    /// the brain reads it at startup via `[browser] long_dwell_bypass_ms`.
+    #[serde(default = "default_long_dwell_bypass_ms")]
+    pub long_dwell_bypass_ms: u64,
 }
 
 fn default_browser_enabled() -> bool {
@@ -216,6 +222,9 @@ fn default_correlation_window_ms() -> u64 {
 fn default_browser_stale_session_secs() -> u64 {
     60
 }
+fn default_long_dwell_bypass_ms() -> u64 {
+    120_000
+}
 
 impl Default for BrowserConfig {
     fn default() -> Self {
@@ -228,6 +237,7 @@ impl Default for BrowserConfig {
             stale_session_secs: default_browser_stale_session_secs(),
             allowlist: BrowserAllowlist::default(),
             url_redaction: BrowserUrlRedaction::default(),
+            long_dwell_bypass_ms: default_long_dwell_bypass_ms(),
         }
     }
 }
@@ -244,16 +254,21 @@ fn default_browser_allowlist_domains() -> Vec<String> {
         "github.com".to_string(),
         "github.io".to_string(),
         "gitlab.com".to_string(),
+        "bitbucket.org".to_string(),
         // Package registries
         "crates.io".to_string(),
         "npmjs.com".to_string(),
         "pypi.org".to_string(),
         "mvnrepository.com".to_string(),
         "pkg.go.dev".to_string(),
+        "rubygems.org".to_string(),
         // Language & framework docs
         "docs.rs".to_string(),
         "doc.rust-lang.org".to_string(),
+        "rust-lang.org".to_string(),
         "docs.python.org".to_string(),
+        "python.org".to_string(),
+        "swift.org".to_string(),
         "developer.mozilla.org".to_string(),
         "docs.astral.sh".to_string(),
         "typescriptlang.org".to_string(),
@@ -261,17 +276,32 @@ fn default_browser_allowlist_domains() -> Vec<String> {
         "kubernetes.io".to_string(),
         "go.dev".to_string(),
         "nodejs.org".to_string(),
+        "ziglang.org".to_string(),
+        // AI & ML
+        "anthropic.com".to_string(),
+        "openai.com".to_string(),
+        "huggingface.co".to_string(),
+        "arxiv.org".to_string(),
+        "lmstudio.ai".to_string(),
         // System & OS docs
         "man7.org".to_string(),
         "wiki.archlinux.org".to_string(),
+        // Database & infra docs
+        "sqlite.org".to_string(),
+        "postgresql.org".to_string(),
+        "redis.io".to_string(),
+        "docker.com".to_string(),
         // Q&A & community
         "stackoverflow.com".to_string(),
         "stackexchange.com".to_string(),
         "reddit.com".to_string(),
         "news.ycombinator.com".to_string(),
-        // Developer blogs & articles
+        "lobste.rs".to_string(),
+        // Developer content
         "medium.com".to_string(),
         "dev.to".to_string(),
+        "hackernoon.com".to_string(),
+        "substack.com".to_string(),
     ]
 }
 
@@ -806,6 +836,7 @@ endpoint = "http://collector:4317"
         assert_eq!(config.dedup_window_minutes, 30);
         assert_eq!(config.correlation_window_ms, 300_000);
         assert_eq!(config.stale_session_secs, 60);
+        assert_eq!(config.long_dwell_bypass_ms, 120_000);
         assert!(config.allowlist.domains.contains(&"github.com".to_string()));
         assert!(
             config
@@ -813,6 +844,21 @@ endpoint = "http://collector:4317"
                 .domains
                 .contains(&"stackoverflow.com".to_string())
         );
+        assert!(
+            config
+                .allowlist
+                .domains
+                .contains(&"rust-lang.org".to_string())
+        );
+        assert!(
+            config
+                .allowlist
+                .domains
+                .contains(&"anthropic.com".to_string())
+        );
+        assert!(config.allowlist.domains.contains(&"arxiv.org".to_string()));
+        assert!(config.allowlist.domains.contains(&"sqlite.org".to_string()));
+        assert!(config.allowlist.domains.contains(&"lobste.rs".to_string()));
         assert!(
             config
                 .url_redaction
@@ -827,6 +873,7 @@ endpoint = "http://collector:4317"
 [browser]
 enabled = false
 min_dwell_ms = 5000
+long_dwell_bypass_ms = 300000
 
 [browser.allowlist]
 domains = ["example.com", "docs.rs"]
@@ -842,6 +889,8 @@ strip_params = ["secret", "nonce"]
         assert_eq!(config.browser.dedup_window_minutes, 30);
         assert_eq!(config.browser.correlation_window_ms, 300_000);
         assert_eq!(config.browser.stale_session_secs, 60);
+        // Explicitly set to non-default to prove custom values round-trip
+        assert_eq!(config.browser.long_dwell_bypass_ms, 300_000);
         // Overridden sub-sections
         assert_eq!(
             config.browser.allowlist.domains,

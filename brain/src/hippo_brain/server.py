@@ -121,6 +121,7 @@ class BrainServer:
         session_stale_secs: int = 120,
         max_claim_batch: int = DEFAULT_MAX_CLAIM_BATCH,
         lock_timeout_ms: int = DEFAULT_LOCK_TIMEOUT_MS,
+        long_dwell_bypass_ms: int = 120_000,
     ):
         if not db_path:
             db_path = str(Path.home() / ".local" / "share" / "hippo" / "hippo.db")
@@ -138,6 +139,7 @@ class BrainServer:
         self.session_stale_secs = session_stale_secs
         self.max_claim_batch = max_claim_batch
         self.lock_timeout_ms = lock_timeout_ms
+        self.long_dwell_bypass_ms = long_dwell_bypass_ms
         self.enrichment_running = False
         self._query_inflight: int = 0  # incremented while /ask is executing
         # Set whenever a query is in flight; the enrichment loop sleeps on this
@@ -835,6 +837,7 @@ class BrainServer:
                                 stale_secs=60,
                                 max_claim_batch=self.max_claim_batch,
                                 stale_lock_timeout_ms=self.lock_timeout_ms,
+                                long_dwell_bypass_ms=self.long_dwell_bypass_ms,
                             )
                         except Exception as e:
                             logger.warning("browser claim error: %s", e, exc_info=True)
@@ -1348,6 +1351,7 @@ def create_app(
     session_stale_secs: int = 120,
     max_claim_batch: int = DEFAULT_MAX_CLAIM_BATCH,
     lock_timeout_ms: int = DEFAULT_LOCK_TIMEOUT_MS,
+    long_dwell_bypass_ms: int = 120_000,
 ) -> Starlette:
     server = BrainServer(
         db_path=db_path,
@@ -1362,6 +1366,7 @@ def create_app(
         session_stale_secs=session_stale_secs,
         max_claim_batch=max_claim_batch,
         lock_timeout_ms=lock_timeout_ms,
+        long_dwell_bypass_ms=long_dwell_bypass_ms,
     )
 
     if _meter:
