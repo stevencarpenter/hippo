@@ -631,7 +631,9 @@ pub async fn handle_doctor(config: &HippoConfig, explain: bool) -> Result<()> {
 
     // Check 1: Per-source staleness via source_health table (P0.1)
     // Check 8: Watchdog heartbeat
-    if db_path.exists() && let Ok(conn) = hippo_core::storage::open_db(&db_path) {
+    if db_path.exists()
+        && let Ok(conn) = hippo_core::storage::open_db(&db_path)
+    {
         fail_count += check_source_staleness(&conn, explain);
         fail_count += check_watchdog_heartbeat(&conn, explain);
     }
@@ -982,7 +984,9 @@ fn check_source_staleness(db: &rusqlite::Connection, explain: bool) -> u32 {
                 return true;
             }
             // Also recurse one level (projects/*/session.jsonl layout).
-            if path.is_dir() && let Ok(sub) = std::fs::read_dir(&path) {
+            if path.is_dir()
+                && let Ok(sub) = std::fs::read_dir(&path)
+            {
                 for sub_entry in sub.flatten() {
                     let sub_path = sub_entry.path();
                     if sub_path.extension().and_then(|e| e.to_str()) == Some("jsonl")
@@ -1047,9 +1051,7 @@ fn check_source_staleness(db: &rusqlite::Connection, explain: bool) -> u32 {
                 println!("[!!] {}  {} (FAIL)", padded, human);
                 fail_count += 1;
                 if explain {
-                    println!(
-                        "     CAUSE:  No events have landed in SQLite for this source"
-                    );
+                    println!("     CAUSE:  No events have landed in SQLite for this source");
                     println!(
                         "     FIX:    Check source is running: hippo doctor (re-run); tail -f ~/.local/share/hippo/daemon.stderr.log"
                     );
