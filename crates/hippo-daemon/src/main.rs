@@ -42,8 +42,12 @@ async fn main() -> Result<()> {
     // The launchd StandardErrorPath still captures pre-main panics and OS-level
     // launch output; runtime application logs go here exclusively.
     let data_dir = config.storage.data_dir.clone();
-    std::fs::create_dir_all(&data_dir)
-        .unwrap_or_else(|e| eprintln!("Warning: could not create data dir {}: {e}", data_dir.display()));
+    std::fs::create_dir_all(&data_dir).unwrap_or_else(|e| {
+        eprintln!(
+            "Warning: could not create data dir {}: {e}",
+            data_dir.display()
+        )
+    });
     let file_appender = tracing_appender::rolling::RollingFileAppender::builder()
         .rotation(tracing_appender::rolling::Rotation::DAILY)
         .filename_prefix("daemon")
