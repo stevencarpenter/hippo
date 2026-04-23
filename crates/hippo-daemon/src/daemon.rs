@@ -227,13 +227,12 @@ pub async fn flush_events(state: &Arc<DaemonState>) -> usize {
 
     if events.is_empty() {
         // Idle-tick: flush ran but the buffer was empty.
-        // last_success_ts advances per spec even on zero-event ticks so that
-        // hippo doctor can distinguish "source quiet" from "flush loop stalled."
-        // last_heartbeat_ts is browser-only and is set by the extension, not here.
+        // Record daemon liveness via heartbeat without touching last_success_ts,
+        // which remains tied to successful event landings.
         let db = state.write_db.lock().await;
         let _ = db.execute(
             "UPDATE source_health
-             SET last_success_ts = ?1, updated_at = ?1
+             SET last_heartbeat_ts = ?1, updated_at = ?1
              WHERE source IN ('shell', 'claude-tool', 'browser')",
             rusqlite::params![now_ms],
         );
@@ -416,6 +415,14 @@ pub async fn flush_events(state: &Arc<DaemonState>) -> usize {
             rusqlite::params![now_ms, err_msg, source],
         );
     }
+
+    // Heartbeat: flush tick completed for daemon-managed sources.
+    let _ = db.execute(
+        "UPDATE source_health
+         SET last_heartbeat_ts = ?1, updated_at = ?1
+         WHERE source IN ('shell', 'claude-tool', 'browser')",
+        rusqlite::params![now_ms],
+    );
     #[cfg(feature = "otel")]
     {
         let count_u64 = count as u64;

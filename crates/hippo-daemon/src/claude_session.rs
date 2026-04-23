@@ -899,42 +899,58 @@ fn insert_segments(conn: &Connection, segments: &[SessionSegment]) -> Result<(us
 
                 // Update source_health for claude-session (upsert — row may not exist
                 // yet on first ingest, or may not exist at all pre-migration; both are safe).
-                let _ = conn.execute(
+                if let Err(health_err) = conn.execute(
                     "INSERT INTO source_health
                          (source, last_event_ts, last_success_ts, consecutive_failures, updated_at)
                      VALUES ('claude-session', ?1, ?2, 0, ?2)
                      ON CONFLICT(source) DO UPDATE SET
                          last_event_ts        = MAX(COALESCE(last_event_ts, 0), excluded.last_event_ts),
                          last_success_ts      = excluded.last_success_ts,
-                         events_last_1h       = events_last_1h + 1,
-                         events_last_24h      = events_last_24h + 1,
-                         consecutive_failures = 0,
-                         updated_at           = excluded.updated_at",
+                          events_last_1h       = events_last_1h + 1,
+                          events_last_24h      = events_last_24h + 1,
+                          consecutive_failures = 0,
+                          updated_at           = excluded.updated_at",
                     params![seg.start_time, now_ms],
-                );
+                ) && !is_missing_source_health_table_error(&health_err)
+                {
+                    warn!(
+                        error = %health_err,
+                        "failed to update source_health on claude-session success"
+                    );
+                }
 
                 inserted += 1;
             }
             Err(e) => {
                 // Record the failure in source_health before propagating.
                 let err_512: String = e.to_string().chars().take(512).collect();
-                let _ = conn.execute(
+                if let Err(health_err) = conn.execute(
                     "INSERT INTO source_health
                          (source, consecutive_failures, last_error_ts, last_error_msg, updated_at)
                      VALUES ('claude-session', 1, ?1, ?2, ?1)
                      ON CONFLICT(source) DO UPDATE SET
                          consecutive_failures = source_health.consecutive_failures + 1,
-                         last_error_ts        = excluded.last_error_ts,
-                         last_error_msg       = excluded.last_error_msg,
-                         updated_at           = excluded.updated_at",
+                          last_error_ts        = excluded.last_error_ts,
+                          last_error_msg       = excluded.last_error_msg,
+                          updated_at           = excluded.updated_at",
                     params![now_ms, err_512],
-                );
+                ) && !is_missing_source_health_table_error(&health_err)
+                {
+                    warn!(
+                        error = %health_err,
+                        "failed to update source_health on claude-session failure"
+                    );
+                }
                 return Err(e.into());
             }
         }
     }
 
     Ok((inserted, skipped))
+}
+
+fn is_missing_source_health_table_error(err: &rusqlite::Error) -> bool {
+    err.to_string().contains("no such table: source_health")
 }
 
 /// Extract segments from a JSONL and upsert them into `claude_sessions`.
