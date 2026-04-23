@@ -27,6 +27,7 @@ def _default_settings() -> dict:
         "telemetry_endpoint": "http://localhost:4318",
         "max_claim_batch": 10,
         "lock_timeout_secs": 600,
+        "long_dwell_bypass_ms": 120_000,
     }
 
 
@@ -47,6 +48,7 @@ def _load_runtime_settings() -> dict:
     models = config.get("models", {})
     brain = config.get("brain", {})
     telemetry = config.get("telemetry", {})
+    browser = config.get("browser", {})
 
     return {
         "db_path": str(data_dir / "hippo.db"),
@@ -66,6 +68,7 @@ def _load_runtime_settings() -> dict:
         "telemetry_endpoint": telemetry.get("endpoint", "http://localhost:4318"),
         "max_claim_batch": brain.get("max_claim_batch", 10),
         "lock_timeout_secs": brain.get("lock_timeout_secs", 600),
+        "long_dwell_bypass_ms": browser.get("long_dwell_bypass_ms", 120_000),
     }
 
 
@@ -120,6 +123,7 @@ def main() -> None:
             session_stale_secs=settings["session_stale_secs"],
             max_claim_batch=settings["max_claim_batch"],
             lock_timeout_ms=int(settings["lock_timeout_secs"]) * 1000,
+            long_dwell_bypass_ms=settings["long_dwell_bypass_ms"],
         )
         try:
             uvicorn.run(app, host="127.0.0.1", port=settings["port"])

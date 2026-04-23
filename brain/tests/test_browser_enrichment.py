@@ -146,6 +146,43 @@ class TestClaimPendingBrowserEvents:
         ).fetchone()[0]
         assert status == "skipped"
 
+    def test_long_dwell_bypasses_scroll_filter(self, db):
+        """Events with low scroll but dwell >= long_dwell_bypass_ms are kept."""
+        stale_ts = int(time.time() * 1000) - 120_000
+
+        # Low scroll, no query, but 3-minute dwell — should be kept
+        _insert_browser_event(
+            db,
+            1,
+            stale_ts,
+            url="https://github.com/sjcarpenter/hippo/pull/99",
+            domain="github.com",
+            dwell_ms=180_000,
+            scroll_depth=0.05,
+        )
+        # Low scroll, no query, short dwell — should be skipped
+        _insert_browser_event(
+            db,
+            2,
+            stale_ts + 1000,
+            url="https://github.com/sjcarpenter/hippo/issues/1",
+            domain="github.com",
+            dwell_ms=5000,
+            scroll_depth=0.05,
+        )
+
+        chunks = claim_pending_browser_events(
+            db, "test-worker", stale_secs=60, long_dwell_bypass_ms=120_000
+        )
+        all_events = [e for chunk in chunks for e in chunk]
+        assert len(all_events) == 1
+        assert all_events[0]["id"] == 1
+
+        row = db.execute(
+            "SELECT status FROM browser_enrichment_queue WHERE browser_event_id = 2"
+        ).fetchone()
+        assert row[0] == "skipped"
+
     def test_claim_splits_chunks_on_time_gap(self, db):
         """Events separated by >5 min gap should be in different chunks."""
         old_ts = int(time.time() * 1000) - 600_000  # 10 minutes ago
