@@ -12,10 +12,11 @@ migration, bump both together.
 
 from __future__ import annotations
 
-EXPECTED_SCHEMA_VERSION: int = 7
+EXPECTED_SCHEMA_VERSION: int = 8
 
 # Versions brain can read without erroring, so the daemon can migrate
 # forward and brain can still serve queries during the window where the
 # new rows are settling in. The lower bound mirrors the set of migrations
-# the Rust `open_db` routine still understands.
-ACCEPTED_READ_VERSIONS: frozenset[int] = frozenset({EXPECTED_SCHEMA_VERSION, 6, 5, 4, 3})
+# the Rust `open_db` routine still understands. Versions older than 5 are
+# not supported; keep 7 for rollback compatibility during the v7→v8 window.
+ACCEPTED_READ_VERSIONS: frozenset[int] = frozenset({EXPECTED_SCHEMA_VERSION, 7, 6, 5})

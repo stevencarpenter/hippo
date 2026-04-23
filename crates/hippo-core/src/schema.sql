@@ -54,6 +54,9 @@ CREATE TABLE IF NOT EXISTS events
     enriched INTEGER NOT NULL DEFAULT 0,
     redaction_count INTEGER NOT NULL DEFAULT 0,
     archived_at INTEGER,
+    -- probe_tag is set only on synthetic probe rows injected for health
+    -- checking; NULL on all real events.
+    probe_tag TEXT,
     created_at INTEGER NOT NULL DEFAULT (unixepoch('now', 'subsec') * 1000)
 );
 
@@ -165,6 +168,8 @@ CREATE TABLE IF NOT EXISTS claude_sessions
     is_subagent INTEGER NOT NULL DEFAULT 0,
     parent_session_id TEXT,
     enriched INTEGER NOT NULL DEFAULT 0,
+    -- probe_tag is set only on synthetic probe rows; NULL on all real sessions.
+    probe_tag TEXT,
     created_at INTEGER NOT NULL DEFAULT (unixepoch('now', 'subsec') * 1000),
     UNIQUE (session_id, segment_index)
 );
@@ -232,6 +237,8 @@ CREATE TABLE IF NOT EXISTS browser_events
     content_hash TEXT,
     envelope_id TEXT,
     enriched INTEGER NOT NULL DEFAULT 0,
+    -- probe_tag is set only on synthetic probe rows; NULL on all real events.
+    probe_tag TEXT,
     created_at INTEGER NOT NULL DEFAULT (unixepoch('now', 'subsec') * 1000)
 );
 
@@ -435,4 +442,35 @@ END;
 -- the Python brain loads. The brain creates `knowledge_vectors` idempotently
 -- on boot via hippo_brain.vector_store.ensure_vec_table().
 
-PRAGMA user_version = 7;
+-- ─── v8: source_health table for capture reliability monitoring ───────
+--
+-- Tracks per-source liveness, probe results, and rolling event counts so
+-- `hippo doctor` can surface capture gaps without scanning the full events
+-- table on every invocation.
+CREATE TABLE IF NOT EXISTS source_health (
+    source                 TEXT PRIMARY KEY,
+    last_event_ts          INTEGER,
+    last_success_ts        INTEGER,
+    last_error_ts          INTEGER,
+    last_error_msg         TEXT,
+    consecutive_failures   INTEGER NOT NULL DEFAULT 0,
+    events_last_1h         INTEGER NOT NULL DEFAULT 0,
+    events_last_24h        INTEGER NOT NULL DEFAULT 0,
+    expected_min_per_hour  INTEGER,
+    probe_ok               INTEGER,
+    probe_lag_ms           INTEGER,
+    probe_last_run_ts      INTEGER,
+    last_heartbeat_ts      INTEGER,
+    updated_at             INTEGER NOT NULL
+);
+
+-- Pre-seed one row per known source so health checks always have a row to
+-- UPDATE rather than needing INSERT-or-UPDATE logic. last_event_ts is NULL
+-- on fresh databases because the event tables are empty.
+INSERT OR IGNORE INTO source_health (source, last_event_ts, updated_at) VALUES
+    ('shell',         (SELECT MAX(timestamp)  FROM events          WHERE source_kind = 'shell'),   unixepoch('now') * 1000),
+    ('claude-tool',   (SELECT MAX(timestamp)  FROM events          WHERE source_kind = 'claude-tool'), unixepoch('now') * 1000),
+    ('claude-session',(SELECT MAX(start_time) FROM claude_sessions),                               unixepoch('now') * 1000),
+    ('browser',       (SELECT MAX(timestamp)  FROM browser_events),                                unixepoch('now') * 1000);
+
+PRAGMA user_version = 8;

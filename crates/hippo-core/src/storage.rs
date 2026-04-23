@@ -13,7 +13,7 @@ const SCHEMA: &str = include_str!("schema.sql");
 /// startup code (e.g. the brain handshake) can cross-check without
 /// re-declaring the value. Keep in sync with
 /// `brain/src/hippo_brain/schema_version.py::EXPECTED_SCHEMA_VERSION`.
-pub const EXPECTED_VERSION: i64 = 7;
+pub const EXPECTED_VERSION: i64 = 8;
 
 pub fn open_db(path: &Path) -> Result<Connection> {
     if let Some(parent) = path.parent() {
@@ -349,6 +349,40 @@ pub fn open_db(path: &Path) -> Result<Connection> {
              CREATE INDEX IF NOT EXISTS idx_events_source_kind
                  ON events (source_kind) WHERE source_kind != 'shell';
              PRAGMA user_version = 7;",
+        )?;
+    }
+
+    // Migrate from v7 → v8: add source_health table for capture reliability
+    // monitoring, and probe_tag columns on the three event tables so probes can
+    // stamp the rows they inject without touching real-capture data.
+    // Keep in sync with schema.sql.
+    if (1..=7).contains(&version) {
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS source_health (
+                source                 TEXT PRIMARY KEY,
+                last_event_ts          INTEGER,
+                last_success_ts        INTEGER,
+                last_error_ts          INTEGER,
+                last_error_msg         TEXT,
+                consecutive_failures   INTEGER NOT NULL DEFAULT 0,
+                events_last_1h         INTEGER NOT NULL DEFAULT 0,
+                events_last_24h        INTEGER NOT NULL DEFAULT 0,
+                expected_min_per_hour  INTEGER,
+                probe_ok               INTEGER,
+                probe_lag_ms           INTEGER,
+                probe_last_run_ts      INTEGER,
+                last_heartbeat_ts      INTEGER,
+                updated_at             INTEGER NOT NULL
+             );
+             ALTER TABLE events           ADD COLUMN probe_tag TEXT;
+             ALTER TABLE claude_sessions  ADD COLUMN probe_tag TEXT;
+             ALTER TABLE browser_events   ADD COLUMN probe_tag TEXT;
+             INSERT OR IGNORE INTO source_health (source, last_event_ts, updated_at) VALUES
+                 ('shell',         (SELECT MAX(timestamp)  FROM events          WHERE source_kind = 'shell'),   unixepoch('now') * 1000),
+                 ('claude-tool',   (SELECT MAX(timestamp)  FROM events          WHERE source_kind = 'claude-tool'), unixepoch('now') * 1000),
+                 ('claude-session',(SELECT MAX(start_time) FROM claude_sessions),                               unixepoch('now') * 1000),
+                 ('browser',       (SELECT MAX(timestamp)  FROM browser_events),                                unixepoch('now') * 1000);
+             PRAGMA user_version = 8;",
         )?;
     } else if version != 0 && version != EXPECTED_VERSION {
         anyhow::bail!(
@@ -1563,7 +1597,7 @@ mod tests {
         let v: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 7);
+        assert_eq!(v, 8);
     }
 
     #[test]
@@ -1633,7 +1667,7 @@ mod tests {
         let v: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 7);
+        assert_eq!(v, 8);
         // Verify envelope_id column exists by inserting with it
         let sid = upsert_session(&conn, "mig-test", "host", "zsh", "user").unwrap();
         let eid = insert_event_at(
@@ -1716,7 +1750,7 @@ mod tests {
         let v: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 7);
+        assert_eq!(v, 8);
     }
 
     #[test]
@@ -1818,7 +1852,7 @@ mod tests {
         let v: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 7);
+        assert_eq!(v, 8);
 
         // Verify browser tables exist
         let browser_tables = [
@@ -1847,7 +1881,7 @@ mod tests {
         let v2: i64 = conn2
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v2, 7);
+        assert_eq!(v2, 8);
     }
 
     fn sample_browser_event() -> BrowserEvent {
@@ -2024,6 +2058,39 @@ mod tests {
             })
             .unwrap();
         assert_eq!(q_count, 1);
+    }
+
+    #[test]
+    fn test_source_health_table_exists() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("test.db");
+        let conn = open_db(&db_path).unwrap();
+
+        // Table must exist and be queryable
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM source_health", [], |r| r.get(0))
+            .unwrap();
+        // Pre-seed inserts four rows (shell, claude-tool, claude-session, browser)
+        assert_eq!(count, 4, "source_health should be pre-seeded with 4 rows");
+
+        // Verify key columns exist via PRAGMA table_info
+        let mut stmt = conn
+            .prepare("SELECT name FROM pragma_table_info('source_health')")
+            .unwrap();
+        let col_names: Vec<String> = stmt
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .filter_map(|r| r.ok())
+            .collect();
+
+        for expected_col in &["source", "last_event_ts", "consecutive_failures", "updated_at"] {
+            assert!(
+                col_names.iter().any(|c| c == expected_col),
+                "column '{}' should exist in source_health; found: {:?}",
+                expected_col,
+                col_names
+            );
+        }
     }
 }
 
