@@ -71,7 +71,7 @@ def test_long_dwell_bypasses_scroll_filter(self, db):
 - [ ] **Step 2: Run test to verify it fails**
 
 ```bash
-cd /Users/carpenter/projects/hippo
+cd "$(git rev-parse --show-toplevel)"
 uv run --project brain --extra dev pytest brain/tests/test_browser_enrichment.py::TestClaimPendingBrowserEvents::test_long_dwell_bypasses_scroll_filter -v
 ```
 
@@ -459,7 +459,7 @@ Expected: build succeeds.
 - [ ] **Step 7: Rebuild the Firefox extension and install**
 
 ```bash
-cd /Users/carpenter/projects/hippo && mise run install:ext
+cd /path/to/hippo && mise run install:ext
 ```
 
 Expected: extension built and XPI updated in Firefox profile. Restart Firefox after this step to pick up the new default allowlist (only matters for a fresh-profile install, but good hygiene).

@@ -844,8 +844,18 @@ endpoint = "http://collector:4317"
                 .domains
                 .contains(&"stackoverflow.com".to_string())
         );
-        assert!(config.allowlist.domains.contains(&"rust-lang.org".to_string()));
-        assert!(config.allowlist.domains.contains(&"anthropic.com".to_string()));
+        assert!(
+            config
+                .allowlist
+                .domains
+                .contains(&"rust-lang.org".to_string())
+        );
+        assert!(
+            config
+                .allowlist
+                .domains
+                .contains(&"anthropic.com".to_string())
+        );
         assert!(config.allowlist.domains.contains(&"arxiv.org".to_string()));
         assert!(config.allowlist.domains.contains(&"sqlite.org".to_string()));
         assert!(config.allowlist.domains.contains(&"lobste.rs".to_string()));
