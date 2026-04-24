@@ -239,12 +239,13 @@ pub async fn flush_events(state: &Arc<DaemonState>) -> usize {
     for envelope in &events {
         match &envelope.payload {
             EventPayload::Shell(shell_event) => {
+                #[cfg_attr(not(feature = "otel"), allow(unused_variables))]
                 let (redacted_event, redaction_hits) =
                     crate::redact_shell_event(shell_event, &state.redaction);
 
                 #[cfg(feature = "otel")]
-                for (rule, n) in &redaction_hits {
-                    metrics::REDACTIONS.add(*n as u64, &[KeyValue::new("rule", rule.clone())]);
+                for (rule, n) in redaction_hits {
+                    metrics::REDACTIONS.add(u64::from(n), &[KeyValue::new("rule", rule)]);
                 }
 
                 let shell_str = redacted_event.shell.as_db_str();

@@ -51,8 +51,10 @@ impl RedactionEngine {
         let mut hits: Vec<(String, u32)> = Vec::new();
         for idx in self.regex_set.matches(input).into_iter() {
             let (regex, replacement) = &self.patterns[idx];
-            // Count before replace so we don't lose hits when the replacement
-            // itself would match (rare but possible with exotic patterns).
+            // Count occurrences in the pre-replacement text. Counting after
+            // `replace_all` would typically return 0 (since the replacement
+            // marker — e.g. `[REDACTED]` — does not itself match the pattern),
+            // which would drop the hit attribution for this rule.
             let n = regex.find_iter(&text).count() as u32;
             if n == 0 {
                 // RegexSet said this pattern matched, but after earlier
