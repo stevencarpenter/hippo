@@ -627,7 +627,7 @@ pub async fn handle_doctor(config: &HippoConfig, explain: bool) -> Result<()> {
     check_source_freshness(config);
 
     // Check OpenTelemetry configuration
-    check_otel_status(config, &client).await;
+    fail_count += check_otel_status(config, &client).await;
 
     // Check 1: Per-source staleness via source_health table (P0.1)
     // Check 8: Watchdog heartbeat
@@ -821,7 +821,7 @@ fn format_duration_ms(ms: i64) -> String {
     format!("{days}d")
 }
 
-async fn check_otel_status(config: &HippoConfig, client: &reqwest::Client) {
+async fn check_otel_status(config: &HippoConfig, client: &reqwest::Client) -> u32 {
     // Check if OTel feature is compiled in
     #[cfg(feature = "otel")]
     let otel_compiled = true;
@@ -830,7 +830,7 @@ async fn check_otel_status(config: &HippoConfig, client: &reqwest::Client) {
 
     if !otel_compiled {
         println!("[--] OpenTelemetry: not compiled (daemon built without --features otel)");
-        return;
+        return 0;
     }
 
     // Check if telemetry is enabled in config
@@ -849,6 +849,7 @@ async fn check_otel_status(config: &HippoConfig, client: &reqwest::Client) {
     match (config_enabled, collector_reachable) {
         (true, true) => {
             println!("[OK] OpenTelemetry: enabled and collector reachable");
+            0
         }
         (true, false) => {
             println!(
@@ -856,6 +857,7 @@ async fn check_otel_status(config: &HippoConfig, client: &reqwest::Client) {
                 collector_health_url
             );
             println!("     Start the stack: mise run otel:up");
+            1
         }
         (false, true) => {
             println!("[!!] OpenTelemetry: collector available but disabled in config");
@@ -863,9 +865,11 @@ async fn check_otel_status(config: &HippoConfig, client: &reqwest::Client) {
                 "     Enable it: Set [telemetry] enabled = true in ~/.config/hippo/config.toml"
             );
             println!("     Then restart: mise run restart");
+            1
         }
         (false, false) => {
             println!("[--] OpenTelemetry: disabled (start with: mise run otel:up)");
+            0
         }
     }
 }
@@ -954,12 +958,16 @@ fn check_source_staleness(db: &rusqlite::Connection, explain: bool) -> u32 {
     };
 
     // Check Firefox running (for browser suppression).
+    // macOS Firefox (incl. Developer Edition) exposes the main process as `firefox`;
+    // `firefox-bin` is Linux-only. Match either to keep the check portable.
     let firefox_running = || -> bool {
-        std::process::Command::new("pgrep")
-            .args(["-x", "firefox-bin"])
-            .status()
-            .map(|s| s.success())
-            .unwrap_or(false)
+        ["firefox", "firefox-bin"].iter().any(|name| {
+            std::process::Command::new("pgrep")
+                .args(["-x", name])
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false)
+        })
     };
 
     // Check if there's a recent claude JSONL with mtime < 5 minutes (for claude-session suppression).
@@ -1258,12 +1266,19 @@ fn check_watchdog_heartbeat(db: &rusqlite::Connection, explain: bool) -> u32 {
             println!("[--] {:<29}  not installed", "watchdog heartbeat");
             0
         }
-        Err(e) => {
-            let msg = e.to_string();
-            // Treat "no such table" the same as "no row" — watchdog not yet installed.
-            let _ = msg;
+        Err(e) if e.to_string().contains("no such table") => {
+            // Pre-migration DB (v7 or older) — source_health does not exist yet.
             println!("[--] {:<29}  not installed", "watchdog heartbeat");
             0
+        }
+        Err(e) => {
+            println!("[!!] {:<29}  DB error: {e}", "watchdog heartbeat");
+            if explain {
+                println!("     CAUSE:  source_health query returned an unexpected DB error");
+                println!("     FIX:    Inspect ~/.local/share/hippo/hippo.db for corruption");
+                println!("     DOC:    docs/capture-reliability/03-doctor-upgrades.md");
+            }
+            1
         }
         Ok(age_secs) => {
             if age_secs < 60 {
