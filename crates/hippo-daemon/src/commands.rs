@@ -901,6 +901,18 @@ fn launchctl_service_loaded(label: &str) -> bool {
 ///     (opt-in feature; most users don't want it — but make the opt-in
 ///     discoverable since silent-missing-data is the #1 failure mode)
 fn check_github_source(config: &HippoConfig) -> u32 {
+    check_github_source_with(config, || {
+        crate::gh_poll::resolve_github_token(&config.github.token_env).is_some()
+    })
+}
+
+/// Testable core of `check_github_source`. `token_present` is a closure so
+/// tests can inject token-presence without mutating the process environment
+/// (which is `unsafe` on Rust 1.82+ and races with any concurrent env reader).
+fn check_github_source_with<F>(config: &HippoConfig, token_present: F) -> u32
+where
+    F: FnOnce() -> bool,
+{
     if !config.github.enabled {
         println!(
             "[--] GitHub CI ingest: disabled (set [github] enabled = true in {} to enable)",
@@ -912,15 +924,18 @@ fn check_github_source(config: &HippoConfig) -> u32 {
     let mut fail = 0u32;
 
     // Token must be resolvable at doctor time — same gate as install.
-    // Resolver tries env first, then `gh auth token` as a fallback.
-    if crate::gh_poll::resolve_github_token(&config.github.token_env).is_none() {
+    // Resolver tries env first, then `~/.config/zsh/.env`, then `gh auth token`.
+    if !token_present() {
         println!(
-            "[!!] GitHub CI ingest: enabled but no token available (env {} unset and `gh auth token` failed)",
+            "[!!] GitHub CI ingest: enabled but no token available (env {} unset, ~/.config/zsh/.env lacks it, and `gh auth token` failed)",
             config.github.token_env
         );
         println!(
-            "     Either: export {} with a PAT (repo + actions:read scopes),",
+            "     Either: export {} with a token",
             config.github.token_env
+        );
+        println!(
+            "             (classic PAT: `repo` + `workflow` scopes; fine-grained PAT: Actions + Metadata + Contents read)"
         );
         println!(
             "     Or:     run `gh auth login` so the wrapper can fall back to `gh auth token`"
@@ -934,9 +949,13 @@ fn check_github_source(config: &HippoConfig) -> u32 {
         fail += 1;
     }
 
-    let plist_path = dirs::home_dir()
-        .map(|h| h.join("Library/LaunchAgents/com.hippo.gh-poll.plist"))
-        .unwrap_or_default();
+    let Some(home_dir) = dirs::home_dir() else {
+        println!(
+            "[!!] GitHub CI ingest: cannot locate home directory; skipping plist verification"
+        );
+        return fail + 1;
+    };
+    let plist_path = home_dir.join("Library/LaunchAgents/com.hippo.gh-poll.plist");
     if !plist_path.exists() {
         println!(
             "[!!] GitHub CI ingest: enabled but gh-poll plist not installed at {}",
@@ -2139,39 +2158,27 @@ replacement = "***"
         let config = HippoConfig::default();
         assert!(!config.github.enabled, "default must be disabled");
         // Disabled → opt-in feature, should not fail doctor.
-        assert_eq!(check_github_source(&config), 0);
+        // Resolver is never called when disabled — pass a trivial stub.
+        assert_eq!(check_github_source_with(&config, || false), 0);
     }
 
     #[test]
     fn test_check_github_source_enabled_without_token_fails() {
-        // SAFETY: this test mutates process env. Other tests in this file
-        // don't touch HIPPO_GITHUB_TOKEN_DOES_NOT_EXIST_12345, so no race.
         let mut config = HippoConfig::default();
         config.github.enabled = true;
-        config.github.token_env = "HIPPO_GITHUB_TOKEN_DOES_NOT_EXIST_12345".to_string();
         config.github.watched_repos = vec!["owner/repo".to_string()];
-        // Empty watched_repos would add another fail; we want to isolate token.
-        unsafe {
-            std::env::remove_var("HIPPO_GITHUB_TOKEN_DOES_NOT_EXIST_12345");
-        }
+        // Inject "token missing" without touching process env.
         // Token missing AND (probably) plist missing in test env → at least 1.
-        assert!(check_github_source(&config) >= 1);
+        assert!(check_github_source_with(&config, || false) >= 1);
     }
 
     #[test]
     fn test_check_github_source_enabled_empty_repos_fails() {
         let mut config = HippoConfig::default();
         config.github.enabled = true;
-        // Set a token so we isolate the empty-repos check.
-        unsafe {
-            std::env::set_var("HIPPO_GITHUB_TOKEN_TEST_REPOS", "dummy");
-        }
-        config.github.token_env = "HIPPO_GITHUB_TOKEN_TEST_REPOS".to_string();
+        // Inject "token present" so we isolate the empty-repos check.
         // watched_repos stays empty.
-        let fail = check_github_source(&config);
-        unsafe {
-            std::env::remove_var("HIPPO_GITHUB_TOKEN_TEST_REPOS");
-        }
+        let fail = check_github_source_with(&config, || true);
         // At least the empty-repos fail (maybe also plist-not-installed in CI).
         assert!(fail >= 1);
     }
