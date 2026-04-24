@@ -910,15 +910,19 @@ fn check_github_source(config: &HippoConfig) -> u32 {
 
     let mut fail = 0u32;
 
-    // Token must be readable at doctor time — same gate as install.
-    if std::env::var(&config.github.token_env).is_err() {
+    // Token must be resolvable at doctor time — same gate as install.
+    // Resolver tries env first, then `gh auth token` as a fallback.
+    if crate::gh_poll::resolve_github_token(&config.github.token_env).is_none() {
         println!(
-            "[!!] GitHub CI ingest: enabled but {} is not set",
+            "[!!] GitHub CI ingest: enabled but no token available (env {} unset and `gh auth token` failed)",
             config.github.token_env
         );
         println!(
-            "     Create a PAT with repo + actions:read scopes and export {}",
+            "     Either: export {} with a PAT (repo + actions:read scopes),",
             config.github.token_env
+        );
+        println!(
+            "     Or:     run `gh auth login` so the wrapper can fall back to `gh auth token`"
         );
         fail += 1;
     }

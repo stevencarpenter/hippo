@@ -16,6 +16,30 @@ pub struct PollConfig {
     pub redact_config_path: Option<PathBuf>,
 }
 
+/// Resolve a GitHub token the same way the gh-poll wrapper does: env first,
+/// then `gh auth token` as a fallback. Used by install-time validation, the
+/// `hippo doctor` check, and the gh-poll runtime — all three agree so the
+/// user doesn't hit surprises between one and the next.
+///
+/// Returns `None` only when the env var is unset *and* either `gh` is not
+/// installed or it returns an empty / non-zero response.
+pub fn resolve_github_token(token_env: &str) -> Option<String> {
+    if let Ok(v) = std::env::var(token_env)
+        && !v.is_empty()
+    {
+        return Some(v);
+    }
+    let output = std::process::Command::new("gh")
+        .args(["auth", "token"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let token = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    (!token.is_empty()).then_some(token)
+}
+
 fn parse_ts(s: Option<&str>) -> Option<i64> {
     s.and_then(|v| chrono::DateTime::parse_from_rfc3339(v).ok())
         .map(|dt| dt.timestamp_millis())
@@ -199,4 +223,43 @@ pub async fn run_once(api: &GhApi, db_path: &Path, cfg: &PollConfig) -> Result<(
     let _ = watchlist::cleanup_expired(&conn, now);
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resolve_prefers_env_over_gh() {
+        // SAFETY: process env mutation. Unique var name isolates from parallel tests.
+        let var = "HIPPO_GH_POLL_RESOLVER_TEST_ENV_WINS";
+        unsafe {
+            std::env::set_var(var, "env-value");
+        }
+        let got = resolve_github_token(var);
+        unsafe {
+            std::env::remove_var(var);
+        }
+        assert_eq!(got.as_deref(), Some("env-value"));
+    }
+
+    #[test]
+    fn resolve_treats_empty_env_as_unset() {
+        // If the env var is set but empty, the resolver must fall through to
+        // `gh auth token` rather than returning "". This ensures an empty
+        // export (e.g. `export HIPPO_GITHUB_TOKEN=` in a profile) doesn't
+        // block the fallback.
+        let var = "HIPPO_GH_POLL_RESOLVER_TEST_EMPTY_ENV";
+        unsafe {
+            std::env::set_var(var, "");
+        }
+        let got = resolve_github_token(var);
+        unsafe {
+            std::env::remove_var(var);
+        }
+        // Either None (no gh / not logged in in test env) or Some("...") if
+        // this is a dev machine with `gh auth login` — both prove the empty
+        // env was skipped, which is what we're verifying.
+        assert!(got.as_deref() != Some(""));
+    }
 }

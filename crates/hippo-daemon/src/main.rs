@@ -287,11 +287,15 @@ async fn main() -> Result<()> {
 
                 // GitHub Actions poller plist — only written when github source is enabled.
                 let gh_poll_installed = if config.github.enabled {
-                    // Verify the token env var is set at install time so the user
-                    // gets an early error, but don't embed it in the plist.
-                    if std::env::var(&config.github.token_env).is_err() {
+                    // Verify a token is reachable at install time — either via the
+                    // env var or via `gh auth token` — so the user gets an early
+                    // error. The wrapper does the same resolution at runtime, so
+                    // we're just checking "will this work when launchd fires it?"
+                    if hippo_daemon::gh_poll::resolve_github_token(&config.github.token_env)
+                        .is_none()
+                    {
                         anyhow::bail!(
-                            "{} must be set to enable the github source",
+                            "No GitHub token available for gh-poll. Either export {} or run `gh auth login`.",
                             config.github.token_env
                         );
                     }
@@ -306,8 +310,11 @@ async fn main() -> Result<()> {
                 } else {
                     println!("  (github source disabled; skipping gh-poll plist)");
                     println!(
-                        "  To enable CI ingest: set [github] enabled = true in {}, export {},",
-                        config.storage.config_dir.join("config.toml").display(),
+                        "  To enable CI ingest: set [github] enabled = true in {},",
+                        config.storage.config_dir.join("config.toml").display()
+                    );
+                    println!(
+                        "    ensure a token is available (run `gh auth login` OR export {}),",
                         config.github.token_env
                     );
                     println!(
