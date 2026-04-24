@@ -80,9 +80,17 @@ fn which(binary: &str) -> Option<PathBuf> {
 
 /// Write a wrapper script for gh-poll that sources the GitHub token at runtime.
 ///
-/// Reads the token from `$HIPPO_GITHUB_TOKEN` or, if unset, from the user's
-/// env file (`~/.config/zsh/.env`). This avoids embedding the plaintext token
-/// in the LaunchAgent plist.
+/// Token resolution chain (first hit wins):
+///   1. `$HIPPO_GITHUB_TOKEN` (or whatever `token_env` names) already in env
+///   2. `~/.config/zsh/.env` — for users who keep their secrets in a chezmoi-
+///      managed dotfile
+///   3. `gh auth token` — falls back to the GitHub CLI's OAuth token if the
+///      user has `gh auth login`'d. Zero new credential management for dev
+///      boxes that already use `gh`.
+///
+/// Keeps the plaintext token out of the plist. If nothing in the chain
+/// returns a token, `hippo gh-poll` will exit with an error which launchd
+/// logs to gh-poll.stderr.log.
 pub fn install_gh_poll_wrapper(
     hippo_bin: &Path,
     token_env: &str,
@@ -103,11 +111,21 @@ pub fn install_gh_poll_wrapper(
 # Sources the GitHub token at runtime to avoid embedding secrets in plists.
 set -euo pipefail
 
-# Try env var first; fall back to sourcing the encrypted-env-deployed file.
+# 1. env var already set (CI / explicit export): use as-is.
+# 2. else source chezmoi-deployed env file if present.
 if [ -z "${{{token_env}:-}}" ] && [ -f "$HOME/.config/zsh/.env" ]; then
     set -a
     source "$HOME/.config/zsh/.env"
     set +a
+fi
+
+# 3. else fall back to `gh auth token` — zero-config for dev boxes that are
+#    already `gh auth login`'d. `gh` stores its OAuth token in the macOS
+#    Keychain, which is readable under launchd's gui/UID context.
+if [ -z "${{{token_env}:-}}" ] && command -v gh >/dev/null 2>&1; then
+    if token=$(gh auth token 2>/dev/null) && [ -n "$token" ]; then
+        export {token_env}="$token"
+    fi
 fi
 
 exec {hippo_bin} gh-poll
