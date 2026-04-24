@@ -70,6 +70,10 @@ pub async fn handle_request(state: &Arc<DaemonState>, request: DaemonRequest) ->
         DaemonRequest::IngestEvent(envelope) => {
             #[cfg(feature = "otel")]
             let event_source = match &envelope.payload {
+                // Mirror storage::source_kind derivation: Shell envelopes with
+                // tool_name set are synthesised from Claude Code tool uses and
+                // belong to the `claude-tool` source per source_health.
+                EventPayload::Shell(s) if s.tool_name.is_some() => "claude-tool",
                 EventPayload::Shell(_) => "shell",
                 EventPayload::Browser(_) => "browser",
                 _ => "unknown",
@@ -340,9 +344,9 @@ pub async fn flush_events(state: &Arc<DaemonState>) -> usize {
     #[cfg(feature = "otel")]
     {
         let count_u64 = count as u64;
-        // TODO(P0.2): emit per-source counts once flush_events tracks per-source breakdown.
-        // For now this counter has no source attribute; use EVENTS_INGESTED{source=...} for
-        // per-source ingestion rates.
+        // Per-source breakdown on FLUSH_EVENTS is deferred: this call site aggregates
+        // a mixed batch. Use EVENTS_INGESTED{source=...} for per-source ingestion rates
+        // until flush_events tracks per-source counts.
         metrics::FLUSH_EVENTS.add(count_u64, &[]);
         metrics::FLUSH_BATCH_SIZE.record(count_u64, &[]);
         metrics::FLUSH_DURATION_MS.record(flush_start.elapsed().as_secs_f64() * 1000.0, &[]);
