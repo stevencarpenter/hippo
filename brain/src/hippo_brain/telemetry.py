@@ -160,7 +160,9 @@ def _register_process_metrics() -> None:
     def _safe_observations(get_value) -> list[Observation]:
         try:
             return [Observation(get_value(), {})]
-        except psutil.NoSuchProcess, psutil.AccessDenied:
+        except psutil.Error:
+            # Covers NoSuchProcess / AccessDenied / ZombieProcess / TimeoutExpired —
+            # all surface only transient failures we want to soft-ignore.
             return []
 
     def cpu_cb(_options: CallbackOptions) -> list[Observation]:
