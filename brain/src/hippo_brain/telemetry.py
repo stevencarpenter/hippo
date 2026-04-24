@@ -78,6 +78,8 @@ def init_telemetry(
     meter_provider = MeterProvider(resource=resource, metric_readers=[metric_reader])
     otel_metrics.set_meter_provider(meter_provider)
 
+    _register_process_metrics()
+
     logger.info(
         "OpenTelemetry initialized: endpoint=%s, service=%s",
         endpoint,
@@ -131,3 +133,90 @@ def hist(histogram, value, **attrs):
     """Record an OTel histogram value if it exists (no-op when ``None``)."""
     if histogram:
         histogram.record(value, attrs)
+
+
+def _register_process_metrics() -> None:
+    """Register OTel process.* semantic-convention metrics via psutil.
+
+    Uses observable gauges/counters so sampling happens lazily, on the OTel
+    export tick, without a separate background task. Safe to call exactly once
+    after ``set_meter_provider``; subsequent calls would register duplicate
+    instruments and emit SDK warnings.
+    """
+    try:
+        from opentelemetry import metrics as otel_metrics
+        from opentelemetry.metrics import CallbackOptions, Observation
+
+        import psutil
+    except ImportError as e:
+        logger.warning("process metrics unavailable: %s", e)
+        return
+
+    proc = psutil.Process()
+    # First cpu_percent() call returns 0.0 and seeds the delta baseline.
+    # Subsequent calls report utilization over the interval since the last call.
+    proc.cpu_percent(interval=None)
+
+    def _safe_observations(get_value) -> list[Observation]:
+        try:
+            return [Observation(get_value(), {})]
+        except psutil.Error:
+            # Covers NoSuchProcess / AccessDenied / ZombieProcess / TimeoutExpired —
+            # all surface only transient failures we want to soft-ignore.
+            return []
+
+    def cpu_cb(_options: CallbackOptions) -> list[Observation]:
+        # psutil returns process CPU as percent of a single CPU (100 = one full
+        # core). OTel process.cpu.utilization is "fraction of one CPU" per
+        # semconv — dividing by 100 matches.
+        return _safe_observations(lambda: proc.cpu_percent(interval=None) / 100.0)
+
+    def rss_cb(_options: CallbackOptions) -> list[Observation]:
+        return _safe_observations(lambda: proc.memory_info().rss)
+
+    def vms_cb(_options: CallbackOptions) -> list[Observation]:
+        return _safe_observations(lambda: proc.memory_info().vms)
+
+    def threads_cb(_options: CallbackOptions) -> list[Observation]:
+        return _safe_observations(proc.num_threads)
+
+    def cpu_time_cb(_options: CallbackOptions) -> list[Observation]:
+        def _total_ms() -> int:
+            times = proc.cpu_times()
+            return int((times.user + times.system) * 1000)
+
+        return _safe_observations(_total_ms)
+
+    meter = otel_metrics.get_meter("hippo-brain.process")
+    meter.create_observable_gauge(
+        "process.cpu.utilization",
+        callbacks=[cpu_cb],
+        unit="1",
+        description=(
+            "Difference in process.cpu.time since last observation, "
+            "divided by interval time (1.0 = one full CPU)."
+        ),
+    )
+    meter.create_observable_gauge(
+        "process.memory.usage",
+        callbacks=[rss_cb],
+        unit="By",
+        description="Resident set size of the process.",
+    )
+    meter.create_observable_gauge(
+        "process.memory.virtual",
+        callbacks=[vms_cb],
+        unit="By",
+        description="Virtual memory size of the process.",
+    )
+    meter.create_observable_gauge(
+        "process.threads",
+        callbacks=[threads_cb],
+        description="Number of OS threads in the process.",
+    )
+    meter.create_observable_counter(
+        "process.cpu.time",
+        callbacks=[cpu_time_cb],
+        unit="ms",
+        description="Total CPU time consumed by the process.",
+    )
