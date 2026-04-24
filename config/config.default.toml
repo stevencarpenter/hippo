@@ -118,6 +118,34 @@ strip_params = [
 # HIPPO_PROJECT_ROOTS env var to override at runtime.
 project_roots = []
 
+[github]
+# GitHub Actions CI-outcome ingest (opt-in).
+#
+# When enabled, a separate `com.hippo.gh-poll` LaunchAgent polls the GitHub
+# REST API every 5 minutes for workflow runs on `watched_repos`, pulls jobs +
+# annotations + failure log tails, and writes them to the `workflow_runs` /
+# `workflow_jobs` / `workflow_annotations` tables. The brain then enriches
+# them into knowledge nodes and eventually graduates recurring failures into
+# `lessons` (queryable via the `get_lessons` MCP tool).
+#
+# To enable CI ingest:
+#   1. Create a GitHub PAT with `repo` + `actions:read` scopes
+#   2. Export the token: `export HIPPO_GITHUB_TOKEN=ghp_...` (in ~/.zshrc or similar)
+#   3. Set enabled = true and populate watched_repos below
+#   4. Reinstall: `hippo daemon install --force` (writes the gh-poll plist)
+#   5. Load the agent: `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.hippo.gh-poll.plist`
+#   6. Verify: `hippo doctor` and (after ~5 min) query via `get_ci_status` MCP tool
+#
+# Without these steps, CI ingest is entirely inactive — `workflow_runs` stays
+# empty and CI-failure lessons never graduate. `hippo doctor` will flag this.
+enabled = false
+watched_repos = []             # e.g., ["stevencarpenter/hippo"]
+# poll_interval_secs = 300       # Background cadence (5 min)
+# tight_poll_interval_secs = 45  # Post-push cadence for watched SHAs
+# watchlist_ttl_secs = 1200      # How long a pushed SHA stays in the tight-poll set (20 min)
+# log_excerpt_max_bytes = 51200  # 50 KB cap per failure log tail
+# token_env = "HIPPO_GITHUB_TOKEN"
+
 [telemetry]
 # OpenTelemetry observability: traces, metrics, and logs to Grafana/Tempo/Loki/Prometheus.
 #

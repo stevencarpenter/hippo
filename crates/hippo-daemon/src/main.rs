@@ -305,6 +305,14 @@ async fn main() -> Result<()> {
                     true
                 } else {
                     println!("  (github source disabled; skipping gh-poll plist)");
+                    println!(
+                        "  To enable CI ingest: set [github] enabled = true in {}, export {},",
+                        config.storage.config_dir.join("config.toml").display(),
+                        config.github.token_env
+                    );
+                    println!(
+                        "    populate watched_repos, then rerun: hippo daemon install --force"
+                    );
                     false
                 };
 

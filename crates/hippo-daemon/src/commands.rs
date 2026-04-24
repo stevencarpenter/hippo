@@ -629,6 +629,9 @@ pub async fn handle_doctor(config: &HippoConfig, explain: bool) -> Result<()> {
     // Check OpenTelemetry configuration
     fail_count += check_otel_status(config, &client).await;
 
+    // Check GitHub CI-ingest configuration
+    fail_count += check_github_source(config);
+
     // Check 1: Per-source staleness via source_health table (P0.1)
     // Check 8: Watchdog heartbeat
     if db_path.exists()
@@ -875,6 +878,83 @@ async fn check_otel_status(config: &HippoConfig, client: &reqwest::Client) -> u3
             0
         }
     }
+}
+
+/// Whether a launchd label is currently loaded. Local duplicate of
+/// `install::service_is_loaded` because `install` is a binary-only module
+/// (not reachable from this lib-side doctor check).
+fn launchctl_service_loaded(label: &str) -> bool {
+    std::process::Command::new("launchctl")
+        .args(["list", label])
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
+/// Report on GitHub CI-ingest (`gh-poll`) configuration.
+///
+/// Three states:
+///   - enabled + plist loaded + token set  → OK
+///   - enabled but plist missing / token missing → warn (fixable config error)
+///   - disabled                             → info only, no fail increment
+///     (opt-in feature; most users don't want it — but make the opt-in
+///     discoverable since silent-missing-data is the #1 failure mode)
+fn check_github_source(config: &HippoConfig) -> u32 {
+    if !config.github.enabled {
+        println!(
+            "[--] GitHub CI ingest: disabled (set [github] enabled = true in {} to enable)",
+            config.storage.config_dir.join("config.toml").display()
+        );
+        return 0;
+    }
+
+    let mut fail = 0u32;
+
+    // Token must be readable at doctor time — same gate as install.
+    if std::env::var(&config.github.token_env).is_err() {
+        println!(
+            "[!!] GitHub CI ingest: enabled but {} is not set",
+            config.github.token_env
+        );
+        println!(
+            "     Create a PAT with repo + actions:read scopes and export {}",
+            config.github.token_env
+        );
+        fail += 1;
+    }
+
+    if config.github.watched_repos.is_empty() {
+        println!("[!!] GitHub CI ingest: enabled but [github] watched_repos is empty");
+        println!("     Add at least one repo, e.g.  watched_repos = [\"owner/name\"]");
+        fail += 1;
+    }
+
+    let plist_path = dirs::home_dir()
+        .map(|h| h.join("Library/LaunchAgents/com.hippo.gh-poll.plist"))
+        .unwrap_or_default();
+    if !plist_path.exists() {
+        println!(
+            "[!!] GitHub CI ingest: enabled but gh-poll plist not installed at {}",
+            plist_path.display()
+        );
+        println!("     Run: hippo daemon install --force");
+        fail += 1;
+    } else if !launchctl_service_loaded("com.hippo.gh-poll") {
+        println!("[!!] GitHub CI ingest: enabled and plist installed but agent not loaded");
+        println!(
+            "     Run: launchctl bootstrap gui/$(id -u) {}",
+            plist_path.display()
+        );
+        fail += 1;
+    }
+
+    if fail == 0 {
+        println!(
+            "[OK] GitHub CI ingest: enabled ({} repo(s) watched)",
+            config.github.watched_repos.len()
+        );
+    }
+    fail
 }
 
 /// Check 1: Per-source staleness via the `source_health` table (requires P0.1 migration).
@@ -2047,5 +2127,47 @@ replacement = "***"
 
         let fail2 = check_source_staleness(&conn, false);
         assert_eq!(fail2, 0, "fresh shell row should return fail_count=0");
+    }
+
+    #[test]
+    fn test_check_github_source_disabled_is_info_only() {
+        let config = HippoConfig::default();
+        assert!(!config.github.enabled, "default must be disabled");
+        // Disabled → opt-in feature, should not fail doctor.
+        assert_eq!(check_github_source(&config), 0);
+    }
+
+    #[test]
+    fn test_check_github_source_enabled_without_token_fails() {
+        // SAFETY: this test mutates process env. Other tests in this file
+        // don't touch HIPPO_GITHUB_TOKEN_DOES_NOT_EXIST_12345, so no race.
+        let mut config = HippoConfig::default();
+        config.github.enabled = true;
+        config.github.token_env = "HIPPO_GITHUB_TOKEN_DOES_NOT_EXIST_12345".to_string();
+        config.github.watched_repos = vec!["owner/repo".to_string()];
+        // Empty watched_repos would add another fail; we want to isolate token.
+        unsafe {
+            std::env::remove_var("HIPPO_GITHUB_TOKEN_DOES_NOT_EXIST_12345");
+        }
+        // Token missing AND (probably) plist missing in test env → at least 1.
+        assert!(check_github_source(&config) >= 1);
+    }
+
+    #[test]
+    fn test_check_github_source_enabled_empty_repos_fails() {
+        let mut config = HippoConfig::default();
+        config.github.enabled = true;
+        // Set a token so we isolate the empty-repos check.
+        unsafe {
+            std::env::set_var("HIPPO_GITHUB_TOKEN_TEST_REPOS", "dummy");
+        }
+        config.github.token_env = "HIPPO_GITHUB_TOKEN_TEST_REPOS".to_string();
+        // watched_repos stays empty.
+        let fail = check_github_source(&config);
+        unsafe {
+            std::env::remove_var("HIPPO_GITHUB_TOKEN_TEST_REPOS");
+        }
+        // At least the empty-repos fail (maybe also plist-not-installed in CI).
+        assert!(fail >= 1);
     }
 }
