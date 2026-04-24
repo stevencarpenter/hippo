@@ -25,6 +25,19 @@ use std::time::Instant as OtelInstant;
 use crate::framing::{read_frame, write_frame};
 use crate::schema_handshake::{HandshakeResult, check_brain_schema_compat, mismatch_advice};
 
+/// Map an `EventPayload` to the `source` attribute value used across daemon
+/// OTel metrics. Mirrors `storage::source_kind` derivation so labels agree
+/// with `source_health` rows.
+#[cfg(feature = "otel")]
+fn payload_source(payload: &EventPayload) -> &'static str {
+    match payload {
+        EventPayload::Shell(s) if s.tool_name.is_some() => "claude-tool",
+        EventPayload::Shell(_) => "shell",
+        EventPayload::Browser(_) => "browser",
+        _ => "unknown",
+    }
+}
+
 pub struct DaemonState {
     pub config: HippoConfig,
     pub write_db: Mutex<Connection>,
@@ -69,15 +82,7 @@ pub async fn handle_request(state: &Arc<DaemonState>, request: DaemonRequest) ->
     let response = match request {
         DaemonRequest::IngestEvent(envelope) => {
             #[cfg(feature = "otel")]
-            let event_source = match &envelope.payload {
-                // Mirror storage::source_kind derivation: Shell envelopes with
-                // tool_name set are synthesised from Claude Code tool uses and
-                // belong to the `claude-tool` source per source_health.
-                EventPayload::Shell(s) if s.tool_name.is_some() => "claude-tool",
-                EventPayload::Shell(_) => "shell",
-                EventPayload::Browser(_) => "browser",
-                _ => "unknown",
-            };
+            let event_source = payload_source(&envelope.payload);
             let mut buffer = state.event_buffer.lock().await;
             let cap = state.config.daemon.flush_batch_size * 4;
             if buffer.len() >= cap {
@@ -344,10 +349,23 @@ pub async fn flush_events(state: &Arc<DaemonState>) -> usize {
     #[cfg(feature = "otel")]
     {
         let count_u64 = count as u64;
-        // Per-source breakdown on FLUSH_EVENTS is deferred: this call site aggregates
-        // a mixed batch. Use EVENTS_INGESTED{source=...} for per-source ingestion rates
-        // until flush_events tracks per-source counts.
-        metrics::FLUSH_EVENTS.add(count_u64, &[]);
+
+        // Per-source breakdown of processed events so `sum by (source)(flush_events)`
+        // works alongside EVENTS_INGESTED{source=...} and EVENTS_DROPPED{source=...}.
+        let mut per_source: HashMap<&'static str, u64> = HashMap::new();
+        for envelope in &events {
+            *per_source
+                .entry(payload_source(&envelope.payload))
+                .or_insert(0) += 1;
+        }
+        for (src, n) in &per_source {
+            metrics::FLUSH_EVENTS.add(*n, &[KeyValue::new("source", *src)]);
+        }
+
+        // Histograms stay aggregate: FLUSH_BATCH_SIZE is a property of the batch
+        // (mixed sources by design), and FLUSH_DURATION_MS times the whole flush
+        // — neither decomposes cleanly per source without changing the flush
+        // model itself.
         metrics::FLUSH_BATCH_SIZE.record(count_u64, &[]);
         metrics::FLUSH_DURATION_MS.record(flush_start.elapsed().as_secs_f64() * 1000.0, &[]);
     }

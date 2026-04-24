@@ -60,6 +60,15 @@ CREATE TABLE IF NOT EXISTS source_health (
 - `'probe'` — reserved for probe subsystem metadata (see `05-synthetic-probes.md`)
 - `'claude-session-watcher'` — process-health heartbeat for the FS watcher (see `06-claude-session-watcher.md`); distinct from `'claude-session'` which is data-path health
 
+### Brain-only sources
+
+The brain also emits enrichment metrics with `source="workflow"` and `source="codex"` labels. These are **not** first-class `source_health` rows because their ingestion path does not flow through the daemon socket:
+
+- **`workflow`** — GitHub Actions workflow runs polled directly by the brain (`hippo gh-poll`), stored in `workflow_runs`.
+- **`codex`** — GitHub Copilot (Codex) session logs ingested via the same Claude-session code path with a `source_kind` marker; they share the `'claude-session'` row in `source_health`.
+
+Reliability of these sources is observed through brain-side metrics (`hippo.brain.enrichment.*{source=...}`) and the underlying table freshness queries in `check_source_freshness`, not through `source_health` heartbeats.
+
 ## Migration (v7 → v8)
 
 The current schema version is `7`, defined at `crates/hippo-core/src/storage.rs:16` as `pub const EXPECTED_VERSION: i64 = 7`. The `source_health` table is added in v8.
