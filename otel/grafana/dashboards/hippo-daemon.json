@@ -20,8 +20,8 @@
         {
           "refId": "A",
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "sum(rate(hippo_daemon_events_ingested_total[5m])) by (type) * 60",
-          "legendFormat": "{{type}}",
+          "expr": "sum(rate(hippo_daemon_events_ingested_total[5m])) by (source) * 60",
+          "legendFormat": "{{source}}",
           "editorMode": "code"
         }
       ],
@@ -76,35 +76,31 @@
     {
       "id": 3,
       "title": "Events Dropped",
-      "type": "stat",
+      "type": "timeseries",
       "gridPos": { "x": 12, "y": 0, "w": 4, "h": 8 },
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "targets": [
         {
           "refId": "A",
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "sum(hippo_daemon_events_dropped_total) or vector(0)",
-          "legendFormat": "",
+          "expr": "sum(rate(hippo_daemon_events_dropped_total[5m])) by (source) * 60",
+          "legendFormat": "{{source}}",
           "editorMode": "code"
         }
       ],
       "fieldConfig": {
         "defaults": {
           "unit": "short",
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              { "color": "green", "value": null },
-              { "color": "red", "value": 1 }
-            ]
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "lineWidth": 1
           }
         }
       },
       "options": {
-        "reduceOptions": { "calcs": ["lastNotNull"] },
-        "orientation": "auto",
-        "textMode": "auto",
-        "colorMode": "background"
+        "tooltip": { "mode": "multi" },
+        "legend": { "displayMode": "list", "placement": "bottom" }
       }
     },
     {
