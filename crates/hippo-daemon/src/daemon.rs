@@ -479,6 +479,8 @@ pub async fn run(config: HippoConfig) -> Result<()> {
         use opentelemetry::global;
         let meter = global::meter("hippo-daemon");
 
+        crate::process_metrics::register();
+
         let state_ref = Arc::clone(&state);
         let _ = meter
             .u64_observable_gauge("hippo.daemon.buffer.size")

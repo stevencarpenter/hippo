@@ -83,6 +83,20 @@ HIPPO_OTEL_RESET_CONFIRM=delete mise run otel:reset  # Backup, then stop + delet
 mise run otel:status                                 # Show container status
 ```
 
+## Process Metrics
+
+Daemon and brain emit OTel [`process.*` semantic-convention](https://opentelemetry.io/docs/specs/semconv/resource/process/) metrics from inside each process — no host-side exporter needed, so Docker-on-macOS host-visibility limits don't apply.
+
+| Metric | Kind | Unit | Source | Notes |
+|---|---|---|---|---|
+| `process.cpu.utilization` | Gauge | `1` (fraction of one core) | daemon, brain | Sampled at 10–15s |
+| `process.memory.usage` | Gauge | bytes (RSS) | daemon, brain | |
+| `process.memory.virtual` | Gauge | bytes (VSZ) | daemon, brain | |
+| `process.threads` | Gauge | count | brain only | Daemon omitted — sysinfo has no cross-platform thread count |
+| `process.cpu.time` | Counter | ms | daemon, brain | Cumulative user + system time |
+
+Series are labelled by `service_name` (`hippo-daemon` / `hippo-brain`) once the otel-collector translates them to Prometheus. See the **Hippo Processes** dashboard in Grafana.
+
 ## Storage and Retention
 
 - **Persistent data path:** `~/.local/share/hippo/otel/`
