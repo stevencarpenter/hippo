@@ -247,11 +247,12 @@ fn redacted_fallback_envelope(
         return envelope.clone();
     };
 
+    let (redacted, _hits) = crate::redact_shell_event(shell, redaction);
     EventEnvelope {
         envelope_id: envelope.envelope_id,
         producer_version: envelope.producer_version,
         timestamp: envelope.timestamp,
-        payload: EventPayload::Shell(crate::redact_shell_event(shell, redaction)),
+        payload: EventPayload::Shell(redacted),
     }
 }
 

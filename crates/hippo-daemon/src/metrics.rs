@@ -69,10 +69,14 @@ pub static REQUEST_DURATION_MS: LazyLock<Histogram<f64>> = LazyLock::new(|| {
 
 // --- Redaction ---
 
+/// Counter of secret replacements. Callers should pass a `rule` attribute
+/// identifying which redaction pattern fired (e.g. `"aws_access_key"`,
+/// `"github_pat"`). Aggregate counts are recoverable by summing across `rule`
+/// in PromQL; per-rule breakdown is recoverable from the label dimension.
 pub static REDACTIONS: LazyLock<Counter<u64>> = LazyLock::new(|| {
     METER
         .u64_counter("hippo.daemon.redactions")
-        .with_description("Total secret replacements applied")
+        .with_description("Secret replacements applied, labelled by redaction rule name")
         .build()
 });
 

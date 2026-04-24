@@ -12,6 +12,10 @@ pub struct RedactionEngine {
 pub struct RedactionResult {
     pub text: String,
     pub count: u32,
+    /// Per-rule hit breakdown: `(rule_name, hits)`. Vec (not HashMap) because
+    /// the rule set is small (O(10)) and we want deterministic iteration order
+    /// for metric emission. Empty when no rules fired.
+    pub hits: Vec<(String, u32)>,
 }
 
 impl RedactionEngine {
@@ -42,22 +46,28 @@ impl RedactionEngine {
     }
 
     pub fn redact(&self, input: &str) -> RedactionResult {
-        self.regex_set.matches(input).into_iter().fold(
-            RedactionResult {
-                text: input.to_string(),
-                count: 0,
-            },
-            |acc, idx| {
-                let (regex, replacement) = &self.patterns[idx];
-                let hits = regex.find_iter(&acc.text).count() as u32;
-                RedactionResult {
-                    text: regex
-                        .replace_all(&acc.text, replacement.as_str())
-                        .to_string(),
-                    count: acc.count + hits,
-                }
-            },
-        )
+        let mut text = input.to_string();
+        let mut total = 0u32;
+        let mut hits: Vec<(String, u32)> = Vec::new();
+        for idx in self.regex_set.matches(input).into_iter() {
+            let (regex, replacement) = &self.patterns[idx];
+            // Count before replace so we don't lose hits when the replacement
+            // itself would match (rare but possible with exotic patterns).
+            let n = regex.find_iter(&text).count() as u32;
+            if n == 0 {
+                // RegexSet said this pattern matched, but after earlier
+                // replacements the hit is gone. Nothing to count or replace.
+                continue;
+            }
+            text = regex.replace_all(&text, replacement.as_str()).to_string();
+            total += n;
+            hits.push((self.names[idx].clone(), n));
+        }
+        RedactionResult {
+            text,
+            count: total,
+            hits,
+        }
     }
 
     pub fn test_string(&self, input: &str) -> Vec<String> {
@@ -172,6 +182,58 @@ replacement = "***"
         assert!(!result.text.contains("AKIAIOSFODNN7EXAMPLE"));
         assert!(!result.text.contains("supersecretvalue123"));
         assert!(result.count >= 2);
+    }
+
+    // -----------------------------------------------------------------------
+    // Per-rule hit attribution tests (issue #52).
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn hits_empty_when_no_redaction() {
+        let result = engine().redact("ls -la /tmp");
+        assert!(result.hits.is_empty());
+        assert_eq!(result.count, 0);
+    }
+
+    #[test]
+    fn hits_names_the_firing_rule() {
+        let result = engine().redact("AWS_KEY=AKIAIOSFODNN7EXAMPLE");
+        assert!(!result.hits.is_empty(), "expected at least one hit");
+        let names: Vec<&str> = result.hits.iter().map(|(n, _)| n.as_str()).collect();
+        assert!(
+            names.contains(&"aws_access_key"),
+            "expected aws_access_key in hits, got {names:?}"
+        );
+    }
+
+    #[test]
+    fn hits_total_matches_count() {
+        let input = "AWS=AKIAIOSFODNN7EXAMPLE and API_KEY=supersecretvalue123";
+        let result = engine().redact(input);
+        let hits_sum: u32 = result.hits.iter().map(|(_, n)| *n).sum();
+        assert_eq!(
+            hits_sum, result.count,
+            "sum of per-rule hits must equal aggregate count"
+        );
+    }
+
+    #[test]
+    fn hits_carry_per_rule_count() {
+        // Same rule firing twice must aggregate into one entry with count=2,
+        // not two entries — simpler for metric emission.
+        let input = "AWS_A=AKIAIOSFODNN7EXAMPLE AWS_B=AKIAIOSFODNN7ANOTHER";
+        let result = engine().redact(input);
+        let aws_hits: Vec<&(String, u32)> = result
+            .hits
+            .iter()
+            .filter(|(n, _)| n == "aws_access_key")
+            .collect();
+        assert_eq!(aws_hits.len(), 1, "expected single entry per rule");
+        assert!(
+            aws_hits[0].1 >= 2,
+            "expected hit count ≥ 2 for duplicate pattern, got {}",
+            aws_hits[0].1
+        );
     }
 
     // -----------------------------------------------------------------------
