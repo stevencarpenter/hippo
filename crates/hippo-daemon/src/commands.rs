@@ -622,9 +622,9 @@ pub async fn handle_doctor(config: &HippoConfig, explain: bool) -> Result<()> {
     check_firefox_extension();
 
     // Per-source capture-freshness audit (one line per raw data source
-    // hippo is supposed to collect). Bridge until the `source_health`
-    // table (docs/capture-reliability/01-source-health.md, P0.1) lands.
-    check_source_freshness(config);
+    // hippo is supposed to collect). Uses day-level thresholds — complements
+    // the seconds-level `check_source_staleness` below.
+    fail_count += check_source_freshness(config);
 
     // Check OpenTelemetry configuration
     fail_count += check_otel_status(config, &client).await;
@@ -658,32 +658,35 @@ pub async fn handle_doctor(config: &HippoConfig, explain: bool) -> Result<()> {
 /// `docs/capture-reliability/10-source-audit.md`). Queries the underlying
 /// tables directly so it works without the `source_health` table (which
 /// is still a P0.1 roadmap item).
-fn check_source_freshness(config: &HippoConfig) {
+fn check_source_freshness(config: &HippoConfig) -> u32 {
     let db_path = config.db_path();
     if !db_path.exists() {
         println!("[--] Source freshness: database not created yet");
-        return;
+        return 0;
     }
 
     let conn = match hippo_core::storage::open_db(&db_path) {
         Ok(c) => c,
         Err(e) => {
             println!("[!!] Source freshness: failed to open DB: {e}");
-            return;
+            return 1;
         }
     };
 
     let now_ms = chrono::Utc::now().timestamp_millis();
+    let mut fail_count = 0u32;
     for probe in source_freshness_probes() {
         let (count, max_ts): (i64, Option<i64>) = conn
             .query_row(probe.query, [], |r| Ok((r.get(0)?, r.get(1)?)))
             .unwrap_or((0, None));
 
-        println!(
-            "{}",
-            source_freshness_verdict(probe.name, count, max_ts, now_ms, probe.thresholds)
-        );
+        let line = source_freshness_verdict(probe.name, count, max_ts, now_ms, probe.thresholds);
+        if line.starts_with("[!!]") {
+            fail_count += 1;
+        }
+        println!("{}", line);
     }
+    fail_count
 }
 
 /// Soft/hard staleness thresholds in milliseconds.
@@ -894,10 +897,10 @@ fn check_source_staleness(db: &rusqlite::Connection, explain: bool) -> u32 {
                 println!(
                     "[--] source health             table not yet created (run hippo daemon install --force)"
                 );
-            } else {
-                println!("[!!] source health             DB error: {}", e);
+                return 0;
             }
-            return 0;
+            println!("[!!] source health             DB error: {}", e);
+            return 1;
         }
     };
 
@@ -907,7 +910,7 @@ fn check_source_staleness(db: &rusqlite::Connection, explain: bool) -> u32 {
         probe_ok: Option<i64>,
     }
 
-    let rows: Vec<SourceRow> = match stmt.query_map([], |row| {
+    let mapped = match stmt.query_map([], |row| {
         Ok(SourceRow {
             source: row.get(0)?,
             last_event_ts: row.get(1)?,
@@ -915,10 +918,17 @@ fn check_source_staleness(db: &rusqlite::Connection, explain: bool) -> u32 {
             probe_ok: row.get(5)?,
         })
     }) {
-        Ok(mapped) => mapped.flatten().collect(),
+        Ok(m) => m,
         Err(e) => {
             println!("[!!] source health             query error: {}", e);
-            return 0;
+            return 1;
+        }
+    };
+    let rows: Vec<SourceRow> = match mapped.collect::<rusqlite::Result<Vec<_>>>() {
+        Ok(r) => r,
+        Err(e) => {
+            println!("[!!] source health             row error: {}", e);
+            return 1;
         }
     };
 
@@ -1113,42 +1123,60 @@ fn check_zsh_hook_sourced(explain: bool) -> u32 {
             Err(_) => continue,
         };
         for line in content.lines() {
-            if line.contains("hippo.zsh") {
-                // Extract the sourced path (the token after "source" or ".").
-                let sourced_path: Option<&str> = line
-                    .split_whitespace()
-                    .skip_while(|t| *t != "source" && *t != ".")
-                    .nth(1);
-                let script_exists = sourced_path
-                    .map(|p| {
-                        let expanded = if let Some(rest) = p.strip_prefix("~/") {
-                            home.join(rest)
-                        } else {
-                            std::path::PathBuf::from(p)
-                        };
-                        expanded.exists()
-                    })
-                    .unwrap_or(false);
-
-                let short_candidate = candidate
-                    .strip_prefix(&home)
-                    .map(|p| format!("~/{}", p.display()))
-                    .unwrap_or_else(|_| candidate.display().to_string());
-
-                if script_exists {
-                    println!(
-                        "[OK] {:<29}  found in {}",
-                        "zsh hook sourced", short_candidate
-                    );
-                } else {
-                    let path_str = sourced_path.unwrap_or("<unknown>");
-                    println!(
-                        "[WW] {:<29}  source line found but script missing at {}",
-                        "zsh hook sourced", path_str
-                    );
-                }
-                return 0;
+            // Skip blank and commented lines — a commented-out `# source …hippo.zsh`
+            // is not an active source directive.
+            let trimmed = line.trim_start();
+            if trimmed.is_empty() || trimmed.starts_with('#') {
+                continue;
             }
+
+            // Require the line to actually start with `source` or `.` (the POSIX
+            // sourcing commands). Substring-matching `hippo.zsh` anywhere in the
+            // line gave false positives on comments, variable assignments, etc.
+            let mut tokens = trimmed.split_whitespace();
+            let Some(cmd) = tokens.next() else { continue };
+            if cmd != "source" && cmd != "." {
+                continue;
+            }
+            let sourced_path: Option<&str> = tokens
+                .next()
+                .map(|p| p.trim_matches(|c: char| c == '"' || c == '\'' || c == ';'));
+            if !sourced_path
+                .map(|p| p.contains("hippo.zsh"))
+                .unwrap_or(false)
+            {
+                continue;
+            }
+
+            let script_exists = sourced_path
+                .map(|p| {
+                    let expanded = if let Some(rest) = p.strip_prefix("~/") {
+                        home.join(rest)
+                    } else {
+                        std::path::PathBuf::from(p)
+                    };
+                    expanded.exists()
+                })
+                .unwrap_or(false);
+
+            let short_candidate = candidate
+                .strip_prefix(&home)
+                .map(|p| format!("~/{}", p.display()))
+                .unwrap_or_else(|_| candidate.display().to_string());
+
+            if script_exists {
+                println!(
+                    "[OK] {:<29}  found in {}",
+                    "zsh hook sourced", short_candidate
+                );
+            } else {
+                let path_str = sourced_path.unwrap_or("<unknown>");
+                println!(
+                    "[WW] {:<29}  source line found but script missing at {}",
+                    "zsh hook sourced", path_str
+                );
+            }
+            return 0;
         }
     }
 
@@ -1226,10 +1254,11 @@ fn check_log_file_sizes(config: &HippoConfig, explain: bool) -> u32 {
         let size_mb = size / (1024 * 1024);
         println!("[!!] {:<29}  {}: {}MB", "log file sizes", name, size_mb);
         if explain {
+            let full_path = data_dir.join(&name);
             println!("     CAUSE:  Log file growing without rotation");
             println!(
                 "     FIX:    Upgrade hippo to a version with log rotation, or: truncate -s 0 {}",
-                name
+                full_path.display()
             );
             println!("     DOC:    docs/capture-reliability/07-roadmap.md");
         }
