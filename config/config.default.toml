@@ -129,11 +129,16 @@ project_roots = []
 # `lessons` (queryable via the `get_lessons` MCP tool).
 #
 # To enable CI ingest:
-#   1. Make sure a GitHub token is available. Two options:
-#        a. Run `gh auth login` (GitHub CLI) — the wrapper falls back to
-#           `gh auth token` automatically, no env var needed.
-#        b. Create a PAT with `repo` + `actions:read` scopes and export
-#           HIPPO_GITHUB_TOKEN=ghp_... (in ~/.zshrc or similar).
+#   1. Make sure a GitHub token is available. The launchd wrapper checks, in order:
+#        a. HIPPO_GITHUB_TOKEN in the process env.
+#        b. `~/.config/zsh/.env` (sourced at runtime — add `export HIPPO_GITHUB_TOKEN=ghp_...`
+#           here so the env var is present under launchd; shell rc files are NOT read by
+#           LaunchAgents).
+#        c. `gh auth token` (zero-config — run `gh auth login` once with the GitHub CLI
+#           and the wrapper picks up the OAuth token from the macOS keychain).
+#      For a manual token, create one with:
+#        - classic PAT: `repo` + `workflow` scopes
+#        - fine-grained PAT: repository Actions (read) + Metadata (read) + Contents (read)
 #   2. Set enabled = true and populate watched_repos below
 #   3. Reinstall: `hippo daemon install --force` (writes the gh-poll plist)
 #   4. Load the agent: `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.hippo.gh-poll.plist`

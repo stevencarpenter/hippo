@@ -16,18 +16,25 @@ pub struct PollConfig {
     pub redact_config_path: Option<PathBuf>,
 }
 
-/// Resolve a GitHub token the same way the gh-poll wrapper does: env first,
-/// then `gh auth token` as a fallback. Used by install-time validation, the
-/// `hippo doctor` check, and the gh-poll runtime — all three agree so the
-/// user doesn't hit surprises between one and the next.
+/// Resolve a GitHub token the same way the gh-poll launchd wrapper does:
+/// process env first, then `~/.config/zsh/.env` (chezmoi-deployed), then
+/// `gh auth token`. Used by install-time validation, the `hippo doctor`
+/// check, and the gh-poll runtime — all three agree so the user doesn't hit
+/// "doctor reports missing but launchd finds it" divergences.
 ///
-/// Returns `None` only when the env var is unset *and* either `gh` is not
-/// installed or it returns an empty / non-zero response.
+/// Returns `None` only when none of those three sources yields a non-empty
+/// token.
 pub fn resolve_github_token(token_env: &str) -> Option<String> {
     if let Ok(v) = std::env::var(token_env)
         && !v.is_empty()
     {
         return Some(v);
+    }
+    if let Some(home) = dirs::home_dir() {
+        let env_file = home.join(".config/zsh/.env");
+        if let Some(v) = read_var_from_env_file(&env_file, token_env) {
+            return Some(v);
+        }
     }
     let output = std::process::Command::new("gh")
         .args(["auth", "token"])
@@ -38,6 +45,42 @@ pub fn resolve_github_token(token_env: &str) -> Option<String> {
     }
     let token = String::from_utf8_lossy(&output.stdout).trim().to_string();
     (!token.is_empty()).then_some(token)
+}
+
+/// Minimal parser for the subset of bash assignment syntax that the wrapper
+/// would resolve via `set -a; source FILE; set +a`. Handles:
+///   - `KEY=value` and `export KEY=value`
+///   - blank lines and `# comments`
+///   - optional single or double quotes around the value
+///
+/// Does not expand `$VAR` references or handle heredocs — if the user's env
+/// file uses those for their token, they can set the variable in the process
+/// env directly, which is the first resolver path.
+fn read_var_from_env_file(path: &Path, var_name: &str) -> Option<String> {
+    let content = std::fs::read_to_string(path).ok()?;
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        let assignment = trimmed.strip_prefix("export ").unwrap_or(trimmed);
+        let Some((key, value)) = assignment.split_once('=') else {
+            continue;
+        };
+        if key.trim() != var_name {
+            continue;
+        }
+        let value = value.trim();
+        let unquoted = match (value.chars().next(), value.chars().last()) {
+            (Some('"'), Some('"')) if value.len() >= 2 => &value[1..value.len() - 1],
+            (Some('\''), Some('\'')) if value.len() >= 2 => &value[1..value.len() - 1],
+            _ => value,
+        };
+        if !unquoted.is_empty() {
+            return Some(unquoted.to_string());
+        }
+    }
+    None
 }
 
 fn parse_ts(s: Option<&str>) -> Option<i64> {
@@ -261,5 +304,54 @@ mod tests {
         // this is a dev machine with `gh auth login` — both prove the empty
         // env was skipped, which is what we're verifying.
         assert!(got.as_deref() != Some(""));
+    }
+
+    #[test]
+    fn env_file_parses_bare_assignment() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(".env");
+        std::fs::write(&path, "FOO=bar\nBAZ=qux\n").unwrap();
+        assert_eq!(read_var_from_env_file(&path, "FOO").as_deref(), Some("bar"));
+        assert_eq!(read_var_from_env_file(&path, "BAZ").as_deref(), Some("qux"));
+        assert_eq!(read_var_from_env_file(&path, "MISSING"), None);
+    }
+
+    #[test]
+    fn env_file_parses_export_and_quotes() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(".env");
+        std::fs::write(
+            &path,
+            "# a comment\n\nexport DQ=\"double quoted\"\nexport SQ='single quoted'\nPLAIN=plain\n",
+        )
+        .unwrap();
+        assert_eq!(
+            read_var_from_env_file(&path, "DQ").as_deref(),
+            Some("double quoted")
+        );
+        assert_eq!(
+            read_var_from_env_file(&path, "SQ").as_deref(),
+            Some("single quoted")
+        );
+        assert_eq!(
+            read_var_from_env_file(&path, "PLAIN").as_deref(),
+            Some("plain")
+        );
+    }
+
+    #[test]
+    fn env_file_skips_empty_values_and_missing_file() {
+        // Missing file → None (not an error path; file is optional).
+        assert_eq!(
+            read_var_from_env_file(Path::new("/nonexistent/path/.env"), "X"),
+            None
+        );
+
+        // Empty assignment is treated as unset so we fall through to the next
+        // resolver source, matching `if [ -z "$VAR" ]` in the wrapper.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(".env");
+        std::fs::write(&path, "EMPTY=\n").unwrap();
+        assert_eq!(read_var_from_env_file(&path, "EMPTY"), None);
     }
 }

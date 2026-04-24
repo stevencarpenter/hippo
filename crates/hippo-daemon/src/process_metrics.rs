@@ -1,7 +1,7 @@
 //! OpenTelemetry process.* semantic-convention metrics for hippo-daemon.
 //!
-//! Samples the current process's CPU utilization, RSS/VSZ memory, thread count,
-//! and cumulative CPU time at a fixed interval via `sysinfo`, then exposes them
+//! Samples the current process's CPU utilization, RSS/VSZ memory, and
+//! cumulative CPU time at a fixed interval via `sysinfo`, then exposes them
 //! as OTel observable gauges and a counter. Only compiled with `--features otel`.
 //!
 //! Implementation note: a background tokio task refreshes `sysinfo` state on a
