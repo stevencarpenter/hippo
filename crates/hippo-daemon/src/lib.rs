@@ -48,9 +48,15 @@ pub fn load_redaction_engine(config: &hippo_core::config::HippoConfig) -> Redact
 }
 
 /// Redact a shell event: scrub the command, filter env to allowlist, redact env values.
-/// Returns the redacted event and the command redaction result (for counting).
-pub fn redact_shell_event(event: &ShellEvent, redaction: &RedactionEngine) -> Box<ShellEvent> {
-    let RedactionResult { text, count } = redaction.redact(&event.command);
+/// Returns the redacted event plus the per-rule hit breakdown from the command
+/// redaction pass, so callers can emit per-rule observability (see #52). The
+/// breakdown is command-only — env values are redacted too, but their hits are
+/// not currently surfaced (would require a separate metric dimension).
+pub fn redact_shell_event(
+    event: &ShellEvent,
+    redaction: &RedactionEngine,
+) -> (Box<ShellEvent>, Vec<(String, u32)>) {
+    let RedactionResult { text, count, hits } = redaction.redact(&event.command);
     let filtered_env = event
         .env_snapshot
         .iter()
@@ -58,10 +64,11 @@ pub fn redact_shell_event(event: &ShellEvent, redaction: &RedactionEngine) -> Bo
         .map(|(k, v)| (k.clone(), redaction.redact(v).text))
         .collect();
 
-    Box::new(ShellEvent {
+    let redacted = Box::new(ShellEvent {
         command: text,
         redaction_count: count,
         env_snapshot: filtered_env,
         ..event.clone()
-    })
+    });
+    (redacted, hits)
 }
