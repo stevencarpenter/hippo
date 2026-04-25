@@ -31,6 +31,12 @@ pub struct BrowserVisit {
     pub search_query: Option<String>,
     pub referrer: Option<String>,
     pub timestamp: i64,
+    /// Optional probe tag for synthetic probe events. When set, the NM host
+    /// uses this as the probe_tag instead of computing it from envelope_id.
+    /// Allows probe events to use a fresh UUID per run (avoiding dedup window
+    /// stale-row false positives).
+    #[serde(default)]
+    pub probe_tag: Option<String>,
 }
 
 /// Response sent back to the Firefox extension.
@@ -222,11 +228,16 @@ pub async fn run(config: &HippoConfig) -> Result<()> {
 
         // Probe events (probe_domain) carry their envelope_id as probe_tag so
         // flush_events can skip enqueueing them and all queries can exclude them.
-        let probe_tag = if is_probe {
-            Some(envelope_id.to_string())
-        } else {
-            None
-        };
+        // If the visit carries an explicit probe_tag (e.g., a fresh UUID from the
+        // probe orchestrator), use it to avoid false positives from the dedup
+        // window catching old rows.
+        let probe_tag = visit.probe_tag.clone().or_else(|| {
+            if is_probe {
+                Some(envelope_id.to_string())
+            } else {
+                None
+            }
+        });
 
         let envelope = EventEnvelope {
             envelope_id,

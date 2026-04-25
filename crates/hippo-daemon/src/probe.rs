@@ -9,7 +9,7 @@
 use anyhow::{Context, Result};
 use hippo_core::config::HippoConfig;
 use hippo_core::storage;
-use rusqlite::{Connection, OptionalExtension};
+use rusqlite::OptionalExtension;
 use std::time::Instant;
 use tracing::{info, warn};
 use uuid::Uuid;
@@ -114,6 +114,8 @@ async fn probe_shell(config: &HippoConfig) -> Result<(bool, Option<i64>)> {
     let probe_uuid = Uuid::new_v4();
     let probe_start_ms = chrono::Utc::now().timestamp_millis();
 
+    let uuid_str = probe_uuid.to_string();
+
     crate::commands::handle_send_event_shell(
         config,
         "__hippo_probe__".to_string(),
@@ -125,14 +127,13 @@ async fn probe_shell(config: &HippoConfig) -> Result<(bool, Option<i64>)> {
         None,
         false,
         None,
-        Some(probe_uuid.to_string()),
+        Some(uuid_str.clone()),
         None,
         None,
     )
     .await
     .context("shell probe send failed")?;
 
-    let uuid_str = probe_uuid.to_string();
     poll_event_row(config, &uuid_str, probe_start_ms).await
 }
 
@@ -165,10 +166,14 @@ async fn probe_claude_tool(config: &HippoConfig) -> Result<(bool, Option<i64>)> 
 
 /// Claude-session probe: assertion-based, not injection.
 ///
-/// For every `~/.claude/projects/*/*.jsonl` modified in the last 5 minutes,
+/// For every `~/.claude/projects/**/*.jsonl` modified in the last 5 minutes,
 /// assert that a `claude_sessions` row exists with `source_file = <path>` and
 /// `end_time >= mtime_ms - 300_000`. If no JSONL was recently active: trivially
 /// pass (no Claude session running). If JSONL exists but no matching row: fail.
+///
+/// Recursive walk covers main sessions and subagent sessions at any depth:
+/// ~/.claude/projects/<project>/<session>.jsonl
+/// ~/.claude/projects/<project>/<parent>/subagents/<id>.jsonl
 fn probe_claude_session(config: &HippoConfig) -> Result<(bool, Option<i64>)> {
     let now_ms = chrono::Utc::now().timestamp_millis();
     let window_ms: i64 = 5 * 60 * 1000; // 5 minutes
@@ -185,38 +190,32 @@ fn probe_claude_session(config: &HippoConfig) -> Result<(bool, Option<i64>)> {
     }
 
     let mut recent_jsonl: Vec<(std::path::PathBuf, i64)> = Vec::new();
+    let mut dirs_to_scan = vec![projects_dir];
 
-    // Walk two levels: ~/.claude/projects/<project>/<session>.jsonl
-    for project_entry in std::fs::read_dir(&projects_dir)
-        .context("cannot read ~/.claude/projects")?
-        .flatten()
-    {
-        let project_path = project_entry.path();
-        if !project_path.is_dir() {
-            continue;
-        }
-        let read_result = std::fs::read_dir(&project_path);
-        let entries = match read_result {
+    // Recursive walk to catch main sessions and subagent sessions at any depth.
+    while let Some(dir) = dirs_to_scan.pop() {
+        let entries = match std::fs::read_dir(&dir) {
             Ok(e) => e,
             Err(_) => continue,
         };
-        for file_entry in entries.flatten() {
-            let file_path = file_entry.path();
-            if file_path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
-                continue;
-            }
-            let mtime_ms = match file_entry.metadata().ok().and_then(|m| {
-                m.modified().ok().and_then(|t| {
-                    t.duration_since(std::time::UNIX_EPOCH)
-                        .ok()
-                        .map(|d| d.as_millis() as i64)
-                })
-            }) {
-                Some(ts) => ts,
-                None => continue,
-            };
-            if now_ms - mtime_ms <= window_ms {
-                recent_jsonl.push((file_path, mtime_ms));
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                dirs_to_scan.push(path);
+            } else if path.extension().and_then(|e| e.to_str()) == Some("jsonl") {
+                let mtime_ms = match entry.metadata().ok().and_then(|m| {
+                    m.modified().ok().and_then(|t| {
+                        t.duration_since(std::time::UNIX_EPOCH)
+                            .ok()
+                            .map(|d| d.as_millis() as i64)
+                    })
+                }) {
+                    Some(ts) => ts,
+                    None => continue,
+                };
+                if now_ms - mtime_ms <= window_ms {
+                    recent_jsonl.push((path, mtime_ms));
+                }
             }
         }
     }
@@ -278,27 +277,31 @@ fn probe_claude_session(config: &HippoConfig) -> Result<(bool, Option<i64>)> {
 
 /// Browser probe: invoke the NM host binary via stdin/stdout, writing a
 /// synthetic visit for `probe_domain`, then poll `browser_events` for the row.
+///
+/// Uses a fresh UUID per run (not make_envelope_id) and checks
+/// `created_at > probe_start_ms` to avoid false positives from the dedup window
+/// matching stale rows from prior probe runs.
 async fn probe_browser(config: &HippoConfig) -> Result<(bool, Option<i64>)> {
     let probe_start_ms = chrono::Utc::now().timestamp_millis();
     let probe_domain = &config.browser.probe_domain;
-    let dedup_window = config.browser.dedup_window_minutes;
 
     let probe_url = format!("https://{}/synthetic", probe_domain);
-    let probe_uuid =
-        crate::native_messaging::make_envelope_id(&probe_url, dedup_window, probe_start_ms);
+    // Use a fresh UUID per probe run (not make_envelope_id) to avoid dedup
+    // window stale-row false positives. The NM host will use this as probe_tag.
+    let probe_uuid = Uuid::new_v4();
     let probe_uuid_str = probe_uuid.to_string();
 
-    // Build the BrowserVisit JSON message.
+    // Build the BrowserVisit JSON message with the explicit probe_tag.
     let visit = serde_json::json!({
         "url": probe_url,
         "title": "Hippo Probe",
         "domain": probe_domain,
         "dwell_ms": 1,
         "scroll_depth": 1.0,
-        "timestamp": probe_start_ms
+        "timestamp": probe_start_ms,
+        "probe_tag": probe_uuid_str
     });
     let payload = serde_json::to_vec(&visit)?;
-
     // Encode with 4-byte native-endian length prefix (NM framing).
     let len = payload.len() as u32;
     let len_bytes = len.to_ne_bytes();
@@ -309,49 +312,52 @@ async fn probe_browser(config: &HippoConfig) -> Result<(bool, Option<i64>)> {
     // Find the hippo binary — use current executable.
     let hippo_bin = std::env::current_exe().unwrap_or_else(|_| std::path::PathBuf::from("hippo"));
 
-    // Spawn the NM host subprocess.
-    let mut child = std::process::Command::new(&hippo_bin)
+    // Spawn the NM host subprocess using tokio for non-blocking I/O.
+    use tokio::io::AsyncWriteExt;
+    let mut child = tokio::process::Command::new(&hippo_bin)
         .arg("native-messaging-host")
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
+        .kill_on_drop(true)
         .spawn()
         .context("failed to spawn native-messaging-host")?;
 
     {
-        use std::io::Write;
         let stdin = child.stdin.as_mut().context("no stdin")?;
         stdin
             .write_all(&nm_message)
+            .await
             .context("failed to write NM message")?;
+        stdin.shutdown().await.context("failed to close NM stdin")?;
     }
-    // Close stdin so the NM host exits its read loop.
-    drop(child.stdin.take());
 
     // Give the NM host time to forward the event before polling.
     tokio::time::sleep(std::time::Duration::from_millis(300)).await;
 
     // Wait for child (don't care about its exit code here).
-    let _ = child.wait();
+    let _ = child.wait().await;
 
     // Poll browser_events for the probe row.
+    // Check created_at > probe_start_ms to ensure we get a fresh row,
+    // not a stale one from a prior probe run within the dedup window.
     let db = storage::open_db(&config.db_path()).context("cannot open DB for browser probe")?;
     let deadline = Instant::now() + std::time::Duration::from_millis(POLL_DEADLINE_MS);
 
     loop {
         let row: Option<i64> = db
             .query_row(
-                "SELECT id FROM browser_events
-                 WHERE envelope_id = ?1 AND probe_tag = ?2
-                 LIMIT 1",
-                rusqlite::params![probe_uuid_str, probe_uuid_str],
+                "SELECT created_at FROM browser_events
+                WHERE probe_tag = ?1 AND created_at > ?2
+                LIMIT 1",
+                rusqlite::params![probe_uuid_str, probe_start_ms],
                 |row| row.get(0),
             )
             .optional()?;
 
-        if let Some(_id) = row {
-            let lag = chrono::Utc::now().timestamp_millis() - probe_start_ms;
-            return Ok((true, Some(lag)));
+        if let Some(created_at) = row {
+            let lag = created_at - probe_start_ms;
+            return Ok((true, Some(lag.max(0))));
         }
 
         if Instant::now() >= deadline {
@@ -362,8 +368,11 @@ async fn probe_browser(config: &HippoConfig) -> Result<(bool, Option<i64>)> {
     }
 }
 
-/// Poll `events` for a row matching `envelope_id = uuid_str` and
-/// `probe_tag = uuid_str`. Returns `(ok, lag_ms)`.
+/// Poll `events` for a row matching `probe_tag = uuid_str`. Returns `(ok, lag_ms)`.
+///
+/// We query by probe_tag alone because EventEnvelope::shell() generates a random
+/// envelope_id that we cannot control from outside the constructor. probe_tag IS
+/// set to the probe UUID, so it's the reliable identifier.
 async fn poll_event_row(
     config: &HippoConfig,
     uuid_str: &str,
@@ -376,9 +385,9 @@ async fn poll_event_row(
         let row: Option<i64> = db
             .query_row(
                 "SELECT created_at FROM events
-                 WHERE envelope_id = ?1 AND probe_tag = ?2
-                 LIMIT 1",
-                rusqlite::params![uuid_str, uuid_str],
+                WHERE probe_tag = ?1
+                LIMIT 1",
+                rusqlite::params![uuid_str],
                 |row| row.get(0),
             )
             .optional()?;
@@ -401,26 +410,23 @@ async fn poll_event_row(
 /// Silently skips if `source_health` row for this source doesn't exist
 /// (the row is created by the P0 migration; if it's missing we're on a
 /// pre-P0 DB and the probe result just has nowhere to land).
+/// Uses `storage::open_db` to ensure migrations run so the schema is current.
 fn write_probe_result(
     config: &HippoConfig,
     source: &str,
     ok: bool,
     lag_ms: Option<i64>,
 ) -> Result<()> {
-    let conn = Connection::open(config.db_path()).context("cannot open DB for probe result")?;
+    let conn = storage::open_db(&config.db_path()).context("cannot open DB for probe result")?;
     let now_ms = chrono::Utc::now().timestamp_millis();
-
-    conn.execute_batch(
-        "PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;",
-    )?;
 
     let rows = conn.execute(
         "UPDATE source_health SET
-             probe_ok          = ?1,
-             probe_lag_ms      = ?2,
-             probe_last_run_ts = ?3,
-             updated_at        = ?3
-         WHERE source = ?4",
+        probe_ok = ?1,
+        probe_lag_ms = ?2,
+        probe_last_run_ts = ?3,
+        updated_at = ?3
+        WHERE source = ?4",
         rusqlite::params![ok as i32, lag_ms, now_ms, source],
     )?;
 

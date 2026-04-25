@@ -184,9 +184,11 @@ pub enum SendEventSource {
         #[arg(long)]
         probe_tag: Option<String>,
         /// Override source_kind (e.g. "claude-tool"). Defaults to "shell".
-        #[arg(long)]
+        /// When set to "claude-tool", --tool-name is required.
+        #[arg(long, requires_if("claude-tool", "tool_name"))]
         source_kind: Option<String>,
-        /// Tool name for claude-tool events (e.g. "Bash").
+        /// Tool name for claude-tool events (e.g. "Bash"). Required when
+        /// --source-kind=claude-tool.
         #[arg(long)]
         tool_name: Option<String>,
     },
