@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+"http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+<key>Label</key>
+<string>com.hippo.claude-session-watcher</string>
+
+<key>ProgramArguments</key>
+<array>
+<string>__HIPPO_BIN__</string>
+<string>claude-session-watch</string>
+</array>
+
+<!-- Keep alive: restart automatically if it exits or is killed -->
+<key>KeepAlive</key>
+<true/>
+
+<!-- Start immediately on bootstrap -->
+<key>RunAtLoad</key>
+<true/>
+
+<key>StandardOutPath</key>
+<string>__DATA_DIR__/claude-session-watcher.log</string>
+
+<key>StandardErrorPath</key>
+<string>__DATA_DIR__/claude-session-watcher.log</string>
+
+<key>EnvironmentVariables</key>
+<dict>
+<key>HOME</key>
+<string>__HOME__</string>
+<key>PATH</key>
+<string>__PATH__</string>
+</dict>
+
+<!-- Throttle restarts: if the process exits within 10 s, wait before relaunching -->
+<key>ThrottleInterval</key>
+<integer>10</integer>
+</dict>
+</plist>

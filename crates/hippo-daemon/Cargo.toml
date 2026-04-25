@@ -36,6 +36,7 @@ opentelemetry-appender-tracing = { workspace = true, optional = true }
 tracing-opentelemetry = { workspace = true, optional = true }
 sysinfo = { version = "0.38", optional = true, default-features = false, features = ["system"] }
 which = "8.0.2"
+notify = "8"
 
 [features]
 default = ["otel"]
@@ -52,3 +53,4 @@ otel = [
 tempfile = "3"
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 wiremock = "0.6"
+proptest = "1"

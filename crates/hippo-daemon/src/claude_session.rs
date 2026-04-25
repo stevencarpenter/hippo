@@ -930,6 +930,34 @@ fn insert_segments(conn: &Connection, segments: &[SessionSegment]) -> Result<(us
 /// Logs but does not fail the caller on per-segment insert errors — the
 /// batch importer should still report event-sender progress honestly even
 /// if a single segment row fails.
+/// Extract segments from a JSONL session file and insert them into an existing
+/// connection. Called by the FS watcher (which owns its own connection) to avoid
+/// opening a second writer. Returns `(inserted, skipped, errors)`.
+pub fn ingest_session_file(conn: &Connection, path: &Path) -> (usize, usize, usize) {
+    let redaction = RedactionEngine::builtin();
+    let session_file = SessionFile::from_path(path);
+
+    let segments = match extract_segments(&session_file, &redaction) {
+        Ok(s) => s,
+        Err(e) => {
+            warn!(path = %path.display(), %e, "failed to extract session segments");
+            return (0, 0, 1);
+        }
+    };
+
+    if segments.is_empty() {
+        return (0, 0, 0);
+    }
+
+    match insert_segments(conn, &segments) {
+        Ok((inserted, skipped)) => (inserted, skipped, 0),
+        Err(e) => {
+            error!(%e, "failed to insert session segments");
+            (0, 0, 1)
+        }
+    }
+}
+
 fn write_session_segments(db_path: &Path, path: &Path) -> (usize, usize, usize) {
     let redaction = RedactionEngine::builtin();
     let session_file = SessionFile::from_path(path);

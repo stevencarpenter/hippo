@@ -13,7 +13,7 @@ const SCHEMA: &str = include_str!("schema.sql");
 /// startup code (e.g. the brain handshake) can cross-check without
 /// re-declaring the value. Keep in sync with
 /// `brain/src/hippo_brain/schema_version.py::EXPECTED_SCHEMA_VERSION`.
-pub const EXPECTED_VERSION: i64 = 9;
+pub const EXPECTED_VERSION: i64 = 10;
 
 pub fn open_db(path: &Path) -> Result<Connection> {
     if let Some(parent) = path.parent() {
@@ -418,6 +418,33 @@ pub fn open_db(path: &Path) -> Result<Connection> {
              CREATE INDEX IF NOT EXISTS idx_claude_sessions_start_time
                  ON claude_sessions (start_time DESC);
              PRAGMA user_version = 9;",
+        )?;
+    }
+
+    // Migrate from v9 → v10: add watcher offset tracking and parity tables (T-5).
+    if (1..=9).contains(&version) {
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS claude_session_offsets (
+                path              TEXT    PRIMARY KEY,
+                session_id        TEXT,
+                byte_offset       INTEGER NOT NULL DEFAULT 0,
+                inode             INTEGER,
+                device            INTEGER,
+                size_at_last_read INTEGER NOT NULL DEFAULT 0,
+                updated_at        INTEGER NOT NULL
+             ) STRICT;
+             CREATE TABLE IF NOT EXISTS claude_session_parity (
+                id             INTEGER PRIMARY KEY AUTOINCREMENT,
+                path           TEXT    NOT NULL,
+                tailer_count   INTEGER NOT NULL DEFAULT 0,
+                watcher_count  INTEGER NOT NULL DEFAULT 0,
+                mismatch_count INTEGER NOT NULL DEFAULT 0,
+                window_start   INTEGER NOT NULL,
+                window_end     INTEGER NOT NULL
+             ) STRICT;
+             CREATE INDEX IF NOT EXISTS idx_claude_session_parity_path_window
+                 ON claude_session_parity (path, window_start);
+             PRAGMA user_version = 10;",
         )?;
     } else if version != 0 && version != EXPECTED_VERSION {
         anyhow::bail!(
@@ -1648,7 +1675,7 @@ mod tests {
         let v: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 9);
+        assert_eq!(v, 10);
     }
 
     #[test]
@@ -1718,7 +1745,7 @@ mod tests {
         let v: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 9);
+        assert_eq!(v, 10);
         // Verify envelope_id column exists by inserting with it
         let sid = upsert_session(&conn, "mig-test", "host", "zsh", "user").unwrap();
         let eid = insert_event_at(
@@ -1804,7 +1831,7 @@ mod tests {
         let v: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 9);
+        assert_eq!(v, 10);
     }
 
     #[test]
@@ -1906,7 +1933,7 @@ mod tests {
         let v: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 9);
+        assert_eq!(v, 10);
 
         // Verify browser tables exist
         let browser_tables = [
@@ -1929,13 +1956,13 @@ mod tests {
             );
         }
 
-        // Close and re-open — should remain at v5 without error
+        // Close and re-open — should remain at current version without error
         drop(conn);
         let conn2 = open_db(&db_path).unwrap();
         let v2: i64 = conn2
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v2, 9);
+        assert_eq!(v2, 10);
     }
 
     fn sample_browser_event() -> BrowserEvent {

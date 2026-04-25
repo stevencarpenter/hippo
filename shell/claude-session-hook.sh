@@ -60,6 +60,29 @@ fi
 
 log "hippo_bin=$HIPPO_BIN"
 
+# Determine capture mode from config.
+# Falls back to "tmux-tailer" if hippo can't be queried (safe default).
+CAPTURE_MODE=$("$HIPPO_BIN" capture-mode 2>/dev/null || echo "tmux-tailer")
+log "capture_mode=$CAPTURE_MODE"
+
+# In watcher/both mode, write a session marker so the FS watcher can correlate
+# the JSONL file with the session that just started.
+if [ "$CAPTURE_MODE" = "watcher" ] || [ "$CAPTURE_MODE" = "both" ]; then
+    MARKER_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/hippo/session-markers"
+    mkdir -p "$MARKER_DIR" 2>/dev/null || true
+    SESSION_ID=$(echo "$INPUT" | python3 -c "import sys,json; print(json.load(sys.stdin).get('session_id',''))" 2>/dev/null)
+    if [ -n "$SESSION_ID" ]; then
+        echo "$TRANSCRIPT_PATH" > "$MARKER_DIR/${SESSION_ID}" 2>/dev/null || true
+        log "wrote session marker for session_id=$SESSION_ID"
+    fi
+fi
+
+# In watcher-only mode, skip tmux spawn — the FS watcher handles ingestion.
+if [ "$CAPTURE_MODE" = "watcher" ]; then
+    log "watcher mode: skipping tmux spawn"
+    exit 0
+fi
+
 # Resolve Claude's PID. The hook runs as a direct child of Claude Code,
 # so $PPID is the Claude process PID.
 CLAUDE_PID="$PPID"

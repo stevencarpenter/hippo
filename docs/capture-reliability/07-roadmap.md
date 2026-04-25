@@ -176,7 +176,7 @@ If that chain exits 0, the watchdog fired at least one alarm within one poll int
 
 ## T-5 · P2.1 — Claude session FS watcher (dual-run mode)
 
-- **Status:** open
+- **Status:** review
 - **Phase:** P2
 - **Depends on:** (P0 — all done). Independent of T-1..T-4; can run in parallel with P1.
 - **Branch:** `feat/p2.1-claude-session-watcher`

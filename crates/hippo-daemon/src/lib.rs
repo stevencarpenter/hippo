@@ -14,6 +14,7 @@ pub mod process_metrics;
 pub mod schema_handshake;
 #[cfg(feature = "otel")]
 pub mod telemetry;
+pub mod watch_claude_sessions;
 pub mod watchdog;
 
 use hippo_core::config::ENV_ALLOWLIST;
