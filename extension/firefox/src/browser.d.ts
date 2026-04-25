@@ -6,6 +6,12 @@ declare namespace browser {
       id?: string;
       tab?: { id: number; url?: string };
     }
+    interface Manifest {
+      version: string;
+      name?: string;
+      description?: string;
+    }
+    function getManifest(): Manifest;
     function sendMessage(message: unknown): Promise<unknown>;
     function sendNativeMessage(host: string, message: unknown): Promise<unknown>;
     const onMessage: {

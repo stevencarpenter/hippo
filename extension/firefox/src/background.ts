@@ -9,7 +9,32 @@
  */
 
 import { DEFAULT_ALLOWLIST, MIN_DWELL_MS, NATIVE_HOST, SEARCH_ENGINES } from "./config";
+import { HEARTBEAT_INTERVAL_MS, buildHeartbeatPayload } from "./heartbeat";
 import type { BrowserVisit, PageVisitMessage, Settings } from "./types";
+
+// Re-export for consumers that import from background.ts directly.
+export { HEARTBEAT_INTERVAL_MS, buildHeartbeatPayload };
+
+// --- Heartbeat ---
+
+/**
+ * Send a heartbeat to the hippo_daemon Native Messaging host.
+ *
+ * Called on startup and every `HEARTBEAT_INTERVAL_MS`.  On success the
+ * timestamp is persisted to `browser.storage.local` so the popup badge
+ * can display freshness without querying the daemon.
+ */
+async function sendHeartbeat(): Promise<void> {
+  const manifest = browser.runtime.getManifest();
+  const msg = buildHeartbeatPayload(manifest.version);
+  try {
+    await browser.runtime.sendNativeMessage(NATIVE_HOST, msg);
+    browser.storage.local.set({ lastHeartbeatTs: msg.sent_at_ms, lastHeartbeatOk: true });
+  } catch (e) {
+    console.warn("[hippo] heartbeat failed:", e);
+    browser.storage.local.set({ lastHeartbeatOk: false });
+  }
+}
 
 // --- Runtime settings (loaded from storage) ---
 const settings: Settings = {
@@ -211,3 +236,11 @@ browser.storage.onChanged.addListener((changes, area) => {
 // --- Initialize ---
 const settingsReady: Promise<void> = loadSettings();
 settingsReady.then(() => updateContentScripts());
+
+// Fire heartbeat on startup (after settings loaded) and then every 5 minutes.
+// Startup heartbeat is deferred until settings are ready so `enabled_state`
+// reflects persisted state rather than the constructor default.
+settingsReady.then(() => {
+  sendHeartbeat();
+  setInterval(sendHeartbeat, HEARTBEAT_INTERVAL_MS);
+});

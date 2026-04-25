@@ -83,6 +83,18 @@
     .saved.show {
       opacity: 1;
     }
+    /* Heartbeat badge */
+    .hb-badge {
+      display: inline-block;
+      padding: 1px 6px;
+      border-radius: 3px;
+      font-size: 11px;
+      font-weight: 600;
+    }
+    .hb-green  { background: #a7c080; color: #2d353b; }
+    .hb-yellow { background: #dbbc7f; color: #2d353b; }
+    .hb-red    { background: #e67e80; color: #fff; }
+    .hb-unknown { color: #859289; }
   </style>
 </head>
 <body>
@@ -100,6 +112,9 @@
   </div>
   <div class="stat">
     Daemon: <strong id="status">...</strong>
+  </div>
+  <div class="stat" style="margin-top: 6px;">
+    Extension sync: <span id="heartbeat-badge" class="hb-badge hb-unknown">–</span>
   </div>
 
   <hr style="border: none; border-top: 1px solid #475258; margin: 12px 0;">

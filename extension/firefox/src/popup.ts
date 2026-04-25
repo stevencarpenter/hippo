@@ -15,9 +15,46 @@ const allowlistTextarea = document.getElementById(
 const saveButton = document.getElementById("save") as HTMLButtonElement;
 const savedIndicator = document.getElementById("saved") as HTMLElement;
 
+/** Format a millisecond age into a human-readable string like "4m ago". */
+function formatAge(ageMs: number): string {
+  const secs = Math.floor(ageMs / 1000);
+  if (secs < 60) return `${secs}s ago`;
+  const mins = Math.floor(secs / 60);
+  if (mins < 60) return `${mins}m ago`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 48) return `${hours}h ago`;
+  return `${Math.floor(hours / 24)}d ago`;
+}
+
+/** Update the heartbeat badge based on `lastHeartbeatTs` from storage. */
+function renderHeartbeatBadge(lastHeartbeatTs: number | null | undefined): void {
+  const badge = document.getElementById("heartbeat-badge");
+  if (!badge) return;
+
+  if (lastHeartbeatTs == null) {
+    badge.textContent = "never";
+    badge.className = "hb-badge hb-unknown";
+    return;
+  }
+
+  const ageMs = Date.now() - lastHeartbeatTs;
+  const label = formatAge(ageMs);
+
+  if (ageMs < 2 * 60 * 1000) {
+    badge.textContent = label;
+    badge.className = "hb-badge hb-green";
+  } else if (ageMs < 10 * 60 * 1000) {
+    badge.textContent = label;
+    badge.className = "hb-badge hb-yellow";
+  } else {
+    badge.textContent = label;
+    badge.className = "hb-badge hb-red";
+  }
+}
+
 // --- Load current settings ---
 browser.storage.local
-  .get(["enabled", "allowlist", "captureCount", "lastSendOk", "lastSendAt"])
+  .get(["enabled", "allowlist", "captureCount", "lastSendOk", "lastSendAt", "lastHeartbeatTs"])
   .then((result) => {
     enabledCheckbox.checked =
       typeof result.enabled === "boolean" ? result.enabled : true;
@@ -45,6 +82,11 @@ browser.storage.local
         statusEl.style.color = "#e67e80";
       }
     }
+
+    // Show heartbeat badge
+    renderHeartbeatBadge(
+      typeof result.lastHeartbeatTs === "number" ? result.lastHeartbeatTs : null
+    );
   });
 
 // --- Toggle enabled state immediately on change ---
