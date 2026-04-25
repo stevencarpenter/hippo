@@ -76,3 +76,37 @@ rules:
       exclude:
         - "*/tests/*"
         - "target/**"
+
+  - id: unfiltered-event-table-select
+    message: |
+      SELECT on an event table (events / claude_sessions / browser_events)
+      without 'probe_tag IS NULL' will return synthetic probe rows in
+      production result sets (AP-6: probe contamination). Probe rows look
+      identical to real developer activity and will pollute every user-facing
+      query, knowledge-node retrieval, and fine-tuning corpus.
+
+      Add  AND probe_tag IS NULL  to the WHERE clause.
+
+      If the query intentionally includes probe rows (e.g. the probe run
+      itself polling for its own row), add a nosemgrep comment with a
+      one-line justification:
+        # nosemgrep: unfiltered-event-table-select -- reason
+
+      See docs/capture-reliability/08-anti-patterns.md AP-6.
+    languages: [python]
+    severity: ERROR
+    patterns:
+      - pattern-either:
+        - pattern: $CONN.execute($SQL, ...)
+        - pattern: $CONN.execute($SQL)
+      - metavariable-regex:
+          # metavariable-regex uses fullmatch; (?s) enables DOTALL for multiline SQL strings.
+          metavariable: $SQL
+          regex: "(?s).*FROM\\s+(events|claude_sessions|browser_events)\\b.*"
+      - pattern-not-regex: "(?i)probe_tag\\s+IS\\s+NULL"
+    paths:
+      include:
+        - brain/src/hippo_brain/
+      exclude:
+        - "*/tests/*"
+        - "target/**"
