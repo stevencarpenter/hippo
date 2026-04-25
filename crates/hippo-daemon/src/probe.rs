@@ -194,8 +194,9 @@ fn probe_claude_session(config: &HippoConfig) -> Result<(bool, Option<i64>)> {
 
     // Recursive walk to catch main sessions and subagent sessions at any depth.
     while let Some(dir) = dirs_to_scan.pop() {
-        let entries = std::fs::read_dir(&dir)
-            .with_context(|| format!("failed to read Claude projects directory {}", dir.display()))?;
+        let entries = std::fs::read_dir(&dir).with_context(|| {
+            format!("failed to read Claude projects directory {}", dir.display())
+        })?;
         for entry in entries.flatten() {
             let path = entry.path();
             if path.is_dir() {
@@ -243,9 +244,7 @@ fn probe_claude_session(config: &HippoConfig) -> Result<(bool, Option<i64>)> {
                 rusqlite::params![path_str.as_ref(), threshold],
                 |row| row.get(0),
             )
-            .with_context(|| {
-                format!("failed to query claude_sessions for {}", path_str)
-            })?;
+            .with_context(|| format!("failed to query claude_sessions for {}", path_str))?;
 
         if count == 0 {
             warn!("claude-session probe: no row for {}", path_str);
