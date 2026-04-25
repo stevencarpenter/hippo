@@ -215,7 +215,7 @@ If that chain exits 0, the watchdog fired at least one alarm within one poll int
 
 ## T-6 · P2.2 — Synthetic probes + probe_tag exclusion filters + Semgrep lint
 
-- **Status:** open
+- **Status:** review
 - **Phase:** P2
 - **Depends on:** (P0 — all done). Independent of T-1..T-5.
 - **Branch:** `feat/p2.2-synthetic-probes`
