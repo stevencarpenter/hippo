@@ -9,7 +9,41 @@
  */
 
 import { DEFAULT_ALLOWLIST, MIN_DWELL_MS, NATIVE_HOST, SEARCH_ENGINES } from "./config";
+import { HEARTBEAT_INTERVAL_MS, buildHeartbeatPayload } from "./heartbeat";
 import type { BrowserVisit, PageVisitMessage, Settings } from "./types";
+
+// Re-export for consumers that import from background.ts directly.
+export { HEARTBEAT_INTERVAL_MS, buildHeartbeatPayload };
+
+// --- Heartbeat ---
+
+/**
+ * Send a heartbeat to the hippo_daemon Native Messaging host.
+ *
+ * Called on startup and every `HEARTBEAT_INTERVAL_MS`.  On success the
+ * timestamp is persisted to `browser.storage.local` so the popup badge
+ * can display freshness without querying the daemon.
+ */
+async function sendHeartbeat(): Promise<void> {
+  const manifest = browser.runtime.getManifest();
+  const msg = buildHeartbeatPayload(manifest.version, settings.enabled);
+  try {
+    // sendNativeMessage resolves with the response object from the NM host.
+    // Inspect status to distinguish daemon-side errors from transport errors.
+    const resp = (await browser.runtime.sendNativeMessage(NATIVE_HOST, msg)) as {
+      status?: string;
+    };
+    if (resp?.status === "ok") {
+      browser.storage.local.set({ lastHeartbeatTs: msg.sent_at_ms, lastHeartbeatOk: true });
+    } else {
+      console.warn("[hippo] heartbeat daemon error:", resp);
+      browser.storage.local.set({ lastHeartbeatOk: false });
+    }
+  } catch (e) {
+    console.warn("[hippo] heartbeat failed:", e);
+    browser.storage.local.set({ lastHeartbeatOk: false });
+  }
+}
 
 // --- Runtime settings (loaded from storage) ---
 const settings: Settings = {
@@ -211,3 +245,32 @@ browser.storage.onChanged.addListener((changes, area) => {
 // --- Initialize ---
 const settingsReady: Promise<void> = loadSettings();
 settingsReady.then(() => updateContentScripts());
+
+// Fire heartbeat on startup (after settings loaded) and then every 5 minutes.
+// Startup heartbeat is deferred until settings are ready so `enabled_state`
+// reflects persisted state rather than the constructor default.
+//
+// We use `browser.alarms` (not setInterval) because the background page is
+// non-persistent (`manifest.json: background.persistent = false`).  Firefox
+// unloads idle event pages, which would silently kill a JS interval.  Alarms
+// are wake-capable: they fire even after the background page is unloaded,
+// causing Firefox to reload it and dispatch the alarm event.
+settingsReady.then(() => {
+  sendHeartbeat();
+  // Derive periodInMinutes from the canonical constant so they never drift.
+  browser.alarms.create("hippo-heartbeat", {
+    periodInMinutes: HEARTBEAT_INTERVAL_MS / 60_000,
+  });
+});
+
+// Gate the alarm handler on settingsReady: when Firefox wakes the event page
+// to fire an alarm, module code re-runs and loadSettings() is called again.
+// The alarm can be dispatched before the storage read resolves, which would
+// cause sendHeartbeat() to see the default settings values.  Awaiting
+// settingsReady here is free when the page is already live (resolved promise).
+browser.alarms.onAlarm.addListener(async (alarm) => {
+  await settingsReady;
+  if (alarm.name === "hippo-heartbeat") {
+    sendHeartbeat();
+  }
+});

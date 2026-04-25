@@ -102,7 +102,7 @@ Violating any invariant below breaks autonomous execution:
 
 ## T-3 · P1.2 — Firefox extension heartbeat + popup badge
 
-- **Status:** open
+- **Status:** review
 - **Phase:** P1
 - **Depends on:** (P0 — all done)
 - **Branch:** `feat/p1.2-browser-heartbeat`
