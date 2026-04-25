@@ -20,8 +20,8 @@ fn v4_db_migrates_to_latest_and_has_workflow_tables() {
     let version: i64 = conn
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .unwrap();
-    // v4 → full chain (v5, v6, v7, v8); only the final version is exercised here.
-    assert_eq!(version, 8);
+    // v4 → full chain (v5, v6, v7, v8, v9); only the final version is exercised here.
+    assert_eq!(version, 9);
 
     for table in [
         "workflow_runs",
