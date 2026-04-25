@@ -9,7 +9,7 @@ use anyhow::{Context, Result};
 use clap::Parser;
 use cli::{
     BrainAction, Cli, Commands, ConfigAction, DaemonAction, IngestSource, RedactAction,
-    SendEventSource,
+    SendEventSource, WatchdogAction,
 };
 use hippo_core::config::HippoConfig;
 use hippo_daemon::probe;
@@ -858,6 +858,17 @@ async fn main() -> Result<()> {
         Commands::Probe { source } => {
             probe::run(&config, source.as_deref()).await?;
         }
+        Commands::Watchdog { action } => match action {
+            WatchdogAction::Run => {
+                if !config.watchdog.enabled {
+                    eprintln!(
+                        "hippo watchdog: disabled (set watchdog.enabled = true in config to enable)"
+                    );
+                } else {
+                    hippo_daemon::watchdog::run(&config)?;
+                }
+            }
+        },
     }
 
     // Shutdown OTel providers

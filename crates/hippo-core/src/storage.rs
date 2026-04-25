@@ -13,7 +13,7 @@ const SCHEMA: &str = include_str!("schema.sql");
 /// startup code (e.g. the brain handshake) can cross-check without
 /// re-declaring the value. Keep in sync with
 /// `brain/src/hippo_brain/schema_version.py::EXPECTED_SCHEMA_VERSION`.
-pub const EXPECTED_VERSION: i64 = 8;
+pub const EXPECTED_VERSION: i64 = 9;
 
 pub fn open_db(path: &Path) -> Result<Connection> {
     if let Some(parent) = path.parent() {
@@ -398,6 +398,25 @@ pub fn open_db(path: &Path) -> Result<Connection> {
             }
         }
         conn.execute_batch("PRAGMA user_version = 8;")?;
+    }
+
+    // Migrate from v8 → v9: add capture_alarms table for watchdog invariant violations.
+    // Written by `hippo watchdog run`; acked via `hippo alarms ack` (T-2).
+    if (1..=8).contains(&version) {
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS capture_alarms (
+                id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                invariant_id TEXT    NOT NULL,
+                raised_at    INTEGER NOT NULL,
+                details_json TEXT    NOT NULL,
+                acked_at     INTEGER,
+                ack_note     TEXT
+             );
+             CREATE INDEX IF NOT EXISTS idx_capture_alarms_invariant_active
+                 ON capture_alarms (invariant_id, acked_at)
+                 WHERE acked_at IS NULL;
+             PRAGMA user_version = 9;",
+        )?;
     } else if version != 0 && version != EXPECTED_VERSION {
         anyhow::bail!(
             "DB schema version mismatch: expected {}, found {}. \
@@ -1625,7 +1644,7 @@ mod tests {
         let v: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 8);
+        assert_eq!(v, 9);
     }
 
     #[test]
@@ -1695,7 +1714,7 @@ mod tests {
         let v: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 8);
+        assert_eq!(v, 9);
         // Verify envelope_id column exists by inserting with it
         let sid = upsert_session(&conn, "mig-test", "host", "zsh", "user").unwrap();
         let eid = insert_event_at(
@@ -1781,7 +1800,7 @@ mod tests {
         let v: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 8);
+        assert_eq!(v, 9);
     }
 
     #[test]
@@ -1883,7 +1902,7 @@ mod tests {
         let v: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 8);
+        assert_eq!(v, 9);
 
         // Verify browser tables exist
         let browser_tables = [
@@ -1912,7 +1931,7 @@ mod tests {
         let v2: i64 = conn2
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v2, 8);
+        assert_eq!(v2, 9);
     }
 
     fn sample_browser_event() -> BrowserEvent {

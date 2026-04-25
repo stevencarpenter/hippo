@@ -19,7 +19,7 @@ const BROWSER_NS: Uuid = Uuid::from_bytes([
     0x8a, 0x3b, 0x7c, 0x01, 0xd4, 0xe5, 0x4f, 0x6a, 0x9b, 0x2c, 0x1e, 0x0f, 0xa8, 0x5d, 0x3c, 0x7e,
 ]);
 
-/// Struct matching what the Firefox extension sends via Native Messaging.
+/// Struct matching what the Firefox extension sends via Native Messaging for a page visit.
 #[derive(Debug, Clone, Deserialize)]
 pub struct BrowserVisit {
     pub url: String,
@@ -37,6 +37,30 @@ pub struct BrowserVisit {
     /// stale-row false positives).
     #[serde(default)]
     pub probe_tag: Option<String>,
+}
+
+/// Heartbeat payload sent by the Firefox extension every 5 minutes (and on startup).
+///
+/// Matches the `HippoHeartbeat` TypeScript interface in `src/types.ts`.
+/// The NM host forwards this to the daemon as `DaemonRequest::UpdateSourceHealthHeartbeat`
+/// — no direct SQLite write from the NM process (AP-1 compliance).
+#[derive(Debug, Clone, Deserialize)]
+pub struct ExtensionHeartbeat {
+    pub extension_version: String,
+    pub enabled_state: bool,
+    pub sent_at_ms: i64,
+}
+
+/// Discriminated union for all messages the extension can send via Native Messaging.
+///
+/// The `type` field in the JSON payload determines the variant. Visit messages
+/// that pre-date the discriminated union format (no `type` field) are handled
+/// via the fallback branch in `run()`.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum NmMessage {
+    Visit(BrowserVisit),
+    Heartbeat(ExtensionHeartbeat),
 }
 
 /// Response sent back to the Firefox extension.
@@ -175,12 +199,48 @@ pub async fn run(config: &HippoConfig) -> Result<()> {
             }
         };
 
-        let visit: BrowserVisit = match serde_json::from_slice(&raw) {
-            Ok(v) => v,
-            Err(e) => {
-                warn!(%e, "failed to parse BrowserVisit");
-                send_response("error", Some(format!("parse error: {e}")));
+        // Attempt tagged-union parse first (heartbeat has "type" field).
+        // If that fails, fall back to treating the message as a legacy BrowserVisit
+        // (extension builds predating the discriminated union format don't include "type").
+        let visit: BrowserVisit = match serde_json::from_slice::<NmMessage>(&raw) {
+            Ok(NmMessage::Heartbeat(hb)) => {
+                // Forward heartbeat to daemon — no SQLite write here (AP-1).
+                match crate::commands::send_request_with_timeout(
+                    &socket_path,
+                    &hippo_core::protocol::DaemonRequest::UpdateSourceHealthHeartbeat {
+                        source: "browser".to_string(),
+                        ts: hb.sent_at_ms,
+                    },
+                    1000, // 1-second timeout; heartbeat is best-effort
+                )
+                .await
+                {
+                    Ok(hippo_core::protocol::DaemonResponse::Ack) => {
+                        debug!(ts = hb.sent_at_ms, "browser heartbeat forwarded to daemon");
+                        send_response("ok", None);
+                    }
+                    Ok(resp) => {
+                        warn!(?resp, "browser heartbeat: daemon returned non-Ack response");
+                        send_response("error", Some(format!("daemon error: {resp:?}")));
+                    }
+                    Err(e) => {
+                        warn!(%e, "browser heartbeat failed to reach daemon");
+                        send_response("error", Some(format!("heartbeat failed: {e}")));
+                    }
+                }
                 continue;
+            }
+            Ok(NmMessage::Visit(v)) => v,
+            Err(_) => {
+                // No "type" field — treat as bare BrowserVisit (legacy format).
+                match serde_json::from_slice::<BrowserVisit>(&raw) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        warn!(%e, "failed to parse NM message as BrowserVisit");
+                        send_response("error", Some(format!("parse error: {e}")));
+                        continue;
+                    }
+                }
             }
         };
 
@@ -353,6 +413,66 @@ mod tests {
         assert!(!is_allowed("evil-github.com"));
         assert!(is_allowed("stackoverflow.com"));
         assert!(!is_allowed("example.com"));
+    }
+
+    #[test]
+    fn test_extension_heartbeat_deserialize() {
+        let json = r#"{
+            "type": "heartbeat",
+            "extension_version": "0.2.0",
+            "enabled_state": true,
+            "sent_at_ms": 1711900000000
+        }"#;
+        let msg: NmMessage = serde_json::from_str(json).unwrap();
+        match msg {
+            NmMessage::Heartbeat(hb) => {
+                assert_eq!(hb.extension_version, "0.2.0");
+                assert!(hb.enabled_state);
+                assert_eq!(hb.sent_at_ms, 1711900000000);
+            }
+            _ => panic!("expected Heartbeat variant"),
+        }
+    }
+
+    #[test]
+    fn test_nm_message_visit_dispatches_correctly() {
+        let json = r#"{
+            "type": "visit",
+            "url": "https://docs.rs/anyhow/",
+            "title": "anyhow",
+            "domain": "docs.rs",
+            "dwell_ms": 5000,
+            "scroll_depth": 0.5,
+            "extracted_text": null,
+            "search_query": null,
+            "referrer": null,
+            "timestamp": 1711900000000
+        }"#;
+        let msg: NmMessage = serde_json::from_str(json).unwrap();
+        match msg {
+            NmMessage::Visit(v) => assert_eq!(v.domain, "docs.rs"),
+            _ => panic!("expected Visit variant"),
+        }
+    }
+
+    #[test]
+    fn test_bare_browser_visit_fallback_parse() {
+        // Legacy format: no "type" field — must still deserialize as BrowserVisit
+        let json = r#"{
+            "url": "https://docs.rs/anyhow/",
+            "title": "anyhow",
+            "domain": "docs.rs",
+            "dwell_ms": 5000,
+            "scroll_depth": 0.5,
+            "extracted_text": null,
+            "search_query": null,
+            "referrer": null,
+            "timestamp": 1711900000000
+        }"#;
+        // NmMessage parse fails (no type field) — fallback to direct BrowserVisit
+        assert!(serde_json::from_str::<NmMessage>(json).is_err());
+        let visit: BrowserVisit = serde_json::from_str(json).unwrap();
+        assert_eq!(visit.domain, "docs.rs");
     }
 
     #[test]

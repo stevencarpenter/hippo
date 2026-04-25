@@ -5,6 +5,7 @@
   "scripts": {
     "build": "tsc --noEmit && node build.mjs",
     "watch": "node build.mjs --watch",
+    "test": "bun test tests/",
     "typecheck": "tsc --noEmit",
     "package": "node build.mjs && npx web-ext build --overwrite-dest --ignore-files src/ build.mjs tsconfig.json package.json package-lock.json README.md"
   },

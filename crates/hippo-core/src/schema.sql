@@ -473,4 +473,24 @@ INSERT OR IGNORE INTO source_health (source, last_event_ts, updated_at) VALUES
     ('claude-session',(SELECT MAX(start_time) FROM claude_sessions),                               unixepoch('now') * 1000),
     ('browser',       (SELECT MAX(timestamp)  FROM browser_events),                                unixepoch('now') * 1000);
 
-PRAGMA user_version = 8;
+-- ─── v9: capture_alarms table for watchdog invariant violations ────────
+--
+-- Written by `hippo watchdog run` when an invariant (I-1..I-10) fires.
+-- Rate-limited per invariant per sliding window (default 60 min).
+-- Acked via `hippo alarms ack <id>` (T-2).
+CREATE TABLE IF NOT EXISTS capture_alarms (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    invariant_id TEXT    NOT NULL,
+    raised_at    INTEGER NOT NULL,
+    details_json TEXT    NOT NULL,
+    acked_at     INTEGER,
+    ack_note     TEXT
+);
+
+-- Partial index on un-acked alarms keyed by invariant — this is the hot
+-- path for the rate-limit query (check for recent un-acked alarm).
+CREATE INDEX IF NOT EXISTS idx_capture_alarms_invariant_active
+    ON capture_alarms (invariant_id, acked_at)
+    WHERE acked_at IS NULL;
+
+PRAGMA user_version = 9;

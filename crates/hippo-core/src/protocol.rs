@@ -28,6 +28,14 @@ pub enum DaemonRequest {
         repo: String,
         ttl_secs: u64,
     },
+    /// Update source_health.last_heartbeat_ts for a given source.
+    ///
+    /// Used by the Native Messaging host to forward Firefox extension heartbeats
+    /// to the daemon without writing SQLite directly (AP-1 compliance).
+    UpdateSourceHealthHeartbeat {
+        source: String,
+        ts: i64,
+    },
     Shutdown,
 }
 

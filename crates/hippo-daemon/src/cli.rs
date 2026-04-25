@@ -119,6 +119,18 @@ pub enum Commands {
         #[arg(long)]
         source: Option<String>,
     },
+    /// Capture-reliability watchdog (invoked by launchd every 60 s)
+    Watchdog {
+        #[command(subcommand)]
+        action: WatchdogAction,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum WatchdogAction {
+    /// Assert invariants against source_health and write capture_alarms rows.
+    /// Designed to be invoked by launchd; exits 0 on success.
+    Run,
 }
 
 #[derive(Subcommand)]
