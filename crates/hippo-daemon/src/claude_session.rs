@@ -925,11 +925,6 @@ fn insert_segments(conn: &Connection, segments: &[SessionSegment]) -> Result<(us
     Ok((inserted, skipped))
 }
 
-/// Extract segments from a JSONL and upsert them into `claude_sessions`.
-///
-/// Logs but does not fail the caller on per-segment insert errors — the
-/// batch importer should still report event-sender progress honestly even
-/// if a single segment row fails.
 /// Extract segments from a JSONL session file and insert them into an existing
 /// connection. Called by the FS watcher (which owns its own connection) to avoid
 /// opening a second writer. Returns `(inserted, skipped, errors)`.

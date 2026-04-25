@@ -5,7 +5,11 @@
 //! launchd service (`com.hippo.claude-session-watcher`, KeepAlive=true).
 //!
 //! Key invariants:
-//! - Only advances `byte_offset` past the last complete (`\n`-terminated) byte.
+//! - Full-file reparse on every FSEvents notification; `INSERT OR IGNORE` on
+//!   `(session_id, segment_index)` makes repeated processing idempotent.
+//!   `size_at_last_read` is compared to current file size to skip no-op wakeups.
+//!   `byte_offset` is stored as `current_size` (matching `size_at_last_read`) so a
+//!   future seek-based optimisation can use it without a schema change.
 //! - Resets offset on inode/device change (file replaced) or size regression (truncated).
 //! - `INSERT OR IGNORE` in `insert_segments` makes re-processing idempotent.
 //! - Writes `source_health WHERE source='claude-session-watcher'` every 30 s.
@@ -22,6 +26,7 @@ use notify::{
     Config as NotifyConfig, Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher,
 };
 use rusqlite::{Connection, params};
+use tokio::signal::unix::{SignalKind, signal as unix_signal};
 use tokio::sync::mpsc;
 use tracing::{info, warn};
 
@@ -92,11 +97,13 @@ fn load_offsets(conn: &Connection) -> Result<HashMap<PathBuf, FileState>> {
 /// Persist a file's offset to `claude_session_offsets`.
 fn save_offset(conn: &Connection, path: &Path, state: &FileState) -> Result<()> {
     let now_ms = Utc::now().timestamp_millis();
+    let session_id = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
     conn.execute(
         "INSERT INTO claude_session_offsets
-             (path, byte_offset, inode, device, size_at_last_read, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+             (path, session_id, byte_offset, inode, device, size_at_last_read, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
          ON CONFLICT(path) DO UPDATE SET
+             session_id        = excluded.session_id,
              byte_offset       = excluded.byte_offset,
              inode             = excluded.inode,
              device            = excluded.device,
@@ -104,6 +111,7 @@ fn save_offset(conn: &Connection, path: &Path, state: &FileState) -> Result<()> 
              updated_at        = excluded.updated_at",
         params![
             path.to_string_lossy(),
+            session_id,
             state.byte_offset as i64,
             state.inode as i64,
             state.device as i64,
@@ -260,8 +268,11 @@ fn write_parity_row(
         )
         .unwrap_or(0) as usize;
 
+    // tailer_count = segments in DB not attributed to the watcher this window.
+    // mismatch_count = same value: segments the watcher missed (tailer-only inserts).
+    // If watcher_count somehow exceeds total (race), clamp to 0 via saturating_sub.
     let tailer_count = total.saturating_sub(watcher_count);
-    let mismatch_count = watcher_count.saturating_sub(total);
+    let mismatch_count = tailer_count;
 
     if let Err(e) = conn.execute(
         "INSERT INTO claude_session_parity
@@ -403,10 +414,18 @@ pub async fn run(config: &HippoConfig) -> Result<()> {
     let mut parity_tick = tokio::time::interval(PARITY_INTERVAL);
     parity_tick.tick().await; // consume first immediate tick
 
+    // Handle both SIGTERM (launchd stop / system shutdown) and SIGINT (ctrl-c).
+    let mut sigterm = unix_signal(SignalKind::terminate())
+        .context("watcher: failed to install SIGTERM handler")?;
+
     loop {
         tokio::select! {
+            _ = sigterm.recv() => {
+                info!("watcher: received SIGTERM, shutting down");
+                break;
+            }
             _ = tokio::signal::ctrl_c() => {
-                info!("watcher: received ctrl-c, shutting down");
+                info!("watcher: received SIGINT, shutting down");
                 break;
             }
 
@@ -415,9 +434,9 @@ pub async fn run(config: &HippoConfig) -> Result<()> {
             }
 
             _ = parity_tick.tick() => {
-                if matches!(mode, ClaudeSessionMode::Both) {
-                    let window_end = Utc::now().timestamp_millis();
-                    for (path, state) in &mut states {
+                let window_end = Utc::now().timestamp_millis();
+                for (path, state) in &mut states {
+                    if matches!(mode, ClaudeSessionMode::Both) {
                         if state.watcher_hour_count > 0 || state.hour_window_start > 0 {
                             write_parity_row(
                                 &conn,
