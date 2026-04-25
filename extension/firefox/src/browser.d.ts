@@ -1,5 +1,22 @@
 /** Minimal Firefox WebExtension API type declarations. */
 declare namespace browser {
+  namespace alarms {
+    interface Alarm {
+      name: string;
+      scheduledTime: number;
+      periodInMinutes?: number;
+    }
+    interface AlarmInfo {
+      when?: number;
+      delayInMinutes?: number;
+      periodInMinutes?: number;
+    }
+    function create(name: string, alarmInfo: AlarmInfo): void;
+    function clear(name: string): Promise<boolean>;
+    const onAlarm: {
+      addListener(callback: (alarm: Alarm) => void): void;
+    };
+  }
   namespace runtime {
     const id: string;
     interface MessageSender {

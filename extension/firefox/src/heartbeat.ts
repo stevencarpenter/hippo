@@ -12,16 +12,19 @@ import type { HippoHeartbeat } from "./types";
 export const HEARTBEAT_INTERVAL_MS = 5 * 60 * 1000;
 
 /**
- * Build the heartbeat payload for a given extension version.
+ * Build the heartbeat payload for a given extension version and enabled state.
  *
  * Does not send anything — use `browser.runtime.sendNativeMessage` with the
  * return value to deliver the heartbeat.
+ *
+ * @param version - The extension version string (from `browser.runtime.getManifest().version`).
+ * @param enabledState - Whether capture is currently enabled (`settings.enabled`).
  */
-export function buildHeartbeatPayload(version: string): HippoHeartbeat {
+export function buildHeartbeatPayload(version: string, enabledState: boolean): HippoHeartbeat {
   return {
     type: "heartbeat",
     extension_version: version,
-    enabled_state: true,
+    enabled_state: enabledState,
     sent_at_ms: Date.now(),
   };
 }

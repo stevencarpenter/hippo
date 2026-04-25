@@ -205,13 +205,15 @@ pub async fn handle_request(state: &Arc<DaemonState>, request: DaemonRequest) ->
             let now_ms = chrono::Utc::now().timestamp_millis();
             let db = state.write_db.lock().await;
             match db.execute(
-                "UPDATE source_health \
-                 SET last_heartbeat_ts = ?1, updated_at = ?2 \
-                 WHERE source = ?3",
+                "INSERT INTO source_health(source, last_heartbeat_ts, updated_at) \
+                 VALUES(?3, ?1, ?2) \
+                 ON CONFLICT(source) DO UPDATE \
+                 SET last_heartbeat_ts = excluded.last_heartbeat_ts, \
+                     updated_at = excluded.updated_at",
                 rusqlite::params![ts, now_ms, source],
             ) {
                 Ok(_) => {
-                    tracing::debug!(source = %source, ts, "source_health heartbeat updated");
+                    tracing::debug!(source = %source, ts, "source_health heartbeat upserted");
                     DaemonResponse::Ack
                 }
                 Err(e) => DaemonResponse::Error(e.to_string()),

@@ -26,7 +26,7 @@ export { HEARTBEAT_INTERVAL_MS, buildHeartbeatPayload };
  */
 async function sendHeartbeat(): Promise<void> {
   const manifest = browser.runtime.getManifest();
-  const msg = buildHeartbeatPayload(manifest.version);
+  const msg = buildHeartbeatPayload(manifest.version, settings.enabled);
   try {
     await browser.runtime.sendNativeMessage(NATIVE_HOST, msg);
     browser.storage.local.set({ lastHeartbeatTs: msg.sent_at_ms, lastHeartbeatOk: true });
@@ -240,7 +240,19 @@ settingsReady.then(() => updateContentScripts());
 // Fire heartbeat on startup (after settings loaded) and then every 5 minutes.
 // Startup heartbeat is deferred until settings are ready so `enabled_state`
 // reflects persisted state rather than the constructor default.
+//
+// We use `browser.alarms` (not setInterval) because the background page is
+// non-persistent (`manifest.json: background.persistent = false`).  Firefox
+// unloads idle event pages, which would silently kill a JS interval.  Alarms
+// are wake-capable: they fire even after the background page is unloaded,
+// causing Firefox to reload it and dispatch the alarm event.
 settingsReady.then(() => {
   sendHeartbeat();
-  setInterval(sendHeartbeat, HEARTBEAT_INTERVAL_MS);
+  browser.alarms.create("hippo-heartbeat", { periodInMinutes: 5 });
+});
+
+browser.alarms.onAlarm.addListener((alarm) => {
+  if (alarm.name === "hippo-heartbeat") {
+    sendHeartbeat();
+  }
 });

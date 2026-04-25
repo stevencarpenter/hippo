@@ -208,9 +208,13 @@ pub async fn run(config: &HippoConfig) -> Result<()> {
                 )
                 .await
                 {
-                    Ok(_) => {
+                    Ok(hippo_core::protocol::DaemonResponse::Ack) => {
                         debug!(ts = hb.sent_at_ms, "browser heartbeat forwarded to daemon");
                         send_response("ok", None);
+                    }
+                    Ok(resp) => {
+                        warn!(?resp, "browser heartbeat: daemon returned non-Ack response");
+                        send_response("error", Some(format!("daemon error: {resp:?}")));
                     }
                     Err(e) => {
                         warn!(%e, "browser heartbeat failed to reach daemon");

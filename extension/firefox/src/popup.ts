@@ -37,7 +37,8 @@ function renderHeartbeatBadge(lastHeartbeatTs: number | null | undefined): void 
     return;
   }
 
-  const ageMs = Date.now() - lastHeartbeatTs;
+  // Clamp to 0 in case of clock skew or storage corruption (future timestamp).
+  const ageMs = Math.max(0, Date.now() - lastHeartbeatTs);
   const label = formatAge(ageMs);
 
   if (ageMs < 2 * 60 * 1000) {
