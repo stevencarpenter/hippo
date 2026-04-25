@@ -415,6 +415,8 @@ pub fn open_db(path: &Path) -> Result<Connection> {
              CREATE INDEX IF NOT EXISTS idx_capture_alarms_invariant_active
                  ON capture_alarms (invariant_id, acked_at)
                  WHERE acked_at IS NULL;
+             CREATE INDEX IF NOT EXISTS idx_claude_sessions_start_time
+                 ON claude_sessions (start_time DESC);
              PRAGMA user_version = 9;",
         )?;
     } else if version != 0 && version != EXPECTED_VERSION {

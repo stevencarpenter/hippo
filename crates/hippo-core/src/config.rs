@@ -436,7 +436,7 @@ impl Default for LessonsConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WatchdogConfig {
-    /// Feature flag — off by default; flip to `true` in T-2 after launchd plist ships.
+    /// Feature flag — enabled by default (flipped on in T-2 when the launchd plist shipped).
     #[serde(default = "default_watchdog_enabled")]
     pub enabled: bool,
     /// Sliding-window rate limit (minutes) before the same invariant can raise a new alarm.

@@ -441,11 +441,12 @@ pub async fn flush_events(state: &Arc<DaemonState>) -> usize {
         }
     }
 
-    // Batch-upsert source_health SUCCESS paths (skip sources that also errored).
+    // Batch-upsert source_health SUCCESS paths for any source with persisted events.
+    // Run independently of the error path so that mixed-outcome batches (some inserts
+    // succeeded, one failed) still advance last_event_ts and rolling counters.  The error
+    // path runs afterwards and increments consecutive_failures, netting to 1 for a partial
+    // failure rather than zero.
     for (source, latest_ts) in &source_latest_ts {
-        if source_errors.contains_key(source) {
-            continue;
-        }
         let count_val = source_counts.get(source).copied().unwrap_or(0);
         match db.execute(
             "UPDATE source_health
