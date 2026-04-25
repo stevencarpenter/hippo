@@ -5,6 +5,7 @@ use hippo_core::events::{CapturedOutput, EventEnvelope, EventPayload, GitState, 
 use hippo_core::protocol::{DaemonRequest, DaemonResponse};
 use hippo_core::redaction::RedactionEngine;
 use hippo_core::storage;
+use rusqlite::OptionalExtension as _;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use tokio::net::UnixStream;
@@ -129,7 +130,14 @@ fn format_optional_brain_field(label: &str, value: Option<&str>) -> Option<Strin
         .map(|s| format!("[OK] Brain {}: {}", label, s))
 }
 
-async fn print_brain_health_details(config: &HippoConfig, client: &reqwest::Client) {
+/// Fetch and print brain /health details.
+///
+/// Returns the raw JSON on success so callers can reuse it (e.g. Check 10 for
+/// schema-version comparison) without issuing a second HTTP request.
+async fn print_brain_health_details(
+    config: &HippoConfig,
+    client: &reqwest::Client,
+) -> Option<serde_json::Value> {
     let brain_url = format!("http://localhost:{}/health", config.brain.port);
     match client.get(&brain_url).send().await {
         Ok(resp) if resp.status().is_success() => {
@@ -223,19 +231,24 @@ async fn print_brain_health_details(config: &HippoConfig, client: &reqwest::Clie
                     {
                         println!("{}", line);
                     }
+                    Some(json)
                 }
                 Err(err) => {
                     println!(
                         "[!!] Brain server reachable but returned unreadable health JSON: {}",
                         err
                     );
+                    None
                 }
             }
         }
-        _ => println!(
-            "[!!] Brain server not reachable on port {}",
-            config.brain.port
-        ),
+        _ => {
+            println!(
+                "[!!] Brain server not reachable on port {}",
+                config.brain.port
+            );
+            None
+        }
     }
 }
 
@@ -536,9 +549,12 @@ pub async fn handle_doctor(config: &HippoConfig, explain: bool) -> Result<()> {
 
     // Check daemon socket and version
     let socket = config.socket_path();
+    // Track whether the daemon socket responded — used by Check 9 (fallback age).
+    let mut daemon_socket_ok = false;
     if socket.exists() {
         match send_request(&socket, &DaemonRequest::GetStatus).await {
             Ok(DaemonResponse::Status(status)) => {
+                daemon_socket_ok = true;
                 println!("[OK] Daemon is running (uptime {}s)", status.uptime_secs);
                 if status.version.is_empty() {
                     println!("[!!] Daemon too old to report version — restart recommended");
@@ -594,19 +610,11 @@ pub async fn handle_doctor(config: &HippoConfig, explain: bool) -> Result<()> {
         }
     }
 
-    // Check brain
-    print_brain_health_details(config, &client).await;
+    // Check brain — store JSON for reuse in Check 10 (schema version).
+    let brain_json = print_brain_health_details(config, &client).await;
 
-    // Check fallback files
-    let fallback_files = storage::list_fallback_files(&config.fallback_dir())
-        .map(|f| f.len())
-        .unwrap_or(0);
-    if fallback_files > 0 {
-        println!("[!!] {} fallback files pending recovery", fallback_files);
-        fail_count += 1;
-    } else {
-        println!("[OK] No fallback files pending");
-    }
+    // Check 9: Fallback file age (extends the old plain-count check).
+    fail_count += check_fallback_age(&config.fallback_dir(), daemon_socket_ok, explain);
 
     // Check embedding model
     if config.models.embedding.is_empty() {
@@ -635,11 +643,28 @@ pub async fn handle_doctor(config: &HippoConfig, explain: bool) -> Result<()> {
 
     // Check 1: Per-source staleness via source_health table (P0.1)
     // Check 8: Watchdog heartbeat
+    // Check 5: Live-session vs DB reconciliation
+    // Check 6: Session-hook log vs DB
+    // Check 10: Schema version
     if db_path.exists()
         && let Ok(conn) = hippo_core::storage::open_db(&db_path)
     {
         fail_count += check_source_staleness(&conn, explain);
         fail_count += check_watchdog_heartbeat(&conn, explain);
+
+        // Check 5: active JSONL sessions vs claude_sessions table
+        if let Some(home) = dirs::home_dir() {
+            fail_count += check_claude_session_db(&home.join(".claude/projects"), &conn, explain);
+        } else {
+            println!("[--] {:<29}  no home dir", "claude-session DB");
+        }
+
+        // Check 6: session-hook debug log vs claude_sessions rows (last 1h)
+        let hook_log = config.storage.data_dir.join("session-hook-debug.log");
+        fail_count += check_session_hook_log(&hook_log, &conn, explain);
+
+        // Check 10: daemon PRAGMA user_version vs brain expected_schema_version
+        fail_count += check_schema_version(&conn, brain_json.as_ref(), explain);
     }
 
     // Check 4: zsh hook sourced
@@ -647,6 +672,15 @@ pub async fn handle_doctor(config: &HippoConfig, explain: bool) -> Result<()> {
 
     // Check 7: Log file sizes
     fail_count += check_log_file_sizes(config, explain);
+
+    // Check 2: Native Messaging manifest (detailed — existence + JSON + path executable + extension ID)
+    if let Some(home) = dirs::home_dir() {
+        let nm_manifest =
+            home.join("Library/Application Support/Mozilla/NativeMessagingHosts/hippo_daemon.json");
+        fail_count += check_nm_manifest(&nm_manifest, explain);
+    } else {
+        println!("[--] {:<29}  no home dir", "native-msg manifest");
+    }
 
     if fail_count > 0 {
         std::process::exit(fail_count as i32);
@@ -1438,6 +1472,483 @@ fn check_watchdog_heartbeat(db: &rusqlite::Connection, explain: bool) -> u32 {
         }
     }
 }
+
+// ─── Check 2: Native Messaging manifest health ──────────────────────────────
+
+/// Check 2: Native Messaging manifest health.
+///
+/// Verifies the manifest file exists, is valid JSON, the `path` field points
+/// to an executable binary, and `allowed_extensions` contains
+/// `"hippo-browser@local"`.
+///
+/// `nm_manifest_path` is the full path to `hippo_daemon.json`; injectable for
+/// tests (pass a tempdir path instead of `~/Library/…`).
+pub fn check_nm_manifest(nm_manifest_path: &std::path::Path, explain: bool) -> u32 {
+    const LABEL: &str = "native-msg manifest";
+
+    if !nm_manifest_path.exists() {
+        println!("[!!] {:<29}  not found", LABEL);
+        if explain {
+            println!(
+                "     CAUSE:  Native Messaging manifest not installed — Firefox cannot launch the host"
+            );
+            println!("     FIX:    hippo daemon install --force");
+            println!("     DOC:    docs/capture-reliability/03-doctor-upgrades.md");
+        }
+        return 1;
+    }
+
+    let content = match std::fs::read_to_string(nm_manifest_path) {
+        Ok(c) => c,
+        Err(e) => {
+            println!("[!!] {:<29}  cannot read: {}", LABEL, e);
+            if explain {
+                println!("     CAUSE:  Manifest file exists but is not readable");
+                println!("     FIX:    hippo daemon install --force");
+                println!("     DOC:    docs/capture-reliability/03-doctor-upgrades.md");
+            }
+            return 1;
+        }
+    };
+
+    let json: serde_json::Value = match serde_json::from_str(&content) {
+        Ok(v) => v,
+        Err(e) => {
+            println!("[!!] {:<29}  invalid JSON: {}", LABEL, e);
+            if explain {
+                println!("     CAUSE:  Manifest file is not valid JSON");
+                println!("     FIX:    hippo daemon install --force");
+                println!("     DOC:    docs/capture-reliability/03-doctor-upgrades.md");
+            }
+            return 1;
+        }
+    };
+
+    // Check `path` field exists and is an executable file.
+    let Some(path_str) = json.get("path").and_then(|v| v.as_str()) else {
+        println!("[!!] {:<29}  missing `path` field", LABEL);
+        if explain {
+            println!("     CAUSE:  Manifest is malformed — no `path` key");
+            println!("     FIX:    hippo daemon install --force");
+            println!("     DOC:    docs/capture-reliability/03-doctor-upgrades.md");
+        }
+        return 1;
+    };
+
+    let binary = std::path::Path::new(path_str);
+    if !binary.exists() {
+        println!("[!!] {:<29}  `path` not found: {}", LABEL, path_str);
+        if explain {
+            println!("     CAUSE:  Manifest `path` points to a non-existent binary");
+            println!("     FIX:    hippo daemon install --force");
+            println!("     DOC:    docs/capture-reliability/03-doctor-upgrades.md");
+        }
+        return 1;
+    }
+
+    use std::os::unix::fs::PermissionsExt;
+    let executable = std::fs::metadata(binary)
+        .map(|m| m.permissions().mode() & 0o111 != 0)
+        .unwrap_or(false);
+    if !executable {
+        println!("[!!] {:<29}  `path` not executable: {}", LABEL, path_str);
+        if explain {
+            println!("     CAUSE:  Manifest `path` binary lacks execute permission");
+            println!("     FIX:    chmod +x {}", path_str);
+            println!("     DOC:    docs/capture-reliability/03-doctor-upgrades.md");
+        }
+        return 1;
+    }
+
+    // Check allowed_extensions contains the hippo extension ID.
+    let has_ext = json
+        .get("allowed_extensions")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .any(|e| e.as_str() == Some("hippo-browser@local"))
+        })
+        .unwrap_or(false);
+    if !has_ext {
+        println!(
+            "[!!] {:<29}  `allowed_extensions` missing `hippo-browser@local`",
+            LABEL
+        );
+        if explain {
+            println!(
+                "     CAUSE:  Extension ID absent from manifest — Firefox refuses to launch the host"
+            );
+            println!("     FIX:    hippo daemon install --force");
+            println!("     DOC:    docs/capture-reliability/03-doctor-upgrades.md");
+        }
+        return 1;
+    }
+
+    println!(
+        "[OK] {:<29}  path={}, extension ID matches",
+        LABEL, path_str
+    );
+    0
+}
+
+// ─── Check 5: Live-session vs DB reconciliation ──────────────────────────────
+
+/// Check 5: Glob active Claude session JSONL files and verify each has a
+/// matching row in `claude_sessions`.
+///
+/// `projects_dir` is `~/.claude/projects` (injectable for tests).
+/// A session file is "active" if its mtime is < 5 minutes old.
+/// Returns fail_count capped at 3.
+pub fn check_claude_session_db(
+    projects_dir: &std::path::Path,
+    db: &rusqlite::Connection,
+    explain: bool,
+) -> u32 {
+    const LABEL: &str = "claude-session DB";
+
+    let five_min_ago = std::time::SystemTime::now()
+        .checked_sub(std::time::Duration::from_secs(300))
+        .unwrap_or(std::time::UNIX_EPOCH);
+
+    // Collect active JSONL paths (mtime within last 5 minutes).
+    let mut active: Vec<std::path::PathBuf> = Vec::new();
+
+    let Ok(proj_entries) = std::fs::read_dir(projects_dir) else {
+        println!("[--] {:<29}  projects dir not found", LABEL);
+        return 0;
+    };
+
+    for proj_entry in proj_entries.flatten() {
+        let proj_path = proj_entry.path();
+        if !proj_path.is_dir() {
+            continue;
+        }
+        let Ok(sub_entries) = std::fs::read_dir(&proj_path) else {
+            continue;
+        };
+        for sub_entry in sub_entries.flatten() {
+            let sub_path = sub_entry.path();
+            if sub_path.extension().and_then(|e| e.to_str()) == Some("jsonl")
+                && let Ok(meta) = std::fs::metadata(&sub_path)
+                && let Ok(modified) = meta.modified()
+                && modified > five_min_ago
+            {
+                active.push(sub_path);
+            }
+        }
+    }
+
+    if active.is_empty() {
+        println!("[--] {:<29}  no active sessions", LABEL);
+        return 0;
+    }
+
+    // session_id is the file stem (the JSONL filename without extension).
+    // This matches how hippo_core::claude_session::SessionFile::from_path derives it.
+    let mut missing: u32 = 0;
+    for path in &active {
+        let Some(session_id) = path.file_stem().and_then(|s| s.to_str()) else {
+            continue;
+        };
+
+        let exists = db
+            .query_row(
+                "SELECT 1 FROM claude_sessions WHERE session_id = ? LIMIT 1",
+                rusqlite::params![session_id],
+                |_| Ok(()),
+            )
+            .optional()
+            .unwrap_or(None)
+            .is_some();
+
+        if !exists {
+            let short = &session_id[..session_id.len().min(8)];
+            let fname = path.file_name().and_then(|n| n.to_str()).unwrap_or("?");
+            println!(
+                "[!!] {:<29}  session {}… not in DB (FAIL, active JSONL {})",
+                LABEL, short, fname
+            );
+            if explain && missing == 0 {
+                println!(
+                    "     CAUSE:  Session hook fired but row never reached SQLite (tmux crash?)"
+                );
+                println!(
+                    "     FIX:    tail -f ~/.local/share/hippo/session-hook-debug.log; check tmux ls"
+                );
+                println!("     DOC:    docs/capture-reliability/03-doctor-upgrades.md");
+            }
+            missing += 1;
+            if missing >= 3 {
+                break;
+            }
+        }
+    }
+
+    if missing == 0 {
+        println!(
+            "[OK] {:<29}  {} active session(s) in DB",
+            LABEL,
+            active.len()
+        );
+    }
+
+    missing.min(3)
+}
+
+// ─── Check 6: Session-hook log vs DB ────────────────────────────────────────
+
+/// Count "hook invoked" log entries within the past hour.
+///
+/// Reads up to the last 10 000 lines of the log. Each line's first
+/// whitespace-delimited token must be a valid RFC 3339 timestamp.
+fn count_hook_invocations_in_last_1h(log_path: &std::path::Path) -> i64 {
+    use std::io::{BufRead, BufReader};
+
+    let Ok(file) = std::fs::File::open(log_path) else {
+        return 0;
+    };
+
+    let reader = BufReader::new(file);
+    let lines: Vec<String> = reader.lines().map_while(Result::ok).collect();
+
+    let tail_start = lines.len().saturating_sub(10_000);
+    let tail = &lines[tail_start..];
+
+    let one_hour_ago = chrono::Utc::now() - chrono::TimeDelta::hours(1);
+    let mut count: i64 = 0;
+
+    for line in tail {
+        if !line.contains("hook invoked") {
+            continue;
+        }
+        if let Some(ts_str) = line.split_whitespace().next()
+            && let Ok(ts) = chrono::DateTime::parse_from_rfc3339(ts_str)
+            && ts.with_timezone(&chrono::Utc) > one_hour_ago
+        {
+            count += 1;
+        }
+    }
+    count
+}
+
+/// Check 6: Session-hook debug log vs DB reconciliation.
+///
+/// Counts `"hook invoked"` entries in the last hour (capped at 10 000 log
+/// lines) and compares to `claude_sessions.created_at` rows in the same
+/// window.
+///
+/// `log_path` = `$DATA_DIR/session-hook-debug.log` (injectable for tests).
+pub fn check_session_hook_log(
+    log_path: &std::path::Path,
+    db: &rusqlite::Connection,
+    explain: bool,
+) -> u32 {
+    const LABEL: &str = "session-hook log";
+
+    let invocations = count_hook_invocations_in_last_1h(log_path);
+
+    let one_hour_ago_ms = chrono::Utc::now().timestamp_millis() - 3_600_000i64;
+    let db_rows: i64 = db
+        .query_row(
+            "SELECT COUNT(*) FROM claude_sessions WHERE created_at >= ?",
+            rusqlite::params![one_hour_ago_ms],
+            |row| row.get(0),
+        )
+        .unwrap_or(0);
+
+    if invocations == 0 && db_rows == 0 {
+        println!("[--] {:<29}  no hook activity", LABEL);
+        return 0;
+    }
+
+    if invocations > 0 && db_rows > 0 {
+        println!(
+            "[OK] {:<29}  {} invocations, {} DB rows (last 1h)",
+            LABEL, invocations, db_rows
+        );
+        return 0;
+    }
+
+    if invocations > 0 && db_rows == 0 && invocations < 3 {
+        println!(
+            "[WW] {:<29}  {} invocations, 0 DB rows — too fresh",
+            LABEL, invocations
+        );
+        return 0;
+    }
+
+    if invocations >= 3 && db_rows == 0 {
+        println!(
+            "[!!] {:<29}  {} invocations, 0 DB rows (last 1h)",
+            LABEL, invocations
+        );
+        if explain {
+            println!("     CAUSE:  Hook fires repeatedly but sessions never reach SQLite");
+            println!(
+                "     FIX:    Check tmux: tmux ls; tail -f ~/.local/share/hippo/session-hook-debug.log"
+            );
+            println!("     DOC:    docs/capture-reliability/03-doctor-upgrades.md");
+        }
+        return 1;
+    }
+
+    // invocations == 0 && db_rows > 0 — sessions in DB but hook not logging recently.
+    // Not an error; could be sessions from earlier this hour.
+    println!(
+        "[OK] {:<29}  0 invocations, {} DB rows (last 1h)",
+        LABEL, db_rows
+    );
+    0
+}
+
+// ─── Check 9: Fallback file age ──────────────────────────────────────────────
+
+/// Check 9: Fallback JSONL file age.
+///
+/// Extends the old "count fallback files" check with an mtime predicate:
+/// - No files → `[OK]`
+/// - Files all < 24 h old → `[WW]` (daemon may still be down / recovering)
+/// - Any file > 24 h old AND daemon is responding → `[!!]` (drain is broken)
+///
+/// `daemon_reachable`: true if the daemon socket returned a valid Status
+/// response earlier in `handle_doctor`; injectable for tests.
+pub fn check_fallback_age(
+    fallback_dir: &std::path::Path,
+    daemon_reachable: bool,
+    explain: bool,
+) -> u32 {
+    const LABEL: &str = "fallback files";
+    const FAIL_AGE: std::time::Duration = std::time::Duration::from_secs(24 * 3600);
+
+    let files = match hippo_core::storage::list_fallback_files(fallback_dir) {
+        Ok(f) => f,
+        Err(_) => {
+            println!("[--] {:<29}  cannot read fallback dir", LABEL);
+            return 0;
+        }
+    };
+
+    if files.is_empty() {
+        println!("[OK] {:<29}  none pending", LABEL);
+        return 0;
+    }
+
+    let now = std::time::SystemTime::now();
+    let mut oldest_secs: u64 = 0;
+    let mut has_stale = false;
+
+    for path in &files {
+        if let Ok(meta) = std::fs::metadata(path)
+            && let Ok(modified) = meta.modified()
+        {
+            let age = now.duration_since(modified).unwrap_or_default();
+            if age.as_secs() > oldest_secs {
+                oldest_secs = age.as_secs();
+            }
+            if age > FAIL_AGE {
+                has_stale = true;
+            }
+        }
+    }
+
+    if has_stale && daemon_reachable {
+        println!(
+            "[!!] {:<29}  {} pending, oldest {}h (daemon up — drain broken?)",
+            LABEL,
+            files.len(),
+            oldest_secs / 3600
+        );
+        if explain {
+            println!(
+                "     CAUSE:  Fallback files > 24h old while daemon is running — drain path broken"
+            );
+            println!("     FIX:    Restart daemon: mise run restart");
+            println!("     DOC:    docs/capture-reliability/03-doctor-upgrades.md");
+        }
+        return 1;
+    }
+
+    if has_stale {
+        println!(
+            "[WW] {:<29}  {} pending, oldest {}h (daemon down — drain pending)",
+            LABEL,
+            files.len(),
+            oldest_secs / 3600
+        );
+    } else {
+        println!(
+            "[WW] {:<29}  {} pending (all < 24h old)",
+            LABEL,
+            files.len()
+        );
+    }
+    0
+}
+
+// ─── Check 10: Schema version ────────────────────────────────────────────────
+
+/// Check 10: Daemon DB schema version vs brain's `expected_schema_version`.
+///
+/// Reuses the `brain_json` already fetched by `print_brain_health_details` —
+/// no extra HTTP round-trip.
+pub fn check_schema_version(
+    db: &rusqlite::Connection,
+    brain_json: Option<&serde_json::Value>,
+    explain: bool,
+) -> u32 {
+    const LABEL: &str = "schema version";
+
+    let db_version: i64 = match db.query_row("PRAGMA user_version", [], |row| row.get(0)) {
+        Ok(v) => v,
+        Err(e) => {
+            println!("[!!] {:<29}  DB error: {}", LABEL, e);
+            return 1;
+        }
+    };
+
+    let Some(json) = brain_json else {
+        println!(
+            "[--] {:<29}  v{} (brain unreachable — cannot compare)",
+            LABEL, db_version
+        );
+        return 0;
+    };
+
+    let Some(expected) = json.get("expected_schema_version").and_then(|v| v.as_i64()) else {
+        println!(
+            "[--] {:<29}  v{} (brain /health missing `expected_schema_version`)",
+            LABEL, db_version
+        );
+        return 0;
+    };
+
+    // A daemon version listed in accepted_read_versions is rollback-compatible.
+    let accepted: Vec<i64> = json
+        .get("accepted_read_versions")
+        .and_then(|v| v.as_array())
+        .map(|arr| arr.iter().filter_map(|e| e.as_i64()).collect())
+        .unwrap_or_default();
+
+    if db_version == expected || accepted.contains(&db_version) {
+        println!("[OK] {:<29}  v{}", LABEL, db_version);
+        0
+    } else {
+        println!(
+            "[!!] {:<29}  daemon v{}, brain expects v{}",
+            LABEL, db_version, expected
+        );
+        if explain {
+            println!(
+                "     CAUSE:  Daemon and brain schema versions diverged — enrichment silently crashes"
+            );
+            println!("     FIX:    mise run restart  (or rebuild both components after updating)");
+            println!("     DOC:    docs/capture-reliability/03-doctor-upgrades.md");
+        }
+        1
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 
 fn check_claude_session_hook(config: &HippoConfig) {
     let settings_path = dirs::home_dir()
