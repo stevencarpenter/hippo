@@ -28,8 +28,17 @@ async function sendHeartbeat(): Promise<void> {
   const manifest = browser.runtime.getManifest();
   const msg = buildHeartbeatPayload(manifest.version, settings.enabled);
   try {
-    await browser.runtime.sendNativeMessage(NATIVE_HOST, msg);
-    browser.storage.local.set({ lastHeartbeatTs: msg.sent_at_ms, lastHeartbeatOk: true });
+    // sendNativeMessage resolves with the response object from the NM host.
+    // Inspect status to distinguish daemon-side errors from transport errors.
+    const resp = (await browser.runtime.sendNativeMessage(NATIVE_HOST, msg)) as {
+      status?: string;
+    };
+    if (resp?.status === "ok") {
+      browser.storage.local.set({ lastHeartbeatTs: msg.sent_at_ms, lastHeartbeatOk: true });
+    } else {
+      console.warn("[hippo] heartbeat daemon error:", resp);
+      browser.storage.local.set({ lastHeartbeatOk: false });
+    }
   } catch (e) {
     console.warn("[hippo] heartbeat failed:", e);
     browser.storage.local.set({ lastHeartbeatOk: false });
@@ -248,10 +257,19 @@ settingsReady.then(() => updateContentScripts());
 // causing Firefox to reload it and dispatch the alarm event.
 settingsReady.then(() => {
   sendHeartbeat();
-  browser.alarms.create("hippo-heartbeat", { periodInMinutes: 5 });
+  // Derive periodInMinutes from the canonical constant so they never drift.
+  browser.alarms.create("hippo-heartbeat", {
+    periodInMinutes: HEARTBEAT_INTERVAL_MS / 60_000,
+  });
 });
 
-browser.alarms.onAlarm.addListener((alarm) => {
+// Gate the alarm handler on settingsReady: when Firefox wakes the event page
+// to fire an alarm, module code re-runs and loadSettings() is called again.
+// The alarm can be dispatched before the storage read resolves, which would
+// cause sendHeartbeat() to see the default settings values.  Awaiting
+// settingsReady here is free when the page is already live (resolved promise).
+browser.alarms.onAlarm.addListener(async (alarm) => {
+  await settingsReady;
   if (alarm.name === "hippo-heartbeat") {
     sendHeartbeat();
   }

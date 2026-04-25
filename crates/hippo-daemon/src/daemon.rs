@@ -202,6 +202,23 @@ pub async fn handle_request(state: &Arc<DaemonState>, request: DaemonRequest) ->
             }
         }
         DaemonRequest::UpdateSourceHealthHeartbeat { source, ts } => {
+            // Restrict to the known enum-like set of sources that are valid in
+            // source_health. Arbitrary strings would create junk rows and corrupt
+            // watchdog/doctor queries.
+            const ALLOWED_SOURCES: &[&str] = &[
+                "browser",
+                "claude-session",
+                "claude-tool",
+                "shell",
+                "watchdog",
+            ];
+            if !ALLOWED_SOURCES.contains(&source.as_str()) {
+                tracing::warn!(%source, "UpdateSourceHealthHeartbeat: unknown source");
+                return DaemonResponse::Error(format!(
+                    "unknown source '{source}'; expected one of: {}",
+                    ALLOWED_SOURCES.join(", ")
+                ));
+            }
             let now_ms = chrono::Utc::now().timestamp_millis();
             let db = state.write_db.lock().await;
             match db.execute(
