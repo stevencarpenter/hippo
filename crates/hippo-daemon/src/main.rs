@@ -9,7 +9,7 @@ use anyhow::{Context, Result};
 use clap::Parser;
 use cli::{
     BrainAction, Cli, Commands, ConfigAction, DaemonAction, IngestSource, RedactAction,
-    SendEventSource,
+    SendEventSource, WatchdogAction,
 };
 use hippo_core::config::HippoConfig;
 use tracing_subscriber::EnvFilter;
@@ -846,6 +846,11 @@ async fn main() -> Result<()> {
         Commands::Doctor { explain } => {
             commands::handle_doctor(&config, explain).await?;
         }
+        Commands::Watchdog { action } => match action {
+            WatchdogAction::Run => {
+                hippo_daemon::watchdog::run(&config)?;
+            }
+        },
     }
 
     // Shutdown OTel providers

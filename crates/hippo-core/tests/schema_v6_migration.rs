@@ -20,7 +20,7 @@ fn v5_db_migrates_to_latest_and_has_fts_and_triggers() {
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .unwrap();
     // v5 → full chain (v6, v7, v8); only the final version is exercised here.
-    assert_eq!(version, 8);
+    assert_eq!(version, 9);
 
     let fts_exists: i64 = conn
         .query_row(
@@ -169,7 +169,7 @@ fn fresh_db_has_latest_schema_and_fts_ready() {
         .unwrap();
     // Fresh DB applies the full SCHEMA + any subsequent migrations, so it
     // lands at the latest version rather than v6.
-    assert_eq!(version, 8);
+    assert_eq!(version, 9);
 
     conn.execute(
         "INSERT INTO knowledge_nodes (uuid, content, embed_text, node_type)

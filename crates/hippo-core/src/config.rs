@@ -427,19 +427,33 @@ impl Default for LessonsConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WatchdogConfig {
+    /// Feature flag — off by default; flip to `true` in T-2 after launchd plist ships.
     #[serde(default = "default_watchdog_enabled")]
     pub enabled: bool,
+    /// Sliding-window rate limit (minutes) before the same invariant can raise a new alarm.
+    /// Default 60 min for the v0.17 soak; stepped down to 15 min in v0.18 (see T-2).
     #[serde(default = "default_alarm_rate_limit_minutes")]
     pub alarm_rate_limit_minutes: u64,
+    /// Fire a macOS `osascript` notification when a new alarm row is inserted.
     #[serde(default)]
     pub notify_macos: bool,
+    /// Path for the structured JSON alarm log.
+    /// Empty string (default) = `$data_dir/watchdog-alarms.log`.
+    #[serde(default)]
+    pub log_path: String,
+    /// Title string used in macOS notifications.
+    #[serde(default = "default_osascript_title")]
+    pub osascript_title: String,
 }
 
 fn default_watchdog_enabled() -> bool {
-    true
+    false
 }
 fn default_alarm_rate_limit_minutes() -> u64 {
-    15
+    60
+}
+fn default_osascript_title() -> String {
+    "Hippo Watchdog".to_string()
 }
 
 impl Default for WatchdogConfig {
@@ -448,6 +462,8 @@ impl Default for WatchdogConfig {
             enabled: default_watchdog_enabled(),
             alarm_rate_limit_minutes: default_alarm_rate_limit_minutes(),
             notify_macos: false,
+            log_path: String::new(),
+            osascript_title: default_osascript_title(),
         }
     }
 }
