@@ -38,7 +38,7 @@ Violating any invariant below breaks autonomous execution:
 
 ## T-1 · P1.1a — Watchdog core (feature-flagged off)
 
-- **Status:** open
+- **Status:** review
 - **Phase:** P1
 - **Depends on:** (P0 — all done)
 - **Branch:** `feat/p1.1a-watchdog-core`
