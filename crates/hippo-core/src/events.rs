@@ -10,9 +10,11 @@ pub struct EventEnvelope {
     pub producer_version: u32,
     pub timestamp: DateTime<Utc>,
     pub payload: EventPayload,
-    /// Set to a probe UUID (same as `envelope_id`) for synthetic probe events.
-    /// `None` for all real events. Carried through to the database `probe_tag`
-    /// column so every event-table SELECT can add `AND probe_tag IS NULL`.
+    /// Set to a probe UUID for synthetic probe events; `None` for real events.
+    /// Not required to match `envelope_id` — shell/claude-tool probes use an
+    /// independent UUID since `EventEnvelope::shell()` generates `envelope_id`
+    /// internally. Carried through to the `probe_tag` column so every
+    /// event-table SELECT can add `AND probe_tag IS NULL`.
     #[serde(default)]
     pub probe_tag: Option<String>,
 }

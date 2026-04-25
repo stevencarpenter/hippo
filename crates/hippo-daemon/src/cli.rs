@@ -192,7 +192,7 @@ pub enum SendEventSource {
         #[arg(long)]
         output: Option<String>,
         /// Probe tag UUID: marks this event as a synthetic probe.
-        /// Set to the same UUID as envelope_id. Excluded from all user queries.
+        /// Any unique UUID; excluded from all user queries.
         #[arg(long)]
         probe_tag: Option<String>,
         /// Override source_kind (e.g. "claude-tool"). Defaults to "shell".
