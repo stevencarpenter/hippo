@@ -134,7 +134,7 @@ Violating any invariant below breaks autonomous execution:
 
 ## T-4 · P1.3 — Doctor checks 2, 5, 6, 9, 10
 
-- **Status:** open
+- **Status:** review
 - **Phase:** P1
 - **Depends on:** (P0 — all done). Note: Check 3 (browser ext dist/) already shipped via #54; Check 8 already shipped via #70 but is dark until T-1 lands.
 - **Branch:** `feat/p1.3-doctor-checks-2`
