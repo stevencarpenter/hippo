@@ -901,10 +901,13 @@ mod tests {
 
     // ── source_health absent ───────────────────────────────────────────────
 
-    /// Call `run()` on a fresh temp DB to prove the full cycle completes
-    /// without panic or error.  `open_db` inside `run()` applies all migrations
-    /// (creating `source_health`, `capture_alarms`, etc.) so the pre-migration
-    /// safety fallback is also exercised on first boot.
+    /// Call `run()` on a fresh temp DB to prove first-boot initialization
+    /// completes without panic or error.  `open_db` inside `run()` applies the
+    /// normal migration chain (creating `source_health`, `capture_alarms`,
+    /// etc.), so this test exercises successful fresh-DB startup rather than
+    /// the belt-and-suspenders pre-migration safety fallback (which would only
+    /// trigger if `source_health` were somehow absent on an already-migrated
+    /// DB — an edge case outside `open_db`'s contract).
     #[test]
     fn watchdog_source_health_absent_no_panic() {
         let dir = TempDir::new().unwrap();

@@ -9,7 +9,7 @@ fn seed_v6(path: &std::path::Path) {
 }
 
 #[test]
-fn v6_db_migrates_to_v7_and_adds_source_kind_and_tool_name() {
+fn v6_db_migrates_to_latest_and_adds_source_kind_and_tool_name() {
     let tmp = TempDir::new().unwrap();
     let db = tmp.path().join("hippo.db");
     seed_v6(&db);
