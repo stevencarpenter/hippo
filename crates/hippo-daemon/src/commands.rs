@@ -552,6 +552,295 @@ pub fn handle_redact_test(config: &HippoConfig, input: &str) {
     println!("  {}", result.text);
 }
 
+// ---------------------------------------------------------------------------
+// Alarms commands
+// ---------------------------------------------------------------------------
+
+/// List un-acknowledged `capture_alarms` rows.
+///
+/// Prints a table of active alarms to stdout.  Returns `true` if any rows
+/// were found (caller should `std::process::exit(1)` for script-friendliness),
+/// `false` if the table is clean.
+pub fn handle_alarms_list(config: &HippoConfig) -> Result<bool> {
+    let conn = hippo_core::storage::open_db(&config.db_path())?;
+
+    let mut stmt = conn.prepare(
+        "SELECT id, invariant_id, raised_at, details_json
+         FROM capture_alarms
+         WHERE acked_at IS NULL
+         ORDER BY raised_at ASC",
+    )?;
+
+    struct AlarmRow {
+        id: i64,
+        invariant_id: String,
+        raised_at: i64,
+        details_json: String,
+    }
+
+    let rows: Vec<AlarmRow> = stmt
+        .query_map([], |row| {
+            Ok(AlarmRow {
+                id: row.get(0)?,
+                invariant_id: row.get(1)?,
+                raised_at: row.get(2)?,
+                details_json: row.get(3)?,
+            })
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+
+    if rows.is_empty() {
+        println!("No active alarms.");
+        return Ok(false);
+    }
+
+    println!(
+        "{:<6}  {:<12}  {:<24}  DETAILS",
+        "ID", "INVARIANT", "RAISED"
+    );
+    println!("{}", "-".repeat(80));
+
+    for row in &rows {
+        let raised = chrono::DateTime::from_timestamp_millis(row.raised_at)
+            .map(|dt| dt.format("%Y-%m-%d %H:%M UTC").to_string())
+            .unwrap_or_else(|| row.raised_at.to_string());
+
+        // Extract a human-readable summary from details_json.
+        let details_summary = alarm_details_summary(&row.details_json);
+
+        println!(
+            "{:<6}  {:<12}  {:<24}  {}",
+            row.id, row.invariant_id, raised, details_summary
+        );
+    }
+
+    Ok(true)
+}
+
+/// Acknowledge a `capture_alarms` row by ID.
+///
+/// Sets `acked_at = now_ms` and optionally `ack_note`.  The `WHERE acked_at IS
+/// NULL` guard makes this idempotent: a second ack on an already-acked row
+/// updates 0 rows and returns `Ok(())`.
+pub fn handle_alarms_ack(config: &HippoConfig, id: i64, note: Option<&str>) -> Result<()> {
+    let conn = hippo_core::storage::open_db(&config.db_path())?;
+    let now_ms = chrono::Utc::now().timestamp_millis();
+
+    let updated = conn.execute(
+        "UPDATE capture_alarms
+         SET acked_at = ?1, ack_note = ?2
+         WHERE id = ?3 AND acked_at IS NULL",
+        rusqlite::params![now_ms, note, id],
+    )?;
+
+    if updated > 0 {
+        println!("Alarm {} acknowledged.", id);
+    } else {
+        // Either already acked (idempotent) or not found — both are OK.
+        println!("Alarm {} not found or already acknowledged.", id);
+    }
+    Ok(())
+}
+
+/// Build a short human-readable summary from a `details_json` blob.
+/// Formats `"{source} silent {duration}"` when both `source` and `since_ms`
+/// are present; otherwise falls back to a (possibly truncated) raw JSON string.
+fn alarm_details_summary(details_json: &str) -> String {
+    let truncated = || details_json.chars().take(60).collect::<String>();
+
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(details_json) else {
+        return truncated();
+    };
+
+    let Some(source) = v.get("source").and_then(|s| s.as_str()) else {
+        return truncated();
+    };
+
+    let Some(since_secs) = v
+        .get("since_ms")
+        .and_then(|s| s.as_i64())
+        .map(|ms| ms / 1_000)
+    else {
+        return truncated();
+    };
+
+    let hours = since_secs / 3600;
+    let mins = (since_secs % 3600) / 60;
+
+    if hours > 0 {
+        format!("{} silent {}h {}m", source, hours, mins)
+    } else {
+        format!("{} silent {}m", source, mins)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Alarms unit tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod alarms {
+    use super::*;
+    use tempfile::TempDir;
+
+    fn config_for_dir(dir: &TempDir) -> HippoConfig {
+        let mut config = HippoConfig::default();
+        config.storage.data_dir = dir.path().to_path_buf();
+        config
+    }
+
+    // Ensure handle_alarms_list returns false (exit 0) when no rows.
+    #[test]
+    fn alarms_list_empty_returns_false() {
+        let dir = TempDir::new().unwrap();
+        // open_db applies full schema migrations, creating capture_alarms
+        let _conn = hippo_core::storage::open_db(&dir.path().join("hippo.db")).unwrap();
+        let config = config_for_dir(&dir);
+        let has_alarms = handle_alarms_list(&config).unwrap();
+        assert!(!has_alarms, "empty table must return false");
+    }
+
+    // Ensure handle_alarms_list returns true (exit 1) when un-acked rows exist.
+    #[test]
+    fn alarms_list_active_rows_returns_true() {
+        let dir = TempDir::new().unwrap();
+        let db_path = dir.path().join("hippo.db");
+        let conn = hippo_core::storage::open_db(&db_path).unwrap();
+
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        conn.execute(
+            "INSERT INTO capture_alarms (invariant_id, raised_at, details_json)
+             VALUES ('I-1', ?1, '{\"source\":\"shell\",\"since_ms\":90000}')",
+            rusqlite::params![now_ms],
+        )
+        .unwrap();
+
+        let config = config_for_dir(&dir);
+        let has_alarms = handle_alarms_list(&config).unwrap();
+        assert!(has_alarms, "active row must return true");
+    }
+
+    // Acked rows must not appear in list.
+    #[test]
+    fn alarms_list_excludes_acked_rows() {
+        let dir = TempDir::new().unwrap();
+        let db_path = dir.path().join("hippo.db");
+        let conn = hippo_core::storage::open_db(&db_path).unwrap();
+
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        conn.execute(
+            "INSERT INTO capture_alarms (invariant_id, raised_at, details_json, acked_at)
+             VALUES ('I-1', ?1, '{}', ?1)",
+            rusqlite::params![now_ms],
+        )
+        .unwrap();
+
+        let config = config_for_dir(&dir);
+        let has_alarms = handle_alarms_list(&config).unwrap();
+        assert!(!has_alarms, "acked row must not appear in list");
+    }
+
+    // handle_alarms_ack sets acked_at and returns Ok.
+    #[test]
+    fn alarms_ack_sets_acked_at() {
+        let dir = TempDir::new().unwrap();
+        let db_path = dir.path().join("hippo.db");
+        let conn = hippo_core::storage::open_db(&db_path).unwrap();
+
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        conn.execute(
+            "INSERT INTO capture_alarms (invariant_id, raised_at, details_json)
+             VALUES ('I-3', ?1, '{}')",
+            rusqlite::params![now_ms],
+        )
+        .unwrap();
+        let id: i64 = conn.last_insert_rowid();
+
+        let config = config_for_dir(&dir);
+        handle_alarms_ack(&config, id, Some("test note")).unwrap();
+
+        let (acked_at, ack_note): (Option<i64>, Option<String>) = conn
+            .query_row(
+                "SELECT acked_at, ack_note FROM capture_alarms WHERE id = ?1",
+                rusqlite::params![id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+
+        assert!(acked_at.is_some(), "acked_at must be set");
+        assert_eq!(ack_note.as_deref(), Some("test note"));
+    }
+
+    // Re-ack is idempotent (must not error).
+    #[test]
+    fn alarms_ack_is_idempotent() {
+        let dir = TempDir::new().unwrap();
+        let db_path = dir.path().join("hippo.db");
+        let conn = hippo_core::storage::open_db(&db_path).unwrap();
+
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        conn.execute(
+            "INSERT INTO capture_alarms (invariant_id, raised_at, details_json)
+             VALUES ('I-3', ?1, '{}')",
+            rusqlite::params![now_ms],
+        )
+        .unwrap();
+        let id: i64 = conn.last_insert_rowid();
+
+        let config = config_for_dir(&dir);
+        handle_alarms_ack(&config, id, None).unwrap();
+        // Second ack — must not return Err
+        let result = handle_alarms_ack(&config, id, Some("again"));
+        assert!(result.is_ok(), "re-ack must be idempotent");
+    }
+
+    // Ack of non-existent ID must not error.
+    #[test]
+    fn alarms_ack_nonexistent_id_is_ok() {
+        let dir = TempDir::new().unwrap();
+        let db_path = dir.path().join("hippo.db");
+        let _conn = hippo_core::storage::open_db(&db_path).unwrap();
+
+        let config = config_for_dir(&dir);
+        let result = handle_alarms_ack(&config, 9999, None);
+        assert!(result.is_ok(), "ack of non-existent id must not error");
+    }
+
+    // alarm_details_summary produces a readable human string.
+    #[test]
+    fn alarms_details_summary_formats_source_and_duration() {
+        let json = r#"{"source":"shell","since_ms":7200000}"#; // 2h
+        let summary = alarm_details_summary(json);
+        assert!(
+            summary.contains("shell"),
+            "summary must contain source name"
+        );
+        assert!(summary.contains('h'), "summary must contain hours");
+    }
+
+    // Malformed JSON falls back to (truncated) raw string.
+    #[test]
+    fn alarms_details_summary_handles_malformed_json() {
+        let summary = alarm_details_summary("not json {{{");
+        assert!(!summary.is_empty());
+        assert!(
+            summary.contains("not json"),
+            "should return raw input fragment"
+        );
+    }
+
+    // Valid JSON missing required fields falls back to raw JSON string.
+    #[test]
+    fn alarms_details_summary_falls_back_when_fields_missing() {
+        let json = r#"{"foo":"bar"}"#;
+        let summary = alarm_details_summary(json);
+        assert!(
+            summary.contains("foo"),
+            "should return raw JSON when fields absent"
+        );
+    }
+}
+
 pub async fn handle_doctor(config: &HippoConfig, explain: bool) -> Result<()> {
     let mut fail_count: u32 = 0;
     let cli_version = env!("HIPPO_VERSION_FULL");

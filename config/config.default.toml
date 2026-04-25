@@ -155,14 +155,14 @@ watched_repos = []             # e.g., ["stevencarpenter/hippo"]
 # token_env = "HIPPO_GITHUB_TOKEN"
 
 [watchdog]
-# Capture-reliability watchdog (feature-flagged off; enabled in T-2 after launchd plist ships).
+# Capture-reliability watchdog — enabled by default since T-2 (launchd plist ships).
 #
-# When enabled, `hippo watchdog run` (invoked every 60 s by launchd) reads the
-# `source_health` table, asserts invariants I-1..I-10, and writes rows to
-# `capture_alarms` for any violations.  Rate-limited to one alarm per invariant
+# `hippo watchdog run` (invoked every 60 s by launchd via com.hippo.watchdog)
+# reads the `source_health` table, asserts invariants I-1..I-10, and writes rows
+# to `capture_alarms` for any violations.  Rate-limited to one alarm per invariant
 # per `alarm_rate_limit_minutes` window (60 min during v0.17 soak; step down to
 # 15 min in v0.18 after 7-day clean run — see docs/capture-reliability/04-watchdog.md).
-enabled                  = false
+enabled                  = true
 alarm_rate_limit_minutes = 60
 notify_macos             = false
 # log_path = ""                   # default: $data_dir/watchdog-alarms.log

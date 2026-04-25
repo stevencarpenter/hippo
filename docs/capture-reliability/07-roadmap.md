@@ -38,7 +38,7 @@ Violating any invariant below breaks autonomous execution:
 
 ## T-1 · P1.1a — Watchdog core (feature-flagged off)
 
-- **Status:** review
+- **Status:** done
 - **Phase:** P1
 - **Depends on:** (P0 — all done)
 - **Branch:** `feat/p1.1a-watchdog-core`
@@ -71,7 +71,7 @@ Violating any invariant below breaks autonomous execution:
 
 ## T-2 · P1.1b — Watchdog launchd install + `hippo alarms` CLI
 
-- **Status:** open
+- **Status:** review
 - **Phase:** P1
 - **Depends on:** T-1 (done)
 - **Branch:** `feat/p1.1b-watchdog-install`
@@ -102,7 +102,7 @@ Violating any invariant below breaks autonomous execution:
 
 ## T-3 · P1.2 — Firefox extension heartbeat + popup badge
 
-- **Status:** review
+- **Status:** done
 - **Phase:** P1
 - **Depends on:** (P0 — all done)
 - **Branch:** `feat/p1.2-browser-heartbeat`
@@ -134,7 +134,7 @@ Violating any invariant below breaks autonomous execution:
 
 ## T-4 · P1.3 — Doctor checks 2, 5, 6, 9, 10
 
-- **Status:** review
+- **Status:** done
 - **Phase:** P1
 - **Depends on:** (P0 — all done). Note: Check 3 (browser ext dist/) already shipped via #54; Check 8 already shipped via #70 but is dark until T-1 lands.
 - **Branch:** `feat/p1.3-doctor-checks-2`
@@ -215,7 +215,7 @@ If that chain exits 0, the watchdog fired at least one alarm within one poll int
 
 ## T-6 · P2.2 — Synthetic probes + probe_tag exclusion filters + Semgrep lint
 
-- **Status:** review
+- **Status:** done
 - **Phase:** P2
 - **Depends on:** (P0 — all done). Independent of T-1..T-5.
 - **Branch:** `feat/p2.2-synthetic-probes`

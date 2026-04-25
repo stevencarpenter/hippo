@@ -124,6 +124,11 @@ pub enum Commands {
         #[command(subcommand)]
         action: WatchdogAction,
     },
+    /// Capture-reliability alarm management
+    Alarms {
+        #[command(subcommand)]
+        action: AlarmsAction,
+    },
 }
 
 #[derive(Subcommand)]
@@ -131,6 +136,20 @@ pub enum WatchdogAction {
     /// Assert invariants against source_health and write capture_alarms rows.
     /// Designed to be invoked by launchd; exits 0 on success.
     Run,
+}
+
+#[derive(Subcommand)]
+pub enum AlarmsAction {
+    /// List un-acknowledged alarms. Exits 1 if any active, 0 if none.
+    List,
+    /// Acknowledge an alarm by ID. Re-ack is a no-op (idempotent).
+    Ack {
+        /// Alarm ID to acknowledge
+        id: i64,
+        /// Optional note to attach to the acknowledgement
+        #[arg(long)]
+        note: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
