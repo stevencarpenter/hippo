@@ -500,14 +500,15 @@ def claim_pending_claude_segments(
     stale_before_ms = now_ms - stale_lock_timeout_ms
     remaining = max_claim_batch if max_claim_batch is not None else -1
 
-    # Get pending segments grouped by cwd
+    # Get pending segments grouped by cwd (exclude probe rows — belt-and-braces).
     cursor = conn.execute(
         """
         SELECT cs.cwd, COUNT(*) as cnt
         FROM claude_enrichment_queue ceq
         JOIN claude_sessions cs ON ceq.claude_session_id = cs.id
-        WHERE ceq.status = 'pending'
-           OR (ceq.status = 'processing' AND COALESCE(ceq.locked_at, 0) <= ?)
+        WHERE (ceq.status = 'pending'
+           OR (ceq.status = 'processing' AND COALESCE(ceq.locked_at, 0) <= ?))
+          AND cs.probe_tag IS NULL
         GROUP BY cs.cwd
         ORDER BY MIN(cs.start_time) ASC
         """,
@@ -528,6 +529,7 @@ def claim_pending_claude_segments(
                 SELECT ceq.id FROM claude_enrichment_queue ceq
                 JOIN claude_sessions cs ON ceq.claude_session_id = cs.id
                 WHERE cs.cwd = ?
+                  AND cs.probe_tag IS NULL
                   AND (ceq.status = 'pending'
                        OR (ceq.status = 'processing' AND COALESCE(ceq.locked_at, 0) <= ?))
                 ORDER BY cs.start_time ASC, ceq.id ASC
@@ -552,7 +554,7 @@ def claim_pending_claude_segments(
                    start_time, end_time, summary_text, tool_calls_json,
                    user_prompts_json, message_count, token_count, is_subagent
             FROM claude_sessions
-            WHERE id IN ({placeholders})
+            WHERE id IN ({placeholders}) AND probe_tag IS NULL
             ORDER BY start_time ASC
             """,
             segment_ids,
