@@ -70,6 +70,7 @@ pub async fn handle_request(state: &Arc<DaemonState>, request: DaemonRequest) ->
         DaemonRequest::GetEntities { .. } => "get_entities",
         DaemonRequest::RawQuery { .. } => "raw_query",
         DaemonRequest::RegisterWatchSha { .. } => "register_watch_sha",
+        DaemonRequest::UpdateSourceHealthHeartbeat { .. } => "update_source_health_heartbeat",
         DaemonRequest::Shutdown => "shutdown",
     };
     tracing::Span::current().record("request_type", request_type);
@@ -197,6 +198,22 @@ pub async fn handle_request(state: &Arc<DaemonState>, request: DaemonRequest) ->
             let db = state.write_db.lock().await;
             match storage::watchlist::upsert(&db, &sha, &repo, now, expires) {
                 Ok(()) => DaemonResponse::Ack,
+                Err(e) => DaemonResponse::Error(e.to_string()),
+            }
+        }
+        DaemonRequest::UpdateSourceHealthHeartbeat { source, ts } => {
+            let now_ms = chrono::Utc::now().timestamp_millis();
+            let db = state.write_db.lock().await;
+            match db.execute(
+                "UPDATE source_health \
+                 SET last_heartbeat_ts = ?1, updated_at = ?2 \
+                 WHERE source = ?3",
+                rusqlite::params![ts, now_ms, source],
+            ) {
+                Ok(_) => {
+                    tracing::debug!(source = %source, ts, "source_health heartbeat updated");
+                    DaemonResponse::Ack
+                }
                 Err(e) => DaemonResponse::Error(e.to_string()),
             }
         }
