@@ -84,9 +84,11 @@ pub enum Harness {
 //   `as_db_str()`        → "claude-code", "opencode", "codex" (agentic_sessions.harness column)
 //   `source_basename()`  → "claude",      "opencode", "codex" (source_health row composition)
 // They differ for ClaudeCode because v8 seeded source_health with `claude-tool`
-// and `claude-session`, not `claude-code-tool` / `agentic-session-claude-code`.
-// Future ingesters compose source_health row names as `agentic-session-{basename}`
-// or `{basename}-tool` via `source_basename()`.
+// and `claude-session` (see schema.sql v8 INSERT) — NOT `claude-code-*`. The
+// Phase 2 v9→v10 migration keeps `claude-tool` and renames `claude-session` →
+// `agentic-session-claude`; both compose off the "claude" basename. Future
+// ingesters use `source_basename()` (e.g., `format!("agentic-session-{}", h.source_basename())`)
+// to avoid the "claude" vs "claude-code" footgun.
 
 pub enum AgenticStatus { Ok, Error, Orphaned }
 

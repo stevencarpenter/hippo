@@ -106,6 +106,25 @@ fn claude_skill_renders_skill_field() {
 }
 
 #[test]
+fn web_fetch_renders_url() {
+    assert_eq!(
+        render_command("WebFetch", &json!({"url": "https://example.com/foo", "prompt": "..."})),
+        "fetch https://example.com/foo"
+    );
+}
+
+#[test]
+fn web_search_renders_query() {
+    assert_eq!(
+        render_command(
+            "WebSearch",
+            &json!({"query": "actions/upload-artifact latest version", "allowed_domains": ["github.com"]})
+        ),
+        "search 'actions/upload-artifact latest version'"
+    );
+}
+
+#[test]
 fn unknown_tool_returns_name() {
     assert_eq!(render_command("MadeUp", &json!({})), "MadeUp");
 }

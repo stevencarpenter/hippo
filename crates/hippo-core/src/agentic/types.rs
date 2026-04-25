@@ -28,11 +28,14 @@ impl Harness {
         }
     }
 
-    /// Short basename used for `source_health` row names: `agentic-session-<basename>`
-    /// and `<basename>-tool`. Distinct from `as_db_str()` for `ClaudeCode` because
-    /// the v8 source_health rows were seeded as `claude-tool` / `agentic-session-claude`,
-    /// not `claude-code-tool` / `agentic-session-claude-code`. Future ingesters
-    /// should compose source names via this method to avoid that footgun.
+    /// Short basename for `source_health` row composition. Returns "claude" for
+    /// `ClaudeCode` (NOT "claude-code") because v8 already seeded source_health
+    /// with `claude-tool` and `claude-session` (see schema.sql v8 INSERT), and
+    /// the Phase 2 v9→v10 migration preserves `claude-tool` while renaming
+    /// `claude-session` → `agentic-session-claude` — both keying off the
+    /// "claude" basename. Future ingesters compose `<basename>-tool` and
+    /// `agentic-session-<basename>` via this method to avoid the
+    /// "claude" vs "claude-code" footgun.
     pub fn source_basename(&self) -> &str {
         match self {
             Self::ClaudeCode => "claude",

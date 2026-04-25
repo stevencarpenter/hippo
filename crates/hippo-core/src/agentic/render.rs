@@ -38,6 +38,11 @@ pub fn render_command(tool_name: &str, input: &Value) -> String {
         // opencode emits `{"tool": "skill", "input": {"name": "<name>"}}`
         // (verified via SQL against ~/.local/share/opencode/opencode.db).
         "skill" => format!("skill: {}", str_field(input, "name", "?")),
+        // Claude WebFetch / WebSearch — frequent enough in real transcripts that
+        // the bare tool-name fallback strips meaningful signal. Shape verified
+        // against ~/.claude/projects/*.jsonl tool_use blocks.
+        "WebFetch" => format!("fetch {}", str_field(input, "url", "<url>")),
+        "WebSearch" => format!("search '{}'", str_field(input, "query", "")),
         other => other.to_string(),
     }
 }

@@ -44,7 +44,7 @@ Phase 1 work (types, renderer, EventPayload variant, round-trip tests) was autho
 - [ ] **Step 2:** Verify no merge conflicts. Files added/modified: `crates/hippo-core/src/agentic/{mod,types,render}.rs`, `crates/hippo-core/src/lib.rs` (one-line `pub mod agentic;` insertion), `crates/hippo-core/tests/{agentic_envelope,agentic_render,agentic_types}.rs`.
 - [ ] **Step 3:** Verification: `cargo build -p hippo-core` succeeds. (`cargo test` will fail at this stage — `agentic_envelope.rs` references `EventPayload::AgenticToolCall` which doesn't exist yet. Expected; Task 1.2 fixes it.)
 
-**Acceptance:** Three commits applied cleanly. `crates/hippo-core/src/agentic/types.rs` is 85 LOC and exports `AgenticToolCall`, `Harness`, `AgenticStatus`, `TokenUsage`. `crates/hippo-core/tests/agentic_render.rs` has 13 tests.
+**Acceptance:** Three commits applied cleanly. `crates/hippo-core/src/agentic/types.rs` exports `AgenticToolCall`, `Harness`, `AgenticStatus`, `TokenUsage`, plus `Harness::source_basename()` (added in review-response). `crates/hippo-core/tests/agentic_render.rs` has 15 tests covering Bash, Read, Edit, Write, Grep, Glob, Agent, TaskCreate, TaskUpdate, exec_command, opencode `skill`, Claude `Skill`, WebFetch, WebSearch, and the Unknown fallback.
 
 ### Task 1.2: Manually add the `AgenticToolCall` variant to `EventPayload`
 
