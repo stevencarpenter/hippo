@@ -25,8 +25,8 @@ mod doctor {
 
         // ── helpers ────────────────────────────────────────────────────────
 
-        /// Open a fresh in-memory SQLite DB with the full hippo schema applied
-        /// (migrations run via `open_db`).
+        /// Open a fresh file-backed SQLite DB at `dir/hippo.db` with the full
+        /// hippo schema applied (migrations run via `open_db`).
         fn open_test_db(dir: &std::path::Path) -> rusqlite::Connection {
             let db_path = dir.join("hippo.db");
             hippo_core::storage::open_db(&db_path).expect("open_db")
@@ -154,6 +154,27 @@ mod doctor {
             let _ = check_nm_manifest(&manifest, true);
         }
 
+        #[test]
+        fn check_2_directory_path_fails() {
+            // A manifest `path` pointing at a directory (mode 0755) must fail
+            // even though directories have execute bits set.
+            let tmp = tempdir().unwrap();
+            let dir_path = tmp.path().join("some-dir");
+            fs::create_dir_all(&dir_path).unwrap();
+
+            let manifest = tmp.path().join("hippo_daemon.json");
+            let json = serde_json::json!({
+                "name": "hippo_daemon",
+                "path": dir_path.to_string_lossy(),
+                "type": "stdio",
+                "allowed_extensions": ["hippo-browser@local"],
+            });
+            fs::write(&manifest, serde_json::to_string_pretty(&json).unwrap()).unwrap();
+
+            let fail = check_nm_manifest(&manifest, false);
+            assert_eq!(fail, 1, "directory as `path` must fail");
+        }
+
         // ── Check 5: live-session vs DB ────────────────────────────────────
 
         #[test]
@@ -234,6 +255,46 @@ mod doctor {
 
             let fail = check_claude_session_db(&tmp.path().join("no-such-dir"), &conn, false);
             assert_eq!(fail, 0, "non-existent projects dir → [--], not a failure");
+        }
+
+        #[test]
+        fn check_5_subagent_jsonl_detected_recursively() {
+            // Regression test for the P1 bug: subagent transcripts at
+            // `<proj>/<parent-uuid>/subagents/<id>.jsonl` must be found by the
+            // recursive walk and reconciled against claude_sessions.
+            let tmp = tempdir().unwrap();
+            let conn = open_test_db(tmp.path());
+
+            // Nested subagent path matching the Claude Code layout.
+            let subagent_dir = tmp
+                .path()
+                .join("projects/encoded-proj/parent-uuid/subagents");
+            fs::create_dir_all(&subagent_dir).unwrap();
+            let session_id = "subagent-session-abc";
+            let jsonl = subagent_dir.join(format!("{session_id}.jsonl"));
+            fs::write(&jsonl, "{}\n").unwrap();
+            // File is fresh — NOT in the DB.
+
+            let fail = check_claude_session_db(&tmp.path().join("projects"), &conn, false);
+            assert_eq!(fail, 1, "nested subagent JSONL absent from DB must fail");
+        }
+
+        #[test]
+        fn check_5_subagent_jsonl_in_db_passes() {
+            let tmp = tempdir().unwrap();
+            let conn = open_test_db(tmp.path());
+
+            let subagent_dir = tmp
+                .path()
+                .join("projects/encoded-proj/parent-uuid/subagents");
+            fs::create_dir_all(&subagent_dir).unwrap();
+            let session_id = "subagent-session-xyz";
+            let jsonl = subagent_dir.join(format!("{session_id}.jsonl"));
+            fs::write(&jsonl, "{}\n").unwrap();
+            insert_session_row(&conn, session_id);
+
+            let fail = check_claude_session_db(&tmp.path().join("projects"), &conn, false);
+            assert_eq!(fail, 0, "nested subagent JSONL present in DB must pass");
         }
 
         // ── Check 6: session-hook log vs DB ───────────────────────────────

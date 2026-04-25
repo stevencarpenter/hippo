@@ -1547,10 +1547,25 @@ pub fn check_nm_manifest(nm_manifest_path: &std::path::Path, explain: bool) -> u
     }
 
     use std::os::unix::fs::PermissionsExt;
-    let executable = std::fs::metadata(binary)
+    let meta = std::fs::metadata(binary).ok();
+    if !meta.as_ref().map(|m| m.is_file()).unwrap_or(false) {
+        println!(
+            "[!!] {:<29}  `path` is not a regular file: {}",
+            LABEL, path_str
+        );
+        if explain {
+            println!(
+                "     CAUSE:  Manifest `path` points to a directory or special file, not an executable binary"
+            );
+            println!("     FIX:    hippo daemon install --force");
+            println!("     DOC:    docs/capture-reliability/03-doctor-upgrades.md");
+        }
+        return 1;
+    }
+    if !meta
         .map(|m| m.permissions().mode() & 0o111 != 0)
-        .unwrap_or(false);
-    if !executable {
+        .unwrap_or(false)
+    {
         println!("[!!] {:<29}  `path` not executable: {}", LABEL, path_str);
         if explain {
             println!("     CAUSE:  Manifest `path` binary lacks execute permission");
@@ -1593,11 +1608,37 @@ pub fn check_nm_manifest(nm_manifest_path: &std::path::Path, explain: bool) -> u
 
 // ─── Check 5: Live-session vs DB reconciliation ──────────────────────────────
 
-/// Check 5: Glob active Claude session JSONL files and verify each has a
-/// matching row in `claude_sessions`.
+/// Recursively collect JSONL files under `dir` whose mtime is newer than
+/// `cutoff`.  Handles the Claude Code layout where subagent transcripts live
+/// at `<project>/<parent-uuid>/subagents/<id>.jsonl`.
+fn collect_active_jsonls(
+    dir: &std::path::Path,
+    cutoff: std::time::SystemTime,
+    result: &mut Vec<std::path::PathBuf>,
+) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            collect_active_jsonls(&path, cutoff, result);
+        } else if path.extension().and_then(|e| e.to_str()) == Some("jsonl")
+            && let Ok(meta) = std::fs::metadata(&path)
+            && let Ok(modified) = meta.modified()
+            && modified > cutoff
+        {
+            result.push(path);
+        }
+    }
+}
+
+/// Check 5: Recursively find active Claude session JSONL files under
+/// `projects_dir` and verify each has a matching row in `claude_sessions`.
 ///
 /// `projects_dir` is `~/.claude/projects` (injectable for tests).
 /// A session file is "active" if its mtime is < 5 minutes old.
+/// Recursion handles subagent transcripts at `<proj>/<parent>/subagents/*.jsonl`.
 /// Returns fail_count capped at 3.
 pub fn check_claude_session_db(
     projects_dir: &std::path::Path,
@@ -1606,37 +1647,18 @@ pub fn check_claude_session_db(
 ) -> u32 {
     const LABEL: &str = "claude-session DB";
 
+    if !projects_dir.is_dir() {
+        println!("[--] {:<29}  projects dir not found", LABEL);
+        return 0;
+    }
+
     let five_min_ago = std::time::SystemTime::now()
         .checked_sub(std::time::Duration::from_secs(300))
         .unwrap_or(std::time::UNIX_EPOCH);
 
-    // Collect active JSONL paths (mtime within last 5 minutes).
+    // Collect active JSONL paths (mtime within last 5 minutes) recursively.
     let mut active: Vec<std::path::PathBuf> = Vec::new();
-
-    let Ok(proj_entries) = std::fs::read_dir(projects_dir) else {
-        println!("[--] {:<29}  projects dir not found", LABEL);
-        return 0;
-    };
-
-    for proj_entry in proj_entries.flatten() {
-        let proj_path = proj_entry.path();
-        if !proj_path.is_dir() {
-            continue;
-        }
-        let Ok(sub_entries) = std::fs::read_dir(&proj_path) else {
-            continue;
-        };
-        for sub_entry in sub_entries.flatten() {
-            let sub_path = sub_entry.path();
-            if sub_path.extension().and_then(|e| e.to_str()) == Some("jsonl")
-                && let Ok(meta) = std::fs::metadata(&sub_path)
-                && let Ok(modified) = meta.modified()
-                && modified > five_min_ago
-            {
-                active.push(sub_path);
-            }
-        }
-    }
+    collect_active_jsonls(projects_dir, five_min_ago, &mut active);
 
     if active.is_empty() {
         println!("[--] {:<29}  no active sessions", LABEL);
@@ -1644,7 +1666,7 @@ pub fn check_claude_session_db(
     }
 
     // session_id is the file stem (the JSONL filename without extension).
-    // This matches how hippo_core::claude_session::SessionFile::from_path derives it.
+    // This matches how hippo_daemon::claude_session::SessionFile::from_path derives it.
     let mut missing: u32 = 0;
     for path in &active {
         let Some(session_id) = path.file_stem().and_then(|s| s.to_str()) else {
@@ -1699,25 +1721,32 @@ pub fn check_claude_session_db(
 
 /// Count "hook invoked" log entries within the past hour.
 ///
-/// Reads up to the last 10 000 lines of the log. Each line's first
+/// Streams the log through a ring buffer capped at 10 000 lines so memory
+/// usage is bounded even for large files. Each line's first
 /// whitespace-delimited token must be a valid RFC 3339 timestamp.
 fn count_hook_invocations_in_last_1h(log_path: &std::path::Path) -> i64 {
+    use std::collections::VecDeque;
     use std::io::{BufRead, BufReader};
+
+    const MAX_LINES: usize = 10_000;
 
     let Ok(file) = std::fs::File::open(log_path) else {
         return 0;
     };
 
-    let reader = BufReader::new(file);
-    let lines: Vec<String> = reader.lines().map_while(Result::ok).collect();
-
-    let tail_start = lines.len().saturating_sub(10_000);
-    let tail = &lines[tail_start..];
+    // Stream into a ring buffer — avoids loading the whole file into memory.
+    let mut ring: VecDeque<String> = VecDeque::with_capacity(MAX_LINES + 1);
+    for line in BufReader::new(file).lines().map_while(Result::ok) {
+        if ring.len() == MAX_LINES {
+            ring.pop_front();
+        }
+        ring.push_back(line);
+    }
 
     let one_hour_ago = chrono::Utc::now() - chrono::TimeDelta::hours(1);
     let mut count: i64 = 0;
 
-    for line in tail {
+    for line in &ring {
         if !line.contains("hook invoked") {
             continue;
         }
