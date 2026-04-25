@@ -266,6 +266,7 @@ fn redacted_fallback_envelope(
         producer_version: envelope.producer_version,
         timestamp: envelope.timestamp,
         payload: EventPayload::Shell(redacted),
+        probe_tag: envelope.probe_tag.clone(),
     }
 }
 
@@ -281,6 +282,9 @@ pub async fn handle_send_event_shell(
     git_commit: Option<String>,
     git_dirty: bool,
     output: Option<String>,
+    probe_tag: Option<String>,
+    source_kind: Option<String>,
+    tool_name: Option<String>,
 ) -> Result<()> {
     let session_id = std::env::var("HIPPO_SESSION_ID")
         .ok()
@@ -315,6 +319,15 @@ pub async fn handle_send_event_shell(
         .filter(|(k, _)| ENV_ALLOWLIST.contains(&k.as_str()))
         .collect();
 
+    // When --source-kind claude-tool is passed, use the provided tool_name.
+    // When --tool-name is passed without explicit source-kind, treat as claude-tool too.
+    let effective_tool_name =
+        if source_kind.as_deref() == Some("claude-tool") || tool_name.is_some() {
+            tool_name
+        } else {
+            None
+        };
+
     let event = ShellEvent {
         session_id,
         command: cmd,
@@ -334,10 +347,13 @@ pub async fn handle_send_event_shell(
         env_snapshot,
         git_state,
         redaction_count: 0,
-        tool_name: None,
+        tool_name: effective_tool_name,
     };
 
-    let envelope = EventEnvelope::shell(event);
+    let envelope = EventEnvelope {
+        probe_tag: probe_tag.clone(),
+        ..EventEnvelope::shell(event)
+    };
     match send_event_fire_and_forget(
         &config.socket_path(),
         &envelope,
@@ -2300,6 +2316,9 @@ mod tests {
             None,
             false,
             None,
+            None,
+            None,
+            None,
         )
         .await
         .unwrap();
@@ -2350,6 +2369,9 @@ replacement = "***"
             None,
             None,
             false,
+            None,
+            None,
+            None,
             None,
         )
         .await
@@ -2412,6 +2434,9 @@ replacement = "***"
             None,
             false,
             None,
+            None,
+            None,
+            None,
         )
         .await
         .unwrap();
@@ -2449,6 +2474,9 @@ replacement = "***"
             None,
             None,
             false,
+            None,
+            None,
+            None,
             None,
         )
         .await

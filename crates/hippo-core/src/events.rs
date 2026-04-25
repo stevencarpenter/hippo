@@ -10,6 +10,13 @@ pub struct EventEnvelope {
     pub producer_version: u32,
     pub timestamp: DateTime<Utc>,
     pub payload: EventPayload,
+    /// Set to a probe UUID for synthetic probe events; `None` for real events.
+    /// Not required to match `envelope_id` — shell/claude-tool probes use an
+    /// independent UUID since `EventEnvelope::shell()` generates `envelope_id`
+    /// internally. Carried through to the `probe_tag` column so every
+    /// event-table SELECT can add `AND probe_tag IS NULL`.
+    #[serde(default)]
+    pub probe_tag: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -116,6 +123,7 @@ impl EventEnvelope {
             producer_version: 1,
             timestamp: Utc::now(),
             payload: EventPayload::Shell(Box::new(event)),
+            probe_tag: None,
         }
     }
 }
@@ -194,6 +202,7 @@ mod tests {
             producer_version: 1,
             timestamp: Utc::now(),
             payload: EventPayload::Browser(Box::new(event)),
+            probe_tag: None,
         };
         let json = serde_json::to_string(&envelope).unwrap();
         let parsed: EventEnvelope = serde_json::from_str(&json).unwrap();
@@ -224,6 +233,7 @@ mod tests {
             producer_version: 1,
             timestamp: Utc::now(),
             payload: EventPayload::Browser(Box::new(event)),
+            probe_tag: None,
         };
         let value: serde_json::Value = serde_json::to_value(&envelope).unwrap();
         let payload = &value["payload"];
@@ -240,6 +250,7 @@ mod tests {
             producer_version: 1,
             timestamp: Utc::now(),
             payload: EventPayload::Raw(raw.clone()),
+            probe_tag: None,
         };
         let json = serde_json::to_string(&envelope).unwrap();
         let parsed: EventEnvelope = serde_json::from_str(&json).unwrap();

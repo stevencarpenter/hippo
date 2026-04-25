@@ -49,7 +49,8 @@ def db():
             git_dirty INTEGER,
             stdout TEXT,
             stderr TEXT,
-            enriched INTEGER NOT NULL DEFAULT 0
+            enriched INTEGER NOT NULL DEFAULT 0,
+            probe_tag TEXT DEFAULT NULL
         );
         CREATE TABLE claude_sessions (
             id INTEGER PRIMARY KEY,
@@ -70,6 +71,7 @@ def db():
             parent_session_id TEXT,
             enriched INTEGER NOT NULL DEFAULT 0,
             created_at INTEGER NOT NULL DEFAULT 0,
+            probe_tag TEXT DEFAULT NULL,
             UNIQUE (session_id, segment_index)
         );
         CREATE TABLE browser_events (
@@ -86,7 +88,8 @@ def db():
             content_hash TEXT,
             envelope_id TEXT,
             enriched INTEGER NOT NULL DEFAULT 0,
-            created_at INTEGER NOT NULL DEFAULT 0
+            created_at INTEGER NOT NULL DEFAULT 0,
+            probe_tag TEXT DEFAULT NULL
         );
         CREATE TABLE entities (
             id INTEGER PRIMARY KEY,

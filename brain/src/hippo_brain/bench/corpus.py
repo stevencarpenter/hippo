@@ -144,7 +144,8 @@ def init_corpus(
     for source, count in source_counts.items():
         if count <= 0:
             continue
-        rows = conn.execute(
+        # bench fixtures use a different schema (payload + source columns, no probe_tag)
+        rows = conn.execute(  # nosemgrep: unfiltered-event-table-select
             "SELECT id, payload FROM events WHERE source = ? ORDER BY id", (source,)
         ).fetchall()
         if not rows:

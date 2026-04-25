@@ -81,6 +81,7 @@ def claim_pending_browser_events(
                    OR (beq.status = 'processing'
                        AND COALESCE(beq.locked_at, 0) <= ?))
               AND be.timestamp < ?
+              AND be.probe_tag IS NULL
             ORDER BY beq.priority, beq.created_at
             LIMIT ?
         )
@@ -100,7 +101,7 @@ def claim_pending_browser_events(
         SELECT id, timestamp, url, title, domain, dwell_ms,
                scroll_depth, extracted_text, search_query, referrer
         FROM browser_events
-        WHERE id IN ({placeholders})
+        WHERE id IN ({placeholders}) AND probe_tag IS NULL
         ORDER BY timestamp ASC
         """,
         event_ids,
@@ -232,6 +233,7 @@ def get_correlated_browser_events(
                scroll_depth, extracted_text, search_query, referrer
         FROM browser_events
         WHERE timestamp BETWEEN ? AND ?
+          AND probe_tag IS NULL
         ORDER BY timestamp ASC
         """,
         (session_start_ms - window_ms, session_end_ms + window_ms),

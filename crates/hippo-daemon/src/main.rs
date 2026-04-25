@@ -12,6 +12,7 @@ use cli::{
     SendEventSource, WatchdogAction,
 };
 use hippo_core::config::HippoConfig;
+use hippo_daemon::probe;
 use tracing_subscriber::EnvFilter;
 
 async fn poll_socket_removal(socket: &std::path::Path, timeout: std::time::Duration) -> bool {
@@ -265,6 +266,7 @@ async fn main() -> Result<()> {
                 let daemon_template = include_str!("../../../launchd/com.hippo.daemon.plist");
                 let brain_template = include_str!("../../../launchd/com.hippo.brain.plist");
                 let gh_poll_template = include_str!("../../../launchd/com.hippo.gh-poll.plist");
+                let probe_template = include_str!("../../../launchd/com.hippo.probe.plist");
                 let xcode_claude_template =
                     include_str!("../../../launchd/com.hippo.xcode-claude-ingest.plist");
                 let xcode_codex_template =
@@ -272,6 +274,7 @@ async fn main() -> Result<()> {
 
                 install::install_plist("com.hippo.daemon", daemon_template, &vars, force)?;
                 install::install_plist("com.hippo.brain", brain_template, &vars, force)?;
+                install::install_plist("com.hippo.probe", probe_template, &vars, force)?;
                 install::install_plist(
                     "com.hippo.xcode-claude-ingest",
                     xcode_claude_template,
@@ -419,6 +422,9 @@ async fn main() -> Result<()> {
                 git_commit,
                 git_dirty,
                 output,
+                probe_tag,
+                source_kind,
+                tool_name,
             } => {
                 commands::handle_send_event_shell(
                     &config,
@@ -431,6 +437,9 @@ async fn main() -> Result<()> {
                     git_commit,
                     git_dirty,
                     output,
+                    probe_tag,
+                    source_kind,
+                    tool_name,
                 )
                 .await?;
             }
@@ -845,6 +854,9 @@ async fn main() -> Result<()> {
         }
         Commands::Doctor { explain } => {
             commands::handle_doctor(&config, explain).await?;
+        }
+        Commands::Probe { source } => {
+            probe::run(&config, source.as_deref()).await?;
         }
         Commands::Watchdog { action } => match action {
             WatchdogAction::Run => {

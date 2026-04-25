@@ -219,8 +219,9 @@ def claim_pending_events_by_session(
         SELECT e.session_id, COUNT(*) as cnt
         FROM enrichment_queue eq
         JOIN events e ON eq.event_id = e.id
-        WHERE eq.status = 'pending'
-           OR (eq.status = 'processing' AND COALESCE(eq.locked_at, 0) <= ?)
+        WHERE (eq.status = 'pending'
+           OR (eq.status = 'processing' AND COALESCE(eq.locked_at, 0) <= ?))
+          AND e.probe_tag IS NULL
         GROUP BY e.session_id
         HAVING MAX(e.timestamp) < ?
         ORDER BY MIN(e.timestamp) ASC
@@ -242,6 +243,7 @@ def claim_pending_events_by_session(
                 SELECT eq.id FROM enrichment_queue eq
                 JOIN events e ON eq.event_id = e.id
                 WHERE e.session_id = ?
+                  AND e.probe_tag IS NULL
                   AND (eq.status = 'pending'
                        OR (eq.status = 'processing' AND COALESCE(eq.locked_at, 0) <= ?))
                 ORDER BY e.timestamp ASC, eq.id ASC
@@ -264,7 +266,7 @@ def claim_pending_events_by_session(
             f"""SELECT id, session_id, timestamp, command, exit_code, duration_ms,
                        cwd, hostname, shell, git_repo, git_branch, git_commit, git_dirty,
                        stdout, stderr
-                FROM events WHERE id IN ({placeholders})
+                FROM events WHERE id IN ({placeholders}) AND probe_tag IS NULL
                 ORDER BY timestamp ASC, id ASC""",
             event_ids,
         ).fetchall()

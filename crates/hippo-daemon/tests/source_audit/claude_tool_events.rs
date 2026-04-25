@@ -55,6 +55,7 @@ async fn claude_tool_event_lands_with_correct_source_kind() {
         producer_version: 1,
         timestamp: Utc::now(),
         payload: EventPayload::Shell(Box::new(event)),
+        probe_tag: None,
     };
 
     hippo_daemon::commands::send_event_fire_and_forget(

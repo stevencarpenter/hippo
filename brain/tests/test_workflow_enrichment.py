@@ -49,7 +49,8 @@ def enrichment_db(tmp_path: Path) -> str:
             enriched INTEGER NOT NULL DEFAULT 0,
             redaction_count INTEGER NOT NULL DEFAULT 0,
             archived_at INTEGER,
-            created_at INTEGER NOT NULL DEFAULT 0
+            created_at INTEGER NOT NULL DEFAULT 0,
+            probe_tag TEXT DEFAULT NULL
         );
         CREATE TABLE IF NOT EXISTS sessions (
             id INTEGER PRIMARY KEY,
@@ -79,7 +80,8 @@ def enrichment_db(tmp_path: Path) -> str:
             message_count INTEGER NOT NULL DEFAULT 0,
             source_file TEXT NOT NULL DEFAULT '',
             enriched INTEGER NOT NULL DEFAULT 0,
-            created_at INTEGER NOT NULL DEFAULT 0
+            created_at INTEGER NOT NULL DEFAULT 0,
+            probe_tag TEXT DEFAULT NULL
         );
         CREATE TABLE IF NOT EXISTS knowledge_node_claude_sessions (
             knowledge_node_id INTEGER NOT NULL,

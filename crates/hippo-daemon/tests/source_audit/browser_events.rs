@@ -46,6 +46,7 @@ async fn browser_envelope_lands_in_browser_events_and_queue() {
         producer_version: 1,
         timestamp: Utc::now(),
         payload: EventPayload::Browser(Box::new(visit)),
+        probe_tag: None,
     };
 
     hippo_daemon::commands::send_event_fire_and_forget(
