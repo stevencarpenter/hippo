@@ -643,22 +643,26 @@ pub fn handle_alarms_ack(config: &HippoConfig, id: i64, note: Option<&str>) -> R
 }
 
 /// Build a short human-readable summary from a `details_json` blob.
-/// Extracts `source` and `since_ms` if present; falls back to raw JSON.
+/// Formats `"{source} silent {duration}"` when both `source` and `since_ms`
+/// are present; otherwise falls back to a (possibly truncated) raw JSON string.
 fn alarm_details_summary(details_json: &str) -> String {
+    let truncated = || details_json.chars().take(60).collect::<String>();
+
     let Ok(v) = serde_json::from_str::<serde_json::Value>(details_json) else {
-        return details_json.chars().take(60).collect();
+        return truncated();
     };
 
-    let source = v
-        .get("source")
-        .and_then(|s| s.as_str())
-        .unwrap_or("unknown");
+    let Some(source) = v.get("source").and_then(|s| s.as_str()) else {
+        return truncated();
+    };
 
-    let since_secs = v
+    let Some(since_secs) = v
         .get("since_ms")
         .and_then(|s| s.as_i64())
         .map(|ms| ms / 1_000)
-        .unwrap_or(0);
+    else {
+        return truncated();
+    };
 
     let hours = since_secs / 3600;
     let mins = (since_secs % 3600) / 60;
@@ -814,11 +818,26 @@ mod alarms {
         assert!(summary.contains('h'), "summary must contain hours");
     }
 
-    // Malformed JSON falls back gracefully.
+    // Malformed JSON falls back to (truncated) raw string.
     #[test]
     fn alarms_details_summary_handles_malformed_json() {
         let summary = alarm_details_summary("not json {{{");
         assert!(!summary.is_empty());
+        assert!(
+            summary.contains("not json"),
+            "should return raw input fragment"
+        );
+    }
+
+    // Valid JSON missing required fields falls back to raw JSON string.
+    #[test]
+    fn alarms_details_summary_falls_back_when_fields_missing() {
+        let json = r#"{"foo":"bar"}"#;
+        let summary = alarm_details_summary(json);
+        assert!(
+            summary.contains("foo"),
+            "should return raw JSON when fields absent"
+        );
     }
 }
 

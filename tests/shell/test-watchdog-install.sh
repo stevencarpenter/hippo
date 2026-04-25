@@ -18,12 +18,12 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
-# Locate the hippo binary — prefer the symlink in ~/.local/bin so we test
-# the installed artefact, not a stale debug build.
-if command -v hippo >/dev/null 2>&1; then
-    HIPPO_BIN="$(command -v hippo)"
-elif [ -f "$HOME/.local/bin/hippo" ]; then
+# Locate the hippo binary — prefer the installed symlink in ~/.local/bin so
+# we exercise the same artifact that launchd will invoke, not a stale debug build.
+if [ -f "$HOME/.local/bin/hippo" ]; then
     HIPPO_BIN="$HOME/.local/bin/hippo"
+elif command -v hippo >/dev/null 2>&1; then
+    HIPPO_BIN="$(command -v hippo)"
 elif [ -f "$REPO_ROOT/target/release/hippo" ]; then
     HIPPO_BIN="$REPO_ROOT/target/release/hippo"
 else
@@ -119,7 +119,7 @@ echo
 echo "-- 3. Alarm round-trip (list / ack) --"
 
 if [ ! -f "$DB_PATH" ]; then
-    echo "  [SKIP] DB not found at $DB_PATH — skipping alarm round-trip" >&2
+    echo "  [FAIL] DB not found at $DB_PATH — daemon not installed or never run" >&2
     FAIL=$((FAIL + 1))
 else
     NOW_MS=$(date +%s)000  # epoch milliseconds (rough)
@@ -136,7 +136,6 @@ else
 
     # hippo alarms list should print the row and exit 1 (active alarms exist).
     LIST_OUTPUT=$("$HIPPO_BIN" alarms list 2>&1 || true)
-    LIST_EXIT=$("$HIPPO_BIN" alarms list >/dev/null 2>&1; echo $?) || true
 
     assert "hippo alarms list prints the test invariant" \
         "echo '$LIST_OUTPUT' | grep -q 'I-TEST'"
