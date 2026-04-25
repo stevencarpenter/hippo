@@ -296,7 +296,8 @@ def _search_shell_events(
         """
         SELECT id, timestamp, command, exit_code, duration_ms, cwd, git_branch
         FROM events
-        WHERE (? IS NULL OR command LIKE ?)
+        WHERE probe_tag IS NULL
+          AND (? IS NULL OR command LIKE ?)
           AND (? IS NULL OR timestamp >= ?)
           AND (? IS NULL OR cwd LIKE ?)
           AND (? IS NULL OR git_branch = ?)
@@ -347,7 +348,8 @@ def _search_claude_events(
         SELECT id, start_time, summary_text, cwd, git_branch, message_count,
                tool_calls_json
         FROM claude_sessions
-        WHERE (? IS NULL OR summary_text LIKE ?)
+        WHERE probe_tag IS NULL
+          AND (? IS NULL OR summary_text LIKE ?)
           AND (? IS NULL OR start_time >= ?)
           AND (? IS NULL OR cwd LIKE ?)
           AND (? IS NULL OR git_branch = ?)
@@ -395,7 +397,8 @@ def _search_browser_events(
         """
         SELECT id, timestamp, url, title, domain, dwell_ms, scroll_depth
         FROM browser_events
-        WHERE (? IS NULL OR (url LIKE ? OR title LIKE ?))
+        WHERE probe_tag IS NULL
+          AND (? IS NULL OR (url LIKE ? OR title LIKE ?))
           AND (? IS NULL OR timestamp >= ?)
         ORDER BY timestamp DESC
         LIMIT ?
@@ -499,12 +502,14 @@ def list_projects_impl(conn: sqlite3.Connection, limit: int = 100) -> list[dict]
             SELECT git_repo, cwd AS cwd_root, MAX(timestamp) AS last_seen
             FROM events
             WHERE cwd IS NOT NULL AND cwd != ''
+              AND probe_tag IS NULL
             GROUP BY git_repo, cwd
             UNION ALL
             SELECT NULL AS git_repo, project_dir AS cwd_root,
                    MAX(start_time) AS last_seen
             FROM claude_sessions
             WHERE project_dir IS NOT NULL AND project_dir != ''
+              AND probe_tag IS NULL
             GROUP BY project_dir
         )
         GROUP BY git_repo, cwd_root

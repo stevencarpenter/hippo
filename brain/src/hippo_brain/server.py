@@ -276,6 +276,7 @@ class BrainServer:
                 """SELECT id, command, cwd, timestamp
                    FROM events
                    WHERE command LIKE ?
+                     AND probe_tag IS NULL
                    ORDER BY timestamp DESC LIMIT ?""",
                 (pattern, limit),
             )
@@ -494,6 +495,7 @@ class BrainServer:
                     FROM events ev
                     JOIN knowledge_node_events kne ON kne.event_id = ev.id
                     WHERE kne.knowledge_node_id = ?
+                      AND ev.probe_tag IS NULL
                     ORDER BY ev.timestamp DESC
                     """,
                     (node_id,),
@@ -554,7 +556,7 @@ class BrainServer:
                 "FROM events"
             )
             params = []
-            conditions = []
+            conditions = ["probe_tag IS NULL"]
 
             if session_id:
                 try:
@@ -635,7 +637,8 @@ class BrainServer:
         try:
             sql = """
                 SELECT s.id, s.start_time, s.hostname, s.shell,
-                       (SELECT COUNT(*) FROM events e WHERE e.session_id = s.id) as event_count
+                       (SELECT COUNT(*) FROM events e
+                        WHERE e.session_id = s.id AND e.probe_tag IS NULL) as event_count
                 FROM sessions s
             """
             params = []

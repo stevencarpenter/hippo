@@ -472,7 +472,9 @@ def _fetch_details(conn: sqlite3.Connection, node_ids: Sequence[int]) -> dict[in
         }
 
     # Attach shell event metadata (cwd/branch/captured_at prefer event data).
-    ev_rows = conn.execute(  # nosemgrep
+    # Knowledge nodes are only created from non-probe events (probes skip the
+    # enrichment queue), so rows linked via knowledge_node_events are never probes.
+    ev_rows = conn.execute(  # nosemgrep: unfiltered-event-table-select
         f"""
         SELECT kne.knowledge_node_id, e.id, e.timestamp, e.cwd, e.git_branch
         FROM knowledge_node_events kne
@@ -495,7 +497,9 @@ def _fetch_details(conn: sqlite3.Connection, node_ids: Sequence[int]) -> dict[in
             d["captured_at"] = ts
 
     # Fill from claude sessions if still empty.
-    cs_rows = conn.execute(  # nosemgrep
+    # Knowledge nodes are only created from non-probe sessions (probes skip the
+    # enrichment queue), so rows linked via knowledge_node_claude_sessions are never probes.
+    cs_rows = conn.execute(  # nosemgrep: unfiltered-event-table-select
         f"""
         SELECT kncs.knowledge_node_id, cs.start_time, cs.cwd, cs.git_branch
         FROM knowledge_node_claude_sessions kncs

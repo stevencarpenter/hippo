@@ -46,7 +46,10 @@ def export_training_data(
     examples = []
     for node_id, content, embed_text, outcome, tags in nodes:
         # Get linked events
-        event_cursor = conn.execute(
+        # nosemgrep: unfiltered-event-table-select -- linked via knowledge_node_events;
+        # knowledge nodes are only written from non-probe events (probes skip the
+        # enrichment queue) so probe rows cannot appear here via this JOIN path.
+        event_cursor = conn.execute(  # nosemgrep: unfiltered-event-table-select
             """
             SELECT e.command, e.exit_code, e.duration_ms, e.cwd, e.git_branch
             FROM events e

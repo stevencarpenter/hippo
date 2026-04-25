@@ -49,6 +49,7 @@ def enrich_one(
         shell_rows = conn.execute(
             """SELECT id, command, git_commit FROM events
                WHERE git_commit = ?
+                 AND probe_tag IS NULL
                LIMIT 20""",
             (head_sha,),
         ).fetchall()
@@ -59,6 +60,7 @@ def enrich_one(
                    WHERE timestamp BETWEEN ? AND ?
                      AND command LIKE '%git push%'
                      AND (git_repo IS NULL OR git_repo = ?)
+                     AND probe_tag IS NULL
                    LIMIT 20""",
                 (
                     started - CORRELATION_WINDOW_MS,
@@ -71,6 +73,7 @@ def enrich_one(
         claude_rows = conn.execute(
             """SELECT id, session_id, summary_text FROM claude_sessions
                WHERE start_time <= ? AND end_time >= ?
+                 AND probe_tag IS NULL
                LIMIT 10""",
             (
                 started + CORRELATION_WINDOW_MS,
@@ -186,6 +189,7 @@ async def enrich_one_async(
         shell_rows = conn.execute(
             """SELECT id, command, git_commit FROM events
                WHERE git_commit = ?
+                 AND probe_tag IS NULL
                LIMIT 20""",
             (head_sha,),
         ).fetchall()
@@ -196,6 +200,7 @@ async def enrich_one_async(
                    WHERE timestamp BETWEEN ? AND ?
                      AND command LIKE '%git push%'
                      AND (git_repo IS NULL OR git_repo = ?)
+                     AND probe_tag IS NULL
                    LIMIT 20""",
                 (
                     started - CORRELATION_WINDOW_MS,
@@ -208,6 +213,7 @@ async def enrich_one_async(
         claude_rows = conn.execute(
             """SELECT id, session_id, summary_text FROM claude_sessions
                WHERE start_time <= ? AND end_time >= ?
+                 AND probe_tag IS NULL
                LIMIT 10""",
             (
                 started + CORRELATION_WINDOW_MS,
