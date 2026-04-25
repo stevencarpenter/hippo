@@ -444,6 +444,8 @@ pub fn open_db(path: &Path) -> Result<Connection> {
              ) STRICT;
              CREATE INDEX IF NOT EXISTS idx_claude_session_parity_path_window
                  ON claude_session_parity (path, window_start);
+             CREATE INDEX IF NOT EXISTS idx_claude_sessions_start_time
+                 ON claude_sessions (start_time DESC);
              PRAGMA user_version = 10;",
         )?;
     } else if version != 0 && version != EXPECTED_VERSION {
