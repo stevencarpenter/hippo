@@ -268,6 +268,7 @@ pub async fn flush_events(state: &Arc<DaemonState>) -> usize {
                             producer_version: envelope.producer_version,
                             timestamp: envelope.timestamp,
                             payload: EventPayload::Shell(redacted_event.clone()),
+                            probe_tag: envelope.probe_tag.clone(),
                         };
                         if let Err(fe) = storage::write_fallback_jsonl(
                             &state.config.fallback_dir(),
@@ -304,6 +305,7 @@ pub async fn flush_events(state: &Arc<DaemonState>) -> usize {
                     redacted_event.redaction_count,
                     env_snapshot_id,
                     Some(&eid),
+                    envelope.probe_tag.as_deref(),
                 ) {
                     warn!("event insert failed, falling back: {}", e);
                     let redacted_envelope = EventEnvelope {
@@ -311,6 +313,7 @@ pub async fn flush_events(state: &Arc<DaemonState>) -> usize {
                         producer_version: envelope.producer_version,
                         timestamp: envelope.timestamp,
                         payload: EventPayload::Shell(redacted_event.clone()),
+                        probe_tag: envelope.probe_tag.clone(),
                     };
                     if let Err(fe) = storage::write_fallback_jsonl(
                         &state.config.fallback_dir(),
@@ -330,6 +333,7 @@ pub async fn flush_events(state: &Arc<DaemonState>) -> usize {
                     browser_event,
                     envelope.timestamp.timestamp_millis(),
                     Some(&eid),
+                    envelope.probe_tag.as_deref(),
                 ) {
                     warn!("browser event insert failed, falling back: {}", e);
                     if let Err(fe) =
@@ -1142,6 +1146,7 @@ replacement = "[CUSTOM]"
             producer_version: 1,
             timestamp: chrono::Utc::now(),
             payload: EventPayload::Browser(Box::new(browser_event)),
+            probe_tag: None,
         };
 
         {

@@ -112,6 +112,13 @@ pub enum Commands {
         #[arg(long)]
         explain: bool,
     },
+    /// Run synthetic capture probes and record results in source_health
+    Probe {
+        /// Run only the named source probe (shell, claude-tool, claude-session, browser).
+        /// Omit to run all probes.
+        #[arg(long)]
+        source: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -172,6 +179,16 @@ pub enum SendEventSource {
         /// Captured stdout+stderr (truncated)
         #[arg(long)]
         output: Option<String>,
+        /// Probe tag UUID: marks this event as a synthetic probe.
+        /// Set to the same UUID as envelope_id. Excluded from all user queries.
+        #[arg(long)]
+        probe_tag: Option<String>,
+        /// Override source_kind (e.g. "claude-tool"). Defaults to "shell".
+        #[arg(long)]
+        source_kind: Option<String>,
+        /// Tool name for claude-tool events (e.g. "Bash").
+        #[arg(long)]
+        tool_name: Option<String>,
     },
     /// Register a SHA in the watchlist for CI tracking.
     Watchlist {

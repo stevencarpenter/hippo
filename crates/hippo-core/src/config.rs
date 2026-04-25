@@ -204,6 +204,11 @@ pub struct BrowserConfig {
     /// the brain reads it at startup via `[browser] long_dwell_bypass_ms`.
     #[serde(default = "default_long_dwell_bypass_ms")]
     pub long_dwell_bypass_ms: u64,
+    /// Domain used for synthetic browser probes. Always allowlisted by the NM host
+    /// regardless of `allowlist.domains`. Must not be a real domain that Firefox
+    /// would ever visit so probe rows cannot be confused with real visits.
+    #[serde(default = "default_probe_domain")]
+    pub probe_domain: String,
 }
 
 fn default_browser_enabled() -> bool {
@@ -227,6 +232,9 @@ fn default_browser_stale_session_secs() -> u64 {
 fn default_long_dwell_bypass_ms() -> u64 {
     120_000
 }
+fn default_probe_domain() -> String {
+    "probe.hippo.local".to_string()
+}
 
 impl Default for BrowserConfig {
     fn default() -> Self {
@@ -240,6 +248,7 @@ impl Default for BrowserConfig {
             allowlist: BrowserAllowlist::default(),
             url_redaction: BrowserUrlRedaction::default(),
             long_dwell_bypass_ms: default_long_dwell_bypass_ms(),
+            probe_domain: default_probe_domain(),
         }
     }
 }

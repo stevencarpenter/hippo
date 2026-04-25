@@ -504,9 +504,11 @@ pub fn insert_event(
         redaction_count,
         env_snapshot_id,
         None,
+        None, // probe_tag: real events never have a probe_tag
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn insert_event_at(
     conn: &Connection,
     session_id: i64,
@@ -515,6 +517,7 @@ pub fn insert_event_at(
     redaction_count: u32,
     env_snapshot_id: Option<i64>,
     envelope_id: Option<&str>,
+    probe_tag: Option<&str>,
 ) -> Result<i64> {
     let shell_str = event.shell.as_db_str();
     let (git_repo, git_branch, git_commit, git_dirty) = match &event.git_state {
@@ -550,8 +553,8 @@ pub fn insert_event_at(
     let rows = tx.execute(
         "INSERT OR IGNORE INTO events (session_id, timestamp, command, stdout, stderr, stdout_truncated, stderr_truncated,
          exit_code, duration_ms, cwd, hostname, shell, git_repo, git_branch, git_commit, git_dirty,
-         env_snapshot_id, redaction_count, envelope_id, source_kind, tool_name)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21)",
+         env_snapshot_id, redaction_count, envelope_id, source_kind, tool_name, probe_tag)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22)",
         rusqlite::params![
             session_id,
             timestamp,
@@ -574,6 +577,7 @@ pub fn insert_event_at(
             envelope_id,
             source_kind,
             event.tool_name.as_deref(),
+            probe_tag,
         ],
     )?;
     if rows == 0 {
@@ -583,11 +587,15 @@ pub fn insert_event_at(
     }
     let event_id = tx.last_insert_rowid();
 
-    // Auto-queue for enrichment (atomic with event insert — rolls back on failure)
-    tx.execute(
-        "INSERT INTO enrichment_queue (event_id) VALUES (?1)",
-        [event_id],
-    )?;
+    // Probe events are excluded from enrichment: their purpose is liveness
+    // verification, not knowledge extraction. Upstream filter is load-bearing
+    // — downstream queue joins also filter but this is the definitive gate.
+    if probe_tag.is_none() {
+        tx.execute(
+            "INSERT INTO enrichment_queue (event_id) VALUES (?1)",
+            [event_id],
+        )?;
+    }
 
     tx.commit()?;
     Ok(event_id)
@@ -598,6 +606,7 @@ pub fn insert_browser_event(
     event: &BrowserEvent,
     timestamp_ms: i64,
     envelope_id: Option<&str>,
+    probe_tag: Option<&str>,
 ) -> Result<i64> {
     // Compute content_hash from extracted_text if present
     let content_hash = event.extracted_text.as_ref().map(|text| {
@@ -615,8 +624,8 @@ pub fn insert_browser_event(
     let rows = tx.execute(
         "INSERT OR IGNORE INTO browser_events
          (timestamp, url, title, domain, dwell_ms, scroll_depth,
-          extracted_text, search_query, referrer, content_hash, envelope_id)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+          extracted_text, search_query, referrer, content_hash, envelope_id, probe_tag)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
         rusqlite::params![
             timestamp_ms,
             event.url,
@@ -629,6 +638,7 @@ pub fn insert_browser_event(
             event.referrer,
             content_hash,
             envelope_id,
+            probe_tag,
         ],
     )?;
 
@@ -640,11 +650,13 @@ pub fn insert_browser_event(
 
     let event_id = tx.last_insert_rowid();
 
-    // Auto-queue for enrichment (atomic with event insert — rolls back on failure)
-    tx.execute(
-        "INSERT INTO browser_enrichment_queue (browser_event_id) VALUES (?1)",
-        [event_id],
-    )?;
+    // Probe events are excluded from enrichment (upstream filter — see AP-6).
+    if probe_tag.is_none() {
+        tx.execute(
+            "INSERT INTO browser_enrichment_queue (browser_event_id) VALUES (?1)",
+            [event_id],
+        )?;
+    }
 
     tx.commit()?;
     Ok(event_id)
@@ -657,7 +669,7 @@ pub fn get_sessions(
 ) -> Result<Vec<crate::protocol::SessionInfo>> {
     let mut sql = String::from(
         "SELECT s.id, s.start_time, s.end_time, s.hostname, s.shell,
-                (SELECT COUNT(*) FROM events e WHERE e.session_id = s.id) as event_count,
+                (SELECT COUNT(*) FROM events e WHERE e.session_id = s.id AND e.probe_tag IS NULL) as event_count,
                 s.summary
          FROM sessions s",
     );
@@ -693,7 +705,7 @@ pub fn get_events(
 ) -> Result<Vec<crate::protocol::EventInfo>> {
     let mut sql = String::from(
         "SELECT id, session_id, timestamp, command, exit_code, duration_ms, cwd, git_branch, enriched
-         FROM events WHERE 1=1",
+         FROM events WHERE probe_tag IS NULL",
     );
     let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
     let mut idx = 1;
@@ -762,7 +774,7 @@ pub fn get_entities(
 pub fn raw_query(conn: &Connection, text: &str) -> Result<Vec<crate::protocol::QueryHit>> {
     let pattern = format!("%{}%", text);
     let mut stmt = conn.prepare(
-        "SELECT id, command, cwd, timestamp FROM events WHERE command LIKE ?1
+        "SELECT id, command, cwd, timestamp FROM events WHERE command LIKE ?1 AND probe_tag IS NULL
          ORDER BY timestamp DESC LIMIT 20",
     )?;
     let rows = stmt.query_map([&pattern], |row| {
@@ -788,7 +800,7 @@ pub fn get_status(conn: &Connection) -> Result<crate::protocol::StatusInfo> {
     };
 
     let events_today: u64 = conn.query_row(
-        "SELECT COUNT(*) FROM events WHERE timestamp >= ?1",
+        "SELECT COUNT(*) FROM events WHERE timestamp >= ?1 AND probe_tag IS NULL",
         [today_start],
         |row| row.get::<_, i64>(0).map(|v| v as u64),
     )?;
@@ -898,6 +910,7 @@ pub fn recover_fallback_files(
                             shell_event.redaction_count,
                             None,
                             Some(&eid),
+                            envelope.probe_tag.as_deref(),
                         ) {
                             Ok(_) => recovered += 1,
                             Err(_) => file_errors += 1,
@@ -910,6 +923,7 @@ pub fn recover_fallback_files(
                             browser_event,
                             envelope.timestamp.timestamp_millis(),
                             Some(&eid),
+                            envelope.probe_tag.as_deref(),
                         ) {
                             Ok(_) => recovered += 1,
                             Err(_) => file_errors += 1,
@@ -1692,6 +1706,7 @@ mod tests {
             0,
             None,
             Some("test-envelope-id"),
+            None,
         )
         .unwrap();
         assert!(eid > 0);
@@ -1710,6 +1725,7 @@ mod tests {
             0,
             None,
             Some("same-envelope"),
+            None,
         )
         .unwrap();
         assert!(eid1 > 0);
@@ -1723,6 +1739,7 @@ mod tests {
             0,
             None,
             Some("same-envelope"),
+            None,
         )
         .unwrap();
         assert_eq!(eid2, -1, "duplicate should return -1");
@@ -1920,7 +1937,7 @@ mod tests {
         let event = sample_browser_event();
         let timestamp_ms = chrono::Utc::now().timestamp_millis();
         let event_id =
-            insert_browser_event(&conn, &event, timestamp_ms, Some("browser-env-1")).unwrap();
+            insert_browser_event(&conn, &event, timestamp_ms, Some("browser-env-1"), None).unwrap();
         assert!(event_id > 0);
 
         // Verify it's stored in browser_events with correct fields
@@ -2003,7 +2020,8 @@ mod tests {
             content_hash: None,
         };
 
-        let id = insert_browser_event(&conn, &event, 1711900000000, Some("no-text-1")).unwrap();
+        let id =
+            insert_browser_event(&conn, &event, 1711900000000, Some("no-text-1"), None).unwrap();
         assert!(id > 0);
 
         let hash: Option<String> = conn
@@ -2037,7 +2055,7 @@ mod tests {
             content_hash: None,
         };
 
-        let id = insert_browser_event(&conn, &event, 1711900000000, None).unwrap();
+        let id = insert_browser_event(&conn, &event, 1711900000000, None, None).unwrap();
         assert!(id > 0);
     }
 
@@ -2049,14 +2067,19 @@ mod tests {
         let event = sample_browser_event();
         let timestamp_ms = chrono::Utc::now().timestamp_millis();
 
-        let eid1 =
-            insert_browser_event(&conn, &event, timestamp_ms, Some("dup-browser-env")).unwrap();
+        let eid1 = insert_browser_event(&conn, &event, timestamp_ms, Some("dup-browser-env"), None)
+            .unwrap();
         assert!(eid1 > 0);
 
         // Second insert with same envelope_id should return -1
-        let eid2 =
-            insert_browser_event(&conn, &event, timestamp_ms + 1000, Some("dup-browser-env"))
-                .unwrap();
+        let eid2 = insert_browser_event(
+            &conn,
+            &event,
+            timestamp_ms + 1000,
+            Some("dup-browser-env"),
+            None,
+        )
+        .unwrap();
         assert_eq!(eid2, -1, "duplicate envelope_id should return -1");
 
         // Only one row in browser_events

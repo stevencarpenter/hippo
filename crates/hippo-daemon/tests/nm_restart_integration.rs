@@ -56,6 +56,7 @@ fn make_browser_envelope(url: &str, ts_ms: i64) -> EventEnvelope {
             referrer: None,
             content_hash: None,
         })),
+        probe_tag: None,
     }
 }
 

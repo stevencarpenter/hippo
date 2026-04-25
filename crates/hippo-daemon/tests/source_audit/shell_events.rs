@@ -34,6 +34,9 @@ async fn shell_event_lands_in_events_table_with_source_kind_shell() {
         None,
         false,
         Some("test result: ok. 12 passed".to_string()),
+        None,
+        None,
+        None,
     )
     .await
     .expect("handle_send_event_shell should succeed when daemon is up");

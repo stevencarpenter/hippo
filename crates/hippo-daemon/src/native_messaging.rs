@@ -152,6 +152,7 @@ pub async fn run(config: &HippoConfig) -> Result<()> {
     let timeout_ms = config.daemon.socket_timeout_ms;
     let strip_params = &config.browser.url_redaction.strip_params;
     let allowed_domains = &config.browser.allowlist.domains;
+    let probe_domain = config.browser.probe_domain.to_lowercase();
     let dedup_window = config.browser.dedup_window_minutes;
 
     loop {
@@ -177,12 +178,16 @@ pub async fn run(config: &HippoConfig) -> Result<()> {
             }
         };
 
-        // Defense-in-depth: check domain allowlist
+        // Defense-in-depth: check domain allowlist.
+        // probe_domain is always allowed regardless of the allowlist so synthetic
+        // probes can route through the NM host without polluting real allowlists.
         let domain_lower = visit.domain.to_lowercase();
-        let allowed = allowed_domains.iter().any(|d| {
-            domain_lower == d.to_lowercase()
-                || domain_lower.ends_with(&format!(".{}", d.to_lowercase()))
-        });
+        let is_probe = domain_lower == probe_domain;
+        let allowed = is_probe
+            || allowed_domains.iter().any(|d| {
+                domain_lower == d.to_lowercase()
+                    || domain_lower.ends_with(&format!(".{}", d.to_lowercase()))
+            });
         if !allowed {
             debug!(domain = %visit.domain, "domain not in allowlist — dropping");
             send_response("filtered", None);
@@ -215,11 +220,20 @@ pub async fn run(config: &HippoConfig) -> Result<()> {
             content_hash: None,
         };
 
+        // Probe events (probe_domain) carry their envelope_id as probe_tag so
+        // flush_events can skip enqueueing them and all queries can exclude them.
+        let probe_tag = if is_probe {
+            Some(envelope_id.to_string())
+        } else {
+            None
+        };
+
         let envelope = EventEnvelope {
             envelope_id,
             producer_version: 1,
             timestamp,
             payload: EventPayload::Browser(Box::new(browser_event)),
+            probe_tag,
         };
 
         match send_event_fire_and_forget(&socket_path, &envelope, timeout_ms).await {

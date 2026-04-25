@@ -199,6 +199,7 @@ fn build_envelope(
         producer_version: 1,
         timestamp: pending.timestamp,
         payload: EventPayload::Shell(Box::new(event)),
+        probe_tag: None,
     }
 }
 
