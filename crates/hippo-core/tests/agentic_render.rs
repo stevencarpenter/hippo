@@ -108,7 +108,10 @@ fn claude_skill_renders_skill_field() {
 #[test]
 fn web_fetch_renders_url() {
     assert_eq!(
-        render_command("WebFetch", &json!({"url": "https://example.com/foo", "prompt": "..."})),
+        render_command(
+            "WebFetch",
+            &json!({"url": "https://example.com/foo", "prompt": "..."})
+        ),
         "fetch https://example.com/foo"
     );
 }

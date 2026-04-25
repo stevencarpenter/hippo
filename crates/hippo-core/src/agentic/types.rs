@@ -4,7 +4,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::events::{CapturedOutput, GitState};
+use crate::primitives::{CapturedOutput, GitState};
 
 /// Which coding harness produced this tool call.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -93,6 +93,19 @@ pub struct AgenticToolCall {
     pub tool_output: Option<CapturedOutput>,
     pub status: AgenticStatus,
     pub duration_ms: u64,
+    /// Wall time the tool actually started. **Distinct from**
+    /// `EventEnvelope.timestamp`, which is producer ingest time.
+    ///
+    /// They diverge for batch backfills: a Codex JSONL ingester reading a
+    /// session from three days ago emits an envelope with `timestamp = now()`
+    /// (when the daemon read the rollout) but `started_at = <three days ago>`
+    /// (when the tool ran). For the live pollers (Claude session tail,
+    /// opencode SQLite poller), the two are very close but not asserted equal —
+    /// queueing latency between source and daemon can introduce sub-second skew.
+    ///
+    /// Downstream consumers should use `started_at` for analytic time-bucketing
+    /// (when did the user run this tool?) and `EventEnvelope.timestamp` for
+    /// pipeline observability (when did hippo see it?).
     pub started_at: DateTime<Utc>,
     pub cwd: PathBuf,
     pub hostname: String,

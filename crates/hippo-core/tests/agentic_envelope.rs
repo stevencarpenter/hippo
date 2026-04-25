@@ -98,3 +98,45 @@ fn envelope_roundtrip_adjacently_tagged() {
         other => panic!("expected AgenticToolCall payload, got {:?}", other),
     }
 }
+
+#[test]
+fn started_at_can_diverge_from_envelope_timestamp() {
+    // Backfill scenario: a Codex JSONL ingester reads a session from three
+    // days ago. The envelope timestamp is "now" (when the daemon saw the
+    // rollout) but `started_at` is three days ago (when the tool ran).
+    // The contract is that the two MAY differ; analytics use `started_at`,
+    // pipeline observability uses the envelope timestamp.
+    let envelope_ts = Utc::now();
+    let tool_started_at = envelope_ts - chrono::Duration::days(3);
+
+    let mut call = sample_tool_call();
+    call.started_at = tool_started_at;
+
+    let envelope = EventEnvelope {
+        envelope_id: Uuid::new_v4(),
+        producer_version: 1,
+        timestamp: envelope_ts,
+        payload: EventPayload::AgenticToolCall(Box::new(call)),
+        probe_tag: None,
+    };
+
+    let json = serde_json::to_string(&envelope).unwrap();
+    let parsed: EventEnvelope = serde_json::from_str(&json).unwrap();
+
+    let parsed_started = match parsed.payload {
+        EventPayload::AgenticToolCall(c) => c.started_at,
+        _ => unreachable!(),
+    };
+    assert_eq!(
+        parsed_started, tool_started_at,
+        "started_at must round-trip independently of envelope.timestamp"
+    );
+    assert_eq!(
+        parsed.timestamp, envelope_ts,
+        "envelope.timestamp preserved"
+    );
+    assert!(
+        parsed.timestamp - parsed_started > chrono::Duration::hours(1),
+        "the two timestamps are independently controlled and may diverge"
+    );
+}

@@ -4,6 +4,12 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use uuid::Uuid;
 
+// `CapturedOutput` and `GitState` live in `crate::primitives` so the
+// `agentic::*` module can import them without inducing a type-graph cycle
+// with `events::*` (which exposes `EventPayload::AgenticToolCall`). Re-exported
+// here for back-compat with existing call sites.
+pub use crate::primitives::{CapturedOutput, GitState};
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EventEnvelope {
     pub envelope_id: Uuid,
@@ -55,13 +61,6 @@ pub struct ShellEvent {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CapturedOutput {
-    pub content: String,
-    pub truncated: bool,
-    pub original_bytes: usize,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ShellKind {
     Zsh,
     Bash,
@@ -79,14 +78,6 @@ impl ShellKind {
             Self::Unknown(s) => s,
         }
     }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct GitState {
-    pub repo: Option<String>,
-    pub branch: Option<String>,
-    pub commit: Option<String>,
-    pub is_dirty: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
