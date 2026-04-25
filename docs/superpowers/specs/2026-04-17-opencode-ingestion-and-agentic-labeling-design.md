@@ -1,8 +1,23 @@
 # Agentic Session Ingestion: opencode, Codex, and First-Class Harness Labeling
 
-**Date:** 2026-04-17
-**Status:** Design approved; implementation plan pending
-**Scope:** Expand Claude Code session ingestion into a general "agentic tool-call" abstraction that also covers opencode (live) and Codex (historical backfill). Add first-class fields for harness, model, provider, agent/mode, and effort.
+**Date:** 2026-04-17 (audited and updated 2026-04-25)
+**Status:** Design approved; Phase 1 partial on `agentic-ingestion` branch; plan rewrite in progress on main
+**Scope:** Expand Claude Code session ingestion into a general "agentic tool-call" abstraction that also covers opencode (live) and Codex (already on main via legacy path; rewires onto the new abstraction). Add first-class fields for harness, model, provider, agent/mode, and effort.
+
+## Audit & Update Log (2026-04-25)
+
+This spec was originally written 2026-04-17. Eight days of merges to main moved several load-bearing assumptions:
+
+- **Schema target:** spec said v5 → v6; reality is **v9 → v10** (v6 added FTS5 + sqlite-vec on knowledge_nodes; v7 added enrichment-queue cleanup; v8 added `source_health` table + `probe_tag` columns on `events`/`claude_sessions`/`browser_events`; v9 added `capture_alarms` for the watchdog). The `agentic-ingestion` branch retargeted to v6 → v7 in commit `c7b8534`; that retarget is also stale.
+- **`probe_tag` column inheritance:** synthetic-probe machinery (PR #82) put a `probe_tag TEXT` column on every event-bearing table. The renamed `agentic_sessions` table inherits it; `AgenticToolCall` events flowing through the daemon will carry probe attribution like every other source.
+- **`source_health` integration:** PR #67 added a `source_health` table pre-seeded with rows for `shell` / `claude-tool` / `claude-session` / `browser`. Doctor checks are no longer bespoke per source; they read this table for staleness. `AgenticToolCall` ingestion adds rows for opencode and (eventually) renames or retires `claude-session`/`claude-tool` once the rename lands.
+- **OTel `source` attribute (PR #66):** daemon metrics renamed `type → source` for source_health alignment. New per-harness metrics in this spec use the `source` (or `harness`) attribute name to stay consistent.
+- **Per-rule redaction attribution (PR #74):** the `REDACTIONS` counter is now per-rule. The `redaction_count` field on `AgenticToolCall` continues to hold the per-event total; per-rule attribution emerges from the redactor's metrics, not the event payload.
+- **Codex's actual state on main:** Codex is **not** "future work / batch importer" — it is **already shipping** as `brain/src/hippo_brain/codex_sessions.py` + `scripts/hippo-ingest-codex.py` + `launchd/com.hippo.xcode-codex-ingest.plist`, routed through the legacy `claude_sessions` table with provenance implicit in `source_file` paths under `~/Library/Developer/Xcode/CodingAssistant/codex/sessions/`. The migration story below has to **rewire existing Codex** onto `AgenticToolCall`, not introduce it from scratch.
+- **Phase 1 partially executed:** the `agentic-ingestion` branch contains working `agentic/{types,render,mod}.rs`, the `EventPayload::AgenticToolCall` variant, and three test files. **One commit on that branch is regressed** (`cf6d20f` was authored before `probe_tag` and `tool_name` landed on main, and removes both fields). The plan rewires the Phase 1 landing to cherry-pick the four good commits onto a fresh branch off current main and replay the regressed commit by hand.
+- **Source-audit test pattern:** `crates/hippo-daemon/tests/source_audit/{shell_events,claude_tool_events,browser_events}.rs` is now the canonical integration-test shape per source. New ingesters add a matching `agentic_tool_calls.rs` (or per-harness file) here.
+- **Watchdog `capture_alarms`:** v9 added the table; invariants are feature-flagged off today. Out of scope for v1; future work line item.
+- **Version baseline:** current is v0.16.0; rollout lands on top.
 
 ## Motivation
 
@@ -157,16 +172,23 @@ poll_interval_ms = 1000
 
 Defaults: `enabled = false` (opt-in for now), standard XDG path.
 
-## Source 2: Codex (historical batch ingestion only)
+## Source 2: Codex (already on main; rewire onto AgenticToolCall)
 
-Codex ingestion is **batch-only** — the user has cancelled their Codex subscription, so there are no live sessions to tail. Future live support can reuse the same importer with a tailing wrapper if reactivated.
+**Current state on main:** Codex is already ingesting via `brain/src/hippo_brain/codex_sessions.py` + `scripts/hippo-ingest-codex.py` + `launchd/com.hippo.xcode-codex-ingest.plist` (5-min `StartInterval` + `WatchPaths` polling). It writes into the `claude_sessions` table with provenance implicit in `source_file` paths under `~/Library/Developer/Xcode/CodingAssistant/codex/sessions/`. The brain-side enrichment summary builder (`build_codex_enrichment_summary`) is selected via the in-memory `SessionSegment.source` discriminator (see `brain/src/hippo_brain/claude_sessions.py:435`), but the discriminator is not persisted today.
 
-### Storage layout
+**The work here is rewire, not introduce.** Three concrete changes:
 
-- `~/.codex/archived_sessions/rollout-<ISO>-<uuid>.jsonl` — completed sessions.
-- `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl` — live sessions (not tailed here).
+1. **Daemon emit path:** today the Python ingester writes directly to SQLite via `claude_sessions.insert_segment(...)`. After v9→v10, the same path emits one `EventPayload::AgenticToolCall` per `function_call`/`custom_tool_call` (matching the spec's "Codex importer" description) AND maintains an `agentic_sessions` segment row (so existing `hippo ask` retrieval keeps working). Phased: per-call events first; segment-row writes continue unchanged.
+2. **Schema migration backfills `harness = 'codex'`** for existing rows with `source_file LIKE '%/CodingAssistant/codex/sessions/%'` (see migration SQL above). No data loss; the discriminator becomes durable.
+3. **Source naming:** the existing `xcode-codex-ingest` launchd plist label stays as-is (don't break `launchctl` semantics during a schema change). Doctor checks read `source_health.source = 'agentic-session-codex'` for staleness.
 
-Both paths are scanned; all discovered JSONL files are treated as historical.
+**Storage layout (unchanged):**
+
+- `~/Library/Developer/Xcode/CodingAssistant/codex/sessions/YYYY/MM/DD/rollout-*.jsonl` — Xcode Codex (currently capturing).
+- `~/.codex/archived_sessions/rollout-<ISO>-<uuid>.jsonl` — Codex CLI archived (not currently captured; included for completeness if reactivated).
+- `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl` — Codex CLI live (not currently captured).
+
+Both `~/.codex` paths are referenced in the importer code path but not actively used; they're retained because the JSONL format is identical and a future enable is a config change, not a code change.
 
 ### JSONL entry shape (`response_item` types)
 
@@ -238,12 +260,19 @@ Rendering logic (`format_tool_command`) is extracted into a shared module `crate
 
 ## Brain / Enrichment Changes
 
-### Schema migration v5 → v6
+### Schema migration v9 → v10
 
-(The current schema is already at v5 — v5 added GitHub Actions / lessons tables. The agentic work is v5 → v6. The migration helper lives in `crates/hippo-core/src/storage.rs` next to the existing v4→v5 block.)
+Current schema is at v9 (capture_alarms / watchdog, feature-flagged). The agentic work is **v9 → v10**. The migration helper lives in `crates/hippo-core/src/storage.rs` next to the existing per-version blocks (v4→v5 through v8→v9).
+
+`claude_sessions` already carries a `probe_tag TEXT` column from v8; the rename preserves it on `agentic_sessions`. `source_health` already has rows for `shell`/`claude-tool`/`claude-session`/`browser`; the migration adds `opencode` and renames `claude-session` → `agentic-session-claude` (or keeps both during a deprecation window — see "Source naming during migration" below).
 
 ```sql
--- Rename Claude-specific tables to harness-agnostic
+-- Rename Claude-specific tables to harness-agnostic.
+-- claude_sessions already has columns: id, session_id, project_dir, cwd,
+-- git_branch, segment_index, start_time, end_time, summary_text,
+-- tool_calls_json, user_prompts_json, message_count, token_count, source_file,
+-- is_subagent, parent_session_id, enriched, probe_tag, created_at.
+-- All carried through unchanged.
 ALTER TABLE claude_sessions RENAME TO agentic_sessions;
 ALTER TABLE claude_enrichment_queue RENAME TO agentic_enrichment_queue;
 ALTER TABLE knowledge_node_claude_sessions RENAME TO knowledge_node_agentic_sessions;
@@ -252,7 +281,19 @@ ALTER TABLE knowledge_node_agentic_sessions
 ALTER TABLE agentic_enrichment_queue
     RENAME COLUMN claude_session_id TO agentic_session_id;
 
--- Add harness-labeling columns
+-- Recreate the indexes from v8 under their new names. SQLite does not
+-- automatically rename indexes during ALTER TABLE RENAME (it preserves the
+-- index DEFINITION but the index name remains the old one), so we drop and
+-- recreate explicitly to keep schema.sql / sqlite_master tidy.
+DROP INDEX IF EXISTS idx_claude_sessions_cwd;
+DROP INDEX IF EXISTS idx_claude_sessions_session;
+DROP INDEX IF EXISTS idx_claude_queue_pending;
+CREATE INDEX idx_agentic_sessions_cwd     ON agentic_sessions (cwd);
+CREATE INDEX idx_agentic_sessions_session ON agentic_sessions (session_id);
+CREATE INDEX idx_agentic_queue_pending    ON agentic_enrichment_queue (status, priority)
+    WHERE status = 'pending';
+
+-- Add harness-labeling columns (all nullable except harness, which defaults).
 ALTER TABLE agentic_sessions ADD COLUMN harness TEXT NOT NULL DEFAULT 'claude-code';
 ALTER TABLE agentic_sessions ADD COLUMN harness_version TEXT;
 ALTER TABLE agentic_sessions ADD COLUMN model TEXT;
@@ -269,29 +310,62 @@ ALTER TABLE agentic_sessions ADD COLUMN cost_usd REAL;
 CREATE INDEX idx_agentic_sessions_harness ON agentic_sessions (harness);
 CREATE INDEX idx_agentic_sessions_model ON agentic_sessions (model);
 
--- Cursor table for live pollers (opencode today; future live sources)
+-- Backfill harness for existing Codex rows (these are real on main today —
+-- routed through claude_sessions today with provenance implicit in source_file).
+UPDATE agentic_sessions
+SET harness = 'codex'
+WHERE harness = 'claude-code'
+  AND source_file LIKE '%/CodingAssistant/codex/sessions/%';
+
+-- Cursor table for live pollers (opencode today; future live sources).
 CREATE TABLE agentic_cursor (
-    harness          TEXT NOT NULL,
-    source_key       TEXT NOT NULL,  -- inode or canonical path for rename-safety
+    harness           TEXT NOT NULL,
+    source_key        TEXT NOT NULL,  -- inode or canonical path for rename-safety
     last_time_created INTEGER NOT NULL,
-    last_id          TEXT NOT NULL,
-    updated_at       INTEGER NOT NULL,
+    last_id           TEXT NOT NULL,
+    updated_at        INTEGER NOT NULL,
     PRIMARY KEY (harness, source_key)
 );
 
-PRAGMA user_version = 6;
+-- Update source_health rows. Two grains per agentic source: per-call (events
+-- table; source_kind = '<harness>-tool') and per-segment (agentic_sessions).
+-- Existing rows: 'shell', 'claude-tool', 'claude-session', 'browser'.
+-- - Rename 'claude-session' → 'agentic-session-claude' (harness-aware naming).
+-- - Keep 'claude-tool' (the per-call events row stays under that name; the
+--   row's events come from EventPayload::AgenticToolCall after Phase 4 but
+--   the source_kind stays 'claude-tool' for dashboard continuity).
+-- - Add new rows for opencode (both grains) and codex (segment grain only;
+--   per-call events for codex are future work).
+INSERT OR IGNORE INTO source_health (source, last_event_ts, updated_at) VALUES
+    ('opencode-tool',            NULL, unixepoch('now') * 1000),
+    ('agentic-session-opencode', NULL, unixepoch('now') * 1000),
+    ('agentic-session-codex',
+     (SELECT MAX(start_time) FROM agentic_sessions WHERE harness = 'codex'),
+     unixepoch('now') * 1000);
+
+UPDATE source_health
+SET source = 'agentic-session-claude'
+WHERE source = 'claude-session';
+
+PRAGMA user_version = 10;
 ```
 
-Existing rows get `harness = 'claude-code'` (the default), `model`/`provider`/etc. null — they can be backfilled by a separate one-shot re-parse of the source JSONLs if desired, but that is not required for this spec.
+**Backfill semantics:** existing rows that do NOT match the Codex-path filter retain `harness = 'claude-code'` (the column default). `model`/`provider`/etc. remain NULL on backfilled rows — populating them requires re-parsing the original JSONLs, which is a separate one-shot job and not required for this spec. Backfilled NULL `model` columns are excluded from `model`-filtered MCP queries (filter applies `WHERE model = ? AND model IS NOT NULL`).
+
+**Source naming during migration:** the v8-seeded `source_health` row `claude-session` is renamed in-place to `agentic-session-claude`. Daemon code that previously wrote `source = 'claude-session'` updates in lock-step (search/replace + tests). The grace-period alternative (insert new row, leave old in place, write to both for one release) is not used — the rename is atomic per migration step and there's no external consumer reading these rows.
+
+**`probe_tag` carries through:** `claude_sessions.probe_tag` is preserved by the table rename (it's a column on the renamed table). New ingesters write `NULL` for real captures and the synthetic-probe envelope's UUID for probe rows, matching the existing convention on `events` / `browser_events`.
 
 ### Brain-side module reorg
 
-- `brain/src/hippo_brain/claude_sessions.py` → `agentic_sessions.py`.
-- `iter_session_files(...)` grows a dispatcher. Per-harness readers:
-  - Claude: existing JSONL walker (unchanged logic, returns segments tagged `harness='claude-code'`).
-  - opencode: new SQLite reader that groups `part` rows by `message_id` → `SessionSegment` with same shape (segmentation by 5-min gap rule applies uniformly).
-  - Codex: new JSONL reader for `~/.codex/archived_sessions` + `~/.codex/sessions/**`.
-- `SessionSegment` gains `harness`, `harness_version`, `model`, `provider`, `agent`, `effort` fields (all optional except `harness`).
+- `brain/src/hippo_brain/claude_sessions.py` → `agentic_sessions.py`. Existing in-tree imports update; `claude_sessions` shim is **not** kept (per repo convention against compat shims).
+- `brain/src/hippo_brain/codex_sessions.py` stays as `codex_sessions.py` (it's already a per-harness reader; no rename needed). `build_codex_enrichment_summary` is reused by the dispatcher.
+- `iter_session_files(...)` becomes `iter_agentic_segments(harness=...)` — a dispatcher that picks a reader by harness:
+  - **Claude:** existing JSONL walker (unchanged logic, segments tagged `harness='claude-code'`).
+  - **opencode:** new SQLite reader (`opencode_sessions.py`) that walks `session`/`message`/`part` from `~/.local/share/opencode/opencode.db`. Segmentation by 5-min user-prompt gap rule applies uniformly. Cursor lives in `agentic_cursor` (NOT `ingestion_state` — `ingestion_state` is for the daemon's coarse per-source watermarks; `agentic_cursor` is per-source-key for tie-breaking on `(time_created, id)`).
+  - **Codex:** existing JSONL walker (`codex_sessions.py`); reads `~/Library/Developer/Xcode/CodingAssistant/codex/sessions/**/rollout-*.jsonl` plus the unused-but-allowed `~/.codex/archived_sessions/`.
+- `SessionSegment` gains `harness`, `harness_version`, `model`, `provider`, `agent`, `effort`, `tokens_*`, `cost_usd` fields (all optional except `harness`, which defaults to `'claude-code'` for the unspecified case).
+- `brain/src/hippo_brain/schema_version.py`: bump `EXPECTED_SCHEMA_VERSION` to `10`; expand `ACCEPTED_READ_VERSIONS` (currently `{9, 8, 7, 6, 5}`) to include `10`. Whether to drop `5` (which requires `migrate-v5-to-v6.py` to read) is a separate cleanup question outside this spec.
 
 ### Enrichment prompt change
 
@@ -313,7 +387,9 @@ All new `AgenticToolCall` events flow through the existing redactor pipeline. Re
 - `tool_input` (recursively over string leaves — new helper in redactor, since existing one is string-only)
 - `tool_output.content`
 
-`redaction_count` is summed across all three and reported in the event.
+`redaction_count` is summed across all three and reported in the event payload (one number, total hits across the three targets).
+
+**Per-rule attribution (PR #74) is orthogonal:** the redactor already emits a per-rule counter via the `REDACTIONS{rule}` metric on the daemon. `AgenticToolCall` does not duplicate per-rule attribution into the event payload (the metric pipeline is the source of truth for which rules fired). The event-level `redaction_count` is a totals-only field for in-row debuggability and for the source-audit tests' assertion that no PII slips through unredacted.
 
 ## Testing
 
@@ -336,8 +412,9 @@ All new `AgenticToolCall` events flow through the existing redactor pipeline. Re
   - `deterministic_session_uuid_from_opencode_id` — v5 UUID stable across runs.
 - **`crates/hippo-daemon/src/codex_session.rs` unit tests:** port of the existing Claude test cases (`format_tool_command`, pairing, orphans, truncation, deterministic envelope IDs, malformed JSON, missing `session_meta`) against codex JSONL fixtures.
 - **`crates/hippo-daemon/src/claude_session.rs` existing tests:** updated to assert `AgenticToolCall` output instead of `ShellEvent`.
-- **`crates/hippo-core/src/agentic/render.rs` unit tests:** one per tool_name renderer (Bash, Read, Edit, Write, Grep, Glob, Agent, TaskCreate, TaskUpdate, exec_command, skill, unknown fallback).
-- **Migration golden test** (`crates/hippo-core/tests/schema_v6_migration.rs`): programmatically build a v4-shaped DB with a known `claude_sessions` row + related queue row + FK link, run the migration, assert (a) all data preserved, (b) `harness='claude-code'` default applied, (c) schema matches v6 spec, (d) `PRAGMA user_version = 6`.
+- **`crates/hippo-core/src/agentic/render.rs` unit tests:** one per tool_name renderer (Bash, Read, Edit, Write, Grep, Glob, Agent, TaskCreate, TaskUpdate, exec_command, skill, unknown fallback). Already on `agentic-ingestion` branch; cherry-picks into the fresh branch.
+- **Source-audit integration test** (`crates/hippo-daemon/tests/source_audit/agentic_tool_calls.rs`): matches the existing `shell_events.rs` / `claude_tool_events.rs` / `browser_events.rs` pattern. End-to-end: emit a fixture `AgenticToolCall`, assert (a) row inserted into `agentic_sessions`, (b) `harness` populated, (c) `probe_tag IS NULL` on real captures, (d) `redaction_count` non-zero for events containing seeded secrets, (e) `source_health` row updated.
+- **Migration golden test** (`crates/hippo-core/tests/schema_v10_migration.rs`): programmatically build a v9-shaped DB with a known `claude_sessions` row (one Claude path, one Codex `~/Library/Developer/Xcode/CodingAssistant/codex/sessions/...` path), `claude_enrichment_queue` row, `knowledge_node_claude_sessions` link, `source_health` rows for `claude-session`/`browser`, and a `probe_tag` value on one row. Run migration, assert: (a) all data preserved, (b) `harness='claude-code'` on the Claude row, `harness='codex'` on the Codex row (backfill), (c) `probe_tag` survives the rename, (d) `source_health` row renamed to `agentic-session-claude` and new `agentic-session-opencode`/`agentic-session-codex` rows present, (e) all renamed indexes match the new schema, (f) `PRAGMA user_version = 10`.
 
 ### Python tests
 
@@ -357,11 +434,15 @@ All new `AgenticToolCall` events flow through the existing redactor pipeline. Re
 
 ## Observability
 
-- New metrics (all gated behind the existing OTel env flag):
+- **New OTel metrics** (gated behind the existing OTel env flag; attribute name is `harness` to align with the schema column, not `source` — see naming note below):
   - `hippo_agentic_events_emitted_total{harness}` counter
   - `hippo_agentic_poller_ticks_total{harness,outcome}` (outcome: `no_change`, `rows_read`, `error`)
   - `hippo_agentic_backfill_files_total{harness}` counter (Codex importer)
-- `hippo doctor` gains a check per active agentic harness: does the DB/dir exist, is the cursor reasonable, is ingestion enabled.
+- **Attribute naming:** PR #66 renamed daemon-level `type → source` for source_health alignment. The `harness` attribute on the new metrics is a *finer-grained* label than `source` (one `source` row in `source_health` corresponds to one harness via the `agentic-session-<harness>` naming). Where a metric needs both, emit `source = "agentic-session-opencode"` plus `harness = "opencode"`.
+- **`hippo doctor` integration** lands via `source_health` rather than bespoke per-source code:
+  - Each harness has a `source_health` row (`agentic-session-claude` / `agentic-session-opencode` / `agentic-session-codex`).
+  - The existing P0.3 staleness / fail-count check (PR #70) covers all three uniformly. No new doctor check code per harness — only the seed rows in the migration.
+  - One-off harness-specific health (e.g., "is opencode actually installed") lives in the `probe_ok` column populated by the synthetic-probe machinery (PR #82). For opencode that means a probe that opens `opencode.db` read-only and verifies the schema hash; failed probe → `probe_ok = 0` → doctor flags it.
 
 ## Future Work
 
@@ -373,9 +454,12 @@ All new `AgenticToolCall` events flow through the existing redactor pipeline. Re
 
 ## Rollout Plan (high level, for the implementation plan step)
 
-1. Land `AgenticToolCall` type + renderer module + tests. No behavioral change yet.
-2. Land schema v6 migration + Python module rename + backwards-read-only reads still working.
-3. Migrate Claude daemon pipeline to emit `AgenticToolCall`. Verify parity on real sessions.
-4. Land opencode poller (gated `enabled = false` by default). Dogfood with opt-in.
-5. Land Codex batch importer CLI.
-6. Enable opencode by default; update `hippo doctor`; add docs.
+1. **Phase 1 — agentic types + renderer + EventPayload variant.** Cherry-pick `21c98f9`, `d332279`, `18dde05` from `agentic-ingestion` onto a fresh branch off current main. Manually replay `cf6d20f` (the events.rs change), preserving `EventEnvelope.probe_tag` (v8) and `ShellEvent.tool_name` (source-audit) which the original commit removed. Add `probe_tag: None` to the cherry-picked `agentic_envelope.rs` test fixture. Verify with `cargo test -p hippo-core` + `cargo clippy --all-targets -- -D warnings`. No behavioral change yet — types only.
+2. **Phase 2 — schema v9 → v10 migration.** Rename tables / indexes; add harness-labeling columns; backfill `harness = 'codex'` from `source_file` paths; create `agentic_cursor`; rename `source_health` row + add new ones; bump `EXPECTED_SCHEMA_VERSION` and `ACCEPTED_READ_VERSIONS` in Rust + Python. Land migration golden test (`schema_v10_migration.rs`).
+3. **Phase 3 — Brain module rename + reader dispatcher.** Move `claude_sessions.py` → `agentic_sessions.py`; introduce `iter_agentic_segments(harness=...)` dispatcher; `SessionSegment` gains harness-labeling fields; `codex_sessions.py` reader is wrapped by the dispatcher; existing Claude + Codex enrichment paths continue to work end-to-end at this stage.
+4. **Phase 4 — Daemon Claude path migrates to `AgenticToolCall`.** `process_line` in `claude_session.rs` emits `EventPayload::AgenticToolCall` instead of `EventPayload::Shell { ShellKind::Unknown("claude-code") }`. Source-audit test added (`tests/source_audit/agentic_tool_calls.rs`). Existing `claude-tool` ShellEvents stop being emitted; the daemon's source attribution moves to `agentic-session-claude`.
+5. **Phase 5 — opencode live poller** (`crates/hippo-daemon/src/opencode_session.rs`). Daemon background task; `PRAGMA data_version` gating; cursor in `agentic_cursor`; redaction; `source_health` write-paths; config `[opencode] enabled` (defaults true on personal-mac install, but no-op if `~/.local/share/opencode/opencode.db` doesn't exist). Synthetic-probe support in `crates/hippo-daemon/src/probe.rs` so `hippo doctor` can flag a missing or unreadable opencode DB.
+6. **Phase 6 — Codex rewire.** Existing `codex_sessions.py` + ingestion script + launchd plist stay (don't break running deployments). The brain reader is moved under the dispatcher and now emits `harness='codex'` on segments; the Rust daemon does NOT yet emit per-call `AgenticToolCall` events for Codex (that's a future-work line item — JSONL-based Codex still goes through the Python segment writer).
+7. **Phase 7 — final wiring.** Enrichment-prompt harness context line; MCP `harness` / `model` filter parameters; metrics emission; docs (CLAUDE.md, `docs/`); `hippo doctor` smoke against the new `source_health` rows.
+
+**Cleanup of `agentic-ingestion` branch:** kept until the new branch merges. After merge, `git branch -d agentic-ingestion` removes the local; the GitHub branch (if any) gets deleted via the PR-merge UI. Open PRs from the old branch are closed without merging in favor of the fresh branch.
