@@ -856,7 +856,7 @@ fn insert_segments(conn: &Connection, segments: &[SessionSegment]) -> Result<(us
             serde_json::to_string(&seg.user_prompts).unwrap_or_else(|_| "[]".into());
         let is_subagent_int: i64 = if seg.is_subagent { 1 } else { 0 };
 
-        let res = conn.execute(
+        match conn.execute(
             "INSERT OR IGNORE INTO claude_sessions
                 (session_id, project_dir, cwd, git_branch, segment_index,
                  start_time, end_time, summary_text, tool_calls_json,
@@ -881,24 +881,45 @@ fn insert_segments(conn: &Connection, segments: &[SessionSegment]) -> Result<(us
                 seg.parent_session_id,
                 now_ms,
             ],
-        )?;
+        )? {
+            0 => {
+                // UNIQUE (session_id, segment_index) collided — already ingested.
+                skipped += 1;
+                continue;
+            }
+            _ => {
+                let claude_session_id = conn.last_insert_rowid();
+                // Enqueue for enrichment. OR IGNORE so a replay doesn't trip the
+                // UNIQUE (claude_session_id) constraint — belt-and-suspenders since
+                // the parent INSERT was also OR IGNORE.
+                conn.execute(
+                    "INSERT OR IGNORE INTO claude_enrichment_queue (claude_session_id, created_at)
+                     VALUES (?1, ?2)",
+                    params![claude_session_id, now_ms],
+                )?;
 
-        if res == 0 {
-            // UNIQUE (session_id, segment_index) collided — already ingested.
-            skipped += 1;
-            continue;
+                // Update source_health for claude-session on success.
+                let seg_ts = seg.end_time;
+                match conn.execute(
+                    "UPDATE source_health
+                     SET last_event_ts        = MAX(COALESCE(last_event_ts, 0), ?1),
+                         last_success_ts      = ?2,
+                         events_last_1h       = events_last_1h + 1,
+                         events_last_24h      = events_last_24h + 1,
+                         consecutive_failures = 0,
+                         updated_at           = ?2
+                     WHERE source = 'claude-session'",
+                    rusqlite::params![seg_ts, now_ms],
+                ) {
+                    Err(e) if !crate::is_missing_source_health_table_error(&e) => {
+                        warn!("source_health session update failed: {e}");
+                    }
+                    _ => {}
+                }
+
+                inserted += 1;
+            }
         }
-
-        let claude_session_id = conn.last_insert_rowid();
-        // Enqueue for enrichment. OR IGNORE so a replay doesn't trip the
-        // UNIQUE (claude_session_id) constraint — belt-and-suspenders since
-        // the parent INSERT was also OR IGNORE.
-        conn.execute(
-            "INSERT OR IGNORE INTO claude_enrichment_queue (claude_session_id, created_at)
-             VALUES (?1, ?2)",
-            params![claude_session_id, now_ms],
-        )?;
-        inserted += 1;
     }
 
     Ok((inserted, skipped))

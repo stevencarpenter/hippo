@@ -456,7 +456,7 @@ pub struct WatchdogConfig {
 }
 
 fn default_watchdog_enabled() -> bool {
-    false
+    true
 }
 fn default_alarm_rate_limit_minutes() -> u64 {
     60
