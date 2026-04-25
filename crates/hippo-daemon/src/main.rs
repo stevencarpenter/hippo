@@ -8,8 +8,8 @@ use std::path::PathBuf;
 use anyhow::{Context, Result};
 use clap::Parser;
 use cli::{
-    BrainAction, Cli, Commands, ConfigAction, DaemonAction, IngestSource, RedactAction,
-    SendEventSource, WatchdogAction,
+    AlarmsAction, BrainAction, Cli, Commands, ConfigAction, DaemonAction, IngestSource,
+    RedactAction, SendEventSource, WatchdogAction,
 };
 use hippo_core::config::HippoConfig;
 use hippo_daemon::probe;
@@ -239,6 +239,7 @@ async fn main() -> Result<()> {
                     .join("Library/LaunchAgents");
                 let daemon_was_loaded = install::service_is_loaded("com.hippo.daemon");
                 let brain_was_loaded = install::service_is_loaded("com.hippo.brain");
+                let watchdog_was_loaded = install::service_is_loaded("com.hippo.watchdog");
 
                 if brain_was_loaded {
                     print!("  Draining brain (waiting for in-flight requests)");
@@ -262,9 +263,17 @@ async fn main() -> Result<()> {
                     );
                     println!("  Stopped daemon");
                 }
+                if watchdog_was_loaded {
+                    install::service_bootout(
+                        &domain,
+                        &launch_agents.join("com.hippo.watchdog.plist"),
+                    );
+                    println!("  Stopped watchdog");
+                }
 
                 let daemon_template = include_str!("../../../launchd/com.hippo.daemon.plist");
                 let brain_template = include_str!("../../../launchd/com.hippo.brain.plist");
+                let watchdog_template = include_str!("../../../launchd/com.hippo.watchdog.plist");
                 let gh_poll_template = include_str!("../../../launchd/com.hippo.gh-poll.plist");
                 let probe_template = include_str!("../../../launchd/com.hippo.probe.plist");
                 let xcode_claude_template =
@@ -275,6 +284,7 @@ async fn main() -> Result<()> {
                 install::install_plist("com.hippo.daemon", daemon_template, &vars, force)?;
                 install::install_plist("com.hippo.brain", brain_template, &vars, force)?;
                 install::install_plist("com.hippo.probe", probe_template, &vars, force)?;
+                install::install_plist("com.hippo.watchdog", watchdog_template, &vars, force)?;
                 install::install_plist(
                     "com.hippo.xcode-claude-ingest",
                     xcode_claude_template,
@@ -353,7 +363,7 @@ async fn main() -> Result<()> {
                 }
 
                 // Reload services that were running before the upgrade.
-                if daemon_was_loaded || brain_was_loaded {
+                if daemon_was_loaded || brain_was_loaded || watchdog_was_loaded {
                     println!();
                     println!("Restarting services...");
                     if daemon_was_loaded {
@@ -370,11 +380,20 @@ async fn main() -> Result<()> {
                         )?;
                         println!("  Started brain");
                     }
+                    if watchdog_was_loaded {
+                        install::service_bootstrap(
+                            &domain,
+                            &launch_agents.join("com.hippo.watchdog.plist"),
+                        )?;
+                        println!("  Started watchdog");
+                    }
                 }
 
                 // Only print "Load with:" for services that weren't already cycled.
-                let needs_manual_start =
-                    !daemon_was_loaded || !brain_was_loaded || gh_poll_installed;
+                let needs_manual_start = !daemon_was_loaded
+                    || !brain_was_loaded
+                    || !watchdog_was_loaded
+                    || gh_poll_installed;
                 if needs_manual_start {
                     println!();
                     println!("Load with:");
@@ -386,6 +405,11 @@ async fn main() -> Result<()> {
                     if !brain_was_loaded {
                         println!(
                             "  launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.hippo.brain.plist"
+                        );
+                    }
+                    if !watchdog_was_loaded {
+                        println!(
+                            "  launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.hippo.watchdog.plist"
                         );
                     }
                     if gh_poll_installed {
@@ -867,6 +891,17 @@ async fn main() -> Result<()> {
                 } else {
                     hippo_daemon::watchdog::run(&config)?;
                 }
+            }
+        },
+        Commands::Alarms { action } => match action {
+            AlarmsAction::List => {
+                let has_alarms = commands::handle_alarms_list(&config)?;
+                if has_alarms {
+                    std::process::exit(1);
+                }
+            }
+            AlarmsAction::Ack { id, note } => {
+                commands::handle_alarms_ack(&config, id, note.as_deref())?;
             }
         },
     }
