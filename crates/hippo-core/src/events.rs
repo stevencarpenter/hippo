@@ -26,6 +26,7 @@ pub enum EventPayload {
     FsChange(FsChangeEvent),
     IdeAction(IdeActionEvent),
     Browser(Box<BrowserEvent>),
+    AgenticToolCall(Box<crate::agentic::AgenticToolCall>),
     Raw(serde_json::Value),
 }
 
