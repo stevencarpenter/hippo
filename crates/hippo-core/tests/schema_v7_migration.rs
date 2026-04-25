@@ -131,7 +131,7 @@ fn existing_v6_rows_default_to_source_kind_shell() {
 }
 
 #[test]
-fn fresh_db_has_v8() {
+fn fresh_db_has_v9() {
     let tmp = TempDir::new().unwrap();
     let db = tmp.path().join("hippo.db");
     let conn = open_db(&db).unwrap();

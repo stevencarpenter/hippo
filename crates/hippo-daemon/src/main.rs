@@ -848,7 +848,13 @@ async fn main() -> Result<()> {
         }
         Commands::Watchdog { action } => match action {
             WatchdogAction::Run => {
-                hippo_daemon::watchdog::run(&config)?;
+                if !config.watchdog.enabled {
+                    eprintln!(
+                        "hippo watchdog: disabled (set watchdog.enabled = true in config to enable)"
+                    );
+                } else {
+                    hippo_daemon::watchdog::run(&config)?;
+                }
             }
         },
     }

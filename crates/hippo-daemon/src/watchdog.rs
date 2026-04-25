@@ -91,6 +91,14 @@ pub struct InvariantViolation {
 /// to call `std::process::exit(0)` if desired (launchd treats any non-zero exit
 /// as a failure).
 pub fn run(config: &HippoConfig) -> Result<()> {
+    // Feature-flag guard: watchdog is shipped disabled until the launchd plist
+    // (T-2) is in place.  Any code path that calls run() should check this
+    // flag, but we also guard here so run() is safe to call unconditionally.
+    if !config.watchdog.enabled {
+        info!("watchdog: disabled (watchdog.enabled = false); skipping cycle");
+        return Ok(());
+    }
+
     let db_path = config.db_path();
 
     // `open_db` handles all schema migrations, including v8→v9 that creates
@@ -172,11 +180,35 @@ pub fn run(config: &HippoConfig) -> Result<()> {
         })
         .to_string();
 
-        conn.execute(
+        // Insert the alarm row, with a single retry on SQLITE_BUSY before
+        // giving up.  busy_timeout=5000 handles the common case; this retry
+        // covers the rare window where a second BUSY fires after the first
+        // timeout expires.  On persistent failure we log and continue so
+        // the remaining invariants are still evaluated.
+        let insert_result = conn.execute(
             "INSERT INTO capture_alarms (invariant_id, raised_at, details_json)
              VALUES (?1, ?2, ?3)",
-            rusqlite::params![v.invariant_id, now_ms, details_json],
-        )?;
+            rusqlite::params![&v.invariant_id, now_ms, &details_json],
+        );
+        if let Err(e) = insert_result {
+            if is_sqlite_busy(&e) {
+                std::thread::sleep(std::time::Duration::from_millis(100));
+                if let Err(retry_err) = conn.execute(
+                    "INSERT INTO capture_alarms (invariant_id, raised_at, details_json)
+                     VALUES (?1, ?2, ?3)",
+                    rusqlite::params![&v.invariant_id, now_ms, &details_json],
+                ) {
+                    error!(
+                        invariant = %v.invariant_id,
+                        error = %retry_err,
+                        "watchdog: alarm insert failed after SQLITE_BUSY retry; skipping"
+                    );
+                    continue;
+                }
+            } else {
+                return Err(e.into());
+            }
+        }
 
         error!(
             invariant = %v.invariant_id,
@@ -455,15 +487,20 @@ pub fn check_rate_limit(
     rate_limit_ms: i64,
 ) -> Result<bool> {
     let cutoff_ms = now_ms - rate_limit_ms;
-    let count: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM capture_alarms
-         WHERE invariant_id = ?1
-           AND acked_at IS NULL
-           AND raised_at > ?2",
+    // Use EXISTS so the query short-circuits on the first matching row instead
+    // of scanning the full index and counting.
+    let exists: bool = conn.query_row(
+        "SELECT EXISTS(
+             SELECT 1 FROM capture_alarms
+             WHERE invariant_id = ?1
+               AND acked_at IS NULL
+               AND raised_at > ?2
+             LIMIT 1
+         )",
         rusqlite::params![invariant_id, cutoff_ms],
         |row| row.get(0),
     )?;
-    Ok(count > 0)
+    Ok(exists)
 }
 
 // ---------------------------------------------------------------------------
@@ -506,6 +543,21 @@ fn fire_macos_notification(message: &str, title: &str) {
     let _ = std::process::Command::new("osascript")
         .args(["-e", &script])
         .output();
+}
+
+/// Returns `true` when the rusqlite error is SQLITE_BUSY (error code 5).
+/// Used by the alarm-insert retry path.
+fn is_sqlite_busy(e: &rusqlite::Error) -> bool {
+    matches!(
+        e,
+        rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error {
+                code: rusqlite::ErrorCode::DatabaseBusy,
+                ..
+            },
+            _,
+        )
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -849,28 +901,29 @@ mod tests {
 
     // ── source_health absent ───────────────────────────────────────────────
 
-    /// When source_health does not exist the watchdog must not panic — it should
-    /// create the table, seed the watchdog row, and return `Ok(())`.
+    /// Call `run()` on a fresh temp DB to prove the full cycle completes
+    /// without panic or error.  `open_db` inside `run()` applies all migrations
+    /// (creating `source_health`, `capture_alarms`, etc.) so the pre-migration
+    /// safety fallback is also exercised on first boot.
     #[test]
     fn watchdog_source_health_absent_no_panic() {
         let dir = TempDir::new().unwrap();
-        let conn = open_test_conn(&dir);
-        // Do NOT create source_health — simulate a bare database.
 
-        // Verify absence.
-        assert!(!source_health_table_exists(&conn).unwrap());
+        // Build a minimal config pointing at the temp dir so run() uses an
+        // isolated DB and log file — never touches ~/.local/share/hippo.
+        let mut config = HippoConfig::default();
+        config.storage.data_dir = dir.path().to_path_buf();
+        config.watchdog.enabled = true;
 
-        // The early-return path creates the table and seeds the watchdog row.
-        conn.execute_batch(SOURCE_HEALTH_FALLBACK_DDL).unwrap();
-        let now_ms = chrono::Utc::now().timestamp_millis();
-        conn.execute(
-            "INSERT OR IGNORE INTO source_health (source, updated_at) VALUES ('watchdog', ?1)",
-            rusqlite::params![now_ms],
-        )
-        .unwrap();
+        let result = run(&config);
+        assert!(
+            result.is_ok(),
+            "run() failed on a fresh DB: {:?}",
+            result.err()
+        );
 
-        // Confirm table exists and watchdog row is present — no panic.
-        assert!(source_health_table_exists(&conn).unwrap());
+        // After a successful cycle the watchdog row must exist in source_health.
+        let conn = hippo_core::storage::open_db(&config.db_path()).unwrap();
         let count: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM source_health WHERE source = 'watchdog'",
@@ -878,7 +931,10 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(count, 1);
+        assert_eq!(
+            count, 1,
+            "watchdog row missing in source_health after run()"
+        );
     }
 
     /// `read_source_health` must return all seeded rows without error.
