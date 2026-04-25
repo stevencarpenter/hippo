@@ -33,6 +33,10 @@ pub fn render_command(tool_name: &str, input: &Value) -> String {
             str_field(input, "taskId", "?"),
             str_field(input, "status", "?")
         ),
+        // Claude emits `{"name": "Skill", "input": {"skill": "<name>"}}`.
+        "Skill" => format!("skill: {}", str_field(input, "skill", "?")),
+        // opencode emits `{"tool": "skill", "input": {"name": "<name>"}}`
+        // (verified via SQL against ~/.local/share/opencode/opencode.db).
         "skill" => format!("skill: {}", str_field(input, "name", "?")),
         other => other.to_string(),
     }

@@ -88,10 +88,20 @@ fn exec_command_renders_cmd() {
 
 #[test]
 fn skill_renders_name() {
-    // opencode shape
+    // opencode shape: {"tool": "skill", "input": {"name": "<name>"}}
     assert_eq!(
         render_command("skill", &json!({"name": "brainstorming"})),
         "skill: brainstorming"
+    );
+}
+
+#[test]
+fn claude_skill_renders_skill_field() {
+    // Claude shape: {"name": "Skill", "input": {"skill": "<name>"}}
+    // Verified against ~/.claude/projects/*.jsonl tool_use blocks.
+    assert_eq!(
+        render_command("Skill", &json!({"skill": "superpowers:brainstorming"})),
+        "skill: superpowers:brainstorming"
     );
 }
 

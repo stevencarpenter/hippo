@@ -61,6 +61,10 @@ pub struct AgenticToolCall {
     pub tool_output: Option<CapturedOutput>,
     pub status: AgenticStatus,             // Ok | Error | Orphaned
     pub duration_ms: u64,
+    pub started_at: DateTime<Utc>,         // wall time the tool ran (distinct from
+                                           // EventEnvelope.timestamp, which is the
+                                           // producer's ingest time — these differ
+                                           // for batch backfills like Codex JSONLs)
     pub cwd: PathBuf,
     pub hostname: String,
     pub git_state: Option<GitState>,
@@ -75,6 +79,14 @@ pub enum Harness {
     Codex,
     Unknown(String),
 }
+
+// Two derived strings per harness:
+//   `as_db_str()`        → "claude-code", "opencode", "codex" (agentic_sessions.harness column)
+//   `source_basename()`  → "claude",      "opencode", "codex" (source_health row composition)
+// They differ for ClaudeCode because v8 seeded source_health with `claude-tool`
+// and `claude-session`, not `claude-code-tool` / `agentic-session-claude-code`.
+// Future ingesters compose source_health row names as `agentic-session-{basename}`
+// or `{basename}-tool` via `source_basename()`.
 
 pub enum AgenticStatus { Ok, Error, Orphaned }
 
@@ -268,11 +280,11 @@ Current schema is at v9 (capture_alarms / watchdog, feature-flagged). The agenti
 
 ```sql
 -- Rename Claude-specific tables to harness-agnostic.
--- claude_sessions already has columns: id, session_id, project_dir, cwd,
--- git_branch, segment_index, start_time, end_time, summary_text,
--- tool_calls_json, user_prompts_json, message_count, token_count, source_file,
--- is_subagent, parent_session_id, enriched, probe_tag, created_at.
--- All carried through unchanged.
+-- claude_sessions already has 19 columns (verified against schema.sql v9):
+-- id, session_id, project_dir, cwd, git_branch, segment_index, start_time,
+-- end_time, summary_text, tool_calls_json, user_prompts_json, message_count,
+-- token_count, source_file, is_subagent, parent_session_id, enriched,
+-- probe_tag, created_at. All carried through unchanged by the rename.
 ALTER TABLE claude_sessions RENAME TO agentic_sessions;
 ALTER TABLE claude_enrichment_queue RENAME TO agentic_enrichment_queue;
 ALTER TABLE knowledge_node_claude_sessions RENAME TO knowledge_node_agentic_sessions;

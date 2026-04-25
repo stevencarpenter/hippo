@@ -17,10 +17,25 @@ pub enum Harness {
 }
 
 impl Harness {
-    /// Stable string form for DB storage and search filters.
+    /// Stable string form for the `agentic_sessions.harness` column and
+    /// search filters. `Unknown(String)` returns the inner string verbatim.
     pub fn as_db_str(&self) -> &str {
         match self {
             Self::ClaudeCode => "claude-code",
+            Self::Opencode => "opencode",
+            Self::Codex => "codex",
+            Self::Unknown(s) => s,
+        }
+    }
+
+    /// Short basename used for `source_health` row names: `agentic-session-<basename>`
+    /// and `<basename>-tool`. Distinct from `as_db_str()` for `ClaudeCode` because
+    /// the v8 source_health rows were seeded as `claude-tool` / `agentic-session-claude`,
+    /// not `claude-code-tool` / `agentic-session-claude-code`. Future ingesters
+    /// should compose source names via this method to avoid that footgun.
+    pub fn source_basename(&self) -> &str {
+        match self {
+            Self::ClaudeCode => "claude",
             Self::Opencode => "opencode",
             Self::Codex => "codex",
             Self::Unknown(s) => s,

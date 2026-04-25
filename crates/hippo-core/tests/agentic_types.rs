@@ -77,6 +77,16 @@ fn harness_as_db_str() {
 }
 
 #[test]
+fn harness_source_basename() {
+    // Distinct from as_db_str() for ClaudeCode: "claude-code" → "claude"
+    // because v8-seeded source_health rows are claude-tool / agentic-session-claude.
+    assert_eq!(Harness::ClaudeCode.source_basename(), "claude");
+    assert_eq!(Harness::Opencode.source_basename(), "opencode");
+    assert_eq!(Harness::Codex.source_basename(), "codex");
+    assert_eq!(Harness::Unknown("aider".into()).source_basename(), "aider");
+}
+
+#[test]
 fn status_as_db_str() {
     assert_eq!(AgenticStatus::Ok.as_db_str(), "ok");
     assert_eq!(AgenticStatus::Error.as_db_str(), "error");
