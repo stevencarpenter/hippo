@@ -50,25 +50,35 @@ uv run --project brain hippo-brain serve
 
 ## Architecture
 
-Two processes share a single SQLite database at ~/.local/share/hippo/hippo.db:
+Two long-lived processes share a single SQLite database at `~/.local/share/hippo/hippo.db`:
 
-1. hippo-daemon (Rust) - captures shell events via Unix socket, redacts secrets, writes to SQLite, serves CLI queries
-2. hippo-brain (Python) - polls enrichment queue from SQLite, calls LM Studio API, writes knowledge nodes + vector embeddings to SQLite via sqlite-vec (vec0 virtual tables + FTS5)
+1. **hippo-daemon** (Rust) — captures events via Unix socket and Native Messaging, redacts secrets, writes to SQLite, serves CLI queries
+2. **hippo-brain** (Python) — polls enrichment queues from SQLite, calls LM Studio API, writes knowledge nodes + vector embeddings to SQLite via sqlite-vec (vec0 virtual tables + FTS5)
+
+Three additional LaunchAgents support capture reliability and Claude session ingestion:
+
+3. **com.hippo.claude-session-watcher** — `notify`/FSEvents watcher on `~/.claude/projects/**/*.jsonl`; ingests Claude Code sessions into `claude_sessions` (`crates/hippo-daemon/src/watch_claude_sessions.rs`)
+4. **com.hippo.watchdog** — runs every 60 s, asserts I-1..I-10 invariants against `source_health`, writes `capture_alarms` rows on violations
+5. **com.hippo.probe** — runs every 5 min, round-trips synthetic events through each capture path, records latency in `source_health.probe_lag_ms`
 
 Communication:
 
 - Shell hook to daemon: fire-and-forget via Unix socket (length-prefixed JSON)
 - CLI to daemon: request/response via same Unix socket
-- hippo query (non-raw) to brain: HTTP request to brain local server
+- Watcher to SQLite: direct write via `claude_session::ingest_session_file` (own connection, `INSERT OR IGNORE` makes re-processing idempotent)
+- Watchdog to SQLite: direct read of `source_health`, write to `capture_alarms`; never touches the daemon socket so a wedged daemon can't silence its own alarm
+- `hippo query` (non-raw) to brain: HTTP request to brain local server
 - Brain to SQLite: direct read/write (WAL mode, busy_timeout=5000); vectors live in the same DB via sqlite-vec
+
+The capture-reliability stack (P0–P3, shipped 2026-04-24 → 2026-04-26) is documented in `docs/capture-reliability/`. The retired tmux-based session tailer and its sev1 history are archived under `docs/archive/`.
 
 ## Data Storage
 
 | Store  | Path                            | Purpose                                                              |
 |--------|---------------------------------|----------------------------------------------------------------------|
-| SQLite | `~/.local/share/hippo/hippo.db` | Events, sessions, enrichment queue, knowledge nodes, vector embeddings (sqlite-vec vec0 + FTS5) |
+| SQLite | `~/.local/share/hippo/hippo.db` | Events, sessions, enrichment queue, knowledge nodes, vector embeddings, source health, capture alarms (sqlite-vec vec0 + FTS5) |
 | Config | `~/.config/hippo/config.toml`   | User configuration                                                   |
-| Logs   | `~/.local/share/hippo/*.log`    | Daemon and brain logs                                                |
+| Logs   | `~/.local/share/hippo/*.log`    | Daemon, brain, watcher, watchdog, and probe logs (7-day rotation via tracing-appender) |
 
 ## Style
 

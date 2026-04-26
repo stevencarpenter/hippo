@@ -433,6 +433,9 @@ pub fn open_db(path: &Path) -> Result<Connection> {
                 size_at_last_read INTEGER NOT NULL DEFAULT 0,
                 updated_at        INTEGER NOT NULL
              ) STRICT;
+             -- claude_session_parity: unused since T-8 (PR #89). Kept here so
+             -- v9→v10 migrations on existing DBs land at the same schema as
+             -- fresh installs (see schema.sql for the matching note).
              CREATE TABLE IF NOT EXISTS claude_session_parity (
                 id             INTEGER PRIMARY KEY AUTOINCREMENT,
                 path           TEXT    NOT NULL,

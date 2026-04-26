@@ -1,5 +1,7 @@
 # Watchdog Process
 
+> **Status: shipped.** Core in T-1 / PR #79; launchd plist + `hippo alarms` CLI in T-2 / PR #83. This doc is the live reference for the watchdog's process model, plist, and the `capture_alarms` schema.
+
 **TL;DR:** A short-lived launchd agent (`com.hippo.watchdog`) runs every 60 seconds, asserts invariants I-1..I-10 against `source_health`, and writes structured alarms to a new `capture_alarms` table when violations are detected. A wedged daemon cannot silence its own alarm because the watchdog is an independent process under a separate launchd job.
 
 ## Process Model

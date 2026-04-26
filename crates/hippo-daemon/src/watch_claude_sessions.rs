@@ -508,9 +508,7 @@ mod tests {
             + "\n";
         std::fs::write(&jsonl_path, &content).unwrap();
 
-        let mut state = FileState {
-            ..Default::default()
-        };
+        let mut state = FileState::default();
         let inserted = process_file(&jsonl_path, &mut state, &db_path)
             .await
             .unwrap();
@@ -590,9 +588,7 @@ mod tests {
         let line2 = j(session_id, 1, "assistant", "first reply") + "\n";
         std::fs::write(&jsonl_path, &(line1.clone() + &line2)).unwrap();
 
-        let mut state = FileState {
-            ..Default::default()
-        };
+        let mut state = FileState::default();
 
         let first = process_file(&jsonl_path, &mut state, &db_path)
             .await

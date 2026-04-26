@@ -87,17 +87,22 @@ This design answers exactly one question per source: *did the event land in SQLi
                       └─────────────────────────────────────────────┘
 ```
 
+## Status
+
+The overhaul shipped across PRs #67–#89 (v0.16.x → present). All design docs below are kept as live references for the schema, the watchdog, and the doctor checks that exist in the running code today. The two design artifacts that are now closed records (`06-claude-session-watcher.md` and `m3-decision.md`) live in [`../archive/capture-reliability-overhaul/`](../archive/capture-reliability-overhaul/).
+
 ## Document Map
 
 | File | Contents |
 |---|---|
 | **[01-source-health.md](01-source-health.md)** | `source_health` table schema, migration (v7→v8), write paths per source, rolling-count recompute job, error path, read queries, back-fill behavior |
 | **[02-invariants.md](02-invariants.md)** | Per-source staleness thresholds, expected-min-per-hour defaults, invariant definitions, alarm severity levels |
-| **[03-doctor-upgrades.md](03-doctor-upgrades.md)** | `hippo doctor` changes: per-source health rows, staleness formatting, probe status display, exit code semantics |
-| **[04-watchdog.md](04-watchdog.md)** | Watchdog process design: separate launchd plist, poll interval, alarm output format, back-off |
-| **[05-synthetic-probes.md](05-synthetic-probes.md)** | Synthetic canary probe design per source, probe event schema, `probe_tag` filtering, probe scheduling, round-trip latency |
-| **[06-claude-session-watcher.md](06-claude-session-watcher.md)** | Long-lived FSEvents watcher for Claude session JSONLs (replaces the retired per-session tmux tailer) |
-| **[07-roadmap.md](07-roadmap.md)** | Phased delivery plan: P0 (source_health + write paths + doctor), P1 (watchdog + extension heartbeat), P2 (watcher + probes), P3 (cleanup) |
+| **[03-doctor-upgrades.md](03-doctor-upgrades.md)** | `hippo doctor` checks: per-source health rows, staleness formatting, probe status display, exit code semantics |
+| **[04-watchdog.md](04-watchdog.md)** | Watchdog process: launchd plist, poll interval, alarm output format, back-off |
+| **[05-synthetic-probes.md](05-synthetic-probes.md)** | Synthetic canary probes: event schema, `probe_tag` filtering, scheduling, round-trip latency |
+| **[07-roadmap.md](07-roadmap.md)** | Phased delivery tracker: P0 (source_health + write paths + doctor), P1 (watchdog + extension heartbeat), P2 (watcher + probes), P3 (cleanup). T-9 is the only remaining task. |
 | **[08-anti-patterns.md](08-anti-patterns.md)** | Patterns that caused the sev1 and patterns this design must avoid |
+| **[09-test-matrix.md](09-test-matrix.md)** | One row per failure mode with the test that would catch it; status column tracks coverage |
+| **[10-source-audit.md](10-source-audit.md)** | Source-by-source map of capture entry points, expected tables, and tests |
 
 Start with **01-source-health.md** — it is the load-bearing schema document that all other sections depend on.

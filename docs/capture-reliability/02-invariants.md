@@ -1,5 +1,7 @@
 # Capture-Reliability Invariants
 
+> **Status: live reference.** I-1..I-10 are asserted by the watchdog (`hippo watchdog run`, T-1 / PR #79) and surfaced by `hippo doctor` (T-0.3 / PR #70 and T-1.3 / PR #81).
+
 **TL;DR:** Ten named, machine-checkable invariants that capture reliability must uphold. Each carries a formal detection predicate, concrete thresholds with rationale, context-awareness rules to suppress false positives, and a required backstop action on violation.
 
 ---
