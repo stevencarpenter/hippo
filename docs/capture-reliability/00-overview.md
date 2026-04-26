@@ -91,6 +91,18 @@ This design answers exactly one question per source: *did the event land in SQLi
 
 The overhaul shipped across PRs #67–#89 (v0.16.x → present). All design docs below are kept as live references for the schema, the watchdog, and the doctor checks that exist in the running code today. The two design artifacts that are now closed records (`06-claude-session-watcher.md` and `m3-decision.md`) live in [`../archive/capture-reliability-overhaul/`](../archive/capture-reliability-overhaul/).
 
+## Investigations Closed
+
+The 2026-04-22 sev1 forensics spawned five investigation issues (#49–#53). All five are now closed. Three were resolved by capture-reliability work; two were out of scope and were spun off so they remain tracked.
+
+| Issue | Title | Resolution |
+|---|---|---|
+| [#49](https://github.com/stevencarpenter/hippo/issues/49) | Apr 10–17 Claude-session blackout (root cause unknown) | **Mitigated systemically** — root cause never isolated (logs already rotated by forensics time, which itself motivated T-0.5 / [#69](https://github.com/stevencarpenter/hippo/pull/69)). The 1-hour SLO from `source_health` ([#67](https://github.com/stevencarpenter/hippo/pull/67), [#68](https://github.com/stevencarpenter/hippo/pull/68)), watchdog ([#79](https://github.com/stevencarpenter/hippo/pull/79), [#83](https://github.com/stevencarpenter/hippo/pull/83)), probes ([#82](https://github.com/stevencarpenter/hippo/pull/82)), and doctor checks 1–10 ([#70](https://github.com/stevencarpenter/hippo/pull/70), [#81](https://github.com/stevencarpenter/hippo/pull/81)) ensures no future blackout of this category can stay silent. |
+| [#50](https://github.com/stevencarpenter/hippo/issues/50) | claade wrapper may break session-hook PID chain | **Resolved by T-8** ([#89](https://github.com/stevencarpenter/hippo/pull/89)) — the hook is now a 14-line no-op; the FS watcher ([#86](https://github.com/stevencarpenter/hippo/pull/86), [#88](https://github.com/stevencarpenter/hippo/pull/88)) replaces the entire PID-walk path. |
+| [#51](https://github.com/stevencarpenter/hippo/issues/51) | Daemon restart drops Firefox NM connection (recovery unknown) | **Resolved operationally by T-3** ([#80](https://github.com/stevencarpenter/hippo/pull/80)) — extension heartbeat (5 min) + popup badge + watchdog alarm. The deeper NM-retry questions are no longer load-bearing for capture reliability. |
+| [#52](https://github.com/stevencarpenter/hippo/issues/52) | Redaction false-positives silently drop events | **Out of scope** for the capture-reliability epic (touches `crates/hippo-core/src/redaction.rs`, not capture paths). Spun off to [#90](https://github.com/stevencarpenter/hippo/issues/90). |
+| [#53](https://github.com/stevencarpenter/hippo/issues/53) | Lessons pipeline doesn't graduate capture-reliability failures | **Out of scope** for the capture-reliability epic (downstream brain enrichment, not ingestion). Spun off to [#91](https://github.com/stevencarpenter/hippo/issues/91). |
+
 ## Document Map
 
 | File | Contents |
