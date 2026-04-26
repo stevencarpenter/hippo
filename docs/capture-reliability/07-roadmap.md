@@ -284,7 +284,7 @@ The second clause (probe freshness) is still meaningful — it confirms T-6 prob
 
 ## T-7 · P3.1 — Flip `claude_session_mode` default to `watcher`
 
-- **Status:** done — shipped via PR #87
+- **Status:** done — shipped via PR #88
 - **Phase:** P3
 - **Depends on:** T-5 (done), T-6 (done), and the M3 decision recorded in `m3-decision.md` (Option D — empirical validation against 7 days of dual-run data on `main`).
 - **Branch:** `feat/p3.1-watcher-default` (merged to `main`)

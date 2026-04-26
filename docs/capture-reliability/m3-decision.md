@@ -6,7 +6,7 @@
 - Last 7 days: 466 JSONL files modified on disk; **463 captured by the watcher** (99.36%).
 - The 3 unrepresented files were verified by hand: in all three, `claude_session_offsets.byte_offset == size_at_last_read == filesize` (watcher fully read them); `extract_segments` returned 0 segments for legitimate reasons (very short conversations or non-conversation snapshot files).
 - Same 7 days: tmux tailer captured 94 distinct sessions; watcher captured 727. Tailer-only sessions: **0**. Watcher-only sessions: **633**. The watcher is dramatically more reliable than the tailer it replaces.
-- The query session that produced these numbers is recorded in PR #87 (T-7) as the M3 evidence.
+- The query session that produced these numbers is recorded in PR #88 (T-7) as the M3 evidence.
 
 The Option C reconciliation script was **not** built. The full original analysis is preserved below for posterity.
 
@@ -130,7 +130,9 @@ Run it once before T-7. If it returns clean across N days of session files, M3 i
 
 ---
 
-## Recommendation
+### Recommendation (superseded — see Outcome at top of file)
+
+> Note: this section is the pre-decision draft recommendation. The actual outcome was Option D (skip the formal validation step entirely after the live-DB query produced equivalent ground-truth evidence). Kept for the historical reasoning.
 
 **Option C.** Reasoning:
 
@@ -141,13 +143,15 @@ Run it once before T-7. If it returns clean across N days of session files, M3 i
 
 If you also want continuous monitoring after T-7 ships, a reduced version of the same script can run as a periodic check (probe-style). But that's a P4 question, not an M3 question.
 
-## What I would NOT recommend
+### What I would NOT recommend (pre-decision draft)
 
 - Trying to "fix" `claude_session_parity` to produce a useful number. The table's design assumed both paths write `claude_sessions`. They don't. Salvaging it costs more than replacing it.
 - Removing the `claude_session_parity` table now. It's a cheap heartbeat trace and may become useful if a future ingestion path does write `claude_sessions`. Leaving it is harmless.
 - Waiting for "more parity data" before deciding. More rows of `(632, 0, 0)` won't change the answer.
 
-## If Option C is approved, here's the work to unblock T-7
+### If Option C is approved, here's the work to unblock T-7 (not done — Option D was chosen)
+
+> Note: This work was never done — Option D was chosen instead. Kept as historical context for what the Option C path would have looked like.
 
 1. Implement `scripts/m3-reconcile.sh` (or `hippo doctor m3-reconcile`).
 2. Run it across ≥7 days of session files. Confirm exit 0.

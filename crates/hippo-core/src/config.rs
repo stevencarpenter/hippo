@@ -542,8 +542,9 @@ pub fn socket_path(data_dir: &Path) -> PathBuf {
 #[serde(rename_all = "kebab-case")]
 pub enum ClaudeSessionMode {
     /// FSEvents watcher process watches all JSONL files continuously.
-    /// Validated 2026-04-25 against 7 days of dual-run data (99.36% capture
-    /// vs the tailer's 12.9%) and made the default in T-7.
+    /// Made the default in T-7 (PR #88) on 2026-04-25 after empirical
+    /// validation against 7 days of dual-run data — see
+    /// `docs/capture-reliability/m3-decision.md` for the canonical numbers.
     #[default]
     Watcher,
     /// Legacy tmux-based tailer (one window per session). Retained as a
