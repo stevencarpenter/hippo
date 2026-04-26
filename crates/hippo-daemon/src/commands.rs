@@ -2000,7 +2000,7 @@ pub fn check_claude_session_db(
                     "     CAUSE:  Watcher service didn't ingest this JSONL (FSEvents miss, watcher down, or extract_segments produced 0 rows)"
                 );
                 println!(
-                    "     FIX:    launchctl print gui/$(id -u)/com.hippo.claude-session-watcher; tail -f ~/.local/share/hippo/watcher.stderr.log"
+                    "     FIX:    launchctl print gui/$(id -u)/com.hippo.claude-session-watcher; tail -f ~/.local/share/hippo/claude-session-watcher.log"
                 );
                 println!("     DOC:    docs/capture-reliability/03-doctor-upgrades.md");
             }
@@ -2121,7 +2121,7 @@ pub fn check_session_hook_log(
                 "     CAUSE:  Hook is firing but the watcher is not producing claude_sessions rows"
             );
             println!(
-                "     FIX:    launchctl print gui/$(id -u)/com.hippo.claude-session-watcher; tail -f ~/.local/share/hippo/watcher.stderr.log"
+                "     FIX:    launchctl print gui/$(id -u)/com.hippo.claude-session-watcher; tail -f ~/.local/share/hippo/claude-session-watcher.log"
             );
             println!("     DOC:    docs/capture-reliability/03-doctor-upgrades.md");
         }
