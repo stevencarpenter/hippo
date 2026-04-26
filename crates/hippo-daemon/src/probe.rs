@@ -444,16 +444,17 @@ fn write_probe_result(
     #[cfg(feature = "otel")]
     {
         use opentelemetry::KeyValue;
+        let source_owned = source.to_owned();
         crate::metrics::PROBE_RUN.add(
             1,
             &[
-                KeyValue::new("source", source.to_owned()),
+                KeyValue::new("source", source_owned.clone()),
                 KeyValue::new("ok", ok),
             ],
         );
         if let Some(lag) = lag_ms {
             crate::metrics::PROBE_LAG_MS
-                .record(lag as f64, &[KeyValue::new("source", source.to_owned())]);
+                .record(lag as f64, &[KeyValue::new("source", source_owned)]);
         }
     }
 

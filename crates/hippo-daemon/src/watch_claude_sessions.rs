@@ -123,7 +123,11 @@ fn save_offset(conn: &Connection, path: &Path, state: &FileState) -> Result<()> 
 }
 
 /// Process new content in a single file.  Returns the number of segments inserted.
-fn process_file(path: &Path, state: &mut FileState, conn: &Connection) -> Result<usize> {
+///
+/// Runs `ingest_session_file` in a `spawn_blocking` task so the async executor
+/// is never stalled by SQLite I/O.  `PER_FILE_TIMEOUT` is enforced as a hard
+/// upper bound; a timeout puts the file into cooldown just as a parsing error would.
+async fn process_file(path: &Path, state: &mut FileState, db_path: &Path) -> Result<usize> {
     if let Some(until) = state.cooldown_until {
         if Instant::now() < until {
             return Ok(0);
@@ -178,18 +182,58 @@ fn process_file(path: &Path, state: &mut FileState, conn: &Connection) -> Result
     }
 
     let start = Instant::now();
-    let (inserted, _skipped, errors) = ingest_session_file(conn, path);
+    let path_owned = path.to_path_buf();
+    let db_path_owned = db_path.to_path_buf();
+
+    let task = tokio::task::spawn_blocking(move || -> Result<(usize, usize, usize)> {
+        let conn = open_db(&db_path_owned)?;
+        let (inserted, skipped, errors) = ingest_session_file(&conn, &path_owned);
+        if errors == 0 {
+            let snap = FileState {
+                byte_offset: current_size,
+                inode: current_inode,
+                device: current_device,
+                size_at_last_read: current_size,
+                ..Default::default()
+            };
+            save_offset(&conn, &path_owned, &snap).unwrap_or_else(|e| {
+                warn!(path = %path_owned.display(), %e, "watcher: failed to save offset");
+            });
+        }
+        Ok((inserted, skipped, errors))
+    });
+
+    let join_result = match tokio::time::timeout(PER_FILE_TIMEOUT, task).await {
+        Err(_elapsed) => {
+            warn!(
+                path = %path.display(),
+                timeout_secs = PER_FILE_TIMEOUT.as_secs(),
+                "watcher: per-file processing timed out; entering cooldown"
+            );
+            state.cooldown_until = Some(Instant::now() + BACKOFF_DURATION);
+            return Ok(0);
+        }
+        Ok(r) => r,
+    };
+
     let elapsed_ms = start.elapsed().as_secs_f64() * 1000.0;
-    if elapsed_ms > PER_FILE_TIMEOUT.as_secs_f64() * 1000.0 {
-        warn!(
-            path = %path.display(),
-            elapsed_ms,
-            "watcher: per-file processing was slow"
-        );
-    }
 
     #[cfg(feature = "otel")]
     crate::metrics::WATCHER_PROCESS_DURATION_MS.record(elapsed_ms, &[]);
+
+    let (inserted, _skipped, errors) = match join_result {
+        Err(join_err) => {
+            warn!(path = %path.display(), %join_err, "watcher: spawn_blocking task panicked");
+            state.cooldown_until = Some(Instant::now() + BACKOFF_DURATION);
+            return Ok(0);
+        }
+        Ok(Err(e)) => {
+            warn!(path = %path.display(), %e, "watcher: failed to open DB in blocking task");
+            state.cooldown_until = Some(Instant::now() + BACKOFF_DURATION);
+            return Ok(0);
+        }
+        Ok(Ok(triple)) => triple,
+    };
 
     if errors > 0 {
         state.cooldown_until = Some(Instant::now() + BACKOFF_DURATION);
@@ -201,9 +245,6 @@ fn process_file(path: &Path, state: &mut FileState, conn: &Connection) -> Result
         state.byte_offset = current_size;
         state.size_at_last_read = current_size;
         state.watcher_hour_count += inserted;
-        save_offset(conn, path, state).unwrap_or_else(|e| {
-            warn!(path = %path.display(), %e, "watcher: failed to save offset");
-        });
         #[cfg(feature = "otel")]
         if inserted > 0 {
             crate::metrics::WATCHER_SEGMENTS_INGESTED.add(inserted as u64, &[]);
@@ -269,6 +310,12 @@ fn write_parity_row(
     // tailer_count = segments in DB not attributed to the watcher this window.
     // mismatch_count = same value: segments the watcher missed (tailer-only inserts).
     // If watcher_count somehow exceeds total (race), clamp to 0 via saturating_sub.
+    //
+    // Architectural note: in `both` mode the tmux-tailer path (`ingest_tail`) sends
+    // events over the daemon socket to the `events` table, not to `claude_sessions`.
+    // The watcher is the sole writer to `claude_sessions`, so in practice
+    // `total ≈ watcher_count` and `mismatch_count ≈ 0`.  The parity row is kept for
+    // future use if the tailer is extended to write `claude_sessions` rows directly.
     let tailer_count = total.saturating_sub(watcher_count);
     let mismatch_count = tailer_count;
 
@@ -388,7 +435,7 @@ pub async fn run(config: &HippoConfig) -> Result<()> {
             hour_window_start: current_hour_start,
             ..Default::default()
         });
-        match process_file(path, state, &conn) {
+        match process_file(path, state, &db_path).await {
             Ok(n) if n > 0 => {
                 info!(path = %path.display(), inserted = n, "watcher: startup catch-up");
             }
@@ -474,9 +521,13 @@ pub async fn run(config: &HippoConfig) -> Result<()> {
             }
 
             _ = parity_tick.tick() => {
-                let window_end = Utc::now().timestamp_millis();
                 for (path, state) in &mut states {
                     if matches!(mode, ClaudeSessionMode::Both) {
+                        // window_end is derived from window_start rather than Utc::now()
+                        // so that the recorded window boundaries are exact multiples of
+                        // PARITY_INTERVAL regardless of when the tokio interval fires.
+                        let window_end =
+                            state.hour_window_start + PARITY_INTERVAL.as_millis() as i64;
                         if state.watcher_hour_count > 0 || state.hour_window_start > 0 {
                             write_parity_row(
                                 &conn,
@@ -512,7 +563,7 @@ pub async fn run(config: &HippoConfig) -> Result<()> {
                             ..Default::default()
                         }
                     });
-                    match process_file(&path, state, &conn) {
+                    match process_file(&path, state, &db_path).await {
                         Ok(0) => {}
                         Ok(n) => {
                             info!(path = %path.display(), inserted = n, "watcher: ingested segments");
@@ -573,10 +624,11 @@ mod tests {
         make_test_jsonl_line(session_id, ts, kind, text)
     }
 
-    #[test]
-    fn process_file_inserts_segments() {
+    #[tokio::test]
+    async fn process_file_inserts_segments() {
         let dir = TempDir::new().unwrap();
-        let conn = open_test_db(&dir);
+        let db_path = dir.path().join("test.db");
+        open_db(&db_path).expect("init test db");
 
         // Write a session with one complete exchange.
         let session_id = "test-sess-0001-0001-0001-0001-000000000001";
@@ -594,23 +646,28 @@ mod tests {
             hour_window_start: 0,
             ..Default::default()
         };
-        let inserted = process_file(&jsonl_path, &mut state, &conn).unwrap();
+        let inserted = process_file(&jsonl_path, &mut state, &db_path)
+            .await
+            .unwrap();
 
         assert!(inserted > 0, "expected at least one segment inserted");
         assert_eq!(state.byte_offset, content.len() as u64);
 
         // Re-process without new content — should be idempotent.
-        let re_inserted = process_file(&jsonl_path, &mut state, &conn).unwrap();
+        let re_inserted = process_file(&jsonl_path, &mut state, &db_path)
+            .await
+            .unwrap();
         assert_eq!(
             re_inserted, 0,
             "re-process with no new content should insert 0"
         );
     }
 
-    #[test]
-    fn process_file_handles_truncation() {
+    #[tokio::test]
+    async fn process_file_handles_truncation() {
         let dir = TempDir::new().unwrap();
-        let conn = open_test_db(&dir);
+        let db_path = dir.path().join("test.db");
+        open_db(&db_path).expect("init test db");
 
         let session_id = "test-sess-trunc-0001-0001-0001-000000000001";
         let jsonl_path = dir.path().join(format!("{session_id}.jsonl"));
@@ -624,7 +681,7 @@ mod tests {
             ..Default::default()
         };
         // Truncation detected: byte_offset > current_size.
-        let _ = process_file(&jsonl_path, &mut state, &conn);
+        let _ = process_file(&jsonl_path, &mut state, &db_path).await;
         assert_eq!(
             state.byte_offset,
             content.len() as u64,
@@ -656,10 +713,11 @@ mod tests {
         assert_eq!(recovered.size_at_last_read, 12000);
     }
 
-    #[test]
-    fn no_duplicate_segments_on_repeated_processing() {
+    #[tokio::test]
+    async fn no_duplicate_segments_on_repeated_processing() {
         let dir = TempDir::new().unwrap();
-        let conn = open_test_db(&dir);
+        let db_path = dir.path().join("test.db");
+        let conn = open_db(&db_path).expect("init test db");
 
         let session_id = "test-sess-dedup-0001-0001-0001-000000000001";
         let jsonl_path = dir.path().join(format!("{session_id}.jsonl"));
@@ -674,7 +732,9 @@ mod tests {
             ..Default::default()
         };
 
-        let first = process_file(&jsonl_path, &mut state, &conn).unwrap();
+        let first = process_file(&jsonl_path, &mut state, &db_path)
+            .await
+            .unwrap();
 
         // Append more content.
         let line3 = j(session_id, 400, "user", "second prompt") + "\n";
@@ -689,7 +749,9 @@ mod tests {
         }
         state.size_at_last_read = (line1.len() + line2.len()) as u64; // simulate previous state
 
-        let second = process_file(&jsonl_path, &mut state, &conn).unwrap();
+        let second = process_file(&jsonl_path, &mut state, &db_path)
+            .await
+            .unwrap();
 
         // Verify no duplicates: count distinct (session_id, segment_index) pairs.
         let count: usize = conn

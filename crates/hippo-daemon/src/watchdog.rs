@@ -221,7 +221,7 @@ pub fn run(config: &HippoConfig) -> Result<()> {
         {
             use opentelemetry::KeyValue;
             crate::metrics::WATCHDOG_ALARMS_FIRED
-                .add(1, &[KeyValue::new("invariant", v.invariant_id.clone())]);
+                .add(1, &[KeyValue::new("invariant_id", v.invariant_id.clone())]);
             crate::metrics::WATCHDOG_INVARIANT_VIOLATION
                 .add(1, &[KeyValue::new("source", v.source.clone())]);
         }
