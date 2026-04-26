@@ -383,14 +383,14 @@ Tmux-spawn code gone AND no investigation issue still open → M4 ratified.
 
 ---
 
-# Risk Register (residual)
+# Risk Register (historical)
 
-Most risks here were retired with their parent tasks. Live ones for the remaining P3 work:
+All P3 work has shipped; the rows below were the live risks tracked while T-7, T-8, and T-9 were in flight. They are kept as a record of what was watched and how it was mitigated, not as open items.
 
-| Risk | Likelihood | Impact | Mitigation |
+| Risk | Likelihood | Impact | Mitigation (now applied) |
 |------|-----------|--------|-----------|
-| FSEvents quirks cause the watcher to miss events after T-7 default flip | Low | High | Whichever M3 resolution is chosen must give a real "watcher captured everything the tailer would have" signal before T-7 ships. Single-command rollback documented in T-7 release note. |
-| Closing #49–#53 in T-9 without surfacing actual root causes | Medium | Medium | T-9 DoD requires each closing comment to cite the PR(s) that mitigated it OR an explicit "won't fix — reason." No bare closures. |
-| Watcher heartbeat column drift in `source_health` | Low | Low | Watcher-row `updated_at` is fresh on this machine but `last_heartbeat_ts` is NULL — worth a quick check before T-7 to confirm doctor's freshness query points at the right column. |
+| FSEvents quirks cause the watcher to miss events after T-7 default flip | Low | High | M3 Option D (empirical 7-day dual-run validation) gave a real "watcher captured everything the tailer would have" signal before T-7 shipped. Single-command rollback documented in T-7 release note (made moot by T-8). |
+| Closing #49–#53 in T-9 without surfacing actual root causes | Medium | Medium | T-9 closing comments cite the mitigating PR(s) or, for #52/#53, the spun-off follow-up issue (#90/#91). No bare closures. |
+| Watcher heartbeat column drift in `source_health` | Low | Low | Verified pre-T-7: doctor's freshness query uses `updated_at`, which advances correctly for the watcher row. |
 
 Retired risks (kept for historical reference): migration failure mid-deploy (handled by `ACCEPTED_READ_VERSIONS`), watchdog alarm fatigue (T-1 defaults shipped), `probe_tag` filter gaps (T-6 semgrep rule + upstream filter shipped), schema version collisions (T-5 ended up at v10 cleanly), AP-10 tmux patches during dev (none merged), `daemon.rs` hot-file merges (no conflicts hit).

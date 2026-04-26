@@ -1419,14 +1419,13 @@ fn check_source_staleness(db: &rusqlite::Connection, explain: bool) -> u32 {
     // Check Firefox running (for browser suppression).
     // macOS Firefox (incl. Developer Edition) exposes the main process as `firefox`;
     // `firefox-bin` is Linux-only. Match either to keep the check portable.
-    // Use `.output()` (not `.status()`) so pgrep's matched-PID stdout is
-    // captured instead of inherited — otherwise the PID leaks into doctor output.
+    // `-q` suppresses pgrep's PID output so it doesn't leak into doctor output.
     let firefox_running = || -> bool {
         ["firefox", "firefox-bin"].iter().any(|name| {
             std::process::Command::new("pgrep")
-                .args(["-x", name])
-                .output()
-                .map(|o| o.status.success())
+                .args(["-qx", name])
+                .status()
+                .map(|s| s.success())
                 .unwrap_or(false)
         })
     };
