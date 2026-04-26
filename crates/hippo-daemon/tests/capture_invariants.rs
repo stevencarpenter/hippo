@@ -1,8 +1,9 @@
 //! Skeletons for the capture-reliability invariants (I-1, I-2, I-7, I-8,
 //! I-10) that cannot be exercised against `main` today because they depend
 //! on infrastructure defined in `docs/capture-reliability/{01-source-health,
-//! 04-watchdog, 05-synthetic-probes, 06-claude-session-watcher}.md` and not
-//! yet implemented.
+//! 04-watchdog, 05-synthetic-probes}.md` and the FS watcher (design archived
+//! at `docs/archive/capture-reliability-overhaul/06-claude-session-watcher.md`;
+//! shipped in PR #86) and not yet wired in here.
 //!
 //! Every test in this file is `#[ignore]` with an explanation pointing at
 //! the blocking roadmap task (see `docs/capture-reliability/07-roadmap.md`).
@@ -47,10 +48,11 @@ fn i1_shell_liveness_suppressed_when_no_zsh_process() {
 // ============================================================================
 
 #[test]
-#[ignore = "blocked on P2.1 (FS-watched session ingester, 06-claude-session-watcher.md) \
-            AND P0.1 (source_health). Once both land, drive the watcher \
-            with a JSONL that grows over time and assert the claude_sessions \
-            row appears within 5 min + source_health updates."]
+#[ignore = "blocked on P0.1 (source_health). The FS-watched session ingester \
+            shipped (see crates/hippo-daemon/src/watch_claude_sessions.rs); once \
+            source_health is wired in, drive the watcher with a JSONL that grows \
+            over time and assert the claude_sessions row appears within 5 min + \
+            source_health updates."]
 fn i2_claude_session_end_to_end() {
     // Given: a JSONL under ~/.claude/projects/<p>/<id>.jsonl with mtime < 5 min.
     // When: the FS-watched session ingester processes it.

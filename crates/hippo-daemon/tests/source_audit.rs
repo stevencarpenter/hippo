@@ -24,9 +24,6 @@ mod claude_tool_events;
 #[path = "source_audit/claude_session_batch.rs"]
 mod claude_session_batch;
 
-#[path = "source_audit/claude_session_tailer.rs"]
-mod claude_session_tailer;
-
 #[path = "source_audit/browser_events.rs"]
 mod browser_events;
 

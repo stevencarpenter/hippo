@@ -1,5 +1,7 @@
 # Synthetic Probes
 
+> **Status: shipped.** `hippo probe` subcommand + per-source probe implementations + Semgrep `unfiltered-event-table-select` rule + `probe_tag IS NULL` filters in every user-facing query path landed in T-6 / PR #82.
+
 **TL;DR:** Synthetic probes round-trip real events through each capture pipeline and verify them as SQLite rows, providing end-to-end liveness verification that socket pings cannot. All probe-generated rows are tagged via a `probe_tag` column and excluded from every user-facing query.
 
 ## Philosophy

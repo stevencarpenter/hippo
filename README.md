@@ -24,9 +24,9 @@ This one-liner downloads and installs the daemon, brain, and GUI app with checks
 |  zsh      |  Unix socket     |              |  SQLite (WAL)  |              |
 |  shell    | ---------------> |              | <------------> | hippo-brain  |
 +-----------+                  |              |                | (Python)     |
-+-----------+  JSONL ingest    | hippo-daemon |                +------+-------+
-|  Claude   | ---------------> | (Rust)       |                       |
-|  Code     |                  |              |                +------+-------+
++-----------+  FSEvents        | hippo-daemon |                +------+-------+
+|  Claude   |  watcher         | (Rust)       |                       |
+|  Code     | ---------------> |              |                +------+-------+
 +-----------+                  |              |                |  hippo-mcp   |
 +-----------+  Native Msg      |              |                | (MCP server) |
 |  Firefox  | ---------------> |              |                +--------------+
@@ -42,6 +42,18 @@ This one-liner downloads and installs the daemon, brain, and GUI app with checks
 | **hippo-daemon** | Rust | Captures events via Unix socket and Native Messaging. Applies secret redaction, stores to SQLite, serves CLI queries. |
 | **hippo-brain** | Python | Polls enrichment queues, calls LM Studio for summarization, correlates browser research with shell activity, writes knowledge nodes + vector embeddings to SQLite via sqlite-vec. |
 | **hippo-mcp** | Python | MCP server exposing the knowledge base over stdio. Claude Code queries your personal knowledge base mid-conversation. |
+
+Five LaunchAgents run under `gui/$(id -u)`:
+
+| Agent | Role |
+|-------|------|
+| `com.hippo.daemon` | Long-lived Rust daemon (KeepAlive) |
+| `com.hippo.brain` | Long-lived Python brain server (KeepAlive) |
+| `com.hippo.claude-session-watcher` | FSEvents watcher on `~/.claude/projects/**/*.jsonl` (KeepAlive); ingests Claude Code sessions |
+| `com.hippo.watchdog` | Capture-reliability monitor; runs every 60 s, asserts I-1..I-10 invariants, writes `capture_alarms` rows |
+| `com.hippo.probe` | Synthetic canary probes; runs every 5 min, round-trips a real event through each capture path and records latency in `source_health` |
+
+`hippo daemon install --force` writes the plists and bootstraps all five.
 
 ## Prerequisites
 
@@ -103,6 +115,19 @@ hippo entities                          # Known projects, tools, files, concepts
 hippo export-training --since 30d --out ./export  # Export training data
 hippo redact test "password=hunter2"    # Test redaction patterns
 ```
+
+Operational:
+
+```bash
+hippo doctor                            # Run diagnostic checks; non-zero exit on any [!!]
+hippo doctor --explain                  # Same, with CAUSE/FIX/DOC for each failure
+hippo alarms list                       # List unacknowledged capture alarms (exit 1 if any)
+hippo alarms ack <id> --note "..."      # Acknowledge an alarm
+hippo probe --source claude-session     # Run a synthetic probe for one source
+hippo ingest claude-session <path>      # Manual one-shot import of a JSONL (recovery)
+```
+
+See [`docs/capture-reliability/00-overview.md`](docs/capture-reliability/00-overview.md) for the design of the capture-reliability stack (per-source health table, watchdog invariants, doctor checks, synthetic probes).
 
 ## MCP Server
 

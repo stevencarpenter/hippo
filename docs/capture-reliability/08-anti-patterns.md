@@ -94,13 +94,13 @@
 
 ---
 
-## AP-10: Patching tmux Window Targeting Instead of Shipping P2.1
+## AP-10: Patching tmux Window Targeting (historical, retired 2026-04-25)
 
-**Forbidden.** Submitting any PR modifying tmux window creation, tmux session targeting, or the `TMUX_TARGET_SESSION` path in `shell/claude-session-hook.sh` to address a session-ingestion regression while P2.1 is in flight.
+**Status: retired.** T-5 shipped the FS watcher; T-8 deleted the tmux-spawn path entirely from `shell/claude-session-hook.sh` and `crates/hippo-daemon/src/main.rs`. There is no tmux code in hippo to patch. Kept here as a historical record of why the watcher work was prioritized.
 
-**Why.** Tmux-targeting code has been patched at least four times for variations of the same bug class: index conflicts, session-name collisions, non-default `base-index`, `$TMUX_PANE` unset. Each patch introduces a new edge case. The structural fix is the long-lived FS watcher (P2.1), which eliminates the tmux dependency entirely. Patching again delays P2.1 without eliminating fragility.
+**Original rule (no longer applicable).** During P0–P2, PRs modifying tmux window creation, tmux session targeting, or the `TMUX_TARGET_SESSION` path were rejected. Tmux-targeting code had been patched at least four times for variations of the same bug class (index conflicts, session-name collisions, non-default `base-index`, `$TMUX_PANE` unset). The structural fix was the long-lived FS watcher (P2.1), which eliminated the tmux dependency.
 
-**The right way.** Any session-ingestion regression during P0–P2 is triaged against the P2.1 branch. If data loss is occurring, manual recovery is `hippo ingest claude-session --batch <path>`. New tmux-targeting patch is rejected at review with: "This is within the scope of P2.1. Merge P2.1 rather than patching tmux targeting for a fifth time."
+**If a session-ingestion regression occurs now**, triage against the watcher (`watch_claude_sessions.rs`). Manual recovery remains `hippo ingest claude-session <path>`.
 
 ---
 

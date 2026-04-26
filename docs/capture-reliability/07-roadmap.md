@@ -1,6 +1,6 @@
 # Capture-Reliability Overhaul: Task Queue
 
-**Status (2026-04-26):** P0, P1, P2 shipped. T-7 shipped in PR #88. Two small P3 tasks remain (T-8, T-9); the M3 decision is resolved (see [m3-decision.md](m3-decision.md)).
+**Status (2026-04-26):** P0, P1, P2 shipped. T-7 (#88) and T-8 (#89) shipped. One task remains: T-9 (close investigation issues #49–#53 + add "Investigations Closed" section to `00-overview.md`). M3 decision archived at [`docs/archive/capture-reliability-overhaul/m3-decision.md`](../archive/capture-reliability-overhaul/m3-decision.md).
 
 **Workflow note:** This was originally framed as a Ralph Loop autonomous queue (T-1 through T-6 were eligible to be picked up by a loop). In practice, every task shipped via standard PR review by hand — the Ralph Loop framing is now retired. The doc remains useful as an ordered tracker of what's done, what's left, and what gates each step. Status fields and DoD checkboxes below reflect the actual state of `main`, not aspirational planning.
 
@@ -182,8 +182,8 @@ If that chain exits 0, the watchdog fired at least one alarm within one poll int
   - `crates/hippo-core/src/storage.rs` (bumped `EXPECTED_VERSION` to 10)
   - `launchd/com.hippo.claude-session-watcher.plist` (new; `KeepAlive=true`, `RunAtLoad=true`)
   - `crates/hippo-daemon/src/main.rs` (subcommand + install integration)
-  - `config/config.default.toml` (`[capture] claude_session_mode = "tmux-tailer"` default)
-  - `shell/claude-session-hook.sh` (branches on `claude_session_mode` via `hippo capture-mode`)
+  - `config/config.default.toml` (`[capture] claude_session_mode = "tmux-tailer"` default) — *retired in T-8*
+  - `shell/claude-session-hook.sh` (branches on `claude_session_mode` via `hippo capture-mode`) — *retired in T-8*
   - `Cargo.toml` (added `notify` crate)
   - `brain/src/hippo_brain/schema_version.py` (bumped to 10)
   - `crates/hippo-daemon/tests/claude_session_watcher_integration.rs` (new; 5 integration tests)
@@ -195,7 +195,7 @@ If that chain exits 0, the watchdog fired at least one alarm within one poll int
   - [x] `source_health WHERE source='claude-session-watcher'` heartbeat upserted every 30s (verified live: row exists, `updated_at` advances).
   - [x] Integration test covers random mutation sequence across 3 files (`claude_session_watcher_integration.rs`).
   - [x] Property test (proptest) — `claude_session_watcher_integration.rs:246` `proptest!` block covers random append sequences.
-  - [x] `shell/claude-session-hook.sh` branches on `hippo capture-mode`; `watcher` path skips tmux spawn entirely; `both`/`tmux-tailer` retain the tmux-spawn path.
+  - [x] `shell/claude-session-hook.sh` branches on `hippo capture-mode`; `watcher` path skips tmux spawn entirely; `both`/`tmux-tailer` retain the tmux-spawn path. *(All branching retired in T-8 — the hook is now a 14-line no-op.)*
   - [x] NFS/iCloud detection via `statfs` `f_fstypename` at startup; log warning if remote FS.
 - **Success criterion:**
   ```bash
@@ -261,7 +261,7 @@ If that chain exits 0, the watchdog fired at least one alarm within one poll int
 >
 > **Empirical confirmation (2026-04-25, this machine):** 2,037 parity rows in the live DB; aggregate `watcher_count = 632`, `tailer_count = 0`, `mismatch_count = 0`. The "M3 clean" predicate already passes — but it would also pass if the watcher were the only thing capturing.
 >
-> Until this is resolved, T-7 must not be unblocked solely by the predicate below. The four candidate resolutions are tracked in [`docs/capture-reliability/m3-decision.md`](m3-decision.md). Pick one before flipping T-7 to `open`.
+> Until this is resolved, T-7 must not be unblocked solely by the predicate below. The four candidate resolutions are tracked in [`docs/archive/capture-reliability-overhaul/m3-decision.md`](../archive/capture-reliability-overhaul/m3-decision.md). Pick one before flipping T-7 to `open`.
 
 **Original predicate (kept for reference; no longer load-bearing):**
 
@@ -286,17 +286,17 @@ The second clause (probe freshness) is still meaningful — it confirms T-6 prob
 
 - **Status:** done — shipped via PR #88
 - **Phase:** P3
-- **Depends on:** T-5 (done), T-6 (done), and the M3 decision recorded in `m3-decision.md` (Option D — empirical validation against 7 days of dual-run data on `main`).
+- **Depends on:** T-5 (done), T-6 (done), and the M3 decision recorded in [`docs/archive/capture-reliability-overhaul/m3-decision.md`](../archive/capture-reliability-overhaul/m3-decision.md) (Option D — empirical validation against 7 days of dual-run data on `main`).
 - **Branch:** `feat/p3.1-watcher-default` (merged to `main`)
 - **Files:**
   - `config/config.default.toml` (default flipped to `"watcher"`)
   - `crates/hippo-core/src/config.rs` (Rust-side default + `ClaudeSessionMode` doc comments)
   - `crates/hippo-daemon/src/commands.rs` (doctor `check_capture_mode` emits `[WW]` for `tmux-tailer`; tests added)
-  - `docs/capture-reliability/m3-decision.md` (Outcome section recording Option D)
+  - `docs/archive/capture-reliability-overhaul/m3-decision.md` (Outcome section recording Option D; archived after T-8)
   - `docs/capture-reliability/07-roadmap.md` (this file: T-7 status flipped)
 - **DoD:**
   - [x] Default config flag flipped from `"tmux-tailer"` to `"watcher"` in both `config.default.toml` and `CaptureConfig::default()`.
-  - [x] Doctor warns (`[WW]`, not `[!!]`) on `tmux-tailer` setting with pointer to `docs/capture-reliability/06-claude-session-watcher.md`.
+  - [x] Doctor warns (`[WW]`, not `[!!]`) on `tmux-tailer` setting with pointer to the watcher service. (Doctor warning was subsequently removed in T-8 along with the rest of the tmux path; the watcher is now the only mode.)
   - [x] Release note (PR description) calls out the switch, the parity evidence, and the single-command rollback (`hippo config set capture.claude_session_mode tmux-tailer && hippo daemon restart`).
   - [x] No code changes to the watcher/tailer paths themselves.
 - **Success criterion:**
@@ -307,27 +307,39 @@ The second clause (probe freshness) is still meaningful — it confirms T-6 prob
 
 ---
 
-## T-8 · P3.2 — Delete tmux-spawn path from session hook
+## T-8 · P3.2 — Retire tmux from hippo entirely
 
-- **Status:** blocked
+- **Status:** done — shipped via PR #89
 - **Phase:** P3
-- **Depends on:** T-7 (done) AND **7 days** of clean run in `watcher` default mode (same parity predicate, 7-day window).
-- **Branch:** `feat/p3.2-hook-simplify`
+- **Depends on:** T-7 (done). The original 7-day soak was dropped on 2026-04-25 — the M3 evidence already showed the watcher was strictly better than the tailer, and an additional soak would have only re-confirmed that.
+- **Branch:** `feat/p3.2-hook-simplify` (in PR #89)
 - **Files:**
-  - `shell/claude-session-hook.sh` (reduce to ≤15 lines; marker-write only)
-  - `scripts/install.sh` (drop tmux-related install steps if any)
-  - `tests/shell/test-claude-session-hook-extended.sh` (update expectations)
-  - `docs/capture-reliability/00-overview.md` (document `hippo ingest claude-session --batch` as manual recovery path)
+  - `shell/claude-session-hook.sh` (slimmed from 127 → 14 lines, no-op log)
+  - `tests/shell/test-claude-session-hook.sh` (deleted)
+  - `tests/shell/test-claude-session-hook-extended.sh` (deleted)
+  - `tests/shell/test-hook-pid-ppid.sh` (deleted)
+  - `crates/hippo-daemon/src/main.rs` (deleted tmux-spawn branch and `CaptureMode` subcommand)
+  - `crates/hippo-daemon/src/cli.rs` (deleted `--inline` and `--batch` flags from `ingest claude-session`; deleted `CaptureMode` subcommand)
+  - `crates/hippo-daemon/src/claude_session.rs` (deleted `ingest_tail`)
+  - `crates/hippo-daemon/src/watch_claude_sessions.rs` (deleted parity-row writer, mode-based idle, and stale fields on `FileState`)
+  - `crates/hippo-daemon/src/commands.rs` (deleted `check_capture_mode` from T-7; updated doctor explain text)
+  - `crates/hippo-core/src/config.rs` (deleted `CaptureConfig` struct, `ClaudeSessionMode` enum, and the `[capture]` section from `HippoConfig`)
+  - `config/config.default.toml` (deleted `[capture]` section)
+  - `crates/hippo-daemon/tests/source_audit/claude_session_tailer.rs` (deleted; was always `#[ignore]`'d skeleton)
+  - `CLAUDE.md`, `docs/capture-reliability/00-overview.md`, `08-anti-patterns.md`, `09-test-matrix.md` (rewrites and historical-status notes); `06-claude-session-watcher.md` was archived to `docs/archive/capture-reliability-overhaul/` since the design has fully shipped
 - **DoD:**
-  - [ ] `shell/claude-session-hook.sh` ≤15 lines, writes only to `$MARKER_DIR/<session_id>`, no tmux invocations, no PID walks.
-  - [ ] Header comment includes a one-paragraph revert snippet pointing at the previous hook in git history.
-  - [ ] `00-overview.md` explicitly names `hippo ingest claude-session --batch <path>` as the documented manual recovery when the watcher is wedged.
-  - [ ] `test-claude-session-hook-extended.sh` updated to assert no tmux calls in the slim hook; still exercises marker write.
+  - [x] `shell/claude-session-hook.sh` is 14 lines, no tmux invocations, no PID walks, no JSON parsing.
+  - [x] No tmux strings remain in any production code path (`grep -rn 'tmux\|TMUX' crates/ shell/ config/` returns only dev-only strings or none).
+  - [x] No required tmux dependency in install scripts, launchd plists, Cargo.toml, or mise.toml.
+  - [x] Doctor explain text references the watcher service, not tmux.
+  - [x] Stale config keys (`[capture]`) are silently ignored (serde default), so existing user configs continue to load.
 - **Success criterion:**
   ```bash
-  [ "$(wc -l < shell/claude-session-hook.sh)" -le 15 ] && \
-    bash tests/shell/test-claude-session-hook-extended.sh && \
-    ! grep -qE "tmux (new-window|send-keys|new-session)" shell/claude-session-hook.sh
+  cargo test -p hippo-core -p hippo-daemon && \
+    cargo clippy --all-targets -- -D warnings && \
+    cargo fmt --check && \
+    [ "$(wc -l < shell/claude-session-hook.sh)" -le 15 ] && \
+    ! grep -qE "tmux|TMUX" shell/claude-session-hook.sh
   ```
 - **Consensus review:** yes
 
@@ -335,7 +347,7 @@ The second clause (probe freshness) is still meaningful — it confirms T-6 prob
 
 ## T-9 · P3.3 — Close investigation issues #49–#53
 
-- **Status:** blocked
+- **Status:** open (T-8 unblocked this on 2026-04-26)
 - **Phase:** P3
 - **Depends on:** T-8 (done)
 - **Branch:** `docs/p3.3-close-investigations`

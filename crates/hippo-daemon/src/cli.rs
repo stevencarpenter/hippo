@@ -131,8 +131,6 @@ pub enum Commands {
     },
     /// Watch ~/.claude/projects/**/*.jsonl for new session content (FSEvents, KeepAlive service)
     ClaudeSessionWatch,
-    /// Print the current claude_session_mode from config (tmux-tailer | watcher | both)
-    CaptureMode,
 }
 
 #[derive(Subcommand)]
@@ -257,13 +255,7 @@ pub enum IngestSource {
     ClaudeSession {
         /// Path to the JSONL session file
         path: String,
-        /// Batch mode: process entire file and exit (default: tail mode)
-        #[arg(long)]
-        batch: bool,
-        /// Run inline instead of spawning a tmux window (used internally)
-        #[arg(long)]
-        inline: bool,
-        /// Wait up to N seconds for the file to appear before tailing (default: 0 = no wait)
+        /// Wait up to N seconds for the file to appear before importing (default: 0 = no wait)
         #[arg(long, default_value_t = 0)]
         wait_for_file: u64,
     },

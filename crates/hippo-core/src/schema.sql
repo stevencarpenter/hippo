@@ -506,6 +506,10 @@ CREATE TABLE IF NOT EXISTS claude_session_offsets (
 ) STRICT;
 
 -- Hourly parity snapshots comparing tailer vs. watcher counts (M3 gate).
+-- Unused since T-8 (PR #89): the tmux tailer that wrote `tailer_count` was
+-- removed and the watcher's parity-row writer was deleted along with it.
+-- Table is kept to avoid a v10→v11 migration purely to drop dead schema; it
+-- holds the historical parity rows from the dual-run validation window.
 CREATE TABLE IF NOT EXISTS claude_session_parity (
     id             INTEGER PRIMARY KEY AUTOINCREMENT,
     path           TEXT    NOT NULL,

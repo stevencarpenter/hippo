@@ -1,7 +1,6 @@
 use std::collections::HashMap;
-use std::io::{BufRead, Seek, SeekFrom};
+use std::io::BufRead;
 use std::path::Path;
-use std::time::Duration;
 
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
@@ -925,9 +924,9 @@ fn insert_segments(conn: &Connection, segments: &[SessionSegment]) -> Result<(us
     Ok((inserted, skipped))
 }
 
-/// Extract segments from a JSONL session file and insert them into an existing
-/// connection. Called by the FS watcher (which owns its own connection) to avoid
-/// opening a second writer. Returns `(inserted, skipped, errors)`.
+/// Extract segments from a JSONL session file and insert them into the given
+/// connection. Used by the FS watcher (per-event invocation in a `spawn_blocking`
+/// task with its own connection). Returns `(inserted, skipped, errors)`.
 pub fn ingest_session_file(conn: &Connection, path: &Path) -> (usize, usize, usize) {
     let redaction = RedactionEngine::builtin();
     let session_file = SessionFile::from_path(path);
@@ -1082,152 +1081,6 @@ pub async fn ingest_batch(
     errors += segment_errors;
 
     Ok((sent, errors))
-}
-
-/// Run the importer in tail mode: skip to end, watch for new lines.
-pub async fn ingest_tail(path: &Path, socket_path: &Path, timeout_ms: u64) -> Result<()> {
-    // path is a Claude session JSONL supplied by the user via `hippo ingest
-    // claude-session --follow`. Local CLI on the user's own machine — no
-    // privilege boundary.
-    // nosemgrep: rust.actix.path-traversal.tainted-path.tainted-path
-    let file =
-        std::fs::File::open(path).with_context(|| format!("failed to open {}", path.display()))?;
-    let mut position = file.metadata()?.len();
-    drop(file);
-
-    let hostname = hostname::get()
-        .map(|h| h.to_string_lossy().to_string())
-        .unwrap_or_else(|_| "unknown".to_string());
-    info!(path = %path.display(), position, "tailing session file");
-
-    let mut pending: HashMap<String, PendingToolUse> = HashMap::new();
-    let mut git_repo_cache: HashMap<String, Option<String>> = HashMap::new();
-    let mut total_sent = 0usize;
-    let mut total_errors = 0usize;
-    let watch_pid = std::env::var("HIPPO_WATCH_PID")
-        .ok()
-        .and_then(|s| s.parse::<u32>().ok());
-
-    loop {
-        tokio::select! {
-            _ = tokio::signal::ctrl_c() => {
-                info!("shutting down (ctrl+c)");
-                break;
-            }
-            _ = tokio::time::sleep(Duration::from_secs(1)) => {
-                // Single process-death check per tick
-                let process_dead = watch_pid.is_some_and(|pid| unsafe {
-                    let ret = libc::kill(pid as i32, 0);
-                    ret == -1 && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH)
-                });
-
-                if process_dead {
-                    info!(watch_pid, "watched process exited, performing final drain");
-                }
-
-                // Read new lines from current position
-                let mut file = match std::fs::File::open(path) {
-                    Ok(f) => f,
-                    Err(e) => {
-                        warn!(%e, "failed to open file");
-                        if process_dead { break; }
-                        continue;
-                    }
-                };
-
-                let file_len = file.metadata().map(|m| m.len()).unwrap_or(0);
-                if file_len < position {
-                    warn!("file truncated, resetting position");
-                    position = 0;
-                }
-
-                if file_len == position {
-                    if process_dead {
-                        info!("drain complete, exiting");
-                        break;
-                    }
-                    continue;
-                }
-
-                if let Err(e) = file.seek(SeekFrom::Start(position)) {
-                    warn!(%e, "failed to seek");
-                    if process_dead { break; }
-                    continue;
-                }
-
-                let reader = std::io::BufReader::new(file);
-                let mut batch_sent = 0usize;
-
-                for line_result in reader.lines() {
-                    match line_result {
-                        Ok(line) => {
-                            let envelopes = match process_line(&line, &mut pending, &mut git_repo_cache, &hostname) {
-                                Ok(envs) => envs,
-                                Err(e) => {
-                                    warn!(%e, "skipping line");
-                                    total_errors += 1;
-                                    // Advance past this line even on parse error
-                                    position += line.len() as u64 + 1;
-                                    continue;
-                                }
-                            };
-
-                            for envelope in envelopes {
-                                match send_event_fire_and_forget(socket_path, &envelope, timeout_ms).await {
-                                    Ok(()) => {
-                                        total_sent += 1;
-                                        batch_sent += 1;
-                                    }
-                                    Err(e) => {
-                                        error!(%e, "failed to send event");
-                                        total_errors += 1;
-                                    }
-                                }
-                            }
-
-                            // Advance position past this line (+1 for newline)
-                            position += line.len() as u64 + 1;
-                        }
-                        Err(e) => {
-                            warn!(%e, "error reading line, stopping at current position");
-                            total_errors += 1;
-                            break; // Don't advance past unread data
-                        }
-                    }
-                }
-
-                if batch_sent > 0 {
-                    info!(batch_sent, total_sent, total_errors, "sent events");
-                }
-
-                // Break AFTER final read if process is dead
-                if process_dead {
-                    info!(batch_sent, "final drain complete, exiting");
-                    break;
-                }
-            }
-        }
-    }
-
-    // Flush any pending tool_uses
-    let orphans: Vec<PendingToolUse> = pending.into_values().collect();
-    if !orphans.is_empty() {
-        info!(count = orphans.len(), "flushing pending tool uses");
-        for orphan in orphans {
-            let envelope = build_envelope(&orphan, None, false, None, &hostname);
-            match send_event_fire_and_forget(socket_path, &envelope, timeout_ms).await {
-                Ok(()) => total_sent += 1,
-                Err(e) => {
-                    error!(%e, "failed to send orphan event");
-                    total_errors += 1;
-                }
-            }
-        }
-    }
-
-    info!(total_sent, total_errors, "session tail complete");
-
-    Ok(())
 }
 
 #[cfg(test)]

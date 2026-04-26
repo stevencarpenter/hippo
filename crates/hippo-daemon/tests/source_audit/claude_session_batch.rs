@@ -1,6 +1,6 @@
 //! Source #3 — Claude session segments via batch import.
 //!
-//! Production path: `hippo ingest claude-session --batch <path>` →
+//! Production path: `hippo ingest claude-session <path>` →
 //! `claude_session::ingest_batch` → `write_session_segments` → direct
 //! SQLite `INSERT OR IGNORE INTO claude_sessions` (+ `claude_enrichment_queue`).
 //!

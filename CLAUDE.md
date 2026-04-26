@@ -128,13 +128,25 @@ Firefox Developer Edition extension captures browsing activity from allowlisted 
 
 ### Claude Session Ingestion
 
-`shell/claude-session-hook.sh` is a Claude Code SessionStart hook that tails session JSONL files into hippo via a detached tmux window (`hippo:` prefix).
+Ingestion is handled by `crates/hippo-daemon/src/watch_claude_sessions.rs`, a long-lived `notify`/FSEvents watcher that runs under launchd (`com.hippo.claude-session-watcher`, `KeepAlive=true`). It subscribes to `~/.claude/projects/**/*.jsonl`, re-runs `extract_segments` on every file growth event, and inserts segments via `INSERT OR IGNORE` on `(session_id, segment_index)` so repeated processing is idempotent. Per-file resume state lives in `claude_session_offsets`.
 
-**Key gotcha:** The hook script runs as a direct child of Claude (`claude → hook.sh`), so `$PPID` IS the Claude process PID — use it directly as `HIPPO_WATCH_PID`. Also, Claude fires the SessionStart hook before creating the transcript JSONL file, so the hook must poll briefly for the file to appear. The Rust tailer's `kill(pid, 0)` check must distinguish ESRCH (process gone) from EPERM (process exists, no permission).
+**SessionStart hook:** `shell/claude-session-hook.sh` (14 lines, no-op as of T-8 / 2026-04-25). It writes a "hook invoked" line to `$DATA_DIR/session-hook-debug.log` so doctor's `check_session_hook_log` can verify hook activity, and exits 0. It does **not** spawn anything, **not** touch tmux, **not** parse the input JSON. Existing `~/.claude/settings.json` entries continue to work without modification.
 
-**Batch import:** `hippo ingest claude-session --batch <path>` for one-shot import of completed sessions.
+**Manual recovery:** `hippo ingest claude-session <path>` does a one-shot batch import (handy if the watcher is wedged or for backfilling a single file).
 
-**Hook config:** Add to `~/.claude/settings.json` under `hooks.SessionStart` (see `shell/claude-session-hook.sh` header for exact JSON). `hippo doctor` verifies the hook path matches the repo.
+**Hook install:** `hippo daemon install` writes the hook entry into `~/.claude/settings.json`. `hippo doctor` verifies the hook path matches the repo.
+
+### Capture Reliability (v0.16+)
+
+Major P0–P3 overhaul shipped 2026-04-24 → 2026-04-26. Design and rationale live in [`docs/capture-reliability/`](docs/capture-reliability/00-overview.md). Key pieces:
+
+- **`source_health` table** (schema v8): single SQL ground truth of "did the event land?" per source — `shell`, `claude-tool`, `claude-session`, `claude-session-watcher`, `browser`, `watchdog`, `probe`. Every capture path writes its row in the same transaction as the event insert. See [`01-source-health.md`](docs/capture-reliability/01-source-health.md).
+- **`hippo watchdog run`** (launchd `com.hippo.watchdog`, every 60 s): asserts I-1..I-10 invariants against `source_health`, writes `capture_alarms` rows on violations, rate-limited per invariant. See [`02-invariants.md`](docs/capture-reliability/02-invariants.md) and [`04-watchdog.md`](docs/capture-reliability/04-watchdog.md).
+- **`hippo alarms list / ack`**: CLI for unacknowledged alarms (exit 1 if any).
+- **`hippo doctor`**: 10 isolated checks with `[OK]`/`[WW]`/`[!!]`/`[--]` severity, exit code = fail count, total wall-clock < 2 s. `--explain` prints CAUSE/FIX/DOC per failure. See [`03-doctor-upgrades.md`](docs/capture-reliability/03-doctor-upgrades.md).
+- **`hippo probe`** (launchd `com.hippo.probe`, every 5 min): synthetic canary events round-trip through each capture path; latency recorded in `source_health.probe_lag_ms`. All probe rows carry a `probe_tag` and are filtered out of every user-facing query (RAG, MCP tools, `hippo ask`, etc.) by upstream daemon filtering and a Semgrep rule. See [`05-synthetic-probes.md`](docs/capture-reliability/05-synthetic-probes.md).
+- **Anti-patterns** are codified in [`08-anti-patterns.md`](docs/capture-reliability/08-anti-patterns.md) — review blockers (e.g., AP-1: don't block the shell hook on health writes; AP-6: don't let probes appear in user-facing queries).
+- **Test matrix** ([`09-test-matrix.md`](docs/capture-reliability/09-test-matrix.md)) and **source audit** ([`10-source-audit.md`](docs/capture-reliability/10-source-audit.md)) are the live coverage references.
 
 ## Style
 

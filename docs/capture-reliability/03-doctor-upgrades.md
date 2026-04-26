@@ -1,5 +1,7 @@
 # Doctor Upgrade Specification
 
+> **Status: shipped.** Checks 1, 4, 7, 8 in T-0.3 / PR #70; checks 2, 5, 6, 9, 10 in T-1.3 / PR #81. This doc is the live reference for what each check asserts, its threshold, and its exit-code contribution.
+
 **TL;DR:** Ten new isolated checks for `hippo doctor`, each with exact queries, thresholds, exit-code contribution, and performance budget. Doctor exits with a non-zero count of failures, enabling CI and scripted incident response.
 
 ---
@@ -130,7 +132,7 @@ See I-2 detection predicate. Summary: glob active JSONLs, compare their `session
 - All in DB → `[OK]`
 - Any missing → `[!!]` (+1 per missing, capped at +3)
 
-**Why this catches the sev1:** A hook that fires but whose tmux window crashes shows zero DB rows. This check's exact signature is the sev1 fingerprint.
+**Why this matters:** Any failure of the FS watcher (`com.hippo.claude-session-watcher`) — service unloaded, FSEvents not firing on the volume, ingestion timing out into permanent cooldown — surfaces as JSONLs on disk with no matching `claude_sessions` row. The sev1 fingerprint that originally motivated this check (a `tmux -t` index error in the per-session tailer) was structurally eliminated by retiring the tailer in T-8/PR #89, but the check is still load-bearing for any future watcher regression.
 
 **Performance:** Filesystem glob + N SQLite lookups, < 100 ms.
 

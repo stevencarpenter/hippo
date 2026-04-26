@@ -2,6 +2,8 @@
 
 # Source Health Table (`source_health`)
 
+> **Status: shipped.** Table created in v8 (T-0.1 / PR #67); write paths added in T-0.2 / PR #68. This doc is the live reference for the schema and the per-source write contracts.
+
 ## Purpose
 
 `source_health` is the single authoritative record of whether each capture source is delivering events. It stores the timestamp of the last successful event landing, the most recent error, a rolling event count, and probe results for sources that have synthetic canary probes. Every capture path writes to this table in the same transaction as the event insert — there is no separate heartbeat mechanism, and there is no way for a source to succeed silently without updating its row. Downstream consumers (doctor, watchdog, dashboards) query this table with one-line SELECTs; they do not scrape logs or inspect process state.
@@ -58,7 +60,7 @@ CREATE TABLE IF NOT EXISTS source_health (
 - `'browser'` — Firefox extension events (`browser_events`)
 - `'watchdog'` — reserved for watchdog self-heartbeat (see `04-watchdog.md`)
 - `'probe'` — reserved for probe subsystem metadata (see `05-synthetic-probes.md`)
-- `'claude-session-watcher'` — process-health heartbeat for the FS watcher (see `06-claude-session-watcher.md`); distinct from `'claude-session'` which is data-path health
+- `'claude-session-watcher'` — process-health heartbeat for the FS watcher (`crates/hippo-daemon/src/watch_claude_sessions.rs`); distinct from `'claude-session'` which is data-path health
 
 ### Brain-only sources
 
@@ -147,11 +149,11 @@ This update runs in the same `rusqlite::Connection` write transaction that commi
 
 The `Browser` payload in `flush_events` (line 315) updates `source = 'browser'` in the same manner.
 
-### `claude-session` (via session tailer / watcher)
+### `claude-session` (via FS watcher / batch import)
 
-**File:** The claude-session tailer (`hippo ingest claude-session`), after each successful `INSERT OR REPLACE INTO claude_sessions`. When the long-lived FS-watcher replaces the tailer (see `06-claude-session-watcher.md`), the same write pattern applies inside the watcher's segment-commit path.
+**File:** The FS watcher (`crates/hippo-daemon/src/watch_claude_sessions.rs`, since T-5/PR #86) and the batch importer (`hippo ingest claude-session <path>`) both write to `claude_sessions` via `claude_session::insert_segments` and update `source_health` with `source = 'claude-session'` after each successful insert. The legacy per-session tmux tailer was removed in T-8/PR #89.
 
-The update pattern is identical to the shell path, with `source = 'claude-session'` and `last_event_ts` set to the `start_time` of the ingested session segment.
+The update pattern is identical to the shell path, with `last_event_ts` set to the `start_time` of the ingested session segment.
 
 ### `browser` (via `flush_events`)
 

@@ -22,8 +22,6 @@ pub struct HippoConfig {
     pub github: GithubConfig,
     #[serde(default)]
     pub watchdog: WatchdogConfig,
-    #[serde(default)]
-    pub capture: CaptureConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -532,41 +530,6 @@ pub fn socket_path(data_dir: &Path) -> PathBuf {
         std::env::temp_dir().join("hippo-daemon.sock")
     } else {
         candidate
-    }
-}
-
-// --- Capture config ---
-
-/// Controls how Claude session JSONL files are ingested.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "kebab-case")]
-pub enum ClaudeSessionMode {
-    /// FSEvents watcher process watches all JSONL files continuously.
-    /// Made the default in T-7 (PR #88) on 2026-04-25 after empirical
-    /// validation against 7 days of dual-run data — see
-    /// `docs/capture-reliability/m3-decision.md` for the canonical numbers.
-    #[default]
-    Watcher,
-    /// Legacy tmux-based tailer (one window per session). Retained as a
-    /// one-command rollback during the watcher rollout. Slated for removal
-    /// in T-8.
-    TmuxTailer,
-    /// Both: tailer + watcher run concurrently. Useful for short-term
-    /// re-validation if the watcher is suspected of regressing.
-    Both,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CaptureConfig {
-    #[serde(default)]
-    pub claude_session_mode: ClaudeSessionMode,
-}
-
-impl Default for CaptureConfig {
-    fn default() -> Self {
-        Self {
-            claude_session_mode: ClaudeSessionMode::Watcher,
-        }
     }
 }
 
