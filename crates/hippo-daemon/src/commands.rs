@@ -1,6 +1,6 @@
 use anyhow::Result;
 use chrono::Utc;
-use hippo_core::config::{ClaudeSessionMode, ENV_ALLOWLIST, HippoConfig};
+use hippo_core::config::{ENV_ALLOWLIST, HippoConfig};
 use hippo_core::events::{CapturedOutput, EventEnvelope, EventPayload, GitState, ShellEvent};
 use hippo_core::protocol::{DaemonRequest, DaemonResponse};
 use hippo_core::redaction::RedactionEngine;
@@ -931,9 +931,6 @@ pub async fn handle_doctor(config: &HippoConfig, explain: bool) -> Result<()> {
 
     // Check Claude session hook
     check_claude_session_hook(config);
-
-    // Warn if still on the legacy tmux tailer (T-7 made watcher the default)
-    check_capture_mode(config);
 
     // Check Firefox extension build + Native Messaging manifest
     check_firefox_extension();
@@ -2000,10 +1997,10 @@ pub fn check_claude_session_db(
             );
             if explain && missing == 0 {
                 println!(
-                    "     CAUSE:  Session hook fired but row never reached SQLite (tmux crash?)"
+                    "     CAUSE:  Watcher service didn't ingest this JSONL (FSEvents miss, watcher down, or extract_segments produced 0 rows)"
                 );
                 println!(
-                    "     FIX:    tail -f ~/.local/share/hippo/session-hook-debug.log; check tmux ls"
+                    "     FIX:    launchctl print gui/$(id -u)/com.hippo.claude-session-watcher; tail -f ~/.local/share/hippo/watcher.stderr.log"
                 );
                 println!("     DOC:    docs/capture-reliability/03-doctor-upgrades.md");
             }
@@ -2120,9 +2117,11 @@ pub fn check_session_hook_log(
             LABEL, invocations
         );
         if explain {
-            println!("     CAUSE:  Hook fires repeatedly but sessions never reach SQLite");
             println!(
-                "     FIX:    Check tmux: tmux ls; tail -f ~/.local/share/hippo/session-hook-debug.log"
+                "     CAUSE:  Hook is firing but the watcher is not producing claude_sessions rows"
+            );
+            println!(
+                "     FIX:    launchctl print gui/$(id -u)/com.hippo.claude-session-watcher; tail -f ~/.local/share/hippo/watcher.stderr.log"
             );
             println!("     DOC:    docs/capture-reliability/03-doctor-upgrades.md");
         }
@@ -2286,35 +2285,6 @@ pub fn check_schema_version(
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-
-/// Warn if `capture.claude_session_mode` is still the legacy `tmux-tailer`.
-/// The watcher has been the default since T-7 (2026-04-25) and is documented
-/// to be substantially more reliable; the tailer path is slated for removal
-/// in T-8. `[OK]` for `watcher` or `both`; `[WW]` (not `[!!]`) for the legacy
-/// setting so existing users aren't punished mid-rollout.
-fn check_capture_mode(config: &HippoConfig) {
-    match config.capture.claude_session_mode {
-        ClaudeSessionMode::Watcher => {
-            println!("[OK] Capture mode: watcher");
-        }
-        ClaudeSessionMode::Both => {
-            println!("[OK] Capture mode: both (watcher + tmux tailer)");
-        }
-        ClaudeSessionMode::TmuxTailer => {
-            println!("[WW] Capture mode: tmux-tailer (legacy)");
-            println!(
-                "     The watcher path is the documented default since T-7 and is significantly"
-            );
-            println!("     more reliable. The tmux tailer is slated for removal in T-8.");
-            println!("     Switch (run all three — `daemon install --force` is required to");
-            println!("     bootstrap the watcher LaunchAgent on hosts that pre-date T-5):");
-            println!("       hippo daemon install --force");
-            println!("       hippo config set capture.claude_session_mode watcher");
-            println!("       hippo daemon restart");
-            println!("     DOC: docs/capture-reliability/06-claude-session-watcher.md");
-        }
-    }
-}
 
 fn check_claude_session_hook(config: &HippoConfig) {
     let settings_path = dirs::home_dir()
@@ -3070,29 +3040,5 @@ replacement = "***"
         let fail = check_github_source_with(&config, || true);
         // At least the empty-repos fail (maybe also plist-not-installed in CI).
         assert!(fail >= 1);
-    }
-
-    #[test]
-    fn test_default_capture_mode_is_watcher() {
-        // T-7: defaulting to the FS watcher must survive serde round-trips
-        // and the explicit Default impl on CaptureConfig.
-        let cfg = HippoConfig::default();
-        assert_eq!(cfg.capture.claude_session_mode, ClaudeSessionMode::Watcher);
-    }
-
-    #[test]
-    fn test_check_capture_mode_runs_for_every_variant() {
-        // The check is print-only (no return), so this is a smoke test:
-        // verify each enum variant flows through without panicking. The
-        // [WW] line for TmuxTailer is the user-facing T-7 deliverable.
-        for mode in [
-            ClaudeSessionMode::Watcher,
-            ClaudeSessionMode::TmuxTailer,
-            ClaudeSessionMode::Both,
-        ] {
-            let mut cfg = HippoConfig::default();
-            cfg.capture.claude_session_mode = mode;
-            check_capture_mode(&cfg);
-        }
     }
 }

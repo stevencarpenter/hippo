@@ -154,28 +154,6 @@ watched_repos = []             # e.g., ["stevencarpenter/hippo"]
 # log_excerpt_max_bytes = 51200  # 50 KB cap per failure log tail
 # token_env = "HIPPO_GITHUB_TOKEN"
 
-[capture]
-# Controls how Claude session JSONL files are ingested.
-#
-# "watcher" (default): a persistent FSEvents service (com.hippo.claude-session-watcher)
-#   watches ~/.claude/projects/**/*.jsonl continuously. No tmux dependency.
-#   Validated 2026-04-25 against 7 days of dual-run data: 99.36% capture vs the
-#   tailer's 12.9% — see docs/capture-reliability/m3-decision.md.
-#
-# "tmux-tailer" (legacy): the SessionStart hook spawns one tmux window per
-#   session that tails the JSONL until Claude exits. Retained as a one-command
-#   rollback during the watcher rollout. Slated for removal in T-8.
-#
-# "both": runs both concurrently. The two paths write to disjoint tables — the
-#   tmux tailer sends per-line tool-call events to `events`, the watcher writes
-#   conversation segments to `claude_sessions` — so there's no DB-level overlap
-#   to dedupe (this is also why the `claude_session_parity` table can never
-#   surface watcher-vs-tailer divergence; see docs/capture-reliability/m3-decision.md).
-#   Useful for short-term side-by-side comparison if the watcher is suspected of regressing.
-#
-# Rollback: `hippo config set capture.claude_session_mode tmux-tailer && hippo daemon restart`
-claude_session_mode = "watcher"
-
 [watchdog]
 # Capture-reliability watchdog — enabled by default since T-2 (launchd plist ships).
 #

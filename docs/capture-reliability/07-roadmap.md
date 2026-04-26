@@ -1,6 +1,6 @@
 # Capture-Reliability Overhaul: Task Queue
 
-**Status (2026-04-26):** P0, P1, P2 shipped. T-7 shipped in PR #88. Two small P3 tasks remain (T-8, T-9); the M3 decision is resolved (see [m3-decision.md](m3-decision.md)).
+**Status (2026-04-26):** P0, P1, P2 shipped. T-7 (#88) and T-8 (#89) shipped. One task remains: T-9 (close investigation issues #49–#53 + add "Investigations Closed" section to `00-overview.md`). M3 decision recorded in [m3-decision.md](m3-decision.md).
 
 **Workflow note:** This was originally framed as a Ralph Loop autonomous queue (T-1 through T-6 were eligible to be picked up by a loop). In practice, every task shipped via standard PR review by hand — the Ralph Loop framing is now retired. The doc remains useful as an ordered tracker of what's done, what's left, and what gates each step. Status fields and DoD checkboxes below reflect the actual state of `main`, not aspirational planning.
 
@@ -307,27 +307,39 @@ The second clause (probe freshness) is still meaningful — it confirms T-6 prob
 
 ---
 
-## T-8 · P3.2 — Delete tmux-spawn path from session hook
+## T-8 · P3.2 — Retire tmux from hippo entirely
 
-- **Status:** blocked
+- **Status:** done — shipped via PR #89
 - **Phase:** P3
-- **Depends on:** T-7 (done) AND **7 days** of clean run in `watcher` default mode (same parity predicate, 7-day window).
-- **Branch:** `feat/p3.2-hook-simplify`
+- **Depends on:** T-7 (done). The original 7-day soak was dropped on 2026-04-25 — the M3 evidence already showed the watcher was strictly better than the tailer, and an additional soak would have only re-confirmed that.
+- **Branch:** `feat/p3.2-hook-simplify` (merged to `main`)
 - **Files:**
-  - `shell/claude-session-hook.sh` (reduce to ≤15 lines; marker-write only)
-  - `scripts/install.sh` (drop tmux-related install steps if any)
-  - `tests/shell/test-claude-session-hook-extended.sh` (update expectations)
-  - `docs/capture-reliability/00-overview.md` (document `hippo ingest claude-session --batch` as manual recovery path)
+  - `shell/claude-session-hook.sh` (slimmed from 127 → 14 lines, no-op log)
+  - `tests/shell/test-claude-session-hook.sh` (deleted)
+  - `tests/shell/test-claude-session-hook-extended.sh` (deleted)
+  - `tests/shell/test-hook-pid-ppid.sh` (deleted)
+  - `crates/hippo-daemon/src/main.rs` (deleted tmux-spawn branch and `CaptureMode` subcommand)
+  - `crates/hippo-daemon/src/cli.rs` (deleted `--inline` and `--batch` flags from `ingest claude-session`; deleted `CaptureMode` subcommand)
+  - `crates/hippo-daemon/src/claude_session.rs` (deleted `ingest_tail`)
+  - `crates/hippo-daemon/src/watch_claude_sessions.rs` (deleted parity-row writer, mode-based idle, and stale fields on `FileState`)
+  - `crates/hippo-daemon/src/commands.rs` (deleted `check_capture_mode` from T-7; updated doctor explain text)
+  - `crates/hippo-core/src/config.rs` (deleted `CaptureConfig` struct, `ClaudeSessionMode` enum, and the `[capture]` section from `HippoConfig`)
+  - `config/config.default.toml` (deleted `[capture]` section)
+  - `crates/hippo-daemon/tests/source_audit/claude_session_tailer.rs` (deleted; was always `#[ignore]`'d skeleton)
+  - `CLAUDE.md`, `docs/capture-reliability/00-overview.md`, `06-claude-session-watcher.md`, `08-anti-patterns.md`, `09-test-matrix.md` (rewrites and historical-status notes)
 - **DoD:**
-  - [ ] `shell/claude-session-hook.sh` ≤15 lines, writes only to `$MARKER_DIR/<session_id>`, no tmux invocations, no PID walks.
-  - [ ] Header comment includes a one-paragraph revert snippet pointing at the previous hook in git history.
-  - [ ] `00-overview.md` explicitly names `hippo ingest claude-session --batch <path>` as the documented manual recovery when the watcher is wedged.
-  - [ ] `test-claude-session-hook-extended.sh` updated to assert no tmux calls in the slim hook; still exercises marker write.
+  - [x] `shell/claude-session-hook.sh` is 14 lines, no tmux invocations, no PID walks, no JSON parsing.
+  - [x] No tmux strings remain in any production code path (`grep -rn 'tmux\|TMUX' crates/ shell/ config/` returns only dev-only strings or none).
+  - [x] No required tmux dependency in install scripts, launchd plists, Cargo.toml, or mise.toml.
+  - [x] Doctor explain text references the watcher service, not tmux.
+  - [x] Stale config keys (`[capture]`) are silently ignored (serde default), so existing user configs continue to load.
 - **Success criterion:**
   ```bash
-  [ "$(wc -l < shell/claude-session-hook.sh)" -le 15 ] && \
-    bash tests/shell/test-claude-session-hook-extended.sh && \
-    ! grep -qE "tmux (new-window|send-keys|new-session)" shell/claude-session-hook.sh
+  cargo test -p hippo-core -p hippo-daemon && \
+    cargo clippy --all-targets -- -D warnings && \
+    cargo fmt --check && \
+    [ "$(wc -l < shell/claude-session-hook.sh)" -le 15 ] && \
+    ! grep -qE "tmux|TMUX" shell/claude-session-hook.sh
   ```
 - **Consensus review:** yes
 

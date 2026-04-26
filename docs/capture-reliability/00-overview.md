@@ -67,8 +67,8 @@ This design answers exactly one question per source: *did the event land in SQLi
 
   zsh hook  ─────────────────────────► flush_events() ──────────► events
                                            │                       (source_kind='shell')
-  claude-session hook ──────────────► session tailer ───────────► claude_sessions
-  (via tmux window / FS watcher)           │
+  ~/.claude/projects/**/*.jsonl ────► FSEvents watcher ─────────► claude_sessions
+                                           │
                                            │
   Firefox extension ──native msg──────► flush_events() ──────────► browser_events
                                            │
@@ -96,7 +96,7 @@ This design answers exactly one question per source: *did the event land in SQLi
 | **[03-doctor-upgrades.md](03-doctor-upgrades.md)** | `hippo doctor` changes: per-source health rows, staleness formatting, probe status display, exit code semantics |
 | **[04-watchdog.md](04-watchdog.md)** | Watchdog process design: separate launchd plist, poll interval, alarm output format, back-off |
 | **[05-synthetic-probes.md](05-synthetic-probes.md)** | Synthetic canary probe design per source, probe event schema, `probe_tag` filtering, probe scheduling, round-trip latency |
-| **[06-claude-session-watcher.md](06-claude-session-watcher.md)** | Retire per-session tmux tailer; design a long-lived FS-watched session ingester |
+| **[06-claude-session-watcher.md](06-claude-session-watcher.md)** | Long-lived FSEvents watcher for Claude session JSONLs (replaces the retired per-session tmux tailer) |
 | **[07-roadmap.md](07-roadmap.md)** | Phased delivery plan: P0 (source_health + write paths + doctor), P1 (watchdog + extension heartbeat), P2 (watcher + probes), P3 (cleanup) |
 | **[08-anti-patterns.md](08-anti-patterns.md)** | Patterns that caused the sev1 and patterns this design must avoid |
 

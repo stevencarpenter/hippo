@@ -1,4 +1,4 @@
-//! Persistent FSEvents watcher for Claude session JSONL files (T-5, P2.1).
+//! Persistent FSEvents watcher for Claude session JSONL files.
 //!
 //! Subscribes to `~/.claude/projects/**/*.jsonl` via `notify`/FSEvents and
 //! re-extracts session segments whenever a file grows.  Runs as a long-lived
@@ -11,9 +11,7 @@
 //!   `byte_offset` is stored as `current_size` (matching `size_at_last_read`) so a
 //!   future seek-based optimisation can use it without a schema change.
 //! - Resets offset on inode/device change (file replaced) or size regression (truncated).
-//! - `INSERT OR IGNORE` in `insert_segments` makes re-processing idempotent.
 //! - Writes `source_health WHERE source='claude-session-watcher'` every 30 s.
-//! - In `both` mode, writes a `claude_session_parity` row per file per hour.
 
 use std::collections::HashMap;
 use std::os::unix::fs::MetadataExt;
@@ -30,14 +28,13 @@ use tokio::signal::unix::{SignalKind, signal as unix_signal};
 use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
 
-use hippo_core::config::{ClaudeSessionMode, HippoConfig};
+use hippo_core::config::HippoConfig;
 use hippo_core::storage::open_db;
 
 use crate::claude_session::ingest_session_file;
 use crate::is_missing_source_health_table_error;
 
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(30);
-const PARITY_INTERVAL: Duration = Duration::from_secs(3600);
 const BACKOFF_DURATION: Duration = Duration::from_secs(60);
 const PER_FILE_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -50,10 +47,6 @@ struct FileState {
     size_at_last_read: u64,
     /// When to retry after a processing timeout.
     cooldown_until: Option<Instant>,
-    /// Segments inserted by this watcher in the current parity hour window.
-    watcher_hour_count: usize,
-    /// Start of the current parity hour window (ms epoch).
-    hour_window_start: i64,
 }
 
 /// Load all saved offsets from `claude_session_offsets` into memory.
@@ -72,9 +65,6 @@ fn load_offsets(conn: &Connection) -> Result<HashMap<PathBuf, FileState>> {
         ))
     })?;
 
-    let now_ms = Utc::now().timestamp_millis();
-    let hour_window_start = now_ms - (now_ms % (3600 * 1000));
-
     let mut map = HashMap::new();
     for row in rows {
         let (path, offset, inode, device, size) = row?;
@@ -86,8 +76,6 @@ fn load_offsets(conn: &Connection) -> Result<HashMap<PathBuf, FileState>> {
                 device,
                 size_at_last_read: size,
                 cooldown_until: None,
-                watcher_hour_count: 0,
-                hour_window_start,
             },
         );
     }
@@ -244,7 +232,6 @@ async fn process_file(path: &Path, state: &mut FileState, db_path: &Path) -> Res
         // `current_size <= size_at_last_read` will hold until more bytes arrive.
         state.byte_offset = current_size;
         state.size_at_last_read = current_size;
-        state.watcher_hour_count += inserted;
         #[cfg(feature = "otel")]
         if inserted > 0 {
             crate::metrics::WATCHER_SEGMENTS_INGESTED.add(inserted as u64, &[]);
@@ -286,73 +273,6 @@ fn upsert_heartbeat(conn: &Connection) {
     }
 }
 
-/// Write a parity row for a file at the end of an hourly window.
-fn write_parity_row(
-    conn: &Connection,
-    path: &Path,
-    watcher_count: usize,
-    window_start: i64,
-    window_end: i64,
-) {
-    // Count all claude_sessions rows for this source_file in the window —
-    // includes both tailer and watcher inserts (INSERT OR IGNORE deduplicates).
-    let total: usize = conn
-        .query_row(
-            "SELECT COUNT(*) FROM claude_sessions
-             WHERE source_file = ?1
-               AND created_at >= ?2
-               AND created_at < ?3",
-            params![path.to_string_lossy(), window_start, window_end],
-            |row| row.get::<_, i64>(0),
-        )
-        .unwrap_or(0) as usize;
-
-    // tailer_count = segments in DB not attributed to the watcher this window.
-    // mismatch_count = same value: segments the watcher missed (tailer-only inserts).
-    // If watcher_count somehow exceeds total (race), clamp to 0 via saturating_sub.
-    //
-    // Architectural note: in `both` mode the tmux-tailer path (`ingest_tail`) sends
-    // events over the daemon socket to the `events` table, not to `claude_sessions`.
-    // The watcher is the sole writer to `claude_sessions`, so in practice
-    // `total ≈ watcher_count` and `mismatch_count ≈ 0`.  The parity row is kept for
-    // future use if the tailer is extended to write `claude_sessions` rows directly.
-    let tailer_count = total.saturating_sub(watcher_count);
-    let mismatch_count = tailer_count;
-
-    if let Err(e) = conn.execute(
-        "INSERT INTO claude_session_parity
-             (path, tailer_count, watcher_count, mismatch_count, window_start, window_end)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-        params![
-            path.to_string_lossy(),
-            tailer_count as i64,
-            watcher_count as i64,
-            mismatch_count as i64,
-            window_start,
-            window_end,
-        ],
-    ) {
-        warn!(%e, path = %path.display(), "watcher: failed to write parity row");
-    }
-
-    if mismatch_count > 0 {
-        warn!(
-            path = %path.display(),
-            tailer_count,
-            watcher_count,
-            mismatch_count,
-            "watcher: parity mismatch in window [{window_start}, {window_end})"
-        );
-    } else {
-        info!(
-            path = %path.display(),
-            tailer_count,
-            watcher_count,
-            "watcher: parity clean for window"
-        );
-    }
-}
-
 /// Check whether `path` lives on a remote filesystem (NFS, SMB, etc.) and log
 /// a warning.  FSEvents may not fire reliably for remote volumes.
 /// `statfs::f_fstypename` is macOS-specific; this is a no-op on other platforms.
@@ -390,22 +310,6 @@ fn projects_dir() -> Option<PathBuf> {
 /// Entry point — runs until SIGTERM/ctrl-c.
 pub async fn run(config: &HippoConfig) -> Result<()> {
     let db_path = config.db_path();
-    let mode = &config.capture.claude_session_mode;
-
-    // In tmux-tailer mode the watcher service should not run. Idle until shutdown
-    // so launchd KeepAlive doesn't spin-restart this process continuously.
-    if matches!(mode, ClaudeSessionMode::TmuxTailer) {
-        info!(
-            "watcher: capture mode is tmux-tailer; idling (set mode to 'watcher' or 'both' to enable FS watching)"
-        );
-        let mut sigterm = unix_signal(SignalKind::terminate())
-            .context("watcher: failed to install SIGTERM handler")?;
-        tokio::select! {
-            _ = sigterm.recv() => {}
-            _ = tokio::signal::ctrl_c() => {}
-        }
-        return Ok(());
-    }
 
     let projects = match projects_dir() {
         Some(p) => p,
@@ -423,18 +327,11 @@ pub async fn run(config: &HippoConfig) -> Result<()> {
     // Load saved offsets and build initial state map.
     let mut states: HashMap<PathBuf, FileState> = load_offsets(&conn).unwrap_or_default();
 
-    // Initialize parity window start for any file not already tracked.
-    let now_ms = Utc::now().timestamp_millis();
-    let current_hour_start = now_ms - (now_ms % (3600 * 1000));
-
     // Startup scan — catch up on any content written while we were down.
     let initial_files = find_session_files(&projects);
     info!(count = initial_files.len(), "watcher: startup scan");
     for path in &initial_files {
-        let state = states.entry(path.clone()).or_insert_with(|| FileState {
-            hour_window_start: current_hour_start,
-            ..Default::default()
-        });
+        let state = states.entry(path.clone()).or_default();
         match process_file(path, state, &db_path).await {
             Ok(n) if n > 0 => {
                 info!(path = %path.display(), inserted = n, "watcher: startup catch-up");
@@ -498,8 +395,6 @@ pub async fn run(config: &HippoConfig) -> Result<()> {
     );
 
     let mut heartbeat_tick = tokio::time::interval(HEARTBEAT_INTERVAL);
-    let mut parity_tick = tokio::time::interval(PARITY_INTERVAL);
-    parity_tick.tick().await; // consume first immediate tick
 
     // Handle both SIGTERM (launchd stop / system shutdown) and SIGINT (ctrl-c).
     let mut sigterm = unix_signal(SignalKind::terminate())
@@ -520,29 +415,6 @@ pub async fn run(config: &HippoConfig) -> Result<()> {
                 upsert_heartbeat(&conn);
             }
 
-            _ = parity_tick.tick() => {
-                for (path, state) in &mut states {
-                    if matches!(mode, ClaudeSessionMode::Both) {
-                        // window_end is derived from window_start rather than Utc::now()
-                        // so that the recorded window boundaries are exact multiples of
-                        // PARITY_INTERVAL regardless of when the tokio interval fires.
-                        let window_end =
-                            state.hour_window_start + PARITY_INTERVAL.as_millis() as i64;
-                        if state.watcher_hour_count > 0 || state.hour_window_start > 0 {
-                            write_parity_row(
-                                &conn,
-                                path,
-                                state.watcher_hour_count,
-                                state.hour_window_start,
-                                window_end,
-                            );
-                        }
-                        state.watcher_hour_count = 0;
-                        state.hour_window_start = window_end;
-                    }
-                }
-            }
-
             Some(event) = rx.recv() => {
                 let is_relevant = matches!(
                     event.kind,
@@ -556,13 +428,7 @@ pub async fn run(config: &HippoConfig) -> Result<()> {
                     if path.extension().is_none_or(|e| e != "jsonl") {
                         continue;
                     }
-                    let state = states.entry(path.clone()).or_insert_with(|| {
-                        let now = Utc::now().timestamp_millis();
-                        FileState {
-                            hour_window_start: now - (now % (3600 * 1000)),
-                            ..Default::default()
-                        }
-                    });
+                    let state = states.entry(path.clone()).or_default();
                     match process_file(&path, state, &db_path).await {
                         Ok(0) => {}
                         Ok(n) => {
@@ -643,7 +509,6 @@ mod tests {
         std::fs::write(&jsonl_path, &content).unwrap();
 
         let mut state = FileState {
-            hour_window_start: 0,
             ..Default::default()
         };
         let inserted = process_file(&jsonl_path, &mut state, &db_path)
@@ -677,7 +542,6 @@ mod tests {
         let mut state = FileState {
             byte_offset: 9999,
             size_at_last_read: 9999,
-            hour_window_start: 0,
             ..Default::default()
         };
         // Truncation detected: byte_offset > current_size.
@@ -700,7 +564,6 @@ mod tests {
             inode: 42,
             device: 7,
             size_at_last_read: 12000,
-            hour_window_start: 0,
             ..Default::default()
         };
         save_offset(&conn, &path, &state).unwrap();
@@ -728,7 +591,6 @@ mod tests {
         std::fs::write(&jsonl_path, &(line1.clone() + &line2)).unwrap();
 
         let mut state = FileState {
-            hour_window_start: 0,
             ..Default::default()
         };
 

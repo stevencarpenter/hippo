@@ -1,5 +1,7 @@
 # Claude Session Watcher
 
+> **Status (2026-04-25): shipped.** T-5 (PR #86) implemented the watcher and the dual-run mode. T-7 made `watcher` the default. T-8 deleted the tmux tailer code path entirely. The "Why tmux-per-session Must Go" and "Phased rollout" sections below remain as the historical decision record; the actual rollout matched the plan modulo the M3 gate (replaced with a one-shot reconciliation against ground truth — see `m3-decision.md`).
+
 **TL;DR:** Replace the per-session tmux tailer model with one long-lived `hippo watch-claude-sessions` process under launchd that subscribes to FSEvents on `~/.claude/projects/` and ingests every JSONL as it grows. The SessionStart hook becomes a no-op marker write; all PID-chain, tmux-targeting, and duplicate-tailer failure modes are structurally eliminated.
 
 ## Why tmux-per-session Must Go

@@ -3,15 +3,12 @@ mod install;
 
 use hippo_daemon::{claude_session, commands, daemon, gh_api, gh_poll, watch_claude_sessions};
 
-use std::path::PathBuf;
-
 use anyhow::{Context, Result};
 use clap::Parser;
 use cli::{
     AlarmsAction, BrainAction, Cli, Commands, ConfigAction, DaemonAction, IngestSource,
     RedactAction, SendEventSource, WatchdogAction,
 };
-use hippo_core::config::ClaudeSessionMode;
 use hippo_core::config::HippoConfig;
 use hippo_daemon::probe;
 use tracing_subscriber::EnvFilter;
@@ -808,8 +805,6 @@ async fn main() -> Result<()> {
         Commands::Ingest { source } => match source {
             IngestSource::ClaudeSession {
                 path,
-                batch,
-                inline,
                 wait_for_file,
             } => {
                 let path = std::path::Path::new(&path);
@@ -837,58 +832,10 @@ async fn main() -> Result<()> {
                 }
                 let socket = config.socket_path();
                 let timeout = config.daemon.socket_timeout_ms;
-                if batch {
-                    let db = config.db_path();
-                    let (sent, errors) =
-                        claude_session::ingest_batch(path, &socket, timeout, &db).await?;
-                    println!(
-                        "Batch import complete: {} events sent, {} errors",
-                        sent, errors
-                    );
-                } else if !inline && std::env::var("TMUX").is_ok() {
-                    // Spawn tailer in a new tmux window
-                    let hippo_bin =
-                        std::env::current_exe().unwrap_or_else(|_| PathBuf::from("hippo"));
-                    let session_name = path
-                        .file_stem()
-                        .and_then(|s| s.to_str())
-                        .unwrap_or("session");
-                    let short_id = &session_name[..8.min(session_name.len())];
-                    let window_name = format!("hippo:{}", short_id);
-                    let cmd = {
-                        // Shell-quote paths to handle spaces/metacharacters.
-                        // Wrap in single quotes, escaping embedded quotes.
-                        let sq = |s: &str| format!("'{}'", s.replace('\'', "'\\''"));
-                        let q_bin = sq(&hippo_bin.to_string_lossy());
-                        let q_path = sq(&path.to_string_lossy());
-                        if wait_for_file > 0 {
-                            format!(
-                                "{q_bin} ingest claude-session --inline --wait-for-file {wait_for_file} {q_path}"
-                            )
-                        } else {
-                            format!("{q_bin} ingest claude-session --inline {q_path}")
-                        }
-                    };
-                    let status = std::process::Command::new("tmux")
-                        .args(["new-window", "-n", &window_name, &cmd])
-                        .status();
-                    match status {
-                        Ok(s) if s.success() => {
-                            println!(
-                                "Tailing in tmux window '{}' (switch with: tmux select-window -t '{}')",
-                                window_name, window_name
-                            );
-                        }
-                        _ => {
-                            eprintln!("Failed to create tmux window, falling back to inline");
-                            println!("Tailing {} (Ctrl+C to stop)", path.display());
-                            claude_session::ingest_tail(path, &socket, timeout).await?;
-                        }
-                    }
-                } else {
-                    println!("Tailing {} (Ctrl+C to stop)", path.display());
-                    claude_session::ingest_tail(path, &socket, timeout).await?;
-                }
+                let db = config.db_path();
+                let (sent, errors) =
+                    claude_session::ingest_batch(path, &socket, timeout, &db).await?;
+                println!("Batch import complete: {sent} events sent, {errors} errors");
             }
         },
         Commands::GhPoll { repo } => {
@@ -960,14 +907,6 @@ async fn main() -> Result<()> {
         },
         Commands::ClaudeSessionWatch => {
             watch_claude_sessions::run(&config).await?;
-        }
-        Commands::CaptureMode => {
-            let mode = match config.capture.claude_session_mode {
-                ClaudeSessionMode::TmuxTailer => "tmux-tailer",
-                ClaudeSessionMode::Watcher => "watcher",
-                ClaudeSessionMode::Both => "both",
-            };
-            println!("{mode}");
         }
     }
 

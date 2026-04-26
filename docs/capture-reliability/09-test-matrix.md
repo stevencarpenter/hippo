@@ -28,11 +28,11 @@ a one-line change rather than "remember to write the test later".
 
 | # | Failure mode | Trigger / evidence | Test type | Location | Status | Invariant |
 |---|---|---|---|---|---|---|
-| F-1 | tmux hook `new-window` without `-t` lands in wrong session | #48 (1330113): `-t` flag removed; session creation fires but tmux window appears in whichever session was "current" on the isolated server, not the Claude session | shell integration | `tests/shell/test-claude-session-hook.sh` | existing (#55) | I-2 |
+| F-1 | tmux hook `new-window` without `-t` lands in wrong session | #48 (1330113) | shell integration | (was `tests/shell/test-claude-session-hook.sh`) | retired in T-8 (tmux path deleted; failure mode no longer reachable) | I-2 |
 | F-2 | Firefox extension `dist/` absent at runtime | #54: build pipeline produced no `dist/*.js`; `hippo doctor` didn't flag it | rust integration (doctor check) | `crates/hippo-daemon/src/commands.rs` `#[cfg(test)] mod tests` | existing (#54) | I-4 |
 | F-3 | `hippo ingest claude-session --batch` fires but `claude_sessions` rows are 0 | #58 | rust integration | `crates/hippo-daemon/tests/claude_session.rs` | added-by-#58-fix (in-flight, worktree `agent-ac306c6f`) | I-2 |
 | F-4 | Redaction regex false-positives drop or corrupt legitimate events | #52 | rust unit (negative cases) | `crates/hippo-core/src/redaction.rs` (`mod tests`) | new (this PR) | I-5 |
-| F-5 | `claade` / other wrappers break PID-chain assumption | #50 | shell integration | `tests/shell/test-hook-pid-ppid.sh` | new (this PR) — documents current `$PPID` behavior; fails if hook ever assumes deeper walk without updating this test | I-2 |
+| F-5 | `claade` / other wrappers break PID-chain assumption | #50 | shell integration | (was `tests/shell/test-hook-pid-ppid.sh`) | retired in T-8 (the slim hook no longer walks PIDs) | I-2 |
 | F-6 | Native Messaging manifest path drifts after binary move | user moves binary; doctor never cross-checks manifest `path` field | rust integration (doctor check) | `crates/hippo-daemon/tests/nm_manifest_doctor.rs` | new (this PR) — skeleton `#[ignore]` until doctor grows the check | source-change-required |
 | F-7 | Daemon restart during NM send silently drops browser visits | #51 | rust integration | `crates/hippo-daemon/tests/nm_restart_integration.rs` | new (this PR) — fallback-file-survives-restart exercised; end-to-end NM send across restart is `#[ignore]` pending a test harness for the NM stdio stream | I-4 |
 | F-8 | Fallback JSONL accumulates > 24 h while daemon is up (drain broken) | design invariant I-9 | rust integration (doctor check) | `crates/hippo-daemon/tests/fallback_age_doctor.rs` | new (this PR) — skeleton `#[ignore]` with note that doctor currently only counts fallback files, does not inspect mtime | I-9 / source-change-required |
@@ -45,10 +45,10 @@ a one-line change rather than "remember to write the test later".
 | F-15 | Hippo's own CI / sev1 failures never graduate into `lessons` | #53 | brain unit (xfail) | `brain/tests/test_lessons_graduation_hippo.py` | new (this PR) — `@pytest.mark.xfail(reason="tracked in #53")`; fails-closed on fix | — |
 | F-16 | Schema version drift between daemon and brain | v0.13.0 handshake incident | rust integration | `crates/hippo-daemon/tests/schema_handshake.rs` (existing) + negative case added | existing + new (this PR) | — |
 | F-17 | Silent error swallowing via `.filter_map(Result::ok)` in capture paths | AP-11 in 08-anti-patterns.md; observed at `crates/hippo-core/src/storage.rs:805` | static analysis (semgrep) + regression test for the rule itself | `.semgrep.yml` + `tests/semgrep/silent_swallow_fixture.rs` | new (this PR) — rule file + fixture; wiring into CI (adding `.semgrep.yml` to the security workflow) is **follow-up** because `security.yml` is currently path-scoped to `shell/` only | AP-11 |
-| F-18 | tmux `base-index != 0` causes "index N in use" | #48 (1330113, pre-fix path) | shell integration | `tests/shell/test-claude-session-hook.sh` | added-by-#55-fix | I-2 |
-| F-19 | Session name with shell metacharacters (spaces, colons) breaks hook | defensive — not observed, but near a sev1 path | shell integration | `tests/shell/test-claude-session-hook-extended.sh` | new (this PR) | I-2 |
-| F-20 | No tmux server running at hook time — batch fallback path | hook line 106-110 | shell integration | `tests/shell/test-claude-session-hook-extended.sh` | new (this PR) | I-2 |
-| F-21 | `$TMUX_PANE` unset but tmux server is up — fallback hippo-session reuse | hook line 96-105 | shell integration | `tests/shell/test-claude-session-hook-extended.sh` | new (this PR) | I-2 |
+| F-18 | tmux `base-index != 0` causes "index N in use" | #48 (1330113, pre-fix path) | shell integration | (was `tests/shell/test-claude-session-hook.sh`) | retired in T-8 | I-2 |
+| F-19 | Session name with shell metacharacters (spaces, colons) breaks hook | defensive | shell integration | (was `tests/shell/test-claude-session-hook-extended.sh`) | retired in T-8 (slim hook no longer interpolates session names) | I-2 |
+| F-20 | No tmux server running at hook time — batch fallback path | hook line 106-110 | shell integration | (was `tests/shell/test-claude-session-hook-extended.sh`) | retired in T-8 (no tmux fallback path exists; manual `hippo ingest claude-session <path>` is the recovery) | I-2 |
+| F-21 | `$TMUX_PANE` unset but tmux server is up — fallback hippo-session reuse | hook line 96-105 | shell integration | (was `tests/shell/test-claude-session-hook-extended.sh`) | retired in T-8 | I-2 |
 | F-22 | `check_claude_session_hook_at` false-OK when settings.json is malformed / not-object | regression for #45, #46, #48 | rust unit | `crates/hippo-daemon/src/commands.rs` `mod tests` (`test_hook_check_structural_type_mismatch`, `test_hook_check_not_configured`, `test_hook_check_match_missing_script`) | existing | — |
 | F-23 | Claude settings.json `hooks.SessionStart` array has multiple hippo entries, one stale one current | observed during #48 rollout | rust unit | same as F-22 (`test_hook_check_multiple_entries_one_exact_match`) | existing | — |
 | F-24 | `hippo doctor` output for hook check is not behaviourally asserted — only smoke-tested ("does not panic") | code review of `commands.rs` `mod tests` | rust unit — assert on captured stdout | same as F-22 | source-change-required (would need `println!` → returning `String`, or a `writeln!(w, …)` injection) | — |
@@ -58,7 +58,7 @@ a one-line change rather than "remember to write the test later".
 | Invariant | Row(s) | Status |
 |---|---|---|
 | I-1 Shell liveness | F-11 | blocked-on-P0.1 |
-| I-2 Claude-session end-to-end | F-1, F-3, F-5, F-10, F-18..F-21 | 5 shell tests + 1 rust test land in this PR / sibling PRs; F-10 (auto) blocked |
+| I-2 Claude-session end-to-end | F-3, F-10 (active); F-1, F-5, F-18..F-21 (retired in T-8 — failure modes structurally eliminated by removing the tmux path) | F-3 covers batch-import; F-10 covers the FSEvents watcher end-to-end |
 | I-3 Claude-tool liveness | — | not yet implemented; skeleton row TBD when invariant test design lands |
 | I-4 Browser liveness | F-2, F-7 | fix PRs + new (this PR) |
 | I-5 Redaction correctness (no over-redaction) | F-4 | new (this PR) |
