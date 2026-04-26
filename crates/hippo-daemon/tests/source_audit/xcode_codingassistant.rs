@@ -7,7 +7,7 @@
 //! every 5 min — so Python is the canonical ingester. But the JSONL
 //! schema is identical to `~/.claude/projects/` modulo a few envelope
 //! types (`queue-operation`) that the Rust `process_line` silently
-//! skips. If a user ever runs `hippo ingest claude-session --batch`
+//! skips. If a user ever runs `hippo ingest claude-session`
 //! against an Xcode JSONL, the Rust path MUST produce the same
 //! `claude_sessions` and `claude-tool` events as it would for a regular
 //! Claude Code JSONL.

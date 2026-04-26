@@ -236,7 +236,7 @@ async fn test_ingest_batch_dedup_on_reimport() {
     let _ = daemon_handle.await;
 }
 
-/// Regression test for #58: `hippo ingest claude-session --batch` must
+/// Regression test for #58: `hippo ingest claude-session` must
 /// populate the `claude_sessions` table — not just `events`. Prior to the
 /// fix, the batch importer only fired tool-call events through the daemon
 /// socket and never wrote the session-segment rows that enrichment depends

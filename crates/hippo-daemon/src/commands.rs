@@ -898,6 +898,7 @@ pub async fn handle_doctor(config: &HippoConfig, explain: bool) -> Result<()> {
     let config_path = config.storage.config_dir.join("config.toml");
     if config_path.exists() {
         println!("[OK] Config file found");
+        fail_count += check_legacy_capture_section(&config_path, explain);
     } else {
         println!("[--] No config file (using defaults)");
     }
@@ -1720,6 +1721,47 @@ fn check_log_file_sizes(config: &HippoConfig, explain: bool) -> u32 {
     }
 
     println!("[OK] {:<29}  all under 50MB", "log file sizes");
+    0
+}
+
+/// Warns when the user's `config.toml` still carries a `[capture]` section.
+///
+/// `[capture]` (and its only key, `claude_session_mode`) was deleted in T-8 /
+/// PR #89. `HippoConfig` does not use `deny_unknown_fields`, so a stale
+/// section silently drops on load — the user's old `tmux-tailer` override
+/// stops doing anything with no visible signal. This check closes the
+/// upgrade-path gap by surfacing it once on the next `hippo doctor` run.
+///
+/// Returns 0 always — this is a `[WW]` warning, not a failure.
+fn check_legacy_capture_section(config_path: &std::path::Path, explain: bool) -> u32 {
+    let Ok(text) = std::fs::read_to_string(config_path) else {
+        return 0;
+    };
+    let has_capture = text
+        .lines()
+        .any(|l| l.trim_start().starts_with("[capture]"));
+    if !has_capture {
+        return 0;
+    }
+    println!(
+        "[WW] {:<29}  legacy [capture] section in {}",
+        "config legacy section",
+        config_path.display()
+    );
+    if explain {
+        println!("     CAUSE:  [capture] / claude_session_mode was retired in T-8 (PR #89);");
+        println!(
+            "             the FS watcher (com.hippo.claude-session-watcher) is the sole ingester."
+        );
+        println!(
+            "             The section is silently ignored on load — your tmux-tailer override is dead."
+        );
+        println!(
+            "     FIX:    Remove the [capture] section from {}",
+            config_path.display()
+        );
+        println!("     DOC:    docs/capture-reliability/07-roadmap.md (T-8)");
+    }
     0
 }
 

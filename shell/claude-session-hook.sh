@@ -8,7 +8,7 @@ set -euo pipefail
 #
 # Manual recovery if the watcher is wedged:
 #   hippo ingest claude-session <path>
-LOG_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/hippo"
+LOG_DIR="${XDG_DATA_HOME:-${HOME:-/tmp}/.local/share}/hippo"
 mkdir -p "$LOG_DIR" 2>/dev/null || true
 echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) hook invoked" >> "$LOG_DIR/session-hook-debug.log" 2>/dev/null || true
 exit 0

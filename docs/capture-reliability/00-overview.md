@@ -28,7 +28,7 @@ Make capture the most bulletproof subsystem in hippo.
 |---|---|---|
 | `shell` | `events` (source_kind='shell') | `flush_events` in `daemon.rs` |
 | `claude-tool` | `events` (source_kind='claude-tool') | `flush_events` in `daemon.rs` |
-| `claude-session` | `claude_sessions` | Claude session tailer (via `hippo ingest claude-session`) |
+| `claude-session` | `claude_sessions` | FS watcher (`com.hippo.claude-session-watcher`); manual recovery via `hippo ingest claude-session <path>` |
 | `browser` | `browser_events` | `flush_events` in `daemon.rs` (via native messaging → Unix socket) |
 
 **Out of scope for this design:**

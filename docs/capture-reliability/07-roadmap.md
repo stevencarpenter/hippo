@@ -182,8 +182,8 @@ If that chain exits 0, the watchdog fired at least one alarm within one poll int
   - `crates/hippo-core/src/storage.rs` (bumped `EXPECTED_VERSION` to 10)
   - `launchd/com.hippo.claude-session-watcher.plist` (new; `KeepAlive=true`, `RunAtLoad=true`)
   - `crates/hippo-daemon/src/main.rs` (subcommand + install integration)
-  - `config/config.default.toml` (`[capture] claude_session_mode = "tmux-tailer"` default)
-  - `shell/claude-session-hook.sh` (branches on `claude_session_mode` via `hippo capture-mode`)
+  - `config/config.default.toml` (`[capture] claude_session_mode = "tmux-tailer"` default) — *retired in T-8*
+  - `shell/claude-session-hook.sh` (branches on `claude_session_mode` via `hippo capture-mode`) — *retired in T-8*
   - `Cargo.toml` (added `notify` crate)
   - `brain/src/hippo_brain/schema_version.py` (bumped to 10)
   - `crates/hippo-daemon/tests/claude_session_watcher_integration.rs` (new; 5 integration tests)
@@ -195,7 +195,7 @@ If that chain exits 0, the watchdog fired at least one alarm within one poll int
   - [x] `source_health WHERE source='claude-session-watcher'` heartbeat upserted every 30s (verified live: row exists, `updated_at` advances).
   - [x] Integration test covers random mutation sequence across 3 files (`claude_session_watcher_integration.rs`).
   - [x] Property test (proptest) — `claude_session_watcher_integration.rs:246` `proptest!` block covers random append sequences.
-  - [x] `shell/claude-session-hook.sh` branches on `hippo capture-mode`; `watcher` path skips tmux spawn entirely; `both`/`tmux-tailer` retain the tmux-spawn path.
+  - [x] `shell/claude-session-hook.sh` branches on `hippo capture-mode`; `watcher` path skips tmux spawn entirely; `both`/`tmux-tailer` retain the tmux-spawn path. *(All branching retired in T-8 — the hook is now a 14-line no-op.)*
   - [x] NFS/iCloud detection via `statfs` `f_fstypename` at startup; log warning if remote FS.
 - **Success criterion:**
   ```bash
@@ -347,7 +347,7 @@ The second clause (probe freshness) is still meaningful — it confirms T-6 prob
 
 ## T-9 · P3.3 — Close investigation issues #49–#53
 
-- **Status:** blocked
+- **Status:** open (T-8 unblocked this on 2026-04-26)
 - **Phase:** P3
 - **Depends on:** T-8 (done)
 - **Branch:** `docs/p3.3-close-investigations`
