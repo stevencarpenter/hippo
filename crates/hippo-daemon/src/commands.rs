@@ -1419,12 +1419,14 @@ fn check_source_staleness(db: &rusqlite::Connection, explain: bool) -> u32 {
     // Check Firefox running (for browser suppression).
     // macOS Firefox (incl. Developer Edition) exposes the main process as `firefox`;
     // `firefox-bin` is Linux-only. Match either to keep the check portable.
+    // Use `.output()` (not `.status()`) so pgrep's matched-PID stdout is
+    // captured instead of inherited — otherwise the PID leaks into doctor output.
     let firefox_running = || -> bool {
         ["firefox", "firefox-bin"].iter().any(|name| {
             std::process::Command::new("pgrep")
                 .args(["-x", name])
-                .status()
-                .map(|s| s.success())
+                .output()
+                .map(|o| o.status.success())
                 .unwrap_or(false)
         })
     };
@@ -1556,12 +1558,32 @@ fn check_zsh_hook_sourced(explain: bool) -> u32 {
         }
     };
 
-    let candidates = [
+    // Direct startup files. Most users wire the hook here.
+    let mut candidates: Vec<std::path::PathBuf> = vec![
         home.join(".zshrc"),
         home.join(".zshenv"),
         home.join(".config/zsh/.zshrc"),
         home.join(".config/zsh/.zshenv"),
     ];
+
+    // Drop-in dirs that interactive zshrcs commonly loop over (chezmoi /
+    // dotfiles users routinely split aliases + functions across `profile.d`
+    // or `.zshrc.d`). Without these the check false-negatives on any setup
+    // that sources hippo.zsh transitively, even when shell events are
+    // landing fine.
+    for drop_in in [
+        home.join(".config/zsh/profile.d"),
+        home.join(".zshrc.d"),
+    ] {
+        if let Ok(entries) = std::fs::read_dir(&drop_in) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.extension().and_then(|e| e.to_str()) == Some("zsh") {
+                    candidates.push(path);
+                }
+            }
+        }
+    }
 
     for candidate in &candidates {
         if !candidate.exists() {
@@ -1599,7 +1621,15 @@ fn check_zsh_hook_sourced(explain: bool) -> u32 {
 
             let script_exists = sourced_path
                 .map(|p| {
+                    // Expand `~/` and `$HOME/` (the two forms users actually
+                    // write in zshrcs). Don't try to handle arbitrary env
+                    // expansion — the path either exists at the literal
+                    // resolved location or the warning is correct.
                     let expanded = if let Some(rest) = p.strip_prefix("~/") {
+                        home.join(rest)
+                    } else if let Some(rest) = p.strip_prefix("$HOME/") {
+                        home.join(rest)
+                    } else if let Some(rest) = p.strip_prefix("${HOME}/") {
                         home.join(rest)
                     } else {
                         std::path::PathBuf::from(p)
