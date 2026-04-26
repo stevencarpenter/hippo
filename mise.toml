@@ -457,15 +457,15 @@ set -euo pipefail
 # leave the user to debug it.
 
 BRAIN_INSTALL_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/hippo-brain"
+# Importing `create_app` is a strict superset of probing individual third-party
+# packages: it transitively pulls in the entire startup graph the brain uses
+# (starlette, uvicorn, httpx, sqlite_vec, opentelemetry, psutil, plus the
+# hippo_brain.* internal modules). If any of them is half-installed, this
+# probe trips at install time instead of on the first launchd start.
 PROBE='
 import sys
 try:
-    from opentelemetry import metrics, trace
-    from opentelemetry.sdk.metrics import MeterProvider  # noqa: F401
-    from opentelemetry.sdk.trace import TracerProvider  # noqa: F401
-    from opentelemetry.exporter.otlp.proto.http.metric_exporter import OTLPMetricExporter  # noqa: F401
-    import psutil  # noqa: F401
-    import sqlite_vec  # noqa: F401
+    from hippo_brain.server import create_app  # noqa: F401
     sys.exit(0)
 except Exception as exc:
     print(f"brain import probe failed: {exc!r}", file=sys.stderr)

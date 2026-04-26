@@ -20,7 +20,12 @@ DEFAULT_ENDPOINT = "http://localhost:4318"
 _telemetry_active: bool = False
 
 
-def _is_otel_enabled() -> bool:
+def is_telemetry_enabled() -> bool:
+    """Return True iff the HIPPO_OTEL_ENABLED env gate is set.
+
+    Reflects user intent only — does not guarantee providers are initialized.
+    Use is_telemetry_active() to check actual runtime state.
+    """
     return os.environ.get("HIPPO_OTEL_ENABLED", "").strip() == "1"
 
 
@@ -51,7 +56,7 @@ def init_telemetry(
     """
     global _telemetry_active
 
-    if not _is_otel_enabled():
+    if not is_telemetry_enabled():
         return None
 
     if not endpoint:
@@ -138,7 +143,7 @@ def init_telemetry(
 
 def get_tracer(name: str = "hippo-brain"):
     """Get OTel tracer if available, else return None."""
-    if not _is_otel_enabled():
+    if not is_telemetry_enabled():
         return None
     try:
         from opentelemetry import trace
@@ -155,7 +160,7 @@ def get_meter(name: str = "hippo-brain"):
     will pick up the real MeterProvider once ``init_telemetry()`` calls
     ``set_meter_provider()``.
     """
-    if not _is_otel_enabled():
+    if not is_telemetry_enabled():
         return None
     try:
         from opentelemetry import metrics as otel_metrics

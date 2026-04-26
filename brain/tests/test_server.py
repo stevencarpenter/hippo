@@ -1,6 +1,7 @@
 """Tests for hippo_brain.server — BrainServer endpoints and create_app."""
 
 import asyncio
+import os
 import time
 from unittest.mock import AsyncMock, patch
 
@@ -92,6 +93,13 @@ def test_health_endpoint(tmp_db):
     assert "last_success_at_ms" in data
     assert "last_error" in data
     assert "last_error_at_ms" in data
+    # Telemetry status is consumed by `hippo doctor` to detect the
+    # configured-on-but-dead silent-degrade mode. Locks in the contract so
+    # the doctor check can't go blind to a future /health refactor.
+    assert "telemetry_enabled" in data
+    assert "telemetry_active" in data
+    assert isinstance(data["telemetry_enabled"], bool)
+    assert isinstance(data["telemetry_active"], bool)
     assert data["enrichment_running"] is False
     assert data["db_reachable"] is True
     assert data["queue_depth"] == 0
@@ -99,6 +107,47 @@ def test_health_endpoint(tmp_db):
     assert data["last_success_at_ms"] is None
     assert data["last_error"] is None
     assert data["last_error_at_ms"] is None
+
+
+def test_health_telemetry_fields_reflect_runtime_state(tmp_db):
+    """When telemetry is gated off, /health must report enabled=False AND
+    active=False — the only state combination that's safe in CI without an
+    OTel collector. Then with the gate on and providers initialized, both
+    must flip True. Catches regressions that decouple the fields from the
+    real module-level state.
+    """
+    # Reach into the exact module that server.py's bound function reads from.
+    # `import hippo_brain.telemetry` would resolve via sys.modules, which
+    # other tests can replace via del+reimport — leaving us setting state on
+    # a module that server.py no longer references. The function's
+    # `__globals__` is the unambiguous source of truth.
+    from hippo_brain.server import is_telemetry_active as server_is_active
+
+    telemetry_globals = server_is_active.__globals__
+
+    _, db_path = tmp_db
+    app = _make_app(str(db_path))
+    client = TestClient(app)
+
+    env_off = {k: v for k, v in os.environ.items() if k != "HIPPO_OTEL_ENABLED"}
+    original_active = telemetry_globals.get("_telemetry_active", False)
+    try:
+        with patch.dict(os.environ, env_off, clear=True):
+            telemetry_globals["_telemetry_active"] = False
+            data = client.get("/health").json()
+            assert data["telemetry_enabled"] is False
+            assert data["telemetry_active"] is False
+
+        # Simulate "providers wired up" without actually running
+        # init_telemetry, which would attach a global OTel exporter that
+        # pollutes other tests.
+        with patch.dict(os.environ, {"HIPPO_OTEL_ENABLED": "1"}):
+            telemetry_globals["_telemetry_active"] = True
+            data = client.get("/health").json()
+            assert data["telemetry_enabled"] is True
+            assert data["telemetry_active"] is True
+    finally:
+        telemetry_globals["_telemetry_active"] = original_active
 
 
 # ---- /query ----

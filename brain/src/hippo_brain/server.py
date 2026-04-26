@@ -56,12 +56,12 @@ from hippo_brain.watchdog import (
     reap_stale_locks,
 )
 from hippo_brain.telemetry import (
-    _is_otel_enabled as _telemetry_is_enabled,
     add as _add,
     get_meter,
     get_tracer as _get_tracer,
     hist as _hist,
-    is_telemetry_active as _telemetry_is_active,
+    is_telemetry_active,
+    is_telemetry_enabled,
 )
 
 _meter = get_meter()
@@ -274,8 +274,8 @@ class BrainServer:
                 # "telemetry configured-on but dead" — the failure mode that
                 # caused dashboards to silently go dark when the deployed brain
                 # venv was out of sync with pyproject.toml.
-                "telemetry_enabled": _telemetry_is_enabled(),
-                "telemetry_active": _telemetry_is_active(),
+                "telemetry_enabled": is_telemetry_enabled(),
+                "telemetry_active": is_telemetry_active(),
             }
         )
 

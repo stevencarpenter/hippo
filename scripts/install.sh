@@ -265,15 +265,15 @@ install_daemon() {
 # that surfaces only at brain-startup time as a generic ImportError.
 verify_brain_imports() {
     local brain_dir="$1"
+    # Importing `create_app` exercises the full startup import graph
+    # (starlette, uvicorn, httpx, sqlite_vec, opentelemetry, psutil, plus the
+    # hippo_brain.* internal modules). A strict superset of probing the
+    # third-party packages individually — protects against the same shape of
+    # bug surfacing in any startup-path dep, not just opentelemetry.
     local probe='
 import sys
 try:
-    from opentelemetry import metrics, trace  # noqa: F401
-    from opentelemetry.sdk.metrics import MeterProvider  # noqa: F401
-    from opentelemetry.sdk.trace import TracerProvider  # noqa: F401
-    from opentelemetry.exporter.otlp.proto.http.metric_exporter import OTLPMetricExporter  # noqa: F401
-    import psutil  # noqa: F401
-    import sqlite_vec  # noqa: F401
+    from hippo_brain.server import create_app  # noqa: F401
     sys.exit(0)
 except Exception as exc:
     print(f"brain import probe failed: {exc!r}", file=sys.stderr)
