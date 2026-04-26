@@ -1,7 +1,10 @@
 """OpenTelemetry initialization for Hippo Brain services.
 
 Gated behind HIPPO_OTEL_ENABLED=1 environment variable.
-When disabled or when OTel packages are not installed, all functions are no-ops.
+When the gate is unset, all functions are no-ops. When the gate is set
+explicitly but the OTel Python packages cannot be imported (e.g., a
+half-installed venv after an upgrade), ``init_telemetry`` raises so the
+service fails loud rather than silently shipping zero metrics.
 """
 
 import logging
@@ -11,9 +14,33 @@ logger = logging.getLogger("hippo_brain.telemetry")
 
 DEFAULT_ENDPOINT = "http://localhost:4318"
 
+# Set to True only after init_telemetry() successfully wires up providers.
+# Surfaced via is_telemetry_active() so the /health endpoint and `hippo doctor`
+# can distinguish "configured-on AND running" from "configured-on but dead".
+_telemetry_active: bool = False
 
-def _is_otel_enabled() -> bool:
+
+def is_telemetry_enabled() -> bool:
+    """Return True iff the HIPPO_OTEL_ENABLED env gate is set.
+
+    Reflects user intent only — does not guarantee providers are initialized.
+    Use is_telemetry_active() to check actual runtime state.
+    """
     return os.environ.get("HIPPO_OTEL_ENABLED", "").strip() == "1"
+
+
+def is_telemetry_active() -> bool:
+    """Return True only after init_telemetry() has fully succeeded."""
+    return _telemetry_active
+
+
+class TelemetryInitError(RuntimeError):
+    """HIPPO_OTEL_ENABLED=1 was set but OTel providers could not be wired up.
+
+    Raised on import failure of any OTel SDK module — almost always a stale
+    or half-installed brain venv. The service should crash visibly and let
+    launchd report the failure rather than continue without telemetry.
+    """
 
 
 def init_telemetry(
@@ -22,9 +49,14 @@ def init_telemetry(
 ) -> "callable | None":
     """Initialize OpenTelemetry providers for traces, metrics, and logs.
 
-    Returns a shutdown callable, or None if OTel is disabled/unavailable.
+    Returns a shutdown callable on success, or ``None`` when telemetry is not
+    enabled. Raises ``TelemetryInitError`` when telemetry is explicitly
+    enabled (``HIPPO_OTEL_ENABLED=1``) but the OTel packages cannot be
+    imported — silently degrading would let dashboards go dark unnoticed.
     """
-    if not _is_otel_enabled():
+    global _telemetry_active
+
+    if not is_telemetry_enabled():
         return None
 
     if not endpoint:
@@ -48,9 +80,22 @@ def init_telemetry(
             from opentelemetry.instrumentation.logging.handler import LoggingHandler
         except ImportError:
             from opentelemetry.sdk._logs import LoggingHandler
-    except ImportError:
-        logger.warning("OpenTelemetry packages not installed — telemetry disabled")
-        return None
+    except (ImportError, AttributeError) as e:
+        # ImportError covers "package missing" and the half-installed-namespace
+        # case (dist-info present, package contents empty) seen 2026-04-26.
+        # AttributeError covers a partially-extracted `__init__.py` that
+        # imports cleanly but is missing the symbols we then access. Both
+        # are "deployed venv out of sync with pyproject.toml" — same recovery.
+        msg = (
+            "HIPPO_OTEL_ENABLED=1 but OpenTelemetry packages cannot be imported "
+            "(error: %s). The deployed brain venv is out of sync with "
+            "pyproject.toml. Recover with: "
+            "`uv sync --project ~/.local/share/hippo-brain --reinstall` then "
+            "restart the brain. If you intended to disable telemetry, unset "
+            "HIPPO_OTEL_ENABLED."
+        ) % e
+        logger.error(msg)
+        raise TelemetryInitError(msg) from e
 
     resource = Resource.create({"service.name": service_name})
 
@@ -78,6 +123,11 @@ def init_telemetry(
     meter_provider = MeterProvider(resource=resource, metric_readers=[metric_reader])
     otel_metrics.set_meter_provider(meter_provider)
 
+    # Mark active BEFORE optional process-metrics registration: the providers
+    # are already wired up at this point, and a downstream failure in
+    # _register_process_metrics (e.g., psutil.AccessDenied in a sandbox) must
+    # not leave the flag desynchronized from "providers initialized" state.
+    _telemetry_active = True
     _register_process_metrics()
 
     logger.info(
@@ -87,6 +137,8 @@ def init_telemetry(
     )
 
     def shutdown() -> None:
+        global _telemetry_active
+        _telemetry_active = False
         tracer_provider.shutdown()
         logger_provider.shutdown()
         meter_provider.shutdown()
@@ -96,7 +148,7 @@ def init_telemetry(
 
 def get_tracer(name: str = "hippo-brain"):
     """Get OTel tracer if available, else return None."""
-    if not _is_otel_enabled():
+    if not is_telemetry_enabled():
         return None
     try:
         from opentelemetry import trace
@@ -113,7 +165,7 @@ def get_meter(name: str = "hippo-brain"):
     will pick up the real MeterProvider once ``init_telemetry()`` calls
     ``set_meter_provider()``.
     """
-    if not _is_otel_enabled():
+    if not is_telemetry_enabled():
         return None
     try:
         from opentelemetry import metrics as otel_metrics

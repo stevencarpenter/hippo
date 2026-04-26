@@ -259,6 +259,31 @@ install_daemon() {
     log_success "Daemon installed"
 }
 
+# Probe the deployed brain venv for the imports the brain process needs at
+# startup. Returns 0 on success, 1 on any import failure. Catches the
+# half-installed-namespace bug (dist-info present, package contents empty)
+# that surfaces only at brain-startup time as a generic ImportError.
+verify_brain_imports() {
+    local brain_dir="$1"
+    # Importing `create_app` exercises the full startup import graph
+    # (starlette, uvicorn, httpx, sqlite_vec, opentelemetry, psutil, plus the
+    # hippo_brain.* internal modules). A strict superset of probing the
+    # third-party packages individually — protects against the same shape of
+    # bug surfacing in any startup-path dep, not just opentelemetry.
+    local probe='
+import sys
+try:
+    from hippo_brain.server import create_app  # noqa: F401
+    sys.exit(0)
+except Exception as exc:
+    # Print to stdout: any CI capture that records only stdout still gets
+    # the diagnostic, and the non-zero exit already signals failure.
+    print(f"brain import probe failed: {exc!r}")
+    sys.exit(1)
+'
+    (cd "${brain_dir}" && uv run --no-sync python -c "${probe}")
+}
+
 # Install brain package
 install_brain() {
     local tag="$1"
@@ -309,6 +334,37 @@ install_brain() {
 
     rm -rf "${BRAIN_DIR}"
     mv "${brain_staging}" "${BRAIN_DIR}"
+
+    # Eagerly build the venv at install time and verify imports. Without this
+    # step `uv run` lazy-creates the venv on first launchd start, which has
+    # in the wild left a half-installed namespace (dist-info present but the
+    # package contents missing). The brain then runs alongside a "telemetry
+    # disabled" warning and every Grafana panel fed by brain metrics goes
+    # dark. Recovered by `uv sync --reinstall`; we now do that proactively.
+    if command -v uv >/dev/null 2>&1; then
+        log_info "Syncing brain Python dependencies..."
+        if ! (cd "${BRAIN_DIR}" && uv sync 2>&1); then
+            log_error "uv sync failed in ${BRAIN_DIR}"
+            exit 1
+        fi
+
+        log_info "Verifying brain imports..."
+        if ! verify_brain_imports "${BRAIN_DIR}"; then
+            log_warning "Brain imports failed after sync; retrying with --reinstall..."
+            if ! (cd "${BRAIN_DIR}" && uv sync --reinstall 2>&1); then
+                log_error "uv sync --reinstall failed in ${BRAIN_DIR}"
+                exit 1
+            fi
+            if ! verify_brain_imports "${BRAIN_DIR}"; then
+                log_error "Brain venv at ${BRAIN_DIR} is unusable even after --reinstall."
+                log_error "Manual recovery: rm -rf '${BRAIN_DIR}/.venv' && cd '${BRAIN_DIR}' && uv sync"
+                exit 1
+            fi
+        fi
+        log_success "Brain dependencies verified"
+    else
+        log_warning "uv not found; skipping eager brain venv build (will lazy-init on first launch)"
+    fi
 
     write_receipt "brain" "${expected_checksum}"
     log_success "Brain installed"

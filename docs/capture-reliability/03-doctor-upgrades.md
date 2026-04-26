@@ -217,6 +217,33 @@ Reads daemon `PRAGMA user_version` and compares to brain's `expected_schema_vers
 
 ---
 
+## Brain telemetry status (configured-on but dead)
+
+The brain exposes `telemetry_enabled` and `telemetry_active` on `/health`.
+Doctor flags the `enabled=true, active=false` combination — the silent
+failure mode where the brain runs without OTel providers because its venv
+is out of sync with `pyproject.toml`. Recovery in the FIX line:
+
+```
+[!!] Brain telemetry: HIPPO_OTEL_ENABLED=1 but providers not initialized
+     CAUSE:  Deployed brain venv is out of sync with pyproject.toml,
+             or the OTel package namespace was half-installed.
+     FIX:    uv sync --project ~/.local/share/hippo-brain --reinstall
+             then: launchctl kickstart -k gui/$(id -u)/com.hippo.brain
+```
+
+**Expected behavior of a misconfigured brain:** because `init_telemetry`
+now hard-fails on import errors when the gate is on, a misconfigured brain
+crashes at startup. With `KeepAlive=true` on `com.hippo.brain.plist`,
+launchd respawns it every ~10 s. The telltale signature in
+`~/.local/share/hippo/brain.stderr.log` is a repeated stack trace ending
+in `TelemetryInitError: HIPPO_OTEL_ENABLED=1 but OpenTelemetry packages
+cannot be imported …`. This is intentional: the loud failure surfaces
+on the first `hippo doctor` run rather than letting metrics quietly
+disappear from Grafana for hours.
+
+---
+
 ## `hippo doctor --explain` mode
 
 When `--explain` is passed, each failing check appends a remediation block:
