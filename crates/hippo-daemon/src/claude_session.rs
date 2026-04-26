@@ -711,7 +711,7 @@ fn extract_segments(
                         git_branch: git_branch
                             .clone()
                             .or_else(|| segments.last().and_then(|s| s.git_branch.clone())),
-                        segment_index: next_index - 1,
+                        segment_index: next_index,
                         start_time: ts_ms,
                         end_time: ts_ms,
                         user_prompts: Vec::new(),

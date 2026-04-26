@@ -205,27 +205,18 @@ fn process_file(path: &Path, state: &mut FileState, conn: &Connection) -> Result
     Ok(inserted)
 }
 
-/// Glob all `~/.claude/projects/**/*.jsonl` files and return their paths.
+/// Walk `~/.claude/projects/**/*.jsonl` recursively (catches subagent files too).
 fn find_session_files(projects_dir: &Path) -> Vec<PathBuf> {
-    let mut files = Vec::new();
-    let Ok(entries) = std::fs::read_dir(projects_dir) else {
-        return files;
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.is_dir() {
-            let Ok(sub) = std::fs::read_dir(&path) else {
-                continue;
-            };
-            for sub_entry in sub.flatten() {
-                let sub_path = sub_entry.path();
-                if sub_path.extension().is_some_and(|e| e == "jsonl") {
-                    files.push(sub_path);
-                }
-            }
-        }
-    }
-    files
+    walkdir::WalkDir::new(projects_dir)
+        .follow_links(false)
+        .into_iter()
+        .flatten()
+        .filter(|e| {
+            e.file_type().is_file()
+                && e.path().extension().is_some_and(|ext| ext == "jsonl")
+        })
+        .map(|e| e.into_path())
+        .collect()
 }
 
 /// Upsert the watcher's own heartbeat in `source_health`.

@@ -37,6 +37,7 @@ tracing-opentelemetry = { workspace = true, optional = true }
 sysinfo = { version = "0.38", optional = true, default-features = false, features = ["system"] }
 which = "8.0.2"
 notify = "8"
+walkdir = "2"
 
 [features]
 default = ["otel"]
