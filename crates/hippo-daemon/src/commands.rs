@@ -1571,10 +1571,7 @@ fn check_zsh_hook_sourced(explain: bool) -> u32 {
     // or `.zshrc.d`). Without these the check false-negatives on any setup
     // that sources hippo.zsh transitively, even when shell events are
     // landing fine.
-    for drop_in in [
-        home.join(".config/zsh/profile.d"),
-        home.join(".zshrc.d"),
-    ] {
+    for drop_in in [home.join(".config/zsh/profile.d"), home.join(".zshrc.d")] {
         if let Ok(entries) = std::fs::read_dir(&drop_in) {
             for entry in entries.flatten() {
                 let path = entry.path();
