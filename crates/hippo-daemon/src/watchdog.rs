@@ -217,6 +217,15 @@ pub fn run(config: &HippoConfig) -> Result<()> {
             "watchdog: new alarm raised"
         );
 
+        #[cfg(feature = "otel")]
+        {
+            use opentelemetry::KeyValue;
+            crate::metrics::WATCHDOG_ALARMS_FIRED
+                .add(1, &[KeyValue::new("invariant_id", v.invariant_id.clone())]);
+            crate::metrics::WATCHDOG_INVARIANT_VIOLATION
+                .add(1, &[KeyValue::new("source", v.source.clone())]);
+        }
+
         // Optional macOS notification (only on new alarm row).
         if config.watchdog.notify_macos {
             let message = format!(
@@ -234,6 +243,9 @@ pub fn run(config: &HippoConfig) -> Result<()> {
         "UPDATE source_health SET last_success_ts = ?1 WHERE source = 'watchdog'",
         rusqlite::params![now_ms],
     )?;
+
+    #[cfg(feature = "otel")]
+    crate::metrics::WATCHDOG_RUN.add(1, &[]);
 
     Ok(())
 }

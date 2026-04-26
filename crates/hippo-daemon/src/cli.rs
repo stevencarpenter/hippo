@@ -129,6 +129,10 @@ pub enum Commands {
         #[command(subcommand)]
         action: AlarmsAction,
     },
+    /// Watch ~/.claude/projects/**/*.jsonl for new session content (FSEvents, KeepAlive service)
+    ClaudeSessionWatch,
+    /// Print the current claude_session_mode from config (tmux-tailer | watcher | both)
+    CaptureMode,
 }
 
 #[derive(Subcommand)]

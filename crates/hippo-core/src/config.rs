@@ -22,6 +22,8 @@ pub struct HippoConfig {
     pub github: GithubConfig,
     #[serde(default)]
     pub watchdog: WatchdogConfig,
+    #[serde(default)]
+    pub capture: CaptureConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -530,6 +532,35 @@ pub fn socket_path(data_dir: &Path) -> PathBuf {
         std::env::temp_dir().join("hippo-daemon.sock")
     } else {
         candidate
+    }
+}
+
+// --- Capture config ---
+
+/// Controls how Claude session JSONL files are ingested.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "kebab-case")]
+pub enum ClaudeSessionMode {
+    /// Legacy tmux-based tailer (one window per session). Default until T-7.
+    #[default]
+    TmuxTailer,
+    /// FSEvents watcher process watches all JSONL files continuously.
+    Watcher,
+    /// Both: tailer + watcher run concurrently for parity validation (M3 gate).
+    Both,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CaptureConfig {
+    #[serde(default)]
+    pub claude_session_mode: ClaudeSessionMode,
+}
+
+impl Default for CaptureConfig {
+    fn default() -> Self {
+        Self {
+            claude_session_mode: ClaudeSessionMode::TmuxTailer,
+        }
     }
 }
 

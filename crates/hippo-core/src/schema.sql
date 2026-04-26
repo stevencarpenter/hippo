@@ -494,4 +494,29 @@ CREATE INDEX IF NOT EXISTS idx_capture_alarms_invariant_active
     ON capture_alarms (invariant_id, acked_at)
     WHERE acked_at IS NULL;
 
-PRAGMA user_version = 9;
+-- Watcher offset tracking: resume-after-restart for the FS watcher (T-5).
+CREATE TABLE IF NOT EXISTS claude_session_offsets (
+    path              TEXT    PRIMARY KEY,
+    session_id        TEXT,
+    byte_offset       INTEGER NOT NULL DEFAULT 0,
+    inode             INTEGER,
+    device            INTEGER,
+    size_at_last_read INTEGER NOT NULL DEFAULT 0,
+    updated_at        INTEGER NOT NULL
+) STRICT;
+
+-- Hourly parity snapshots comparing tailer vs. watcher counts (M3 gate).
+CREATE TABLE IF NOT EXISTS claude_session_parity (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    path           TEXT    NOT NULL,
+    tailer_count   INTEGER NOT NULL DEFAULT 0,
+    watcher_count  INTEGER NOT NULL DEFAULT 0,
+    mismatch_count INTEGER NOT NULL DEFAULT 0,
+    window_start   INTEGER NOT NULL,
+    window_end     INTEGER NOT NULL
+) STRICT;
+
+CREATE INDEX IF NOT EXISTS idx_claude_session_parity_path_window
+    ON claude_session_parity (path, window_start);
+
+PRAGMA user_version = 10;

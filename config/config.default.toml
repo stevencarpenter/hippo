@@ -154,6 +154,20 @@ watched_repos = []             # e.g., ["stevencarpenter/hippo"]
 # log_excerpt_max_bytes = 51200  # 50 KB cap per failure log tail
 # token_env = "HIPPO_GITHUB_TOKEN"
 
+[capture]
+# Controls how Claude session JSONL files are ingested.
+#
+# "tmux-tailer" (default): the SessionStart hook spawns one tmux window per
+#   session that tails the JSONL until Claude exits.
+#
+# "watcher": a persistent FSEvents daemon (com.hippo.claude-session-watcher)
+#   watches ~/.claude/projects/**/*.jsonl continuously. No tmux windows.
+#   Flip to this default in T-7 after 48 h of parity validation.
+#
+# "both": runs the tmux tailer AND the watcher concurrently. INSERT OR IGNORE
+#   deduplicates at the DB layer. Use during M3 parity gate.
+claude_session_mode = "tmux-tailer"
+
 [watchdog]
 # Capture-reliability watchdog — enabled by default since T-2 (launchd plist ships).
 #

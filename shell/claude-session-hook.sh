@@ -60,6 +60,17 @@ fi
 
 log "hippo_bin=$HIPPO_BIN"
 
+# Determine capture mode from config.
+# Falls back to "tmux-tailer" if hippo can't be queried (safe default).
+CAPTURE_MODE=$("$HIPPO_BIN" capture-mode 2>/dev/null || echo "tmux-tailer")
+log "capture_mode=$CAPTURE_MODE"
+
+# In watcher-only mode, skip tmux spawn — the FS watcher handles ingestion.
+if [ "$CAPTURE_MODE" = "watcher" ]; then
+    log "watcher mode: skipping tmux spawn"
+    exit 0
+fi
+
 # Resolve Claude's PID. The hook runs as a direct child of Claude Code,
 # so $PPID is the Claude process PID.
 CLAUDE_PID="$PPID"
