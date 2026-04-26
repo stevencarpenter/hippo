@@ -415,6 +415,8 @@ pub fn open_db(path: &Path) -> Result<Connection> {
              CREATE INDEX IF NOT EXISTS idx_capture_alarms_invariant_active
                  ON capture_alarms (invariant_id, acked_at)
                  WHERE acked_at IS NULL;
+             CREATE INDEX IF NOT EXISTS idx_claude_sessions_start_time
+                 ON claude_sessions (start_time DESC);
              PRAGMA user_version = 9;",
         )?;
     } else if version != 0 && version != EXPECTED_VERSION {
@@ -527,6 +529,16 @@ pub fn insert_event(
     )
 }
 
+/// Derive the `source_kind` string for a shell event — same logic used by `insert_event_at`.
+/// Exposed so callers that need the kind for bookkeeping don't duplicate the derivation.
+pub fn source_kind_of(event: &ShellEvent) -> &'static str {
+    if event.tool_name.is_some() {
+        "claude-tool"
+    } else {
+        "shell"
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn insert_event_at(
     conn: &Connection,
@@ -557,15 +569,7 @@ pub fn insert_event_at(
         None => (None, None),
     };
 
-    // Derive source_kind from tool_name presence. A populated tool_name
-    // means the event was synthesized from a Claude Code tool use; a
-    // missing one means it came from a native shell hook. Future sources
-    // (cursor, codex, ...) will need their own discriminator on ShellEvent.
-    let source_kind = if event.tool_name.is_some() {
-        "claude-tool"
-    } else {
-        "shell"
-    };
+    let source_kind = source_kind_of(event);
 
     let tx = conn.unchecked_transaction()?;
 

@@ -240,6 +240,7 @@ async fn main() -> Result<()> {
                 let daemon_was_loaded = install::service_is_loaded("com.hippo.daemon");
                 let brain_was_loaded = install::service_is_loaded("com.hippo.brain");
                 let watchdog_was_loaded = install::service_is_loaded("com.hippo.watchdog");
+                let probe_was_loaded = install::service_is_loaded("com.hippo.probe");
 
                 if brain_was_loaded {
                     print!("  Draining brain (waiting for in-flight requests)");
@@ -269,6 +270,10 @@ async fn main() -> Result<()> {
                         &launch_agents.join("com.hippo.watchdog.plist"),
                     );
                     println!("  Stopped watchdog");
+                }
+                if probe_was_loaded {
+                    install::service_bootout(&domain, &launch_agents.join("com.hippo.probe.plist"));
+                    println!("  Stopped probe");
                 }
 
                 let daemon_template = include_str!("../../../launchd/com.hippo.daemon.plist");
@@ -363,7 +368,8 @@ async fn main() -> Result<()> {
                 }
 
                 // Reload services that were running before the upgrade.
-                if daemon_was_loaded || brain_was_loaded || watchdog_was_loaded {
+                if daemon_was_loaded || brain_was_loaded || watchdog_was_loaded || probe_was_loaded
+                {
                     println!();
                     println!("Restarting services...");
                     if daemon_was_loaded {
@@ -387,12 +393,20 @@ async fn main() -> Result<()> {
                         )?;
                         println!("  Started watchdog");
                     }
+                    if probe_was_loaded {
+                        install::service_bootstrap(
+                            &domain,
+                            &launch_agents.join("com.hippo.probe.plist"),
+                        )?;
+                        println!("  Started probe");
+                    }
                 }
 
                 // Only print "Load with:" for services that weren't already cycled.
                 let needs_manual_start = !daemon_was_loaded
                     || !brain_was_loaded
                     || !watchdog_was_loaded
+                    || !probe_was_loaded
                     || gh_poll_installed;
                 if needs_manual_start {
                     println!();
@@ -410,6 +424,11 @@ async fn main() -> Result<()> {
                     if !watchdog_was_loaded {
                         println!(
                             "  launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.hippo.watchdog.plist"
+                        );
+                    }
+                    if !probe_was_loaded {
+                        println!(
+                            "  launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.hippo.probe.plist"
                         );
                     }
                     if gh_poll_installed {

@@ -8,6 +8,7 @@ use rusqlite::Connection;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::Mutex;
 use tokio::sync::watch;
@@ -256,6 +257,11 @@ pub async fn flush_events(state: &Arc<DaemonState>) -> usize {
     #[cfg(feature = "otel")]
     let flush_start = OtelInstant::now();
 
+    let now_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as i64;
+
     let events: Vec<EventEnvelope> = {
         let mut buffer = state.event_buffer.lock().await;
         let n = buffer.len().min(state.config.daemon.flush_batch_size);
@@ -265,12 +271,30 @@ pub async fn flush_events(state: &Arc<DaemonState>) -> usize {
     tracing::Span::current().record("event_count", count);
 
     if events.is_empty() {
+        // Idle tick: stamp last_success_ts so the watchdog sees liveness
+        // even when no events are flowing.
+        let db = state.write_db.lock().await;
+        match db.execute(
+            "UPDATE source_health
+             SET last_success_ts = ?1, updated_at = ?1
+             WHERE source IN ('shell', 'claude-tool', 'browser')",
+            rusqlite::params![now_ms],
+        ) {
+            Err(e) if !crate::is_missing_source_health_table_error(&e) => {
+                warn!("source_health idle-tick update failed: {e}");
+            }
+            _ => {}
+        }
         return 0;
     }
 
     let username = std::env::var("USER").unwrap_or_else(|_| "unknown".to_string());
     let db = state.write_db.lock().await;
     let mut session_map = state.session_map.lock().await;
+
+    let mut source_latest_ts: HashMap<&'static str, i64> = HashMap::new();
+    let mut source_counts: HashMap<&'static str, i64> = HashMap::new();
+    let mut source_errors: HashMap<&'static str, String> = HashMap::new();
 
     for envelope in &events {
         match &envelope.payload {
@@ -332,59 +356,145 @@ pub async fn flush_events(state: &Arc<DaemonState>) -> usize {
                         },
                     );
 
+                let event_ts = envelope.timestamp.timestamp_millis();
+                let source: &'static str = storage::source_kind_of(&redacted_event);
                 let eid = envelope.envelope_id.to_string();
-                if let Err(e) = storage::insert_event_at(
+                match storage::insert_event_at(
                     &db,
                     session_id,
                     &redacted_event,
-                    envelope.timestamp.timestamp_millis(),
+                    event_ts,
                     redacted_event.redaction_count,
                     env_snapshot_id,
                     Some(&eid),
                     envelope.probe_tag.as_deref(),
                 ) {
-                    warn!("event insert failed, falling back: {}", e);
-                    let redacted_envelope = EventEnvelope {
-                        envelope_id: envelope.envelope_id,
-                        producer_version: envelope.producer_version,
-                        timestamp: envelope.timestamp,
-                        payload: EventPayload::Shell(redacted_event.clone()),
-                        probe_tag: envelope.probe_tag.clone(),
-                    };
-                    if let Err(fe) = storage::write_fallback_jsonl(
-                        &state.config.fallback_dir(),
-                        &redacted_envelope,
-                    ) {
-                        error!("fallback write failed: {}", fe);
+                    Ok(id) if id >= 0 => {
+                        let entry = source_latest_ts.entry(source).or_insert(0);
+                        if event_ts > *entry {
+                            *entry = event_ts;
+                        }
+                        *source_counts.entry(source).or_insert(0) += 1;
                     }
-                    #[cfg(feature = "otel")]
-                    metrics::FALLBACK_WRITES.add(1, &[]);
-                    state.drop_count.fetch_add(1, Ordering::Relaxed);
+                    Ok(_) => {} // duplicate envelope_id, already stored
+                    Err(e) => {
+                        warn!("event insert failed, falling back: {}", e);
+                        source_errors
+                            .entry(source)
+                            .or_insert_with(|| e.to_string().chars().take(512).collect());
+                        let redacted_envelope = EventEnvelope {
+                            envelope_id: envelope.envelope_id,
+                            producer_version: envelope.producer_version,
+                            timestamp: envelope.timestamp,
+                            payload: EventPayload::Shell(redacted_event.clone()),
+                            probe_tag: envelope.probe_tag.clone(),
+                        };
+                        if let Err(fe) = storage::write_fallback_jsonl(
+                            &state.config.fallback_dir(),
+                            &redacted_envelope,
+                        ) {
+                            error!("fallback write failed: {}", fe);
+                        }
+                        #[cfg(feature = "otel")]
+                        metrics::FALLBACK_WRITES.add(1, &[]);
+                        state.drop_count.fetch_add(1, Ordering::Relaxed);
+                    }
                 }
             }
             EventPayload::Browser(browser_event) => {
+                let event_ts = envelope.timestamp.timestamp_millis();
                 let eid = envelope.envelope_id.to_string();
-                if let Err(e) = storage::insert_browser_event(
+                match storage::insert_browser_event(
                     &db,
                     browser_event,
-                    envelope.timestamp.timestamp_millis(),
+                    event_ts,
                     Some(&eid),
                     envelope.probe_tag.as_deref(),
                 ) {
-                    warn!("browser event insert failed, falling back: {}", e);
-                    if let Err(fe) =
-                        storage::write_fallback_jsonl(&state.config.fallback_dir(), envelope)
-                    {
-                        error!("fallback write failed: {}", fe);
+                    Ok(id) if id >= 0 => {
+                        let entry = source_latest_ts.entry("browser").or_insert(0);
+                        if event_ts > *entry {
+                            *entry = event_ts;
+                        }
+                        *source_counts.entry("browser").or_insert(0) += 1;
                     }
-                    #[cfg(feature = "otel")]
-                    metrics::FALLBACK_WRITES.add(1, &[]);
-                    state.drop_count.fetch_add(1, Ordering::Relaxed);
+                    Ok(_) => {} // duplicate envelope_id
+                    Err(e) => {
+                        warn!("browser event insert failed, falling back: {}", e);
+                        source_errors
+                            .entry("browser")
+                            .or_insert_with(|| e.to_string().chars().take(512).collect());
+                        if let Err(fe) =
+                            storage::write_fallback_jsonl(&state.config.fallback_dir(), envelope)
+                        {
+                            error!("fallback write failed: {}", fe);
+                        }
+                        #[cfg(feature = "otel")]
+                        metrics::FALLBACK_WRITES.add(1, &[]);
+                        state.drop_count.fetch_add(1, Ordering::Relaxed);
+                    }
                 }
             }
             _ => {
                 tracing::warn!("unknown event payload type, skipping");
             }
+        }
+    }
+
+    // Batch-upsert source_health SUCCESS paths for any source with persisted events.
+    // Run independently of the error path so that mixed-outcome batches (some inserts
+    // succeeded, one failed) still advance last_event_ts and rolling counters.  The error
+    // path runs afterwards and increments consecutive_failures, netting to 1 for a partial
+    // failure rather than zero.
+    for (source, latest_ts) in &source_latest_ts {
+        let count_val = source_counts.get(source).copied().unwrap_or(0);
+        match db.execute(
+            "UPDATE source_health
+             SET last_event_ts        = MAX(COALESCE(last_event_ts, 0), ?1),
+                 last_success_ts      = ?2,
+                 events_last_1h       = events_last_1h  + ?3,
+                 events_last_24h      = events_last_24h + ?3,
+                 consecutive_failures = 0,
+                 updated_at           = ?2
+             WHERE source = ?4",
+            rusqlite::params![latest_ts, now_ms, count_val, source],
+        ) {
+            Err(e) if !crate::is_missing_source_health_table_error(&e) => {
+                warn!("source_health success update failed for {source}: {e}");
+            }
+            _ => {}
+        }
+    }
+    // Batch-upsert source_health ERROR paths.
+    for (source, err_msg) in &source_errors {
+        match db.execute(
+            "UPDATE source_health
+             SET last_error_ts        = ?1,
+                 last_error_msg       = ?2,
+                 consecutive_failures = consecutive_failures + 1,
+                 updated_at           = ?1
+             WHERE source = ?3",
+            rusqlite::params![now_ms, err_msg, source],
+        ) {
+            Err(e) if !crate::is_missing_source_health_table_error(&e) => {
+                warn!("source_health error update failed for {source}: {e}");
+            }
+            _ => {}
+        }
+    }
+    // Liveness stamp for all sources (even those with no events this tick).
+    for source in ["shell", "claude-tool", "browser"] {
+        if source_errors.contains_key(source) {
+            continue;
+        }
+        match db.execute(
+            "UPDATE source_health SET last_success_ts = ?1, updated_at = ?1 WHERE source = ?2",
+            rusqlite::params![now_ms, source],
+        ) {
+            Err(e) if !crate::is_missing_source_health_table_error(&e) => {
+                warn!("source_health liveness update failed for {source}: {e}");
+            }
+            _ => {}
         }
     }
 
@@ -413,6 +523,82 @@ pub async fn flush_events(state: &Arc<DaemonState>) -> usize {
     }
 
     count
+}
+
+struct RollingCounts {
+    shell_1h: i64,
+    shell_24h: i64,
+    tool_1h: i64,
+    tool_24h: i64,
+    session_1h: i64,
+    session_24h: i64,
+    browser_1h: i64,
+    browser_24h: i64,
+}
+
+async fn recompute_rolling_counts(state: Arc<DaemonState>) {
+    let mut interval = tokio::time::interval(Duration::from_secs(300));
+    interval.tick().await; // discard first immediate tick so we start ~5 min after daemon start
+    loop {
+        interval.tick().await;
+        let counts = {
+            let db = state.read_db.lock().await;
+            let read = |sql: &str| -> rusqlite::Result<i64> { db.query_row(sql, [], |r| r.get(0)) };
+            let result: rusqlite::Result<RollingCounts> = (|| {
+                Ok(RollingCounts {
+                    shell_1h: read(
+                        "SELECT COUNT(*) FROM events WHERE source_kind='shell' AND timestamp>(unixepoch('now')-3600)*1000",
+                    )?,
+                    shell_24h: read(
+                        "SELECT COUNT(*) FROM events WHERE source_kind='shell' AND timestamp>(unixepoch('now')-86400)*1000",
+                    )?,
+                    tool_1h: read(
+                        "SELECT COUNT(*) FROM events WHERE source_kind='claude-tool' AND timestamp>(unixepoch('now')-3600)*1000",
+                    )?,
+                    tool_24h: read(
+                        "SELECT COUNT(*) FROM events WHERE source_kind='claude-tool' AND timestamp>(unixepoch('now')-86400)*1000",
+                    )?,
+                    session_1h: read(
+                        "SELECT COUNT(*) FROM claude_sessions WHERE start_time>(unixepoch('now')-3600)*1000",
+                    )?,
+                    session_24h: read(
+                        "SELECT COUNT(*) FROM claude_sessions WHERE start_time>(unixepoch('now')-86400)*1000",
+                    )?,
+                    browser_1h: read(
+                        "SELECT COUNT(*) FROM browser_events WHERE timestamp>(unixepoch('now')-3600)*1000",
+                    )?,
+                    browser_24h: read(
+                        "SELECT COUNT(*) FROM browser_events WHERE timestamp>(unixepoch('now')-86400)*1000",
+                    )?,
+                })
+            })();
+            match result {
+                Ok(v) => v,
+                Err(e) => {
+                    tracing::debug!("recompute_rolling_counts read failed, skipping: {e}");
+                    continue;
+                }
+            }
+        };
+        let db = state.write_db.lock().await;
+        for (source, c1h, c24h) in [
+            ("shell", counts.shell_1h, counts.shell_24h),
+            ("claude-tool", counts.tool_1h, counts.tool_24h),
+            ("claude-session", counts.session_1h, counts.session_24h),
+            ("browser", counts.browser_1h, counts.browser_24h),
+        ] {
+            match db.execute(
+                "UPDATE source_health SET events_last_1h=?1, events_last_24h=?2, \
+                 updated_at=unixepoch('now')*1000 WHERE source=?3",
+                rusqlite::params![c1h, c24h, source],
+            ) {
+                Err(e) if !crate::is_missing_source_health_table_error(&e) => {
+                    warn!("source_health rolling-count update failed for {source}: {e}");
+                }
+                _ => {}
+            }
+        }
+    }
 }
 
 pub async fn run(config: HippoConfig) -> Result<()> {
@@ -582,6 +768,8 @@ pub async fn run(config: HippoConfig) -> Result<()> {
         }
     });
 
+    let recompute_task = tokio::spawn(recompute_rolling_counts(Arc::clone(&state)));
+
     // Bind listener
     let listener = UnixListener::bind(&socket_path)?;
     info!("daemon listening on {:?}", socket_path);
@@ -622,6 +810,9 @@ pub async fn run(config: HippoConfig) -> Result<()> {
     if let Err(e) = flush_task.await {
         warn!("flush task join error: {}", e);
     }
+
+    recompute_task.abort();
+    let _ = recompute_task.await; // JoinError::Cancelled is expected
 
     // Final drain for events buffered by connections that finished after the
     // flush task exited. No race: flush task is already joined above.

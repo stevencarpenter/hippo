@@ -218,6 +218,7 @@ CREATE INDEX IF NOT EXISTS idx_queue_pending ON enrichment_queue (status, priori
 WHERE status = 'pending';
 CREATE INDEX IF NOT EXISTS idx_claude_sessions_cwd ON claude_sessions (cwd);
 CREATE INDEX IF NOT EXISTS idx_claude_sessions_session ON claude_sessions (session_id);
+CREATE INDEX IF NOT EXISTS idx_claude_sessions_start_time ON claude_sessions (start_time DESC);
 CREATE INDEX IF NOT EXISTS idx_claude_queue_pending ON claude_enrichment_queue (status, priority)
 WHERE status = 'pending';
 

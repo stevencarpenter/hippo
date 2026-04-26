@@ -30,8 +30,6 @@ Violating any invariant below breaks autonomous execution:
 
 **Milestone M1** ✅ — doctor reports per-source staleness; outage diagnosable via `SELECT * FROM source_health` in a single query.
 
-**Known transitional issue:** Check 8 (watchdog heartbeat) ships on v0.16.0 but always returns `[--] no data` until T-1 (watchdog) lands. Flag this in v0.17 release notes.
-
 ---
 
 # Task Queue (Execute In Order)
@@ -71,7 +69,7 @@ Violating any invariant below breaks autonomous execution:
 
 ## T-2 · P1.1b — Watchdog launchd install + `hippo alarms` CLI
 
-- **Status:** review
+- **Status:** done
 - **Phase:** P1
 - **Depends on:** T-1 (done)
 - **Branch:** `feat/p1.1b-watchdog-install`
