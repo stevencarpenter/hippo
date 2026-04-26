@@ -104,3 +104,61 @@ pub static FALLBACK_RECOVERED: LazyLock<Counter<u64>> = LazyLock::new(|| {
         .with_description("Events recovered from fallback")
         .build()
 });
+
+// --- Watcher ---
+
+pub static WATCHER_SEGMENTS_INGESTED: LazyLock<Counter<u64>> = LazyLock::new(|| {
+    METER
+        .u64_counter("hippo.watcher.segments.ingested")
+        .with_description("Segments inserted by the FS watcher")
+        .build()
+});
+
+pub static WATCHER_PROCESS_DURATION_MS: LazyLock<Histogram<f64>> = LazyLock::new(|| {
+    METER
+        .f64_histogram("hippo.watcher.process.duration")
+        .with_description("Per-file processing time in the FS watcher")
+        .with_unit("ms")
+        .build()
+});
+
+pub static WATCHER_EVENTS_DROPPED: LazyLock<Counter<u64>> = LazyLock::new(|| {
+    METER
+        .u64_counter("hippo.watcher.events.dropped")
+        .with_description("FSEvents notifications dropped due to full channel")
+        .build()
+});
+
+// --- Probe ---
+
+/// Increment once per probe run; use `source` and `ok` attributes to slice.
+pub static PROBE_RUN: LazyLock<Counter<u64>> = LazyLock::new(|| {
+    METER
+        .u64_counter("hippo.probe.run")
+        .with_description("Synthetic probe executions, labelled by source and ok")
+        .build()
+});
+
+pub static PROBE_LAG_MS: LazyLock<Histogram<f64>> = LazyLock::new(|| {
+    METER
+        .f64_histogram("hippo.probe.lag")
+        .with_description("Probe round-trip lag from submission to DB row")
+        .with_unit("ms")
+        .build()
+});
+
+// --- Watchdog ---
+
+pub static WATCHDOG_RUN: LazyLock<Counter<u64>> = LazyLock::new(|| {
+    METER
+        .u64_counter("hippo.watchdog.run")
+        .with_description("Watchdog evaluation cycles completed")
+        .build()
+});
+
+pub static WATCHDOG_ALARMS_FIRED: LazyLock<Counter<u64>> = LazyLock::new(|| {
+    METER
+        .u64_counter("hippo.watchdog.alarms.fired")
+        .with_description("New capture alarms inserted, labelled by invariant_id")
+        .build()
+});

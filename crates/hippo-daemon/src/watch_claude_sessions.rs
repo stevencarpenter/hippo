@@ -200,6 +200,12 @@ fn process_file(path: &Path, state: &mut FileState, conn: &Connection) -> Result
         save_offset(conn, path, state).unwrap_or_else(|e| {
             warn!(path = %path.display(), %e, "watcher: failed to save offset");
         });
+        #[cfg(feature = "otel")]
+        if inserted > 0 {
+            crate::metrics::WATCHER_SEGMENTS_INGESTED.add(inserted as u64, &[]);
+            crate::metrics::WATCHER_PROCESS_DURATION_MS
+                .record(start.elapsed().as_secs_f64() * 1000.0, &[]);
+        }
     }
 
     Ok(inserted)
@@ -399,6 +405,8 @@ pub async fn run(config: &HippoConfig) -> Result<()> {
                 // reparse on the next write catches anything missed); Closed means shutdown.
                 if let Err(tokio::sync::mpsc::error::TrySendError::Full(_)) = tx.try_send(e) {
                     debug!("watcher: FSEvents channel full; event dropped");
+                    #[cfg(feature = "otel")]
+                    crate::metrics::WATCHER_EVENTS_DROPPED.add(1, &[]);
                 }
             }
         },
