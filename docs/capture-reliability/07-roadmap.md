@@ -1,6 +1,6 @@
 # Capture-Reliability Overhaul: Task Queue
 
-**Status (2026-04-25):** P0, P1, P2 shipped. Three small P3 tasks remain (T-7, T-8, T-9), all currently blocked on a decision about M3 (see [P2 Phase Gate](#p2-phase-gate--milestone-m3)).
+**Status (2026-04-26):** P0, P1, P2 shipped. T-7 shipped in PR #88. Two small P3 tasks remain (T-8, T-9); the M3 decision is resolved (see [m3-decision.md](m3-decision.md)).
 
 **Workflow note:** This was originally framed as a Ralph Loop autonomous queue (T-1 through T-6 were eligible to be picked up by a loop). In practice, every task shipped via standard PR review by hand — the Ralph Loop framing is now retired. The doc remains useful as an ordered tracker of what's done, what's left, and what gates each step. Status fields and DoD checkboxes below reflect the actual state of `main`, not aspirational planning.
 

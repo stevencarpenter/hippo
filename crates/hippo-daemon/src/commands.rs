@@ -2306,10 +2306,12 @@ fn check_capture_mode(config: &HippoConfig) {
                 "     The watcher path is the documented default since T-7 and is significantly"
             );
             println!("     more reliable. The tmux tailer is slated for removal in T-8.");
-            println!(
-                "     Switch:  hippo config set capture.claude_session_mode watcher && hippo daemon restart"
-            );
-            println!("     DOC:     docs/capture-reliability/06-claude-session-watcher.md");
+            println!("     Switch (run all three — `daemon install --force` is required to");
+            println!("     bootstrap the watcher LaunchAgent on hosts that pre-date T-5):");
+            println!("       hippo daemon install --force");
+            println!("       hippo config set capture.claude_session_mode watcher");
+            println!("       hippo daemon restart");
+            println!("     DOC: docs/capture-reliability/06-claude-session-watcher.md");
         }
     }
 }

@@ -1,6 +1,6 @@
 # M3 Decision: how do we validate the watcher before flipping the default?
 
-**Status:** resolved 2026-04-25 — proceeded with **Option D** (skip the formal validation step) after a query session against the live DB on `main` produced ground-truth evidence equivalent to what Option C would have produced. T-7 ships next.
+**Status:** resolved 2026-04-25 — proceeded with **Option D** (skip the formal validation step) after a query session against the live DB on `main` produced ground-truth evidence equivalent to what Option C would have produced. T-7 shipped in PR #88 on 2026-04-25.
 
 **Outcome summary:**
 - Last 7 days: 466 JSONL files modified on disk; **463 captured by the watcher** (99.36%).
