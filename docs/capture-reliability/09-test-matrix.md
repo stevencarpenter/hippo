@@ -30,7 +30,7 @@ a one-line change rather than "remember to write the test later".
 |---|---|---|---|---|---|---|
 | F-1 | tmux hook `new-window` without `-t` lands in wrong session | #48 (1330113) | shell integration | (was `tests/shell/test-claude-session-hook.sh`) | retired in T-8 (tmux path deleted; failure mode no longer reachable) | I-2 |
 | F-2 | Firefox extension `dist/` absent at runtime | #54: build pipeline produced no `dist/*.js`; `hippo doctor` didn't flag it | rust integration (doctor check) | `crates/hippo-daemon/src/commands.rs` `#[cfg(test)] mod tests` | existing (#54) | I-4 |
-| F-3 | `hippo ingest claude-session --batch` fires but `claude_sessions` rows are 0 | #58 | rust integration | `crates/hippo-daemon/tests/claude_session.rs` | added-by-#58-fix (in-flight, worktree `agent-ac306c6f`) | I-2 |
+| F-3 | `hippo ingest claude-session` fires but `claude_sessions` rows are 0 | #58 | rust integration | `crates/hippo-daemon/tests/claude_session.rs` | added-by-#58-fix (in-flight, worktree `agent-ac306c6f`) | I-2 |
 | F-4 | Redaction regex false-positives drop or corrupt legitimate events | #52 | rust unit (negative cases) | `crates/hippo-core/src/redaction.rs` (`mod tests`) | new (this PR) | I-5 |
 | F-5 | `claade` / other wrappers break PID-chain assumption | #50 | shell integration | (was `tests/shell/test-hook-pid-ppid.sh`) | retired in T-8 (the slim hook no longer walks PIDs) | I-2 |
 | F-6 | Native Messaging manifest path drifts after binary move | user moves binary; doctor never cross-checks manifest `path` field | rust integration (doctor check) | `crates/hippo-daemon/tests/nm_manifest_doctor.rs` | new (this PR) — skeleton `#[ignore]` until doctor grows the check | source-change-required |

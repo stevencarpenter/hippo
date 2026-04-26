@@ -312,7 +312,7 @@ The second clause (probe freshness) is still meaningful — it confirms T-6 prob
 - **Status:** done — shipped via PR #89
 - **Phase:** P3
 - **Depends on:** T-7 (done). The original 7-day soak was dropped on 2026-04-25 — the M3 evidence already showed the watcher was strictly better than the tailer, and an additional soak would have only re-confirmed that.
-- **Branch:** `feat/p3.2-hook-simplify` (merged to `main`)
+- **Branch:** `feat/p3.2-hook-simplify` (in PR #89)
 - **Files:**
   - `shell/claude-session-hook.sh` (slimmed from 127 → 14 lines, no-op log)
   - `tests/shell/test-claude-session-hook.sh` (deleted)

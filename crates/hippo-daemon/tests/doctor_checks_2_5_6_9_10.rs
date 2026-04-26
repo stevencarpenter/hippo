@@ -190,7 +190,8 @@ mod doctor {
             // File is fresh (just written) — mtime < 5min by default.
 
             // Do NOT insert any row into claude_sessions — session is "missing".
-            let fail = check_claude_session_db(&tmp.path().join("projects"), &conn, false);
+            let fail =
+                check_claude_session_db(&tmp.path().join("projects"), tmp.path(), &conn, false);
             assert_eq!(fail, 1, "active session absent from DB must yield fail=1");
         }
 
@@ -207,7 +208,8 @@ mod doctor {
 
             insert_session_row(&conn, session_id);
 
-            let fail = check_claude_session_db(&tmp.path().join("projects"), &conn, false);
+            let fail =
+                check_claude_session_db(&tmp.path().join("projects"), tmp.path(), &conn, false);
             assert_eq!(fail, 0, "active session in DB must pass");
         }
 
@@ -223,7 +225,8 @@ mod doctor {
             fs::write(&jsonl, "{}\n").unwrap();
             back_date_file(&jsonl, Duration::from_secs(600)); // 10 minutes old
 
-            let fail = check_claude_session_db(&tmp.path().join("projects"), &conn, false);
+            let fail =
+                check_claude_session_db(&tmp.path().join("projects"), tmp.path(), &conn, false);
             assert_eq!(fail, 0, "no active sessions → [--], not a failure");
         }
 
@@ -241,7 +244,8 @@ mod doctor {
                 fs::write(&jsonl, "{}\n").unwrap();
             }
 
-            let fail = check_claude_session_db(&tmp.path().join("projects"), &conn, false);
+            let fail =
+                check_claude_session_db(&tmp.path().join("projects"), tmp.path(), &conn, false);
             assert_eq!(
                 fail, 3,
                 "fail_count must be capped at 3 regardless of missing count"
@@ -253,7 +257,8 @@ mod doctor {
             let tmp = tempdir().unwrap();
             let conn = open_test_db(tmp.path());
 
-            let fail = check_claude_session_db(&tmp.path().join("no-such-dir"), &conn, false);
+            let fail =
+                check_claude_session_db(&tmp.path().join("no-such-dir"), tmp.path(), &conn, false);
             assert_eq!(fail, 0, "non-existent projects dir → [--], not a failure");
         }
 
@@ -275,7 +280,8 @@ mod doctor {
             fs::write(&jsonl, "{}\n").unwrap();
             // File is fresh — NOT in the DB.
 
-            let fail = check_claude_session_db(&tmp.path().join("projects"), &conn, false);
+            let fail =
+                check_claude_session_db(&tmp.path().join("projects"), tmp.path(), &conn, false);
             assert_eq!(fail, 1, "nested subagent JSONL absent from DB must fail");
         }
 
@@ -293,7 +299,8 @@ mod doctor {
             fs::write(&jsonl, "{}\n").unwrap();
             insert_session_row(&conn, session_id);
 
-            let fail = check_claude_session_db(&tmp.path().join("projects"), &conn, false);
+            let fail =
+                check_claude_session_db(&tmp.path().join("projects"), tmp.path(), &conn, false);
             assert_eq!(fail, 0, "nested subagent JSONL present in DB must pass");
         }
 
@@ -324,7 +331,7 @@ mod doctor {
             write_hook_log(&log, &[10, 60, 120]);
 
             // No claude_sessions rows → 0 DB rows in last 1h.
-            let fail = check_session_hook_log(&log, &conn, false);
+            let fail = check_session_hook_log(&log, tmp.path(), &conn, false);
             assert_eq!(fail, 1, "≥3 invocations with 0 DB rows must fail");
         }
 
@@ -336,7 +343,7 @@ mod doctor {
             let log = tmp.path().join("session-hook-debug.log");
             write_hook_log(&log, &[10, 60]); // only 2 invocations
 
-            let fail = check_session_hook_log(&log, &conn, false);
+            let fail = check_session_hook_log(&log, tmp.path(), &conn, false);
             assert_eq!(fail, 0, "< 3 invocations with 0 DB rows is [WW], not [!!]");
         }
 
@@ -347,7 +354,7 @@ mod doctor {
 
             let log = tmp.path().join("session-hook-debug.log");
             // File does not exist.
-            let fail = check_session_hook_log(&log, &conn, false);
+            let fail = check_session_hook_log(&log, tmp.path(), &conn, false);
             assert_eq!(
                 fail, 0,
                 "missing log file → [--] no activity, not a failure"
@@ -364,7 +371,7 @@ mod doctor {
 
             insert_session_row(&conn, "recent-session-abc");
 
-            let fail = check_session_hook_log(&log, &conn, false);
+            let fail = check_session_hook_log(&log, tmp.path(), &conn, false);
             assert_eq!(fail, 0, "invocations + DB rows → [OK]");
         }
 
@@ -377,7 +384,7 @@ mod doctor {
             // 5 lines but all older than 1h.
             write_hook_log(&log, &[3700, 4000, 5000, 6000, 7200]);
 
-            let fail = check_session_hook_log(&log, &conn, false);
+            let fail = check_session_hook_log(&log, tmp.path(), &conn, false);
             assert_eq!(fail, 0, "invocations outside 1h window should not count");
         }
 
@@ -578,8 +585,8 @@ mod doctor {
             let start = std::time::Instant::now();
 
             let _ = check_nm_manifest(&manifest, false);
-            let _ = check_claude_session_db(&tmp.path().join("projects"), &conn, false);
-            let _ = check_session_hook_log(&log, &conn, false);
+            let _ = check_claude_session_db(&tmp.path().join("projects"), tmp.path(), &conn, false);
+            let _ = check_session_hook_log(&log, tmp.path(), &conn, false);
             let _ = check_fallback_age(&fallback, true, false);
             let _ = check_schema_version(&conn, Some(&brain_json), false);
 

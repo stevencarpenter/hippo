@@ -959,14 +959,19 @@ pub async fn handle_doctor(config: &HippoConfig, explain: bool) -> Result<()> {
 
         // Check 5: active JSONL sessions vs claude_sessions table
         if let Some(home) = dirs::home_dir() {
-            fail_count += check_claude_session_db(&home.join(".claude/projects"), &conn, explain);
+            fail_count += check_claude_session_db(
+                &home.join(".claude/projects"),
+                &config.storage.data_dir,
+                &conn,
+                explain,
+            );
         } else {
             println!("[--] {:<29}  no home dir", "claude-session DB");
         }
 
         // Check 6: session-hook debug log vs claude_sessions rows (last 1h)
         let hook_log = config.storage.data_dir.join("session-hook-debug.log");
-        fail_count += check_session_hook_log(&hook_log, &conn, explain);
+        fail_count += check_session_hook_log(&hook_log, &config.storage.data_dir, &conn, explain);
 
         // Check 10: daemon PRAGMA user_version vs brain expected_schema_version
         fail_count += check_schema_version(&conn, brain_json.as_ref(), explain);
@@ -1947,6 +1952,7 @@ fn collect_active_jsonls(
 /// Returns fail_count capped at 3.
 pub fn check_claude_session_db(
     projects_dir: &std::path::Path,
+    data_dir: &std::path::Path,
     db: &rusqlite::Connection,
     explain: bool,
 ) -> u32 {
@@ -1996,11 +2002,13 @@ pub fn check_claude_session_db(
                 LABEL, short, fname
             );
             if explain && missing == 0 {
+                let log_path = data_dir.join("claude-session-watcher.log");
                 println!(
-                    "     CAUSE:  Watcher service didn't ingest this JSONL (FSEvents miss, watcher down, or extract_segments produced 0 rows)"
+                    "     CAUSE:  Watcher hasn't created a row for this active JSONL (watcher down, FSEvents missed the growth event, or the file has no extractable segments yet)"
                 );
                 println!(
-                    "     FIX:    launchctl print gui/$(id -u)/com.hippo.claude-session-watcher; tail -f ~/.local/share/hippo/claude-session-watcher.log"
+                    "     FIX:    launchctl print gui/$(id -u)/com.hippo.claude-session-watcher; tail -f {}",
+                    log_path.display()
                 );
                 println!("     DOC:    docs/capture-reliability/03-doctor-upgrades.md");
             }
@@ -2074,6 +2082,7 @@ fn count_hook_invocations_in_last_1h(log_path: &std::path::Path) -> i64 {
 /// `log_path` = `$DATA_DIR/session-hook-debug.log` (injectable for tests).
 pub fn check_session_hook_log(
     log_path: &std::path::Path,
+    data_dir: &std::path::Path,
     db: &rusqlite::Connection,
     explain: bool,
 ) -> u32 {
@@ -2117,11 +2126,13 @@ pub fn check_session_hook_log(
             LABEL, invocations
         );
         if explain {
+            let watcher_log = data_dir.join("claude-session-watcher.log");
             println!(
                 "     CAUSE:  Hook is firing but the watcher is not producing claude_sessions rows"
             );
             println!(
-                "     FIX:    launchctl print gui/$(id -u)/com.hippo.claude-session-watcher; tail -f ~/.local/share/hippo/claude-session-watcher.log"
+                "     FIX:    launchctl print gui/$(id -u)/com.hippo.claude-session-watcher; tail -f {}",
+                watcher_log.display()
             );
             println!("     DOC:    docs/capture-reliability/03-doctor-upgrades.md");
         }
