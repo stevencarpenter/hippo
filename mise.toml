@@ -441,6 +441,55 @@ run = "cargo run --bin hippo -- entities"
 
 # ── Service management ───────────────────────────────────────────────
 
+[tasks."install:verify-brain-imports"]
+description = "Verify deployed brain venv can import its critical dependencies"
+run = '''
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Catches the half-installed-namespace failure mode where `uv sync` reports
+# success but the package contents weren't fully extracted. Observed on
+# macOS arm64 with cached wheels: dist-info present, namespace empty, every
+# dependent dashboard goes dark with no error message anywhere.
+#
+# The fix is `uv sync --reinstall`, which we'll run automatically once
+# before bailing — install should self-heal on the common case rather than
+# leave the user to debug it.
+
+BRAIN_INSTALL_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/hippo-brain"
+PROBE='
+import sys
+try:
+    from opentelemetry import metrics, trace
+    from opentelemetry.sdk.metrics import MeterProvider  # noqa: F401
+    from opentelemetry.sdk.trace import TracerProvider  # noqa: F401
+    from opentelemetry.exporter.otlp.proto.http.metric_exporter import OTLPMetricExporter  # noqa: F401
+    import psutil  # noqa: F401
+    import sqlite_vec  # noqa: F401
+    sys.exit(0)
+except Exception as exc:
+    print(f"brain import probe failed: {exc!r}", file=sys.stderr)
+    sys.exit(1)
+'
+
+if (cd "$BRAIN_INSTALL_DIR" && uv run --no-sync python -c "$PROBE"); then
+    echo "  Brain imports OK"
+    exit 0
+fi
+
+echo "==> Brain imports failed; running uv sync --reinstall to repair..."
+(cd "$BRAIN_INSTALL_DIR" && uv sync --reinstall)
+
+if (cd "$BRAIN_INSTALL_DIR" && uv run --no-sync python -c "$PROBE"); then
+    echo "  Brain imports OK after reinstall"
+    exit 0
+fi
+
+echo "ERROR: brain venv at $BRAIN_INSTALL_DIR is unusable even after --reinstall."
+echo "Manual recovery: rm -rf '$BRAIN_INSTALL_DIR/.venv' && cd '$BRAIN_INSTALL_DIR' && uv sync"
+exit 1
+'''
+
 [tasks.install]
 description = "Full clean-install: stop, build, install, configure, start, verify"
 run = '''
@@ -552,7 +601,15 @@ rsync -a --delete \
 # but must land under $BRAIN_INSTALL_DIR/shell/ so doctor and the Claude hook find it.
 rsync -a --delete shell/ "$BRAIN_INSTALL_DIR/shell/"
 echo "==> Rebuilding brain venv at ${BRAIN_INSTALL_DIR}..."
+# `uv sync` against a stale .venv has, in the wild, left dist-info present
+# while leaving the namespace package half-extracted (observed 2026-04-26 on
+# macOS arm64: opentelemetry/{exporter,instrumentation,proto,sdk} present but
+# opentelemetry/{api,metrics,trace} missing). A subsequent `--reinstall`
+# repaired it. Rather than risk that race in production, nuke the venv first
+# so uv builds it from scratch — and verify imports below.
+rm -rf "$BRAIN_INSTALL_DIR/.venv"
 (cd "$BRAIN_INSTALL_DIR" && uv sync)
+mise run install:verify-brain-imports
 
 # ── 5. Install plists + symlink ─────────────────────────────────────
 echo "==> Installing LaunchAgents + symlink..."

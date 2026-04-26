@@ -941,8 +941,8 @@ pub async fn handle_doctor(config: &HippoConfig, explain: bool) -> Result<()> {
     // the seconds-level `check_source_staleness` below.
     fail_count += check_source_freshness(config);
 
-    // Check OpenTelemetry configuration
-    fail_count += check_otel_status(config, &client).await;
+    // Check OpenTelemetry configuration (incl. brain self-reported status)
+    fail_count += check_otel_status(config, &client, brain_json.as_ref()).await;
 
     // Check GitHub CI-ingest configuration
     fail_count += check_github_source(config);
@@ -1173,7 +1173,11 @@ fn format_duration_ms(ms: i64) -> String {
     format!("{days}d")
 }
 
-async fn check_otel_status(config: &HippoConfig, client: &reqwest::Client) -> u32 {
+async fn check_otel_status(
+    config: &HippoConfig,
+    client: &reqwest::Client,
+    brain_json: Option<&serde_json::Value>,
+) -> u32 {
     // Check if OTel feature is compiled in
     #[cfg(feature = "otel")]
     let otel_compiled = true;
@@ -1197,8 +1201,7 @@ async fn check_otel_status(config: &HippoConfig, client: &reqwest::Client) -> u3
         .map(|r| r.status().is_success())
         .unwrap_or(false);
 
-    // Determine status and provide actionable feedback
-    match (config_enabled, collector_reachable) {
+    let mut fail_count = match (config_enabled, collector_reachable) {
         (true, true) => {
             println!("[OK] OpenTelemetry: enabled and collector reachable");
             0
@@ -1223,6 +1226,48 @@ async fn check_otel_status(config: &HippoConfig, client: &reqwest::Client) -> u3
             println!("[--] OpenTelemetry: disabled (start with: mise run otel:up)");
             0
         }
+    };
+
+    fail_count += check_brain_telemetry_status(brain_json);
+
+    fail_count
+}
+
+/// Surface the brain's self-reported telemetry state. Catches the failure
+/// mode where the brain process is alive and reports `enrichment_running:
+/// true` but ships zero metrics because its venv was never re-synced after a
+/// pyproject change. This is precisely the silent regression that left the
+/// hippo-enrichment dashboard dark on 2026-04-26.
+///
+/// Three outcomes (return 1 only on the configured-on-but-dead case):
+/// - `telemetry_enabled = true,  telemetry_active = true`  → OK, no print
+/// - `telemetry_enabled = true,  telemetry_active = false` → fail loud
+/// - `telemetry_enabled = false`                           → no-op
+/// - either field missing (older brain)                    → unknown, no-op
+fn check_brain_telemetry_status(brain_json: Option<&serde_json::Value>) -> u32 {
+    let Some(json) = brain_json else { return 0 };
+    let enabled = json.get("telemetry_enabled").and_then(|v| v.as_bool());
+    let active = json.get("telemetry_active").and_then(|v| v.as_bool());
+
+    match (enabled, active) {
+        (Some(true), Some(true)) => {
+            println!("[OK] Brain telemetry: initialized and active");
+            0
+        }
+        (Some(true), Some(false)) => {
+            println!("[!!] Brain telemetry: HIPPO_OTEL_ENABLED=1 but providers not initialized");
+            println!("     CAUSE:  Deployed brain venv is out of sync with pyproject.toml,");
+            println!("             or the OTel package namespace was half-installed.");
+            println!("     FIX:    uv sync --project ~/.local/share/hippo-brain --reinstall");
+            println!("             then: launchctl kickstart -k gui/$(id -u)/com.hippo.brain");
+            println!("     DOC:    docs/capture-reliability/03-doctor-upgrades.md");
+            1
+        }
+        (Some(false), _) => 0,
+        // Older brain without the new health fields — treat as unknown.
+        // Don't fail; the existing collector-reachability check above is a
+        // close-enough proxy for installs that haven't been upgraded yet.
+        _ => 0,
     }
 }
 
@@ -3119,5 +3164,54 @@ replacement = "***"
         let fail = check_github_source_with(&config, || true);
         // At least the empty-repos fail (maybe also plist-not-installed in CI).
         assert!(fail >= 1);
+    }
+
+    #[test]
+    fn test_check_brain_telemetry_status_no_brain() {
+        // Brain unreachable → no info to report → no fail.
+        assert_eq!(check_brain_telemetry_status(None), 0);
+    }
+
+    #[test]
+    fn test_check_brain_telemetry_status_disabled() {
+        // telemetry_enabled=false → no fail regardless of active state.
+        let json = serde_json::json!({
+            "telemetry_enabled": false,
+            "telemetry_active": false,
+        });
+        assert_eq!(check_brain_telemetry_status(Some(&json)), 0);
+    }
+
+    #[test]
+    fn test_check_brain_telemetry_status_active() {
+        let json = serde_json::json!({
+            "telemetry_enabled": true,
+            "telemetry_active": true,
+        });
+        assert_eq!(check_brain_telemetry_status(Some(&json)), 0);
+    }
+
+    #[test]
+    fn test_check_brain_telemetry_status_enabled_but_inactive_fails() {
+        // The exact failure mode from the 2026-04-26 dashboard outage:
+        // brain alive, env says telemetry on, but the venv was out of sync
+        // and providers never initialized.
+        let json = serde_json::json!({
+            "telemetry_enabled": true,
+            "telemetry_active": false,
+        });
+        assert_eq!(check_brain_telemetry_status(Some(&json)), 1);
+    }
+
+    #[test]
+    fn test_check_brain_telemetry_status_older_brain_unknown() {
+        // Older brain that doesn't yet expose telemetry_{enabled,active}.
+        // Don't fail — the daemon-side collector check above is a close-enough
+        // proxy until the brain is upgraded.
+        let json = serde_json::json!({
+            "status": "ok",
+            "version": "0.16.0",
+        });
+        assert_eq!(check_brain_telemetry_status(Some(&json)), 0);
     }
 }

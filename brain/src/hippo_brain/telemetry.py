@@ -1,7 +1,10 @@
 """OpenTelemetry initialization for Hippo Brain services.
 
 Gated behind HIPPO_OTEL_ENABLED=1 environment variable.
-When disabled or when OTel packages are not installed, all functions are no-ops.
+When the gate is unset, all functions are no-ops. When the gate is set
+explicitly but the OTel Python packages cannot be imported (e.g., a
+half-installed venv after an upgrade), ``init_telemetry`` raises so the
+service fails loud rather than silently shipping zero metrics.
 """
 
 import logging
@@ -11,9 +14,28 @@ logger = logging.getLogger("hippo_brain.telemetry")
 
 DEFAULT_ENDPOINT = "http://localhost:4318"
 
+# Set to True only after init_telemetry() successfully wires up providers.
+# Surfaced via is_telemetry_active() so the /health endpoint and `hippo doctor`
+# can distinguish "configured-on AND running" from "configured-on but dead".
+_telemetry_active: bool = False
+
 
 def _is_otel_enabled() -> bool:
     return os.environ.get("HIPPO_OTEL_ENABLED", "").strip() == "1"
+
+
+def is_telemetry_active() -> bool:
+    """Return True only after init_telemetry() has fully succeeded."""
+    return _telemetry_active
+
+
+class TelemetryInitError(RuntimeError):
+    """HIPPO_OTEL_ENABLED=1 was set but OTel providers could not be wired up.
+
+    Raised on import failure of any OTel SDK module — almost always a stale
+    or half-installed brain venv. The service should crash visibly and let
+    launchd report the failure rather than continue without telemetry.
+    """
 
 
 def init_telemetry(
@@ -22,8 +44,13 @@ def init_telemetry(
 ) -> "callable | None":
     """Initialize OpenTelemetry providers for traces, metrics, and logs.
 
-    Returns a shutdown callable, or None if OTel is disabled/unavailable.
+    Returns a shutdown callable on success, or ``None`` when telemetry is not
+    enabled. Raises ``TelemetryInitError`` when telemetry is explicitly
+    enabled (``HIPPO_OTEL_ENABLED=1``) but the OTel packages cannot be
+    imported — silently degrading would let dashboards go dark unnoticed.
     """
+    global _telemetry_active
+
     if not _is_otel_enabled():
         return None
 
@@ -48,9 +75,21 @@ def init_telemetry(
             from opentelemetry.instrumentation.logging.handler import LoggingHandler
         except ImportError:
             from opentelemetry.sdk._logs import LoggingHandler
-    except ImportError:
-        logger.warning("OpenTelemetry packages not installed — telemetry disabled")
-        return None
+    except ImportError as e:
+        # The brain venv was almost certainly installed against an older
+        # pyproject and never re-synced. `uv sync --reinstall` repairs both
+        # missing packages and the half-installed-namespace failure mode
+        # where dist-info is present but the namespace is empty.
+        msg = (
+            "HIPPO_OTEL_ENABLED=1 but OpenTelemetry packages cannot be imported "
+            "(import error: %s). The deployed brain venv is out of sync with "
+            "pyproject.toml. Recover with: "
+            "`uv sync --project ~/.local/share/hippo-brain --reinstall` then "
+            "restart the brain. If you intended to disable telemetry, unset "
+            "HIPPO_OTEL_ENABLED."
+        ) % e
+        logger.error(msg)
+        raise TelemetryInitError(msg) from e
 
     resource = Resource.create({"service.name": service_name})
 
@@ -80,6 +119,7 @@ def init_telemetry(
 
     _register_process_metrics()
 
+    _telemetry_active = True
     logger.info(
         "OpenTelemetry initialized: endpoint=%s, service=%s",
         endpoint,
@@ -87,6 +127,8 @@ def init_telemetry(
     )
 
     def shutdown() -> None:
+        global _telemetry_active
+        _telemetry_active = False
         tracer_provider.shutdown()
         logger_provider.shutdown()
         meter_provider.shutdown()
