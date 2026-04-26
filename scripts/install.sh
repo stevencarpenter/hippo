@@ -276,7 +276,9 @@ try:
     from hippo_brain.server import create_app  # noqa: F401
     sys.exit(0)
 except Exception as exc:
-    print(f"brain import probe failed: {exc!r}", file=sys.stderr)
+    # Print to stdout: any CI capture that records only stdout still gets
+    # the diagnostic, and the non-zero exit already signals failure.
+    print(f"brain import probe failed: {exc!r}")
     sys.exit(1)
 '
     (cd "${brain_dir}" && uv run --no-sync python -c "${probe}")

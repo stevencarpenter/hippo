@@ -80,14 +80,15 @@ def init_telemetry(
             from opentelemetry.instrumentation.logging.handler import LoggingHandler
         except ImportError:
             from opentelemetry.sdk._logs import LoggingHandler
-    except ImportError as e:
-        # The brain venv was almost certainly installed against an older
-        # pyproject and never re-synced. `uv sync --reinstall` repairs both
-        # missing packages and the half-installed-namespace failure mode
-        # where dist-info is present but the namespace is empty.
+    except (ImportError, AttributeError) as e:
+        # ImportError covers "package missing" and the half-installed-namespace
+        # case (dist-info present, package contents empty) seen 2026-04-26.
+        # AttributeError covers a partially-extracted `__init__.py` that
+        # imports cleanly but is missing the symbols we then access. Both
+        # are "deployed venv out of sync with pyproject.toml" — same recovery.
         msg = (
             "HIPPO_OTEL_ENABLED=1 but OpenTelemetry packages cannot be imported "
-            "(import error: %s). The deployed brain venv is out of sync with "
+            "(error: %s). The deployed brain venv is out of sync with "
             "pyproject.toml. Recover with: "
             "`uv sync --project ~/.local/share/hippo-brain --reinstall` then "
             "restart the brain. If you intended to disable telemetry, unset "
@@ -122,9 +123,13 @@ def init_telemetry(
     meter_provider = MeterProvider(resource=resource, metric_readers=[metric_reader])
     otel_metrics.set_meter_provider(meter_provider)
 
+    # Mark active BEFORE optional process-metrics registration: the providers
+    # are already wired up at this point, and a downstream failure in
+    # _register_process_metrics (e.g., psutil.AccessDenied in a sandbox) must
+    # not leave the flag desynchronized from "providers initialized" state.
+    _telemetry_active = True
     _register_process_metrics()
 
-    _telemetry_active = True
     logger.info(
         "OpenTelemetry initialized: endpoint=%s, service=%s",
         endpoint,
