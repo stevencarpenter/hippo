@@ -1,6 +1,6 @@
 # Capture-Reliability Overhaul: Task Queue
 
-**Status (2026-04-26):** P0, P1, P2 shipped. T-7 (#88) and T-8 (#89) shipped. One task remains: T-9 (close investigation issues #49–#53 + add "Investigations Closed" section to `00-overview.md`). M3 decision archived at [`docs/archive/capture-reliability-overhaul/m3-decision.md`](../archive/capture-reliability-overhaul/m3-decision.md).
+**Status (2026-04-26):** P0, P1, P2, P3 shipped. T-7 (#88), T-8 (#89), and T-9 shipped — investigations #49–#53 closed (3 resolved by capture work, 2 spun off to #90/#91 as out-of-scope follow-ups; see `00-overview.md` § Investigations Closed). **All milestones (M1–M4) ratified.** M3 decision archived at [`docs/archive/capture-reliability-overhaul/m3-decision.md`](../archive/capture-reliability-overhaul/m3-decision.md).
 
 **Workflow note:** This was originally framed as a Ralph Loop autonomous queue (T-1 through T-6 were eligible to be picked up by a loop). In practice, every task shipped via standard PR review by hand — the Ralph Loop framing is now retired. The doc remains useful as an ordered tracker of what's done, what's left, and what gates each step. Status fields and DoD checkboxes below reflect the actual state of `main`, not aspirational planning.
 
@@ -347,17 +347,18 @@ The second clause (probe freshness) is still meaningful — it confirms T-6 prob
 
 ## T-9 · P3.3 — Close investigation issues #49–#53
 
-- **Status:** open (T-8 unblocked this on 2026-04-26)
+- **Status:** done — issues closed 2026-04-26; #52 and #53 spun off as #90 and #91 to preserve audit trail
 - **Phase:** P3
 - **Depends on:** T-8 (done)
 - **Branch:** `docs/p3.3-close-investigations`
 - **Files:**
-  - `docs/capture-reliability/00-overview.md` (add `## Investigations Closed` section)
+  - `docs/capture-reliability/00-overview.md` (added `## Investigations Closed` section)
   - GitHub issues #49, #50, #51, #52, #53 (closing comments)
+  - GitHub issues #90 (redaction follow-up, spun from #52), #91 (lessons follow-up, spun from #53)
 - **DoD:**
-  - [ ] Each of #49, #50, #51, #52, #53 closed with a findings comment citing the PR(s) that mitigated it (e.g., "Root cause: PID-chain walk under `claade` wrapper. Mitigated by T-5 (`feat/p2.1-claude-session-watcher`) — watcher uses FS events, not PID chain. Closing.").
-  - [ ] `00-overview.md` gains a `## Investigations Closed` section linking each issue number to its closing PR(s).
-  - [ ] No investigation issue closes without either a fix-PR reference or an explicit "won't fix — reason" note.
+  - [x] Each of #49, #50, #51, #52, #53 closed with a findings comment citing the PR(s) that mitigated it or — for the two out-of-scope items — the spun-off follow-up issue.
+  - [x] `00-overview.md` gains a `## Investigations Closed` section linking each issue number to its closing PR(s) or follow-up.
+  - [x] No investigation issue closes without either a fix-PR reference or an explicit "out-of-scope, tracked at #N" note.
 - **Success criterion:**
   ```bash
   for n in 49 50 51 52 53; do \
@@ -382,14 +383,14 @@ Tmux-spawn code gone AND no investigation issue still open → M4 ratified.
 
 ---
 
-# Risk Register (residual)
+# Risk Register (historical)
 
-Most risks here were retired with their parent tasks. Live ones for the remaining P3 work:
+All P3 work has shipped; the rows below were the live risks tracked while T-7, T-8, and T-9 were in flight. They are kept as a record of what was watched and how it was mitigated, not as open items.
 
-| Risk | Likelihood | Impact | Mitigation |
+| Risk | Likelihood | Impact | Mitigation (now applied) |
 |------|-----------|--------|-----------|
-| FSEvents quirks cause the watcher to miss events after T-7 default flip | Low | High | Whichever M3 resolution is chosen must give a real "watcher captured everything the tailer would have" signal before T-7 ships. Single-command rollback documented in T-7 release note. |
-| Closing #49–#53 in T-9 without surfacing actual root causes | Medium | Medium | T-9 DoD requires each closing comment to cite the PR(s) that mitigated it OR an explicit "won't fix — reason." No bare closures. |
-| Watcher heartbeat column drift in `source_health` | Low | Low | Watcher-row `updated_at` is fresh on this machine but `last_heartbeat_ts` is NULL — worth a quick check before T-7 to confirm doctor's freshness query points at the right column. |
+| FSEvents quirks cause the watcher to miss events after T-7 default flip | Low | High | M3 Option D (empirical 7-day dual-run validation) gave a real "watcher captured everything the tailer would have" signal before T-7 shipped. Single-command rollback documented in T-7 release note (made moot by T-8). |
+| Closing #49–#53 in T-9 without surfacing actual root causes | Medium | Medium | T-9 closing comments cite the mitigating PR(s) or, for #52/#53, the spun-off follow-up issue (#90/#91). No bare closures. |
+| Watcher heartbeat column drift in `source_health` | Low | Low | Verified pre-T-7: doctor's freshness query uses `updated_at`, which advances correctly for the watcher row. |
 
 Retired risks (kept for historical reference): migration failure mid-deploy (handled by `ACCEPTED_READ_VERSIONS`), watchdog alarm fatigue (T-1 defaults shipped), `probe_tag` filter gaps (T-6 semgrep rule + upstream filter shipped), schema version collisions (T-5 ended up at v10 cleanly), AP-10 tmux patches during dev (none merged), `daemon.rs` hot-file merges (no conflicts hit).
