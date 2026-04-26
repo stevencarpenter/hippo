@@ -31,7 +31,7 @@ fn count_segments(conn: &Connection, session_id: &str) -> i64 {
         [session_id],
         |row| row.get::<_, i64>(0),
     )
-    .unwrap_or(0)
+    .expect("count_segments query failed")
 }
 
 fn has_duplicates(conn: &Connection, session_id: &str) -> bool {
@@ -47,7 +47,7 @@ fn has_duplicates(conn: &Connection, session_id: &str) -> bool {
             [session_id],
             |row| row.get::<_, i64>(0),
         )
-        .unwrap_or(0);
+        .expect("has_duplicates query failed");
     dup > 0
 }
 

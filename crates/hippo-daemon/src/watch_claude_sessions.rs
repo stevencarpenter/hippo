@@ -28,7 +28,7 @@ use notify::{
 use rusqlite::{Connection, params};
 use tokio::signal::unix::{SignalKind, signal as unix_signal};
 use tokio::sync::mpsc;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 use hippo_core::config::{ClaudeSessionMode, HippoConfig};
 use hippo_core::storage::open_db;
@@ -212,8 +212,7 @@ fn find_session_files(projects_dir: &Path) -> Vec<PathBuf> {
         .into_iter()
         .flatten()
         .filter(|e| {
-            e.file_type().is_file()
-                && e.path().extension().is_some_and(|ext| ext == "jsonl")
+            e.file_type().is_file() && e.path().extension().is_some_and(|ext| ext == "jsonl")
         })
         .map(|e| e.into_path())
         .collect()
@@ -301,16 +300,16 @@ fn write_parity_row(
 
 /// Check whether `path` lives on a remote filesystem (NFS, SMB, etc.) and log
 /// a warning.  FSEvents may not fire reliably for remote volumes.
+/// `statfs::f_fstypename` is macOS-specific; this is a no-op on other platforms.
+#[cfg(target_os = "macos")]
 fn warn_if_remote_fs(path: &Path) {
-    use std::ffi::CStr;
-    use std::ffi::CString;
+    use std::ffi::{CStr, CString};
 
     let Ok(c_path) = CString::new(path.to_string_lossy().as_bytes()) else {
         return;
     };
     let mut buf: libc::statfs = unsafe { std::mem::zeroed() };
-    let ret = unsafe { libc::statfs(c_path.as_ptr(), &mut buf) };
-    if ret != 0 {
+    if unsafe { libc::statfs(c_path.as_ptr(), &mut buf) } != 0 {
         return;
     }
     let fs_type = unsafe { CStr::from_ptr(buf.f_fstypename.as_ptr()) }
@@ -325,6 +324,9 @@ fn warn_if_remote_fs(path: &Path) {
     }
 }
 
+#[cfg(not(target_os = "macos"))]
+fn warn_if_remote_fs(_path: &Path) {}
+
 /// Return the path to `~/.claude/projects/`.
 fn projects_dir() -> Option<PathBuf> {
     dirs::home_dir().map(|h| h.join(".claude").join("projects"))
@@ -334,6 +336,21 @@ fn projects_dir() -> Option<PathBuf> {
 pub async fn run(config: &HippoConfig) -> Result<()> {
     let db_path = config.db_path();
     let mode = &config.capture.claude_session_mode;
+
+    // In tmux-tailer mode the watcher service should not run. Idle until shutdown
+    // so launchd KeepAlive doesn't spin-restart this process continuously.
+    if matches!(mode, ClaudeSessionMode::TmuxTailer) {
+        info!(
+            "watcher: capture mode is tmux-tailer; idling (set mode to 'watcher' or 'both' to enable FS watching)"
+        );
+        let mut sigterm = unix_signal(SignalKind::terminate())
+            .context("watcher: failed to install SIGTERM handler")?;
+        tokio::select! {
+            _ = sigterm.recv() => {}
+            _ = tokio::signal::ctrl_c() => {}
+        }
+        return Ok(());
+    }
 
     let projects = match projects_dir() {
         Some(p) => p,
@@ -378,22 +395,44 @@ pub async fn run(config: &HippoConfig) -> Result<()> {
     let mut watcher = RecommendedWatcher::new(
         move |event: notify::Result<Event>| {
             if let Ok(e) = event {
-                let _ = tx.blocking_send(e);
+                // try_send never blocks the notify thread; Full drops events (the full-file
+                // reparse on the next write catches anything missed); Closed means shutdown.
+                if let Err(tokio::sync::mpsc::error::TrySendError::Full(_)) = tx.try_send(e) {
+                    debug!("watcher: FSEvents channel full; event dropped");
+                }
             }
         },
         NotifyConfig::default(),
     )
     .context("watcher: failed to create FSEvents watcher")?;
 
-    if projects.exists() {
+    // Watch `projects` if it exists; otherwise walk up to the nearest ancestor that
+    // does exist (typically `~/.claude`).  This handles fresh installs where
+    // `~/.claude/projects` has not yet been created by Claude — FSEvents on the
+    // ancestor will fire when the subdirectory and its files appear.
+    let watch_root = {
+        let mut p = projects.clone();
+        while !p.exists() {
+            match p.parent() {
+                Some(parent) => p = parent.to_path_buf(),
+                None => break,
+            }
+        }
+        p
+    };
+    if watch_root.exists() {
+        if watch_root != projects {
+            warn!(
+                projects = %projects.display(),
+                watching = %watch_root.display(),
+                "watcher: projects directory does not exist; watching ancestor instead"
+            );
+        }
         watcher
-            .watch(&projects, RecursiveMode::Recursive)
-            .context("watcher: failed to watch projects dir")?;
+            .watch(&watch_root, RecursiveMode::Recursive)
+            .with_context(|| format!("watcher: failed to watch {}", watch_root.display()))?;
     } else {
-        warn!(
-            path = %projects.display(),
-            "watcher: projects directory does not exist; no files will be watched"
-        );
+        warn!("watcher: no watchable directory found; no files will be watched");
     }
 
     info!(
@@ -456,9 +495,12 @@ pub async fn run(config: &HippoConfig) -> Result<()> {
                     if path.extension().is_none_or(|e| e != "jsonl") {
                         continue;
                     }
-                    let state = states.entry(path.clone()).or_insert_with(|| FileState {
-                        hour_window_start: current_hour_start,
-                        ..Default::default()
+                    let state = states.entry(path.clone()).or_insert_with(|| {
+                        let now = Utc::now().timestamp_millis();
+                        FileState {
+                            hour_window_start: now - (now % (3600 * 1000)),
+                            ..Default::default()
+                        }
                     });
                     match process_file(&path, state, &conn) {
                         Ok(0) => {}
@@ -528,7 +570,7 @@ mod tests {
 
         // Write a session with one complete exchange.
         let session_id = "test-sess-0001-0001-0001-0001-000000000001";
-        let jsonl_path = dir.path().join("test-session.jsonl");
+        let jsonl_path = dir.path().join(format!("{session_id}.jsonl"));
         let content = [
             j(session_id, 0, "system", "init"),
             j(session_id, 1, "user", "hello"),
@@ -561,7 +603,7 @@ mod tests {
         let conn = open_test_db(&dir);
 
         let session_id = "test-sess-trunc-0001-0001-0001-000000000001";
-        let jsonl_path = dir.path().join("trunc-session.jsonl");
+        let jsonl_path = dir.path().join(format!("{session_id}.jsonl"));
         let content = j(session_id, 0, "user", "hi") + "\n";
         std::fs::write(&jsonl_path, &content).unwrap();
 
@@ -610,7 +652,7 @@ mod tests {
         let conn = open_test_db(&dir);
 
         let session_id = "test-sess-dedup-0001-0001-0001-000000000001";
-        let jsonl_path = dir.path().join("dedup-session.jsonl");
+        let jsonl_path = dir.path().join(format!("{session_id}.jsonl"));
 
         // Write initial content.
         let line1 = j(session_id, 0, "user", "first") + "\n";
