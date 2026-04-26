@@ -435,8 +435,6 @@ verify_installation() {
         return 0
     fi
 
-    local socket="${DATA_DIR}/daemon.sock"
-
     # Brain port: prefer config.toml's [brain] port, fall back to the
     # daemon default (9175). A simple awk over the [brain] section beats
     # taking a TOML parser dependency for one integer.
@@ -455,12 +453,19 @@ verify_installation() {
         fi
     fi
 
-    local waited=0
+    # Track elapsed wall-clock seconds via $SECONDS, not iteration count:
+    # a single loop tick can take >1s (curl --max-time 2 + sleep 1 + hippo
+    # status latency), so an iteration-based budget would silently extend
+    # the timeout by 3x. `hippo status` resolves the socket path via
+    # config.socket_path() internally — including the long-path /tmp
+    # fallback and any [storage].data_dir override — so we rely on its
+    # exit code rather than probing a hardcoded socket path.
+    local started_at=${SECONDS}
     local max_wait=60
     local daemon_up=0
     local brain_up=0
-    while [ "${waited}" -lt "${max_wait}" ]; do
-        if [ "${daemon_up}" -eq 0 ] && [ -S "${socket}" ] \
+    while [ $((SECONDS - started_at)) -lt "${max_wait}" ]; do
+        if [ "${daemon_up}" -eq 0 ] \
             && "${BIN_DIR}/hippo" status >/dev/null 2>&1; then
             daemon_up=1
         fi
@@ -473,7 +478,6 @@ verify_installation() {
             break
         fi
         sleep 1
-        waited=$((waited + 1))
     done
 
     if [ "${daemon_up}" -ne 1 ]; then
@@ -535,13 +539,29 @@ warn_on_stale_shell_hook_sources() {
     # and falsely reported as missing. Bail (treat as resolved-but-unknown)
     # if any other unresolved $VAR remains, since we can't safely eval
     # arbitrary content from a user's shell config.
+    #
+    # The `$HOME` form needs token-boundary care: a naive global substring
+    # replace would also chew through `$HOME_DIR` etc., destroying the `$`
+    # the unresolved-var skip relies on. `${HOME}` is fine to substring-
+    # replace because `}` is itself the token terminator.
     expand_shell_path() {
         local p="$1"
         p="${p//\$\{HOME\}/${HOME}}"
-        p="${p//\$HOME/${HOME}}"
+        p="${p//\$HOME\//${HOME}/}"
+        # $HOME at end-of-string only — we don't replace $HOME followed
+        # by an identifier char (e.g. $HOMEDIR). Glob is single-quoted so
+        # `$` is a literal here, not a parameter expansion.
+        case "${p}" in
+            *'$HOME') p="${p%\$HOME}${HOME}" ;;
+        esac
         case "${p}" in
             '~') p="${HOME}" ;;
-            '~/'*) p="${HOME}/${p#~/}" ;;
+            '~/'*)
+                # Bash doesn't strip `~/` reliably via ${p#~/}; the case
+                # arm guarantees the first two chars are `~/`, so substring
+                # offset is unambiguous.
+                p="${HOME}/${p:2}"
+                ;;
         esac
         printf '%s' "${p}"
     }
