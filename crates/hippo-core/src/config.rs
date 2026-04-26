@@ -541,12 +541,18 @@ pub fn socket_path(data_dir: &Path) -> PathBuf {
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "kebab-case")]
 pub enum ClaudeSessionMode {
-    /// Legacy tmux-based tailer (one window per session). Default until T-7.
-    #[default]
-    TmuxTailer,
     /// FSEvents watcher process watches all JSONL files continuously.
+    /// Made the default in T-7 (PR #88) on 2026-04-25 after empirical
+    /// validation against 7 days of dual-run data — see
+    /// `docs/capture-reliability/m3-decision.md` for the canonical numbers.
+    #[default]
     Watcher,
-    /// Both: tailer + watcher run concurrently for parity validation (M3 gate).
+    /// Legacy tmux-based tailer (one window per session). Retained as a
+    /// one-command rollback during the watcher rollout. Slated for removal
+    /// in T-8.
+    TmuxTailer,
+    /// Both: tailer + watcher run concurrently. Useful for short-term
+    /// re-validation if the watcher is suspected of regressing.
     Both,
 }
 
@@ -559,7 +565,7 @@ pub struct CaptureConfig {
 impl Default for CaptureConfig {
     fn default() -> Self {
         Self {
-            claude_session_mode: ClaudeSessionMode::TmuxTailer,
+            claude_session_mode: ClaudeSessionMode::Watcher,
         }
     }
 }
