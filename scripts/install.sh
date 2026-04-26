@@ -422,6 +422,85 @@ install_services() {
     log_success "Services installed"
 }
 
+# Run end-to-end health check so a fresh install fails loud rather than
+# leaving the user to discover broken state later via `hippo doctor`.
+# launchd has just bootstrapped the plists; brain in particular can take
+# 10–30s to import torch and bind its HTTP port, so we poll until the
+# daemon's socket is live before firing the full doctor run.
+verify_installation() {
+    log_info "Verifying installation (this can take ~30s on a cold start)..."
+
+    if [ ! -x "${BIN_DIR}/hippo" ]; then
+        log_warning "Skipping verification — daemon binary not executable at ${BIN_DIR}/hippo"
+        return 0
+    fi
+
+    local socket="${DATA_DIR}/daemon.sock"
+
+    # Brain port: prefer config.toml's [brain] port, fall back to the
+    # daemon default (9175). A simple awk over the [brain] section beats
+    # taking a TOML parser dependency for one integer.
+    local brain_port=9175
+    if [ -f "${CONFIG_DIR}/config.toml" ]; then
+        local parsed_port
+        parsed_port="$(awk '
+            /^\[brain\]/ { in_section = 1; next }
+            /^\[/        { in_section = 0 }
+            in_section && /^[[:space:]]*port[[:space:]]*=/ {
+                gsub(/[^0-9]/, "", $0); print; exit
+            }
+        ' "${CONFIG_DIR}/config.toml" 2>/dev/null || true)"
+        if [[ "${parsed_port}" =~ ^[0-9]+$ ]]; then
+            brain_port="${parsed_port}"
+        fi
+    fi
+
+    local waited=0
+    local max_wait=60
+    local daemon_up=0
+    local brain_up=0
+    while [ "${waited}" -lt "${max_wait}" ]; do
+        if [ "${daemon_up}" -eq 0 ] && [ -S "${socket}" ] \
+            && "${BIN_DIR}/hippo" status >/dev/null 2>&1; then
+            daemon_up=1
+        fi
+        if [ "${brain_up}" -eq 0 ] \
+            && curl -fsS --max-time 2 "http://127.0.0.1:${brain_port}/health" \
+                >/dev/null 2>&1; then
+            brain_up=1
+        fi
+        if [ "${daemon_up}" -eq 1 ] && [ "${brain_up}" -eq 1 ]; then
+            break
+        fi
+        sleep 1
+        waited=$((waited + 1))
+    done
+
+    if [ "${daemon_up}" -ne 1 ]; then
+        log_warning "Daemon did not respond within ${max_wait}s; running doctor anyway"
+    fi
+    if [ "${brain_up}" -ne 1 ]; then
+        log_warning "Brain HTTP did not respond on port ${brain_port} within ${max_wait}s; running doctor anyway"
+    fi
+
+    echo ""
+    if "${BIN_DIR}/hippo" doctor; then
+        log_success "Hippo doctor: all checks passed"
+        return 0
+    fi
+
+    echo ""
+    log_warning "Hippo doctor reported issues. Common causes:"
+    log_info "  - Brain still warming up: rerun 'hippo doctor' in 30s"
+    log_info "  - LM Studio not running or model not loaded"
+    log_info "  - Firefox extension not loaded (about:debugging → Load Temporary Add-on)"
+    log_info "  - Stale shell config: review the warnings above, then 'exec zsh'"
+    log_info "Re-run with 'hippo doctor --explain' for CAUSE/FIX/DOC details on each failure."
+    # Return success so a partial-but-recoverable install doesn't abort
+    # the script before the "Next steps" hint is printed.
+    return 0
+}
+
 # Check dependencies
 check_dependencies() {
     local missing_deps=()
@@ -448,7 +527,24 @@ warn_on_stale_shell_hook_sources() {
     local expected_env="${BRAIN_DIR}/shell/hippo-env.zsh"
     local expected_hook="${BRAIN_DIR}/shell/hippo.zsh"
     local stale_found=0
-    local config_path line source_path
+    local config_path line source_path resolved_path
+
+    # Expand the common shell path tokens ($HOME, ${HOME}, leading ~) that
+    # zsh would have expanded at source-time. Without this, a `source
+    # "$HOME/..."` line gets compared against the literal string `$HOME/...`
+    # and falsely reported as missing. Bail (treat as resolved-but-unknown)
+    # if any other unresolved $VAR remains, since we can't safely eval
+    # arbitrary content from a user's shell config.
+    expand_shell_path() {
+        local p="$1"
+        p="${p//\$\{HOME\}/${HOME}}"
+        p="${p//\$HOME/${HOME}}"
+        case "${p}" in
+            '~') p="${HOME}" ;;
+            '~/'*) p="${HOME}/${p#~/}" ;;
+        esac
+        printf '%s' "${p}"
+    }
 
     scan_shell_source_file() {
         local config_path="$1"
@@ -457,8 +553,9 @@ warn_on_stale_shell_hook_sources() {
         while IFS= read -r line; do
             source_path="$(printf '%s\n' "${line}" | LC_ALL=C sed -nE "s/.*source[[:space:]]+['\"]?([^'\"[:space:]]*hippo(-env)?\\.zsh)['\"]?.*/\\1/p")"
             [ -n "${source_path}" ] || continue
+            resolved_path="$(expand_shell_path "${source_path}")"
 
-            case "${source_path}" in
+            case "${resolved_path}" in
                 "${expected_env}"|"${expected_hook}")
                     continue
                     ;;
@@ -466,8 +563,13 @@ warn_on_stale_shell_hook_sources() {
                     stale_found=1
                     log_warning "Shell config ${config_path} still uses legacy path: ${source_path}"
                     ;;
+                *'$'*)
+                    # Unresolved env var we don't know how to expand — skip
+                    # the existence check rather than emit a false-positive.
+                    continue
+                    ;;
                 *)
-                    if [ ! -e "${source_path}" ]; then
+                    if [ ! -e "${resolved_path}" ]; then
                         stale_found=1
                         log_warning "Shell config ${config_path} sources missing file: ${source_path}"
                     fi
@@ -537,6 +639,9 @@ main() {
     echo ""
 
     check_dependencies
+    echo ""
+
+    verify_installation
     echo ""
 
     # Success message
