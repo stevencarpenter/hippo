@@ -448,7 +448,7 @@ fn write_probe_result(
             1,
             &[
                 KeyValue::new("source", source.to_owned()),
-                KeyValue::new("ok", ok.to_string()),
+                KeyValue::new("ok", ok),
             ],
         );
         if let Some(lag) = lag_ms {

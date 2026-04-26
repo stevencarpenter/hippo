@@ -162,3 +162,13 @@ pub static WATCHDOG_ALARMS_FIRED: LazyLock<Counter<u64>> = LazyLock::new(|| {
         .with_description("New capture alarms inserted, labelled by invariant_id")
         .build()
 });
+
+/// Per-source violation counter as specified in docs/capture-reliability/02-invariants.md.
+/// Complements WATCHDOG_ALARMS_FIRED (which slices by invariant_id) with the source dimension
+/// required by the spec for dashboards and alerts.
+pub static WATCHDOG_INVARIANT_VIOLATION: LazyLock<Counter<u64>> = LazyLock::new(|| {
+    METER
+        .u64_counter("hippo.watchdog.invariant_violation")
+        .with_description("Invariant violations by capture source, per spec 02-invariants.md")
+        .build()
+});

@@ -179,13 +179,17 @@ fn process_file(path: &Path, state: &mut FileState, conn: &Connection) -> Result
 
     let start = Instant::now();
     let (inserted, _skipped, errors) = ingest_session_file(conn, path);
-    if start.elapsed() > PER_FILE_TIMEOUT {
+    let elapsed_ms = start.elapsed().as_secs_f64() * 1000.0;
+    if elapsed_ms > PER_FILE_TIMEOUT.as_secs_f64() * 1000.0 {
         warn!(
             path = %path.display(),
-            elapsed_ms = start.elapsed().as_millis(),
+            elapsed_ms,
             "watcher: per-file processing was slow"
         );
     }
+
+    #[cfg(feature = "otel")]
+    crate::metrics::WATCHER_PROCESS_DURATION_MS.record(elapsed_ms, &[]);
 
     if errors > 0 {
         state.cooldown_until = Some(Instant::now() + BACKOFF_DURATION);
@@ -203,8 +207,6 @@ fn process_file(path: &Path, state: &mut FileState, conn: &Connection) -> Result
         #[cfg(feature = "otel")]
         if inserted > 0 {
             crate::metrics::WATCHER_SEGMENTS_INGESTED.add(inserted as u64, &[]);
-            crate::metrics::WATCHER_PROCESS_DURATION_MS
-                .record(start.elapsed().as_secs_f64() * 1000.0, &[]);
         }
     }
 

@@ -218,13 +218,13 @@ pub fn run(config: &HippoConfig) -> Result<()> {
         );
 
         #[cfg(feature = "otel")]
-        crate::metrics::WATCHDOG_ALARMS_FIRED.add(
-            1,
-            &[opentelemetry::KeyValue::new(
-                "invariant",
-                v.invariant_id.clone(),
-            )],
-        );
+        {
+            use opentelemetry::KeyValue;
+            crate::metrics::WATCHDOG_ALARMS_FIRED
+                .add(1, &[KeyValue::new("invariant", v.invariant_id.clone())]);
+            crate::metrics::WATCHDOG_INVARIANT_VIOLATION
+                .add(1, &[KeyValue::new("source", v.source.clone())]);
+        }
 
         // Optional macOS notification (only on new alarm row).
         if config.watchdog.notify_macos {
