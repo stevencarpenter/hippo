@@ -70,6 +70,10 @@ The tests below cover the watcher data-loss fix shipped in T-A.1–T-A.7 (2026-0
 | Backfill CLI helpers | `test_parse_since_date_valid`, `test_parse_since_date_invalid`, `test_reset_offset_no_row_is_ok` | `crates/hippo-daemon/src/backfill.rs` |
 | Brain hash propagation | `TestContentHashPropagation::test_claim_pending_segments_returns_content_hash`, `TestContentHashPropagation::test_enrichment_writes_last_enriched_content_hash`, `TestContentHashPropagation::test_enrichment_failure_does_not_write_hash`, `TestContentHashPropagation::test_null_content_hash_skips_write` | `brain/tests/test_claude_sessions.py` |
 | Review fix-ups (T-A.10) | `test_enqueue_does_not_clobber_processing_lock`, `test_process_file_short_circuit_preserves_queue_state`, `test_check_backfill_needed_warns_when_null_hash_post_cutoff`, `test_check_backfill_needed_silent_when_hash_set` | `crates/hippo-daemon/src/watch_claude_sessions.rs` |
+| Review fix-ups (round 3) | `test_upsert_counts_legacy_null_hash_as_inserted` (CP-1/R2-6), `test_source_health_not_bumped_on_idempotent_reparse` (C-3) | `crates/hippo-daemon/src/claude_session.rs` |
+| Review fix-ups (round 3) | `test_check_backfill_needed_silent_on_pre_migration_db` (R2-7), `test_sweep_returns_zero_on_pre_migration_db` (CP-4/R2-3, now uses true v11 fixture) | `crates/hippo-daemon/src/watch_claude_sessions.rs` |
+| Review fix-ups (round 3) | `test_expand_tilde_passthrough`, `test_expand_tilde_prefix`, `test_collect_paths_expands_tilde` (C-2 — `~` expansion in backfill glob) | `crates/hippo-daemon/src/backfill.rs` |
+| Review fix-ups (round 3) | `test_brain_server_rejects_v11_db` (C-4/R2-5 — v11 dropped from `ACCEPTED_READ_VERSIONS`) | `brain/tests/test_server.py` |
 
 **Running Phase 1 tests:**
 

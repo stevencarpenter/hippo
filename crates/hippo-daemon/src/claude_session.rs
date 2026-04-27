@@ -1039,11 +1039,19 @@ fn insert_segments(conn: &Connection, segments: &[SessionSegment]) -> Result<(us
         };
 
         // "inserted" = new row created OR content hash changed from the prior
-        // row. "skipped" = row existed and content was identical (idempotent
-        // re-run). Callers use this only for logging/metrics.
-        let hash_changed = prior_content_hash
-            .map(|h| h != content_hash.as_str())
-            .unwrap_or(false);
+        // row. A NULL prior hash on an existing row (legacy v11 row migrated
+        // to v12) is treated as "changed", since the upsert is the first
+        // write that populates `content_hash` (and refreshes content
+        // columns). "skipped" = row existed with a non-NULL prior hash that
+        // matches the current hash (idempotent re-run). Callers use this
+        // only for logging/metrics.
+        let hash_changed = if prior.is_some() {
+            prior_content_hash
+                .map(|h| h != content_hash.as_str())
+                .unwrap_or(true)
+        } else {
+            false
+        };
         if was_insert || hash_changed {
             inserted += 1;
         } else {
@@ -1086,23 +1094,29 @@ fn insert_segments(conn: &Connection, segments: &[SessionSegment]) -> Result<(us
             )?;
         }
 
-        // Update source_health for claude-session on success.
-        let seg_ts = seg.end_time;
-        match tx.execute(
-            "UPDATE source_health
-             SET last_event_ts        = MAX(COALESCE(last_event_ts, 0), ?1),
-                 last_success_ts      = ?2,
-                 events_last_1h       = events_last_1h + 1,
-                 events_last_24h      = events_last_24h + 1,
-                 consecutive_failures = 0,
-                 updated_at           = ?2
-             WHERE source = 'claude-session'",
-            rusqlite::params![seg_ts, now_ms],
-        ) {
-            Err(e) if !crate::is_missing_source_health_table_error(&e) => {
-                warn!("source_health session update failed: {e}");
+        // Update source_health for claude-session only when this upsert
+        // actually represented new or changed content. Reparses of unchanged
+        // segments would otherwise inflate `events_last_1h/24h` and refresh
+        // `last_success_ts` on every FSEvents tick, masking real drops in
+        // capture liveness.
+        if was_insert || hash_changed {
+            let seg_ts = seg.end_time;
+            match tx.execute(
+                "UPDATE source_health
+                 SET last_event_ts        = MAX(COALESCE(last_event_ts, 0), ?1),
+                     last_success_ts      = ?2,
+                     events_last_1h       = events_last_1h + 1,
+                     events_last_24h      = events_last_24h + 1,
+                     consecutive_failures = 0,
+                     updated_at           = ?2
+                 WHERE source = 'claude-session'",
+                rusqlite::params![seg_ts, now_ms],
+            ) {
+                Err(e) if !crate::is_missing_source_health_table_error(&e) => {
+                    warn!("source_health session update failed: {e}");
+                }
+                _ => {}
             }
-            _ => {}
         }
     }
 
@@ -2221,6 +2235,114 @@ mod tests {
             )
             .unwrap();
         assert_eq!(stored_hash, expected_hash);
+    }
+
+    /// CP-1/R2-6 regression: legacy v11 rows have `content_hash IS NULL`
+    /// after the v11→v12 migration. The first reparse must count as
+    /// `inserted` (the row's hash transitioned NULL → real value), not
+    /// `skipped`, so backfill summaries and metrics aren't misleading.
+    #[test]
+    fn test_upsert_counts_legacy_null_hash_as_inserted() {
+        let conn = open_test_db();
+        let seg = make_test_segment("session-legacy-001", 0);
+
+        // Manually insert a row that simulates a v11 legacy row: all
+        // content fields populated but content_hash is NULL (because the
+        // column didn't exist when the row was written).
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        conn.execute(
+            "INSERT INTO claude_sessions
+                 (session_id, project_dir, cwd, git_branch, segment_index,
+                  start_time, end_time, summary_text, tool_calls_json,
+                  user_prompts_json, message_count, token_count, source_file,
+                  is_subagent, parent_session_id, content_hash, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, NULL, ?16)",
+            rusqlite::params![
+                seg.session_id,
+                seg.project_dir,
+                seg.cwd,
+                seg.git_branch,
+                seg.segment_index,
+                seg.start_time,
+                seg.end_time,
+                build_summary_text(&seg),
+                "[]",
+                "[]",
+                seg.message_count,
+                seg.token_count,
+                seg.source_file,
+                0i64,
+                Option::<String>::None,
+                now_ms,
+            ],
+        )
+        .unwrap();
+
+        let (inserted, skipped) = insert_segments(&conn, &[seg]).unwrap();
+        assert_eq!(
+            inserted, 1,
+            "v11 legacy row (NULL content_hash) → first reparse must count as inserted"
+        );
+        assert_eq!(skipped, 0);
+    }
+
+    /// C-3 regression: source_health metrics must only bump when the
+    /// upsert represents new or changed content. Whole-file reparses on
+    /// idempotent content would otherwise inflate liveness counters and
+    /// mask real capture drops.
+    #[test]
+    fn test_source_health_not_bumped_on_idempotent_reparse() {
+        let conn = open_test_db();
+        let seg = make_test_segment("session-health-001", 0);
+
+        // Reset the seeded source_health row to a known-zero baseline so we
+        // can read deltas without depending on migration-time values.
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        conn.execute(
+            "UPDATE source_health
+             SET last_event_ts        = 0,
+                 last_success_ts      = 0,
+                 events_last_1h       = 0,
+                 events_last_24h      = 0,
+                 consecutive_failures = 0,
+                 updated_at           = ?1
+             WHERE source = 'claude-session'",
+            rusqlite::params![now_ms],
+        )
+        .unwrap();
+
+        // First insert: content is new → counters should advance to 1.
+        insert_segments(&conn, std::slice::from_ref(&seg)).unwrap();
+        let (e1h_after_insert, e24h_after_insert): (i64, i64) = conn
+            .query_row(
+                "SELECT events_last_1h, events_last_24h FROM source_health
+                 WHERE source = 'claude-session'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(e1h_after_insert, 1);
+        assert_eq!(e24h_after_insert, 1);
+
+        // Second insert with identical content (whole-file reparse) → counters
+        // must NOT advance.
+        insert_segments(&conn, std::slice::from_ref(&seg)).unwrap();
+        let (e1h_after_reparse, e24h_after_reparse): (i64, i64) = conn
+            .query_row(
+                "SELECT events_last_1h, events_last_24h FROM source_health
+                 WHERE source = 'claude-session'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            e1h_after_reparse, 1,
+            "events_last_1h must not advance on idempotent reparse"
+        );
+        assert_eq!(
+            e24h_after_reparse, 1,
+            "events_last_24h must not advance on idempotent reparse"
+        );
     }
 
     // ─── T-A.4: enqueue gate integration ────────────────────────────────────

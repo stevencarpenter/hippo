@@ -281,12 +281,16 @@ fn upsert_heartbeat(conn: &Connection) {
 /// `last_enriched_content_hash`) or the `claude_enrichment_queue` table are
 /// absent — i.e., the DB has not yet been migrated from v11→v12.
 ///
-/// Used by `run_settling_sweep` to no-op gracefully on pre-migration databases
-/// rather than propagating a confusing SQL error.
+/// Used by `run_settling_sweep` and `check_backfill_needed` to no-op
+/// gracefully on pre-migration databases rather than propagating a confusing
+/// SQL error. Both aliased (`cs.content_hash`) and bare (`content_hash`)
+/// forms are matched because callers query both shapes.
 fn is_missing_claude_session_columns_error(err: &rusqlite::Error) -> bool {
     let msg = err.to_string();
     msg.contains("no such column: cs.content_hash")
+        || msg.contains("no such column: content_hash")
         || msg.contains("no such column: cs.last_enriched_content_hash")
+        || msg.contains("no such column: last_enriched_content_hash")
         || msg.contains("no such table: claude_enrichment_queue")
 }
 
@@ -375,7 +379,15 @@ fn run_settling_sweep(
                 warn!(%e, "watcher: settling sweep query failed");
                 return Ok(0);
             }
-            Ok(rows) => rows.flatten().collect(),
+            // Collect into a Result so per-row decode errors surface as a
+            // single failure rather than being silently dropped by `flatten`.
+            Ok(rows) => match rows.collect::<rusqlite::Result<Vec<_>>>() {
+                Ok(candidates) => candidates,
+                Err(e) => {
+                    warn!(%e, "watcher: settling sweep row decode failed");
+                    return Ok(0);
+                }
+            },
         }
     };
 
@@ -389,7 +401,11 @@ fn run_settling_sweep(
         e
     })?;
 
-    for (session_id, source_file) in candidates {
+    // `claude_session_row_id` is `claude_sessions.id` (an integer rowid),
+    // not the textual `claude_sessions.session_id`. The
+    // `claude_enrichment_queue.claude_session_id` foreign key joins on
+    // this rowid.
+    for (claude_session_row_id, source_file) in candidates {
         if enqueued >= max_per_tick {
             break;
         }
@@ -432,7 +448,7 @@ fn run_settling_sweep(
                  error_message = NULL,
                  updated_at    = excluded.updated_at
              WHERE claude_enrichment_queue.status != 'processing'",
-            params![session_id, now_ms],
+            params![claude_session_row_id, now_ms],
         ) {
             Ok(rows_changed) => {
                 // The WHERE clause may no-op the UPDATE if a concurrent brain
@@ -451,7 +467,7 @@ fn run_settling_sweep(
                 return Ok(enqueued);
             }
             Err(e) => {
-                warn!(%e, session_id, "watcher: settling sweep enqueue failed");
+                warn!(%e, claude_session_row_id, "watcher: settling sweep enqueue failed");
                 // Non-fatal: continue trying remaining candidates.
             }
         }
@@ -1229,21 +1245,66 @@ mod tests {
         assert_eq!(enqueued, 0, "missing file should be silently skipped");
     }
 
+    /// Construct a true pre-migration (v11-shaped) DB by hand — `open_db`
+    /// runs all migrations to `EXPECTED_VERSION`, so it can't be used here.
+    /// Only the columns/tables the sweep query touches need to exist; their
+    /// shape mirrors the pre-v12 schema (no `content_hash`,
+    /// no `last_enriched_content_hash`, no `claude_enrichment_queue`).
+    fn open_test_db_v11(dir: &TempDir) -> Connection {
+        let path = dir.path().join("pre_migration_v11.sqlite");
+        let conn = Connection::open(&path).expect("open v11 db");
+        conn.execute_batch(
+            r#"
+            PRAGMA user_version = 11;
+
+            CREATE TABLE claude_sessions (
+                id              INTEGER PRIMARY KEY,
+                session_id      TEXT NOT NULL,
+                segment_index   INTEGER NOT NULL DEFAULT 0,
+                source_file     TEXT NOT NULL,
+                end_time        INTEGER NOT NULL DEFAULT 0,
+                tool_calls_json TEXT,
+                user_prompts_json TEXT,
+                probe_tag       TEXT,
+                UNIQUE (session_id, segment_index)
+            );
+            "#,
+        )
+        .expect("init v11 schema");
+        conn
+    }
+
     #[test]
     fn test_sweep_returns_zero_on_pre_migration_db() {
         let dir = TempDir::new().unwrap();
-        // Open a DB that does NOT have v12 columns (plain v11 schema).
-        let conn = open_test_db(&dir);
+        // True v11-shaped DB: missing the v12 columns and the
+        // claude_enrichment_queue table that `run_settling_sweep` needs.
+        let conn = open_test_db_v11(&dir);
 
         let now_ms = chrono::Utc::now().timestamp_millis();
-        // Must return Ok(0) and not panic — the OnceLock suppresses repeated warns.
+        // Must return Ok(0) (not Err, not panic) when the v12 surface is
+        // absent. The OnceLock guard suppresses repeated warns.
         let result = run_settling_sweep(&conn, 10, now_ms);
-        assert!(result.is_ok(), "pre-migration DB should return Ok");
+        assert!(
+            result.is_ok(),
+            "pre-migration DB should return Ok, got {result:?}"
+        );
         assert_eq!(
             result.unwrap(),
             0,
             "pre-migration DB should return 0 enqueued"
         );
+    }
+
+    /// R2-7 regression: `check_backfill_needed` must also be silent on a
+    /// v11-shaped DB (its query references bare `content_hash`, no `cs.`
+    /// alias). Returns 0 without warning loops.
+    #[test]
+    fn test_check_backfill_needed_silent_on_pre_migration_db() {
+        let dir = TempDir::new().unwrap();
+        let conn = open_test_db_v11(&dir);
+        let n = check_backfill_needed(&conn);
+        assert_eq!(n, 0, "pre-migration DB must produce no backfill warning");
     }
 
     // -------------------------------------------------------------------------

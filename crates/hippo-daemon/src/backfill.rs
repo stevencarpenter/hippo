@@ -124,12 +124,30 @@ pub fn parse_since_date(s: &str) -> Result<DateTime<Utc>> {
     Ok(local_dt.with_timezone(&Utc))
 }
 
+/// Expand a leading `~` (or `~/`) in `pattern` to the user's home directory.
+/// `glob::glob` treats `~` as a literal path component, so quoted CLI input
+/// like `'~/.claude/projects/**/*.jsonl'` (the documented recovery form)
+/// would silently match zero files. We expand here so the documented command
+/// works as written. Patterns without a leading `~` pass through unchanged.
+fn expand_tilde(pattern: &str) -> Result<String> {
+    if pattern == "~" {
+        let home = dirs::home_dir().context("could not determine home directory for `~`")?;
+        return Ok(home.to_string_lossy().into_owned());
+    }
+    if let Some(rest) = pattern.strip_prefix("~/") {
+        let home = dirs::home_dir().context("could not determine home directory for `~/`")?;
+        return Ok(home.join(rest).to_string_lossy().into_owned());
+    }
+    Ok(pattern.to_string())
+}
+
 /// Expand `glob_pattern` to a sorted list of paths, optionally filtered by mtime.
 fn collect_paths(glob_pattern: &str, since: Option<DateTime<Utc>>) -> Result<Vec<PathBuf>> {
+    let expanded = expand_tilde(glob_pattern)?;
     // nosemgrep: rust.actix.path-traversal.tainted-path.tainted-path
     // This is a local CLI operating on the user's own machine.
-    let entries = glob::glob(glob_pattern)
-        .with_context(|| format!("invalid glob pattern: {glob_pattern}"))?;
+    let entries =
+        glob::glob(&expanded).with_context(|| format!("invalid glob pattern: {expanded}"))?;
 
     let since_secs: Option<i64> = since.map(|dt| dt.timestamp());
 
@@ -211,6 +229,14 @@ mod tests {
         path
     }
 
+    /// Build a `HippoConfig` whose `db_path()` points inside `dir`.
+    fn test_config(dir: &Path) -> HippoConfig {
+        let mut cfg = HippoConfig::default();
+        cfg.storage.data_dir = dir.to_path_buf();
+        cfg.storage.config_dir = dir.to_path_buf();
+        cfg
+    }
+
     #[test]
     fn test_backfill_dry_run_writes_nothing() {
         let (dir, db_path) = setup_tmp();
@@ -228,9 +254,16 @@ mod tests {
         ).unwrap();
         drop(conn);
 
-        // Run dry-run backfill directly (not through config).
-        let paths = collect_paths(&format!("{}/*.jsonl", dir.path().display()), None).unwrap();
-        assert_eq!(paths.len(), 1);
+        // Drive run_backfill end-to-end with dry_run=true. It must enumerate
+        // the matching file but write nothing to the DB.
+        let cfg = test_config(dir.path());
+        // Hippo uses `hippo.db` under data_dir; the file at db_path is exactly that.
+        assert_eq!(cfg.db_path(), db_path);
+        let pattern = format!("{}/*.jsonl", dir.path().display());
+        let summary = run_backfill(&cfg, &pattern, None, true).expect("dry_run backfill");
+        assert_eq!(summary.files_matched, 1);
+        assert_eq!(summary.files_processed, 0, "dry-run must not process");
+        assert_eq!(summary.segments_updated, 0);
 
         // Verify DB is untouched after dry-run.
         let conn = open_db(&db_path).unwrap();
@@ -328,7 +361,9 @@ mod tests {
         assert_eq!(errors1, 0);
         assert!(inserted1 > 0);
 
-        // Second run — same content, INSERT OR IGNORE means skipped > 0, inserted = 0.
+        // Second run — same content. Under upsert + content-hash dedup
+        // (T-A.3/T-A.4), the existing row is updated in place but the hash
+        // is unchanged, so it's counted as `skipped` (not `inserted`).
         let (inserted2, skipped2, errors2) = ingest_session_file(&conn, &jsonl_path);
         assert_eq!(errors2, 0);
         assert_eq!(
@@ -457,6 +492,50 @@ mod tests {
     fn test_parse_since_date_invalid() {
         assert!(parse_since_date("not-a-date").is_err());
         assert!(parse_since_date("2026/04/25").is_err());
+    }
+
+    #[test]
+    fn test_expand_tilde_passthrough() {
+        // Patterns without a leading `~` are returned unchanged.
+        assert_eq!(expand_tilde("/abs/path").unwrap(), "/abs/path");
+        assert_eq!(
+            expand_tilde("relative/*.jsonl").unwrap(),
+            "relative/*.jsonl"
+        );
+        // A `~` mid-path is not a home reference; it stays literal.
+        assert_eq!(expand_tilde("foo/~/bar").unwrap(), "foo/~/bar");
+    }
+
+    #[test]
+    fn test_expand_tilde_prefix() {
+        let home = dirs::home_dir().expect("home dir");
+        assert_eq!(expand_tilde("~").unwrap(), home.to_string_lossy());
+        let expected = home.join(".claude/projects/**/*.jsonl");
+        assert_eq!(
+            expand_tilde("~/.claude/projects/**/*.jsonl").unwrap(),
+            expected.to_string_lossy()
+        );
+    }
+
+    #[test]
+    fn test_collect_paths_expands_tilde() {
+        // `glob::glob` does not expand `~`. Without expansion, a pattern
+        // like `~/<unique-tmp-name>/*.jsonl` would silently return zero
+        // paths. We can't reliably write under the user's $HOME from a
+        // unit test, but we can confirm that the expansion happens before
+        // glob — i.e., a tilde-pattern returns Ok with an empty list (the
+        // home dir doesn't contain the unique fixture name) rather than a
+        // glob-pattern error.
+        let nonce = format!(
+            "hippo-backfill-tilde-test-{}-not-real",
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)
+        );
+        let pattern = format!("~/{nonce}/*.jsonl");
+        let paths = collect_paths(&pattern, None).expect("tilde pattern must not error");
+        assert!(
+            paths.is_empty(),
+            "fixture path should not exist; got {paths:?}"
+        );
     }
 
     #[test]

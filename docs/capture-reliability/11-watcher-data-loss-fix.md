@@ -1,6 +1,6 @@
 # Watcher Data-Loss Fix: Tracking Plan
 
-> **Status (2026-04-27, shipped):** Phase 1 (Bug A fix) SHIPPED (review feedback addressed in same PR; see commits f-z for fix-up). T-A.1–T-A.7 merged on `main`. T-A.8 verification report forthcoming (in flight). Bug B and follow-ups deferred to dedicated phases.
+> **Status (2026-04-27, in review):** Phase 1 (Bug A fix) is in review on PR #101. Post-merge this status block will flip to "shipped" along with the merge commit reference. T-A.1–T-A.7 implemented; T-A.8 verification report forthcoming (in flight). Bug B and follow-ups deferred to dedicated phases.
 
 **TL;DR:** The Claude-session FS-watcher is silently lossy in two distinct ways, both discovered on 2026-04-26 while ostensibly closing out the I-3 invariant:
 
@@ -54,14 +54,14 @@ The new segment 20 was written once (at the very first FSEvents notification aft
 
 **Goal:** Watcher reparses become content-correct and idempotent. Segments enrich when settled, not when first written. Backfill recovers lost data from 2026-04-25 onward.
 
-**Status: SHIPPED (2026-04-27). T-A.1–T-A.7 merged on `main`.**
+**Status: in review on PR #101 (2026-04-27). T-A.1–T-A.7 implemented; flips to SHIPPED at merge.**
 
 ### Design
 
 - **Schema v11→v12** (additive, idempotent ALTERs):
   - `claude_sessions.content_hash TEXT` — SHA256 of `(tool_calls_json + "|" + user_prompts_json + "|" + assistant_texts.join("\n"))` — full text, not counts; catches edits even when structure is unchanged.
   - `claude_sessions.last_enriched_content_hash TEXT` — written by the brain enrichment worker when it completes a segment; NULL until first enrichment.
-  - Brain `EXPECTED_SCHEMA_VERSION` bumped to 12; `ACCEPTED_READ_VERSIONS` keeps 11 for rollback.
+  - Brain `EXPECTED_SCHEMA_VERSION` bumped to 12. `ACCEPTED_READ_VERSIONS` does **not** include 11 because the brain now reads `claude_sessions.content_hash` (added in v12) inside `claim_pending_claude_segments`; opening a v11 DB would otherwise crash mid-enrichment with `no such column`. Rejecting at connect time is the safer behaviour. The daemon-side schema handshake (`schema_handshake.rs`) already enforces strict equality, so this purely tightens brain's DB-attach guard.
 - **`insert_segments` rewrite:** `INSERT … ON CONFLICT(session_id, segment_index) DO UPDATE SET (content fields)` — keeps the DB in sync with the latest reparse. The `RETURNING` clause yields whether the row pre-existed.
 - **Enqueue policy:**
   - **INSERT path** (no conflict): always enqueue. Catches orphan segments (`message_count=1, never grows`).
@@ -74,7 +74,7 @@ The new segment 20 was written once (at the very first FSEvents notification aft
 
 ### Tasks
 
-- [x] **T-A.1 — Schema v11→v12.** `crates/hippo-core/src/schema.sql` adds the two columns; `crates/hippo-core/src/storage.rs` adds the v11→v12 migration block (matching v10→v11 pattern); bump `EXPECTED_VERSION` to 12. Bump `brain/src/hippo_brain/schema_version.py` to 12, keep 11 in `ACCEPTED_READ_VERSIONS`.
+- [x] **T-A.1 — Schema v11→v12.** `crates/hippo-core/src/schema.sql` adds the two columns; `crates/hippo-core/src/storage.rs` adds the v11→v12 migration block (matching v10→v11 pattern); bump `EXPECTED_VERSION` to 12. Bump `brain/src/hippo_brain/schema_version.py` to 12 and drop v11 from `ACCEPTED_READ_VERSIONS` (brain reads `content_hash` so a v11 attach must fail at connect, not mid-loop).
   - DoD: Migration test added (mirror `test_migrate_v10_to_v11_adds_auto_resolve_columns`); partial-success recovery test added; `cargo test -p hippo-core` green.
 - [x] **T-A.2 — Hash computation helper.** Add `compute_segment_content_hash(seg: &SessionSegment) -> String` in `claude_session.rs`. Tests cover identical-content equality and tool-content sensitivity.
   - DoD: Unit tests cover empty segment, segment with tools only, segment with prompts only, segment whose redaction changed (different hash).
@@ -82,8 +82,8 @@ The new segment 20 was written once (at the very first FSEvents notification aft
   - DoD: Unit test feeds the same file twice with growing content; asserts final row matches the latest extract; idempotent against same input.
 - [x] **T-A.4 — Enqueue gate logic.** New helper `decide_enqueue(was_insert, current_hash, last_enriched_hash, queue_state, now_ms) -> bool` with the rules above. Wired into `insert_segments` post-upsert.
   - DoD: Unit tests cover: orphan-segment-enqueues, hash-unchanged-skips, debounce-window-not-elapsed-skips, processing-state-skips, hash-changed-and-debounced-enqueues.
-- [x] **T-A.5 — Brain writes `last_enriched_content_hash`.** In `brain/src/hippo_brain/claude_sessions.py` (or wherever the segment-enrichment write completes), update the row with the hash that was just enriched. Hash is recomputed from the segment content read at claim time so the brain doesn't depend on the watcher.
-  - DoD: Python unit test verifies hash propagates; integration test verifies a re-enqueue after change re-runs enrichment.
+- [x] **T-A.5 — Brain writes `last_enriched_content_hash`.** In `brain/src/hippo_brain/claude_sessions.py`, the segment-enrichment write path updates the row with the daemon-computed `content_hash` claimed from `claude_sessions`, propagating that value into `last_enriched_content_hash`. The brain does **not** recompute the hash; reusing the daemon's value avoids cross-language divergence (different JSON serialization, different newline handling).
+  - DoD: Python unit test (`TestContentHashPropagation`) verifies the daemon-computed `content_hash` is propagated into `last_enriched_content_hash`; integration test verifies a re-enqueue after change re-runs enrichment.
 - [x] **T-A.6 — Watcher heartbeat settling sweep.** In `watch_claude_sessions.rs`, every heartbeat tick, run a SELECT for unsettled segments (hash mismatch + file idle > 30 min + no queue row + has content) and enqueue. Bounded by a per-tick batch cap so a recovery storm doesn't fire 1000 enrichments at once.
   - DoD: Integration test simulates "user walks away" — segment created, file goes idle, sweep enqueues after threshold.
 - [x] **T-A.7 — Backfill CLI.** New subcommand `hippo ingest claude-session-backfill <glob> [--since DATE] [--dry-run]`. Resets watcher offsets for matching files, triggers reparse via the existing watcher code path. Logs a summary table (files processed, segments updated, segments unchanged).
@@ -164,7 +164,7 @@ These are not blocking. File issues; pick up when convenient.
 
 `mise run install` upgrades brain and daemon together in the correct order, so the standard install path Just Works. **Manual rollback paths are unsupported** — if you need to roll back the daemon binary, you must also roll back the brain. Don't run a v12 brain alongside a downgraded v11 daemon.
 
-(Aside: brain's `ACCEPTED_READ_VERSIONS` is a separate concern — it governs which on-disk schema versions brain will *attach* to without erroring. It does not affect or relax the daemon-side handshake. v11 is kept in the set for the case where a v12 brain attaches to a DB that was migrated forward but then the daemon process restarted onto an older binary; brain can still read it without crashing.)
+(Aside: brain's `ACCEPTED_READ_VERSIONS` is a separate concern — it governs which on-disk schema versions brain will *attach* to without erroring. It does not affect or relax the daemon-side handshake. v11 is **not** in the set: brain now reads `content_hash` inside `claim_pending_claude_segments`, so a v11 DB would crash mid-enrichment. Refusing the attach makes that failure mode loud and immediate at connect time. Older read-only versions (v5–v10) remain in the set for code paths that don't touch the v12 columns.)
 
 ---
 
