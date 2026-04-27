@@ -1289,6 +1289,49 @@ mod tests {
         assert!(resolved_at.is_none());
     }
 
+    /// A `details_json` whose `source` field is non-string (number, null,
+    /// missing entirely) must NOT cause the alarm to silently auto-resolve.
+    /// Locks in the contract that only string-valued sources participate
+    /// in pair-matching.
+    #[test]
+    fn auto_resolve_skips_alarm_with_non_string_source() {
+        let dir = TempDir::new().unwrap();
+        let conn = open_test_conn(&dir);
+        create_capture_alarms_table(&conn);
+
+        // Three rows, each with a problematic `source` field shape.
+        for details in [
+            r#"{"source": 42}"#,        // numeric
+            r#"{"source": null}"#,       // explicit null
+            r#"{"other_field": "x"}"#,   // missing entirely
+        ] {
+            conn.execute(
+                "INSERT INTO capture_alarms (invariant_id, raised_at, details_json)
+                 VALUES ('I-1', ?1, ?2)",
+                rusqlite::params![NOW - 90_000, details],
+            )
+            .unwrap();
+        }
+
+        let resolved = auto_resolve_alarms(&conn, &[], NOW).unwrap();
+        assert_eq!(
+            resolved, 0,
+            "alarms with non-string source must never auto-resolve"
+        );
+
+        let counters: Vec<i64> = conn
+            .prepare("SELECT clean_ticks FROM capture_alarms")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+        assert!(
+            counters.iter().all(|&c| c == 0),
+            "counters must stay at 0 for unparseable rows; got {counters:?}"
+        );
+    }
+
     /// Resolved alarms must not suppress new alarms via rate-limit. A
     /// resolved row from 5 minutes ago should leave check_rate_limit free
     /// to allow a brand-new raise.
