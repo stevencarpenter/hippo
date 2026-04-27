@@ -697,7 +697,7 @@ def write_claude_knowledge_node(
         # where the daemon has not yet written a hash) to avoid clobbering an
         # existing last_enriched_content_hash with NULL.
         if content_hashes is not None:
-            for seg_id, ch in zip(segment_ids, content_hashes):
+            for seg_id, ch in zip(segment_ids, content_hashes, strict=True):
                 if ch is not None:
                     conn.execute(
                         "UPDATE claude_sessions SET last_enriched_content_hash = ? WHERE id = ?",

@@ -930,6 +930,16 @@ fn insert_segments(conn: &Connection, segments: &[SessionSegment]) -> Result<(us
     let mut skipped = 0usize;
     let now_ms = Utc::now().timestamp_millis();
 
+    // Wrap the entire segment loop in a single transaction.
+    // Benefits:
+    //   1. Performance: one fsync for N segments instead of N fsyncs.
+    //   2. Atomicity: partial inserts on error are rolled back.
+    //   3. Race reduction: the write lock is held from SELECT through the queue
+    //      mutation, narrowing the I-1 race window.
+    // `unchecked_transaction` is used (rather than `transaction`) because
+    // `conn` is borrowed from the caller as `&Connection`, not `&mut Connection`.
+    let tx = conn.unchecked_transaction()?;
+
     for seg in segments {
         let summary_text = build_summary_text(seg);
         let tool_calls_json =
@@ -1055,13 +1065,23 @@ fn insert_segments(conn: &Connection, segments: &[SessionSegment]) -> Result<(us
                 now_ms,
             )
         {
-            // INSERT OR REPLACE resets a stale 'done' or 'failed' row back to
-            // 'pending'. Both created_at and updated_at are set to now_ms so
-            // the debounce window is anchored at this moment.
+            // Safe upsert: on conflict, only overwrite non-processing rows.
+            // - The WHERE clause blocks trampling an in-flight worker's lock.
+            // - retry_count=0 is intentional: a new content version (detected
+            //   by the decide_enqueue hash check) deserves a fresh retry budget.
+            // - error_message is cleared because it is now stale.
+            // - locked_at/locked_by are left untouched by the UPDATE path (they
+            //   will already be NULL because the WHERE excludes 'processing').
             conn.execute(
-                "INSERT OR REPLACE INTO claude_enrichment_queue
-                     (claude_session_id, status, created_at, updated_at)
-                 VALUES (?1, 'pending', ?2, ?2)",
+                "INSERT INTO claude_enrichment_queue
+                     (claude_session_id, status, retry_count, error_message, created_at, updated_at)
+                 VALUES (?1, 'pending', 0, NULL, ?2, ?2)
+                 ON CONFLICT(claude_session_id) DO UPDATE SET
+                     status        = 'pending',
+                     retry_count   = 0,
+                     error_message = NULL,
+                     updated_at    = excluded.updated_at
+                 WHERE claude_enrichment_queue.status != 'processing'",
                 params![claude_session_id, now_ms],
             )?;
         }
@@ -1086,6 +1106,7 @@ fn insert_segments(conn: &Connection, segments: &[SessionSegment]) -> Result<(us
         }
     }
 
+    tx.commit()?;
     Ok((inserted, skipped))
 }
 

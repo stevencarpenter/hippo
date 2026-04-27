@@ -1,3 +1,5 @@
+use std::net::TcpListener as StdTcpListener;
+
 use tempfile::tempdir;
 
 use hippo_core::config::HippoConfig;
@@ -10,6 +12,14 @@ pub fn test_config() -> HippoConfig {
     config.storage.config_dir = temp.path().join("config");
     // Short flush interval so events land in the DB quickly
     config.daemon.flush_interval_ms = 100;
+    // Bind an ephemeral TCP port then drop the listener so no real service
+    // will answer on it.  This prevents `check_brain_schema_compat` from
+    // connecting to a live hippo-brain at the production default (9175) and
+    // bailing with a schema-version mismatch.
+    let ephemeral = StdTcpListener::bind("127.0.0.1:0").unwrap();
+    let ephemeral_port = ephemeral.local_addr().unwrap().port();
+    drop(ephemeral);
+    config.brain.port = ephemeral_port;
     std::mem::forget(temp);
     config
 }
