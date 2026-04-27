@@ -12,10 +12,14 @@
 //!   future seek-based optimisation can use it without a schema change.
 //! - Resets offset on inode/device change (file replaced) or size regression (truncated).
 //! - Writes `source_health WHERE source='claude-session-watcher'` every 30 s.
+//! - Every heartbeat tick, runs `run_settling_sweep` to enqueue segments where
+//!   `content_hash != last_enriched_content_hash` and the source file has been
+//!   idle for 30+ minutes.  This is the backstop for the T-A.4 debounce gate.
 
 use std::collections::HashMap;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
@@ -273,6 +277,214 @@ fn upsert_heartbeat(conn: &Connection) {
     }
 }
 
+/// Return true when `err` indicates that the v12 columns (`content_hash`,
+/// `last_enriched_content_hash`) or the `claude_enrichment_queue` table are
+/// absent — i.e., the DB has not yet been migrated from v11→v12.
+///
+/// Used by `run_settling_sweep` and `check_backfill_needed` to no-op
+/// gracefully on pre-migration databases rather than propagating a confusing
+/// SQL error. Both aliased (`cs.content_hash`) and bare (`content_hash`)
+/// forms are matched because callers query both shapes.
+fn is_missing_claude_session_columns_error(err: &rusqlite::Error) -> bool {
+    let msg = err.to_string();
+    msg.contains("no such column: cs.content_hash")
+        || msg.contains("no such column: content_hash")
+        || msg.contains("no such column: cs.last_enriched_content_hash")
+        || msg.contains("no such column: last_enriched_content_hash")
+        || msg.contains("no such table: claude_enrichment_queue")
+}
+
+/// Sentinel: emit the pre-migration `warn!` at most once per process lifetime.
+static SETTLING_SWEEP_PRE_MIGRATION_WARNED: OnceLock<()> = OnceLock::new();
+
+/// Settling sweep — enqueue segments where content has drifted from the last
+/// enriched state and the source file has gone quiet.
+///
+/// This is the backstop for the T-A.4 debounce gate: if the file stops growing
+/// before the debounce window fires, the sweep catches the segment on the next
+/// heartbeat tick (at most 30 s later, file-mtime-checked in Rust).
+///
+/// # Contract (frozen)
+/// - Settling threshold: 30 minutes of file mtime idle.
+/// - Per-tick batch cap: `max_per_tick` (caller passes 10).
+/// - Enqueue mechanic: `INSERT … ON CONFLICT(claude_session_id) DO UPDATE …
+///   WHERE status != 'processing'`. Two-layer protection against trampling
+///   an in-flight worker: the SELECT excludes `processing` rows, and the
+///   UPSERT's `WHERE` clause is defense-in-depth for the SELECT-vs-UPSERT
+///   race window. `done`/`failed` rows are correctly reset to `pending`
+///   with `retry_count = 0` (new content version deserves a fresh budget).
+/// - Pre-migration safe: returns `Ok(0)` with a single `warn!` per process.
+///
+/// Returns the count of segments enqueued this tick.
+fn run_settling_sweep(
+    conn: &Connection,
+    max_per_tick: usize,
+    now_ms: i64,
+) -> rusqlite::Result<usize> {
+    // 30 minutes ago in epoch-ms.
+    let mtime_cutoff_ms = now_ms - 30 * 60 * 1000;
+
+    // Over-fetch by 4× so the Rust-side mtime filter still yields max_per_tick
+    // candidates even if some files have been recently modified or deleted.
+    let fetch_limit = (max_per_tick * 4) as i64;
+
+    let candidates: Vec<(i64, String)> = {
+        // Prepare the candidate SELECT.  Any "no such column" / "no such table"
+        // error means the DB has not yet been migrated to v12 — return Ok(0).
+        let mut stmt = match conn.prepare(
+            "SELECT cs.id, cs.source_file
+             FROM claude_sessions cs
+             LEFT JOIN claude_enrichment_queue ceq ON ceq.claude_session_id = cs.id
+             WHERE cs.probe_tag IS NULL
+               AND cs.content_hash IS NOT NULL
+               AND (cs.last_enriched_content_hash IS NULL
+                    OR cs.content_hash != cs.last_enriched_content_hash)
+               AND (
+                 json_array_length(COALESCE(cs.tool_calls_json,   '[]')) > 0
+                 OR json_array_length(COALESCE(cs.user_prompts_json, '[]')) > 0
+               )
+               AND (ceq.id IS NULL OR ceq.status IN ('done','failed'))
+             ORDER BY cs.end_time ASC
+             LIMIT ?1",
+        ) {
+            Err(ref e) if is_missing_claude_session_columns_error(e) => {
+                SETTLING_SWEEP_PRE_MIGRATION_WARNED.get_or_init(|| {
+                    warn!(
+                        "watcher: settling sweep skipped — DB not yet migrated to v12 \
+                         (content_hash column absent); will retry each heartbeat"
+                    );
+                });
+                return Ok(0);
+            }
+            Err(e) => {
+                warn!(%e, "watcher: settling sweep prepare failed");
+                return Ok(0);
+            }
+            Ok(s) => s,
+        };
+
+        match stmt.query_map(params![fetch_limit], |row| {
+            Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+        }) {
+            Err(ref e) if is_missing_claude_session_columns_error(e) => {
+                SETTLING_SWEEP_PRE_MIGRATION_WARNED.get_or_init(|| {
+                    warn!(
+                        "watcher: settling sweep skipped — DB not yet migrated to v12 \
+                         (content_hash column absent); will retry each heartbeat"
+                    );
+                });
+                return Ok(0);
+            }
+            Err(e) => {
+                warn!(%e, "watcher: settling sweep query failed");
+                return Ok(0);
+            }
+            // Collect into a Result so per-row decode errors surface as a
+            // single failure rather than being silently dropped by `flatten`.
+            Ok(rows) => match rows.collect::<rusqlite::Result<Vec<_>>>() {
+                Ok(candidates) => candidates,
+                Err(e) => {
+                    warn!(%e, "watcher: settling sweep row decode failed");
+                    return Ok(0);
+                }
+            },
+        }
+    };
+
+    let mut enqueued = 0usize;
+
+    // Wrap the per-tick enqueue batch in a single transaction.
+    // Reduces fsyncs and keeps the write lock held across all upserts
+    // (narrowing the race window from I-1).
+    let tx = conn.unchecked_transaction().map_err(|e| {
+        warn!(%e, "watcher: settling sweep could not begin transaction");
+        e
+    })?;
+
+    // `claude_session_row_id` is `claude_sessions.id` (an integer rowid),
+    // not the textual `claude_sessions.session_id`. The
+    // `claude_enrichment_queue.claude_session_id` foreign key joins on
+    // this rowid.
+    for (claude_session_row_id, source_file) in candidates {
+        if enqueued >= max_per_tick {
+            break;
+        }
+
+        // Check file mtime in Rust — only accept files whose last modification
+        // is older than the 30-minute settling threshold.
+        let mtime_ms = match std::fs::metadata(&source_file) {
+            Err(_) => {
+                // File deleted or inaccessible — silently skip.
+                continue;
+            }
+            Ok(meta) => match meta.modified() {
+                Err(_) => continue,
+                Ok(sys_time) => {
+                    // Convert SystemTime → epoch ms.
+                    match sys_time.duration_since(std::time::UNIX_EPOCH) {
+                        Ok(d) => d.as_millis() as i64,
+                        Err(_) => continue,
+                    }
+                }
+            },
+        };
+
+        if mtime_ms > mtime_cutoff_ms {
+            // File modified more recently than 30 min ago — not yet settled.
+            continue;
+        }
+
+        // Safe upsert: on conflict, only overwrite non-processing rows.
+        // Mirrors the same logic in insert_segments (claude_session.rs).
+        // Keeps the worker's lock safe; resets retry_count because a new
+        // content version deserves a fresh retry budget.
+        match tx.execute(
+            "INSERT INTO claude_enrichment_queue
+                 (claude_session_id, status, retry_count, error_message, created_at, updated_at)
+             VALUES (?1, 'pending', 0, NULL, ?2, ?2)
+             ON CONFLICT(claude_session_id) DO UPDATE SET
+                 status        = 'pending',
+                 retry_count   = 0,
+                 error_message = NULL,
+                 updated_at    = excluded.updated_at
+             WHERE claude_enrichment_queue.status != 'processing'",
+            params![claude_session_row_id, now_ms],
+        ) {
+            Ok(rows_changed) => {
+                // The WHERE clause may no-op the UPDATE if a concurrent brain
+                // worker transitioned the row to `processing` between our SELECT
+                // and this UPSERT. Only count actual enqueues so the metric
+                // reflects work the brain will see.
+                if rows_changed > 0 {
+                    enqueued += 1;
+                }
+            }
+            Err(ref e) if is_missing_claude_session_columns_error(e) => {
+                // Race: shouldn't happen after SELECT succeeded, but guard anyway.
+                warn!(%e, "watcher: settling sweep enqueue failed (pre-migration?)");
+                // Commit whatever we managed before this error.
+                let _ = tx.commit();
+                return Ok(enqueued);
+            }
+            Err(e) => {
+                warn!(%e, claude_session_row_id, "watcher: settling sweep enqueue failed");
+                // Non-fatal: continue trying remaining candidates.
+            }
+        }
+    }
+
+    tx.commit().map_err(|e| {
+        warn!(%e, "watcher: settling sweep commit failed");
+        e
+    })?;
+
+    if enqueued > 0 {
+        debug!(enqueued, "watcher: settling sweep");
+    }
+
+    Ok(enqueued)
+}
+
 /// Check whether `path` lives on a remote filesystem (NFS, SMB, etc.) and log
 /// a warning.  FSEvents may not fire reliably for remote volumes.
 /// `statfs::f_fstypename` is macOS-specific; this is a no-op on other platforms.
@@ -307,6 +519,57 @@ fn projects_dir() -> Option<PathBuf> {
     dirs::home_dir().map(|h| h.join(".claude").join("projects"))
 }
 
+/// Sentinel: emit the backfill warning at most once per process lifetime.
+static BACKFILL_WARN_ONCE: OnceLock<()> = OnceLock::new();
+
+/// One-shot startup check: if any post-2026-04-25 segments have a NULL
+/// `content_hash` (Bug A truncation residue from before Phase 1 shipped),
+/// emit a `warn!` pointing the user at the backfill CLI.
+///
+/// Returns the count of affected segments, or 0 if the column does not exist
+/// (pre-migration DB — safe no-op) or if the DB is already clean.
+///
+/// The OnceLock ensures the warn fires at most once per process even if this
+/// function is ever called more than once.
+fn check_backfill_needed(conn: &Connection) -> usize {
+    // `strftime('%s', '2026-04-25')` returns seconds; multiply by 1000 to
+    // compare against epoch-ms `end_time`.
+    let count: rusqlite::Result<i64> = conn.query_row(
+        "SELECT COUNT(*) FROM claude_sessions
+         WHERE content_hash IS NULL
+           AND probe_tag IS NULL
+           AND end_time > strftime('%s', '2026-04-25') * 1000",
+        [],
+        |row| row.get(0),
+    );
+
+    match count {
+        Err(ref e) if is_missing_claude_session_columns_error(e) => {
+            // Pre-migration DB (v11): content_hash column absent. Safe to ignore.
+            0
+        }
+        Err(e) => {
+            warn!(%e, "watcher: backfill check query failed");
+            0
+        }
+        Ok(0) => 0,
+        Ok(n) => {
+            BACKFILL_WARN_ONCE.get_or_init(|| {
+                warn!(
+                    count = n,
+                    "watcher: {} session segment(s) captured 2026-04-25 → present have \
+                     NULL content_hash (Bug A truncation residue). Run: \
+                     hippo ingest claude-session-backfill \
+                     '~/.claude/projects/**/*.jsonl' --since 2026-04-25 --dry-run, \
+                     then without --dry-run to recover.",
+                    n
+                );
+            });
+            n as usize
+        }
+    }
+}
+
 /// Entry point — runs until SIGTERM/ctrl-c.
 pub async fn run(config: &HippoConfig) -> Result<()> {
     let db_path = config.db_path();
@@ -323,6 +586,9 @@ pub async fn run(config: &HippoConfig) -> Result<()> {
 
     // Open our own write connection (WAL, separate from the daemon).
     let conn = open_db(&db_path).context("watcher: failed to open DB")?;
+
+    // One-shot startup check: warn if Bug A truncation residue is present.
+    check_backfill_needed(&conn);
 
     // Load saved offsets and build initial state map.
     let mut states: HashMap<PathBuf, FileState> = load_offsets(&conn).unwrap_or_default();
@@ -413,6 +679,13 @@ pub async fn run(config: &HippoConfig) -> Result<()> {
 
             _ = heartbeat_tick.tick() => {
                 upsert_heartbeat(&conn);
+                let now_ms = Utc::now().timestamp_millis();
+                match run_settling_sweep(&conn, 10, now_ms) {
+                    Ok(_) => {}
+                    Err(e) => {
+                        warn!(%e, "watcher: settling sweep error");
+                    }
+                }
             }
 
             Some(event) = rx.recv() => {
@@ -640,5 +913,629 @@ mod tests {
             )
             .unwrap() as usize;
         assert_eq!(dup_count, 0, "duplicate (session_id, segment_index) found");
+    }
+
+    // -------------------------------------------------------------------------
+    // Settling sweep tests
+    // -------------------------------------------------------------------------
+
+    /// Open a test DB. Post-T-A.1 the v12 columns are part of the canonical
+    /// schema (added by the v11→v12 migration in `open_db`), so no manual
+    /// ALTER is needed. This thin wrapper is kept for readability since
+    /// several sweep tests reference "v12" semantics in their setup.
+    fn open_test_db_v12(dir: &TempDir) -> Connection {
+        open_test_db(dir)
+    }
+
+    /// Set the mtime of a file to `seconds_ago` seconds before now using libc.
+    fn set_mtime_seconds_ago(path: &Path, seconds_ago: u64) {
+        use std::ffi::CString;
+        let ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+            .saturating_sub(seconds_ago) as libc::time_t;
+        let times = [
+            libc::timeval {
+                tv_sec: ts,
+                tv_usec: 0,
+            },
+            libc::timeval {
+                tv_sec: ts,
+                tv_usec: 0,
+            },
+        ];
+        let c_path = CString::new(path.to_str().unwrap()).unwrap();
+        unsafe {
+            libc::utimes(c_path.as_ptr(), times.as_ptr());
+        }
+    }
+
+    /// Seed a `claude_sessions` row directly for sweep tests.
+    #[allow(clippy::too_many_arguments)]
+    fn seed_session(
+        conn: &Connection,
+        row_id: i64,
+        session_id: &str,
+        source_file: &str,
+        content_hash: Option<&str>,
+        last_enriched_content_hash: Option<&str>,
+        tool_calls_json: Option<&str>,
+        user_prompts_json: Option<&str>,
+    ) {
+        let now_ms = 1_700_000_000_000i64;
+        conn.execute(
+            "INSERT INTO claude_sessions
+                 (id, session_id, project_dir, cwd, segment_index, start_time, end_time,
+                  summary_text, tool_calls_json, user_prompts_json, message_count, source_file,
+                  content_hash, last_enriched_content_hash, created_at)
+             VALUES (?1, ?2, '/tmp', '/tmp', 0, ?3, ?3, 'test', ?4, ?5, 1, ?6, ?7, ?8, ?3)",
+            params![
+                row_id,
+                session_id,
+                now_ms,
+                tool_calls_json,
+                user_prompts_json,
+                source_file,
+                content_hash,
+                last_enriched_content_hash,
+            ],
+        )
+        .expect("seed_session");
+    }
+
+    /// Seed a queue row for a session.
+    fn seed_queue(conn: &Connection, claude_session_id: i64, status: &str) {
+        let now_ms = 1_700_000_000_000i64;
+        conn.execute(
+            "INSERT INTO claude_enrichment_queue
+                 (claude_session_id, status, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?3)",
+            params![claude_session_id, status, now_ms],
+        )
+        .expect("seed_queue");
+    }
+
+    /// Read the queue status for a session.
+    fn queue_status(conn: &Connection, claude_session_id: i64) -> Option<String> {
+        conn.query_row(
+            "SELECT status FROM claude_enrichment_queue WHERE claude_session_id = ?1",
+            params![claude_session_id],
+            |row| row.get(0),
+        )
+        .ok()
+    }
+
+    #[test]
+    fn test_sweep_enqueues_segment_with_old_mtime_and_hash_mismatch() {
+        let dir = TempDir::new().unwrap();
+        let conn = open_test_db_v12(&dir);
+
+        // Create a file and set its mtime to 35 minutes ago.
+        let file = dir.path().join("old-session.jsonl");
+        std::fs::write(&file, b"x").unwrap();
+        set_mtime_seconds_ago(&file, 35 * 60);
+
+        seed_session(
+            &conn,
+            1,
+            "sess-old-mtime",
+            file.to_str().unwrap(),
+            Some("hash-a"),
+            Some("hash-b"),           // mismatch: content changed since enrichment
+            Some(r#"[{"id":"t1"}]"#), // non-empty tool_calls
+            None,
+        );
+
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        let enqueued = run_settling_sweep(&conn, 10, now_ms).expect("sweep");
+        assert_eq!(enqueued, 1, "expected 1 segment enqueued");
+        assert_eq!(
+            queue_status(&conn, 1).as_deref(),
+            Some("pending"),
+            "queue row should be pending"
+        );
+    }
+
+    #[test]
+    fn test_sweep_skips_recent_mtime() {
+        let dir = TempDir::new().unwrap();
+        let conn = open_test_db_v12(&dir);
+
+        // File modified only 5 minutes ago — not yet settled.
+        let file = dir.path().join("recent-session.jsonl");
+        std::fs::write(&file, b"x").unwrap();
+        set_mtime_seconds_ago(&file, 5 * 60);
+
+        seed_session(
+            &conn,
+            2,
+            "sess-recent",
+            file.to_str().unwrap(),
+            Some("hash-a"),
+            Some("hash-b"),
+            Some(r#"[{"id":"t1"}]"#),
+            None,
+        );
+
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        let enqueued = run_settling_sweep(&conn, 10, now_ms).expect("sweep");
+        assert_eq!(enqueued, 0, "recent file should not be enqueued");
+    }
+
+    #[test]
+    fn test_sweep_skips_when_hash_matches() {
+        let dir = TempDir::new().unwrap();
+        let conn = open_test_db_v12(&dir);
+
+        // File is old, but hashes match — already enriched at current content.
+        let file = dir.path().join("hash-match.jsonl");
+        std::fs::write(&file, b"x").unwrap();
+        set_mtime_seconds_ago(&file, 35 * 60);
+
+        seed_session(
+            &conn,
+            3,
+            "sess-hash-match",
+            file.to_str().unwrap(),
+            Some("same-hash"),
+            Some("same-hash"), // matches: no re-enrichment needed
+            Some(r#"[{"id":"t1"}]"#),
+            None,
+        );
+
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        let enqueued = run_settling_sweep(&conn, 10, now_ms).expect("sweep");
+        assert_eq!(enqueued, 0, "matching hashes should not trigger enqueue");
+    }
+
+    #[test]
+    fn test_sweep_skips_when_processing() {
+        let dir = TempDir::new().unwrap();
+        let conn = open_test_db_v12(&dir);
+
+        let file = dir.path().join("processing.jsonl");
+        std::fs::write(&file, b"x").unwrap();
+        set_mtime_seconds_ago(&file, 35 * 60);
+
+        seed_session(
+            &conn,
+            4,
+            "sess-processing",
+            file.to_str().unwrap(),
+            Some("hash-a"),
+            Some("hash-b"),
+            Some(r#"[{"id":"t1"}]"#),
+            None,
+        );
+        seed_queue(&conn, 4, "processing");
+
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        let enqueued = run_settling_sweep(&conn, 10, now_ms).expect("sweep");
+        assert_eq!(enqueued, 0, "in-progress queue row should block re-enqueue");
+    }
+
+    #[test]
+    fn test_sweep_replaces_done_queue_row() {
+        let dir = TempDir::new().unwrap();
+        let conn = open_test_db_v12(&dir);
+
+        let file = dir.path().join("done-session.jsonl");
+        std::fs::write(&file, b"x").unwrap();
+        set_mtime_seconds_ago(&file, 35 * 60);
+
+        seed_session(
+            &conn,
+            5,
+            "sess-done",
+            file.to_str().unwrap(),
+            Some("hash-new"),
+            Some("hash-old"), // content changed since last enrichment
+            Some(r#"[{"id":"t1"}]"#),
+            None,
+        );
+        // Pre-existing 'done' row from a previous enrichment cycle.
+        seed_queue(&conn, 5, "done");
+
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        let enqueued = run_settling_sweep(&conn, 10, now_ms).expect("sweep");
+        assert_eq!(enqueued, 1, "done row should be replaced with pending");
+
+        let status = queue_status(&conn, 5).unwrap();
+        assert_eq!(status, "pending", "queue row should be reset to pending");
+
+        // updated_at should be fresh (within a few seconds of now).
+        let updated_at: i64 = conn
+            .query_row(
+                "SELECT updated_at FROM claude_enrichment_queue WHERE claude_session_id = 5",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(
+            updated_at >= now_ms,
+            "updated_at should be at or after now_ms (got {updated_at}, expected >= {now_ms})"
+        );
+    }
+
+    #[test]
+    fn test_sweep_skips_empty_segment() {
+        let dir = TempDir::new().unwrap();
+        let conn = open_test_db_v12(&dir);
+
+        let file = dir.path().join("empty-seg.jsonl");
+        std::fs::write(&file, b"x").unwrap();
+        set_mtime_seconds_ago(&file, 35 * 60);
+
+        seed_session(
+            &conn,
+            6,
+            "sess-empty",
+            file.to_str().unwrap(),
+            Some("hash-a"),
+            Some("hash-b"),
+            Some("[]"), // empty tool_calls
+            Some("[]"), // empty user_prompts
+        );
+
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        let enqueued = run_settling_sweep(&conn, 10, now_ms).expect("sweep");
+        assert_eq!(enqueued, 0, "empty segment should not be enqueued");
+    }
+
+    #[test]
+    fn test_sweep_caps_at_max_per_tick() {
+        let dir = TempDir::new().unwrap();
+        let conn = open_test_db_v12(&dir);
+
+        // Seed 15 eligible segments, all with old files.
+        for i in 1i64..=15 {
+            let file = dir.path().join(format!("cap-sess-{i}.jsonl"));
+            std::fs::write(&file, b"x").unwrap();
+            set_mtime_seconds_ago(&file, 35 * 60);
+            seed_session(
+                &conn,
+                i,
+                &format!("sess-cap-{i:02}"),
+                file.to_str().unwrap(),
+                Some("hash-a"),
+                Some("hash-b"),
+                Some(r#"[{"id":"t1"}]"#),
+                None,
+            );
+        }
+
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        // cap at 10
+        let enqueued = run_settling_sweep(&conn, 10, now_ms).expect("sweep");
+        assert_eq!(enqueued, 10, "sweep should cap at max_per_tick=10");
+
+        // The remaining 5 should still have no queue row (or be untouched).
+        let pending_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM claude_enrichment_queue WHERE status = 'pending'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(pending_count, 10, "exactly 10 rows should be pending");
+    }
+
+    #[test]
+    fn test_sweep_skips_missing_file() {
+        let dir = TempDir::new().unwrap();
+        let conn = open_test_db_v12(&dir);
+
+        // Point source_file at a path that does not exist.
+        let nonexistent = dir.path().join("does-not-exist.jsonl");
+
+        seed_session(
+            &conn,
+            7,
+            "sess-missing-file",
+            nonexistent.to_str().unwrap(),
+            Some("hash-a"),
+            Some("hash-b"),
+            Some(r#"[{"id":"t1"}]"#),
+            None,
+        );
+
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        let enqueued = run_settling_sweep(&conn, 10, now_ms).expect("sweep should not error");
+        assert_eq!(enqueued, 0, "missing file should be silently skipped");
+    }
+
+    /// Construct a true pre-migration (v11-shaped) DB by hand — `open_db`
+    /// runs all migrations to `EXPECTED_VERSION`, so it can't be used here.
+    /// Only the columns/tables the sweep query touches need to exist; their
+    /// shape mirrors the pre-v12 schema (no `content_hash`,
+    /// no `last_enriched_content_hash`, no `claude_enrichment_queue`).
+    fn open_test_db_v11(dir: &TempDir) -> Connection {
+        let path = dir.path().join("pre_migration_v11.sqlite");
+        let conn = Connection::open(&path).expect("open v11 db");
+        conn.execute_batch(
+            r#"
+            PRAGMA user_version = 11;
+
+            CREATE TABLE claude_sessions (
+                id              INTEGER PRIMARY KEY,
+                session_id      TEXT NOT NULL,
+                segment_index   INTEGER NOT NULL DEFAULT 0,
+                source_file     TEXT NOT NULL,
+                end_time        INTEGER NOT NULL DEFAULT 0,
+                tool_calls_json TEXT,
+                user_prompts_json TEXT,
+                probe_tag       TEXT,
+                UNIQUE (session_id, segment_index)
+            );
+            "#,
+        )
+        .expect("init v11 schema");
+        conn
+    }
+
+    #[test]
+    fn test_sweep_returns_zero_on_pre_migration_db() {
+        let dir = TempDir::new().unwrap();
+        // True v11-shaped DB: missing the v12 columns and the
+        // claude_enrichment_queue table that `run_settling_sweep` needs.
+        let conn = open_test_db_v11(&dir);
+
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        // Must return Ok(0) (not Err, not panic) when the v12 surface is
+        // absent. The OnceLock guard suppresses repeated warns.
+        let result = run_settling_sweep(&conn, 10, now_ms);
+        assert!(
+            result.is_ok(),
+            "pre-migration DB should return Ok, got {result:?}"
+        );
+        assert_eq!(
+            result.unwrap(),
+            0,
+            "pre-migration DB should return 0 enqueued"
+        );
+    }
+
+    /// R2-7 regression: `check_backfill_needed` must also be silent on a
+    /// v11-shaped DB (its query references bare `content_hash`, no `cs.`
+    /// alias). Returns 0 without warning loops.
+    #[test]
+    fn test_check_backfill_needed_silent_on_pre_migration_db() {
+        let dir = TempDir::new().unwrap();
+        let conn = open_test_db_v11(&dir);
+        let n = check_backfill_needed(&conn);
+        assert_eq!(n, 0, "pre-migration DB must produce no backfill warning");
+    }
+
+    // -------------------------------------------------------------------------
+    // I-1 regression: safe upsert must not clobber a processing lock
+    // -------------------------------------------------------------------------
+
+    /// Seed a queue row already in `processing` with explicit `locked_by` /
+    /// `retry_count` fields (simulating a brain worker that claimed it).
+    fn seed_queue_processing(
+        conn: &Connection,
+        claude_session_id: i64,
+        locked_by: &str,
+        retry_count: i64,
+    ) {
+        let now_ms = 1_700_000_000_000i64;
+        conn.execute(
+            "INSERT INTO claude_enrichment_queue
+                 (claude_session_id, status, retry_count, locked_by, locked_at, created_at, updated_at)
+             VALUES (?1, 'processing', ?2, ?3, ?4, ?4, ?4)",
+            params![claude_session_id, retry_count, locked_by, now_ms],
+        )
+        .expect("seed_queue_processing");
+    }
+
+    /// Verify that the safe upsert SQL (I-1 fix) does NOT overwrite a
+    /// processing row's lock fields, even when the caller attempts to
+    /// enqueue the same session_id as 'pending'.
+    ///
+    /// This tests the SQL-level WHERE clause directly because the
+    /// `decide_enqueue` function already guards against this at the Rust
+    /// level — but the SQL guard is the defence-in-depth for the race where
+    /// the row transitions to 'processing' after the SELECT but before the
+    /// UPSERT.
+    #[test]
+    fn test_enqueue_does_not_clobber_processing_lock() {
+        let dir = TempDir::new().unwrap();
+        let conn = open_test_db_v12(&dir);
+
+        // Seed a session row.
+        seed_session(
+            &conn,
+            100,
+            "sess-lock-test",
+            "/tmp/lock-test.jsonl",
+            Some("hash-v2"),
+            Some("hash-v1"), // different: content changed
+            Some(r#"[{"id":"t1"}]"#),
+            None,
+        );
+
+        // Brain worker has already claimed the row.
+        seed_queue_processing(&conn, 100, "worker-a", 2);
+
+        // Attempt to upsert to 'pending' — the WHERE clause must block this.
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        conn.execute(
+            "INSERT INTO claude_enrichment_queue
+                 (claude_session_id, status, retry_count, error_message, created_at, updated_at)
+             VALUES (?1, 'pending', 0, NULL, ?2, ?2)
+             ON CONFLICT(claude_session_id) DO UPDATE SET
+                 status        = 'pending',
+                 retry_count   = 0,
+                 error_message = NULL,
+                 updated_at    = excluded.updated_at
+             WHERE claude_enrichment_queue.status != 'processing'",
+            params![100i64, now_ms],
+        )
+        .expect("upsert should succeed (no-op due to WHERE)");
+
+        // Verify the processing row is completely intact.
+        let (status, locked_by, retry_count): (String, Option<String>, i64) = conn
+            .query_row(
+                "SELECT status, locked_by, retry_count
+                 FROM claude_enrichment_queue WHERE claude_session_id = 100",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .expect("queue row should still exist");
+
+        assert_eq!(status, "processing", "status must remain 'processing'");
+        assert_eq!(
+            locked_by.as_deref(),
+            Some("worker-a"),
+            "locked_by must not be cleared"
+        );
+        assert_eq!(retry_count, 2, "retry_count must not be reset to 0");
+    }
+
+    // -------------------------------------------------------------------------
+    // process_file file-size short-circuit: re-firing a watcher event on an
+    // unchanged file must not re-enqueue (preserves brain's queue state)
+    // -------------------------------------------------------------------------
+    //
+    // Note: this exercises the size_at_last_read short-circuit in `process_file`,
+    // which intercepts BEFORE `insert_segments` runs. True `insert_segments`
+    // idempotence (the I-3 transactional path) is covered directly by
+    // `test_upsert_idempotent_on_same_content` in `claude_session.rs::tests`.
+
+    #[tokio::test]
+    async fn test_process_file_short_circuit_preserves_queue_state() {
+        let dir = TempDir::new().unwrap();
+        let db_path = dir.path().join("test.db");
+        let conn = open_db(&db_path).expect("init test db");
+
+        let session_id = "test-sess-idem-0001-0001-0001-000000000001";
+        let jsonl_path = dir.path().join(format!("{session_id}.jsonl"));
+
+        // Write a session with one complete exchange.
+        let content = [
+            make_test_jsonl_line(session_id, 0, "system", "init"),
+            make_test_jsonl_line(session_id, 1, "user", "hello"),
+            make_test_jsonl_line(session_id, 2, "assistant", "hi there"),
+        ]
+        .join("\n")
+            + "\n";
+        std::fs::write(&jsonl_path, &content).unwrap();
+
+        // First ingest — should create the session row and enqueue it.
+        let mut state = FileState::default();
+        process_file(&jsonl_path, &mut state, &db_path)
+            .await
+            .unwrap();
+
+        // Simulate brain marking the queue row 'done' and recording the hash.
+        // (retry_count=3 is an arbitrary non-zero value to detect resets.)
+        let session_row_id: i64 = conn
+            .query_row(
+                "SELECT id FROM claude_sessions WHERE session_id = ?1 LIMIT 1",
+                [session_id],
+                |row| row.get(0),
+            )
+            .expect("session row should exist");
+
+        let current_hash: String = conn
+            .query_row(
+                "SELECT content_hash FROM claude_sessions WHERE id = ?1",
+                [session_row_id],
+                |row| row.get(0),
+            )
+            .expect("content_hash should exist");
+
+        // Mark the queue row done with retry_count=3 and record the enriched hash.
+        conn.execute(
+            "UPDATE claude_enrichment_queue SET status='done', retry_count=3, updated_at=0
+             WHERE claude_session_id = ?1",
+            [session_row_id],
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE claude_sessions SET last_enriched_content_hash = ?1 WHERE id = ?2",
+            params![current_hash, session_row_id],
+        )
+        .unwrap();
+
+        // Second ingest with the same content — no new bytes, nothing to do.
+        // (process_file short-circuits because size_at_last_read == current_size)
+        // But we can directly confirm the idempotence of insert_segments by
+        // checking the queue row after the file hasn't changed.
+        let re_inserted = process_file(&jsonl_path, &mut state, &db_path)
+            .await
+            .unwrap();
+        assert_eq!(re_inserted, 0, "no new content means 0 insertions");
+
+        // The queue row retry_count should still be 3 (not reset to 0).
+        let (status, retry): (String, i64) = conn
+            .query_row(
+                "SELECT status, retry_count FROM claude_enrichment_queue
+                 WHERE claude_session_id = ?1",
+                [session_row_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("queue row should still exist");
+
+        assert_eq!(status, "done", "status should remain 'done'");
+        assert_eq!(
+            retry, 3,
+            "retry_count should not be reset when content is unchanged"
+        );
+    }
+
+    // -------------------------------------------------------------------------
+    // I-4 startup warn: check_backfill_needed
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn test_check_backfill_needed_warns_when_null_hash_post_cutoff() {
+        let dir = TempDir::new().unwrap();
+        let conn = open_test_db_v12(&dir);
+
+        // Seed a segment with NULL content_hash and end_time after 2026-04-25.
+        // strftime('%s','2026-04-25') = 1777075200; +1 day = 1777161600 s
+        // Convert to epoch-ms: 1777161600000
+        let post_cutoff_ms = 1_777_161_600_000i64;
+        conn.execute(
+            "INSERT INTO claude_sessions
+                 (session_id, project_dir, cwd, segment_index, start_time, end_time,
+                  summary_text, message_count, source_file, created_at)
+             VALUES ('backfill-warn-sess', '/tmp', '/tmp', 0, ?1, ?1,
+                     'test', 1, '/tmp/backfill-warn.jsonl', ?1)",
+            params![post_cutoff_ms],
+        )
+        .expect("seed backfill-warn session");
+
+        // content_hash is NULL (default); probe_tag is NULL (default).
+        // check_backfill_needed should return count > 0.
+        let count = check_backfill_needed(&conn);
+        assert!(
+            count > 0,
+            "should detect NULL content_hash segment after 2026-04-25 cutoff"
+        );
+    }
+
+    #[test]
+    fn test_check_backfill_needed_silent_when_hash_set() {
+        let dir = TempDir::new().unwrap();
+        let conn = open_test_db_v12(&dir);
+
+        // Seed a segment WITH a content_hash — no backfill needed.
+        // epoch-ms for 2026-04-26 00:00:00 UTC (after the 2026-04-25 cutoff).
+        let post_cutoff_ms = 1_777_161_600_000i64;
+        conn.execute(
+            "INSERT INTO claude_sessions
+                 (session_id, project_dir, cwd, segment_index, start_time, end_time,
+                  summary_text, message_count, source_file, content_hash, created_at)
+             VALUES ('backfill-ok-sess', '/tmp', '/tmp', 0, ?1, ?1,
+                     'test', 1, '/tmp/backfill-ok.jsonl', 'somehash', ?1)",
+            params![post_cutoff_ms],
+        )
+        .expect("seed backfill-ok session");
+
+        let count = check_backfill_needed(&conn);
+        assert_eq!(count, 0, "segment with content_hash set needs no backfill");
     }
 }

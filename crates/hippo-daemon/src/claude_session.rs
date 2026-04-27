@@ -8,7 +8,8 @@ use hippo_core::events::{
     CapturedOutput, EventEnvelope, EventPayload, GitState, ShellEvent, ShellKind,
 };
 use hippo_core::redaction::RedactionEngine;
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, OptionalExtension, params};
+use sha2::{Digest, Sha256};
 use tracing::{error, info, warn};
 use uuid::Uuid;
 
@@ -348,7 +349,7 @@ fn process_line(
 /// Claude Code JSONL transcript without going through the daemon socket so
 /// the batch importer can survive without brain running.
 #[derive(Debug, Clone)]
-struct SessionSegment {
+pub(crate) struct SessionSegment {
     session_id: String,
     project_dir: String,
     cwd: String,
@@ -356,9 +357,9 @@ struct SessionSegment {
     segment_index: i64,
     start_time: i64,
     end_time: i64,
-    user_prompts: Vec<String>,
-    assistant_texts: Vec<String>,
-    tool_calls: Vec<ToolCallSummary>,
+    pub(crate) user_prompts: Vec<String>,
+    pub(crate) assistant_texts: Vec<String>,
+    pub(crate) tool_calls: Vec<ToolCallSummary>,
     message_count: i64,
     token_count: i64,
     source_file: String,
@@ -367,9 +368,39 @@ struct SessionSegment {
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
-struct ToolCallSummary {
-    name: String,
-    summary: String,
+pub(crate) struct ToolCallSummary {
+    pub(crate) name: String,
+    pub(crate) summary: String,
+}
+
+/// SHA256 of the segment's enrichment-relevant content, lowercase hex.
+///
+/// Inputs (joined by "|"): `tool_calls_json` + `user_prompts_json` +
+/// `assistant_texts` joined by "\n".  Empty string for any field that is
+/// empty/missing — never panics.
+///
+/// This hash is stored in `claude_sessions.content_hash` on every upsert and
+/// compared against `claude_sessions.last_enriched_content_hash` (set by the
+/// brain on enrichment completion, T-A.5) to decide whether re-enrichment is
+/// needed (T-A.4).
+pub(crate) fn compute_segment_content_hash(seg: &SessionSegment) -> String {
+    let tool_calls_json = serde_json::to_string(&seg.tool_calls).unwrap_or_else(|_| "[]".into());
+    let user_prompts_json =
+        serde_json::to_string(&seg.user_prompts).unwrap_or_else(|_| "[]".into());
+    let assistant_text = seg.assistant_texts.join("\n");
+
+    let mut hasher = Sha256::new();
+    hasher.update(tool_calls_json.as_bytes());
+    hasher.update(b"|");
+    hasher.update(user_prompts_json.as_bytes());
+    hasher.update(b"|");
+    hasher.update(assistant_text.as_bytes());
+
+    hasher
+        .finalize()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
 }
 
 /// Describes how a JSONL path decomposes into the fields the `claude_sessions`
@@ -836,16 +867,78 @@ fn build_summary_text(seg: &SessionSegment) -> String {
     out
 }
 
+/// Decide whether a just-upserted segment should be enqueued for enrichment.
+///
+/// # Arguments
+/// - `was_insert` — true if the segment row was newly created (no prior row
+///   existed). New rows always need first enrichment.
+/// - `current_hash` — the `content_hash` just written by the upsert.
+/// - `prior_last_enriched_hash` — the existing `last_enriched_content_hash`
+///   BEFORE the upsert (None if no prior row or if prior row had NULL hash).
+/// - `prior_queue_status` — the existing `claude_enrichment_queue.status` for
+///   this segment (None if no queue row exists yet).
+/// - `prior_queue_updated_at_ms` — epoch-ms of `claude_enrichment_queue.updated_at`
+///   (None if no queue row exists yet).
+/// - `now_ms` — epoch-ms now.
+///
+/// # Rules (in priority order)
+/// 1. `was_insert` → enqueue (new segments need first enrichment).
+/// 2. `prior_queue_status == Some("processing")` → skip (worker is on it).
+/// 3. `current_hash == prior_last_enriched_hash` → skip (no new content).
+/// 4. `(now_ms - prior_queue_updated_at_ms) < 300_000` → skip (5-min debounce).
+/// 5. Otherwise → enqueue.
+///
+/// Empty-segment short-circuit is handled by the CALLER, not this function.
+fn decide_enqueue(
+    was_insert: bool,
+    current_hash: &str,
+    prior_last_enriched_hash: Option<&str>,
+    prior_queue_status: Option<&str>,
+    prior_queue_updated_at_ms: Option<i64>,
+    now_ms: i64,
+) -> bool {
+    if was_insert {
+        return true;
+    }
+    if prior_queue_status == Some("processing") {
+        return false;
+    }
+    if prior_last_enriched_hash == Some(current_hash) {
+        return false;
+    }
+    if let Some(updated_at) = prior_queue_updated_at_ms
+        && (now_ms - updated_at) < 300_000
+    {
+        return false;
+    }
+    true
+}
+
 /// Insert extracted segments into `claude_sessions` + enqueue them for
 /// enrichment. Returns `(inserted, skipped)`.
 ///
-/// `INSERT OR IGNORE` handles re-imports idempotently against the
-/// `UNIQUE (session_id, segment_index)` constraint — same semantics as the
-/// Python `insert_segment` which swallows `UNIQUE constraint` errors.
+/// **Semantics (updated from INSERT OR IGNORE):**
+/// - "inserted" = new row created OR existing row had hash change (content grew).
+/// - "skipped"  = row existed and content was unchanged (upsert ran but no
+///   change; counts for logging/metrics only).
+///
+/// The upsert uses `ON CONFLICT (session_id, segment_index) DO UPDATE` so
+/// every watcher reparse keeps the DB in sync with the latest file content.
+/// `last_enriched_content_hash` is NOT touched here — only the brain sets it.
 fn insert_segments(conn: &Connection, segments: &[SessionSegment]) -> Result<(usize, usize)> {
     let mut inserted = 0usize;
     let mut skipped = 0usize;
     let now_ms = Utc::now().timestamp_millis();
+
+    // Wrap the entire segment loop in a single transaction.
+    // Benefits:
+    //   1. Performance: one fsync for N segments instead of N fsyncs.
+    //   2. Atomicity: partial inserts on error are rolled back.
+    //   3. Race reduction: the write lock is held from SELECT through the queue
+    //      mutation, narrowing the I-1 race window.
+    // `unchecked_transaction` is used (rather than `transaction`) because
+    // `conn` is borrowed from the caller as `&Connection`, not `&mut Connection`.
+    let tx = conn.unchecked_transaction()?;
 
     for seg in segments {
         let summary_text = build_summary_text(seg);
@@ -855,13 +948,68 @@ fn insert_segments(conn: &Connection, segments: &[SessionSegment]) -> Result<(us
             serde_json::to_string(&seg.user_prompts).unwrap_or_else(|_| "[]".into());
         let is_subagent_int: i64 = if seg.is_subagent { 1 } else { 0 };
 
-        match conn.execute(
-            "INSERT OR IGNORE INTO claude_sessions
+        // T-A.2: compute content hash before upsert.
+        let content_hash = compute_segment_content_hash(seg);
+
+        // T-A.3 step 2: read prior state in a single SELECT so decide_enqueue
+        // has the data it needs without a second round-trip after the upsert.
+        // Returns (id, prior_content_hash, last_enriched_content_hash,
+        //          queue_status, queue_updated_at).
+        #[allow(clippy::type_complexity)]
+        let prior: Option<(
+            i64,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            Option<i64>,
+        )> = tx
+            .query_row(
+                "SELECT cs.id, cs.content_hash, cs.last_enriched_content_hash,
+                        ceq.status, ceq.updated_at
+                 FROM claude_sessions cs
+                 LEFT JOIN claude_enrichment_queue ceq ON ceq.claude_session_id = cs.id
+                 WHERE cs.session_id = ?1 AND cs.segment_index = ?2",
+                params![seg.session_id, seg.segment_index],
+                |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, Option<String>>(1)?,
+                        row.get::<_, Option<String>>(2)?,
+                        row.get::<_, Option<String>>(3)?,
+                        row.get::<_, Option<i64>>(4)?,
+                    ))
+                },
+            )
+            .optional()?;
+
+        let was_insert = prior.is_none();
+        let prior_content_hash = prior.as_ref().and_then(|(_, h, _, _, _)| h.as_deref());
+        let prior_last_enriched_hash = prior.as_ref().and_then(|(_, _, h, _, _)| h.as_deref());
+        let prior_queue_status = prior.as_ref().and_then(|(_, _, _, s, _)| s.as_deref());
+        let prior_queue_updated_at_ms = prior.as_ref().and_then(|(_, _, _, _, u)| *u);
+
+        // T-A.3 step 3: upsert with ON CONFLICT DO UPDATE.
+        // Identity columns (session_id, segment_index, project_dir, source_file,
+        // cwd, is_subagent, parent_session_id, start_time, created_at) are NOT
+        // updated on conflict — they describe what the segment is, not what it
+        // contains. Content columns are always refreshed to the latest reparse.
+        // `last_enriched_content_hash` is intentionally omitted — only the brain
+        // writes that (T-A.5).
+        tx.execute(
+            "INSERT INTO claude_sessions
                 (session_id, project_dir, cwd, git_branch, segment_index,
                  start_time, end_time, summary_text, tool_calls_json,
                  user_prompts_json, message_count, token_count, source_file,
-                 is_subagent, parent_session_id, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
+                 is_subagent, parent_session_id, content_hash, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)
+             ON CONFLICT (session_id, segment_index) DO UPDATE SET
+                 end_time          = excluded.end_time,
+                 summary_text      = excluded.summary_text,
+                 tool_calls_json   = excluded.tool_calls_json,
+                 user_prompts_json = excluded.user_prompts_json,
+                 message_count     = excluded.message_count,
+                 token_count       = excluded.token_count,
+                 content_hash      = excluded.content_hash",
             params![
                 seg.session_id,
                 seg.project_dir,
@@ -878,49 +1026,101 @@ fn insert_segments(conn: &Connection, segments: &[SessionSegment]) -> Result<(us
                 seg.source_file,
                 is_subagent_int,
                 seg.parent_session_id,
+                content_hash,
                 now_ms,
             ],
-        )? {
-            0 => {
-                // UNIQUE (session_id, segment_index) collided — already ingested.
-                skipped += 1;
-                continue;
-            }
-            _ => {
-                let claude_session_id = conn.last_insert_rowid();
-                // Enqueue for enrichment. OR IGNORE so a replay doesn't trip the
-                // UNIQUE (claude_session_id) constraint — belt-and-suspenders since
-                // the parent INSERT was also OR IGNORE.
-                conn.execute(
-                    "INSERT OR IGNORE INTO claude_enrichment_queue (claude_session_id, created_at)
-                     VALUES (?1, ?2)",
-                    params![claude_session_id, now_ms],
-                )?;
+        )?;
 
-                // Update source_health for claude-session on success.
-                let seg_ts = seg.end_time;
-                match conn.execute(
-                    "UPDATE source_health
-                     SET last_event_ts        = MAX(COALESCE(last_event_ts, 0), ?1),
-                         last_success_ts      = ?2,
-                         events_last_1h       = events_last_1h + 1,
-                         events_last_24h      = events_last_24h + 1,
-                         consecutive_failures = 0,
-                         updated_at           = ?2
-                     WHERE source = 'claude-session'",
-                    rusqlite::params![seg_ts, now_ms],
-                ) {
-                    Err(e) if !crate::is_missing_source_health_table_error(&e) => {
-                        warn!("source_health session update failed: {e}");
-                    }
-                    _ => {}
+        // Retrieve the rowid (needed for enrichment queue foreign key).
+        let claude_session_id: i64 = if was_insert {
+            tx.last_insert_rowid()
+        } else {
+            prior.as_ref().map(|(id, _, _, _, _)| *id).unwrap()
+        };
+
+        // "inserted" = new row created OR content hash changed from the prior
+        // row. A NULL prior hash on an existing row (legacy v11 row migrated
+        // to v12) is treated as "changed", since the upsert is the first
+        // write that populates `content_hash` (and refreshes content
+        // columns). "skipped" = row existed with a non-NULL prior hash that
+        // matches the current hash (idempotent re-run). Callers use this
+        // only for logging/metrics.
+        let hash_changed = if prior.is_some() {
+            prior_content_hash
+                .map(|h| h != content_hash.as_str())
+                .unwrap_or(true)
+        } else {
+            false
+        };
+        if was_insert || hash_changed {
+            inserted += 1;
+        } else {
+            skipped += 1;
+        }
+
+        // T-A.4: enqueue gate.
+        let is_empty = seg.user_prompts.is_empty()
+            && seg.tool_calls.is_empty()
+            && seg.assistant_texts.is_empty();
+
+        if !is_empty
+            && decide_enqueue(
+                was_insert,
+                &content_hash,
+                prior_last_enriched_hash,
+                prior_queue_status,
+                prior_queue_updated_at_ms,
+                now_ms,
+            )
+        {
+            // Safe upsert: on conflict, only overwrite non-processing rows.
+            // - The WHERE clause blocks trampling an in-flight worker's lock.
+            // - retry_count=0 is intentional: a new content version (detected
+            //   by the decide_enqueue hash check) deserves a fresh retry budget.
+            // - error_message is cleared because it is now stale.
+            // - locked_at/locked_by are left untouched by the UPDATE path (they
+            //   will already be NULL because the WHERE excludes 'processing').
+            tx.execute(
+                "INSERT INTO claude_enrichment_queue
+                     (claude_session_id, status, retry_count, error_message, created_at, updated_at)
+                 VALUES (?1, 'pending', 0, NULL, ?2, ?2)
+                 ON CONFLICT(claude_session_id) DO UPDATE SET
+                     status        = 'pending',
+                     retry_count   = 0,
+                     error_message = NULL,
+                     updated_at    = excluded.updated_at
+                 WHERE claude_enrichment_queue.status != 'processing'",
+                params![claude_session_id, now_ms],
+            )?;
+        }
+
+        // Update source_health for claude-session only when this upsert
+        // actually represented new or changed content. Reparses of unchanged
+        // segments would otherwise inflate `events_last_1h/24h` and refresh
+        // `last_success_ts` on every FSEvents tick, masking real drops in
+        // capture liveness.
+        if was_insert || hash_changed {
+            let seg_ts = seg.end_time;
+            match tx.execute(
+                "UPDATE source_health
+                 SET last_event_ts        = MAX(COALESCE(last_event_ts, 0), ?1),
+                     last_success_ts      = ?2,
+                     events_last_1h       = events_last_1h + 1,
+                     events_last_24h      = events_last_24h + 1,
+                     consecutive_failures = 0,
+                     updated_at           = ?2
+                 WHERE source = 'claude-session'",
+                rusqlite::params![seg_ts, now_ms],
+            ) {
+                Err(e) if !crate::is_missing_source_health_table_error(&e) => {
+                    warn!("source_health session update failed: {e}");
                 }
-
-                inserted += 1;
+                _ => {}
             }
         }
     }
 
+    tx.commit()?;
     Ok((inserted, skipped))
 }
 
@@ -1675,5 +1875,505 @@ mod tests {
             super::process_line(&line, &mut pending, &mut cache, "test-host").unwrap();
         }
         assert_eq!(cache.len(), 1, "cwd should be cached once across envelopes");
+    }
+
+    // ─── T-A.2: compute_segment_content_hash ────────────────────────────────
+
+    fn make_empty_segment() -> SessionSegment {
+        SessionSegment {
+            session_id: "test-session".to_string(),
+            project_dir: "test-project".to_string(),
+            cwd: "/test".to_string(),
+            git_branch: None,
+            segment_index: 0,
+            start_time: 0,
+            end_time: 0,
+            user_prompts: vec![],
+            assistant_texts: vec![],
+            tool_calls: vec![],
+            message_count: 0,
+            token_count: 0,
+            source_file: "/test/session.jsonl".to_string(),
+            is_subagent: false,
+            parent_session_id: None,
+        }
+    }
+
+    #[test]
+    fn test_hash_empty_segment_is_stable() {
+        let seg = make_empty_segment();
+        let h1 = compute_segment_content_hash(&seg);
+        let h2 = compute_segment_content_hash(&seg);
+        assert_eq!(h1, h2, "empty segment hash must be stable");
+        // SHA256 hex is 64 chars
+        assert_eq!(h1.len(), 64);
+        assert!(h1.chars().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    #[test]
+    fn test_hash_is_deterministic() {
+        let mut seg = make_empty_segment();
+        seg.user_prompts = vec!["run the tests".to_string()];
+        seg.tool_calls = vec![ToolCallSummary {
+            name: "Bash".to_string(),
+            summary: "cargo test".to_string(),
+        }];
+        seg.assistant_texts = vec!["Running tests now".to_string()];
+        let h1 = compute_segment_content_hash(&seg);
+        let h2 = compute_segment_content_hash(&seg);
+        assert_eq!(h1, h2, "same content must always produce the same hash");
+    }
+
+    #[test]
+    fn test_hash_changes_when_tools_change() {
+        let mut seg = make_empty_segment();
+        seg.user_prompts = vec!["do something".to_string()];
+        let hash_no_tools = compute_segment_content_hash(&seg);
+
+        seg.tool_calls = vec![ToolCallSummary {
+            name: "Bash".to_string(),
+            summary: "cargo build".to_string(),
+        }];
+        let hash_with_tools = compute_segment_content_hash(&seg);
+
+        assert_ne!(
+            hash_no_tools, hash_with_tools,
+            "adding a tool call must change the hash"
+        );
+
+        seg.tool_calls[0].summary = "cargo test".to_string();
+        let hash_different_tool = compute_segment_content_hash(&seg);
+        assert_ne!(
+            hash_with_tools, hash_different_tool,
+            "changing tool summary must change the hash"
+        );
+    }
+
+    #[test]
+    fn test_hash_changes_when_prompts_change() {
+        let mut seg = make_empty_segment();
+        let hash_no_prompts = compute_segment_content_hash(&seg);
+
+        seg.user_prompts = vec!["first prompt".to_string()];
+        let hash_one_prompt = compute_segment_content_hash(&seg);
+        assert_ne!(hash_no_prompts, hash_one_prompt);
+
+        seg.user_prompts.push("second prompt".to_string());
+        let hash_two_prompts = compute_segment_content_hash(&seg);
+        assert_ne!(hash_one_prompt, hash_two_prompts);
+    }
+
+    #[test]
+    fn test_hash_changes_when_assistant_text_changes() {
+        let mut seg = make_empty_segment();
+        let hash_no_text = compute_segment_content_hash(&seg);
+
+        seg.assistant_texts = vec!["I will run the tests".to_string()];
+        let hash_with_text = compute_segment_content_hash(&seg);
+        assert_ne!(hash_no_text, hash_with_text);
+
+        seg.assistant_texts[0] = "Running now".to_string();
+        let hash_different_text = compute_segment_content_hash(&seg);
+        assert_ne!(hash_with_text, hash_different_text);
+    }
+
+    // ─── T-A.4: decide_enqueue pure unit tests ───────────────────────────────
+
+    #[test]
+    fn test_decide_enqueue_inserts_always() {
+        // was_insert=true must always enqueue, regardless of other params
+        assert!(decide_enqueue(true, "hash1", None, None, None, 0));
+        assert!(decide_enqueue(
+            true,
+            "hash1",
+            Some("hash1"),
+            Some("done"),
+            Some(0),
+            0
+        ));
+        assert!(decide_enqueue(
+            true,
+            "hash1",
+            Some("hash1"),
+            Some("processing"),
+            Some(0),
+            0
+        ));
+    }
+
+    #[test]
+    fn test_decide_enqueue_skip_when_processing() {
+        // prior status "processing" → skip even if hash changed
+        assert!(!decide_enqueue(
+            false,
+            "new-hash",
+            Some("old-enriched-hash"),
+            Some("processing"),
+            Some(0),
+            1_000_000
+        ));
+    }
+
+    #[test]
+    fn test_decide_enqueue_skip_when_hash_unchanged() {
+        // current_hash == prior_last_enriched_hash → skip
+        assert!(!decide_enqueue(
+            false,
+            "same-hash",
+            Some("same-hash"),
+            Some("done"),
+            Some(0),
+            1_000_000
+        ));
+    }
+
+    #[test]
+    fn test_decide_enqueue_skip_when_within_debounce() {
+        // Within 5-minute (300_000 ms) debounce window → skip
+        let now_ms = 1_000_000i64;
+        let updated_at = now_ms - 100_000; // 100s ago = within debounce
+        assert!(!decide_enqueue(
+            false,
+            "new-hash",
+            Some("old-enriched"),
+            Some("done"),
+            Some(updated_at),
+            now_ms
+        ));
+    }
+
+    #[test]
+    fn test_decide_enqueue_enqueue_when_hash_changed_and_debounced() {
+        // hash changed + past debounce window → enqueue
+        let now_ms = 1_000_000i64;
+        let updated_at = now_ms - 400_000; // 400s ago = past 5-min debounce
+        assert!(decide_enqueue(
+            false,
+            "new-hash",
+            Some("old-enriched"),
+            Some("done"),
+            Some(updated_at),
+            now_ms
+        ));
+    }
+
+    #[test]
+    fn test_decide_enqueue_enqueue_when_no_prior_queue_row() {
+        // No prior queue row (None status) + hash changed → enqueue
+        // (no debounce applies when there's no prior queue row)
+        assert!(decide_enqueue(
+            false,
+            "new-hash",
+            Some("old-enriched"),
+            None, // no queue row
+            None,
+            1_000_000
+        ));
+    }
+
+    // ─── T-A.3: insert_segments upsert integration ───────────────────────────
+
+    fn open_test_db() -> rusqlite::Connection {
+        // Open an in-memory SQLite DB and apply the full schema migration so
+        // tests get a fully-migrated v12 DB without needing a temp file.
+        let tmp = tempfile::tempdir().unwrap();
+        let db_path = tmp.path().join("test.db");
+        // open_db applies all migrations up to EXPECTED_VERSION.
+        let conn = hippo_core::storage::open_db(&db_path).unwrap();
+        // Keep tmp alive by leaking it — tests are short-lived processes.
+        std::mem::forget(tmp);
+        conn
+    }
+
+    fn make_test_segment(session_id: &str, segment_index: i64) -> SessionSegment {
+        SessionSegment {
+            session_id: session_id.to_string(),
+            project_dir: "test-project".to_string(),
+            cwd: "/projects/test".to_string(),
+            git_branch: Some("main".to_string()),
+            segment_index,
+            start_time: 1_000_000,
+            end_time: 1_001_000,
+            user_prompts: vec!["run the build".to_string()],
+            assistant_texts: vec!["I'll run it now".to_string()],
+            tool_calls: vec![ToolCallSummary {
+                name: "Bash".to_string(),
+                summary: "cargo build".to_string(),
+            }],
+            message_count: 3,
+            token_count: 100,
+            source_file: "/test/session.jsonl".to_string(),
+            is_subagent: false,
+            parent_session_id: None,
+        }
+    }
+
+    #[test]
+    fn test_upsert_inserts_new_segment() {
+        let conn = open_test_db();
+        let seg = make_test_segment("session-new-001", 0);
+        let expected_hash = compute_segment_content_hash(&seg);
+
+        let (inserted, skipped) = insert_segments(&conn, &[seg]).unwrap();
+        assert_eq!(inserted, 1);
+        assert_eq!(skipped, 0);
+
+        let (content_hash, last_enriched, message_count): (Option<String>, Option<String>, i64) =
+            conn.query_row(
+                "SELECT content_hash, last_enriched_content_hash, message_count
+                 FROM claude_sessions WHERE session_id = ?1 AND segment_index = 0",
+                ["session-new-001"],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+
+        assert_eq!(content_hash.as_deref(), Some(expected_hash.as_str()));
+        assert!(
+            last_enriched.is_none(),
+            "last_enriched_content_hash must be NULL on insert"
+        );
+        assert_eq!(message_count, 3);
+    }
+
+    #[test]
+    fn test_upsert_updates_existing_segment_on_growth() {
+        let conn = open_test_db();
+
+        // Insert truncated version first (fewer tools, lower message_count)
+        let mut seg_v1 = make_test_segment("session-grow-001", 0);
+        seg_v1.tool_calls.clear();
+        seg_v1.message_count = 1;
+        insert_segments(&conn, &[seg_v1]).unwrap();
+
+        // Simulate brain writing last_enriched_content_hash for the v1 content
+        let v1_hash: String = conn
+            .query_row(
+                "SELECT content_hash FROM claude_sessions
+                 WHERE session_id = ?1 AND segment_index = 0",
+                ["session-grow-001"],
+                |row| row.get(0),
+            )
+            .unwrap();
+        conn.execute(
+            "UPDATE claude_sessions SET last_enriched_content_hash = ?1
+             WHERE session_id = ?2 AND segment_index = 0",
+            rusqlite::params![v1_hash, "session-grow-001"],
+        )
+        .unwrap();
+
+        // Now upsert with grown content
+        let seg_v2 = make_test_segment("session-grow-001", 0); // has tool_calls + message_count=3
+        let expected_v2_hash = compute_segment_content_hash(&seg_v2);
+        let (inserted, skipped) = insert_segments(&conn, &[seg_v2]).unwrap();
+        assert_eq!(inserted, 1, "content grew → should count as inserted");
+        assert_eq!(skipped, 0);
+
+        let (content_hash, last_enriched, message_count, tool_calls_json): (
+            String,
+            Option<String>,
+            i64,
+            String,
+        ) = conn
+            .query_row(
+                "SELECT content_hash, last_enriched_content_hash, message_count,
+                        tool_calls_json
+                 FROM claude_sessions WHERE session_id = ?1 AND segment_index = 0",
+                ["session-grow-001"],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .unwrap();
+
+        assert_eq!(
+            content_hash, expected_v2_hash,
+            "content_hash must reflect v2"
+        );
+        assert_eq!(
+            last_enriched.as_deref(),
+            Some(v1_hash.as_str()),
+            "last_enriched_content_hash must be unchanged (only brain writes it)"
+        );
+        assert_eq!(message_count, 3, "message_count must be updated to v2");
+        assert!(
+            tool_calls_json.contains("cargo build"),
+            "tool_calls_json must contain v2 tool"
+        );
+    }
+
+    #[test]
+    fn test_upsert_idempotent_on_same_content() {
+        let conn = open_test_db();
+        let seg = make_test_segment("session-idem-001", 0);
+        let expected_hash = compute_segment_content_hash(&seg);
+
+        // Insert once
+        let (ins1, skip1) = insert_segments(&conn, std::slice::from_ref(&seg)).unwrap();
+        assert_eq!(ins1, 1);
+        assert_eq!(skip1, 0);
+
+        // Insert again with identical content
+        let (ins2, skip2) = insert_segments(&conn, std::slice::from_ref(&seg)).unwrap();
+        assert_eq!(ins2, 0, "identical content second time → skipped");
+        assert_eq!(skip2, 1);
+
+        // Row count must still be 1
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM claude_sessions WHERE session_id = ?1",
+                ["session-idem-001"],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 1);
+
+        // Hash must be unchanged
+        let stored_hash: String = conn
+            .query_row(
+                "SELECT content_hash FROM claude_sessions
+                 WHERE session_id = ?1 AND segment_index = 0",
+                ["session-idem-001"],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(stored_hash, expected_hash);
+    }
+
+    /// CP-1/R2-6 regression: legacy v11 rows have `content_hash IS NULL`
+    /// after the v11→v12 migration. The first reparse must count as
+    /// `inserted` (the row's hash transitioned NULL → real value), not
+    /// `skipped`, so backfill summaries and metrics aren't misleading.
+    #[test]
+    fn test_upsert_counts_legacy_null_hash_as_inserted() {
+        let conn = open_test_db();
+        let seg = make_test_segment("session-legacy-001", 0);
+
+        // Manually insert a row that simulates a v11 legacy row: all
+        // content fields populated but content_hash is NULL (because the
+        // column didn't exist when the row was written).
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        conn.execute(
+            "INSERT INTO claude_sessions
+                 (session_id, project_dir, cwd, git_branch, segment_index,
+                  start_time, end_time, summary_text, tool_calls_json,
+                  user_prompts_json, message_count, token_count, source_file,
+                  is_subagent, parent_session_id, content_hash, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, NULL, ?16)",
+            rusqlite::params![
+                seg.session_id,
+                seg.project_dir,
+                seg.cwd,
+                seg.git_branch,
+                seg.segment_index,
+                seg.start_time,
+                seg.end_time,
+                build_summary_text(&seg),
+                "[]",
+                "[]",
+                seg.message_count,
+                seg.token_count,
+                seg.source_file,
+                0i64,
+                Option::<String>::None,
+                now_ms,
+            ],
+        )
+        .unwrap();
+
+        let (inserted, skipped) = insert_segments(&conn, &[seg]).unwrap();
+        assert_eq!(
+            inserted, 1,
+            "v11 legacy row (NULL content_hash) → first reparse must count as inserted"
+        );
+        assert_eq!(skipped, 0);
+    }
+
+    /// C-3 regression: source_health metrics must only bump when the
+    /// upsert represents new or changed content. Whole-file reparses on
+    /// idempotent content would otherwise inflate liveness counters and
+    /// mask real capture drops.
+    #[test]
+    fn test_source_health_not_bumped_on_idempotent_reparse() {
+        let conn = open_test_db();
+        let seg = make_test_segment("session-health-001", 0);
+
+        // Reset the seeded source_health row to a known-zero baseline so we
+        // can read deltas without depending on migration-time values.
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        conn.execute(
+            "UPDATE source_health
+             SET last_event_ts        = 0,
+                 last_success_ts      = 0,
+                 events_last_1h       = 0,
+                 events_last_24h      = 0,
+                 consecutive_failures = 0,
+                 updated_at           = ?1
+             WHERE source = 'claude-session'",
+            rusqlite::params![now_ms],
+        )
+        .unwrap();
+
+        // First insert: content is new → counters should advance to 1.
+        insert_segments(&conn, std::slice::from_ref(&seg)).unwrap();
+        let (e1h_after_insert, e24h_after_insert): (i64, i64) = conn
+            .query_row(
+                "SELECT events_last_1h, events_last_24h FROM source_health
+                 WHERE source = 'claude-session'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(e1h_after_insert, 1);
+        assert_eq!(e24h_after_insert, 1);
+
+        // Second insert with identical content (whole-file reparse) → counters
+        // must NOT advance.
+        insert_segments(&conn, std::slice::from_ref(&seg)).unwrap();
+        let (e1h_after_reparse, e24h_after_reparse): (i64, i64) = conn
+            .query_row(
+                "SELECT events_last_1h, events_last_24h FROM source_health
+                 WHERE source = 'claude-session'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            e1h_after_reparse, 1,
+            "events_last_1h must not advance on idempotent reparse"
+        );
+        assert_eq!(
+            e24h_after_reparse, 1,
+            "events_last_24h must not advance on idempotent reparse"
+        );
+    }
+
+    // ─── T-A.4: enqueue gate integration ────────────────────────────────────
+
+    #[test]
+    fn test_insert_segments_skips_enqueue_for_empty_segment() {
+        let conn = open_test_db();
+
+        // Empty segment: no user_prompts, no tool_calls, no assistant_texts.
+        // Note: extract_segments actually filters out empty trailing segments,
+        // but the gate is still tested via direct insert_segments call.
+        let mut seg = make_test_segment("session-empty-001", 0);
+        seg.user_prompts.clear();
+        seg.tool_calls.clear();
+        seg.assistant_texts.clear();
+
+        insert_segments(&conn, &[seg]).unwrap();
+
+        // No enrichment queue row should have been written
+        let queue_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM claude_enrichment_queue ceq
+                 JOIN claude_sessions cs ON ceq.claude_session_id = cs.id
+                 WHERE cs.session_id = ?1",
+                ["session-empty-001"],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            queue_count, 0,
+            "empty segment must not produce a claude_enrichment_queue row"
+        );
     }
 }

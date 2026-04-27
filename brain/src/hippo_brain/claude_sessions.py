@@ -572,7 +572,8 @@ def claim_pending_claude_segments(
             f"""
             SELECT id, session_id, project_dir, cwd, git_branch, segment_index,
                    start_time, end_time, summary_text, tool_calls_json,
-                   user_prompts_json, message_count, token_count, is_subagent
+                   user_prompts_json, message_count, token_count, is_subagent,
+                   content_hash
             FROM claude_sessions
             WHERE id IN ({placeholders}) AND probe_tag IS NULL
             ORDER BY start_time ASC
@@ -598,6 +599,7 @@ def claim_pending_claude_segments(
                     "message_count": row[11],
                     "token_count": row[12],
                     "is_subagent": row[13],
+                    "content_hash": row[14],
                 }
             )
 
@@ -635,9 +637,22 @@ def _skip_ineligible_claude_segments(conn, segments: list[dict]) -> list[dict]:
 
 
 def write_claude_knowledge_node(
-    conn, result: EnrichmentResult, segment_ids: list[int], model_name: str
+    conn,
+    result: EnrichmentResult,
+    segment_ids: list[int],
+    model_name: str,
+    content_hashes: list[str | None] | None = None,
 ) -> int:
-    """Insert knowledge node linked to Claude session segments."""
+    """Insert knowledge node linked to Claude session segments.
+
+    ``content_hashes`` must be the same length as ``segment_ids`` when
+    provided.  Each entry is the ``content_hash`` value read from
+    ``claude_sessions`` at claim time (daemon-computed; brain never recomputes
+    it).  For each segment whose hash is not ``None``, the corresponding
+    ``last_enriched_content_hash`` column is updated so the watcher dedup
+    logic can detect future content changes.  ``None`` entries are skipped to
+    avoid overwriting an existing value with NULL on legacy rows.
+    """
     node_uuid = str(uuid.uuid4())
     now_ms = int(time.time() * 1000)
     content = json.dumps(
@@ -697,6 +712,18 @@ def write_claude_knowledge_node(
             """,
             [now_ms, *segment_ids],
         )
+
+        # Record the content version that was just enriched so the watcher
+        # dedup logic can detect future changes.  Skip NULL hashes (legacy rows
+        # where the daemon has not yet written a hash) to avoid clobbering an
+        # existing last_enriched_content_hash with NULL.
+        if content_hashes is not None:
+            for seg_id, ch in zip(segment_ids, content_hashes, strict=True):
+                if ch is not None:
+                    conn.execute(
+                        "UPDATE claude_sessions SET last_enriched_content_hash = ? WHERE id = ?",
+                        (ch, seg_id),
+                    )
 
         # Upsert entities
         upsert_entities(conn, node_id, result.entities, SHELL_ENTITY_TYPE_MAP, now_ms)

@@ -15,6 +15,7 @@ path = "src/main.rs"
 anyhow.workspace = true
 clap.workspace = true
 hippo-core = { path = "../hippo-core" }
+sha2.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
 tracing.workspace = true
@@ -36,6 +37,7 @@ opentelemetry-appender-tracing = { workspace = true, optional = true }
 tracing-opentelemetry = { workspace = true, optional = true }
 sysinfo = { version = "0.38", optional = true, default-features = false, features = ["system"] }
 which = "8.0.2"
+glob = "0.3"
 notify = "8"
 walkdir = "2"
 

@@ -1,4 +1,4 @@
-use hippo_core::storage::open_db;
+use hippo_core::storage::{EXPECTED_VERSION, open_db};
 use rusqlite::Connection;
 use tempfile::TempDir;
 
@@ -27,7 +27,7 @@ fn v6_db_migrates_to_latest_and_adds_source_kind_and_tool_name() {
     let version: i64 = conn
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .unwrap();
-    assert_eq!(version, 11);
+    assert_eq!(version, EXPECTED_VERSION);
 
     // events table must gain source_kind (NOT NULL default 'shell') and tool_name (TEXT).
     let columns: Vec<(String, String, i64, Option<String>)> = conn
@@ -139,7 +139,7 @@ fn fresh_db_has_v9() {
     let version: i64 = conn
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .unwrap();
-    assert_eq!(version, 11);
+    assert_eq!(version, EXPECTED_VERSION);
 
     // source_kind / tool_name must exist on a fresh install too
     // (i.e. schema.sql itself must carry them, not just the migration).

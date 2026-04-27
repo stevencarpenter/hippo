@@ -885,6 +885,15 @@ mod tests {
         let mut config = HippoConfig::default();
         config.storage.data_dir = temp.path().join("data");
         config.storage.config_dir = temp.path().join("config");
+        // Bind an ephemeral TCP port then drop the listener so no real service
+        // will answer on it.  This prevents `check_brain_schema_compat` from
+        // connecting to a live hippo-brain running at the production default
+        // (9175) and failing with a schema-version mismatch when this branch's
+        // EXPECTED_VERSION is higher than the running brain's version.
+        let ephemeral = StdTcpListener::bind("127.0.0.1:0").unwrap();
+        let ephemeral_port = ephemeral.local_addr().unwrap().port();
+        drop(ephemeral); // release immediately; no service will race us in tests
+        config.brain.port = ephemeral_port;
         std::mem::forget(temp);
         config
     }

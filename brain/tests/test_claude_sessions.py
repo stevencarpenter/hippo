@@ -619,3 +619,121 @@ class TestClaudeEligibilityFilter:
 
         batches = claim_pending_claude_segments(db_conn, "test-worker")
         assert len(batches) == 1
+
+
+class TestContentHashPropagation:
+    """Tests for T-A.5: brain reads and writes content_hash / last_enriched_content_hash."""
+
+    _RESULT = EnrichmentResult(
+        summary="Summary",
+        intent="testing",
+        outcome="success",
+        entities={"projects": [], "tools": [], "files": [], "services": [], "errors": []},
+        tags=["test"],
+        embed_text="embed text",
+        key_decisions=[],
+        problems_encountered=[],
+    )
+
+    def _make_seg(self, session_id, *, tool_calls=None):
+        return SessionSegment(
+            session_id=session_id,
+            project_dir="p",
+            cwd="/proj",
+            git_branch=None,
+            segment_index=0,
+            start_time=1000,
+            end_time=2000,
+            user_prompts=["hi"],
+            tool_calls=tool_calls or [{"name": "Read", "summary": "foo.py"}],
+            message_count=5,
+            source_file="/tmp/test.jsonl",
+        )
+
+    def test_claim_pending_segments_returns_content_hash(self, tmp_db):
+        """claim_pending_claude_segments returns content_hash from the DB row."""
+        db_conn, _ = tmp_db
+        seg_id = insert_segment(db_conn, self._make_seg("hash-claim-s"))
+        # Simulate daemon writing the hash after insert.
+        db_conn.execute(
+            "UPDATE claude_sessions SET content_hash = ? WHERE id = ?",
+            ("abc123", seg_id),
+        )
+        db_conn.commit()
+
+        batches = claim_pending_claude_segments(db_conn, "test-worker")
+        assert len(batches) == 1
+        segment = batches[0][0]
+        assert segment["content_hash"] == "abc123"
+
+    def test_enrichment_writes_last_enriched_content_hash(self, tmp_db):
+        """Successful enrichment writes last_enriched_content_hash = content_hash."""
+        db_conn, _ = tmp_db
+        seg_id = insert_segment(db_conn, self._make_seg("hash-write-s"))
+        db_conn.execute(
+            "UPDATE claude_sessions SET content_hash = ? WHERE id = ?",
+            ("abc123", seg_id),
+        )
+        db_conn.commit()
+
+        write_claude_knowledge_node(
+            db_conn,
+            self._RESULT,
+            [seg_id],
+            "test-model",
+            content_hashes=["abc123"],
+        )
+
+        row = db_conn.execute(
+            "SELECT last_enriched_content_hash FROM claude_sessions WHERE id = ?",
+            (seg_id,),
+        ).fetchone()
+        assert row[0] == "abc123"
+
+    def test_enrichment_failure_does_not_write_hash(self, tmp_db):
+        """mark_claude_queue_failed does NOT touch last_enriched_content_hash."""
+        db_conn, _ = tmp_db
+        seg_id = insert_segment(db_conn, self._make_seg("hash-fail-s"))
+        # Pre-set content_hash and an existing last_enriched_content_hash.
+        db_conn.execute(
+            "UPDATE claude_sessions SET content_hash = ?, last_enriched_content_hash = ? WHERE id = ?",
+            ("abc123", "old456", seg_id),
+        )
+        db_conn.commit()
+
+        mark_claude_queue_failed(db_conn, [seg_id], "LLM timeout")
+
+        row = db_conn.execute(
+            "SELECT last_enriched_content_hash FROM claude_sessions WHERE id = ?",
+            (seg_id,),
+        ).fetchone()
+        assert row[0] == "old456", "failure path must not overwrite last_enriched_content_hash"
+
+    def test_null_content_hash_skips_write(self, tmp_db):
+        """When content_hash is NULL (legacy row), last_enriched_content_hash stays NULL."""
+        db_conn, _ = tmp_db
+        seg_id = insert_segment(db_conn, self._make_seg("hash-null-s"))
+        # content_hash remains NULL (the daemon hasn't written one yet).
+
+        write_claude_knowledge_node(
+            db_conn,
+            self._RESULT,
+            [seg_id],
+            "test-model",
+            content_hashes=[None],
+        )
+
+        row = db_conn.execute(
+            "SELECT last_enriched_content_hash FROM claude_sessions WHERE id = ?",
+            (seg_id,),
+        ).fetchone()
+        assert row[0] is None, (
+            "NULL content_hash must not write anything to last_enriched_content_hash"
+        )
+
+        # Enrichment must still have completed normally (queue = done).
+        status = db_conn.execute(
+            "SELECT status FROM claude_enrichment_queue WHERE claude_session_id = ?",
+            (seg_id,),
+        ).fetchone()
+        assert status[0] == "done"
