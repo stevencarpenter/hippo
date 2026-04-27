@@ -157,7 +157,14 @@ These are not blocking. File issues; pick up when convenient.
 
 ### Install ordering
 
-**Daemon ↔ brain ordering during deploy.** Brain at v11 cannot serve a daemon at v12 (the strict schema handshake bails). `mise run install` upgrades both atomically in the right order, so the standard install path is fine. Manual rollback paths (e.g., reverting just the daemon binary while leaving brain at v12) are unsupported — brain at v12 cannot serve a v11 daemon either. If you need to roll back, roll both back together; brain's `ACCEPTED_READ_VERSIONS` keeps v11 for read-only fallback during the rollback window.
+**Daemon ↔ brain ordering during deploy.** The daemon's startup handshake (`crates/hippo-daemon/src/schema_handshake.rs:96`) requires **strict equality** between `daemon.EXPECTED_VERSION` and `brain.expected_schema_version` advertised on `/health`. Any mismatch — in either direction — causes the daemon to bail before binding its socket. So:
+
+- **v11 brain ↔ v12 daemon: incompatible.** Daemon refuses to start. Standard upgrade order matters.
+- **v12 brain ↔ v11 daemon: also incompatible** (same strict-equality rule). Rollback order matters too.
+
+`mise run install` upgrades brain and daemon together in the correct order, so the standard install path Just Works. **Manual rollback paths are unsupported** — if you need to roll back the daemon binary, you must also roll back the brain. Don't run a v12 brain alongside a downgraded v11 daemon.
+
+(Aside: brain's `ACCEPTED_READ_VERSIONS` is a separate concern — it governs which on-disk schema versions brain will *attach* to without erroring. It does not affect or relax the daemon-side handshake. v11 is kept in the set for the case where a v12 brain attaches to a DB that was migrated forward but then the daemon process restarted onto an older binary; brain can still read it without crashing.)
 
 ---
 

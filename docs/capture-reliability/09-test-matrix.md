@@ -69,7 +69,7 @@ The tests below cover the watcher data-loss fix shipped in T-A.1–T-A.7 (2026-0
 | Backfill CLI | `test_backfill_dry_run_writes_nothing`, `test_backfill_resets_offset_for_matched_files`, `test_backfill_reparses_and_updates_segment`, `test_backfill_idempotent_on_second_run`, `test_backfill_skips_files_older_than_since`, `test_backfill_glob_matches_multiple_files` | `crates/hippo-daemon/src/backfill.rs` |
 | Backfill CLI helpers | `test_parse_since_date_valid`, `test_parse_since_date_invalid`, `test_reset_offset_no_row_is_ok` | `crates/hippo-daemon/src/backfill.rs` |
 | Brain hash propagation | `TestContentHashPropagation::test_claim_pending_segments_returns_content_hash`, `TestContentHashPropagation::test_enrichment_writes_last_enriched_content_hash`, `TestContentHashPropagation::test_enrichment_failure_does_not_write_hash`, `TestContentHashPropagation::test_null_content_hash_skips_write` | `brain/tests/test_claude_sessions.py` |
-| T-A.10/11 follow-ups (post-review, landed in PR review fixes) | regression test for I-1 brain-claim race; unit tests for I-4 startup warn; transactional behavior tests for I-3 | `crates/hippo-daemon/src/watch_claude_sessions.rs`, `crates/hippo-daemon/src/claude_session.rs` |
+| Review fix-ups (T-A.10) | `test_enqueue_does_not_clobber_processing_lock`, `test_process_file_short_circuit_preserves_queue_state`, `test_check_backfill_needed_warns_when_null_hash_post_cutoff`, `test_check_backfill_needed_silent_when_hash_set` | `crates/hippo-daemon/src/watch_claude_sessions.rs` |
 
 **Running Phase 1 tests:**
 

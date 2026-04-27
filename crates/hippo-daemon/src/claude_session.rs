@@ -962,7 +962,7 @@ fn insert_segments(conn: &Connection, segments: &[SessionSegment]) -> Result<(us
             Option<String>,
             Option<String>,
             Option<i64>,
-        )> = conn
+        )> = tx
             .query_row(
                 "SELECT cs.id, cs.content_hash, cs.last_enriched_content_hash,
                         ceq.status, ceq.updated_at
@@ -995,7 +995,7 @@ fn insert_segments(conn: &Connection, segments: &[SessionSegment]) -> Result<(us
         // contains. Content columns are always refreshed to the latest reparse.
         // `last_enriched_content_hash` is intentionally omitted — only the brain
         // writes that (T-A.5).
-        conn.execute(
+        tx.execute(
             "INSERT INTO claude_sessions
                 (session_id, project_dir, cwd, git_branch, segment_index,
                  start_time, end_time, summary_text, tool_calls_json,
@@ -1033,7 +1033,7 @@ fn insert_segments(conn: &Connection, segments: &[SessionSegment]) -> Result<(us
 
         // Retrieve the rowid (needed for enrichment queue foreign key).
         let claude_session_id: i64 = if was_insert {
-            conn.last_insert_rowid()
+            tx.last_insert_rowid()
         } else {
             prior.as_ref().map(|(id, _, _, _, _)| *id).unwrap()
         };
@@ -1072,7 +1072,7 @@ fn insert_segments(conn: &Connection, segments: &[SessionSegment]) -> Result<(us
             // - error_message is cleared because it is now stale.
             // - locked_at/locked_by are left untouched by the UPDATE path (they
             //   will already be NULL because the WHERE excludes 'processing').
-            conn.execute(
+            tx.execute(
                 "INSERT INTO claude_enrichment_queue
                      (claude_session_id, status, retry_count, error_message, created_at, updated_at)
                  VALUES (?1, 'pending', 0, NULL, ?2, ?2)
@@ -1088,7 +1088,7 @@ fn insert_segments(conn: &Connection, segments: &[SessionSegment]) -> Result<(us
 
         // Update source_health for claude-session on success.
         let seg_ts = seg.end_time;
-        match conn.execute(
+        match tx.execute(
             "UPDATE source_health
              SET last_event_ts        = MAX(COALESCE(last_event_ts, 0), ?1),
                  last_success_ts      = ?2,

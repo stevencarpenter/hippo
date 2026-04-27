@@ -303,8 +303,12 @@ static SETTLING_SWEEP_PRE_MIGRATION_WARNED: OnceLock<()> = OnceLock::new();
 /// # Contract (frozen)
 /// - Settling threshold: 30 minutes of file mtime idle.
 /// - Per-tick batch cap: `max_per_tick` (caller passes 10).
-/// - Enqueue mechanic: `INSERT OR REPLACE` — replaces `done`/`failed` rows;
-///   preserves `processing` rows (excluded by the SELECT predicate).
+/// - Enqueue mechanic: `INSERT … ON CONFLICT(claude_session_id) DO UPDATE …
+///   WHERE status != 'processing'`. Two-layer protection against trampling
+///   an in-flight worker: the SELECT excludes `processing` rows, and the
+///   UPSERT's `WHERE` clause is defense-in-depth for the SELECT-vs-UPSERT
+///   race window. `done`/`failed` rows are correctly reset to `pending`
+///   with `retry_count = 0` (new content version deserves a fresh budget).
 /// - Pre-migration safe: returns `Ok(0)` with a single `warn!` per process.
 ///
 /// Returns the count of segments enqueued this tick.
@@ -430,8 +434,14 @@ fn run_settling_sweep(
              WHERE claude_enrichment_queue.status != 'processing'",
             params![session_id, now_ms],
         ) {
-            Ok(_) => {
-                enqueued += 1;
+            Ok(rows_changed) => {
+                // The WHERE clause may no-op the UPDATE if a concurrent brain
+                // worker transitioned the row to `processing` between our SELECT
+                // and this UPSERT. Only count actual enqueues so the metric
+                // reflects work the brain will see.
+                if rows_changed > 0 {
+                    enqueued += 1;
+                }
             }
             Err(ref e) if is_missing_claude_session_columns_error(e) => {
                 // Race: shouldn't happen after SELECT succeeded, but guard anyway.
@@ -1323,11 +1333,17 @@ mod tests {
     }
 
     // -------------------------------------------------------------------------
-    // I-3 idempotence: running insert_segments twice preserves queue state
+    // process_file file-size short-circuit: re-firing a watcher event on an
+    // unchanged file must not re-enqueue (preserves brain's queue state)
     // -------------------------------------------------------------------------
+    //
+    // Note: this exercises the size_at_last_read short-circuit in `process_file`,
+    // which intercepts BEFORE `insert_segments` runs. True `insert_segments`
+    // idempotence (the I-3 transactional path) is covered directly by
+    // `test_upsert_idempotent_on_same_content` in `claude_session.rs::tests`.
 
     #[tokio::test]
-    async fn test_insert_idempotence_preserves_queue_retry_count() {
+    async fn test_process_file_short_circuit_preserves_queue_state() {
         let dir = TempDir::new().unwrap();
         let db_path = dir.path().join("test.db");
         let conn = open_db(&db_path).expect("init test db");
