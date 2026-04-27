@@ -19,6 +19,10 @@ class EnrichmentResult:
     embed_text: str = ""
     key_decisions: list = field(default_factory=list)
     problems_encountered: list = field(default_factory=list)
+    # Structured "considered X, chose Y, reason Z" alternatives that were
+    # weighed during the work session. Each entry is a dict with keys
+    # "considered", "chosen", and "reason" (all str). Issue #98 F3.
+    design_decisions: list = field(default_factory=list)
 
 
 @dataclass
@@ -115,6 +119,30 @@ def validate_enrichment_data(data: dict) -> EnrichmentResult:
         raw_problems = []
     problems_encountered = [p for p in raw_problems if isinstance(p, str)]
 
+    # Design decisions: list of {considered, chosen, reason} objects (optional).
+    # Skip entries that aren't dicts or lack the three string keys — a partial
+    # entry is worse than no entry because a future agent can't trust it.
+    raw_design = data.get("design_decisions", [])
+    if not isinstance(raw_design, list):
+        raw_design = []
+    design_decisions: list[dict[str, str]] = []
+    for entry in raw_design:
+        if not isinstance(entry, dict):
+            continue
+        considered = entry.get("considered")
+        chosen = entry.get("chosen")
+        reason = entry.get("reason")
+        if not (
+            isinstance(considered, str)
+            and considered
+            and isinstance(chosen, str)
+            and chosen
+            and isinstance(reason, str)
+            and reason
+        ):
+            continue
+        design_decisions.append({"considered": considered, "chosen": chosen, "reason": reason})
+
     # Tags must be a list of strings (skip non-string items)
     raw_tags = data.get("tags", [])
     if not isinstance(raw_tags, list):
@@ -130,4 +158,5 @@ def validate_enrichment_data(data: dict) -> EnrichmentResult:
         embed_text=data["embed_text"],
         key_decisions=key_decisions,
         problems_encountered=problems_encountered,
+        design_decisions=design_decisions,
     )

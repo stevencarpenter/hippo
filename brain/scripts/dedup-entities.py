@@ -1,10 +1,22 @@
 #!/usr/bin/env python3
-"""One-shot entity deduplication migration (R-16).
+"""One-shot entity deduplication migration.
 
-Re-canonicalizes all entities using the new entity_resolver rules and merges
-rows where (type, new_canonical) would collide. Keeps the oldest row (smallest
-created_at), re-points all knowledge_node_entities to the survivor, then
-deletes the duplicate entity rows.
+Re-canonicalizes all entities using the current entity_resolver rules and
+merges rows where (type, new_canonical) would collide. Keeps the oldest row
+(smallest created_at), re-points all knowledge_node_entities to the survivor,
+then deletes the duplicate entity rows.
+
+This script handles two flavors of duplication transparently because it
+delegates to canonicalize():
+
+  1. Multiple project roots resolving to the same logical file (e.g.
+     hippo vs. hippo-postgres) — the original v5→v6 use case.
+  2. Ephemeral parallel-agent worktrees under .claude/worktrees/<X>/...
+     (issue #98). Worktree subdirectory names vary (`agent-*`, `feat-*`,
+     adjective-noun-hex), and the directories are removed once the agent's
+     work is merged or discarded — leaving polluted entity rows. Re-running
+     this script after canonicalize() learns the worktree-strip rule
+     collapses N copies of every commonly-edited file to one canonical row.
 
 Usage:
     uv run --project brain python brain/scripts/dedup-entities.py [--data-dir PATH] [--dry-run]
@@ -13,7 +25,7 @@ Environment:
     HIPPO_PROJECT_ROOTS  Colon-separated list of absolute project root paths to
                          strip from path-type entity values (e.g.
                          /home/user/projects/hippo:/home/user/projects/hippo-postgres).
-                         Required for worktree-prefix dedup to work correctly.
+                         Required for project-root dedup to work correctly.
 
 Exits 0 on success. Non-zero on error.
 """

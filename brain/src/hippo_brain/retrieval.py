@@ -457,6 +457,7 @@ def _fetch_details(conn: sqlite3.Connection, node_ids: Sequence[int]) -> dict[in
     details: dict[int, dict] = {}
     for node_id, uuid, content_str, embed_text, outcome, tags_str, created_at in rows:
         summary = _extract_summary(content_str)
+        design_decisions = _extract_design_decisions(content_str)
         tags = _parse_tags(tags_str)
         details[node_id] = {
             "id": node_id,
@@ -465,6 +466,7 @@ def _fetch_details(conn: sqlite3.Connection, node_ids: Sequence[int]) -> dict[in
             "embed_text": embed_text or "",
             "outcome": outcome,
             "tags": tags,
+            "design_decisions": design_decisions,
             "cwd": "",
             "git_branch": "",
             "captured_at": created_at,
@@ -649,6 +651,28 @@ def _extract_summary(content_str: str | None) -> str:
     if isinstance(payload, dict):
         return payload.get("summary") or ""
     return ""
+
+
+def _extract_design_decisions(content_str: str | None) -> list[dict]:
+    """Extract design_decisions list from a knowledge_node content JSON blob.
+
+    Older nodes (pre-issue #98) won't have this key; return an empty list so
+    the RAG context renderer can skip it cleanly. Each surviving entry is
+    expected to be a dict with `considered`, `chosen`, `reason` keys —
+    written through `validate_enrichment_data` so the shape is enforced.
+    """
+    if not content_str:
+        return []
+    try:
+        payload = json.loads(content_str)
+    except json.JSONDecodeError, TypeError:
+        return []
+    if not isinstance(payload, dict):
+        return []
+    raw = payload.get("design_decisions")
+    if not isinstance(raw, list):
+        return []
+    return [entry for entry in raw if isinstance(entry, dict)]
 
 
 def _parse_tags(tags_str: str | None) -> list[str]:

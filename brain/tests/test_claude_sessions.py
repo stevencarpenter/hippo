@@ -270,6 +270,26 @@ class TestBuildClaudeEnrichmentPrompt:
         assert "Read: /src/enrichment.py" in prompt
         assert "Looking at enrichment.py" in prompt
 
+    def test_strips_worktree_from_cwd(self):
+        """Issue #98 F1c: Claude segment cwd from an agent worktree must be
+        normalized to the parent repo path before reaching the LLM.
+        """
+        seg = SessionSegment(
+            session_id="s1",
+            project_dir="proj",
+            cwd="/projects/hippo/.claude/worktrees/agent-ac83d4d3/crates/hippo-core",
+            git_branch="main",
+            segment_index=0,
+            start_time=1711612800000,
+            end_time=1711614600000,
+            user_prompts=["test"],
+            message_count=1,
+        )
+        prompt = build_claude_enrichment_prompt([seg])
+        assert "/projects/hippo/crates/hippo-core" in prompt
+        assert ".claude/worktrees" not in prompt
+        assert "agent-ac83d4d3" not in prompt
+
 
 class TestInsertAndClaim:
     def test_insert_segment(self, tmp_db):

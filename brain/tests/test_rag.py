@@ -185,6 +185,47 @@ class TestBuildRagPrompt:
         # No truncation ellipsis should appear for this small corpus
         assert "…" not in context
 
+    def test_design_decisions_rendered_in_context(self):
+        """Issue #98 F3: when a hit carries `design_decisions`, the
+        considered/chosen/reason structure must surface in the synthesis prompt
+        so the LLM can answer "why X over Y" questions accurately.
+        """
+        hit = dict(
+            SAMPLE_HITS[0],
+            design_decisions=[
+                {
+                    "considered": "Stage GUI inside /Applications/.hippo-staging/HippoGUI.app",
+                    "chosen": "Stage GUI in $TMPDIR, mv to /Applications atomically",
+                    "reason": "Launch Services crawls /Applications recursively",
+                }
+            ],
+        )
+        messages = _build_rag_prompt("why $TMPDIR?", [hit])
+        user = messages[1]["content"]
+        assert "Design decisions:" in user
+        assert "Stage GUI inside /Applications/.hippo-staging" in user
+        assert "Stage GUI in $TMPDIR" in user
+        assert "Launch Services crawls /Applications" in user
+
+    def test_design_decisions_omitted_when_empty(self):
+        hit = dict(SAMPLE_HITS[0], design_decisions=[])
+        messages = _build_rag_prompt("test", [hit])
+        assert "Design decisions:" not in messages[1]["content"]
+
+    def test_design_decisions_partial_entry_skipped_in_render(self):
+        hit = dict(
+            SAMPLE_HITS[0],
+            design_decisions=[
+                {"considered": "X", "chosen": "Y", "reason": "Z"},
+                {"considered": "A", "chosen": "B"},  # missing reason — render must skip
+                "garbage",  # wrong type — render must skip
+            ],
+        )
+        messages = _build_rag_prompt("test", [hit])
+        user = messages[1]["content"]
+        assert "considered 'X'" in user
+        assert "considered 'A'" not in user
+
 
 class TestFormatRagResponse:
     def test_formats_answer_and_sources(self):

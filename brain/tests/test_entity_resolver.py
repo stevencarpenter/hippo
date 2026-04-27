@@ -9,6 +9,7 @@ from hippo_brain.entity_resolver import (
     _cached_fallback_roots,
     _resolve_project_roots,
     canonicalize,
+    strip_worktree_prefix,
 )
 
 SCHEMA_PATH = Path(__file__).parent.parent.parent / "crates" / "hippo-core" / "src" / "schema.sql"
@@ -268,3 +269,172 @@ class TestExactRootMatchBasename:
         r2 = canonicalize("directory", "/users/carpenter/projects/hippo", project_roots=roots)
         assert r1 == r2 == "hippo"
         assert r1 != ""
+
+
+# ---------------------------------------------------------------------------
+# Worktree-prefix stripping (issue #98 — F1: ephemeral parallel-agent worktree
+# pollution). The worktree subdirectory naming scheme is NOT just `agent-*`;
+# Claude Code names worktrees with a mix of schemes, so the stripping must be
+# segment-name agnostic.
+# ---------------------------------------------------------------------------
+
+
+class TestStripWorktreePrefix:
+    def test_strip_agent_worktree(self):
+        assert (
+            strip_worktree_prefix(
+                "/users/carpenter/projects/hippo/.claude/worktrees/agent-ac83d4d3/src/foo.rs"
+            )
+            == "/users/carpenter/projects/hippo/src/foo.rs"
+        )
+
+    def test_strip_feat_worktree(self):
+        # `feat-p1.1a-watchdog-core` style — does NOT start with `agent-`.
+        assert (
+            strip_worktree_prefix(
+                "/users/carpenter/projects/hippo/.claude/worktrees/feat-p1.1a-watchdog-core/src/foo.rs"
+            )
+            == "/users/carpenter/projects/hippo/src/foo.rs"
+        )
+
+    def test_strip_adjective_noun_worktree(self):
+        # `gracious-williamson-8c3e1f` style — Claude Code's adjective-noun-hex namer.
+        assert (
+            strip_worktree_prefix(
+                "/users/carpenter/projects/hippo/.claude/worktrees/gracious-williamson-8c3e1f/src/foo.rs"
+            )
+            == "/users/carpenter/projects/hippo/src/foo.rs"
+        )
+
+    def test_strip_noop_on_non_worktree_path(self):
+        assert (
+            strip_worktree_prefix("/users/carpenter/projects/hippo/src/foo.rs")
+            == "/users/carpenter/projects/hippo/src/foo.rs"
+        )
+
+    def test_strip_handles_relative_path(self):
+        assert (
+            strip_worktree_prefix(".claude/worktrees/agent-XX/crates/hippo-daemon/src/foo.rs")
+            == "crates/hippo-daemon/src/foo.rs"
+        )
+
+    def test_strip_only_one_segment(self):
+        # Only the segment immediately after `worktrees/` is stripped — nested
+        # worktrees would be unusual but the regex must not greedily eat more.
+        assert (
+            strip_worktree_prefix(
+                "/repo/.claude/worktrees/agent-XX/.claude/worktrees/agent-YY/file.txt"
+            )
+            == "/repo/file.txt"
+        )
+
+    def test_strip_does_not_match_directory_named_like_worktree(self):
+        # A directory literally named ".claude/worktrees/foo" with no trailing
+        # slash (i.e. the worktree IS the leaf) is preserved — without a
+        # trailing slash there's no segment AFTER the worktree dir to anchor on.
+        assert (
+            strip_worktree_prefix("/repo/.claude/worktrees/agent-XX")
+            == "/repo/.claude/worktrees/agent-XX"
+        )
+
+
+class TestCanonicalizeStripsWorktreeBeforeProjectRoot:
+    """canonicalize() must strip the worktree segment BEFORE the project-root
+    strip, otherwise the project-root no longer matches the prefix of the
+    worktree path.
+    """
+
+    def test_agent_worktree_collapses_to_canonical(self):
+        roots = ["/users/carpenter/projects/hippo"]
+        result = canonicalize(
+            "file",
+            "/users/carpenter/projects/hippo/.claude/worktrees/agent-ac83d4d3/crates/hippo-daemon/src/schema_handshake.rs",
+            project_roots=roots,
+        )
+        assert result == "crates/hippo-daemon/src/schema_handshake.rs"
+
+    def test_canonical_path_and_worktree_path_resolve_same(self):
+        roots = ["/users/carpenter/projects/hippo"]
+        canonical_input = (
+            "/users/carpenter/projects/hippo/crates/hippo-daemon/src/schema_handshake.rs"
+        )
+        worktree_input = "/users/carpenter/projects/hippo/.claude/worktrees/agent-ac83d4d3/crates/hippo-daemon/src/schema_handshake.rs"
+        a = canonicalize("file", canonical_input, project_roots=roots)
+        b = canonicalize("file", worktree_input, project_roots=roots)
+        assert a == b == "crates/hippo-daemon/src/schema_handshake.rs"
+
+    def test_three_different_worktree_styles_all_collapse(self):
+        roots = ["/users/carpenter/projects/hippo"]
+        paths = [
+            "/users/carpenter/projects/hippo/.claude/worktrees/agent-ac83d4d3/src/foo.rs",
+            "/users/carpenter/projects/hippo/.claude/worktrees/feat-p1.1a-watchdog/src/foo.rs",
+            "/users/carpenter/projects/hippo/.claude/worktrees/gracious-williamson-8c3e1f/src/foo.rs",
+        ]
+        results = {canonicalize("file", p, project_roots=roots) for p in paths}
+        assert results == {"src/foo.rs"}
+
+    def test_dedup_collapses_worktree_polluted_entities(self, monkeypatch):
+        """End-to-end: existing dedup-entities.py picks up worktree-polluted
+        rows now that canonicalize strips the worktree segment.
+        """
+        monkeypatch.setenv("HIPPO_PROJECT_ROOTS", "/users/carpenter/projects/hippo")
+
+        conn, db_path = _make_db()
+        try:
+            now_ms = 1_700_000_000_000
+            # Insert canonical + 3 worktree variants of the same file.
+            conn.execute(
+                "INSERT INTO entities (type, name, canonical, first_seen, last_seen, created_at) VALUES (?,?,?,?,?,?)",
+                (
+                    "file",
+                    "/users/carpenter/projects/hippo/crates/hippo-daemon/src/schema_handshake.rs",
+                    "/users/carpenter/projects/hippo/crates/hippo-daemon/src/schema_handshake.rs",
+                    now_ms,
+                    now_ms,
+                    now_ms,
+                ),
+            )
+            for i, wt in enumerate(
+                [
+                    "agent-ac83d4d3",
+                    "agent-a5642c4b",
+                    "feat-p1.1a-watchdog",
+                ],
+                start=1,
+            ):
+                conn.execute(
+                    "INSERT INTO entities (type, name, canonical, first_seen, last_seen, created_at) VALUES (?,?,?,?,?,?)",
+                    (
+                        "file",
+                        f"/users/carpenter/projects/hippo/.claude/worktrees/{wt}/crates/hippo-daemon/src/schema_handshake.rs",
+                        f"/users/carpenter/projects/hippo/.claude/worktrees/{wt}/crates/hippo-daemon/src/schema_handshake.rs",
+                        now_ms + i,
+                        now_ms + i,
+                        now_ms + i,
+                    ),
+                )
+            conn.commit()
+
+            import importlib.util
+            import sys
+
+            scripts_root = Path(__file__).parent.parent / "scripts"
+            spec = importlib.util.spec_from_file_location(
+                "dedup_entities_worktree", scripts_root / "dedup-entities.py"
+            )
+            assert spec is not None and spec.loader is not None
+            mod = importlib.util.module_from_spec(spec)
+            sys.modules["dedup_entities_worktree"] = mod
+            spec.loader.exec_module(mod)  # type: ignore[union-attr]
+
+            stats = mod.run(conn, dry_run=False)
+
+            rows = conn.execute("SELECT canonical FROM entities").fetchall()
+            assert len(rows) == 1
+            assert rows[0]["canonical"] == "crates/hippo-daemon/src/schema_handshake.rs"
+            assert stats["deleted"] == 3
+        finally:
+            conn.close()
+            db_path.unlink(missing_ok=True)
+            db_path.with_suffix(".db-wal").unlink(missing_ok=True)
+            db_path.with_suffix(".db-shm").unlink(missing_ok=True)

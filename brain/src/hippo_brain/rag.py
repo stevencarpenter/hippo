@@ -106,6 +106,20 @@ def _hit_lines(index: int, hit: dict, embed_cap: int, cmd_cap: int) -> list[str]
         lines.append(f"Summary: {hit['summary']}")
     if hit.get("embed_text"):
         lines.append(f"Detail: {_truncate(hit['embed_text'], embed_cap)}")
+    # Render design_decisions verbatim — the "considered X, chose Y, reason Z"
+    # structure is exactly what the synthesis LLM needs to answer questions
+    # about why a particular approach was picked. (Issue #98 F3.)
+    design_decisions = hit.get("design_decisions") or []
+    if isinstance(design_decisions, list) and design_decisions:
+        lines.append("Design decisions:")
+        for d in design_decisions:
+            if not isinstance(d, dict):
+                continue
+            considered = d.get("considered", "")
+            chosen = d.get("chosen", "")
+            reason = d.get("reason", "")
+            if considered and chosen and reason:
+                lines.append(f"  - considered {considered!r}; chose {chosen!r}; reason: {reason}")
     if hit.get("commands_raw"):
         lines.append(f"Commands: {_truncate(hit['commands_raw'], cmd_cap)}")
     if hit.get("cwd"):

@@ -3,7 +3,7 @@ import re
 import time
 import uuid
 
-from hippo_brain.entity_resolver import canonicalize
+from hippo_brain.entity_resolver import canonicalize, strip_worktree_prefix
 from hippo_brain.models import EnrichmentResult, validate_enrichment_data
 from hippo_brain.watchdog import DEFAULT_LOCK_TIMEOUT_MS
 
@@ -124,13 +124,24 @@ distinction in your summary — attribute actions to the correct actor.
 
 IMPORTANT: Be specific. Use actual file names, function names, error messages, and outcomes from the event data. Generic descriptions like "edited a Rust file" are unacceptable. Instead say "added build.rs to hippo-daemon that embeds git metadata via cargo:rustc-env".
 
-The embed_text field should read like a developer's work log entry — specific enough that searching for "embedding model configuration" or "clippy warning fix" would find it.
+VERBATIM PRESERVATION RULE: In every text field (summary, intent, key_decisions, problems_encountered, design_decisions, embed_text), reproduce the following kinds of tokens EXACTLY as they appeared in the source events. Do NOT paraphrase, normalize, or guess at them:
+  - Environment variable names (UPPERCASE_WITH_UNDERSCORES, e.g. HIPPO_FORCE)
+  - Constants and ALL_CAPS identifiers matching [A-Z][A-Z0-9_]{2,}
+  - Semantic versions matching \\d+\\.\\d+\\.\\d+ (e.g. 0.0.26, 2.20.0)
+  - Package@version pairs (e.g. "python-multipart 0.0.26", "pygments@2.20.0")
+  - Symbol names: function, method, class, struct, trait, type, and constant identifiers
+  - CLI flag names (--no-verify, -uall, --release)
+  - File paths and command names
+If you are unsure of an exact name or version, OMIT it rather than guess. A hallucinated identifier is worse than a missing one — a future agent can re-read the source events to recover what was missed, but cannot un-believe a wrong name.
+
+The embed_text field is what powers semantic search over this work session. It MUST be identifier-dense: include every symbol name, file path, package name, version string, and CLI command that appears in the source events. Density of identifiers beats prose elegance — a future agent will search this field by keyword, not read it aloud. A good embed_text reads like a tag soup of the actual technical content (e.g. "drain_brain pgrep launchctl uv run wrapper crates/hippo-daemon/src/install.rs parse_launchctl_pid"), not like a polished paragraph.
 
 Output a JSON object with these fields:
 - summary: Specific description of what was accomplished (not what tools were used)
 - intent: The developer's goal (e.g., "testing", "debugging", "deploying", "refactoring")
 - outcome: One of "success", "partial", "failure", "unknown"
 - key_decisions: List of decisions made and why (e.g., "Chose build.rs over vergen crate for zero dependencies")
+- design_decisions: List of "considered X, chose Y, reason Z" structured decisions when the events show an alternative was evaluated and rejected. Each entry is an object with keys "considered" (the abandoned approach), "chosen" (what was picked), and "reason" (why the chosen approach won). Empty list if no alternatives were weighed.
 - problems_encountered: List of errors/failures and how they were resolved
 - entities: An object with lists of extracted entities:
   - projects: Project names mentioned or inferred
@@ -139,7 +150,7 @@ Output a JSON object with these fields:
   - services: Services interacted with (databases, APIs, etc.)
   - errors: Actual error messages encountered (not generic descriptions)
 - tags: Descriptive, specific tags (not "success" or "editing")
-- embed_text: A detailed paragraph a developer would write in a work log. Specific file names, error messages, and outcomes. Optimized for semantic search.
+- embed_text: A detailed, identifier-dense paragraph (see rule above). Optimized for keyword retrieval, not prose.
 
 Output ONLY valid JSON, no markdown fences or extra text."""
 
@@ -151,7 +162,13 @@ def _actor_label(shell: str) -> str:
 
 
 def build_enrichment_prompt(events: list[dict], browser_context: str = "") -> str:
-    """Format events into the user prompt template."""
+    """Format events into the user prompt template.
+
+    `cwd` is normalized to strip Claude Code worktree segments
+    (`.claude/worktrees/<X>/`) so the LLM sees the parent-repo path rather
+    than the ephemeral agent worktree subdirectory. The raw value is
+    preserved in the events table.
+    """
     lines = []
     for i, ev in enumerate(events, 1):
         actor = _actor_label(ev.get("shell", ""))
@@ -159,7 +176,7 @@ def build_enrichment_prompt(events: list[dict], browser_context: str = "") -> st
         parts.append(f"  command: {ev.get('command', '')}")
         parts.append(f"  exit_code: {ev.get('exit_code', '')}")
         parts.append(f"  duration_ms: {ev.get('duration_ms', '')}")
-        parts.append(f"  cwd: {ev.get('cwd', '')}")
+        parts.append(f"  cwd: {strip_worktree_prefix(ev.get('cwd', ''))}")
         if ev.get("git_branch"):
             parts.append(f"  git_branch: {ev['git_branch']}")
         if ev.get("git_commit"):
@@ -369,6 +386,7 @@ def write_knowledge_node(
             "tags": result.tags,
             "key_decisions": result.key_decisions,
             "problems_encountered": result.problems_encountered,
+            "design_decisions": result.design_decisions,
         }
     )
     tags_json = json.dumps(result.tags)

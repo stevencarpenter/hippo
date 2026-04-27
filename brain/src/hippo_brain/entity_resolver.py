@@ -5,8 +5,16 @@ Canonical form rules:
 - Lowercase + strip surrounding whitespace
 - Strip trailing slashes
 - Collapse internal whitespace runs to single space
-- For path-like types (file, directory, path): strip known project root prefixes
-  so the same file under different worktree paths resolves to the same canonical.
+- For path-like types (file, directory, path):
+    1. Strip Claude Code parallel-agent worktree segments
+       (`.claude/worktrees/<anything>/`). These are ephemeral worktrees
+       created by the Task/TeamCreate tools that get deleted after the
+       agent's work merges or is discarded; entity rows pointing inside
+       them rot. Stripping them collapses N copies of the same logical
+       file (one per agent run) to a single canonical row.
+    2. Strip known project root prefixes so the same file under different
+       project root paths (e.g. `hippo` vs. `hippo-postgres`) resolves to
+       the same canonical.
 
 Project root precedence (highest to lowest):
 1. Explicit project_roots= passed to canonicalize() — useful in tests and scripts
@@ -29,6 +37,13 @@ from pathlib import Path
 
 _PATH_TYPES = frozenset({"file", "directory", "path"})
 _logger = logging.getLogger(__name__)
+
+# Matches `.claude/worktrees/<single-segment>/` anywhere in a path.
+# `<single-segment>` is any non-slash directory name — Claude Code worktrees
+# are named with varied schemes (`agent-XXXX`, `feat-XXXX`, adjective-noun-hex,
+# etc.), so we cannot rely on a fixed prefix. Trailing `/` is required so we
+# don't accidentally strip a file literally named ".claude/worktrees/foo".
+_WORKTREE_SEGMENT_RE = re.compile(r"\.claude/worktrees/[^/]+/")
 
 
 def _load_config_roots() -> list[str]:
@@ -86,6 +101,16 @@ def _resolve_project_roots(override: list[str] | None) -> list[str]:
     return list(_cached_fallback_roots())
 
 
+def strip_worktree_prefix(path: str) -> str:
+    """Strip every `.claude/worktrees/<X>/` segment from `path`.
+
+    Worktree subdirectory names vary (`agent-*`, `feat-*`, adjective-noun-hex
+    pairs from Claude Code's namer, etc.), so the stripping is segment-name
+    agnostic — anything between `.claude/worktrees/` and the next `/` is removed.
+    """
+    return _WORKTREE_SEGMENT_RE.sub("", path)
+
+
 def canonicalize(
     entity_type: str,
     value: str,
@@ -101,6 +126,13 @@ def canonicalize(
     v = re.sub(r"\s+", " ", v)
 
     if entity_type in _PATH_TYPES:
+        # Strip worktree segments first so a path like
+        #   /users/carpenter/projects/hippo/.claude/worktrees/agent-XX/src/foo.rs
+        # collapses to
+        #   /users/carpenter/projects/hippo/src/foo.rs
+        # before the project-root strip turns it into `src/foo.rs`.
+        v = strip_worktree_prefix(v)
+
         roots = _resolve_project_roots(project_roots)
         for root in roots:
             normalized = os.path.expanduser(root).lower().rstrip("/")

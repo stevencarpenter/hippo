@@ -31,6 +31,45 @@ def test_build_enrichment_prompt():
     assert "abc1234" in prompt
 
 
+def test_build_enrichment_prompt_strips_worktree_from_cwd():
+    """Issue #98 F1c: cwd values from agent worktrees must be normalized to
+    the parent repo path before reaching the LLM, otherwise generated entities
+    inherit the ephemeral worktree prefix.
+    """
+    events = [
+        {
+            "command": "cargo test",
+            "exit_code": 0,
+            "duration_ms": 1000,
+            "cwd": "/Users/dev/projects/hippo/.claude/worktrees/agent-ac83d4d3/crates/hippo-core",
+            "git_branch": "main",
+        }
+    ]
+    prompt = build_enrichment_prompt(events)
+    assert "/Users/dev/projects/hippo/crates/hippo-core" in prompt
+    assert ".claude/worktrees" not in prompt
+    assert "agent-ac83d4d3" not in prompt
+
+
+def test_build_enrichment_prompt_strips_non_agent_worktree_styles():
+    """Worktree subdirectories aren't always `agent-*` — also `feat-*`,
+    adjective-noun-hex, etc. The strip must be name-agnostic.
+    """
+    for wt_name in ("feat-p1.1a-watchdog", "gracious-williamson-8c3e1f"):
+        events = [
+            {
+                "command": "ls",
+                "exit_code": 0,
+                "duration_ms": 5,
+                "cwd": f"/Users/dev/projects/hippo/.claude/worktrees/{wt_name}/src",
+                "git_branch": "main",
+            }
+        ]
+        prompt = build_enrichment_prompt(events)
+        assert wt_name not in prompt, f"worktree segment {wt_name!r} not stripped"
+        assert "/Users/dev/projects/hippo/src" in prompt
+
+
 def test_parse_enrichment_response():
     raw = (
         '{"summary": "Ran tests", "intent": "testing", "outcome": "success", '
@@ -112,6 +151,59 @@ def test_parse_rejects_entities_not_dict():
 def test_parse_rejects_invalid_json():
     with pytest.raises(json.JSONDecodeError):
         parse_enrichment_response("not json")
+
+
+# ---------------------------------------------------------------------------
+# Issue #98 F3: design_decisions field validation.
+# ---------------------------------------------------------------------------
+
+
+def test_parse_design_decisions_accepts_valid_entries():
+    data = _valid_enrichment_dict(
+        design_decisions=[
+            {
+                "considered": "Stage GUI inside /Applications/.hippo-staging/HippoGUI.app",
+                "chosen": "Stage GUI in $TMPDIR, swap via mv to /Applications",
+                "reason": "Launch Services crawls /Applications recursively and may register the transient hidden bundle",
+            }
+        ]
+    )
+    result = parse_enrichment_response(json.dumps(data))
+    assert len(result.design_decisions) == 1
+    entry = result.design_decisions[0]
+    assert entry["considered"].startswith("Stage GUI inside /Applications/")
+    assert entry["chosen"].startswith("Stage GUI in $TMPDIR")
+    assert "Launch Services" in entry["reason"]
+
+
+def test_parse_design_decisions_skips_partial_entries():
+    """An entry missing any of considered/chosen/reason is dropped — partial
+    decisions are worse than no decision because they cannot be trusted.
+    """
+    data = _valid_enrichment_dict(
+        design_decisions=[
+            {"considered": "X", "chosen": "Y", "reason": "Z"},  # valid
+            {"considered": "X", "chosen": "Y"},  # missing reason — drop
+            {"chosen": "Y", "reason": "Z"},  # missing considered — drop
+            {"considered": "", "chosen": "Y", "reason": "Z"},  # empty string — drop
+            "not a dict",  # wrong type — drop
+        ]
+    )
+    result = parse_enrichment_response(json.dumps(data))
+    assert len(result.design_decisions) == 1
+    assert result.design_decisions[0] == {"considered": "X", "chosen": "Y", "reason": "Z"}
+
+
+def test_parse_design_decisions_default_empty():
+    data = _valid_enrichment_dict()  # no design_decisions key
+    result = parse_enrichment_response(json.dumps(data))
+    assert result.design_decisions == []
+
+
+def test_parse_design_decisions_non_list_becomes_empty():
+    data = _valid_enrichment_dict(design_decisions="not a list")
+    result = parse_enrichment_response(json.dumps(data))
+    assert result.design_decisions == []
 
 
 def test_claim_and_write(tmp_db):
@@ -471,6 +563,46 @@ def test_write_knowledge_node_stores_key_decisions(tmp_db):
     content = json.loads(row[0])
     assert content["key_decisions"] == ["Chose build.rs over vergen for zero deps"]
     assert content["problems_encountered"] == ["clippy warning on unused import"]
+
+
+def test_write_knowledge_node_persists_design_decisions(tmp_db):
+    """Issue #98 F3: design_decisions must round-trip through the content JSON
+    blob so RAG retrieval can surface them later.
+    """
+    conn, _ = tmp_db
+    _seed_event_with_queue(conn, event_id=1)
+
+    result = EnrichmentResult(
+        summary="Picked staging strategy",
+        intent="design",
+        outcome="success",
+        entities={
+            "projects": ["hippo"],
+            "tools": [],
+            "files": [],
+            "services": [],
+            "errors": [],
+        },
+        tags=["install"],
+        embed_text="GUI staging $TMPDIR /Applications Launch Services",
+        design_decisions=[
+            {
+                "considered": "Stage GUI inside /Applications/.hippo-staging/HippoGUI.app",
+                "chosen": "Stage GUI in $TMPDIR, mv to /Applications atomically",
+                "reason": "Launch Services crawls /Applications recursively",
+            }
+        ],
+    )
+
+    node_id = write_knowledge_node(conn, result, [1], "test-model")
+    row = conn.execute("SELECT content FROM knowledge_nodes WHERE id = ?", (node_id,)).fetchone()
+    content = json.loads(row[0])
+
+    assert len(content["design_decisions"]) == 1
+    entry = content["design_decisions"][0]
+    assert entry["considered"].startswith("Stage GUI inside /Applications")
+    assert entry["chosen"].startswith("Stage GUI in $TMPDIR")
+    assert "Launch Services" in entry["reason"]
 
 
 # ---------------------------------------------------------------------------
