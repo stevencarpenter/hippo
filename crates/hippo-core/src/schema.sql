@@ -485,14 +485,22 @@ CREATE TABLE IF NOT EXISTS capture_alarms (
     raised_at    INTEGER NOT NULL,
     details_json TEXT    NOT NULL,
     acked_at     INTEGER,
-    ack_note     TEXT
+    ack_note     TEXT,
+    -- v11: set by the watchdog when the underlying invariant has stayed
+    -- clean for 2 consecutive ticks. Resolved rows stop suppressing new
+    -- alarms and don't contribute to the doctor exit code.
+    resolved_at  INTEGER,
+    -- v11: consecutive-clean tick count, used by the auto-resolve loop.
+    -- Reset to 0 whenever the invariant violates again. CHECK constraint
+    -- defends against a stray UPDATE leaving the counter negative.
+    clean_ticks  INTEGER NOT NULL DEFAULT 0 CHECK (clean_ticks >= 0)
 );
 
--- Partial index on un-acked alarms keyed by invariant — this is the hot
--- path for the rate-limit query (check for recent un-acked alarm).
+-- Partial index on active (un-acked, un-resolved) alarms keyed by invariant
+-- — this is the hot path for the rate-limit query.
 CREATE INDEX IF NOT EXISTS idx_capture_alarms_invariant_active
     ON capture_alarms (invariant_id, acked_at)
-    WHERE acked_at IS NULL;
+    WHERE acked_at IS NULL AND resolved_at IS NULL;
 
 -- Watcher offset tracking: resume-after-restart for the FS watcher (T-5).
 CREATE TABLE IF NOT EXISTS claude_session_offsets (
@@ -523,4 +531,4 @@ CREATE TABLE IF NOT EXISTS claude_session_parity (
 CREATE INDEX IF NOT EXISTS idx_claude_session_parity_path_window
     ON claude_session_parity (path, window_start);
 
-PRAGMA user_version = 10;
+PRAGMA user_version = 11;

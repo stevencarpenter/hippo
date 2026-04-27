@@ -66,6 +66,10 @@ One query over a small table. If absent (pre-migration install), create it from 
 
 **Step 4 — Raise alarms for each failing invariant.** See Alarm Contract.
 
+**Step 4b — Auto-resolve recovered alarms.** After raising new alarms, walk every active (un-acked, un-resolved) row and check whether its `(invariant_id, source)` pair appears in the *current* tick's violation set. Pairs absent from the violation set get `clean_ticks += 1`; pairs present get `clean_ticks = 0`. When `clean_ticks` reaches `2`, set `resolved_at = now_ms`. Two ticks (≈120 s) is the minimum window that prevents single-tick flap from prematurely clearing an alarm. Resolved rows persist until `hippo alarms prune` acks them with `ack_note='auto-resolved'`.
+
+Because each watchdog invocation is a single-shot process under launchd, `clean_ticks` lives in the `capture_alarms` row, not in process memory. State carries across watchdog restarts — relaunches, redeploys, even reboots — so a healing invariant's progress toward auto-resolution is never lost. The whole step is wrapped in one transaction so the per-row UPDATEs commit atomically.
+
 **Step 5 — Exit clean.** `std::process::exit(0)`. launchd re-launches after `StartInterval`.
 
 ## Alarm Contract
@@ -79,12 +83,20 @@ CREATE TABLE IF NOT EXISTS capture_alarms (
     raised_at    INTEGER NOT NULL,
     details_json TEXT    NOT NULL,
     acked_at     INTEGER,
-    ack_note     TEXT
+    ack_note     TEXT,
+    -- v11: set when the watchdog observes 2 consecutive clean ticks for
+    -- this alarm's (invariant_id, source) pair. Resolved rows do not
+    -- suppress new alarms (rate-limit ignores them) and do not contribute
+    -- to the doctor exit code.
+    resolved_at  INTEGER,
+    -- v11: consecutive-clean tick counter, reset to 0 whenever the
+    -- invariant violates again on a subsequent tick.
+    clean_ticks  INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE INDEX IF NOT EXISTS idx_capture_alarms_invariant_active
     ON capture_alarms (invariant_id, acked_at)
-    WHERE acked_at IS NULL;
+    WHERE acked_at IS NULL AND resolved_at IS NULL;
 ```
 
 ### Rate Limiting
@@ -95,9 +107,12 @@ Before INSERT, query for recent un-acked alarm for same invariant:
 SELECT id FROM capture_alarms
 WHERE invariant_id = :id
   AND acked_at IS NULL
+  AND resolved_at IS NULL
   AND raised_at > :cutoff_ms
 LIMIT 1;
 ```
+
+The `resolved_at IS NULL` clause means an auto-resolved alarm stops blocking new raises — if the invariant flaps back, the next tick raises a fresh row instead of being silently suppressed.
 
 where `cutoff_ms = now_ms - (alarm_rate_limit_minutes * 60 * 1000)`. Default `15`.
 
@@ -150,6 +165,27 @@ WHERE id = :id AND acked_at IS NULL;
 ```
 
 **Rate-limit reset after ack.** Rate-limit query filters `acked_at IS NULL`, so acked rows no longer block. Next cycle detecting the same violation inserts a fresh alarm. Intentional: acking means "I saw this," not "I fixed it."
+
+### Upgrading from v10
+
+Schema bump v10 → v11 is purely additive: two new columns on `capture_alarms` (`resolved_at`, `clean_ticks`) and a tightened partial-index predicate. Migration is idempotent and crash-safe (each ALTER pre-checks `pragma_table_info`).
+
+Two operational notes for the first install with auto-resolve:
+
+1. **Expect a one-time auto-resolve wave.** Every existing un-acked alarm enters v11 with `clean_ticks = 0` and `resolved_at = NULL`. After two consecutive watchdog ticks where the underlying invariant is healthy (~120 s), the row transitions to AUTO-RESOLVED. A long-standing pile of stale alarms from a past outage will all clear together. Run `hippo alarms prune` once after the wave to ack them en-masse.
+2. **Rollback to a v10 binary hard-fails.** A v10 daemon opening a v11 DB hits `DB schema version mismatch: expected 10, found 11.` and refuses to start (same behavior as every prior schema bump). The added columns are read-compatible — brain accepts both v10 and v11 — but the daemon's strict mismatch guard means rolling back requires either restoring a v10 DB snapshot or manually `PRAGMA user_version = 10`.
+
+### `hippo alarms prune`
+
+Bulk-ack every auto-resolved row in one statement:
+
+```sql
+UPDATE capture_alarms
+SET acked_at = :now_ms, ack_note = 'auto-resolved'
+WHERE acked_at IS NULL AND resolved_at IS NOT NULL;
+```
+
+Use this when `hippo alarms list` shows a long AUTO-RESOLVED section from a past outage and you don't want to ack each row individually. `hippo doctor` also prints a `[--] auto-resolved alarms: N pending` line when any are present, so you can spot the cleanup opportunity without listing.
 
 ## Failure Modes for the Watchdog Itself
 

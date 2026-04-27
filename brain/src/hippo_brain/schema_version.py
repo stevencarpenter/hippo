@@ -12,13 +12,14 @@ migration, bump both together.
 
 from __future__ import annotations
 
-EXPECTED_SCHEMA_VERSION: int = 10
+EXPECTED_SCHEMA_VERSION: int = 11
 
 # Versions brain can read without erroring, so the daemon can migrate
 # forward and brain can still serve queries during the window where the
 # new rows are settling in. Brain requires v5 as the minimum because the
 # knowledge_nodes table and FTS5 index were added in that migration; v1–v4
-# DBs must be migrated by the daemon before brain starts. Keep 9 for
-# rollback compatibility during the v9→v10 window (new tables are additive
-# and do not affect brain read paths).
-ACCEPTED_READ_VERSIONS: frozenset[int] = frozenset({EXPECTED_SCHEMA_VERSION, 9, 8, 7, 6, 5})
+# DBs must be migrated by the daemon before brain starts. v10 is kept for
+# rollback compatibility during the v10→v11 window — the migration only adds
+# columns (resolved_at, clean_ticks) to capture_alarms which brain never
+# reads, so a v10-aware brain handles a v11 DB transparently.
+ACCEPTED_READ_VERSIONS: frozenset[int] = frozenset({EXPECTED_SCHEMA_VERSION, 10, 9, 8, 7, 6, 5})

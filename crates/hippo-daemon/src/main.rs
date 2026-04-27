@@ -904,6 +904,9 @@ async fn main() -> Result<()> {
             AlarmsAction::Ack { id, note } => {
                 commands::handle_alarms_ack(&config, id, note.as_deref())?;
             }
+            AlarmsAction::Prune => {
+                commands::handle_alarms_prune(&config)?;
+            }
         },
         Commands::ClaudeSessionWatch => {
             watch_claude_sessions::run(&config).await?;

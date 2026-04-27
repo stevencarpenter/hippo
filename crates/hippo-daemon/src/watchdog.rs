@@ -20,9 +20,15 @@ use anyhow::Result;
 use hippo_core::config::HippoConfig;
 use rusqlite::Connection;
 use serde_json::json;
+use std::collections::HashSet;
 use std::io::Write;
 use std::path::Path;
 use tracing::{error, info, warn};
+
+/// Number of consecutive clean watchdog ticks required to auto-resolve an
+/// active alarm. Set to 2 so a single transient recovery doesn't clear an
+/// alarm that's about to flap back.
+const AUTO_RESOLVE_CLEAN_TICKS: i64 = 2;
 
 // DDL used by the pre-migration safety path only.  The authoritative definition
 // lives in `schema.sql` and `storage.rs`; this is a fallback for the case where
@@ -238,6 +244,37 @@ pub fn run(config: &HippoConfig) -> Result<()> {
         }
     }
 
+    // ── Step 4b: Auto-resolve alarms whose invariant has stayed clean ─────
+    // Build the (invariant_id, source) set of *currently-violated* pairs and
+    // walk all active (un-acked, un-resolved) alarms. Each clean tick bumps
+    // `clean_ticks`; on AUTO_RESOLVE_CLEAN_TICKS we set `resolved_at`.
+    // Any alarm whose pair is currently violated has its counter reset.
+    let resolved = auto_resolve_alarms(&conn, &violations, now_ms)?;
+    if resolved > 0 {
+        info!(count = resolved, "watchdog: auto-resolved alarms");
+        #[cfg(feature = "otel")]
+        crate::metrics::WATCHDOG_ALARMS_AUTO_RESOLVED.add(resolved as u64, &[]);
+    }
+
+    // Tick-end snapshot. Emitted as a structured info! line so the existing
+    // OTel→Loki pipeline picks it up — no new metric-type infrastructure
+    // needed. Operators can build a Grafana panel from these fields by
+    // querying `{job="hippo"} | json | line=~"watchdog: tick complete"`.
+    let (active_count, resolved_unacked_count) = count_alarm_states(&conn).unwrap_or_else(|e| {
+        warn!(
+            error = %e,
+            "watchdog: count_alarm_states failed; emitting -1 sentinel"
+        );
+        (-1, -1)
+    });
+    info!(
+        active = active_count,
+        resolved_unacked = resolved_unacked_count,
+        new_violations = violations.len(),
+        auto_resolved = resolved,
+        "watchdog: tick complete"
+    );
+
     // ── Step 5: Mark cycle complete ───────────────────────────────────────
     conn.execute(
         "UPDATE source_health SET last_success_ts = ?1 WHERE source = 'watchdog'",
@@ -248,6 +285,25 @@ pub fn run(config: &HippoConfig) -> Result<()> {
     crate::metrics::WATCHDOG_RUN.add(1, &[]);
 
     Ok(())
+}
+
+/// Returns `(active, resolved_unacked)` from `capture_alarms`. Errors are
+/// handled by the caller; a `(−1, −1)` sentinel logged means "DB query
+/// failed" and is preferable to crashing the whole tick over telemetry.
+fn count_alarm_states(conn: &Connection) -> Result<(i64, i64)> {
+    let active: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM capture_alarms
+         WHERE acked_at IS NULL AND resolved_at IS NULL",
+        [],
+        |row| row.get(0),
+    )?;
+    let resolved: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM capture_alarms
+         WHERE acked_at IS NULL AND resolved_at IS NOT NULL",
+        [],
+        |row| row.get(0),
+    )?;
+    Ok((active, resolved))
 }
 
 // ---------------------------------------------------------------------------
@@ -506,6 +562,7 @@ pub fn check_rate_limit(
              SELECT 1 FROM capture_alarms
              WHERE invariant_id = ?1
                AND acked_at IS NULL
+               AND resolved_at IS NULL
                AND raised_at > ?2
              LIMIT 1
          )",
@@ -513,6 +570,135 @@ pub fn check_rate_limit(
         |row| row.get(0),
     )?;
     Ok(exists)
+}
+
+// ---------------------------------------------------------------------------
+// Auto-resolution
+// ---------------------------------------------------------------------------
+
+/// Walk all active (un-acked, un-resolved) alarms and either reset their
+/// clean-tick counter (still violating) or increment it (currently clean).
+/// When the counter reaches `AUTO_RESOLVE_CLEAN_TICKS`, set `resolved_at` so
+/// the alarm stops contributing to the doctor exit code and stops suppressing
+/// new raises via rate-limit.
+///
+/// `current_violations` is the live set produced by `check_invariants` for
+/// this tick. Membership is keyed by `(invariant_id, source)` because a
+/// single invariant (e.g. I-8 probe freshness) can apply to multiple sources
+/// independently.
+///
+/// Returns the count of alarms that transitioned to resolved on this tick.
+pub fn auto_resolve_alarms(
+    conn: &Connection,
+    current_violations: &[InvariantViolation],
+    now_ms: i64,
+) -> Result<usize> {
+    let violating: HashSet<(String, String)> = current_violations
+        .iter()
+        .map(|v| (v.invariant_id.clone(), v.source.clone()))
+        .collect();
+
+    struct Row {
+        id: i64,
+        invariant_id: String,
+        source: Option<String>,
+        clean_ticks: i64,
+    }
+
+    // Scope `stmt` so its borrow of `conn` is released before we open the
+    // transaction below.
+    let rows: Vec<Row> = {
+        let mut stmt = conn.prepare(
+            "SELECT id, invariant_id, details_json, clean_ticks
+             FROM capture_alarms
+             WHERE acked_at IS NULL AND resolved_at IS NULL",
+        )?;
+        stmt.query_map([], |r| {
+            let id: i64 = r.get(0)?;
+            let invariant_id: String = r.get(1)?;
+            let details_json: String = r.get(2)?;
+            let source = match serde_json::from_str::<serde_json::Value>(&details_json) {
+                Ok(v) => v
+                    .get("source")
+                    .and_then(|s| s.as_str())
+                    .map(|s| s.to_string()),
+                Err(e) => {
+                    warn!(
+                        alarm_id = id,
+                        invariant = %invariant_id,
+                        error = %e,
+                        "watchdog: failed to parse alarm details_json; skipping auto-resolve for this row"
+                    );
+                    None
+                }
+            };
+            Ok(Row {
+                id,
+                invariant_id,
+                source,
+                clean_ticks: r.get(3)?,
+            })
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?
+    };
+
+    // Batch every per-row UPDATE into one transaction. With a backlog of
+    // stale alarms this collapses N fsync-bounded autocommits into one and
+    // gives us atomicity if a future change adds more side effects below.
+    let tx = conn.unchecked_transaction()?;
+    let mut resolved = 0usize;
+    for row in rows {
+        // Alarms with no parseable source can't be matched to a current
+        // violation pair; conservatively treat them as still violating so
+        // they require manual ack rather than auto-resolving in error.
+        let Some(source) = row.source else {
+            continue;
+        };
+
+        let key = (row.invariant_id.clone(), source.clone());
+        let still_violating = violating.contains(&key);
+
+        if still_violating {
+            // Reset the counter only if it has drifted from 0; spares a write
+            // on the steady-state case where the alarm is freshly raised.
+            if row.clean_ticks != 0 {
+                tx.execute(
+                    "UPDATE capture_alarms SET clean_ticks = 0 WHERE id = ?1",
+                    rusqlite::params![row.id],
+                )?;
+                #[cfg(feature = "otel")]
+                crate::metrics::WATCHDOG_ALARMS_RESET.add(1, &[]);
+            }
+            continue;
+        }
+
+        let new_ticks = row.clean_ticks + 1;
+        if new_ticks >= AUTO_RESOLVE_CLEAN_TICKS {
+            let updated = tx.execute(
+                "UPDATE capture_alarms
+                 SET clean_ticks = ?1, resolved_at = ?2
+                 WHERE id = ?3 AND resolved_at IS NULL",
+                rusqlite::params![new_ticks, now_ms, row.id],
+            )?;
+            if updated > 0 {
+                resolved += 1;
+                info!(
+                    alarm_id = row.id,
+                    invariant = %row.invariant_id,
+                    source = %source,
+                    "watchdog: alarm auto-resolved"
+                );
+            }
+        } else {
+            tx.execute(
+                "UPDATE capture_alarms SET clean_ticks = ?1 WHERE id = ?2",
+                rusqlite::params![new_ticks, row.id],
+            )?;
+        }
+    }
+    tx.commit()?;
+
+    Ok(resolved)
 }
 
 // ---------------------------------------------------------------------------
@@ -596,6 +782,8 @@ mod tests {
     }
 
     fn create_capture_alarms_table(conn: &Connection) {
+        // v11-shaped table so tests exercise the same DDL the production
+        // schema lands on after migration.
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS capture_alarms (
                 id           INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -603,13 +791,42 @@ mod tests {
                 raised_at    INTEGER NOT NULL,
                 details_json TEXT    NOT NULL,
                 acked_at     INTEGER,
-                ack_note     TEXT
+                ack_note     TEXT,
+                resolved_at  INTEGER,
+                clean_ticks  INTEGER NOT NULL DEFAULT 0
              );
              CREATE INDEX IF NOT EXISTS idx_capture_alarms_invariant_active
                  ON capture_alarms (invariant_id, acked_at)
-                 WHERE acked_at IS NULL;",
+                 WHERE acked_at IS NULL AND resolved_at IS NULL;",
         )
         .unwrap();
+    }
+
+    /// Insert one active (un-acked, un-resolved) alarm with a parseable
+    /// `details_json.source` field. Returns the new row id.
+    fn insert_active_alarm(
+        conn: &Connection,
+        invariant_id: &str,
+        source: &str,
+        raised_at: i64,
+    ) -> i64 {
+        let details = format!("{{\"source\":\"{}\",\"since_ms\":90000}}", source);
+        conn.execute(
+            "INSERT INTO capture_alarms (invariant_id, raised_at, details_json)
+             VALUES (?1, ?2, ?3)",
+            rusqlite::params![invariant_id, raised_at, details],
+        )
+        .unwrap();
+        conn.last_insert_rowid()
+    }
+
+    fn alarm_state(conn: &Connection, id: i64) -> (i64, Option<i64>) {
+        conn.query_row(
+            "SELECT clean_ticks, resolved_at FROM capture_alarms WHERE id = ?1",
+            rusqlite::params![id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap()
     }
 
     fn create_source_health_table(conn: &Connection) {
@@ -976,6 +1193,224 @@ mod tests {
         let sources: Vec<&str> = rows.iter().map(|r| r.source.as_str()).collect();
         assert!(sources.contains(&"shell"));
         assert!(sources.contains(&"watchdog"));
+    }
+
+    // ── Auto-resolve ───────────────────────────────────────────────────────
+
+    /// One clean tick on an active alarm increments clean_ticks but does NOT
+    /// resolve (threshold is 2 consecutive clean ticks).
+    #[test]
+    fn auto_resolve_one_clean_tick_increments_only() {
+        let dir = TempDir::new().unwrap();
+        let conn = open_test_conn(&dir);
+        create_capture_alarms_table(&conn);
+        let id = insert_active_alarm(&conn, "I-1", "shell", NOW - 90_000);
+
+        // No current violations → alarm's invariant is clean for this tick.
+        let resolved = auto_resolve_alarms(&conn, &[], NOW).unwrap();
+        assert_eq!(resolved, 0, "must not resolve on first clean tick");
+
+        let (clean_ticks, resolved_at) = alarm_state(&conn, id);
+        assert_eq!(clean_ticks, 1);
+        assert!(resolved_at.is_none());
+    }
+
+    /// Two consecutive clean ticks resolve the alarm.
+    #[test]
+    fn auto_resolve_two_clean_ticks_resolves() {
+        let dir = TempDir::new().unwrap();
+        let conn = open_test_conn(&dir);
+        create_capture_alarms_table(&conn);
+        let id = insert_active_alarm(&conn, "I-4", "browser", NOW - 200_000);
+
+        // Tick 1: clean.
+        assert_eq!(auto_resolve_alarms(&conn, &[], NOW).unwrap(), 0);
+        // Tick 2: clean again.
+        let resolved = auto_resolve_alarms(&conn, &[], NOW + 60_000).unwrap();
+        assert_eq!(resolved, 1, "second clean tick must resolve the alarm");
+
+        let (clean_ticks, resolved_at) = alarm_state(&conn, id);
+        assert_eq!(clean_ticks, AUTO_RESOLVE_CLEAN_TICKS);
+        assert_eq!(resolved_at, Some(NOW + 60_000));
+    }
+
+    /// A clean tick followed by a re-violation resets clean_ticks to 0,
+    /// preventing the alarm from auto-resolving on flapping invariants.
+    #[test]
+    fn auto_resolve_resets_clean_ticks_on_reviolation() {
+        let dir = TempDir::new().unwrap();
+        let conn = open_test_conn(&dir);
+        create_capture_alarms_table(&conn);
+        let id = insert_active_alarm(&conn, "I-1", "shell", NOW - 90_000);
+
+        // Tick 1: clean → counter = 1.
+        auto_resolve_alarms(&conn, &[], NOW).unwrap();
+        assert_eq!(alarm_state(&conn, id).0, 1);
+
+        // Tick 2: invariant violates again → counter resets to 0.
+        let still_violating = vec![InvariantViolation {
+            invariant_id: "I-1".to_string(),
+            source: "shell".to_string(),
+            since_ms: 60_000,
+            details: serde_json::json!({}),
+        }];
+        let resolved = auto_resolve_alarms(&conn, &still_violating, NOW + 60_000).unwrap();
+        assert_eq!(resolved, 0);
+
+        let (clean_ticks, resolved_at) = alarm_state(&conn, id);
+        assert_eq!(clean_ticks, 0, "re-violation must reset counter");
+        assert!(resolved_at.is_none());
+    }
+
+    /// Already-resolved alarms must not be touched by subsequent ticks.
+    #[test]
+    fn auto_resolve_skips_already_resolved() {
+        let dir = TempDir::new().unwrap();
+        let conn = open_test_conn(&dir);
+        create_capture_alarms_table(&conn);
+        let id = insert_active_alarm(&conn, "I-1", "shell", NOW - 90_000);
+        // Manually resolve.
+        conn.execute(
+            "UPDATE capture_alarms SET resolved_at = ?1, clean_ticks = 2 WHERE id = ?2",
+            rusqlite::params![NOW - 60_000, id],
+        )
+        .unwrap();
+
+        let resolved = auto_resolve_alarms(&conn, &[], NOW).unwrap();
+        assert_eq!(resolved, 0);
+
+        let (clean_ticks, resolved_at) = alarm_state(&conn, id);
+        assert_eq!(clean_ticks, 2, "resolved row must be untouched");
+        assert_eq!(resolved_at, Some(NOW - 60_000));
+    }
+
+    /// Acked alarms must not be re-evaluated by the auto-resolve loop.
+    #[test]
+    fn auto_resolve_skips_acked() {
+        let dir = TempDir::new().unwrap();
+        let conn = open_test_conn(&dir);
+        create_capture_alarms_table(&conn);
+        let id = insert_active_alarm(&conn, "I-1", "shell", NOW - 90_000);
+        conn.execute(
+            "UPDATE capture_alarms SET acked_at = ?1 WHERE id = ?2",
+            rusqlite::params![NOW - 30_000, id],
+        )
+        .unwrap();
+
+        auto_resolve_alarms(&conn, &[], NOW).unwrap();
+        // counter unchanged (still 0)
+        assert_eq!(alarm_state(&conn, id).0, 0);
+    }
+
+    /// Per-source matching: an I-8 alarm against `browser` must NOT auto-
+    /// resolve when the only current violation is I-8 against a different
+    /// source. Each (invariant, source) pair is tracked independently.
+    #[test]
+    fn auto_resolve_matches_on_invariant_and_source_pair() {
+        let dir = TempDir::new().unwrap();
+        let conn = open_test_conn(&dir);
+        create_capture_alarms_table(&conn);
+        let browser_id = insert_active_alarm(&conn, "I-8", "browser", NOW - 1_000_000);
+
+        // I-8 violates for shell only (different source).
+        let other_violation = vec![InvariantViolation {
+            invariant_id: "I-8".to_string(),
+            source: "shell".to_string(),
+            since_ms: 0,
+            details: serde_json::json!({}),
+        }];
+        auto_resolve_alarms(&conn, &other_violation, NOW).unwrap();
+        // Browser alarm is clean (its pair isn't in current violations).
+        assert_eq!(alarm_state(&conn, browser_id).0, 1);
+    }
+
+    /// Alarms whose details_json has no parseable source are conservatively
+    /// left alone (counter unchanged) so a malformed row never silently
+    /// auto-resolves.
+    #[test]
+    fn auto_resolve_skips_alarm_with_unparseable_source() {
+        let dir = TempDir::new().unwrap();
+        let conn = open_test_conn(&dir);
+        create_capture_alarms_table(&conn);
+        conn.execute(
+            "INSERT INTO capture_alarms (invariant_id, raised_at, details_json)
+             VALUES ('I-1', ?1, '{}')",
+            rusqlite::params![NOW - 90_000],
+        )
+        .unwrap();
+        let id = conn.last_insert_rowid();
+
+        auto_resolve_alarms(&conn, &[], NOW).unwrap();
+        let (clean_ticks, resolved_at) = alarm_state(&conn, id);
+        assert_eq!(clean_ticks, 0);
+        assert!(resolved_at.is_none());
+    }
+
+    /// A `details_json` whose `source` field is non-string (number, null,
+    /// missing entirely) must NOT cause the alarm to silently auto-resolve.
+    /// Locks in the contract that only string-valued sources participate
+    /// in pair-matching.
+    #[test]
+    fn auto_resolve_skips_alarm_with_non_string_source() {
+        let dir = TempDir::new().unwrap();
+        let conn = open_test_conn(&dir);
+        create_capture_alarms_table(&conn);
+
+        // Three rows, each with a problematic `source` field shape.
+        for details in [
+            r#"{"source": 42}"#,       // numeric
+            r#"{"source": null}"#,     // explicit null
+            r#"{"other_field": "x"}"#, // missing entirely
+        ] {
+            conn.execute(
+                "INSERT INTO capture_alarms (invariant_id, raised_at, details_json)
+                 VALUES ('I-1', ?1, ?2)",
+                rusqlite::params![NOW - 90_000, details],
+            )
+            .unwrap();
+        }
+
+        let resolved = auto_resolve_alarms(&conn, &[], NOW).unwrap();
+        assert_eq!(
+            resolved, 0,
+            "alarms with non-string source must never auto-resolve"
+        );
+
+        let counters: Vec<i64> = conn
+            .prepare("SELECT clean_ticks FROM capture_alarms")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+        assert!(
+            counters.iter().all(|&c| c == 0),
+            "counters must stay at 0 for unparseable rows; got {counters:?}"
+        );
+    }
+
+    /// Resolved alarms must not suppress new alarms via rate-limit. A
+    /// resolved row from 5 minutes ago should leave check_rate_limit free
+    /// to allow a brand-new raise.
+    #[test]
+    fn watchdog_rate_limit_resolved_alarm_not_suppressed() {
+        let dir = TempDir::new().unwrap();
+        let conn = open_test_conn(&dir);
+        create_capture_alarms_table(&conn);
+
+        let raised_5min_ago = NOW - 5 * 60 * 1_000;
+        conn.execute(
+            "INSERT INTO capture_alarms (invariant_id, raised_at, details_json, resolved_at)
+             VALUES ('I-1', ?1, '{}', ?2)",
+            rusqlite::params![raised_5min_ago, NOW - 60_000],
+        )
+        .unwrap();
+
+        let limited = check_rate_limit(&conn, "I-1", NOW, 60 * 60 * 1_000).unwrap();
+        assert!(
+            !limited,
+            "resolved alarm must not suppress new raises via rate-limit"
+        );
     }
 
     /// check_invariants must return an empty Vec when no violations exist.
