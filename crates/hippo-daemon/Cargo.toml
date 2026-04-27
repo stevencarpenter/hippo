@@ -15,6 +15,7 @@ path = "src/main.rs"
 anyhow.workspace = true
 clap.workspace = true
 hippo-core = { path = "../hippo-core" }
+sha2.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
 tracing.workspace = true
