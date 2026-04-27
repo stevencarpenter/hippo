@@ -737,3 +737,61 @@ class TestContentHashPropagation:
             (seg_id,),
         ).fetchone()
         assert status[0] == "done"
+
+    def test_claim_pending_falls_back_when_v12_columns_absent(self, tmp_db):
+        """Regression test for the P1 finding from PR #102 review.
+
+        ACCEPTED_READ_VERSIONS includes v11; on a rolled-back v11 DB the
+        v12-added columns (content_hash / last_enriched_content_hash) do
+        not exist. Before the fix, the SELECT in claim_pending_claude_segments
+        raised OperationalError, the enrichment loop's broad except clause
+        swallowed it, and Claude enrichment silently halted.
+
+        Asserts: the function detects the missing column, falls back to a
+        v11-compatible SELECT, and returns segments with content_hash=None
+        so callers can still process them.
+        """
+        db_conn, _ = tmp_db
+        seg_id = insert_segment(db_conn, self._make_seg("hash-v11-s"))
+        # Simulate a v11 schema: drop the v12-added columns. SQLite supports
+        # ALTER TABLE DROP COLUMN since 3.35, which is the version bundled
+        # with macOS / pinned by uv.
+        db_conn.execute("ALTER TABLE claude_sessions DROP COLUMN content_hash")
+        db_conn.execute("ALTER TABLE claude_sessions DROP COLUMN last_enriched_content_hash")
+        db_conn.commit()
+
+        batches = claim_pending_claude_segments(db_conn, "test-worker-v11")
+        assert len(batches) == 1
+        segment = batches[0][0]
+        assert segment["id"] == seg_id
+        assert segment["content_hash"] is None, (
+            "v11 fallback must return content_hash=None so the enrichment "
+            "writer skips the last_enriched_content_hash UPDATE"
+        )
+
+    def test_enrichment_writer_skips_silently_on_v11(self, tmp_db):
+        """write_claude_knowledge_node must not raise when last_enriched_content_hash
+        column is absent (rolled-back v11 DB)."""
+        db_conn, _ = tmp_db
+        seg_id = insert_segment(db_conn, self._make_seg("hash-v11-write-s"))
+        # Drop the v12-added column to simulate a v11 DB.
+        db_conn.execute("ALTER TABLE claude_sessions DROP COLUMN last_enriched_content_hash")
+        db_conn.commit()
+
+        # This must not raise even though we're passing a non-NULL hash;
+        # the writer detects the missing column and skips.
+        write_claude_knowledge_node(
+            db_conn,
+            self._RESULT,
+            [seg_id],
+            "test-model",
+            content_hashes=["should-not-write-this"],
+        )
+
+        # Queue must still be marked done — the v11 fallback is graceful,
+        # not failed.
+        status = db_conn.execute(
+            "SELECT status FROM claude_enrichment_queue WHERE claude_session_id = ?",
+            (seg_id,),
+        ).fetchone()
+        assert status[0] == "done"

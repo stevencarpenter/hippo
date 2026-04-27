@@ -1,6 +1,8 @@
 """Parse Claude Code session logs into segments for enrichment."""
 
 import json
+import logging
+import sqlite3
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -15,6 +17,8 @@ from hippo_brain.enrichment import (
 from hippo_brain.entity_resolver import strip_worktree_prefix
 from hippo_brain.models import EnrichmentResult
 from hippo_brain.watchdog import DEFAULT_LOCK_TIMEOUT_MS
+
+logger = logging.getLogger(__name__)
 
 STALE_LOCK_TIMEOUT_MS = DEFAULT_LOCK_TIMEOUT_MS
 
@@ -568,8 +572,12 @@ def claim_pending_claude_segments(
             continue
 
         placeholders = ",".join("?" * len(segment_ids))
-        cursor = conn.execute(
-            f"""
+        # Schema-aware SELECT: try the v12-form first (with content_hash). On
+        # v11 DBs the column is absent and SQLite raises OperationalError;
+        # fall back to a v11-compatible query and set content_hash=None on
+        # each segment so downstream code (mark_claude_segments_enriched)
+        # skips the last_enriched_content_hash write rather than erroring.
+        v12_select = f"""
             SELECT id, session_id, project_dir, cwd, git_branch, segment_index,
                    start_time, end_time, summary_text, tool_calls_json,
                    user_prompts_json, message_count, token_count, is_subagent,
@@ -577,9 +585,28 @@ def claim_pending_claude_segments(
             FROM claude_sessions
             WHERE id IN ({placeholders}) AND probe_tag IS NULL
             ORDER BY start_time ASC
-            """,
-            segment_ids,
-        )
+        """
+        v11_select = f"""
+            SELECT id, session_id, project_dir, cwd, git_branch, segment_index,
+                   start_time, end_time, summary_text, tool_calls_json,
+                   user_prompts_json, message_count, token_count, is_subagent
+            FROM claude_sessions
+            WHERE id IN ({placeholders}) AND probe_tag IS NULL
+            ORDER BY start_time ASC
+        """
+        try:
+            cursor = conn.execute(v12_select, segment_ids)
+            has_content_hash = True
+        except sqlite3.OperationalError as e:
+            if "no such column" not in str(e).lower():
+                raise
+            logger.warning(
+                "claude_sessions.content_hash absent (DB on schema v11) — "
+                "falling back to v11-compatible SELECT; re-enrichment dedup "
+                "will be disabled until the DB is migrated to v12."
+            )
+            cursor = conn.execute(v11_select, segment_ids)
+            has_content_hash = False
 
         segments = []
         for row in cursor.fetchall():
@@ -599,7 +626,7 @@ def claim_pending_claude_segments(
                     "message_count": row[11],
                     "token_count": row[12],
                     "is_subagent": row[13],
-                    "content_hash": row[14],
+                    "content_hash": row[14] if has_content_hash else None,
                 }
             )
 
@@ -716,14 +743,28 @@ def write_claude_knowledge_node(
         # Record the content version that was just enriched so the watcher
         # dedup logic can detect future changes.  Skip NULL hashes (legacy rows
         # where the daemon has not yet written a hash) to avoid clobbering an
-        # existing last_enriched_content_hash with NULL.
+        # existing last_enriched_content_hash with NULL.  On v11 DBs the
+        # column is absent — log once and skip the write so enrichment
+        # completes successfully (re-enrichment will fall back to the
+        # `enriched` flag until the DB is migrated to v12).
         if content_hashes is not None:
             for seg_id, ch in zip(segment_ids, content_hashes):
-                if ch is not None:
+                if ch is None:
+                    continue
+                try:
                     conn.execute(
                         "UPDATE claude_sessions SET last_enriched_content_hash = ? WHERE id = ?",
                         (ch, seg_id),
                     )
+                except sqlite3.OperationalError as e:
+                    if "no such column" not in str(e).lower():
+                        raise
+                    logger.warning(
+                        "claude_sessions.last_enriched_content_hash absent "
+                        "(DB on schema v11) — skipping last_enriched_content_hash "
+                        "writes for this batch."
+                    )
+                    break
 
         # Upsert entities
         upsert_entities(conn, node_id, result.entities, SHELL_ENTITY_TYPE_MAP, now_ms)
