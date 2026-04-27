@@ -1096,7 +1096,11 @@ class BrainServer:
                     conn = self._get_conn()
                     try:
                         node_id = write_claude_knowledge_node(
-                            conn, result, segment_ids, self.enrichment_model
+                            conn,
+                            result,
+                            segment_ids,
+                            self.enrichment_model,
+                            content_hashes=[s.get("content_hash") for s in segments],
                         )
                     finally:
                         conn.close()
