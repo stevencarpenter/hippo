@@ -815,16 +815,12 @@ mod tests {
     // Settling sweep tests
     // -------------------------------------------------------------------------
 
-    /// Open a test DB and manually add the v12 columns so sweep tests work
-    /// without depending on T-A.1's migration being merged into this branch.
+    /// Open a test DB. Post-T-A.1 the v12 columns are part of the canonical
+    /// schema (added by the v11→v12 migration in `open_db`), so no manual
+    /// ALTER is needed. This thin wrapper is kept for readability since
+    /// several sweep tests reference "v12" semantics in their setup.
     fn open_test_db_v12(dir: &TempDir) -> Connection {
-        let conn = open_test_db(dir);
-        conn.execute_batch(
-            "ALTER TABLE claude_sessions ADD COLUMN content_hash TEXT;
-             ALTER TABLE claude_sessions ADD COLUMN last_enriched_content_hash TEXT;",
-        )
-        .expect("add v12 columns");
-        conn
+        open_test_db(dir)
     }
 
     /// Set the mtime of a file to `seconds_ago` seconds before now using libc.
