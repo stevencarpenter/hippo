@@ -210,10 +210,14 @@ def _build_rag_prompt(
             d_len = len(_design_decision_payload(h.get("design_decisions") or []))
             total_payload = e_len + c_len + d_len
             if total_payload == 0:
+                # Structural fields (summary/cwd/tags/etc.) still render; only
+                # payload-heavy fields get a zero cap in this branch.
                 e_cap = c_cap = d_cap = 0
             else:
                 e_cap = (per_hit * e_len) // total_payload if e_len else 0
                 c_cap = (per_hit * c_len) // total_payload if c_len else 0
+                # The final field absorbs rounding remainder so the caps sum to
+                # exactly per_hit instead of drifting upward.
                 d_cap = per_hit - e_cap - c_cap
             blocks.append("\n".join(_hit_lines(i, h, e_cap, c_cap, d_cap)))
 

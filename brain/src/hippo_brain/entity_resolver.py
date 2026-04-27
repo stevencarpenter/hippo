@@ -45,6 +45,17 @@ _logger = logging.getLogger(__name__)
 _WORKTREE_SEGMENT_RE = re.compile(r"(^|/)\.claude/worktrees/[^/]+(/|$)")
 
 
+def _replace_worktree_match(match: re.Match[str]) -> str:
+    """Preserve path separators while dropping one worktree directory segment.
+
+    group(1) is the leading separator (or start-of-string), and group(2) is the
+    separator after the worktree name (or end-of-string). When the worktree is a
+    leaf path segment, we drop the whole match; otherwise we keep the leading
+    separator so the parent path still joins cleanly to the remaining suffix.
+    """
+    return "" if match.group(2) == "" else match.group(1)
+
+
 def _load_config_roots() -> list[str]:
     """Load [entities] project_roots from ~/.config/hippo/config.toml."""
     config_path = Path.home() / ".config" / "hippo" / "config.toml"
@@ -110,10 +121,7 @@ def strip_worktree_prefix(path: str) -> str:
     """
     stripped = path
     while True:
-        next_value = _WORKTREE_SEGMENT_RE.sub(
-            lambda match: "" if match.group(2) == "" else match.group(1),
-            stripped,
-        )
+        next_value = _WORKTREE_SEGMENT_RE.sub(_replace_worktree_match, stripped)
         if next_value == stripped:
             return next_value
         stripped = next_value
