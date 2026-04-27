@@ -270,6 +270,26 @@ class TestBuildClaudeEnrichmentPrompt:
         assert "Read: /src/enrichment.py" in prompt
         assert "Looking at enrichment.py" in prompt
 
+    def test_strips_worktree_from_cwd(self):
+        """Issue #98 F1c: Claude segment cwd from an agent worktree must be
+        normalized to the parent repo path before reaching the LLM.
+        """
+        seg = SessionSegment(
+            session_id="s1",
+            project_dir="proj",
+            cwd="/projects/hippo/.claude/worktrees/agent-ac83d4d3/crates/hippo-core",
+            git_branch="main",
+            segment_index=0,
+            start_time=1711612800000,
+            end_time=1711614600000,
+            user_prompts=["test"],
+            message_count=1,
+        )
+        prompt = build_claude_enrichment_prompt([seg])
+        assert "/projects/hippo/crates/hippo-core" in prompt
+        assert ".claude/worktrees" not in prompt
+        assert "agent-ac83d4d3" not in prompt
+
 
 class TestInsertAndClaim:
     def test_insert_segment(self, tmp_db):
@@ -410,6 +430,66 @@ class TestInsertAndClaim:
             (seg_id,),
         ).fetchone()
         assert status[0] == "done"
+
+    def test_write_claude_knowledge_node_persists_design_decisions(self, tmp_db):
+        """Protect the Claude-session writer's content JSON shape.
+
+        This function overlaps with PR #101's content-hash propagation changes,
+        so pinning `design_decisions` here helps catch a bad conflict
+        resolution that keeps one change but drops the other.
+        """
+        db_conn, _ = tmp_db
+        seg = SessionSegment(
+            session_id="kn-session-design",
+            project_dir="proj",
+            cwd="/test",
+            git_branch="main",
+            segment_index=0,
+            start_time=1000,
+            end_time=2000,
+            user_prompts=["test"],
+            message_count=1,
+            source_file="/tmp/test.jsonl",
+        )
+        seg_id = insert_segment(db_conn, seg)
+
+        result = EnrichmentResult(
+            summary="Test summary",
+            intent="testing",
+            outcome="success",
+            entities={
+                "projects": ["test"],
+                "tools": ["cargo"],
+                "files": [],
+                "services": [],
+                "errors": [],
+            },
+            tags=["test"],
+            embed_text="Test embed text for search",
+            key_decisions=["chose testing approach"],
+            problems_encountered=[],
+            design_decisions=[
+                {
+                    "considered": "plain prose summary only",
+                    "chosen": "structured design_decisions field",
+                    "reason": "better why-X-over-Y recall",
+                }
+            ],
+        )
+
+        node_id = write_claude_knowledge_node(db_conn, result, [seg_id], "test-model")
+        row = db_conn.execute(
+            "SELECT content FROM knowledge_nodes WHERE id = ?",
+            (node_id,),
+        ).fetchone()
+        content = json.loads(row[0])
+        assert content["design_decisions"] == [
+            {
+                "considered": "plain prose summary only",
+                "chosen": "structured design_decisions field",
+                "reason": "better why-X-over-Y recall",
+            }
+        ]
 
         # Verify entities created
         entity = db_conn.execute(

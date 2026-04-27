@@ -20,6 +20,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from hippo_brain.claude_sessions import SessionSegment
+from hippo_brain.entity_resolver import strip_worktree_prefix
 
 # 5-minute gap between user prompts = task boundary
 TASK_GAP_MS = 5 * 60 * 1000
@@ -303,10 +304,16 @@ def _extract_user_text_from_codex_message(message: str) -> str:
 
 
 def build_codex_enrichment_summary(segments: list[SessionSegment]) -> str:
-    """Format Codex segments into a summary for the enrichment prompt."""
+    """Format Codex segments into a summary for the enrichment prompt.
+
+    The segment `cwd` is normalized via `strip_worktree_prefix` so the LLM
+    sees the parent-repo path rather than the ephemeral
+    `.claude/worktrees/<X>/` subdirectory created by parallel agents.
+    """
     parts = []
     for seg in segments:
-        header = f"GitHub Copilot (Codex) session (project: {seg.cwd})"
+        cwd = strip_worktree_prefix(seg.cwd)
+        header = f"GitHub Copilot (Codex) session (project: {cwd})"
         if seg.start_time and seg.end_time:
             start = datetime.fromtimestamp(seg.start_time / 1000, tz=timezone.utc).strftime(
                 "%Y-%m-%d %H:%M"
