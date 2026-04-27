@@ -431,6 +431,66 @@ class TestInsertAndClaim:
         ).fetchone()
         assert status[0] == "done"
 
+    def test_write_claude_knowledge_node_persists_design_decisions(self, tmp_db):
+        """Protect the Claude-session writer's content JSON shape.
+
+        This function overlaps with PR #101's content-hash propagation changes,
+        so pinning `design_decisions` here helps catch a bad conflict
+        resolution that keeps one change but drops the other.
+        """
+        db_conn, _ = tmp_db
+        seg = SessionSegment(
+            session_id="kn-session-design",
+            project_dir="proj",
+            cwd="/test",
+            git_branch="main",
+            segment_index=0,
+            start_time=1000,
+            end_time=2000,
+            user_prompts=["test"],
+            message_count=1,
+            source_file="/tmp/test.jsonl",
+        )
+        seg_id = insert_segment(db_conn, seg)
+
+        result = EnrichmentResult(
+            summary="Test summary",
+            intent="testing",
+            outcome="success",
+            entities={
+                "projects": ["test"],
+                "tools": ["cargo"],
+                "files": [],
+                "services": [],
+                "errors": [],
+            },
+            tags=["test"],
+            embed_text="Test embed text for search",
+            key_decisions=["chose testing approach"],
+            problems_encountered=[],
+            design_decisions=[
+                {
+                    "considered": "plain prose summary only",
+                    "chosen": "structured design_decisions field",
+                    "reason": "better why-X-over-Y recall",
+                }
+            ],
+        )
+
+        node_id = write_claude_knowledge_node(db_conn, result, [seg_id], "test-model")
+        row = db_conn.execute(
+            "SELECT content FROM knowledge_nodes WHERE id = ?",
+            (node_id,),
+        ).fetchone()
+        content = json.loads(row[0])
+        assert content["design_decisions"] == [
+            {
+                "considered": "plain prose summary only",
+                "chosen": "structured design_decisions field",
+                "reason": "better why-X-over-Y recall",
+            }
+        ]
+
         # Verify entities created
         entity = db_conn.execute(
             "SELECT name FROM entities WHERE type = 'project' AND canonical = 'test'"
