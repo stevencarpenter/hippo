@@ -56,18 +56,20 @@ a one-line change rather than "remember to write the test later".
 
 ### Phase 1 (Bug A) test coverage — F-25
 
-The 35 tests below cover the watcher data-loss fix shipped in T-A.1–T-A.7 (2026-04-27). Row F-25 in the table above represents the failure mode; the entries here give individual test names and file paths for traceability.
+The tests below cover the watcher data-loss fix shipped in T-A.1–T-A.7 (2026-04-27). Row F-25 in the table above represents the failure mode; the entries here give individual test names and file paths for traceability.
 
 | Group | Tests | File |
 |---|---|---|
-| Schema migration | `test_migrate_v11_to_v12_adds_content_hash`, `test_migrate_v11_to_v12_idempotent` | `crates/hippo-core/src/storage.rs` |
-| Content hash | `test_hash_empty_segment`, `test_hash_tools_only`, `test_hash_prompts_only`, `test_hash_combined`, `test_hash_sensitive_to_content_change` | `crates/hippo-daemon/src/claude_session.rs` |
-| Upsert (replaces INSERT OR IGNORE) | `test_upsert_new_row_inserted`, `test_upsert_existing_row_updated`, `test_upsert_idempotent_same_content` | `crates/hippo-daemon/src/claude_session.rs` |
-| Enqueue gate | `test_decide_enqueue_insert_always_enqueues`, `test_decide_enqueue_hash_unchanged_skips`, `test_decide_enqueue_debounce_not_elapsed_skips`, `test_decide_enqueue_processing_skips`, `test_decide_enqueue_hash_changed_and_debounced_enqueues`, `test_decide_enqueue_empty_segment_skips` | `crates/hippo-daemon/src/claude_session.rs` |
+| Schema migration | `test_migrate_v11_to_v12_adds_content_hash_columns`, `test_migrate_v11_to_v12_recovers_from_partial_success` | `crates/hippo-core/src/storage.rs` |
+| Content hash | `test_hash_empty_segment_is_stable`, `test_hash_is_deterministic`, `test_hash_changes_when_tools_change`, `test_hash_changes_when_prompts_change`, `test_hash_changes_when_assistant_text_changes` | `crates/hippo-daemon/src/claude_session.rs` |
+| Upsert (replaces INSERT OR IGNORE) | `test_upsert_inserts_new_segment`, `test_upsert_updates_existing_segment_on_growth`, `test_upsert_idempotent_on_same_content` | `crates/hippo-daemon/src/claude_session.rs` |
+| Enqueue gate | `test_decide_enqueue_inserts_always`, `test_decide_enqueue_skip_when_hash_unchanged`, `test_decide_enqueue_skip_when_within_debounce`, `test_decide_enqueue_skip_when_processing`, `test_decide_enqueue_enqueue_when_hash_changed_and_debounced`, `test_decide_enqueue_enqueue_when_no_prior_queue_row` | `crates/hippo-daemon/src/claude_session.rs` |
 | Empty-segment short-circuit | `test_insert_segments_skips_enqueue_for_empty_segment` | `crates/hippo-daemon/src/claude_session.rs` |
-| Settling sweep | `test_sweep_enqueues_idle_unsettled_segment`, `test_sweep_skips_recently_active_file`, `test_sweep_skips_already_settled_segment`, `test_sweep_skips_already_queued_segment`, `test_sweep_skips_processing_segment`, `test_sweep_skips_empty_segment`, `test_sweep_batch_cap_respected`, `test_sweep_pre_migration_guard`, `test_sweep_multiple_files` | `crates/hippo-daemon/src/watch_claude_sessions.rs` |
-| Backfill CLI | `test_backfill_resets_offset`, `test_backfill_since_filter`, `test_backfill_dry_run`, `test_backfill_idempotent`, `test_backfill_missing_file_skipped`, `test_backfill_summary_output` | `crates/hippo-daemon/src/backfill.rs` |
-| Brain hash propagation | `TestContentHashPropagation::test_hash_written_on_success`, `TestContentHashPropagation::test_hash_not_written_on_failure`, `TestContentHashPropagation::test_hash_triggers_reenrich_on_change`, `TestContentHashPropagation::test_hash_unchanged_skips_reenrich` | `brain/tests/test_claude_sessions.py` |
+| Settling sweep | `test_sweep_enqueues_segment_with_old_mtime_and_hash_mismatch`, `test_sweep_skips_recent_mtime`, `test_sweep_skips_when_hash_matches`, `test_sweep_replaces_done_queue_row`, `test_sweep_skips_when_processing`, `test_sweep_skips_empty_segment`, `test_sweep_skips_missing_file`, `test_sweep_caps_at_max_per_tick`, `test_sweep_returns_zero_on_pre_migration_db` | `crates/hippo-daemon/src/watch_claude_sessions.rs` |
+| Backfill CLI | `test_backfill_dry_run_writes_nothing`, `test_backfill_resets_offset_for_matched_files`, `test_backfill_reparses_and_updates_segment`, `test_backfill_idempotent_on_second_run`, `test_backfill_skips_files_older_than_since`, `test_backfill_glob_matches_multiple_files` | `crates/hippo-daemon/src/backfill.rs` |
+| Backfill CLI helpers | `test_parse_since_date_valid`, `test_parse_since_date_invalid`, `test_reset_offset_no_row_is_ok` | `crates/hippo-daemon/src/backfill.rs` |
+| Brain hash propagation | `TestContentHashPropagation::test_claim_pending_segments_returns_content_hash`, `TestContentHashPropagation::test_enrichment_writes_last_enriched_content_hash`, `TestContentHashPropagation::test_enrichment_failure_does_not_write_hash`, `TestContentHashPropagation::test_null_content_hash_skips_write` | `brain/tests/test_claude_sessions.py` |
+| T-A.10/11 follow-ups (post-review, landed in PR review fixes) | regression test for I-1 brain-claim race; unit tests for I-4 startup warn; transactional behavior tests for I-3 | `crates/hippo-daemon/src/watch_claude_sessions.rs`, `crates/hippo-daemon/src/claude_session.rs` |
 
 **Running Phase 1 tests:**
 
