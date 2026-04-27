@@ -493,10 +493,18 @@ import pathlib
 prod_db = pathlib.Path.home() / '.local' / 'share' / 'hippo' / 'hippo.db'
 bench_sqlite = corpus_v2_sqlite_path()
 assert 'hippo-bench' in str(bench_sqlite), f'Expected hippo-bench in path: {bench_sqlite}'
-# Verify bench sqlite is NOT under prod hippo dir
-assert str(prod_db.parent) not in str(bench_sqlite.parent), 'Bench corpus inside prod dir!'
+# Verify bench sqlite is NOT under prod hippo dir.
+# Use path-component containment, not substring: '/x/hippo' is a prefix of
+# '/x/hippo-bench' as a string but NOT as a path component, so substring
+# checks falsely flag the (correct) hippo-bench layout. Resolve both and
+# walk parents instead.
+prod_resolved = prod_db.parent.resolve()
+bench_resolved = bench_sqlite.parent.resolve()
+assert prod_resolved not in bench_resolved.parents and prod_resolved != bench_resolved, (
+    f'Bench corpus inside prod dir! prod={prod_resolved} bench={bench_resolved}'
+)
 print('PASS: paths correctly separated')
-print('  prod db dir:', prod_db.parent)
+print('  prod db dir:', prod_resolved)
 print('  bench sqlite:', bench_sqlite)
 "
 ```
