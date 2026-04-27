@@ -556,27 +556,34 @@ pub fn handle_redact_test(config: &HippoConfig, input: &str) {
 // Alarms commands
 // ---------------------------------------------------------------------------
 
-/// List un-acknowledged `capture_alarms` rows.
+struct AlarmRow {
+    id: i64,
+    invariant_id: String,
+    raised_at: i64,
+    details_json: String,
+    resolved_at: Option<i64>,
+}
+
+/// List un-acknowledged `capture_alarms` rows, grouped by status.
 ///
-/// Prints a table of active alarms to stdout.  Returns `true` if any rows
-/// were found (caller should `std::process::exit(1)` for script-friendliness),
-/// `false` if the table is clean.
+/// Two sections:
+///   * **ACTIVE** — `resolved_at IS NULL`; the underlying invariant is
+///     still violating. These contribute to the exit code.
+///   * **AUTO-RESOLVED** — `resolved_at IS NOT NULL` and `acked_at IS
+///     NULL`; the watchdog cleared the invariant but the user hasn't
+///     ack'd. Informational only.
+///
+/// Returns `true` if any *active* rows exist (caller should `exit(1)`),
+/// `false` otherwise. Auto-resolved rows never set the return to `true`.
 pub fn handle_alarms_list(config: &HippoConfig) -> Result<bool> {
     let conn = hippo_core::storage::open_db(&config.db_path())?;
 
     let mut stmt = conn.prepare(
-        "SELECT id, invariant_id, raised_at, details_json
+        "SELECT id, invariant_id, raised_at, details_json, resolved_at
          FROM capture_alarms
          WHERE acked_at IS NULL
          ORDER BY raised_at ASC",
     )?;
-
-    struct AlarmRow {
-        id: i64,
-        invariant_id: String,
-        raised_at: i64,
-        details_json: String,
-    }
 
     let rows: Vec<AlarmRow> = stmt
         .query_map([], |row| {
@@ -585,36 +592,79 @@ pub fn handle_alarms_list(config: &HippoConfig) -> Result<bool> {
                 invariant_id: row.get(1)?,
                 raised_at: row.get(2)?,
                 details_json: row.get(3)?,
+                resolved_at: row.get(4)?,
             })
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
 
-    if rows.is_empty() {
-        println!("No active alarms.");
+    let (active, resolved): (Vec<&AlarmRow>, Vec<&AlarmRow>) =
+        rows.iter().partition(|r| r.resolved_at.is_none());
+
+    if active.is_empty() && resolved.is_empty() {
+        println!("No alarms.");
         return Ok(false);
     }
 
-    println!(
-        "{:<6}  {:<12}  {:<24}  DETAILS",
-        "ID", "INVARIANT", "RAISED"
-    );
-    println!("{}", "-".repeat(80));
-
-    for row in &rows {
-        let raised = chrono::DateTime::from_timestamp_millis(row.raised_at)
-            .map(|dt| dt.format("%Y-%m-%d %H:%M UTC").to_string())
-            .unwrap_or_else(|| row.raised_at.to_string());
-
-        // Extract a human-readable summary from details_json.
-        let details_summary = alarm_details_summary(&row.details_json);
-
-        println!(
-            "{:<6}  {:<12}  {:<24}  {}",
-            row.id, row.invariant_id, raised, details_summary
-        );
+    if !active.is_empty() {
+        println!("ACTIVE");
+        print_alarms_table(&active, false);
     }
 
-    Ok(true)
+    if !resolved.is_empty() {
+        if !active.is_empty() {
+            println!();
+        }
+        println!(
+            "AUTO-RESOLVED ({} row{}, run `hippo alarms prune` to clear)",
+            resolved.len(),
+            if resolved.len() == 1 { "" } else { "s" }
+        );
+        print_alarms_table(&resolved, true);
+    }
+
+    Ok(!active.is_empty())
+}
+
+fn print_alarms_table(rows: &[&AlarmRow], show_resolved: bool) {
+    if show_resolved {
+        println!(
+            "{:<6}  {:<12}  {:<24}  {:<24}  DETAILS",
+            "ID", "INVARIANT", "RAISED", "RESOLVED"
+        );
+        println!("{}", "-".repeat(100));
+    } else {
+        println!(
+            "{:<6}  {:<12}  {:<24}  DETAILS",
+            "ID", "INVARIANT", "RAISED"
+        );
+        println!("{}", "-".repeat(80));
+    }
+
+    for row in rows {
+        let raised = format_ts(row.raised_at);
+        let details_summary = alarm_details_summary(&row.details_json);
+        if show_resolved {
+            let resolved = row
+                .resolved_at
+                .map(format_ts)
+                .unwrap_or_else(|| "-".to_string());
+            println!(
+                "{:<6}  {:<12}  {:<24}  {:<24}  {}",
+                row.id, row.invariant_id, raised, resolved, details_summary
+            );
+        } else {
+            println!(
+                "{:<6}  {:<12}  {:<24}  {}",
+                row.id, row.invariant_id, raised, details_summary
+            );
+        }
+    }
+}
+
+fn format_ts(ts_ms: i64) -> String {
+    chrono::DateTime::from_timestamp_millis(ts_ms)
+        .map(|dt| dt.format("%Y-%m-%d %H:%M UTC").to_string())
+        .unwrap_or_else(|| ts_ms.to_string())
 }
 
 /// Acknowledge a `capture_alarms` row by ID.
@@ -638,6 +688,32 @@ pub fn handle_alarms_ack(config: &HippoConfig, id: i64, note: Option<&str>) -> R
     } else {
         // Either already acked (idempotent) or not found — both are OK.
         println!("Alarm {} not found or already acknowledged.", id);
+    }
+    Ok(())
+}
+
+/// Bulk-acknowledge every auto-resolved alarm (resolved_at IS NOT NULL,
+/// acked_at IS NULL). Sets `acked_at = now_ms` and `ack_note = "auto-resolved"`.
+/// Idempotent: a second run on a clean table updates 0 rows and returns Ok.
+pub fn handle_alarms_prune(config: &HippoConfig) -> Result<()> {
+    let conn = hippo_core::storage::open_db(&config.db_path())?;
+    let now_ms = chrono::Utc::now().timestamp_millis();
+
+    let updated = conn.execute(
+        "UPDATE capture_alarms
+         SET acked_at = ?1, ack_note = 'auto-resolved'
+         WHERE acked_at IS NULL AND resolved_at IS NOT NULL",
+        rusqlite::params![now_ms],
+    )?;
+
+    if updated > 0 {
+        println!(
+            "Pruned {} auto-resolved alarm{}.",
+            updated,
+            if updated == 1 { "" } else { "s" }
+        );
+    } else {
+        println!("No auto-resolved alarms to prune.");
     }
     Ok(())
 }
@@ -792,6 +868,146 @@ mod alarms {
         // Second ack — must not return Err
         let result = handle_alarms_ack(&config, id, Some("again"));
         assert!(result.is_ok(), "re-ack must be idempotent");
+    }
+
+    // Resolved-but-unacked rows must NOT contribute to the exit code.
+    // (An auto-resolved alarm is informational — exit 1 is reserved for
+    // currently-violating invariants.)
+    #[test]
+    fn alarms_list_resolved_only_returns_false() {
+        let dir = TempDir::new().unwrap();
+        let db_path = dir.path().join("hippo.db");
+        let conn = hippo_core::storage::open_db(&db_path).unwrap();
+
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        conn.execute(
+            "INSERT INTO capture_alarms (invariant_id, raised_at, details_json, resolved_at)
+             VALUES ('I-1', ?1, '{\"source\":\"shell\"}', ?1)",
+            rusqlite::params![now_ms],
+        )
+        .unwrap();
+
+        let config = config_for_dir(&dir);
+        let has_alarms = handle_alarms_list(&config).unwrap();
+        assert!(!has_alarms, "resolved-only rows must not trigger exit 1");
+    }
+
+    // Mixed: an active row alongside a resolved row → exit 1 (active drives it).
+    #[test]
+    fn alarms_list_active_and_resolved_returns_true() {
+        let dir = TempDir::new().unwrap();
+        let db_path = dir.path().join("hippo.db");
+        let conn = hippo_core::storage::open_db(&db_path).unwrap();
+
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        conn.execute(
+            "INSERT INTO capture_alarms (invariant_id, raised_at, details_json)
+             VALUES ('I-1', ?1, '{\"source\":\"shell\"}')",
+            rusqlite::params![now_ms],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO capture_alarms (invariant_id, raised_at, details_json, resolved_at)
+             VALUES ('I-4', ?1, '{\"source\":\"browser\"}', ?1)",
+            rusqlite::params![now_ms],
+        )
+        .unwrap();
+
+        let config = config_for_dir(&dir);
+        let has_alarms = handle_alarms_list(&config).unwrap();
+        assert!(
+            has_alarms,
+            "any active alarm must trigger exit 1 even when resolved rows present"
+        );
+    }
+
+    // Prune acks every resolved-but-unacked row, leaves active rows untouched.
+    #[test]
+    fn alarms_prune_acks_resolved_only() {
+        let dir = TempDir::new().unwrap();
+        let db_path = dir.path().join("hippo.db");
+        let conn = hippo_core::storage::open_db(&db_path).unwrap();
+
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        // Two resolved-but-unacked + one active.
+        conn.execute(
+            "INSERT INTO capture_alarms (invariant_id, raised_at, details_json, resolved_at)
+             VALUES ('I-1', ?1, '{\"source\":\"shell\"}', ?1)",
+            rusqlite::params![now_ms],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO capture_alarms (invariant_id, raised_at, details_json, resolved_at)
+             VALUES ('I-4', ?1, '{\"source\":\"browser\"}', ?1)",
+            rusqlite::params![now_ms],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO capture_alarms (invariant_id, raised_at, details_json)
+             VALUES ('I-8', ?1, '{\"source\":\"shell\"}')",
+            rusqlite::params![now_ms],
+        )
+        .unwrap();
+
+        let config = config_for_dir(&dir);
+        handle_alarms_prune(&config).unwrap();
+
+        let acked: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM capture_alarms WHERE acked_at IS NOT NULL",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(acked, 2, "both resolved rows must be acked");
+
+        let active_unacked: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM capture_alarms
+                 WHERE acked_at IS NULL AND resolved_at IS NULL",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(active_unacked, 1, "active row must remain un-acked");
+
+        // Ack note is set to 'auto-resolved' so the historical reason is preserved.
+        let note: String = conn
+            .query_row(
+                "SELECT ack_note FROM capture_alarms WHERE id = 1",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(note, "auto-resolved");
+    }
+
+    // Prune on an empty / all-active table is a no-op.
+    #[test]
+    fn alarms_prune_no_op_when_nothing_resolved() {
+        let dir = TempDir::new().unwrap();
+        let db_path = dir.path().join("hippo.db");
+        let conn = hippo_core::storage::open_db(&db_path).unwrap();
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        conn.execute(
+            "INSERT INTO capture_alarms (invariant_id, raised_at, details_json)
+             VALUES ('I-1', ?1, '{}')",
+            rusqlite::params![now_ms],
+        )
+        .unwrap();
+
+        let config = config_for_dir(&dir);
+        let result = handle_alarms_prune(&config);
+        assert!(result.is_ok());
+
+        let acked: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM capture_alarms WHERE acked_at IS NOT NULL",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(acked, 0);
     }
 
     // Ack of non-existent ID must not error.

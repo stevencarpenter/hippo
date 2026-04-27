@@ -142,7 +142,8 @@ pub enum WatchdogAction {
 
 #[derive(Subcommand)]
 pub enum AlarmsAction {
-    /// List un-acknowledged alarms. Exits 1 if any active, 0 if none.
+    /// List alarms grouped by status. Exits 1 if any *active* alarms remain
+    /// (auto-resolved-but-unacked rows do not affect exit code).
     List,
     /// Acknowledge an alarm by ID. Re-ack is a no-op (idempotent).
     Ack {
@@ -152,6 +153,10 @@ pub enum AlarmsAction {
         #[arg(long)]
         note: Option<String>,
     },
+    /// Bulk-acknowledge all auto-resolved alarms. Sets `acked_at` and
+    /// `ack_note='auto-resolved'` on every row where the watchdog cleared
+    /// the underlying invariant but the user hasn't ack'd yet.
+    Prune,
 }
 
 #[derive(Subcommand)]

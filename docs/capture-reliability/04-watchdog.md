@@ -66,6 +66,8 @@ One query over a small table. If absent (pre-migration install), create it from 
 
 **Step 4 — Raise alarms for each failing invariant.** See Alarm Contract.
 
+**Step 4b — Auto-resolve recovered alarms.** After raising new alarms, walk every active (un-acked, un-resolved) row and check whether its `(invariant_id, source)` pair appears in the *current* tick's violation set. Pairs absent from the violation set get `clean_ticks += 1`; pairs present get `clean_ticks = 0`. When `clean_ticks` reaches `2`, set `resolved_at = now_ms`. Two ticks (≈120 s) is the minimum window that prevents single-tick flap from prematurely clearing an alarm. Resolved rows persist until `hippo alarms prune` acks them with `ack_note='auto-resolved'`.
+
 **Step 5 — Exit clean.** `std::process::exit(0)`. launchd re-launches after `StartInterval`.
 
 ## Alarm Contract
@@ -79,12 +81,20 @@ CREATE TABLE IF NOT EXISTS capture_alarms (
     raised_at    INTEGER NOT NULL,
     details_json TEXT    NOT NULL,
     acked_at     INTEGER,
-    ack_note     TEXT
+    ack_note     TEXT,
+    -- v11: set when the watchdog observes 2 consecutive clean ticks for
+    -- this alarm's (invariant_id, source) pair. Resolved rows do not
+    -- suppress new alarms (rate-limit ignores them) and do not contribute
+    -- to the doctor exit code.
+    resolved_at  INTEGER,
+    -- v11: consecutive-clean tick counter, reset to 0 whenever the
+    -- invariant violates again on a subsequent tick.
+    clean_ticks  INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE INDEX IF NOT EXISTS idx_capture_alarms_invariant_active
     ON capture_alarms (invariant_id, acked_at)
-    WHERE acked_at IS NULL;
+    WHERE acked_at IS NULL AND resolved_at IS NULL;
 ```
 
 ### Rate Limiting
@@ -95,9 +105,12 @@ Before INSERT, query for recent un-acked alarm for same invariant:
 SELECT id FROM capture_alarms
 WHERE invariant_id = :id
   AND acked_at IS NULL
+  AND resolved_at IS NULL
   AND raised_at > :cutoff_ms
 LIMIT 1;
 ```
+
+The `resolved_at IS NULL` clause means an auto-resolved alarm stops blocking new raises — if the invariant flaps back, the next tick raises a fresh row instead of being silently suppressed.
 
 where `cutoff_ms = now_ms - (alarm_rate_limit_minutes * 60 * 1000)`. Default `15`.
 
@@ -150,6 +163,16 @@ WHERE id = :id AND acked_at IS NULL;
 ```
 
 **Rate-limit reset after ack.** Rate-limit query filters `acked_at IS NULL`, so acked rows no longer block. Next cycle detecting the same violation inserts a fresh alarm. Intentional: acking means "I saw this," not "I fixed it."
+
+**`hippo alarms prune`** — Bulk-ack every auto-resolved row in one statement:
+
+```sql
+UPDATE capture_alarms
+SET acked_at = :now_ms, ack_note = 'auto-resolved'
+WHERE acked_at IS NULL AND resolved_at IS NOT NULL;
+```
+
+Use this when `hippo alarms list` shows a long AUTO-RESOLVED section from a past outage and you don't want to ack each row individually.
 
 ## Failure Modes for the Watchdog Itself
 

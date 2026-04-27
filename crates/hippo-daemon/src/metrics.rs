@@ -172,3 +172,12 @@ pub static WATCHDOG_INVARIANT_VIOLATION: LazyLock<Counter<u64>> = LazyLock::new(
         .with_description("Invariant violations by capture source, per spec 02-invariants.md")
         .build()
 });
+
+/// Alarms transitioned from active to resolved by the auto-resolve loop
+/// after the underlying invariant stayed clean for 2 consecutive ticks.
+pub static WATCHDOG_ALARMS_AUTO_RESOLVED: LazyLock<Counter<u64>> = LazyLock::new(|| {
+    METER
+        .u64_counter("hippo.watchdog.alarms.auto_resolved")
+        .with_description("Alarms cleared automatically after invariant stayed clean")
+        .build()
+});
