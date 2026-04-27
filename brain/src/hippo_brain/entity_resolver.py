@@ -120,11 +120,13 @@ def strip_worktree_prefix(path: str) -> str:
     end of the path) is removed.
     """
     stripped = path
-    while True:
+    max_passes = path.count(".claude/worktrees/") + 1
+    for _ in range(max_passes):
         next_value = _WORKTREE_SEGMENT_RE.sub(_replace_worktree_match, stripped)
         if next_value == stripped:
             return next_value
         stripped = next_value
+    return stripped
 
 
 def canonicalize(

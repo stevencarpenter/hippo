@@ -165,6 +165,49 @@ def _render_design_decision_lines(
     return _truncate(payload, max_chars).splitlines()
 
 
+def _allocate_payload_caps(
+    per_hit: int, *, embed_len: int, cmd_len: int, design_len: int
+) -> tuple[int, int, int]:
+    """Split one hit's payload budget across embed/cmd/design fields.
+
+    Uses proportional floor division, distributes any remainder to the largest
+    fields, and preserves at least one character for each non-empty field when
+    the per-hit budget is large enough to do so.
+    """
+    lengths = {
+        "embed": max(embed_len, 0),
+        "cmd": max(cmd_len, 0),
+        "design": max(design_len, 0),
+    }
+    total = sum(lengths.values())
+    if total == 0:
+        return 0, 0, 0
+
+    caps = {name: (per_hit * length) // total if length else 0 for name, length in lengths.items()}
+    remainder = per_hit - sum(caps.values())
+
+    ranked = sorted(lengths, key=lambda name: lengths[name], reverse=True)
+    for name in ranked:
+        if remainder <= 0:
+            break
+        if lengths[name]:
+            caps[name] += 1
+            remainder -= 1
+
+    non_empty = [name for name, length in lengths.items() if length]
+    if per_hit >= len(non_empty):
+        for name in non_empty:
+            if caps[name] > 0:
+                continue
+            donor = next((candidate for candidate in ranked if caps[candidate] > 1), None)
+            if donor is None:
+                break
+            caps[donor] -= 1
+            caps[name] = 1
+
+    return caps["embed"], caps["cmd"], caps["design"]
+
+
 def _build_rag_prompt(
     question: str,
     hits: list[dict],
@@ -210,15 +253,16 @@ def _build_rag_prompt(
             d_len = len(_design_decision_payload(h.get("design_decisions") or []))
             total_payload = e_len + c_len + d_len
             if total_payload == 0:
-                # Structural fields (summary/cwd/tags/etc.) still render; only
-                # payload-heavy fields get a zero cap in this branch.
+                # All payload-heavy fields are suppressed in this branch;
+                # structural fields (summary/cwd/tags/etc.) still render.
                 e_cap = c_cap = d_cap = 0
             else:
-                e_cap = (per_hit * e_len) // total_payload if e_len else 0
-                c_cap = (per_hit * c_len) // total_payload if c_len else 0
-                # The final field absorbs rounding remainder so the caps sum to
-                # exactly per_hit instead of drifting upward.
-                d_cap = per_hit - e_cap - c_cap
+                e_cap, c_cap, d_cap = _allocate_payload_caps(
+                    per_hit,
+                    embed_len=e_len,
+                    cmd_len=c_len,
+                    design_len=d_len,
+                )
             blocks.append("\n".join(_hit_lines(i, h, e_cap, c_cap, d_cap)))
 
     context = "\n\n".join(blocks)
