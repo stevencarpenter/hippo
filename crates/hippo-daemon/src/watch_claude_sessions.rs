@@ -815,18 +815,6 @@ mod tests {
     // Settling sweep tests
     // -------------------------------------------------------------------------
 
-    /// Open a test DB and manually add the v12 columns so sweep tests work
-    /// without depending on T-A.1's migration being merged into this branch.
-    fn open_test_db_v12(dir: &TempDir) -> Connection {
-        let conn = open_test_db(dir);
-        conn.execute_batch(
-            "ALTER TABLE claude_sessions ADD COLUMN content_hash TEXT;
-             ALTER TABLE claude_sessions ADD COLUMN last_enriched_content_hash TEXT;",
-        )
-        .expect("add v12 columns");
-        conn
-    }
-
     /// Set the mtime of a file to `seconds_ago` seconds before now using libc.
     fn set_mtime_seconds_ago(path: &Path, seconds_ago: u64) {
         use std::ffi::CString;
@@ -909,7 +897,7 @@ mod tests {
     #[test]
     fn test_sweep_enqueues_segment_with_old_mtime_and_hash_mismatch() {
         let dir = TempDir::new().unwrap();
-        let conn = open_test_db_v12(&dir);
+        let conn = open_test_db(&dir);
 
         // Create a file and set its mtime to 35 minutes ago.
         let file = dir.path().join("old-session.jsonl");
@@ -940,7 +928,7 @@ mod tests {
     #[test]
     fn test_sweep_skips_recent_mtime() {
         let dir = TempDir::new().unwrap();
-        let conn = open_test_db_v12(&dir);
+        let conn = open_test_db(&dir);
 
         // File modified only 5 minutes ago — not yet settled.
         let file = dir.path().join("recent-session.jsonl");
@@ -966,7 +954,7 @@ mod tests {
     #[test]
     fn test_sweep_skips_when_hash_matches() {
         let dir = TempDir::new().unwrap();
-        let conn = open_test_db_v12(&dir);
+        let conn = open_test_db(&dir);
 
         // File is old, but hashes match — already enriched at current content.
         let file = dir.path().join("hash-match.jsonl");
@@ -992,7 +980,7 @@ mod tests {
     #[test]
     fn test_sweep_skips_when_processing() {
         let dir = TempDir::new().unwrap();
-        let conn = open_test_db_v12(&dir);
+        let conn = open_test_db(&dir);
 
         let file = dir.path().join("processing.jsonl");
         std::fs::write(&file, b"x").unwrap();
@@ -1018,7 +1006,7 @@ mod tests {
     #[test]
     fn test_sweep_replaces_done_queue_row() {
         let dir = TempDir::new().unwrap();
-        let conn = open_test_db_v12(&dir);
+        let conn = open_test_db(&dir);
 
         let file = dir.path().join("done-session.jsonl");
         std::fs::write(&file, b"x").unwrap();
@@ -1061,7 +1049,7 @@ mod tests {
     #[test]
     fn test_sweep_skips_empty_segment() {
         let dir = TempDir::new().unwrap();
-        let conn = open_test_db_v12(&dir);
+        let conn = open_test_db(&dir);
 
         let file = dir.path().join("empty-seg.jsonl");
         std::fs::write(&file, b"x").unwrap();
@@ -1086,7 +1074,7 @@ mod tests {
     #[test]
     fn test_sweep_caps_at_max_per_tick() {
         let dir = TempDir::new().unwrap();
-        let conn = open_test_db_v12(&dir);
+        let conn = open_test_db(&dir);
 
         // Seed 15 eligible segments, all with old files.
         for i in 1i64..=15 {
@@ -1124,7 +1112,7 @@ mod tests {
     #[test]
     fn test_sweep_skips_missing_file() {
         let dir = TempDir::new().unwrap();
-        let conn = open_test_db_v12(&dir);
+        let conn = open_test_db(&dir);
 
         // Point source_file at a path that does not exist.
         let nonexistent = dir.path().join("does-not-exist.jsonl");
