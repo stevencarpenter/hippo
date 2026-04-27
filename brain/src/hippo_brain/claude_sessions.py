@@ -12,6 +12,7 @@ from hippo_brain.enrichment import (
     is_enrichment_eligible,
     upsert_entities,
 )
+from hippo_brain.entity_resolver import strip_worktree_prefix
 from hippo_brain.models import EnrichmentResult
 from hippo_brain.watchdog import DEFAULT_LOCK_TIMEOUT_MS
 
@@ -26,13 +27,24 @@ Produce structured enrichment data capturing the knowledge from this work sessio
 
 IMPORTANT: Be specific. Use actual file names, function names, error messages, and outcomes from the session data. Generic descriptions are unacceptable.
 
-The embed_text field should read like a developer's work log entry — specific enough that searching for "embedding model configuration" or "clippy warning fix" would find it.
+VERBATIM PRESERVATION RULE: In every text field (summary, intent, key_decisions, problems_encountered, design_decisions, embed_text), reproduce the following kinds of tokens EXACTLY as they appeared in the session data. Do NOT paraphrase, normalize, or guess at them:
+  - Environment variable names (UPPERCASE_WITH_UNDERSCORES, e.g. HIPPO_FORCE)
+  - Constants and ALL_CAPS identifiers matching [A-Z][A-Z0-9_]{2,}
+  - Semantic versions matching \\d+\\.\\d+\\.\\d+ (e.g. 0.0.26, 2.20.0)
+  - Package@version pairs (e.g. "python-multipart 0.0.26", "pygments@2.20.0")
+  - Symbol names: function, method, class, struct, trait, type, and constant identifiers
+  - CLI flag names (--no-verify, -uall, --release)
+  - File paths and command names
+If you are unsure of an exact name or version, OMIT it rather than guess. A hallucinated identifier is worse than a missing one — a future agent can re-read the source data to recover what was missed, but cannot un-believe a wrong name.
+
+The embed_text field is what powers semantic search over this work session. It MUST be identifier-dense: include every symbol name, file path, package name, version string, and CLI command that appears in the session data. Density of identifiers beats prose elegance — a future agent will search this field by keyword, not read it aloud. A good embed_text reads like a tag soup of the actual technical content (e.g. "schema_handshake.rs daemon brain handshake parse_protocol_version v0.13.0 sqlite-vec install.sh"), not like a polished paragraph.
 
 Output a JSON object with these fields:
 - summary: Specific description of what was accomplished
 - intent: The developer's goal (e.g., "feature development", "debugging", "refactoring", "configuration")
 - outcome: One of "success", "partial", "failure", "unknown"
 - key_decisions: List of decisions made and why
+- design_decisions: List of "considered X, chose Y, reason Z" structured decisions when the session shows an alternative was evaluated and rejected. Each entry is an object with keys "considered" (the abandoned approach), "chosen" (what was picked), and "reason" (why the chosen approach won). Empty list if no alternatives were weighed.
 - problems_encountered: List of errors/failures and how they were resolved
 - entities: An object with lists of extracted entities:
   - projects: Project names mentioned or inferred
@@ -41,7 +53,7 @@ Output a JSON object with these fields:
   - services: Services interacted with (databases, APIs, etc.)
   - errors: Actual error messages encountered
 - tags: Descriptive, specific tags
-- embed_text: A detailed paragraph a developer would write in a work log. Specific file names, error messages, and outcomes. Optimized for semantic search.
+- embed_text: A detailed, identifier-dense paragraph (see rule above). Optimized for keyword retrieval, not prose.
 
 Output ONLY valid JSON, no markdown fences or extra text."""
 
@@ -332,10 +344,18 @@ def extract_segments(
 
 
 def build_claude_enrichment_prompt(segments: list[SessionSegment]) -> str:
-    """Format session segments into the enrichment prompt."""
+    """Format session segments into the enrichment prompt.
+
+    The segment `cwd` is normalized via `strip_worktree_prefix` so the
+    LLM sees the parent-repo path rather than the ephemeral
+    `.claude/worktrees/<X>/` subdirectory created by parallel agents.
+    """
     parts = []
     for seg in segments:
-        header = f"Claude Code session segment (project: {seg.cwd}, branch: {seg.git_branch or 'unknown'})"
+        cwd = strip_worktree_prefix(seg.cwd)
+        header = (
+            f"Claude Code session segment (project: {cwd}, branch: {seg.git_branch or 'unknown'})"
+        )
         if seg.start_time and seg.end_time:
             start = datetime.fromtimestamp(seg.start_time / 1000).strftime("%Y-%m-%d %H:%M")
             end = datetime.fromtimestamp(seg.end_time / 1000).strftime("%H:%M")
@@ -644,6 +664,7 @@ def write_claude_knowledge_node(
             "tags": result.tags,
             "key_decisions": result.key_decisions,
             "problems_encountered": result.problems_encountered,
+            "design_decisions": result.design_decisions,
         }
     )
     tags_json = json.dumps(result.tags)
