@@ -170,6 +170,14 @@ CREATE TABLE IF NOT EXISTS claude_sessions
     enriched INTEGER NOT NULL DEFAULT 0,
     -- probe_tag is set only on synthetic probe rows; NULL on all real sessions.
     probe_tag TEXT,
+    -- v12: hash of the segment's content (summary_text + tool_calls_json +
+    -- user_prompts_json) at the time the daemon last upserted this row.
+    -- Set by the watcher on every upsert; NULL on legacy rows migrated from v11.
+    content_hash TEXT,
+    -- v12: hash of the content that the brain last enriched. Set by the
+    -- enrichment worker when it completes; NULL until first enrichment.
+    -- Re-enrichment is triggered when content_hash != last_enriched_content_hash.
+    last_enriched_content_hash TEXT,
     created_at INTEGER NOT NULL DEFAULT (unixepoch('now', 'subsec') * 1000),
     UNIQUE (session_id, segment_index)
 );
@@ -531,4 +539,4 @@ CREATE TABLE IF NOT EXISTS claude_session_parity (
 CREATE INDEX IF NOT EXISTS idx_claude_session_parity_path_window
     ON claude_session_parity (path, window_start);
 
-PRAGMA user_version = 11;
+PRAGMA user_version = 12;
