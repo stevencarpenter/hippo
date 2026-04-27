@@ -1,3 +1,4 @@
+pub mod backfill;
 pub mod claude_session;
 pub mod commands;
 pub mod daemon;

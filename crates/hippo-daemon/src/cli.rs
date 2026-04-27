@@ -264,6 +264,17 @@ pub enum IngestSource {
         #[arg(long, default_value_t = 0)]
         wait_for_file: u64,
     },
+    /// Re-extract segments from previously-truncated session JSONL files (Bug A recovery)
+    ClaudeSessionBackfill {
+        /// Glob pattern matching session JSONL paths (e.g. ~/.claude/projects/**/*.jsonl)
+        glob: String,
+        /// Only process files whose mtime is newer than this date (YYYY-MM-DD, local time)
+        #[arg(long)]
+        since: Option<String>,
+        /// Print matched files and summary without writing to the database
+        #[arg(long)]
+        dry_run: bool,
+    },
 }
 
 #[derive(Subcommand)]
