@@ -95,7 +95,13 @@ def _shape_rag_sources(
     return sources[:limit]
 
 
-def _hit_lines(index: int, hit: dict, embed_cap: int, cmd_cap: int) -> list[str]:
+def _hit_lines(
+    index: int,
+    hit: dict,
+    embed_cap: int,
+    cmd_cap: int,
+    design_cap: int,
+) -> list[str]:
     """Render a single retrieval hit as a list of context lines."""
     score = round(1.0 - hit.get("_distance", 1.0), 4)
     ts = hit.get("captured_at", 0)
@@ -106,6 +112,13 @@ def _hit_lines(index: int, hit: dict, embed_cap: int, cmd_cap: int) -> list[str]
         lines.append(f"Summary: {hit['summary']}")
     if hit.get("embed_text"):
         lines.append(f"Detail: {_truncate(hit['embed_text'], embed_cap)}")
+    # Render design_decisions verbatim — the "considered X, chose Y, reason Z"
+    # structure is exactly what the synthesis LLM needs to answer questions
+    # about why a particular approach was picked. (Issue #98 F3.)
+    design_lines = _render_design_decision_lines(hit.get("design_decisions") or [], design_cap)
+    if design_lines:
+        lines.append("Design decisions:")
+        lines.extend(design_lines)
     if hit.get("commands_raw"):
         lines.append(f"Commands: {_truncate(hit['commands_raw'], cmd_cap)}")
     if hit.get("cwd"):
@@ -126,6 +139,75 @@ def _hit_lines(index: int, hit: dict, embed_cap: int, cmd_cap: int) -> list[str]
     return lines
 
 
+def _design_decision_payload(design_decisions: list[dict] | object) -> str:
+    """Render valid design_decisions entries as plain text for budgeting."""
+    if not isinstance(design_decisions, list):
+        return ""
+    rendered: list[str] = []
+    for decision in design_decisions:
+        if not isinstance(decision, dict):
+            continue
+        considered = decision.get("considered", "")
+        chosen = decision.get("chosen", "")
+        reason = decision.get("reason", "")
+        if considered and chosen and reason:
+            rendered.append(f"  - considered {considered!r}; chose {chosen!r}; reason: {reason}")
+    return "\n".join(rendered)
+
+
+def _render_design_decision_lines(
+    design_decisions: list[dict] | object, max_chars: int
+) -> list[str]:
+    """Render design_decisions under a total character cap."""
+    payload = _design_decision_payload(design_decisions)
+    if not payload or max_chars <= 0:
+        return []
+    return _truncate(payload, max_chars).splitlines()
+
+
+def _allocate_payload_caps(
+    per_hit: int, *, embed_len: int, cmd_len: int, design_len: int
+) -> tuple[int, int, int]:
+    """Split one hit's payload budget across embed/cmd/design fields.
+
+    Uses proportional floor division, distributes any remainder to the largest
+    fields, and preserves at least one character for each non-empty field when
+    the per-hit budget is large enough to do so.
+    """
+    lengths = {
+        "embed": max(embed_len, 0),
+        "cmd": max(cmd_len, 0),
+        "design": max(design_len, 0),
+    }
+    total = sum(lengths.values())
+    if total == 0:
+        return 0, 0, 0
+
+    caps = {name: (per_hit * length) // total if length else 0 for name, length in lengths.items()}
+    remainder = per_hit - sum(caps.values())
+
+    ranked = sorted(lengths, key=lambda name: lengths[name], reverse=True)
+    for name in ranked:
+        if remainder <= 0:
+            break
+        if lengths[name]:
+            caps[name] += 1
+            remainder -= 1
+
+    non_empty = [name for name, length in lengths.items() if length]
+    if per_hit >= len(non_empty):
+        for name in non_empty:
+            if caps[name] > 0:
+                continue
+            donor = next((candidate for candidate in ranked if caps[candidate] > 1), None)
+            if donor is None:
+                break
+            caps[donor] -= 1
+            caps[name] = 1
+
+    return caps["embed"], caps["cmd"], caps["design"]
+
+
 def _build_rag_prompt(
     question: str,
     hits: list[dict],
@@ -134,43 +216,54 @@ def _build_rag_prompt(
     """Build chat messages for the synthesis LLM from question + retrieved hits.
 
     If the rendered context exceeds ``max_chars``, the long per-hit fields
-    (``embed_text`` and ``commands_raw``) are truncated proportionally so the
-    final prompt fits the budget.
+    (``embed_text``, ``commands_raw``, and ``design_decisions``) are truncated
+    proportionally so the final prompt fits the budget.
     """
     # First pass: render with generous caps.
     embed_cap = 2_000
     cmd_cap = 2_000
-    blocks = ["\n".join(_hit_lines(i, h, embed_cap, cmd_cap)) for i, h in enumerate(hits, 1)]
+    blocks = [
+        "\n".join(_hit_lines(i, h, embed_cap, cmd_cap, cmd_cap)) for i, h in enumerate(hits, 1)
+    ]
     total = sum(len(b) for b in blocks) + max(0, (len(blocks) - 1)) * 2
 
     if total > max_chars and hits:
         # How much budget is consumed by structural text (headers, cwd, tags, etc)
         # that we don't want to truncate? Approximate by re-rendering with the
-        # two big fields stripped.
+        # large payload fields stripped.
         structural = 0
         for i, h in enumerate(hits, 1):
             stripped = dict(h)
             stripped["embed_text"] = ""
             stripped["commands_raw"] = ""
-            structural += len("\n".join(_hit_lines(i, stripped, 0, 0)))
+            stripped["design_decisions"] = []
+            structural += len("\n".join(_hit_lines(i, stripped, 0, 0, 0)))
         structural += max(0, (len(hits) - 1)) * 2
 
         remaining = max(max_chars - structural, _MIN_PER_HIT_FIELD_CHARS * len(hits))
         # Split remaining budget across hits, then split per-hit budget across
-        # embed_text and commands_raw proportionally to their current sizes.
+        # embed_text, commands_raw, and design_decisions proportionally to their
+        # current rendered sizes.
         per_hit = max(remaining // max(len(hits), 1), _MIN_PER_HIT_FIELD_CHARS)
 
         blocks = []
         for i, h in enumerate(hits, 1):
             e_len = len(h.get("embed_text", "") or "")
             c_len = len(h.get("commands_raw", "") or "")
-            total_payload = e_len + c_len
+            d_len = len(_design_decision_payload(h.get("design_decisions") or []))
+            total_payload = e_len + c_len + d_len
             if total_payload == 0:
-                e_cap = c_cap = per_hit // 2
+                # All payload-heavy fields are suppressed in this branch;
+                # structural fields (summary/cwd/tags/etc.) still render.
+                e_cap = c_cap = d_cap = 0
             else:
-                e_cap = max(int(per_hit * e_len / total_payload), 40) if e_len else 0
-                c_cap = max(per_hit - e_cap, 40) if c_len else 0
-            blocks.append("\n".join(_hit_lines(i, h, e_cap, c_cap)))
+                e_cap, c_cap, d_cap = _allocate_payload_caps(
+                    per_hit,
+                    embed_len=e_len,
+                    cmd_len=c_len,
+                    design_len=d_len,
+                )
+            blocks.append("\n".join(_hit_lines(i, h, e_cap, c_cap, d_cap)))
 
     context = "\n\n".join(blocks)
     return [
@@ -277,6 +370,7 @@ def _result_to_hit(r: SearchResult) -> dict:
         "captured_at": r.captured_at,
         "outcome": r.outcome or "",
         "tags": json.dumps(r.tags) if r.tags else "",
+        "design_decisions": list(r.design_decisions),
         "uuid": r.uuid,
         "linked_event_ids": list(r.linked_event_ids),
     }

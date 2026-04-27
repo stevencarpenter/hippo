@@ -154,6 +154,7 @@ def _insert_node(
     node_id: int,
     *,
     summary: str = "",
+    content: dict | None = None,
     embed_text: str = "",
     tags: list[str] | None = None,
     outcome: str | None = None,
@@ -167,7 +168,7 @@ def _insert_node(
         (
             node_id,
             f"uuid-{node_id}",
-            json.dumps({"summary": summary}),
+            json.dumps(content if content is not None else {"summary": summary}),
             embed_text,
             node_type,
             outcome,
@@ -533,7 +534,16 @@ def test_search_result_includes_linked_event_ids_and_metadata(conn):
     _insert_node(
         conn,
         1,
-        summary="hello",
+        content={
+            "summary": "hello",
+            "design_decisions": [
+                {
+                    "considered": "sqlite direct reads",
+                    "chosen": "hybrid retrieval",
+                    "reason": "better recall",
+                }
+            ],
+        },
         embed_text="world",
         tags=["a", "b"],
         outcome="ok",
@@ -554,6 +564,13 @@ def test_search_result_includes_linked_event_ids_and_metadata(conn):
     assert result.cwd == "/proj"
     assert result.git_branch == "main"
     assert result.captured_at == 2000  # latest event timestamp wins
+    assert result.design_decisions == [
+        {
+            "considered": "sqlite direct reads",
+            "chosen": "hybrid retrieval",
+            "reason": "better recall",
+        }
+    ]
     assert sorted(result.linked_event_ids) == [10, 11]
 
 

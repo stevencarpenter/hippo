@@ -20,13 +20,24 @@ Extract what they were researching, learning, or investigating. Focus on technic
 
 IMPORTANT: Be specific. Use actual page titles, URLs, technical concepts, and search queries from the data. Generic descriptions like "browsed some pages" are unacceptable.
 
-The embed_text field should read like a developer's research log — specific enough that searching for "Rust Display trait implementation" or "cargo proc-macro error" would find it.
+VERBATIM PRESERVATION RULE: In every text field (summary, intent, key_decisions, problems_encountered, design_decisions, embed_text), reproduce the following kinds of tokens EXACTLY as they appeared in the page titles, URLs, or search queries. Do NOT paraphrase, normalize, or guess at them:
+  - Environment variable names (UPPERCASE_WITH_UNDERSCORES)
+  - Constants and ALL_CAPS identifiers matching [A-Z][A-Z0-9_]{2,}
+  - Semantic versions matching \\d+\\.\\d+\\.\\d+ (e.g. 1.75.0, 22.3.1)
+  - Package@version pairs (e.g. "tokio@1.40.0")
+  - Symbol names: function, method, class, struct, trait, and constant identifiers
+  - CLI flag names (--release, --no-default-features)
+  - File paths and command names
+If you are unsure of an exact name or version, OMIT it rather than guess.
+
+The embed_text field is what powers semantic search over this research session. It MUST be identifier-dense: include every symbol name, package name, version string, search query, and technical term that appears in the page data. Density of identifiers beats prose elegance — a future agent will search this field by keyword. A good embed_text reads like a tag soup of the actual technical content (e.g. "tokio mpsc unbounded_channel rust async-trait stackoverflow tokio-rs docs.rs"), not like a polished paragraph.
 
 Output a JSON object with these fields:
 - summary: Specific description of what was researched or learned
 - intent: The developer's goal (e.g., "research", "debugging", "learning", "reference")
 - outcome: One of "success", "partial", "failure", "unknown"
 - key_decisions: List of decisions informed by the research
+- design_decisions: List of "considered X, chose Y, reason Z" structured decisions when the research shows an alternative was evaluated and rejected. Each entry is an object with keys "considered", "chosen", and "reason". Empty list if no alternatives were weighed.
 - problems_encountered: List of obstacles or dead ends
 - entities: An object with lists of extracted entities:
   - projects: Project names mentioned or inferred
@@ -36,7 +47,7 @@ Output a JSON object with these fields:
   - errors: Error messages being researched
   - domains: Key domains visited (e.g., "stackoverflow.com", "docs.rs")
 - tags: Descriptive, specific tags
-- embed_text: A detailed paragraph describing the research session. Specific topics, search queries, and sources. Optimized for semantic search.
+- embed_text: A detailed, identifier-dense paragraph (see rule above). Optimized for keyword retrieval, not prose.
 
 Output ONLY valid JSON, no markdown fences or extra text."""
 
@@ -303,6 +314,7 @@ def write_browser_knowledge_node(
             "tags": result.tags,
             "key_decisions": result.key_decisions,
             "problems_encountered": result.problems_encountered,
+            "design_decisions": result.design_decisions,
         }
     )
     tags_json = json.dumps(result.tags)

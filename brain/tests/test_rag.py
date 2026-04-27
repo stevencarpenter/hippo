@@ -185,6 +185,66 @@ class TestBuildRagPrompt:
         # No truncation ellipsis should appear for this small corpus
         assert "…" not in context
 
+    def test_design_decisions_rendered_in_context(self):
+        """Issue #98 F3: when a hit carries `design_decisions`, the
+        considered/chosen/reason structure must surface in the synthesis prompt
+        so the LLM can answer "why X over Y" questions accurately.
+        """
+        hit = dict(
+            SAMPLE_HITS[0],
+            design_decisions=[
+                {
+                    "considered": "Stage GUI inside /Applications/.hippo-staging/HippoGUI.app",
+                    "chosen": "Stage GUI in $TMPDIR, mv to /Applications atomically",
+                    "reason": "Launch Services crawls /Applications recursively",
+                }
+            ],
+        )
+        messages = _build_rag_prompt("why $TMPDIR?", [hit])
+        user = messages[1]["content"]
+        assert "Design decisions:" in user
+        assert "Stage GUI inside /Applications/.hippo-staging" in user
+        assert "Stage GUI in $TMPDIR" in user
+        assert "Launch Services crawls /Applications" in user
+
+    def test_design_decisions_omitted_when_empty(self):
+        hit = dict(SAMPLE_HITS[0], design_decisions=[])
+        messages = _build_rag_prompt("test", [hit])
+        assert "Design decisions:" not in messages[1]["content"]
+
+    def test_design_decisions_partial_entry_skipped_in_render(self):
+        hit = dict(
+            SAMPLE_HITS[0],
+            design_decisions=[
+                {"considered": "X", "chosen": "Y", "reason": "Z"},
+                {"considered": "A", "chosen": "B"},  # missing reason — render must skip
+                "garbage",  # wrong type — render must skip
+            ],
+        )
+        messages = _build_rag_prompt("test", [hit])
+        user = messages[1]["content"]
+        assert "considered 'X'" in user
+        assert "considered 'A'" not in user
+
+    def test_design_decisions_are_truncated_with_context_budget(self):
+        hit = dict(
+            SAMPLE_HITS[0],
+            embed_text="",
+            commands_raw="",
+            design_decisions=[
+                {
+                    "considered": "A" * 400,
+                    "chosen": "B" * 400,
+                    "reason": "C" * 400,
+                }
+            ],
+        )
+        messages = _build_rag_prompt("test", [hit], max_chars=220)
+        user = messages[1]["content"]
+        assert "Design decisions:" in user
+        assert "…" in user
+        assert ("A" * 200) not in user
+
 
 class TestFormatRagResponse:
     def test_formats_answer_and_sources(self):
@@ -440,6 +500,7 @@ def _fake_search_result(**overrides):
         cwd="/home/user/projects/hippo",
         git_branch="postgres",
         captured_at=1743379200000,
+        design_decisions=[],
         linked_event_ids=[42, 43],
     )
     base.update(overrides)
@@ -580,6 +641,35 @@ class TestFilteredRetrievalRouting:
             assert result["sources"][1]["linked_event_ids"] == []
             # Score round-trips from SearchResult.score through the _distance adapter.
             assert result["sources"][0]["score"] == pytest.approx(0.91, abs=0.001)
+        finally:
+            sentinel_conn.close()
+
+    @pytest.mark.asyncio
+    async def test_filters_path_surfaces_design_decisions_in_prompt(self):
+        client = _healthy_client(chat_return="ok")
+        sentinel_conn = sqlite3.connect(":memory:")
+        try:
+            with patch("hippo_brain.rag.retrieval_search") as retrieval_mock:
+                retrieval_mock.return_value = [
+                    _fake_search_result(
+                        design_decisions=[
+                            {
+                                "considered": "sqlite direct reads",
+                                "chosen": "hybrid retrieval",
+                                "reason": "better recall",
+                            }
+                        ]
+                    )
+                ]
+                await ask(
+                    "why hybrid?", client, None, "m", "e", project="/home/user", conn=sentinel_conn
+                )
+
+            prompt = client.chat.call_args.args[0][1]["content"]
+            assert "Design decisions:" in prompt
+            assert "sqlite direct reads" in prompt
+            assert "hybrid retrieval" in prompt
+            assert "better recall" in prompt
         finally:
             sentinel_conn.close()
 

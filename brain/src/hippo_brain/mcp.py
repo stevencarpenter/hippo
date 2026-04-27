@@ -575,6 +575,7 @@ def _result_to_dict(result) -> dict:
         "cwd": result.cwd,
         "git_branch": result.git_branch,
         "captured_at": result.captured_at,
+        "design_decisions": list(result.design_decisions),
         "linked_event_ids": list(result.linked_event_ids),
     }
 

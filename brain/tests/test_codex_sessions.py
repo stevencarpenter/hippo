@@ -702,6 +702,30 @@ def test_extract_codex_segments_skips_entries_with_non_dict_payload():
         assert segments[0].user_prompts == ["real"]
 
 
+def test_build_codex_enrichment_summary_strips_worktree_from_cwd():
+    """Issue #98 F1c: Codex segment cwd from an agent worktree must be
+    normalized to the parent repo path before reaching the LLM.
+    """
+    from hippo_brain.claude_sessions import SessionSegment
+
+    seg = SessionSegment(
+        session_id="s1",
+        project_dir="demo",
+        cwd="/projects/hippo/.claude/worktrees/feat-watchdog/crates/hippo-core",
+        git_branch=None,
+        segment_index=0,
+        start_time=1711612800000,
+        end_time=1711614600000,
+        user_prompts=["x"],
+        message_count=1,
+        source="codex",
+    )
+    out = build_codex_enrichment_summary([seg])
+    assert "/projects/hippo/crates/hippo-core" in out
+    assert ".claude/worktrees" not in out
+    assert "feat-watchdog" not in out
+
+
 def test_build_codex_enrichment_summary_includes_tools_and_assistant():
     """build_codex_enrichment_summary renders tool_calls and
     assistant_texts sections when present — the enrichment prompt relies
