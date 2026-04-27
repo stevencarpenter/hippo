@@ -15,6 +15,28 @@ const SCHEMA: &str = include_str!("schema.sql");
 /// `brain/src/hippo_brain/schema_version.py::EXPECTED_SCHEMA_VERSION`.
 pub const EXPECTED_VERSION: i64 = 11;
 
+/// Idempotent `ALTER TABLE … ADD COLUMN`. Pre-checks `PRAGMA table_info`
+/// for the column name; if absent, runs the supplied DDL. Used by
+/// migrations so a partial-success crash (column added but `user_version`
+/// not yet bumped) is safe to re-run without depending on SQLite's
+/// "duplicate column name" error string, which is locale/version-sensitive.
+fn add_column_if_missing(
+    conn: &Connection,
+    table: &str,
+    column: &str,
+    add_column_ddl: &str,
+) -> Result<()> {
+    let exists: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM pragma_table_info(?1) WHERE name = ?2)",
+        rusqlite::params![table, column],
+        |row| row.get(0),
+    )?;
+    if !exists {
+        conn.execute_batch(add_column_ddl)?;
+    }
+    Ok(())
+}
+
 pub fn open_db(path: &Path) -> Result<Connection> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
@@ -381,21 +403,29 @@ pub fn open_db(path: &Path) -> Result<Connection> {
                  ('claude-session',(SELECT MAX(start_time) FROM claude_sessions),                               unixepoch('now') * 1000),
                  ('browser',       (SELECT MAX(timestamp)  FROM browser_events),                                unixepoch('now') * 1000);",
         )?;
-        // ALTER TABLE doesn't support IF NOT EXISTS in SQLite.  A crash between the
-        // CREATE TABLE above and the PRAGMA user_version = 8 below would leave the DB
-        // at v7, causing a retry that errors on the already-added column.  Suppress
-        // "duplicate column name" so the migration is safe to re-run.
-        for alter in [
-            "ALTER TABLE events           ADD COLUMN probe_tag TEXT",
-            "ALTER TABLE claude_sessions  ADD COLUMN probe_tag TEXT",
-            "ALTER TABLE browser_events   ADD COLUMN probe_tag TEXT",
+        // ALTER TABLE doesn't support IF NOT EXISTS in SQLite. A crash
+        // between the CREATE TABLE above and the PRAGMA user_version = 8
+        // below would leave the DB at v7, causing a retry that errors on
+        // the already-added column. `add_column_if_missing` pre-checks
+        // table_info so the migration is idempotent on re-run.
+        for (table, column, ddl) in [
+            (
+                "events",
+                "probe_tag",
+                "ALTER TABLE events ADD COLUMN probe_tag TEXT",
+            ),
+            (
+                "claude_sessions",
+                "probe_tag",
+                "ALTER TABLE claude_sessions ADD COLUMN probe_tag TEXT",
+            ),
+            (
+                "browser_events",
+                "probe_tag",
+                "ALTER TABLE browser_events ADD COLUMN probe_tag TEXT",
+            ),
         ] {
-            if let Err(e) = conn.execute_batch(alter) {
-                let is_dup = e.to_string().contains("duplicate column name");
-                if !is_dup {
-                    return Err(e.into());
-                }
-            }
+            add_column_if_missing(&conn, table, column, ddl)?;
         }
         conn.execute_batch("PRAGMA user_version = 8;")?;
     }
@@ -464,20 +494,24 @@ pub fn open_db(path: &Path) -> Result<Connection> {
     // and stop counting toward the doctor exit code. They survive in the
     // table until acked or pruned via `hippo alarms prune`.
     if (1..=10).contains(&version) {
-        // ALTER TABLE doesn't support IF NOT EXISTS in SQLite. Suppress
-        // "duplicate column name" so the migration is safe to re-run after
-        // a crash between ALTER and the user_version bump.
-        for alter in [
+        // Both ALTERs are idempotent via `add_column_if_missing`, so a
+        // partial-success crash (one column added, then crash before the
+        // second or before the user_version bump) is safe to re-run.
+        // `clean_ticks` carries a CHECK constraint so a stray UPDATE can't
+        // leave it negative.
+        add_column_if_missing(
+            &conn,
+            "capture_alarms",
+            "resolved_at",
             "ALTER TABLE capture_alarms ADD COLUMN resolved_at INTEGER",
-            "ALTER TABLE capture_alarms ADD COLUMN clean_ticks INTEGER NOT NULL DEFAULT 0",
-        ] {
-            if let Err(e) = conn.execute_batch(alter) {
-                let is_dup = e.to_string().contains("duplicate column name");
-                if !is_dup {
-                    return Err(e.into());
-                }
-            }
-        }
+        )?;
+        add_column_if_missing(
+            &conn,
+            "capture_alarms",
+            "clean_ticks",
+            "ALTER TABLE capture_alarms ADD COLUMN clean_ticks INTEGER NOT NULL DEFAULT 0
+                 CHECK (clean_ticks >= 0)",
+        )?;
         // The "active alarm" predicate now includes resolved_at — old index
         // would let resolved rows still suppress new alarms via rate-limit.
         conn.execute_batch(
@@ -1788,6 +1822,66 @@ mod tests {
         assert!(
             ddl.contains("resolved_at IS NULL"),
             "v11 index must filter resolved alarms; got: {ddl}"
+        );
+    }
+
+    /// A previous v10→v11 attempt may have crashed after adding `resolved_at`
+    /// but before adding `clean_ticks` (or before bumping user_version).
+    /// `add_column_if_missing` must complete the migration on re-run without
+    /// erroring on the column that already exists.
+    #[test]
+    fn test_migrate_v10_to_v11_recovers_from_partial_success() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("test.db");
+
+        // v10-shaped table with `resolved_at` already added (simulating
+        // a crash mid-migration). user_version still 10 so open_db re-runs
+        // the v10→v11 block.
+        {
+            let conn = rusqlite::Connection::open(&db_path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE capture_alarms (
+                    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                    invariant_id TEXT    NOT NULL,
+                    raised_at    INTEGER NOT NULL,
+                    details_json TEXT    NOT NULL,
+                    acked_at     INTEGER,
+                    ack_note     TEXT,
+                    resolved_at  INTEGER
+                 );
+                 PRAGMA user_version = 10;",
+            )
+            .unwrap();
+        }
+
+        // Re-run open_db — must complete the migration without erroring.
+        let conn = open_db(&db_path).unwrap();
+
+        let v: i64 = conn
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(v, 11);
+
+        // Both columns must now exist.
+        let cols: Vec<String> = conn
+            .prepare("SELECT name FROM pragma_table_info('capture_alarms')")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+        assert!(cols.contains(&"resolved_at".to_string()));
+        assert!(cols.contains(&"clean_ticks".to_string()));
+
+        // CHECK constraint enforces clean_ticks >= 0.
+        let result = conn.execute(
+            "INSERT INTO capture_alarms (invariant_id, raised_at, details_json, clean_ticks)
+             VALUES ('I-1', 0, '{}', -1)",
+            [],
+        );
+        assert!(
+            result.is_err(),
+            "CHECK (clean_ticks >= 0) must reject negative values"
         );
     }
 

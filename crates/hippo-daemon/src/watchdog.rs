@@ -256,6 +256,19 @@ pub fn run(config: &HippoConfig) -> Result<()> {
         crate::metrics::WATCHDOG_ALARMS_AUTO_RESOLVED.add(resolved as u64, &[]);
     }
 
+    // Tick-end snapshot. Emitted as a structured info! line so the existing
+    // OTel→Loki pipeline picks it up — no new metric-type infrastructure
+    // needed. Operators can build a Grafana panel from these fields by
+    // querying `{job="hippo"} | json | line=~"watchdog: tick complete"`.
+    let (active_count, resolved_unacked_count) = count_alarm_states(&conn).unwrap_or((-1, -1));
+    info!(
+        active = active_count,
+        resolved_unacked = resolved_unacked_count,
+        new_violations = violations.len(),
+        auto_resolved = resolved,
+        "watchdog: tick complete"
+    );
+
     // ── Step 5: Mark cycle complete ───────────────────────────────────────
     conn.execute(
         "UPDATE source_health SET last_success_ts = ?1 WHERE source = 'watchdog'",
@@ -266,6 +279,25 @@ pub fn run(config: &HippoConfig) -> Result<()> {
     crate::metrics::WATCHDOG_RUN.add(1, &[]);
 
     Ok(())
+}
+
+/// Returns `(active, resolved_unacked)` from `capture_alarms`. Errors are
+/// handled by the caller; a `(−1, −1)` sentinel logged means "DB query
+/// failed" and is preferable to crashing the whole tick over telemetry.
+fn count_alarm_states(conn: &Connection) -> Result<(i64, i64)> {
+    let active: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM capture_alarms
+         WHERE acked_at IS NULL AND resolved_at IS NULL",
+        [],
+        |row| row.get(0),
+    )?;
+    let resolved: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM capture_alarms
+         WHERE acked_at IS NULL AND resolved_at IS NOT NULL",
+        [],
+        |row| row.get(0),
+    )?;
+    Ok((active, resolved))
 }
 
 // ---------------------------------------------------------------------------
@@ -1301,9 +1333,9 @@ mod tests {
 
         // Three rows, each with a problematic `source` field shape.
         for details in [
-            r#"{"source": 42}"#,        // numeric
-            r#"{"source": null}"#,       // explicit null
-            r#"{"other_field": "x"}"#,   // missing entirely
+            r#"{"source": 42}"#,       // numeric
+            r#"{"source": null}"#,     // explicit null
+            r#"{"other_field": "x"}"#, // missing entirely
         ] {
             conn.execute(
                 "INSERT INTO capture_alarms (invariant_id, raised_at, details_json)

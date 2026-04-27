@@ -491,8 +491,9 @@ CREATE TABLE IF NOT EXISTS capture_alarms (
     -- alarms and don't contribute to the doctor exit code.
     resolved_at  INTEGER,
     -- v11: consecutive-clean tick count, used by the auto-resolve loop.
-    -- Reset to 0 whenever the invariant violates again.
-    clean_ticks  INTEGER NOT NULL DEFAULT 0
+    -- Reset to 0 whenever the invariant violates again. CHECK constraint
+    -- defends against a stray UPDATE leaving the counter negative.
+    clean_ticks  INTEGER NOT NULL DEFAULT 0 CHECK (clean_ticks >= 0)
 );
 
 -- Partial index on active (un-acked, un-resolved) alarms keyed by invariant
