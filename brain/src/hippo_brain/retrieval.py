@@ -46,6 +46,7 @@ class SearchResult:
     cwd: str
     git_branch: str
     captured_at: int
+    design_decisions: list[dict] = field(default_factory=list)
     linked_event_ids: list[int] = field(default_factory=list)
 
 
@@ -625,6 +626,7 @@ def _to_result(score: float, detail: dict | None) -> SearchResult:
             cwd="",
             git_branch="",
             captured_at=0,
+            design_decisions=[],
             linked_event_ids=[],
         )
     return SearchResult(
@@ -637,6 +639,7 @@ def _to_result(score: float, detail: dict | None) -> SearchResult:
         cwd=detail["cwd"],
         git_branch=detail["git_branch"],
         captured_at=detail["captured_at"],
+        design_decisions=list(detail.get("design_decisions") or []),
         linked_event_ids=list(detail["linked_event_ids"]),
     )
 

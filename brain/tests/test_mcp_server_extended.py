@@ -132,6 +132,7 @@ class TestSearchHybridTool:
             "cwd",
             "git_branch",
             "captured_at",
+            "design_decisions",
             "linked_event_ids",
         }
         assert expected_keys.issubset(r.keys()), (

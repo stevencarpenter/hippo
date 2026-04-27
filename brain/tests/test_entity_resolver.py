@@ -328,14 +328,8 @@ class TestStripWorktreePrefix:
             == "/repo/file.txt"
         )
 
-    def test_strip_does_not_match_directory_named_like_worktree(self):
-        # A directory literally named ".claude/worktrees/foo" with no trailing
-        # slash (i.e. the worktree IS the leaf) is preserved — without a
-        # trailing slash there's no segment AFTER the worktree dir to anchor on.
-        assert (
-            strip_worktree_prefix("/repo/.claude/worktrees/agent-XX")
-            == "/repo/.claude/worktrees/agent-XX"
-        )
+    def test_strip_leaf_worktree_directory(self):
+        assert strip_worktree_prefix("/repo/.claude/worktrees/agent-XX") == "/repo"
 
 
 class TestCanonicalizeStripsWorktreeBeforeProjectRoot:

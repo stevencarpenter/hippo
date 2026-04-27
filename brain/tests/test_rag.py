@@ -226,6 +226,25 @@ class TestBuildRagPrompt:
         assert "considered 'X'" in user
         assert "considered 'A'" not in user
 
+    def test_design_decisions_are_truncated_with_context_budget(self):
+        hit = dict(
+            SAMPLE_HITS[0],
+            embed_text="",
+            commands_raw="",
+            design_decisions=[
+                {
+                    "considered": "A" * 400,
+                    "chosen": "B" * 400,
+                    "reason": "C" * 400,
+                }
+            ],
+        )
+        messages = _build_rag_prompt("test", [hit], max_chars=220)
+        user = messages[1]["content"]
+        assert "Design decisions:" in user
+        assert "…" in user
+        assert ("A" * 200) not in user
+
 
 class TestFormatRagResponse:
     def test_formats_answer_and_sources(self):
@@ -481,6 +500,7 @@ def _fake_search_result(**overrides):
         cwd="/home/user/projects/hippo",
         git_branch="postgres",
         captured_at=1743379200000,
+        design_decisions=[],
         linked_event_ids=[42, 43],
     )
     base.update(overrides)
@@ -621,6 +641,35 @@ class TestFilteredRetrievalRouting:
             assert result["sources"][1]["linked_event_ids"] == []
             # Score round-trips from SearchResult.score through the _distance adapter.
             assert result["sources"][0]["score"] == pytest.approx(0.91, abs=0.001)
+        finally:
+            sentinel_conn.close()
+
+    @pytest.mark.asyncio
+    async def test_filters_path_surfaces_design_decisions_in_prompt(self):
+        client = _healthy_client(chat_return="ok")
+        sentinel_conn = sqlite3.connect(":memory:")
+        try:
+            with patch("hippo_brain.rag.retrieval_search") as retrieval_mock:
+                retrieval_mock.return_value = [
+                    _fake_search_result(
+                        design_decisions=[
+                            {
+                                "considered": "sqlite direct reads",
+                                "chosen": "hybrid retrieval",
+                                "reason": "better recall",
+                            }
+                        ]
+                    )
+                ]
+                await ask(
+                    "why hybrid?", client, None, "m", "e", project="/home/user", conn=sentinel_conn
+                )
+
+            prompt = client.chat.call_args.args[0][1]["content"]
+            assert "Design decisions:" in prompt
+            assert "sqlite direct reads" in prompt
+            assert "hybrid retrieval" in prompt
+            assert "better recall" in prompt
         finally:
             sentinel_conn.close()
 

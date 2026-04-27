@@ -38,12 +38,11 @@ from pathlib import Path
 _PATH_TYPES = frozenset({"file", "directory", "path"})
 _logger = logging.getLogger(__name__)
 
-# Matches `.claude/worktrees/<single-segment>/` anywhere in a path.
-# `<single-segment>` is any non-slash directory name — Claude Code worktrees
-# are named with varied schemes (`agent-XXXX`, `feat-XXXX`, adjective-noun-hex,
-# etc.), so we cannot rely on a fixed prefix. Trailing `/` is required so we
-# don't accidentally strip a file literally named ".claude/worktrees/foo".
-_WORKTREE_SEGMENT_RE = re.compile(r"\.claude/worktrees/[^/]+/")
+# Matches `/.claude/worktrees/<single-segment>/` or the same pattern at the
+# start of a relative path. `<single-segment>` is any non-slash directory name
+# — Claude Code worktrees are named with varied schemes (`agent-XXXX`,
+# `feat-XXXX`, adjective-noun-hex, etc.), so we cannot rely on a fixed prefix.
+_WORKTREE_SEGMENT_RE = re.compile(r"(^|/)\.claude/worktrees/[^/]+(/|$)")
 
 
 def _load_config_roots() -> list[str]:
@@ -106,9 +105,18 @@ def strip_worktree_prefix(path: str) -> str:
 
     Worktree subdirectory names vary (`agent-*`, `feat-*`, adjective-noun-hex
     pairs from Claude Code's namer, etc.), so the stripping is segment-name
-    agnostic — anything between `.claude/worktrees/` and the next `/` is removed.
+    agnostic — anything between `.claude/worktrees/` and the next `/` (or the
+    end of the path) is removed.
     """
-    return _WORKTREE_SEGMENT_RE.sub("", path)
+    stripped = path
+    while True:
+        next_value = _WORKTREE_SEGMENT_RE.sub(
+            lambda match: "" if match.group(2) == "" else match.group(1),
+            stripped,
+        )
+        if next_value == stripped:
+            return next_value
+        stripped = next_value
 
 
 def canonicalize(
