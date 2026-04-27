@@ -353,7 +353,7 @@ def test_brain_server_get_routes(tmp_db):
     _, db_path = tmp_db
     server = _make_server(str(db_path))
     routes = server.get_routes()
-    assert len(routes) == 7
+    assert len(routes) == 9
     paths = [r.path for r in routes]
     assert "/health" in paths
     assert "/sessions" in paths
@@ -361,6 +361,8 @@ def test_brain_server_get_routes(tmp_db):
     assert "/knowledge" in paths
     assert "/query" in paths
     assert "/ask" in paths
+    assert "/control/pause" in paths
+    assert "/control/resume" in paths
 
 
 # ---- create_app ----
@@ -940,7 +942,7 @@ def test_knowledge_list_routes_included(tmp_db):
     paths = [r.path for r in routes]
     assert "/knowledge" in paths
     assert "/knowledge/{id:int}" in paths
-    assert len(routes) == 7
+    assert len(routes) == 9
 
 
 # ---- /knowledge/{id} ----
@@ -1127,8 +1129,7 @@ def test_events_list_routes_included(tmp_db):
     routes = server.get_routes()
     paths = [r.path for r in routes]
     assert "/events" in paths
-    # Now 7 routes (+1 for /sessions)
-    assert len(routes) == 7
+    assert len(routes) == 9
 
 
 # ---- /sessions ----
@@ -1249,4 +1250,4 @@ def test_sessions_list_routes_included(tmp_db):
     routes = server.get_routes()
     paths = [r.path for r in routes]
     assert "/sessions" in paths
-    assert len(routes) == 7
+    assert len(routes) == 9
