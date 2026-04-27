@@ -39,6 +39,18 @@ MAX_WALL_HOURS="${RALPH_MAX_WALL_HOURS:-8}"
 FAIL_BUDGET="${RALPH_FAIL_BUDGET:-3}"
 DRY_RUN="${RALPH_DRY_RUN:-0}"
 
+# CLI flags (env vars take precedence; --dry-run is a convenience for
+# operators who don't want to set RALPH_DRY_RUN=1)
+for arg in "$@"; do
+    case "$arg" in
+        --dry-run) DRY_RUN=1 ;;
+        --help|-h)
+            sed -n '2,30p' "${BASH_SOURCE[0]}" | sed 's/^# \?//'
+            exit 0
+            ;;
+    esac
+done
+
 STATE_FILE="${WORKTREE}/.ralph/hippo-bench-v2-state.json"
 PLAN_FILE="${WORKTREE}/docs/superpowers/plans/2026-04-27-hippo-bench-v2-ralph-plan.md"
 LOG_DIR="${WORKTREE}/.ralph/logs"
@@ -192,30 +204,16 @@ print(sum(1 for t in state['tasks'].values() if t['status'] == 'blocked'))
 }
 
 # ---------------------------------------------------------------------------
-# Helper: check all completed
-# ---------------------------------------------------------------------------
-
-all_completed() {
-    python3 -c "
-import json
-with open('$STATE_FILE') as f:
-    state = json.load(f)
-tasks = state['tasks']
-if all(t['status'] == 'completed' for t in tasks.values()):
-    sys.exit(0)
-else:
-    sys.exit(1)
-" 2>/dev/null && return 0 || return 1
-}
-
-# ---------------------------------------------------------------------------
 # Helper: wall clock elapsed hours
 # ---------------------------------------------------------------------------
 
 elapsed_hours() {
-    local now
-    now=$(python3 -c "import time; print(int(time.time()))")
-    echo "scale=2; ($now - $LOOP_START_EPOCH) / 3600" | bc
+    # Use python3 (already a hard dependency) instead of bc, which isn't
+    # always installed on minimal macOS setups.
+    python3 -c "
+import time
+print(f'{(time.time() - $LOOP_START_EPOCH) / 3600:.2f}'.rstrip('0').rstrip('.') or '0')
+"
 }
 
 # ---------------------------------------------------------------------------
@@ -359,17 +357,17 @@ Read the plan, implement the task, run the verify commands, update the state fil
         echo "[ralph] DRY_RUN=1: would invoke claude -p with the following prompt:" | tee -a "$LOOP_LOG"
         echo "$CLAUDE_PROMPT" | head -20 | tee -a "$LOOP_LOG"
         echo "[ralph] (prompt truncated for dry-run display)" | tee -a "$LOOP_LOG"
-        # Simulate success
+        # Reset the in-progress task back to pending so a real run starts clean
         python3 -c "
 import json
 with open('$STATE_FILE') as f:
     state = json.load(f)
-state['tasks']['$next_task']['status'] = 'pending'  # reset for real run
+state['tasks']['$next_task']['status'] = 'pending'
 with open('$STATE_FILE', 'w') as f:
     json.dump(state, f, indent=2)
 "
-        echo "[ralph] DRY_RUN: continuing to next iter" | tee -a "$LOOP_LOG"
-        break
+        echo "[ralph] DRY_RUN: prompt validated, exiting 0" | tee -a "$LOOP_LOG"
+        exit 0
     fi
 
     # Invoke claude -p
