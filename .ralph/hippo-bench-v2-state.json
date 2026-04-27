@@ -1,0 +1,249 @@
+{
+  "schema_version": 1,
+  "plan_file": "docs/superpowers/plans/2026-04-27-hippo-bench-v2-ralph-plan.md",
+  "tasks": {
+    "RB2-01": {
+      "status": "completed",
+      "deps": [],
+      "last_attempt_iso": "2026-04-27T10:10:12.829548+00:00",
+      "last_error": null
+    },
+    "RB2-02": {
+      "status": "completed",
+      "deps": [],
+      "last_attempt_iso": "2026-04-27T10:11:08.524313+00:00",
+      "last_error": null
+    },
+    "RB2-03": {
+      "status": "completed",
+      "deps": [],
+      "last_attempt_iso": "2026-04-27T10:12:03.491700+00:00",
+      "last_error": null
+    },
+    "RB2-04": {
+      "status": "completed",
+      "deps": [
+        "RB2-01",
+        "RB2-02"
+      ],
+      "last_attempt_iso": "2026-04-27T10:15:54.933124+00:00",
+      "last_error": null
+    },
+    "RB2-05": {
+      "status": "completed",
+      "deps": [
+        "RB2-04"
+      ],
+      "last_attempt_iso": "2026-04-27T10:16:06.007144+00:00",
+      "last_error": null
+    },
+    "RB2-06": {
+      "status": "completed",
+      "deps": [
+        "RB2-03"
+      ],
+      "last_attempt_iso": "2026-04-27T10:17:49.880623+00:00",
+      "last_error": null
+    },
+    "RB2-07": {
+      "status": "completed",
+      "deps": [
+        "RB2-03"
+      ],
+      "last_attempt_iso": "2026-04-27T10:31:46.977559+00:00",
+      "last_error": null
+    },
+    "RB2-08": {
+      "status": "pending",
+      "deps": [
+        "RB2-06",
+        "RB2-07"
+      ],
+      "last_attempt_iso": null,
+      "last_error": "loop interrupted for merge resolution"
+    },
+    "RB2-09": {
+      "status": "completed",
+      "deps": [
+        "RB2-01",
+        "RB2-02"
+      ],
+      "last_attempt_iso": "2026-04-27T10:30:00.000000+00:00",
+      "last_error": null
+    },
+    "RB2-10": {
+      "status": "completed",
+      "deps": [
+        "RB2-09"
+      ],
+      "last_attempt_iso": "2026-04-27T10:32:00.000000+00:00",
+      "last_error": null
+    },
+    "RB2-11": {
+      "status": "pending",
+      "deps": [
+        "RB2-07"
+      ],
+      "last_attempt_iso": null,
+      "last_error": null
+    },
+    "RB2-12": {
+      "status": "pending",
+      "deps": [
+        "RB2-11"
+      ],
+      "last_attempt_iso": null,
+      "last_error": null
+    },
+    "RB2-13": {
+      "status": "pending",
+      "deps": [
+        "RB2-12"
+      ],
+      "last_attempt_iso": null,
+      "last_error": null
+    },
+    "RB2-14": {
+      "status": "completed",
+      "deps": [
+        "RB2-09",
+        "RB2-02"
+      ],
+      "last_attempt_iso": "2026-04-27T10:35:00.000000+00:00",
+      "last_error": null
+    },
+    "RB2-15": {
+      "status": "pending",
+      "deps": [
+        "RB2-01"
+      ],
+      "last_attempt_iso": null,
+      "last_error": null
+    },
+    "RB2-16": {
+      "status": "pending",
+      "deps": [
+        "RB2-09",
+        "RB2-04",
+        "RB2-12"
+      ],
+      "last_attempt_iso": null,
+      "last_error": null
+    },
+    "RB2-17": {
+      "status": "pending",
+      "deps": [
+        "RB2-04",
+        "RB2-06",
+        "RB2-07"
+      ],
+      "last_attempt_iso": null,
+      "last_error": null
+    },
+    "RB2-18": {
+      "status": "pending",
+      "deps": [
+        "RB2-16",
+        "RB2-17",
+        "RB2-19"
+      ],
+      "last_attempt_iso": null,
+      "last_error": null
+    },
+    "RB2-19": {
+      "status": "pending",
+      "deps": [
+        "RB2-06"
+      ],
+      "last_attempt_iso": null,
+      "last_error": null
+    },
+    "RB2-20": {
+      "status": "pending",
+      "deps": [
+        "RB2-06"
+      ],
+      "last_attempt_iso": null,
+      "last_error": null
+    },
+    "RB2-21P": {
+      "status": "pending",
+      "deps": [
+        "RB2-18"
+      ],
+      "last_attempt_iso": null,
+      "last_error": null
+    },
+    "RB2-21": {
+      "status": "pending",
+      "deps": [
+        "RB2-18",
+        "RB2-21P"
+      ],
+      "last_attempt_iso": null,
+      "last_error": null
+    },
+    "RB2-22": {
+      "status": "pending",
+      "deps": [
+        "RB2-01"
+      ],
+      "last_attempt_iso": null,
+      "last_error": null
+    },
+    "RB2-23": {
+      "status": "pending",
+      "deps": [
+        "RB2-22"
+      ],
+      "last_attempt_iso": null,
+      "last_error": null
+    },
+    "RB2-24": {
+      "status": "pending",
+      "deps": [
+        "RB2-22"
+      ],
+      "last_attempt_iso": null,
+      "last_error": null
+    },
+    "RB2-25": {
+      "status": "pending",
+      "deps": [
+        "RB2-22"
+      ],
+      "last_attempt_iso": null,
+      "last_error": null
+    },
+    "RB2-26": {
+      "status": "pending",
+      "deps": [
+        "RB2-21"
+      ],
+      "last_attempt_iso": null,
+      "last_error": null
+    },
+    "RB2-27": {
+      "status": "pending",
+      "deps": [
+        "RB2-21"
+      ],
+      "last_attempt_iso": null,
+      "last_error": null
+    },
+    "RB2-28": {
+      "status": "pending",
+      "deps": [
+        "RB2-05",
+        "RB2-08",
+        "RB2-10",
+        "RB2-13",
+        "RB2-14",
+        "RB2-15",
+        "RB2-27"
+      ],
+      "last_attempt_iso": null,
+      "last_error": null
+    }
+  }
+}
