@@ -10,32 +10,28 @@ Keep `EXPECTED_SCHEMA_VERSION` in sync with `EXPECTED_VERSION` in
 migration, bump both together.
 
 v11→v12 adds `content_hash` and `last_enriched_content_hash` to
-`claude_sessions`. As of T-A.5 the brain reads `content_hash` (in
-`claim_pending_claude_segments`) and writes `last_enriched_content_hash`
-on enrichment success. v11 stays in `ACCEPTED_READ_VERSIONS` for the
-v11→v12 rollback window, but the brain's claim and write paths now
-detect "no such column" errors and degrade gracefully when the columns
-are absent (logging a warning and falling back to a column-less query
-or skipping the write).
+`claude_sessions`. Brain now both reads `content_hash`
+(`claim_pending_claude_segments`) and writes `last_enriched_content_hash`
+(`write_claude_knowledge_node`), so v12 is the minimum readable version.
+The daemon-side handshake (`schema_handshake.rs`) already enforces strict
+equality, and dropping v11 from `ACCEPTED_READ_VERSIONS` brings brain's
+DB-attach guard in line: pre-v12 DBs are rejected at connect time rather
+than crashing later inside the enrichment loop on `no such column:
+content_hash`.
 """
 
 from __future__ import annotations
 
 EXPECTED_SCHEMA_VERSION: int = 12
 
-# Versions brain can read without erroring, so the daemon can migrate
-# forward and brain can still serve queries during the window where the
-# new rows are settling in. Brain requires v5 as the minimum because the
-# knowledge_nodes table and FTS5 index were added in that migration; v1–v4
-# DBs must be migrated by the daemon before brain starts. v10 is kept for
-# rollback compatibility during the v10→v11 window — the migration only adds
-# columns (resolved_at, clean_ticks) to capture_alarms which brain never
-# reads, so a v10-aware brain handles a v11 DB transparently. v11 is kept
-# for rollback compatibility during the v11→v12 window — the brain reads
-# the v12-added columns (content_hash, last_enriched_content_hash) in
-# claude_sessions, but `claim_pending_claude_segments` and the enrichment
-# writer detect missing columns at query time and fall back to a v11
-# code path (logging a warning) so a brain attached to a rolled-back
-# v11 DB continues to function with reduced features rather than
-# silently halting the enrichment loop.
-ACCEPTED_READ_VERSIONS: frozenset[int] = frozenset({EXPECTED_SCHEMA_VERSION, 11, 10, 9, 8, 7, 6, 5})
+# Versions brain can read without erroring. Brain requires v5 as the
+# minimum because the knowledge_nodes table and FTS5 index were added in
+# that migration; v1–v4 DBs must be migrated by the daemon before brain
+# starts. v10 is kept for rollback compatibility during the v10→v11
+# window — that migration only adds columns (resolved_at, clean_ticks)
+# to capture_alarms which brain never reads, so a v10-aware brain
+# handles a v11 DB transparently. v11 is intentionally NOT included:
+# brain now reads `content_hash` and writes `last_enriched_content_hash`
+# (added in v11→v12), so a v11 DB would fail mid-enrichment with
+# "no such column: content_hash". Reject at connect time instead.
+ACCEPTED_READ_VERSIONS: frozenset[int] = frozenset({EXPECTED_SCHEMA_VERSION, 10, 9, 8, 7, 6, 5})

@@ -170,12 +170,11 @@ CREATE TABLE IF NOT EXISTS claude_sessions
     enriched INTEGER NOT NULL DEFAULT 0,
     -- probe_tag is set only on synthetic probe rows; NULL on all real sessions.
     probe_tag TEXT,
-    -- v12: hash of the segment's content (tool_calls_json + user_prompts_json
-    -- + joined assistant_texts; see compute_segment_content_hash in
-    -- crates/hippo-daemon/src/claude_session.rs) at the time the daemon last
-    -- upserted this row. summary_text is intentionally NOT part of the hash
-    -- because it is a derived field and would cause spurious churn.
-    -- Set by the watcher on every upsert; NULL on legacy rows migrated from v11.
+    -- v12: SHA256 of the segment's content (tool_calls_json + "|" +
+    -- user_prompts_json + "|" + assistant_texts joined with "\n") at the time
+    -- the daemon last upserted this row. summary_text is intentionally NOT
+    -- part of the hash. Set by the watcher on every upsert; NULL on legacy
+    -- rows migrated from v11.
     content_hash TEXT,
     -- v12: hash of the content that the brain last enriched. Set by the
     -- enrichment worker when it completes; NULL until first enrichment.

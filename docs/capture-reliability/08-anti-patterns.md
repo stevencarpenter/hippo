@@ -111,3 +111,40 @@
 **Why.** Silent swallowing turns capture bugs invisible. `flush_events` in `daemon.rs` already demonstrates the correct pattern: every `Err(e)` branch calls `warn!`, writes to fallback, and calls `state.drop_count.fetch_add`. Failure is counted, logged, recoverable. Iterator patterns like `.filter_map(|r| r.ok())` produce zero log output when half the writes fail.
 
 **The right way.** Every error in a capture write path either propagates to the caller or, where continuation is required (batch processing), calls `warn!` with the full error and increments `consecutive_failures` in `source_health`. Clippy lint `clippy::result_map_unit_fn` and custom Semgrep rule flag silent-swallow in CI.
+
+---
+
+## AP-12: `INSERT OR IGNORE` on a derived bucket key whose content is mutable
+
+**Forbidden.** Using `INSERT OR IGNORE` (or `INSERT … ON CONFLICT DO NOTHING`) when the conflict key identifies a *bucket* whose row content is derived from an ever-growing source (e.g., `(session_id, segment_index)` for a JSONL segment that accretes messages over time).
+
+**Where seen:** `crates/hippo-daemon/src/claude_session.rs::insert_segments` until 2026-04-27 (see T-A.3 and `docs/capture-reliability/11-watcher-data-loss-fix.md` Phase 1).
+
+**Why it's wrong.** `(session_id, segment_index)` is a *bucket* key — it identifies a slice of a JSONL session file, but the slice's *content* (`message_count`, `tool_calls_json`, `assistant_texts`, etc.) grows over time as the file grows. The watcher re-runs `extract_segments` on every FSEvents notification. With `INSERT OR IGNORE`, the **first** partial extraction wins forever; subsequent reparses with more content are silently rejected. Result: every Claude session segment between 2026-04-25 and the fix was a tiny prefix of the actual content (median 2–4 messages out of hundreds; 59/63 recent segments had empty `tool_calls_json` — 6% non-empty vs ≈50%+ historical baseline).
+
+**Detection.** A query like the following will show implausibly low tool-extraction rates after a regression:
+
+```sql
+SELECT
+  ROUND(100.0 * COUNT(CASE WHEN json_array_length(tool_calls_json) > 0 THEN 1 END)
+        / COUNT(*), 1) AS pct_with_tools
+FROM claude_sessions
+WHERE end_time > strftime('%s', 'now', '-7 days') * 1000;
+```
+
+Healthy baseline: ≥ 40%. During the bug: 6%.
+
+**Use instead.** `INSERT … ON CONFLICT(key) DO UPDATE SET (mutable cols)`. If you also need to detect insert-vs-update for downstream side effects (e.g., re-enqueueing for enrichment), compare a content hash stored on the row rather than keying off the conflict outcome alone.
+
+```sql
+INSERT INTO claude_sessions (session_id, segment_index, content_hash, tool_calls_json, …)
+VALUES (?, ?, ?, ?, …)
+ON CONFLICT(session_id, segment_index) DO UPDATE SET
+    content_hash    = excluded.content_hash,
+    tool_calls_json = excluded.tool_calls_json,
+    …;
+```
+
+**Rule of thumb.** `INSERT OR IGNORE` is correct **only** when the conflict key uniquely identifies *the entire immutable row* (e.g., `envelope_id` for a fire-and-forget event, `tool_use_id` for a per-tool event). It is wrong for *bucket* keys whose row content is derived and mutable.
+
+**Cross-reference:** `docs/capture-reliability/11-watcher-data-loss-fix.md` Phase 1.

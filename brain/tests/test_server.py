@@ -638,6 +638,26 @@ def test_brain_server_rejects_wrong_schema_version(tmp_path):
         assert "schema version mismatch" in str(e).lower()
 
 
+def test_brain_server_rejects_v11_db(tmp_path):
+    """Regression for C-4/R2-5: brain reads `content_hash` (added in v12),
+    so a v11 DB must be rejected at connect time rather than crashing later
+    inside `claim_pending_claude_segments` with `no such column`.
+    """
+    import sqlite3
+
+    db_path = tmp_path / "v11.db"
+    conn = sqlite3.connect(str(db_path))
+    conn.execute("PRAGMA user_version = 11")
+    conn.close()
+
+    server = _make_server(str(db_path))
+    try:
+        server._get_conn()
+        raise AssertionError("Expected RuntimeError was not raised")
+    except RuntimeError as e:
+        assert "schema version mismatch" in str(e).lower()
+
+
 # ---- query alignment ----
 
 

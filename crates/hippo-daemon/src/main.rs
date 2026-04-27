@@ -1,7 +1,9 @@
 mod cli;
 mod install;
 
-use hippo_daemon::{claude_session, commands, daemon, gh_api, gh_poll, watch_claude_sessions};
+use hippo_daemon::{
+    backfill, claude_session, commands, daemon, gh_api, gh_poll, watch_claude_sessions,
+};
 
 use anyhow::{Context, Result};
 use clap::Parser;
@@ -836,6 +838,50 @@ async fn main() -> Result<()> {
                 let (sent, errors) =
                     claude_session::ingest_batch(path, &socket, timeout, &db).await?;
                 println!("Batch import complete: {sent} events sent, {errors} errors");
+            }
+            IngestSource::ClaudeSessionBackfill {
+                glob,
+                since,
+                dry_run,
+            } => {
+                let since_dt = match &since {
+                    Some(s) => Some(
+                        backfill::parse_since_date(s)
+                            .with_context(|| format!("invalid --since value: {s}"))?,
+                    ),
+                    None => None,
+                };
+
+                if dry_run {
+                    println!("Backfill DRY RUN — no changes written");
+                }
+
+                let summary = backfill::run_backfill(&config, &glob, since_dt, dry_run)?;
+
+                if dry_run {
+                    println!("\nBackfill DRY RUN — no changes written:");
+                    println!("  Files matched:        {:>6}", summary.files_matched);
+                    println!("  Duration:             {:>8.1}s", summary.duration_secs);
+                } else {
+                    println!("\nBackfill complete:");
+                    println!("  Files matched:        {:>6}", summary.files_matched);
+                    println!("  Files processed:      {:>6}", summary.files_processed);
+                    println!(
+                        "  Files errored:        {:>6}   (see warnings above)",
+                        summary.files_errored
+                    );
+                    println!(
+                        "  Segments updated:     {:>6}   (rows with content changes)",
+                        summary.segments_updated
+                    );
+                    println!(
+                        "  Segments unchanged:   {:>6}   (idempotent no-op)",
+                        summary.segments_unchanged
+                    );
+                    println!("  Duration:             {:>8.1}s", summary.duration_secs);
+                    println!();
+                    println!("Run `hippo doctor` to confirm enrichment queue depth.");
+                }
             }
         },
         Commands::GhPoll { repo } => {
