@@ -52,13 +52,45 @@ a one-line change rather than "remember to write the test later".
 | F-22 | `check_claude_session_hook_at` false-OK when settings.json is malformed / not-object | regression for #45, #46, #48 | rust unit | `crates/hippo-daemon/src/commands.rs` `mod tests` (`test_hook_check_structural_type_mismatch`, `test_hook_check_not_configured`, `test_hook_check_match_missing_script`) | existing | — |
 | F-23 | Claude settings.json `hooks.SessionStart` array has multiple hippo entries, one stale one current | observed during #48 rollout | rust unit | same as F-22 (`test_hook_check_multiple_entries_one_exact_match`) | existing | — |
 | F-24 | `hippo doctor` output for hook check is not behaviourally asserted — only smoke-tested ("does not panic") | code review of `commands.rs` `mod tests` | rust unit — assert on captured stdout | same as F-22 | source-change-required (would need `println!` → returning `String`, or a `writeln!(w, …)` injection) | — |
+| F-25 | `INSERT OR IGNORE` on `(session_id, segment_index)` silently freezes segment content at first partial extraction (Bug A) | 2026-04-26 investigation; AP-12; `11-watcher-data-loss-fix.md` | rust unit (hash, upsert, enqueue gate, sweep, backfill) + migration + Python | `crates/hippo-daemon/src/claude_session.rs`, `crates/hippo-daemon/src/watch_claude_sessions.rs`, `crates/hippo-daemon/src/backfill.rs`, `crates/hippo-core/src/storage.rs`, `brain/tests/test_claude_sessions.py` | new (T-A.1–T-A.7) | I-2 |
+
+### Phase 1 (Bug A) test coverage — F-25
+
+The 35 tests below cover the watcher data-loss fix shipped in T-A.1–T-A.7 (2026-04-27). Row F-25 in the table above represents the failure mode; the entries here give individual test names and file paths for traceability.
+
+| Group | Tests | File |
+|---|---|---|
+| Schema migration | `test_migrate_v11_to_v12_adds_content_hash`, `test_migrate_v11_to_v12_idempotent` | `crates/hippo-core/src/storage.rs` |
+| Content hash | `test_hash_empty_segment`, `test_hash_tools_only`, `test_hash_prompts_only`, `test_hash_combined`, `test_hash_sensitive_to_content_change` | `crates/hippo-daemon/src/claude_session.rs` |
+| Upsert (replaces INSERT OR IGNORE) | `test_upsert_new_row_inserted`, `test_upsert_existing_row_updated`, `test_upsert_idempotent_same_content` | `crates/hippo-daemon/src/claude_session.rs` |
+| Enqueue gate | `test_decide_enqueue_insert_always_enqueues`, `test_decide_enqueue_hash_unchanged_skips`, `test_decide_enqueue_debounce_not_elapsed_skips`, `test_decide_enqueue_processing_skips`, `test_decide_enqueue_hash_changed_and_debounced_enqueues`, `test_decide_enqueue_empty_segment_skips` | `crates/hippo-daemon/src/claude_session.rs` |
+| Empty-segment short-circuit | `test_insert_segments_skips_enqueue_for_empty_segment` | `crates/hippo-daemon/src/claude_session.rs` |
+| Settling sweep | `test_sweep_enqueues_idle_unsettled_segment`, `test_sweep_skips_recently_active_file`, `test_sweep_skips_already_settled_segment`, `test_sweep_skips_already_queued_segment`, `test_sweep_skips_processing_segment`, `test_sweep_skips_empty_segment`, `test_sweep_batch_cap_respected`, `test_sweep_pre_migration_guard`, `test_sweep_multiple_files` | `crates/hippo-daemon/src/watch_claude_sessions.rs` |
+| Backfill CLI | `test_backfill_resets_offset`, `test_backfill_since_filter`, `test_backfill_dry_run`, `test_backfill_idempotent`, `test_backfill_missing_file_skipped`, `test_backfill_summary_output` | `crates/hippo-daemon/src/backfill.rs` |
+| Brain hash propagation | `TestContentHashPropagation::test_hash_written_on_success`, `TestContentHashPropagation::test_hash_not_written_on_failure`, `TestContentHashPropagation::test_hash_triggers_reenrich_on_change`, `TestContentHashPropagation::test_hash_unchanged_skips_reenrich` | `brain/tests/test_claude_sessions.py` |
+
+**Running Phase 1 tests:**
+
+```bash
+# Rust — migration, hash, upsert, enqueue gate, sweep, backfill
+cargo test -p hippo-core storage::tests::test_migrate_v11
+cargo test -p hippo-daemon claude_session::tests::test_hash_
+cargo test -p hippo-daemon claude_session::tests::test_upsert_
+cargo test -p hippo-daemon claude_session::tests::test_decide_enqueue_
+cargo test -p hippo-daemon claude_session::tests::test_insert_segments_skips_enqueue_for_empty_segment
+cargo test -p hippo-daemon watch_claude_sessions::tests::test_sweep_
+cargo test -p hippo-daemon backfill::tests::test_backfill_
+
+# Python — brain hash propagation
+uv run --project brain pytest brain/tests/test_claude_sessions.py::TestContentHashPropagation -v
+```
 
 ### Invariant coverage cross-check
 
 | Invariant | Row(s) | Status |
 |---|---|---|
 | I-1 Shell liveness | F-11 | blocked-on-P0.1 |
-| I-2 Claude-session end-to-end | F-3, F-10 (active); F-1, F-5, F-18..F-21 (retired in T-8 — failure modes structurally eliminated by removing the tmux path) | F-3 covers batch-import; F-10 covers the FSEvents watcher end-to-end |
+| I-2 Claude-session end-to-end | F-3, F-10, F-25 (active); F-1, F-5, F-18..F-21 (retired in T-8 — failure modes structurally eliminated by removing the tmux path) | F-3 covers batch-import; F-10 covers the FSEvents watcher end-to-end; F-25 covers segment-content truncation (Bug A upsert fix) |
 | I-3 Claude-tool liveness | — | not yet implemented; skeleton row TBD when invariant test design lands |
 | I-4 Browser liveness | F-2, F-7 | fix PRs + new (this PR) |
 | I-5 Redaction correctness (no over-redaction) | F-4 | new (this PR) |
