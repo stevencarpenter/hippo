@@ -1,4 +1,4 @@
-use hippo_core::storage::open_db;
+use hippo_core::storage::{EXPECTED_VERSION, open_db};
 use rusqlite::Connection;
 use tempfile::TempDir;
 
@@ -20,8 +20,8 @@ fn v4_db_migrates_to_latest_and_has_workflow_tables() {
     let version: i64 = conn
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .unwrap();
-    // v4 → full chain (v5, v6, v7, v8, v9, v10); only the final version is exercised here.
-    assert_eq!(version, 11);
+    // v4 → full chain (v5..v12); only the final version is exercised here.
+    assert_eq!(version, EXPECTED_VERSION);
 
     for table in [
         "workflow_runs",

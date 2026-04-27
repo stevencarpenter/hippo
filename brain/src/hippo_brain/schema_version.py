@@ -8,11 +8,15 @@ the two processes disagree.
 Keep `EXPECTED_SCHEMA_VERSION` in sync with `EXPECTED_VERSION` in
 `crates/hippo-core/src/storage.rs`. When the daemon runs its next
 migration, bump both together.
+
+v11→v12 adds `content_hash` and `last_enriched_content_hash` to
+`claude_sessions`. Brain reads neither column yet — that wiring lands in
+T-A.5 — so a v11-aware brain handles a v12 DB transparently.
 """
 
 from __future__ import annotations
 
-EXPECTED_SCHEMA_VERSION: int = 11
+EXPECTED_SCHEMA_VERSION: int = 12
 
 # Versions brain can read without erroring, so the daemon can migrate
 # forward and brain can still serve queries during the window where the
@@ -21,5 +25,9 @@ EXPECTED_SCHEMA_VERSION: int = 11
 # DBs must be migrated by the daemon before brain starts. v10 is kept for
 # rollback compatibility during the v10→v11 window — the migration only adds
 # columns (resolved_at, clean_ticks) to capture_alarms which brain never
-# reads, so a v10-aware brain handles a v11 DB transparently.
-ACCEPTED_READ_VERSIONS: frozenset[int] = frozenset({EXPECTED_SCHEMA_VERSION, 10, 9, 8, 7, 6, 5})
+# reads, so a v10-aware brain handles a v11 DB transparently. v11 is kept
+# for rollback compatibility during the v11→v12 window — the migration only
+# adds columns (content_hash, last_enriched_content_hash) to claude_sessions
+# which brain does not yet read, so a v11-aware brain handles a v12 DB
+# transparently.
+ACCEPTED_READ_VERSIONS: frozenset[int] = frozenset({EXPECTED_SCHEMA_VERSION, 11, 10, 9, 8, 7, 6, 5})

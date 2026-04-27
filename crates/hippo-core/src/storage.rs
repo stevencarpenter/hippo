@@ -13,7 +13,7 @@ const SCHEMA: &str = include_str!("schema.sql");
 /// startup code (e.g. the brain handshake) can cross-check without
 /// re-declaring the value. Keep in sync with
 /// `brain/src/hippo_brain/schema_version.py::EXPECTED_SCHEMA_VERSION`.
-pub const EXPECTED_VERSION: i64 = 11;
+pub const EXPECTED_VERSION: i64 = 12;
 
 /// Idempotent `ALTER TABLE … ADD COLUMN`. Pre-checks `PRAGMA table_info`
 /// for the column name; if absent, runs the supplied DDL. Used by
@@ -521,6 +521,54 @@ pub fn open_db(path: &Path) -> Result<Connection> {
                  WHERE acked_at IS NULL AND resolved_at IS NULL;
              PRAGMA user_version = 11;",
         )?;
+    }
+
+    // Migrate from v11 → v12: add content_hash and last_enriched_content_hash
+    // to claude_sessions in support of the Phase 1 data-loss fix.
+    //
+    // Background: the FS watcher used INSERT OR IGNORE on (session_id,
+    // segment_index), so segments that grew after first capture were silently
+    // truncated — the stale row was never updated. The fix switches to an
+    // upsert (INSERT … ON CONFLICT DO UPDATE) keyed on content_hash so the
+    // daemon can detect when a segment has changed and overwrite the stale row.
+    //
+    // `content_hash` — set by the daemon watcher on every upsert; NULL on
+    //     rows that pre-date v12 (legacy rows are re-hashed on next watcher
+    //     pass via T-A.7 backfill).
+    // `last_enriched_content_hash` — set by the brain enrichment worker when
+    //     it completes enrichment of a segment. The brain compares this against
+    //     content_hash to detect stale knowledge nodes and re-enrich when they
+    //     diverge. NULL until first enrichment.
+    //
+    // See docs/capture-reliability/11-watcher-data-loss-fix.md, task T-A.1.
+    if (1..=11).contains(&version) {
+        // Guard: claude_sessions may not exist in minimal test DBs that only
+        // seed the tables relevant to an earlier migration. In production the
+        // table always exists (created in v3); skip the ALTERs if it is absent
+        // so older migration tests keep working.
+        let table_exists: bool = conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='claude_sessions')",
+            [],
+            |row| row.get(0),
+        )?;
+        if table_exists {
+            // Both ALTERs are idempotent via `add_column_if_missing`, so a
+            // partial-success crash (one column added, then crash before the
+            // second or before the user_version bump) is safe to re-run.
+            add_column_if_missing(
+                &conn,
+                "claude_sessions",
+                "content_hash",
+                "ALTER TABLE claude_sessions ADD COLUMN content_hash TEXT",
+            )?;
+            add_column_if_missing(
+                &conn,
+                "claude_sessions",
+                "last_enriched_content_hash",
+                "ALTER TABLE claude_sessions ADD COLUMN last_enriched_content_hash TEXT",
+            )?;
+        }
+        conn.execute_batch("PRAGMA user_version = 12;")?;
     } else if version != 0 && version != EXPECTED_VERSION {
         anyhow::bail!(
             "DB schema version mismatch: expected {}, found {}. \
@@ -1750,7 +1798,7 @@ mod tests {
         let v: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 11);
+        assert_eq!(v, EXPECTED_VERSION);
     }
 
     /// v10→v11 migration: add `resolved_at` and `clean_ticks` columns,
@@ -1786,11 +1834,12 @@ mod tests {
         // Run migrations.
         let conn = open_db(&db_path).unwrap();
 
-        // Schema is at v11.
+        // Schema is at EXPECTED_VERSION (v11→v12 also runs since the range
+        // covers all versions <= 11).
         let v: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 11);
+        assert_eq!(v, EXPECTED_VERSION);
 
         // Pre-existing row preserved.
         let count: i64 = conn
@@ -1860,7 +1909,7 @@ mod tests {
         let v: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 11);
+        assert_eq!(v, EXPECTED_VERSION);
 
         // Both columns must now exist.
         let cols: Vec<String> = conn
@@ -1883,6 +1932,150 @@ mod tests {
             result.is_err(),
             "CHECK (clean_ticks >= 0) must reject negative values"
         );
+    }
+
+    /// v11→v12 migration: add `content_hash` and `last_enriched_content_hash`
+    /// columns to `claude_sessions`. Pre-existing rows must survive with NULL
+    /// values in both new columns, and the schema must land at v12.
+    #[test]
+    fn test_migrate_v11_to_v12_adds_content_hash_columns() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("test.db");
+
+        // Build a v11-shaped DB: full claude_sessions column list as it
+        // exists today (no content_hash / last_enriched_content_hash), plus
+        // the capture_alarms and capture_alarms index that v11 introduced.
+        // user_version = 11 so open_db runs only the v11→v12 block.
+        {
+            let conn = rusqlite::Connection::open(&db_path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE claude_sessions (
+                    id INTEGER PRIMARY KEY,
+                    session_id TEXT NOT NULL,
+                    project_dir TEXT NOT NULL,
+                    cwd TEXT NOT NULL,
+                    git_branch TEXT,
+                    segment_index INTEGER NOT NULL,
+                    start_time INTEGER NOT NULL,
+                    end_time INTEGER NOT NULL,
+                    summary_text TEXT NOT NULL,
+                    tool_calls_json TEXT,
+                    user_prompts_json TEXT,
+                    message_count INTEGER NOT NULL,
+                    token_count INTEGER,
+                    source_file TEXT NOT NULL,
+                    is_subagent INTEGER NOT NULL DEFAULT 0,
+                    parent_session_id TEXT,
+                    enriched INTEGER NOT NULL DEFAULT 0,
+                    probe_tag TEXT,
+                    created_at INTEGER NOT NULL DEFAULT (unixepoch('now','subsec') * 1000),
+                    UNIQUE (session_id, segment_index)
+                 );
+                 INSERT INTO claude_sessions
+                     (session_id, project_dir, cwd, segment_index, start_time,
+                      end_time, summary_text, message_count, source_file)
+                 VALUES
+                     ('sess-1', '/proj', '/proj', 0, 1700000000000,
+                      1700000001000, 'hello world', 4, '/path/to/file.jsonl');
+                 PRAGMA user_version = 11;",
+            )
+            .unwrap();
+        }
+
+        // Run migrations.
+        let conn = open_db(&db_path).unwrap();
+
+        // Schema lands at v12.
+        let v: i64 = conn
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(v, 12);
+
+        // Pre-existing row is preserved.
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM claude_sessions", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 1);
+
+        // Both new columns exist and are NULL on the migrated row.
+        let (content_hash, last_enriched): (Option<String>, Option<String>) = conn
+            .query_row(
+                "SELECT content_hash, last_enriched_content_hash FROM claude_sessions",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert!(
+            content_hash.is_none(),
+            "content_hash must be NULL on legacy row"
+        );
+        assert!(
+            last_enriched.is_none(),
+            "last_enriched_content_hash must be NULL on legacy row"
+        );
+    }
+
+    /// A previous v11→v12 attempt may have crashed after adding `content_hash`
+    /// but before adding `last_enriched_content_hash` (or before bumping
+    /// user_version). `add_column_if_missing` must complete the migration on
+    /// re-run without erroring on the column that already exists.
+    #[test]
+    fn test_migrate_v11_to_v12_recovers_from_partial_success() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("test.db");
+
+        // v11-shaped table with `content_hash` already added (simulating a
+        // crash mid-migration). user_version still 11 so open_db re-runs the
+        // v11→v12 block.
+        {
+            let conn = rusqlite::Connection::open(&db_path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE claude_sessions (
+                    id INTEGER PRIMARY KEY,
+                    session_id TEXT NOT NULL,
+                    project_dir TEXT NOT NULL,
+                    cwd TEXT NOT NULL,
+                    git_branch TEXT,
+                    segment_index INTEGER NOT NULL,
+                    start_time INTEGER NOT NULL,
+                    end_time INTEGER NOT NULL,
+                    summary_text TEXT NOT NULL,
+                    tool_calls_json TEXT,
+                    user_prompts_json TEXT,
+                    message_count INTEGER NOT NULL,
+                    token_count INTEGER,
+                    source_file TEXT NOT NULL,
+                    is_subagent INTEGER NOT NULL DEFAULT 0,
+                    parent_session_id TEXT,
+                    enriched INTEGER NOT NULL DEFAULT 0,
+                    probe_tag TEXT,
+                    content_hash TEXT,
+                    created_at INTEGER NOT NULL DEFAULT (unixepoch('now','subsec') * 1000),
+                    UNIQUE (session_id, segment_index)
+                 );
+                 PRAGMA user_version = 11;",
+            )
+            .unwrap();
+        }
+
+        // Re-run open_db — must complete the migration without erroring.
+        let conn = open_db(&db_path).unwrap();
+
+        let v: i64 = conn
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(v, 12);
+
+        // Both columns must now exist.
+        let cols: Vec<String> = conn
+            .prepare("SELECT name FROM pragma_table_info('claude_sessions')")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+        assert!(cols.contains(&"content_hash".to_string()));
+        assert!(cols.contains(&"last_enriched_content_hash".to_string()));
     }
 
     #[test]
@@ -1952,7 +2145,7 @@ mod tests {
         let v: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 11);
+        assert_eq!(v, EXPECTED_VERSION);
         // Verify envelope_id column exists by inserting with it
         let sid = upsert_session(&conn, "mig-test", "host", "zsh", "user").unwrap();
         let eid = insert_event_at(
@@ -2038,7 +2231,7 @@ mod tests {
         let v: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 11);
+        assert_eq!(v, EXPECTED_VERSION);
     }
 
     #[test]
@@ -2140,7 +2333,7 @@ mod tests {
         let v: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 11);
+        assert_eq!(v, EXPECTED_VERSION);
 
         // Verify browser tables exist
         let browser_tables = [
@@ -2169,7 +2362,7 @@ mod tests {
         let v2: i64 = conn2
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v2, 11);
+        assert_eq!(v2, EXPECTED_VERSION);
     }
 
     fn sample_browser_event() -> BrowserEvent {
