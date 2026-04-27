@@ -181,3 +181,14 @@ pub static WATCHDOG_ALARMS_AUTO_RESOLVED: LazyLock<Counter<u64>> = LazyLock::new
         .with_description("Alarms cleared automatically after invariant stayed clean")
         .build()
 });
+
+/// Active alarms whose `clean_ticks` counter was reset to 0 by a re-violation
+/// during the same tick. Leading indicator of a flapping source: a non-zero
+/// rate here means an invariant is healing and re-violating without ever
+/// reaching the 2-tick auto-resolve threshold.
+pub static WATCHDOG_ALARMS_RESET: LazyLock<Counter<u64>> = LazyLock::new(|| {
+    METER
+        .u64_counter("hippo.watchdog.alarms.reset")
+        .with_description("Active alarms whose clean_ticks was reset by a re-violation")
+        .build()
+});

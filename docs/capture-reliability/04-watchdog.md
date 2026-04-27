@@ -68,6 +68,8 @@ One query over a small table. If absent (pre-migration install), create it from 
 
 **Step 4b — Auto-resolve recovered alarms.** After raising new alarms, walk every active (un-acked, un-resolved) row and check whether its `(invariant_id, source)` pair appears in the *current* tick's violation set. Pairs absent from the violation set get `clean_ticks += 1`; pairs present get `clean_ticks = 0`. When `clean_ticks` reaches `2`, set `resolved_at = now_ms`. Two ticks (≈120 s) is the minimum window that prevents single-tick flap from prematurely clearing an alarm. Resolved rows persist until `hippo alarms prune` acks them with `ack_note='auto-resolved'`.
 
+Because each watchdog invocation is a single-shot process under launchd, `clean_ticks` lives in the `capture_alarms` row, not in process memory. State carries across watchdog restarts — relaunches, redeploys, even reboots — so a healing invariant's progress toward auto-resolution is never lost. The whole step is wrapped in one transaction so the per-row UPDATEs commit atomically.
+
 **Step 5 — Exit clean.** `std::process::exit(0)`. launchd re-launches after `StartInterval`.
 
 ## Alarm Contract

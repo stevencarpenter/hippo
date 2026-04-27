@@ -260,7 +260,13 @@ pub fn run(config: &HippoConfig) -> Result<()> {
     // OTel→Loki pipeline picks it up — no new metric-type infrastructure
     // needed. Operators can build a Grafana panel from these fields by
     // querying `{job="hippo"} | json | line=~"watchdog: tick complete"`.
-    let (active_count, resolved_unacked_count) = count_alarm_states(&conn).unwrap_or((-1, -1));
+    let (active_count, resolved_unacked_count) = count_alarm_states(&conn).unwrap_or_else(|e| {
+        warn!(
+            error = %e,
+            "watchdog: count_alarm_states failed; emitting -1 sentinel"
+        );
+        (-1, -1)
+    });
     info!(
         active = active_count,
         resolved_unacked = resolved_unacked_count,
@@ -592,12 +598,6 @@ pub fn auto_resolve_alarms(
         .map(|v| (v.invariant_id.clone(), v.source.clone()))
         .collect();
 
-    let mut stmt = conn.prepare(
-        "SELECT id, invariant_id, details_json, clean_ticks
-         FROM capture_alarms
-         WHERE acked_at IS NULL AND resolved_at IS NULL",
-    )?;
-
     struct Row {
         id: i64,
         invariant_id: String,
@@ -605,25 +605,47 @@ pub fn auto_resolve_alarms(
         clean_ticks: i64,
     }
 
-    let rows: Vec<Row> = stmt
-        .query_map([], |r| {
+    // Scope `stmt` so its borrow of `conn` is released before we open the
+    // transaction below.
+    let rows: Vec<Row> = {
+        let mut stmt = conn.prepare(
+            "SELECT id, invariant_id, details_json, clean_ticks
+             FROM capture_alarms
+             WHERE acked_at IS NULL AND resolved_at IS NULL",
+        )?;
+        stmt.query_map([], |r| {
+            let id: i64 = r.get(0)?;
+            let invariant_id: String = r.get(1)?;
             let details_json: String = r.get(2)?;
-            let source = serde_json::from_str::<serde_json::Value>(&details_json)
-                .ok()
-                .and_then(|v| {
-                    v.get("source")
-                        .and_then(|s| s.as_str())
-                        .map(|s| s.to_string())
-                });
+            let source = match serde_json::from_str::<serde_json::Value>(&details_json) {
+                Ok(v) => v
+                    .get("source")
+                    .and_then(|s| s.as_str())
+                    .map(|s| s.to_string()),
+                Err(e) => {
+                    warn!(
+                        alarm_id = id,
+                        invariant = %invariant_id,
+                        error = %e,
+                        "watchdog: failed to parse alarm details_json; skipping auto-resolve for this row"
+                    );
+                    None
+                }
+            };
             Ok(Row {
-                id: r.get(0)?,
-                invariant_id: r.get(1)?,
+                id,
+                invariant_id,
                 source,
                 clean_ticks: r.get(3)?,
             })
         })?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
+        .collect::<rusqlite::Result<Vec<_>>>()?
+    };
 
+    // Batch every per-row UPDATE into one transaction. With a backlog of
+    // stale alarms this collapses N fsync-bounded autocommits into one and
+    // gives us atomicity if a future change adds more side effects below.
+    let tx = conn.unchecked_transaction()?;
     let mut resolved = 0usize;
     for row in rows {
         // Alarms with no parseable source can't be matched to a current
@@ -640,17 +662,19 @@ pub fn auto_resolve_alarms(
             // Reset the counter only if it has drifted from 0; spares a write
             // on the steady-state case where the alarm is freshly raised.
             if row.clean_ticks != 0 {
-                conn.execute(
+                tx.execute(
                     "UPDATE capture_alarms SET clean_ticks = 0 WHERE id = ?1",
                     rusqlite::params![row.id],
                 )?;
+                #[cfg(feature = "otel")]
+                crate::metrics::WATCHDOG_ALARMS_RESET.add(1, &[]);
             }
             continue;
         }
 
         let new_ticks = row.clean_ticks + 1;
         if new_ticks >= AUTO_RESOLVE_CLEAN_TICKS {
-            let updated = conn.execute(
+            let updated = tx.execute(
                 "UPDATE capture_alarms
                  SET clean_ticks = ?1, resolved_at = ?2
                  WHERE id = ?3 AND resolved_at IS NULL",
@@ -666,12 +690,13 @@ pub fn auto_resolve_alarms(
                 );
             }
         } else {
-            conn.execute(
+            tx.execute(
                 "UPDATE capture_alarms SET clean_ticks = ?1 WHERE id = ?2",
                 rusqlite::params![new_ticks, row.id],
             )?;
         }
     }
+    tx.commit()?;
 
     Ok(resolved)
 }

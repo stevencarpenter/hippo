@@ -597,13 +597,13 @@ pub fn handle_alarms_list(config: &HippoConfig) -> Result<bool> {
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
 
+    // `Iterator::partition` preserves source order, so active rows inherit
+    // raised_at ASC from the SELECT above — oldest still-violating alarm at
+    // the top. Resolved rows then re-sort to resolved_at DESC so the most-
+    // recent recoveries appear first (what an operator wants when scanning
+    // a long auto-resolved list).
     let (active, mut resolved): (Vec<&AlarmRow>, Vec<&AlarmRow>) =
         rows.iter().partition(|r| r.resolved_at.is_none());
-
-    // Active rows stay in raised_at ASC order so the oldest still-violating
-    // alarm is at the top. Resolved rows reverse to resolved_at DESC so the
-    // most-recent recoveries appear first — that's what an operator wants
-    // to see when scanning a long auto-resolved list.
     resolved.sort_by_key(|r| std::cmp::Reverse(r.resolved_at));
 
     if active.is_empty() && resolved.is_empty() {
@@ -632,85 +632,65 @@ pub fn handle_alarms_list(config: &HippoConfig) -> Result<bool> {
 }
 
 // Column widths for `hippo alarms list`, single source of truth so the
-// header, body, and underline never drift apart.
+// header and body never drift apart.
 const COL_ID: usize = 6;
 const COL_INVARIANT: usize = 12;
 const COL_TS: usize = 24;
-const COL_GAP: usize = 2;
-const COL_DETAILS_MIN: usize = 30;
 
 fn print_alarms_table(rows: &[&AlarmRow], show_resolved: bool) {
-    // Total width = sum of column widths + gaps between them. Computing it
-    // means the underline always matches the header, even if a column width
-    // is later tweaked. `+ COL_DETAILS_MIN` reserves space for the trailing
-    // DETAILS column which has no fixed width.
-    let n_cols = if show_resolved { 5 } else { 4 };
-    let fixed_width = COL_ID
-        + COL_INVARIANT
-        + COL_TS
-        + if show_resolved { COL_TS } else { 0 }
-        + COL_GAP * (n_cols - 1);
-    let total_width = fixed_width + COL_DETAILS_MIN;
-
-    if show_resolved {
-        println!(
-            "{:<id$}  {:<inv$}  {:<ts$}  {:<ts$}  DETAILS",
-            "ID",
-            "INVARIANT",
-            "RAISED",
-            "RESOLVED",
-            id = COL_ID,
-            inv = COL_INVARIANT,
-            ts = COL_TS,
-        );
+    let resolved_header = if show_resolved {
+        format!("{:<ts$}  ", "RESOLVED", ts = COL_TS)
     } else {
-        println!(
-            "{:<id$}  {:<inv$}  {:<ts$}  DETAILS",
-            "ID",
-            "INVARIANT",
-            "RAISED",
-            id = COL_ID,
-            inv = COL_INVARIANT,
-            ts = COL_TS,
-        );
-    }
-    println!("{}", "-".repeat(total_width));
+        String::new()
+    };
+    // Render the header into a String and size the underline from it so the
+    // two always match by construction. Row DETAILS may run longer than
+    // "DETAILS" — that's fine; the underline sits below the header, not the
+    // longest row.
+    let header = format!(
+        "{:<id$}  {:<inv$}  {:<ts$}  {}DETAILS",
+        "ID",
+        "INVARIANT",
+        "RAISED",
+        resolved_header,
+        id = COL_ID,
+        inv = COL_INVARIANT,
+        ts = COL_TS,
+    );
+    println!("{}", header);
+    println!("{}", "-".repeat(header.chars().count()));
 
     for row in rows {
         let raised = format_ts(row.raised_at);
         let details_summary = alarm_details_summary(&row.details_json);
-        if show_resolved {
-            let resolved = row
+        let resolved_col = if show_resolved {
+            let r = row
                 .resolved_at
                 .map(format_ts)
                 .unwrap_or_else(|| "-".to_string());
-            println!(
-                "{:<id$}  {:<inv$}  {:<ts$}  {:<ts$}  {}",
-                row.id,
-                row.invariant_id,
-                raised,
-                resolved,
-                details_summary,
-                id = COL_ID,
-                inv = COL_INVARIANT,
-                ts = COL_TS,
-            );
+            format!("{:<ts$}  ", r, ts = COL_TS)
         } else {
-            println!(
-                "{:<id$}  {:<inv$}  {:<ts$}  {}",
-                row.id,
-                row.invariant_id,
-                raised,
-                details_summary,
-                id = COL_ID,
-                inv = COL_INVARIANT,
-                ts = COL_TS,
-            );
-        }
+            String::new()
+        };
+        println!(
+            "{:<id$}  {:<inv$}  {:<ts$}  {}{}",
+            row.id,
+            row.invariant_id,
+            raised,
+            resolved_col,
+            details_summary,
+            id = COL_ID,
+            inv = COL_INVARIANT,
+            ts = COL_TS,
+        );
     }
 }
 
 fn format_ts(ts_ms: i64) -> String {
+    // Treat 0 as an uninitialized sentinel rather than rendering 1970-01-01.
+    if ts_ms == 0 {
+        return "-".to_string();
+    }
     chrono::DateTime::from_timestamp_millis(ts_ms)
         .map(|dt| dt.format("%Y-%m-%d %H:%M UTC").to_string())
         .unwrap_or_else(|| ts_ms.to_string())
