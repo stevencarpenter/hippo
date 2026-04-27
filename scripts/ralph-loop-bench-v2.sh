@@ -383,12 +383,16 @@ with open('$STATE_FILE', 'w') as f:
     claude_exit=0
     claude_output=""
 
-    claude_output=$(timeout 1800 claude \
+    # Use perl alarm-based timeout — `timeout` (GNU coreutils) is not
+    # installed by default on macOS. perl is on every macOS.
+    claude_output=$(perl -e 'alarm shift; exec @ARGV or die "exec: $!"' 1800 \
+        claude \
         -p \
         --output-format json \
         --no-session-persistence \
         --dangerously-skip-permissions \
         --add-dir "${WORKTREE}" \
+        -- \
         "${CLAUDE_PROMPT}" 2>&1) || claude_exit=$?
 
     ITER_END=$(python3 -c "import time; print(int(time.time()))")
