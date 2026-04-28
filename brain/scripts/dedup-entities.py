@@ -47,6 +47,7 @@ import logging
 import os
 import sqlite3
 import sys
+import uuid
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -187,15 +188,18 @@ def run(conn: sqlite3.Connection, dry_run: bool) -> dict[str, int]:
             final_updates.append((row["id"], new_name, new_canonical))
             total_rebranded += 1
 
-        # Phase 1: park every touched row at a unique placeholder canonical so
-        # the final UPDATEs can never collide on UNIQUE (type, canonical).
-        # Placeholder values are namespaced + id-suffixed, so two parallel
-        # invocations of this script wouldn't collide either (unlikely, but
-        # cheap to defend against).
+        # Phase 1: park every touched row at a placeholder canonical so the
+        # final UPDATEs can never collide on UNIQUE (type, canonical). The
+        # placeholder embeds a per-run UUID4 (32 hex chars) plus the entity id;
+        # collision with any real-world entity canonical or another in-flight
+        # invocation's placeholder is astronomically unlikely. Earlier versions
+        # used a deterministic `__dedup_pending_<id>__` token, which a
+        # malicious or coincidental entity row could collide with directly.
+        run_token = uuid.uuid4().hex
         for entity_id, _new_name, _new_canonical in final_updates:
             conn.execute(
                 "UPDATE entities SET canonical = ? WHERE id = ?",
-                [f"__dedup_pending_{entity_id}__", entity_id],
+                [f"__dedup_pending_{run_token}_{entity_id}__", entity_id],
             )
 
         # Phase 2: apply the real new values. Now no other entity row holds

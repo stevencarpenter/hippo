@@ -33,12 +33,21 @@ def dedup(monkeypatch):
     return _load_script_module()
 
 
-def _seed_entity(conn, etype, name, canonical):
-    now_ms = int(time.time() * 1000)
+def _seed_entity(conn, etype, name, canonical, *, created_at: int | None = None):
+    """Insert an entity row.
+
+    When ordering between rows matters (e.g. merge-survivor selection picks
+    the oldest `created_at`), pass an explicit `created_at` value. Relying on
+    `time.sleep` between calls is unreliable: we round to integer ms and two
+    consecutive calls within the same ms tick yield equal timestamps,
+    making survivor selection nondeterministic and the test flaky.
+    """
+    if created_at is None:
+        created_at = int(time.time() * 1000)
     conn.execute(
         "INSERT INTO entities (type, name, canonical, first_seen, last_seen, created_at) "
         "VALUES (?, ?, ?, ?, ?, ?)",
-        (etype, name, canonical, now_ms, now_ms, now_ms),
+        (etype, name, canonical, created_at, created_at, created_at),
     )
     conn.commit()
 
@@ -100,15 +109,17 @@ def test_duplicate_group_merge_also_strips_survivor_name(tmp_db, dedup):
     name with potentially-polluted display value."""
     conn, _ = tmp_db
     # Older row: polluted name + polluted canonical (pre-PR-100 state).
+    # Use explicit created_at values 1ms apart so the survivor (oldest) is
+    # deterministically selected — sleep-based ordering is unreliable.
     _seed_entity(
         conn,
         "file",
         "/Users/test/projects/hippo/.claude/worktrees/agent-old/brain/bar.py",
         "/users/test/projects/hippo/.claude/worktrees/agent-old/brain/bar.py",
+        created_at=1_700_000_000_000,
     )
     # Newer row with the same logical file in canonical form.
-    time.sleep(0.001)  # ensure newer created_at
-    _seed_entity(conn, "file", "brain/bar.py", "brain/bar.py")
+    _seed_entity(conn, "file", "brain/bar.py", "brain/bar.py", created_at=1_700_000_001_000)
 
     stats = dedup.run(conn, dry_run=False)
 
@@ -148,6 +159,53 @@ def test_rebrand_handles_canonical_swap_without_unique_collision(tmp_db, dedup):
     assert canonicals == ["alpha", "beta"]
 
 
+def test_placeholder_does_not_collide_with_existing_entity_canonical(tmp_db, dedup):
+    """The Phase-1 placeholder canonical must not collide with any pre-existing
+    entity's canonical. Earlier versions used a deterministic
+    `__dedup_pending_<id>__` token; if any existing entity of the same type
+    already had that canonical, the parking UPDATE would trip UNIQUE.
+
+    Defended against by embedding a per-run UUID4 into the placeholder so it
+    cannot be predicted ahead of time.
+
+    Setup: row 1 is a rebrand candidate ('file', polluted canonical). Row 2
+    is an already-clean 'file' whose canonical happens to be exactly what the
+    legacy placeholder for row 1 would have been. Under the old code the
+    Phase-1 update for row 1 would collide with row 2; under the new code it
+    cannot because row 1's placeholder embeds a UUID.
+    """
+    conn, _ = tmp_db
+    # Row 1: needs rebranding. SQLite will assign id=1.
+    _seed_entity(
+        conn,
+        "file",
+        "/Users/test/projects/hippo/.claude/worktrees/agent-x/foo.py",
+        "/users/test/projects/hippo/.claude/worktrees/agent-x/foo.py",
+    )
+    # Row 2: an already-clean 'file' whose canonical matches what the legacy
+    # placeholder for id=1 would have been (`__dedup_pending_1__`). Because
+    # canonicalize('file', '__dedup_pending_1__') == '__dedup_pending_1__'
+    # (no path logic kicks in), this row is NOT a rebrand candidate — its
+    # canonical stays put through the run, providing the adversarial
+    # collision target.
+    _seed_entity(conn, "file", "__dedup_pending_1__", "__dedup_pending_1__")
+
+    # Should complete without sqlite3.IntegrityError.
+    stats = dedup.run(conn, dry_run=False)
+
+    assert stats["rebranded"] == 1
+    # Row 2 still holds the canonical that would have collided.
+    canonicals = {
+        r[0] for r in conn.execute("SELECT canonical FROM entities WHERE type='file'").fetchall()
+    }
+    assert "__dedup_pending_1__" in canonicals
+    # Row 1 ended up with its real new canonical, not a placeholder.
+    assert "foo.py" in canonicals or any("foo.py" in c for c in canonicals)
+
+
+
+
+
 def test_dry_run_makes_no_changes(tmp_db, dedup):
     conn, _ = tmp_db
     _seed_entity(
@@ -159,7 +217,9 @@ def test_dry_run_makes_no_changes(tmp_db, dedup):
 
     stats = dedup.run(conn, dry_run=True)
 
-    # Stats reflect the work that *would* be done, but no UPDATEs ran.
+    # In dry-run mode no mutations are applied, so the mutation counters
+    # (`deleted`, `rebranded`) stay at 0 by design — they reflect work
+    # actually performed, not work that would be performed.
     assert stats["rebranded"] == 0
     row = conn.execute("SELECT name, canonical FROM entities").fetchone()
     assert ".claude/worktrees/" in row[0]
