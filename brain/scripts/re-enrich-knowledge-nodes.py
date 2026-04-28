@@ -65,6 +65,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
+from hippo_brain import vector_store  # noqa: E402
 from hippo_brain.claude_sessions import CLAUDE_SYSTEM_PROMPT  # noqa: E402
 from hippo_brain.client import LMStudioClient  # noqa: E402
 from hippo_brain.embeddings import embed_knowledge_node  # noqa: E402
@@ -215,12 +216,18 @@ def _update_node_in_place(
 ) -> None:
     """Replace the node's derived content + entity links inside one transaction.
 
-    Bumps enrichment_version to TARGET. Existing knowledge_node_entities links
-    are dropped first; upsert_entities re-adds them under the new entities
-    payload (which goes through the current canonicalize / strip_worktree
-    rules). knowledge_node_events / knowledge_node_claude_sessions /
-    knowledge_node_browser_events / knowledge_node_workflow_runs are untouched
-    — those are the source-event links and don't change on re-enrichment.
+    Does NOT bump ``enrichment_version`` — that's deferred until after the
+    embedding has also been refreshed (see ``_finalize_node_version``). If
+    embedding fails, the content has already been overwritten with new-model
+    output but the version stays at 1, so the next run will re-process and
+    overwrite again with another fresh LLM call. Cost is one extra LLM call
+    per partially-failed node; benefit is no node ever ends up at TARGET
+    with a stale embedding (which would silently degrade retrieval).
+
+    knowledge_node_entities is wiped + re-upserted under the current
+    canonicalize / strip_worktree rules. Source-event link tables
+    (knowledge_node_events / _claude_sessions / _browser_events /
+    _workflow_runs) are untouched.
     """
     now_ms = int(time.time() * 1000)
     content = json.dumps(
@@ -243,7 +250,7 @@ def _update_node_in_place(
             """
             UPDATE knowledge_nodes
             SET content = ?, embed_text = ?, outcome = ?, tags = ?,
-                enrichment_model = ?, enrichment_version = ?, updated_at = ?
+                enrichment_model = ?, updated_at = ?
             WHERE id = ?
             """,
             (
@@ -252,7 +259,6 @@ def _update_node_in_place(
                 result.outcome,
                 tags_json,
                 enrichment_model,
-                TARGET_ENRICHMENT_VERSION,
                 now_ms,
                 node_id,
             ),
@@ -266,6 +272,18 @@ def _update_node_in_place(
         raise
 
 
+def _finalize_node_version(conn: sqlite3.Connection, node_id: int) -> None:
+    """Bump enrichment_version to TARGET after content + embedding are both
+    refreshed. Separate from ``_update_node_in_place`` so a failed embed
+    leaves version at 1, ensuring the next run re-processes the node.
+    """
+    conn.execute(
+        "UPDATE knowledge_nodes SET enrichment_version = ? WHERE id = ?",
+        (TARGET_ENRICHMENT_VERSION, node_id),
+    )
+    conn.commit()
+
+
 async def _re_embed(
     client: LMStudioClient,
     conn: sqlite3.Connection,
@@ -276,6 +294,12 @@ async def _re_embed(
     if not embed_model:
         log.debug("no embed_model configured; skipping re-embed for node %d", node_id)
         return
+    # vec0 virtual tables don't honor INSERT OR REPLACE the way classical
+    # tables do — re-inserting against an existing knowledge_node_id raises
+    # `UNIQUE constraint failed on knowledge_vectors primary key`. The live
+    # brain never hits this because each enrichment creates a fresh node id.
+    # In re-enrichment we update in place, so we must DELETE first.
+    conn.execute("DELETE FROM knowledge_vectors WHERE knowledge_node_id = ?", (node_id,))
     await embed_knowledge_node(
         client,
         conn,
@@ -329,6 +353,7 @@ async def _process_node(
     try:
         _update_node_in_place(conn, node_id, result, enrichment_model)
         await _re_embed(client, conn, node_id, result.embed_text, embed_model)
+        _finalize_node_version(conn, node_id)
     except Exception as e:
         log.error("node %d (%s): write/embed failed: %s", node_id, source, e)
         return False
@@ -355,10 +380,20 @@ async def main_async(args: argparse.Namespace) -> int:
     base_url = settings.get("lmstudio_base_url", "http://localhost:1234/v1")
     timeout = float(settings.get("lmstudio_timeout_secs", 300.0))
 
-    conn = sqlite3.connect(str(db_path))
+    # vector_store.open_conn loads the sqlite-vec extension (vec0) and
+    # applies the standard PRAGMAs. Plain sqlite3.connect cannot write to
+    # the knowledge_vectors virtual table — embed_knowledge_node would
+    # error with "no such module: vec0".
+    conn = vector_store.open_conn(db_path)
     conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA foreign_keys=ON")
-    conn.execute("PRAGMA busy_timeout=5000")
+    # Autocommit mode: the script juggles its own explicit BEGIN/COMMIT
+    # blocks plus calls into embed_knowledge_node which manages its own
+    # transactions. Python's default DML auto-transaction would leave the
+    # connection mid-transaction after a failed INSERT (vec0 UNIQUE), so
+    # the next explicit BEGIN trips "cannot start a transaction within a
+    # transaction" and every subsequent node fails. Setting isolation_level
+    # to None disables the auto-transaction.
+    conn.isolation_level = None
 
     candidates = _select_candidate_nodes(conn, args.source, args.limit, args.newest_first)
     log.info(
