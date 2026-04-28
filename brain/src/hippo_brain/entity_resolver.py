@@ -173,11 +173,22 @@ def canonicalize(
         roots = _resolve_project_roots(project_roots)
         for root in roots:
             normalized = os.path.expanduser(root).lower().rstrip("/")
-            if v.startswith(normalized + "/"):
-                v = v[len(normalized) + 1 :]
-                break
+            # Exact-root match: collapse to basename. For projects this is
+            # the desired behavior — `<root>` reduces to the project name
+            # (e.g. "hippo"). For files/directories it's also useful when
+            # the entity *is* the root itself.
             if v == normalized:
                 v = Path(normalized).name  # e.g. "hippo-postgres" rather than ""
+                break
+            # Prefix strip: collapse `<root>/<suffix>` to `<suffix>`. For
+            # files/directories this is what makes `hippo/src/foo.rs` and
+            # `hippo-postgres/src/foo.rs` dedupe to the same `src/foo.rs`.
+            # For PROJECT entities we deliberately skip this — `hippo/brain`
+            # and `hippo-eval/brain` would otherwise both canonicalize to
+            # "brain" and merge into a single project entity, attaching
+            # future knowledge nodes from one project to the other's row.
+            if entity_type != "project" and v.startswith(normalized + "/"):
+                v = v[len(normalized) + 1 :]
                 break
 
     return v

@@ -81,6 +81,42 @@ class TestCanonicalizePathType:
         assert ".claude/worktrees/" not in result
         assert result == "/users/test/projects/kafka-s3"
 
+    def test_project_type_does_not_merge_cross_project_subpaths(self):
+        """Sub-paths from different project roots must NOT canonicalize to
+        the same value for project entities. If the prefix-strip applied to
+        projects (as it does for files), `hippo/brain` and `hippo-eval/brain`
+        would both reduce to `brain` and merge into a single project entity,
+        attaching future knowledge nodes from one project to the other.
+
+        Per Codex P1 review on PR #107.
+        """
+        roots = [
+            "/users/me/projects/hippo",
+            "/users/me/projects/hippo-eval",
+        ]
+        a = canonicalize("project", "/users/me/projects/hippo/brain", project_roots=roots)
+        b = canonicalize("project", "/users/me/projects/hippo-eval/brain", project_roots=roots)
+        assert a != b, f"sub-paths from different project roots merged: {a!r} == {b!r}"
+        # The full project-root-qualified subpaths are preserved so each
+        # entity stays distinct.
+        assert a == "/users/me/projects/hippo/brain"
+        assert b == "/users/me/projects/hippo-eval/brain"
+
+    def test_file_subpath_dedup_still_works(self):
+        """Sanity check: the project-only carve-out must NOT regress the
+        existing file-type behavior where `hippo/src/foo.rs` and
+        `hippo-postgres/src/foo.rs` legitimately merge to `src/foo.rs`.
+        """
+        roots = [
+            "/users/me/projects/hippo",
+            "/users/me/projects/hippo-postgres",
+        ]
+        a = canonicalize("file", "/users/me/projects/hippo/src/foo.rs", project_roots=roots)
+        b = canonicalize(
+            "file", "/users/me/projects/hippo-postgres/src/foo.rs", project_roots=roots
+        )
+        assert a == b == "src/foo.rs"
+
     def test_both_worktree_variants_resolve_same(self):
         roots = [
             "/users/carpenter/projects/hippo",
