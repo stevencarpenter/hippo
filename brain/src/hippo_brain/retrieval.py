@@ -17,6 +17,8 @@ import sqlite3
 from dataclasses import dataclass, field
 from typing import Protocol, Sequence
 
+from hippo_brain.enrichment import IDENTIFIER_ENTITY_TYPES
+
 
 RRF_K = 60
 CANDIDATE_POOL = 3000
@@ -48,6 +50,7 @@ class SearchResult:
     captured_at: int
     design_decisions: list[dict] = field(default_factory=list)
     linked_event_ids: list[int] = field(default_factory=list)
+    entities: dict[str, list[str]] = field(default_factory=dict)
 
 
 class _Backend(Protocol):
@@ -472,6 +475,7 @@ def _fetch_details(conn: sqlite3.Connection, node_ids: Sequence[int]) -> dict[in
             "git_branch": "",
             "captured_at": created_at,
             "linked_event_ids": [],
+            "entities": {},
         }
 
     # Attach shell event metadata (cwd/branch/captured_at prefer event data).
@@ -522,6 +526,38 @@ def _fetch_details(conn: sqlite3.Connection, node_ids: Sequence[int]) -> dict[in
             d["git_branch"] = branch
         if ts and ts > d["captured_at"]:
             d["captured_at"] = ts
+
+    # Hydrate type-bucketed entity names so the RAG renderer can surface them
+    # as a structural `Entities:` line above the truncatable `Detail:` block.
+    # The window function caps each node at 20 names (defends against
+    # pathological enrichments) and `substr(..., 1, 200)` caps each name
+    # (the schema has no length limit on entities.name).
+    type_placeholders = ",".join("?" for _ in IDENTIFIER_ENTITY_TYPES)
+    ent_rows = conn.execute(  # nosemgrep
+        f"""
+        SELECT knowledge_node_id, type, name FROM (
+          SELECT
+            kne.knowledge_node_id AS knowledge_node_id,
+            ent.type AS type,
+            substr(ent.name, 1, 200) AS name,
+            ROW_NUMBER() OVER (
+              PARTITION BY kne.knowledge_node_id
+              ORDER BY ent.type, ent.name
+            ) AS rn
+          FROM knowledge_node_entities kne
+          JOIN entities ent ON ent.id = kne.entity_id
+          WHERE kne.knowledge_node_id IN ({placeholders})
+            AND ent.type IN ({type_placeholders})
+        )
+        WHERE rn <= 20
+        """,
+        [*node_ids, *IDENTIFIER_ENTITY_TYPES],
+    ).fetchall()
+    for kn_id, etype, ename in ent_rows:
+        d = details.get(kn_id)
+        if d is None:
+            continue
+        d["entities"].setdefault(etype, []).append(ename)
 
     return details
 
@@ -641,6 +677,7 @@ def _to_result(score: float, detail: dict | None) -> SearchResult:
         captured_at=detail["captured_at"],
         design_decisions=list(detail.get("design_decisions") or []),
         linked_event_ids=list(detail["linked_event_ids"]),
+        entities=dict(detail.get("entities") or {}),
     )
 
 

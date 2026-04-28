@@ -5,6 +5,7 @@ import time
 import uuid
 
 from hippo_brain.enrichment import (
+    CURRENT_ENRICHMENT_VERSION,
     SHELL_ENTITY_TYPE_MAP,
     is_enrichment_eligible,
     upsert_entities,
@@ -46,6 +47,7 @@ Output a JSON object with these fields:
   - services: Services or APIs referenced
   - errors: Error messages being researched
   - domains: Key domains visited (e.g., "stackoverflow.com", "docs.rs")
+  - env_vars: Environment variable names referenced in the page content (UPPERCASE_WITH_UNDERSCORES, e.g. RUST_LOG, NODE_ENV). Use the exact verbatim name — do not lowercase, abbreviate, or guess.
 - tags: Descriptive, specific tags
 - embed_text: A detailed, identifier-dense paragraph (see rule above). Optimized for keyword retrieval, not prose.
 
@@ -326,7 +328,7 @@ def write_browser_knowledge_node(
             INSERT INTO knowledge_nodes (uuid, content, embed_text, node_type, outcome,
                                          tags, enrichment_model, enrichment_version,
                                          created_at, updated_at)
-            VALUES (?, ?, ?, 'observation', ?, ?, ?, 1, ?, ?)
+            VALUES (?, ?, ?, 'observation', ?, ?, ?, ?, ?, ?)
             """,
             (
                 node_uuid,
@@ -335,6 +337,7 @@ def write_browser_knowledge_node(
                 result.outcome,
                 tags_json,
                 model_name,
+                CURRENT_ENRICHMENT_VERSION,
                 now_ms,
                 now_ms,
             ),

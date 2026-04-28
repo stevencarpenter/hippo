@@ -88,7 +88,26 @@ SHELL_ENTITY_TYPE_MAP = {
     "files": "file",
     "services": "service",
     "errors": "concept",
+    "env_vars": "env_var",
 }
+
+# Single source of truth for which entity types carry user-bindable identifiers
+# (rendered on the RAG `Entities:` line). Adding a new type to any
+# `*_ENTITY_TYPE_MAP` requires updating exactly one of these tuples; the
+# taxonomy guard test (brain/tests/test_entity_taxonomy.py) fails otherwise.
+IDENTIFIER_ENTITY_TYPES: tuple[str, ...] = ("tool", "file", "service", "project", "env_var")
+NON_IDENTIFIER_ENTITY_TYPES: tuple[str, ...] = ("concept",)
+
+# Stamped into `knowledge_nodes.enrichment_version` on every newly written
+# node. Ratchets up whenever an enrichment-prompt or entity-taxonomy change
+# makes older outputs structurally stale, so the re-enrich script's WHERE
+# clause (`enrichment_version < TARGET_ENRICHMENT_VERSION`) naturally
+# selects every legacy node for refresh.
+#   v1 — original corpus
+#   v2 — PRs #100/#105/#107 (verbatim preservation, identifier-dense
+#        embed_text, design_decisions, worktree-stripped entity names)
+#   v3 — adds the env_var entity bucket (issue #108 follow-up)
+CURRENT_ENRICHMENT_VERSION: int = 3
 
 
 def upsert_entities(conn, node_id: int, entities_dict, entity_type_map: dict, now_ms: int):
@@ -167,6 +186,7 @@ Output a JSON object with these fields:
   - files: Specific files referenced (use actual paths from the events)
   - services: Services interacted with (databases, APIs, etc.)
   - errors: Actual error messages encountered (not generic descriptions)
+  - env_vars: Environment variable names referenced or required (UPPERCASE_WITH_UNDERSCORES, e.g. HIPPO_PROJECT_ROOTS, RUST_LOG, PATH). Include vars that the events read, set, exported, unset, or whose absence caused a failure. Use the exact verbatim name — do not lowercase, abbreviate, or guess.
 - tags: Descriptive, specific tags (not "success" or "editing")
 - embed_text: A detailed, identifier-dense paragraph (see rule above). Optimized for keyword retrieval, not prose.
 
@@ -420,7 +440,7 @@ def write_knowledge_node(
             INSERT INTO knowledge_nodes (uuid, content, embed_text, node_type, outcome,
                                          tags, enrichment_model, enrichment_version,
                                          created_at, updated_at)
-            VALUES (?, ?, ?, 'observation', ?, ?, ?, 1, ?, ?)
+            VALUES (?, ?, ?, 'observation', ?, ?, ?, ?, ?, ?)
             """,
             (
                 node_uuid,
@@ -429,6 +449,7 @@ def write_knowledge_node(
                 result.outcome,
                 tags_json,
                 model_name,
+                CURRENT_ENRICHMENT_VERSION,
                 now_ms,
                 now_ms,
             ),

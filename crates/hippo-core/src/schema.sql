@@ -65,7 +65,7 @@ CREATE TABLE IF NOT EXISTS entities
     id INTEGER PRIMARY KEY,
     type TEXT NOT NULL CHECK (type IN (
         'project', 'file', 'tool', 'service', 'repo', 'host', 'person',
-        'concept', 'domain'
+        'concept', 'domain', 'env_var'
     )),
     name TEXT NOT NULL,
     canonical TEXT,
@@ -541,4 +541,4 @@ CREATE TABLE IF NOT EXISTS claude_session_parity (
 CREATE INDEX IF NOT EXISTS idx_claude_session_parity_path_window
     ON claude_session_parity (path, window_start);
 
-PRAGMA user_version = 12;
+PRAGMA user_version = 13;

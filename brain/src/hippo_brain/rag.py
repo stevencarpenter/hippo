@@ -9,6 +9,7 @@ import time
 from datetime import datetime, timezone
 
 from hippo_brain.embeddings import EMBED_DIM, _pad_or_truncate, search_similar
+from hippo_brain.enrichment import IDENTIFIER_ENTITY_TYPES
 from hippo_brain.retrieval import Filters, SearchResult
 from hippo_brain.retrieval import search as retrieval_search
 from hippo_brain.telemetry import get_meter
@@ -36,9 +37,10 @@ _rag_degraded = (
 
 logger = logging.getLogger("hippo_brain.rag")
 
-DEFAULT_MAX_CONTEXT_CHARS = 8000
+DEFAULT_MAX_CONTEXT_CHARS = 12000
 DEFAULT_SOURCES_LIMIT = 10
 _MIN_PER_HIT_FIELD_CHARS = 80
+_ENTITIES_LINE_CAP = 500
 
 _SYSTEM_PROMPT = (
     "You are a personal knowledge assistant. The user is asking about their own past "
@@ -76,6 +78,31 @@ def _truncate(text: str, max_len: int) -> str:
     if len(text) <= max_len:
         return text
     return text[: max(max_len - 1, 1)] + "…"
+
+
+def _render_entities_line(entities: dict | None) -> str | None:
+    """Render structured entities as a flat comma-separated line.
+
+    Returns None when there is nothing to surface — caller omits the line
+    rather than emitting a bare "Entities:" prefix. Capped at
+    _ENTITIES_LINE_CAP so identifier-rich hits don't crowd embed_text out
+    of the structural budget.
+    """
+    if not isinstance(entities, dict):
+        return None
+    seen: set[str] = set()
+    tokens: list[str] = []
+    for etype in IDENTIFIER_ENTITY_TYPES:
+        for name in entities.get(etype) or []:
+            if not isinstance(name, str) or not name:
+                continue
+            if name in seen:
+                continue
+            seen.add(name)
+            tokens.append(name)
+    if not tokens:
+        return None
+    return f"Entities: {_truncate(', '.join(tokens), _ENTITIES_LINE_CAP)}"
 
 
 def _shape_rag_sources(
@@ -120,6 +147,9 @@ def _hit_lines(
     lines = [f"[{index}] (score: {score}, {date_str})"]
     if hit.get("summary"):
         lines.append(f"Summary: {hit['summary']}")
+    entities_line = _render_entities_line(hit.get("entities"))
+    if entities_line:
+        lines.append(entities_line)
     if hit.get("embed_text"):
         lines.append(f"Detail: {_truncate(hit['embed_text'], embed_cap)}")
     # Render design_decisions verbatim — the "considered X, chose Y, reason Z"
@@ -383,6 +413,7 @@ def _result_to_hit(r: SearchResult) -> dict:
         "design_decisions": list(r.design_decisions),
         "uuid": r.uuid,
         "linked_event_ids": list(r.linked_event_ids),
+        "entities": dict(r.entities),
     }
 
 

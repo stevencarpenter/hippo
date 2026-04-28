@@ -766,6 +766,88 @@ def test_upsert_entities_does_not_churn_clean_existing_name(tmp_db, monkeypatch)
     assert name == "/Users/test/projects/hippo/brain/bar.py"
 
 
+def test_write_knowledge_node_stores_env_var_entities(tmp_db):
+    """LLM output that includes the new `env_vars` array must land as
+    `env_var`-typed rows in the entities table — the canonical fix for
+    issue #108's missing-identifier failure mode. Surfaced verbatim, no
+    case folding.
+    """
+    conn, _ = tmp_db
+    _seed_event_with_queue(conn, event_id=1)
+
+    result = EnrichmentResult(
+        summary="Investigated dedup-entities script",
+        intent="debugging",
+        outcome="success",
+        entities={
+            "projects": [],
+            "tools": [],
+            "files": [],
+            "services": [],
+            "errors": [],
+            "env_vars": ["HIPPO_PROJECT_ROOTS", "RUST_LOG"],
+        },
+        tags=[],
+        embed_text="dedup-entities.py HIPPO_PROJECT_ROOTS RUST_LOG",
+    )
+    write_knowledge_node(conn, result, [1], "test-model")
+
+    rows = conn.execute("SELECT name FROM entities WHERE type = 'env_var' ORDER BY name").fetchall()
+    names = [r[0] for r in rows]
+    assert names == ["HIPPO_PROJECT_ROOTS", "RUST_LOG"], (
+        f"env_var rows not stored verbatim, got {names}"
+    )
+
+
+def test_parse_enrichment_response_accepts_env_vars_field():
+    """The `env_vars` array is a first-class entity bucket alongside
+    projects/tools/files/services/errors. Parsing must not drop it, and
+    non-string entries must be filtered like every other bucket."""
+    raw = json.dumps(
+        {
+            "summary": "x",
+            "intent": "x",
+            "outcome": "success",
+            "entities": {
+                "projects": [],
+                "tools": [],
+                "files": [],
+                "services": [],
+                "errors": [],
+                "env_vars": ["HIPPO_FORCE", 42, "PATH", None],
+            },
+            "tags": [],
+            "embed_text": "x",
+        }
+    )
+    result = parse_enrichment_response(raw)
+    assert result.entities["env_vars"] == ["HIPPO_FORCE", "PATH"]
+
+
+def test_parse_enrichment_response_defaults_env_vars_to_empty_list():
+    """Older LLM outputs (pre-v3 prompt) won't include the `env_vars` key.
+    Validation must default it to `[]` rather than crashing or skipping
+    the whole response."""
+    raw = json.dumps(
+        {
+            "summary": "x",
+            "intent": "x",
+            "outcome": "success",
+            "entities": {
+                "projects": [],
+                "tools": [],
+                "files": [],
+                "services": [],
+                "errors": [],
+            },
+            "tags": [],
+            "embed_text": "x",
+        }
+    )
+    result = parse_enrichment_response(raw)
+    assert result.entities["env_vars"] == []
+
+
 def test_upsert_entities_does_not_strip_non_path_types(tmp_db):
     """Non-path entity types (errors stored as `concept`) may legitimately
     contain `.claude/worktrees/...` substrings inside diagnostic messages.

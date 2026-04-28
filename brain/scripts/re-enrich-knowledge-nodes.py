@@ -32,8 +32,8 @@ Sources NOT handled by this version
 - **browser** — only 6 nodes in the live corpus; not worth a third
   branch in this script.
 
-Both stay at ``enrichment_version=1`` and will be skipped by future runs
-of this script. Add explicit handling later if needed.
+Both stay at their existing ``enrichment_version`` and will be skipped
+by future runs of this script. Add explicit handling later if needed.
 
 Usage
 -----
@@ -44,10 +44,13 @@ Usage
 Resume semantics
 ----------------
 The script bumps each successfully-processed node's
-``enrichment_version`` from 1 to 2. The default WHERE clause filters
-``enrichment_version < TARGET_VERSION``, so re-running picks up where a
-prior run left off. Failed nodes stay at the old version and will be
-retried on the next run.
+``enrichment_version`` to ``TARGET_ENRICHMENT_VERSION``. The default
+WHERE clause filters ``enrichment_version < TARGET_VERSION``, so a
+re-run picks up where a prior run left off. Failed nodes stay at the
+old version and will be retried on the next run. Each bump of the
+target invalidates the entire corpus — it ratchets up when an
+enrichment-prompt or entity-taxonomy change makes older outputs
+structurally stale (most recent: v3 added the ``env_vars`` bucket).
 """
 
 from __future__ import annotations
@@ -70,6 +73,7 @@ from hippo_brain.claude_sessions import CLAUDE_SYSTEM_PROMPT  # noqa: E402
 from hippo_brain.client import LMStudioClient  # noqa: E402
 from hippo_brain.embeddings import embed_knowledge_node  # noqa: E402
 from hippo_brain.enrichment import (  # noqa: E402
+    CURRENT_ENRICHMENT_VERSION,
     SHELL_ENTITY_TYPE_MAP,
     SYSTEM_PROMPT,
     build_enrichment_prompt,
@@ -77,7 +81,10 @@ from hippo_brain.enrichment import (  # noqa: E402
     upsert_entities,
 )
 
-TARGET_ENRICHMENT_VERSION = 2
+# The script targets the current daemon write version. Bumping
+# CURRENT_ENRICHMENT_VERSION in enrichment.py automatically invalidates the
+# whole corpus for re-enrichment.
+TARGET_ENRICHMENT_VERSION = CURRENT_ENRICHMENT_VERSION
 
 logging.basicConfig(
     level=logging.INFO,
