@@ -34,9 +34,11 @@ class TestCanonicalizeNonPath:
         assert canonicalize("service", "postgres/") == "postgres"
 
     def test_non_path_type_unaffected_by_path_logic(self):
-        # Even if the value looks like a path, non-path types are not stripped.
+        # Even if the value looks like a path, non-path types (tool, service,
+        # concept) are not stripped — their values may legitimately contain
+        # path-like substrings (e.g. an error message mentioning a file path).
         roots = ["/users/carpenter/projects/hippo"]
-        result = canonicalize("project", "/users/carpenter/projects/hippo/foo", project_roots=roots)
+        result = canonicalize("tool", "/users/carpenter/projects/hippo/foo", project_roots=roots)
         assert result == "/users/carpenter/projects/hippo/foo"
 
     def test_concept_unchanged(self):
@@ -57,6 +59,63 @@ class TestCanonicalizePathType:
             "file", "/users/carpenter/projects/hippo/src/storage.rs", project_roots=roots
         )
         assert result == "src/storage.rs"
+
+    def test_project_type_treated_as_path(self):
+        # Issue #98 follow-up: project entities are path-typed because the LLM
+        # consistently emits the session cwd as the project value. Without this,
+        # `/Users/foo/projects/hippo/.claude/worktrees/agent-X` would never
+        # dedupe with a clean `/Users/foo/projects/hippo` row.
+        roots = ["/users/carpenter/projects/hippo"]
+        polluted = "/users/carpenter/projects/hippo/.claude/worktrees/agent-x"
+        clean = "/users/carpenter/projects/hippo"
+        # Both reduce to the basename when the value matches a project root exactly.
+        assert canonicalize("project", polluted, project_roots=roots) == "hippo"
+        assert canonicalize("project", clean, project_roots=roots) == "hippo"
+
+    def test_project_type_strips_worktree_even_without_root_match(self):
+        # If the value's project root isn't in HIPPO_PROJECT_ROOTS, we still
+        # strip the worktree segment — leaving an absolute path that's at
+        # least dedup-friendly with other agents' runs of the same project.
+        polluted = "/users/test/projects/kafka-s3/.claude/worktrees/vibrant-satoshi"
+        result = canonicalize("project", polluted, project_roots=[])
+        assert ".claude/worktrees/" not in result
+        assert result == "/users/test/projects/kafka-s3"
+
+    def test_project_type_does_not_merge_cross_project_subpaths(self):
+        """Sub-paths from different project roots must NOT canonicalize to
+        the same value for project entities. If the prefix-strip applied to
+        projects (as it does for files), `hippo/brain` and `hippo-eval/brain`
+        would both reduce to `brain` and merge into a single project entity,
+        attaching future knowledge nodes from one project to the other.
+
+        Per Codex P1 review on PR #107.
+        """
+        roots = [
+            "/users/me/projects/hippo",
+            "/users/me/projects/hippo-eval",
+        ]
+        a = canonicalize("project", "/users/me/projects/hippo/brain", project_roots=roots)
+        b = canonicalize("project", "/users/me/projects/hippo-eval/brain", project_roots=roots)
+        assert a != b, f"sub-paths from different project roots merged: {a!r} == {b!r}"
+        # The full project-root-qualified subpaths are preserved so each
+        # entity stays distinct.
+        assert a == "/users/me/projects/hippo/brain"
+        assert b == "/users/me/projects/hippo-eval/brain"
+
+    def test_file_subpath_dedup_still_works(self):
+        """Sanity check: the project-only carve-out must NOT regress the
+        existing file-type behavior where `hippo/src/foo.rs` and
+        `hippo-postgres/src/foo.rs` legitimately merge to `src/foo.rs`.
+        """
+        roots = [
+            "/users/me/projects/hippo",
+            "/users/me/projects/hippo-postgres",
+        ]
+        a = canonicalize("file", "/users/me/projects/hippo/src/foo.rs", project_roots=roots)
+        b = canonicalize(
+            "file", "/users/me/projects/hippo-postgres/src/foo.rs", project_roots=roots
+        )
+        assert a == b == "src/foo.rs"
 
     def test_both_worktree_variants_resolve_same(self):
         roots = [
