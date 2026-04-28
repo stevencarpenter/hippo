@@ -5,6 +5,7 @@ import time
 import uuid
 
 from hippo_brain.enrichment import (
+    CURRENT_ENRICHMENT_VERSION,
     SHELL_ENTITY_TYPE_MAP,
     is_enrichment_eligible,
     upsert_entities,
@@ -13,6 +14,13 @@ from hippo_brain.models import EnrichmentResult
 from hippo_brain.watchdog import DEFAULT_LOCK_TIMEOUT_MS
 
 STALE_LOCK_TIMEOUT_MS = DEFAULT_LOCK_TIMEOUT_MS
+
+# Browser source extends the shell entity map with a `domains` bucket
+# (e.g. "stackoverflow.com", "docs.rs"). Promoted to a module-level
+# constant so the taxonomy guard test (`test_entity_taxonomy.py`) can
+# discover it via package introspection — every value here must be
+# classified in `IDENTIFIER_ENTITY_TYPES + NON_IDENTIFIER_ENTITY_TYPES`.
+BROWSER_ENTITY_TYPE_MAP: dict[str, str] = {**SHELL_ENTITY_TYPE_MAP, "domains": "domain"}
 
 BROWSER_SYSTEM_PROMPT = """You are a developer activity analyst. You receive a sequence of web pages a developer visited during a browsing session.
 
@@ -46,6 +54,7 @@ Output a JSON object with these fields:
   - services: Services or APIs referenced
   - errors: Error messages being researched
   - domains: Key domains visited (e.g., "stackoverflow.com", "docs.rs")
+  - env_vars: Environment variable names referenced in the page content (UPPERCASE_WITH_UNDERSCORES, e.g. RUST_LOG, NODE_ENV). Use the exact verbatim name — do not lowercase, abbreviate, or guess.
 - tags: Descriptive, specific tags
 - embed_text: A detailed, identifier-dense paragraph (see rule above). Optimized for keyword retrieval, not prose.
 
@@ -326,7 +335,7 @@ def write_browser_knowledge_node(
             INSERT INTO knowledge_nodes (uuid, content, embed_text, node_type, outcome,
                                          tags, enrichment_model, enrichment_version,
                                          created_at, updated_at)
-            VALUES (?, ?, ?, 'observation', ?, ?, ?, 1, ?, ?)
+            VALUES (?, ?, ?, 'observation', ?, ?, ?, ?, ?, ?)
             """,
             (
                 node_uuid,
@@ -335,6 +344,7 @@ def write_browser_knowledge_node(
                 result.outcome,
                 tags_json,
                 model_name,
+                CURRENT_ENRICHMENT_VERSION,
                 now_ms,
                 now_ms,
             ),
@@ -347,9 +357,9 @@ def write_browser_knowledge_node(
             [(node_id, eid) for eid in event_ids],
         )
 
-        # Upsert entities (browser adds "domains" to the standard map)
-        browser_entity_map = {**SHELL_ENTITY_TYPE_MAP, "domains": "domain"}
-        upsert_entities(conn, node_id, result.entities, browser_entity_map, now_ms)
+        # Upsert entities (browser map adds "domains" → "domain" to the shell
+        # taxonomy; see BROWSER_ENTITY_TYPE_MAP at the top of the module).
+        upsert_entities(conn, node_id, result.entities, BROWSER_ENTITY_TYPE_MAP, now_ms)
 
         # Mark browser events as enriched
         placeholders = ",".join("?" * len(event_ids))

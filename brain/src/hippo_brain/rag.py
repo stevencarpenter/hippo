@@ -9,6 +9,7 @@ import time
 from datetime import datetime, timezone
 
 from hippo_brain.embeddings import EMBED_DIM, _pad_or_truncate, search_similar
+from hippo_brain.enrichment import IDENTIFIER_ENTITY_TYPES
 from hippo_brain.retrieval import Filters, SearchResult
 from hippo_brain.retrieval import search as retrieval_search
 from hippo_brain.telemetry import get_meter
@@ -36,9 +37,10 @@ _rag_degraded = (
 
 logger = logging.getLogger("hippo_brain.rag")
 
-DEFAULT_MAX_CONTEXT_CHARS = 8000
+DEFAULT_MAX_CONTEXT_CHARS = 12000
 DEFAULT_SOURCES_LIMIT = 10
 _MIN_PER_HIT_FIELD_CHARS = 80
+_ENTITIES_LINE_CAP = 500
 
 _SYSTEM_PROMPT = (
     "You are a personal knowledge assistant. The user is asking about their own past "
@@ -76,6 +78,77 @@ def _truncate(text: str, max_len: int) -> str:
     if len(text) <= max_len:
         return text
     return text[: max(max_len - 1, 1)] + "…"
+
+
+def _render_entities_line(entities: dict | None) -> str | None:
+    """Render structured entities as a flat comma-separated line.
+
+    Returns None when there is nothing to surface — caller omits the line
+    rather than emitting a bare "Entities:" prefix. Capped at
+    _ENTITIES_LINE_CAP so identifier-rich hits don't crowd embed_text out
+    of the structural budget.
+
+    Truncation is at *token boundaries*, not character positions: char-
+    based truncation would emit `HIPPO_PROJECT_RO…`, which is exactly the
+    mid-identifier-clipping failure mode the line is designed to prevent.
+    When the joined tokens exceed the cap, we drop whole tokens from the
+    tail and append the standard ellipsis to signal omission.
+    """
+    if not isinstance(entities, dict):
+        return None
+    seen: set[str] = set()
+    tokens: list[str] = []
+    for etype in IDENTIFIER_ENTITY_TYPES:
+        for name in entities.get(etype) or []:
+            if not isinstance(name, str) or not name:
+                continue
+            if name in seen:
+                continue
+            seen.add(name)
+            tokens.append(name)
+    if not tokens:
+        return None
+
+    # First pass: pack tokens until the next ", <token>" would exceed the
+    # cap. Reserve room for a trailing ", …" ellipsis if we end up dropping
+    # any tokens, so the cap holds even with the marker appended. Lengths
+    # come from `len()` calls on the live separators so the math stays
+    # correct if the sentinel strings are ever changed.
+    sep = ", "
+    ellipsis = "…"
+    ellipsis_tail = sep + ellipsis
+    kept: list[str] = []
+    used = 0
+    for i, tok in enumerate(tokens):
+        candidate_len = len(tok) if not kept else used + len(sep) + len(tok)
+        # If anything after this token would need to be dropped, we need
+        # room for the ellipsis tail. Look one ahead to decide.
+        more_to_come = i < len(tokens) - 1
+        budget = _ENTITIES_LINE_CAP - (len(ellipsis_tail) if more_to_come else 0)
+        if candidate_len > budget:
+            break
+        kept.append(tok)
+        used = candidate_len
+    if not kept:
+        # First token alone exceeded the per-token-with-tail budget. Two
+        # sub-cases:
+        #   1. The token still fits within the raw cap and more tokens
+        #      were dropped — append a bare `…` (1 char) to signal the
+        #      omission without taking a chunk out of the identifier
+        #      itself. Costs at most 1 over the cap-minus-tail bound,
+        #      which we'd have spent on `, …` anyway.
+        #   2. The token exceeds the raw cap (pathological 200-char
+        #      name) or there is nothing after it — fall back to char-
+        #      based truncation. Verbatim preservation loses, but the
+        #      alternative is rendering nothing at all.
+        first = tokens[0]
+        if len(tokens) > 1 and len(first) < _ENTITIES_LINE_CAP:
+            return f"Entities: {first}{ellipsis}"
+        return f"Entities: {_truncate(first, _ENTITIES_LINE_CAP)}"
+    body = sep.join(kept)
+    if len(kept) < len(tokens):
+        body += ellipsis_tail
+    return f"Entities: {body}"
 
 
 def _shape_rag_sources(
@@ -120,6 +193,9 @@ def _hit_lines(
     lines = [f"[{index}] (score: {score}, {date_str})"]
     if hit.get("summary"):
         lines.append(f"Summary: {hit['summary']}")
+    entities_line = _render_entities_line(hit.get("entities"))
+    if entities_line:
+        lines.append(entities_line)
     if hit.get("embed_text"):
         lines.append(f"Detail: {_truncate(hit['embed_text'], embed_cap)}")
     # Render design_decisions verbatim — the "considered X, chose Y, reason Z"
@@ -383,6 +459,7 @@ def _result_to_hit(r: SearchResult) -> dict:
         "design_decisions": list(r.design_decisions),
         "uuid": r.uuid,
         "linked_event_ids": list(r.linked_event_ids),
+        "entities": dict(r.entities),
     }
 
 

@@ -20,6 +20,7 @@ from hippo_brain.retrieval import (
     RRF_K,
     Filters,
     SearchResult,
+    _fetch_details,
     search,
 )
 
@@ -577,3 +578,124 @@ def test_search_result_includes_linked_event_ids_and_metadata(conn):
 def test_constants_match_spec():
     assert RRF_K == 60
     assert MMR_LAMBDA == pytest.approx(0.7)
+
+
+# ---------------------------------------------------------------------------
+# Entity hydration (issue #108)
+# ---------------------------------------------------------------------------
+
+
+def _link_typed_entity(
+    conn: sqlite3.Connection,
+    node_id: int,
+    entity_id: int,
+    *,
+    entity_type: str,
+    name: str,
+    canonical: str | None = None,
+) -> None:
+    """Insert a typed entity and link it to a knowledge node."""
+    conn.execute(
+        "INSERT OR IGNORE INTO entities (id, type, name, canonical) VALUES (?, ?, ?, ?)",
+        (entity_id, entity_type, name, canonical or name),
+    )
+    conn.execute(
+        "INSERT INTO knowledge_node_entities (knowledge_node_id, entity_id) VALUES (?, ?)",
+        (node_id, entity_id),
+    )
+
+
+def test_fetch_details_hydrates_entities(conn):
+    """P0-3 — `_fetch_details` must populate `details[node_id]['entities']`
+    bucketed by type, honoring the per-node window of 20 names and the
+    `substr(..., 1, 200)` per-name cap. The SQL `WHERE ent.type IN (...)`
+    must also exclude `concept`-typed rows (those live in
+    NON_IDENTIFIER_ENTITY_TYPES and aren't fetched at the SQL layer)."""
+    _insert_node(conn, 1, summary="n1", embed_text="alpha")
+    _insert_node(conn, 2, summary="n2", embed_text="beta")
+
+    # Node 1: one of each identifier type plus an excluded concept entity.
+    _link_typed_entity(conn, 1, 10, entity_type="tool", name="pytest")
+    _link_typed_entity(conn, 1, 11, entity_type="file", name="brain/src/foo.py")
+    _link_typed_entity(conn, 1, 12, entity_type="service", name="sqlite-vec")
+    _link_typed_entity(conn, 1, 13, entity_type="project", name="hippo")
+    _link_typed_entity(conn, 1, 14, entity_type="concept", name="UNIQUE constraint failed")
+
+    # Node 2: 25 file entities to verify the per-node LIMIT 20 window cap.
+    for offset in range(25):
+        _link_typed_entity(
+            conn,
+            2,
+            100 + offset,
+            entity_type="file",
+            name=f"file_{offset:02d}.py",
+        )
+
+    details = _fetch_details(conn, [1, 2])
+
+    # Node 1: bucketed by type, concept excluded.
+    n1 = details[1]["entities"]
+    assert n1["tool"] == ["pytest"]
+    assert n1["file"] == ["brain/src/foo.py"]
+    assert n1["service"] == ["sqlite-vec"]
+    assert n1["project"] == ["hippo"]
+    assert "concept" not in n1, "concept-typed entities must not be hydrated"
+
+    # Node 2: window-limited to 20 names total.
+    n2 = details[2]["entities"]
+    total = sum(len(names) for names in n2.values())
+    assert total <= 20, f"per-node cap broken: total entity count {total} > 20"
+    # The first 20 files alphabetically (file_00..file_19) survive.
+    assert n2["file"] == [f"file_{i:02d}.py" for i in range(20)]
+
+
+def test_fetch_details_hydrates_env_var_entities(conn):
+    """`env_var` is a first-class identifier type (PR for issue #108
+    follow-up). It must be returned by the SQL `WHERE ent.type IN (...)`
+    filter and bucketed under the `env_var` key in `details[id]['entities']`
+    — not silently dropped like `concept` is."""
+    _insert_node(conn, 1, summary="env-vary node", embed_text="alpha")
+    _link_typed_entity(conn, 1, 10, entity_type="env_var", name="HIPPO_PROJECT_ROOTS")
+    _link_typed_entity(conn, 1, 11, entity_type="env_var", name="RUST_LOG")
+
+    details = _fetch_details(conn, [1])
+
+    assert details[1]["entities"]["env_var"] == ["HIPPO_PROJECT_ROOTS", "RUST_LOG"]
+
+
+def test_fetch_details_caps_pathological_entity_name_at_200_chars(conn):
+    """The schema has no length cap on `entities.name`. The retrieval SQL
+    applies `substr(ent.name, 1, 200)` so a single 10KB pathological name
+    can't blow up the rendered prompt or the in-memory dict size."""
+    _insert_node(conn, 1, summary="n", embed_text="alpha")
+    _link_typed_entity(conn, 1, 10, entity_type="tool", name="X" * 10_000)
+
+    details = _fetch_details(conn, [1])
+
+    assert details[1]["entities"]["tool"] == ["X" * 200]
+
+
+def test_fetch_details_entities_empty_when_no_links(conn):
+    """A node without any entity links gets `entities={}`, not a missing key.
+    Callers (`_to_result`, `_render_entities_line`) rely on the dict-typed
+    default so they can iterate without isinstance checks."""
+    _insert_node(conn, 1, summary="lonely", embed_text="alpha")
+
+    details = _fetch_details(conn, [1])
+
+    assert details[1]["entities"] == {}
+
+
+def test_search_result_carries_entities_through_to_result(conn):
+    """End-to-end: an entity-linked node returned from `search()` must have
+    its entities populated on the `SearchResult` dataclass — proves the
+    `_to_result` plumbing wires `detail['entities']` into the dataclass."""
+    _insert_node(conn, 1, summary="hi", embed_text="alpha")
+    _link_typed_entity(conn, 1, 10, entity_type="tool", name="pytest")
+    _link_typed_entity(conn, 1, 11, entity_type="project", name="hippo")
+
+    backend = FakeBackend(fts=[(1, -1.0)])
+    [result] = search(conn, "hi", None, Filters(), mode="lexical", limit=5, backend=backend)
+
+    assert isinstance(result, SearchResult)
+    assert result.entities == {"tool": ["pytest"], "project": ["hippo"]}

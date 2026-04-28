@@ -724,3 +724,196 @@ class TestFilteredRetrievalRouting:
             client.chat.assert_not_called()
         finally:
             sentinel_conn.close()
+
+
+# -- Entities line surfacing (issue #108) -----------------------------------
+
+
+class TestEntitiesLine:
+    """The `Entities:` line is the structural fix for issue #108: identifiers
+    that the enrichment LLM bucketed into `entities.tools/files/services/projects`
+    are surfaced as a flat comma-separated line above the truncatable `Detail:`
+    block, so they survive proportional `embed_text` truncation.
+    """
+
+    def _hit(self, **overrides):
+        base = dict(SAMPLE_HITS[0])
+        base["entities"] = {}
+        base.update(overrides)
+        return base
+
+    def test_entities_line_appears_above_detail_line(self):
+        """P0-1 — position invariant in `_hit_lines` output. The line must
+        sit above `Detail:` so identifier-rich tokens are visually adjacent
+        to the structured summary metadata, not the truncatable payload."""
+        hit = self._hit(
+            entities={
+                "tool": ["pytest"],
+                "file": ["brain/src/hippo_brain/rag.py"],
+            }
+        )
+        messages = _build_rag_prompt("q", [hit])
+        user = messages[1]["content"]
+        ent_idx = user.index("Entities:")
+        detail_idx = user.index("Detail:")
+        assert ent_idx < detail_idx, (
+            "Entities: line must render above Detail: line; "
+            f"got entities@{ent_idx} detail@{detail_idx}"
+        )
+
+    def test_entities_survive_proportional_truncation(self):
+        """P0-2 — load-bearing claim of the design. Force the second pass of
+        `_build_rag_prompt` (proportional payload truncation) and confirm the
+        Entities tokens are preserved verbatim while the Detail/Commands
+        payload is reduced. The first pass would render any prompt unchanged
+        regardless of where the entities live, so we must trip the truncation
+        branch (total > max_chars) for this test to mean anything."""
+        huge = "X" * 50_000
+        hit = self._hit(
+            embed_text=huge,
+            commands_raw=huge,
+            entities={
+                "tool": ["pytest", "ruff"],
+                "service": ["sqlite-vec"],
+                "project": ["hippo"],
+            },
+        )
+        messages = _build_rag_prompt("q", [hit, hit], max_chars=4000)
+        context = messages[1]["content"]
+        # Truncation actually happened.
+        assert "…" in context
+        assert len(context) < 5000
+        # Every identifier is still present despite payload truncation.
+        for token in ("pytest", "ruff", "sqlite-vec", "hippo"):
+            assert token in context, (
+                f"identifier token {token!r} dropped by proportional truncation"
+            )
+
+    def test_entities_dedup_across_types(self):
+        """P0-4 — same canonical token in two type buckets must render once.
+        A tool that's also a project name (e.g. `hippo` is both) shouldn't
+        crowd the line with duplicates."""
+        hit = self._hit(
+            entities={
+                "tool": ["hippo", "ruff"],
+                "project": ["hippo"],  # duplicate of tool entry
+            }
+        )
+        messages = _build_rag_prompt("q", [hit])
+        user = messages[1]["content"]
+        # Find the Entities: line and inspect its tokens.
+        line = next(line for line in user.splitlines() if line.startswith("Entities:"))
+        # Strip prefix and split.
+        payload = line[len("Entities: ") :]
+        # `hippo` should appear exactly once across the rendered tokens.
+        tokens = [t.strip() for t in payload.split(",")]
+        assert tokens.count("hippo") == 1, f"expected 1 'hippo' token, got tokens={tokens}"
+        assert "ruff" in tokens
+
+    def test_entities_cap_truncates_at_token_boundaries(self):
+        """P1-5 — line is capped at `_ENTITIES_LINE_CAP` (500) characters
+        AND truncation lands on token boundaries — not mid-identifier.
+        Char-based truncation would emit `identifier_42_xxxxxxxxx…`,
+        which is exactly the mid-identifier failure mode the line is
+        designed to prevent. 100 long identifiers exceed the cap; assert
+        the line is bounded, ends with the ellipsis tail, and every
+        surfaced token is intact (each kept token is a complete element
+        from the input list)."""
+        long_tokens = [f"identifier_{i:03d}_xxxxxxxxxxxxxxxx" for i in range(100)]
+        hit = self._hit(entities={"tool": long_tokens})
+        messages = _build_rag_prompt("q", [hit])
+        user = messages[1]["content"]
+        line = next(line for line in user.splitlines() if line.startswith("Entities:"))
+        payload = line[len("Entities: ") :]
+        assert len(payload) <= 500
+        # Truncation actually happened; the ellipsis tail signals it.
+        assert payload.endswith(", …"), (
+            f"expected token-boundary ellipsis tail, got payload={payload!r}"
+        )
+        # Drop the trailing ", …" sentinel; every remaining comma-split
+        # token must be one of the original inputs (no mid-identifier
+        # cuts).
+        kept = [t.strip() for t in payload.removesuffix(", …").split(",")]
+        for tok in kept:
+            assert tok in long_tokens, (
+                f"truncation produced non-original token {tok!r}; "
+                f"this is the mid-identifier-cut failure mode the helper exists to prevent"
+            )
+
+    def test_entities_borderline_first_token_still_signals_omission(self):
+        """Reviewer M1: when the first token is in the (cap - tail, cap]
+        range and additional tokens exist, the greedy packer rejects it
+        (no room for ", …" tail) and falls into the single-token path.
+        Without a signal, the rendered line would look complete even
+        though tokens were dropped. Verify the fallback appends a bare
+        `…` (no comma) so the omission is visible without taking a
+        chunk out of the identifier itself."""
+        # 497-char first token — fits within cap=500 but rejected by
+        # the cap-minus-tail budget of 497 vs 497 (497 > 496 → break).
+        long_first = "X" * 497
+        hit = self._hit(entities={"tool": [long_first, "ruff", "pytest"]})
+        messages = _build_rag_prompt("q", [hit])
+        user = messages[1]["content"]
+        line = next(line for line in user.splitlines() if line.startswith("Entities:"))
+        payload = line[len("Entities: ") :]
+        # First identifier preserved verbatim (no mid-token cut).
+        assert long_first in payload, "verbatim preservation was sacrificed"
+        # Omission signal present so reader knows tokens were dropped.
+        assert payload.endswith("…"), f"expected ellipsis signal, got {payload!r}"
+        # Cap respected (first token + 1-char ellipsis = 498).
+        assert len(payload) <= 500
+
+    def test_entities_omitted_when_all_types_empty(self):
+        """P1-6 — defensive: empty/missing entities must not produce a stray
+        `Entities:` prefix line. Covers `entities={}`, `entities={tool:[]}`,
+        and the missing-key case."""
+        for variant in (
+            self._hit(entities={}),
+            self._hit(entities={"tool": []}),
+            self._hit(entities={"tool": [], "file": [], "service": []}),
+        ):
+            messages = _build_rag_prompt("q", [variant])
+            assert "Entities:" not in messages[1]["content"], (
+                f"unexpected Entities: line for {variant['entities']!r}"
+            )
+
+        # Missing key altogether — drop entities from the dict.
+        bare = dict(SAMPLE_HITS[0])
+        bare.pop("entities", None)
+        messages = _build_rag_prompt("q", [bare])
+        assert "Entities:" not in messages[1]["content"]
+
+    def test_env_var_entities_surface_on_entities_line(self):
+        """The whole point of the env_var bucket: identifiers like
+        `HIPPO_PROJECT_ROOTS` must appear on the rendered `Entities:` line
+        for the synthesis LLM to verbatim-preserve them. This is the
+        canonical repro for issue #108."""
+        hit = self._hit(
+            entities={
+                "tool": ["pytest"],
+                "env_var": ["HIPPO_PROJECT_ROOTS", "RUST_LOG"],
+            }
+        )
+        messages = _build_rag_prompt("what env var?", [hit])
+        user = messages[1]["content"]
+        line = next(line for line in user.splitlines() if line.startswith("Entities:"))
+        assert "HIPPO_PROJECT_ROOTS" in line
+        assert "RUST_LOG" in line
+        assert "pytest" in line
+
+    def test_concept_entities_excluded_from_entities_line(self):
+        """P1-7 — `concept`-typed entities (errors, prose) are deliberately
+        NOT surfaced on the line. They live in `NON_IDENTIFIER_ENTITY_TYPES`
+        because they're prose, not bindable tokens."""
+        hit = self._hit(
+            entities={
+                "tool": ["pytest"],
+                "concept": ["UNIQUE constraint failed", "database is locked"],
+            }
+        )
+        messages = _build_rag_prompt("q", [hit])
+        user = messages[1]["content"]
+        line = next(line for line in user.splitlines() if line.startswith("Entities:"))
+        assert "pytest" in line
+        assert "UNIQUE constraint failed" not in line
+        assert "database is locked" not in line

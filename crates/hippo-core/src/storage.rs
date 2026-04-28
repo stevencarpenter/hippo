@@ -13,7 +13,7 @@ const SCHEMA: &str = include_str!("schema.sql");
 /// startup code (e.g. the brain handshake) can cross-check without
 /// re-declaring the value. Keep in sync with
 /// `brain/src/hippo_brain/schema_version.py::EXPECTED_SCHEMA_VERSION`.
-pub const EXPECTED_VERSION: i64 = 12;
+pub const EXPECTED_VERSION: i64 = 13;
 
 /// Idempotent `ALTER TABLE … ADD COLUMN`. Pre-checks `PRAGMA table_info`
 /// for the column name; if absent, runs the supplied DDL. Used by
@@ -569,6 +569,81 @@ pub fn open_db(path: &Path) -> Result<Connection> {
             )?;
         }
         conn.execute_batch("PRAGMA user_version = 12;")?;
+    }
+
+    // Migrate from v12 → v13: extend the entities.type CHECK list with
+    // 'env_var' so the enrichment pipeline can bucket environment variable
+    // names as a first-class identifier type. Surfaced on the RAG
+    // `Entities:` line via `IDENTIFIER_ENTITY_TYPES` (issue #108 follow-up).
+    //
+    // SQLite does not support ALTER TABLE … ADD CHECK, so we follow the
+    // documented 12-step recipe: create entities_new with the expanded
+    // CHECK, copy rows, drop the old table, rename the new one, and
+    // recreate the indexes. The ALTER TABLE RENAME preserves foreign-key
+    // references from `relationships`, `event_entities`, and
+    // `knowledge_node_entities` (their REFERENCES clauses are textual and
+    // resolve by name), but the DROP + RENAME sequence still requires
+    // `foreign_keys=OFF` to avoid a transient FK violation.
+    //
+    // Idempotency: `DROP TABLE IF EXISTS entities_new` lets a partial-
+    // success crash (e.g. crash between INSERT and DROP) be safely retried
+    // — the next run drops the half-populated entities_new and starts over.
+    // The `PRAGMA user_version = 13` bump is bundled into the same
+    // `execute_batch` as the table swap so the recipe and the version
+    // marker advance atomically: a crash after rename but before the
+    // version bump can no longer leave the DB at v12 with the new CHECK.
+    if (1..=12).contains(&version) {
+        let entities_exists: bool = conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='entities')",
+            [],
+            |row| row.get(0),
+        )?;
+        if entities_exists {
+            conn.execute_batch(
+                "PRAGMA foreign_keys = OFF;
+                 BEGIN;
+                 DROP TABLE IF EXISTS entities_new;
+                 CREATE TABLE entities_new (
+                     id INTEGER PRIMARY KEY,
+                     type TEXT NOT NULL CHECK (type IN (
+                         'project', 'file', 'tool', 'service', 'repo', 'host', 'person',
+                         'concept', 'domain', 'env_var'
+                     )),
+                     name TEXT NOT NULL,
+                     canonical TEXT,
+                     metadata TEXT,
+                     first_seen INTEGER NOT NULL DEFAULT (unixepoch('now', 'subsec') * 1000),
+                     last_seen INTEGER NOT NULL DEFAULT (unixepoch('now', 'subsec') * 1000),
+                     created_at INTEGER NOT NULL DEFAULT (unixepoch('now', 'subsec') * 1000),
+                     UNIQUE (type, canonical)
+                 );
+                 INSERT INTO entities_new
+                     (id, type, name, canonical, metadata, first_seen, last_seen, created_at)
+                     SELECT id, type, name, canonical, metadata, first_seen, last_seen, created_at
+                     FROM entities;
+                 DROP TABLE entities;
+                 ALTER TABLE entities_new RENAME TO entities;
+                 CREATE INDEX IF NOT EXISTS idx_entities_type_name ON entities (type, name);
+                 CREATE INDEX IF NOT EXISTS idx_entities_canonical ON entities (canonical)
+                     WHERE canonical IS NOT NULL;
+                 -- Defensive: SQLite's table-recreate recipe recommends a
+                 -- foreign_key_check before COMMIT so a future schema
+                 -- evolution that breaks the textual-FK-name resolution
+                 -- assumption surfaces here, not at the next FK-touching
+                 -- write. Cheap (one-pass scan of FK rows) and runs once
+                 -- per upgrade.
+                 PRAGMA foreign_key_check;
+                 PRAGMA user_version = 13;
+                 COMMIT;
+                 PRAGMA foreign_keys = ON;",
+            )?;
+        } else {
+            // No entities table to recreate (only happens in partial-schema
+            // test DBs); still advance the version so the migration doesn't
+            // re-trigger on every open. Mirrors the v11→v12 pattern for
+            // claude_sessions.
+            conn.execute_batch("PRAGMA user_version = 13;")?;
+        }
     } else if version != 0 && version != EXPECTED_VERSION {
         anyhow::bail!(
             "DB schema version mismatch: expected {}, found {}. \
@@ -1985,11 +2060,12 @@ mod tests {
         // Run migrations.
         let conn = open_db(&db_path).unwrap();
 
-        // Schema lands at v12.
+        // Schema lands at EXPECTED_VERSION (the v12→v13 block also runs
+        // since the range covers v11..=v12).
         let v: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 12);
+        assert_eq!(v, EXPECTED_VERSION);
 
         // Pre-existing row is preserved.
         let count: i64 = conn
@@ -2064,7 +2140,7 @@ mod tests {
         let v: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 12);
+        assert_eq!(v, EXPECTED_VERSION);
 
         // Both columns must now exist.
         let cols: Vec<String> = conn
@@ -2076,6 +2152,192 @@ mod tests {
             .unwrap();
         assert!(cols.contains(&"content_hash".to_string()));
         assert!(cols.contains(&"last_enriched_content_hash".to_string()));
+    }
+
+    /// v12→v13 migration: extend the entities.type CHECK list with
+    /// 'env_var'. The migration recreates the table because SQLite cannot
+    /// alter a CHECK constraint in place. Existing rows must survive the
+    /// recreation, and new env_var inserts must succeed afterwards.
+    #[test]
+    fn test_migrate_v12_to_v13_extends_entities_check_with_env_var() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("test.db");
+
+        // Build a v12-shaped entities table (the v8 CHECK list, no env_var)
+        // and seed one row of every existing type so we can prove the
+        // recreation preserved them all.
+        {
+            let conn = rusqlite::Connection::open(&db_path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE entities (
+                    id INTEGER PRIMARY KEY,
+                    type TEXT NOT NULL CHECK (type IN (
+                        'project', 'file', 'tool', 'service', 'repo', 'host', 'person',
+                        'concept', 'domain'
+                    )),
+                    name TEXT NOT NULL,
+                    canonical TEXT,
+                    metadata TEXT,
+                    first_seen INTEGER NOT NULL DEFAULT 1700000000000,
+                    last_seen INTEGER NOT NULL DEFAULT 1700000000000,
+                    created_at INTEGER NOT NULL DEFAULT 1700000000000,
+                    UNIQUE (type, canonical)
+                 );
+                 INSERT INTO entities (id, type, name, canonical) VALUES
+                    (1, 'project', 'hippo', 'hippo'),
+                    (2, 'file', '/tmp/foo.py', '/tmp/foo.py'),
+                    (3, 'tool', 'pytest', 'pytest'),
+                    (4, 'service', 'sqlite-vec', 'sqlite-vec'),
+                    (5, 'concept', 'database is locked', 'database is locked'),
+                    (6, 'domain', 'docs.rs', 'docs.rs');
+                 PRAGMA user_version = 12;",
+            )
+            .unwrap();
+        }
+
+        let conn = open_db(&db_path).unwrap();
+
+        // Schema lands at v13.
+        let v: i64 = conn
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(v, EXPECTED_VERSION);
+
+        // All six legacy rows survived the table recreation.
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM entities", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 6, "every legacy entity row must survive migration");
+
+        // env_var inserts now succeed (would fail with CHECK constraint
+        // error pre-migration).
+        conn.execute(
+            "INSERT INTO entities (type, name, canonical) \
+             VALUES ('env_var', 'HIPPO_PROJECT_ROOTS', 'HIPPO_PROJECT_ROOTS')",
+            [],
+        )
+        .expect("post-migration env_var insert must succeed");
+
+        // The two indexes are recreated on the renamed table.
+        let idx_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master \
+                 WHERE type='index' AND tbl_name='entities' \
+                 AND name IN ('idx_entities_type_name', 'idx_entities_canonical')",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(idx_count, 2, "both entity indexes must be recreated");
+    }
+
+    /// A previous v12→v13 attempt may have crashed mid-migration, leaving
+    /// `entities_new` populated but `entities` not yet dropped. The migration
+    /// must drop the half-built `entities_new` and start over cleanly.
+    #[test]
+    fn test_migrate_v12_to_v13_recovers_from_partial_success() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("test.db");
+
+        // v12-shaped entities table plus a half-populated entities_new from a
+        // crashed prior attempt. user_version is still 12 so open_db re-runs
+        // the migration block.
+        {
+            let conn = rusqlite::Connection::open(&db_path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE entities (
+                    id INTEGER PRIMARY KEY,
+                    type TEXT NOT NULL CHECK (type IN (
+                        'project', 'file', 'tool', 'service', 'repo', 'host', 'person',
+                        'concept', 'domain'
+                    )),
+                    name TEXT NOT NULL,
+                    canonical TEXT,
+                    metadata TEXT,
+                    first_seen INTEGER NOT NULL DEFAULT 1700000000000,
+                    last_seen INTEGER NOT NULL DEFAULT 1700000000000,
+                    created_at INTEGER NOT NULL DEFAULT 1700000000000,
+                    UNIQUE (type, canonical)
+                 );
+                 INSERT INTO entities (id, type, name, canonical) VALUES
+                    (1, 'tool', 'pytest', 'pytest');
+                 -- Half-populated entities_new from a crashed prior attempt.
+                 CREATE TABLE entities_new (
+                    id INTEGER PRIMARY KEY,
+                    type TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    canonical TEXT,
+                    metadata TEXT,
+                    first_seen INTEGER NOT NULL DEFAULT 0,
+                    last_seen INTEGER NOT NULL DEFAULT 0,
+                    created_at INTEGER NOT NULL DEFAULT 0,
+                    UNIQUE (type, canonical)
+                 );
+                 INSERT INTO entities_new (id, type, name, canonical)
+                     VALUES (1, 'tool', 'pytest', 'pytest');
+                 PRAGMA user_version = 12;",
+            )
+            .unwrap();
+        }
+
+        // Migration must complete cleanly despite the half-baked entities_new.
+        let conn = open_db(&db_path).unwrap();
+
+        let v: i64 = conn
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(v, EXPECTED_VERSION);
+
+        // Single legacy row survived; entities_new is gone (renamed).
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM entities", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 1);
+
+        // entities_new no longer exists at the end of a successful run.
+        let leftover: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE name='entities_new'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(leftover, 0, "entities_new must not survive the migration");
+    }
+
+    /// v12→v13 migration must still advance `user_version` on a partial-
+    /// schema test DB that has no `entities` table at all (only happens in
+    /// minimal migration-test fixtures, never in production). Mirrors the
+    /// v11→v12 `claude_sessions`-may-not-exist guard at line 544.
+    #[test]
+    fn test_migrate_v12_to_v13_advances_version_when_entities_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("test.db");
+
+        // Bare-minimum v12 DB with no `entities` table.
+        {
+            let conn = rusqlite::Connection::open(&db_path).unwrap();
+            conn.execute_batch("PRAGMA user_version = 12;").unwrap();
+        }
+
+        let conn = open_db(&db_path).unwrap();
+
+        // Schema lands at EXPECTED_VERSION even without an entities table —
+        // otherwise the migration block would re-trigger on every open.
+        let v: i64 = conn
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(v, EXPECTED_VERSION);
+
+        // No `entities` table was created (no schema seeded).
+        let exists: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='entities'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(exists, 0);
     }
 
     #[test]
