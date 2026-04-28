@@ -3,7 +3,7 @@ import re
 import time
 import uuid
 
-from hippo_brain.entity_resolver import canonicalize, strip_worktree_prefix
+from hippo_brain.entity_resolver import canonicalize, is_path_type, strip_worktree_prefix
 from hippo_brain.models import EnrichmentResult, validate_enrichment_data
 from hippo_brain.watchdog import DEFAULT_LOCK_TIMEOUT_MS
 
@@ -97,15 +97,33 @@ def upsert_entities(conn, node_id: int, entities_dict, entity_type_map: dict, no
     entity_ids = []
     for key, entity_type in entity_type_map.items():
         for name in all_entities.get(key, []):
+            # For path-type entities, strip worktree prefix from the display
+            # name too — not just the canonical key. `canonical` deduplicates
+            # correctly, but `name` is what `mcp__hippo__get_entities` and the
+            # UI surface, and an ephemeral `.claude/worktrees/<X>/` prefix
+            # here means the first write from inside a worktree poisons the
+            # display name forever. Non-path entity types (errors stored as
+            # `concept`, etc.) are left verbatim — their values may legitimately
+            # contain `.claude/worktrees/...` substrings inside stack traces or
+            # diagnostic messages, and rewriting those would lose information
+            # while creating a name/canonical divergence.
+            # On conflict, repair an existing polluted name with the new clean
+            # one; otherwise leave it alone (avoid churn for stable rows).
+            display_name = strip_worktree_prefix(name) if is_path_type(entity_type) else name
             canonical = canonicalize(entity_type, name)
             cursor = conn.execute(
                 """
                 INSERT INTO entities (type, name, canonical, first_seen, last_seen, created_at)
                 VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT (type, canonical) DO
-                UPDATE SET last_seen = excluded.last_seen
+                UPDATE SET last_seen = excluded.last_seen,
+                           name = CASE
+                               WHEN name LIKE '%.claude/worktrees/%'
+                                   THEN excluded.name
+                               ELSE name
+                           END
                 RETURNING id
                 """,
-                (entity_type, name, canonical, now_ms, now_ms, now_ms),
+                (entity_type, display_name, canonical, now_ms, now_ms, now_ms),
             )
             entity_ids.append(cursor.fetchone()[0])
     if entity_ids:
@@ -204,7 +222,11 @@ def parse_enrichment_response(raw: str) -> EnrichmentResult:
     text = re.sub(r"\n?```\s*$", "", text)
     text = text.strip()
 
-    data = json.loads(text)
+    # strict=False permits raw control characters (e.g. unescaped \n) inside
+    # string values. JSON spec disallows them, but local LLMs routinely emit
+    # them inside multi-line `summary`/`embed_text` values; rejecting these
+    # responses sends the retry loop into a hot loop of full-model inferences.
+    data = json.loads(text, strict=False)
     return validate_enrichment_data(data)
 
 

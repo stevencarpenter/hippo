@@ -133,6 +133,20 @@ class TestBuildRagPrompt:
         assert "ONLY the context" in system
         assert "Do not make up" in system
 
+    def test_system_prompt_contains_verbatim_preservation_rule(self):
+        """Issue #98 F2 follow-up: synthesis must preserve identifiers,
+        version strings, env var names, etc. exactly as they appear in the
+        retrieved context. Without this, the RAG layer silently paraphrases
+        version numbers and hallucinates plausible-sounding variants of env
+        var names — even when the right value is in `embed_text`.
+        """
+        messages = _build_rag_prompt("test", SAMPLE_HITS)
+        system = messages[0]["content"]
+        assert "VERBATIM" in system
+        assert "version strings" in system
+        assert "environment variable" in system.lower()
+        assert "hallucinated" in system.lower() or "hallucinate" in system.lower()
+
     def test_user_message_contains_question(self):
         messages = _build_rag_prompt("how did I set up NM?", SAMPLE_HITS)
         user = messages[1]["content"]

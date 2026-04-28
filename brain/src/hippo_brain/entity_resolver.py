@@ -35,7 +35,15 @@ import tomllib
 from functools import lru_cache
 from pathlib import Path
 
-_PATH_TYPES = frozenset({"file", "directory", "path"})
+# `project` is path-typed even though projects are conceptually identifiers
+# rather than filesystem locations: the LLM consistently emits the work
+# session's `cwd` as the project value (e.g. `/Users/foo/projects/hippo` or
+# `/Users/foo/projects/hippo/.claude/worktrees/agent-X`). Treating project as
+# path-typed lets canonicalize strip the worktree segment and reduce a
+# project-root-matching path to its basename ("hippo"). Without this, every
+# parallel-agent session yields a distinct project entity polluted with
+# `.claude/worktrees/<X>/` and never deduplicates with the clean root.
+_PATH_TYPES = frozenset({"file", "directory", "path", "project"})
 _logger = logging.getLogger(__name__)
 
 # Matches `/.claude/worktrees/<single-segment>/` or the same pattern at the
@@ -111,6 +119,17 @@ def _resolve_project_roots(override: list[str] | None) -> list[str]:
     return list(_cached_fallback_roots())
 
 
+def is_path_type(entity_type: str) -> bool:
+    """Return True for entity types whose values are filesystem paths.
+
+    Used by callers that want to apply path-only transforms (e.g.
+    `strip_worktree_prefix`) without rewriting non-path values like error
+    messages or concept strings, which may legitimately embed path-like
+    substrings inside diagnostic text.
+    """
+    return entity_type in _PATH_TYPES
+
+
 def strip_worktree_prefix(path: str) -> str:
     """Strip every `.claude/worktrees/<X>/` segment from `path`.
 
@@ -154,11 +173,22 @@ def canonicalize(
         roots = _resolve_project_roots(project_roots)
         for root in roots:
             normalized = os.path.expanduser(root).lower().rstrip("/")
-            if v.startswith(normalized + "/"):
-                v = v[len(normalized) + 1 :]
-                break
+            # Exact-root match: collapse to basename. For projects this is
+            # the desired behavior — `<root>` reduces to the project name
+            # (e.g. "hippo"). For files/directories it's also useful when
+            # the entity *is* the root itself.
             if v == normalized:
                 v = Path(normalized).name  # e.g. "hippo-postgres" rather than ""
+                break
+            # Prefix strip: collapse `<root>/<suffix>` to `<suffix>`. For
+            # files/directories this is what makes `hippo/src/foo.rs` and
+            # `hippo-postgres/src/foo.rs` dedupe to the same `src/foo.rs`.
+            # For PROJECT entities we deliberately skip this — `hippo/brain`
+            # and `hippo-eval/brain` would otherwise both canonicalize to
+            # "brain" and merge into a single project entity, attaching
+            # future knowledge nodes from one project to the other's row.
+            if entity_type != "project" and v.startswith(normalized + "/"):
+                v = v[len(normalized) + 1 :]
                 break
 
     return v

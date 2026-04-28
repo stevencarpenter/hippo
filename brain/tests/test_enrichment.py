@@ -153,6 +153,23 @@ def test_parse_rejects_invalid_json():
         parse_enrichment_response("not json")
 
 
+def test_parse_accepts_raw_control_chars_in_strings():
+    # Local LLMs (e.g. gpt-oss-120b) emit raw \n inside string values when
+    # generating multi-line summaries. JSON spec disallows it, but rejecting
+    # these responses puts the enrichment retry loop into a hot loop of
+    # full-model inferences. parse_enrichment_response must tolerate them.
+    raw = (
+        '{"summary": "line one\nline two\twith tab", '
+        '"intent": "testing", "outcome": "success", '
+        '"entities": {"projects": [], "tools": [], "files": [], '
+        '"services": [], "errors": []}, '
+        '"tags": [], "embed_text": "x"}'
+    )
+    result = parse_enrichment_response(raw)
+    assert "line one" in result.summary
+    assert "line two" in result.summary
+
+
 # ---------------------------------------------------------------------------
 # Issue #98 F3: design_decisions field validation.
 # ---------------------------------------------------------------------------
@@ -603,6 +620,190 @@ def test_write_knowledge_node_persists_design_decisions(tmp_db):
     assert entry["considered"].startswith("Stage GUI inside /Applications")
     assert entry["chosen"].startswith("Stage GUI in $TMPDIR")
     assert "Launch Services" in entry["reason"]
+
+
+# ---------------------------------------------------------------------------
+# Issue #98 F1 follow-up: entity *display name* must also be worktree-stripped.
+# PR #100 fixed the `canonical` column so dedup works, but the `name` column
+# (what `mcp__hippo__get_entities` returns) still stored the raw worktree path.
+# ---------------------------------------------------------------------------
+
+
+def _file_entity(conn, path: str) -> tuple[str, str]:
+    """Return (name, canonical) for a single 'file' entity matching `path`."""
+    row = conn.execute(
+        "SELECT name, canonical FROM entities WHERE type = 'file' AND name LIKE ?",
+        (f"%{path.rsplit('/', 1)[-1]}%",),
+    ).fetchone()
+    assert row is not None, f"no file entity matching {path}"
+    return row[0], row[1]
+
+
+def test_upsert_entities_strips_worktree_from_display_name(tmp_db, monkeypatch):
+    # Pin canonicalization roots so this test is deterministic — without it,
+    # canonicalize() falls back to ~/projects/*/.git auto-detection and the
+    # test outcome depends on the host filesystem (CI may or may not have a
+    # `~/projects/hippo` checkout). Also clear the cached fallback so a prior
+    # test in the same process doesn't poison this run.
+    monkeypatch.setenv("HIPPO_PROJECT_ROOTS", "/Users/test/projects/hippo")
+    from hippo_brain.entity_resolver import _cached_fallback_roots
+
+    _cached_fallback_roots.cache_clear()
+
+    conn, _ = tmp_db
+    _seed_event_with_queue(conn, event_id=1)
+
+    polluted = (
+        "/Users/test/projects/hippo/.claude/worktrees/youthful-kirch-7d3b27/"
+        "brain/src/hippo_brain/enrichment.py"
+    )
+    result = EnrichmentResult(
+        summary="Edited enrichment",
+        intent="coding",
+        outcome="success",
+        entities={
+            "projects": ["hippo"],
+            "tools": [],
+            "files": [polluted],
+            "services": [],
+            "errors": [],
+        },
+        tags=[],
+        embed_text="enrichment.py",
+    )
+    write_knowledge_node(conn, result, [1], "test-model")
+
+    name, _canonical = _file_entity(conn, "enrichment.py")
+    assert ".claude/worktrees/" not in name, f"display name still polluted: {name}"
+    assert name.endswith("brain/src/hippo_brain/enrichment.py")
+
+
+def test_upsert_entities_repairs_existing_polluted_name(tmp_db, monkeypatch):
+    """A clean write must heal a row whose `name` was polluted by an earlier
+    pre-fix write (same canonical, polluted display name)."""
+    monkeypatch.setenv("HIPPO_PROJECT_ROOTS", "/Users/test/projects/hippo")
+    from hippo_brain.entity_resolver import _cached_fallback_roots
+
+    _cached_fallback_roots.cache_clear()
+
+    conn, _ = tmp_db
+    _seed_event_with_queue(conn, event_id=1)
+    _seed_event_with_queue(conn, event_id=2, session_id=2)
+
+    # Simulate a pre-fix row: polluted name, but canonical is already correct
+    # (since canonicalize() in PR #100 already strips worktree segments).
+    now_ms = int(time.time() * 1000)
+    conn.execute(
+        "INSERT INTO entities (type, name, canonical, first_seen, last_seen, created_at) "
+        "VALUES ('file', ?, ?, ?, ?, ?)",
+        (
+            "/users/test/projects/hippo/.claude/worktrees/agent-old/brain/foo.py",
+            "brain/foo.py",
+            now_ms,
+            now_ms,
+            now_ms,
+        ),
+    )
+    conn.commit()
+
+    # Fresh write with a clean path — should heal the existing polluted name.
+    result = EnrichmentResult(
+        summary="...",
+        intent="coding",
+        outcome="success",
+        entities={
+            "projects": [],
+            "tools": [],
+            "files": ["/Users/test/projects/hippo/brain/foo.py"],
+            "services": [],
+            "errors": [],
+        },
+        tags=[],
+        embed_text="x",
+    )
+    write_knowledge_node(conn, result, [1], "test-model")
+
+    name, _ = _file_entity(conn, "foo.py")
+    assert ".claude/worktrees/" not in name
+
+
+def test_upsert_entities_does_not_churn_clean_existing_name(tmp_db, monkeypatch):
+    """If the existing display name is already clean, a subsequent write with a
+    different (but still clean) name shouldn't overwrite it — avoids churn."""
+    monkeypatch.setenv("HIPPO_PROJECT_ROOTS", "/Users/test/projects/hippo")
+    from hippo_brain.entity_resolver import _cached_fallback_roots
+
+    _cached_fallback_roots.cache_clear()
+
+    conn, _ = tmp_db
+    _seed_event_with_queue(conn, event_id=1)
+    _seed_event_with_queue(conn, event_id=2, session_id=2)
+
+    # Both writes carry clean names; only the canonical matches.
+    for source_path in (
+        "/Users/test/projects/hippo/brain/bar.py",
+        "brain/bar.py",  # second write: shorter, but canonical is the same
+    ):
+        result = EnrichmentResult(
+            summary="...",
+            intent="coding",
+            outcome="success",
+            entities={
+                "projects": [],
+                "tools": [],
+                "files": [source_path],
+                "services": [],
+                "errors": [],
+            },
+            tags=[],
+            embed_text="x",
+        )
+        evid = 1 if source_path.startswith("/") else 2
+        write_knowledge_node(conn, result, [evid], "test-model")
+
+    name, _ = _file_entity(conn, "bar.py")
+    # The first write's name is preserved; the second clean write didn't churn it.
+    assert name == "/Users/test/projects/hippo/brain/bar.py"
+
+
+def test_upsert_entities_does_not_strip_non_path_types(tmp_db):
+    """Non-path entity types (errors stored as `concept`) may legitimately
+    contain `.claude/worktrees/...` substrings inside diagnostic messages.
+    Stripping them would lose information and create a name/canonical
+    divergence (canonicalize doesn't strip for non-path types either).
+    """
+    conn, _ = tmp_db
+    _seed_event_with_queue(conn, event_id=1)
+
+    # An error message that happens to mention a worktree path inline. The
+    # error string is stored as a 'concept' entity per SHELL_ENTITY_TYPE_MAP.
+    error_msg = (
+        "FileNotFoundError: cannot stat "
+        "/Users/test/projects/hippo/.claude/worktrees/agent-XX/foo.py"
+    )
+    result = EnrichmentResult(
+        summary="...",
+        intent="debugging",
+        outcome="failure",
+        entities={
+            "projects": [],
+            "tools": [],
+            "files": [],
+            "services": [],
+            "errors": [error_msg],
+        },
+        tags=[],
+        embed_text="x",
+    )
+    write_knowledge_node(conn, result, [1], "test-model")
+
+    row = conn.execute(
+        "SELECT name FROM entities WHERE type = 'concept' AND name LIKE 'filenotfounderror%'"
+    ).fetchone()
+    assert row is not None, "concept entity for the error was not created"
+    # The .claude/worktrees/... substring inside the error message must
+    # survive verbatim — this is diagnostic context, not a path entity.
+    assert ".claude/worktrees/agent-XX/foo.py" in row[0]
 
 
 # ---------------------------------------------------------------------------
