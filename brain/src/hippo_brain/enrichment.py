@@ -217,7 +217,11 @@ def parse_enrichment_response(raw: str) -> EnrichmentResult:
     text = re.sub(r"\n?```\s*$", "", text)
     text = text.strip()
 
-    data = json.loads(text)
+    # strict=False permits raw control characters (e.g. unescaped \n) inside
+    # string values. JSON spec disallows them, but local LLMs routinely emit
+    # them inside multi-line `summary`/`embed_text` values; rejecting these
+    # responses sends the retry loop into a hot loop of full-model inferences.
+    data = json.loads(text, strict=False)
     return validate_enrichment_data(data)
 
 

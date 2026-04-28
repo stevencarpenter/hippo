@@ -153,6 +153,23 @@ def test_parse_rejects_invalid_json():
         parse_enrichment_response("not json")
 
 
+def test_parse_accepts_raw_control_chars_in_strings():
+    # Local LLMs (e.g. gpt-oss-120b) emit raw \n inside string values when
+    # generating multi-line summaries. JSON spec disallows it, but rejecting
+    # these responses puts the enrichment retry loop into a hot loop of
+    # full-model inferences. parse_enrichment_response must tolerate them.
+    raw = (
+        '{"summary": "line one\nline two\twith tab", '
+        '"intent": "testing", "outcome": "success", '
+        '"entities": {"projects": [], "tools": [], "files": [], '
+        '"services": [], "errors": []}, '
+        '"tags": [], "embed_text": "x"}'
+    )
+    result = parse_enrichment_response(raw)
+    assert "line one" in result.summary
+    assert "line two" in result.summary
+
+
 # ---------------------------------------------------------------------------
 # Issue #98 F3: design_decisions field validation.
 # ---------------------------------------------------------------------------
