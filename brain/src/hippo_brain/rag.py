@@ -111,10 +111,12 @@ def _render_entities_line(entities: dict | None) -> str | None:
 
     # First pass: pack tokens until the next ", <token>" would exceed the
     # cap. Reserve room for a trailing ", …" ellipsis if we end up dropping
-    # any tokens, so the cap holds even with the marker appended.
+    # any tokens, so the cap holds even with the marker appended. Lengths
+    # come from `len()` calls on the live separators so the math stays
+    # correct if the sentinel strings are ever changed.
     sep = ", "
     ellipsis = "…"
-    ellipsis_tail = sep + ellipsis  # 4 chars: ", …"
+    ellipsis_tail = sep + ellipsis
     kept: list[str] = []
     used = 0
     for i, tok in enumerate(tokens):
@@ -128,10 +130,21 @@ def _render_entities_line(entities: dict | None) -> str | None:
         kept.append(tok)
         used = candidate_len
     if not kept:
-        # First token alone exceeds the cap (pathological 200-char name).
-        # Fall back to char-based truncation on that single token so the
-        # line still surfaces something rather than vanishing entirely.
-        return f"Entities: {_truncate(tokens[0], _ENTITIES_LINE_CAP)}"
+        # First token alone exceeded the per-token-with-tail budget. Two
+        # sub-cases:
+        #   1. The token still fits within the raw cap and more tokens
+        #      were dropped — append a bare `…` (1 char) to signal the
+        #      omission without taking a chunk out of the identifier
+        #      itself. Costs at most 1 over the cap-minus-tail bound,
+        #      which we'd have spent on `, …` anyway.
+        #   2. The token exceeds the raw cap (pathological 200-char
+        #      name) or there is nothing after it — fall back to char-
+        #      based truncation. Verbatim preservation loses, but the
+        #      alternative is rendering nothing at all.
+        first = tokens[0]
+        if len(tokens) > 1 and len(first) < _ENTITIES_LINE_CAP:
+            return f"Entities: {first}{ellipsis}"
+        return f"Entities: {_truncate(first, _ENTITIES_LINE_CAP)}"
     body = sep.join(kept)
     if len(kept) < len(tokens):
         body += ellipsis_tail

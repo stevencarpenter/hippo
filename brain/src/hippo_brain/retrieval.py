@@ -672,6 +672,7 @@ def _to_result(score: float, detail: dict | None) -> SearchResult:
             captured_at=0,
             design_decisions=[],
             linked_event_ids=[],
+            entities={},
         )
     return SearchResult(
         uuid=detail["uuid"],

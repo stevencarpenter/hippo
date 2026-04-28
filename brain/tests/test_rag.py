@@ -840,6 +840,29 @@ class TestEntitiesLine:
                 f"this is the mid-identifier-cut failure mode the helper exists to prevent"
             )
 
+    def test_entities_borderline_first_token_still_signals_omission(self):
+        """Reviewer M1: when the first token is in the (cap - tail, cap]
+        range and additional tokens exist, the greedy packer rejects it
+        (no room for ", …" tail) and falls into the single-token path.
+        Without a signal, the rendered line would look complete even
+        though tokens were dropped. Verify the fallback appends a bare
+        `…` (no comma) so the omission is visible without taking a
+        chunk out of the identifier itself."""
+        # 497-char first token — fits within cap=500 but rejected by
+        # the cap-minus-tail budget of 497 vs 497 (497 > 496 → break).
+        long_first = "X" * 497
+        hit = self._hit(entities={"tool": [long_first, "ruff", "pytest"]})
+        messages = _build_rag_prompt("q", [hit])
+        user = messages[1]["content"]
+        line = next(line for line in user.splitlines() if line.startswith("Entities:"))
+        payload = line[len("Entities: ") :]
+        # First identifier preserved verbatim (no mid-token cut).
+        assert long_first in payload, "verbatim preservation was sacrificed"
+        # Omission signal present so reader knows tokens were dropped.
+        assert payload.endswith("…"), f"expected ellipsis signal, got {payload!r}"
+        # Cap respected (first token + 1-char ellipsis = 498).
+        assert len(payload) <= 500
+
     def test_entities_omitted_when_all_types_empty(self):
         """P1-6 — defensive: empty/missing entities must not produce a stray
         `Entities:` prefix line. Covers `entities={}`, `entities={tool:[]}`,

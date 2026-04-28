@@ -626,6 +626,13 @@ pub fn open_db(path: &Path) -> Result<Connection> {
                  CREATE INDEX IF NOT EXISTS idx_entities_type_name ON entities (type, name);
                  CREATE INDEX IF NOT EXISTS idx_entities_canonical ON entities (canonical)
                      WHERE canonical IS NOT NULL;
+                 -- Defensive: SQLite's table-recreate recipe recommends a
+                 -- foreign_key_check before COMMIT so a future schema
+                 -- evolution that breaks the textual-FK-name resolution
+                 -- assumption surfaces here, not at the next FK-touching
+                 -- write. Cheap (one-pass scan of FK rows) and runs once
+                 -- per upgrade.
+                 PRAGMA foreign_key_check;
                  PRAGMA user_version = 13;
                  COMMIT;
                  PRAGMA foreign_keys = ON;",
@@ -2296,6 +2303,41 @@ mod tests {
             )
             .unwrap();
         assert_eq!(leftover, 0, "entities_new must not survive the migration");
+    }
+
+    /// v12→v13 migration must still advance `user_version` on a partial-
+    /// schema test DB that has no `entities` table at all (only happens in
+    /// minimal migration-test fixtures, never in production). Mirrors the
+    /// v11→v12 `claude_sessions`-may-not-exist guard at line 544.
+    #[test]
+    fn test_migrate_v12_to_v13_advances_version_when_entities_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("test.db");
+
+        // Bare-minimum v12 DB with no `entities` table.
+        {
+            let conn = rusqlite::Connection::open(&db_path).unwrap();
+            conn.execute_batch("PRAGMA user_version = 12;").unwrap();
+        }
+
+        let conn = open_db(&db_path).unwrap();
+
+        // Schema lands at EXPECTED_VERSION even without an entities table —
+        // otherwise the migration block would re-trigger on every open.
+        let v: i64 = conn
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(v, EXPECTED_VERSION);
+
+        // No `entities` table was created (no schema seeded).
+        let exists: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='entities'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(exists, 0);
     }
 
     #[test]
