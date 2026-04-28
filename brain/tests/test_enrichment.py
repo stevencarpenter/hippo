@@ -639,7 +639,17 @@ def _file_entity(conn, path: str) -> tuple[str, str]:
     return row[0], row[1]
 
 
-def test_upsert_entities_strips_worktree_from_display_name(tmp_db):
+def test_upsert_entities_strips_worktree_from_display_name(tmp_db, monkeypatch):
+    # Pin canonicalization roots so this test is deterministic — without it,
+    # canonicalize() falls back to ~/projects/*/.git auto-detection and the
+    # test outcome depends on the host filesystem (CI may or may not have a
+    # `~/projects/hippo` checkout). Also clear the cached fallback so a prior
+    # test in the same process doesn't poison this run.
+    monkeypatch.setenv("HIPPO_PROJECT_ROOTS", "/Users/test/projects/hippo")
+    from hippo_brain.entity_resolver import _cached_fallback_roots
+
+    _cached_fallback_roots.cache_clear()
+
     conn, _ = tmp_db
     _seed_event_with_queue(conn, event_id=1)
 
@@ -668,9 +678,14 @@ def test_upsert_entities_strips_worktree_from_display_name(tmp_db):
     assert name.endswith("brain/src/hippo_brain/enrichment.py")
 
 
-def test_upsert_entities_repairs_existing_polluted_name(tmp_db):
+def test_upsert_entities_repairs_existing_polluted_name(tmp_db, monkeypatch):
     """A clean write must heal a row whose `name` was polluted by an earlier
     pre-fix write (same canonical, polluted display name)."""
+    monkeypatch.setenv("HIPPO_PROJECT_ROOTS", "/Users/test/projects/hippo")
+    from hippo_brain.entity_resolver import _cached_fallback_roots
+
+    _cached_fallback_roots.cache_clear()
+
     conn, _ = tmp_db
     _seed_event_with_queue(conn, event_id=1)
     _seed_event_with_queue(conn, event_id=2, session_id=2)
@@ -712,9 +727,14 @@ def test_upsert_entities_repairs_existing_polluted_name(tmp_db):
     assert ".claude/worktrees/" not in name
 
 
-def test_upsert_entities_does_not_churn_clean_existing_name(tmp_db):
+def test_upsert_entities_does_not_churn_clean_existing_name(tmp_db, monkeypatch):
     """If the existing display name is already clean, a subsequent write with a
     different (but still clean) name shouldn't overwrite it — avoids churn."""
+    monkeypatch.setenv("HIPPO_PROJECT_ROOTS", "/Users/test/projects/hippo")
+    from hippo_brain.entity_resolver import _cached_fallback_roots
+
+    _cached_fallback_roots.cache_clear()
+
     conn, _ = tmp_db
     _seed_event_with_queue(conn, event_id=1)
     _seed_event_with_queue(conn, event_id=2, session_id=2)
@@ -744,6 +764,46 @@ def test_upsert_entities_does_not_churn_clean_existing_name(tmp_db):
     name, _ = _file_entity(conn, "bar.py")
     # The first write's name is preserved; the second clean write didn't churn it.
     assert name == "/Users/test/projects/hippo/brain/bar.py"
+
+
+def test_upsert_entities_does_not_strip_non_path_types(tmp_db):
+    """Non-path entity types (errors stored as `concept`) may legitimately
+    contain `.claude/worktrees/...` substrings inside diagnostic messages.
+    Stripping them would lose information and create a name/canonical
+    divergence (canonicalize doesn't strip for non-path types either).
+    """
+    conn, _ = tmp_db
+    _seed_event_with_queue(conn, event_id=1)
+
+    # An error message that happens to mention a worktree path inline. The
+    # error string is stored as a 'concept' entity per SHELL_ENTITY_TYPE_MAP.
+    error_msg = (
+        "FileNotFoundError: cannot stat "
+        "/Users/test/projects/hippo/.claude/worktrees/agent-XX/foo.py"
+    )
+    result = EnrichmentResult(
+        summary="...",
+        intent="debugging",
+        outcome="failure",
+        entities={
+            "projects": [],
+            "tools": [],
+            "files": [],
+            "services": [],
+            "errors": [error_msg],
+        },
+        tags=[],
+        embed_text="x",
+    )
+    write_knowledge_node(conn, result, [1], "test-model")
+
+    row = conn.execute(
+        "SELECT name FROM entities WHERE type = 'concept' AND name LIKE 'filenotfounderror%'"
+    ).fetchone()
+    assert row is not None, "concept entity for the error was not created"
+    # The .claude/worktrees/... substring inside the error message must
+    # survive verbatim — this is diagnostic context, not a path entity.
+    assert ".claude/worktrees/agent-XX/foo.py" in row[0]
 
 
 # ---------------------------------------------------------------------------

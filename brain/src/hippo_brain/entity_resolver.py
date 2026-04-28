@@ -111,6 +111,17 @@ def _resolve_project_roots(override: list[str] | None) -> list[str]:
     return list(_cached_fallback_roots())
 
 
+def is_path_type(entity_type: str) -> bool:
+    """Return True for entity types whose values are filesystem paths.
+
+    Used by callers that want to apply path-only transforms (e.g.
+    `strip_worktree_prefix`) without rewriting non-path values like error
+    messages or concept strings, which may legitimately embed path-like
+    substrings inside diagnostic text.
+    """
+    return entity_type in _PATH_TYPES
+
+
 def strip_worktree_prefix(path: str) -> str:
     """Strip every `.claude/worktrees/<X>/` segment from `path`.
 
