@@ -532,6 +532,13 @@ def _fetch_details(conn: sqlite3.Connection, node_ids: Sequence[int]) -> dict[in
     # The window function caps each node at 20 names (defends against
     # pathological enrichments) and `substr(..., 1, 200)` caps each name
     # (the schema has no length limit on entities.name).
+    #
+    # The outer `ORDER BY` is load-bearing: the inner `ROW_NUMBER() OVER`
+    # only orders rows *within each partition*. Without an explicit outer
+    # ORDER BY, SQLite is free to return rows in any plan-dependent order,
+    # which would make the rendered `Entities:` line non-deterministic
+    # across runs (and flake any test that pins token order). Sorting by
+    # (knowledge_node_id, type, name) gives a stable, alphabetical surface.
     type_placeholders = ",".join("?" for _ in IDENTIFIER_ENTITY_TYPES)
     ent_rows = conn.execute(  # nosemgrep
         f"""
@@ -550,6 +557,7 @@ def _fetch_details(conn: sqlite3.Connection, node_ids: Sequence[int]) -> dict[in
             AND ent.type IN ({type_placeholders})
         )
         WHERE rn <= 20
+        ORDER BY knowledge_node_id, type, name
         """,
         [*node_ids, *IDENTIFIER_ENTITY_TYPES],
     ).fetchall()

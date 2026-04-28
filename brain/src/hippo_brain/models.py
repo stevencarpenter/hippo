@@ -14,6 +14,7 @@ class EnrichmentResult:
             "services": [],
             "errors": [],
             "env_vars": [],
+            "domains": [],
         }
     )
     tags: list = field(default_factory=list)
@@ -75,7 +76,7 @@ class Lesson:
 
 
 _VALID_OUTCOMES = {"success", "partial", "failure", "unknown"}
-_ENTITY_KEYS = ("projects", "tools", "files", "services", "errors", "env_vars")
+_ENTITY_KEYS = ("projects", "tools", "files", "services", "errors", "env_vars", "domains")
 
 
 def validate_enrichment_data(data: dict) -> EnrichmentResult:
