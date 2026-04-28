@@ -77,10 +77,6 @@ from hippo_brain.enrichment import (  # noqa: E402
     upsert_entities,
 )
 
-# CLAUDE entity-type map mirrors SHELL — claude enrichment writes the same
-# structured EnrichmentResult shape into knowledge_nodes.content.
-CLAUDE_ENTITY_TYPE_MAP = SHELL_ENTITY_TYPE_MAP
-
 TARGET_ENRICHMENT_VERSION = 2
 
 logging.basicConfig(
@@ -189,17 +185,32 @@ def _build_prompt_for(source: str, payload: list[dict]) -> tuple[str, str]:
 async def _call_llm_with_retries(
     client: LMStudioClient, system_prompt: str, prompt: str, model: str
 ) -> object:
-    """Mirror Server._call_llm_with_retries: 3 attempts, parse on each."""
+    """Mirror Server._call_llm_with_retries: 3 attempts, parse on each.
+
+    On retry attempts (≥2), appends a follow-up user message instructing the
+    model to output ONLY valid JSON. The live brain does this and it
+    materially reduces re-failure rate when a model emits prose around a
+    JSON object — without the hint we'd burn 3 full inferences before
+    giving up. Behavior matches ``Server._call_llm_with_retries`` exactly.
+    """
     last_err: Exception | None = None
     for attempt in range(1, 4):
-        try:
-            raw = await client.chat(
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": prompt},
-                ],
-                model=model,
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": prompt},
+        ]
+        if attempt > 1:
+            messages.append(
+                {
+                    "role": "user",
+                    "content": (
+                        "Your previous response was not valid JSON. "
+                        "Output ONLY a JSON object, no explanation or markdown."
+                    ),
+                }
             )
+        try:
+            raw = await client.chat(messages=messages, model=model)
             return parse_enrichment_response(raw)
         except Exception as e:
             last_err = e

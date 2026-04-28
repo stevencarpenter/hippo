@@ -187,6 +187,45 @@ def test_process_node_updates_in_place(conn, re_enrich):
     assert new_content["summary"] == "test command"  # from MockLMStudioClient.CANNED_RESPONSE
 
 
+def test_process_claude_node_updates_in_place(conn, re_enrich):
+    """Round-trip: re-enriching a claude node uses the joined-summary_text
+    prompt path and bumps version while preserving id / uuid / created_at.
+
+    Mirrors test_process_node_updates_in_place but exercises the claude
+    branch (`_fetch_claude_segments`, summary_text concatenation).
+    """
+    _seed_claude_node(conn, node_id=55, created_at=1_700_000_000_000)
+    before = conn.execute("SELECT uuid, created_at FROM knowledge_nodes WHERE id = 55").fetchone()
+    original_uuid, original_created_at = before["uuid"], before["created_at"]
+
+    candidate = {"id": 55, "uuid": original_uuid, "_source": "claude"}
+    client = MockLMStudioClient()
+
+    ok = asyncio.run(
+        re_enrich._process_node(
+            client, conn, candidate, enrichment_model="m", embed_model="", dry_run=False
+        )
+    )
+    assert ok is True
+
+    after = conn.execute(
+        "SELECT uuid, created_at, enrichment_version, content FROM knowledge_nodes WHERE id = 55"
+    ).fetchone()
+    assert after["uuid"] == original_uuid
+    assert after["created_at"] == original_created_at
+    assert after["enrichment_version"] == re_enrich.TARGET_ENRICHMENT_VERSION
+    assert json.loads(after["content"])["summary"] == "test command"
+
+    # Verify the claude prompt branch was hit (not the shell branch): the
+    # user message should contain the seeded segment's summary_text.
+    user_messages = [
+        m["content"] for call in client.chat_calls for m in call["messages"] if m["role"] == "user"
+    ]
+    assert any("fake summary text" in m for m in user_messages), (
+        "claude prompt should be the joined summary_text"
+    )
+
+
 def test_dry_run_makes_no_changes(conn, re_enrich):
 
     _seed_shell_node(conn, node_id=7)
