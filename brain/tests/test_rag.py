@@ -810,19 +810,35 @@ class TestEntitiesLine:
         assert tokens.count("hippo") == 1, f"expected 1 'hippo' token, got tokens={tokens}"
         assert "ruff" in tokens
 
-    def test_entities_cap_truncates_via_truncate_helper(self):
-        """P1-5 — line is capped at `_ENTITIES_LINE_CAP` (500) characters.
-        100 long identifiers exceed that cap; assert the rendered line is
-        bounded and ends with the standard ellipsis sentinel."""
-        # Keep token boundary irrelevant — we don't promise smart breaks.
-        long_tokens = [f"identifier_{i}_xxxxxxxxxxxxxxxx" for i in range(100)]
+    def test_entities_cap_truncates_at_token_boundaries(self):
+        """P1-5 — line is capped at `_ENTITIES_LINE_CAP` (500) characters
+        AND truncation lands on token boundaries — not mid-identifier.
+        Char-based truncation would emit `identifier_42_xxxxxxxxx…`,
+        which is exactly the mid-identifier failure mode the line is
+        designed to prevent. 100 long identifiers exceed the cap; assert
+        the line is bounded, ends with the ellipsis tail, and every
+        surfaced token is intact (each kept token is a complete element
+        from the input list)."""
+        long_tokens = [f"identifier_{i:03d}_xxxxxxxxxxxxxxxx" for i in range(100)]
         hit = self._hit(entities={"tool": long_tokens})
         messages = _build_rag_prompt("q", [hit])
         user = messages[1]["content"]
         line = next(line for line in user.splitlines() if line.startswith("Entities:"))
         payload = line[len("Entities: ") :]
         assert len(payload) <= 500
-        assert payload.endswith("…")
+        # Truncation actually happened; the ellipsis tail signals it.
+        assert payload.endswith(", …"), (
+            f"expected token-boundary ellipsis tail, got payload={payload!r}"
+        )
+        # Drop the trailing ", …" sentinel; every remaining comma-split
+        # token must be one of the original inputs (no mid-identifier
+        # cuts).
+        kept = [t.strip() for t in payload.removesuffix(", …").split(",")]
+        for tok in kept:
+            assert tok in long_tokens, (
+                f"truncation produced non-original token {tok!r}; "
+                f"this is the mid-identifier-cut failure mode the helper exists to prevent"
+            )
 
     def test_entities_omitted_when_all_types_empty(self):
         """P1-6 — defensive: empty/missing entities must not produce a stray

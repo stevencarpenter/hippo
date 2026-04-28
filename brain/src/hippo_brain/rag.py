@@ -87,6 +87,12 @@ def _render_entities_line(entities: dict | None) -> str | None:
     rather than emitting a bare "Entities:" prefix. Capped at
     _ENTITIES_LINE_CAP so identifier-rich hits don't crowd embed_text out
     of the structural budget.
+
+    Truncation is at *token boundaries*, not character positions: char-
+    based truncation would emit `HIPPO_PROJECT_RO…`, which is exactly the
+    mid-identifier-clipping failure mode the line is designed to prevent.
+    When the joined tokens exceed the cap, we drop whole tokens from the
+    tail and append the standard ellipsis to signal omission.
     """
     if not isinstance(entities, dict):
         return None
@@ -102,7 +108,34 @@ def _render_entities_line(entities: dict | None) -> str | None:
             tokens.append(name)
     if not tokens:
         return None
-    return f"Entities: {_truncate(', '.join(tokens), _ENTITIES_LINE_CAP)}"
+
+    # First pass: pack tokens until the next ", <token>" would exceed the
+    # cap. Reserve room for a trailing ", …" ellipsis if we end up dropping
+    # any tokens, so the cap holds even with the marker appended.
+    sep = ", "
+    ellipsis = "…"
+    ellipsis_tail = sep + ellipsis  # 4 chars: ", …"
+    kept: list[str] = []
+    used = 0
+    for i, tok in enumerate(tokens):
+        candidate_len = len(tok) if not kept else used + len(sep) + len(tok)
+        # If anything after this token would need to be dropped, we need
+        # room for the ellipsis tail. Look one ahead to decide.
+        more_to_come = i < len(tokens) - 1
+        budget = _ENTITIES_LINE_CAP - (len(ellipsis_tail) if more_to_come else 0)
+        if candidate_len > budget:
+            break
+        kept.append(tok)
+        used = candidate_len
+    if not kept:
+        # First token alone exceeds the cap (pathological 200-char name).
+        # Fall back to char-based truncation on that single token so the
+        # line still surfaces something rather than vanishing entirely.
+        return f"Entities: {_truncate(tokens[0], _ENTITIES_LINE_CAP)}"
+    body = sep.join(kept)
+    if len(kept) < len(tokens):
+        body += ellipsis_tail
+    return f"Entities: {body}"
 
 
 def _shape_rag_sources(

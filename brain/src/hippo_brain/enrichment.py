@@ -95,8 +95,14 @@ SHELL_ENTITY_TYPE_MAP = {
 # (rendered on the RAG `Entities:` line). Adding a new type to any
 # `*_ENTITY_TYPE_MAP` requires updating exactly one of these tuples; the
 # taxonomy guard test (brain/tests/test_entity_taxonomy.py) fails otherwise.
+#
+# `domain` lives in NON_IDENTIFIER not because domains aren't bindable
+# tokens — `github.com` clearly is — but because the browser source uses
+# them as page-level metadata (a research-session marker), not as
+# identifier tokens we want pinned into RAG synthesis context. Hoist it
+# to IDENTIFIER if browser-source RAG retrieval ever needs the line.
 IDENTIFIER_ENTITY_TYPES: tuple[str, ...] = ("tool", "file", "service", "project", "env_var")
-NON_IDENTIFIER_ENTITY_TYPES: tuple[str, ...] = ("concept",)
+NON_IDENTIFIER_ENTITY_TYPES: tuple[str, ...] = ("concept", "domain")
 
 # Stamped into `knowledge_nodes.enrichment_version` on every newly written
 # node. Ratchets up whenever an enrichment-prompt or entity-taxonomy change

@@ -588,6 +588,10 @@ pub fn open_db(path: &Path) -> Result<Connection> {
     // Idempotency: `DROP TABLE IF EXISTS entities_new` lets a partial-
     // success crash (e.g. crash between INSERT and DROP) be safely retried
     // — the next run drops the half-populated entities_new and starts over.
+    // The `PRAGMA user_version = 13` bump is bundled into the same
+    // `execute_batch` as the table swap so the recipe and the version
+    // marker advance atomically: a crash after rename but before the
+    // version bump can no longer leave the DB at v12 with the new CHECK.
     if (1..=12).contains(&version) {
         let entities_exists: bool = conn.query_row(
             "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='entities')",
@@ -622,11 +626,17 @@ pub fn open_db(path: &Path) -> Result<Connection> {
                  CREATE INDEX IF NOT EXISTS idx_entities_type_name ON entities (type, name);
                  CREATE INDEX IF NOT EXISTS idx_entities_canonical ON entities (canonical)
                      WHERE canonical IS NOT NULL;
+                 PRAGMA user_version = 13;
                  COMMIT;
                  PRAGMA foreign_keys = ON;",
             )?;
+        } else {
+            // No entities table to recreate (only happens in partial-schema
+            // test DBs); still advance the version so the migration doesn't
+            // re-trigger on every open. Mirrors the v11→v12 pattern for
+            // claude_sessions.
+            conn.execute_batch("PRAGMA user_version = 13;")?;
         }
-        conn.execute_batch("PRAGMA user_version = 13;")?;
     } else if version != 0 && version != EXPECTED_VERSION {
         anyhow::bail!(
             "DB schema version mismatch: expected {}, found {}. \

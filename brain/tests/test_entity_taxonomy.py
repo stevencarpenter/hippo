@@ -48,13 +48,21 @@ def _discover_entity_type_maps() -> dict[str, dict[str, str]]:
     return discovered
 
 
-def test_at_least_shell_entity_type_map_is_discovered():
-    """Sanity: the discovery walk must find SHELL_ENTITY_TYPE_MAP. If this
-    test ever stops finding it, the introspection has broken (e.g., the
-    package layout changed) and the rest of this file gives a false-pass."""
+def test_shell_and_browser_entity_type_maps_are_discovered():
+    """Sanity: the discovery walk must find both SHELL_ENTITY_TYPE_MAP and
+    BROWSER_ENTITY_TYPE_MAP. If either ever stops being a top-level
+    constant (e.g. someone reverts BROWSER back to an inline dict literal
+    in `write_browser_knowledge_node`), the rest of this file gives a
+    false-pass on browser-specific types like `domain`."""
     maps = _discover_entity_type_maps()
     shell_keys = [k for k in maps if k.endswith(".SHELL_ENTITY_TYPE_MAP")]
+    browser_keys = [k for k in maps if k.endswith(".BROWSER_ENTITY_TYPE_MAP")]
     assert shell_keys, f"discovery walk did not find SHELL_ENTITY_TYPE_MAP; got keys={list(maps)}"
+    assert browser_keys, (
+        f"discovery walk did not find BROWSER_ENTITY_TYPE_MAP — extracting it as a "
+        f"module-level constant in browser_enrichment.py is what lets this guard cover "
+        f"browser-specific types like `domain`. got keys={list(maps)}"
+    )
 
 
 def test_every_entity_type_map_value_is_classified():

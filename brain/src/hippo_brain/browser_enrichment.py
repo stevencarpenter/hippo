@@ -15,6 +15,13 @@ from hippo_brain.watchdog import DEFAULT_LOCK_TIMEOUT_MS
 
 STALE_LOCK_TIMEOUT_MS = DEFAULT_LOCK_TIMEOUT_MS
 
+# Browser source extends the shell entity map with a `domains` bucket
+# (e.g. "stackoverflow.com", "docs.rs"). Promoted to a module-level
+# constant so the taxonomy guard test (`test_entity_taxonomy.py`) can
+# discover it via package introspection — every value here must be
+# classified in `IDENTIFIER_ENTITY_TYPES + NON_IDENTIFIER_ENTITY_TYPES`.
+BROWSER_ENTITY_TYPE_MAP: dict[str, str] = {**SHELL_ENTITY_TYPE_MAP, "domains": "domain"}
+
 BROWSER_SYSTEM_PROMPT = """You are a developer activity analyst. You receive a sequence of web pages a developer visited during a browsing session.
 
 Extract what they were researching, learning, or investigating. Focus on technical topics and how pages relate to each other (e.g., a search query leading to documentation).
@@ -350,9 +357,9 @@ def write_browser_knowledge_node(
             [(node_id, eid) for eid in event_ids],
         )
 
-        # Upsert entities (browser adds "domains" to the standard map)
-        browser_entity_map = {**SHELL_ENTITY_TYPE_MAP, "domains": "domain"}
-        upsert_entities(conn, node_id, result.entities, browser_entity_map, now_ms)
+        # Upsert entities (browser map adds "domains" → "domain" to the shell
+        # taxonomy; see BROWSER_ENTITY_TYPE_MAP at the top of the module).
+        upsert_entities(conn, node_id, result.entities, BROWSER_ENTITY_TYPE_MAP, now_ms)
 
         # Mark browser events as enriched
         placeholders = ",".join("?" * len(event_ids))
