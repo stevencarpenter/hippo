@@ -2,12 +2,21 @@
 """One-shot entity deduplication migration.
 
 Re-canonicalizes all entities using the current entity_resolver rules and
-merges rows where (type, new_canonical) would collide. Keeps the oldest row
-(smallest created_at), re-points all knowledge_node_entities to the survivor,
-then deletes the duplicate entity rows.
+either merges duplicates or rebrands lone rows whose stored values are stale.
 
-This script handles two flavors of duplication transparently because it
-delegates to canonicalize():
+For each (type, new_canonical) group:
+
+  * len > 1 — merge. Keep the oldest row (smallest created_at), re-point all
+    knowledge_node_entities to the survivor, delete the duplicate rows, and
+    update the survivor's name + canonical to the recomputed values.
+  * len == 1 (lone row) — if the recomputed name or canonical differs from
+    what's stored (e.g. an old polluted row with no clean dupe ever observed),
+    UPDATE that single row in place. Without this pass, lone polluted rows
+    persist indefinitely because nothing ever conflicts with them and #105's
+    on-conflict repair never triggers.
+
+This script handles two flavors of duplication / staleness transparently
+because it delegates to canonicalize():
 
   1. Multiple project roots resolving to the same logical file (e.g.
      hippo vs. hippo-postgres) — the original v5→v6 use case.
@@ -16,7 +25,8 @@ delegates to canonicalize():
      adjective-noun-hex), and the directories are removed once the agent's
      work is merged or discarded — leaving polluted entity rows. Re-running
      this script after canonicalize() learns the worktree-strip rule
-     collapses N copies of every commonly-edited file to one canonical row.
+     collapses N copies of every commonly-edited file to one canonical row,
+     and rebrands any remaining lone polluted rows.
 
 Usage:
     uv run --project brain python brain/scripts/dedup-entities.py [--data-dir PATH] [--dry-run]
@@ -42,7 +52,11 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from hippo_brain.entity_resolver import canonicalize  # noqa: E402
+from hippo_brain.entity_resolver import (  # noqa: E402
+    canonicalize,
+    is_path_type,
+    strip_worktree_prefix,
+)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -55,6 +69,15 @@ log = logging.getLogger("dedup-entities")
 def _default_db_path() -> Path:
     base = os.environ.get("XDG_DATA_HOME") or str(Path.home() / ".local" / "share")
     return Path(base) / "hippo" / "hippo.db"
+
+
+def _recompute_name(etype: str, name: str) -> str:
+    """Display-name form: strip worktree segments for path types, leave others alone.
+
+    Mirrors `upsert_entities` in enrichment.py — the goal is for stored `name`
+    values to match what the live write path produces today.
+    """
+    return strip_worktree_prefix(name) if is_path_type(etype) else name
 
 
 def run(conn: sqlite3.Connection, dry_run: bool) -> dict[str, int]:
@@ -74,10 +97,22 @@ def run(conn: sqlite3.Connection, dry_run: bool) -> dict[str, int]:
         key = (row["type"], new_canonical)
         groups.setdefault(key, []).append(row)
 
-    merges = [(key, members) for key, members in groups.items() if len(members) > 1]
+    merges: list[tuple[tuple[str, str], list[sqlite3.Row]]] = []
+    rebrands: list[tuple[sqlite3.Row, str, str]] = []  # (row, new_name, new_canonical)
+    for (etype, new_canonical), members in groups.items():
+        if len(members) > 1:
+            merges.append(((etype, new_canonical), members))
+            continue
+        # Lone group: rebrand if either name or canonical changed under the
+        # current rules (e.g. an old worktree-polluted path with no clean dupe).
+        row = members[0]
+        new_name = _recompute_name(etype, row["name"])
+        if new_canonical != row["canonical"] or new_name != row["name"]:
+            rebrands.append((row, new_name, new_canonical))
 
     log.info("Total entities: %d", len(rows))
     log.info("Duplicate groups: %d", len(merges))
+    log.info("Lone rebrand candidates: %d", len(rebrands))
 
     if dry_run:
         for (etype, new_canonical), members in merges:
@@ -87,10 +122,30 @@ def run(conn: sqlite3.Connection, dry_run: bool) -> dict[str, int]:
                 f"MERGE type={etype!r} canonical={new_canonical!r}: "
                 f"keep id={keep_id}, delete ids={dupe_ids}"
             )
+        for row, new_name, new_canonical in rebrands:
+            print(
+                f"REBRAND id={row['id']} type={row['type']!r}: "
+                f"name={row['name']!r} → {new_name!r}, "
+                f"canonical={row['canonical']!r} → {new_canonical!r}"
+            )
         log.info("Dry run — no changes made")
-        return {"total": len(rows), "groups": len(merges), "deleted": 0}
+        return {
+            "total": len(rows),
+            "groups": len(merges),
+            "deleted": 0,
+            "rebranded": 0,
+        }
 
     total_deleted = 0
+    total_rebranded = 0
+    # Final-value updates for every entity touched (merge survivors + lone
+    # rebrands). We collect them first and apply in two phases below to avoid
+    # transient UNIQUE collisions: a row's new_canonical may equal *another*
+    # row's CURRENT canonical (where that other row's own new_canonical is
+    # different and thus didn't get grouped with us). A naïve in-place UPDATE
+    # then trips `UNIQUE (type, canonical)` even though the final state is
+    # collision-free. Two-pass with unique placeholders sidesteps that.
+    final_updates: list[tuple[int, str, str]] = []  # (id, new_name, new_canonical)
     conn.execute("BEGIN")
     try:
         for (etype, new_canonical), members in merges:
@@ -116,11 +171,10 @@ def run(conn: sqlite3.Connection, dry_run: bool) -> dict[str, int]:
                 conn.execute("DELETE FROM entities WHERE id = ?", [dupe_id])
                 total_deleted += 1
 
-            # Update the survivor's canonical to the new form.
-            conn.execute(
-                "UPDATE entities SET canonical = ? WHERE id = ?",
-                [new_canonical, keep["id"]],
-            )
+            # Survivor's new display name mirrors the enrichment write path
+            # (PR #105 strips worktree from `name` for path types).
+            new_name = _recompute_name(etype, keep["name"])
+            final_updates.append((keep["id"], new_name, new_canonical))
             log.info(
                 "Merged type=%r canonical=%r: kept id=%d, deleted %d duplicate(s)",
                 etype,
@@ -129,13 +183,45 @@ def run(conn: sqlite3.Connection, dry_run: bool) -> dict[str, int]:
                 len(dupes),
             )
 
+        for row, new_name, new_canonical in rebrands:
+            final_updates.append((row["id"], new_name, new_canonical))
+            total_rebranded += 1
+
+        # Phase 1: park every touched row at a unique placeholder canonical so
+        # the final UPDATEs can never collide on UNIQUE (type, canonical).
+        # Placeholder values are namespaced + id-suffixed, so two parallel
+        # invocations of this script wouldn't collide either (unlikely, but
+        # cheap to defend against).
+        for entity_id, _new_name, _new_canonical in final_updates:
+            conn.execute(
+                "UPDATE entities SET canonical = ? WHERE id = ?",
+                [f"__dedup_pending_{entity_id}__", entity_id],
+            )
+
+        # Phase 2: apply the real new values. Now no other entity row holds
+        # any of these canonicals (we cleared them above), so UNIQUE holds.
+        for entity_id, new_name, new_canonical in final_updates:
+            conn.execute(
+                "UPDATE entities SET name = ?, canonical = ? WHERE id = ?",
+                [new_name, new_canonical, entity_id],
+            )
+
         conn.commit()
     except Exception:
         conn.rollback()
         raise
 
-    log.info("Done. Deleted %d duplicate entity row(s).", total_deleted)
-    return {"total": len(rows), "groups": len(merges), "deleted": total_deleted}
+    log.info(
+        "Done. Deleted %d duplicate row(s), rebranded %d lone row(s).",
+        total_deleted,
+        total_rebranded,
+    )
+    return {
+        "total": len(rows),
+        "groups": len(merges),
+        "deleted": total_deleted,
+        "rebranded": total_rebranded,
+    }
 
 
 def main() -> None:
