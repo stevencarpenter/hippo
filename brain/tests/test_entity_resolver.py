@@ -34,9 +34,11 @@ class TestCanonicalizeNonPath:
         assert canonicalize("service", "postgres/") == "postgres"
 
     def test_non_path_type_unaffected_by_path_logic(self):
-        # Even if the value looks like a path, non-path types are not stripped.
+        # Even if the value looks like a path, non-path types (tool, service,
+        # concept) are not stripped — their values may legitimately contain
+        # path-like substrings (e.g. an error message mentioning a file path).
         roots = ["/users/carpenter/projects/hippo"]
-        result = canonicalize("project", "/users/carpenter/projects/hippo/foo", project_roots=roots)
+        result = canonicalize("tool", "/users/carpenter/projects/hippo/foo", project_roots=roots)
         assert result == "/users/carpenter/projects/hippo/foo"
 
     def test_concept_unchanged(self):
@@ -57,6 +59,27 @@ class TestCanonicalizePathType:
             "file", "/users/carpenter/projects/hippo/src/storage.rs", project_roots=roots
         )
         assert result == "src/storage.rs"
+
+    def test_project_type_treated_as_path(self):
+        # Issue #98 follow-up: project entities are path-typed because the LLM
+        # consistently emits the session cwd as the project value. Without this,
+        # `/Users/foo/projects/hippo/.claude/worktrees/agent-X` would never
+        # dedupe with a clean `/Users/foo/projects/hippo` row.
+        roots = ["/users/carpenter/projects/hippo"]
+        polluted = "/users/carpenter/projects/hippo/.claude/worktrees/agent-x"
+        clean = "/users/carpenter/projects/hippo"
+        # Both reduce to the basename when the value matches a project root exactly.
+        assert canonicalize("project", polluted, project_roots=roots) == "hippo"
+        assert canonicalize("project", clean, project_roots=roots) == "hippo"
+
+    def test_project_type_strips_worktree_even_without_root_match(self):
+        # If the value's project root isn't in HIPPO_PROJECT_ROOTS, we still
+        # strip the worktree segment — leaving an absolute path that's at
+        # least dedup-friendly with other agents' runs of the same project.
+        polluted = "/users/test/projects/kafka-s3/.claude/worktrees/vibrant-satoshi"
+        result = canonicalize("project", polluted, project_roots=[])
+        assert ".claude/worktrees/" not in result
+        assert result == "/users/test/projects/kafka-s3"
 
     def test_both_worktree_variants_resolve_same(self):
         roots = [

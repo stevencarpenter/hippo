@@ -35,7 +35,15 @@ import tomllib
 from functools import lru_cache
 from pathlib import Path
 
-_PATH_TYPES = frozenset({"file", "directory", "path"})
+# `project` is path-typed even though projects are conceptually identifiers
+# rather than filesystem locations: the LLM consistently emits the work
+# session's `cwd` as the project value (e.g. `/Users/foo/projects/hippo` or
+# `/Users/foo/projects/hippo/.claude/worktrees/agent-X`). Treating project as
+# path-typed lets canonicalize strip the worktree segment and reduce a
+# project-root-matching path to its basename ("hippo"). Without this, every
+# parallel-agent session yields a distinct project entity polluted with
+# `.claude/worktrees/<X>/` and never deduplicates with the clean root.
+_PATH_TYPES = frozenset({"file", "directory", "path", "project"})
 _logger = logging.getLogger(__name__)
 
 # Matches `/.claude/worktrees/<single-segment>/` or the same pattern at the
