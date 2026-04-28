@@ -203,9 +203,6 @@ def test_placeholder_does_not_collide_with_existing_entity_canonical(tmp_db, ded
     assert "foo.py" in canonicals or any("foo.py" in c for c in canonicals)
 
 
-
-
-
 def test_dry_run_makes_no_changes(tmp_db, dedup):
     conn, _ = tmp_db
     _seed_entity(
