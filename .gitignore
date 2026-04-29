@@ -12,6 +12,7 @@ __pycache__/
 *.db-wal
 *.db-shm
 *.jsonl
+!docs/baselines/**/*.jsonl
 .venv/
 brain/.venv/
 *.egg-info/
