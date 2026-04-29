@@ -38,7 +38,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "hippo_brain_enrichment_queue_depth{source=\"shell\"}",
+          "expr": "hippo_brain_enrichment_queue_depth{service_namespace=\"\",source=\"shell\"}",
           "legendFormat": "{{source}} \u00b7 {{status}}",
           "editorMode": "code"
         },
@@ -48,7 +48,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "hippo_brain_enrichment_queue_depth{source=\"claude\"}",
+          "expr": "hippo_brain_enrichment_queue_depth{service_namespace=\"\",source=\"claude\"}",
           "legendFormat": "{{source}} \u00b7 {{status}}",
           "editorMode": "code"
         },
@@ -58,7 +58,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "hippo_brain_enrichment_queue_depth{source=\"browser\"}",
+          "expr": "hippo_brain_enrichment_queue_depth{service_namespace=\"\",source=\"browser\"}",
           "legendFormat": "{{source}} \u00b7 {{status}}",
           "editorMode": "code"
         }
@@ -104,7 +104,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum(hippo_brain_enrichment_queue_depth{status=\"failed\"}) or vector(0)",
+          "expr": "sum(hippo_brain_enrichment_queue_depth{service_namespace=\"\",status=\"failed\"}) or vector(0)",
           "legendFormat": "",
           "editorMode": "code"
         }
@@ -159,7 +159,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "rate(hippo_brain_enrichment_events_claimed_total{source=\"shell\"}[5m]) * 60",
+          "expr": "rate(hippo_brain_enrichment_events_claimed_total{service_namespace=\"\",source=\"shell\"}[5m]) * 60",
           "legendFormat": "shell",
           "editorMode": "code"
         },
@@ -169,7 +169,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "rate(hippo_brain_enrichment_events_claimed_total{source=\"claude\"}[5m]) * 60",
+          "expr": "rate(hippo_brain_enrichment_events_claimed_total{service_namespace=\"\",source=\"claude\"}[5m]) * 60",
           "legendFormat": "claude",
           "editorMode": "code"
         },
@@ -179,7 +179,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "rate(hippo_brain_enrichment_events_claimed_total{source=\"browser\"}[5m]) * 60",
+          "expr": "rate(hippo_brain_enrichment_events_claimed_total{service_namespace=\"\",source=\"browser\"}[5m]) * 60",
           "legendFormat": "browser",
           "editorMode": "code"
         }
@@ -229,7 +229,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "histogram_quantile(0.5, sum(rate(hippo_brain_lmstudio_request_duration_milliseconds_bucket{method=\"chat\"}[5m])) by (le))",
+          "expr": "histogram_quantile(0.5, sum(rate(hippo_brain_lmstudio_request_duration_milliseconds_bucket{service_namespace=\"\",method=\"chat\"}[5m])) by (le))",
           "legendFormat": "p50",
           "editorMode": "code"
         },
@@ -239,7 +239,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "histogram_quantile(0.95, sum(rate(hippo_brain_lmstudio_request_duration_milliseconds_bucket{method=\"chat\"}[5m])) by (le))",
+          "expr": "histogram_quantile(0.95, sum(rate(hippo_brain_lmstudio_request_duration_milliseconds_bucket{service_namespace=\"\",method=\"chat\"}[5m])) by (le))",
           "legendFormat": "p95",
           "editorMode": "code"
         },
@@ -249,7 +249,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "histogram_quantile(0.99, sum(rate(hippo_brain_lmstudio_request_duration_milliseconds_bucket{method=\"chat\"}[5m])) by (le))",
+          "expr": "histogram_quantile(0.99, sum(rate(hippo_brain_lmstudio_request_duration_milliseconds_bucket{service_namespace=\"\",method=\"chat\"}[5m])) by (le))",
           "legendFormat": "p99",
           "editorMode": "code"
         }
@@ -295,7 +295,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum(rate(hippo_brain_lmstudio_errors_total[5m])) by (method) * 60",
+          "expr": "sum(rate(hippo_brain_lmstudio_errors_total{service_namespace=\"\"}[5m])) by (method) * 60",
           "legendFormat": "{{method}}",
           "editorMode": "code"
         }
@@ -341,7 +341,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "histogram_quantile(0.5, sum(rate(hippo_brain_lmstudio_prompt_tokens_bucket[5m])) by (le))",
+          "expr": "histogram_quantile(0.5, sum(rate(hippo_brain_lmstudio_prompt_tokens_bucket{service_namespace=\"\"}[5m])) by (le))",
           "legendFormat": "p50",
           "editorMode": "code"
         },
@@ -351,7 +351,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "histogram_quantile(0.95, sum(rate(hippo_brain_lmstudio_prompt_tokens_bucket[5m])) by (le))",
+          "expr": "histogram_quantile(0.95, sum(rate(hippo_brain_lmstudio_prompt_tokens_bucket{service_namespace=\"\"}[5m])) by (le))",
           "legendFormat": "p95",
           "editorMode": "code"
         }
@@ -397,7 +397,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "histogram_quantile(0.5, sum(rate(hippo_brain_embedding_duration_milliseconds_bucket[5m])) by (le))",
+          "expr": "histogram_quantile(0.5, sum(rate(hippo_brain_embedding_duration_milliseconds_bucket{service_namespace=\"\"}[5m])) by (le))",
           "legendFormat": "p50",
           "editorMode": "code"
         },
@@ -407,7 +407,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "histogram_quantile(0.95, sum(rate(hippo_brain_embedding_duration_milliseconds_bucket[5m])) by (le))",
+          "expr": "histogram_quantile(0.95, sum(rate(hippo_brain_embedding_duration_milliseconds_bucket{service_namespace=\"\"}[5m])) by (le))",
           "legendFormat": "p95",
           "editorMode": "code"
         }
@@ -453,7 +453,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum(hippo_brain_embedding_failures_total) or vector(0)",
+          "expr": "sum(hippo_brain_embedding_failures_total{service_namespace=\"\"}) or vector(0)",
           "legendFormat": "",
           "editorMode": "code"
         }
@@ -508,7 +508,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "histogram_quantile(0.5, sum(rate(hippo_brain_rag_duration_milliseconds_bucket[5m])) by (le, stage))",
+          "expr": "histogram_quantile(0.5, sum(rate(hippo_brain_rag_duration_milliseconds_bucket{service_namespace=\"\"}[5m])) by (le, stage))",
           "legendFormat": "{{stage}} p50",
           "editorMode": "code"
         }
@@ -554,7 +554,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "histogram_quantile(0.5, sum(rate(hippo_brain_rag_retrieval_hits_bucket[5m])) by (le))",
+          "expr": "histogram_quantile(0.5, sum(rate(hippo_brain_rag_retrieval_hits_bucket{service_namespace=\"\"}[5m])) by (le))",
           "legendFormat": "p50",
           "editorMode": "code"
         },
@@ -564,7 +564,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "histogram_quantile(0.95, sum(rate(hippo_brain_rag_retrieval_hits_bucket[5m])) by (le))",
+          "expr": "histogram_quantile(0.95, sum(rate(hippo_brain_rag_retrieval_hits_bucket{service_namespace=\"\"}[5m])) by (le))",
           "legendFormat": "p95",
           "editorMode": "code"
         }
@@ -610,7 +610,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "histogram_quantile(0.95, sum(rate(hippo_brain_mcp_tool_duration_milliseconds_bucket[5m])) by (le, tool))",
+          "expr": "histogram_quantile(0.95, sum(rate(hippo_brain_mcp_tool_duration_milliseconds_bucket{service_namespace=\"\"}[5m])) by (le, tool))",
           "legendFormat": "{{tool}} p95",
           "editorMode": "code"
         }
@@ -656,7 +656,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum(rate(hippo_brain_mcp_tool_calls_total[5m])) by (tool) * 60",
+          "expr": "sum(rate(hippo_brain_mcp_tool_calls_total{service_namespace=\"\"}[5m])) by (tool) * 60",
           "legendFormat": "{{tool}}",
           "editorMode": "code"
         }

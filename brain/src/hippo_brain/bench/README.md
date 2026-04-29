@@ -379,3 +379,138 @@ calling out:
 
 Use the `tier0_verdict.skipped_gates` field to surface "didn't measure this" vs.
 "failed this" in any leaderboard you publish.
+
+---
+
+## v2 Usage
+
+hippo-bench v2 adds a shadow-stack architecture, time-bucketed corpus sampling,
+downstream-proxy evaluation (Hit@K / MRR / NDCG), and automatic pause/resume of
+the production brain during bench runs.
+
+For the full design rationale see:
+- v1 design: [`docs/superpowers/specs/2026-04-21-hippo-bench-design.md`](../../../../docs/superpowers/specs/2026-04-21-hippo-bench-design.md) (history-preserved)
+- v2 design: [`docs/superpowers/specs/2026-04-27-hippo-bench-v2-design.md`](../../../../docs/superpowers/specs/2026-04-27-hippo-bench-v2-design.md)
+
+### Prerequisites
+
+```bash
+# 1. Generate the v2 corpus (time-bucketed SQLite + JSONL sidecar).
+#    Reads from your live hippo DB at ~/.local/share/hippo/hippo.db.
+uv run --project brain hippo-bench corpus init --corpus-version corpus-v2
+
+# 2. Seed the Q/A evaluation fixture (copies committed template to fixtures dir).
+uv run --project brain python3 brain/src/hippo_brain/bench/qa_seed.py
+
+# 3. Verify both artifacts are intact.
+uv run --project brain hippo-bench corpus verify --corpus-version corpus-v2
+```
+
+Corpus artifacts land in `~/.local/share/hippo-bench/fixtures/` — a sibling of
+the prod data directory, never a child. This is enforced by `bench/paths.py`.
+
+### Running a v2 bench
+
+```bash
+# Basic: single model, v2 corpus.
+uv run --project brain hippo-bench run \
+  --models qwen3.5-35b-a3b \
+  --corpus-version corpus-v2
+
+# With downstream ask-synthesis sampling (keyword hit rate on Q/A items).
+uv run --project brain hippo-bench run \
+  --models qwen3.5-35b-a3b \
+  --corpus-version corpus-v2 \
+  --with-ask-synthesis
+
+# Multiple models in one run (bench loads/unloads each cleanly).
+uv run --project brain hippo-bench run \
+  --models qwen3.5-35b-a3b,llama3.3-70b-mlx \
+  --corpus-version corpus-v2 \
+  --with-ask-synthesis
+```
+
+### Prod brain coordination
+
+v2 automatically pauses the production `hippo-brain` enrichment loop before
+spawning the shadow stack, then resumes it after the run completes. This prevents
+the prod brain from consuming LM Studio capacity during the bench window.
+
+- **Automatic** — no flags needed if the prod brain is running
+- **Resume is best-effort** — registered via `atexit` so it fires even on crash
+- **Override** — `--skip-prod-pause` bypasses pause/resume entirely (e.g., if
+  the prod brain is not running or you're doing a dry-run):
+
+```bash
+uv run --project brain hippo-bench run \
+  --models qwen3.5-35b-a3b \
+  --corpus-version corpus-v2 \
+  --skip-prod-pause
+```
+
+If the prod brain restarts during a bench run (e.g., due to launchd keepalive),
+the `model_summary` record will include `"prod_brain_restarted_during_bench": true`.
+
+### Results
+
+Run output lands in `~/.local/share/hippo-bench/runs/<run_id>/<model_id>/`.
+The top-level JSONL file (specified via `--out` or auto-named) contains the same
+four record types as v1 (`run_manifest`, `attempt`, `model_summary`, `run_end`),
+extended with v2 fields:
+
+| New field | Where | Meaning |
+|---|---|---|
+| `bench_version` | `run_manifest` | `"0.2.0"` for v2 runs |
+| `corpus_schema_version` | `run_manifest` | Schema version of the bench corpus SQLite |
+| `eval_qa_version` | `run_manifest` | Q/A fixture version used |
+| `host_baseline` | `run_manifest` | Load avg at run start |
+| `prod_state_at_start` | `run_manifest` | Was prod brain running / paused? |
+| `process_ready_ms` | `model_summary` | Time from shadow stack spawn to `/health` 200 |
+| `queue_drain_wall_clock_sec` | `model_summary` | Wall time for enrichment queue to empty |
+| `downstream_proxy` | `model_summary` | Hit@1/3/5/10, MRR, NDCG@10 per retrieval mode |
+| `prod_brain_restarted_during_bench` | `model_summary` | Whether prod brain came back up during run |
+| `timeout_during_drain` | `model_summary` | Whether drain hard-timeout (3600s) was hit |
+| `prod_brain_resumed_ok` | `run_end` | Whether resume RPC succeeded after run |
+| `models_with_prod_restart_event` | `run_end` | Models where prod restart was detected |
+
+### Dry-run / config validation
+
+```bash
+uv run --project brain hippo-bench run \
+  --dry-run \
+  --models qwen3.5-35b-a3b \
+  --corpus-version corpus-v2 \
+  --skip-prod-pause \
+  --out /tmp/test-dryrun.jsonl
+```
+
+Dry-run skips LM Studio, corpus, and shadow stack. It writes a `run_manifest`
+with `bench_version="0.2.0"` and a `run_end` with `reason="dry_run"`, then exits
+0. Use this to verify CLI config without a running model or corpus.
+
+### New v2 CLI flags
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `--corpus-version corpus-v2` | `corpus-v2` | Select v2 corpus path and orchestrator |
+| `--corpus-days N` | 90 | Days of history to sample from |
+| `--corpus-buckets N` | 9 | Time buckets for even temporal coverage |
+| `--shell-min / --claude-min / --browser-min / --workflow-min` | 50 | Per-source minimum event floor |
+| `--skip-prod-pause` | false | Skip pause/resume of the prod brain |
+| `--with-ask-synthesis` | false | Run ask-synthesis keyword hit rate pass |
+| `--ask-synthesis-sample N` | 10 | Number of Q/A items to sample for synthesis |
+
+### v2 Module map (additions)
+
+| Module | Responsibility |
+|---|---|
+| [`corpus_v2.py`](corpus_v2.py) | Time-bucketed sampling, SQLite snapshot, JSONL sidecar, manifest |
+| [`shadow_stack.py`](shadow_stack.py) | Process-group spawn (daemon + brain), env injection, SIGTERM/SIGKILL teardown |
+| [`downstream_proxy.py`](downstream_proxy.py) | Q/A loading, Hit@K, MRR, NDCG, ask-synthesis sampling |
+| [`coordinator_v2.py`](coordinator_v2.py) | Per-model v2 lifecycle (shadow stack, queue drain, downstream proxy) |
+| [`preflight_v2.py`](preflight_v2.py) | v2 pre-flight checks (prod brain reachable, corpus schema, disk) |
+| [`orchestrate_v2.py`](orchestrate_v2.py) | v2 top-level orchestrator (pause/resume, per-model loop, atexit resume) |
+| [`output_v2.py`](output_v2.py) | v2 record dataclasses with extended fields |
+| [`schemas_v2.py`](schemas_v2.py) | Corpus schema-version assertion against live hippo schema |
+| [`qa_seed.py`](qa_seed.py) | Seeds `eval-qa-v1.jsonl` from committed template into fixtures dir |
+| [`pause_rpc.py`](pause_rpc.py) | Thin HTTP client for `/control/pause` and `/control/resume` |
