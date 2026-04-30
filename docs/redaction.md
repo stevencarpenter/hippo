@@ -8,9 +8,9 @@ For the bigger threat model (data flow, encryption, MCP trust boundary), read th
 
 A regex-based filter that runs over event text **before storage**. Implemented in `crates/hippo-core/src/redaction.rs::RedactionEngine`. Applied to:
 
-- Shell command strings, stdout, stderr (in `daemon.rs::flush_events` before `insert_event_at`).
-- Browser titles and Readability-extracted page content (same path).
-- Claude session segment text (same path).
+- **Shell command strings**, plus values of env-allowlisted env vars, in `daemon.rs::flush_events` (via `redact_shell_event` in `crates/hippo-daemon/src/lib.rs`). The shell hook's captured output (`stdout`/`stderr` payload sent as the event's `--output`) is **not** currently passed through `RedactionEngine`; only the command and allowlisted env values are filtered before `insert_event_at`.
+- **Claude session segment text** — `user_prompts`, `assistant_texts`, and per-tool-call `summary` fields are redacted in the FS-watcher path (`crates/hippo-daemon/src/claude_session.rs::extract_segments`, not in `flush_events`). The shared pattern set is loaded once via `RedactionEngine::builtin()`.
+- **Browser visits** — URL query parameters listed in `[browser.url_redaction] strip_params` are stripped in `native_messaging.rs::strip_sensitive_params` (see [Browser URL redaction](#browser-url-redaction) below). Browser titles and Readability-extracted page content are NOT currently passed through `RedactionEngine` before storage.
 
 Redaction is **best-effort**. It catches known secret formats; it cannot catch secrets in arbitrary positions. Treat it as a noise filter, not a security guarantee. If you need stronger guarantees, don't paste secrets into your terminal in front of a tool that captures stdout.
 
@@ -38,9 +38,9 @@ replacement = "[REDACTED]"
 
 | Field | Required | Behavior |
 |---|---|---|
-| `name` | yes | Rule identifier. Surfaces in metrics (`hippo.daemon.redaction_hits{rule=<name>}`) and in `hippo redact test` output. Must be unique. |
+| `name` | yes | Rule identifier. Surfaces in metrics (`hippo.daemon.redactions{rule=<name>}`) and in `hippo redact test` output. Must be unique. |
 | `regex` | yes | Rust [`regex` crate](https://docs.rs/regex/) syntax. **No PCRE backreferences or lookaround.** Compiled once at daemon startup (and `RegexSet`-bundled for fast match dispatch). Use `(?i)` for case-insensitivity. |
-| `replacement` | yes | The replacement string for matched substrings. Conventionally `"[REDACTED]"`; can include capture-group references (`$1`, `$2`) per the regex crate's `Replacer`. |
+| `replacement` | no | The replacement string for matched substrings. Defaults to `"[REDACTED]"` when omitted (see `RedactConfig` in `crates/hippo-core/src/config.rs`); can include capture-group references (`$1`, `$2`) per the regex crate's `Replacer`. |
 
 The whole `redact.toml` is the rule set; patterns are loaded in file order. See `crates/hippo-core/src/config.rs::RedactConfig` for the deserialization shape.
 
@@ -48,18 +48,18 @@ The whole `redact.toml` is the rule set; patterns are loaded in file order. See 
 
 - **All patterns apply, not first-match.** `RedactionEngine::redact` iterates over `RegexSet::matches`, then calls `replace_all` for each matching rule. A single command can fire multiple rules.
 - **Order is deterministic.** Patterns evaluate in the order they appear in `redact.toml`. After each pattern's `replace_all`, subsequent patterns operate on the *already-redacted* text. This matters when patterns can overlap: an earlier pattern that replaces a substring with `[REDACTED]` prevents a later pattern from matching what was there.
-- **Per-rule hit attribution.** Counting happens before replacement (counting after `replace_all` would return zero, since `[REDACTED]` doesn't match the original pattern). Hit counts feed the OTel counter `hippo.daemon.redaction_hits{rule=<name>}`.
+- **Per-rule hit attribution.** Counting happens before replacement (counting after `replace_all` would return zero, since `[REDACTED]` doesn't match the original pattern). Hit counts feed the OTel counter `hippo.daemon.redactions` with the rule name as the `rule` attribute (see `crates/hippo-daemon/src/metrics.rs`). Note that hits are only emitted for the shell `command` field today; redactions of allowlisted env values fire but aren't surfaced as separate counter increments.
 - **No event dropping.** When the entire command matches a pattern, the substring is replaced with `[REDACTED]` in-place; the event row is still stored. Hippo doesn't delete events even when redaction renders them empty. (See [issue #52](https://github.com/stevencarpenter/hippo/issues/52) for the open discussion of "over-redaction silently producing empty events" — the current behavior is "store the redacted row," which is auditable but means a power user might see `[REDACTED]` lines in `hippo events`.)
 
 ## Default patterns
 
-Shipped in [`config/redact.default.toml`](../config/redact.default.toml). All replacements are `"[REDACTED]"`.
+Shipped in [`config/redact.default.toml`](../config/redact.default.toml). All replacements are `"[REDACTED]"`. The regex column below shows the patterns verbatim — Markdown's `|` cell separator is escaped as `&#124;` where it appears inside a regex's alternation; the raw TOML uses a literal `|`.
 
 | Rule | Regex | Catches |
 |---|---|---|
 | `aws_access_key` | `AKIA[0-9A-Z]{16}` | Long-lived AWS access key IDs (the `AKIA*` prefix). |
-| `github_pat` | `ghp_[a-zA-Z0-9]{36}\|github_pat_[a-zA-Z0-9_]{82}` | GitHub classic personal access tokens (`ghp_`) and fine-grained tokens (`github_pat_`). |
-| `generic_secret_assignment` | `(?i)(api[_-]?key\|api[_-]?token\|access[_-]?token\|auth[_-]?token\|secret[_-]?key\|private[_-]?key\|password)\s*[=:]\s*\S{8,}` | `key=value` and `key: value` assignments where the key matches a known secret-y name and the value is ≥ 8 non-whitespace characters. |
+| `github_pat` | `ghp_[a-zA-Z0-9]{36}&#124;github_pat_[a-zA-Z0-9_]{82}` | GitHub classic personal access tokens (`ghp_`) and fine-grained tokens (`github_pat_`). |
+| `generic_secret_assignment` | `(?i)(api[_-]?key&#124;api[_-]?token&#124;access[_-]?token&#124;auth[_-]?token&#124;secret[_-]?key&#124;private[_-]?key&#124;password)\s*[=:]\s*\S{8,}` | `key=value` and `key: value` assignments where the key matches a known secret-y name and the value is ≥ 8 non-whitespace characters. |
 | `jwt` | `eyJ[a-zA-Z0-9_-]{10,}\.eyJ[a-zA-Z0-9_-]{10,}\.[a-zA-Z0-9_-]+` | Three-segment JWTs starting with the standard base64 `{` prefix. |
 | `bearer_header` | `(?i)authorization:\s*bearer\s+\S+` | HTTP `Authorization: Bearer <token>` headers. |
 | `private_key_pem` | `-----BEGIN [A-Z ]*PRIVATE KEY-----` | The leading line of any PEM-encoded private key. (The body and trailing `-----END` line aren't matched, so a key body in stdout would have its header redacted but the body would persist. This is a known gap.) |
@@ -88,7 +88,9 @@ You want to catch your team's internal API tokens, which look like `xtok_<32-hex
 ```bash
 # Step 1: confirm the default rules don't catch it
 hippo redact test "deploy --token xtok_a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6"
-# rules fired: (none)
+# No patterns matched.
+# Redacted (0 replacements):
+#   deploy --token xtok_a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6
 
 # Step 2: add the pattern
 $EDITOR ~/.config/hippo/redact.toml
@@ -104,11 +106,15 @@ replacement = "[REDACTED]"
 ```bash
 # Step 3: verify
 hippo redact test "deploy --token xtok_a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6"
-# rules fired: internal_xtok
+# Matched patterns: internal_xtok
+# Redacted (1 replacements):
+#   deploy --token [REDACTED]
 
 # Step 4: confirm it doesn't false-positive on benign text
 hippo redact test "git checkout xtok-feature-branch"
-# rules fired: (none)
+# No patterns matched.
+# Redacted (0 replacements):
+#   git checkout xtok-feature-branch
 ```
 
 ### More example sessions
@@ -116,30 +122,38 @@ hippo redact test "git checkout xtok-feature-branch"
 ```bash
 # Stripe live keys
 hippo redact test "STRIPE_KEY=sk_live_AbCdEfGhIjKlMnOp"
-# default rules fire: (none) — STRIPE_KEY isn't on the keyword list
+# No patterns matched.
+# Redacted (0 replacements): ... (STRIPE_KEY isn't on the keyword list)
 
 # After adding a pattern named `stripe_secret_key` with regex `sk_live_[a-zA-Z0-9]{24,}`:
 hippo redact test "STRIPE_KEY=sk_live_AbCdEfGhIjKlMnOp"
-# rules fired: stripe_secret_key
+# Matched patterns: stripe_secret_key
+# Redacted (1 replacements):
+#   STRIPE_KEY=[REDACTED]
 ```
 
 ```bash
 # Slack incoming webhooks (placeholder shown — replace with your team's URL when testing)
 hippo redact test "curl -X POST https://hooks.slack.com/services/<TEAM>/<CHANNEL>/<TOKEN>"
-# default rules fire: (none)
+# No patterns matched.
+# Redacted (0 replacements): ...
 
-# After adding a pattern: regex = 'https://hooks\.slack\.com/services/[A-Z0-9/]+'
-# the same call would report: rules fired: slack_webhook_url
+# After adding a pattern with regex = 'https://hooks\.slack\.com/services/[A-Z0-9/]+'
+# the same call would report:
+# Matched patterns: slack_webhook_url
+# Redacted (1 replacements): curl -X POST [REDACTED]
 ```
 
 ```bash
 # Database connection strings
 hippo redact test "DATABASE_URL=postgres://admin:hunter2@db.example.com:5432/prod"
-# default rules fire: (none) — DATABASE_URL isn't on the keyword list
+# No patterns matched.
+# Redacted (0 replacements): ... (DATABASE_URL isn't on the keyword list)
 
 # Add: regex = '(?i)(database_url|postgres|mysql)://[^@\s]+:[^@\s]+@'
 hippo redact test "DATABASE_URL=postgres://admin:hunter2@db.example.com:5432/prod"
-# rules fired: db_connection_string
+# Matched patterns: db_connection_string
+# Redacted (1 replacements): DATABASE_URL=[REDACTED]db.example.com:5432/prod
 ```
 
 After adding any new pattern, restart the daemon: `mise run restart`. The engine compiles patterns at startup and doesn't reload on `redact.toml` change.
@@ -174,7 +188,7 @@ What it doesn't catch:
 | Common URL-borne tokens in browser visit URLs | Tokens in URL path segments or page content |
 | Secrets in `Authorization: Bearer …` HTTP headers logged to stdout | Secrets in custom auth schemes |
 | Storing structured PEM private-key headers | The body of a multi-line private key (only the header line matches) |
-| Replay of `[REDACTED]` strings across the LLM/MCP path (since the secret has been replaced before storage) | Secrets that already-stored prior to a pattern being added |
+| Replay of `[REDACTED]` strings across the LLM/MCP path (since the secret has been replaced before storage) | Secrets that were already stored before a pattern was added |
 
 For threats outside this list, the answer is "don't paste secrets into your terminal." Hippo's job is to catch the common case.
 
