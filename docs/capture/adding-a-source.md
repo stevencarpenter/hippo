@@ -23,12 +23,16 @@ Every new source must implement all of these. Skipping any one is a known-bug sh
 
 ### 1. Source identity
 
-Pick a `source_kind` value. It joins the existing set: `'shell'`, `'claude-tool'`, `'claude-session'`, `'claude-session-watcher'`, `'browser'`, `'workflow'`, `'watchdog'`, `'probe'`. Use kebab-case.
+Two distinct identifiers are involved; pick a value for each.
+
+**`events.source_kind`** distinguishes rows in the events table. Today's set: `'shell'` and `'claude-tool'` (rows where `tool_name IS NOT NULL`). Pick a kebab-case value if your source writes into the `events` table. Sources with their own table (browser, claude-session) don't need a `source_kind` value.
+
+**`source_health.source`** is the watchdog's per-source heartbeat key. Today's set: `'shell'`, `'claude-tool'`, `'claude-session'`, `'claude-session-watcher'`, `'browser'`, `'workflow'`, `'watchdog'`. (Note: there is no `'probe'` row — probes write `probe_ok` / `probe_lag_ms` / `probe_last_run_ts` onto the *real* source's row, not into a separate probe heartbeat.)
 
 The new value goes in:
 
-- `crates/hippo-core/src/storage.rs` — wherever `source_kind` is referenced; specifically `source_health` is seeded at v8 with one row per kind, so add a seed row in your migration (next step).
-- `crates/hippo-daemon/src/probe.rs` — the probe enum if you want probe coverage (see step 5).
+- `crates/hippo-core/src/storage.rs` — wherever `source_kind` is referenced (only if your source writes into `events`); `source_health` is seeded at v8 with one row per source, so add a seed row in your migration (next step).
+- `crates/hippo-daemon/src/probe.rs` — if you want probe coverage, add the new source to the `source: Option<&str>` string-dispatch in `run`, and add the matching `probe_<source>` async function (see step 5). There is no enum.
 
 ### 2. Schema migration
 
@@ -54,7 +58,7 @@ Where the actual writes happen. The contract is two writes in **one** SQLite tra
 
 For sources that flow through the daemon's existing `flush_events` path (recommended for anything that can speak the Unix socket protocol):
 
-- Add a new envelope variant in `crates/hippo-daemon/src/commands.rs` (analogous to `handle_send_event_shell` and `handle_send_event_browser`).
+- Add a new envelope variant in `crates/hippo-daemon/src/commands.rs`. `handle_send_event_shell` is the one CLI-side handler today; **there is no `handle_send_event_browser`** — browser events flow via `crates/hippo-daemon/src/native_messaging.rs::run` → `send_event_fire_and_forget` → daemon flush, so a Native-Messaging-style source mirrors that path instead.
 - Route to `send_event_fire_and_forget` for fire-and-forget capture; the durability contract (success = "frame hit the socket") is documented at the function definition.
 - Implement the event-row write in `crates/hippo-core/src/storage.rs` analogous to `insert_event_at` / `insert_browser_event`.
 - Update `source_health` in the same transaction. Existing helpers in `storage.rs` show the pattern.
@@ -83,11 +87,14 @@ Sources that capture only metadata (workflow-runs is structural, not user-typed)
 
 ### 5. Probe coverage
 
-The synthetic-probe job runs every 5 minutes and round-trips a tagged event through every probed source. To add probe support:
+The synthetic-probe job runs every 5 minutes and exercises every probed source. To add probe support:
 
-- Implement a probe in `crates/hippo-daemon/src/probe.rs`. Existing entries (shell, browser, claude-session) are the templates. The probe inserts an event with `probe_tag` set to a per-run UUID, then waits for the event to land in the source's table.
+- Implement a probe in `crates/hippo-daemon/src/probe.rs`. Existing entries (shell, claude-tool, browser, claude-session) are the templates. Two probe shapes are valid, depending on whether synthetic injection makes sense for your source:
+  - **Inject + poll** (shell, claude-tool, browser): emit a synthetic event with `probe_tag` set to a per-run UUID through the same path real captures use, then poll for the row to land. `probe_lag_ms` is end-to-end latency.
+  - **Assertion-only** (claude-session): make a source-specific environmental assertion (e.g. "any JSONL under `~/.claude/projects` modified in the last 5 min has a matching `claude_sessions` row") without injecting a synthetic row. This is the right shape when injection would either be intrusive or wouldn't represent the real capture path.
+- Wire the new source into `run()` in `probe.rs` so `hippo probe --source <name>` and the launchd job both invoke your probe.
 - Probes must work on a daemon-only basis — they cannot depend on the brain or LM Studio.
-- The probe's `probe_ok` definition is source-specific (e.g. shell: `pgrep -x zsh` non-empty; browser: Firefox running). Document yours.
+- The probe's `probe_ok` definition is source-specific (e.g. shell: `pgrep -x zsh` non-empty; browser: Firefox running; claude-session: at least one fresh-mtime JSONL in `~/.claude/projects`). Document yours.
 
 If your source genuinely cannot be probed (e.g., a one-shot import path, or a source that depends on user activity that synthetic probes can't fake), add an explicit "probe-exempt" entry in [`sources.md`](sources.md) with a one-sentence rationale.
 
@@ -130,14 +137,19 @@ Threshold guidance: pick at least 3× the expected event-rate interval. Shell is
 
 ### 9. Doctor check
 
-`hippo doctor` already prints per-source freshness via `commands.rs::print_source_freshness`. Add a row for your source to that helper's source list. Severity:
+`hippo doctor` runs two related sets of source checks (both in `crates/hippo-daemon/src/commands.rs`); a new source needs to be wired into both:
+
+- **Source-audit / freshness lines** (`check_source_freshness`): add a `SourceFreshnessProbe` entry to `source_freshness_probes()` naming the SQL `COUNT(*) / MAX(timestamp)` query plus your soft/hard `FreshnessThresholds` constants.
+- **`source_health`-based staleness lines** (`check_source_staleness`): add the new source name to that helper so its `last_event_ts` is surfaced alongside the existing rows.
+
+Severity:
 
 - `[OK]` if last event < soft threshold
 - `[WW]` if last event between soft and hard threshold
 - `[!!]` if last event > hard threshold AND your `probe_ok` says the source should be active
 - `[--]` if zero rows ever (this is informational on startup; once events have flowed, "zero rows ever" reverts to `[!!]`)
 
-Soft + hard thresholds go in your watchdog config block; let the doctor read the same constants.
+Keep the soft + hard thresholds in the same `commands.rs` constants/`source_freshness_probes()` definitions that `check_source_freshness` consumes today, so doctor and watchdog behavior share a single source of truth rather than duplicating values. Watchdog thresholds are not config-driven today; if you need runtime override, that is a follow-up task.
 
 ### 10. Test matrix + source audit
 
@@ -180,11 +192,11 @@ Suppose you're adding `bash` history capture as a new source. (For zsh, just edi
 | 2. Migration | Bump `EXPECTED_VERSION` to N+1; seed `INSERT OR IGNORE INTO source_health (source, last_event_ts, updated_at) VALUES ('bash', NULL, ...)`. No new table — bash events flow through `events`. |
 | 3. Capture path | Write `shell/hippo.bash` analogous to `hippo.zsh` (preexec/precmd → fire-and-forget on the daemon socket). The daemon side reuses `handle_send_event_shell` with `source_kind` parameterized — minor refactor in `commands.rs`. |
 | 4. Redaction | Same `RedactionEngine` runs on commands + stdout + stderr; nothing source-specific. |
-| 5. Probe | Add `Source::Bash` variant to `probe.rs` enum; `probe_ok` is `pgrep -x bash` non-empty. The probe injects a synthetic command via the same socket path. |
+| 5. Probe | Add a `"bash"` arm to the `source: Option<&str>` dispatch in `probe.rs::run` and a `probe_bash` async function (no enum); `probe_ok` is `pgrep -x bash` non-empty. The probe injects a synthetic command via the same socket path. |
 | 6. Eligibility | `is_enrichment_eligible(event_dict, "bash")` mirrors the shell branch — same trivial-command set, same duration threshold. |
 | 7. Brain | If shell/bash share enrichment shape, no new method needed: parameterize `_enrich_shell_batches` to pull from both `source_kind in ('shell','bash')`. |
 | 8. Watchdog invariant | I-N+1 mirrors I-1: bash liveness when bash is the user's active shell, 60 s threshold. |
-| 9. Doctor | New row in `print_source_freshness`. |
+| 9. Doctor | New `SourceFreshnessProbe` entry in `source_freshness_probes()` (used by `check_source_freshness`); also extend `check_source_staleness` to include the new source's `source_health` row. |
 | 10. Tests | `source_audit::bash_events` (event lands), `nm_bash_restart` (capture survives daemon restart), bash-specific probe round-trip. |
 | 11. Docs | Row in `sources.md`; changelog in `schema.md`; bash hook documented in [`shell/README.md`](../../shell/README.md). |
 
