@@ -1,16 +1,16 @@
 //! Skeletons for the capture-reliability invariants (I-1, I-2, I-7, I-8,
 //! I-10) that cannot be exercised against `main` today because they depend
-//! on infrastructure defined in `docs/capture-reliability/{01-source-health,
+//! on infrastructure defined in `docs/capture/{01-source-health,
 //! 04-watchdog, 05-synthetic-probes}.md` and the FS watcher (design archived
 //! at `docs/archive/capture-reliability-overhaul/06-claude-session-watcher.md`;
 //! shipped in PR #86) and not yet wired in here.
 //!
 //! Every test in this file is `#[ignore]` with an explanation pointing at
-//! the blocking roadmap task (see `docs/capture-reliability/07-roadmap.md`).
+//! the blocking roadmap task (see `docs/archive/capture-reliability-overhaul/07-roadmap.md`).
 //! The file is committed so that when each P0/P1/P2 phase lands, the test
 //! is a one-line enable, not a "remember to write this later" TODO.
 //!
-//! Tracking: docs/capture-reliability/09-test-matrix.md rows F-10..F-14.
+//! Tracking: docs/capture/test-matrix.md rows F-10..F-14.
 
 // ============================================================================
 // F-11 / I-1 — shell liveness

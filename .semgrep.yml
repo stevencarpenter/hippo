@@ -17,8 +17,8 @@
 # beyond its current `shell/` path-scope) is tracked as a follow-up; the
 # rules are useful for local scans and code-review in the meantime.
 #
-# Reference: docs/capture-reliability/08-anti-patterns.md AP-11,
-#            docs/capture-reliability/09-test-matrix.md row F-17.
+# Reference: docs/capture/anti-patterns.md AP-11,
+#            docs/capture/test-matrix.md row F-17.
 
 rules:
   - id: hippo-capture-silent-result-swallow
@@ -92,7 +92,7 @@ rules:
       one-line justification:
         # nosemgrep: unfiltered-event-table-select -- reason
 
-      See docs/capture-reliability/08-anti-patterns.md AP-6.
+      See docs/capture/anti-patterns.md AP-6.
     languages: [python]
     severity: ERROR
     patterns:

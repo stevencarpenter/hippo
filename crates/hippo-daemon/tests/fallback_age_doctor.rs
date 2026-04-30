@@ -12,7 +12,7 @@
 //! a source change. These tests are `#[ignore]` until that source change
 //! lands; the skeleton reserves the test file and names the intended shape.
 //!
-//! Tracking: docs/capture-reliability/09-test-matrix.md row F-8.
+//! Tracking: docs/capture/test-matrix.md row F-8.
 
 use std::fs;
 use std::path::Path;

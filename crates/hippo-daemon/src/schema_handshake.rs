@@ -159,7 +159,7 @@ mod tests {
     // assertion is that `check_brain_schema_compat` returns Incompatible with
     // both versions named, so the CLI can print the remediation message.
     //
-    // Tracking: docs/capture-reliability/09-test-matrix.md row F-16.
+    // Tracking: docs/capture/test-matrix.md row F-16.
     // ------------------------------------------------------------------
 
     #[tokio::test]

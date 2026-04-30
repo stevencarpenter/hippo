@@ -163,7 +163,7 @@ pub static WATCHDOG_ALARMS_FIRED: LazyLock<Counter<u64>> = LazyLock::new(|| {
         .build()
 });
 
-/// Per-source violation counter as specified in docs/capture-reliability/02-invariants.md.
+/// Per-source violation counter as specified in docs/capture/architecture.md.
 /// Complements WATCHDOG_ALARMS_FIRED (which slices by invariant_id) with the source dimension
 /// required by the spec for dashboards and alerts.
 pub static WATCHDOG_INVARIANT_VIOLATION: LazyLock<Counter<u64>> = LazyLock::new(|| {

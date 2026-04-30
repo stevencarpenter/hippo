@@ -1,6 +1,6 @@
 //! Doctor extension — `hippo doctor` emits one freshness line per
 //! source. The line formats are defined by
-//! `docs/capture-reliability/10-source-audit.md` and produced by the
+//! `docs/capture/sources.md` and produced by the
 //! pure-function helper `commands::source_freshness_verdict`.
 //!
 //! This test exercises two things:
@@ -34,7 +34,7 @@ fn probes_cover_every_source_from_the_audit_matrix() {
             "browser",
             "workflow",
         ],
-        "probe list must stay in sync with docs/capture-reliability/10-source-audit.md"
+        "probe list must stay in sync with docs/capture/sources.md"
     );
 }
 

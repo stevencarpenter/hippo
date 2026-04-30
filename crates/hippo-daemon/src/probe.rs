@@ -4,7 +4,7 @@
 //! polls the database to confirm the row appeared. Results are written to
 //! `source_health` so the watchdog can evaluate invariant I-8 (probe freshness).
 //!
-//! Reference: docs/capture-reliability/05-synthetic-probes.md
+//! Reference: docs/capture/architecture.md
 
 use anyhow::{Context, Result};
 use hippo_core::config::HippoConfig;

@@ -540,7 +540,7 @@ pub fn open_db(path: &Path) -> Result<Connection> {
     //     content_hash to detect stale knowledge nodes and re-enrich when they
     //     diverge. NULL until first enrichment.
     //
-    // See docs/capture-reliability/11-watcher-data-loss-fix.md, task T-A.1.
+    // See docs/archive/capture-reliability-overhaul/11-watcher-data-loss-fix.md, task T-A.1.
     if (1..=11).contains(&version) {
         // Guard: claude_sessions may not exist in minimal test DBs that only
         // seed the tables relevant to an earlier migration. In production the

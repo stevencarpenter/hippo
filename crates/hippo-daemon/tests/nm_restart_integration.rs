@@ -19,7 +19,7 @@
 //! mid-write) is `#[ignore]` because it requires harness plumbing that
 //! does not exist on `main` today.
 //!
-//! Tracking: docs/capture-reliability/09-test-matrix.md row F-7.
+//! Tracking: docs/capture/test-matrix.md row F-7.
 
 use std::collections::HashMap;
 use std::fs;
