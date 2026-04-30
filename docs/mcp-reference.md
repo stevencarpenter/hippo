@@ -25,7 +25,7 @@ Several tools share filter arguments. They all behave the same way:
 
 | Argument | Type | Behavior |
 |---|---|---|
-| `since` | `str` | Time window: `"30m"`, `"24h"`, `"7d"`, `"30d"`. Parses to epoch-ms, filters events/sessions newer than that. Empty string disables the filter. |
+| `since` | `str` | Time window. **Strict format only**: `^<digits><unit>$` where unit is `m`/`h`/`d`. Examples: `"30m"`, `"24h"`, `"7d"`. `parse_since` returns 0 (no filter) for inputs with spaces, words, bare numbers, mixed case, or anything else that doesn't match. Empty string disables. |
 | `project` | `str` | Substring match on `cwd` or `git_repo` of the events/sessions linked to a knowledge node. Use `list_projects` first to find candidates. |
 | `source` | `str` | One of `"shell"`, `"claude"`, `"browser"`, `"workflow"`. Empty string means all sources. |
 | `branch` | `str` | Exact-match `git_branch` filter. Ignored for browser events. |
@@ -81,31 +81,33 @@ Search enriched knowledge nodes; no synthesis. Defaults to semantic; falls back 
 | Name | Type | Default | Notes |
 |---|---|---|---|
 | `query` | `str` | required | Search query text. |
-| `mode` | `str` | `"semantic"` | `"semantic"` (vector similarity via LM Studio embedding model) or `"lexical"` (FTS5 / LIKE fallback). |
+| `mode` | `str` | `"semantic"` | `"semantic"` (vector similarity via LM Studio embedding model) or `"lexical"` (SQL `LIKE` over `knowledge_nodes.content` / `embed_text` — does NOT use the FTS5 index). |
 | `limit` | `int` | `10` | |
 | `project` / `since` / `source` / `branch` | `str` | `""` | See [Common arguments](#common-arguments). |
 
 When any filter is applied, the implementation forces lexical mode (filter pushdown isn't supported in the semantic path).
 
-**Returns** — list of `SearchResult`-shaped dicts:
+**Returns** — list of `SearchResult`-shaped dicts (from `shape_semantic_results` / `search_knowledge_lexical` in `brain/src/hippo_brain/mcp_queries.py`):
 
 ```json
 {
   "uuid": "node-uuid-...",
   "score": 0.87,
   "summary": "...",
-  "embed_text": "identifier-dense tag soup",
+  "intent": "",
   "outcome": "success" | "partial" | "failure" | "unknown",
   "tags": ["tag1", "tag2"],
+  "embed_text": "identifier-dense tag soup",
   "cwd": "/Users/.../projects/hippo",
   "git_branch": "main",
   "captured_at": 1730000000000,
-  "design_decisions": [{"considered": "...", "chosen": "...", "reason": "..."}, ...],
-  "linked_event_ids": [12345, 12346, ...]
+  "linked_event_ids": [12345, 12346],
+  "linked_claude_session_ids": [501, 502],
+  "linked_browser_event_ids": [9001]
 }
 ```
 
-`design_decisions` is empty for nodes enriched before PR #100. `linked_event_ids` is empty for browser-only or workflow-only nodes.
+The `linked_*_ids` arrays are empty when a node has no links to that source (e.g., a browser-only node returns `[]` for `linked_event_ids`).
 
 ---
 
@@ -143,13 +145,31 @@ Search raw events — shell commands, Claude tool calls, browser visits — not 
 | `since` / `project` / `branch` | `str` | `""` | See [Common arguments](#common-arguments). |
 | `limit` | `int` | `20` | |
 
-**Returns** — list of event dicts. Shape depends on `source`:
+**Returns** — list of normalized event dicts. The shape is the same across all three sources (the per-source helpers in `mcp_queries.py` project each row into this canonical envelope):
 
-- Shell: `{id, timestamp, command, exit_code, duration_ms, cwd, git_branch, source_kind, tool_name}` — no stdout/stderr in the response (those are stored but not returned by default to keep payloads bounded).
-- Claude session: `{id, session_id, segment_index, summary_text, message_count, start_time, end_time}`.
-- Browser: `{id, timestamp, url, title, domain, dwell_ms, scroll_depth}`.
+```json
+{
+  "id": 12345,
+  "source": "shell" | "claude" | "browser",
+  "timestamp": 1730000000000,
+  "summary": "...",
+  "cwd": "/Users/.../projects/hippo",
+  "detail": "...",
+  "git_branch": "main"
+}
+```
 
-When `source="all"`, results are interleaved by timestamp.
+What lands in `summary` and `detail` is source-specific:
+
+| Source | `summary` | `detail` | `cwd` / `git_branch` |
+|---|---|---|---|
+| `shell` (rows from `events`) | the command text | `"exit=<code> duration=<ms>ms"` | `cwd` and `git_branch` from the event |
+| `claude` (rows from `claude_sessions`) | `summary_text` | `"messages=<count> tools=<count>"` (tool count derived from `tool_calls_json`) | `cwd` / `git_branch` from the session |
+| `browser` (rows from `browser_events`) | `"<domain> — <title or url>"` | `"dwell=<ms>ms scroll=<pct>%"` | empty strings (browser events have no cwd/branch) |
+
+When `source="all"`, results are interleaved by `timestamp` desc and capped at `limit`.
+
+The original per-table fields (`command`, `exit_code`, `url`, `tool_calls_json`, etc.) are **not** returned — they're projected into `summary`/`detail` and the underlying row stays in SQLite. Use `hippo events` (CLI) or query SQLite directly when you need the raw columns.
 
 ---
 
@@ -161,27 +181,25 @@ Browse the entities knowledge graph.
 
 | Name | Type | Default | Notes |
 |---|---|---|---|
-| `type` | `str` | `""` | One of `"project"`, `"tool"`, `"file"`, `"directory"`, `"path"`, `"service"`, `"repo"`, `"host"`, `"person"`, `"concept"`, `"domain"`, `"env_var"` (added in schema v13). Empty = all types. |
+| `type` | `str` | `""` | One of the schema's `entities.type` CHECK values: `"project"`, `"file"`, `"tool"`, `"service"`, `"repo"`, `"host"`, `"person"`, `"concept"`, `"domain"`, `"env_var"` (added in schema v13). Empty = all types. The brain doesn't emit every category in every corpus — query `get_entities` with no filter to see what your DB actually contains. |
 | `query` | `str` | `""` | Substring match on entity name. |
 | `limit` | `int` | `50` | |
 | `project` | `str` | `""` | Substring match on cwd/git_repo of co-occurring nodes. |
 | `since` | `str` | `""` | Window applied to `entities.last_seen`. |
 
-**Returns** — list of entity dicts:
+**Returns** — list of entity dicts (`get_entities_impl` in `brain/src/hippo_brain/mcp_queries.py`):
 
 ```json
 {
-  "id": 1234,
   "type": "file",
   "name": "/Users/.../brain/src/hippo_brain/enrichment.py",
   "canonical": "brain/src/hippo_brain/enrichment.py",
   "first_seen": 1730000000000,
-  "last_seen": 1730900000000,
-  "occurrences": 47
+  "last_seen": 1730900000000
 }
 ```
 
-`canonical` is the dedup key (worktree-stripped, project-root-relative); `name` is the display value the LLM emitted (worktree-stripped at write time per #105).
+`canonical` is the dedup key (worktree-stripped, project-root-relative); `name` is the display value the LLM emitted (worktree-stripped at write time per #105). The internal `entities.id` and any aggregate occurrence count are not exposed today.
 
 ---
 
@@ -195,18 +213,17 @@ Distinct projects in the corpus, ordered by most-recent activity first.
 |---|---|---|---|
 | `limit` | `int` | `50` | |
 
-**Returns** — list of dicts:
+**Returns** — list of dicts (`list_projects_impl` in `brain/src/hippo_brain/mcp_queries.py`):
 
 ```json
 {
   "git_repo": "stevencarpenter/hippo",
   "cwd_root": "/Users/carpenter/projects/hippo",
-  "last_activity": 1730900000000,
-  "event_count": 3247
+  "last_seen": 1730900000000
 }
 ```
 
-Use this for discovery before filtering other tools by `project`.
+The list is the union of distinct `(git_repo, cwd_root)` pairs from shell `events` and `claude_sessions` (browser events have no cwd, so they're skipped). `last_seen` is `MAX(timestamp)` / `MAX(start_time)` across both sources. There is no `event_count` field today.
 
 ---
 
@@ -214,24 +231,26 @@ Use this for discovery before filtering other tools by `project`.
 
 Hybrid retrieval rendered as a Markdown context block, ready to paste into another agent's prompt.
 
-**Arguments** — same as `search_hybrid` minus `mode` and `branch`. Always uses `mode="hybrid"`.
+**Arguments** — `query`, `limit`, `project`, `since`, `source` (same semantics as `search_hybrid`). Does NOT accept `mode`, `branch`, or `entity`. Always uses `mode="hybrid"` internally.
 
-**Returns** — single Markdown string. Shape:
+**Returns** — single Markdown string rendered by `format_context_block` in `brain/src/hippo_brain/mcp_queries.py`. Shape:
 
 ```markdown
-## Context for: <query>
+# Hippo context for: <query>
 
-### 1. <summary> [score]
-- cwd: <cwd> · branch: <branch> · captured: <date>
-- uuid: <uuid>
-- outcome: <success/partial/failure>
+## [1] <summary> (score: 0.87)
+- **Outcome:** <success/partial/failure>
+- **CWD:** `<cwd>`
+- **Branch:** `<git_branch>`
+- **When:** <ISO timestamp>
+- **uuid:** `<uuid>`
 
-<truncated embed_text>
+<truncated embed_text — up to 600 chars then `…`>
 
-### 2. ...
+## [2] ...
 ```
 
-Embed text per hit is truncated to keep the block prompt-budget-friendly.
+When no results match, the block is `# Hippo context for: <query>\n\n_No relevant knowledge found._`. Embed text per hit is truncated to 600 characters (with a trailing `…`) to keep the block prompt-budget-friendly.
 
 ---
 
@@ -268,15 +287,15 @@ Distilled past-mistake lessons. Pre-flight before editing in a known failure-pro
 | `tool` | `str \| None` | `None` | Filter by tool name (`"ruff"`, `"clippy"`, etc.). |
 | `limit` | `int` | `10` | |
 
-**Returns** — list of lesson dicts: `{repo, tool, rule_id, path_prefix, summary, fix_hint, occurrences, first_seen_at, last_seen_at}`.
+**Returns** — list of lesson dicts (from `dataclasses.asdict(Lesson)`): `{id, repo, tool, rule_id, path_prefix, summary, fix_hint, occurrences, first_seen_at, last_seen_at}`. `id` is the `lessons.id` primary key.
 
 Lessons graduate only after 2+ occurrences (single failures stay in `lesson_pending` and don't surface here).
 
 ## Common pitfalls
 
 - **Probe events are filtered out of every tool.** They have `probe_tag IS NOT NULL`. Even `search_events` won't return them — that's intentional (AP-6). If you need them for diagnostics, query `events` directly via SQL.
-- **`since` parsing is liberal.** `"30m"`, `"30 m"`, `"30 minutes"`, `"30min"` all work. Bare numbers are interpreted as minutes. Empty string disables.
-- **`source="claude"` covers both `claude-tool` events and `claude_sessions`** for `search_events`. For `search_hybrid` / `search_knowledge`, it filters knowledge nodes that link back to either.
+- **`since` parsing is strict.** Only `^<digits><unit>$` (unit is `m`/`h`/`d`) is accepted — e.g. `"30m"`, `"24h"`, `"7d"`. Inputs with spaces (`"30 m"`), full words (`"30 minutes"`), suffix variants (`"30min"`), bare numbers, or anything else parse to 0 (no filter applied) — silently. There is no parser warning.
+- **`source="claude"` does NOT include `claude-tool` events in `search_events`.** `_search_claude_events` queries `claude_sessions` only. Claude tool-call events live in the `events` table (with `source_kind='claude-tool'`) and are returned under `source="shell"` (or `source="all"`) — `_search_shell_events` does not filter by `source_kind`. For `search_hybrid` / `search_knowledge`, `source="claude"` filters knowledge nodes whose linked events/sessions match the claude-side data.
 - **Filter combinations apply AND, not OR.** `project="hippo"` + `branch="main"` returns only nodes from hippo's main branch.
 - **`ask` returns an error STRING for misconfiguration**, not an exception. Check the prefix `"Error:"`.
 
