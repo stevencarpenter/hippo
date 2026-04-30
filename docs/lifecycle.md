@@ -10,16 +10,19 @@ For a power user diagnosing a missing event, this doc + [the SQL recipes at the 
 zsh preexec
        |
        v
-hippo.zsh::preexec captures cmd_start_ms, cwd, git_*
+shell/hippo.zsh::_hippo_preexec captures cmd_start_ms, cwd, git_*
+       |  -- registered via add-zsh-hook preexec _hippo_preexec
        |
        v  (foreground, microseconds)
 zsh runs the command
        |
        v
-hippo.zsh::precmd captures exit_code, duration_ms, stdout (truncated), stderr
+shell/hippo.zsh::_hippo_precmd captures exit_code, duration_ms, captured output
+       |  -- registered via add-zsh-hook precmd _hippo_precmd
+       |  -- single combined stream sent via --output (head + tail truncated)
        |
        v  (DISOWNED, fire-and-forget)
-hippo send-event-shell  -- a child process
+hippo send-event shell  -- a child process
        |
        v  (length-prefixed JSON over Unix socket)
 crates/hippo-daemon/src/commands.rs::send_event_fire_and_forget
@@ -29,22 +32,26 @@ crates/hippo-daemon/src/commands.rs::send_event_fire_and_forget
 crates/hippo-daemon/src/daemon.rs::flush_events
        |  -- background tokio timer, every flush_interval_ms (default 100 ms)
        |  -- batches buffered frames, opens single SQLite transaction
+       |  -- calls redact_shell_event before insert (hippo-core/src/redaction.rs)
+       |  -- on insert failure: write_fallback_jsonl + bump drop counter
+       |  -- updates source_health after the batch (last_event_ts, counters)
        v
 crates/hippo-core/src/storage.rs::insert_event_at
-       |  -- writes events row + source_health row in same transaction
-       |  -- redaction runs here: hippo-core/src/redaction.rs
-       |  -- on failure: write_fallback_jsonl and bump drop counter
+       |  -- inserts the events row inside flush_events' transaction
+       |  -- does not redact, does not touch source_health, does not write fallback
        v
-events table (source_kind='shell') + source_health row updated
+events table (source_kind='shell'); source_health updated by flush_events
        |
-       v
-brain/src/hippo_brain/enrichment.py::is_enrichment_eligible
-       |  -- runs at claim time, NOT at insert time
-       |  -- filters trivial commands (clear, exec zsh, true, :) under 100 ms
-       |     with no stdout/stderr; sets queue.status='skipped' inline
        v
 brain/src/hippo_brain/enrichment.py::claim_pending_events_by_session
        |  -- session-grouped, 60s gap-split, max_claim_batch cap
+       |  -- calls _skip_ineligible_shell_events() to stamp
+       |     enrichment_queue.status='skipped' for ineligible shell events
+       v
+brain/src/hippo_brain/enrichment.py::is_enrichment_eligible
+       |  -- pure predicate; returns (ok, reason)
+       |  -- filters trivial commands (clear, exec zsh, true, :) under 100 ms
+       |     with no stdout/stderr; reason is stored as queue.error_message
        v
 brain/src/hippo_brain/server.py::_enrich_shell_batches
        |  -- builds prompt via build_enrichment_prompt
@@ -67,7 +74,7 @@ MCP-visible: search_events / search_knowledge / ask
 
 **The key invariant for shell capture:** the hook never touches SQLite. Latency in the user's interactive prompt is bounded by the socket write — typically 20–50 ms. SQLite writes happen in `flush_events` on the daemon's tokio runtime. (See [`capture/anti-patterns.md`](capture/anti-patterns.md) AP-1.)
 
-**Truncation.** Stdout and stderr are truncated to `[capture] output_head_lines` lines from the head and `output_tail_lines` from the tail (default: 50 each). Long outputs in between are replaced with an ellipsis marker. Configure in `~/.config/hippo/config.toml`.
+**Truncation.** The shell hook captures a single combined stream (stdout-only via the script's `--output` flag; stderr is not separately captured today). It is truncated to `[daemon] output_head_lines` lines from the head and `[daemon] output_tail_lines` from the tail (defaults: 50 head / 100 tail; see `config/config.default.toml`). Long output in between is replaced with an ellipsis marker. Configure in `~/.config/hippo/config.toml`.
 
 **Redaction.** `crates/hippo-core/src/redaction.rs` runs on the event's command, stdout, and stderr before storage. Patterns come from `~/.config/hippo/redact.toml`. (Limits are documented in [`config/README.md`](../config/README.md); a deeper redaction reference is tracked in [#114](https://github.com/stevencarpenter/hippo/issues/114).)
 
@@ -84,9 +91,11 @@ crates/hippo-daemon/src/watch_claude_sessions.rs::process_file
        |  -- reads from claude_session_offsets per file (resume state)
        |  -- re-runs extract_segments on every growth event (idempotent)
        v
-brain/src/hippo_brain/claude_sessions.py::extract_segments
+crates/hippo-daemon/src/claude_session.rs::extract_segments
        |  -- splits the JSONL into time-bounded SessionSegments
        |  -- segment_index is monotonic, derived from message ranges
+       |  -- Python port for batch / non-watcher ingest paths:
+       |     brain/src/hippo_brain/claude_sessions.py::extract_segments
        v
 crates/hippo-daemon/src/claude_session.rs::insert_segments
        |  -- INSERT ... ON CONFLICT(session_id, segment_index) DO UPDATE SET
@@ -236,10 +245,10 @@ ORDER BY id DESC LIMIT 10;
 ### Recipe 4 — Are events landing but stuck in the fallback path?
 
 ```bash
-ls -la ~/.local/share/hippo/*.fallback.jsonl 2>/dev/null
+ls -la ~/.local/share/hippo/fallback/*.jsonl 2>/dev/null
 ```
 
-A fallback file present means the daemon was unreachable when the event was generated. The next daemon start replays them. If the file persists for > 24 h, I-9 fires.
+A fallback file present means the event could not be durably stored to SQLite at that moment — either the CLI couldn't reach the daemon socket (`commands.rs::send_event_fire_and_forget` falls back to disk), or the daemon hit a SQLite/transaction failure inside `flush_events`. The next daemon start replays them via `recover_fallback_files`. Run `hippo doctor --explain` and skim `~/.local/share/hippo/daemon.stderr.log` to determine which failure mode caused the fallback. If the file persists for > 24 h, I-9 fires.
 
 ### Recipe 5 — Has the watchdog noticed anything?
 
