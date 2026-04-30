@@ -1508,7 +1508,9 @@ fn check_brain_telemetry_status(brain_json: Option<&serde_json::Value>) -> u32 {
             println!("             or the OTel package namespace was half-installed.");
             println!("     FIX:    uv sync --project ~/.local/share/hippo-brain --reinstall");
             println!("             then: launchctl kickstart -k gui/$(id -u)/com.hippo.brain");
-            println!("     DOC:    docs/archive/capture-reliability-overhaul/03-doctor-upgrades.md");
+            println!(
+                "     DOC:    docs/archive/capture-reliability-overhaul/03-doctor-upgrades.md"
+            );
             1
         }
         (Some(false), _) => 0,
@@ -2136,7 +2138,9 @@ fn check_watchdog_heartbeat(db: &rusqlite::Connection, explain: bool) -> u32 {
                 if explain {
                     println!("     CAUSE:  Watchdog has stopped sending heartbeats");
                     println!("     FIX:    Restart the watchdog service: mise run restart");
-                    println!("     DOC:    docs/archive/capture-reliability-overhaul/07-roadmap.md");
+                    println!(
+                        "     DOC:    docs/archive/capture-reliability-overhaul/07-roadmap.md"
+                    );
                 }
                 1
             }
