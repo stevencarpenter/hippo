@@ -1,9 +1,10 @@
 # Enrichment queue watchdog
 
-Mitigates R-22: on 2026-04-17 the live corpus had **417 queue rows all locked by
-one worker at one timestamp** and held for 30+ minutes because LM Studio
-returned HTTP 400 and the claim loop got stuck, while pending work grew behind
-it. The watchdog removes the three failure-mode legs that made that possible.
+Mitigates the enrichment-queue wedge risk: on 2026-04-17 the live corpus had
+**417 queue rows all locked by one worker at one timestamp** and held for 30+
+minutes because LM Studio returned HTTP 400 and the claim loop got stuck,
+while pending work grew behind it. The watchdog removes the three failure-mode
+legs that made that possible.
 
 ## What it does
 

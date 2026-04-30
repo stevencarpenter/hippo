@@ -9,8 +9,11 @@ When a version tag is pushed (format: `v*.*.*`), GitHub Actions automatically bu
 ## Triggering a Release
 
 Hippo's daemon, brain, and GUI ship in lockstep: one tag → one GitHub Release
-with all three artifacts. Because the daemon and brain share a SQLite schema,
-their versions must move together (see CLAUDE.md for the rationale).
+with all three artifacts. The daemon's startup handshake (see
+`crates/hippo-daemon/src/schema_handshake.rs`) requires the brain to run a
+matching schema version; a mismatch causes the daemon to refuse to bind its
+socket. Bumping the daemon and brain versions together keeps the handshake
+honest.
 
 1. Bump the version in the shared manifests to the same `X.Y.Z`, and keep the GUI fallback version aligned:
    ```bash
