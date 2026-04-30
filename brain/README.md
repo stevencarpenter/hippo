@@ -41,13 +41,16 @@ The brain also includes an MCP server that exposes Hippo's knowledge base as too
 uv run --project brain hippo-mcp
 ```
 
-**Tools:**
+**Tools** (current set; see the [project root README](../README.md#mcp-server) for the canonical list and a future `docs/mcp-reference.md` for full request/response shapes):
 
 | Tool | Description |
 |------|-------------|
+| `ask` | RAG query — synthesizes an answer from relevant knowledge nodes |
 | `search_knowledge` | Semantic or lexical search over enriched knowledge nodes |
+| `search_hybrid` | Hybrid sqlite-vec + FTS5 search with score fusion |
 | `search_events` | Search raw events (shell commands, Claude sessions, browser visits) |
-| `get_entities` | List extracted entities (projects, tools, files, domains, concepts) |
+| `get_entities` | List extracted entities (projects, tools, files, env vars, concepts) |
+| `get_context` / `get_lessons` / `list_projects` / `get_ci_status` | Auxiliary lookups; see source for details |
 
 **Transport:** stdio using newline-delimited JSON (JSONL) — one JSON-RPC message per line. This is the default for MCP SDK v1.x stdio transport.
 

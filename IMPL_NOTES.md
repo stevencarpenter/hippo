@@ -3,7 +3,7 @@
 ## Gate 0 — env-var bucketing probe
 
 Spec section: "Known limitation: env vars and other unbucketed token kinds"
-(`docs/superpowers/specs/2026-04-27-rag-entity-surfacing-design.md`).
+(`docs/archive/feature-waves/2026-04-27-rag-entity-surfacing-design.md`).
 
 ### Command
 

@@ -138,15 +138,15 @@ Ingestion is handled by `crates/hippo-daemon/src/watch_claude_sessions.rs`, a lo
 
 ### Capture Reliability (v0.16+)
 
-Major P0–P3 overhaul shipped 2026-04-24 → 2026-04-26. Design and rationale live in [`docs/capture-reliability/`](docs/capture-reliability/00-overview.md). Key pieces:
+Capture-reliability stack (the result of the P0–P3 overhaul shipped through v0.16). Reference docs live in [`docs/capture/`](docs/capture/architecture.md); historical design records are in [`docs/archive/capture-reliability-overhaul/`](docs/archive/capture-reliability-overhaul/). Key pieces:
 
-- **`source_health` table** (schema v8): single SQL ground truth of "did the event land?" per source — `shell`, `claude-tool`, `claude-session`, `claude-session-watcher`, `browser`, `watchdog`, `probe`. Every capture path writes its row in the same transaction as the event insert. See [`01-source-health.md`](docs/capture-reliability/01-source-health.md).
-- **`hippo watchdog run`** (launchd `com.hippo.watchdog`, every 60 s): asserts I-1..I-10 invariants against `source_health`, writes `capture_alarms` rows on violations, rate-limited per invariant. See [`02-invariants.md`](docs/capture-reliability/02-invariants.md) and [`04-watchdog.md`](docs/capture-reliability/04-watchdog.md).
+- **`source_health` table**: single SQL ground truth of "did the event land?" per source — `shell`, `claude-tool`, `claude-session`, `claude-session-watcher`, `browser`, `watchdog`, `probe`. Every capture path writes its row in the same transaction as the event insert. See [`docs/capture/architecture.md`](docs/capture/architecture.md).
+- **`hippo watchdog run`** (launchd `com.hippo.watchdog`, every 60 s): asserts the I-1..I-10 invariants against `source_health`, writes `capture_alarms` rows on violations, rate-limited per invariant. See [`docs/capture/architecture.md`](docs/capture/architecture.md).
 - **`hippo alarms list / ack`**: CLI for unacknowledged alarms (exit 1 if any).
-- **`hippo doctor`**: 10 isolated checks with `[OK]`/`[WW]`/`[!!]`/`[--]` severity, exit code = fail count, total wall-clock < 2 s. `--explain` prints CAUSE/FIX/DOC per failure. See [`03-doctor-upgrades.md`](docs/capture-reliability/03-doctor-upgrades.md).
-- **`hippo probe`** (launchd `com.hippo.probe`, every 5 min): synthetic canary events round-trip through each capture path; latency recorded in `source_health.probe_lag_ms`. All probe rows carry a `probe_tag` and are filtered out of every user-facing query (RAG, MCP tools, `hippo ask`, etc.) by upstream daemon filtering and a Semgrep rule. See [`05-synthetic-probes.md`](docs/capture-reliability/05-synthetic-probes.md).
-- **Anti-patterns** are codified in [`08-anti-patterns.md`](docs/capture-reliability/08-anti-patterns.md) — review blockers (e.g., AP-1: don't block the shell hook on health writes; AP-6: don't let probes appear in user-facing queries).
-- **Test matrix** ([`09-test-matrix.md`](docs/capture-reliability/09-test-matrix.md)) and **source audit** ([`10-source-audit.md`](docs/capture-reliability/10-source-audit.md)) are the live coverage references.
+- **`hippo doctor`**: ten isolated checks with `[OK]`/`[WW]`/`[!!]`/`[--]` severity, exit code = fail count, total wall-clock < 2 s. `--explain` prints CAUSE/FIX/DOC per failure. See [`docs/capture/operator-runbook.md`](docs/capture/operator-runbook.md).
+- **`hippo probe`** (launchd `com.hippo.probe`, every 5 min): synthetic canary events round-trip through each capture path; latency recorded in `source_health.probe_lag_ms`. All probe rows carry a `probe_tag` and are filtered out of every user-facing query (RAG, MCP tools, `hippo ask`, etc.) by upstream daemon filtering and a Semgrep rule. See [`docs/capture/architecture.md`](docs/capture/architecture.md).
+- **Anti-patterns** are codified in [`docs/capture/anti-patterns.md`](docs/capture/anti-patterns.md) — review blockers (e.g., AP-1: don't block the shell hook on health writes; AP-6: don't let probes appear in user-facing queries).
+- **Per-source coverage** is mapped in [`docs/capture/sources.md`](docs/capture/sources.md); the test-matrix table that backs it lives in [`docs/capture/test-matrix.md`](docs/capture/test-matrix.md).
 
 ## Style
 
