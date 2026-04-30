@@ -109,6 +109,7 @@ The system promises observability, not correctness. If something breaks, the goa
 
 ## See also
 
+- [`docs/lifecycle.md`](../lifecycle.md) — end-to-end trace of how each event type becomes a knowledge node, with diagnostic SQL recipes.
 - [`sources.md`](sources.md) — what each source captures, where it lands, what fires.
 - [`anti-patterns.md`](anti-patterns.md) — AP-1..AP-12: review blockers.
 - [`operator-runbook.md`](operator-runbook.md) — doctor recipes, alarm responses, recovery flows.

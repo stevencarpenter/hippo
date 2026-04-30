@@ -76,7 +76,7 @@ Five LaunchAgents run under `gui/$(id -u)`:
 | `com.hippo.watchdog` | Capture-reliability monitor; runs every 60 s, asserts I-1..I-10 invariants, writes `capture_alarms` rows |
 | `com.hippo.probe` | Synthetic canary probes; runs every 5 min, round-trips a real event through each capture path and records latency in `source_health` |
 
-`hippo daemon install --force` writes the plists and bootstraps all five. The capture-reliability stack (source health, invariants, watchdog, probes, alarms) is documented in [`docs/capture/`](docs/capture/) — start with [`architecture.md`](docs/capture/architecture.md). Review-blocker rules every contributor must follow live in [`docs/capture/anti-patterns.md`](docs/capture/anti-patterns.md).
+`hippo daemon install --force` writes the plists and bootstraps all five. The capture-reliability stack (source health, invariants, watchdog, probes, alarms) is documented in [`docs/capture/`](docs/capture/) — start with [`architecture.md`](docs/capture/architecture.md). For an end-to-end trace of how a shell command, Claude session segment, or browser visit becomes a knowledge node, see [`docs/lifecycle.md`](docs/lifecycle.md). Review-blocker rules every contributor must follow live in [`docs/capture/anti-patterns.md`](docs/capture/anti-patterns.md).
 
 ## Prerequisites
 
