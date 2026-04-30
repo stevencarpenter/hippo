@@ -70,7 +70,8 @@ Field meanings (from the file's own `schema` block):
 | `relevant_knowledge_node_uuids` | Known-good node UUIDs, labeled against the live corpus on the `labeled_at` date. |
 | `acceptable_answer_keywords` | At least one MUST appear in a good answer (drives the `keyword_hit` boolean). |
 | `source_bias` | `shell`, `claude`, `browser`, or `mixed`. |
-| `coverage_gap_reason` | Set when `relevant_knowledge_node_uuids` is empty — explains why the corpus cannot answer. |
+
+The file's `schema` block also documents a `coverage_gap_reason` field for entries where `relevant_knowledge_node_uuids` is empty. As of v0.20, that field is informational only — `load_questions` and the `Question` dataclass in `evaluation.py` do not load it, and no metric consumes it. Treat it as a human-readable labeling note until the harness reads it explicitly.
 
 Targets 30–50 questions drawn from hippo's own development history. Adding a question:
 

@@ -51,7 +51,7 @@ One row per source. Updated in the same transaction as event writes; the watchdo
 | `source` | TEXT PK | Source name: `shell`, `claude-tool`, `claude-session`, `claude-session-watcher`, `browser`, `workflow`, `watchdog`, `probe`. |
 | `last_event_ts` | INTEGER | Epoch ms of the most recent successful event write for this source. |
 | `consecutive_failures` | INTEGER | Bumped on each failure; reset on success. Backstop for I-1, I-4 freshness alarms. |
-| `events_last_1h` / `_24h` | INTEGER | Rolling counts. Maintained by the daemon (incremented in `crates/hippo-daemon/src/daemon.rs::flush_events`, periodically rolled forward); the watchdog reads them, it does not compute them. |
+| `events_last_1h` / `_24h` | INTEGER | Rolling counts. Maintained by the daemon: incremented per-write in `crates/hippo-daemon/src/daemon.rs::flush_events`, then periodically corrected by `recompute_rolling_counts` (same file, every 5 min) which overwrites them with fresh `COUNT(*)` queries against `events` / `claude_sessions` / `browser_events`. The watchdog reads these values; it does not compute them. |
 | `probe_ok` | INTEGER | Last probe-job result: 1 = healthy, 0 = unhealthy. Source-specific definition (see "Probes" below). |
 | `probe_last_run_ts` | INTEGER | When the probe last completed for this source. |
 | `probe_lag_ms` | INTEGER | End-to-end latency of the most recent successful probe. |
