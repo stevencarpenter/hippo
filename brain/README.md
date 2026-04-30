@@ -41,7 +41,7 @@ The brain also includes an MCP server that exposes Hippo's knowledge base as too
 uv run --project brain hippo-mcp
 ```
 
-**Tools** (current set; see the [project root README](../README.md#mcp-server) for the canonical list and a future `docs/mcp-reference.md` for full request/response shapes):
+**Tools** (current set; see [`docs/mcp-reference.md`](../docs/mcp-reference.md) for full arguments, return shapes, examples, and selection guide):
 
 | Tool | Description |
 |------|-------------|
