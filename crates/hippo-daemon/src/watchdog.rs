@@ -5,7 +5,8 @@
 //! rows to `capture_alarms` for any violations detected.  Rate-limited per
 //! invariant per sliding window (default 60 min).
 //!
-//! Five-step flow (per `docs/capture/architecture.md`):
+//! Five-step flow (detailed spec in `docs/archive/capture-reliability-overhaul/04-watchdog.md`;
+//! the live architectural overview lives at `docs/capture/architecture.md`):
 //!   1. Upsert own heartbeat into `source_health WHERE source='watchdog'`
 //!   2. Read full `source_health` in one `SELECT *`
 //!   3. Assert I-1..I-10 against in-memory rows

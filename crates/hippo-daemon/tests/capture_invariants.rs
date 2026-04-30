@@ -1,8 +1,10 @@
 //! Skeletons for the capture-reliability invariants (I-1, I-2, I-7, I-8,
 //! I-10) that cannot be exercised against `main` today because they depend
-//! on infrastructure defined in `docs/capture/{01-source-health,
-//! 04-watchdog, 05-synthetic-probes}.md` and the FS watcher (design archived
-//! at `docs/archive/capture-reliability-overhaul/06-claude-session-watcher.md`;
+//! on infrastructure documented in `docs/capture/architecture.md` (the live
+//! reference) and the historical specs in
+//! `docs/archive/capture-reliability-overhaul/{01-source-health.md,
+//! 04-watchdog.md, 05-synthetic-probes.md}` plus the FS watcher (design
+//! archived at `docs/archive/capture-reliability-overhaul/06-claude-session-watcher.md`;
 //! shipped in PR #86) and not yet wired in here.
 //!
 //! Every test in this file is `#[ignore]` with an explanation pointing at

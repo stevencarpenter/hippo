@@ -1250,10 +1250,11 @@ pub async fn handle_doctor(config: &HippoConfig, explain: bool) -> Result<()> {
 /// Per-source capture-freshness doctor check.
 ///
 /// Emits one line per source, color-coded by how long since the freshest
-/// row (staleness threshold per source — see
-/// `docs/capture/sources.md`). Queries the underlying
-/// tables directly so it works without the `source_health` table (which
-/// is still a P0.1 roadmap item).
+/// row (staleness thresholds defined in `source_freshness_probes()`
+/// below; see also the I-1..I-10 freshness invariants in
+/// `docs/capture/architecture.md`). Queries the underlying tables
+/// directly so it works without the `source_health` table (which is
+/// still a P0.1 roadmap item).
 fn check_source_freshness(config: &HippoConfig) -> u32 {
     let db_path = config.db_path();
     if !db_path.exists() {
@@ -1507,7 +1508,7 @@ fn check_brain_telemetry_status(brain_json: Option<&serde_json::Value>) -> u32 {
             println!("             or the OTel package namespace was half-installed.");
             println!("     FIX:    uv sync --project ~/.local/share/hippo-brain --reinstall");
             println!("             then: launchctl kickstart -k gui/$(id -u)/com.hippo.brain");
-            println!("     DOC:    docs/capture/operator-runbook.md");
+            println!("     DOC:    docs/archive/capture-reliability-overhaul/03-doctor-upgrades.md");
             1
         }
         (Some(false), _) => 0,
