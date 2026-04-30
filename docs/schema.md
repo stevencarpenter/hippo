@@ -18,14 +18,17 @@ Daemon and brain handshake on this constant at startup. If they disagree the dae
 
 ## Per-version changelog
 
-The Rust migration runner at `storage.rs::open_db` walks every version from the loaded `PRAGMA user_version` up to `EXPECTED_VERSION`, applying the migration block for each step. Migrations are idempotent: a partial-success crash (a column added but `user_version` not yet bumped) is safe to re-run because every block guards with `IF NOT EXISTS` / `add_column_if_missing` / `INSERT OR IGNORE`.
+The Rust migration runner at `storage.rs::open_db` walks every version from the loaded `PRAGMA user_version` up to `EXPECTED_VERSION`, applying the migration block for each step. Migration crash-safety is mixed:
+
+- **Crash-safe (v8 and later):** every CREATE uses `IF NOT EXISTS`, every ALTER goes through `add_column_if_missing` (which pre-checks `PRAGMA table_info`), and every seed insert uses `INSERT OR IGNORE`. A daemon that crashes after adding a column but before bumping `user_version` retries the migration cleanly on next start.
+- **Not crash-safe (v1→v2, v6→v7):** these blocks issue unguarded `ALTER TABLE … ADD COLUMN` inside the same `execute_batch` as `PRAGMA user_version = N`. A crash between the `ALTER` and the `PRAGMA` leaves the column added but the version unchanged; the next start retries the same `ALTER` and SQLite errors with "duplicate column name". Recovery is a manual `PRAGMA user_version = N` after confirming the column landed. The `add_column_if_missing` pattern was introduced at v8 and used consistently from there forward.
 
 | Version | Summary | Tables/columns | Operational impact |
 |---|---|---|---|
 | **v1** | Initial schema. | `events` (without `envelope_id`), `sessions`. | Baseline. Every fresh install since v1 lands here first then migrates forward. |
 | **v2** | Event dedup. | `events.envelope_id` column + unique index. | Browser visits and Claude tool events get a stable dedup key, enabling replay-safe ingest. |
-| **v3** | Claude session ingest. | `claude_sessions`, `knowledge_node_claude_sessions`, `claude_enrichment_queue`. | Hippo's first non-shell capture path. The `(session_id, segment_index)` UNIQUE key is the conflict target later refined in v12. |
-| **v4** | Browser source. | `browser_events`, `browser_enrichment_queue`, `knowledge_node_browser_events` plus four indexes (`timestamp`, `domain`, `envelope_id`, `(timestamp, domain)`). | Firefox extension begins landing visits via Native Messaging. The unique-on-`envelope_id` index is what lets `make_envelope_id` dedup same-URL repeats within `dedup_window_minutes`. |
+| **v3** | Claude session ingest. | `claude_sessions`, `knowledge_node_claude_sessions`, `claude_enrichment_queue`. | Hippo's first non-shell capture path. The `(session_id, segment_index)` UNIQUE constraint introduced here remains the watcher's upsert conflict target through every later migration (v12 added `content_hash` columns alongside it but did not change the conflict key itself). |
+| **v4** | Browser source. | `browser_events`, `browser_enrichment_queue`, `knowledge_node_browser_events` plus six indexes on `browser_events` and the queue (`idx_browser_events_timestamp`, `idx_browser_events_domain`, `idx_browser_events_envelope_id` [UNIQUE], `idx_browser_events_enriched`, `idx_browser_queue_pending`, `idx_browser_events_ts_domain`). | Firefox extension begins landing visits via Native Messaging. The unique-on-`envelope_id` index is what lets `make_envelope_id` dedup same-URL repeats within `dedup_window_minutes`. |
 | **v5** | GitHub Actions ingest. | `workflow_runs`, `workflow_jobs`, `workflow_annotations`, `workflow_log_excerpts`, `workflow_enrichment_queue`, `sha_watchlist`, `lessons`, `lesson_pending`, `knowledge_node_workflow_runs`, `knowledge_node_lessons`. | Workflow-poller (`gh_poll.rs`) starts ingesting CI runs; `lessons` becomes the substrate for graduating recurring CI failures into named tips. |
 | **v6** | Full-text search on knowledge nodes. | `knowledge_nodes` (created here for legacy v1 DBs that predate it), `knowledge_fts` (FTS5 virtual table over `summary`/`embed_text`/`content`), AI/AD/AU triggers to keep FTS in sync. Note: `knowledge_vectors` (vec0) is NOT created here — the Rust daemon doesn't load the sqlite-vec extension; the Python brain creates it lazily on first embed. | `hippo query --raw` now does FTS5 lexical search. The `MATCH` operator fast-paths over `embed_text` without round-tripping through Python. |
 | **v7** | Multi-source events. | `events.source_kind` (default `'shell'`), `events.tool_name`, `idx_events_source_kind`. | First step toward the multi-source capture stack. `source_kind='claude-tool'` rows enter the events table for tool-call envelopes derived from Claude session ingest. |
@@ -62,8 +65,10 @@ sqlite3 ~/.local/share/hippo/hippo.db "PRAGMA user_version;"
 | `claude_session_offsets` | Per-file FS-watcher resume state (byte_offset, inode, device). | `watch_claude_sessions.rs::process_file` |
 | `browser_events` | Firefox-extension visits with Readability-extracted main text, dwell, scroll depth. | `storage.rs::insert_browser_event` |
 | `workflow_runs` / `_jobs` / `_annotations` / `_log_excerpts` | GitHub Actions ingest. | `gh_poll.rs::run_once` |
+| `sha_watchlist` | Per-(repo, sha) follow flag for in-flight CI runs. Drives the gh-poller's "wait for this SHA's runs to settle" loop. | `gh_poll.rs` |
 | `lessons` / `lesson_pending` | Graduated recurring CI tips. | Brain enrichment via `_enrich_workflow_runs` |
-| `knowledge_nodes` | The synthesized output of enrichment (summary, intent, entities, embed_text). | `enrichment.py::write_knowledge_node`, `claude_sessions.py::write_claude_knowledge_node` |
+| `env_snapshots` | Hashed environment-variable snapshots referenced by `events.env_snapshot_id`. Lets multiple events share one snapshot rather than embedding env-var sets in every row. | Daemon at session start |
+| `knowledge_nodes` | The synthesized output of enrichment. The `content` column is a JSON blob (with `summary` / `intent` / `entities` / `tool_calls` / etc. as inner fields); `embed_text` and `node_type`/`outcome`/`tags` are real columns. | `enrichment.py::write_knowledge_node`, `claude_sessions.py::write_claude_knowledge_node` |
 | `knowledge_node_events` / `_claude_sessions` / `_browser_events` / `_workflow_runs` / `_lessons` | Link tables tying knowledge nodes back to their source events. | Same writers as `knowledge_nodes` |
 | `entities` | Extracted identifiers (project, file, tool, service, repo, host, person, concept, domain, env_var). UNIQUE `(type, canonical)`. | `enrichment.py::upsert_entities` |
 | `event_entities` / `knowledge_node_entities` | Many-to-many links from rows to extracted entities. | Same |
@@ -71,6 +76,7 @@ sqlite3 ~/.local/share/hippo/hippo.db "PRAGMA user_version;"
 | `enrichment_queue` / `claude_enrichment_queue` / `browser_enrichment_queue` / `workflow_enrichment_queue` | Per-source queue tables. Each row is a claim ticket with `status`, `priority`, `retry_count`, `locked_at`, `locked_by`. | Daemon on insert; brain on claim/complete; watchdog reaper on timeout |
 | `source_health` | Per-source last_event_ts, consecutive_failures, probe_ok, probe_lag_ms. The watchdog's source of truth. | Daemon (capture path), watchdog (probe results) |
 | `capture_alarms` | Watchdog invariant violations. Append-only ledger. | `hippo watchdog run` |
+| `claude_session_parity` | Legacy parity-check ledger from the tmux-tailer / FS-watcher transition (T-5..T-8). Retained so v9→v10 migrations on existing databases converge with the same shape as fresh installs; not written by any current code path. | (no live writer) |
 | `knowledge_fts` | FTS5 virtual table over `knowledge_nodes.summary` / `embed_text` / `content`. | Triggers (auto-synced with `knowledge_nodes`) |
 | `knowledge_vectors` | sqlite-vec virtual table holding 768-dim embedding vectors. | `embeddings.py::embed_knowledge_node` (Python brain — Rust daemon doesn't load vec0) |
 | `embed_model_meta` | Single-row tracking table for the model that produced the corpus's vectors. | Same |
@@ -106,7 +112,7 @@ workflow_enrichment_queue ──> workflow_runs
 
 - **Single-shot per version.** Each migration block in `storage.rs::open_db` runs at most once per database lifetime: the version range guard (`if (1..=N).contains(&version)`) becomes false after `PRAGMA user_version = N+1` lands.
 - **Idempotent on partial-success crash.** Every CREATE uses `IF NOT EXISTS`; every ALTER goes through `add_column_if_missing` which pre-checks `PRAGMA table_info`; every seed insert uses `INSERT OR IGNORE`. A daemon that crashes after adding a column but before bumping `user_version` will retry the migration cleanly on next start.
-- **Atomic version bumps where it matters.** v8's table-recreate (and v13's CHECK extension) bundle the `PRAGMA user_version` update into the same `execute_batch` as the migration body, so a crash after schema change but before version bump can't leave the DB in an inconsistent state.
+- **Atomic version bumps for the table-recreate path.** Only **v13** is a true table-recreate, and its migration bundles `PRAGMA user_version = 13` into the same `execute_batch` as the `DROP TABLE` / `RENAME` / `COMMIT` sequence — a crash after the rename can't leave the DB at v12 with the v13 CHECK constraint live. Earlier versions (including v8, which is a CREATE-IF-NOT-EXISTS plus `add_column_if_missing` loop) issue `PRAGMA user_version = N` in a separate `execute_batch` after the migration body completes, so re-run safety on those steps comes from the idempotency of each individual statement, not from atomicity with the version bump.
 - **PRAGMA `foreign_keys` discipline.** Migrations that require dropping a table (v13) explicitly turn FKs off, run inside a transaction, and turn them back on at the end. Other migrations rely on the default `foreign_keys=ON` set by `open_db`.
 
 ## Version mismatch recovery
@@ -114,14 +120,21 @@ workflow_enrichment_queue ──> workflow_runs
 Symptom: daemon refuses to bind its socket; `hippo doctor` reports a schema-version mismatch.
 
 ```bash
-# What does the live DB say?
+# Run the unified handshake check (compares all three at once).
+hippo doctor --explain | grep -A 4 "schema"
+
+# Or check each side individually:
+
+# 1. What does the live DB say?
 sqlite3 ~/.local/share/hippo/hippo.db "PRAGMA user_version;"
 
-# What version does the daemon binary expect?
-hippo daemon version
+# 2. What version does the daemon binary expect? (compiled-in constant)
+grep -E "^pub const EXPECTED_VERSION" \
+  ~/projects/hippo/crates/hippo-core/src/storage.rs
 
-# What version does the brain expect?
-uv run --project brain python -c "from hippo_brain.schema_version import EXPECTED_SCHEMA_VERSION; print(EXPECTED_SCHEMA_VERSION)"
+# 3. What version does the brain expect?
+uv run --project brain python -c \
+  "from hippo_brain.schema_version import EXPECTED_SCHEMA_VERSION; print(EXPECTED_SCHEMA_VERSION)"
 ```
 
 All three numbers must match. Common causes and fixes:
