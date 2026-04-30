@@ -36,9 +36,9 @@ mise run build:brain          # uv sync --project brain
 mise run test                 # full suite: Rust + Python + lint + format check
 ```
 
-The `mise run test` target is the most reliable single command. It runs `cargo test --workspace --locked`, the Python suite via `uv run --project brain pytest`, the Swift package tests, and lint/format checks across all four languages.
+The `mise run test` target is the most reliable single command. It runs the per-crate Rust suites (`hippo-core`, `hippo-daemon` lib + integration), the Python suite via `uv run --project brain pytest brain/tests --cov`, Swift package tests + lint via the `gui:test` / `gui:lint` task dependencies, `cargo clippy --all-targets -- -D warnings`, `cargo fmt --check`, and `ruff check` / `ruff format --check` against the brain.
 
-If `mise run test` is green, your local environment matches CI.
+It is **not** byte-for-byte CI: `mise run test` does **not** add the `--locked` / `--no-fail-fast` flags that CI passes to `cargo test`, does **not** run `cargo audit`, and does **not** build the Firefox extension. Treat it as the high-leverage local smoke test, not a guarantee. See [CI behavior](#ci-behavior) below for the differences.
 
 ## Test strategy
 
@@ -52,7 +52,7 @@ Tests are organized by layer. Cite the level you should add to when fixing a bug
 | Python integration | `brain/tests/test_*.py` (the ones with `tmp_db` fixture) | End-to-end against a real SQLite DB seeded with the live schema. Enrichment writers, dedup script, RAG retrieval. |
 | Swift | `hippo-gui/HippoGUIKitTests/` | Swift package tests via `mise run gui:test` or `swift test` from `hippo-gui/`. |
 | Shell | `tests/shell/*.sh` | Shell-hook integration tests. Limited (the watcher pattern replaced most tmux-era tests). |
-| Semgrep | `.semgrep.yml` + `tests/semgrep/*.rs` fixture | Static-analysis rules for the Rust capture paths. Currently scoped to `shell/`; widening it to all of Rust is tracked work. |
+| Semgrep | `.semgrep.yml` + `tests/semgrep/*.rs` fixture | Static-analysis rules currently scoped to the Rust capture paths plus `brain/src/hippo_brain/` (run locally with `semgrep --config .semgrep.yml crates/ brain/`). Semgrep is **not** wired into CI today; it's a local-only / code-review check. |
 
 When fixing a bug, add a regression test at the same layer the bug lived. For a Rust silent-error bug, the regression goes in `crates/hippo-daemon/tests/`; for a brain prompt regression, in `brain/tests/`. The [test matrix](docs/capture/test-matrix.md) maps every known capture-side failure mode to a test — your bug probably has a row there.
 
@@ -88,14 +88,16 @@ Most changes live entirely in one language. The exceptions:
 
 ## CI behavior
 
-`.github/workflows/` runs on every PR:
+`.github/workflows/` runs on every PR (file names are the live filenames in this repo):
 
-- **mcp-sync-ci.yml** — runs ruff + pytest on the brain on changes to `brain/`.
-- **rust-ci.yml** — runs `cargo test --workspace --locked --no-fail-fast` and `cargo clippy --all-targets --locked -- -D warnings` on changes to Rust paths.
-- **gui-ci.yml** — Swift package tests on changes to `hippo-gui/`.
+- **python.yml** — `ruff` + `pytest` on the brain when `brain/` changes.
+- **rust.yml** — `cargo build --all-targets --locked`, `cargo clippy --all-targets --locked --no-deps -- -D warnings`, `cargo test --locked --no-fail-fast`, and `cargo audit --file Cargo.lock` when Rust paths change.
+- **gui.yml** — Swift package tests when `hippo-gui/` changes.
+- **extension.yml** — Firefox extension build / checks when `extension/firefox/` changes.
+- **security.yml** — repository-level security checks (note: this workflow does **not** currently run Semgrep; the `.semgrep.yml` rules are local-only).
 - **release.yml** — fires on `v*.*.*` tags. See [`docs/RELEASE.md`](docs/RELEASE.md).
 
-Reproducing CI locally: `mise run test` matches what CI runs (it adds `--locked --no-fail-fast` for cargo test by default).
+Reproducing CI locally: `mise run test` covers the core checks most contributors need before opening a PR, but it is not byte-for-byte CI. In particular, CI runs `cargo test` / `cargo clippy` / `cargo build` with `--locked` (and `cargo test` with `--no-fail-fast`), and runs `cargo audit` plus the extension and security workflows on top. To match CI on the Rust side run `cargo test --locked --no-fail-fast` and `cargo clippy --all-targets --locked --no-deps -- -D warnings` directly.
 
 If a test fails on CI but passes locally, the most common causes are:
 
@@ -103,22 +105,16 @@ If a test fails on CI but passes locally, the most common causes are:
 - Brain Python dependency drift — `uv sync --project brain --frozen`.
 - A test reading from `~/.local/share/hippo/` (probably contaminating between runs). Set `XDG_DATA_HOME` to a tmpdir for the test.
 
-## Pre-commit hooks
+## Formatting and linting
 
-This repo uses [pre-commit](https://pre-commit.com). Install once:
+This repository does not currently ship a checked-in [pre-commit](https://pre-commit.com) configuration. Run the relevant tooling directly for the files you changed before pushing:
 
-```bash
-pre-commit install
-```
+- Python (anything under `brain/`): `uv run --project brain ruff format brain/src brain/tests` and `uv run --project brain ruff check brain/`.
+- Rust: `cargo fmt` and `cargo clippy --all-targets -- -D warnings`.
+- TOML: confirm edited files parse (any TOML-aware editor or `python -c "import tomllib; tomllib.load(open('FILE','rb'))"`).
+- Markdown / shell / generic text: strip trailing whitespace.
 
-Hooks run on `git commit`:
-
-- ruff format + check on staged Python files
-- cargo fmt on staged Rust files
-- TOML validity check
-- Trailing-whitespace strip
-
-To opt out for a single commit (rare; usually a sign you should fix the issue): `git commit --no-verify`. Don't use this on PRs you'll ask for review on — CI will fail what the hook would have caught.
+If CI fails on formatting or linting, fix the issue locally and rerun the relevant tool before pushing review updates. (If a future PR adds a `.pre-commit-config.yaml` to this repo, this section will replace these direct commands with `pre-commit install` + the hook list — but as of v0.20 there is no such config to install.)
 
 ## Code review expectations
 
@@ -132,7 +128,7 @@ To opt out for a single commit (rare; usually a sign you should fix the issue): 
 
 The ground rules:
 
-- **Probe events are filtered out of every user-facing query.** Never write a query against `events`/`browser_events`/`claude_sessions` without `AND probe_tag IS NULL`. Semgrep enforces this. (AP-6.)
+- **Probe events are filtered out of every user-facing query.** Never write a query against `events`/`browser_events`/`claude_sessions` without `AND probe_tag IS NULL`. A Semgrep rule exists for this in `.semgrep.yml`; run `semgrep --config .semgrep.yml crates/ brain/` locally before pushing capture-layer changes (Semgrep is not enforced in CI today). (AP-6.)
 - **Capture and enrichment are decoupled.** `source_health` tracks capture health only; the brain's HTTP `/health` tracks enrichment health. Never couple them. (AP-2.)
 - **No silent error swallowing.** `.filter_map(Result::ok)` and `.ok().unwrap_or_default()` in any capture write path are PR-blockers. Errors get a `warn!` log and a counter bump. (AP-11.)
 - **Schema migrations are idempotent.** Every CREATE has `IF NOT EXISTS`; every ALTER goes through `add_column_if_missing`; every seed is `INSERT OR IGNORE`. A daemon that crashes mid-migration must complete cleanly on restart.
@@ -163,7 +159,7 @@ Types in use: `fix`, `feat`, `chore`, `docs`, `test`, `refactor`. Scopes in use:
 
 **One change per PR.** A migration + a feature + a refactor in one PR is too much. Split.
 
-**No --no-verify.** If the pre-commit hook complains, fix what it found. Don't bypass it.
+**No --no-verify.** Even though there's no checked-in pre-commit config today, any local hook a contributor or maintainer adds (or future `.pre-commit-config.yaml`) is in service of CI. If something complains, fix what it found rather than bypassing.
 
 **Co-Authored-By trailers** are welcome. `git commit -s` for sign-off if you prefer.
 
@@ -176,7 +172,7 @@ Maintainer-only. Contributors don't bump versions in their PRs — the release P
 - **Bugs**: [GitHub Issues](https://github.com/stevencarpenter/hippo/issues). Fill in the doctor output and reproduction steps.
 - **Feature requests**: same; label `enhancement`.
 - **Questions**: GitHub Discussions if enabled, otherwise an issue with `question` label.
-- **Security**: do not file as a public issue. The repo has a security-scanning push protection that will catch obvious cases; for vulnerabilities that bypass it, email the maintainer per the SECURITY.md contact (when one exists).
+- **Security**: do not file as a public issue. The repo has a security-scanning push protection that will catch obvious cases; for vulnerabilities that bypass it, use [GitHub's private security advisory flow](https://github.com/stevencarpenter/hippo/security/advisories/new) (a checked-in `SECURITY.md` is open follow-up work).
 
 ## See also
 
