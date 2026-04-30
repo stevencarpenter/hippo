@@ -13,7 +13,7 @@ For an architectural overview of what each tool does, see [`architecture.md`](ar
 | Has anything quietly broken in the last hour? | `hippo alarms list` (exits 1 if any unacknowledged) |
 | Is a specific source healthy right now? | `hippo probe --source <name>` (synthetic round-trip) |
 | Is the brain enriching properly? | `hippo doctor` (the brain section) — capture and enrichment are decoupled (I-10) |
-| What did I just lose? | `~/.local/share/hippo/*.fallback.jsonl` — fallback files; replayed on next daemon start |
+| What did I just lose? | `~/.local/share/hippo/fallback/*.jsonl` — fallback files (one per UTC date); replayed on next daemon start |
 
 ## Doctor
 
@@ -89,13 +89,13 @@ grep -l 'hippo.zsh' ~/.zshrc ~/.zshenv ~/.config/zsh/*.zsh 2>/dev/null
 hippo probe --source shell
 ```
 
-If the probe lands but the original command didn't, the hook silently dropped the frame — check the fallback files:
+If the probe lands but the original command didn't, the hook silently dropped the frame — check the fallback files (one JSONL per UTC date, written when the daemon was unreachable):
 
 ```bash
-ls -la ~/.local/share/hippo/*.fallback.jsonl 2>/dev/null
+ls -la ~/.local/share/hippo/fallback/*.jsonl 2>/dev/null
 ```
 
-A fallback file existing means the daemon was unreachable; the next daemon start will replay it.
+A fallback file existing means the daemon was unreachable; the next daemon start will replay it via `recover_fallback_files` (`crates/hippo-core/src/storage.rs`).
 
 ### "Doctor shows red"
 
@@ -107,7 +107,7 @@ Pick the first `[!!]` failure. The CAUSE/FIX/DOC block will tell you which file 
 
 - `[!!] shell events: 8m ago (FAIL)` → I-1 violation. See [`architecture.md`](architecture.md) I-1; check whether your shell session has been idle (suppression) or whether the hook actually fired (run `hippo probe --source shell`).
 - `[!!] watchdog heartbeat: 4m ago (FAIL)` → I-7 violation. Watchdog crashed or its launchd job is missing. Check `launchctl list | grep hippo`. If `com.hippo.watchdog` is missing, run `hippo daemon install --force`.
-- `[!!] fallback files: 5 files > 24h (recovery broken)` → I-9 violation. Daemon is up but old fallback files aren't being drained. Check `journalctl`-equivalent logs at `~/.local/share/hippo/*.log` for write errors.
+- `[!!] fallback files: 5 files > 24h (recovery broken)` → I-9 violation. Daemon is up but old fallback files under `~/.local/share/hippo/fallback/` aren't being drained. Check the daemon's launchd logs (`~/.local/share/hippo/daemon.stderr.log` and the rolling `daemon.YYYY-MM-DD.log` files written by the tracing appender) for write errors.
 
 ### "Brain queue is backing up"
 
@@ -134,14 +134,21 @@ The watchdog reaper handles transient locks (rows stuck in `processing` for > `l
 The daemon's startup handshake (`crates/hippo-daemon/src/schema_handshake.rs`) requires the daemon and brain schema versions to match exactly. If they don't, the daemon refuses to bind its socket.
 
 ```bash
-# What does the live DB say?
+# Run the unified handshake check (compares all three at once).
+hippo doctor --explain | grep -A 4 "schema"
+
+# Or inspect each side individually:
+
+# 1. What does the live DB say?
 sqlite3 ~/.local/share/hippo/hippo.db "PRAGMA user_version;"
 
-# What version does the daemon binary expect?
-hippo daemon version
+# 2. What version does the daemon binary expect? (compiled-in constant)
+grep -E "^pub const EXPECTED_VERSION" \
+  ~/projects/hippo/crates/hippo-core/src/storage.rs
 
-# What version does the brain expect?
-uv run --project brain python -c "from hippo_brain.schema_version import EXPECTED_SCHEMA_VERSION; print(EXPECTED_SCHEMA_VERSION)"
+# 3. What version does the brain expect?
+uv run --project brain python -c \
+  "from hippo_brain.schema_version import EXPECTED_SCHEMA_VERSION; print(EXPECTED_SCHEMA_VERSION)"
 ```
 
 All three numbers must match. If they don't, `mise run install` (or `mise run install --clean`) brings everything to the same version. Don't manually `PRAGMA user_version = N` on the DB — migrations have to run.

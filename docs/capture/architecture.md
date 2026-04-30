@@ -51,7 +51,7 @@ One row per source. Updated in the same transaction as event writes; the watchdo
 | `source` | TEXT PK | Source name: `shell`, `claude-tool`, `claude-session`, `claude-session-watcher`, `browser`, `workflow`, `watchdog`, `probe`. |
 | `last_event_ts` | INTEGER | Epoch ms of the most recent successful event write for this source. |
 | `consecutive_failures` | INTEGER | Bumped on each failure; reset on success. Backstop for I-1, I-4 freshness alarms. |
-| `events_last_1h` / `_24h` | INTEGER | Rolling counts. Recomputed by the watchdog, not maintained per-write. |
+| `events_last_1h` / `_24h` | INTEGER | Rolling counts. Maintained by the daemon (incremented in `crates/hippo-daemon/src/daemon.rs::flush_events`, periodically rolled forward); the watchdog reads them, it does not compute them. |
 | `probe_ok` | INTEGER | Last probe-job result: 1 = healthy, 0 = unhealthy. Source-specific definition (see "Probes" below). |
 | `probe_last_run_ts` | INTEGER | When the probe last completed for this source. |
 | `probe_lag_ms` | INTEGER | End-to-end latency of the most recent successful probe. |
@@ -82,7 +82,7 @@ Asserted by the watchdog every 60 s. Each has a formal predicate in `crates/hipp
 | **I-2** Claude-session end-to-end | For every Claude JSONL with `mtime < 5 min`, a matching `claude_sessions` row must exist. | 5 min | No live JSONL. | Watchdog alarm naming each missing `session_id`. |
 | **I-3** Claude-tool concurrency | If a live JSONL has received a `tool_use` line within 5 min, at least one matching `events.source_kind='claude-tool'` row must exist in that window. | 5 min | No live JSONL with recent `tool_use`. | Structured log only by default; opt-in alarm via `[watchdog] claude_tool_alarm = true`. |
 | **I-4** Browser round-trip | If Firefox is up AND extension heartbeat is recent, `browser_events` rows must land within 2 min. | 2 min | Firefox not running; extension heartbeat absent or stale. | Watchdog alarm + doctor `[!!] browser events`. |
-| **I-5** Drop visibility | Every event dropped (socket accept + crash, buffer overflow) increments a persistent counter. Zero tolerance for invisible drops. | every drop | — | OTel counter `hippo.daemon.drops_total{source=<name>}`. |
+| **I-5** Drop visibility | Every event dropped (socket accept + crash, buffer overflow) increments a persistent counter. Zero tolerance for invisible drops. | every drop | — | OTel counter `hippo.daemon.events.dropped` (paired with `hippo.daemon.events.ingested`); see `crates/hippo-daemon/src/metrics.rs`. |
 | **I-6** Buffer non-saturation | Sustained drop rate over any 5 min sliding window ≤ 0.1% of total event traffic. | 0.1% / 5 min | — | Watchdog alarm + doctor `[!!] drop-rate`. |
 | **I-7** Watchdog liveness | The watchdog itself writes to `source_health WHERE source='watchdog'` at least every 60 s. | 180 s stale | — | Doctor only (a dead watchdog can't alarm about itself). |
 | **I-8** Probe freshness | For each source with `probe_last_run_ts IS NOT NULL`: `probe_ok = 1` OR `probe_last_run_ts > now − 15 min`. | 15 min | — | Watchdog alarm + doctor `[!!] <source> probe`. |

@@ -51,7 +51,7 @@ The native messaging manifest at `~/Library/Application Support/Mozilla/NativeMe
 
 Opt-in via `[github] enabled = true` and a token in `HIPPO_GITHUB_TOKEN` (env var, `~/.config/zsh/.env`, or `gh auth token`; see `config/config.default.toml` for full token-scope guidance). Polls the Actions API every `[github] poll_interval_secs` (default 60), upserts runs/jobs/annotations/log excerpts, and enqueues for enrichment.
 
-There is no real-time invariant — doctor checks freshness against soft (24 h) and hard (7 d) thresholds.
+There is no real-time invariant — doctor's source-freshness probe (`crates/hippo-daemon/src/commands.rs::source_freshness_probes`) checks `MAX(workflow_runs.started_at)` against soft (3 d) and hard (30 d) thresholds.
 
 ### Xcode-side sources (ClaudeAgentConfig + Codex)
 

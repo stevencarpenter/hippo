@@ -16,64 +16,94 @@ Hippo's retrieval pipeline (sqlite-vec + FTS5 hybrid since v0.20) needs quantita
 
 ## CLI
 
+`hippo-eval` is a single-command CLI (defined as the `hippo-eval` console script in `brain/pyproject.toml`, dispatching to `hippo_brain.evaluation:main`). It runs the full labeled set in one pass and writes a scorecard:
+
 ```bash
-hippo-eval run --questions <path>                  # run all questions, emit metrics
-hippo-eval run --questions <path> --mode <mode>    # restrict to one retrieval mode
-hippo-eval baseline                                # capture a baseline for diff comparisons
-hippo-eval compare <baseline> <current>            # diff two runs
+uv run --project brain hippo-eval                        # run with defaults
+uv run --project brain hippo-eval --mode hybrid          # pick retrieval mode
+uv run --project brain hippo-eval --subset q01,q02       # subset of question ids
+uv run --project brain hippo-eval --no-synthesis         # skip ask() synthesis
+uv run --project brain hippo-eval --no-judge             # skip LM-judge groundedness
+uv run --project brain hippo-eval --questions <path>     # override questions file
+uv run --project brain hippo-eval --out <dir>            # write scorecard JSON
 ```
 
-`--mode` values: `semantic`, `lexical`, `hybrid`, `recent`. All four are functional against the live `main` (sqlite-vec for `semantic`, FTS5 for `lexical`, score fusion for `hybrid`, recency-only for `recent`).
+All flags (verbatim, source: `_parse_args` in `evaluation.py`):
+
+| Flag | Default | Notes |
+|---|---|---|
+| `--questions` | `brain/tests/eval_questions.json` (i.e. `_DEFAULT_QUESTIONS`) | Path to the labeled question set. |
+| `--mode` | `hybrid` | One of `hybrid`, `semantic`, `lexical`, `recent`. |
+| `--limit` | `10` | Top-K size for retrieval. |
+| `--out` | `""` | When set, writes the full scorecard JSON to this directory. |
+| `--subset` | `""` | Comma-separated question ids; empty = all. |
+| `--no-synthesis` | off | Skip `ask()` synthesis (retrieval-only). |
+| `--no-judge` | off | Skip LM-judge groundedness scoring. |
+
+There is no `run` / `baseline` / `compare` subcommand surface; "compare two runs" is an external diff over the JSON scorecards in `--out` directories.
 
 ## Question set
 
-The labeled question set lives in `brain/eval/questions.jsonl`. Each entry:
+The labeled question set lives at `brain/tests/eval_questions.json` (resolved via `_DEFAULT_QUESTIONS = Path(__file__).parent.parent.parent / "tests" / "eval_questions.json"`). The file is a JSON object whose `questions` array contains the labeled entries; each entry is loaded by `load_questions` into the `Question` dataclass (`brain/src/hippo_brain/evaluation.py`):
 
 ```json
 {
-  "id": "q-123",
-  "question": "...",
-  "expected_node_uuids": ["uuid-1", "uuid-2"],
-  "tags": ["claude-session", "rag-quality"]
+  "id": "q01",
+  "question": "Why did we replace LanceDB with sqlite-vec?",
+  "intent": "why-decision",
+  "relevant_knowledge_node_uuids": [
+    "e4397aa3-520d-4d5e-a1ab-56f9411bba2b"
+  ],
+  "acceptable_answer_keywords": ["sqlite-vec", "consolidation"],
+  "source_bias": "claude",
+  "coverage_gap_reason": ""
 }
 ```
 
-Targets 30–50 questions drawn from hippo's development history. Adding a question:
+Field meanings (from the file's own `schema` block):
+
+| Field | Meaning |
+|---|---|
+| `id` | Stable unique id (e.g. `q01`). |
+| `question` | Natural-language user query. |
+| `intent` | One of `why-decision`, `how-it-works`, `state-lookup`, `cross-source`, `adversarial`. |
+| `relevant_knowledge_node_uuids` | Known-good node UUIDs, labeled against the live corpus on the `labeled_at` date. |
+| `acceptable_answer_keywords` | At least one MUST appear in a good answer (drives the `keyword_hit` boolean). |
+| `source_bias` | `shell`, `claude`, `browser`, or `mixed`. |
+| `coverage_gap_reason` | Set when `relevant_knowledge_node_uuids` is empty — explains why the corpus cannot answer. |
+
+Targets 30–50 questions drawn from hippo's own development history. Adding a question:
 
 1. Pick a real recent activity that produced retrievable nodes.
 2. Write the question as a user would ask it.
-3. Run the question through `hippo ask --raw` to find the relevant node UUIDs.
-4. Append to `questions.jsonl`.
-5. Run `hippo-eval run` to confirm the new question's metrics.
+3. Run `hippo ask` (or `hippo query --raw <text>`) to find the relevant node UUIDs.
+4. Append to `eval_questions.json` under `questions`.
+5. Run `uv run --project brain hippo-eval --subset <new-id>` to confirm metrics.
 
 ## Metrics
 
-Per-question:
+Per-question (computed in `evaluation.py`):
 
-- **Recall@K** — fraction of expected UUIDs in the top-K retrieved hits.
+- **Recall@K** — fraction of `relevant_knowledge_node_uuids` present in the top-K retrieved hits.
 - **MRR** — mean reciprocal rank of the first expected hit.
 - **NDCG@K** — normalized discounted cumulative gain.
-- **Source diversity** — number of distinct `source_kind` values in top-K.
-- **Coverage gap** — heuristic: distance between top-K's mean similarity and the threshold considered "strong evidence" for that question type.
-- **Groundedness** (when `--llm-judge` is set) — LM-Studio-judged 0/1 score for whether `ask()`'s answer is supported by the retrieved sources.
+- **Source diversity** — *normalized Shannon entropy* of `source_kind` distribution across top-K hits, in `[0, 1]` (`source_diversity` in `evaluation.py`). 0 means all hits share one source; 1 means uniform spread across all observed sources.
+- **Near-duplicate density** — pairwise cosine-similarity density of top-K embeddings; high values flag duplicate-heavy retrievals.
+- **Coverage gap score** — *fraction of top-K scores that fall below the configured threshold* (default 0.5; `coverage_gap_score` in `evaluation.py`). 0.0 means all hits are strong; 1.0 means none are.
+- **Groundedness** — LM-judge 0/1 score for whether `ask()`'s answer is supported by the retrieved sources (skipped under `--no-judge`).
+- **Keyword hit** — boolean: at least one of `acceptable_answer_keywords` appears in the synthesized answer.
 
-Aggregate: macro-mean of each metric across the question set, plus per-tag breakouts.
+Aggregate: macro-mean of each metric across the question set, plus per-`intent` and per-`source_bias` breakouts when emitted to `--out`.
 
 ## Degradation
 
-`hippo-eval run` exits non-zero if:
-
-- Any expected node UUID is missing from the live DB (the question set has stale references — fix by re-running step 3 above).
-- Aggregate Recall@5 falls below the configured floor (default 0.6).
-- The brain HTTP server is unreachable.
-
-For diagnostic purposes (e.g., "did the prompt change tank recall on a specific tag?"), `hippo-eval compare` prints per-question deltas between two runs.
+`hippo-eval` exits with a non-zero code if `--subset` matches no questions. It does not currently enforce a minimum recall floor or fail on missing UUIDs; surfacing those as exit codes is open follow-up work. For diagnostic comparisons across runs, point `--out` at separate directories and diff the resulting JSON scorecards externally.
 
 ## Implementation
 
-Lives at `brain/src/hippo_brain/eval/`. Entry point: `brain/src/hippo_brain/eval/cli.py`.
+Lives at `brain/src/hippo_brain/evaluation.py`. Entry point: the `hippo-eval` console script in `brain/pyproject.toml`, which dispatches to `hippo_brain.evaluation:main`. There is no separate `eval/` package or `eval/cli.py` module today.
 
-Tests: `brain/tests/test_eval_*.py`.
+Tests: `brain/tests/test_evaluation*.py` and adjacent metric-function tests.
 
 ## See also
 
