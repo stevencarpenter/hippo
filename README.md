@@ -310,7 +310,7 @@ mise run nuke               # SIGKILL everything (preserves data)
 
 ### Contributing
 
-A dedicated `CONTRIBUTING.md` is tracked in [issue #114](https://github.com/stevencarpenter/hippo/issues/114). In the meantime: open issues for bugs, PRs welcome. Code-style notes live in `CLAUDE.md`. Review blockers for the capture layer are codified in [`docs/capture/anti-patterns.md`](docs/capture/anti-patterns.md) (AP-1 through AP-12); read them before touching `crates/hippo-daemon/src/{daemon,commands,storage}.rs` or `brain/src/hippo_brain/server.py`.
+See [`CONTRIBUTING.md`](CONTRIBUTING.md) — setup, test strategy, dev loop, cross-language coupling, CI, PR conventions, and where to ask. Review blockers for the capture layer are codified in [`docs/capture/anti-patterns.md`](docs/capture/anti-patterns.md) (AP-1 through AP-12); read them before your first capture-layer PR.
 
 ## Project Structure
 
