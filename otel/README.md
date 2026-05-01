@@ -22,7 +22,7 @@ export HIPPO_OTEL_ENABLED=1
 mise run restart
 
 # Open Grafana
-open http://localhost:3000
+open http://localhost:3030
 ```
 
 Hippo persists OTEL data on the host under `~/.local/share/hippo/otel/`, so restarting or recreating
@@ -44,7 +44,7 @@ hippo-mcp   ──┘
 | Service | Port | Purpose |
 |---------|------|---------|
 | OTel Collector | 4317 (gRPC), 4318 (HTTP) | Receives OTLP telemetry |
-| Grafana | 3000 | Dashboards and exploration |
+| Grafana | 3030 | Dashboards and exploration |
 | Tempo | 3200 | Trace storage |
 | Loki | 3100 | Log aggregation |
 | Prometheus | 9090 | Metrics storage |

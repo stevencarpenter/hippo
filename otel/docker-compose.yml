@@ -52,7 +52,7 @@ services:
       - ./grafana/dashboards:/etc/grafana/provisioning/dashboards:ro
       - ${HOME}/.local/share/hippo/otel/grafana:/var/lib/grafana
     ports:
-      - "3000:3000"
+      - "3030:3000"
     depends_on:
       - tempo
       - loki
