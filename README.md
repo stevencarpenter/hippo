@@ -186,6 +186,9 @@ The MCP server lets Claude Code (or any MCP client) query your knowledge base mi
 | `search_hybrid` | Hybrid sqlite-vec + FTS5 search with score fusion |
 | `search_events` | Search raw events (shell commands, Claude sessions, browser visits) |
 | `get_entities` | List extracted entities (projects, tools, files, env vars, concepts) |
+| `list_projects` / `get_context` / `get_ci_status` / `get_lessons` | Discovery + auxiliary lookups |
+
+Full reference with arguments, return shapes, examples, and selection guide: [`docs/mcp-reference.md`](docs/mcp-reference.md).
 
 Add to your Claude Code MCP config (e.g., `~/.claude/settings.json` or your MCP config file):
 
