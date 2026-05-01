@@ -7,7 +7,7 @@
 //! every source below is exercised through its production write path so a
 //! regression surfaces on CI instead of in a 272-session sev1 backfill.
 //!
-//! Source matrix: `docs/capture-reliability/10-source-audit.md`.
+//! Source matrix: `docs/capture/sources.md`.
 //!
 //! One file per source, glued together as sub-modules (integration tests
 //! only compile when declared from a file directly under `tests/`).

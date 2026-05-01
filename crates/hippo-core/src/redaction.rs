@@ -246,7 +246,7 @@ replacement = "***"
     // enrichment pipeline cannot recover information from `[REDACTED]`, and
     // the RAG layer returns degraded answers.
     //
-    // Test matrix: docs/capture-reliability/09-test-matrix.md row F-4
+    // Test matrix: docs/capture/test-matrix.md row F-4
     // Invariant:   I-5 Redaction correctness
     //
     // One test per pattern class so a regression pinpoints exactly which

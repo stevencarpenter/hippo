@@ -161,7 +161,7 @@ watched_repos = []             # e.g., ["stevencarpenter/hippo"]
 # reads the `source_health` table, asserts invariants I-1..I-10, and writes rows
 # to `capture_alarms` for any violations.  Rate-limited to one alarm per invariant
 # per `alarm_rate_limit_minutes` window (60 min during v0.17 soak; step down to
-# 15 min in v0.18 after 7-day clean run — see docs/capture-reliability/04-watchdog.md).
+# 15 min in v0.18 after 7-day clean run — see docs/capture/architecture.md).
 enabled                  = true
 alarm_rate_limit_minutes = 60
 notify_macos             = false

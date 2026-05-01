@@ -6,7 +6,7 @@ Verifies that every user-facing query on the three event tables
 belt-and-braces guard so synthetic probe rows never leak into
 production result sets, enrichment queues, or project listings.
 
-Reference: docs/capture-reliability/08-anti-patterns.md AP-6.
+Reference: docs/capture/anti-patterns.md AP-6.
 """
 
 import sqlite3

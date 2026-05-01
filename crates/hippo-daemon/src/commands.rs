@@ -1250,10 +1250,11 @@ pub async fn handle_doctor(config: &HippoConfig, explain: bool) -> Result<()> {
 /// Per-source capture-freshness doctor check.
 ///
 /// Emits one line per source, color-coded by how long since the freshest
-/// row (staleness threshold per source — see
-/// `docs/capture-reliability/10-source-audit.md`). Queries the underlying
-/// tables directly so it works without the `source_health` table (which
-/// is still a P0.1 roadmap item).
+/// row (staleness thresholds defined in `source_freshness_probes()`
+/// below; see also the I-1..I-10 freshness invariants in
+/// `docs/capture/architecture.md`). Queries the underlying tables
+/// directly so it works without the `source_health` table (which is
+/// still a P0.1 roadmap item).
 fn check_source_freshness(config: &HippoConfig) -> u32 {
     let db_path = config.db_path();
     if !db_path.exists() {
@@ -1507,7 +1508,9 @@ fn check_brain_telemetry_status(brain_json: Option<&serde_json::Value>) -> u32 {
             println!("             or the OTel package namespace was half-installed.");
             println!("     FIX:    uv sync --project ~/.local/share/hippo-brain --reinstall");
             println!("             then: launchctl kickstart -k gui/$(id -u)/com.hippo.brain");
-            println!("     DOC:    docs/capture-reliability/03-doctor-upgrades.md");
+            println!(
+                "     DOC:    docs/archive/capture-reliability-overhaul/03-doctor-upgrades.md"
+            );
             1
         }
         (Some(false), _) => 0,
@@ -1815,7 +1818,7 @@ fn check_source_staleness(db: &rusqlite::Connection, explain: bool) -> u32 {
                     println!(
                         "     FIX:    Check source is running: hippo doctor (re-run); tail -f ~/.local/share/hippo/daemon.stderr.log"
                     );
-                    println!("     DOC:    docs/capture-reliability/02-invariants.md");
+                    println!("     DOC:    docs/capture/architecture.md");
                 }
             }
         }
@@ -1954,7 +1957,7 @@ fn check_zsh_hook_sourced(explain: bool) -> u32 {
     if explain {
         println!("     CAUSE:  Shell hook not loaded — shell events cannot be captured");
         println!("     FIX:    Add to ~/.zshrc: source ~/.local/share/hippo/hippo.zsh");
-        println!("     DOC:    docs/capture-reliability/08-anti-patterns.md");
+        println!("     DOC:    docs/capture/anti-patterns.md");
     }
     1
 }
@@ -2027,7 +2030,7 @@ fn check_log_file_sizes(config: &HippoConfig, explain: bool) -> u32 {
                 "     FIX:    Upgrade hippo to a version with log rotation, or: truncate -s 0 {}",
                 full_path.display()
             );
-            println!("     DOC:    docs/capture-reliability/07-roadmap.md");
+            println!("     DOC:    docs/archive/capture-reliability-overhaul/07-roadmap.md");
         }
         return 1;
     }
@@ -2078,7 +2081,7 @@ fn check_legacy_capture_section(config_path: &std::path::Path, explain: bool) ->
             "     FIX:    Remove the [capture] section from {}",
             config_path.display()
         );
-        println!("     DOC:    docs/capture-reliability/07-roadmap.md (T-8)");
+        println!("     DOC:    docs/archive/capture-reliability-overhaul/07-roadmap.md (T-8)");
     }
     0
 }
@@ -2113,7 +2116,7 @@ fn check_watchdog_heartbeat(db: &rusqlite::Connection, explain: bool) -> u32 {
             if explain {
                 println!("     CAUSE:  source_health query returned an unexpected DB error");
                 println!("     FIX:    Inspect ~/.local/share/hippo/hippo.db for corruption");
-                println!("     DOC:    docs/capture-reliability/03-doctor-upgrades.md");
+                println!("     DOC:    docs/capture/operator-runbook.md");
             }
             1
         }
@@ -2135,7 +2138,9 @@ fn check_watchdog_heartbeat(db: &rusqlite::Connection, explain: bool) -> u32 {
                 if explain {
                     println!("     CAUSE:  Watchdog has stopped sending heartbeats");
                     println!("     FIX:    Restart the watchdog service: mise run restart");
-                    println!("     DOC:    docs/capture-reliability/07-roadmap.md");
+                    println!(
+                        "     DOC:    docs/archive/capture-reliability-overhaul/07-roadmap.md"
+                    );
                 }
                 1
             }
@@ -2189,7 +2194,7 @@ pub fn check_nm_manifest(nm_manifest_path: &std::path::Path, explain: bool) -> u
                 "     CAUSE:  Native Messaging manifest not installed — Firefox cannot launch the host"
             );
             println!("     FIX:    hippo daemon install --force");
-            println!("     DOC:    docs/capture-reliability/03-doctor-upgrades.md");
+            println!("     DOC:    docs/capture/operator-runbook.md");
         }
         return 1;
     }
@@ -2201,7 +2206,7 @@ pub fn check_nm_manifest(nm_manifest_path: &std::path::Path, explain: bool) -> u
             if explain {
                 println!("     CAUSE:  Manifest file exists but is not readable");
                 println!("     FIX:    hippo daemon install --force");
-                println!("     DOC:    docs/capture-reliability/03-doctor-upgrades.md");
+                println!("     DOC:    docs/capture/operator-runbook.md");
             }
             return 1;
         }
@@ -2214,7 +2219,7 @@ pub fn check_nm_manifest(nm_manifest_path: &std::path::Path, explain: bool) -> u
             if explain {
                 println!("     CAUSE:  Manifest file is not valid JSON");
                 println!("     FIX:    hippo daemon install --force");
-                println!("     DOC:    docs/capture-reliability/03-doctor-upgrades.md");
+                println!("     DOC:    docs/capture/operator-runbook.md");
             }
             return 1;
         }
@@ -2226,7 +2231,7 @@ pub fn check_nm_manifest(nm_manifest_path: &std::path::Path, explain: bool) -> u
         if explain {
             println!("     CAUSE:  Manifest is malformed — no `path` key");
             println!("     FIX:    hippo daemon install --force");
-            println!("     DOC:    docs/capture-reliability/03-doctor-upgrades.md");
+            println!("     DOC:    docs/capture/operator-runbook.md");
         }
         return 1;
     };
@@ -2237,7 +2242,7 @@ pub fn check_nm_manifest(nm_manifest_path: &std::path::Path, explain: bool) -> u
         if explain {
             println!("     CAUSE:  Manifest `path` points to a non-existent binary");
             println!("     FIX:    hippo daemon install --force");
-            println!("     DOC:    docs/capture-reliability/03-doctor-upgrades.md");
+            println!("     DOC:    docs/capture/operator-runbook.md");
         }
         return 1;
     }
@@ -2254,7 +2259,7 @@ pub fn check_nm_manifest(nm_manifest_path: &std::path::Path, explain: bool) -> u
                 "     CAUSE:  Manifest `path` points to a directory or special file, not an executable binary"
             );
             println!("     FIX:    hippo daemon install --force");
-            println!("     DOC:    docs/capture-reliability/03-doctor-upgrades.md");
+            println!("     DOC:    docs/capture/operator-runbook.md");
         }
         return 1;
     }
@@ -2266,7 +2271,7 @@ pub fn check_nm_manifest(nm_manifest_path: &std::path::Path, explain: bool) -> u
         if explain {
             println!("     CAUSE:  Manifest `path` binary lacks execute permission");
             println!("     FIX:    chmod +x {}", path_str);
-            println!("     DOC:    docs/capture-reliability/03-doctor-upgrades.md");
+            println!("     DOC:    docs/capture/operator-runbook.md");
         }
         return 1;
     }
@@ -2290,7 +2295,7 @@ pub fn check_nm_manifest(nm_manifest_path: &std::path::Path, explain: bool) -> u
                 "     CAUSE:  Extension ID absent from manifest — Firefox refuses to launch the host"
             );
             println!("     FIX:    hippo daemon install --force");
-            println!("     DOC:    docs/capture-reliability/03-doctor-upgrades.md");
+            println!("     DOC:    docs/capture/operator-runbook.md");
         }
         return 1;
     }
@@ -2396,7 +2401,7 @@ pub fn check_claude_session_db(
                     "     FIX:    launchctl print gui/$(id -u)/com.hippo.claude-session-watcher; tail -f {}",
                     log_path.display()
                 );
-                println!("     DOC:    docs/capture-reliability/03-doctor-upgrades.md");
+                println!("     DOC:    docs/capture/operator-runbook.md");
             }
             missing += 1;
             if missing >= 3 {
@@ -2520,7 +2525,7 @@ pub fn check_session_hook_log(
                 "     FIX:    launchctl print gui/$(id -u)/com.hippo.claude-session-watcher; tail -f {}",
                 watcher_log.display()
             );
-            println!("     DOC:    docs/capture-reliability/03-doctor-upgrades.md");
+            println!("     DOC:    docs/capture/operator-runbook.md");
         }
         return 1;
     }
@@ -2596,7 +2601,7 @@ pub fn check_fallback_age(
                 "     CAUSE:  Fallback files > 24h old while daemon is running — drain path broken"
             );
             println!("     FIX:    Restart daemon: mise run restart");
-            println!("     DOC:    docs/capture-reliability/03-doctor-upgrades.md");
+            println!("     DOC:    docs/capture/operator-runbook.md");
         }
         return 1;
     }
@@ -2675,7 +2680,7 @@ pub fn check_schema_version(
                 "     CAUSE:  Daemon and brain schema versions diverged — enrichment silently crashes"
             );
             println!("     FIX:    mise run restart  (or rebuild both components after updating)");
-            println!("     DOC:    docs/capture-reliability/03-doctor-upgrades.md");
+            println!("     DOC:    docs/capture/operator-runbook.md");
         }
         1
     }

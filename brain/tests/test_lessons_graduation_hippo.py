@@ -15,7 +15,7 @@ graduation pass, and check that a lesson row exists. It's marked xfail so
 CI stays green while the signal is preserved — when #53 ships, the xfail
 becomes a pass and the marker can be removed.
 
-Tracking: docs/capture-reliability/09-test-matrix.md row F-15.
+Tracking: docs/capture/test-matrix.md row F-15.
 """
 
 import sqlite3
@@ -61,7 +61,7 @@ def test_hippo_own_recurring_failure_graduates_into_lessons(db_path: str) -> Non
         rule_id="capture-silence-24h",
         path_prefix="crates/hippo-daemon/",
     )
-    summary = "capture silence > 24h (see docs/capture-reliability/)"
+    summary = "capture silence > 24h (see docs/capture/)"
 
     for i in range(3):
         upsert_cluster(

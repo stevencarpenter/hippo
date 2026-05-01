@@ -11,7 +11,7 @@
 //!    storage.rs filter `probe_tag IS NULL` so even if a probe row somehow
 //!    slipped through, user-facing queries would not surface it.
 //!
-//! Reference: docs/capture-reliability/08-anti-patterns.md AP-6.
+//! Reference: docs/capture/anti-patterns.md AP-6.
 
 #[path = "common/mod.rs"]
 mod common;

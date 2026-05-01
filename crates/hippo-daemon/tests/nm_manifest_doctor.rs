@@ -15,7 +15,7 @@
 //! are `#[ignore]` until the doctor adds the check; the skeleton reserves
 //! the test file so enabling them is a one-line change.
 //!
-//! Tracking: docs/capture-reliability/09-test-matrix.md row F-6.
+//! Tracking: docs/capture/test-matrix.md row F-6.
 
 use std::fs;
 use std::os::unix::fs::PermissionsExt;

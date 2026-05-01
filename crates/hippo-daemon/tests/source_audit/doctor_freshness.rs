@@ -1,13 +1,15 @@
 //! Doctor extension — `hippo doctor` emits one freshness line per
-//! source. The line formats are defined by
-//! `docs/capture-reliability/10-source-audit.md` and produced by the
+//! source. The line formats and the < 2s wall-clock budget are specified
+//! in `docs/archive/capture-reliability-overhaul/10-source-audit.md`
+//! (and the doctor's user-facing contract in
+//! `docs/capture/operator-runbook.md`); the formats are produced by the
 //! pure-function helper `commands::source_freshness_verdict`.
 //!
 //! This test exercises two things:
 //!
 //! 1. `source_freshness_probes()` enumerates exactly the set of sources
-//!    the audit doc claims — if a source is added/removed in code but
-//!    not in the doc (or vice versa), the test fails.
+//!    the audit spec claims — if a source is added/removed in code but
+//!    not in the spec (or vice versa), the test fails.
 //! 2. `source_freshness_verdict()` emits the right status prefix for
 //!    each branch — `[OK]`, `[WW]`, `[!!]`, `[--]`.
 //!
@@ -34,7 +36,7 @@ fn probes_cover_every_source_from_the_audit_matrix() {
             "browser",
             "workflow",
         ],
-        "probe list must stay in sync with docs/capture-reliability/10-source-audit.md"
+        "probe list must stay in sync with docs/capture/sources.md"
     );
 }
 
