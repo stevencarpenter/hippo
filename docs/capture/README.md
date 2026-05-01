@@ -8,7 +8,7 @@ Reference documentation for hippo's capture-reliability stack — what every sou
 |---|---|
 | **New contributor** — "what does the system do?" | [`architecture.md`](architecture.md) |
 | **Operator** — "something looks wrong" | [`operator-runbook.md`](operator-runbook.md) |
-| **Source author** — "I want to add a new capture path" | [`anti-patterns.md`](anti-patterns.md) first, then [`sources.md`](sources.md) for the existing patterns |
+| **Source author** — "I want to add a new capture path" | [`adding-a-source.md`](adding-a-source.md) (the full eleven-step contract). Read [`anti-patterns.md`](anti-patterns.md) first if you haven't. |
 | **Reviewer** — "is this PR safe?" | [`anti-patterns.md`](anti-patterns.md) (AP-1..AP-12 are review blockers) |
 | **Test author** — "where does this test go?" | [`test-matrix.md`](test-matrix.md) |
 
@@ -19,6 +19,7 @@ Reference documentation for hippo's capture-reliability stack — what every sou
 | [`architecture.md`](architecture.md) | The four layers (capture path / `source_health` / watchdog / probe / alarms), I-1..I-10 invariants with thresholds, how the pieces interact. |
 | [`sources.md`](sources.md) | Per-source coverage matrix: shell, claude-session, browser, workflow runs, and the rest. Entry point, tables, invariants, probe coverage. |
 | [`anti-patterns.md`](anti-patterns.md) | AP-1..AP-12: forbidden patterns with rationale and the right alternative. Review blockers. |
+| [`adding-a-source.md`](adding-a-source.md) | Eleven-step contract for plugging in a new capture source. Includes a worked example. |
 | [`operator-runbook.md`](operator-runbook.md) | Doctor recipes, alarm responses, recovery flows. First-aid for "something is wrong with capture." |
 | [`test-matrix.md`](test-matrix.md) | Failure-mode-to-test mapping. The "How to extend" section is the contract for adding new tests. |
 

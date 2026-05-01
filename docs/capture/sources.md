@@ -63,15 +63,4 @@ Synthetic events sent through each path every 5 minutes. Probe rows are tagged w
 
 ## Adding a new source
 
-The contract for a new capture source is documented end-to-end in the [`docs/adding-a-source.md`](../adding-a-source.md) guide (filed in [#114](https://github.com/stevencarpenter/hippo/issues/114) — pending). At minimum:
-
-1. Add `source_kind` enum value (where defined).
-2. Capture path that writes to `events` (or a source-specific table) AND to `source_health` in the same transaction.
-3. Enrichment-eligibility predicate in `is_enrichment_eligible`.
-4. Entry in `enrichment_queue` (or a source-specific queue).
-5. Probe implementation, OR an explicit "probe-exempt with rationale" entry.
-6. New invariant in this directory's [`architecture.md`](architecture.md).
-7. New row in [`test-matrix.md`](test-matrix.md).
-8. New row in this document.
-
-Until the dedicated guide ships, the [`test-matrix.md`](test-matrix.md) "How to extend" section is the closest existing reference.
+The full contract for a new capture source is documented in [`adding-a-source.md`](adding-a-source.md). It covers the eleven required pieces: source identity, schema migration, capture path, redaction, probes, eligibility predicate, brain enrichment path, watchdog invariant, doctor check, test matrix, and documentation. A worked example (hypothetical `bash` source) walks through every step with concrete file references.
