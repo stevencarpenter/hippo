@@ -94,11 +94,11 @@ curl -s http://localhost:13133/
 ```
 
 ### Check Grafana Dashboards
-- Hippo Overview: http://localhost:3000/d/hippo-overview
-- Hippo Daemon: http://localhost:3000/d/hippo-daemon
-- Hippo Enrichment Pipeline: http://localhost:3000/d/hippo-enrichment
+- Hippo Overview: http://localhost:3030/d/hippo-overview
+- Hippo Daemon: http://localhost:3030/d/hippo-daemon
+- Hippo Enrichment Pipeline: http://localhost:3030/d/hippo-enrichment
 
-Login: admin/admin
+Login: admin/hippo
 
 ### Check OTEL Logs
 ```bash
@@ -166,4 +166,4 @@ Run these to confirm hippo is fully operational:
 3. LM Studio: `curl -s http://localhost:1234/v1/models | jq '.data[].id'`
 4. Recent enrichment: `tail -10 ~/.local/share/hippo/brain.stderr.log | grep enriched`
 5. OTEL collector: `curl -s http://localhost:13133/`
-6. Grafana: `curl -s -u admin:admin 'http://localhost:3000/api/search' | jq '.[] | .title'`
+6. Grafana: `curl -s -u admin:hippo 'http://localhost:3030/api/search' | jq '.[] | .title'`

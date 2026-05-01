@@ -743,7 +743,7 @@ if [ "$OTEL_ENABLED" = "0" ] && [ "$OTEL_COLLECTOR_UP" = "1" ]; then
     echo "      To enable observability:"
     echo "        1. Edit ~/.config/hippo/config.toml and set [telemetry] enabled = true"
     echo "        2. Run: mise run restart"
-    echo "        3. Access Grafana: http://localhost:3000 (admin/hippo)"
+    echo "        3. Access Grafana: http://localhost:3030 (admin/hippo)"
 elif [ "$OTEL_ENABLED" = "0" ] && [ "$OTEL_COLLECTOR_UP" = "0" ]; then
     echo "NOTE: OpenTelemetry observability is disabled."
     echo "      To enable it:"
@@ -1042,7 +1042,7 @@ fi
 docker compose up -d --remove-orphans
 echo ""
 echo "=== OTel stack running ==="
-echo "  Grafana:        http://localhost:3000 (admin/hippo)"
+echo "  Grafana:        http://localhost:3030 (admin/hippo)"
 echo "  OTel Collector: localhost:4317 (gRPC) / localhost:4318 (HTTP)"
 echo "  Collector health: http://localhost:13133"
 echo "  Data dir:       $OTEL_DATA_DIR"
