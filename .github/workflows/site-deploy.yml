@@ -1,0 +1,99 @@
+name: Site Deploy
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "site/**"
+      - "docs/**"
+      - "README.md"
+      - "CONTRIBUTING.md"
+      - ".github/workflows/site-deploy.yml"
+    paths-ignore:
+      - "docs/archive/**"
+      - "docs/superpowers/**"
+  workflow_dispatch:
+  schedule:
+    # Daily 06:00 UTC keeps /changelog and /status fresh.
+    - cron: "0 6 * * *"
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Don't cancel an in-flight deploy if a second push lands; otherwise GitHub Pages
+# can end up in an inconsistent state.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: site
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+          run_install: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: pnpm
+          cache-dependency-path: site/pnpm-lock.yaml
+
+      - name: Cache Astro + Pagefind output
+        uses: actions/cache@v4
+        with:
+          path: |
+            site/node_modules/.astro
+            site/node_modules/.pagefind
+          key: astro-cache-${{ hashFiles('site/pnpm-lock.yaml', 'site/astro.config.mjs', 'docs/**', 'site/src/**', 'README.md', 'CONTRIBUTING.md') }}
+
+      - run: pnpm install --frozen-lockfile
+
+      # D3: inline checks before build, no workflow_run chaining.
+      - name: Astro check
+        run: pnpm exec astro check
+
+      - name: Vitest
+        run: pnpm test
+
+      - name: Build
+        run: pnpm build
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Configure Pages
+        # D1: enable Pages on first run if it hasn't been configured manually.
+        uses: actions/configure-pages@v5
+        with:
+          enablement: true
+
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: site/dist
+
+  deploy:
+    name: deploy
+    needs: build
+    if: success()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

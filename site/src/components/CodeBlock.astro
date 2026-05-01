@@ -32,7 +32,9 @@ const { copyable = true } = Astro.props;
           const sel = window.getSelection();
           sel?.removeAllRanges();
           sel?.addRange(range);
-          document.execCommand && document.execCommand("copy");
+          // execCommand is deprecated but is still the only fallback when
+          // navigator.clipboard isn't available (older Safari, file://, etc.)
+          if ("execCommand" in document) document.execCommand("copy");
           sel?.removeAllRanges();
         }
         button.classList.add("copied");

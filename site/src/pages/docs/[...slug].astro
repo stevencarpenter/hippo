@@ -53,8 +53,9 @@ const { collection, entryId } = Astro.props as {
   collection: "docs" | "rootDocs" | "contributing";
   entryId: string;
 };
-const { slug } = Astro.params;
-if (!slug) throw new Error("missing slug param");
+const slugParam = Astro.params.slug;
+if (slugParam === undefined) throw new Error("missing slug param");
+const slug = String(slugParam);
 
 // Re-fetch the entry (Astro doesn't pass the full entry through props ergonomically).
 const all = await getCollection(collection);
@@ -78,7 +79,6 @@ const title =
   firstMarkdownH1(entry.body) ??
   defaultTitleForSlug(slug);
 const description = (entry.data as Record<string, unknown>).description as string | undefined;
-const sourcePath = (entry.data as Record<string, unknown>).sourcePath as string | undefined;
 // frontmatter mutated by remark plugin (E2)
 const editPath = (entry.data as Record<string, unknown>).editPath as string | undefined;
 const lastUpdated = (entry.data as Record<string, unknown>).lastUpdated as string | undefined;

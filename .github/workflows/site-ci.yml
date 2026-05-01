@@ -1,0 +1,104 @@
+name: Site CI
+
+on:
+  pull_request:
+    paths:
+      - "site/**"
+      - "docs/**"
+      - "README.md"
+      - "CONTRIBUTING.md"
+      - ".github/workflows/site-ci.yml"
+    paths-ignore:
+      - "docs/archive/**"
+      - "docs/superpowers/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: site-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: site
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # remark-edit-on-github needs git log history
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+          run_install: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: pnpm
+          cache-dependency-path: site/pnpm-lock.yaml
+
+      - name: Cache Astro + Pagefind output
+        uses: actions/cache@v4
+        with:
+          path: |
+            site/node_modules/.astro
+            site/node_modules/.pagefind
+          key: astro-cache-${{ hashFiles('site/pnpm-lock.yaml', 'site/astro.config.mjs', 'docs/**', 'site/src/**', 'README.md', 'CONTRIBUTING.md') }}
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Astro check
+        run: pnpm exec astro check
+
+      - name: Vitest (rehype plugins)
+        run: pnpm test
+
+      - name: Build
+        run: pnpm build
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # D5 — non-blocking link check until we've watched a week of false-positive rate.
+      - name: Linkinator (non-blocking)
+        continue-on-error: true
+        run: |
+          pnpm exec linkinator dist \
+            --recurse \
+            --skip "^https?://github\\.com/.+/(blob|tree|releases|releases/tag|issues|pull|pulls|commit)/.*$" \
+            --skip "^https?://github\\.com/[^/]+/[^/]+/?$" \
+            --retry --retry-errors-count 3 --retry-errors-jitter 2000 \
+            --concurrency 4
+
+      # D6 — axe-core smoke. Skip /search (Pagefind shadow-DOM noise — patched manually).
+      - name: Axe a11y smoke
+        continue-on-error: true
+        run: |
+          npx -y serve@latest dist -l 4321 &
+          SERVER_PID=$!
+          sleep 2
+          set +e
+          npx -y @axe-core/cli@4 \
+            http://localhost:4321/ \
+            http://localhost:4321/install/ \
+            http://localhost:4321/why/ \
+            http://localhost:4321/docs/capture/anti-patterns/ \
+            --exit \
+            --tags wcag2a,wcag2aa \
+            --save axe-results.json
+          STATUS=$?
+          kill "$SERVER_PID" 2>/dev/null || true
+          exit $STATUS
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: axe-results
+          path: site/axe-results.json
+          if-no-files-found: ignore

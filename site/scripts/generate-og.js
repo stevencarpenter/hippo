@@ -1,7 +1,6 @@
 // One-shot OG image generator. Renders public/og-default.png from an SVG template.
 // Run via `node scripts/generate-og.js` from site/.
 import sharp from "sharp";
-import { writeFileSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 

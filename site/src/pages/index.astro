@@ -5,16 +5,12 @@ import Hero from "../components/Hero.astro";
 import PlateBadge from "../components/PlateBadge.astro";
 import CodeBlock from "../components/CodeBlock.astro";
 import CornuAmmonis from "../components/motifs/CornuAmmonis.astro";
-import SectioCoronalis from "../components/motifs/SectioCoronalis.astro";
 import TrisynapticCircuit from "../components/motifs/TrisynapticCircuit.astro";
-import Fasciculus from "../components/motifs/Fasciculus.astro";
 import MarginaliaMotif from "../components/motifs/MarginaliaMotif.astro";
 
 const blogPosts = (await getCollection("blog", ({ data }) => !data.draft))
   .sort((a, b) => b.data.date.getTime() - a.data.date.getTime())
   .slice(0, 3);
-
-const today = new Date().toISOString().slice(0, 10);
 ---
 <Tier1 title="Hippo" description="A second brain that lives on your machine — local-first memory for shell, Claude Code, and browsing.">
   <Hero />
