@@ -98,6 +98,15 @@ describe("rehypeLinkRewrite", () => {
     expect(out).toContain('href="/install"');
   });
 
+  it("redirects archive-section .md links to GitHub blob", async () => {
+    const out = await runWithSource(
+      `<a href="../archive/capture-reliability-overhaul/11-watcher-data-loss-fix.md">x</a>`,
+      "docs/capture/anti-patterns.md",
+    );
+    expect(out).toContain('href="https://github.com/stevencarpenter/hippo/blob/main/docs/archive/capture-reliability-overhaul/11-watcher-data-loss-fix.md"');
+    expect(out).toContain('target="_blank"');
+  });
+
   it("does not touch non-md relative links", async () => {
     const out = await runWithSource(
       `<a href="../../scripts/install.sh">x</a>`,

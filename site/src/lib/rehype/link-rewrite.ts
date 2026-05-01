@@ -84,13 +84,26 @@ export const rehypeLinkRewrite: Plugin<[], Root> = () => {
       const linkPath = hashIdx >= 0 ? href.slice(0, hashIdx) : href;
       const fragment = hashIdx >= 0 ? href.slice(hashIdx) : "";
 
-      if (!linkPath.endsWith(".md")) return;
+      // Accept .md targets and dir targets that point inside docs/.
+      const isMdLink = linkPath.endsWith(".md");
+      const isDirLink = linkPath.endsWith("/");
+      if (!isMdLink && !isDirLink) return;
 
       const sourceDir = path.posix.dirname(sourcePath);
       const resolved = path.posix.normalize(path.posix.join(sourceDir, linkPath));
-      const site = repoPathToSitePath(resolved);
+      const site = isMdLink ? repoPathToSitePath(resolved) : null;
       if (site) {
         props.href = `${site}${fragment}`;
+        return;
+      }
+      // Resolved path lives in an excluded section (archive, superpowers, etc.)
+      // or is a directory link. Redirect to GitHub so the link doesn't 404.
+      if (resolved.startsWith("docs/")) {
+        const slash = isDirLink ? "" : "";
+        const treeOrBlob = isDirLink ? "tree" : "blob";
+        props.href = `https://github.com/stevencarpenter/hippo/${treeOrBlob}/main/${resolved}${slash}${fragment}`;
+        props.target = "_blank";
+        props.rel = "noopener";
       }
     });
   };
