@@ -1,0 +1,48 @@
+---
+import { getCollection } from "astro:content";
+import Tier1 from "../../layouts/Tier1.astro";
+import PlateBadge from "../../components/PlateBadge.astro";
+import Marginalia from "../../components/Marginalia.astro";
+
+const posts = (await getCollection("blog", ({ data }) => !data.draft)).sort(
+  (a, b) => b.data.date.getTime() - a.data.date.getTime(),
+);
+---
+<Tier1 title="Field notes" description="Field notes from hippo's development.">
+  <section class="plate-section page">
+    <PlateBadge label="Plate X" figure="commentarii" />
+    <h1 class="display"><span aria-hidden="true">¶ </span>Field notes.</h1>
+    <p class="lede"><em>— observations, false starts, things that survived.</em></p>
+
+    {posts.length === 0 ? (
+      <Marginalia>
+        <span lang="la"><em>Sub praelo.</em></span> The first field notes are still being
+        written. In the meantime: read <a href="/why">why hippo exists</a>, or follow
+        <a href="/changelog"> the changelog</a>.
+      </Marginalia>
+    ) : (
+      <ul class="post-list">
+        {posts.map((post) => {
+          const slug = post.id.replace(/\.md$/, "");
+          return (
+            <li>
+              <p class="post-meta">{post.data.date.toISOString().slice(0, 10)}</p>
+              <h2><a href={`/blog/${slug}`}>{post.data.title}</a></h2>
+              <p>{post.data.description}</p>
+            </li>
+          );
+        })}
+      </ul>
+    )}
+  </section>
+</Tier1>
+
+<style>
+  .post-list { list-style: none; padding: 0; }
+  .post-list li { padding: 1.4rem 0; border-bottom: 1px solid var(--rule-soft); }
+  .post-list h2 { font-family: var(--font-display); font-size: 1.4rem; margin: 0.2rem 0; font-style: normal; color: var(--ink); }
+  .post-list h2 a { color: inherit; text-decoration: none; }
+  .post-list h2 a:hover { color: var(--oxblood); }
+  .post-meta { font-family: var(--font-label); font-size: 11px; letter-spacing: 0.18em; color: var(--sepia); text-transform: uppercase; margin: 0; }
+  .post-list p { margin: 0.3rem 0 0; color: var(--ink); }
+</style>

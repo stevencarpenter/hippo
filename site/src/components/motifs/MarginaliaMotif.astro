@@ -1,0 +1,48 @@
+---
+export interface Props {
+  size?: "full" | "reduced" | "inline";
+  caption?: string;
+  breathe?: boolean;
+  decorative?: boolean;
+  class?: string;
+}
+const {
+  size = "full",
+  caption,
+  breathe = false,
+  decorative = true,
+  class: className = "",
+} = Astro.props;
+const px = size === "full" ? 200 : size === "reduced" ? 32 : 24;
+const stroke = size === "inline" ? 1.4 : 1;
+---
+<figure class={`motif motif-marginalia ${breathe ? "breathe" : ""} ${className}`}>
+  <svg
+    viewBox="0 0 120 130"
+    width={px}
+    height={px}
+    xmlns="http://www.w3.org/2000/svg"
+    aria-hidden={decorative ? "true" : undefined}
+    role={decorative ? undefined : "img"}
+    focusable="false"
+  >
+    {!decorative && <title>marginalia — quill ribbon and hatching</title>}
+    <g fill="none" stroke="currentColor" stroke-width={stroke} stroke-linecap="round">
+      <path d="M20 30 Q60 5, 100 30"/>
+      <path d="M20 35 Q60 10, 100 35" stroke-width="0.5"/>
+      <path d="M22 35 L22 90 M28 35 L28 90 M34 35 L34 90 M40 35 L40 90 M46 35 L46 90 M52 35 L52 90 M58 35 L58 90 M64 35 L64 90 M70 35 L70 90 M76 35 L76 90 M82 35 L82 90 M88 35 L88 90 M94 35 L94 90 M100 35 L100 90" stroke-width="0.4"/>
+      <path d="M18 90 L102 90 M16 95 L104 95 M16 95 L18 90 M104 95 L102 90" stroke-width="0.6"/>
+    </g>
+  </svg>
+  {caption && size === "full" && (
+    <figcaption class="fig-caption" aria-hidden="true">{caption}</figcaption>
+  )}
+</figure>
+
+<style>
+  .motif { display: inline-flex; flex-direction: column; align-items: center; color: var(--ink); }
+  .motif svg { color: var(--ink); transform-origin: center; will-change: transform; }
+  .motif.breathe svg { animation: motif-breathe 8s ease-in-out infinite; }
+  @keyframes motif-breathe { 0%,100% { transform: scale(1); } 50% { transform: scale(1.03); } }
+  @media (prefers-reduced-motion: reduce) { .motif.breathe svg { animation: none; } }
+</style>

@@ -1,0 +1,29 @@
+---
+import Head from "../components/Head.astro";
+import Header from "../components/Header.astro";
+import Footer from "../components/Footer.astro";
+
+export interface Props {
+  title: string;
+  description?: string;
+  ogImage?: string;
+  noIndex?: boolean;
+}
+const { title, description, ogImage, noIndex } = Astro.props;
+---
+<!DOCTYPE html>
+<html lang="en" dir="ltr">
+  <head>
+    <Head title={title} description={description} ogImage={ogImage} noIndex={noIndex} />
+  </head>
+  <body class="tier-1">
+    <a class="skip-link" href="#main">Skip to content</a>
+    <Header />
+    <main id="main" tabindex="-1">
+      <slot />
+    </main>
+    <Footer />
+    {/* Live region for code-copy announcements (A8). */}
+    <div id="sr-announce" class="sr-only" role="status" aria-live="polite" aria-atomic="true"></div>
+  </body>
+</html>

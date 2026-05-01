@@ -1,0 +1,112 @@
+---
+import type { GetStaticPaths } from "astro";
+import { getCollection, render } from "astro:content";
+import Tier2 from "../../layouts/Tier2.astro";
+import DocsBreadcrumb from "../../components/DocsBreadcrumb.astro";
+import EditOnGitHub from "../../components/EditOnGitHub.astro";
+import ChapterMark from "../../components/ChapterMark.astro";
+import { defaultTitleForSlug, motifForSlug } from "../../lib/docs.ts";
+
+export const getStaticPaths: GetStaticPaths = async () => {
+  const paths: { params: { slug: string }; props: Record<string, unknown> }[] = [];
+  const docsEntries = await getCollection("docs");
+  for (const entry of docsEntries) {
+    const docsSlug = entry.id;
+    if (
+      docsSlug.startsWith("archive/") ||
+      docsSlug.startsWith("superpowers/") ||
+      docsSlug.startsWith("initial-research/")
+    ) continue;
+    const segments = docsSlug.split("/");
+    let routeSlug: string;
+    const last = segments[segments.length - 1];
+    if (segments.length === 1) {
+      routeSlug = `reference/${docsSlug}`;
+    } else if (last === "README" || last === "readme") {
+      routeSlug = segments.slice(0, -1).join("/");
+    } else {
+      routeSlug = docsSlug;
+    }
+    paths.push({
+      params: { slug: routeSlug },
+      props: { collection: "docs", entryId: entry.id },
+    });
+  }
+  const rootEntries = await getCollection("rootDocs");
+  for (const entry of rootEntries) {
+    paths.push({
+      params: { slug: entry.id },
+      props: { collection: "rootDocs", entryId: entry.id },
+    });
+  }
+  const contribEntries = await getCollection("contributing");
+  for (const entry of contribEntries) {
+    paths.push({
+      params: { slug: entry.id },
+      props: { collection: "contributing", entryId: entry.id },
+    });
+  }
+  return paths;
+};
+
+const { collection, entryId } = Astro.props as {
+  collection: "docs" | "rootDocs" | "contributing";
+  entryId: string;
+};
+const { slug } = Astro.params;
+if (!slug) throw new Error("missing slug param");
+
+// Re-fetch the entry (Astro doesn't pass the full entry through props ergonomically).
+const all = await getCollection(collection);
+const entry = all.find((e) => e.id === entryId);
+if (!entry) throw new Error(`entry not found: ${collection}/${entryId}`);
+
+const { Content, headings } = await render(entry);
+
+// Pull h1 from raw body if frontmatter doesn't supply a title.
+// (Reading from `headings` would include the autolink anchor's pilcrow prefix.)
+function firstMarkdownH1(body: string | undefined): string | undefined {
+  if (!body) return undefined;
+  for (const line of body.split(/\r?\n/)) {
+    const m = /^#\s+(.+?)\s*$/.exec(line);
+    if (m) return m[1];
+  }
+  return undefined;
+}
+const title =
+  ((entry.data as Record<string, unknown>).title as string | undefined) ??
+  firstMarkdownH1(entry.body) ??
+  defaultTitleForSlug(slug);
+const description = (entry.data as Record<string, unknown>).description as string | undefined;
+const sourcePath = (entry.data as Record<string, unknown>).sourcePath as string | undefined;
+// frontmatter mutated by remark plugin (E2)
+const editPath = (entry.data as Record<string, unknown>).editPath as string | undefined;
+const lastUpdated = (entry.data as Record<string, unknown>).lastUpdated as string | undefined;
+
+// Breadcrumb construction
+const segs = slug.split("/");
+const trail: { label: string; href?: string }[] = [{ label: "Docs", href: "/docs" }];
+for (let i = 0; i < segs.length; i++) {
+  const isLast = i === segs.length - 1;
+  const partial = segs.slice(0, i + 1).join("/");
+  trail.push({
+    label: isLast ? title : defaultTitleForSlug(partial),
+    href: isLast ? undefined : `/docs/${partial}`,
+  });
+}
+
+const motif = motifForSlug(slug);
+// Show chapter mark only on top-level section indices (e.g. /docs/capture, /docs/getting-started).
+const showChapterMark = !slug.includes("/") || slug.endsWith("/README");
+const docHasOwnH1 = !!firstMarkdownH1(entry.body);
+---
+<Tier2 title={title} description={description} currentSlug={slug} headings={headings}>
+  <DocsBreadcrumb trail={trail} />
+  {showChapterMark && (
+    <ChapterMark motif={motif} />
+  )}
+  {!docHasOwnH1 && <h1>{title}</h1>}
+  {description && <p class="lede"><em>{description}</em></p>}
+  <Content />
+  <EditOnGitHub slug={slug} editPath={editPath} lastUpdated={lastUpdated} />
+</Tier2>

@@ -260,8 +260,9 @@ venv.bak/
 # Rope project settings
 .ropeproject
 
-# mkdocs documentation
-/site
+# mkdocs documentation (kept for any prior consumer; the hippobrain.org site
+# under /site is intentionally NOT excluded — see /site/.gitignore for the
+# specific build artefacts to skip)
 
 # mypy
 .mypy_cache/

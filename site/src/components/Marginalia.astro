@@ -1,0 +1,9 @@
+---
+export interface Props {
+  type?: "default" | "danger";
+}
+const { type = "default" } = Astro.props;
+---
+<aside class={`marginalia ${type === "danger" ? "danger" : ""}`}>
+  <slot />
+</aside>

@@ -1,0 +1,26 @@
+---
+export interface Crumb {
+  label: string;
+  href?: string;
+}
+export interface Props {
+  trail: Crumb[];
+}
+const { trail } = Astro.props;
+---
+<nav class="breadcrumb" aria-label="Breadcrumb">
+  {trail.map((crumb, idx) => {
+    const isLast = idx === trail.length - 1;
+    const isMid = !isLast && idx > 0;
+    return (
+      <Fragment>
+        {idx > 0 && <span class={`sep ${isMid ? "seg-mid" : ""}`} aria-hidden="true">/</span>}
+        {isLast || !crumb.href ? (
+          <span class="current">{crumb.label}</span>
+        ) : (
+          <a class={`breadcrumb-segment ${isMid ? "seg-mid" : ""}`} href={crumb.href}>{crumb.label}</a>
+        )}
+      </Fragment>
+    );
+  })}
+</nav>

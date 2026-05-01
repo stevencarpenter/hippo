@@ -1,0 +1,84 @@
+---
+import Tier1 from "../layouts/Tier1.astro";
+import PlateBadge from "../components/PlateBadge.astro";
+import CodeBlock from "../components/CodeBlock.astro";
+import CornuAmmonis from "../components/motifs/CornuAmmonis.astro";
+---
+<Tier1 title="Install" description="Install hippo on macOS arm64 via curl-bash, manual build, or contributor flow.">
+  <section class="plate-section page">
+    <PlateBadge label="Plate II" figure="installatio" />
+    <h1 class="display"><span aria-hidden="true">↓ </span>Install.</h1>
+    <p class="lede"><em>— curl one line, or build it yourself.</em></p>
+
+    <CodeBlock>
+      <pre><code class="language-shell">curl -fsSL https://hippobrain.org/install.sh | sh</code></pre>
+    </CodeBlock>
+
+    <h2><em>1 — Quick install (Apple Silicon)</em></h2>
+    <p>The one-liner above downloads the latest signed release tarball, verifies it,
+       installs binaries to <code>~/.local/bin/</code>, drops a default config at
+       <code>~/.config/hippo/config.toml</code>, and starts the LaunchAgents. It runs without
+       <code>sudo</code> and writes nothing outside your home directory.</p>
+
+    <details>
+      <summary>About this script</summary>
+      <p>The script is open source — read it before you run it.</p>
+      <ul>
+        <li><a href="https://github.com/stevencarpenter/hippo/blob/main/scripts/install.sh" rel="noopener" target="_blank">scripts/install.sh on GitHub <span aria-hidden="true">↗</span></a></li>
+        <li><a href="https://github.com/stevencarpenter/hippo/releases/latest" rel="noopener" target="_blank">Latest release notes <span aria-hidden="true">↗</span></a></li>
+      </ul>
+    </details>
+
+    <h2><em>2 — Manual installation</em></h2>
+    <p>For Intel Macs and contributors who want to build from source.</p>
+    <CodeBlock>
+      <pre><code class="language-shell"># prerequisites: rustup, uv, mise, LM Studio
+git clone https://github.com/stevencarpenter/hippo.git
+cd hippo
+
+# build the daemon + brain
+mise run install</code></pre>
+    </CodeBlock>
+    <p>The <code>mise run install</code> task does a full clean install: builds the Rust
+       workspace, syncs the Python brain via <code>uv</code>, installs LaunchAgents under
+       <code>~/Library/LaunchAgents/</code>, drops the Native Messaging manifest for
+       Firefox, starts services, and runs <code>hippo doctor</code> to verify.</p>
+
+    <h2><em>3 — Verify it&rsquo;s working</em></h2>
+    <p>Run the doctor. Ten checks, sub-second wall-clock, exit code = number of failures.</p>
+    <CodeBlock>
+      <pre><code class="language-shell">hippo doctor</code></pre>
+    </CodeBlock>
+    <p>Expected output looks like the sample on <a href="/">the homepage</a>. If you see
+       <code>[!!]</code> or <code>[WW]</code>, run <code>hippo doctor --explain</code> for
+       <em>cause / fix / doc</em> per failure. The full failure-mode catalogue lives at
+       <a href="/docs/capture/operator-runbook">/docs/capture/operator-runbook</a>.</p>
+
+    <h2><em>4 — Uninstall</em></h2>
+    <p>Hippo doesn&rsquo;t hide its uninstaller.</p>
+    <CodeBlock>
+      <pre><code class="language-shell">hippo daemon uninstall   # removes LaunchAgents and binaries
+rm ~/.local/share/hippo/hippo.db   # if you also want to drop the database</code></pre>
+    </CodeBlock>
+    <p>The database stays untouched unless you remove it explicitly. The shell hook entry
+       in <code>~/.zshrc</code> is left as-is; the line is harmless if hippo isn&rsquo;t running, but
+       you can delete it if you prefer.</p>
+
+    <div class="install-illus" aria-hidden="true">
+      <CornuAmmonis size="full" />
+    </div>
+  </section>
+</Tier1>
+
+<style>
+  details { margin: 1rem 0; }
+  summary {
+    font-family: var(--font-label);
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    font-size: 11px;
+    color: var(--sepia);
+    cursor: pointer;
+  }
+  .install-illus { display: flex; justify-content: center; margin: 3rem 0 0; opacity: 0.6; }
+</style>

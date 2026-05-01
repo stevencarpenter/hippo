@@ -1,0 +1,50 @@
+---
+import { marked } from "marked";
+import Tier1 from "../layouts/Tier1.astro";
+import PlateBadge from "../components/PlateBadge.astro";
+import ChangelogEntry from "../components/ChangelogEntry.astro";
+import Marginalia from "../components/Marginalia.astro";
+import { listReleases } from "../lib/github.ts";
+
+const releases = await listReleases();
+---
+<Tier1 title="Changelog" description="GitHub releases for hippo, rendered at build time.">
+  <section class="plate-section page">
+    <PlateBadge label="Plate VIII" figure="annales" />
+    <h1 class="display"><span aria-hidden="true">⚏ </span>Changelog.</h1>
+    <p class="lede"><em>— what shipped, when.</em></p>
+
+    <p class="meta-line">
+      Pulled from <a href="https://github.com/stevencarpenter/hippo/releases" rel="noopener" target="_blank">GitHub releases <span aria-hidden="true">↗</span></a>.
+      RSS available at <a href="/changelog/rss.xml">/changelog/rss.xml</a>.
+    </p>
+
+    {releases.length === 0 ? (
+      <Marginalia>
+        <span lang="la"><em>Sub praelo.</em></span> No releases fetched at build time
+        — likely the GitHub API was rate-limited. Try the
+        <a href="https://github.com/stevencarpenter/hippo/releases" rel="noopener" target="_blank">releases page on GitHub <span aria-hidden="true">↗</span></a>.
+      </Marginalia>
+    ) : (
+      releases.map((r) => (
+        <ChangelogEntry
+          tag={r.tag}
+          name={r.name}
+          date={r.date}
+          url={r.url}
+          bodyHtml={marked.parse(r.body || "", { async: false }) as string}
+        />
+      ))
+    )}
+  </section>
+</Tier1>
+
+<style>
+  .meta-line {
+    font-family: var(--font-label);
+    font-size: 12px;
+    letter-spacing: 0.1em;
+    color: var(--quiet);
+    margin-bottom: 1.4rem;
+  }
+</style>

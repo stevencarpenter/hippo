@@ -1,0 +1,58 @@
+---
+export interface Props {
+  tag: string;
+  date: string; // YYYY-MM-DD
+  name: string;
+  url: string;
+  bodyHtml: string; // pre-rendered markdown
+}
+const { tag, date, name, url, bodyHtml } = Astro.props;
+---
+<article class="changelog-entry">
+  <header>
+    <h2>{name}</h2>
+    <p class="meta">
+      <code>{tag}</code> · {date} ·
+      <a href={url} rel="noopener" target="_blank">on GitHub <span aria-hidden="true">↗</span></a>
+    </p>
+  </header>
+  <div class="changelog-body" set:html={bodyHtml}></div>
+</article>
+
+<style>
+  .changelog-entry {
+    margin-bottom: 2.4rem;
+    padding-bottom: 1.6rem;
+    border-bottom: 1px solid var(--rule-soft);
+  }
+  .changelog-entry:last-child { border-bottom: 0; }
+  .changelog-entry h2 {
+    font-family: var(--font-display);
+    font-size: 1.4rem;
+    font-style: normal;
+    color: var(--ink);
+    margin-bottom: 0.2rem;
+  }
+  .changelog-entry .meta {
+    font-family: var(--font-label);
+    font-size: 12px;
+    letter-spacing: 0.1em;
+    color: var(--quiet);
+    margin-bottom: 0.6rem;
+  }
+  .changelog-entry .meta code { background: var(--code-bg); padding: 0.05rem 0.32rem; }
+  .changelog-body :global(h2),
+  .changelog-body :global(h3) {
+    font-family: var(--font-display);
+    color: var(--sepia);
+    font-style: italic;
+    font-size: 1.1rem;
+    margin: 1rem 0 0.3rem;
+  }
+  .changelog-body :global(ul) { padding-left: 1.4rem; }
+  .changelog-body :global(li) { margin: 0.2rem 0; }
+  .changelog-body :global(code) {
+    background: var(--code-bg); padding: 0.05rem 0.32rem;
+    font-family: var(--font-mono); font-size: 0.92em; color: var(--sepia);
+  }
+</style>

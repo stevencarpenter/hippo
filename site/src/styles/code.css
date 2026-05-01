@@ -1,0 +1,97 @@
+/* ============================================================
+ * Code blocks — sepia palette, 6px sepia bar (sticky-positioned),
+ * always-visible copy button (A8), Shiki css-variables theming.
+ * U4: overflow-x: auto on every <pre>; per-block soft-wrap deferred.
+ * ============================================================ */
+
+pre {
+  position: relative;
+  background: var(--code-bg);
+  color: var(--ink);
+  padding: 1rem 1rem 1rem 1.6rem;
+  margin: 1.4em 0;
+  border: 0;
+  font-family: var(--font-mono);
+  font-size: var(--t1-mono);
+  line-height: 1.55;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  /* sticky 6px sepia bar that survives horizontal scroll */
+  background-image: linear-gradient(to right, var(--sepia) 0 6px, transparent 6px);
+  background-repeat: no-repeat;
+  background-attachment: local;
+  background-size: 6px 100%;
+}
+
+pre code {
+  font-family: inherit;
+  font-size: inherit;
+  background: transparent;
+  color: inherit;
+  padding: 0;
+  white-space: pre;
+}
+
+pre[data-wrap="true"] code {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* Copy button (A8 — always visible, never hover-only). */
+.code-block { position: relative; }
+.code-block .code-copy {
+  position: absolute;
+  top: 0.4rem;
+  right: 0.4rem;
+  background: var(--paper);
+  color: var(--ink);
+  border: 1px solid var(--rule);
+  padding: 0.2rem 0.55rem;
+  font-family: var(--font-label);
+  font-size: 11px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: background 200ms ease, color 200ms ease;
+}
+.code-block .code-copy:hover, .code-block .code-copy:focus-visible {
+  background: var(--ink);
+  color: var(--paper);
+}
+.code-block .code-copy.copied {
+  background: var(--sepia);
+  color: var(--paper);
+  border-color: var(--sepia);
+}
+
+/* Shiki css-variables theme — sepia syntax tokens. */
+.astro-code, .shiki {
+  background: var(--code-bg) !important;
+}
+
+.astro-code .line { display: block; min-height: 1lh; }
+
+.astro-code span {
+  color: var(--ink);
+}
+
+/* Token coloring via Astro's css-variables theme:
+   --astro-code-color-text, --astro-code-token-comment, etc. */
+:root {
+  --astro-code-foreground: var(--ink);
+  --astro-code-background: var(--code-bg);
+  --astro-code-token-comment: var(--quiet-on-code);
+  --astro-code-token-keyword: var(--oxblood);
+  --astro-code-token-string: #5a3a1f;
+  --astro-code-token-string-expression: #5a3a1f;
+  --astro-code-token-number: var(--sepia);
+  --astro-code-token-punctuation: var(--sepia);
+  --astro-code-token-function: var(--ink);
+  --astro-code-token-constant: var(--sepia);
+  --astro-code-token-parameter: var(--ink);
+  --astro-code-token-link: var(--oxblood);
+}
+
+/* Italic for strings; bolder weight for keywords. */
+.astro-code .token.comment,
+.astro-code span[style*="color: var(--quiet-on-code)"] { font-style: italic; }

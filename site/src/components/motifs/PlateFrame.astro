@@ -1,0 +1,54 @@
+---
+export interface Props {
+  size?: "full" | "reduced" | "inline";
+  caption?: string;
+  breathe?: boolean;
+  decorative?: boolean;
+  class?: string;
+}
+const {
+  size = "full",
+  caption,
+  breathe = false,
+  decorative = true,
+  class: className = "",
+} = Astro.props;
+const px = size === "full" ? 200 : size === "reduced" ? 32 : 24;
+const stroke = size === "inline" ? 1.4 : 1;
+---
+<figure class={`motif motif-plate-frame ${breathe ? "breathe" : ""} ${className}`}>
+  <svg
+    viewBox="0 0 120 130"
+    width={px}
+    height={px}
+    xmlns="http://www.w3.org/2000/svg"
+    aria-hidden={decorative ? "true" : undefined}
+    role={decorative ? undefined : "img"}
+    focusable="false"
+  >
+    {!decorative && <title>plate-frame — decorative four-corner ornament</title>}
+    <g fill="none" stroke="currentColor" stroke-width={stroke} stroke-linecap="round">
+      {/* outer rect */}
+      <rect x="14" y="14" width="92" height="100"/>
+      {/* corner ornaments */}
+      <path d="M14 22 Q18 18, 22 14"/>
+      <path d="M98 14 Q102 18, 106 22"/>
+      <path d="M14 106 Q18 110, 22 114"/>
+      <path d="M98 114 Q102 110, 106 106"/>
+      {/* inner mark */}
+      <path d="M60 50 C66 52, 68 58, 65 62 C62 66, 56 64, 56 60 C56 56, 60 56, 60 58" stroke-width="0.7"/>
+      <circle cx="60" cy="68" r="0.7" fill="currentColor"/>
+    </g>
+  </svg>
+  {caption && size === "full" && (
+    <figcaption class="fig-caption" aria-hidden="true">{caption}</figcaption>
+  )}
+</figure>
+
+<style>
+  .motif { display: inline-flex; flex-direction: column; align-items: center; color: var(--ink); }
+  .motif svg { color: var(--ink); transform-origin: center; will-change: transform; }
+  .motif.breathe svg { animation: motif-breathe 8s ease-in-out infinite; }
+  @keyframes motif-breathe { 0%,100% { transform: scale(1); } 50% { transform: scale(1.03); } }
+  @media (prefers-reduced-motion: reduce) { .motif.breathe svg { animation: none; } }
+</style>

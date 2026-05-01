@@ -1,0 +1,27 @@
+---
+import Tier1 from "../layouts/Tier1.astro";
+import PlateBadge from "../components/PlateBadge.astro";
+import Search from "../components/Search.astro";
+---
+<Tier1 title="Search" description="Search the docs and field notes." noIndex={true}>
+  <section class="plate-section page search-page">
+    <PlateBadge label="Plate IX" figure="concordantia" />
+    <h1 class="display">Search.</h1>
+    <p class="lede"><span lang="la"><em>— concordantia</em></span> &mdash; search the docs and field notes.</p>
+    <Search />
+  </section>
+</Tier1>
+
+<style>
+  .search-page :global(#search) { margin-top: 1rem; }
+  /* Pagefind UI tweaks scoped to the page wrapper. */
+  .search-page :global(.pagefind-ui__form) { font-family: var(--font-body-1); }
+  .search-page :global(.pagefind-ui__search-input) {
+    background: var(--paper-2);
+    border: 1px solid var(--rule);
+    color: var(--ink);
+  }
+  .search-page :global(.pagefind-ui__result-title) {
+    font-family: var(--font-display);
+  }
+</style>

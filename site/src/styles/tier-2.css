@@ -1,0 +1,224 @@
+/* ============================================================
+ * Tier-2 docs pages — three-column grid (left rail / main / right rail).
+ * Disciplined whitespace, tighter type scale, paper-2 background.
+ * U2: collapse-to-2-col when outline is empty.
+ * U3: mobile breadcrumb truncation.
+ * U4: code blocks may break out at <768px; per-block soft-wrap deferred.
+ * ============================================================ */
+
+body.tier-2 {
+  background-color: var(--paper-2);
+}
+
+.tier-2 .docs-shell {
+  display: grid;
+  grid-template-columns: var(--rail-left) minmax(0, 1fr) var(--rail-right);
+  gap: 2rem;
+  max-width: var(--max-page);
+  margin: 0 auto;
+  padding: 1.4rem 1.5rem 4rem;
+  align-items: start;
+}
+
+@media (max-width: 1024px) {
+  .tier-2 .docs-shell { grid-template-columns: var(--rail-left) minmax(0, 1fr); gap: 1.6rem; }
+  .tier-2 .docs-rail-right { display: none; }
+}
+
+@media (max-width: 768px) {
+  .tier-2 .docs-shell { grid-template-columns: 1fr; padding: 1rem; }
+  .tier-2 .docs-rail-left { position: static; }
+}
+
+/* U2: empty outline */
+.tier-2[data-outline="none"] .docs-shell {
+  grid-template-columns: var(--rail-left) minmax(0, 1fr);
+}
+.tier-2[data-outline="none"] .docs-rail-right { display: none; }
+.tier-2[data-outline="none"] .docs-main { max-width: 75ch; }
+
+/* Left rail — section nav */
+.tier-2 .docs-rail-left {
+  position: sticky;
+  top: 5rem;
+  font-family: var(--font-body-2);
+  font-size: 0.95rem;
+}
+
+.tier-2 .docs-rail-left .section + .section { margin-top: 1.4rem; }
+
+.tier-2 .docs-rail-left h5 {
+  font-family: var(--font-label);
+  font-size: 11px;
+  letter-spacing: 0.28em;
+  text-transform: uppercase;
+  color: var(--sepia);
+  margin-bottom: 0.5rem;
+  font-weight: 500;
+}
+.tier-2 .docs-rail-left .caption {
+  font-family: var(--font-label);
+  font-style: italic;
+  font-size: 0.9rem;
+  color: var(--quiet);
+  display: block;
+  margin-bottom: 0.5rem;
+}
+
+.tier-2 .docs-rail-left ul {
+  list-style: none;
+  padding: 0; margin: 0;
+}
+.tier-2 .docs-rail-left li { margin: 0.2rem 0; }
+.tier-2 .docs-rail-left a {
+  display: block;
+  padding: 0.2rem 0 0.2rem 0.6rem;
+  color: var(--ink);
+  text-decoration: none;
+  border-left: 2px solid transparent;
+  line-height: 1.35;
+}
+.tier-2 .docs-rail-left a:hover {
+  color: var(--oxblood);
+  border-left-color: var(--rule);
+}
+.tier-2 .docs-rail-left a[aria-current="page"] {
+  color: var(--oxblood);
+  font-weight: 600;
+  border-left-color: var(--oxblood);
+}
+
+@media (max-width: 768px) {
+  .tier-2 .docs-rail-left details {
+    border: 1px solid var(--rule-soft);
+    padding: 0.6rem 0.9rem;
+    background: var(--paper);
+  }
+  .tier-2 .docs-rail-left details > summary {
+    cursor: pointer;
+    font-family: var(--font-label);
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    font-size: 11px;
+    color: var(--sepia);
+  }
+}
+
+/* Right rail — outline */
+.tier-2 .docs-rail-right {
+  position: sticky;
+  top: 5rem;
+  font-family: var(--font-body-2);
+  font-size: 0.9rem;
+  color: var(--ink);
+}
+.tier-2 .docs-rail-right h5 {
+  font-family: var(--font-label);
+  font-size: 11px;
+  letter-spacing: 0.28em;
+  text-transform: uppercase;
+  color: var(--sepia);
+  margin-bottom: 0.5rem;
+  font-weight: 500;
+}
+.tier-2 .docs-rail-right ul { list-style: none; padding: 0; margin: 0; }
+.tier-2 .docs-rail-right li { margin: 0.25rem 0; }
+.tier-2 .docs-rail-right a {
+  display: block;
+  color: var(--quiet);
+  text-decoration: none;
+  border-left: 2px solid transparent;
+  padding-left: 0.5rem;
+}
+.tier-2 .docs-rail-right li.depth-3 a { padding-left: 1.2rem; font-size: 0.85rem; }
+.tier-2 .docs-rail-right a[aria-current="location"],
+.tier-2 .docs-rail-right a.active {
+  color: var(--oxblood);
+  border-left-color: var(--oxblood);
+}
+
+/* Main column */
+.tier-2 .docs-main {
+  font-family: var(--font-body-2);
+  font-size: var(--t2-body);
+  line-height: 1.7;
+  max-width: 70ch;
+}
+
+/* Breadcrumb — Junicode small caps */
+.tier-2 .breadcrumb {
+  font-family: var(--font-label);
+  font-size: 0.85rem;
+  letter-spacing: 0.34em;
+  text-transform: uppercase;
+  color: var(--sepia);
+  margin-bottom: 1rem;
+}
+.tier-2 .breadcrumb a { color: var(--sepia); text-decoration: none; }
+.tier-2 .breadcrumb a:hover { color: var(--oxblood); }
+.tier-2 .breadcrumb .current { color: var(--ink); }
+.tier-2 .breadcrumb .sep { margin: 0 0.5rem; color: var(--quiet); }
+
+@media (max-width: 480px) {
+  .tier-2 .breadcrumb {
+    letter-spacing: 0.18em;
+  }
+  /* U3: hide all but the back-to-/docs and last segment on tiny screens. */
+  .tier-2 .breadcrumb .seg-mid { display: none; }
+  .tier-2 .breadcrumb .seg-mid + .sep { display: none; }
+}
+
+/* Edit-on-github footer */
+.tier-2 .edit-footer {
+  margin-top: 3rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--rule-soft);
+  font-family: var(--font-label);
+  font-size: 12px;
+  letter-spacing: 0.1em;
+  color: var(--quiet);
+}
+.tier-2 .edit-footer a {
+  color: var(--sepia);
+  text-decoration: underline;
+  text-decoration-color: var(--rule);
+}
+.tier-2 .edit-footer a:hover { color: var(--oxblood); }
+
+.tier-2 .docs-main h1 {
+  font-family: var(--font-display);
+  font-size: var(--t2-h1);
+  font-weight: 400;
+  margin: 0 0 0.5rem;
+  text-wrap: balance;
+}
+
+.tier-2 .docs-main .lede {
+  font-family: var(--font-body-2);
+  font-style: italic;
+  color: var(--sepia);
+  font-size: 1.05rem;
+  margin-bottom: 1.6rem;
+}
+
+/* Chapter mark above first heading on top-level section */
+.tier-2 .chapter-mark {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  margin-bottom: 1.6rem;
+  animation: chapter-fade-in 320ms ease-out both;
+}
+@keyframes chapter-fade-in { from { opacity: 0; } to { opacity: 1; } }
+
+.tier-2 .docs-main pre { font-size: 13px; }
+
+@media (max-width: 768px) {
+  .tier-2 .docs-main pre {
+    margin-inline: -1rem;
+    border-left: 0;
+    padding-left: 1rem;
+    background-image: linear-gradient(to right, var(--sepia) 0 4px, transparent 4px);
+    background-size: 4px 100%;
+  }
+}

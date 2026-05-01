@@ -1,0 +1,258 @@
+/* ============================================================
+ * Tier-1 marketing pages — generous whitespace, paper texture,
+ * display typography, plate-section separators.
+ * ============================================================ */
+
+body.tier-1 {
+  background-color: var(--paper);
+  background-image:
+    radial-gradient(circle at 25% 18%, rgba(42,29,16,0.025) 0 1px, transparent 1.5px),
+    radial-gradient(circle at 70% 60%, rgba(42,29,16,0.02) 0 1px, transparent 1.5px);
+  background-size: 240px 240px, 280px 280px;
+}
+
+.tier-1 .page {
+  max-width: var(--max-page);
+  margin: 0 auto;
+  padding: 0 1.5rem;
+}
+
+.tier-1 .plate-section {
+  padding: var(--gap-xxl) 0;
+  border-bottom: 1px solid var(--rule-soft);
+}
+.tier-1 .plate-section:last-of-type { border-bottom: 0; }
+
+.tier-1 .display {
+  font-family: var(--font-display);
+  font-size: var(--t1-display);
+  font-weight: 350;
+  font-variation-settings: "opsz" var(--display-opsz), "SOFT" var(--display-soft);
+  letter-spacing: -0.02em;
+  line-height: 1.05;
+  color: var(--ink);
+  margin: 0;
+}
+.tier-1 .display .midpoint { color: var(--sepia); }
+
+.tier-1 .lede {
+  font-family: var(--font-display);
+  font-style: italic;
+  font-size: 1.15rem;
+  color: var(--sepia);
+  font-variation-settings: "SOFT" 100;
+  margin: 0.4rem 0 1.2rem;
+  text-wrap: balance;
+}
+
+.tier-1 .eyebrow {
+  font-family: var(--font-label);
+  font-size: var(--t1-eyebrow);
+  letter-spacing: 0.28em;
+  text-transform: uppercase;
+  color: var(--sepia);
+  margin-bottom: 0.6rem;
+  display: inline-block;
+}
+
+.tier-1 .body-lede {
+  font-family: var(--font-body-1);
+  font-size: 1.08rem;
+  line-height: 1.6;
+  max-width: 60ch;
+  margin: 1.2rem 0;
+}
+
+.tier-1 .button-row {
+  display: flex;
+  gap: 1rem;
+  margin-top: 1.4rem;
+  flex-wrap: wrap;
+}
+
+.tier-1 .button {
+  display: inline-block;
+  padding: 0.7rem 1.4rem;
+  background: var(--ink);
+  color: var(--paper);
+  text-decoration: none;
+  font-family: var(--font-label);
+  font-size: 12px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  border: 1px solid var(--ink);
+  transition: background 200ms ease, color 200ms ease;
+}
+.tier-1 .button:hover, .tier-1 .button:focus-visible {
+  background: var(--oxblood);
+  border-color: var(--oxblood);
+  color: var(--paper);
+}
+.tier-1 .button.ghost {
+  background: transparent;
+  color: var(--ink);
+}
+.tier-1 .button.ghost:hover, .tier-1 .button.ghost:focus-visible {
+  background: var(--ink);
+  color: var(--paper);
+}
+
+/* 3-column grid utility for Plate II, Privacy claims. */
+.tier-1 .three-col {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 2rem;
+}
+@media (max-width: 720px) {
+  .tier-1 .three-col { grid-template-columns: 1fr; gap: 1.8rem; }
+}
+
+.tier-1 .col h3 {
+  font-family: var(--font-display);
+  font-size: 1.15rem;
+  margin-bottom: 0.5rem;
+  font-weight: 600;
+}
+
+.tier-1 .col p { color: var(--ink); }
+
+/* Hero composition — text 1.1fr / illustration 0.9fr */
+.tier-1 .hero-grid {
+  display: grid;
+  grid-template-columns: 1.1fr 0.9fr;
+  gap: 3rem;
+  align-items: center;
+}
+@media (max-width: 720px) {
+  .tier-1 .hero-grid { grid-template-columns: 1fr; gap: 2rem; }
+  .tier-1 .hero-grid .hero-illus { grid-row: 1; max-width: 280px; margin: 0 auto; }
+}
+
+.tier-1 .hero-illus {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+}
+
+/* fig caption (Junicode italic, sepia, centered) */
+.tier-1 .fig-caption,
+.fig-caption {
+  font-family: var(--font-label);
+  font-style: italic;
+  font-size: 12px;
+  color: var(--sepia);
+  text-align: center;
+  margin-top: 0.4rem;
+}
+
+/* Plate badges — Junicode 11px uppercase, sepia, sepia 1px border, 2px 9px padding. */
+.plate-badge {
+  display: inline-block;
+  font-family: var(--font-label);
+  font-size: 11px;
+  letter-spacing: 0.34em;
+  text-transform: uppercase;
+  color: var(--sepia);
+  border: 1px solid var(--sepia);
+  padding: 2px 9px;
+  margin-bottom: 1.4rem;
+}
+.plate-badge .figure {
+  font-style: italic;
+  letter-spacing: 0.1em;
+  text-transform: none;
+}
+
+/* Marginalia / callout */
+.marginalia {
+  margin: 1.4em 0;
+  padding: 0.4rem 0 0.4rem 0.9rem;
+  border-left: 2px solid var(--sepia);
+  font-style: italic;
+  color: var(--sepia);
+}
+.marginalia::before {
+  content: "¶";
+  color: var(--oxblood);
+  font-style: normal;
+  font-weight: 600;
+  margin-right: 0.4rem;
+}
+.marginalia.danger { border-left-color: var(--oxblood); color: var(--oxblood); }
+.marginalia.danger::before { content: "†"; }
+
+/* Admonitions in docs (warn/note/danger) */
+.admonition {
+  margin: 1.4em 0;
+  padding: 0.7rem 1rem;
+  border-left: 3px solid var(--sepia);
+  background: rgba(107, 60, 32, 0.04);
+}
+.admonition .admonition-title {
+  font-family: var(--font-label);
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  font-size: 11px;
+  color: var(--sepia);
+  margin-bottom: 0.3rem;
+}
+.admonition.warn { border-left-color: var(--rust); }
+.admonition.warn .admonition-title { color: var(--rust); }
+.admonition.danger { border-left-color: var(--oxblood); }
+.admonition.danger .admonition-title { color: var(--oxblood); }
+
+/* Status badges — green/yellow/grey by state, with text label. */
+.status-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-family: var(--font-label);
+  font-size: 11px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  padding: 0.25rem 0.7rem;
+  border: 1px solid var(--ink);
+  background: var(--paper-2);
+}
+.status-badge.active { background: #c8d8b8; color: #2a3d20; border-color: #4a6535; }
+.status-badge.quiet { background: #ead9b1; color: #5e4a1d; border-color: #8a6a30; }
+.status-badge.hibernating { background: #d5c9b3; color: #463829; border-color: #6a5847; }
+
+/* Definition list — used on /status. */
+.tier-1 dl {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 0.5rem 1.2rem;
+  font-size: 0.95rem;
+}
+.tier-1 dt {
+  font-family: var(--font-label);
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  font-size: 11px;
+  color: var(--sepia);
+  align-self: baseline;
+}
+.tier-1 dd { margin: 0; }
+
+/* FAQ entries */
+.faq-entry { padding: 1.4rem 0; border-bottom: 1px solid var(--rule-soft); }
+.faq-entry:last-child { border-bottom: 0; }
+.faq-entry h2 {
+  font-family: var(--font-display);
+  font-size: 1.3rem;
+  font-style: normal;
+  color: var(--ink);
+  font-variation-settings: "opsz" 36;
+  margin-bottom: 0.5rem;
+}
+.faq-entry h2 a.anchor-h { color: inherit; text-decoration: none; }
+.faq-entry h2 a.anchor-h::before {
+  content: "¶ ";
+  color: var(--oxblood);
+  opacity: 0;
+  margin-left: -1em;
+  transition: opacity 200ms ease;
+}
+.faq-entry h2 a.anchor-h:hover::before { opacity: 1; }
+.faq-entry p { color: var(--ink); max-width: 70ch; }

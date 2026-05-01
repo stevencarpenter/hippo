@@ -1,0 +1,46 @@
+---
+import type { MarkdownHeading } from "astro";
+import { getCollection } from "astro:content";
+import Head from "../components/Head.astro";
+import Header from "../components/Header.astro";
+import Footer from "../components/Footer.astro";
+import DocsRail from "../components/DocsRail.astro";
+import DocsOutline from "../components/DocsOutline.astro";
+import { buildSidebar } from "../lib/docs.ts";
+
+export interface Props {
+  title: string;
+  description?: string;
+  currentSlug: string;
+  headings: MarkdownHeading[];
+  ogImage?: string;
+}
+const { title, description, currentSlug, headings, ogImage } = Astro.props;
+
+const docsEntries = await getCollection("docs");
+const rootEntries = await getCollection("rootDocs");
+const contribEntries = await getCollection("contributing");
+const sections = buildSidebar(docsEntries, rootEntries, contribEntries);
+
+const outlineCount = headings.filter((h) => h.depth === 2 || h.depth === 3).length;
+const outlineDataAttr = outlineCount < 3 ? "none" : "shown";
+---
+<!DOCTYPE html>
+<html lang="en" dir="ltr">
+  <head>
+    <Head title={title} description={description} ogImage={ogImage} />
+  </head>
+  <body class="tier-2" data-outline={outlineDataAttr}>
+    <a class="skip-link" href="#main">Skip to content</a>
+    <Header />
+    <div class="docs-shell">
+      <DocsRail sections={sections} currentSlug={currentSlug} />
+      <main id="main" tabindex="-1" class="docs-main prose prose-tier-2">
+        <slot />
+      </main>
+      <DocsOutline headings={headings} />
+    </div>
+    <Footer />
+    <div id="sr-announce" class="sr-only" role="status" aria-live="polite" aria-atomic="true"></div>
+  </body>
+</html>

@@ -1,0 +1,44 @@
+---
+import { getCollection } from "astro:content";
+import Tier2 from "../../layouts/Tier2.astro";
+import { buildSidebar } from "../../lib/docs.ts";
+
+const docsEntries = await getCollection("docs");
+const rootEntries = await getCollection("rootDocs");
+const contribEntries = await getCollection("contributing");
+const sections = buildSidebar(docsEntries, rootEntries, contribEntries);
+const headings = [
+  ...sections.map((s) => ({ depth: 2 as const, slug: s.id, text: s.label })),
+];
+---
+<Tier2 title="Docs" description="Hippo documentation: getting started, capture-reliability rulebook, reference docs, contributing." currentSlug="" headings={headings}>
+  <h1>Docs.</h1>
+  <p class="lede"><em>— what hippo does, by section.</em></p>
+
+  <p>Source of truth for everything below is <code>../docs/</code> in the repo. Edit
+     a doc on GitHub and the next deploy of this site renders the change verbatim.
+     Each doc page has an &ldquo;Edit on GitHub&rdquo; footer with a deep link.</p>
+
+  {sections.map((section) => (
+    <section class="docs-section" id={section.id}>
+      <h2><em>{section.label}</em></h2>
+      {section.caption && <p class="caption" lang="la"><em>{section.caption}</em></p>}
+      <ul>
+        {section.entries.map((entry) => (
+          <li><a href={entry.url}>{entry.title}</a></li>
+        ))}
+      </ul>
+    </section>
+  ))}
+</Tier2>
+
+<style>
+  .docs-section { margin: 2rem 0; }
+  .docs-section h2 { font-family: var(--font-display); font-size: 1.2rem; color: var(--sepia); font-style: italic; margin-bottom: 0.4rem; }
+  .docs-section .caption { color: var(--quiet); font-size: 0.95rem; margin-bottom: 0.6rem; }
+  .docs-section ul { list-style: none; padding: 0; }
+  .docs-section li { padding: 0.3rem 0; border-bottom: 1px dotted var(--rule-soft); }
+  .docs-section li:last-child { border-bottom: 0; }
+  .docs-section a { color: var(--ink); text-decoration: none; }
+  .docs-section a:hover { color: var(--oxblood); }
+</style>

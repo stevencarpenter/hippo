@@ -1,0 +1,117 @@
+---
+import Tier1 from "../layouts/Tier1.astro";
+import PlateBadge from "../components/PlateBadge.astro";
+import StatusBadge from "../components/StatusBadge.astro";
+import { latestCommit, latestCIRun, listReleases, openIssueCount } from "../lib/github.ts";
+
+const releases = await listReleases();
+const commit = await latestCommit();
+const ciRun = await latestCIRun();
+const issues = await openIssueCount();
+
+const latest = releases[0] ?? null;
+const latestDate = latest?.date ? new Date(`${latest.date}T00:00:00Z`) : null;
+const daysSince = latestDate
+  ? Math.floor((Date.now() - latestDate.getTime()) / (24 * 3600 * 1000))
+  : null;
+
+let state: "active" | "quiet" | "hibernating" = "hibernating";
+let stateLabel = "Hibernating";
+if (daysSince !== null) {
+  if (daysSince < 30) { state = "active"; stateLabel = "Active"; }
+  else if (daysSince < 90) { state = "quiet"; stateLabel = "Quiet"; }
+  else { state = "hibernating"; stateLabel = "Hibernating"; }
+}
+
+const fmtDate = (s: string | null | undefined) => s || "—";
+---
+<Tier1 title="Status" description="Build-time signal: latest release, CI run, open issues.">
+  <section class="plate-section page">
+    <PlateBadge label="Plate XI" figure="status" />
+    <h1 class="display">Status.</h1>
+    <p class="lede"><em>— signs of life, refreshed daily.</em></p>
+
+    <div class="state-row">
+      <span class="state-label">Hippo is</span>
+      <StatusBadge state={state} label={stateLabel} />
+    </div>
+
+    <dl class="status-dl">
+      <dt>Latest release</dt>
+      <dd>
+        {latest ? (
+          <>
+            <a href={latest.url} rel="noopener" target="_blank"><code>{latest.tag}</code></a>
+            &nbsp;·&nbsp; {fmtDate(latest.date)}
+            {daysSince !== null && <> &nbsp;·&nbsp; <span class="quiet">{daysSince} days ago</span></>}
+          </>
+        ) : (
+          <span class="quiet">no release data</span>
+        )}
+      </dd>
+      <dt>Latest CI run</dt>
+      <dd>
+        {ciRun ? (
+          <>
+            <a href={ciRun.url} rel="noopener" target="_blank">{ciRun.name}</a>
+            &nbsp;·&nbsp; {ciRun.conclusion ?? ciRun.status}
+            &nbsp;·&nbsp; {fmtDate(ciRun.date)}
+          </>
+        ) : (
+          <span class="quiet">no CI data</span>
+        )}
+      </dd>
+      <dt>Open issues</dt>
+      <dd>
+        {issues !== null ? (
+          <a href="https://github.com/stevencarpenter/hippo/issues" rel="noopener" target="_blank">{issues}</a>
+        ) : (
+          <span class="quiet">—</span>
+        )}
+      </dd>
+      <dt>Last commit</dt>
+      <dd>
+        {commit ? (
+          <>
+            <a href={commit.url} rel="noopener" target="_blank"><code>{commit.shortSha}</code></a>
+            &nbsp;·&nbsp; {fmtDate(commit.date)}
+            <p class="commit-msg">{commit.message}</p>
+          </>
+        ) : (
+          <span class="quiet">no commit data</span>
+        )}
+      </dd>
+    </dl>
+
+    <p class="footnote">Build-time data, refreshed by the daily deploy cron. Page rebuilds every day at 06:00 UTC.</p>
+  </section>
+</Tier1>
+
+<style>
+  .state-row {
+    display: flex; align-items: center; gap: 1rem;
+    margin: 1.4rem 0;
+  }
+  .state-label {
+    font-family: var(--font-label);
+    font-size: 11px;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: var(--sepia);
+  }
+  .status-dl { margin-top: 1rem; }
+  .status-dl code { background: var(--code-bg); padding: 0.05rem 0.32rem; }
+  .commit-msg {
+    margin: 0.2rem 0 0;
+    font-family: var(--font-mono);
+    font-size: 13px;
+    color: var(--quiet);
+    max-width: 60ch;
+  }
+  .quiet { color: var(--quiet); }
+  .footnote {
+    font-size: 0.95rem;
+    color: var(--quiet);
+    margin-top: 2rem;
+  }
+</style>

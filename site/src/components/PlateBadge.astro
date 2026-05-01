@@ -1,0 +1,11 @@
+---
+export interface Props {
+  label: string;
+  figure?: string; // e.g. "fig. 1" — italic, lowercase
+}
+const { label, figure } = Astro.props;
+---
+<span class="plate-badge">
+  {label}
+  {figure && <span class="figure"> · {figure}</span>}
+</span>

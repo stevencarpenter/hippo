@@ -1,0 +1,38 @@
+---
+import type { SidebarSection } from "../lib/docs.ts";
+
+export interface Props {
+  sections: SidebarSection[];
+  currentSlug: string;
+}
+const { sections, currentSlug } = Astro.props;
+---
+<aside class="docs-rail-left" aria-label="Section navigation">
+  <details open class="rail-details">
+    <summary>Sections</summary>
+    {sections.map((section) => (
+      <div class="section">
+        <h5>{section.label}</h5>
+        {section.caption && <span class="caption" lang="la"><em>{section.caption}</em></span>}
+        <ul>
+          {section.entries.map((entry) => {
+            const active = entry.slug === currentSlug;
+            return (
+              <li>
+                <a href={entry.url} aria-current={active ? "page" : undefined}>{entry.title}</a>
+              </li>
+            );
+          })}
+        </ul>
+      </div>
+    ))}
+  </details>
+</aside>
+
+<style>
+  /* On non-mobile screens, ignore the <details> chrome — display children plain. */
+  @media (min-width: 769px) {
+    .docs-rail-left .rail-details { display: contents; }
+    .docs-rail-left .rail-details > summary { display: none; }
+  }
+</style>

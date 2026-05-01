@@ -1,0 +1,23 @@
+/* ============================================================
+ * Print stylesheet — anatomical-naturalism docs print like a textbook page.
+ * ============================================================ */
+
+@media print {
+  body { background: white !important; color: black !important; font-size: 11pt; }
+  .skip-link, .site-header, .site-footer, .docs-rail-left, .docs-rail-right,
+  .code-copy, .search-mount { display: none !important; }
+  .tier-2 .docs-shell { grid-template-columns: 1fr; padding: 0; }
+  a { color: black; text-decoration: underline; }
+  a[href^="http"]::after { content: " [" attr(href) "]"; font-size: 0.85em; color: #333; }
+  pre {
+    background: white !important;
+    border-left: 2px solid black;
+    background-image: linear-gradient(to right, black 0 2px, transparent 2px) !important;
+    color: black;
+    page-break-inside: avoid;
+  }
+  h1, h2, h3 { page-break-after: avoid; }
+  blockquote, table, .marginalia, .admonition { page-break-inside: avoid; }
+  svg { opacity: 0.6; }
+  img { max-width: 100% !important; }
+}

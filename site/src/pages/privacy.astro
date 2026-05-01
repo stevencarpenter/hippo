@@ -1,0 +1,113 @@
+---
+import Tier1 from "../layouts/Tier1.astro";
+import PlateBadge from "../components/PlateBadge.astro";
+import Fasciculus from "../components/motifs/Fasciculus.astro";
+---
+<Tier1 title="Privacy" description="What hippo captures, what it redacts, what stays on your machine.">
+  <section class="plate-section page">
+    <PlateBadge label="Plate IV" figure="custodia" />
+    <h1 class="display"><span aria-hidden="true">¶ </span>Privacy.</h1>
+    <p class="lede"><em>— a data-flow story, not a marketing claim.</em></p>
+
+    <p class="body-lede">Hippo runs locally. The interesting question isn&rsquo;t whether
+       a hosted service has your data &mdash; it doesn&rsquo;t exist &mdash; it&rsquo;s how the daemon
+       handles the data on your machine. This page documents the entire pipeline,
+       source by source.</p>
+
+    <div class="data-flow">
+      <svg viewBox="0 0 700 300" role="img" aria-labelledby="flow-title flow-desc">
+        <title id="flow-title">Data flow: capture sources to enriched knowledge, all on-device.</title>
+        <desc id="flow-desc">Three capture sources on the left — shell, Claude session JSONL, and Firefox browsing — flow through a redactor in the daemon. Redacted events land in a local SQLite database. The brain reads enrichment queues from that database, calls a local LLM (LM Studio bound to localhost), and writes knowledge nodes back. The MCP server reads only from SQLite to answer questions over stdio. Nothing in this diagram crosses the machine boundary, drawn as a dashed sepia border around the entire flow.</desc>
+        <g fill="none" stroke="currentColor" stroke-width="1.4" font-family="var(--font-display), serif" font-size="12" stroke-linecap="round">
+          <rect x="20" y="20" width="660" height="260" stroke-dasharray="4 6" stroke="var(--sepia)"/>
+          <text x="40" y="14" font-style="italic" fill="var(--sepia)" stroke="none" font-size="11">stays on machine ↓</text>
+          <rect x="40" y="40" width="120" height="40"/>
+          <text x="100" y="64" text-anchor="middle" fill="currentColor" stroke="none">shell hook</text>
+          <rect x="40" y="100" width="120" height="40"/>
+          <text x="100" y="124" text-anchor="middle" fill="currentColor" stroke="none">claude watcher</text>
+          <rect x="40" y="160" width="120" height="40"/>
+          <text x="100" y="184" text-anchor="middle" fill="currentColor" stroke="none">firefox NM</text>
+          <path d="M160 60 L240 120"/>
+          <path d="M160 120 L240 130"/>
+          <path d="M160 180 L240 140"/>
+          <rect x="240" y="100" width="120" height="60" stroke-width="2"/>
+          <text x="300" y="125" text-anchor="middle" fill="currentColor" stroke="none">redactor</text>
+          <text x="300" y="142" text-anchor="middle" font-style="italic" fill="currentColor" stroke="none" font-size="11">daemon · Rust</text>
+          <ellipse cx="450" cy="130" rx="50" ry="28"/>
+          <text x="450" y="125" text-anchor="middle" fill="currentColor" stroke="none">SQLite</text>
+          <text x="450" y="142" text-anchor="middle" font-style="italic" fill="currentColor" stroke="none" font-size="11">FTS5 · vec0</text>
+          <path d="M360 130 L400 130"/>
+          <rect x="540" y="40" width="120" height="60"/>
+          <text x="600" y="65" text-anchor="middle" fill="currentColor" stroke="none">LM Studio</text>
+          <text x="600" y="82" text-anchor="middle" font-style="italic" fill="currentColor" stroke="none" font-size="11">localhost · GPU</text>
+          <rect x="540" y="160" width="120" height="60"/>
+          <text x="600" y="186" text-anchor="middle" fill="currentColor" stroke="none">MCP server</text>
+          <text x="600" y="204" text-anchor="middle" font-style="italic" fill="currentColor" stroke="none" font-size="11">stdio</text>
+          <path d="M500 110 L540 70" stroke-dasharray="3 4"/>
+          <path d="M500 150 L540 190" stroke-dasharray="3 4"/>
+        </g>
+      </svg>
+      <p class="fig-caption" lang="la"><em>fig. — fasciculus</em>: every arrow stays inside the dashed boundary.</p>
+    </div>
+
+    <h2 id="shell"><em>Shell capture (zsh)</em></h2>
+    <p>The hook lives at <code>shell/hippo-zsh-hook.zsh</code>. On every command, it
+       writes a single JSON line to the daemon&rsquo;s Unix socket. It captures: PWD,
+       command text, exit status, duration, timestamp. It does <strong>not</strong>
+       capture environment variables, terminal output, or anything that wasn&rsquo;t
+       typed at the prompt.</p>
+    <p>The hook is fire-and-forget: a one-byte write to the socket, no
+       acknowledgement, no blocking. If the daemon is down, your shell isn&rsquo;t
+       slowed down; the event is simply not captured.</p>
+
+    <h2 id="claude"><em>Claude Code session capture</em></h2>
+    <p>An FSEvents watcher subscribes to <code>~/.claude/projects/**/*.jsonl</code>.
+       On every growth event it parses new segments out of the file, deduplicates
+       on <code>(session_id, segment_index)</code>, and inserts them. Tool-use blocks
+       and assistant turns become individual rows. The session JSONLs themselves
+       are owned by your Claude Code install &mdash; hippo doesn&rsquo;t modify them.</p>
+
+    <h2 id="firefox"><em>Firefox browsing (allowlist)</em></h2>
+    <p>A WebExtension speaks Native Messaging to the daemon. <strong>Only allowlisted
+       domains</strong> produce events; everything else is filtered before anything
+       crosses the extension boundary. The default allowlist is 27 documentation
+       sites (MDN, Rust std, Python docs, etc.). You edit it in the extension&rsquo;s
+       options. There is no &ldquo;capture all&rdquo; mode.</p>
+
+    <h2 id="redaction"><em>Redaction</em></h2>
+    <p>Every event &mdash; from every source &mdash; runs through the redactor in the same
+       transaction as the database insert. The redactor is a regex pipeline that
+       lives at <code>~/.config/hippo/redact.toml</code>; you can read and edit it.</p>
+    <p>Default patterns include AWS access keys, GitHub PATs, generic
+       <code>Bearer</code> tokens, OpenAI keys, npm tokens, and a long tail of
+       cloud-provider patterns. The catalogue is documented at
+       <a href="/docs/reference/redaction">/docs/reference/redaction</a>; if you find a
+       pattern you wish was redacted by default, please file an issue.</p>
+
+    <h2><em>What stays on your machine</em></h2>
+    <ul>
+      <li>The SQLite database at <code>~/.local/share/hippo/hippo.db</code>.</li>
+      <li>The model file you downloaded for LM Studio.</li>
+      <li>The redaction config at <code>~/.config/hippo/redact.toml</code>.</li>
+      <li>Logs at <code>~/.local/share/hippo/logs/</code>.</li>
+    </ul>
+
+    <h2><em>What you can turn off</em></h2>
+    <ul>
+      <li><strong>Any source</strong> by setting <code>[capture.&lt;source&gt;].enabled = false</code> in <code>config.toml</code>.</li>
+      <li><strong>Any pattern</strong> by editing <code>redact.toml</code>; or add a stricter rule.</li>
+      <li><strong>The browser source</strong> by uninstalling the extension; the daemon won&rsquo;t complain.</li>
+      <li><strong>Telemetry</strong> &mdash; it&rsquo;s off by default. Read about the OTel stack at <a href="https://github.com/stevencarpenter/hippo/blob/main/otel/README.md" rel="noopener" target="_blank">otel/README.md <span aria-hidden="true">↗</span></a>.</li>
+    </ul>
+  </section>
+</Tier1>
+
+<style>
+  .data-flow {
+    margin: 1.6rem 0 2rem;
+    padding: 1.4rem;
+    background: var(--paper-2);
+    border: 1px solid var(--rule-soft);
+  }
+  .data-flow svg { width: 100%; height: auto; max-height: 320px; color: var(--ink); }
+</style>

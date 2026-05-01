@@ -1,0 +1,48 @@
+---
+export interface Props {
+  size?: "full" | "reduced" | "inline";
+  caption?: string;
+  breathe?: boolean;
+  decorative?: boolean;
+  class?: string;
+}
+const {
+  size = "full",
+  caption,
+  breathe = false,
+  decorative = true,
+  class: className = "",
+} = Astro.props;
+const px = size === "full" ? 200 : size === "reduced" ? 32 : 24;
+const stroke = size === "inline" ? 1.4 : 1;
+---
+<figure class={`motif motif-sectio-coronalis ${breathe ? "breathe" : ""} ${className}`}>
+  <svg
+    viewBox="0 0 120 130"
+    width={px}
+    height={px}
+    xmlns="http://www.w3.org/2000/svg"
+    aria-hidden={decorative ? "true" : undefined}
+    role={decorative ? undefined : "img"}
+    focusable="false"
+  >
+    {!decorative && <title>sectio coronalis — coronal cross-section</title>}
+    <g fill="none" stroke="currentColor" stroke-width={stroke}>
+      <ellipse cx="60" cy="55" rx="42" ry="32"/>
+      <path d="M40 50 C45 35, 75 35, 80 50 C82 60, 76 68, 60 68 C44 68, 38 60, 40 50 Z"/>
+      <path d="M44 50 L50 50 M70 50 L76 50" stroke-width="0.7"/>
+      <path d="M55 60 C58 64, 62 64, 65 60" stroke-width="0.7"/>
+    </g>
+  </svg>
+  {caption && size === "full" && (
+    <figcaption class="fig-caption" aria-hidden="true">{caption}</figcaption>
+  )}
+</figure>
+
+<style>
+  .motif { display: inline-flex; flex-direction: column; align-items: center; color: var(--ink); }
+  .motif svg { color: var(--ink); transform-origin: center; will-change: transform; }
+  .motif.breathe svg { animation: motif-breathe 8s ease-in-out infinite; }
+  @keyframes motif-breathe { 0%,100% { transform: scale(1); } 50% { transform: scale(1.03); } }
+  @media (prefers-reduced-motion: reduce) { .motif.breathe svg { animation: none; } }
+</style>
