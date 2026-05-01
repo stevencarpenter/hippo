@@ -238,7 +238,7 @@ Hippo captures shell commands (including stdout/stderr), Claude Code session tra
 
 **LLM calls are local.** Enrichment and RAG queries go to LM Studio at `http://localhost:1234/v1`. If you point LM Studio at a remote backend, your shell history and session transcripts travel that path.
 
-**Redaction is best-effort.** Hippo redacts known secret formats (AWS keys, GitHub tokens, `password=` assignments, JWTs, PEM headers) before storage. Regex-based redaction cannot catch secrets in positional arguments, non-standard env-var names, or multi-line stdout payloads. Treat it as a noise filter, not a security guarantee. Test patterns with `hippo redact test "your candidate string"`.
+**Redaction is best-effort.** Hippo redacts known secret formats (AWS keys, GitHub tokens, `password=` assignments, JWTs, PEM headers) before storage. Regex-based redaction cannot catch secrets in positional arguments, non-standard env-var names, or multi-line stdout payloads. Treat it as a noise filter, not a security guarantee. Test patterns with `hippo redact test "your candidate string"`. Full reference (default rules, evaluation model, custom patterns, known false-negatives, browser URL redaction): [`docs/redaction.md`](docs/redaction.md).
 
 **The SQLite database is accessible to any process running as your user.** Single-user assumption. Consider restricting `~/.local/share/hippo/` to `700` if you share the machine.
 
