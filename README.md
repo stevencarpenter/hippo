@@ -341,7 +341,7 @@ All paths follow XDG defaults. Override with `XDG_DATA_HOME` / `XDG_CONFIG_HOME`
 | Logs | `~/.local/share/hippo/*.log` | Daemon and brain logs |
 | Fallback | `~/.local/share/hippo/*.fallback.jsonl` | Last-resort durability backstop when the daemon socket is unreachable; replayed on next daemon start |
 
-Schema uses `PRAGMA user_version = N`. Daemon and brain handshake on this constant at startup; see [`docs/RELEASE.md`](docs/RELEASE.md) for the lockstep version contract.
+Schema uses `PRAGMA user_version = N` (current: v13). Daemon and brain handshake on this constant at startup. See [`docs/schema.md`](docs/schema.md) for the per-version changelog, table map, and version-mismatch recovery; see [`docs/RELEASE.md`](docs/RELEASE.md) for the lockstep release workflow.
 
 ## License
 
