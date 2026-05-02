@@ -12,7 +12,11 @@ const { sections, currentSlug } = Astro.props;
     <summary>Sections</summary>
     {sections.map((section) => (
       <div class="section">
-        <h5>{section.label}</h5>
+        <h5>
+          {section.url
+            ? <a class="section-link" href={section.url}>{section.label}</a>
+            : section.label}
+        </h5>
         {section.caption && <span class="caption" lang="la"><em>{section.caption}</em></span>}
         <ul>
           {section.entries.map((entry) => {
@@ -34,5 +38,16 @@ const { sections, currentSlug } = Astro.props;
   @media (min-width: 769px) {
     .docs-rail-left .rail-details { display: contents; }
     .docs-rail-left .rail-details > summary { display: none; }
+  }
+  /* Section heading-as-link: keep the small-caps label aesthetic; underline on hover only. */
+  .docs-rail-left h5 .section-link {
+    color: inherit;
+    text-decoration: none;
+  }
+  .docs-rail-left h5 .section-link:hover {
+    color: var(--oxblood);
+    text-decoration: underline;
+    text-decoration-color: var(--rule);
+    text-underline-offset: 0.2em;
   }
 </style>

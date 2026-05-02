@@ -18,6 +18,10 @@ export interface SidebarSection {
   id: string;
   label: string;
   caption?: string; // italic Latin caption under section heading
+  /** When the section has a backing README index page (e.g. docs/capture/README.md),
+   *  this is the URL to it. The label can be rendered as a link to make the section
+   *  index discoverable from the rail / docs index. Undefined means no index page. */
+  url?: string;
   entries: SidebarEntry[];
 }
 
@@ -105,6 +109,44 @@ function resolveTitle(
 }
 
 /**
+ * Compute the route slug for a docs collection entry id, mirroring the routing
+ * rules in pages/docs/[...slug].astro's getStaticPaths. Centralised here so any
+ * caller that needs to know "is /docs/<X> a real page?" doesn't redefine the rules.
+ */
+export function routeSlugForDocsEntry(entryId: string): string {
+  const slug = entryId.replace(/\.md$/, "");
+  const segments = slug.split("/");
+  const last = segments[segments.length - 1];
+  if (segments.length === 1) return `reference/${slug}`;
+  if (last === "README" || last === "readme") return segments.slice(0, -1).join("/");
+  return slug;
+}
+
+/**
+ * Set of every route slug under /docs/ that resolves to a generated page. Used by
+ * breadcrumb construction to skip `href` on intermediate segments that don't have
+ * a backing route (e.g. `/docs/reference` is NOT a route — the section is synthetic).
+ */
+export function buildRoutableDocsSlugs(
+  docsEntries: CollectionEntry<"docs">[],
+  rootEntries: CollectionEntry<"rootDocs">[],
+  contribEntries: CollectionEntry<"contributing">[],
+): Set<string> {
+  const slugs = new Set<string>();
+  for (const entry of docsEntries) {
+    if (
+      entry.id.startsWith("archive/") ||
+      entry.id.startsWith("superpowers/") ||
+      entry.id.startsWith("initial-research/")
+    ) continue;
+    slugs.add(routeSlugForDocsEntry(entry.id));
+  }
+  for (const entry of rootEntries) slugs.add(entry.id);
+  for (const entry of contribEntries) slugs.add(entry.id);
+  return slugs;
+}
+
+/**
  * Build the docs sidebar by sorting entries into Capture / Reference / Contributing /
  * Getting started sections. Each entry is the slug-derived URL.
  */
@@ -115,6 +157,9 @@ export function buildSidebar(
 ): SidebarSection[] {
   const capture: SidebarEntry[] = [];
   const reference: SidebarEntry[] = [];
+  /** Per-section index URLs. Populated when a `<section>/README.md` exists, so the
+   *  rail and docs index can render the section label as a link. */
+  const sectionUrls: Record<string, string> = {};
 
   for (const entry of docsEntries) {
     const slug = entry.id.replace(/\.md$/, "");
@@ -136,9 +181,14 @@ export function buildSidebar(
     } else {
       routeSlug = slug;
     }
-    // Drop section-index README entries from the sidebar list — the section
-    // heading itself already serves as the link to the index page (I2).
-    if (isSectionIndex) continue;
+    // Section-index README entries: don't add to the entries list (would duplicate
+    // the section heading), but DO record the URL so the heading can become a link.
+    // Codex: previously the README was dropped without recording the URL anywhere,
+    // making /docs/capture and similar index pages undiscoverable from the rail.
+    if (isSectionIndex) {
+      sectionUrls[routeSlug] = `/docs/${routeSlug}`;
+      continue;
+    }
     const title = resolveTitle(
       entry.data as Record<string, unknown>,
       (entry as unknown as { body?: string }).body,
@@ -183,6 +233,7 @@ export function buildSidebar(
       id: "capture",
       label: "Capture",
       caption: "cornu Ammonis",
+      url: sectionUrls["capture"],
       entries: capture,
     });
   }
