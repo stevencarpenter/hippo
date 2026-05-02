@@ -18,6 +18,9 @@ use tracing_subscriber::util::SubscriberInitExt;
 fn resource(service_name: &str) -> Resource {
     Resource::builder()
         .with_service_name(service_name.to_string())
+        .with_detectors(&[Box::new(
+            opentelemetry_sdk::resource::EnvResourceDetector::new(),
+        )])
         .build()
 }
 

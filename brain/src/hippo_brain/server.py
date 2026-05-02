@@ -1,4 +1,5 @@
 import asyncio
+import datetime as _dt
 import logging
 import sqlite3
 import time
@@ -147,6 +148,8 @@ class BrainServer:
         self.lock_timeout_ms = lock_timeout_ms
         self.long_dwell_bypass_ms = long_dwell_bypass_ms
         self.enrichment_running = False
+        self._paused: bool = False
+        self._paused_at_iso: str | None = None
         self._query_inflight: int = 0  # incremented while /ask is executing
         # Set whenever a query is in flight; the enrichment loop sleeps on this
         # event so it wakes immediately rather than waiting out the full poll
@@ -254,6 +257,8 @@ class BrainServer:
                 "accepted_read_versions": sorted(ACCEPTED_READ_VERSIONS),
                 "lmstudio_reachable": reachable,
                 "enrichment_running": self.enrichment_running,
+                "paused": self._paused,
+                "paused_at": self._paused_at_iso,
                 "db_reachable": db_reachable,
                 "queue_depth": queue_depth,
                 "queue_failed": queue_failed,
@@ -324,7 +329,7 @@ class BrainServer:
 
         try:
             limit = int(limit)
-        except TypeError, ValueError:
+        except (TypeError, ValueError):
             return JSONResponse({"error": "limit must be an integer"}, status_code=400)
 
         if limit <= 0:
@@ -437,7 +442,7 @@ class BrainServer:
             for r in cursor.fetchall():
                 try:
                     tags = json.loads(r[5]) if r[5] else []
-                except json.JSONDecodeError, TypeError:
+                except (json.JSONDecodeError, TypeError):
                     tags = []
                 nodes.append(
                     {
@@ -483,7 +488,7 @@ class BrainServer:
 
             try:
                 tags = json.loads(row[6]) if row[6] else []
-            except json.JSONDecodeError, TypeError:
+            except (json.JSONDecodeError, TypeError):
                 tags = []
 
             related_entities = [
@@ -702,7 +707,7 @@ class BrainServer:
         limit = body.get("limit", 10)
         try:
             limit = int(limit)
-        except TypeError, ValueError:
+        except (TypeError, ValueError):
             return JSONResponse({"error": "limit must be an integer"}, status_code=400)
         if limit <= 0:
             return JSONResponse({"error": "limit must be greater than 0"}, status_code=400)
@@ -744,6 +749,19 @@ class BrainServer:
 
         status = 200 if "answer" in result else 502
         return JSONResponse(result, status_code=status)
+
+    async def control_pause(self, request: Request) -> JSONResponse:
+        """Pause the enrichment loop. Idempotent."""
+        if not self._paused:
+            self._paused = True
+            self._paused_at_iso = _dt.datetime.now(tz=_dt.UTC).isoformat()
+        return JSONResponse({"paused_at": self._paused_at_iso, "in_flight_finished": True})
+
+    async def control_resume(self, request: Request) -> JSONResponse:
+        """Resume the enrichment loop. Idempotent."""
+        self._paused = False
+        self._paused_at_iso = None
+        return JSONResponse({"resumed_at": _dt.datetime.now(tz=_dt.UTC).isoformat()})
 
     def _resolve_model_from_preflight(self, loaded: list[str]) -> bool:
         """Sync model selection from preflight's already-fetched model list."""
@@ -790,6 +808,9 @@ class BrainServer:
         try:
             while True:
                 try:
+                    if self._paused:
+                        await asyncio.sleep(self.poll_interval_secs)
+                        continue
                     # Sleep up to poll_interval_secs, waking early if a query
                     # arrives mid-sleep. The event-based wake means we yield
                     # to the LM Studio slot instead of waiting out the full
@@ -1120,7 +1141,7 @@ class BrainServer:
                             try:
                                 tools = _json.loads(s.get("tool_calls_json", "[]"))
                                 all_tools.extend(f"{t['name']}: {t['summary']}" for t in tools)
-                            except _json.JSONDecodeError, KeyError:
+                            except (_json.JSONDecodeError, KeyError):
                                 pass
                         node_dict = {
                             "id": node_id,
@@ -1354,6 +1375,8 @@ class BrainServer:
             Route("/knowledge/{id:int}", self.get_knowledge, methods=["GET"]),
             Route("/query", self.query, methods=["POST"]),
             Route("/ask", self.ask, methods=["POST"]),
+            Route("/control/pause", self.control_pause, methods=["POST"]),
+            Route("/control/resume", self.control_resume, methods=["POST"]),
         ]
 
 
