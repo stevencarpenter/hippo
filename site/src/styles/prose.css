@@ -162,14 +162,10 @@
 }
 .prose tbody tr:nth-child(even) { background: rgba(42, 29, 16, 0.03); }
 
-/* Long identifiers / SQL fragments / file paths in cells must wrap so the
-   table doesn't outgrow its grid column and overlap the docs right-rail. */
-.prose th, .prose td { overflow-wrap: anywhere; }
-.prose th code, .prose td code { white-space: normal; overflow-wrap: anywhere; }
-
 /* Inline code — light background, no border. nowrap keeps short identifiers
-   like `hippo doctor` from breaking mid-token in body prose; the table-cell
-   override above is what prevents long fragments from blowing out columns. */
+   like `hippo doctor` from breaking mid-token in body prose. break-word lets
+   pathologically long tokens (URLs, file paths) still break rather than
+   triggering horizontal scroll on narrow viewports. */
 .prose :not(pre) > code {
   font-family: var(--font-mono);
   font-size: 0.92em;
@@ -177,7 +173,20 @@
   padding: 0.05em 0.32em;
   color: var(--sepia);
   white-space: nowrap;
+  overflow-wrap: break-word;
 }
+
+/* Table cells with long identifiers / SQL fragments / file paths must wrap
+   so the table doesn't outgrow its grid column and overlap the docs right
+   rail. break-word (NOT anywhere) is critical — `anywhere` allows breaking
+   at every character for min-content calculation, which causes table-layout:
+   auto to collapse columns to 1ch and produce a "letter-per-line" ladder.
+   `break-word` permits the same breaks at preferred-size layout but doesn't
+   contribute to intrinsic min-content, so columns stay sane. Declared after
+   the general inline-code rule above so the white-space override actually
+   wins (equal specificity → source order decides). */
+.prose th, .prose td { overflow-wrap: break-word; }
+.prose th code, .prose td code { white-space: normal; overflow-wrap: break-word; }
 
 /* Tier-2 docs: Source Serif 4 body. */
 .prose-tier-2 {

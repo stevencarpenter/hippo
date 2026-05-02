@@ -8,6 +8,7 @@ import { rehypeLinkRewrite } from "./src/lib/rehype/link-rewrite.ts";
 import { rehypeImageResolve } from "./src/lib/rehype/image-resolve.ts";
 import { remarkEditOnGithub } from "./src/lib/remark/edit-on-github.ts";
 import { copyDocImages } from "./integrations/copy-doc-images.ts";
+import { copyPublicAssets } from "./integrations/copy-public-assets.ts";
 
 // https://astro.build/config
 export default defineConfig({
@@ -20,6 +21,7 @@ export default defineConfig({
     sitemap(),
     pagefind(),
     copyDocImages(),
+    copyPublicAssets(),
   ],
   markdown: {
     syntaxHighlight: "shiki",

@@ -1,5 +1,19 @@
 ---
-const sha = (process.env.GITHUB_SHA ?? "").slice(0, 7) || "dev";
+import { execFileSync } from "node:child_process";
+
+function localGitSha(): string {
+  try {
+    return execFileSync("git", ["rev-parse", "HEAD"], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim();
+  } catch {
+    return "";
+  }
+}
+
+const ciSha = process.env.GITHUB_SHA ?? "";
+const sha = (ciSha || localGitSha()).slice(0, 7) || "dev";
 const buildDate = new Date().toISOString().slice(0, 10);
 ---
 <footer class="site-footer">
