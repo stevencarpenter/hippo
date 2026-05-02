@@ -1,5 +1,6 @@
 ---
 import { marked } from "marked";
+import DOMPurify from "isomorphic-dompurify";
 import Tier1 from "../layouts/Tier1.astro";
 import PlateBadge from "../components/PlateBadge.astro";
 import ChangelogEntry from "../components/ChangelogEntry.astro";
@@ -7,6 +8,20 @@ import Marginalia from "../components/Marginalia.astro";
 import { listReleases } from "../lib/github.ts";
 
 const releases = await listReleases();
+
+/**
+ * Sanitize markdown-rendered HTML before injecting via `set:html`. GitHub release
+ * bodies can contain raw HTML (e.g. `<details>`, `<img>`); marked passes that through
+ * unchanged, so without this step a release body could inject arbitrary script tags.
+ * DOMPurify uses a strict allowlist + scrubs event handlers, javascript: URIs, etc.
+ */
+function renderReleaseBody(body: string): string {
+  const html = marked.parse(body || "", { async: false }) as string;
+  return DOMPurify.sanitize(html, {
+    USE_PROFILES: { html: true },
+    ADD_ATTR: ["target", "rel"],
+  });
+}
 ---
 <Tier1 title="Changelog" description="GitHub releases for hippo, rendered at build time.">
   <section class="plate-section page">
@@ -32,7 +47,7 @@ const releases = await listReleases();
           name={r.name}
           date={r.date}
           url={r.url}
-          bodyHtml={marked.parse(r.body || "", { async: false }) as string}
+          bodyHtml={renderReleaseBody(r.body || "")}
         />
       ))
     )}

@@ -23,8 +23,13 @@ export function withSourcePath(
         ...context,
         parseData: async (args: { id: string; data: Record<string, unknown>; filePath?: string }) => {
           const sourcePath = computeSourcePath(args.id);
+          // When sourcePath is null the entry is "excluded" — the file is still loaded
+          // into the docs collection, but with no sourcePath in its frontmatter so the
+          // remark/rehype plugins skip rewriting and `pages/docs/[...slug].astro`
+          // filters it out of getStaticPaths so no route is generated. This keeps
+          // archive / superpowers / initial-research files queryable internally
+          // without exposing them as pages.
           if (sourcePath == null) {
-            // skip excluded files entirely by handing parseData a hint we can detect
             return context.parseData(args);
           }
           return context.parseData({
@@ -39,10 +44,14 @@ export function withSourcePath(
   };
 }
 
-/** Excluded prefixes for the docs collection. Mirror these in docs/[...slug].astro. */
+/** Doc-tree prefixes that are loaded into the collection but never rendered as pages.
+ *  Mirror these in `pages/docs/[...slug].astro`'s getStaticPaths filter — that's where
+ *  exclusion is actually enforced (the loader can only refuse to inject sourcePath). */
 export const EXCLUDED_DOCS_PREFIXES = ["archive/", "superpowers/", "initial-research/"];
 
-/** Glob loader for ../docs/**\/*.md, excluding archive + superpowers, with sourcePath. */
+/** Glob loader for ../docs/**\/*.md with sourcePath injected per entry. Excluded
+ *  prefixes are still loaded (Astro's glob loader doesn't accept array patterns), but
+ *  receive no sourcePath and are filtered from routing. */
 export function docsLoader(): Loader {
   const inner = astroGlob({
     pattern: "**/*.md",

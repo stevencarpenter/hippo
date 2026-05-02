@@ -107,13 +107,88 @@ describe("rehypeLinkRewrite", () => {
     expect(out).toContain('target="_blank"');
   });
 
-  it("does not touch non-md relative links", async () => {
+  it("rewrites relative directory link to section index", async () => {
+    const out = await runWithSource(
+      `<a href="capture/">x</a>`,
+      "docs/eval-harness-design.md",
+    );
+    expect(out).toContain('href="/docs/capture"');
+    expect(out).not.toContain('target="_blank"');
+  });
+
+  it("rewrites parent-relative directory link to section index", async () => {
+    const out = await runWithSource(
+      `<a href="../capture/">x</a>`,
+      "docs/capture/anti-patterns.md",
+    );
+    expect(out).toContain('href="/docs/capture"');
+  });
+
+  it("preserves fragment on directory link", async () => {
+    const out = await runWithSource(
+      `<a href="capture/#sources">x</a>`,
+      "docs/eval-harness-design.md",
+    );
+    expect(out).toContain('href="/docs/capture#sources"');
+  });
+
+  it("redirects excluded-section directory link to GitHub tree", async () => {
+    const out = await runWithSource(
+      `<a href="../archive/capture-reliability-overhaul/">x</a>`,
+      "docs/capture/anti-patterns.md",
+    );
+    expect(out).toContain(
+      'href="https://github.com/stevencarpenter/hippo/tree/main/docs/archive/capture-reliability-overhaul"',
+    );
+    expect(out).toContain('target="_blank"');
+  });
+
+  it("rewrites non-md non-directory repo link to GitHub blob with arrow", async () => {
+    const out = await runWithSource(
+      `<a href="LICENSE">MIT License</a>`,
+      "README.md",
+    );
+    expect(out).toContain(
+      'href="https://github.com/stevencarpenter/hippo/blob/main/LICENSE"',
+    );
+    expect(out).toContain('target="_blank"');
+    expect(out).toContain("↗");
+  });
+
+  it("rewrites deep repo file path to GitHub blob", async () => {
     const out = await runWithSource(
       `<a href="../../scripts/install.sh">x</a>`,
       "docs/capture/architecture.md",
     );
-    // The plugin only rewrites .md targets; .sh is left alone (caller will see a 404 if
-    // the file isn't published — that's the right tradeoff for v1.0).
-    expect(out).toContain('href="../../scripts/install.sh"');
+    expect(out).toContain(
+      'href="https://github.com/stevencarpenter/hippo/blob/main/scripts/install.sh"',
+    );
+    expect(out).toContain('target="_blank"');
+  });
+
+  it("rewrites cross-directory repo link with subpath to GitHub blob", async () => {
+    const out = await runWithSource(
+      `<a href="crates/hippo-core/src/schema.sql">schema</a>`,
+      "README.md",
+    );
+    expect(out).toContain(
+      'href="https://github.com/stevencarpenter/hippo/blob/main/crates/hippo-core/src/schema.sql"',
+    );
+  });
+
+  it("leaves query-only relative links unchanged", async () => {
+    const out = await runWithSource(
+      `<a href="?tab=changes">x</a>`,
+      "README.md",
+    );
+    expect(out).toContain('href="?tab=changes"');
+  });
+
+  it("leaves mailto links unchanged", async () => {
+    const out = await runWithSource(
+      `<a href="mailto:foo@example.com">x</a>`,
+      "docs/lifecycle.md",
+    );
+    expect(out).toContain('href="mailto:foo@example.com"');
   });
 });
