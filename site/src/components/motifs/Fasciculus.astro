@@ -1,0 +1,54 @@
+---
+export interface Props {
+  size?: "full" | "reduced" | "inline";
+  caption?: string;
+  breathe?: boolean;
+  decorative?: boolean;
+  class?: string;
+}
+const {
+  size = "full",
+  caption,
+  breathe = false,
+  decorative = true,
+  class: className = "",
+} = Astro.props;
+const px = size === "full" ? 200 : size === "reduced" ? 32 : 24;
+const stroke = size === "inline" ? 1.4 : 1;
+---
+<figure aria-hidden={decorative ? "true" : undefined} class={`motif motif-fasciculus ${breathe ? "breathe" : ""} ${className}`}>
+  <svg
+    viewBox="0 0 120 130"
+    width={px}
+    height={px}
+    xmlns="http://www.w3.org/2000/svg"
+    aria-hidden={decorative ? "true" : undefined}
+    role={decorative ? undefined : "img"}
+    focusable="false"
+  >
+    {!decorative && <title>fasciculus — bundle of fibres</title>}
+    <g fill="none" stroke="currentColor" stroke-width={stroke} stroke-linecap="round">
+      {/* parallel curving strokes — bundle of fibres */}
+      <path d="M22 18 C44 38, 78 38, 100 100"/>
+      <path d="M28 18 C50 38, 80 38, 100 96" stroke-width="0.8"/>
+      <path d="M34 18 C54 38, 80 38, 100 92" stroke-width="0.7"/>
+      <path d="M40 18 C58 38, 80 40, 100 88" stroke-width="0.65"/>
+      <path d="M46 18 C62 40, 82 42, 100 84" stroke-width="0.6"/>
+      <path d="M52 20 C66 42, 84 46, 100 80" stroke-width="0.55"/>
+      {/* tie / wrap */}
+      <ellipse cx="78" cy="56" rx="14" ry="4"/>
+      <path d="M78 52 L78 60" stroke-width="0.5"/>
+    </g>
+  </svg>
+  {caption && size === "full" && (
+    <figcaption class="fig-caption" aria-hidden="true">{caption}</figcaption>
+  )}
+</figure>
+
+<style>
+  .motif { display: inline-flex; flex-direction: column; align-items: center; color: var(--ink); }
+  .motif svg { color: var(--ink); transform-origin: center; will-change: transform; }
+  .motif.breathe svg { animation: motif-breathe 8s ease-in-out infinite; }
+  @keyframes motif-breathe { 0%,100% { transform: scale(1); } 50% { transform: scale(1.03); } }
+  @media (prefers-reduced-motion: reduce) { .motif.breathe svg { animation: none; } }
+</style>

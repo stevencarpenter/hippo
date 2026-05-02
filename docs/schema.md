@@ -158,7 +158,7 @@ When you bump `EXPECTED_VERSION` from N to N+1:
 1. Write the migration block in `storage.rs::open_db` guarded by `if (1..=N).contains(&version)`.
 2. Update `crates/hippo-core/src/schema.sql` so fresh installs match.
 3. Bump `EXPECTED_VERSION` in `storage.rs` AND `EXPECTED_SCHEMA_VERSION` in `brain/src/hippo_brain/schema_version.py` in the same PR (they must agree).
-4. Bump `[workspace.package].version` in `Cargo.toml`, `[project].version` in `brain/pyproject.toml`, and `hippo-gui/VERSION` for the lockstep release (see [`docs/RELEASE.md`](RELEASE.md)).
+4. Bump `[workspace.package].version` in `Cargo.toml`, `[project].version` in `brain/pyproject.toml`, and `hippo-gui/VERSION` for the lockstep release (see [`docs/release.md`](release.md)).
 5. Add a row to the changelog table above.
 6. If your migration touches `entities.type` or other CHECK constraints, follow the 12-step table-recreate recipe from v13. Test the partial-success-crash case: kill the migration mid-way and confirm re-run lands cleanly.
 
@@ -167,5 +167,5 @@ When you bump `EXPECTED_VERSION` from N to N+1:
 - [`lifecycle.md`](lifecycle.md) — what writes to which table.
 - [`capture/architecture.md`](capture/architecture.md) — `source_health`, `capture_alarms`, and the watchdog's view of the schema.
 - [`capture/operator-runbook.md`](capture/operator-runbook.md) — recipes for the most common schema-related failure (version mismatch).
-- [`RELEASE.md`](RELEASE.md) — lockstep version contract and release workflow.
+- [`release.md`](release.md) — lockstep version contract and release workflow.
 - [`crates/hippo-core/src/schema.sql`](../crates/hippo-core/src/schema.sql) — authoritative SQL for fresh installs.

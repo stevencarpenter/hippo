@@ -1,0 +1,22 @@
+---
+import type { MotifId } from "../lib/docs.ts";
+import { getMotif, motifCaptions } from "../lib/motifs.ts";
+import PlateBadge from "./PlateBadge.astro";
+
+export interface Props {
+  motif: MotifId;
+  label?: string;
+  figure?: string;
+}
+const { motif, label, figure } = Astro.props;
+const Motif = getMotif(motif);
+const caption = motifCaptions[motif];
+---
+<div class="chapter-mark">
+  {label && <PlateBadge label={label} figure={figure} />}
+  <Motif size="full" caption={caption} />
+</div>
+
+<style>
+  .chapter-mark { margin: 0 0 1.6rem; }
+</style>

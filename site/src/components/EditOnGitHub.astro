@@ -1,0 +1,21 @@
+---
+import { gitHubSourcePath } from "../lib/docs.ts";
+
+export interface Props {
+  slug: string;
+  lastUpdated?: string;
+  editPath?: string;
+}
+const { slug, lastUpdated, editPath } = Astro.props;
+const finalUrl = editPath ?? `https://github.com/stevencarpenter/hippo/blob/main/${gitHubSourcePath(slug)}`;
+---
+<footer class="edit-footer">
+  <a href={finalUrl} rel="noopener" target="_blank">Edit this page on GitHub <span aria-hidden="true">↗</span></a>
+  {lastUpdated && (
+    <span class="last-updated"> · last updated {lastUpdated}</span>
+  )}
+</footer>
+
+<style>
+  .edit-footer .last-updated { color: var(--quiet); margin-left: 0.4rem; }
+</style>

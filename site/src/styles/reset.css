@@ -1,0 +1,92 @@
+/* ============================================================
+ * Modern minimal reset + base.
+ * ============================================================ */
+
+*, *::before, *::after { box-sizing: border-box; }
+
+html, body { margin: 0; padding: 0; }
+html { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
+
+body {
+  background-color: var(--paper);
+  color: var(--ink);
+  font-family: var(--font-body-1);
+  font-size: var(--t1-body);
+  line-height: 1.6;
+  font-feature-settings: "kern" 1, "liga" 1, "onum" 1;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  min-height: 100vh;
+}
+
+img, svg, video, canvas { display: block; max-width: 100%; height: auto; }
+img { vertical-align: middle; }
+
+button { font: inherit; color: inherit; cursor: pointer; }
+
+a {
+  color: var(--ink);
+  text-decoration: underline;
+  text-decoration-color: var(--rule);
+  text-underline-offset: 0.2em;
+  transition: color 200ms ease, text-decoration-color 200ms ease;
+}
+a:hover, a:focus-visible { color: var(--oxblood); text-decoration-color: var(--oxblood); }
+
+h1, h2, h3, h4, h5, h6 { margin: 0; font-weight: 400; }
+
+ul, ol { margin: 0; padding-left: 1.4rem; }
+p { margin: 0 0 1em; }
+
+hr { border: 0; border-top: 1px solid var(--rule); margin: 2.4rem 0; }
+
+/* Focus ring (A6/A7 — visible on every interactive element) */
+:focus { outline: none; }
+:focus-visible {
+  outline: 2px solid var(--oxblood);
+  outline-offset: 2px;
+}
+
+/* Skip link (focus-visible only). */
+.skip-link {
+  position: absolute;
+  left: 0.5rem;
+  top: -100px;
+  z-index: 1000;
+  background: var(--ink);
+  color: var(--paper);
+  padding: 0.5rem 0.9rem;
+  font-family: var(--font-label);
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  text-decoration: none;
+  font-size: 12px;
+}
+.skip-link:focus, .skip-link:focus-visible { top: 0.5rem; }
+
+/* Programmatically-focused <main> shouldn't ring (A7). */
+main:focus { outline: none; }
+
+/* Visually-hidden but accessible to screen readers (A5/A8). */
+.sr-only {
+  position: absolute !important;
+  width: 1px; height: 1px;
+  padding: 0; margin: -1px;
+  overflow: hidden; clip: rect(0, 0, 0, 0);
+  white-space: nowrap; border: 0;
+}
+
+/* Reduced motion: short-circuit everything. */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+::selection {
+  background: var(--oxblood);
+  color: var(--paper);
+}

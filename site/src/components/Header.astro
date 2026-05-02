@@ -1,0 +1,79 @@
+---
+import Wordmark from "./Wordmark.astro";
+
+const path = Astro.url.pathname.replace(/\/$/, "") || "/";
+const items = [
+  { href: "/why", label: "Why" },
+  { href: "/install", label: "Install" },
+  { href: "/docs", label: "Docs" },
+  { href: "/blog", label: "Field notes" },
+];
+
+function isActive(href: string): boolean {
+  if (href === "/") return path === "/";
+  return path === href || path.startsWith(href + "/");
+}
+---
+<header class="site-header">
+  <div class="header-inner">
+    <a class="logo" href="/" aria-label="hippobrain home">
+      <Wordmark size="header" />
+    </a>
+    <nav aria-label="Primary">
+      <ul>
+        {items.map((it) => (
+          <li>
+            <a
+              href={it.href}
+              aria-current={isActive(it.href) ? "page" : undefined}
+              class={isActive(it.href) ? "active" : ""}
+            >{it.label}</a>
+          </li>
+        ))}
+        <li>
+          <a href="https://github.com/stevencarpenter/hippo" rel="noopener" target="_blank">GitHub <span aria-hidden="true">↗</span></a>
+        </li>
+      </ul>
+    </nav>
+  </div>
+</header>
+
+<style>
+  .site-header {
+    border-bottom: 1px solid var(--rule-soft);
+    background: var(--paper);
+  }
+  .header-inner {
+    max-width: var(--max-page);
+    margin: 0 auto;
+    padding: 1rem 1.5rem;
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 2rem;
+  }
+  .logo { text-decoration: none; }
+  nav ul {
+    list-style: none;
+    margin: 0; padding: 0;
+    display: flex; gap: 1.5rem;
+    flex-wrap: wrap;
+  }
+  nav a {
+    text-decoration: none;
+    font-family: var(--font-label);
+    font-size: 12px;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: var(--ink);
+    padding-bottom: 0.2em;
+    border-bottom: 1px solid transparent;
+  }
+  nav a:hover { color: var(--oxblood); border-bottom-color: var(--oxblood); }
+  nav a.active { color: var(--oxblood); border-bottom-color: var(--oxblood); }
+
+  @media (max-width: 720px) {
+    .header-inner { flex-direction: column; align-items: flex-start; gap: 0.6rem; }
+    nav ul { gap: 1rem; }
+  }
+</style>

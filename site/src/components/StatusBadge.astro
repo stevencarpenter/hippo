@@ -1,0 +1,12 @@
+---
+export interface Props {
+  state: "active" | "quiet" | "hibernating";
+  label: string;
+}
+const { state, label } = Astro.props;
+const glyph = state === "active" ? "●" : state === "quiet" ? "◐" : "○";
+---
+<span class={`status-badge ${state}`} role="status">
+  <span aria-hidden="true">{glyph}</span>
+  <span>{label}</span>
+</span>

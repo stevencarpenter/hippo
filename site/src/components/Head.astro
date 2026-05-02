@@ -1,0 +1,61 @@
+---
+import { ClientRouter } from "astro:transitions";
+import "../styles/reset.css";
+import "../styles/fonts.css";
+import "../styles/tokens.css";
+import "../styles/prose.css";
+import "../styles/code.css";
+import "../styles/tier-1.css";
+import "../styles/tier-2.css";
+import "../styles/print.css";
+
+export interface Props {
+  title: string;
+  description?: string;
+  ogImage?: string;
+  noIndex?: boolean;
+}
+
+const {
+  title,
+  description = "Hippo — a second brain that lives on your machine.",
+  ogImage = "/og-default.png",
+  noIndex = false,
+} = Astro.props;
+
+const canonical = new URL(Astro.url.pathname, Astro.site ?? "https://hippobrain.org").toString();
+const ogImageUrl = new URL(ogImage, Astro.site ?? "https://hippobrain.org").toString();
+const fullTitle = title === "Hippo" ? title : `${title} · Hippo`;
+---
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<meta name="generator" content={Astro.generator} />
+
+<title>{fullTitle}</title>
+<meta name="description" content={description} />
+<link rel="canonical" href={canonical} />
+{noIndex && <meta name="robots" content="noindex" />}
+
+<meta property="og:type" content="website" />
+<meta property="og:url" content={canonical} />
+<meta property="og:title" content={fullTitle} />
+<meta property="og:description" content={description} />
+<meta property="og:image" content={ogImageUrl} />
+<meta name="twitter:card" content="summary_large_image" />
+<meta name="twitter:title" content={fullTitle} />
+<meta name="twitter:description" content={description} />
+<meta name="twitter:image" content={ogImageUrl} />
+
+<link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+{/* favicon.ico + apple-touch-icon.png deferred — generate from favicon.svg in a follow-up before launch. */}
+
+<link rel="alternate" type="application/rss+xml" title="hippobrain — field notes" href="/blog/rss.xml" />
+<link rel="alternate" type="application/rss+xml" title="hippobrain — changelog" href="/changelog/rss.xml" />
+
+{/* E5 — preload most-used faces. */}
+<link rel="preload" href="/fonts/fraunces-variable.woff2" as="font" type="font/woff2" crossorigin />
+<link rel="preload" href="/fonts/jetbrains-mono-variable.woff2" as="font" type="font/woff2" crossorigin />
+
+<meta name="theme-color" content="#efe4ce" />
+
+<ClientRouter />

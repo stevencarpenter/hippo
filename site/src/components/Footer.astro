@@ -1,0 +1,104 @@
+---
+import { execFileSync } from "node:child_process";
+
+function localGitSha(): string {
+  try {
+    return execFileSync("git", ["rev-parse", "HEAD"], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim();
+  } catch {
+    return "";
+  }
+}
+
+const ciSha = process.env.GITHUB_SHA ?? "";
+const sha = (ciSha || localGitSha()).slice(0, 7) || "dev";
+const buildDate = new Date().toISOString().slice(0, 10);
+---
+<footer class="site-footer">
+  <div class="footer-inner">
+    <div class="footer-grid">
+      <div>
+        <h2 class="footer-h">hippobrain.</h2>
+        <p class="colophon">
+          <span lang="la"><em>memoriae custos.</em></span> Set in Fraunces and Source Serif 4.
+          Hand-drawn anatomy in pen and ink.
+        </p>
+      </div>
+      <div>
+        <h2 class="footer-h">Read</h2>
+        <ul>
+          <li><a href="/why">Why hippo</a></li>
+          <li><a href="/privacy">Privacy</a></li>
+          <li><a href="/faq">FAQ</a></li>
+          <li><a href="/blog">Field notes</a></li>
+          <li><a href="/blog/rss.xml">RSS</a></li>
+        </ul>
+      </div>
+      <div>
+        <h2 class="footer-h">Code</h2>
+        <ul>
+          <li><a href="https://github.com/stevencarpenter/hippo" rel="noopener" target="_blank">GitHub <span aria-hidden="true">↗</span></a></li>
+          <li><a href="/docs/contributing">Contributing</a></li>
+          <li><a href="/changelog">Changelog</a></li>
+          <li><a href="/status">Status</a></li>
+          <li><a href="https://github.com/stevencarpenter/hippo/blob/main/LICENSE" rel="noopener" target="_blank">MIT licence <span aria-hidden="true">↗</span></a></li>
+        </ul>
+      </div>
+    </div>
+    <div class="footer-meta">
+      <span>build <code>{sha}</code> · {buildDate}</span>
+    </div>
+  </div>
+</footer>
+
+<style>
+  .site-footer {
+    border-top: 1px solid var(--rule-soft);
+    background: var(--paper);
+    margin-top: 4rem;
+    padding: 2rem 0;
+  }
+  .footer-inner {
+    max-width: var(--max-page);
+    margin: 0 auto;
+    padding: 0 1.5rem;
+  }
+  .footer-grid {
+    display: grid;
+    grid-template-columns: 1.4fr 1fr 1fr;
+    gap: 2.4rem;
+  }
+  @media (max-width: 720px) { .footer-grid { grid-template-columns: 1fr; gap: 1.6rem; } }
+
+  .footer-h {
+    font-family: var(--font-label);
+    font-size: 11px;
+    letter-spacing: 0.28em;
+    text-transform: uppercase;
+    color: var(--sepia);
+    margin-bottom: 0.6rem;
+    font-weight: 500;
+  }
+  .footer-grid ul { list-style: none; padding: 0; margin: 0; }
+  .footer-grid li { margin-bottom: 0.4em; }
+  .footer-grid a { font-size: 0.95rem; }
+
+  .colophon {
+    font-family: var(--font-body-1);
+    font-size: 0.95rem;
+    color: var(--quiet);
+    line-height: 1.55;
+  }
+
+  .footer-meta {
+    margin-top: 1.6rem;
+    padding-top: 1rem;
+    border-top: 1px solid var(--rule-soft);
+    font-family: var(--font-mono);
+    font-size: 12px;
+    color: var(--quiet);
+  }
+  .footer-meta code { background: var(--code-bg); padding: 0.05rem 0.32rem; }
+</style>

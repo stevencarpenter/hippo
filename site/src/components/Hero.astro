@@ -1,0 +1,36 @@
+---
+import CornuAmmonis from "./motifs/CornuAmmonis.astro";
+import PlateBadge from "./PlateBadge.astro";
+import CodeBlock from "./CodeBlock.astro";
+---
+<section class="plate-section hero">
+  <div class="page hero-grid">
+    <div class="hero-text">
+      <PlateBadge label="Plate I" figure="fig. 1" />
+      {/* A3 — Latin display IS the h1 (semantically the page title). lang="la" per A4. */}
+      <h1 class="display" lang="la">Memoriæ <span class="midpoint" aria-hidden="true">·</span> custos.</h1>
+      {/* A3 — supporting English line is a paragraph, not a heading. */}
+      <p class="lede"><span aria-hidden="true">— </span>the keeper of memory.</p>
+      <p class="body-lede">
+        A local-first memory layer for your shell, your Claude Code sessions, and
+        your browsing — within an allowlist you control. Hippo runs as a daemon
+        on your Mac, captures activity locally, and answers questions about it
+        with a model that lives on your GPU.
+      </p>
+      <CodeBlock>
+        <pre><code class="language-shell">curl -fsSL https://hippobrain.org/install.sh | sh</code></pre>
+      </CodeBlock>
+      <div class="button-row">
+        <a href="/install" class="button">Install</a>
+        <a href="/docs" class="button ghost">Read the docs</a>
+      </div>
+    </div>
+    <div class="hero-illus">
+      <CornuAmmonis size="full" caption="cornu Ammonis · sectio sagittalis" breathe={true} />
+    </div>
+  </div>
+</section>
+
+<style>
+  .hero { padding-top: 3rem; }
+</style>

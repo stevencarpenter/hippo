@@ -84,7 +84,7 @@ Most changes live entirely in one language. The exceptions:
 | Adding a column to `events` | Migration + Rust write path + Python read path | Both daemon and brain query `events`. |
 | New MCP tool | Brain only (`brain/src/hippo_brain/mcp.py`); daemon doesn't know about MCP | Update [`docs/mcp-reference.md`](docs/mcp-reference.md). |
 | New config key | `config/config.default.toml` + Rust `HippoConfig` (in `hippo-core/src/config.rs`) + brain settings loader (`brain/src/hippo_brain/__init__.py::_load_runtime_settings`) | Both sides read from `~/.config/hippo/config.toml`. |
-| Release / version bump | `Cargo.toml`, `brain/pyproject.toml`, `hippo-gui/VERSION` — all three move together | Lockstep. See [`docs/RELEASE.md`](docs/RELEASE.md). |
+| Release / version bump | `Cargo.toml`, `brain/pyproject.toml`, `hippo-gui/VERSION` — all three move together | Lockstep. See [`docs/release.md`](docs/release.md). |
 
 ## CI behavior
 
@@ -95,7 +95,7 @@ Most changes live entirely in one language. The exceptions:
 - **gui.yml** — Swift package tests when `hippo-gui/` changes.
 - **extension.yml** — Firefox extension build / checks when `extension/firefox/` changes.
 - **security.yml** — repository-level security checks (note: this workflow does **not** currently run Semgrep; the `.semgrep.yml` rules are local-only).
-- **release.yml** — fires on `v*.*.*` tags. See [`docs/RELEASE.md`](docs/RELEASE.md).
+- **release.yml** — fires on `v*.*.*` tags. See [`docs/release.md`](docs/release.md).
 
 Reproducing CI locally: `mise run test` covers the core checks most contributors need before opening a PR, but it is not byte-for-byte CI. In particular, CI runs `cargo test` / `cargo clippy` / `cargo build` with `--locked` (and `cargo test` with `--no-fail-fast`), and runs `cargo audit` plus the extension and security workflows on top. To match CI on the Rust side run `cargo test --locked --no-fail-fast` and `cargo clippy --all-targets --locked --no-deps -- -D warnings` directly.
 
@@ -165,7 +165,7 @@ Types in use: `fix`, `feat`, `chore`, `docs`, `test`, `refactor`. Scopes in use:
 
 ## Releasing
 
-Maintainer-only. Contributors don't bump versions in their PRs — the release PR is a separate `chore(release)` PR per [`docs/RELEASE.md`](docs/RELEASE.md). Your feature PR can ride into whichever release the maintainer cuts next.
+Maintainer-only. Contributors don't bump versions in their PRs — the release PR is a separate `chore(release)` PR per [`docs/release.md`](docs/release.md). Your feature PR can ride into whichever release the maintainer cuts next.
 
 ## Where to ask
 
@@ -183,4 +183,4 @@ Maintainer-only. Contributors don't bump versions in their PRs — the release P
 - [`docs/mcp-reference.md`](docs/mcp-reference.md) — MCP tool reference
 - [`docs/redaction.md`](docs/redaction.md) — redaction reference
 - [`docs/capture/`](docs/capture/) — capture-reliability stack docs
-- [`docs/RELEASE.md`](docs/RELEASE.md) — release process
+- [`docs/release.md`](docs/release.md) — release process

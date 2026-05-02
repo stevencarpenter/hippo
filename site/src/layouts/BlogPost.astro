@@ -1,0 +1,47 @@
+---
+import type { MotifId } from "../lib/docs.ts";
+import Tier1 from "./Tier1.astro";
+import { getMotif, motifCaptions } from "../lib/motifs.ts";
+import PlateBadge from "../components/PlateBadge.astro";
+
+export interface Props {
+  title: string;
+  description: string;
+  date: Date;
+  motif: MotifId;
+}
+const { title, description, date, motif } = Astro.props;
+const Motif = getMotif(motif);
+const caption = motifCaptions[motif];
+const dateStr = date.toISOString().slice(0, 10);
+---
+<Tier1 title={title} description={description}>
+  <article class="blog-post page">
+    <PlateBadge label="Field note" figure={`fig. ${dateStr}`} />
+    <div class="blog-motif">
+      <Motif size="full" caption={caption} />
+    </div>
+    <h1 class="display-h1">{title}</h1>
+    <p class="lede">{description}</p>
+    <div class="prose dropcap">
+      <slot />
+    </div>
+  </article>
+</Tier1>
+
+<style>
+  .blog-post {
+    max-width: 70ch;
+    padding: 2rem 1.5rem 4rem;
+    margin: 0 auto;
+  }
+  .blog-motif { display: flex; justify-content: center; margin-bottom: 1rem; }
+  .display-h1 {
+    font-family: var(--font-display);
+    font-size: 2.4rem;
+    font-weight: 400;
+    margin: 0 0 0.4rem;
+    letter-spacing: -0.01em;
+    text-wrap: balance;
+  }
+</style>

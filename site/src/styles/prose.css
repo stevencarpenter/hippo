@@ -1,0 +1,218 @@
+/* ============================================================
+ * Prose — markdown rendering rules.
+ * .prose            tier-1 default body face
+ * .prose-tier-2     tier-2 docs body face (Source Serif 4) + tighter scale
+ * ============================================================ */
+
+.prose {
+  font-family: var(--font-body-1);
+  font-size: var(--t1-body);
+  line-height: 1.65;
+  color: var(--ink);
+  max-width: var(--max-prose);
+}
+
+.prose > * + * { margin-top: 1em; }
+
+.prose h1 {
+  font-family: var(--font-display);
+  font-size: var(--t1-h1);
+  font-weight: 400;
+  font-variation-settings: "opsz" 36;
+  letter-spacing: -0.01em;
+  margin-top: 1.2em;
+  text-wrap: balance;
+}
+
+.prose h2 {
+  font-family: var(--font-display);
+  font-style: italic;
+  font-size: var(--t1-h2);
+  font-weight: 400;
+  font-variation-settings: "SOFT" var(--h2-soft);
+  color: var(--sepia);
+  margin-top: 1.6em;
+  text-wrap: balance;
+}
+
+.prose h3 {
+  font-family: var(--font-display);
+  font-size: var(--t1-h3);
+  font-weight: 600;
+  margin-top: 1.4em;
+  text-wrap: balance;
+}
+
+/* h4-h6 are rare in hand-written markdown but become routine when the
+   changelog demotes release-body headings by 2 (h1→h3, h2→h4, h3→h5).
+   Without explicit styling these inherit the global `font-weight: 400` reset
+   and read as plain body text — losing the visual hierarchy the demotion
+   was meant to preserve. Each level steps down in weight or color. */
+.prose h4 {
+  font-family: var(--font-display);
+  font-size: 1rem;
+  font-weight: 600;
+  font-style: italic;
+  color: var(--ink);
+  margin-top: 1.2em;
+  text-wrap: balance;
+}
+.prose h5 {
+  font-family: var(--font-label);
+  font-size: 0.85rem;
+  font-weight: 500;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--sepia);
+  margin-top: 1em;
+}
+.prose h6 {
+  font-family: var(--font-label);
+  font-size: 0.78rem;
+  font-weight: 500;
+  letter-spacing: 0.12em;
+  font-style: italic;
+  color: var(--quiet);
+  margin-top: 0.8em;
+}
+
+.prose h2 .anchor,
+.prose h3 .anchor,
+.prose h1 .anchor {
+  text-decoration: none;
+  color: var(--oxblood);
+  margin-left: 0.5em;
+  opacity: 0;
+  transition: opacity 200ms ease;
+  font-weight: 400;
+}
+.prose h1 .anchor::before,
+.prose h2 .anchor::before,
+.prose h3 .anchor::before { content: "¶"; }
+.prose h1:hover .anchor,
+.prose h2:hover .anchor,
+.prose h3:hover .anchor,
+.prose h1:focus-within .anchor,
+.prose h2:focus-within .anchor,
+.prose h3:focus-within .anchor { opacity: 1; }
+
+.prose blockquote {
+  margin: 1.2em 0;
+  padding: 0.4rem 0 0.4rem 0.9rem;
+  border-left: 2px solid var(--sepia);
+  font-style: italic;
+  color: var(--sepia);
+  background: transparent;
+}
+.prose blockquote::before {
+  content: "¶ ";
+  color: var(--oxblood);
+  font-style: normal;
+  font-weight: 600;
+}
+
+.prose ul, .prose ol { padding-left: 1.4rem; }
+.prose li { margin-bottom: 0.3em; }
+.prose li > ul, .prose li > ol { margin-top: 0.3em; }
+
+.prose a { color: var(--oxblood); text-decoration-color: var(--rule); }
+.prose a:hover, .prose a:focus-visible {
+  color: var(--oxblood);
+  text-decoration-color: var(--oxblood);
+}
+
+.prose strong { font-weight: 600; color: var(--ink); }
+.prose em { font-style: italic; }
+
+.prose hr { border-top: 1px solid var(--rule); margin: 2.4rem 0; }
+
+.prose img {
+  margin: 1.4em auto;
+  border: 1px solid var(--rule);
+  background: var(--paper-2);
+}
+
+/* Tables (anatomical naturalism — small caps Junicode header, sepia rules, zebra). */
+.prose table {
+  width: 100%;
+  max-width: 100%;
+  border-collapse: collapse;
+  margin: 1.4em 0;
+  font-variant-numeric: tabular-nums;
+  /* table-layout: auto lets columns size to content, but combined with the
+     cell wrap rules below this still respects the grid track width. */
+  table-layout: auto;
+}
+.prose thead { border-top: 1px solid var(--sepia); border-bottom: 1px solid var(--sepia); }
+.prose th {
+  font-family: var(--font-label);
+  font-size: 0.85em;
+  font-weight: 500;
+  letter-spacing: 0.06em;
+  font-variant: small-caps;
+  text-transform: lowercase;
+  text-align: left;
+  color: var(--sepia);
+  padding: 0.5em 0.7em;
+}
+.prose td {
+  padding: 0.5em 0.7em;
+  border-bottom: 1px solid var(--rule-soft);
+  vertical-align: top;
+}
+.prose tbody tr:nth-child(even) { background: rgba(42, 29, 16, 0.03); }
+
+/* Inline code — light background, no border. nowrap keeps short identifiers
+   like `hippo doctor` from breaking mid-token in body prose. break-word lets
+   pathologically long tokens (URLs, file paths) still break rather than
+   triggering horizontal scroll on narrow viewports. */
+.prose :not(pre) > code {
+  font-family: var(--font-mono);
+  font-size: 0.92em;
+  background: var(--code-bg);
+  padding: 0.05em 0.32em;
+  color: var(--sepia);
+  white-space: nowrap;
+  overflow-wrap: break-word;
+}
+
+/* Table cells with long identifiers / SQL fragments / file paths must wrap
+   so the table doesn't outgrow its grid column and overlap the docs right
+   rail. break-word (NOT anywhere) is critical — `anywhere` allows breaking
+   at every character for min-content calculation, which causes table-layout:
+   auto to collapse columns to 1ch and produce a "letter-per-line" ladder.
+   `break-word` permits the same breaks at preferred-size layout but doesn't
+   contribute to intrinsic min-content, so columns stay sane. Declared after
+   the general inline-code rule above so the white-space override actually
+   wins (equal specificity → source order decides). */
+.prose th, .prose td { overflow-wrap: break-word; }
+.prose th code, .prose td code { white-space: normal; overflow-wrap: break-word; }
+
+/* Tier-2 docs: Source Serif 4 body. */
+.prose-tier-2 {
+  font-family: var(--font-body-2);
+  font-size: var(--t2-body);
+  line-height: 1.7;
+  max-width: 70ch;
+}
+.prose-tier-2 h1 {
+  font-size: var(--t2-h1);
+  margin-top: 0;
+}
+.prose-tier-2 h2 {
+  font-size: var(--t2-h2);
+}
+.prose-tier-2 h3 {
+  font-size: var(--t2-h3);
+}
+
+/* Drop cap — first paragraph of a chapter only. Component opt-in via `.dropcap`. */
+.dropcap > p:first-of-type::first-letter {
+  font-family: var(--font-display);
+  font-size: 3.4rem;
+  font-weight: 600;
+  line-height: 0.9;
+  color: var(--oxblood);
+  float: left;
+  padding: 0.18rem 0.55rem 0 0;
+}

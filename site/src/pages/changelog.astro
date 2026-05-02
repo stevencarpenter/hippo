@@ -1,0 +1,81 @@
+---
+import { marked } from "marked";
+import DOMPurify from "isomorphic-dompurify";
+import Tier1 from "../layouts/Tier1.astro";
+import PlateBadge from "../components/PlateBadge.astro";
+import ChangelogEntry from "../components/ChangelogEntry.astro";
+import Marginalia from "../components/Marginalia.astro";
+import { listReleases } from "../lib/github.ts";
+
+const releases = await listReleases();
+
+/**
+ * Render and sanitize a GitHub release body before injecting via `set:html`.
+ *
+ * Two concerns:
+ *
+ * 1. **XSS** — release bodies can contain raw HTML (e.g. `<details>`, `<img>`);
+ *    marked passes that through unchanged, so without DOMPurify a malicious
+ *    release body could inject arbitrary script tags.
+ * 2. **Heading hierarchy** — release notes typically open with `# Release Title`,
+ *    which marked converts to `<h1>`. The changelog page already has its own
+ *    `<h1>Changelog.</h1>` and one `<h2>` per release (the entry header). If we
+ *    let release-body h1/h2 through, the page ends up with N+1 `<h1>` tags and
+ *    a broken outline. We demote h1→h3, h2→h4, h3→h5, h4→h6 so the page outline
+ *    stays clean (page h1 → entry h2 → release-body h3+).
+ */
+function renderReleaseBody(body: string): string {
+  let html = marked.parse(body || "", { async: false }) as string;
+  // Demote heading levels by 2. Order matters — process h4 first so we don't
+  // double-shift (h2 → h4 → h6 would be wrong).
+  html = html
+    .replace(/<(\/?)h4(\b[^>]*)>/g, "<$1h6$2>")
+    .replace(/<(\/?)h3(\b[^>]*)>/g, "<$1h5$2>")
+    .replace(/<(\/?)h2(\b[^>]*)>/g, "<$1h4$2>")
+    .replace(/<(\/?)h1(\b[^>]*)>/g, "<$1h3$2>");
+  return DOMPurify.sanitize(html, {
+    USE_PROFILES: { html: true },
+    ADD_ATTR: ["target", "rel"],
+  });
+}
+---
+<Tier1 title="Changelog" description="GitHub releases for hippo, rendered at build time.">
+  <section class="plate-section page">
+    <PlateBadge label="Plate I" figure="annales" figureLatin />
+    <h1 class="display"><span aria-hidden="true">⚏ </span>Changelog.</h1>
+    <p class="lede"><em>— what shipped, when.</em></p>
+
+    <p class="meta-line">
+      Pulled from <a href="https://github.com/stevencarpenter/hippo/releases" rel="noopener" target="_blank">GitHub releases <span aria-hidden="true">↗</span></a>.
+      RSS available at <a href="/changelog/rss.xml">/changelog/rss.xml</a>.
+    </p>
+
+    {releases.length === 0 ? (
+      <Marginalia>
+        <span lang="la"><em>Sub praelo.</em></span> No releases fetched at build time
+        — likely the GitHub API was rate-limited. Try the
+        <a href="https://github.com/stevencarpenter/hippo/releases" rel="noopener" target="_blank">releases page on GitHub <span aria-hidden="true">↗</span></a>.
+      </Marginalia>
+    ) : (
+      releases.map((r) => (
+        <ChangelogEntry
+          tag={r.tag}
+          name={r.name}
+          date={r.date}
+          url={r.url}
+          bodyHtml={renderReleaseBody(r.body || "")}
+        />
+      ))
+    )}
+  </section>
+</Tier1>
+
+<style>
+  .meta-line {
+    font-family: var(--font-label);
+    font-size: 12px;
+    letter-spacing: 0.1em;
+    color: var(--quiet);
+    margin-bottom: 1.4rem;
+  }
+</style>

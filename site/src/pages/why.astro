@@ -1,0 +1,63 @@
+---
+import Tier1 from "../layouts/Tier1.astro";
+import PlateBadge from "../components/PlateBadge.astro";
+---
+<Tier1 title="Why hippo" description="Why hippo exists: agentic coding context loss, on-device privacy, and the tools hippo is not.">
+  <section class="plate-section page">
+    <PlateBadge label="Plate I" figure="ratio" figureLatin />
+    <h1 class="display">Why <span class="midpoint" aria-hidden="true">·</span> hippo.</h1>
+    <p class="lede"><em>— the problem hippo solves, and the things it isn&rsquo;t.</em></p>
+
+    <h2>1 — The problem hippo actually solves</h2>
+    <div class="prose dropcap">
+      <p>Agentic coding tools forget. Each new session of Claude Code, Aider, or Cursor
+         starts from a blank slate: it has no memory of the architectural decision you
+         made on Tuesday, the name of the function you renamed last week, the failure
+         mode you fixed in the redactor twice last month. You re-explain. The tool
+         re-discovers. You both waste tokens and time.</p>
+      <p>Hippo is a daemon that watches your shell, your Claude session JSONLs, and
+         your browser (within an allowlist), enriches what it sees with a local LLM,
+         and exposes the result over MCP. Your editor of choice asks <code>ask</code>
+         &mdash; <em>"why did I rename that function?"</em>, <em>"what did I read about probe leakage last month?"</em> &mdash;
+         and gets back a synthesized answer with citations. The knowledge stays on your
+         machine. The model runs on your GPU. There is no server.</p>
+    </div>
+
+    <h2>2 — What hippo is not</h2>
+    <ul>
+      <li><strong>Not <a href="https://atuin.sh/" rel="noopener" target="_blank">Atuin</a>.</strong> Atuin syncs shell history. Hippo answers questions about it.</li>
+      <li><strong>Not <a href="https://www.rewind.ai/" rel="noopener" target="_blank">Rewind</a>.</strong> Rewind records your screen. Hippo records intent: commands, sessions, browsed pages.</li>
+      <li><strong>Not Apple Continuity.</strong> Continuity hands files between your devices. Hippo gives one device a memory.</li>
+      <li><strong>Not <a href="https://roamresearch.com/" rel="noopener" target="_blank">Roam</a> or <a href="https://obsidian.md/" rel="noopener" target="_blank">Obsidian</a>.</strong> Those are notes you write deliberately. Hippo captures activity automatically.</li>
+      <li><strong>Not <a href="https://www.notion.so/" rel="noopener" target="_blank">Notion</a> AI.</strong> Notion is a hosted database. Hippo is a SQLite file on your disk.</li>
+    </ul>
+
+    <h2>3 — Who hippo is for</h2>
+    <p>Developers using agentic coding tools on macOS arm64. That&rsquo;s the audience: it&rsquo;s
+       narrow on purpose. If you don&rsquo;t use Claude Code (or a similar tool), you have
+       very little to gain from running hippo today. The shell-capture path works for
+       any zsh user, but the synthesized value &mdash; cross-session memory for an agentic
+       tool &mdash; comes from feeding the tool back into itself.</p>
+
+    <h2>4 — What hippo will never do</h2>
+    <ul>
+      <li><strong>Phone home.</strong> No telemetry endpoint upstream. The opt-in OTel stack ships pointed at <code>localhost</code>.</li>
+      <li><strong>Sync to a cloud.</strong> Your <code>~/.local/share/hippo/hippo.db</code> stays on your machine.</li>
+      <li><strong>Share your data with a third party.</strong> The MIT licence makes this easy to verify; the architecture makes it impossible to do quietly.</li>
+      <li><strong>Run a server.</strong> Two long-lived processes (<code>hippo-daemon</code> and <code>hippo-brain</code>), launchd-managed, both bound to localhost. No HTTP listener exposed off-machine.</li>
+    </ul>
+
+    <p class="footnote">If you spot any drift between the bullets above and the
+       implementation, please open an issue. <span lang="la"><em>Concordantia</em></span> is load-bearing.</p>
+  </section>
+</Tier1>
+
+<style>
+  .footnote {
+    font-size: 0.95rem;
+    color: var(--quiet);
+    margin-top: 2rem;
+    padding-top: 1rem;
+    border-top: 1px solid var(--rule-soft);
+  }
+</style>

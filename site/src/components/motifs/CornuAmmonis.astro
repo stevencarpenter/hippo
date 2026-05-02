@@ -1,0 +1,60 @@
+---
+/**
+ * Hippocampus side view — the seahorse curl. Hand-traced path data.
+ * SVG paths from spec (Plate IV first figure).
+ */
+export interface Props {
+  size?: "full" | "reduced" | "inline";
+  caption?: string; // italic Junicode caption (decorative; aria-hidden via parent)
+  breathe?: boolean; // 8s scale 1.00 -> 1.03
+  decorative?: boolean; // A5 — default true; renders aria-hidden
+  class?: string;
+}
+const {
+  size = "full",
+  caption,
+  breathe = false,
+  decorative = true,
+  class: className = "",
+} = Astro.props;
+
+const px = size === "full" ? 200 : size === "reduced" ? 32 : 24;
+const stroke = size === "inline" ? 1.4 : 1;
+---
+<figure aria-hidden={decorative ? "true" : undefined} class={`motif motif-cornu-ammonis ${breathe ? "breathe" : ""} ${className}`}>
+  <svg
+    viewBox="0 0 120 130"
+    width={px}
+    height={px}
+    xmlns="http://www.w3.org/2000/svg"
+    aria-hidden={decorative ? "true" : undefined}
+    role={decorative ? undefined : "img"}
+    focusable="false"
+  >
+    {!decorative && <title>cornu Ammonis — hippocampus side view</title>}
+    <g fill="none" stroke="currentColor" stroke-width={stroke} stroke-linecap="round">
+      <path d="M60 18 C84 21, 99 36, 96 60 C93 81, 78 87, 66 83 C57 79, 53 71, 57 63 C60 57, 69 55, 73 60 C77 65, 75 72, 68 73"/>
+      <path d="M68 73 C65 78, 60 83, 54 85 C45 88, 36 87, 33 78 C31 71, 36 66, 42 67"/>
+      <path d="M60 18 C55 17, 51 19, 49 24 C48 28, 51 32, 55 33"/>
+      <circle cx="71" cy="30" r="0.9" fill="currentColor"/>
+    </g>
+  </svg>
+  {caption && size !== "inline" && size !== "reduced" && (
+    <figcaption class="fig-caption" aria-hidden="true">{caption}</figcaption>
+  )}
+</figure>
+
+<style>
+  .motif { display: inline-flex; flex-direction: column; align-items: center; color: var(--ink); }
+  .motif svg { color: var(--ink); transform-origin: center; will-change: transform; }
+  .motif.breathe svg {
+    animation: motif-breathe 8s ease-in-out infinite;
+  }
+  @keyframes motif-breathe {
+    0%, 100% { transform: scale(1.00); }
+    50% { transform: scale(1.03); }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .motif.breathe svg { animation: none; }
+  }
+</style>

@@ -1,0 +1,94 @@
+/* ============================================================
+ * Design tokens — anatomical naturalism palette + typography.
+ * Spec: docs/superpowers/specs/2026-05-01-hippobrain-org-design.md
+ * Addendum A1: --rule alpha bumped to 0.50 for 1.4.11 compliance.
+ * Addendum A2: --quiet-on-code added for code-comment AA on --code-bg.
+ * ============================================================ */
+
+:root {
+  /* Color */
+  --paper:        #efe4ce;
+  --paper-2:      #f5efe2;
+  --ink:          #2a1d10;
+  --sepia:        #6b3c20;
+  --oxblood:      #8a3a1f;
+  /* DECORATIVE ONLY — illustration strokes, hatch. Fails AA at small text by design. */
+  --rust:         #b58a4b;
+  --quiet:        #7a6649;            /* AA on --paper */
+  --quiet-on-code:#6f5a3e;            /* AA on --code-bg — use ONLY for code comments */
+  --code-bg:      #e9ddc5;
+  --rule:         rgba(42, 29, 16, 0.50);   /* 3.05:1 on --paper, 3.18:1 on --paper-2 (A1) */
+  --rule-soft:    rgba(42, 29, 16, 0.15);   /* decorative paper rules; no contrast req */
+
+  /* Type stacks */
+  --font-display: "Fraunces", "Source Serif 4", Iowan Old Style, Apple Garamond, serif;
+  --font-body-1:  "Fraunces", "Source Serif 4", Iowan Old Style, Apple Garamond, serif;
+  --font-body-2:  "Source Serif 4", "Fraunces", Iowan Old Style, Apple Garamond, serif;
+  /* Junicode deferred (1.16MB woff2 blows the <500KB budget). Falling back to Fraunces
+     for plate-badge / fig-caption duty until the font is properly subset to Latin only. */
+  --font-label:   "Fraunces", Iowan Old Style, serif;
+  --font-mono:    "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, monospace;
+
+  /* Tier-1 type scale */
+  --t1-display: 52px;
+  --t1-h1:      32px;
+  --t1-h2:      23px;
+  --t1-h3:      18px;
+  --t1-body:    16px;
+  --t1-eyebrow: 11px;
+  --t1-mono:    14px;
+
+  /* Tier-2 type scale */
+  --t2-display: 32px;
+  --t2-h1:      28px;
+  --t2-h2:      20px;
+  --t2-h3:      16px;
+  --t2-body:    16px;
+  --t2-eyebrow: 10px;
+
+  /* Spacing */
+  --gap-xs: 0.25rem;
+  --gap-sm: 0.5rem;
+  --gap-md: 1rem;
+  --gap-lg: 1.6rem;
+  --gap-xl: 2.6rem;
+  --gap-xxl: 4.2rem;
+
+  /* Layout */
+  --max-prose: 60ch;
+  --max-page:  1200px;
+  --rail-left: 220px;
+  --rail-right: 200px;
+
+  /* Radii — none, by design */
+  --radius: 0;
+
+  /* Variable axes */
+  --display-soft: 70;
+  --h2-soft: 100;
+  --display-opsz: 144;
+}
+
+/* Responsive collapse on narrow screens */
+@media (max-width: 480px) {
+  :root {
+    --t1-display: 36px;
+    --t1-h1:      24px;
+    --t1-h2:      18px;
+  }
+}
+
+/* Lights-low / dark tokens (D8). No toggle UI in v1.0 — tokens defined so impl can land. */
+[data-theme="dark"] {
+  --paper:        #1f1812;
+  --paper-2:      #261d15;
+  --ink:          #efe4ce;
+  --sepia:        #c39a76;
+  --oxblood:      #d97a5e;
+  --rust:         #c89968;
+  --quiet:        #8b7860;
+  --quiet-on-code:#a99275;
+  --code-bg:      #2a1f17;
+  --rule:         rgba(239, 228, 206, 0.50);
+  --rule-soft:    rgba(239, 228, 206, 0.15);
+}

@@ -1,0 +1,196 @@
+---
+import { getCollection } from "astro:content";
+import Tier1 from "../layouts/Tier1.astro";
+import Hero from "../components/Hero.astro";
+import PlateBadge from "../components/PlateBadge.astro";
+import CodeBlock from "../components/CodeBlock.astro";
+import CornuAmmonis from "../components/motifs/CornuAmmonis.astro";
+import TrisynapticCircuit from "../components/motifs/TrisynapticCircuit.astro";
+import MarginaliaMotif from "../components/motifs/MarginaliaMotif.astro";
+
+const blogPosts = (await getCollection("blog", ({ data }) => !data.draft))
+  .sort((a, b) => b.data.date.getTime() - a.data.date.getTime())
+  .slice(0, 3);
+---
+<Tier1 title="Hippo" description="A second brain that lives on your machine — local-first memory for shell, Claude Code, and browsing.">
+  <Hero />
+
+  <!-- Plate II — What hippo captures, exactly -->
+  <section class="plate-section" aria-labelledby="plate-ii-heading">
+    <div class="page">
+      <PlateBadge label="Plate II" figure="fig. 2" />
+      <h2 id="plate-ii-heading">What hippo captures, exactly.</h2>
+      <p class="body-lede">Three sources today, named by the file or extension that produces them. Nothing is captured that isn't on this list.</p>
+      <div class="three-col">
+        <div class="col">
+          <div class="col-icon" aria-hidden="true"><CornuAmmonis size="full" /></div>
+          <h3>Shell</h3>
+          <p>A zsh hook (<code>shell/hippo-zsh-hook.zsh</code>) writes a JSON line per command to the daemon's Unix socket. PWD, command, exit status, duration, redacted command text. No environment variables, no terminal output.</p>
+          <p><a href="/privacy#shell">technical detail →</a></p>
+        </div>
+        <div class="col">
+          <div class="col-icon" aria-hidden="true"><TrisynapticCircuit size="full" /></div>
+          <h3>Claude Code</h3>
+          <p>An FSEvents watcher tails session JSONLs in <code>~/.claude/projects/**/*.jsonl</code>, segments tool-use blocks, and writes them once per growth event. Idempotent on <code>(session_id, segment_index)</code>.</p>
+          <p><a href="/privacy#claude">technical detail →</a></p>
+        </div>
+        <div class="col">
+          <div class="col-icon" aria-hidden="true"><MarginaliaMotif size="full" /></div>
+          <h3>Firefox</h3>
+          <p>A WebExtension speaks Native Messaging to the daemon. Only allowlisted domains (currently 27, edited by you) yield events; everything else is ignored before it's written down.</p>
+          <p><a href="/privacy#firefox">technical detail →</a></p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Plate III — How it works (architecture diagram) -->
+  <section class="plate-section" aria-labelledby="plate-iii-heading">
+    <div class="page">
+      <PlateBadge label="Plate III" figure="fig. 3 — daemon · brain · MCP" />
+      <h2 id="plate-iii-heading">How it works.</h2>
+      <div class="arch">
+        <svg viewBox="0 0 800 240" role="img" aria-labelledby="arch-title arch-desc" class="arch-diagram">
+          <title id="arch-title">Hippo architecture: capture sources feed the daemon, the brain enriches with a local LLM, the MCP server answers questions.</title>
+          <desc id="arch-desc">Three capture sources on the left — zsh hook, Claude Code session watcher, Firefox WebExtension — write events to the hippo-daemon Rust process via a Unix socket. The daemon redacts secrets and writes to a SQLite database with FTS5 plus sqlite-vec. The hippo-brain Python process reads enrichment queues from SQLite, calls a local LLM via the LM Studio HTTP API, and writes knowledge nodes back to SQLite. An MCP server exposes ask, search_knowledge, search_events, and get_entities tools to client editors over stdio.</desc>
+          <g fill="none" stroke="currentColor" stroke-width="1.5" font-family="var(--font-display), serif" font-size="13" stroke-linecap="round">
+            <!-- sources column -->
+            <rect x="20" y="20" width="150" height="40"/>
+            <text x="95" y="44" text-anchor="middle" fill="currentColor" stroke="none">zsh hook</text>
+            <rect x="20" y="100" width="150" height="40"/>
+            <text x="95" y="124" text-anchor="middle" fill="currentColor" stroke="none">Claude session watch</text>
+            <rect x="20" y="180" width="150" height="40"/>
+            <text x="95" y="204" text-anchor="middle" fill="currentColor" stroke="none">Firefox extension</text>
+            <!-- arrows to daemon -->
+            <path d="M170 40 L260 110"/>
+            <path d="M170 120 L260 120"/>
+            <path d="M170 200 L260 130"/>
+            <!-- daemon -->
+            <rect x="260" y="80" width="170" height="80" stroke-width="2"/>
+            <text x="345" y="110" text-anchor="middle" fill="currentColor" stroke="none">hippo-daemon</text>
+            <text x="345" y="130" text-anchor="middle" fill="currentColor" font-style="italic" font-size="11" stroke="none">Rust · redact · write</text>
+            <!-- sqlite -->
+            <ellipse cx="540" cy="120" rx="60" ry="32"/>
+            <text x="540" y="116" text-anchor="middle" fill="currentColor" stroke="none">SQLite</text>
+            <text x="540" y="132" text-anchor="middle" font-style="italic" font-size="11" fill="currentColor" stroke="none">FTS5 · vec0</text>
+            <!-- daemon to sqlite -->
+            <path d="M430 120 L480 120"/>
+            <!-- brain -->
+            <rect x="640" y="20" width="140" height="60"/>
+            <text x="710" y="48" text-anchor="middle" fill="currentColor" stroke="none">hippo-brain</text>
+            <text x="710" y="66" text-anchor="middle" font-style="italic" font-size="11" fill="currentColor" stroke="none">Python · LM Studio</text>
+            <!-- mcp -->
+            <rect x="640" y="160" width="140" height="60"/>
+            <text x="710" y="186" text-anchor="middle" fill="currentColor" stroke="none">MCP server</text>
+            <text x="710" y="206" text-anchor="middle" font-style="italic" font-size="11" fill="currentColor" stroke="none">ask · search · entities</text>
+            <!-- sqlite to brain & mcp -->
+            <path d="M580 100 L640 60" stroke-dasharray="2 4"/>
+            <path d="M580 140 L640 180" stroke-dasharray="2 4"/>
+          </g>
+        </svg>
+        <p class="fig-caption" lang="la"><em>fig. 3 — sectio architectonica.</em> Capture sources feed the Rust daemon; the brain reads enrichment queues; the MCP server answers questions over stdio.</p>
+      </div>
+      <p class="body-lede">Two processes share a SQLite database. The daemon captures, redacts, and writes; the brain enriches; the MCP server answers questions. Inference runs on your GPU via LM Studio. The architecture is documented at <a href="/docs/reference/lifecycle">/docs/reference/lifecycle</a>.</p>
+    </div>
+  </section>
+
+  <!-- Plate IV — Privacy claims -->
+  <section class="plate-section" aria-labelledby="plate-iv-heading">
+    <div class="page">
+      <PlateBadge label="Plate IV" figure="fig. 4" />
+      <h2 id="plate-iv-heading">Privacy, by construction.</h2>
+      <div class="three-col">
+        <div class="col">
+          <h3>All inference local.</h3>
+          <p>Hippo's brain calls LM Studio on <code>localhost</code>. The model file lives on your disk; the inference runs on your GPU. There is no network call to a hosted LLM, ever.</p>
+        </div>
+        <div class="col">
+          <h3>No telemetry by default.</h3>
+          <p>Hippo ships an OpenTelemetry stack you can opt into, and when you do, it points at <code>localhost:4317</code>. There is no telemetry endpoint upstream. Nothing leaves your machine unless you stand up a remote collector yourself.</p>
+        </div>
+        <div class="col">
+          <h3>Secrets redacted before storage.</h3>
+          <p>The daemon runs every captured event through a redaction pass before it touches the database. Patterns are user-editable in <code>~/.config/hippo/redact.toml</code>. Review them at <a href="/privacy#redaction">/privacy</a>.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Plate V — See it work -->
+  <section class="plate-section" aria-labelledby="plate-v-heading">
+    <div class="page">
+      <PlateBadge label="Plate V" figure="fig. 5" />
+      <h2 id="plate-v-heading">See it work.</h2>
+      <p class="body-lede">A real session, redacted. Run <code>hippo doctor</code> to confirm the wiring, then <code>hippo ask</code> to query the knowledge base.</p>
+
+      <CodeBlock>
+        <pre><code class="language-shellsession">$ hippo doctor
+[OK]   daemon       v0.20.1 — pid 5142, uptime 3d 14h
+[OK]   brain        v0.20.1 — http://127.0.0.1:8841
+[OK]   schema       v6
+[OK]   socket       /Users/you/.local/share/hippo/hippo.sock
+[OK]   shell hook   ~/.config/zsh/hippo-shell-hook.zsh present
+[OK]   claude hook  ~/.claude/settings.json hook entry matches repo
+[OK]   browser NM   ~/Library/Application Support/Mozilla/NativeMessagingHosts/hippo_daemon.json
+[OK]   probes       last canary round-trip 247ms (shell)
+[OK]   alarms       0 unacknowledged
+[OK]   LM Studio    http://127.0.0.1:1234 reachable; loaded model qwen3-coder
+ten checks complete in 0.61s — all green.</code></pre>
+      </CodeBlock>
+
+      <CodeBlock>
+        <pre><code class="language-shellsession">$ hippo ask "what was that anti-pattern about probes leaking into search?"
+
+  AP-6: probe events MUST NOT appear in user-facing queries. Synthetic
+  canaries from `hippo probe` carry a probe_tag column on every row;
+  every consumer (RAG, MCP search, hippo ask) filters on probe_tag IS NULL
+  upstream. A Semgrep rule enforces this at review time.
+
+  See:
+  · docs/capture/anti-patterns.md (3.91)
+  · crates/hippo-daemon/src/probe.rs:142-178 (3.42)
+  · brain/src/hippo_brain/search.py:88-112 (3.18)</code></pre>
+      </CodeBlock>
+    </div>
+  </section>
+
+  {blogPosts.length > 0 && (
+    <!-- Plate VI — Field notes (conditional) -->
+    <section class="plate-section" aria-labelledby="plate-vi-heading">
+      <div class="page">
+        <PlateBadge label="Plate VI" figure="fig. 6" />
+        <h2 id="plate-vi-heading">Recent field notes.</h2>
+        <ul class="post-list">
+          {blogPosts.map((post) => (
+            <li>
+              <p class="post-meta">{post.data.date.toISOString().slice(0, 10)}</p>
+              <h3><a href={`/blog/${post.id.replace(/\.md$/, "")}`}>{post.data.title}</a></h3>
+              <p>{post.data.description}</p>
+            </li>
+          ))}
+        </ul>
+        <p><a href="/blog">All field notes →</a></p>
+      </div>
+    </section>
+  )}
+</Tier1>
+
+<style>
+  .plate-section h2 { margin-bottom: 0.4rem; }
+  .col-icon { margin-bottom: 0.4rem; color: var(--sepia); }
+  .col-icon :global(svg) { width: 32px; height: 32px; }
+  .arch {
+    margin: 1.4rem 0;
+    padding: 1.4rem;
+    background: var(--paper-2);
+    border: 1px solid var(--rule-soft);
+  }
+  .arch-diagram { width: 100%; height: auto; max-height: 320px; color: var(--ink); }
+  .post-list { list-style: none; padding: 0; }
+  .post-list li { padding: 1rem 0; border-bottom: 1px solid var(--rule-soft); }
+  .post-list h3 { font-family: var(--font-display); font-size: 1.2rem; margin: 0.2rem 0; }
+  .post-list h3 a { color: var(--ink); text-decoration: none; }
+  .post-list h3 a:hover { color: var(--oxblood); }
+  .post-meta { font-family: var(--font-label); font-size: 11px; letter-spacing: 0.18em; color: var(--sepia); text-transform: uppercase; margin: 0; }
+  .post-list p { color: var(--ink); margin: 0.3rem 0 0; }
+</style>

@@ -1,0 +1,23 @@
+---
+export interface Props {
+  size?: "header" | "footer" | "hero";
+  as?: "span" | "h1";
+  class?: string;
+}
+const { size = "header", as = "span", class: className = "" } = Astro.props;
+const Tag = as;
+const sizeClass = `wordmark-${size}`;
+---
+{/* "Hippo·campus." — sepia mid-dot, NOT lang="la" (project name). The mid-dot is
+    aria-hidden so screen readers say "Hippocampus." (A5). */}
+<Tag class={`wordmark ${sizeClass} ${className}`}>
+  Hippo<span class="midpoint" aria-hidden="true">·</span>campus.
+</Tag>
+
+<style>
+  .wordmark { font-family: var(--font-display); font-weight: 400; color: var(--ink); letter-spacing: -0.01em; }
+  .wordmark-header { font-size: 1.25rem; }
+  .wordmark-footer { font-size: 1rem; }
+  .wordmark-hero  { font-size: var(--t1-display); font-variation-settings: "opsz" var(--display-opsz), "SOFT" var(--display-soft); font-weight: 350; line-height: 1.05; }
+  .midpoint { color: var(--sepia); }
+</style>

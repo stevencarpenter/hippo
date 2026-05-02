@@ -1,0 +1,50 @@
+---
+export interface Props {
+  tag: string;
+  date: string; // YYYY-MM-DD
+  name: string;
+  url: string;
+  bodyHtml: string; // pre-rendered markdown
+}
+const { tag, date, name, url, bodyHtml } = Astro.props;
+---
+<article class="changelog-entry">
+  <header>
+    <h2>{name}</h2>
+    <p class="meta">
+      <code>{tag}</code> · {date} ·
+      <a href={url} rel="noopener" target="_blank">on GitHub <span aria-hidden="true">↗</span></a>
+    </p>
+  </header>
+  <!-- Add `prose` so global prose.css rules style the demoted h3/h4/h5/h6
+       and other markdown elements consistently with the rest of the site
+       (changelog.astro shifts h1->h3, h2->h4, etc. before set:html). -->
+  <div class="changelog-body prose" set:html={bodyHtml}></div>
+</article>
+
+<style>
+  .changelog-entry {
+    margin-bottom: 2.4rem;
+    padding-bottom: 1.6rem;
+    border-bottom: 1px solid var(--rule-soft);
+  }
+  .changelog-entry:last-child { border-bottom: 0; }
+  .changelog-entry h2 {
+    font-family: var(--font-display);
+    font-size: 1.4rem;
+    font-style: normal;
+    color: var(--ink);
+    margin-bottom: 0.2rem;
+  }
+  .changelog-entry .meta {
+    font-family: var(--font-label);
+    font-size: 12px;
+    letter-spacing: 0.1em;
+    color: var(--quiet);
+    margin-bottom: 0.6rem;
+  }
+  .changelog-entry .meta code { background: var(--code-bg); padding: 0.05rem 0.32rem; }
+  /* changelog-body uses .prose for everything else; only override the max-width
+     so release notes can use the full column. */
+  .changelog-body { max-width: none; }
+</style>

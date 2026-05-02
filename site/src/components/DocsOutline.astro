@@ -1,0 +1,56 @@
+---
+import type { MarkdownHeading } from "astro";
+
+export interface Props {
+  headings: MarkdownHeading[];
+}
+const { headings } = Astro.props;
+const filtered = headings.filter((h) => h.depth === 2 || h.depth === 3);
+---
+{filtered.length >= 3 && (
+  <aside class="docs-rail-right" aria-label="On this page">
+    <h5>On this page</h5>
+    <ul>
+      {filtered.map((h) => (
+        <li class={`depth-${h.depth}`}>
+          <a href={`#${h.slug}`} data-heading-link={h.slug}>{h.text}</a>
+        </li>
+      ))}
+    </ul>
+  </aside>
+)}
+
+<script is:inline>
+  // Highlight active heading on scroll. Updates aria-current="location" (A6).
+  (() => {
+    const links = Array.from(document.querySelectorAll('[data-heading-link]'));
+    if (!links.length) return;
+    const slugToLink = new Map();
+    links.forEach((a) => slugToLink.set(a.getAttribute('data-heading-link'), a));
+    const targets = Array.from(slugToLink.keys())
+      .map((slug) => document.getElementById(slug))
+      .filter((el) => el instanceof Element);
+    if (!targets.length) return;
+    let active = null;
+    const setActive = (slug) => {
+      if (active === slug) return;
+      slugToLink.forEach((a, s) => {
+        if (s === slug) {
+          a.setAttribute('aria-current', 'location');
+          a.classList.add('active');
+        } else {
+          a.removeAttribute('aria-current');
+          a.classList.remove('active');
+        }
+      });
+      active = slug;
+    };
+    const observer = new IntersectionObserver((entries) => {
+      const visible = entries
+        .filter((e) => e.isIntersecting)
+        .sort((a, b) => a.target.getBoundingClientRect().top - b.target.getBoundingClientRect().top);
+      if (visible[0]) setActive(visible[0].target.id);
+    }, { rootMargin: '0px 0px -70% 0px', threshold: 0 });
+    targets.forEach((t) => observer.observe(t));
+  })();
+</script>

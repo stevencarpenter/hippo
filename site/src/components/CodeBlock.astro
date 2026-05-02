@@ -1,0 +1,52 @@
+---
+export interface Props {
+  lang?: string;
+  copyable?: boolean;
+}
+const { copyable = true } = Astro.props;
+---
+<div class="code-block">
+  <slot />
+  {copyable && (
+    <button class="code-copy" type="button" aria-label="Copy code to clipboard" data-copy>Copy</button>
+  )}
+</div>
+
+<script is:inline>
+  // Always-visible copy button (A8). One-shot wiring on first paint and after view transitions.
+  (function () {
+    function wire(button) {
+      if (button.dataset.wired) return;
+      button.dataset.wired = "1";
+      button.addEventListener("click", async () => {
+        const wrapper = button.closest(".code-block");
+        const pre = wrapper && wrapper.querySelector("pre");
+        if (!pre) return;
+        const text = pre.textContent || "";
+        // navigator.clipboard.writeText is available in all evergreen browsers
+        // and Safari 13.1+ (Apr 2020). The site ships only over HTTPS, so the
+        // secure-context requirement is always met. No execCommand fallback.
+        try {
+          await navigator.clipboard.writeText(text);
+        } catch {
+          // Permission denied or transient failure — silently bail. The user
+          // can still select-and-Cmd-C; we just don't get the toast.
+          return;
+        }
+        button.classList.add("copied");
+        const announce = document.getElementById("sr-announce");
+        if (announce) {
+          announce.textContent = "Copied to clipboard.";
+          setTimeout(() => { announce.textContent = ""; }, 1500);
+        }
+        setTimeout(() => button.classList.remove("copied"), 600);
+      });
+    }
+    function wireAll() {
+      document.querySelectorAll("button[data-copy]").forEach(wire);
+    }
+    if (document.readyState !== "loading") wireAll();
+    else document.addEventListener("DOMContentLoaded", wireAll);
+    document.addEventListener("astro:page-load", wireAll);
+  })();
+</script>

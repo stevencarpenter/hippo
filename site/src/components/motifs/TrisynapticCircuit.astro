@@ -1,0 +1,57 @@
+---
+export interface Props {
+  size?: "full" | "reduced" | "inline";
+  caption?: string;
+  breathe?: boolean;
+  decorative?: boolean;
+  class?: string;
+}
+const {
+  size = "full",
+  caption,
+  breathe = false,
+  decorative = true,
+  class: className = "",
+} = Astro.props;
+const px = size === "full" ? 200 : size === "reduced" ? 32 : 24;
+const stroke = size === "inline" ? 1.4 : 1;
+---
+<figure aria-hidden={decorative ? "true" : undefined} class={`motif motif-trisynaptic ${breathe ? "breathe" : ""} ${className}`}>
+  <svg
+    viewBox="0 0 120 130"
+    width={px}
+    height={px}
+    xmlns="http://www.w3.org/2000/svg"
+    aria-hidden={decorative ? "true" : undefined}
+    role={decorative ? undefined : "img"}
+    focusable="false"
+  >
+    {!decorative && <title>trisynaptic circuit — CA1 / CA2 / CA3 / DG</title>}
+    <g fill="none" stroke="currentColor" stroke-width={stroke}>
+      <circle cx="40" cy="55" r="6"/>
+      <circle cx="80" cy="40" r="6"/>
+      <circle cx="80" cy="70" r="6"/>
+      <circle cx="60" cy="90" r="6"/>
+      <path d="M46 53 L74 42 M46 57 L74 68 M84 45 L60 84 M84 73 L60 87"/>
+      {size !== "inline" && size !== "reduced" && (
+        <g font-family="Junicode, serif" font-size="6" fill="currentColor" stroke="none">
+          <text x="40" y="58" text-anchor="middle">CA1</text>
+          <text x="80" y="43" text-anchor="middle">CA2</text>
+          <text x="80" y="73" text-anchor="middle">CA3</text>
+          <text x="60" y="93" text-anchor="middle">DG</text>
+        </g>
+      )}
+    </g>
+  </svg>
+  {caption && size === "full" && (
+    <figcaption class="fig-caption" aria-hidden="true">{caption}</figcaption>
+  )}
+</figure>
+
+<style>
+  .motif { display: inline-flex; flex-direction: column; align-items: center; color: var(--ink); }
+  .motif svg { color: var(--ink); transform-origin: center; will-change: transform; }
+  .motif.breathe svg { animation: motif-breathe 8s ease-in-out infinite; }
+  @keyframes motif-breathe { 0%,100% { transform: scale(1); } 50% { transform: scale(1.03); } }
+  @media (prefers-reduced-motion: reduce) { .motif.breathe svg { animation: none; } }
+</style>

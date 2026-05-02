@@ -1,0 +1,90 @@
+---
+import Tier1 from "../layouts/Tier1.astro";
+import PlateBadge from "../components/PlateBadge.astro";
+
+interface Entry {
+  id: string;
+  question: string;
+  answerHtml: string;
+}
+
+// Twelve concrete answers per the spec. Real numbers, no marketing copy.
+const entries: Entry[] = [
+  {
+    id: "platform",
+    question: "Does hippo work on Linux or Windows?",
+    answerHtml: `<p>macOS only. Release binaries ship for arm64; Intel Macs can build from source. The capture paths use launchd, FSEvents, and macOS-specific Native Messaging plumbing — a Linux or Windows port is not on the roadmap.</p>`,
+  },
+  {
+    id: "telemetry",
+    question: "Does hippo send data anywhere?",
+    answerHtml: `<p>No. All inference is local via LM Studio. The opt-in OpenTelemetry stack ships pointed at <code>localhost:4317</code>. There is no upstream telemetry endpoint.</p>`,
+  },
+  {
+    id: "secrets",
+    question: "What if I have secrets in my shell history?",
+    answerHtml: `<p>Hippo redacts events before they touch the database. The default patterns catch AWS keys, GitHub PATs, generic <code>Bearer</code> tokens, OpenAI keys, npm tokens, and a long tail of cloud-provider patterns. See <a href="/privacy#redaction">/privacy</a> and <a href="/docs/reference/redaction">/docs/reference/redaction</a>.</p>`,
+  },
+  {
+    id: "agents",
+    question: "Will hippo work with Cursor / Aider / Continue?",
+    answerHtml: `<p>Today, only Claude Code session JSONLs are ingested. Other agentic tools may be supported in the future, but no promises &mdash; if your tool writes session transcripts to disk in a format hippo can parse, the watcher path is straightforward to extend. See <a href="/docs/capture/adding-a-source">adding a source</a>.</p>`,
+  },
+  {
+    id: "disk",
+    question: "How much disk space does hippo use?",
+    answerHtml: `<p>About 50&nbsp;MB for the daemon binaries. The SQLite database varies by usage; typical figures are 200&ndash;500&nbsp;MB after a month of heavy use, dominated by the FTS5 index and embeddings. <code>~/.local/share/hippo/hippo.db</code> is the only growing file.</p>`,
+  },
+  {
+    id: "memory",
+    question: "How much memory?",
+    answerHtml: `<p>The daemon idles around 30&nbsp;MB. The brain spawns LM Studio inference on demand; LM Studio&rsquo;s memory footprint depends entirely on the model you load. A typical 7B-class model on Apple Silicon uses 4&ndash;8&nbsp;GB of unified memory; a 35B-A3B model uses ~20&nbsp;GB.</p>`,
+  },
+  {
+    id: "always-on",
+    question: "Does the brain run all the time?",
+    answerHtml: `<p>Yes, as a launchd-managed service. It&rsquo;s idle most of the time, polling enrichment queues from SQLite. When work appears, it calls LM Studio, writes the result, and goes back to sleep. CPU at idle is well under 1%.</p>`,
+  },
+  {
+    id: "models",
+    question: "What models are supported?",
+    answerHtml: `<p>Any LM Studio-compatible model. Currently tested with Qwen 3.5 35B-A3B; configurable in <code>~/.config/hippo/config.toml</code> via <code>[models.query]</code> and <code>[models.enrich]</code>. Smaller models work; larger models work; mixing models per task works.</p>`,
+  },
+  {
+    id: "export",
+    question: "Can I export my data?",
+    answerHtml: `<p>Yes. SQLite at <code>~/.local/share/hippo/hippo.db</code>. Standard SQL. The schema is documented at <a href="/docs/reference/schema">/docs/reference/schema</a>; nothing about it is proprietary.</p>`,
+  },
+  {
+    id: "uninstall",
+    question: "Can I uninstall cleanly?",
+    answerHtml: `<p>Yes. <code>hippo daemon uninstall</code> removes the LaunchAgents and binaries. The database stays at <code>~/.local/share/hippo/hippo.db</code> until you remove it explicitly. The shell hook entry in <code>~/.zshrc</code> is harmless when hippo isn&rsquo;t running, but you can delete it if you prefer.</p>`,
+  },
+  {
+    id: "open-source",
+    question: "Is hippo open source?",
+    answerHtml: `<p>Yes, MIT licence. Source: <a href="https://github.com/stevencarpenter/hippo" rel="noopener" target="_blank">github.com/stevencarpenter/hippo <span aria-hidden="true">↗</span></a>.</p>`,
+  },
+  {
+    id: "contribute",
+    question: "How do I contribute?",
+    answerHtml: `<p>Read <a href="/docs/contributing">CONTRIBUTING.md</a> first; then the capture-reliability rulebook at <a href="/docs/capture/anti-patterns">docs/capture/anti-patterns</a> &mdash; the AP-1..AP-N anti-patterns are review blockers, not suggestions. The site itself has its own contributing guide at <a href="https://github.com/stevencarpenter/hippo/blob/main/site/CONTRIBUTING.md" rel="noopener" target="_blank">site/CONTRIBUTING.md <span aria-hidden="true">↗</span></a>.</p>`,
+  },
+];
+---
+<Tier1 title="FAQ" description="Common questions about hippo, with concrete numbers and links to source.">
+  <section class="plate-section page">
+    <PlateBadge label="Plate I" figure="quæstiones" figureLatin />
+    <h1 class="display"><span aria-hidden="true">? </span>Frequently asked.</h1>
+    <p class="lede"><em>— twelve answers, all concrete.</em></p>
+
+    <div class="faq">
+      {entries.map((e) => (
+        <section class="faq-entry" id={e.id}>
+          <h2><a href={`#${e.id}`} class="anchor-h">{e.question}</a></h2>
+          <div set:html={e.answerHtml} />
+        </section>
+      ))}
+    </div>
+  </section>
+</Tier1>

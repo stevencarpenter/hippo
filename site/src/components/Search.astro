@@ -1,0 +1,74 @@
+---
+// Pagefind search UI mount. Init logic + a11y patches per A9.
+---
+<div
+  id="search"
+  class="search-mount"
+  role="region"
+  aria-label="Search results"
+></div>
+<link rel="stylesheet" href="/pagefind/pagefind-ui.css" />
+<script src="/pagefind/pagefind-ui.js" is:inline></script>
+<script is:inline>
+  // Re-init on every page load — including SPA-style navigations from ViewTransitions —
+  // so /search works after a client-side nav, not just a hard reload.
+  function initPagefindUI() {
+    if (typeof PagefindUI === "undefined") return;
+    var mount = document.getElementById("search");
+    if (!mount || mount.dataset.pagefindInit === "true") return;
+    mount.dataset.pagefindInit = "true";
+    new PagefindUI({
+      element: "#search",
+      showImages: false,
+      showSubResults: true,
+      placeholder: "Search the docs and field notes…",
+      translations: {
+        placeholder: "Search the docs and field notes…",
+        clear_search: "Clear search",
+        load_more: "Load more results",
+        search_label: "Search the docs and field notes",
+        filters_label: "Filter results",
+        zero_results: "No entries match. Try a broader term, or browse the docs index.",
+        many_results: "[COUNT] results for [SEARCH_TERM]",
+        one_result: "[COUNT] result for [SEARCH_TERM]",
+        alt_search: "Did you mean [DIFFERENT_TERM]?",
+        search_suggestion: "No results for [SEARCH_TERM]. Try one of the suggested terms below.",
+        searching: "Searching for [SEARCH_TERM]…",
+      },
+    });
+    // A9 — patch label on Pagefind input if upstream missed one, and put
+    // aria-live="polite" on the *result list only* (not the wrapper, or every
+    // keystroke fires an SR announcement of the result rebuild — I8).
+    setTimeout(() => {
+      var input = mount.querySelector("input[type='text']");
+      if (input && !input.getAttribute("aria-label")) {
+        input.setAttribute("aria-label", "Search the docs and field notes");
+      }
+      var results = mount.querySelector(".pagefind-ui__results");
+      if (results && !results.getAttribute("aria-live")) {
+        results.setAttribute("role", "region");
+        results.setAttribute("aria-label", "Search results");
+        results.setAttribute("aria-live", "polite");
+      }
+    }, 100);
+  }
+  document.addEventListener("DOMContentLoaded", initPagefindUI);
+  // Astro view transitions fire `astro:page-load` after each SPA navigation;
+  // pagefind's mount node is replaced, so re-init.
+  document.addEventListener("astro:page-load", initPagefindUI);
+</script>
+
+<style>
+  .search-mount {
+    --pagefind-ui-primary: var(--oxblood);
+    --pagefind-ui-text: var(--ink);
+    --pagefind-ui-background: var(--paper);
+    --pagefind-ui-border: var(--rule);
+    --pagefind-ui-tag: var(--sepia);
+    --pagefind-ui-border-width: 1px;
+    --pagefind-ui-border-radius: 0;
+    --pagefind-ui-image-border-radius: 0;
+    --pagefind-ui-image-box-ratio: 3 / 2;
+    --pagefind-ui-font: var(--font-body-1);
+  }
+</style>

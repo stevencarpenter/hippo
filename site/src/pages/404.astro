@@ -1,0 +1,41 @@
+---
+import Tier1 from "../layouts/Tier1.astro";
+import PlateBadge from "../components/PlateBadge.astro";
+import PlateFrame from "../components/motifs/PlateFrame.astro";
+---
+<Tier1 title="Plate not found" description="404 — the page is missing or never existed." noIndex={true}>
+  <section class="plate-section page not-found">
+    <PlateBadge label="Plate not found" figure="fig. 404" />
+    <h1 class="display">The page is missing.</h1>
+    <p class="lede"><em>— or it never existed.</em></p>
+    <div class="frame" aria-hidden="true">
+      <PlateFrame size="full" />
+    </div>
+    <ul class="links">
+      <li><a href="/">Home</a></li>
+      <li><a href="/docs">Docs</a></li>
+      <li><a href="/search">Search</a></li>
+    </ul>
+  </section>
+</Tier1>
+
+<style>
+  .not-found { text-align: center; padding-top: 4rem; }
+  .not-found .display { margin: 0 auto; max-width: 16ch; text-wrap: balance; }
+  .not-found .lede { margin-top: 0.6rem; }
+  .frame { display: flex; justify-content: center; margin: 2.6rem 0; opacity: 0.7; }
+  .links {
+    list-style: none;
+    padding: 0;
+    display: flex;
+    gap: 2rem;
+    justify-content: center;
+    margin-top: 1rem;
+    font-family: var(--font-label);
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    font-size: 12px;
+  }
+  .links a { color: var(--ink); }
+  .links a:hover { color: var(--oxblood); }
+</style>

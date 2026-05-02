@@ -1,0 +1,19 @@
+---
+export interface Props {
+  label: string;
+  figure?: string; // e.g. "fig. 1" — italic, lowercase
+  /**
+   * Mark the figure caption as Latin so screen readers pronounce it correctly
+   * (A4 rule). When true, the figure span is wrapped with lang="la". Default
+   * false because most plate figures are English ("fig. 1", "fig. 404").
+   */
+  figureLatin?: boolean;
+}
+const { label, figure, figureLatin = false } = Astro.props;
+---
+<span class="plate-badge">
+  {label}
+  {figure && (
+    <span class="figure" {...(figureLatin ? { lang: "la" } : {})}> · {figure}</span>
+  )}
+</span>
