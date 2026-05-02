@@ -6,7 +6,7 @@ import CornuAmmonis from "../components/motifs/CornuAmmonis.astro";
 ---
 <Tier1 title="Install" description="Install hippo on macOS arm64 via curl-bash, manual build, or contributor flow.">
   <section class="plate-section page">
-    <PlateBadge label="Plate II" figure="installatio" />
+    <PlateBadge label="Plate I" figure="installatio" figureLatin />
     <h1 class="display"><span aria-hidden="true">↓ </span>Install.</h1>
     <p class="lede"><em>— curl one line, or build it yourself.</em></p>
 
@@ -30,7 +30,8 @@ import CornuAmmonis from "../components/motifs/CornuAmmonis.astro";
     </details>
 
     <h2>2 — Manual installation</h2>
-    <p>For Intel Macs and contributors who want to build from source.</p>
+    <p>For contributors who want to build from source. Release binaries are
+       <strong>arm64-only</strong> today; Intel Macs need to build from source.</p>
     <CodeBlock>
       <pre><code class="language-shell"># prerequisites: rustup, uv, mise, LM Studio
 git clone https://github.com/stevencarpenter/hippo.git

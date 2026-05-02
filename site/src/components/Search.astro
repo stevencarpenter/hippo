@@ -6,7 +6,6 @@
   class="search-mount"
   role="region"
   aria-label="Search results"
-  aria-live="polite"
 ></div>
 <link rel="stylesheet" href="/pagefind/pagefind-ui.css" />
 <script src="/pagefind/pagefind-ui.js" is:inline></script>
@@ -37,11 +36,19 @@
         searching: "Searching for [SEARCH_TERM]…",
       },
     });
-    // A9 — patch label on Pagefind input if upstream missed one.
+    // A9 — patch label on Pagefind input if upstream missed one, and put
+    // aria-live="polite" on the *result list only* (not the wrapper, or every
+    // keystroke fires an SR announcement of the result rebuild — I8).
     setTimeout(() => {
       var input = mount.querySelector("input[type='text']");
       if (input && !input.getAttribute("aria-label")) {
         input.setAttribute("aria-label", "Search the docs and field notes");
+      }
+      var results = mount.querySelector(".pagefind-ui__results");
+      if (results && !results.getAttribute("aria-live")) {
+        results.setAttribute("role", "region");
+        results.setAttribute("aria-label", "Search results");
+        results.setAttribute("aria-live", "polite");
       }
     }, 100);
   }

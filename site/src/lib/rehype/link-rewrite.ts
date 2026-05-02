@@ -130,12 +130,14 @@ export const rehypeLinkRewrite: Plugin<[], Root> = () => {
           props.href = `${site}${fragment}`;
           return;
         }
-        // Excluded-section .md: send to GitHub blob.
-        if (resolved.startsWith("docs/")) {
-          props.href = ghBlob(resolved, fragment);
-          props.target = "_blank";
-          props.rel = "noopener";
-        }
+        // .md link that isn't site-mappable — could be an excluded-section
+        // doc (docs/archive/...) or a non-docs README (extension/firefox/README.md,
+        // otel/README.md, CLAUDE.md, etc.). Either way, send to GitHub blob so the
+        // link lands somewhere instead of resolving to /docs/<broken>.
+        props.href = ghBlob(resolved, fragment);
+        props.target = "_blank";
+        props.rel = "noopener";
+        appendArrow(node);
         return;
       }
 

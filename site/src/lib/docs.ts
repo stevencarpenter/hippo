@@ -67,12 +67,41 @@ export function motifForSlug(slug: string): MotifId {
   return "sectio-coronalis";
 }
 
-/** Friendly default title from a slug, used when frontmatter doesn't supply one. */
+/** Friendly default title from a slug, used as a last-resort fallback when neither
+ *  frontmatter nor an h1 in the body supplies one. */
 export function defaultTitleForSlug(slug: string): string {
   if (slug === "getting-started") return "Getting started";
   if (slug === "contributing") return "Contributing";
   const last = slug.split("/").pop() ?? slug;
   return last.replace(/[-_]/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+/** Extract the first markdown h1 from raw entry body, before the rehype pipeline
+ *  rewrites anything. Returns undefined if none found. Used by the sidebar so that
+ *  entry titles are the actual page H1 (e.g. "MCP Tool Reference") rather than a
+ *  Title Case-mangled slug ("Mcp Reference"). */
+export function firstMarkdownH1(body: string | undefined): string | undefined {
+  if (!body) return undefined;
+  for (const line of body.split(/\r?\n/)) {
+    const m = line.match(/^#\s+(.+?)\s*$/);
+    if (m) return m[1];
+  }
+  return undefined;
+}
+
+/** Resolve an entry's display title via: frontmatter.title → first markdown h1 →
+ *  defaultTitleForSlug. Same chain that pages/docs/[...slug].astro uses to render
+ *  the page heading; sidebar/index must agree. */
+function resolveTitle(
+  data: Record<string, unknown> | undefined,
+  body: string | undefined,
+  slug: string,
+): string {
+  const frontmatterTitle = data?.title as string | undefined;
+  if (frontmatterTitle) return frontmatterTitle;
+  const h1 = firstMarkdownH1(body);
+  if (h1) return h1;
+  return defaultTitleForSlug(slug);
 }
 
 /**
@@ -98,14 +127,23 @@ export function buildSidebar(
     const segments = slug.split("/");
     const last = segments[segments.length - 1];
     let routeSlug: string;
+    let isSectionIndex = false;
     if (segments.length === 1) {
       routeSlug = `reference/${slug}`;
     } else if (last === "README" || last === "readme") {
       routeSlug = segments.slice(0, -1).join("/");
+      isSectionIndex = true;
     } else {
       routeSlug = slug;
     }
-    const title = entry.data.title ?? defaultTitleForSlug(routeSlug);
+    // Drop section-index README entries from the sidebar list — the section
+    // heading itself already serves as the link to the index page (I2).
+    if (isSectionIndex) continue;
+    const title = resolveTitle(
+      entry.data as Record<string, unknown>,
+      (entry as unknown as { body?: string }).body,
+      routeSlug,
+    );
     const sidebarEntry: SidebarEntry = {
       slug: routeSlug,
       title,
@@ -130,7 +168,11 @@ export function buildSidebar(
       caption: "principia",
       entries: rootEntries.map((e) => ({
         slug: e.id,
-        title: e.data.title ?? "Getting started",
+        title: resolveTitle(
+          e.data as Record<string, unknown>,
+          (e as unknown as { body?: string }).body,
+          e.id,
+        ),
         url: `/docs/${e.id}`,
       })),
     });
@@ -161,7 +203,11 @@ export function buildSidebar(
       caption: "marginalia",
       entries: contribEntries.map((e) => ({
         slug: e.id,
-        title: e.data.title ?? "Contributing",
+        title: resolveTitle(
+          e.data as Record<string, unknown>,
+          (e as unknown as { body?: string }).body,
+          e.id,
+        ),
         url: `/docs/${e.id}`,
       })),
     });

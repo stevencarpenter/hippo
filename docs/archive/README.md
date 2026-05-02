@@ -1,6 +1,6 @@
 # Archived documentation
 
-Historical planning documents, design records, and post-mortems whose work has shipped and is no longer in active development. **Documents here describe past intent, not current behavior.** For reference docs of live system behavior, see the [project README](../../README.md), [`docs/capture/`](../capture/), and [`docs/RELEASE.md`](../RELEASE.md).
+Historical planning documents, design records, and post-mortems whose work has shipped and is no longer in active development. **Documents here describe past intent, not current behavior.** For reference docs of live system behavior, see the [project README](../../README.md), [`docs/capture/`](../capture/), and [`docs/release.md`](../release.md).
 
 ## Archive policy
 

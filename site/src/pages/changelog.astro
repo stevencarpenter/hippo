@@ -10,13 +10,29 @@ import { listReleases } from "../lib/github.ts";
 const releases = await listReleases();
 
 /**
- * Sanitize markdown-rendered HTML before injecting via `set:html`. GitHub release
- * bodies can contain raw HTML (e.g. `<details>`, `<img>`); marked passes that through
- * unchanged, so without this step a release body could inject arbitrary script tags.
- * DOMPurify uses a strict allowlist + scrubs event handlers, javascript: URIs, etc.
+ * Render and sanitize a GitHub release body before injecting via `set:html`.
+ *
+ * Two concerns:
+ *
+ * 1. **XSS** — release bodies can contain raw HTML (e.g. `<details>`, `<img>`);
+ *    marked passes that through unchanged, so without DOMPurify a malicious
+ *    release body could inject arbitrary script tags.
+ * 2. **Heading hierarchy** — release notes typically open with `# Release Title`,
+ *    which marked converts to `<h1>`. The changelog page already has its own
+ *    `<h1>Changelog.</h1>` and one `<h2>` per release (the entry header). If we
+ *    let release-body h1/h2 through, the page ends up with N+1 `<h1>` tags and
+ *    a broken outline. We demote h1→h3, h2→h4, h3→h5, h4→h6 so the page outline
+ *    stays clean (page h1 → entry h2 → release-body h3+).
  */
 function renderReleaseBody(body: string): string {
-  const html = marked.parse(body || "", { async: false }) as string;
+  let html = marked.parse(body || "", { async: false }) as string;
+  // Demote heading levels by 2. Order matters — process h4 first so we don't
+  // double-shift (h2 → h4 → h6 would be wrong).
+  html = html
+    .replace(/<(\/?)h4(\b[^>]*)>/g, "<$1h6$2>")
+    .replace(/<(\/?)h3(\b[^>]*)>/g, "<$1h5$2>")
+    .replace(/<(\/?)h2(\b[^>]*)>/g, "<$1h4$2>")
+    .replace(/<(\/?)h1(\b[^>]*)>/g, "<$1h3$2>");
   return DOMPurify.sanitize(html, {
     USE_PROFILES: { html: true },
     ADD_ATTR: ["target", "rel"],
@@ -25,7 +41,7 @@ function renderReleaseBody(body: string): string {
 ---
 <Tier1 title="Changelog" description="GitHub releases for hippo, rendered at build time.">
   <section class="plate-section page">
-    <PlateBadge label="Plate VIII" figure="annales" />
+    <PlateBadge label="Plate I" figure="annales" figureLatin />
     <h1 class="display"><span aria-hidden="true">⚏ </span>Changelog.</h1>
     <p class="lede"><em>— what shipped, when.</em></p>
 

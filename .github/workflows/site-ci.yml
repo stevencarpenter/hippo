@@ -51,7 +51,6 @@ jobs:
         with:
           path: |
             site/node_modules/.astro
-            site/node_modules/.pagefind
           key: astro-cache-${{ hashFiles('site/pnpm-lock.yaml', 'site/astro.config.mjs', 'docs/**', 'site/src/**', 'README.md', 'CONTRIBUTING.md') }}
 
       - run: pnpm install --frozen-lockfile

@@ -13,7 +13,7 @@ const entries: Entry[] = [
   {
     id: "platform",
     question: "Does hippo work on Linux or Windows?",
-    answerHtml: `<p>No. macOS arm64 only today. The capture paths use launchd, FSEvents, and macOS-specific Native Messaging plumbing. A Linux port is not on the roadmap.</p>`,
+    answerHtml: `<p>macOS only. Release binaries ship for arm64; Intel Macs can build from source. The capture paths use launchd, FSEvents, and macOS-specific Native Messaging plumbing — a Linux or Windows port is not on the roadmap.</p>`,
   },
   {
     id: "telemetry",
@@ -74,7 +74,7 @@ const entries: Entry[] = [
 ---
 <Tier1 title="FAQ" description="Common questions about hippo, with concrete numbers and links to source.">
   <section class="plate-section page">
-    <PlateBadge label="Plate VII" figure="quæstiones" />
+    <PlateBadge label="Plate I" figure="quæstiones" figureLatin />
     <h1 class="display"><span aria-hidden="true">? </span>Frequently asked.</h1>
     <p class="lede"><em>— twelve answers, all concrete.</em></p>
 

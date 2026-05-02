@@ -327,7 +327,7 @@ config/                    Default config templates
 launchd/                   macOS LaunchAgent plist templates
 scripts/                   Utility scripts (bulk enrich, re-embed, monitor, dedup-entities)
 otel/                      OpenTelemetry observability stack (docker-compose)
-docs/                      Live reference docs (capture/, RELEASE.md, eval-harness-design.md, brain-watchdog.md)
+docs/                      Live reference docs (capture/, release.md, eval-harness-design.md, brain-watchdog.md)
 docs/superpowers/          In-flight feature plans + designs
 docs/archive/              Historical plans, design records, post-mortems
 tools/                     Developer utilities (SQL formatting)
@@ -344,7 +344,7 @@ All paths follow XDG defaults. Override with `XDG_DATA_HOME` / `XDG_CONFIG_HOME`
 | Logs | `~/.local/share/hippo/*.log` | Daemon and brain logs |
 | Fallback | `~/.local/share/hippo/*.fallback.jsonl` | Last-resort durability backstop when the daemon socket is unreachable; replayed on next daemon start |
 
-Schema uses `PRAGMA user_version = N` (current: v13). Daemon and brain handshake on this constant at startup. See [`docs/schema.md`](docs/schema.md) for the per-version changelog, table map, and version-mismatch recovery; see [`docs/RELEASE.md`](docs/RELEASE.md) for the lockstep release workflow.
+Schema uses `PRAGMA user_version = N` (current: v13). Daemon and brain handshake on this constant at startup. See [`docs/schema.md`](docs/schema.md) for the per-version changelog, table map, and version-mismatch recovery; see [`docs/release.md`](docs/release.md) for the lockstep release workflow.
 
 ## License
 

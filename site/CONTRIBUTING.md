@@ -87,6 +87,15 @@ diagrams (Plate III architecture, /privacy data flow) opt in with
 `decorative={false}` and ship a hidden `<desc>` long-description for screen
 readers.
 
+## Plate numbering
+
+Each page is its own folio — plate numbering **restarts at I per page**. The
+homepage uses Plate I (hero) through Plate VI (field notes) because it's a
+multi-section page; every other tier-1 page just has Plate I. Don't try to
+extend the homepage series globally — visitors don't navigate the site as one
+continuous publication, and a fresh folio per page reads more like a book of
+plates than a numbered sequence.
+
 ## Tier-2 outline auto-collapse (U2)
 
 Docs pages with fewer than three h2/h3 headings collapse to a two-column grid

@@ -107,6 +107,34 @@ describe("rehypeLinkRewrite", () => {
     expect(out).toContain('target="_blank"');
   });
 
+  it("redirects cross-tree .md links (CLAUDE.md from contributing) to GitHub blob", async () => {
+    const out = await runWithSource(
+      `<a href="CLAUDE.md">x</a>`,
+      "CONTRIBUTING.md",
+    );
+    expect(out).toContain('href="https://github.com/stevencarpenter/hippo/blob/main/CLAUDE.md"');
+    expect(out).toContain('target="_blank"');
+    expect(out).toContain("↗");
+  });
+
+  it("redirects sibling-package .md links (extension/firefox/README.md) to GitHub blob", async () => {
+    const out = await runWithSource(
+      `<a href="extension/firefox/README.md">x</a>`,
+      "README.md",
+    );
+    expect(out).toContain('href="https://github.com/stevencarpenter/hippo/blob/main/extension/firefox/README.md"');
+    expect(out).toContain('target="_blank"');
+  });
+
+  it("redirects parent-relative non-docs README links to GitHub blob", async () => {
+    const out = await runWithSource(
+      `<a href="../../shell/README.md">x</a>`,
+      "docs/capture/adding-a-source.md",
+    );
+    expect(out).toContain('href="https://github.com/stevencarpenter/hippo/blob/main/shell/README.md"');
+    expect(out).toContain('target="_blank"');
+  });
+
   it("rewrites relative directory link to section index", async () => {
     const out = await runWithSource(
       `<a href="capture/">x</a>`,
