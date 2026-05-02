@@ -147,6 +147,7 @@ def _load_corpus_entries(corpus_sqlite: Path) -> list[CorpusEntry]:
 
 def _metrics_snapshot_fn(sampler: MetricsSampler):
     """Return a zero-arg callable that yields the current sampler snapshot as a dict."""
+
     def _snap() -> dict:
         s = sampler.latest()
         if s is None:
@@ -157,6 +158,7 @@ def _metrics_snapshot_fn(sampler: MetricsSampler):
             "load_avg_1m": s.load_avg_1m,
             "mem_free_mb": s.mem_free_mb,
         }
+
     return _snap
 
 

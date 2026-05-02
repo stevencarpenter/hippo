@@ -66,7 +66,7 @@ def _cpu_brand() -> str:
         )
         if out.returncode == 0 and out.stdout.strip():
             return out.stdout.strip()
-    except (OSError, subprocess.SubprocessError):
+    except OSError, subprocess.SubprocessError:
         pass
     return platform.processor() or "unknown"
 
@@ -76,7 +76,7 @@ def _lms_version() -> str | None:
         out = subprocess.run(
             ["lms", "--version"], capture_output=True, text=True, check=False, timeout=5
         )
-    except (OSError, subprocess.SubprocessError):
+    except OSError, subprocess.SubprocessError:
         return None
     if out.returncode != 0:
         return None
@@ -87,7 +87,7 @@ def _read_manifest_field(manifest_path: Path, key: str, default=None):
     try:
         data = json.loads(manifest_path.read_text(encoding="utf-8"))
         return data.get(key, default)
-    except (FileNotFoundError, json.JSONDecodeError):
+    except FileNotFoundError, json.JSONDecodeError:
         return default
 
 
@@ -125,7 +125,7 @@ def orchestrate_run_v2(
 
     try:
         load_1m, load_5m, _ = os.getloadavg()
-    except (OSError, AttributeError):
+    except OSError, AttributeError:
         load_1m, load_5m = 0.0, 0.0
 
     host_baseline = {
@@ -247,7 +247,9 @@ def orchestrate_run_v2(
                     model=model,
                     run_id=run_id,
                     corpus_sqlite=corpus_sqlite,
-                    lmstudio_url=lmstudio_url if lmstudio_url.endswith("/v1") else f"{lmstudio_url.rstrip('/')}/v1",
+                    lmstudio_url=lmstudio_url
+                    if lmstudio_url.endswith("/v1")
+                    else f"{lmstudio_url.rstrip('/')}/v1",
                     embedding_model=embedding_model,
                     drain_timeout_sec=drain_timeout_sec,
                     prod_brain_url=brain_url,
