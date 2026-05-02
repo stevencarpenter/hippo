@@ -19,7 +19,7 @@ const blogPosts = (await getCollection("blog", ({ data }) => !data.draft))
   <section class="plate-section" aria-labelledby="plate-ii-heading">
     <div class="page">
       <PlateBadge label="Plate II" figure="fig. 2" />
-      <h2 id="plate-ii-heading"><em>What hippo captures, exactly.</em></h2>
+      <h2 id="plate-ii-heading">What hippo captures, exactly.</h2>
       <p class="body-lede">Three sources today, named by the file or extension that produces them. Nothing is captured that isn't on this list.</p>
       <div class="three-col">
         <div class="col">
@@ -48,7 +48,7 @@ const blogPosts = (await getCollection("blog", ({ data }) => !data.draft))
   <section class="plate-section" aria-labelledby="plate-iii-heading">
     <div class="page">
       <PlateBadge label="Plate III" figure="fig. 3 — daemon · brain · MCP" />
-      <h2 id="plate-iii-heading"><em>How it works.</em></h2>
+      <h2 id="plate-iii-heading">How it works.</h2>
       <div class="arch">
         <svg viewBox="0 0 800 240" role="img" aria-labelledby="arch-title arch-desc" class="arch-diagram">
           <title id="arch-title">Hippo architecture: capture sources feed the daemon, the brain enriches with a local LLM, the MCP server answers questions.</title>
@@ -98,7 +98,7 @@ const blogPosts = (await getCollection("blog", ({ data }) => !data.draft))
   <section class="plate-section" aria-labelledby="plate-iv-heading">
     <div class="page">
       <PlateBadge label="Plate IV" figure="fig. 4" />
-      <h2 id="plate-iv-heading"><em>Privacy, by construction.</em></h2>
+      <h2 id="plate-iv-heading">Privacy, by construction.</h2>
       <div class="three-col">
         <div class="col">
           <h3>All inference local.</h3>
@@ -120,7 +120,7 @@ const blogPosts = (await getCollection("blog", ({ data }) => !data.draft))
   <section class="plate-section" aria-labelledby="plate-v-heading">
     <div class="page">
       <PlateBadge label="Plate V" figure="fig. 5" />
-      <h2 id="plate-v-heading"><em>See it work.</em></h2>
+      <h2 id="plate-v-heading">See it work.</h2>
       <p class="body-lede">A real session, redacted. Run <code>hippo doctor</code> to confirm the wiring, then <code>hippo ask</code> to query the knowledge base.</p>
 
       <CodeBlock>
@@ -159,7 +159,7 @@ ten checks complete in 0.61s — all green.</code></pre>
     <section class="plate-section" aria-labelledby="plate-vi-heading">
       <div class="page">
         <PlateBadge label="Plate VI" figure="fig. 6" />
-        <h2 id="plate-vi-heading"><em>Recent field notes.</em></h2>
+        <h2 id="plate-vi-heading">Recent field notes.</h2>
         <ul class="post-list">
           {blogPosts.map((post) => (
             <li>

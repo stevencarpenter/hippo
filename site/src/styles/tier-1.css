@@ -23,6 +23,22 @@ body.tier-1 {
 }
 .tier-1 .plate-section:last-of-type { border-bottom: 0; }
 
+/* Plate-section h2s render as italic display by aesthetic — done here in CSS rather
+ * than wrapping the heading text in <em>, which would imply stress emphasis to AT.
+ * (Per panel review M2: <em> on a whole heading is announced with emphasis on every
+ * word — wrong semantic for a decorative italic.) */
+.tier-1 .plate-section h2 {
+  font-family: var(--font-display);
+  font-style: italic;
+  font-weight: 400;
+  font-size: 1.6rem;
+  font-variation-settings: "SOFT" 100;
+  color: var(--ink);
+  margin: 0 0 0.6rem;
+  letter-spacing: -0.005em;
+  text-wrap: balance;
+}
+
 .tier-1 .display {
   font-family: var(--font-display);
   font-size: var(--t1-display);

@@ -106,7 +106,9 @@ const docHasOwnH1 = !!firstMarkdownH1(entry.body);
     <ChapterMark motif={motif} />
   )}
   {!docHasOwnH1 && <h1>{title}</h1>}
-  {description && <p class="lede"><em>{description}</em></p>}
+  {/* Only render the frontmatter lede when we synthesised the h1 — otherwise the lede
+      orphans above the doc's own h1 in the rendered DOM. */}
+  {!docHasOwnH1 && description && <p class="lede"><em>{description}</em></p>}
   <Content />
   <EditOnGitHub slug={slug} editPath={editPath} lastUpdated={lastUpdated} />
 </Tier2>

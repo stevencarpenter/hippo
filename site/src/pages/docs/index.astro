@@ -21,7 +21,7 @@ const headings = [
 
   {sections.map((section) => (
     <section class="docs-section" id={section.id}>
-      <h2><em>{section.label}</em></h2>
+      <h2>{section.label}</h2>
       {section.caption && <p class="caption" lang="la"><em>{section.caption}</em></p>}
       <ul>
         {section.entries.map((entry) => (

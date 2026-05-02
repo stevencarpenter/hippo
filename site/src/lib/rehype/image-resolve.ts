@@ -27,8 +27,15 @@ export const rehypeImageResolve: Plugin<[], Root> = () => {
       if (/^https?:\/\//.test(src)) return;
       if (src.startsWith("/")) return;
       const resolved = path.posix.normalize(path.posix.join(sourceDir, src));
-      const filename = path.posix.basename(resolved);
-      props.src = `/docs-images/${filename}`;
+      // Only rewrite images that resolve into docs/diagrams/ — the only path mirrored
+      // by the copy-doc-images integration. Anything else (a future pattern referencing
+      // images in some other docs subdirectory) is left alone so the breakage is loud
+      // rather than silently 404 against /docs-images/<basename>.
+      if (!resolved.startsWith("docs/diagrams/")) return;
+      // Preserve subpath under docs/diagrams/ so subdirectory mirrors copied by the
+      // recursive walk in copy-doc-images stay addressable (no basename collisions).
+      const subpath = resolved.slice("docs/diagrams/".length);
+      props.src = `/docs-images/${subpath}`;
       props.loading = "lazy";
       props.decoding = "async";
     });

@@ -16,7 +16,7 @@ const {
 const px = size === "full" ? 200 : size === "reduced" ? 32 : 24;
 const stroke = size === "inline" ? 1.4 : 1;
 ---
-<figure class={`motif motif-sectio-coronalis ${breathe ? "breathe" : ""} ${className}`}>
+<figure aria-hidden={decorative ? "true" : undefined} class={`motif motif-sectio-coronalis ${breathe ? "breathe" : ""} ${className}`}>
   <svg
     viewBox="0 0 120 130"
     width={px}

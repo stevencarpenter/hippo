@@ -14,8 +14,8 @@ import CornuAmmonis from "../components/motifs/CornuAmmonis.astro";
       <pre><code class="language-shell">curl -fsSL https://hippobrain.org/install.sh | sh</code></pre>
     </CodeBlock>
 
-    <h2><em>1 — Quick install (Apple Silicon)</em></h2>
-    <p>The one-liner above downloads the latest signed release tarball, verifies it,
+    <h2>1 — Quick install (Apple Silicon)</h2>
+    <p>The one-liner above downloads the latest release tarball, verifies its SHA-256 checksum,
        installs binaries to <code>~/.local/bin/</code>, drops a default config at
        <code>~/.config/hippo/config.toml</code>, and starts the LaunchAgents. It runs without
        <code>sudo</code> and writes nothing outside your home directory.</p>
@@ -29,7 +29,7 @@ import CornuAmmonis from "../components/motifs/CornuAmmonis.astro";
       </ul>
     </details>
 
-    <h2><em>2 — Manual installation</em></h2>
+    <h2>2 — Manual installation</h2>
     <p>For Intel Macs and contributors who want to build from source.</p>
     <CodeBlock>
       <pre><code class="language-shell"># prerequisites: rustup, uv, mise, LM Studio
@@ -44,7 +44,7 @@ mise run install</code></pre>
        <code>~/Library/LaunchAgents/</code>, drops the Native Messaging manifest for
        Firefox, starts services, and runs <code>hippo doctor</code> to verify.</p>
 
-    <h2><em>3 — Verify it&rsquo;s working</em></h2>
+    <h2>3 — Verify it&rsquo;s working</h2>
     <p>Run the doctor. Ten checks, sub-second wall-clock, exit code = number of failures.</p>
     <CodeBlock>
       <pre><code class="language-shell">hippo doctor</code></pre>
@@ -54,7 +54,7 @@ mise run install</code></pre>
        <em>cause / fix / doc</em> per failure. The full failure-mode catalogue lives at
        <a href="/docs/capture/operator-runbook">/docs/capture/operator-runbook</a>.</p>
 
-    <h2><em>4 — Uninstall</em></h2>
+    <h2>4 — Uninstall</h2>
     <p>Hippo doesn&rsquo;t hide its uninstaller.</p>
     <CodeBlock>
       <pre><code class="language-shell">hippo daemon uninstall   # removes LaunchAgents and binaries

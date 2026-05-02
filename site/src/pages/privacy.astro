@@ -49,7 +49,7 @@ import PlateBadge from "../components/PlateBadge.astro";
       <p class="fig-caption" lang="la"><em>fig. — fasciculus</em>: every arrow stays inside the dashed boundary.</p>
     </div>
 
-    <h2 id="shell"><em>Shell capture (zsh)</em></h2>
+    <h2 id="shell">Shell capture (zsh)</h2>
     <p>The hook lives at <code>shell/hippo-zsh-hook.zsh</code>. On every command, it
        writes a single JSON line to the daemon&rsquo;s Unix socket. It captures: PWD,
        command text, exit status, duration, timestamp. It does <strong>not</strong>
@@ -59,21 +59,21 @@ import PlateBadge from "../components/PlateBadge.astro";
        acknowledgement, no blocking. If the daemon is down, your shell isn&rsquo;t
        slowed down; the event is simply not captured.</p>
 
-    <h2 id="claude"><em>Claude Code session capture</em></h2>
+    <h2 id="claude">Claude Code session capture</h2>
     <p>An FSEvents watcher subscribes to <code>~/.claude/projects/**/*.jsonl</code>.
        On every growth event it parses new segments out of the file, deduplicates
        on <code>(session_id, segment_index)</code>, and inserts them. Tool-use blocks
        and assistant turns become individual rows. The session JSONLs themselves
        are owned by your Claude Code install &mdash; hippo doesn&rsquo;t modify them.</p>
 
-    <h2 id="firefox"><em>Firefox browsing (allowlist)</em></h2>
+    <h2 id="firefox">Firefox browsing (allowlist)</h2>
     <p>A WebExtension speaks Native Messaging to the daemon. <strong>Only allowlisted
        domains</strong> produce events; everything else is filtered before anything
        crosses the extension boundary. The default allowlist is 27 documentation
        sites (MDN, Rust std, Python docs, etc.). You edit it in the extension&rsquo;s
        options. There is no &ldquo;capture all&rdquo; mode.</p>
 
-    <h2 id="redaction"><em>Redaction</em></h2>
+    <h2 id="redaction">Redaction</h2>
     <p>Every event &mdash; from every source &mdash; runs through the redactor in the same
        transaction as the database insert. The redactor is a regex pipeline that
        lives at <code>~/.config/hippo/redact.toml</code>; you can read and edit it.</p>
@@ -83,7 +83,7 @@ import PlateBadge from "../components/PlateBadge.astro";
        <a href="/docs/reference/redaction">/docs/reference/redaction</a>; if you find a
        pattern you wish was redacted by default, please file an issue.</p>
 
-    <h2><em>What stays on your machine</em></h2>
+    <h2>What stays on your machine</h2>
     <ul>
       <li>The SQLite database at <code>~/.local/share/hippo/hippo.db</code>.</li>
       <li>The model file you downloaded for LM Studio.</li>
@@ -91,7 +91,7 @@ import PlateBadge from "../components/PlateBadge.astro";
       <li>Logs at <code>~/.local/share/hippo/logs/</code>.</li>
     </ul>
 
-    <h2><em>What you can turn off</em></h2>
+    <h2>What you can turn off</h2>
     <ul>
       <li><strong>Any source</strong> by setting <code>[capture.&lt;source&gt;].enabled = false</code> in <code>config.toml</code>.</li>
       <li><strong>Any pattern</strong> by editing <code>redact.toml</code>; or add a stricter rule.</li>

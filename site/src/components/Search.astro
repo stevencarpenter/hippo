@@ -1,12 +1,23 @@
 ---
 // Pagefind search UI mount. Init logic + a11y patches per A9.
 ---
-<div id="search" class="search-mount" role="region" aria-label="Search results"></div>
+<div
+  id="search"
+  class="search-mount"
+  role="region"
+  aria-label="Search results"
+  aria-live="polite"
+></div>
 <link rel="stylesheet" href="/pagefind/pagefind-ui.css" />
 <script src="/pagefind/pagefind-ui.js" is:inline></script>
 <script is:inline>
-  document.addEventListener("DOMContentLoaded", () => {
+  // Re-init on every page load — including SPA-style navigations from ViewTransitions —
+  // so /search works after a client-side nav, not just a hard reload.
+  function initPagefindUI() {
     if (typeof PagefindUI === "undefined") return;
+    var mount = document.getElementById("search");
+    if (!mount || mount.dataset.pagefindInit === "true") return;
+    mount.dataset.pagefindInit = "true";
     new PagefindUI({
       element: "#search",
       showImages: false,
@@ -28,12 +39,16 @@
     });
     // A9 — patch label on Pagefind input if upstream missed one.
     setTimeout(() => {
-      const input = document.querySelector("#search input[type='text']");
+      var input = mount.querySelector("input[type='text']");
       if (input && !input.getAttribute("aria-label")) {
         input.setAttribute("aria-label", "Search the docs and field notes");
       }
     }, 100);
-  });
+  }
+  document.addEventListener("DOMContentLoaded", initPagefindUI);
+  // Astro view transitions fire `astro:page-load` after each SPA navigation;
+  // pagefind's mount node is replaced, so re-init.
+  document.addEventListener("astro:page-load", initPagefindUI);
 </script>
 
 <style>
