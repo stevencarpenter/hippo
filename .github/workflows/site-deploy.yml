@@ -3,15 +3,17 @@ name: Site Deploy
 on:
   push:
     branches: [main]
+    # GitHub disallows `paths` + `paths-ignore` on the same event — express
+    # exclusions via `!` negation patterns inside `paths` instead.
     paths:
       - "site/**"
       - "docs/**"
+      - "!docs/archive/**"
+      - "!docs/superpowers/**"
+      - "!docs/initial-research/**"
       - "README.md"
       - "CONTRIBUTING.md"
       - ".github/workflows/site-deploy.yml"
-    paths-ignore:
-      - "docs/archive/**"
-      - "docs/superpowers/**"
   workflow_dispatch:
   schedule:
     # Daily 06:00 UTC keeps /changelog and /status fresh.

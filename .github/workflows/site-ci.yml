@@ -2,15 +2,17 @@ name: Site CI
 
 on:
   pull_request:
+    # GitHub disallows `paths` + `paths-ignore` on the same event — express
+    # exclusions via `!` negation patterns inside `paths` instead.
     paths:
       - "site/**"
       - "docs/**"
+      - "!docs/archive/**"
+      - "!docs/superpowers/**"
+      - "!docs/initial-research/**"
       - "README.md"
       - "CONTRIBUTING.md"
       - ".github/workflows/site-ci.yml"
-    paths-ignore:
-      - "docs/archive/**"
-      - "docs/superpowers/**"
   workflow_dispatch:
 
 permissions:
