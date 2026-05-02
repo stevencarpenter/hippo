@@ -29,8 +29,8 @@ export default defineConfig({
     },
     remarkPlugins: [remarkEditOnGithub],
     rehypePlugins: [
-      rehypeLinkRewrite,
-      rehypeImageResolve,
+      [rehypeLinkRewrite, {}],
+      [rehypeImageResolve, {}],
       rehypeSlug,
       [
         rehypeAutolinkHeadings,

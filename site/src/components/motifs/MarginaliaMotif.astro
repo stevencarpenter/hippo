@@ -27,11 +27,30 @@ const stroke = size === "inline" ? 1.4 : 1;
     focusable="false"
   >
     {!decorative && <title>marginalia — quill ribbon and hatching</title>}
-    <g fill="none" stroke="currentColor" stroke-width={stroke} stroke-linecap="round">
-      <path d="M20 30 Q60 5, 100 30"/>
-      <path d="M20 35 Q60 10, 100 35" stroke-width="0.5"/>
-      <path d="M22 35 L22 90 M28 35 L28 90 M34 35 L34 90 M40 35 L40 90 M46 35 L46 90 M52 35 L52 90 M58 35 L58 90 M64 35 L64 90 M70 35 L70 90 M76 35 L76 90 M82 35 L82 90 M88 35 L88 90 M94 35 L94 90 M100 35 L100 90" stroke-width="0.4"/>
-      <path d="M18 90 L102 90 M16 95 L104 95 M16 95 L18 90 M104 95 L102 90" stroke-width="0.6"/>
+    <g fill="none" stroke="currentColor" stroke-width={stroke} stroke-linecap="round" stroke-linejoin="round">
+      {/* Page edge: a single vertical rule at the left margin, with a few
+          ornamental serifs at the top and bottom — the literal "margin" of
+          the page where marginalia would be written. */}
+      <path d="M30 18 L30 112"/>
+      <path d="M26 18 L34 18 M26 112 L34 112" stroke-width={stroke * 0.8}/>
+
+      {/* Pilcrow flourish — drop-cap-style P with a curling tail, the
+          archetypal marginalia mark. */}
+      <path d="M52 32 L52 78"/>
+      <path d="M52 32 Q72 32, 72 46 Q72 60, 52 60"/>
+      <path d="M64 32 L64 78"/>
+      {/* Curling pen flourish coming off the bottom of the pilcrow. */}
+      <path d="M64 78 Q64 92, 78 94 Q92 96, 92 84 Q92 76, 84 76 Q78 76, 78 82" stroke-width={stroke * 0.85}/>
+
+      {/* Three short ornament marks running down the right side — typical
+          drypoint-style marginal notations. */}
+      <path d="M100 38 L106 36 M100 42 L104 41" stroke-width={stroke * 0.6}/>
+      <path d="M100 60 L106 58 M100 64 L104 63" stroke-width={stroke * 0.6}/>
+      <path d="M100 82 L106 80 M100 86 L104 85" stroke-width={stroke * 0.6}/>
+
+      {/* Tiny ink dots — pen rests against the page. */}
+      <circle cx="44" cy="100" r="0.9" fill="currentColor"/>
+      <circle cx="48" cy="103" r="0.7" fill="currentColor"/>
     </g>
   </svg>
   {caption && size === "full" && (

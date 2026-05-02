@@ -23,19 +23,19 @@ const blogPosts = (await getCollection("blog", ({ data }) => !data.draft))
       <p class="body-lede">Three sources today, named by the file or extension that produces them. Nothing is captured that isn't on this list.</p>
       <div class="three-col">
         <div class="col">
-          <div class="col-icon" aria-hidden="true"><CornuAmmonis size="reduced" /></div>
+          <div class="col-icon" aria-hidden="true"><CornuAmmonis size="full" /></div>
           <h3>Shell</h3>
           <p>A zsh hook (<code>shell/hippo-zsh-hook.zsh</code>) writes a JSON line per command to the daemon's Unix socket. PWD, command, exit status, duration, redacted command text. No environment variables, no terminal output.</p>
           <p><a href="/privacy#shell">technical detail →</a></p>
         </div>
         <div class="col">
-          <div class="col-icon" aria-hidden="true"><TrisynapticCircuit size="reduced" /></div>
+          <div class="col-icon" aria-hidden="true"><TrisynapticCircuit size="full" /></div>
           <h3>Claude Code</h3>
           <p>An FSEvents watcher tails session JSONLs in <code>~/.claude/projects/**/*.jsonl</code>, segments tool-use blocks, and writes them once per growth event. Idempotent on <code>(session_id, segment_index)</code>.</p>
           <p><a href="/privacy#claude">technical detail →</a></p>
         </div>
         <div class="col">
-          <div class="col-icon" aria-hidden="true"><MarginaliaMotif size="reduced" /></div>
+          <div class="col-icon" aria-hidden="true"><MarginaliaMotif size="full" /></div>
           <h3>Firefox</h3>
           <p>A WebExtension speaks Native Messaging to the daemon. Only allowlisted domains (currently 27, edited by you) yield events; everything else is ignored before it's written down.</p>
           <p><a href="/privacy#firefox">technical detail →</a></p>

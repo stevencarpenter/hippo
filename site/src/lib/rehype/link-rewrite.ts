@@ -2,7 +2,7 @@ import type { Plugin } from "unified";
 import type { Root, Element } from "hast";
 import { visit } from "unist-util-visit";
 import path from "node:path";
-import { isAstroVFile } from "../remark/types.ts";
+import { resolveSourcePath } from "../source-path.ts";
 
 /**
  * Maps a repo-relative POSIX path (e.g. "docs/capture/anti-patterns.md", "README.md",
@@ -44,6 +44,17 @@ function ghTree(repoPath: string, fragment = ""): string {
 }
 
 function appendArrow(node: Element): void {
+  // Skip the ↗ glyph when the link wraps only an image (e.g. a shields.io
+  // badge in README.md). The badge itself communicates the link target; an
+  // appended text arrow visually floats between badges and reads as noise.
+  // The behavioral cue (target=_blank + rel=noopener) is unchanged.
+  const visibleChildren = node.children.filter(
+    (c) => !(c.type === "text" && /^\s*$/.test(c.value)),
+  );
+  const onlyChild = visibleChildren.length === 1 ? visibleChildren[0] : null;
+  if (onlyChild && onlyChild.type === "element" && onlyChild.tagName === "img") {
+    return;
+  }
   const last = node.children[node.children.length - 1];
   const wantsArrow = !(last && last.type === "text" && last.value.endsWith("↗"));
   if (wantsArrow) {
@@ -69,12 +80,9 @@ function appendArrow(node: Element): void {
  *   /absolute     — site-absolute       -> unchanged
  *   mailto:/tel:  — protocol            -> unchanged
  */
-export const rehypeLinkRewrite: Plugin<[], Root> = () => {
+export function rehypeLinkRewrite(): (tree: Root, file: import("vfile").VFile) => void {
   return (tree, file) => {
-    let sourcePath: string | undefined;
-    if (isAstroVFile(file)) {
-      sourcePath = file.data.astro.frontmatter.sourcePath as string | undefined;
-    }
+    const sourcePath = resolveSourcePath(file);
 
     visit(tree, "element", (node: Element) => {
       if (node.tagName !== "a") return;
@@ -168,4 +176,4 @@ export const rehypeLinkRewrite: Plugin<[], Root> = () => {
       appendArrow(node);
     });
   };
-};
+}

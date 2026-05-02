@@ -2,7 +2,7 @@ import type { Plugin } from "unified";
 import type { Element, Root } from "hast";
 import { visit } from "unist-util-visit";
 import path from "node:path";
-import { isAstroVFile } from "../remark/types.ts";
+import { resolveSourcePath } from "../source-path.ts";
 
 /**
  * Rewrites relative <img src="../diagrams/foo.png"> references in docs markdown to
@@ -13,10 +13,7 @@ import { isAstroVFile } from "../remark/types.ts";
  */
 export const rehypeImageResolve: Plugin<[], Root> = () => {
   return (tree, file) => {
-    let sourcePath: string | undefined;
-    if (isAstroVFile(file)) {
-      sourcePath = file.data.astro.frontmatter.sourcePath as string | undefined;
-    }
+    const sourcePath = resolveSourcePath(file);
     if (!sourcePath) return;
     const sourceDir = path.posix.dirname(sourcePath);
     visit(tree, "element", (node: Element) => {

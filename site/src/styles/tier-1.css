@@ -130,6 +130,12 @@ body.tier-1 {
   font-weight: 600;
 }
 
+/* CSS-scale the per-column motif from its full 200px viewBox down to a
+   substantial-but-not-dominant icon. The motif renders at full SVG detail
+   so anatomical lines stay legible — width is just constrained here. */
+.tier-1 .col-icon { margin-bottom: 0.6rem; }
+.tier-1 .col-icon svg { width: 90px; height: auto; }
+
 .tier-1 .col p { color: var(--ink); }
 
 /* Hero composition — text 1.1fr / illustration 0.9fr */

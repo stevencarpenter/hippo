@@ -212,6 +212,24 @@ describe("rehypeLinkRewrite", () => {
     expect(out).toContain('href="?tab=changes"');
   });
 
+  it("does NOT append ↗ to a link whose only child is an image (badges)", async () => {
+    const out = await runWithSource(
+      `<a href="https://example.com/foo"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License: MIT"></a>`,
+      "README.md",
+    );
+    expect(out).toContain('target="_blank"');
+    expect(out).toContain('rel="noopener"');
+    expect(out).not.toContain("↗");
+  });
+
+  it("still appends ↗ to a link with mixed image + text", async () => {
+    const out = await runWithSource(
+      `<a href="https://example.com/foo">More <img src="x.svg" alt=""></a>`,
+      "README.md",
+    );
+    expect(out).toContain("↗");
+  });
+
   it("leaves mailto links unchanged", async () => {
     const out = await runWithSource(
       `<a href="mailto:foo@example.com">x</a>`,
