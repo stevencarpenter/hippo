@@ -23,19 +23,15 @@ const { copyable = true } = Astro.props;
         const pre = wrapper && wrapper.querySelector("pre");
         if (!pre) return;
         const text = pre.textContent || "";
+        // navigator.clipboard.writeText is available in all evergreen browsers
+        // and Safari 13.1+ (Apr 2020). The site ships only over HTTPS, so the
+        // secure-context requirement is always met. No execCommand fallback.
         try {
           await navigator.clipboard.writeText(text);
         } catch {
-          // fall back: select-and-copy
-          const range = document.createRange();
-          range.selectNodeContents(pre);
-          const sel = window.getSelection();
-          sel?.removeAllRanges();
-          sel?.addRange(range);
-          // execCommand is deprecated but is still the only fallback when
-          // navigator.clipboard isn't available (older Safari, file://, etc.)
-          if ("execCommand" in document) document.execCommand("copy");
-          sel?.removeAllRanges();
+          // Permission denied or transient failure — silently bail. The user
+          // can still select-and-Cmd-C; we just don't get the toast.
+          return;
         }
         button.classList.add("copied");
         const announce = document.getElementById("sr-announce");
