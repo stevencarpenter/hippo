@@ -1,6 +1,6 @@
 import { defineCollection, z } from "astro:content";
 import { glob } from "astro/loaders";
-import { docsLoader, singleMarkdownLoader } from "../lib/markdown-file-loader.ts";
+import { docsLoader, singleMarkdownLoader } from "./lib/markdown-file-loader.ts";
 
 /** Tier-2 docs sourced from ../docs/**\/*.md (excluding archive + superpowers). */
 const docs = defineCollection({

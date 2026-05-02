@@ -14,12 +14,8 @@ export default defineConfig({
   site: "https://hippobrain.org",
   output: "static",
   trailingSlash: "ignore",
-  // Required on Astro 4.x to opt into the Content Layer API used by our docsLoader
-  // and singleMarkdownLoader. The flag becomes a no-op (and can be removed) when
-  // we upgrade to Astro 5+, where the Content Layer is stable.
-  experimental: {
-    contentLayer: true,
-  },
+  // Astro 5+ stabilized the Content Layer API used by docsLoader / singleMarkdownLoader,
+  // so no `experimental.contentLayer` flag is needed.
   integrations: [
     sitemap(),
     pagefind(),
