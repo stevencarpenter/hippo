@@ -11,7 +11,6 @@ import random
 import shutil
 import sqlite3
 import time
-from dataclasses import field
 from pathlib import Path
 from typing import Any
 
@@ -239,7 +238,6 @@ def run_one_model_v2(
     pause_client = PauseRpcClient(prod_brain_url, skip=skip_prod_pause)
     initial_health = pause_client.probe_health()
     was_paused = bool(initial_health and initial_health.get("paused", False))
-    probe_start = time.time()
     # Re-probe only if drain took long enough to be worth checking
     if queue_drain_wall_clock_sec > 120:
         health = pause_client.probe_health()
