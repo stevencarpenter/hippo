@@ -216,7 +216,30 @@ def _cmd_corpus_add_adversarial(args: argparse.Namespace) -> int:
         conn.close()
 
 
+def _cmd_recover(args: argparse.Namespace) -> int:
+    """BT-06: detect a stale pause lockfile and resume prod brain.
+
+    Surfaced both as an explicit subcommand and called automatically at
+    the top of `_cmd_run`. Idempotent — exits 0 in both cases.
+    """
+    from hippo_brain.bench.pause_rpc import PAUSE_LOCKFILE, recover_stale_pause
+
+    recovered = recover_stale_pause(args.brain_url)
+    if recovered:
+        print(f"recovered: stale pause lockfile cleared ({PAUSE_LOCKFILE})")
+    else:
+        print(f"no stale lockfile at {PAUSE_LOCKFILE}")
+    return 0
+
+
 def _cmd_run(args: argparse.Namespace) -> int:
+    # BT-06: recover from a prior crashed bench run before doing anything
+    # else. If the previous bench was SIGKILL'd, prod brain is still paused;
+    # this resumes it before we issue our own pause.
+    from hippo_brain.bench.pause_rpc import recover_stale_pause
+
+    recover_stale_pause(args.brain_url)
+
     ts = _dt.datetime.now(tz=_dt.UTC).strftime("%Y%m%dT%H%M%S")
     models = [m.strip() for m in args.models.split(",") if m.strip()]
 
@@ -408,6 +431,19 @@ def _build_parser() -> argparse.ArgumentParser:
     summary = sub.add_parser("summary", help="Pretty-print a run JSONL file")
     summary.add_argument("run_file")
     summary.set_defaults(func=_cmd_summary)
+
+    # BT-06: recovery subcommand. Idempotent — clears stale pause lockfile
+    # and resumes prod brain if a prior bench was SIGKILL'd.
+    recover = sub.add_parser(
+        "recover",
+        help="Detect a stale pause lockfile from a crashed bench and resume prod brain",
+    )
+    recover.add_argument(
+        "--brain-url",
+        default="http://localhost:8000",
+        help="Prod brain base URL to resume if lockfile doesn't carry one",
+    )
+    recover.set_defaults(func=_cmd_recover)
 
     return parser
 

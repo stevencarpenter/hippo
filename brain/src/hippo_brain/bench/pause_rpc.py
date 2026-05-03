@@ -1,8 +1,86 @@
-"""Thin client for the hippo-brain pause/resume control RPC."""
+"""Thin client for the hippo-brain pause/resume control RPC.
+
+BT-06: pause/resume now goes through a lockfile so a SIGKILL'd bench
+leaves a marker the next bench-start can detect and clean up. Without
+this, atexit/finally never run on SIGKILL → prod brain stays paused
+indefinitely → enrichment queue grows silently.
+"""
 
 from __future__ import annotations
 
+import datetime as _dt
+import json
+import logging
+import os
+from pathlib import Path
+
 import httpx
+
+logger = logging.getLogger(__name__)
+
+PAUSE_LOCKFILE: Path = Path("~/.local/share/hippo-bench/pause.lock").expanduser()
+
+
+def _write_lockfile_atomic(brain_url: str) -> None:
+    """Atomic write: O_CREAT|O_EXCL on a sibling tmp file, then rename.
+
+    The exclusive create avoids racing with another bench process that
+    started concurrently. If the lockfile already exists, we update it
+    (overwrite) since this is the same process taking ownership again.
+    """
+    PAUSE_LOCKFILE.parent.mkdir(parents=True, exist_ok=True)
+    payload = json.dumps(
+        {
+            "started_iso": _dt.datetime.now(_dt.UTC).isoformat(),
+            "brain_url": brain_url,
+            "pid": os.getpid(),
+        }
+    )
+    tmp = PAUSE_LOCKFILE.with_suffix(".lock.tmp")
+    # Allow overwrite on retry (re-pause after a transient failure) — exclusive
+    # create is for the tmp file; the rename is atomic regardless of target.
+    fd = os.open(str(tmp), os.O_CREAT | os.O_TRUNC | os.O_WRONLY, 0o600)
+    try:
+        os.write(fd, payload.encode("utf-8"))
+    finally:
+        os.close(fd)
+    os.replace(tmp, PAUSE_LOCKFILE)
+
+
+def recover_stale_pause(default_brain_url: str) -> bool:
+    """If a pause lockfile exists, read its brain_url and POST resume.
+
+    Returns True if a stale lockfile was found and recovery attempted,
+    False if no lockfile present. Best-effort on the HTTP call — even a
+    failed POST removes the lockfile to avoid permanent paste-staleness
+    when the brain itself has rotated. The caller's next /health probe
+    will surface any genuinely-still-paused state.
+    """
+    if not PAUSE_LOCKFILE.exists():
+        return False
+    try:
+        data = json.loads(PAUSE_LOCKFILE.read_text())
+        brain_url = data.get("brain_url", default_brain_url)
+        logger.warning(
+            "BT-06: stale pause lockfile detected (started=%s, pid=%s) — issuing recovery resume to %s",
+            data.get("started_iso"),
+            data.get("pid"),
+            brain_url,
+        )
+    except Exception as e:
+        logger.warning("BT-06: lockfile read failed (%s) — using default brain_url", e)
+        brain_url = default_brain_url
+
+    try:
+        httpx.post(f"{brain_url.rstrip('/')}/control/resume", timeout=10.0)
+    except Exception as e:
+        logger.warning("BT-06: recovery resume POST failed: %s — removing lockfile anyway", e)
+
+    try:
+        PAUSE_LOCKFILE.unlink(missing_ok=True)
+    except Exception as e:
+        logger.warning("BT-06: lockfile unlink failed: %s", e)
+    return True
 
 
 class PauseRpcClient:
@@ -23,19 +101,36 @@ class PauseRpcClient:
             return None
 
     def pause(self) -> dict | None:
-        """POST /control/pause. Returns response JSON or None on skip."""
+        """POST /control/pause. Returns response JSON or None on skip.
+
+        Writes the pause lockfile BEFORE the HTTP call. If the bench is
+        SIGKILL'd between this point and resume(), the next bench start
+        finds the lockfile and recovers (BT-06).
+        """
         if self.skip:
             return None
+        _write_lockfile_atomic(self.base_url)
         r = httpx.post(f"{self.base_url}/control/pause", timeout=10.0)
         r.raise_for_status()
         return r.json()
 
     def resume(self) -> dict | None:
-        """POST /control/resume. Best-effort — swallows errors (called in atexit)."""
+        """POST /control/resume. Best-effort — swallows errors (called in atexit).
+
+        Removes the pause lockfile only after the HTTP call returns
+        (success OR failure — a failed resume probably means the brain is
+        already gone, in which case there's nothing to keep paused).
+        """
         if self.skip:
             return None
+        result: dict | None = None
         try:
             r = httpx.post(f"{self.base_url}/control/resume", timeout=10.0)
-            return r.json()
+            result = r.json()
         except Exception:
-            return None
+            result = None
+        try:
+            PAUSE_LOCKFILE.unlink(missing_ok=True)
+        except Exception as e:
+            logger.warning("BT-06: lockfile unlink during resume failed: %s", e)
+        return result
