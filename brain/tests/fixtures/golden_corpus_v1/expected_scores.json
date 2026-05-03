@@ -1,0 +1,43 @@
+{
+  "modes": {
+    "hybrid": {
+      "hit_at_1": 0.5,
+      "hit_at_3": 0.875,
+      "hit_at_5": 1.0,
+      "hit_at_10": 1.0,
+      "mrr": 0.670833,
+      "ndcg_at_10": 0.752223,
+      "scored_count": 8
+    },
+    "semantic": {
+      "hit_at_1": 0.5,
+      "hit_at_3": 0.875,
+      "hit_at_5": 1.0,
+      "hit_at_10": 1.0,
+      "mrr": 0.670833,
+      "ndcg_at_10": 0.752223,
+      "scored_count": 8
+    },
+    "lexical": {
+      "hit_at_1": 0.5,
+      "hit_at_3": 0.875,
+      "hit_at_5": 1.0,
+      "hit_at_10": 1.0,
+      "mrr": 0.670833,
+      "ndcg_at_10": 0.752223,
+      "scored_count": 8
+    }
+  },
+  "qa_count": 8,
+  "k": 10,
+  "ranks_by_qa_id": {
+    "g1": 1,
+    "g2": 1,
+    "g3": 3,
+    "g4": 1,
+    "g5": 1,
+    "g6": 3,
+    "g7": 2,
+    "g8": 5
+  }
+}
