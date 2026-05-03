@@ -97,6 +97,9 @@ def init_telemetry(
         logger.error(msg)
         raise TelemetryInitError(msg) from e
 
+    # Resource.create() merges OTEL_RESOURCE_ATTRIBUTES from the environment
+    # via the Python SDK default detector chain. bench/shadow_stack.py injects
+    # service.namespace=hippo-bench here at process spawn time.
     resource = Resource.create({"service.name": service_name})
 
     # Traces

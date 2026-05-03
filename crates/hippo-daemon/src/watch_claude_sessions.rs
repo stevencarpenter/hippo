@@ -5,8 +5,11 @@
 //! launchd service (`com.hippo.claude-session-watcher`, KeepAlive=true).
 //!
 //! Key invariants:
-//! - Full-file reparse on every FSEvents notification; `INSERT OR IGNORE` on
-//!   `(session_id, segment_index)` makes repeated processing idempotent.
+//! - Full-file reparse on every FSEvents notification; segment writes use
+//!   `INSERT ... ON CONFLICT(session_id, segment_index) DO UPDATE` keyed on
+//!   `content_hash` (T-A.2/3) so a re-parse that produces a different hash
+//!   replaces the stored row and re-queues enrichment, while a re-parse with
+//!   the same hash is a cheap no-op.
 //!   `size_at_last_read` is compared to current file size to skip no-op wakeups.
 //!   `byte_offset` is stored as `current_size` (matching `size_at_last_read`) so a
 //!   future seek-based optimisation can use it without a schema change.
@@ -331,6 +334,16 @@ fn run_settling_sweep(
     let candidates: Vec<(i64, String)> = {
         // Prepare the candidate SELECT.  Any "no such column" / "no such table"
         // error means the DB has not yet been migrated to v12 — return Ok(0).
+        //
+        // Content-existence filter (the AND-OR triplet on json_array_length /
+        // length): include rows that carry meaningful content along ANY of the
+        // three axes hashed by compute_segment_content_hash (tool_calls_json,
+        // user_prompts_json, joined assistant_texts). Assistant text is not
+        // stored as a separate column, so summary_text (NOT NULL but may be
+        // empty) is the proxy for "this segment has assistant-side content."
+        // Without the summary_text clause, a segment with only assistant
+        // content would never be re-enqueued by the settling sweep even though
+        // its content_hash had changed.
         let mut stmt = match conn.prepare(
             "SELECT cs.id, cs.source_file
              FROM claude_sessions cs
@@ -342,6 +355,7 @@ fn run_settling_sweep(
                AND (
                  json_array_length(COALESCE(cs.tool_calls_json,   '[]')) > 0
                  OR json_array_length(COALESCE(cs.user_prompts_json, '[]')) > 0
+                 OR length(COALESCE(cs.summary_text, '')) > 0
                )
                AND (ceq.id IS NULL OR ceq.status IN ('done','failed'))
              ORDER BY cs.end_time ASC
@@ -1177,10 +1191,56 @@ mod tests {
             Some("[]"), // empty tool_calls
             Some("[]"), // empty user_prompts
         );
+        // seed_session hardcodes summary_text='test'. For this test to assert
+        // "truly empty segment is skipped", we need summary_text empty as well
+        // so all three content axes (tool_calls, user_prompts, summary/assistant)
+        // are zero — otherwise the P2 sweep coverage clause would (correctly)
+        // pick this segment up as having assistant content.
+        conn.execute(
+            "UPDATE claude_sessions SET summary_text = '' WHERE id = 6",
+            [],
+        )
+        .unwrap();
 
         let now_ms = chrono::Utc::now().timestamp_millis();
         let enqueued = run_settling_sweep(&conn, 10, now_ms).expect("sweep");
         assert_eq!(enqueued, 0, "empty segment should not be enqueued");
+    }
+
+    /// Regression test for the P2 finding from PR #102 review: an assistant-only
+    /// segment (no tool_calls, no user_prompts, but non-empty summary_text)
+    /// MUST be considered eligible for re-enrichment when its content_hash
+    /// has diverged from last_enriched_content_hash. Before the P2 fix, the
+    /// settling sweep's WHERE clause required tool_calls or user_prompts to
+    /// be non-empty, leaving assistant-only segments stranded indefinitely.
+    #[test]
+    fn test_sweep_enqueues_assistant_only_segment() {
+        let dir = TempDir::new().unwrap();
+        let conn = open_test_db_v12(&dir);
+
+        let file = dir.path().join("assistant-only.jsonl");
+        std::fs::write(&file, b"x").unwrap();
+        set_mtime_seconds_ago(&file, 35 * 60);
+
+        seed_session(
+            &conn,
+            42,
+            "sess-assistant",
+            file.to_str().unwrap(),
+            Some("hash-current"),
+            Some("hash-last"),
+            Some("[]"), // empty tool_calls
+            Some("[]"), // empty user_prompts
+        );
+        // seed_session sets summary_text='test' which is non-empty —
+        // exactly the assistant-only shape the P2 fix targets.
+
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        let enqueued = run_settling_sweep(&conn, 10, now_ms).expect("sweep");
+        assert_eq!(
+            enqueued, 1,
+            "assistant-only segment with hash mismatch must be enqueued"
+        );
     }
 
     #[test]

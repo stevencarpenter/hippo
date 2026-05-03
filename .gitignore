@@ -12,6 +12,8 @@ __pycache__/
 *.db-wal
 *.db-shm
 *.jsonl
+!docs/baselines/**/*.jsonl
+!brain/src/hippo_brain/bench/qa_template.jsonl
 .venv/
 brain/.venv/
 *.egg-info/

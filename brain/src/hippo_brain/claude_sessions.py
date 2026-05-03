@@ -655,6 +655,16 @@ def write_claude_knowledge_node(
     logic can detect future content changes.  ``None`` entries are skipped to
     avoid overwriting an existing value with NULL on legacy rows.
     """
+    # Defensive length check: zip() silently truncates to the shorter
+    # iterable, which would leave trailing segments without their
+    # last_enriched_content_hash update if a caller passed a misaligned list.
+    # Fail fast instead so the bug surfaces at the call site, not as a
+    # mysterious watcher re-enqueue loop weeks later.
+    if content_hashes is not None and len(content_hashes) != len(segment_ids):
+        raise ValueError(
+            f"content_hashes length ({len(content_hashes)}) does not match "
+            f"segment_ids length ({len(segment_ids)})"
+        )
     node_uuid = str(uuid.uuid4())
     now_ms = int(time.time() * 1000)
     content = json.dumps(

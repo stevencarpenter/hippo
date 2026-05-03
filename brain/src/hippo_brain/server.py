@@ -1,4 +1,5 @@
 import asyncio
+import datetime as _dt
 import logging
 import sqlite3
 import time
@@ -147,11 +148,20 @@ class BrainServer:
         self.lock_timeout_ms = lock_timeout_ms
         self.long_dwell_bypass_ms = long_dwell_bypass_ms
         self.enrichment_running = False
+        self._paused: bool = False
+        self._paused_at_iso: str | None = None
         self._query_inflight: int = 0  # incremented while /ask is executing
+        # True while the enrichment loop body is running an LM-bound batch
+        # (preflight + claim + gather). Used by /control/pause so callers like
+        # hippo-bench can confirm prod is quiescent before claiming the LM slot.
+        self._enrichment_active: bool = False
         # Set whenever a query is in flight; the enrichment loop sleeps on this
         # event so it wakes immediately rather than waiting out the full poll
         # interval before yielding to the LM.
         self._query_arrived = asyncio.Event()
+        # Set by /control/resume so the loop wakes immediately from its paused
+        # sleep instead of waiting out the full poll_interval_secs.
+        self._resume_event = asyncio.Event()
         self._enrichment_task = None
         self._reaper_task = None
         self._vector_db = None
@@ -254,6 +264,8 @@ class BrainServer:
                 "accepted_read_versions": sorted(ACCEPTED_READ_VERSIONS),
                 "lmstudio_reachable": reachable,
                 "enrichment_running": self.enrichment_running,
+                "paused": self._paused,
+                "paused_at": self._paused_at_iso,
                 "db_reachable": db_reachable,
                 "queue_depth": queue_depth,
                 "queue_failed": queue_failed,
@@ -324,7 +336,7 @@ class BrainServer:
 
         try:
             limit = int(limit)
-        except TypeError, ValueError:
+        except (TypeError, ValueError):  # fmt: skip
             return JSONResponse({"error": "limit must be an integer"}, status_code=400)
 
         if limit <= 0:
@@ -437,7 +449,7 @@ class BrainServer:
             for r in cursor.fetchall():
                 try:
                     tags = json.loads(r[5]) if r[5] else []
-                except json.JSONDecodeError, TypeError:
+                except (json.JSONDecodeError, TypeError):  # fmt: skip
                     tags = []
                 nodes.append(
                     {
@@ -483,7 +495,7 @@ class BrainServer:
 
             try:
                 tags = json.loads(row[6]) if row[6] else []
-            except json.JSONDecodeError, TypeError:
+            except (json.JSONDecodeError, TypeError):  # fmt: skip
                 tags = []
 
             related_entities = [
@@ -702,7 +714,7 @@ class BrainServer:
         limit = body.get("limit", 10)
         try:
             limit = int(limit)
-        except TypeError, ValueError:
+        except (TypeError, ValueError):  # fmt: skip
             return JSONResponse({"error": "limit must be an integer"}, status_code=400)
         if limit <= 0:
             return JSONResponse({"error": "limit must be greater than 0"}, status_code=400)
@@ -744,6 +756,37 @@ class BrainServer:
 
         status = 200 if "answer" in result else 502
         return JSONResponse(result, status_code=status)
+
+    async def control_pause(self, request: Request) -> JSONResponse:
+        """Pause the enrichment loop. Idempotent.
+
+        in_flight_finished reflects both /ask queries and the enrichment
+        loop body — bench callers need both quiescent before they own the
+        LM Studio slot.
+        """
+        if not self._paused:
+            self._paused = True
+            self._paused_at_iso = _dt.datetime.now(tz=_dt.UTC).isoformat()
+        in_flight_finished = self._query_inflight == 0 and not self._enrichment_active
+        return JSONResponse(
+            {
+                "paused_at": self._paused_at_iso,
+                "in_flight_finished": in_flight_finished,
+                "enrichment_active": self._enrichment_active,
+                "query_inflight": self._query_inflight,
+            }
+        )
+
+    async def control_resume(self, request: Request) -> JSONResponse:
+        """Resume the enrichment loop. Idempotent.
+
+        Sets _resume_event so the loop wakes immediately rather than
+        waiting out the full poll_interval_secs sleep.
+        """
+        self._paused = False
+        self._paused_at_iso = None
+        self._resume_event.set()
+        return JSONResponse({"resumed_at": _dt.datetime.now(tz=_dt.UTC).isoformat()})
 
     def _resolve_model_from_preflight(self, loaded: list[str]) -> bool:
         """Sync model selection from preflight's already-fetched model list."""
@@ -790,6 +833,18 @@ class BrainServer:
         try:
             while True:
                 try:
+                    if self._paused:
+                        # Wake immediately when /control/resume sets the event;
+                        # otherwise re-poll _paused after poll_interval_secs.
+                        try:
+                            await asyncio.wait_for(
+                                self._resume_event.wait(),
+                                timeout=self.poll_interval_secs,
+                            )
+                        except TimeoutError:
+                            pass
+                        self._resume_event.clear()
+                        continue
                     # Sleep up to poll_interval_secs, waking early if a query
                     # arrives mid-sleep. The event-based wake means we yield
                     # to the LM Studio slot instead of waiting out the full
@@ -813,82 +868,86 @@ class BrainServer:
                         )
                         await asyncio.sleep(0.1)
 
-                    decision = await preflight_lm_studio(
-                        self.client, self._preferred_model or None, allow_fallback=True
-                    )
-                    if not decision.proceed:
-                        continue
-
-                    # Sync resolved enrichment_model from preflight result; falls
-                    # back to first chat model when preferred isn't loaded.
-                    if not self._resolve_model_from_preflight(decision.loaded_models):
-                        continue
-
-                    conn = self._get_conn()
+                    self._enrichment_active = True
                     try:
-                        # Claim all work upfront (sequential — avoids SQLite write contention)
-                        shell_chunks = claim_pending_events_by_session(
-                            conn,
-                            self.enrichment_batch_size,
-                            worker_id,
-                            self.session_stale_secs,
-                            max_claim_batch=self.max_claim_batch,
-                            stale_lock_timeout_ms=self.lock_timeout_ms,
+                        decision = await preflight_lm_studio(
+                            self.client, self._preferred_model or None, allow_fallback=True
                         )
-                        try:
-                            claude_batches = claim_pending_claude_segments(
-                                conn,
-                                worker_id,
-                                max_claim_batch=self.max_claim_batch,
-                                stale_lock_timeout_ms=self.lock_timeout_ms,
-                            )
-                        except Exception as e:
-                            logger.debug("no claude segments to process: %s", e)
-                            claude_batches = []
-                        try:
-                            browser_batches = claim_pending_browser_events(
-                                conn,
-                                worker_id,
-                                stale_secs=60,
-                                max_claim_batch=self.max_claim_batch,
-                                stale_lock_timeout_ms=self.lock_timeout_ms,
-                                long_dwell_bypass_ms=self.long_dwell_bypass_ms,
-                            )
-                        except Exception as e:
-                            logger.warning("browser claim error: %s", e, exc_info=True)
-                            browser_batches = []
-                        try:
-                            workflow_run_ids = claim_pending_workflow_runs(
-                                conn,
-                                worker_id,
-                                stale_lock_timeout_ms=self.lock_timeout_ms,
-                                max_claim_batch=self.max_claim_batch,
-                            )
-                        except Exception as e:
-                            logger.warning("workflow claim error: %s", e, exc_info=True)
-                            workflow_run_ids = []
-
-                        if (
-                            not shell_chunks
-                            and not claude_batches
-                            and not browser_batches
-                            and not workflow_run_ids
-                        ):
+                        if not decision.proceed:
                             continue
 
-                        # Process all sources concurrently — each method uses its own
-                        # DB connection for writes so they don't block each other.
-                        # Shell receives the claim conn for read-only browser correlation.
-                        t0 = time.monotonic()
-                        await asyncio.gather(
-                            self._enrich_shell_batches(shell_chunks, conn),
-                            self._enrich_claude_batches(claude_batches),
-                            self._enrich_browser_batches(browser_batches),
-                            self._enrich_workflow_runs(workflow_run_ids),
-                        )
-                        _hist(_loop_duration, (time.monotonic() - t0) * 1000)
+                        # Sync resolved enrichment_model from preflight result; falls
+                        # back to first chat model when preferred isn't loaded.
+                        if not self._resolve_model_from_preflight(decision.loaded_models):
+                            continue
+
+                        conn = self._get_conn()
+                        try:
+                            # Claim all work upfront (sequential — avoids SQLite write contention)
+                            shell_chunks = claim_pending_events_by_session(
+                                conn,
+                                self.enrichment_batch_size,
+                                worker_id,
+                                self.session_stale_secs,
+                                max_claim_batch=self.max_claim_batch,
+                                stale_lock_timeout_ms=self.lock_timeout_ms,
+                            )
+                            try:
+                                claude_batches = claim_pending_claude_segments(
+                                    conn,
+                                    worker_id,
+                                    max_claim_batch=self.max_claim_batch,
+                                    stale_lock_timeout_ms=self.lock_timeout_ms,
+                                )
+                            except Exception as e:
+                                logger.debug("no claude segments to process: %s", e)
+                                claude_batches = []
+                            try:
+                                browser_batches = claim_pending_browser_events(
+                                    conn,
+                                    worker_id,
+                                    stale_secs=60,
+                                    max_claim_batch=self.max_claim_batch,
+                                    stale_lock_timeout_ms=self.lock_timeout_ms,
+                                    long_dwell_bypass_ms=self.long_dwell_bypass_ms,
+                                )
+                            except Exception as e:
+                                logger.warning("browser claim error: %s", e, exc_info=True)
+                                browser_batches = []
+                            try:
+                                workflow_run_ids = claim_pending_workflow_runs(
+                                    conn,
+                                    worker_id,
+                                    stale_lock_timeout_ms=self.lock_timeout_ms,
+                                    max_claim_batch=self.max_claim_batch,
+                                )
+                            except Exception as e:
+                                logger.warning("workflow claim error: %s", e, exc_info=True)
+                                workflow_run_ids = []
+
+                            if (
+                                not shell_chunks
+                                and not claude_batches
+                                and not browser_batches
+                                and not workflow_run_ids
+                            ):
+                                continue
+
+                            # Process all sources concurrently — each method uses its own
+                            # DB connection for writes so they don't block each other.
+                            # Shell receives the claim conn for read-only browser correlation.
+                            t0 = time.monotonic()
+                            await asyncio.gather(
+                                self._enrich_shell_batches(shell_chunks, conn),
+                                self._enrich_claude_batches(claude_batches),
+                                self._enrich_browser_batches(browser_batches),
+                                self._enrich_workflow_runs(workflow_run_ids),
+                            )
+                            _hist(_loop_duration, (time.monotonic() - t0) * 1000)
+                        finally:
+                            conn.close()
                     finally:
-                        conn.close()
+                        self._enrichment_active = False
                 except Exception as e:
                     self.last_error = str(e) or type(e).__name__
                     self.last_error_at_ms = int(time.time() * 1000)
@@ -1120,7 +1179,7 @@ class BrainServer:
                             try:
                                 tools = _json.loads(s.get("tool_calls_json", "[]"))
                                 all_tools.extend(f"{t['name']}: {t['summary']}" for t in tools)
-                            except _json.JSONDecodeError, KeyError:
+                            except (_json.JSONDecodeError, KeyError):  # fmt: skip
                                 pass
                         node_dict = {
                             "id": node_id,
@@ -1354,6 +1413,8 @@ class BrainServer:
             Route("/knowledge/{id:int}", self.get_knowledge, methods=["GET"]),
             Route("/query", self.query, methods=["POST"]),
             Route("/ask", self.ask, methods=["POST"]),
+            Route("/control/pause", self.control_pause, methods=["POST"]),
+            Route("/control/resume", self.control_resume, methods=["POST"]),
         ]
 
 
