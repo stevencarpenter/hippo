@@ -199,6 +199,9 @@ pub fn run(config: &HippoConfig) -> Result<()> {
         );
         if let Err(e) = insert_result {
             if is_sqlite_busy(&e) {
+                // BT-15: track contention for bench's "is this model causing
+                // write pressure?" diagnostic.
+                crate::metrics::DB_BUSY_COUNT.add(1, &[opentelemetry::KeyValue::new("op", "watchdog_alarm_insert")]);
                 std::thread::sleep(std::time::Duration::from_millis(100));
                 if let Err(retry_err) = conn.execute(
                     "INSERT INTO capture_alarms (invariant_id, raised_at, details_json)

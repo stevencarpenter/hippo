@@ -192,3 +192,15 @@ pub static WATCHDOG_ALARMS_RESET: LazyLock<Counter<u64>> = LazyLock::new(|| {
         .with_description("Active alarms whose clean_ticks was reset by a re-violation")
         .build()
 });
+
+/// BT-15: Counter incremented every time a sqlite operation hits SQLITE_BUSY.
+/// `busy_timeout=5000` handles the common case before this fires; a non-zero
+/// rate here under bench load means write contention on the same DB —
+/// useful for distinguishing "this model is slow" from "this model causes
+/// SQLite write contention that backs up the queue."
+pub static DB_BUSY_COUNT: LazyLock<Counter<u64>> = LazyLock::new(|| {
+    METER
+        .u64_counter("hippo.daemon.db_busy_count")
+        .with_description("SQLITE_BUSY events seen by the daemon (after busy_timeout)")
+        .build()
+});
