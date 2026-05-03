@@ -63,7 +63,10 @@ async function fetchWithRetry(url: string, retries = 3): Promise<Response> {
     try {
       const res = await fetch(url, { headers: authHeaders() });
       if (res.ok) return res;
-      // Treat 4xx as terminal, 5xx as retryable.
+      // Retry on 5xx (transient server errors) and on 403 specifically:
+      // GitHub returns 403 for unauthenticated rate-limit hits, which clear
+      // after a backoff. Other 4xx codes (404 missing, 401 bad token) are
+      // terminal — return the response so the caller can fall back.
       if (res.status >= 500 || res.status === 403) {
         lastErr = new Error(`fetch ${url} -> ${res.status}`);
         await new Promise((r) => setTimeout(r, delay));
