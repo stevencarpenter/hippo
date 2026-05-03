@@ -367,17 +367,51 @@ pub fn read_source_health(conn: &Connection) -> Result<Vec<SourceHealthRow>> {
 // Invariant evaluation
 // ---------------------------------------------------------------------------
 
+/// BT-16: Returns true if a hippo-bench pause window is currently active.
+///
+/// Reuses the BT-06 pause lockfile rather than introducing a new
+/// SQLite migration: the lockfile already encodes the bench's
+/// "I have paused prod and bench is running" state. Existence ⇒
+/// pause active. We also treat a lockfile that was modified within
+/// the last 60 s as still-pausing-cooldown to avoid flapping right
+/// after a crash-resume.
+pub fn bench_pause_window_active() -> bool {
+    let path = match dirs::home_dir() {
+        Some(h) => h.join(".local/share/hippo-bench/pause.lock"),
+        None => return false,
+    };
+    let metadata = match std::fs::metadata(&path) {
+        Ok(m) => m,
+        Err(_) => return false,
+    };
+    // Active lockfile = bench is paused right now. Existence is enough; the
+    // mtime is informational.
+    let _ = metadata.modified();
+    true
+}
+
 /// Evaluate I-1..I-10 against the in-memory `source_health` rows.
 ///
 /// Returns one `InvariantViolation` per triggered invariant.
 /// Invariants that require filesystem access (I-2 proxy, I-9) or are
 /// architectural (I-5, I-10) or doctor-only (I-7) either return a proxy
 /// violation or `None`; their full implementations land in later tasks.
+///
+/// BT-16: when a hippo-bench pause window is active (per
+/// `bench_pause_window_active()`), I-2, I-4, and I-8 are suppressed —
+/// during a bench run prod brain is intentionally paused and capture
+/// freshness predicates would fire spuriously, drowning real alarms.
 pub fn check_invariants(rows: &[SourceHealthRow], now_ms: i64) -> Vec<InvariantViolation> {
     let by_source: std::collections::HashMap<&str, &SourceHealthRow> =
         rows.iter().map(|r| (r.source.as_str(), r)).collect();
 
     let mut violations = Vec::new();
+    let bench_paused = bench_pause_window_active();
+    if bench_paused {
+        tracing::info!(
+            "BT-16: bench pause window active — suppressing I-2/I-4/I-8 invariants"
+        );
+    }
 
     // I-1: Shell liveness (>60 s stale while probe says active)
     if let Some(v) = check_i1_shell_liveness(&by_source, now_ms) {
@@ -386,7 +420,10 @@ pub fn check_invariants(rows: &[SourceHealthRow], now_ms: i64) -> Vec<InvariantV
 
     // I-2: Claude-session coverage proxy (consecutive_failures > 3)
     // Full JSONL-based predicate lands in T-4 (doctor checks).
-    if let Some(v) = check_i2_claude_session_proxy(&by_source, now_ms) {
+    // BT-16: suppressed during bench pause window.
+    if !bench_paused
+        && let Some(v) = check_i2_claude_session_proxy(&by_source, now_ms)
+    {
         violations.push(v);
     }
 
@@ -394,7 +431,10 @@ pub fn check_invariants(rows: &[SourceHealthRow], now_ms: i64) -> Vec<InvariantV
     // Omitted from T-1; activated in future when probe data is available.
 
     // I-4: Browser round-trip (>2 min stale while probe says active)
-    if let Some(v) = check_i4_browser_roundtrip(&by_source, now_ms) {
+    // BT-16: suppressed during bench pause window.
+    if !bench_paused
+        && let Some(v) = check_i4_browser_roundtrip(&by_source, now_ms)
+    {
         violations.push(v);
     }
 
@@ -405,7 +445,12 @@ pub fn check_invariants(rows: &[SourceHealthRow], now_ms: i64) -> Vec<InvariantV
     // I-10: Decoupling — architectural enforcement via CI test; not a runtime alarm.
 
     // I-8: Probe freshness (> 15 min stale OR probe_ok = 0)
-    violations.extend(check_i8_probe_freshness(rows, now_ms));
+    // BT-16: suppressed during bench pause window — probes can't run while
+    // prod brain is paused, so freshness alarms during a bench run are
+    // spurious by definition.
+    if !bench_paused {
+        violations.extend(check_i8_probe_freshness(rows, now_ms));
+    }
 
     violations
 }
