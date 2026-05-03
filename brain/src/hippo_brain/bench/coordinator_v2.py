@@ -130,52 +130,53 @@ def _wait_for_queue_drain(
 
 
 def _collect_event_ids_from_db(bench_db: Path) -> set[str]:
-    """Collect all event IDs from bench DB corpus."""
-    event_ids = set()
+    """Collect all event IDs from bench DB corpus.
 
-    try:
-        conn = sqlite3.connect(str(bench_db))
-
+    Per-source tables are queried independently. Missing tables are debug-logged
+    and skipped — sparse corpora (e.g. shell-only) legitimately don't have all
+    four. Other failures (corruption, permission errors, sqlite open errors)
+    propagate so the caller's _capture pattern records them in JSONL rather
+    than masking them as an empty event_ids set.
+    """
+    event_ids: set[str] = set()
+    with contextlib.closing(sqlite3.connect(str(bench_db))) as conn:
         try:
             shell_rows = conn.execute("SELECT id FROM events").fetchall()
             event_ids.update(f"shell-{row[0]}" for row in shell_rows if row[0])
-        except sqlite3.OperationalError:
-            pass
+        except sqlite3.OperationalError as e:
+            logger.debug("table 'events' missing in corpus, skipping: %s", e)
 
         try:
             claude_rows = conn.execute("SELECT id FROM claude_sessions").fetchall()
             event_ids.update(f"claude-{row[0]}" for row in claude_rows if row[0])
-        except sqlite3.OperationalError:
-            pass
+        except sqlite3.OperationalError as e:
+            logger.debug("table 'claude_sessions' missing in corpus, skipping: %s", e)
 
         try:
             browser_rows = conn.execute("SELECT id FROM browser_events").fetchall()
             event_ids.update(f"browser-{row[0]}" for row in browser_rows if row[0])
-        except sqlite3.OperationalError:
-            pass
+        except sqlite3.OperationalError as e:
+            logger.debug("table 'browser_events' missing in corpus, skipping: %s", e)
 
         try:
             workflow_rows = conn.execute("SELECT id FROM workflow_runs").fetchall()
             event_ids.update(f"workflow-{row[0]}" for row in workflow_rows if row[0])
-        except sqlite3.OperationalError:
-            pass
-
-        conn.close()
-    except Exception:
-        pass
-
+        except sqlite3.OperationalError as e:
+            logger.debug("table 'workflow_runs' missing in corpus, skipping: %s", e)
     return event_ids
 
 
 def _load_corpus_entries(corpus_sqlite: Path) -> list[CorpusEntry]:
-    """Load CorpusEntry objects from the JSONL sidecar next to the SQLite snapshot."""
+    """Load CorpusEntry objects from the JSONL sidecar next to the SQLite snapshot.
+
+    Missing sidecar returns []. Read/parse failures propagate so the caller's
+    _capture pattern records them in JSONL rather than masking them as an
+    empty corpus (which would silently disable warmup + self-consistency).
+    """
     corpus_jsonl = corpus_sqlite.with_suffix(".jsonl")
     if not corpus_jsonl.exists():
         return []
-    try:
-        return list(load_corpus(corpus_jsonl))
-    except Exception:
-        return []
+    return list(load_corpus(corpus_jsonl))
 
 
 def _metrics_snapshot_fn(sampler: MetricsSampler):
@@ -278,7 +279,11 @@ def run_one_model_v2(
         process_ready_ms = int(wait_for_brain_ready(stack) * 1000)
 
         # 5. Warmup — direct calls to LM Studio to prime the model before the timed window
-        all_entries = _load_corpus_entries(corpus_sqlite)
+        try:
+            all_entries = _load_corpus_entries(corpus_sqlite)
+        except Exception as e:
+            _capture("load_corpus", e)
+            all_entries = []
         rng = random.Random(42)
         if all_entries and warmup_calls > 0:
             warmup_pool = all_entries[: min(20, len(all_entries))]
