@@ -28,6 +28,8 @@ All paths are relative to the worktree root unless prefixed with `~`.
 - Never call `mise run nuke` or any LaunchAgent removal during the loop.
 - After every task: `git status` — there should be no untracked files outside this plan's scope.
 
+**BT-22 is the absolute last task.** It is the only task that needs creative human judgment (writing `acceptable_answer_keywords` requires domain knowledge of what answers should contain). It depends on **every other task** so the loop reaches it only when nothing else can run. If BT-22 cannot be completed autonomously, the loop **must halt** and surface the question to the operator — do not skip it silently, do not mark it complete with empty content, do not heuristically guess keywords just to mark it done. Better to halt and ask than to ship inert keywords.
+
 ---
 
 ## State File Schema
@@ -96,7 +98,14 @@ The first ralph run targets **Phase 0 + Phase 1** (BT-01..BT-20). Phase 2 needs 
 
 **Work:**
 
-Create `.ralph/` directory if it doesn't exist. Write the initial state JSON with all 30 tasks set to `"status": "pending"`, dependencies populated per this plan. Also create `.gitignore` entry for `.ralph/` if not present (state is per-machine).
+Create `.ralph/` directory if it doesn't exist. Write the initial state JSON with dependencies populated per this plan. Also create `.gitignore` entry for `.ralph/` if not present (state is per-machine).
+
+Initial statuses:
+- `BT-01..BT-21, BT-29, BT-30`: `"status": "pending"`
+- `BT-23..BT-28` (Phase 2 sketches): `"status": "blocked"`, `"last_error": "design review pending — methodology decisions required from human, see plan section 'Phase 2 — Methodology Bootstrapping' before unblocking"`. The loop must NOT attempt these.
+- `BT-22` (final keyword backfill): `"status": "pending"`, `"deps": ["BT-01","BT-02",...,"BT-21","BT-23","BT-24","BT-25","BT-26","BT-27","BT-28","BT-29","BT-30"]` (i.e. depends on every other task). Since BT-23..BT-28 start `blocked`, BT-22 is reachable only after every other pending task is `completed` AND the blocked sketches are unblocked by a human, OR the loop's "ready to run" predicate is `dep.status in ("completed", "blocked")` — see implementation note below.
+
+**Implementation note for the loop's task-picker:** A task is ready when every dep is in status `"completed"` OR `"blocked"`. Treating `blocked` as "satisfied for downstream gating" lets BT-22 attempt without waiting for the sketched Phase 2 tasks to be unblocked. This is intentional — BT-22 should run last regardless of whether the Phase 2 sketches were ever expanded.
 
 **Verify:**
 ```bash
@@ -635,15 +644,24 @@ grep -q "leakage" docs/baselines/QA-ANNOTATION.md || grep -q "provenance" docs/b
 
 ---
 
-#### BT-22 — Populate `acceptable_answer_keywords` for all current Q/A items
+#### BT-22 — Populate `acceptable_answer_keywords` for all current Q/A items (FINAL TASK)
 
-**Deps:** BT-21
+**Deps:** every other task (BT-01..BT-21, BT-23..BT-30)
 **Budget:** 60 min
 **File:** `brain/src/hippo_brain/bench/qa_template.jsonl`
 
+**This is the absolute last task in the loop. It runs only after every other task has reached `completed` or `blocked`.**
+
 **Work:** Per methodology panel, the synthesis gate is currently inert because this field is empty. For each non-adversarial item in the fixture, add ≥3 keywords that any correct answer should contain (proper-noun, action verb, key entity).
 
-If the loop cannot determine appropriate keywords for an item, mark this task `blocked` and ask for human review.
+**Halt condition:** If the loop cannot autonomously author appropriate keywords for any item — because the question is ambiguous, the answer requires hippo-specific domain knowledge, or the keywords would be guesses — the loop **MUST**:
+1. Mark this task `blocked` with `last_error` set to the specific items that cannot be authored, including each item's `id` and `question`.
+2. **Kill the ralph loop entirely** (exit, do not pick up other tasks).
+3. Print to the operator a clear message: "BT-22 requires domain input. The following Q/A items need human-authored `acceptable_answer_keywords`: [list]. Without these, the synthesis gate stays inert and the bench cannot validate answer faithfulness. Please review and either (a) author the keywords directly, (b) confirm the heuristic guesses I produced for items I was confident about, or (c) explain why this gate doesn't matter for your model-ranking goal."
+
+Do not silently mark the task complete with placeholder keywords. Do not heuristically generate generic keywords (e.g., the question's nouns). Do not skip the task and proceed.
+
+**Why this strictness:** the methodology panel flagged that `keyword_hit_rate=0.000` across the existing baseline — meaning the field is empty everywhere — and that hides whether models hallucinate. If BT-22 ships with bad keywords, the bench gains a false signal of validity. Halting and asking is the safer failure mode.
 
 **Verify:**
 ```bash
