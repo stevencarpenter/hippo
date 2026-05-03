@@ -5,6 +5,7 @@ downstream-proxy pass → self-consistency pass → teardown → cooldown.
 
 from __future__ import annotations
 
+import contextlib
 import dataclasses
 import logging
 import os
@@ -80,21 +81,27 @@ def _wait_for_queue_drain(
     schema_checked = False
 
     while time.time() - start < drain_timeout_sec:
+        total_pending = 0
+        tables_found = 0
         try:
-            conn = sqlite3.connect(str(bench_db))
-            total_pending = 0
-            tables_found = 0
-            for table in tables:
-                try:
-                    row = conn.execute(
-                        f"SELECT COUNT(*) FROM {table} WHERE status IN ('pending', 'processing')"
-                    ).fetchone()
-                    if row:
-                        total_pending += row[0]
-                    tables_found += 1
-                except sqlite3.OperationalError:
-                    pass
-            conn.close()
+            # BT-08: contextlib.closing + busy_timeout. Previously this opened a
+            # fresh connection per poll (~0.5 Hz × 1 hr = 1800 connections)
+            # without a try/finally close — on long drains this exhausted the
+            # default macOS 256-fd-per-process limit. WAL+busy_timeout match
+            # the rest of the codebase and tolerate brief contention with the
+            # shadow brain's writer.
+            with contextlib.closing(sqlite3.connect(str(bench_db), timeout=5.0)) as conn:
+                conn.execute("PRAGMA busy_timeout = 5000")
+                for table in tables:
+                    try:
+                        row = conn.execute(
+                            f"SELECT COUNT(*) FROM {table} WHERE status IN ('pending', 'processing')"
+                        ).fetchone()
+                        if row:
+                            total_pending += row[0]
+                        tables_found += 1
+                    except sqlite3.OperationalError:
+                        pass
 
             # Fail fast on schema mismatch before declaring success.
             if not schema_checked:
