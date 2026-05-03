@@ -72,17 +72,28 @@ def test_env_injection_xdg_data_home(tmp_path, monkeypatch):
     for _args, kwargs in calls:
         env = kwargs["env"]
         assert env["XDG_DATA_HOME"] == str(run_tree)
-        assert env["XDG_CONFIG_HOME"] == str(run_tree / "config")
+        # HOME is overridden so both Rust dirs::home_dir and Python Path.home
+        # resolve to run_tree; XDG_CONFIG_HOME is intentionally not set so both
+        # tools fall through to <HOME>/.config/hippo/config.toml.
+        assert env["HOME"] == str(run_tree)
+        assert "XDG_CONFIG_HOME" not in env
 
 
 def test_start_new_session_flag(tmp_path, monkeypatch):
+    """Daemon owns a new session (process-group leader); brain joins via preexec_fn."""
     calls = _capture_popen_calls(monkeypatch)
     with patch.dict(os.environ, {}, clear=True):
         spawn_shadow_stack(**_spawn_kwargs(tmp_path))
 
     assert len(calls) == 2
-    for _args, kwargs in calls:
-        assert kwargs.get("start_new_session") is True
+    daemon_kwargs = calls[0][1]
+    brain_kwargs = calls[1][1]
+    # Daemon creates a new session so os.killpg targets its group.
+    assert daemon_kwargs.get("start_new_session") is True
+    assert daemon_kwargs.get("preexec_fn") is None
+    # Brain joins the daemon's process group via preexec_fn, not start_new_session.
+    assert brain_kwargs.get("start_new_session") is not True
+    assert callable(brain_kwargs.get("preexec_fn"))
 
 
 def test_otel_disabled_by_default(tmp_path, monkeypatch):
