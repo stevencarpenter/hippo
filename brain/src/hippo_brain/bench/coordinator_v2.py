@@ -6,6 +6,7 @@ downstream-proxy pass → self-consistency pass → teardown → cooldown.
 from __future__ import annotations
 
 import dataclasses
+import logging
 import os
 import random
 import shutil
@@ -13,6 +14,8 @@ import sqlite3
 import time
 from pathlib import Path
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 from hippo_brain.bench import lms
 from hippo_brain.bench.corpus import CorpusEntry, load_corpus
@@ -193,7 +196,13 @@ def run_one_model_v2(
     prod_brain_url: str = "http://localhost:8000",
     skip_prod_pause: bool = False,
 ) -> ModelRunResultV2:
-    """Per-model v2 lifecycle."""
+    """Per-model v2 lifecycle.
+
+    BT-03: spawn → teardown is wrapped in try/finally so a raise anywhere in
+    the body still calls teardown_shadow_stack. Without this, model N's
+    failure leaks the shadow process group; model N+1's spawn races on the
+    fixed brain port and either succeeds against stale data or hangs.
+    """
     start_time = time.time()
 
     # 1. Unload all, load target model
@@ -206,103 +215,120 @@ def run_one_model_v2(
     bench_db = run_tree / "hippo.db"
     shutil.copy2(corpus_sqlite, bench_db)
 
-    # 3. Spawn shadow stack
-    stack = spawn_shadow_stack(
-        run_tree=run_tree,
-        run_id=run_id,
-        model_id=model,
-        corpus_version="corpus-v2",
-        embedding_model=embedding_model or "embed-model",
-        brain_port=18923,
-        otel_enabled=False,
-    )
-
-    # 4. Wait for brain ready and record process_ready_ms
-    process_ready_ms = int(wait_for_brain_ready(stack) * 1000)
-
-    # 5. Warmup — direct calls to LM Studio to prime the model before the timed window
-    all_entries = _load_corpus_entries(corpus_sqlite)
-    rng = random.Random(42)
-    if all_entries and warmup_calls > 0:
-        warmup_pool = all_entries[: min(20, len(all_entries))]
-        warmup_entries = rng.sample(warmup_pool, min(warmup_calls, len(warmup_pool)))
-        for entry in warmup_entries:
-            try:
-                call_enrichment(
-                    base_url=lmstudio_url,
-                    model=model,
-                    payload=entry.redacted_content,
-                    source=entry.source,
-                    timeout_sec=timeout_sec,
-                    temperature=temperature,
-                )
-            except Exception:
-                pass
-
-    # 6. Start metrics sampler
-    sampler = MetricsSampler(sample_interval_ms=250)
-    sampler.start()
-
-    # 7. Wait for main queue drain (shadow brain drains naturally)
-    drain_start = time.time()
-    timeout_during_drain = _wait_for_queue_drain(bench_db, drain_timeout_sec)
-    queue_drain_wall_clock_sec = int(time.time() - drain_start)
-
-    # 8. Poll prod brain health every 120s to detect an unexpected restart
+    stack = None
+    sampler: MetricsSampler | None = None
+    process_ready_ms = 0
+    queue_drain_wall_clock_sec = 0
+    timeout_during_drain = False
     prod_brain_restarted_during_bench = False
-    pause_client = PauseRpcClient(prod_brain_url, skip=skip_prod_pause)
-    initial_health = pause_client.probe_health()
-    was_paused = bool(initial_health and initial_health.get("paused", False))
-    # Re-probe only if drain took long enough to be worth checking
-    if queue_drain_wall_clock_sec > 120:
-        health = pause_client.probe_health()
-        if health and not health.get("paused", False) and was_paused:
-            prod_brain_restarted_during_bench = True
-
-    # 9. Run downstream-proxy pass
     downstream_proxy: dict[str, Any] = {}
-    try:
-        event_ids = _collect_event_ids_from_db(bench_db)
-        if embedding_fn:
-            qa_path = bench_qa_path()
-            if qa_path.exists():
-                included_qa, _ = load_qa_items(qa_path, event_ids)
-                if included_qa:
-                    conn = sqlite3.connect(str(bench_db))
-                    downstream_proxy = run_downstream_proxy_pass(
-                        conn,
-                        included_qa,
-                        embedding_fn,
-                    )
-                    conn.close()
-    except Exception:
-        pass
-
-    # 10. Self-consistency pass — 5 events × N runs via direct LM Studio calls
     attempts: list[AttemptRecord] = []
     per_event_vectors: list[list[list[float]]] = []
-    if all_entries and sc_events > 0 and sc_runs > 0:
-        sc_pool = rng.sample(all_entries, min(sc_events, len(all_entries)))
+
+    try:
+        # 3. Spawn shadow stack
+        stack = spawn_shadow_stack(
+            run_tree=run_tree,
+            run_id=run_id,
+            model_id=model,
+            corpus_version="corpus-v2",
+            embedding_model=embedding_model or "embed-model",
+            brain_port=18923,
+            otel_enabled=False,
+        )
+
+        # 4. Wait for brain ready and record process_ready_ms
+        process_ready_ms = int(wait_for_brain_ready(stack) * 1000)
+
+        # 5. Warmup — direct calls to LM Studio to prime the model before the timed window
+        all_entries = _load_corpus_entries(corpus_sqlite)
+        rng = random.Random(42)
+        if all_entries and warmup_calls > 0:
+            warmup_pool = all_entries[: min(20, len(all_entries))]
+            warmup_entries = rng.sample(warmup_pool, min(warmup_calls, len(warmup_pool)))
+            for entry in warmup_entries:
+                try:
+                    call_enrichment(
+                        base_url=lmstudio_url,
+                        model=model,
+                        payload=entry.redacted_content,
+                        source=entry.source,
+                        timeout_sec=timeout_sec,
+                        temperature=temperature,
+                    )
+                except Exception:
+                    pass
+
+        # 6. Start metrics sampler
+        sampler = MetricsSampler(sample_interval_ms=250)
+        sampler.start()
+
+        # 7. Wait for main queue drain (shadow brain drains naturally)
+        drain_start = time.time()
+        timeout_during_drain = _wait_for_queue_drain(bench_db, drain_timeout_sec)
+        queue_drain_wall_clock_sec = int(time.time() - drain_start)
+
+        # 8. Poll prod brain health every 120s to detect an unexpected restart
+        pause_client = PauseRpcClient(prod_brain_url, skip=skip_prod_pause)
+        initial_health = pause_client.probe_health()
+        was_paused = bool(initial_health and initial_health.get("paused", False))
+        # Re-probe only if drain took long enough to be worth checking
+        if queue_drain_wall_clock_sec > 120:
+            health = pause_client.probe_health()
+            if health and not health.get("paused", False) and was_paused:
+                prod_brain_restarted_during_bench = True
+
+        # 9. Run downstream-proxy pass
         try:
-            sc_attempts, sc_vecs = run_self_consistency_pass(
-                base_url=lmstudio_url,
-                model=model,
-                entries=sc_pool,
-                runs_per_event=sc_runs,
-                embedding_model=embedding_model,
-                timeout_sec=timeout_sec,
-                metrics_snapshot=_metrics_snapshot_fn(sampler),
-                temperature=temperature,
-                run_id=run_id,
-            )
-            attempts.extend(sc_attempts)
-            per_event_vectors.extend(sc_vecs)
+            event_ids = _collect_event_ids_from_db(bench_db)
+            if embedding_fn:
+                qa_path = bench_qa_path()
+                if qa_path.exists():
+                    included_qa, _ = load_qa_items(qa_path, event_ids)
+                    if included_qa:
+                        conn = sqlite3.connect(str(bench_db))
+                        downstream_proxy = run_downstream_proxy_pass(
+                            conn,
+                            included_qa,
+                            embedding_fn,
+                        )
+                        conn.close()
         except Exception:
             pass
 
-    # 11. Teardown
-    sampler.stop()
-    teardown_shadow_stack(stack)
+        # 10. Self-consistency pass — 5 events × N runs via direct LM Studio calls
+        if all_entries and sc_events > 0 and sc_runs > 0:
+            sc_pool = rng.sample(all_entries, min(sc_events, len(all_entries)))
+            try:
+                sc_attempts, sc_vecs = run_self_consistency_pass(
+                    base_url=lmstudio_url,
+                    model=model,
+                    entries=sc_pool,
+                    runs_per_event=sc_runs,
+                    embedding_model=embedding_model,
+                    timeout_sec=timeout_sec,
+                    metrics_snapshot=_metrics_snapshot_fn(sampler),
+                    temperature=temperature,
+                    run_id=run_id,
+                )
+                attempts.extend(sc_attempts)
+                per_event_vectors.extend(sc_vecs)
+            except Exception:
+                pass
+
+    finally:
+        # 11. Teardown — runs even if any step above raised so we never leak
+        # shadow processes or leave the metrics sampler running.
+        if sampler is not None:
+            try:
+                sampler.stop()
+            except Exception:
+                logger.exception("BT-03: sampler.stop failed during teardown")
+        if stack is not None:
+            try:
+                teardown_shadow_stack(stack)
+            except Exception:
+                logger.exception("BT-03: teardown_shadow_stack failed — manual cleanup may be required")
 
     # 12. Cooldown
     cooldown_start = time.time()
@@ -324,7 +350,7 @@ def run_one_model_v2(
         model=model,
         attempts=attempts,
         per_event_vectors=per_event_vectors,
-        peak_metrics=sampler.peak() or {},
+        peak_metrics=(sampler.peak() if sampler is not None else None) or {},
         wall_clock_sec=wall_clock_sec,
         cooldown_timeout=cooldown_timeout,
         process_ready_ms=process_ready_ms,
