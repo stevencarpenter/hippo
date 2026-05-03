@@ -87,9 +87,11 @@ def _wait_for_queue_drain(
             # BT-08: contextlib.closing + busy_timeout. Previously this opened a
             # fresh connection per poll (~0.5 Hz × 1 hr = 1800 connections)
             # without a try/finally close — on long drains this exhausted the
-            # default macOS 256-fd-per-process limit. WAL+busy_timeout match
-            # the rest of the codebase and tolerate brief contention with the
-            # shadow brain's writer.
+            # default macOS 256-fd-per-process limit. busy_timeout matches the
+            # rest of the codebase and tolerates brief contention with the
+            # shadow brain's writer; WAL is already enabled persistently on
+            # the bench DB by the daemon, so the per-poll open inherits it
+            # without needing a `PRAGMA journal_mode=WAL` here.
             with contextlib.closing(sqlite3.connect(str(bench_db), timeout=5.0)) as conn:
                 conn.execute("PRAGMA busy_timeout = 5000")
                 for table in tables:
@@ -320,7 +322,11 @@ def run_one_model_v2(
             if health and not health.get("paused", False) and was_paused:
                 prod_brain_restarted_during_bench = True
 
-        # 9. Run downstream-proxy pass
+        # 9. Run downstream-proxy pass.
+        # Post-review C-1: wrap the sqlite connection in contextlib.closing so
+        # an exception inside run_downstream_proxy_pass (or anywhere between
+        # open and close) doesn't leak the fd. Per-model leaks compound across
+        # a multi-model bench run and exhaust macOS's 256-fd-per-process limit.
         try:
             event_ids = _collect_event_ids_from_db(bench_db)
             if embedding_fn:
@@ -328,13 +334,12 @@ def run_one_model_v2(
                 if qa_path.exists():
                     included_qa, _ = load_qa_items(qa_path, event_ids)
                     if included_qa:
-                        conn = sqlite3.connect(str(bench_db))
-                        downstream_proxy = run_downstream_proxy_pass(
-                            conn,
-                            included_qa,
-                            embedding_fn,
-                        )
-                        conn.close()
+                        with contextlib.closing(sqlite3.connect(str(bench_db))) as conn:
+                            downstream_proxy = run_downstream_proxy_pass(
+                                conn,
+                                included_qa,
+                                embedding_fn,
+                            )
         except Exception as e:
             _capture("downstream_proxy", e)
 
