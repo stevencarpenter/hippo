@@ -210,6 +210,112 @@ def test_wait_for_queue_drain_returns_drained_when_tables_empty(tmp_path: Path) 
     assert timeout_hit is False, "empty queue should return drained, not timeout"
 
 
+def test_smoke_run_one_model_v2_full_lifecycle(
+    monkeypatch: pytest.MonkeyPatch, fake_corpus: Path
+) -> None:
+    """BT-12: end-to-end smoke through every step.
+
+    Patches every I/O boundary, runs through unload→load→spawn→drain→
+    downstream-proxy→SC→teardown→cooldown, and asserts:
+    - downstream_proxy is populated (not silently {})
+    - SC attempts list is populated
+    - errors list is empty (clean path)
+    - teardown was called exactly once
+    """
+    mocks = _patch_lifecycle(monkeypatch)
+
+    embedding_fn = MagicMock(return_value=[0.0] * 8)
+    monkeypatch.setattr(
+        coordinator_v2,
+        "bench_qa_path",
+        lambda: fake_corpus.parent / "qa.jsonl",
+    )
+    qa_path = fake_corpus.parent / "qa.jsonl"
+    qa_path.write_text('{"id":"q1","question":"x","golden_event_ids":["shell-1"]}\n')
+    monkeypatch.setattr(
+        coordinator_v2,
+        "load_qa_items",
+        MagicMock(return_value=([{"id": "q1"}], [])),
+    )
+    monkeypatch.setattr(
+        coordinator_v2,
+        "_collect_event_ids_from_db",
+        MagicMock(return_value={"shell-1"}),
+    )
+    # Populated downstream proxy result.
+    monkeypatch.setattr(
+        coordinator_v2,
+        "run_downstream_proxy_pass",
+        MagicMock(return_value={"hit_at_1": 0.4, "mrr": 0.35, "ndcg_at_10": 0.42}),
+    )
+    # Provide a non-empty corpus so SC pass actually runs.
+    fake_entry = MagicMock(redacted_content="hello", source="shell")
+    monkeypatch.setattr(
+        coordinator_v2,
+        "_load_corpus_entries",
+        MagicMock(return_value=[fake_entry, fake_entry, fake_entry]),
+    )
+    sc_attempt = MagicMock()
+    sc_attempt.to_dict.return_value = {"k": "v"}
+    monkeypatch.setattr(
+        coordinator_v2,
+        "run_self_consistency_pass",
+        MagicMock(return_value=([sc_attempt, sc_attempt], [[[0.0]]])),
+    )
+
+    result = coordinator_v2.run_one_model_v2(
+        model="test-model",
+        run_id="test-run",
+        corpus_sqlite=fake_corpus,
+        embedding_fn=embedding_fn,
+        warmup_calls=0,
+        sc_events=2,
+        sc_runs=1,
+        cooldown_max_sec=0,
+    )
+
+    assert mocks["teardown"].call_count == 1, "teardown called exactly once on clean path"
+    assert result.downstream_proxy == {
+        "hit_at_1": 0.4,
+        "mrr": 0.35,
+        "ndcg_at_10": 0.42,
+    }, "downstream_proxy must be populated, not silently empty"
+    assert len(result.attempts) == 2, "SC attempts plumbed into result"
+    assert result.errors == [], "no errors on clean path"
+
+
+def test_sc_failure_captured_with_attempts_empty(
+    monkeypatch: pytest.MonkeyPatch, fake_corpus: Path
+) -> None:
+    """BT-12: SC pass raises → result.errors records it, attempts stays empty."""
+    mocks = _patch_lifecycle(
+        monkeypatch,
+        sc_raises=RuntimeError("synthetic: SC pass exploded"),
+    )
+    fake_entry = MagicMock(redacted_content="hello", source="shell")
+    monkeypatch.setattr(
+        coordinator_v2,
+        "_load_corpus_entries",
+        MagicMock(return_value=[fake_entry, fake_entry, fake_entry]),
+    )
+
+    result = coordinator_v2.run_one_model_v2(
+        model="test-model",
+        run_id="test-run",
+        corpus_sqlite=fake_corpus,
+        warmup_calls=0,
+        sc_events=2,
+        sc_runs=1,
+        cooldown_max_sec=0,
+    )
+
+    assert mocks["teardown"].call_count == 1
+    assert result.attempts == [], "SC failure → no attempts recorded"
+    sc_error = next((e for e in result.errors if e["step"] == "self_consistency"), None)
+    assert sc_error is not None, f"expected self_consistency error, got: {result.errors}"
+    assert "synthetic" in sc_error["error"]
+
+
 def test_downstream_proxy_failure_captured_as_structured_error(
     monkeypatch: pytest.MonkeyPatch, fake_corpus: Path
 ) -> None:
