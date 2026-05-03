@@ -1,10 +1,19 @@
 # Hippo-Bench Trust Initiative — Ralph Loop Plan
 
-**Status:** Ready for autonomous execution
+**Status:** Phase 0 + 1 complete via autonomous loop (BT-01..BT-21, BT-30); BT-22 audited and accepted (commit pending operator review); BT-23..BT-28 + BT-29 operator-gated. Loop terminated 2026-05-03 after a clean-context code review surfaced six post-review fixes (see `tracking-doc → Post-Review Findings`).
 **Tracking doc:** `docs/superpowers/plans/2026-05-03-hippo-bench-trust-tracking.md`
 **State file:** `.ralph/hippo-bench-trust-state.json`
 **Task prefix:** `BT-`
 **Branch:** `feat/bench-trust` (off main `c2f3ff3`)
+**Operator runbook (BT-29):** `docs/capture/bench-runbook.md`
+
+> **Post-review amendments (2026-05-03):** Several of this plan's `Verify`
+> blocks describe the spec at the time of authoring, not the final shape.
+> See `tracking-doc → Post-Review Findings` for the corrected acceptance.
+> Notable: BT-10 sandbox guard now `bail!`s (was `warn!`); BT-15 `db_busy_count`
+> instruments six flush-path sites (was 1); BT-16 lockfile suppression has a
+> 30-min mtime gate (was existence-only); BT-13 test exercises the real
+> `_enrichment_loop` (was synthetic).
 
 ---
 
