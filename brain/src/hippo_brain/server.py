@@ -755,7 +755,9 @@ class BrainServer:
         if not self._paused:
             self._paused = True
             self._paused_at_iso = _dt.datetime.now(tz=_dt.UTC).isoformat()
-        return JSONResponse({"paused_at": self._paused_at_iso, "in_flight_finished": True})
+        return JSONResponse(
+            {"paused_at": self._paused_at_iso, "in_flight_finished": self._query_inflight == 0}
+        )
 
     async def control_resume(self, request: Request) -> JSONResponse:
         """Resume the enrichment loop. Idempotent."""

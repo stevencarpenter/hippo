@@ -37,7 +37,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum(rate(hippo_daemon_events_ingested_total{service_namespace=\"\"}[5m])) * 60",
+          "expr": "sum(rate(hippo_daemon_events_ingested_total{service_namespace!~\".+\"}[5m])) * 60",
           "legendFormat": "",
           "editorMode": "code"
         }
@@ -88,7 +88,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum(hippo_daemon_events_dropped_total{service_namespace=\"\"}) or vector(0)",
+          "expr": "sum(hippo_daemon_events_dropped_total{service_namespace!~\".+\"}) or vector(0)",
           "legendFormat": "",
           "editorMode": "code"
         }
@@ -143,7 +143,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum(hippo_brain_enrichment_queue_depth{service_namespace=\"\",status=\"pending\"}) or vector(0)",
+          "expr": "sum(hippo_brain_enrichment_queue_depth{service_namespace!~\".+\",status=\"pending\"}) or vector(0)",
           "legendFormat": "",
           "editorMode": "code"
         }
@@ -202,7 +202,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum(rate(hippo_brain_enrichment_nodes_created_total{service_namespace=\"\"}[1h])) * 3600",
+          "expr": "sum(rate(hippo_brain_enrichment_nodes_created_total{service_namespace!~\".+\"}[1h])) * 3600",
           "legendFormat": "",
           "editorMode": "code"
         }
@@ -253,7 +253,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum(rate(hippo_daemon_events_ingested_total{service_namespace=\"\"}[5m])) * 60",
+          "expr": "sum(rate(hippo_daemon_events_ingested_total{service_namespace!~\".+\"}[5m])) * 60",
           "legendFormat": "ingested/min",
           "editorMode": "code"
         },
@@ -263,7 +263,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum(rate(hippo_brain_enrichment_events_claimed_total{service_namespace=\"\"}[5m])) * 60",
+          "expr": "sum(rate(hippo_brain_enrichment_events_claimed_total{service_namespace!~\".+\"}[5m])) * 60",
           "legendFormat": "enriched/min",
           "editorMode": "code"
         }
@@ -309,7 +309,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum(rate(hippo_brain_lmstudio_errors_total{service_namespace=\"\"}[5m])) * 60",
+          "expr": "sum(rate(hippo_brain_lmstudio_errors_total{service_namespace!~\".+\"}[5m])) * 60",
           "legendFormat": "LM Studio",
           "editorMode": "code"
         },
@@ -319,7 +319,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum(rate(hippo_brain_enrichment_failures_total{service_namespace=\"\"}[5m])) * 60",
+          "expr": "sum(rate(hippo_brain_enrichment_failures_total{service_namespace!~\".+\"}[5m])) * 60",
           "legendFormat": "enrichment",
           "editorMode": "code"
         },
@@ -329,7 +329,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum(rate(hippo_daemon_events_dropped_total{service_namespace=\"\"}[5m])) * 60",
+          "expr": "sum(rate(hippo_daemon_events_dropped_total{service_namespace!~\".+\"}[5m])) * 60",
           "legendFormat": "dropped",
           "editorMode": "code"
         }
@@ -375,7 +375,7 @@
             "type": "loki",
             "uid": "loki"
           },
-          "expr": "{service_name=~\"hippo.*\",service_namespace=\"\"} |~ \"(?i)error|failed|panic\"",
+          "expr": "{service_name=~\"hippo.*\",service_namespace!~\".+\"} |~ \"(?i)error|failed|panic\"",
           "queryType": "range"
         }
       ],

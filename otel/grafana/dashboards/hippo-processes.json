@@ -38,7 +38,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "process_cpu_utilization_ratio{service_namespace=\"\"}",
+          "expr": "process_cpu_utilization_ratio{service_namespace!~\".+\"}",
           "legendFormat": "{{service_name}}",
           "editorMode": "code"
         }
@@ -88,7 +88,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "process_memory_usage_bytes{service_namespace=\"\"}",
+          "expr": "process_memory_usage_bytes{service_namespace!~\".+\"}",
           "legendFormat": "{{service_name}}",
           "editorMode": "code"
         }
@@ -138,7 +138,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "process_memory_virtual_bytes{service_namespace=\"\"}",
+          "expr": "process_memory_virtual_bytes{service_namespace!~\".+\"}",
           "legendFormat": "{{service_name}}",
           "editorMode": "code"
         }
@@ -188,7 +188,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "process_threads{service_namespace=\"\"}",
+          "expr": "process_threads{service_namespace!~\".+\"}",
           "legendFormat": "{{service_name}}",
           "editorMode": "code"
         }
@@ -238,7 +238,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "rate(process_cpu_time_milliseconds_total{service_namespace=\"\"}[5m]) / 1000",
+          "expr": "rate(process_cpu_time_milliseconds_total{service_namespace!~\".+\"}[5m]) / 1000",
           "legendFormat": "{{service_name}}",
           "editorMode": "code"
         }

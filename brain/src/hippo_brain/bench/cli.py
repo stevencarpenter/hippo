@@ -199,13 +199,18 @@ def _cmd_corpus_add_adversarial(args: argparse.Namespace) -> int:
         redacted = redact(raw_payload)
         now_iso = _dt.datetime.now(tz=_dt.UTC).isoformat()
 
-        conn.execute(
+        cur = conn.execute(
             "INSERT OR IGNORE INTO adversarial_events "
             "(event_id, source, reason, redacted_content, added_at_iso) VALUES (?, ?, ?, ?, ?)",
             (event_id, source, args.reason, redacted, now_iso),
         )
         conn.commit()
-        print(f"added adversarial event {event_id!r} to {overlay_path}")
+        if cur.rowcount:
+            print(f"added adversarial event {event_id!r} to {overlay_path}")
+        else:
+            print(
+                f"already present: adversarial event {event_id!r} in {overlay_path} (not updated)"
+            )
         return 0
     finally:
         conn.close()
@@ -340,17 +345,6 @@ def _build_parser() -> argparse.ArgumentParser:
         "--skip-prod-pause",
         action="store_true",
         help="Skip pausing the prod brain before the run (v2 only).",
-    )
-    run.add_argument(
-        "--with-ask-synthesis",
-        action="store_true",
-        help="Run ask-synthesis sample pass after downstream-proxy (v2 only).",
-    )
-    run.add_argument(
-        "--ask-synthesis-sample",
-        type=int,
-        default=10,
-        help="Number of Q/A items to sample for ask-synthesis (v2 only).",
     )
     run.set_defaults(func=_cmd_run)
 

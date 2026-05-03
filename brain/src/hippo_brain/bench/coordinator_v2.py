@@ -66,11 +66,13 @@ def _wait_for_queue_drain(
 
     start = time.time()
     consecutive_empty = 0
+    logged_no_tables = False
 
     while time.time() - start < drain_timeout_sec:
         try:
             conn = sqlite3.connect(str(bench_db))
             total_pending = 0
+            tables_found = 0
             for table in tables:
                 try:
                     row = conn.execute(
@@ -78,9 +80,20 @@ def _wait_for_queue_drain(
                     ).fetchone()
                     if row:
                         total_pending += row[0]
+                    tables_found += 1
                 except sqlite3.OperationalError:
                     pass
             conn.close()
+
+            if tables_found == 0 and not logged_no_tables:
+                import warnings
+
+                warnings.warn(
+                    f"_wait_for_queue_drain: none of the expected queue tables exist in "
+                    f"{bench_db} — schema mismatch or empty DB; treating as drained",
+                    stacklevel=2,
+                )
+                logged_no_tables = True
 
             if total_pending == 0:
                 consecutive_empty += 1
