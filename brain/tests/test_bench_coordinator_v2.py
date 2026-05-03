@@ -23,7 +23,9 @@ def fake_corpus(tmp_path: Path) -> Path:
     coordinator only reads it via _wait_for_queue_drain (which we patch out)
     and _collect_event_ids_from_db (which swallows OperationalError)."""
     p = tmp_path / "corpus.sqlite"
-    p.write_bytes(b"")  # empty file; sqlite will treat as malformed but our patches bypass real reads
+    p.write_bytes(
+        b""
+    )  # empty file; sqlite will treat as malformed but our patches bypass real reads
     return p
 
 
@@ -125,9 +127,7 @@ def test_teardown_runs_when_wait_for_brain_ready_raises(
     assert mocks["sampler"].stop.call_count == 0, "sampler not yet started when wait raises"
 
 
-def test_teardown_runs_on_clean_path(
-    monkeypatch: pytest.MonkeyPatch, fake_corpus: Path
-) -> None:
+def test_teardown_runs_on_clean_path(monkeypatch: pytest.MonkeyPatch, fake_corpus: Path) -> None:
     """Sanity: clean path also tears down."""
     mocks = _patch_lifecycle(monkeypatch)
 
@@ -165,4 +165,55 @@ def test_teardown_runs_when_drain_raises(
         )
 
     assert mocks["teardown"].call_count == 1
-    assert mocks["sampler"].stop.call_count == 1, "sampler was started before drain — must be stopped"
+    assert mocks["sampler"].stop.call_count == 1, (
+        "sampler was started before drain — must be stopped"
+    )
+
+
+def test_downstream_proxy_failure_captured_as_structured_error(
+    monkeypatch: pytest.MonkeyPatch, fake_corpus: Path
+) -> None:
+    """BT-04: downstream_proxy raise is captured into result.errors, not silently swallowed."""
+    mocks = _patch_lifecycle(
+        monkeypatch,
+        proxy_raises=RuntimeError("synthetic: downstream proxy exploded"),
+    )
+
+    # Need an embedding_fn for the downstream proxy branch to be reached.
+    embedding_fn = MagicMock(return_value=[0.0] * 8)
+    # And a qa_path that exists.
+    monkeypatch.setattr(
+        coordinator_v2,
+        "bench_qa_path",
+        lambda: fake_corpus.parent / "qa.jsonl",
+    )
+    qa_path = fake_corpus.parent / "qa.jsonl"
+    qa_path.write_text('{"id":"q1","question":"x","golden_event_ids":["shell-1"]}\n')
+    monkeypatch.setattr(
+        coordinator_v2,
+        "load_qa_items",
+        MagicMock(return_value=([{"id": "q1"}], [])),
+    )
+    # Force _collect_event_ids_from_db to return non-empty so downstream_proxy actually runs.
+    monkeypatch.setattr(
+        coordinator_v2,
+        "_collect_event_ids_from_db",
+        MagicMock(return_value={"shell-1"}),
+    )
+
+    result = coordinator_v2.run_one_model_v2(
+        model="test-model",
+        run_id="test-run",
+        corpus_sqlite=fake_corpus,
+        embedding_fn=embedding_fn,
+        warmup_calls=0,
+        sc_events=0,
+        cooldown_max_sec=0,
+    )
+
+    assert mocks["teardown"].call_count == 1
+    assert result.errors, "errors list should contain the proxy failure"
+    proxy_error = next((e for e in result.errors if e["step"] == "downstream_proxy"), None)
+    assert proxy_error is not None, f"expected downstream_proxy error, got: {result.errors}"
+    assert "synthetic" in proxy_error["error"]
+    assert proxy_error["type"] == "RuntimeError"

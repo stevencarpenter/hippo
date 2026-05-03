@@ -56,6 +56,10 @@ class ModelSummaryRecordV2:
     downstream_proxy: dict[str, Any] = field(default_factory=dict)
     prod_brain_restarted_during_bench: bool = False
     timeout_during_drain: bool = False
+    # BT-04: structured capture of failures inside run_one_model_v2 that
+    # previously got swallowed by `except Exception: pass`. Each entry has
+    # {"step": <stage name>, "type": <exc class>, "error": <str(exc)>}.
+    errors: list[dict[str, str]] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         d: dict[str, Any] = {"record_type": "model_summary"}

@@ -15,8 +15,6 @@ import time
 from pathlib import Path
 from typing import Any
 
-logger = logging.getLogger(__name__)
-
 from hippo_brain.bench import lms
 from hippo_brain.bench.corpus import CorpusEntry, load_corpus
 from hippo_brain.bench.downstream_proxy import (
@@ -35,6 +33,8 @@ from hippo_brain.bench.shadow_stack import (
     wait_for_brain_ready,
 )
 
+logger = logging.getLogger(__name__)
+
 
 @dataclasses.dataclass
 class ModelRunResultV2:
@@ -49,6 +49,9 @@ class ModelRunResultV2:
     downstream_proxy: dict[str, Any]
     prod_brain_restarted_during_bench: bool
     timeout_during_drain: bool
+    # BT-04: structured capture of failures previously swallowed by
+    # `except Exception: pass`. Plumbed into ModelSummaryRecordV2.errors.
+    errors: list[dict[str, str]] = dataclasses.field(default_factory=list)
 
 
 def _wait_for_queue_drain(
@@ -224,6 +227,15 @@ def run_one_model_v2(
     downstream_proxy: dict[str, Any] = {}
     attempts: list[AttemptRecord] = []
     per_event_vectors: list[list[list[float]]] = []
+    # BT-04: capture failures inside the body that would otherwise be
+    # swallowed by `except Exception: pass`. Plumbed through to the JSONL
+    # ModelSummaryRecordV2.errors so a silently-zero downstream_proxy or
+    # missing SC pass shows up in the run output instead of looking clean.
+    errors: list[dict[str, str]] = []
+
+    def _capture(step: str, exc: Exception) -> None:
+        logger.exception("BT-04: %s failed: %s", step, exc)
+        errors.append({"step": step, "type": type(exc).__name__, "error": str(exc)})
 
     try:
         # 3. Spawn shadow stack
@@ -256,8 +268,8 @@ def run_one_model_v2(
                         timeout_sec=timeout_sec,
                         temperature=temperature,
                     )
-                except Exception:
-                    pass
+                except Exception as e:
+                    _capture(f"warmup:{entry.source}", e)
 
         # 6. Start metrics sampler
         sampler = MetricsSampler(sample_interval_ms=250)
@@ -293,8 +305,8 @@ def run_one_model_v2(
                             embedding_fn,
                         )
                         conn.close()
-        except Exception:
-            pass
+        except Exception as e:
+            _capture("downstream_proxy", e)
 
         # 10. Self-consistency pass — 5 events × N runs via direct LM Studio calls
         if all_entries and sc_events > 0 and sc_runs > 0:
@@ -313,8 +325,8 @@ def run_one_model_v2(
                 )
                 attempts.extend(sc_attempts)
                 per_event_vectors.extend(sc_vecs)
-            except Exception:
-                pass
+            except Exception as e:
+                _capture("self_consistency", e)
 
     finally:
         # 11. Teardown — runs even if any step above raised so we never leak
@@ -328,7 +340,9 @@ def run_one_model_v2(
             try:
                 teardown_shadow_stack(stack)
             except Exception:
-                logger.exception("BT-03: teardown_shadow_stack failed — manual cleanup may be required")
+                logger.exception(
+                    "BT-03: teardown_shadow_stack failed — manual cleanup may be required"
+                )
 
     # 12. Cooldown
     cooldown_start = time.time()
@@ -358,4 +372,5 @@ def run_one_model_v2(
         downstream_proxy=downstream_proxy,
         prod_brain_restarted_during_bench=prod_brain_restarted_during_bench,
         timeout_during_drain=timeout_during_drain,
+        errors=errors,
     )
