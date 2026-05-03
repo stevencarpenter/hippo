@@ -158,12 +158,14 @@ export function rehypeLinkRewrite(): (tree: Root, file: import("vfile").VFile) =
           props.href = `${site}${fragment}`;
           return;
         }
-        // Excluded section or non-docs directory: GitHub tree URL.
-        if (dirNoSlash.startsWith("docs/")) {
-          props.href = ghTree(dirNoSlash, fragment);
-          props.target = "_blank";
-          props.rel = "noopener";
-        }
+        // Anything else (excluded docs subtree OR a non-docs directory like
+        // crates/ or extension/) → GitHub tree URL. The earlier guard that
+        // restricted this branch to `docs/` left non-docs dir links with
+        // their original relative href, which the browser resolved as
+        // /docs/<current>/crates/... — a 404.
+        props.href = ghTree(dirNoSlash, fragment);
+        props.target = "_blank";
+        props.rel = "noopener";
         return;
       }
 

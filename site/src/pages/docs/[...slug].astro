@@ -5,7 +5,7 @@ import Tier2 from "../../layouts/Tier2.astro";
 import DocsBreadcrumb from "../../components/DocsBreadcrumb.astro";
 import EditOnGitHub from "../../components/EditOnGitHub.astro";
 import ChapterMark from "../../components/ChapterMark.astro";
-import { defaultTitleForSlug, motifForSlug } from "../../lib/docs.ts";
+import { buildRoutableDocsSlugs, defaultTitleForSlug, motifForSlug } from "../../lib/docs.ts";
 
 export const getStaticPaths: GetStaticPaths = async () => {
   const paths: { params: { slug: string }; props: Record<string, unknown> }[] = [];
@@ -83,15 +83,23 @@ const description = (entry.data as Record<string, unknown>).description as strin
 const editPath = (entry.data as Record<string, unknown>).editPath as string | undefined;
 const lastUpdated = (entry.data as Record<string, unknown>).lastUpdated as string | undefined;
 
-// Breadcrumb construction
+// Breadcrumb construction. Intermediate segments only get an href when there's an
+// actual page at that slug — `/docs/reference/redaction` has a real `redaction`
+// page but NO `/docs/reference` index page, so the "Reference" crumb renders as
+// plain text rather than a 404'd link. (Codex review: avoid linking to non-routes.)
+const allDocsForRoutes = await getCollection("docs");
+const allRootForRoutes = await getCollection("rootDocs");
+const allContribForRoutes = await getCollection("contributing");
+const routableSlugs = buildRoutableDocsSlugs(allDocsForRoutes, allRootForRoutes, allContribForRoutes);
 const segs = slug.split("/");
 const trail: { label: string; href?: string }[] = [{ label: "Docs", href: "/docs" }];
 for (let i = 0; i < segs.length; i++) {
   const isLast = i === segs.length - 1;
   const partial = segs.slice(0, i + 1).join("/");
+  const partialIsRoute = routableSlugs.has(partial);
   trail.push({
     label: isLast ? title : defaultTitleForSlug(partial),
-    href: isLast ? undefined : `/docs/${partial}`,
+    href: isLast ? undefined : (partialIsRoute ? `/docs/${partial}` : undefined),
   });
 }
 

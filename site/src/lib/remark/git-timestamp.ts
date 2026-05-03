@@ -16,9 +16,13 @@ function loadBatchCache(): Map<string, string> {
   const repoRoot = path.resolve(process.cwd(), "..");
   batchCache = new Map();
   try {
+    // Walk HEAD only (NOT --all). With --all, `first-seen-wins` could pick
+    // up the latest edit on an unmerged feature branch as a file's "last
+    // updated" date, even though that edit isn't shipped on the deploy
+    // ref. HEAD-only ensures the timestamp reflects what's actually live.
     const out = execFileSync(
       "git",
-      ["log", "--name-only", "--format=COMMIT %ci", "--all"],
+      ["log", "--name-only", "--format=COMMIT %ci"],
       { cwd: repoRoot, encoding: "utf8", maxBuffer: 50 * 1024 * 1024 },
     );
     let currentDate = "";

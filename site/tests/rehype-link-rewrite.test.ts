@@ -204,6 +204,18 @@ describe("rehypeLinkRewrite", () => {
     );
   });
 
+  it("rewrites non-docs directory link to GitHub tree (would 404 if left relative)", async () => {
+    const out = await runWithSource(
+      `<a href="crates/hippo-core/">core crate</a>`,
+      "README.md",
+    );
+    expect(out).toContain(
+      'href="https://github.com/stevencarpenter/hippo/tree/main/crates/hippo-core"',
+    );
+    expect(out).toContain('target="_blank"');
+    expect(out).not.toContain('href="crates/hippo-core/"');
+  });
+
   it("leaves query-only relative links unchanged", async () => {
     const out = await runWithSource(
       `<a href="?tab=changes">x</a>`,
