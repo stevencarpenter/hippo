@@ -300,7 +300,9 @@ def _build_parser() -> argparse.ArgumentParser:
 
     run = sub.add_parser("run", help="Run the bench against candidate models")
     run.add_argument("--models", required=True, help="Comma-separated model identifiers")
-    run.add_argument("--corpus-version", default="corpus-v1")
+    # BT-18: default to v2 — bench v2 is the production path. v1 still
+    # selectable explicitly for legacy comparisons.
+    run.add_argument("--corpus-version", default="corpus-v2")
     run.add_argument("--base-url", default="http://localhost:1234/v1")
     run.add_argument(
         "--brain-url", default="http://localhost:8000", help="Prod brain base URL (v2)"

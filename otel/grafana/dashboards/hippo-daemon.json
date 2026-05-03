@@ -37,7 +37,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum(rate(hippo_daemon_events_ingested_total{service_namespace=\"\"}[5m])) by (source) * 60",
+          "expr": "sum(rate(hippo_daemon_events_ingested_total{service_namespace!~\".+\"}[5m])) by (source) * 60",
           "legendFormat": "{{source}}",
           "editorMode": "code"
         }
@@ -83,7 +83,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "hippo_daemon_buffer_size{service_namespace=\"\"}",
+          "expr": "hippo_daemon_buffer_size{service_namespace!~\".+\"}",
           "legendFormat": "",
           "editorMode": "code"
         }
@@ -140,7 +140,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum(rate(hippo_daemon_events_dropped_total{service_namespace=\"\"}[5m])) by (source) * 60",
+          "expr": "sum(rate(hippo_daemon_events_dropped_total{service_namespace!~\".+\"}[5m])) by (source) * 60",
           "legendFormat": "{{source}}",
           "editorMode": "code"
         }
@@ -186,7 +186,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum(rate(hippo_daemon_sessions_created_total{service_namespace=\"\"}[1h])) * 3600",
+          "expr": "sum(rate(hippo_daemon_sessions_created_total{service_namespace!~\".+\"}[1h])) * 3600",
           "legendFormat": "",
           "editorMode": "code"
         }
@@ -237,7 +237,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "histogram_quantile(0.5, sum(rate(hippo_daemon_flush_duration_milliseconds_bucket{service_namespace=\"\"}[5m])) by (le))",
+          "expr": "histogram_quantile(0.5, sum(rate(hippo_daemon_flush_duration_milliseconds_bucket{service_namespace!~\".+\"}[5m])) by (le))",
           "legendFormat": "p50",
           "editorMode": "code"
         },
@@ -247,7 +247,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "histogram_quantile(0.95, sum(rate(hippo_daemon_flush_duration_milliseconds_bucket{service_namespace=\"\"}[5m])) by (le))",
+          "expr": "histogram_quantile(0.95, sum(rate(hippo_daemon_flush_duration_milliseconds_bucket{service_namespace!~\".+\"}[5m])) by (le))",
           "legendFormat": "p95",
           "editorMode": "code"
         }
@@ -293,7 +293,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "histogram_quantile(0.5, sum(rate(hippo_daemon_flush_batch_size_bucket{service_namespace=\"\"}[5m])) by (le))",
+          "expr": "histogram_quantile(0.5, sum(rate(hippo_daemon_flush_batch_size_bucket{service_namespace!~\".+\"}[5m])) by (le))",
           "legendFormat": "p50",
           "editorMode": "code"
         },
@@ -303,7 +303,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "histogram_quantile(0.95, sum(rate(hippo_daemon_flush_batch_size_bucket{service_namespace=\"\"}[5m])) by (le))",
+          "expr": "histogram_quantile(0.95, sum(rate(hippo_daemon_flush_batch_size_bucket{service_namespace!~\".+\"}[5m])) by (le))",
           "legendFormat": "p95",
           "editorMode": "code"
         }
@@ -349,7 +349,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "hippo_daemon_db_size_bytes{service_namespace=\"\"}",
+          "expr": "hippo_daemon_db_size_bytes{service_namespace!~\".+\"}",
           "legendFormat": "",
           "editorMode": "code"
         }
@@ -395,7 +395,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum(rate(hippo_daemon_redactions_total{service_namespace=\"\"}[5m])) * 60",
+          "expr": "sum(rate(hippo_daemon_redactions_total{service_namespace!~\".+\"}[5m])) * 60",
           "legendFormat": "",
           "editorMode": "code"
         }
@@ -441,7 +441,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "histogram_quantile(0.95, sum(rate(hippo_daemon_request_duration_milliseconds_bucket{service_namespace=\"\"}[5m])) by (le, type))",
+          "expr": "histogram_quantile(0.95, sum(rate(hippo_daemon_request_duration_milliseconds_bucket{service_namespace!~\".+\"}[5m])) by (le, type))",
           "legendFormat": "{{type}} p95",
           "editorMode": "code"
         }
@@ -487,7 +487,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum(hippo_daemon_fallback_writes_total{service_namespace=\"\"}) or vector(0)",
+          "expr": "sum(hippo_daemon_fallback_writes_total{service_namespace!~\".+\"}) or vector(0)",
           "legendFormat": "",
           "editorMode": "code"
         }
@@ -542,7 +542,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "hippo_daemon_fallback_pending{service_namespace=\"\"} or vector(0)",
+          "expr": "hippo_daemon_fallback_pending{service_namespace!~\".+\"} or vector(0)",
           "legendFormat": "",
           "editorMode": "code"
         }
