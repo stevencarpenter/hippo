@@ -281,6 +281,10 @@ pub async fn flush_events(state: &Arc<DaemonState>) -> usize {
             rusqlite::params![now_ms],
         ) {
             Err(e) if !crate::is_missing_source_health_table_error(&e) => {
+                #[cfg(feature = "otel")]
+                {
+                    crate::metrics::record_db_busy(&e, "flush_idle_tick_source_health");
+                }
                 warn!("source_health idle-tick update failed: {e}");
             }
             _ => {}
@@ -378,6 +382,10 @@ pub async fn flush_events(state: &Arc<DaemonState>) -> usize {
                     }
                     Ok(_) => {} // duplicate envelope_id, already stored
                     Err(e) => {
+                        #[cfg(feature = "otel")]
+                        if let Some(re) = e.downcast_ref::<rusqlite::Error>() {
+                            crate::metrics::record_db_busy(re, "flush_event_insert");
+                        }
                         warn!("event insert failed, falling back: {}", e);
                         source_errors
                             .entry(source)
@@ -420,6 +428,10 @@ pub async fn flush_events(state: &Arc<DaemonState>) -> usize {
                     }
                     Ok(_) => {} // duplicate envelope_id
                     Err(e) => {
+                        #[cfg(feature = "otel")]
+                        if let Some(re) = e.downcast_ref::<rusqlite::Error>() {
+                            crate::metrics::record_db_busy(re, "flush_browser_event_insert");
+                        }
                         warn!("browser event insert failed, falling back: {}", e);
                         source_errors
                             .entry("browser")
@@ -460,6 +472,10 @@ pub async fn flush_events(state: &Arc<DaemonState>) -> usize {
             rusqlite::params![latest_ts, now_ms, count_val, source],
         ) {
             Err(e) if !crate::is_missing_source_health_table_error(&e) => {
+                #[cfg(feature = "otel")]
+                {
+                    crate::metrics::record_db_busy(&e, "flush_source_health_success");
+                }
                 warn!("source_health success update failed for {source}: {e}");
             }
             _ => {}
@@ -477,6 +493,10 @@ pub async fn flush_events(state: &Arc<DaemonState>) -> usize {
             rusqlite::params![now_ms, err_msg, source],
         ) {
             Err(e) if !crate::is_missing_source_health_table_error(&e) => {
+                #[cfg(feature = "otel")]
+                {
+                    crate::metrics::record_db_busy(&e, "flush_source_health_error");
+                }
                 warn!("source_health error update failed for {source}: {e}");
             }
             _ => {}
@@ -492,6 +512,10 @@ pub async fn flush_events(state: &Arc<DaemonState>) -> usize {
             rusqlite::params![now_ms, source],
         ) {
             Err(e) if !crate::is_missing_source_health_table_error(&e) => {
+                #[cfg(feature = "otel")]
+                {
+                    crate::metrics::record_db_busy(&e, "flush_source_health_liveness");
+                }
                 warn!("source_health liveness update failed for {source}: {e}");
             }
             _ => {}
@@ -609,11 +633,15 @@ pub async fn run_with_mode(config: HippoConfig, bench_mode: bool) -> Result<()> 
     let socket_path = config.socket_path();
     let db_path = config.db_path();
 
-    // BT-10: bench-mode sandbox assertion. Shadow stack overrides HOME and
-    // XDG_DATA_HOME to run_tree before spawning the daemon; if any path
-    // resolves outside run_tree we have a leak. Warn (not bail) so a
-    // misconfigured corpus path can still be caught downstream by source-
-    // health probes rather than crashing the daemon.
+    // BT-10 + post-review I-4: bench-mode sandbox assertion. Shadow stack
+    // overrides HOME and XDG_DATA_HOME to run_tree before spawning the daemon;
+    // if any path resolves outside run_tree the bench would mutate the user's
+    // real prod DB. Original spec said "warn and continue" — overruled in
+    // post-review because (a) the shadow stack already sets both env vars on
+    // every legitimate bench, so this never fires unless env threading is
+    // broken, and (b) the cost of a single bench run pointing at prod is
+    // unbounded data corruption while the cost of a false-positive bail is a
+    // loud, recoverable startup error. Fail closed.
     if bench_mode {
         info!("starting daemon in bench mode (--bench)");
         let xdg = std::env::var("XDG_DATA_HOME")
@@ -623,10 +651,12 @@ pub async fn run_with_mode(config: HippoConfig, bench_mode: bool) -> Result<()> 
         if let Some(root) = xdg
             && !db_path.starts_with(&root)
         {
-            warn!(
-                db_path = %db_path.display(),
-                xdg_root = %root.display(),
-                "BT-10 bench mode: db_path is NOT under XDG_DATA_HOME/HOME — possible sandbox leak"
+            anyhow::bail!(
+                "BT-10/I-4 bench mode sandbox violation: db_path={} is NOT under \
+                 XDG_DATA_HOME/HOME={}. Refusing to start so a mis-threaded env \
+                 cannot point the bench at prod data.",
+                db_path.display(),
+                root.display(),
             );
         }
     }

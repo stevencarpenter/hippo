@@ -198,13 +198,15 @@ pub fn run(config: &HippoConfig) -> Result<()> {
             rusqlite::params![&v.invariant_id, now_ms, &details_json],
         );
         if let Err(e) = insert_result {
-            if is_sqlite_busy(&e) {
+            if crate::is_sqlite_busy(&e) {
                 // BT-15: track contention for bench's "is this model causing
-                // write pressure?" diagnostic.
-                crate::metrics::DB_BUSY_COUNT.add(
-                    1,
-                    &[opentelemetry::KeyValue::new("op", "watchdog_alarm_insert")],
-                );
+                // write pressure?" diagnostic. Increment via the shared helper
+                // so post-review I-3 keeps every busy-count site's labelling
+                // consistent.
+                #[cfg(feature = "otel")]
+                {
+                    crate::metrics::record_db_busy(&e, "watchdog_alarm_insert");
+                }
                 std::thread::sleep(std::time::Duration::from_millis(100));
                 if let Err(retry_err) = conn.execute(
                     "INSERT INTO capture_alarms (invariant_id, raised_at, details_json)
@@ -800,21 +802,6 @@ fn fire_macos_notification(message: &str, title: &str) {
     let _ = std::process::Command::new("osascript")
         .args(["-e", &script])
         .output();
-}
-
-/// Returns `true` when the rusqlite error is SQLITE_BUSY (error code 5).
-/// Used by the alarm-insert retry path.
-fn is_sqlite_busy(e: &rusqlite::Error) -> bool {
-    matches!(
-        e,
-        rusqlite::Error::SqliteFailure(
-            rusqlite::ffi::Error {
-                code: rusqlite::ErrorCode::DatabaseBusy,
-                ..
-            },
-            _,
-        )
-    )
 }
 
 // ---------------------------------------------------------------------------
