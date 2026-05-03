@@ -962,8 +962,8 @@ async fn main() -> Result<()> {
         // muscle-memory) doesn't have to know about the daemon subcommand
         // structure. The `--bench` flag is a placeholder for BT-10/BT-11
         // to attach bench-mode behavior.
-        Commands::Serve { bench: _bench } => {
-            daemon::run(config).await?;
+        Commands::Serve { bench } => {
+            daemon::run_with_mode(config, bench).await?;
         }
     }
 

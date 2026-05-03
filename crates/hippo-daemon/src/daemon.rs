@@ -602,8 +602,34 @@ async fn recompute_rolling_counts(state: Arc<DaemonState>) {
 }
 
 pub async fn run(config: HippoConfig) -> Result<()> {
+    run_with_mode(config, false).await
+}
+
+pub async fn run_with_mode(config: HippoConfig, bench_mode: bool) -> Result<()> {
     let socket_path = config.socket_path();
     let db_path = config.db_path();
+
+    // BT-10: bench-mode sandbox assertion. Shadow stack overrides HOME and
+    // XDG_DATA_HOME to run_tree before spawning the daemon; if any path
+    // resolves outside run_tree we have a leak. Warn (not bail) so a
+    // misconfigured corpus path can still be caught downstream by source-
+    // health probes rather than crashing the daemon.
+    if bench_mode {
+        info!("starting daemon in bench mode (--bench)");
+        let xdg = std::env::var("XDG_DATA_HOME")
+            .ok()
+            .or_else(|| std::env::var("HOME").ok())
+            .map(std::path::PathBuf::from);
+        if let Some(root) = xdg
+            && !db_path.starts_with(&root)
+        {
+            warn!(
+                db_path = %db_path.display(),
+                xdg_root = %root.display(),
+                "BT-10 bench mode: db_path is NOT under XDG_DATA_HOME/HOME — possible sandbox leak"
+            );
+        }
+    }
 
     let redaction = crate::load_redaction_engine(&config);
 
