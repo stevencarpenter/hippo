@@ -108,9 +108,15 @@ def spawn_shadow_stack(
     # Daemon gets its own session (new process group).
     # The brain joins the daemon's process group so a single os.killpg tears
     # both down without orphaning either process.
+    #
+    # NOTE: Use "daemon run" — there is no `hippo serve` subcommand. PR #127
+    # shipped `[hippo_bin, "serve"]` which silently failed: shadow daemon
+    # crashed on spawn, brain still came up against the pre-copied corpus DB
+    # so JSONL output kept appearing while bench had no daemon-side
+    # telemetry. Caught by panel review (BT-02).
     with open(logs_dir / "daemon.log", "ab") as daemon_log:
         daemon_proc = subprocess.Popen(
-            [hippo_bin, "serve"],
+            [hippo_bin, "daemon", "run"],
             env=env,
             stdout=subprocess.DEVNULL,
             stderr=daemon_log,
