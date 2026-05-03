@@ -9,6 +9,7 @@ fixed brain port.
 from __future__ import annotations
 
 import shutil
+import time
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -168,6 +169,45 @@ def test_teardown_runs_when_drain_raises(
     assert mocks["sampler"].stop.call_count == 1, (
         "sampler was started before drain — must be stopped"
     )
+
+
+def test_wait_for_queue_drain_raises_on_missing_tables(tmp_path: Path) -> None:
+    """BT-05: schema mismatch must fail fast, not be reported as 'drained instantly'."""
+    import sqlite3
+
+    bench_db = tmp_path / "bench.sqlite"
+    # Build a sqlite DB with NONE of the expected queue tables.
+    conn = sqlite3.connect(str(bench_db))
+    conn.execute("CREATE TABLE unrelated (id INTEGER)")
+    conn.commit()
+    conn.close()
+
+    t0 = time.monotonic()
+    with pytest.raises(RuntimeError, match="no queue tables present"):
+        coordinator_v2._wait_for_queue_drain(
+            bench_db, drain_timeout_sec=10.0, poll_interval_sec=0.1
+        )
+    elapsed = time.monotonic() - t0
+    assert elapsed < 1.0, (
+        f"should raise on first poll (~instantaneous), not wait for timeout — took {elapsed:.2f}s"
+    )
+
+
+def test_wait_for_queue_drain_returns_drained_when_tables_empty(tmp_path: Path) -> None:
+    """Sanity: when at least one queue table exists and is empty, returns False (drained)."""
+    import sqlite3
+
+    bench_db = tmp_path / "bench.sqlite"
+    conn = sqlite3.connect(str(bench_db))
+    # Only one of the four exists — that's enough to satisfy schema_checked.
+    conn.execute("CREATE TABLE enrichment_queue (id INTEGER, status TEXT)")
+    conn.commit()
+    conn.close()
+
+    timeout_hit = coordinator_v2._wait_for_queue_drain(
+        bench_db, drain_timeout_sec=5.0, poll_interval_sec=0.05
+    )
+    assert timeout_hit is False, "empty queue should return drained, not timeout"
 
 
 def test_downstream_proxy_failure_captured_as_structured_error(

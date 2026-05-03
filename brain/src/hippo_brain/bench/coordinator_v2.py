@@ -62,6 +62,11 @@ def _wait_for_queue_drain(
     """Poll enrichment queue tables until empty or timeout.
 
     Returns True if timeout was hit, False if successfully drained.
+
+    BT-05: Raises RuntimeError if NONE of the expected queue tables exist on
+    the very first poll — a schema mismatch must fail fast, not be reported
+    as "drained instantly". The previous behavior (warn once, return False)
+    masked schema bumps as bench success and recorded near-zero throughput.
     """
     tables = [
         "enrichment_queue",
@@ -72,7 +77,7 @@ def _wait_for_queue_drain(
 
     start = time.time()
     consecutive_empty = 0
-    logged_no_tables = False
+    schema_checked = False
 
     while time.time() - start < drain_timeout_sec:
         try:
@@ -91,15 +96,15 @@ def _wait_for_queue_drain(
                     pass
             conn.close()
 
-            if tables_found == 0 and not logged_no_tables:
-                import warnings
-
-                warnings.warn(
-                    f"_wait_for_queue_drain: none of the expected queue tables exist in "
-                    f"{bench_db} — schema mismatch or empty DB; treating as drained",
-                    stacklevel=2,
-                )
-                logged_no_tables = True
+            # Fail fast on schema mismatch before declaring success.
+            if not schema_checked:
+                if tables_found == 0:
+                    raise RuntimeError(
+                        f"_wait_for_queue_drain: no queue tables present in {bench_db} — "
+                        "schema mismatch, refusing to declare drained. Expected at least one of: "
+                        f"{tables}"
+                    )
+                schema_checked = True
 
             if total_pending == 0:
                 consecutive_empty += 1
@@ -107,8 +112,10 @@ def _wait_for_queue_drain(
                     return False
             else:
                 consecutive_empty = 0
-        except Exception:
-            pass
+        except sqlite3.OperationalError as e:
+            # Transient sqlite errors (e.g. WAL contention with the brain
+            # writer) are not schema mismatches — keep polling.
+            logger.warning("transient sqlite error in queue drain: %s", e)
 
         time.sleep(poll_interval_sec)
 
