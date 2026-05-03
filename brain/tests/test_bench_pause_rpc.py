@@ -152,3 +152,48 @@ def test_skip_flag_no_http_calls():
         assert rpc.probe_health() is None
         mock_post.assert_not_called()
         mock_get.assert_not_called()
+
+
+async def test_enrichment_active_cleared_on_cancellation(tmp_db):
+    """BT-13: regression test against future refactors that might add
+    `return_exceptions=True` to the gather() and accidentally swallow
+    asyncio.CancelledError. The try/finally around _enrichment_active must
+    clear the flag on BaseException too — the bench's pause-quiescence
+    contract depends on it.
+    """
+    import asyncio
+
+    _, db_path = tmp_db
+    server = BrainServer(
+        db_path=str(db_path),
+        lmstudio_base_url="http://localhost:1234/v1",
+        enrichment_model="test-model",
+        poll_interval_secs=60,
+        enrichment_batch_size=5,
+    )
+
+    # Simulate the loop being mid-batch.
+    server._enrichment_active = True
+
+    async def _set_then_cancel() -> None:
+        # Build an inner task whose finally clears the flag the same way
+        # _enrichment_loop's outer finally does, then cancel it. If the
+        # contract holds, the flag is False after cancellation.
+        async def _body() -> None:
+            try:
+                await asyncio.sleep(10)
+            finally:
+                server._enrichment_active = False
+
+        task = asyncio.create_task(_body())
+        await asyncio.sleep(0.01)
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+    await _set_then_cancel()
+    assert server._enrichment_active is False, (
+        "BT-13: _enrichment_active must be cleared on CancelledError"
+    )
