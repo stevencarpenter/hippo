@@ -5,6 +5,19 @@
 **Companion plan:** `docs/superpowers/plans/2026-05-03-hippo-bench-trust-ralph-plan.md` (autonomous execution)
 **Origin:** Six-expert panel review of PR #127 (methodology, Rust, Python, QA, SRE, telemetry). Synthesized 2026-05-03.
 
+## North Star (operator-stated 2026-05-03)
+
+> "I want the benchmark for realistic hippo usage and activity embedding and enriching on a very reliable and varied corpus of test events. That is our north star! Secondary to that will be how can hippo enrichment itself feel like a daemon. In the future, I would love my phone to be able to do inference with the context of local data and leveraging on device enclaves. But right now I am building my corpus. I think at some point I will need to distill a seed corpus to make people useful in the first week, because collecting a months data sounds insane and no way I would stick around."
+
+**Implications for this plan:**
+
+1. **Primary metric is realistic activity quality, not just retrieval scores.** The Q/A fixture (Phase 2) must reflect actual hippo usage patterns — shell commands the user actually runs, Claude sessions about real work, browser pages from active research — not synthetic retrieval probes. A model that scores 0.85 MRR on synthetic queries but 0.40 MRR on the user's actual workflows is the wrong winner.
+2. **"Feels like a daemon" is a measurable secondary axis.** Add enrichment latency / queue-drain rate / responsiveness-under-load as first-class bench metrics, not just throwaway peak_metrics. P50/P95 latency and "time-to-knowledge-node" matter as much as Hit@K.
+3. **Seed corpus is a future product feature, not in current bench scope** — but the bench's Phase 2 corpus work should be designed so a curated subset can later be distilled into a shippable seed for new-user onboarding (target: Week 1 utility from Day 1).
+4. **On-device inference (phone + enclaves) is explicit future scope.** Keep the bench architecture model-agnostic — no assumptions about LM Studio specifically; the LM Studio dependency should be behind a swappable client interface so future on-device runtimes can replace it.
+
+These reshape Phase 2 (BT-23..BT-28 sketches) when they're unblocked for design review. They do not change Phase 0/1 (foundational reliability + correctness), which proceeds as planned.
+
 ---
 
 ## Definition of Done (overall)
@@ -160,3 +173,6 @@ Daily-use polish so the team actually wants to run this on every model release.
 | 2026-05-03 | Frozen reference corpus, re-freeze every 6 months | Cross-model comparison requires identical input distribution; rolling corpus makes baselines incomparable | PM |
 | 2026-05-03 | First-class `hippo daemon run --bench` flag | Single auditable place where bench-mode behavior diverges; env-var-only sandbox doesn't cover all macOS APIs | PM |
 | 2026-05-03 | No timeline; phased priority replaces dates | User explicitly does not care about timeline; phase-gate ordering matters more than calendar | PM |
+| 2026-05-03 | North star = realistic activity bench (not synthetic retrieval) | Operator-stated direction. Bench must measure what matters to the user, not what's easy to score. | Operator |
+| 2026-05-03 | Add daemon-feel (latency/responsiveness) as secondary axis | Operator-stated. Quality alone isn't enough; an accurate-but-slow model fails hippo's daemon contract. | Operator |
+| 2026-05-03 | Keep LM Studio behind a swappable client interface | Future on-device inference (phone + enclaves) needs a non-LM-Studio backend. Don't bake assumptions in. | PM |
