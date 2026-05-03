@@ -252,6 +252,17 @@ def run_one_model_v2(
         errors.append({"step": step, "type": type(exc).__name__, "error": str(exc)})
 
     try:
+        # BT-07: refuse to spawn if port 18923 is already listening — almost
+        # always means the prior model's teardown leaked. Better to fail
+        # loudly than race on the port.
+        from hippo_brain.bench.preflight_v2 import check_brain_port_free
+
+        port_check = check_brain_port_free(18923)
+        if port_check.status == "fail":
+            raise RuntimeError(
+                f"BT-07: shadow brain port preflight failed for model={model!r}: {port_check.detail}"
+            )
+
         # 3. Spawn shadow stack
         stack = spawn_shadow_stack(
             run_tree=run_tree,

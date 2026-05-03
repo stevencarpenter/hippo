@@ -131,12 +131,50 @@ def check_disk_free_bench(bench_root: Path, min_gb: float = 2.0) -> CheckResult:
     return CheckResult(name="disk_free_bench", status=result.status, detail=result.detail)
 
 
+def check_brain_port_free(port: int = 18923) -> CheckResult:
+    """BT-07: refuse to start a shadow brain if its port is already listening.
+
+    A port that's already in use almost always means the previous bench run
+    leaked its shadow process group (BT-03 fixed the common path; this catches
+    the residual cases — SIGKILL'd loops, manual ctrl-C escapes, dev-rebuild
+    races). Without this guard the next spawn either binds elsewhere silently
+    or hangs in wait_for_brain_ready until timeout.
+    """
+    import socket
+
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        s.bind(("127.0.0.1", port))
+    except OSError as e:
+        # Try lsof for a friendlier error; tolerate its absence.
+        offender = ""
+        try:
+            import subprocess
+
+            r = subprocess.run(
+                ["lsof", "-i", f":{port}"], capture_output=True, text=True, timeout=2.0
+            )
+            if r.stdout.strip():
+                offender = f" — listener:\n{r.stdout.strip()}"
+        except Exception:
+            pass
+        return CheckResult(
+            name="brain_port_free",
+            status="fail",
+            detail=f"port {port} already in use ({e}){offender}",
+        )
+    finally:
+        s.close()
+    return CheckResult(name="brain_port_free", status="pass", detail=f"port {port} free")
+
+
 def run_all_preflight_v2(
     brain_url: str,
     corpus_sqlite: Path,
     manifest: Path,
     lmstudio_url: str,
     skip_prod_pause: bool,
+    brain_port: int = 18923,
 ) -> tuple[list[CheckResult], bool]:
     """Run all v2 preflight checks. Returns (checks, aborted).
 
@@ -144,6 +182,7 @@ def run_all_preflight_v2(
     - corpus schema mismatch or missing
     - LM Studio unreachable
     - disk < 2 GB under bench root
+    - shadow brain port already in use (BT-07)
     - prod brain reachable AND not pauseable AND skip_prod_pause not set
     """
     reachable = check_prod_brain_reachable(brain_url)
@@ -151,13 +190,15 @@ def run_all_preflight_v2(
     corpus_check = check_corpus_v2_present(corpus_sqlite, manifest)
     lms_check = check_lmstudio_reachable(lmstudio_url)
     bench_disk = check_disk_free_bench(hippo_bench_root())
+    port_check = check_brain_port_free(brain_port)
 
-    checks = [reachable, pauseable, corpus_check, lms_check, bench_disk]
+    checks = [reachable, pauseable, corpus_check, lms_check, bench_disk, port_check]
 
     aborted = (
         corpus_check.status == "fail"
         or lms_check.status == "fail"
         or bench_disk.status == "fail"
+        or port_check.status == "fail"
         or (reachable.status == "pass" and pauseable.status == "fail" and not skip_prod_pause)
     )
 
