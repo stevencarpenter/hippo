@@ -314,6 +314,20 @@ def _cmd_summary(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_determinism(args: argparse.Namespace) -> int:
+    """BT-29: compare N JSONL run files; exit 1 if any model exceeds budget."""
+    from hippo_brain.bench.determinism import compare_runs
+
+    paths = [Path(p) for p in args.run_files]
+    report = compare_runs(
+        paths,
+        mrr_budget=args.mrr_budget,
+        hit_at_1_budget=args.hit_at_1_budget,
+    )
+    print(report.render())
+    return 0 if report.passes() else 1
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="hippo-bench",
@@ -431,6 +445,29 @@ def _build_parser() -> argparse.ArgumentParser:
     summary = sub.add_parser("summary", help="Pretty-print a run JSONL file")
     summary.add_argument("run_file")
     summary.set_defaults(func=_cmd_summary)
+
+    # BT-29 / post-review: deterministic-rerun verification. Operator runs the
+    # bench 3× against the same model + frozen corpus, then compares JSONLs.
+    # Exit 1 on any model exceeding the trust budget — wire into CI for an
+    # automated regression alarm.
+    det = sub.add_parser(
+        "determinism",
+        help="BT-29: compare N JSONL run files and verify metric stability",
+    )
+    det.add_argument("run_files", nargs="+", help="Two or more JSONL files from `hippo-bench run`")
+    det.add_argument(
+        "--mrr-budget",
+        type=float,
+        default=0.02,
+        help="Max permitted spread of MRR across runs (default 0.02 per DoD #1)",
+    )
+    det.add_argument(
+        "--hit-at-1-budget",
+        type=float,
+        default=0.02,
+        help="Max permitted spread of Hit@1 across runs (default 0.02 per DoD #1)",
+    )
+    det.set_defaults(func=_cmd_determinism)
 
     # BT-06: recovery subcommand. Idempotent — clears stale pause lockfile
     # and resumes prod brain if a prior bench was SIGKILL'd.
