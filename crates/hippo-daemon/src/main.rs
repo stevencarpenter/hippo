@@ -99,8 +99,8 @@ async fn main() -> Result<()> {
 
     match cli.command {
         Commands::Daemon { action } => match action {
-            DaemonAction::Run => {
-                daemon::run(config).await?;
+            DaemonAction::Run { bench } => {
+                daemon::run_with_mode(config, bench).await?;
             }
             DaemonAction::Start => {
                 let uid = unsafe { libc::getuid() };

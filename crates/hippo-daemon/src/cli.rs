@@ -177,8 +177,18 @@ pub enum BrainAction {
 
 #[derive(Subcommand)]
 pub enum DaemonAction {
-    /// Run the daemon in the foreground
-    Run,
+    /// Run the daemon in the foreground.
+    ///
+    /// Post-review C-5: `--bench` is symmetric with `hippo serve --bench`.
+    /// Earlier the flag only existed on `Serve`, but tracking-doc claims and
+    /// shadow_stack invocations referred to both forms; the missing flag
+    /// silently caused `daemon run --bench` to start in non-bench mode.
+    Run {
+        /// Run in bench mode: skip FSEvents watcher and LaunchAgent guards;
+        /// refuse to start if db_path resolves outside `XDG_DATA_HOME`/`HOME`.
+        #[arg(long)]
+        bench: bool,
+    },
     /// Start the daemon via launchd
     Start,
     /// Stop the daemon
