@@ -323,6 +323,7 @@ def _cmd_determinism(args: argparse.Namespace) -> int:
         paths,
         mrr_budget=args.mrr_budget,
         hit_at_1_budget=args.hit_at_1_budget,
+        mode=args.mode,
     )
     print(report.render())
     return 0 if report.passes() else 1
@@ -466,6 +467,11 @@ def _build_parser() -> argparse.ArgumentParser:
         type=float,
         default=0.02,
         help="Max permitted spread of Hit@1 across runs (default 0.02 per DoD #1)",
+    )
+    det.add_argument(
+        "--mode",
+        default="hybrid",
+        help="Retrieval mode to compare (default hybrid; downstream_proxy.modes key)",
     )
     det.set_defaults(func=_cmd_determinism)
 

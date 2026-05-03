@@ -5,6 +5,11 @@ last_error on BT-29: "blast radius is too high for autonomous loop"). What
 *can* be tested autonomously is the comparison logic that decides pass/fail.
 A regression here would let the operator's runbook silently report PASS on
 a model that's actually flapping by 0.05 MRR run-to-run.
+
+The fixtures below mirror the real `ModelSummaryRecordV2.to_dict` /
+`run_downstream_proxy_pass` shape — `downstream_proxy["modes"][<mode>]` is
+nested, not flat. An earlier version of this file used a flat shape that
+silently masked C-7 (harness reading `None` from real bench output).
 """
 
 from __future__ import annotations
@@ -16,6 +21,7 @@ import pytest
 
 from hippo_brain.bench.determinism import (
     DEFAULT_HIT_AT_1_BUDGET,
+    DEFAULT_MODE,
     DEFAULT_MRR_BUDGET,
     compare_runs,
 )
@@ -33,19 +39,39 @@ def _write_run(
 
 
 def _summary_row(
-    model_id: str, mrr: float | None = None, hit_at_1: float | None = None
+    model_id: str,
+    *,
+    mrr: float | None = None,
+    hit_at_1: float | None = None,
+    mode: str = DEFAULT_MODE,
+    extra_modes: dict[str, dict[str, float]] | None = None,
 ) -> dict[str, object]:
-    """Build a minimal model_summary record matching ModelSummaryRecordV2.to_dict shape."""
-    proxy: dict[str, object] = {}
-    if mrr is not None:
-        proxy["mrr"] = mrr
-    if hit_at_1 is not None:
-        proxy["hit_at_1"] = hit_at_1
+    """Build a model_summary record matching the real
+    `ModelSummaryRecordV2.to_dict()` / `run_downstream_proxy_pass()` shape.
+
+    `downstream_proxy["modes"]` is nested per-mode; flat top-level
+    `mrr`/`hit_at_1` keys are NOT present in real output.
+    """
+    modes_block: dict[str, dict[str, float]] = {}
+    if mrr is not None or hit_at_1 is not None:
+        mode_block: dict[str, float] = {}
+        if mrr is not None:
+            mode_block["mrr"] = mrr
+        if hit_at_1 is not None:
+            mode_block["hit_at_1"] = hit_at_1
+        modes_block[mode] = mode_block
+    if extra_modes:
+        modes_block.update(extra_modes)
     return {
         "record_type": "model_summary",
         "run_id": "test-run",
         "model": {"id": model_id},
-        "downstream_proxy": proxy,
+        "downstream_proxy": {
+            "modes": modes_block,
+            "qa_count": 8,
+            "k": 10,
+            "per_item": [],
+        },
     }
 
 
@@ -65,6 +91,7 @@ def test_three_stable_runs_pass(tmp_path: Path) -> None:
     assert delta.n_runs == 3
     assert delta.mrr_delta == pytest.approx(0.01, abs=1e-9)
     assert delta.hit_at_1_delta == pytest.approx(0.01, abs=1e-9)
+    assert delta.missing_metric is None
 
 
 def test_mrr_blowout_fails(tmp_path: Path) -> None:
@@ -165,6 +192,7 @@ def test_default_budgets_match_dod() -> None:
     """
     assert DEFAULT_MRR_BUDGET == 0.02
     assert DEFAULT_HIT_AT_1_BUDGET == 0.02
+    assert DEFAULT_MODE == "hybrid"
 
 
 def test_render_includes_overall_verdict(tmp_path: Path) -> None:
@@ -179,3 +207,137 @@ def test_render_includes_overall_verdict(tmp_path: Path) -> None:
     rendered = report.render()
     assert "**Overall: FAIL**" in rendered
     assert "model-A" in rendered
+
+
+# ----------------------------------------------------------------------------
+# Post-review C-7 / C-8: real downstream_proxy shape is nested under "modes"
+# ----------------------------------------------------------------------------
+
+
+def test_extracts_from_nested_hybrid_mode(tmp_path: Path) -> None:
+    """Pin the real-shape extraction (post-review C-7). The harness must read
+    `downstream_proxy["modes"]["hybrid"]["mrr"]`, not top-level `mrr`. A
+    regression here was silently producing PASS on real bench output.
+    """
+    # Belt-and-suspenders: write the row WITH a top-level mrr/hit_at_1 (which
+    # don't exist in real output) and explicitly DIFFERENT values nested under
+    # modes.hybrid. If the harness ever falls back to the flat shape, the
+    # asserted values won't match.
+    rows = [
+        {
+            "record_type": "model_summary",
+            "run_id": "t",
+            "model": {"id": "model-A"},
+            "downstream_proxy": {
+                "modes": {"hybrid": {"mrr": 0.40, "hit_at_1": 0.50}},
+                # These flat keys must NOT be read by the harness.
+                "mrr": 999.0,
+                "hit_at_1": 999.0,
+            },
+        }
+    ]
+    p1 = _write_run(tmp_path / "r1.jsonl", rows)
+    rows[0]["downstream_proxy"]["modes"]["hybrid"] = {"mrr": 0.41, "hit_at_1": 0.51}  # type: ignore[index]
+    p2 = _write_run(tmp_path / "r2.jsonl", rows)
+
+    report = compare_runs([p1, p2])
+    assert report.deltas[0].mrr_values == [0.40, 0.41]
+    assert report.deltas[0].hit_at_1_values == [0.50, 0.51]
+
+
+def test_alternate_mode_can_be_selected(tmp_path: Path) -> None:
+    """Operator can pin a non-default mode (e.g. semantic-only deployment)."""
+    paths = [
+        _write_run(
+            tmp_path / "r1.jsonl",
+            [
+                _summary_row(
+                    "model-A",
+                    extra_modes={
+                        "hybrid": {"mrr": 0.4, "hit_at_1": 0.5},
+                        "semantic": {"mrr": 0.7, "hit_at_1": 0.8},
+                    },
+                )
+            ],
+        ),
+        _write_run(
+            tmp_path / "r2.jsonl",
+            [
+                _summary_row(
+                    "model-A",
+                    extra_modes={
+                        "hybrid": {"mrr": 0.41, "hit_at_1": 0.51},
+                        "semantic": {"mrr": 0.71, "hit_at_1": 0.81},
+                    },
+                )
+            ],
+        ),
+    ]
+    semantic_report = compare_runs(paths, mode="semantic")
+    assert semantic_report.deltas[0].mrr_values == [0.7, 0.71]
+    assert "Mode: semantic" in semantic_report.render()
+
+
+# ----------------------------------------------------------------------------
+# Post-review C-6 / CC-2: missing metrics → fail (was silent 0.0 default)
+# ----------------------------------------------------------------------------
+
+
+def test_missing_mrr_in_one_run_fails_that_model(tmp_path: Path) -> None:
+    """Determinism cannot be assessed when one run lacks the metric.
+    Previously this defaulted the delta to 0.0 → false PASS.
+    """
+    paths = [
+        _write_run(tmp_path / "r1.jsonl", [_summary_row("model-A", mrr=0.4, hit_at_1=0.5)]),
+        _write_run(tmp_path / "r2.jsonl", [_summary_row("model-A", hit_at_1=0.5)]),  # no mrr
+    ]
+    report = compare_runs(paths)
+
+    assert not report.passes(), "missing metric must fail the model"
+    delta = report.deltas[0]
+    assert delta.missing_metric is not None
+    assert "mrr in 1 of 2 runs" in delta.missing_metric
+
+
+def test_missing_hit_at_1_in_all_runs_fails(tmp_path: Path) -> None:
+    """If the proxy step failed in every run (e.g. embedding_fn was None),
+    NO model can be deterministically certified — all deltas fail."""
+    paths = [
+        _write_run(tmp_path / "r1.jsonl", [_summary_row("model-A", mrr=0.4)]),
+        _write_run(tmp_path / "r2.jsonl", [_summary_row("model-A", mrr=0.4)]),
+    ]
+    report = compare_runs(paths)
+
+    assert not report.passes()
+    assert "hit_at_1" in report.deltas[0].missing_metric  # type: ignore[operator]
+
+
+def test_missing_metric_surfaced_in_render(tmp_path: Path) -> None:
+    """Rendered verdict must explain *why* the model failed when missing."""
+    paths = [
+        _write_run(tmp_path / "r1.jsonl", [_summary_row("model-A", mrr=0.4, hit_at_1=0.5)]),
+        _write_run(tmp_path / "r2.jsonl", [_summary_row("model-A", hit_at_1=0.5)]),
+    ]
+    report = compare_runs(paths)
+    rendered = report.render()
+    assert "FAIL (missing:" in rendered
+    assert "mrr in 1 of 2 runs" in rendered
+
+
+# ----------------------------------------------------------------------------
+# Post-review C-3: budget comparison is inclusive (<=, not <)
+# ----------------------------------------------------------------------------
+
+
+def test_exactly_at_budget_passes(tmp_path: Path) -> None:
+    """A spread of exactly 0.02 should PASS (inclusive budget). The previous
+    strict-`<` comparison would surprise operators who read "± 0.02" as
+    inclusive (the standard convention).
+    """
+    paths = [
+        _write_run(tmp_path / "r1.jsonl", [_summary_row("model-A", mrr=0.40, hit_at_1=0.50)]),
+        _write_run(tmp_path / "r2.jsonl", [_summary_row("model-A", mrr=0.42, hit_at_1=0.52)]),
+    ]
+    report = compare_runs(paths)
+    assert report.passes(), "exactly-at-budget (0.02) must pass under inclusive convention"
+    assert report.deltas[0].mrr_delta == pytest.approx(0.02, abs=1e-9)

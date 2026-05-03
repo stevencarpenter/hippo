@@ -64,7 +64,8 @@ uv run --project brain hippo-bench determinism \
 # BT-29 determinism report
 
 Runs compared: 3
-Budget: MRR delta < 0.02, Hit@1 delta < 0.02
+Mode: hybrid
+Budget: MRR delta ≤ 0.02, Hit@1 delta ≤ 0.02
 
 | model | n_runs | mrr range | mrr delta | hit@1 range | hit@1 delta | verdict |
 |---|---|---|---|---|---|---|
@@ -74,6 +75,16 @@ Budget: MRR delta < 0.02, Hit@1 delta < 0.02
 ```
 
 Exit code 0. Trust foundation is verified for this model.
+
+The harness defaults to comparing the `hybrid` retrieval mode (production
+path). To verify a different mode (e.g. semantic-only deployment), pass
+`--mode semantic`. To loosen or tighten the budget, use `--mrr-budget` and
+`--hit-at-1-budget`.
+
+If any compared run is missing `downstream_proxy.modes[<mode>].mrr` or
+`hit_at_1` (e.g. the proxy step raised and was captured into `errors[]`),
+the model gets a `FAIL (missing: ...)` verdict rather than a silent PASS —
+determinism cannot be assessed when one of the data points is absent.
 
 **Expected output (FAIL path):**
 
