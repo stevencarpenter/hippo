@@ -1,0 +1,8 @@
+{"qa_id": "g1", "question": "what shell command did I run for git status", "golden_event_id": "shell-001", "acceptable_answer_keywords": ["git", "status"]}
+{"qa_id": "g2", "question": "which python script processed the corpus", "golden_event_id": "shell-002", "acceptable_answer_keywords": ["build_dossier", "corpus"]}
+{"qa_id": "g3", "question": "what claude session covered the auth refactor", "golden_event_id": "claude-003", "acceptable_answer_keywords": ["auth", "refactor"]}
+{"qa_id": "g4", "question": "what page did I read about sqlite WAL", "golden_event_id": "browser-004", "acceptable_answer_keywords": ["sqlite", "WAL"]}
+{"qa_id": "g5", "question": "which cargo build failed earlier", "golden_event_id": "shell-005", "acceptable_answer_keywords": ["cargo", "build"]}
+{"qa_id": "g6", "question": "what github action workflow failed", "golden_event_id": "workflow-006", "acceptable_answer_keywords": ["workflow", "failed"]}
+{"qa_id": "g7", "question": "claude session about the bench v2 design", "golden_event_id": "claude-007", "acceptable_answer_keywords": ["bench", "v2", "design"]}
+{"qa_id": "g8", "question": "browser page about firefox extension manifest", "golden_event_id": "browser-008", "acceptable_answer_keywords": ["firefox", "extension", "manifest"]}
