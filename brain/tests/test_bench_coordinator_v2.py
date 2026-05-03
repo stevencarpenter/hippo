@@ -33,11 +33,14 @@ def fake_corpus(tmp_path: Path) -> Path:
 def _patch_lifecycle(
     monkeypatch: pytest.MonkeyPatch,
     *,
-    spawn_raises: Exception | None = None,
-    wait_raises: Exception | None = None,
-    drain_raises: Exception | None = None,
-    sc_raises: Exception | None = None,
-    proxy_raises: Exception | None = None,
+    # BaseException-typed (not just Exception) so post-review I-1 / P1-02 (c)
+    # can inject signal-equivalent KeyboardInterrupt to verify the BT-03
+    # try/finally contract holds for SystemExit / KeyboardInterrupt too.
+    spawn_raises: BaseException | None = None,
+    wait_raises: BaseException | None = None,
+    drain_raises: BaseException | None = None,
+    sc_raises: BaseException | None = None,
+    proxy_raises: BaseException | None = None,
 ) -> dict[str, MagicMock]:
     """Stub every I/O dependency. Returns a dict of MagicMocks keyed by name
     so the test can assert call counts."""
@@ -363,3 +366,143 @@ def test_downstream_proxy_failure_captured_as_structured_error(
     assert proxy_error is not None, f"expected downstream_proxy error, got: {result.errors}"
     assert "synthetic" in proxy_error["error"]
     assert proxy_error["type"] == "RuntimeError"
+
+
+# ----------------------------------------------------------------------------
+# Post-review I-1 / Ralph-plan P1-02 — fault-injection suite
+#
+# Three scenarios from the original P1-02 acceptance bullet that BT-12 + BT-13
+# did not cover. Port collision (the 4th scenario) is covered by BT-07's own
+# preflight test.
+# ----------------------------------------------------------------------------
+
+
+def test_drain_times_out_cleanly_when_queue_stays_full(tmp_path: Path) -> None:
+    """P1-02 (a): LM Studio failure during drain → enrichment_queue rows stay
+    'pending' indefinitely because the shadow brain can't enrich them.
+    _wait_for_queue_drain must respect drain_timeout_sec and return True
+    (timeout=hit), not hang past the budget. Asserts elapsed time stays
+    within ~1.5× budget so we catch a regression that ignored the deadline.
+    """
+    import contextlib
+    import sqlite3
+
+    bench_db = tmp_path / "stuck.db"
+    with contextlib.closing(sqlite3.connect(str(bench_db))) as conn:
+        conn.execute("CREATE TABLE enrichment_queue (id INTEGER PRIMARY KEY, status TEXT)")
+        # Two pending rows — exact count doesn't matter, just that >0 keeps
+        # the drain loop running until timeout.
+        conn.executemany(
+            "INSERT INTO enrichment_queue (status) VALUES (?)",
+            [("pending",), ("pending",)],
+        )
+        conn.commit()
+
+    t0 = time.monotonic()
+    timeout_hit = coordinator_v2._wait_for_queue_drain(
+        bench_db, drain_timeout_sec=1.0, poll_interval_sec=0.1
+    )
+    elapsed = time.monotonic() - t0
+
+    assert timeout_hit is True, "drain must report timeout when queue stays full"
+    assert elapsed < 2.0, (
+        f"drain took {elapsed:.2f}s for 1s timeout — drain ignored deadline (regression?)"
+    )
+
+
+def test_drain_counts_stale_processing_rows_as_pending(tmp_path: Path) -> None:
+    """P1-02 (b): Stale 'processing' rows held by a dead worker (e.g. shadow
+    brain killed mid-batch) MUST keep the drain pending. The drain SQL counts
+    BOTH 'pending' and 'processing' as outstanding precisely so a stale-locked
+    row can't masquerade as drained.
+
+    If a refactor narrows the drain query to status='pending' only, the queue
+    can silently report empty while half its rows are stuck — letting a
+    dead-brain bench falsely declare success. This test pins the contract.
+    """
+    import contextlib
+    import sqlite3
+
+    bench_db = tmp_path / "stale.db"
+    with contextlib.closing(sqlite3.connect(str(bench_db))) as conn:
+        conn.execute("CREATE TABLE enrichment_queue (id INTEGER PRIMARY KEY, status TEXT)")
+        conn.execute("INSERT INTO enrichment_queue (status) VALUES ('processing')")
+        conn.commit()
+
+    timeout_hit = coordinator_v2._wait_for_queue_drain(
+        bench_db, drain_timeout_sec=0.5, poll_interval_sec=0.1
+    )
+
+    assert timeout_hit is True, (
+        "stale 'processing' row must keep drain pending until timeout — otherwise "
+        "a dead-brain bench could silently report success"
+    )
+
+
+def test_teardown_runs_on_baseexception_mid_lifecycle(
+    monkeypatch: pytest.MonkeyPatch, fake_corpus: Path
+) -> None:
+    """P1-02 (c): The closest practical equivalent of "SIGTERM during gather"
+    in a synchronous test: inject a BaseException (KeyboardInterrupt) at the
+    drain step and assert teardown still runs.
+
+    A signal-raised exception (SIGINT → KeyboardInterrupt, SIGTERM → handler
+    that raises) propagates through `try`/`finally` blocks the same way as
+    Exception, but `except Exception:` clauses do NOT catch BaseException.
+    BT-03's try/finally is correctly using `finally:` (not `except:`), so this
+    test pins that contract — a refactor that swapped finally for except
+    Exception would let SIGTERM leak the shadow process group.
+    """
+    mocks = _patch_lifecycle(
+        monkeypatch,
+        drain_raises=KeyboardInterrupt(),
+    )
+
+    with pytest.raises(KeyboardInterrupt):
+        coordinator_v2.run_one_model_v2(
+            model="test-model",
+            run_id="test-run",
+            corpus_sqlite=fake_corpus,
+            warmup_calls=0,
+            cooldown_max_sec=0,
+        )
+
+    assert mocks["teardown"].call_count == 1, (
+        "BT-03 teardown contract must hold for BaseException, not just Exception"
+    )
+    assert mocks["sampler"].stop.call_count == 1, (
+        "sampler was running when the signal-equivalent exception fired — must stop"
+    )
+
+
+def test_load_corpus_failure_captured_as_structured_error(
+    monkeypatch: pytest.MonkeyPatch, fake_corpus: Path
+) -> None:
+    """Post-review C-2: a corrupted corpus JSONL no longer silently produces
+    an empty all_entries list — the failure is captured into result.errors so
+    JSONL output reflects it. Bench continues with all_entries=[] (warmup +
+    SC pass naturally skipped) rather than crashing run_one_model_v2.
+    """
+    mocks = _patch_lifecycle(monkeypatch)
+    monkeypatch.setattr(
+        coordinator_v2,
+        "_load_corpus_entries",
+        MagicMock(side_effect=ValueError("synthetic: corpus jsonl is malformed")),
+    )
+
+    result = coordinator_v2.run_one_model_v2(
+        model="test-model",
+        run_id="test-run",
+        corpus_sqlite=fake_corpus,
+        warmup_calls=2,
+        sc_events=0,
+        cooldown_max_sec=0,
+    )
+
+    assert mocks["teardown"].call_count == 1, "teardown still runs on captured failure"
+    load_error = next((e for e in result.errors if e["step"] == "load_corpus"), None)
+    assert load_error is not None, f"expected load_corpus error, got: {result.errors}"
+    assert "synthetic" in load_error["error"]
+    assert load_error["type"] == "ValueError"
+    # Bench continued past the failure — it's a captured-error, not a crash.
+    assert result.model == "test-model"
