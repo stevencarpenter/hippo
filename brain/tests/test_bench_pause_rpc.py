@@ -155,11 +155,18 @@ def test_skip_flag_no_http_calls():
 
 
 async def test_enrichment_active_cleared_on_cancellation(tmp_db):
-    """BT-13: regression test against future refactors that might add
+    """Post-review I-2: regression test against future refactors that might add
     `return_exceptions=True` to the gather() and accidentally swallow
     asyncio.CancelledError. The try/finally around _enrichment_active must
     clear the flag on BaseException too — the bench's pause-quiescence
     contract depends on it.
+
+    Unlike the original BT-13 test (which built a synthetic inner task whose
+    own finally cleared the flag — proving Python's language semantic, not the
+    application contract), this test runs the actual `_enrichment_loop` task,
+    parks it at `preflight_lm_studio` where `_enrichment_active = True` is
+    already set on server.py:871, then cancels and asserts the loop's own
+    `finally` (server.py:949-950) cleared the flag.
     """
     import asyncio
 
@@ -168,32 +175,46 @@ async def test_enrichment_active_cleared_on_cancellation(tmp_db):
         db_path=str(db_path),
         lmstudio_base_url="http://localhost:1234/v1",
         enrichment_model="test-model",
-        poll_interval_secs=60,
+        poll_interval_secs=0.01,
         enrichment_batch_size=5,
     )
 
-    # Simulate the loop being mid-batch.
-    server._enrichment_active = True
+    # Park preflight_lm_studio in a long sleep so the loop reaches the line
+    # AFTER `_enrichment_active = True` and waits there until we cancel. The
+    # patch target is `hippo_brain.server.preflight_lm_studio` (where the
+    # symbol is bound by `from ... import ...`), not the source module.
+    async def _hang(*_args, **_kwargs):
+        await asyncio.sleep(60)
 
-    async def _set_then_cancel() -> None:
-        # Build an inner task whose finally clears the flag the same way
-        # _enrichment_loop's outer finally does, then cancel it. If the
-        # contract holds, the flag is False after cancellation.
-        async def _body() -> None:
-            try:
-                await asyncio.sleep(10)
-            finally:
-                server._enrichment_active = False
-
-        task = asyncio.create_task(_body())
-        await asyncio.sleep(0.01)
-        task.cancel()
+    with patch("hippo_brain.server.preflight_lm_studio", side_effect=_hang):
+        task = asyncio.create_task(server._enrichment_loop())
         try:
-            await task
-        except asyncio.CancelledError:
-            pass
+            # Wait up to 1 s for the loop to enter the inner try and set
+            # _enrichment_active = True. Tight poll because poll_interval_secs
+            # is 0.01 and preflight is the first await after the flag is set.
+            for _ in range(100):
+                if server._enrichment_active:
+                    break
+                await asyncio.sleep(0.01)
+            assert server._enrichment_active, (
+                "loop never reached preflight — patch target or fixture wrong"
+            )
 
-    await _set_then_cancel()
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+        finally:
+            if not task.done():
+                task.cancel()
+                try:
+                    await task
+                except BaseException:
+                    pass
+
     assert server._enrichment_active is False, (
-        "BT-13: _enrichment_active must be cleared on CancelledError"
+        "Post-review I-2: _enrichment_loop's finally (server.py:949-950) must "
+        "clear _enrichment_active on CancelledError — the pause-quiescence "
+        "contract depends on it"
     )
