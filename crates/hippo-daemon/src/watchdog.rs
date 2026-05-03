@@ -370,27 +370,40 @@ pub fn read_source_health(conn: &Connection) -> Result<Vec<SourceHealthRow>> {
 // Invariant evaluation
 // ---------------------------------------------------------------------------
 
+/// Post-review C-1: a SIGKILL'd bench leaves the lockfile behind; without an
+/// mtime gate the watchdog would silently suppress I-2/I-4/I-8 indefinitely
+/// until the next bench start runs `recover_stale_pause`. 30 min is comfortably
+/// longer than any realistic drain (worst-case observed ~40 min on cold corpus
+/// with v0.16) but bounded enough that a crashed bench doesn't blind the
+/// watchdog for days.
+const PAUSE_LOCKFILE_MAX_AGE: std::time::Duration = std::time::Duration::from_secs(30 * 60);
+
 /// BT-16: Returns true if a hippo-bench pause window is currently active.
 ///
-/// Reuses the BT-06 pause lockfile rather than introducing a new
-/// SQLite migration: the lockfile already encodes the bench's
-/// "I have paused prod and bench is running" state. Existence ⇒
-/// pause active. We also treat a lockfile that was modified within
-/// the last 60 s as still-pausing-cooldown to avoid flapping right
-/// after a crash-resume.
+/// Reuses the BT-06 pause lockfile rather than introducing a new SQLite
+/// migration: the lockfile already encodes the bench's "I have paused prod
+/// and bench is running" state. A lockfile is "active" only if it exists AND
+/// its mtime is within `PAUSE_LOCKFILE_MAX_AGE` — see that constant for the
+/// rationale.
 pub fn bench_pause_window_active() -> bool {
     let path = match dirs::home_dir() {
         Some(h) => h.join(".local/share/hippo-bench/pause.lock"),
         None => return false,
     };
-    let metadata = match std::fs::metadata(&path) {
-        Ok(m) => m,
+    is_pause_lockfile_active(&path, std::time::SystemTime::now())
+}
+
+fn is_pause_lockfile_active(path: &std::path::Path, now: std::time::SystemTime) -> bool {
+    let modified = match std::fs::metadata(path).and_then(|m| m.modified()) {
+        Ok(t) => t,
         Err(_) => return false,
     };
-    // Active lockfile = bench is paused right now. Existence is enough; the
-    // mtime is informational.
-    let _ = metadata.modified();
-    true
+    match now.duration_since(modified) {
+        Ok(age) => age < PAUSE_LOCKFILE_MAX_AGE,
+        // mtime in the future ⇒ clock skew. Treat as active to avoid
+        // spurious alarms during a real bench run.
+        Err(_) => true,
+    }
 }
 
 /// Evaluate I-1..I-10 against the in-memory `source_health` rows.
@@ -904,6 +917,53 @@ mod tests {
     }
 
     const NOW: i64 = 1_700_000_000_000i64; // arbitrary reference epoch ms
+
+    // ── BT-16 / Post-review C-1: pause-lockfile mtime gate ────────────────
+
+    #[test]
+    fn pause_lockfile_missing_returns_inactive() {
+        let dir = TempDir::new().unwrap();
+        let lockfile = dir.path().join("absent.lock");
+        assert!(!is_pause_lockfile_active(
+            &lockfile,
+            std::time::SystemTime::now()
+        ));
+    }
+
+    #[test]
+    fn pause_lockfile_recent_mtime_returns_active() {
+        let dir = TempDir::new().unwrap();
+        let lockfile = dir.path().join("pause.lock");
+        std::fs::write(&lockfile, b"{}").unwrap();
+        let mtime = std::fs::metadata(&lockfile).unwrap().modified().unwrap();
+        // 5 min after mtime is comfortably inside the 30-min window.
+        let near_future = mtime + std::time::Duration::from_secs(5 * 60);
+        assert!(is_pause_lockfile_active(&lockfile, near_future));
+    }
+
+    #[test]
+    fn pause_lockfile_stale_mtime_returns_inactive() {
+        let dir = TempDir::new().unwrap();
+        let lockfile = dir.path().join("pause.lock");
+        std::fs::write(&lockfile, b"{}").unwrap();
+        let mtime = std::fs::metadata(&lockfile).unwrap().modified().unwrap();
+        // 31 min after mtime is just outside the 30-min window — the
+        // canonical "SIGKILL'd bench left a lockfile behind" scenario.
+        let far_future = mtime + std::time::Duration::from_secs(31 * 60);
+        assert!(!is_pause_lockfile_active(&lockfile, far_future));
+    }
+
+    #[test]
+    fn pause_lockfile_future_mtime_treated_as_active() {
+        // Clock skew safety: if mtime > now (e.g., NTP correction), prefer
+        // suppressing the alarm over spuriously alarming during a real bench.
+        let dir = TempDir::new().unwrap();
+        let lockfile = dir.path().join("pause.lock");
+        std::fs::write(&lockfile, b"{}").unwrap();
+        let mtime = std::fs::metadata(&lockfile).unwrap().modified().unwrap();
+        let past = mtime - std::time::Duration::from_secs(60);
+        assert!(is_pause_lockfile_active(&lockfile, past));
+    }
 
     // ── I-1 ────────────────────────────────────────────────────────────────
 
