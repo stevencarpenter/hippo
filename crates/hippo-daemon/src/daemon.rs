@@ -787,7 +787,8 @@ pub async fn run_with_mode(config: HippoConfig, bench_mode: bool) -> Result<()> 
                 ];
                 let conn = match rusqlite::Connection::open_with_flags(
                     &queue_db_path,
-                    rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+                    rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY
+                        | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
                 ) {
                     Ok(c) => c,
                     Err(_) => return,

@@ -62,6 +62,8 @@ def test_cli_run_dry_run_invokes_orchestrate(monkeypatch, tmp_path, capsys):
     rc = main(
         [
             "run",
+            "--corpus-version",  # BT-18: explicit v1 since test patches v1 orchestrator
+            "corpus-v1",
             "--dry-run",
             "--skip-checks",
             "--out",
@@ -98,6 +100,8 @@ def test_cli_run_returns_3_when_all_models_errored(monkeypatch, tmp_path):
     rc = main(
         [
             "run",
+            "--corpus-version",
+            "corpus-v1",
             "--skip-checks",
             "--models",
             "bad-model",
@@ -122,7 +126,17 @@ def test_cli_run_returns_2_when_preflight_aborts(monkeypatch, tmp_path):
         )
 
     monkeypatch.setattr("hippo_brain.bench.cli.orchestrate_run", fake_orchestrate)
-    rc = main(["run", "--models", "m1", "--out", str(tmp_path / "r.jsonl")])
+    rc = main(
+        [
+            "run",
+            "--corpus-version",
+            "corpus-v1",
+            "--models",
+            "m1",
+            "--out",
+            str(tmp_path / "r.jsonl"),
+        ]
+    )
     assert rc == 2
 
 

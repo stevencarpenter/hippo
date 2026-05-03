@@ -201,7 +201,10 @@ pub fn run(config: &HippoConfig) -> Result<()> {
             if is_sqlite_busy(&e) {
                 // BT-15: track contention for bench's "is this model causing
                 // write pressure?" diagnostic.
-                crate::metrics::DB_BUSY_COUNT.add(1, &[opentelemetry::KeyValue::new("op", "watchdog_alarm_insert")]);
+                crate::metrics::DB_BUSY_COUNT.add(
+                    1,
+                    &[opentelemetry::KeyValue::new("op", "watchdog_alarm_insert")],
+                );
                 std::thread::sleep(std::time::Duration::from_millis(100));
                 if let Err(retry_err) = conn.execute(
                     "INSERT INTO capture_alarms (invariant_id, raised_at, details_json)
@@ -408,9 +411,7 @@ pub fn check_invariants(rows: &[SourceHealthRow], now_ms: i64) -> Vec<InvariantV
     let mut violations = Vec::new();
     let bench_paused = bench_pause_window_active();
     if bench_paused {
-        tracing::info!(
-            "BT-16: bench pause window active — suppressing I-2/I-4/I-8 invariants"
-        );
+        tracing::info!("BT-16: bench pause window active — suppressing I-2/I-4/I-8 invariants");
     }
 
     // I-1: Shell liveness (>60 s stale while probe says active)
@@ -421,9 +422,7 @@ pub fn check_invariants(rows: &[SourceHealthRow], now_ms: i64) -> Vec<InvariantV
     // I-2: Claude-session coverage proxy (consecutive_failures > 3)
     // Full JSONL-based predicate lands in T-4 (doctor checks).
     // BT-16: suppressed during bench pause window.
-    if !bench_paused
-        && let Some(v) = check_i2_claude_session_proxy(&by_source, now_ms)
-    {
+    if !bench_paused && let Some(v) = check_i2_claude_session_proxy(&by_source, now_ms) {
         violations.push(v);
     }
 
@@ -432,9 +431,7 @@ pub fn check_invariants(rows: &[SourceHealthRow], now_ms: i64) -> Vec<InvariantV
 
     // I-4: Browser round-trip (>2 min stale while probe says active)
     // BT-16: suppressed during bench pause window.
-    if !bench_paused
-        && let Some(v) = check_i4_browser_roundtrip(&by_source, now_ms)
-    {
+    if !bench_paused && let Some(v) = check_i4_browser_roundtrip(&by_source, now_ms) {
         violations.push(v);
     }
 

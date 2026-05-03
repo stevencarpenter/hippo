@@ -92,8 +92,7 @@ def test_golden_retrieval_scores() -> None:
         expected_mode = expected["modes"][mode_name]
         for metric in ("hit_at_1", "hit_at_3", "hit_at_5", "hit_at_10", "mrr", "ndcg_at_10"):
             assert actual_mode[metric] == pytest.approx(expected_mode[metric], abs=1e-4), (
-                f"{mode_name}.{metric}: got {actual_mode[metric]}, "
-                f"expected {expected_mode[metric]}"
+                f"{mode_name}.{metric}: got {actual_mode[metric]}, expected {expected_mode[metric]}"
             )
 
 
@@ -128,11 +127,9 @@ def test_golden_catches_rank_regression() -> None:
 
     # Three perfect-rank items dropped to rank 5: Hit@1 must fall by 3/8 = 0.375.
     assert (expected_hit_at_1 - actual_hit_at_1) >= 0.30, (
-        f"Hit@1 should drop by >=0.30 after rank-flip; "
-        f"got {expected_hit_at_1} -> {actual_hit_at_1}"
+        f"Hit@1 should drop by >=0.30 after rank-flip; got {expected_hit_at_1} -> {actual_hit_at_1}"
     )
     # MRR drops because three 1.0 contributions become 0.2.
     assert (expected_mrr - actual_mrr) >= 0.10, (
-        f"MRR should drop by >=0.10 after rank-flip; "
-        f"got {expected_mrr} -> {actual_mrr}"
+        f"MRR should drop by >=0.10 after rank-flip; got {expected_mrr} -> {actual_mrr}"
     )
