@@ -131,6 +131,16 @@ pub enum Commands {
     },
     /// Watch ~/.claude/projects/**/*.jsonl for new session content (FSEvents, KeepAlive service)
     ClaudeSessionWatch,
+    /// Run the daemon in the foreground (alias for `daemon run`).
+    ///
+    /// BT-09: shipped so `hippo serve` no longer fails with "unrecognized
+    /// subcommand" — bench's shadow_stack used to call this and silently
+    /// crashed.
+    Serve {
+        /// Run in bench mode: skip FSEvents watcher and LaunchAgent guards.
+        #[arg(long)]
+        bench: bool,
+    },
 }
 
 #[derive(Subcommand)]
