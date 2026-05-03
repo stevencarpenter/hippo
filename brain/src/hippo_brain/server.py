@@ -151,10 +151,17 @@ class BrainServer:
         self._paused: bool = False
         self._paused_at_iso: str | None = None
         self._query_inflight: int = 0  # incremented while /ask is executing
+        # True while the enrichment loop body is running an LM-bound batch
+        # (preflight + claim + gather). Used by /control/pause so callers like
+        # hippo-bench can confirm prod is quiescent before claiming the LM slot.
+        self._enrichment_active: bool = False
         # Set whenever a query is in flight; the enrichment loop sleeps on this
         # event so it wakes immediately rather than waiting out the full poll
         # interval before yielding to the LM.
         self._query_arrived = asyncio.Event()
+        # Set by /control/resume so the loop wakes immediately from its paused
+        # sleep instead of waiting out the full poll_interval_secs.
+        self._resume_event = asyncio.Event()
         self._enrichment_task = None
         self._reaper_task = None
         self._vector_db = None
@@ -751,18 +758,34 @@ class BrainServer:
         return JSONResponse(result, status_code=status)
 
     async def control_pause(self, request: Request) -> JSONResponse:
-        """Pause the enrichment loop. Idempotent."""
+        """Pause the enrichment loop. Idempotent.
+
+        in_flight_finished reflects both /ask queries and the enrichment
+        loop body — bench callers need both quiescent before they own the
+        LM Studio slot.
+        """
         if not self._paused:
             self._paused = True
             self._paused_at_iso = _dt.datetime.now(tz=_dt.UTC).isoformat()
+        in_flight_finished = self._query_inflight == 0 and not self._enrichment_active
         return JSONResponse(
-            {"paused_at": self._paused_at_iso, "in_flight_finished": self._query_inflight == 0}
+            {
+                "paused_at": self._paused_at_iso,
+                "in_flight_finished": in_flight_finished,
+                "enrichment_active": self._enrichment_active,
+                "query_inflight": self._query_inflight,
+            }
         )
 
     async def control_resume(self, request: Request) -> JSONResponse:
-        """Resume the enrichment loop. Idempotent."""
+        """Resume the enrichment loop. Idempotent.
+
+        Sets _resume_event so the loop wakes immediately rather than
+        waiting out the full poll_interval_secs sleep.
+        """
         self._paused = False
         self._paused_at_iso = None
+        self._resume_event.set()
         return JSONResponse({"resumed_at": _dt.datetime.now(tz=_dt.UTC).isoformat()})
 
     def _resolve_model_from_preflight(self, loaded: list[str]) -> bool:
@@ -811,7 +834,16 @@ class BrainServer:
             while True:
                 try:
                     if self._paused:
-                        await asyncio.sleep(self.poll_interval_secs)
+                        # Wake immediately when /control/resume sets the event;
+                        # otherwise re-poll _paused after poll_interval_secs.
+                        try:
+                            await asyncio.wait_for(
+                                self._resume_event.wait(),
+                                timeout=self.poll_interval_secs,
+                            )
+                        except TimeoutError:
+                            pass
+                        self._resume_event.clear()
                         continue
                     # Sleep up to poll_interval_secs, waking early if a query
                     # arrives mid-sleep. The event-based wake means we yield
@@ -836,82 +868,86 @@ class BrainServer:
                         )
                         await asyncio.sleep(0.1)
 
-                    decision = await preflight_lm_studio(
-                        self.client, self._preferred_model or None, allow_fallback=True
-                    )
-                    if not decision.proceed:
-                        continue
-
-                    # Sync resolved enrichment_model from preflight result; falls
-                    # back to first chat model when preferred isn't loaded.
-                    if not self._resolve_model_from_preflight(decision.loaded_models):
-                        continue
-
-                    conn = self._get_conn()
+                    self._enrichment_active = True
                     try:
-                        # Claim all work upfront (sequential — avoids SQLite write contention)
-                        shell_chunks = claim_pending_events_by_session(
-                            conn,
-                            self.enrichment_batch_size,
-                            worker_id,
-                            self.session_stale_secs,
-                            max_claim_batch=self.max_claim_batch,
-                            stale_lock_timeout_ms=self.lock_timeout_ms,
+                        decision = await preflight_lm_studio(
+                            self.client, self._preferred_model or None, allow_fallback=True
                         )
-                        try:
-                            claude_batches = claim_pending_claude_segments(
-                                conn,
-                                worker_id,
-                                max_claim_batch=self.max_claim_batch,
-                                stale_lock_timeout_ms=self.lock_timeout_ms,
-                            )
-                        except Exception as e:
-                            logger.debug("no claude segments to process: %s", e)
-                            claude_batches = []
-                        try:
-                            browser_batches = claim_pending_browser_events(
-                                conn,
-                                worker_id,
-                                stale_secs=60,
-                                max_claim_batch=self.max_claim_batch,
-                                stale_lock_timeout_ms=self.lock_timeout_ms,
-                                long_dwell_bypass_ms=self.long_dwell_bypass_ms,
-                            )
-                        except Exception as e:
-                            logger.warning("browser claim error: %s", e, exc_info=True)
-                            browser_batches = []
-                        try:
-                            workflow_run_ids = claim_pending_workflow_runs(
-                                conn,
-                                worker_id,
-                                stale_lock_timeout_ms=self.lock_timeout_ms,
-                                max_claim_batch=self.max_claim_batch,
-                            )
-                        except Exception as e:
-                            logger.warning("workflow claim error: %s", e, exc_info=True)
-                            workflow_run_ids = []
-
-                        if (
-                            not shell_chunks
-                            and not claude_batches
-                            and not browser_batches
-                            and not workflow_run_ids
-                        ):
+                        if not decision.proceed:
                             continue
 
-                        # Process all sources concurrently — each method uses its own
-                        # DB connection for writes so they don't block each other.
-                        # Shell receives the claim conn for read-only browser correlation.
-                        t0 = time.monotonic()
-                        await asyncio.gather(
-                            self._enrich_shell_batches(shell_chunks, conn),
-                            self._enrich_claude_batches(claude_batches),
-                            self._enrich_browser_batches(browser_batches),
-                            self._enrich_workflow_runs(workflow_run_ids),
-                        )
-                        _hist(_loop_duration, (time.monotonic() - t0) * 1000)
+                        # Sync resolved enrichment_model from preflight result; falls
+                        # back to first chat model when preferred isn't loaded.
+                        if not self._resolve_model_from_preflight(decision.loaded_models):
+                            continue
+
+                        conn = self._get_conn()
+                        try:
+                            # Claim all work upfront (sequential — avoids SQLite write contention)
+                            shell_chunks = claim_pending_events_by_session(
+                                conn,
+                                self.enrichment_batch_size,
+                                worker_id,
+                                self.session_stale_secs,
+                                max_claim_batch=self.max_claim_batch,
+                                stale_lock_timeout_ms=self.lock_timeout_ms,
+                            )
+                            try:
+                                claude_batches = claim_pending_claude_segments(
+                                    conn,
+                                    worker_id,
+                                    max_claim_batch=self.max_claim_batch,
+                                    stale_lock_timeout_ms=self.lock_timeout_ms,
+                                )
+                            except Exception as e:
+                                logger.debug("no claude segments to process: %s", e)
+                                claude_batches = []
+                            try:
+                                browser_batches = claim_pending_browser_events(
+                                    conn,
+                                    worker_id,
+                                    stale_secs=60,
+                                    max_claim_batch=self.max_claim_batch,
+                                    stale_lock_timeout_ms=self.lock_timeout_ms,
+                                    long_dwell_bypass_ms=self.long_dwell_bypass_ms,
+                                )
+                            except Exception as e:
+                                logger.warning("browser claim error: %s", e, exc_info=True)
+                                browser_batches = []
+                            try:
+                                workflow_run_ids = claim_pending_workflow_runs(
+                                    conn,
+                                    worker_id,
+                                    stale_lock_timeout_ms=self.lock_timeout_ms,
+                                    max_claim_batch=self.max_claim_batch,
+                                )
+                            except Exception as e:
+                                logger.warning("workflow claim error: %s", e, exc_info=True)
+                                workflow_run_ids = []
+
+                            if (
+                                not shell_chunks
+                                and not claude_batches
+                                and not browser_batches
+                                and not workflow_run_ids
+                            ):
+                                continue
+
+                            # Process all sources concurrently — each method uses its own
+                            # DB connection for writes so they don't block each other.
+                            # Shell receives the claim conn for read-only browser correlation.
+                            t0 = time.monotonic()
+                            await asyncio.gather(
+                                self._enrich_shell_batches(shell_chunks, conn),
+                                self._enrich_claude_batches(claude_batches),
+                                self._enrich_browser_batches(browser_batches),
+                                self._enrich_workflow_runs(workflow_run_ids),
+                            )
+                            _hist(_loop_duration, (time.monotonic() - t0) * 1000)
+                        finally:
+                            conn.close()
                     finally:
-                        conn.close()
+                        self._enrichment_active = False
                 except Exception as e:
                     self.last_error = str(e) or type(e).__name__
                     self.last_error_at_ms = int(time.time() * 1000)

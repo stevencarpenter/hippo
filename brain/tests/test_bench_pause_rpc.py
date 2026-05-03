@@ -36,7 +36,47 @@ def test_pause_returns_200_with_paused_at(tmp_db):
 
     parsed = _dt.datetime.fromisoformat(data["paused_at"])
     assert parsed.tzinfo is not None
+    # in_flight_finished is True only when both query inflight count is 0
+    # AND the enrichment loop is not mid-batch — bench needs both quiescent.
     assert data["in_flight_finished"] is True
+    assert data["enrichment_active"] is False
+    assert data["query_inflight"] == 0
+
+
+def test_pause_in_flight_finished_false_when_enrichment_active(tmp_db):
+    """in_flight_finished must reflect enrichment_active, not just queries."""
+    _, db_path = tmp_db
+    server = BrainServer(
+        db_path=str(db_path),
+        lmstudio_base_url="http://localhost:1234/v1",
+        enrichment_model="test-model",
+        poll_interval_secs=60,
+        enrichment_batch_size=5,
+    )
+    server._enrichment_active = True
+    client = TestClient(Starlette(routes=server.get_routes()))
+
+    data = client.post("/control/pause").json()
+    assert data["enrichment_active"] is True
+    assert data["in_flight_finished"] is False
+
+
+def test_resume_sets_resume_event(tmp_db):
+    """control_resume must set _resume_event so a paused loop wakes immediately."""
+    _, db_path = tmp_db
+    server = BrainServer(
+        db_path=str(db_path),
+        lmstudio_base_url="http://localhost:1234/v1",
+        enrichment_model="test-model",
+        poll_interval_secs=60,
+        enrichment_batch_size=5,
+    )
+    client = TestClient(Starlette(routes=server.get_routes()))
+
+    client.post("/control/pause")
+    assert not server._resume_event.is_set()
+    client.post("/control/resume")
+    assert server._resume_event.is_set()
 
 
 def test_pause_idempotent(tmp_db):
