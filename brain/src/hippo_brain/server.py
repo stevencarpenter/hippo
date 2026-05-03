@@ -329,7 +329,7 @@ class BrainServer:
 
         try:
             limit = int(limit)
-        except TypeError, ValueError:
+        except (TypeError, ValueError):  # fmt: skip
             return JSONResponse({"error": "limit must be an integer"}, status_code=400)
 
         if limit <= 0:
@@ -442,7 +442,7 @@ class BrainServer:
             for r in cursor.fetchall():
                 try:
                     tags = json.loads(r[5]) if r[5] else []
-                except json.JSONDecodeError, TypeError:
+                except (json.JSONDecodeError, TypeError):  # fmt: skip
                     tags = []
                 nodes.append(
                     {
@@ -488,7 +488,7 @@ class BrainServer:
 
             try:
                 tags = json.loads(row[6]) if row[6] else []
-            except json.JSONDecodeError, TypeError:
+            except (json.JSONDecodeError, TypeError):  # fmt: skip
                 tags = []
 
             related_entities = [
@@ -707,7 +707,7 @@ class BrainServer:
         limit = body.get("limit", 10)
         try:
             limit = int(limit)
-        except TypeError, ValueError:
+        except (TypeError, ValueError):  # fmt: skip
             return JSONResponse({"error": "limit must be an integer"}, status_code=400)
         if limit <= 0:
             return JSONResponse({"error": "limit must be greater than 0"}, status_code=400)
@@ -1141,7 +1141,7 @@ class BrainServer:
                             try:
                                 tools = _json.loads(s.get("tool_calls_json", "[]"))
                                 all_tools.extend(f"{t['name']}: {t['summary']}" for t in tools)
-                            except _json.JSONDecodeError, KeyError:
+                            except (_json.JSONDecodeError, KeyError):  # fmt: skip
                                 pass
                         node_dict = {
                             "id": node_id,

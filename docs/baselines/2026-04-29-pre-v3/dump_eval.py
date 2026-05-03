@@ -1,7 +1,8 @@
 """Re-run hippo-eval retrieval-only and dump per-question metrics as JSON."""
 import asyncio, json, sys
 from pathlib import Path
-sys.path.insert(0, "/Users/carpenter/projects/hippo/brain/src")
+_REPO_ROOT = Path(__file__).resolve().parents[3]
+sys.path.insert(0, str(_REPO_ROOT / "brain" / "src"))
 from hippo_brain.evaluation import (
     load_questions, run_benchmark, _corpus_stats,
 )
@@ -10,7 +11,7 @@ from hippo_brain.mcp import _load_config
 from hippo_brain.vector_store import open_conn
 
 cfg = _load_config()
-qs = load_questions("/Users/carpenter/projects/hippo/brain/tests/eval_questions.json")
+qs = load_questions(str(_REPO_ROOT / "brain" / "tests" / "eval_questions.json"))
 conn = open_conn(cfg["db_path"])
 lm = LMStudioClient(base_url=cfg["lmstudio_base_url"])
 

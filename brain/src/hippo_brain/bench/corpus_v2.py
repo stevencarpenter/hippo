@@ -713,7 +713,7 @@ def _sample_with_rows(
             continue
         try:
             wanted_ids[e.source].add(int(raw_id))
-        except ValueError, KeyError:
+        except (ValueError, KeyError):  # fmt: skip
             continue
 
     source_rows: dict[str, list[sqlite3.Row]] = {s: [] for s in _SOURCE_SPECS}

@@ -375,7 +375,7 @@
             "type": "loki",
             "uid": "loki"
           },
-          "expr": "{service_name=~\"hippo.*\"} |~ \"(?i)error|failed|panic\"",
+          "expr": "{service_name=~\"hippo.*\",service_namespace=\"\"} |~ \"(?i)error|failed|panic\"",
           "queryType": "range"
         }
       ],

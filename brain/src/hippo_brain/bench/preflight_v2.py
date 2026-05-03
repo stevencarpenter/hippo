@@ -45,7 +45,12 @@ def check_prod_brain_reachable(brain_url: str) -> CheckResult:
 
 
 def check_prod_brain_pauseable(brain_url: str, skip: bool) -> CheckResult:
-    """POST /control/pause on the prod brain. skip=True returns pass/skipped."""
+    """Probe /health to verify the brain exposes the pause capability.
+
+    This is intentionally read-only — the actual POST /control/pause is sent
+    by the orchestrator after all preflight checks pass.  Sending a real pause
+    here would leave prod stuck if a later check (corpus, disk) aborts the run.
+    """
     if skip:
         return CheckResult(
             name="prod_brain_pauseable",
@@ -53,25 +58,32 @@ def check_prod_brain_pauseable(brain_url: str, skip: bool) -> CheckResult:
             detail="skipped (--skip-prod-pause)",
         )
     try:
-        resp = httpx.post(f"{brain_url.rstrip('/')}/control/pause", timeout=10.0)
+        resp = httpx.get(f"{brain_url.rstrip('/')}/health", timeout=5.0)
     except httpx.ConnectError:
         return CheckResult(
             name="prod_brain_pauseable",
             status="warn",
-            detail="connection refused — prod brain not running; pause skipped",
+            detail="connection refused — prod brain not running; pause support unknown",
         )
     except httpx.HTTPError as e:
         return CheckResult(name="prod_brain_pauseable", status="fail", detail=f"HTTP error: {e}")
     if resp.status_code == 200:
         data = resp.json()
-        paused_at = data.get("paused_at", "unknown")
+        if "paused" in data:
+            return CheckResult(
+                name="prod_brain_pauseable",
+                status="pass",
+                detail="pause endpoint available (health reports paused field)",
+            )
         return CheckResult(
-            name="prod_brain_pauseable", status="pass", detail=f"paused_at={paused_at}"
+            name="prod_brain_pauseable",
+            status="warn",
+            detail="health response missing 'paused' field — brain may not support pause",
         )
     return CheckResult(
         name="prod_brain_pauseable",
         status="fail",
-        detail=f"pause failed: HTTP {resp.status_code}",
+        detail=f"health check failed: HTTP {resp.status_code}",
     )
 
 

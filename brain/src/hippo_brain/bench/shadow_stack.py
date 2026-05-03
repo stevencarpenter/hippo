@@ -2,8 +2,11 @@
 
 Spawns hippo-daemon + hippo-brain in their own process group with:
   XDG_DATA_HOME=<run_tree>
-  XDG_CONFIG_HOME=<run_tree>/config
+  HOME=<run_tree>  (so both Rust dirs::home_dir and Python Path.home resolve to run_tree)
   OTEL_RESOURCE_ATTRIBUTES=service.namespace=hippo-bench,...
+
+A minimal config.toml is written to <run_tree>/.config/hippo/config.toml before
+spawning so the brain uses the shadow port and data directory.
 
 The caller must copy corpus-v2.sqlite to <run_tree>/hippo.db before calling
 spawn_shadow_stack().
@@ -41,8 +44,12 @@ def _build_env(
     otel_enabled: bool,
 ) -> dict[str, str]:
     env = os.environ.copy()
+    env["HOME"] = str(run_tree)
     env["XDG_DATA_HOME"] = str(run_tree)
-    env["XDG_CONFIG_HOME"] = str(run_tree / "config")
+    # XDG_CONFIG_HOME intentionally not overridden — HOME override means both
+    # Rust (dirs::home_dir) and Python (Path.home) resolve config to
+    # <run_tree>/.config/hippo/config.toml without a separate env var.
+    env.pop("XDG_CONFIG_HOME", None)
     env["OTEL_RESOURCE_ATTRIBUTES"] = (
         f"service.namespace=hippo-bench,"
         f"bench.run_id={run_id},"
@@ -55,6 +62,19 @@ def _build_env(
     else:
         env.pop("HIPPO_OTEL_ENABLED", None)
     return env
+
+
+def _write_shadow_config(run_tree: pathlib.Path, brain_port: int) -> None:
+    """Write a minimal config.toml into the shadow HOME so both the daemon and
+    brain read from it.  The storage.data_dir points at run_tree so the daemon
+    opens run_tree/hippo.db — the same file the coordinator copied corpus into."""
+    config_dir = run_tree / ".config" / "hippo"
+    config_dir.mkdir(parents=True, exist_ok=True)
+    config_path = config_dir / "config.toml"
+    config_path.write_text(
+        f'[storage]\ndata_dir = "{run_tree}"\n\n[brain]\nport = {brain_port}\n',
+        encoding="utf-8",
+    )
 
 
 def spawn_shadow_stack(
@@ -70,7 +90,8 @@ def spawn_shadow_stack(
     run_tree = pathlib.Path(run_tree)
     logs_dir = run_tree / "logs"
     logs_dir.mkdir(parents=True, exist_ok=True)
-    (run_tree / "config").mkdir(parents=True, exist_ok=True)
+
+    _write_shadow_config(run_tree, brain_port)
 
     env = _build_env(
         run_tree=run_tree,
@@ -84,32 +105,35 @@ def spawn_shadow_stack(
     hippo_bin = shutil.which("hippo") or "hippo"
     uv_bin = shutil.which("uv") or "uv"
 
-    daemon_log = open(logs_dir / "daemon.log", "ab")
-    brain_log = open(logs_dir / "brain.log", "ab")
+    # Daemon gets its own session (new process group).
+    # The brain joins the daemon's process group so a single os.killpg tears
+    # both down without orphaning either process.
+    with open(logs_dir / "daemon.log", "ab") as daemon_log:
+        daemon_proc = subprocess.Popen(
+            [hippo_bin, "serve"],
+            env=env,
+            stdout=subprocess.DEVNULL,
+            stderr=daemon_log,
+            start_new_session=True,
+        )
+    # With start_new_session=True the child calls setsid(), making its PID the
+    # process-group leader.  pgid == pid is guaranteed.
+    daemon_pgid = daemon_proc.pid
 
-    daemon_proc = subprocess.Popen(
-        [hippo_bin, "serve"],
-        env=env,
-        stdout=subprocess.DEVNULL,
-        stderr=daemon_log,
-        start_new_session=True,
-    )
-
-    brain_proc = subprocess.Popen(
-        [uv_bin, "run", "--project", "brain", "hippo-brain", "--port", str(brain_port)],
-        env=env,
-        stdout=subprocess.DEVNULL,
-        stderr=brain_log,
-        start_new_session=True,
-    )
-
-    process_group_id = os.getpgid(daemon_proc.pid)
+    with open(logs_dir / "brain.log", "ab") as brain_log:
+        brain_proc = subprocess.Popen(
+            [uv_bin, "run", "--project", "brain", "hippo-brain", "serve"],
+            env=env,
+            stdout=subprocess.DEVNULL,
+            stderr=brain_log,
+            preexec_fn=lambda: os.setpgid(0, daemon_pgid),
+        )
 
     return ShadowStack(
         daemon_proc=daemon_proc,
         brain_proc=brain_proc,
         run_tree=run_tree,
-        process_group_id=process_group_id,
+        process_group_id=daemon_pgid,
         brain_base_url=f"http://127.0.0.1:{brain_port}",
     )
 

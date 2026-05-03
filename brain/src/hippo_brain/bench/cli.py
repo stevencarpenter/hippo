@@ -177,7 +177,7 @@ def _cmd_corpus_add_adversarial(args: argparse.Namespace) -> int:
         try:
             _, raw_id_str = event_id.split("-", 1)
             raw_id = int(raw_id_str)
-        except ValueError, IndexError:
+        except (ValueError, IndexError):  # fmt: skip
             print(f"error: could not parse numeric ID from event_id={event_id!r}")
             return 1
 

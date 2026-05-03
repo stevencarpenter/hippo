@@ -12,7 +12,7 @@ Complete these checks before starting the loop. Each one matters.
 ### 1. Working tree is clean and on the right branch
 
 ```bash
-cd /Users/carpenter/projects/hippo/.claude/worktrees/youthful-kirch-7d3b27
+cd $REPO_ROOT
 git status          # must show "nothing to commit, working tree clean"
 git branch          # must show "* claude/youthful-kirch-7d3b27"
 ```
@@ -63,7 +63,7 @@ df -h ~/.local/share
 ```bash
 tmux new-session -s ralph-bench-v2
 # inside the session:
-cd /Users/carpenter/projects/hippo/.claude/worktrees/youthful-kirch-7d3b27
+cd $REPO_ROOT
 ```
 
 Running inside tmux means you can detach (`Ctrl+b d`) and reattach later without killing the loop.
@@ -75,7 +75,7 @@ Running inside tmux means you can detach (`Ctrl+b d`) and reattach later without
 ### Standard (tmux-attached)
 
 ```bash
-cd /Users/carpenter/projects/hippo/.claude/worktrees/youthful-kirch-7d3b27
+cd $REPO_ROOT
 
 RALPH_MAX_ITERS=60 \
 RALPH_MAX_WALL_HOURS=8 \
@@ -89,7 +89,7 @@ bash scripts/ralph-loop-bench-v2.sh 2>&1 | tee .ralph/logs/ralph-$(date +%Y%m%dT
 
 ```bash
 # Inside tmux:
-cd /Users/carpenter/projects/hippo/.claude/worktrees/youthful-kirch-7d3b27
+cd $REPO_ROOT
 
 RALPH_MAX_ITERS=60 \
 RALPH_MAX_WALL_HOURS=8 \
@@ -255,7 +255,7 @@ This allows dependent tasks to proceed if they have no other blockers. Use with 
 Simply re-run the script from the same worktree directory:
 
 ```bash
-cd /Users/carpenter/projects/hippo/.claude/worktrees/youthful-kirch-7d3b27
+cd $REPO_ROOT
 bash scripts/ralph-loop-bench-v2.sh 2>&1 | tee -a .ralph/logs/resumed-$(date +%Y%m%dT%H%M%S).log
 ```
 

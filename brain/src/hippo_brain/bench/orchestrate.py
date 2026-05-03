@@ -38,7 +38,7 @@ def _cpu_brand() -> str:
         )
         if out.returncode == 0 and out.stdout.strip():
             return out.stdout.strip()
-    except OSError, subprocess.SubprocessError:
+    except (OSError, subprocess.SubprocessError):  # fmt: skip
         pass
     return platform.processor() or "unknown"
 
@@ -49,7 +49,7 @@ def _lms_version() -> str | None:
         out = subprocess.run(
             ["lms", "--version"], capture_output=True, text=True, check=False, timeout=5
         )
-    except OSError, subprocess.SubprocessError:
+    except (OSError, subprocess.SubprocessError):  # fmt: skip
         return None
     if out.returncode != 0:
         return None
