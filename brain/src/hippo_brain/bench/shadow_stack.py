@@ -114,9 +114,12 @@ def spawn_shadow_stack(
     # crashed on spawn, brain still came up against the pre-copied corpus DB
     # so JSONL output kept appearing while bench had no daemon-side
     # telemetry. Caught by panel review (BT-02).
+    # BT-11: --bench tells the daemon to log bench mode and assert sandbox
+    # isolation. Use `serve` (the BT-09 alias) instead of `daemon run` so the
+    # flag has somewhere to land — `daemon run` doesn't accept --bench.
     with open(logs_dir / "daemon.log", "ab") as daemon_log:
         daemon_proc = subprocess.Popen(
-            [hippo_bin, "daemon", "run"],
+            [hippo_bin, "serve", "--bench"],
             env=env,
             stdout=subprocess.DEVNULL,
             stderr=daemon_log,
