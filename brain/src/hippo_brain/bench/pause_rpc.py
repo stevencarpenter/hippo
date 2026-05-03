@@ -22,11 +22,17 @@ PAUSE_LOCKFILE: Path = Path("~/.local/share/hippo-bench/pause.lock").expanduser(
 
 
 def _write_lockfile_atomic(brain_url: str) -> None:
-    """Atomic write: O_CREAT|O_EXCL on a sibling tmp file, then rename.
+    """Atomic write via tmp-file + `os.replace`.
 
-    The exclusive create avoids racing with another bench process that
-    started concurrently. If the lockfile already exists, we update it
-    (overwrite) since this is the same process taking ownership again.
+    `os.replace` is POSIX-atomic — the lockfile either exists with the old
+    content or with the new content, never with a partial payload. That's
+    enough for the single-host design (no concurrent-bench-process race to
+    defend against; see `feedback_single_host` memory + tracking-doc "What
+    We Are Not Doing").
+
+    Post-review C-4: an earlier docstring claimed `O_EXCL` semantics that the
+    code never implemented (it uses `O_TRUNC` so the same process can re-pause
+    after a transient failure). Documented honestly now.
     """
     PAUSE_LOCKFILE.parent.mkdir(parents=True, exist_ok=True)
     payload = json.dumps(
@@ -37,8 +43,6 @@ def _write_lockfile_atomic(brain_url: str) -> None:
         }
     )
     tmp = PAUSE_LOCKFILE.with_suffix(".lock.tmp")
-    # Allow overwrite on retry (re-pause after a transient failure) — exclusive
-    # create is for the tmp file; the rename is atomic regardless of target.
     fd = os.open(str(tmp), os.O_CREAT | os.O_TRUNC | os.O_WRONLY, 0o600)
     try:
         os.write(fd, payload.encode("utf-8"))
@@ -106,12 +110,32 @@ class PauseRpcClient:
         Writes the pause lockfile BEFORE the HTTP call. If the bench is
         SIGKILL'd between this point and resume(), the next bench start
         finds the lockfile and recovers (BT-06).
+
+        Post-review CC-1: if the HTTP call fails, the lockfile would
+        otherwise remain — and the watchdog would suppress I-2/I-4/I-8
+        invariants up to the 30-min C-1 staleness window even though prod
+        was never actually paused. Unlink on RPC failure so the lockfile
+        only exists when prod truly is paused.
         """
         if self.skip:
             return None
         _write_lockfile_atomic(self.base_url)
-        r = httpx.post(f"{self.base_url}/control/pause", timeout=10.0)
-        r.raise_for_status()
+        try:
+            r = httpx.post(f"{self.base_url}/control/pause", timeout=10.0)
+            r.raise_for_status()
+        except Exception:
+            # Roll back the lockfile so a transient pause failure can't mute
+            # real watchdog alarms during the suppression window.
+            try:
+                PAUSE_LOCKFILE.unlink(missing_ok=True)
+            except Exception as unlink_err:
+                logger.warning(
+                    "BT-06/CC-1: pause RPC failed AND lockfile unlink failed: %s. "
+                    "Watchdog may suppress I-2/I-4/I-8 until the next bench's "
+                    "recover_stale_pause runs (or the C-1 30-min mtime gate elapses).",
+                    unlink_err,
+                )
+            raise
         return r.json()
 
     def resume(self) -> dict | None:

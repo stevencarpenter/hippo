@@ -119,3 +119,49 @@ def test_skip_flag_does_not_write_lockfile(isolated_lockfile: Path) -> None:
     rpc = pause_rpc.PauseRpcClient(base_url="http://localhost:8000", skip=True)
     rpc.pause()
     assert not isolated_lockfile.exists()
+
+
+# ----------------------------------------------------------------------------
+# Post-review CC-1: pause RPC failure must NOT leave a stale lockfile behind
+# (otherwise watchdog suppresses I-2/I-4/I-8 even though prod was never paused)
+# ----------------------------------------------------------------------------
+
+
+def test_lockfile_unlinked_when_pause_http_call_raises(isolated_lockfile: Path) -> None:
+    """If httpx.post raises, pause() must roll back the lockfile and re-raise.
+
+    Without this, a transient pause RPC error (network blip, brain restart
+    between probe and pause) would leave the lockfile in place; the watchdog
+    would then suppress I-2/I-4/I-8 alarms for up to the C-1 staleness window
+    even though prod was never actually paused.
+    """
+    import httpx
+
+    rpc = pause_rpc.PauseRpcClient(base_url="http://localhost:8000")
+
+    with patch.object(pause_rpc.httpx, "post") as mock_post:
+        mock_post.side_effect = httpx.ConnectError("synthetic: brain unreachable")
+        with pytest.raises(httpx.ConnectError, match="synthetic"):
+            rpc.pause()
+
+    assert not isolated_lockfile.exists(), (
+        "CC-1: pause() must unlink the lockfile if the HTTP POST raises — "
+        "leaving it behind mutes the watchdog for the suppression window"
+    )
+
+
+def test_lockfile_unlinked_when_pause_returns_5xx(isolated_lockfile: Path) -> None:
+    """raise_for_status() raises on 5xx; same rollback contract applies."""
+    import httpx
+
+    rpc = pause_rpc.PauseRpcClient(base_url="http://localhost:8000")
+
+    def _raise_5xx() -> None:
+        raise httpx.HTTPStatusError("synthetic 503", request=MagicMock(), response=MagicMock())
+
+    with patch.object(pause_rpc.httpx, "post") as mock_post:
+        mock_post.return_value = MagicMock(raise_for_status=_raise_5xx)
+        with pytest.raises(httpx.HTTPStatusError, match="synthetic 503"):
+            rpc.pause()
+
+    assert not isolated_lockfile.exists()
