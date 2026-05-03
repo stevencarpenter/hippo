@@ -769,6 +769,42 @@ pub async fn run_with_mode(config: HippoConfig, bench_mode: bool) -> Result<()> 
                 gauge.observe(count_dir_entries(&fallback_dir_gauge), &[]);
             })
             .build();
+
+        // BT-14: per-queue pending depth, tagged with queue_kind. Gives bench
+        // a "drain rate over time" view per source — used to distinguish a
+        // model that drains evenly vs. one that backs up only browser_events
+        // (e.g., due to longer prompt sizes).
+        let queue_db_path = state.config.db_path();
+        let _ = meter
+            .u64_observable_gauge("hippo.bench.queue_depth")
+            .with_description("Pending+processing rows in each enrichment queue")
+            .with_callback(move |gauge| {
+                let queues: &[(&str, &str)] = &[
+                    ("shell", "enrichment_queue"),
+                    ("claude", "claude_enrichment_queue"),
+                    ("browser", "browser_enrichment_queue"),
+                    ("workflow", "workflow_enrichment_queue"),
+                ];
+                let conn = match rusqlite::Connection::open_with_flags(
+                    &queue_db_path,
+                    rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+                ) {
+                    Ok(c) => c,
+                    Err(_) => return,
+                };
+                for (kind, table) in queues {
+                    let sql = format!(
+                        "SELECT COUNT(*) FROM {table} WHERE status IN ('pending', 'processing')"
+                    );
+                    if let Ok(n) = conn.query_row(&sql, [], |r| r.get::<_, i64>(0)) {
+                        gauge.observe(
+                            n.max(0) as u64,
+                            &[opentelemetry::KeyValue::new("queue_kind", *kind)],
+                        );
+                    }
+                }
+            })
+            .build();
     }
 
     // Spawn flush task
