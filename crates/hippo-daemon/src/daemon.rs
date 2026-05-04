@@ -724,6 +724,19 @@ pub async fn run_with_mode(config: HippoConfig, bench_mode: bool) -> Result<()> 
     let write_conn = storage::open_db(&db_path)?;
     let read_conn = storage::open_db(&db_path)?;
 
+    // Bench-mode: backfill any missing tables from schema.sql. The bench's
+    // corpus init writes a hand-curated subset of input tables and sets
+    // user_version=EXPECTED_VERSION, which causes open_db to skip the
+    // fresh-DB SCHEMA path. The brain expects the FULL schema (knowledge_nodes,
+    // entities, knowledge_node_*, workflow_annotations, lessons, …) when
+    // writing enrichment results — without this backfill, every brain write
+    // raises `OperationalError: no such table`. ensure_schema is idempotent
+    // (CREATE … IF NOT EXISTS throughout) so it's safe to apply against a
+    // partially-populated bench DB. Production runs do not enter this branch.
+    if bench_mode {
+        storage::ensure_schema(&write_conn)?;
+    }
+
     // Recover fallback files
     let mut session_map = HashMap::new();
     let fallback_dir = config.fallback_dir();

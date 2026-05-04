@@ -659,6 +659,28 @@ pub fn open_db(path: &Path) -> Result<Connection> {
     Ok(conn)
 }
 
+/// Idempotently apply the full `schema.sql` to an already-open connection.
+/// Every statement uses `CREATE … IF NOT EXISTS`, so this is a no-op for
+/// objects that already exist.
+///
+/// `open_db` only applies `SCHEMA` when `user_version == 0` (fresh DB),
+/// trusting that any DB with `user_version > 0` is the product of the
+/// migration ladder and thus has every table. The bench's corpus-init in
+/// Python writes a hand-curated subset of tables and then sets
+/// `PRAGMA user_version = EXPECTED_VERSION`, which violates that assumption:
+/// the brain expects the full prod schema (knowledge_nodes, entities,
+/// knowledge_node_*, workflow_annotations, lessons, …) when writing
+/// enrichment results, but the bench DB only has the input tables.
+///
+/// This function lets bench-mode fill the gap without touching prod's
+/// migration semantics. Operator runs should never call it — they go
+/// through `open_db` whose v=0 / migration paths are what guarantees
+/// schema integrity in production.
+pub fn ensure_schema(conn: &Connection) -> Result<()> {
+    conn.execute_batch(SCHEMA)?;
+    Ok(())
+}
+
 pub fn upsert_session(
     conn: &Connection,
     session_uuid: &str,
@@ -2854,6 +2876,142 @@ mod tests {
                 col_names
             );
         }
+    }
+
+    /// REGRESSION (BT-29 schema gap, 2026-05-04): the bench's corpus init
+    /// writes a column-compatible subset of input tables (sessions, events,
+    /// env_snapshots, …) and stamps `PRAGMA user_version = EXPECTED_VERSION`.
+    /// open_db, seeing v=latest, skips the fresh-DB SCHEMA path and never
+    /// creates the OUTPUT tables the brain writes during enrichment
+    /// (knowledge_nodes, entities, knowledge_node_*, workflow_annotations,
+    /// lessons, …). `ensure_schema` must be safe to apply against this
+    /// state — backfilling the missing tables and indexes without touching
+    /// existing rows. The partial seed below uses prod-compatible columns
+    /// so schema.sql's indexes (e.g. idx_events_envelope_id) succeed.
+    #[test]
+    fn test_ensure_schema_backfills_missing_tables_at_expected_version() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("partial.db");
+        let conn = Connection::open(&db).unwrap();
+        conn.execute_batch(
+            "PRAGMA journal_mode=WAL;
+             PRAGMA foreign_keys=ON;
+             CREATE TABLE sessions (
+                 id INTEGER PRIMARY KEY,
+                 start_time INTEGER NOT NULL,
+                 end_time INTEGER,
+                 terminal TEXT,
+                 shell TEXT NOT NULL,
+                 hostname TEXT NOT NULL,
+                 username TEXT NOT NULL,
+                 summary TEXT,
+                 created_at INTEGER NOT NULL DEFAULT 0
+             );
+             CREATE TABLE env_snapshots (
+                 id INTEGER PRIMARY KEY,
+                 content_hash TEXT NOT NULL UNIQUE,
+                 env_json TEXT NOT NULL,
+                 created_at INTEGER NOT NULL DEFAULT 0
+             );
+             CREATE TABLE events (
+                 id INTEGER PRIMARY KEY,
+                 session_id INTEGER NOT NULL REFERENCES sessions(id),
+                 timestamp INTEGER NOT NULL,
+                 command TEXT NOT NULL,
+                 stdout TEXT,
+                 stderr TEXT,
+                 stdout_truncated INTEGER DEFAULT 0,
+                 stderr_truncated INTEGER DEFAULT 0,
+                 exit_code INTEGER,
+                 duration_ms INTEGER NOT NULL,
+                 cwd TEXT NOT NULL,
+                 hostname TEXT NOT NULL,
+                 shell TEXT NOT NULL,
+                 git_repo TEXT,
+                 git_branch TEXT,
+                 git_commit TEXT,
+                 git_dirty INTEGER,
+                 env_snapshot_id INTEGER REFERENCES env_snapshots(id),
+                 envelope_id TEXT,
+                 source_kind TEXT NOT NULL DEFAULT 'shell',
+                 tool_name TEXT,
+                 enriched INTEGER NOT NULL DEFAULT 0,
+                 redaction_count INTEGER NOT NULL DEFAULT 0,
+                 archived_at INTEGER,
+                 probe_tag TEXT,
+                 created_at INTEGER NOT NULL DEFAULT 0
+             );
+             INSERT INTO sessions (id, start_time, shell, hostname, username)
+                 VALUES (1, 1000, 'zsh', 'h', 'u');
+             INSERT INTO events
+                 (id, session_id, timestamp, command, duration_ms, cwd, hostname, shell)
+                 VALUES (1, 1, 2000, 'echo hi', 5, '/tmp', 'h', 'zsh');",
+        )
+        .unwrap();
+        // Stamp at latest, mirroring corpus_v2.write_corpus_v2_sqlite.
+        conn.execute_batch(&format!("PRAGMA user_version = {};", EXPECTED_VERSION))
+            .unwrap();
+
+        // open_db must NOT bail and must NOT clobber existing rows.
+        drop(conn);
+        let conn = open_db(&db).unwrap();
+        let v: i64 = conn
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(v, EXPECTED_VERSION);
+
+        // Pre-condition: knowledge_nodes is missing (hand-curated subset).
+        let kn_exists: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='knowledge_nodes')",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(
+            !kn_exists,
+            "test setup: knowledge_nodes should be absent before ensure_schema"
+        );
+
+        // Apply ensure_schema (the bench-mode backfill).
+        ensure_schema(&conn).unwrap();
+
+        // Post-condition: every output table the brain writes to now exists.
+        for table in [
+            "knowledge_nodes",
+            "entities",
+            "knowledge_node_events",
+            "knowledge_node_claude_sessions",
+            "knowledge_node_workflow_runs",
+            "workflow_annotations",
+            "lessons",
+        ] {
+            let exists: bool = conn
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1)",
+                    [table],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert!(
+                exists,
+                "ensure_schema should have created table '{}'",
+                table
+            );
+        }
+
+        // Pre-existing rows must be intact (CREATE … IF NOT EXISTS preserves data).
+        let event_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM events", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(event_count, 1, "ensure_schema must not touch existing rows");
+
+        // Idempotent: second application is a no-op.
+        ensure_schema(&conn).unwrap();
+        let event_count_after: i64 = conn
+            .query_row("SELECT COUNT(*) FROM events", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(event_count_after, 1);
     }
 }
 

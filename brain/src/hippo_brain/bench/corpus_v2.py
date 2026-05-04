@@ -235,17 +235,35 @@ _SOURCE_SPECS: dict[str, _SourceSpec] = {
 }
 
 
-# Shadow DB schema. Mirrors the subset of crates/hippo-core/src/schema.sql
-# that the brain enrichment touches. PRAGMA user_version is set separately
-# from EXPECTED_SCHEMA_VERSION at write time. Keep in sync when the live
-# schema changes the columns of these tables.
+# Shadow DB schema for the bench's INPUT tables. Column-for-column compatible
+# with `crates/hippo-core/src/schema.sql` so the daemon's bench-mode
+# `ensure_schema` pass (which runs schema.sql idempotently to create the
+# OUTPUT tables — knowledge_nodes, entities, knowledge_node_*, etc.) can
+# also create the prod indexes on these input tables without hitting
+# "no such column" errors.
+#
+# Output tables (knowledge_nodes, entities, workflow_annotations, lessons, …)
+# are intentionally NOT created here — the daemon owns them via ensure_schema.
+# Adding new prod columns? Keep this constant in sync with schema.sql so the
+# bench DB's table shapes don't drift.
 _SHADOW_SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS sessions (
     id INTEGER PRIMARY KEY,
-    start_time INTEGER NOT NULL DEFAULT 0,
-    shell TEXT NOT NULL DEFAULT '',
-    hostname TEXT NOT NULL DEFAULT '',
-    username TEXT NOT NULL DEFAULT ''
+    start_time INTEGER NOT NULL,
+    end_time INTEGER,
+    terminal TEXT,
+    shell TEXT NOT NULL,
+    hostname TEXT NOT NULL,
+    username TEXT NOT NULL,
+    summary TEXT,
+    created_at INTEGER NOT NULL DEFAULT (unixepoch('now', 'subsec') * 1000)
+);
+
+CREATE TABLE IF NOT EXISTS env_snapshots (
+    id INTEGER PRIMARY KEY,
+    content_hash TEXT NOT NULL UNIQUE,
+    env_json TEXT NOT NULL,
+    created_at INTEGER NOT NULL DEFAULT (unixepoch('now', 'subsec') * 1000)
 );
 
 CREATE TABLE IF NOT EXISTS events (
@@ -255,6 +273,8 @@ CREATE TABLE IF NOT EXISTS events (
     command TEXT NOT NULL,
     stdout TEXT,
     stderr TEXT,
+    stdout_truncated INTEGER DEFAULT 0,
+    stderr_truncated INTEGER DEFAULT 0,
     exit_code INTEGER,
     duration_ms INTEGER NOT NULL,
     cwd TEXT NOT NULL,
@@ -264,12 +284,15 @@ CREATE TABLE IF NOT EXISTS events (
     git_branch TEXT,
     git_commit TEXT,
     git_dirty INTEGER,
+    env_snapshot_id INTEGER REFERENCES env_snapshots(id),
+    envelope_id TEXT,
     source_kind TEXT NOT NULL DEFAULT 'shell',
     tool_name TEXT,
     enriched INTEGER NOT NULL DEFAULT 0,
     redaction_count INTEGER NOT NULL DEFAULT 0,
+    archived_at INTEGER,
     probe_tag TEXT,
-    created_at INTEGER NOT NULL DEFAULT 0
+    created_at INTEGER NOT NULL DEFAULT (unixepoch('now', 'subsec') * 1000)
 );
 
 CREATE TABLE IF NOT EXISTS enrichment_queue (
@@ -283,8 +306,8 @@ CREATE TABLE IF NOT EXISTS enrichment_queue (
     error_message TEXT,
     locked_at INTEGER,
     locked_by TEXT,
-    created_at INTEGER NOT NULL DEFAULT 0,
-    updated_at INTEGER NOT NULL DEFAULT 0
+    created_at INTEGER NOT NULL DEFAULT (unixepoch('now', 'subsec') * 1000),
+    updated_at INTEGER NOT NULL DEFAULT (unixepoch('now', 'subsec') * 1000)
 );
 
 CREATE TABLE IF NOT EXISTS claude_sessions (
@@ -321,8 +344,8 @@ CREATE TABLE IF NOT EXISTS claude_enrichment_queue (
     error_message TEXT,
     locked_at INTEGER,
     locked_by TEXT,
-    created_at INTEGER NOT NULL DEFAULT 0,
-    updated_at INTEGER NOT NULL DEFAULT 0
+    created_at INTEGER NOT NULL DEFAULT (unixepoch('now', 'subsec') * 1000),
+    updated_at INTEGER NOT NULL DEFAULT (unixepoch('now', 'subsec') * 1000)
 );
 
 CREATE TABLE IF NOT EXISTS browser_events (
@@ -337,8 +360,10 @@ CREATE TABLE IF NOT EXISTS browser_events (
     search_query TEXT,
     referrer TEXT,
     content_hash TEXT,
+    envelope_id TEXT,
     enriched INTEGER NOT NULL DEFAULT 0,
-    probe_tag TEXT
+    probe_tag TEXT,
+    created_at INTEGER NOT NULL DEFAULT (unixepoch('now', 'subsec') * 1000)
 );
 
 CREATE TABLE IF NOT EXISTS browser_enrichment_queue (
@@ -352,8 +377,8 @@ CREATE TABLE IF NOT EXISTS browser_enrichment_queue (
     error_message TEXT,
     locked_at INTEGER,
     locked_by TEXT,
-    created_at INTEGER NOT NULL DEFAULT 0,
-    updated_at INTEGER NOT NULL DEFAULT 0
+    created_at INTEGER NOT NULL DEFAULT (unixepoch('now', 'subsec') * 1000),
+    updated_at INTEGER NOT NULL DEFAULT (unixepoch('now', 'subsec') * 1000)
 );
 
 CREATE TABLE IF NOT EXISTS workflow_runs (
@@ -384,8 +409,14 @@ CREATE TABLE IF NOT EXISTS workflow_enrichment_queue (
     error_message TEXT,
     locked_at INTEGER,
     locked_by TEXT,
-    enqueued_at INTEGER NOT NULL DEFAULT 0,
-    updated_at INTEGER NOT NULL DEFAULT 0
+    -- Prod schema declares these NOT NULL with no default (the daemon sets
+    -- them explicitly on every insert). The bench's seeded INSERT only
+    -- supplies (run_id, status), so we add a default for the bench's
+    -- convenience. CREATE TABLE IF NOT EXISTS is a no-op for an existing
+    -- table, so ensure_schema in bench mode does NOT downgrade the bench's
+    -- relaxed defaults — it sees the table already exists and skips.
+    enqueued_at INTEGER NOT NULL DEFAULT (unixepoch('now', 'subsec') * 1000),
+    updated_at INTEGER NOT NULL DEFAULT (unixepoch('now', 'subsec') * 1000)
 );
 
 CREATE TABLE IF NOT EXISTS corpus_meta (
