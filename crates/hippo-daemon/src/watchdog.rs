@@ -198,7 +198,15 @@ pub fn run(config: &HippoConfig) -> Result<()> {
             rusqlite::params![&v.invariant_id, now_ms, &details_json],
         );
         if let Err(e) = insert_result {
-            if is_sqlite_busy(&e) {
+            if crate::is_sqlite_busy(&e) {
+                // BT-15: track contention for bench's "is this model causing
+                // write pressure?" diagnostic. Increment via the shared helper
+                // so post-review I-3 keeps every busy-count site's labelling
+                // consistent.
+                #[cfg(feature = "otel")]
+                {
+                    crate::metrics::record_db_busy(&e, "watchdog_alarm_insert");
+                }
                 std::thread::sleep(std::time::Duration::from_millis(100));
                 if let Err(retry_err) = conn.execute(
                     "INSERT INTO capture_alarms (invariant_id, raised_at, details_json)
@@ -364,17 +372,62 @@ pub fn read_source_health(conn: &Connection) -> Result<Vec<SourceHealthRow>> {
 // Invariant evaluation
 // ---------------------------------------------------------------------------
 
+/// Post-review C-1: a SIGKILL'd bench leaves the lockfile behind; without an
+/// mtime gate the watchdog would silently suppress I-2/I-4/I-8 indefinitely
+/// until the next bench start runs `recover_stale_pause`. 30 min is comfortably
+/// longer than any realistic drain (worst-case observed ~40 min on cold corpus
+/// with v0.16) but bounded enough that a crashed bench doesn't blind the
+/// watchdog for days.
+const PAUSE_LOCKFILE_MAX_AGE: std::time::Duration = std::time::Duration::from_secs(30 * 60);
+
+/// BT-16: Returns true if a hippo-bench pause window is currently active.
+///
+/// Reuses the BT-06 pause lockfile rather than introducing a new SQLite
+/// migration: the lockfile already encodes the bench's "I have paused prod
+/// and bench is running" state. A lockfile is "active" only if it exists AND
+/// its mtime is within `PAUSE_LOCKFILE_MAX_AGE` — see that constant for the
+/// rationale.
+pub fn bench_pause_window_active() -> bool {
+    let path = match dirs::home_dir() {
+        Some(h) => h.join(".local/share/hippo-bench/pause.lock"),
+        None => return false,
+    };
+    is_pause_lockfile_active(&path, std::time::SystemTime::now())
+}
+
+fn is_pause_lockfile_active(path: &std::path::Path, now: std::time::SystemTime) -> bool {
+    let modified = match std::fs::metadata(path).and_then(|m| m.modified()) {
+        Ok(t) => t,
+        Err(_) => return false,
+    };
+    match now.duration_since(modified) {
+        Ok(age) => age < PAUSE_LOCKFILE_MAX_AGE,
+        // mtime in the future ⇒ clock skew. Treat as active to avoid
+        // spurious alarms during a real bench run.
+        Err(_) => true,
+    }
+}
+
 /// Evaluate I-1..I-10 against the in-memory `source_health` rows.
 ///
 /// Returns one `InvariantViolation` per triggered invariant.
 /// Invariants that require filesystem access (I-2 proxy, I-9) or are
 /// architectural (I-5, I-10) or doctor-only (I-7) either return a proxy
 /// violation or `None`; their full implementations land in later tasks.
+///
+/// BT-16: when a hippo-bench pause window is active (per
+/// `bench_pause_window_active()`), I-2, I-4, and I-8 are suppressed —
+/// during a bench run prod brain is intentionally paused and capture
+/// freshness predicates would fire spuriously, drowning real alarms.
 pub fn check_invariants(rows: &[SourceHealthRow], now_ms: i64) -> Vec<InvariantViolation> {
     let by_source: std::collections::HashMap<&str, &SourceHealthRow> =
         rows.iter().map(|r| (r.source.as_str(), r)).collect();
 
     let mut violations = Vec::new();
+    let bench_paused = bench_pause_window_active();
+    if bench_paused {
+        tracing::info!("BT-16: bench pause window active — suppressing I-2/I-4/I-8 invariants");
+    }
 
     // I-1: Shell liveness (>60 s stale while probe says active)
     if let Some(v) = check_i1_shell_liveness(&by_source, now_ms) {
@@ -383,7 +436,8 @@ pub fn check_invariants(rows: &[SourceHealthRow], now_ms: i64) -> Vec<InvariantV
 
     // I-2: Claude-session coverage proxy (consecutive_failures > 3)
     // Full JSONL-based predicate lands in T-4 (doctor checks).
-    if let Some(v) = check_i2_claude_session_proxy(&by_source, now_ms) {
+    // BT-16: suppressed during bench pause window.
+    if !bench_paused && let Some(v) = check_i2_claude_session_proxy(&by_source, now_ms) {
         violations.push(v);
     }
 
@@ -391,7 +445,8 @@ pub fn check_invariants(rows: &[SourceHealthRow], now_ms: i64) -> Vec<InvariantV
     // Omitted from T-1; activated in future when probe data is available.
 
     // I-4: Browser round-trip (>2 min stale while probe says active)
-    if let Some(v) = check_i4_browser_roundtrip(&by_source, now_ms) {
+    // BT-16: suppressed during bench pause window.
+    if !bench_paused && let Some(v) = check_i4_browser_roundtrip(&by_source, now_ms) {
         violations.push(v);
     }
 
@@ -402,7 +457,12 @@ pub fn check_invariants(rows: &[SourceHealthRow], now_ms: i64) -> Vec<InvariantV
     // I-10: Decoupling — architectural enforcement via CI test; not a runtime alarm.
 
     // I-8: Probe freshness (> 15 min stale OR probe_ok = 0)
-    violations.extend(check_i8_probe_freshness(rows, now_ms));
+    // BT-16: suppressed during bench pause window — probes can't run while
+    // prod brain is paused, so freshness alarms during a bench run are
+    // spurious by definition.
+    if !bench_paused {
+        violations.extend(check_i8_probe_freshness(rows, now_ms));
+    }
 
     violations
 }
@@ -744,21 +804,6 @@ fn fire_macos_notification(message: &str, title: &str) {
         .output();
 }
 
-/// Returns `true` when the rusqlite error is SQLITE_BUSY (error code 5).
-/// Used by the alarm-insert retry path.
-fn is_sqlite_busy(e: &rusqlite::Error) -> bool {
-    matches!(
-        e,
-        rusqlite::Error::SqliteFailure(
-            rusqlite::ffi::Error {
-                code: rusqlite::ErrorCode::DatabaseBusy,
-                ..
-            },
-            _,
-        )
-    )
-}
-
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -859,6 +904,53 @@ mod tests {
     }
 
     const NOW: i64 = 1_700_000_000_000i64; // arbitrary reference epoch ms
+
+    // ── BT-16 / Post-review C-1: pause-lockfile mtime gate ────────────────
+
+    #[test]
+    fn pause_lockfile_missing_returns_inactive() {
+        let dir = TempDir::new().unwrap();
+        let lockfile = dir.path().join("absent.lock");
+        assert!(!is_pause_lockfile_active(
+            &lockfile,
+            std::time::SystemTime::now()
+        ));
+    }
+
+    #[test]
+    fn pause_lockfile_recent_mtime_returns_active() {
+        let dir = TempDir::new().unwrap();
+        let lockfile = dir.path().join("pause.lock");
+        std::fs::write(&lockfile, b"{}").unwrap();
+        let mtime = std::fs::metadata(&lockfile).unwrap().modified().unwrap();
+        // 5 min after mtime is comfortably inside the 30-min window.
+        let near_future = mtime + std::time::Duration::from_secs(5 * 60);
+        assert!(is_pause_lockfile_active(&lockfile, near_future));
+    }
+
+    #[test]
+    fn pause_lockfile_stale_mtime_returns_inactive() {
+        let dir = TempDir::new().unwrap();
+        let lockfile = dir.path().join("pause.lock");
+        std::fs::write(&lockfile, b"{}").unwrap();
+        let mtime = std::fs::metadata(&lockfile).unwrap().modified().unwrap();
+        // 31 min after mtime is just outside the 30-min window — the
+        // canonical "SIGKILL'd bench left a lockfile behind" scenario.
+        let far_future = mtime + std::time::Duration::from_secs(31 * 60);
+        assert!(!is_pause_lockfile_active(&lockfile, far_future));
+    }
+
+    #[test]
+    fn pause_lockfile_future_mtime_treated_as_active() {
+        // Clock skew safety: if mtime > now (e.g., NTP correction), prefer
+        // suppressing the alarm over spuriously alarming during a real bench.
+        let dir = TempDir::new().unwrap();
+        let lockfile = dir.path().join("pause.lock");
+        std::fs::write(&lockfile, b"{}").unwrap();
+        let mtime = std::fs::metadata(&lockfile).unwrap().modified().unwrap();
+        let past = mtime - std::time::Duration::from_secs(60);
+        assert!(is_pause_lockfile_active(&lockfile, past));
+    }
 
     // ── I-1 ────────────────────────────────────────────────────────────────
 

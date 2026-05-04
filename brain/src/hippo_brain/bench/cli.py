@@ -216,7 +216,30 @@ def _cmd_corpus_add_adversarial(args: argparse.Namespace) -> int:
         conn.close()
 
 
+def _cmd_recover(args: argparse.Namespace) -> int:
+    """BT-06: detect a stale pause lockfile and resume prod brain.
+
+    Surfaced both as an explicit subcommand and called automatically at
+    the top of `_cmd_run`. Idempotent — exits 0 in both cases.
+    """
+    from hippo_brain.bench.pause_rpc import PAUSE_LOCKFILE, recover_stale_pause
+
+    recovered = recover_stale_pause(args.brain_url)
+    if recovered:
+        print(f"recovered: stale pause lockfile cleared ({PAUSE_LOCKFILE})")
+    else:
+        print(f"no stale lockfile at {PAUSE_LOCKFILE}")
+    return 0
+
+
 def _cmd_run(args: argparse.Namespace) -> int:
+    # BT-06: recover from a prior crashed bench run before doing anything
+    # else. If the previous bench was SIGKILL'd, prod brain is still paused;
+    # this resumes it before we issue our own pause.
+    from hippo_brain.bench.pause_rpc import recover_stale_pause
+
+    recover_stale_pause(args.brain_url)
+
     ts = _dt.datetime.now(tz=_dt.UTC).strftime("%Y%m%dT%H%M%S")
     models = [m.strip() for m in args.models.split(",") if m.strip()]
 
@@ -291,6 +314,21 @@ def _cmd_summary(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_determinism(args: argparse.Namespace) -> int:
+    """BT-29: compare N JSONL run files; exit 1 if any model exceeds budget."""
+    from hippo_brain.bench.determinism import compare_runs
+
+    paths = [Path(p) for p in args.run_files]
+    report = compare_runs(
+        paths,
+        mrr_budget=args.mrr_budget,
+        hit_at_1_budget=args.hit_at_1_budget,
+        mode=args.mode,
+    )
+    print(report.render())
+    return 0 if report.passes() else 1
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="hippo-bench",
@@ -300,7 +338,9 @@ def _build_parser() -> argparse.ArgumentParser:
 
     run = sub.add_parser("run", help="Run the bench against candidate models")
     run.add_argument("--models", required=True, help="Comma-separated model identifiers")
-    run.add_argument("--corpus-version", default="corpus-v1")
+    # BT-18: default to v2 — bench v2 is the production path. v1 still
+    # selectable explicitly for legacy comparisons.
+    run.add_argument("--corpus-version", default="corpus-v2")
     run.add_argument("--base-url", default="http://localhost:1234/v1")
     run.add_argument(
         "--brain-url", default="http://localhost:8000", help="Prod brain base URL (v2)"
@@ -406,6 +446,47 @@ def _build_parser() -> argparse.ArgumentParser:
     summary = sub.add_parser("summary", help="Pretty-print a run JSONL file")
     summary.add_argument("run_file")
     summary.set_defaults(func=_cmd_summary)
+
+    # BT-29 / post-review: deterministic-rerun verification. Operator runs the
+    # bench 3× against the same model + frozen corpus, then compares JSONLs.
+    # Exit 1 on any model exceeding the trust budget — wire into CI for an
+    # automated regression alarm.
+    det = sub.add_parser(
+        "determinism",
+        help="BT-29: compare N JSONL run files and verify metric stability",
+    )
+    det.add_argument("run_files", nargs="+", help="Two or more JSONL files from `hippo-bench run`")
+    det.add_argument(
+        "--mrr-budget",
+        type=float,
+        default=0.02,
+        help="Max permitted spread of MRR across runs (default 0.02 per DoD #1)",
+    )
+    det.add_argument(
+        "--hit-at-1-budget",
+        type=float,
+        default=0.02,
+        help="Max permitted spread of Hit@1 across runs (default 0.02 per DoD #1)",
+    )
+    det.add_argument(
+        "--mode",
+        default="hybrid",
+        help="Retrieval mode to compare (default hybrid; downstream_proxy.modes key)",
+    )
+    det.set_defaults(func=_cmd_determinism)
+
+    # BT-06: recovery subcommand. Idempotent — clears stale pause lockfile
+    # and resumes prod brain if a prior bench was SIGKILL'd.
+    recover = sub.add_parser(
+        "recover",
+        help="Detect a stale pause lockfile from a crashed bench and resume prod brain",
+    )
+    recover.add_argument(
+        "--brain-url",
+        default="http://localhost:8000",
+        help="Prod brain base URL to resume if lockfile doesn't carry one",
+    )
+    recover.set_defaults(func=_cmd_recover)
 
     return parser
 

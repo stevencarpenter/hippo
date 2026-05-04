@@ -99,8 +99,8 @@ async fn main() -> Result<()> {
 
     match cli.command {
         Commands::Daemon { action } => match action {
-            DaemonAction::Run => {
-                daemon::run(config).await?;
+            DaemonAction::Run { bench } => {
+                daemon::run_with_mode(config, bench).await?;
             }
             DaemonAction::Start => {
                 let uid = unsafe { libc::getuid() };
@@ -956,6 +956,14 @@ async fn main() -> Result<()> {
         },
         Commands::ClaudeSessionWatch => {
             watch_claude_sessions::run(&config).await?;
+        }
+        // BT-09: `hippo serve` is a foreground-run alias for `hippo daemon run`.
+        // Honors the same logic so bench code (and any future operator
+        // muscle-memory) doesn't have to know about the daemon subcommand
+        // structure. The `--bench` flag is a placeholder for BT-10/BT-11
+        // to attach bench-mode behavior.
+        Commands::Serve { bench } => {
+            daemon::run_with_mode(config, bench).await?;
         }
     }
 

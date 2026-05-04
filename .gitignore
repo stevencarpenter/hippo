@@ -14,6 +14,7 @@ __pycache__/
 *.jsonl
 !docs/baselines/**/*.jsonl
 !brain/src/hippo_brain/bench/qa_template.jsonl
+!brain/tests/fixtures/**/*.jsonl
 .venv/
 brain/.venv/
 *.egg-info/
@@ -433,3 +434,4 @@ Temporary Items
 **/bench-runs/
 
 .claude
+.ralph/

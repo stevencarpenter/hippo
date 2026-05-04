@@ -281,6 +281,10 @@ pub async fn flush_events(state: &Arc<DaemonState>) -> usize {
             rusqlite::params![now_ms],
         ) {
             Err(e) if !crate::is_missing_source_health_table_error(&e) => {
+                #[cfg(feature = "otel")]
+                {
+                    crate::metrics::record_db_busy(&e, "flush_idle_tick_source_health");
+                }
                 warn!("source_health idle-tick update failed: {e}");
             }
             _ => {}
@@ -378,6 +382,10 @@ pub async fn flush_events(state: &Arc<DaemonState>) -> usize {
                     }
                     Ok(_) => {} // duplicate envelope_id, already stored
                     Err(e) => {
+                        #[cfg(feature = "otel")]
+                        if let Some(re) = e.downcast_ref::<rusqlite::Error>() {
+                            crate::metrics::record_db_busy(re, "flush_event_insert");
+                        }
                         warn!("event insert failed, falling back: {}", e);
                         source_errors
                             .entry(source)
@@ -420,6 +428,10 @@ pub async fn flush_events(state: &Arc<DaemonState>) -> usize {
                     }
                     Ok(_) => {} // duplicate envelope_id
                     Err(e) => {
+                        #[cfg(feature = "otel")]
+                        if let Some(re) = e.downcast_ref::<rusqlite::Error>() {
+                            crate::metrics::record_db_busy(re, "flush_browser_event_insert");
+                        }
                         warn!("browser event insert failed, falling back: {}", e);
                         source_errors
                             .entry("browser")
@@ -460,6 +472,10 @@ pub async fn flush_events(state: &Arc<DaemonState>) -> usize {
             rusqlite::params![latest_ts, now_ms, count_val, source],
         ) {
             Err(e) if !crate::is_missing_source_health_table_error(&e) => {
+                #[cfg(feature = "otel")]
+                {
+                    crate::metrics::record_db_busy(&e, "flush_source_health_success");
+                }
                 warn!("source_health success update failed for {source}: {e}");
             }
             _ => {}
@@ -477,6 +493,10 @@ pub async fn flush_events(state: &Arc<DaemonState>) -> usize {
             rusqlite::params![now_ms, err_msg, source],
         ) {
             Err(e) if !crate::is_missing_source_health_table_error(&e) => {
+                #[cfg(feature = "otel")]
+                {
+                    crate::metrics::record_db_busy(&e, "flush_source_health_error");
+                }
                 warn!("source_health error update failed for {source}: {e}");
             }
             _ => {}
@@ -492,6 +512,10 @@ pub async fn flush_events(state: &Arc<DaemonState>) -> usize {
             rusqlite::params![now_ms, source],
         ) {
             Err(e) if !crate::is_missing_source_health_table_error(&e) => {
+                #[cfg(feature = "otel")]
+                {
+                    crate::metrics::record_db_busy(&e, "flush_source_health_liveness");
+                }
                 warn!("source_health liveness update failed for {source}: {e}");
             }
             _ => {}
@@ -602,8 +626,40 @@ async fn recompute_rolling_counts(state: Arc<DaemonState>) {
 }
 
 pub async fn run(config: HippoConfig) -> Result<()> {
+    run_with_mode(config, false).await
+}
+
+pub async fn run_with_mode(config: HippoConfig, bench_mode: bool) -> Result<()> {
     let socket_path = config.socket_path();
     let db_path = config.db_path();
+
+    // BT-10 + post-review I-4: bench-mode sandbox assertion. Shadow stack
+    // overrides HOME and XDG_DATA_HOME to run_tree before spawning the daemon;
+    // if any path resolves outside run_tree the bench would mutate the user's
+    // real prod DB. Original spec said "warn and continue" — overruled in
+    // post-review because (a) the shadow stack already sets both env vars on
+    // every legitimate bench, so this never fires unless env threading is
+    // broken, and (b) the cost of a single bench run pointing at prod is
+    // unbounded data corruption while the cost of a false-positive bail is a
+    // loud, recoverable startup error. Fail closed.
+    if bench_mode {
+        info!("starting daemon in bench mode (--bench)");
+        let xdg = std::env::var("XDG_DATA_HOME")
+            .ok()
+            .or_else(|| std::env::var("HOME").ok())
+            .map(std::path::PathBuf::from);
+        if let Some(root) = xdg
+            && !db_path.starts_with(&root)
+        {
+            anyhow::bail!(
+                "BT-10/I-4 bench mode sandbox violation: db_path={} is NOT under \
+                 XDG_DATA_HOME/HOME={}. Refusing to start so a mis-threaded env \
+                 cannot point the bench at prod data.",
+                db_path.display(),
+                root.display(),
+            );
+        }
+    }
 
     let redaction = crate::load_redaction_engine(&config);
 
@@ -741,6 +797,43 @@ pub async fn run(config: HippoConfig) -> Result<()> {
             .with_description("Unrecovered fallback files")
             .with_callback(move |gauge| {
                 gauge.observe(count_dir_entries(&fallback_dir_gauge), &[]);
+            })
+            .build();
+
+        // BT-14: per-queue pending depth, tagged with queue_kind. Gives bench
+        // a "drain rate over time" view per source — used to distinguish a
+        // model that drains evenly vs. one that backs up only browser_events
+        // (e.g., due to longer prompt sizes).
+        let queue_db_path = state.config.db_path();
+        let _ = meter
+            .u64_observable_gauge("hippo.bench.queue_depth")
+            .with_description("Pending+processing rows in each enrichment queue")
+            .with_callback(move |gauge| {
+                let queues: &[(&str, &str)] = &[
+                    ("shell", "enrichment_queue"),
+                    ("claude", "claude_enrichment_queue"),
+                    ("browser", "browser_enrichment_queue"),
+                    ("workflow", "workflow_enrichment_queue"),
+                ];
+                let conn = match rusqlite::Connection::open_with_flags(
+                    &queue_db_path,
+                    rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY
+                        | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+                ) {
+                    Ok(c) => c,
+                    Err(_) => return,
+                };
+                for (kind, table) in queues {
+                    let sql = format!(
+                        "SELECT COUNT(*) FROM {table} WHERE status IN ('pending', 'processing')"
+                    );
+                    if let Ok(n) = conn.query_row(&sql, [], |r| r.get::<_, i64>(0)) {
+                        gauge.observe(
+                            n.max(0) as u64,
+                            &[opentelemetry::KeyValue::new("queue_kind", *kind)],
+                        );
+                    }
+                }
             })
             .build();
     }

@@ -55,6 +55,22 @@ pub(crate) fn is_missing_source_health_table_error(err: &rusqlite::Error) -> boo
     err.to_string().contains("no such table: source_health")
 }
 
+/// Returns `true` when the rusqlite error is SQLITE_BUSY (error code 5).
+/// Shared between watchdog (alarm-insert retry) and daemon flush_events
+/// (per-op DB_BUSY_COUNT instrumentation, post-review I-3).
+pub(crate) fn is_sqlite_busy(err: &rusqlite::Error) -> bool {
+    matches!(
+        err,
+        rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error {
+                code: rusqlite::ErrorCode::DatabaseBusy,
+                ..
+            },
+            _,
+        )
+    )
+}
+
 /// Redact a shell event: scrub the command, filter env to allowlist, redact env values.
 /// Returns the redacted event plus the per-rule hit breakdown from the command
 /// redaction pass, so callers can emit per-rule observability (see #52). The

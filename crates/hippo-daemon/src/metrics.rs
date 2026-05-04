@@ -192,3 +192,35 @@ pub static WATCHDOG_ALARMS_RESET: LazyLock<Counter<u64>> = LazyLock::new(|| {
         .with_description("Active alarms whose clean_ticks was reset by a re-violation")
         .build()
 });
+
+/// BT-15 + post-review I-3: Counter incremented every time a sqlite operation
+/// hits SQLITE_BUSY. `busy_timeout=5000` handles the common case before this
+/// fires; a non-zero rate here under bench load means write contention on the
+/// same DB — useful for distinguishing "this model is slow" from "this model
+/// causes SQLite write contention that backs up the queue."
+///
+/// Original BT-15 only instrumented the watchdog alarm-insert retry (a cold
+/// path); post-review I-3 adds instrumentation across the daemon flush hot
+/// path (event inserts and source_health updates) so contention from real
+/// bench traffic is actually observable.
+pub static DB_BUSY_COUNT: LazyLock<Counter<u64>> = LazyLock::new(|| {
+    METER
+        .u64_counter("hippo.daemon.db_busy_count")
+        .with_description("SQLITE_BUSY events seen by the daemon (after busy_timeout)")
+        .build()
+});
+
+/// Increment `DB_BUSY_COUNT` iff `err` is SQLITE_BUSY, tagging the originating
+/// call site via `op`. Returns whether the increment fired so callers can
+/// emit a contention-specific log alongside the generic warn.
+///
+/// Always cfg-gated by `feature = "otel"` at the call site — non-otel builds
+/// see the same error-path semantics minus the metric.
+pub fn record_db_busy(err: &rusqlite::Error, op: &'static str) -> bool {
+    if crate::is_sqlite_busy(err) {
+        DB_BUSY_COUNT.add(1, &[opentelemetry::KeyValue::new("op", op)]);
+        true
+    } else {
+        false
+    }
+}

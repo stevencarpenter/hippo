@@ -5,7 +5,9 @@ downstream-proxy pass → self-consistency pass → teardown → cooldown.
 
 from __future__ import annotations
 
+import contextlib
 import dataclasses
+import logging
 import os
 import random
 import shutil
@@ -32,6 +34,8 @@ from hippo_brain.bench.shadow_stack import (
     wait_for_brain_ready,
 )
 
+logger = logging.getLogger(__name__)
+
 
 @dataclasses.dataclass
 class ModelRunResultV2:
@@ -46,6 +50,9 @@ class ModelRunResultV2:
     downstream_proxy: dict[str, Any]
     prod_brain_restarted_during_bench: bool
     timeout_during_drain: bool
+    # BT-04: structured capture of failures previously swallowed by
+    # `except Exception: pass`. Plumbed into ModelSummaryRecordV2.errors.
+    errors: list[dict[str, str]] = dataclasses.field(default_factory=list)
 
 
 def _wait_for_queue_drain(
@@ -56,6 +63,11 @@ def _wait_for_queue_drain(
     """Poll enrichment queue tables until empty or timeout.
 
     Returns True if timeout was hit, False if successfully drained.
+
+    BT-05: Raises RuntimeError if NONE of the expected queue tables exist on
+    the very first poll — a schema mismatch must fail fast, not be reported
+    as "drained instantly". The previous behavior (warn once, return False)
+    masked schema bumps as bench success and recorded near-zero throughput.
     """
     tables = [
         "enrichment_queue",
@@ -66,34 +78,42 @@ def _wait_for_queue_drain(
 
     start = time.time()
     consecutive_empty = 0
-    logged_no_tables = False
+    schema_checked = False
 
     while time.time() - start < drain_timeout_sec:
+        total_pending = 0
+        tables_found = 0
         try:
-            conn = sqlite3.connect(str(bench_db))
-            total_pending = 0
-            tables_found = 0
-            for table in tables:
-                try:
-                    row = conn.execute(
-                        f"SELECT COUNT(*) FROM {table} WHERE status IN ('pending', 'processing')"
-                    ).fetchone()
-                    if row:
-                        total_pending += row[0]
-                    tables_found += 1
-                except sqlite3.OperationalError:
-                    pass
-            conn.close()
+            # BT-08: contextlib.closing + busy_timeout. Previously this opened a
+            # fresh connection per poll (~0.5 Hz × 1 hr = 1800 connections)
+            # without a try/finally close — on long drains this exhausted the
+            # default macOS 256-fd-per-process limit. busy_timeout matches the
+            # rest of the codebase and tolerates brief contention with the
+            # shadow brain's writer; WAL is already enabled persistently on
+            # the bench DB by the daemon, so the per-poll open inherits it
+            # without needing a `PRAGMA journal_mode=WAL` here.
+            with contextlib.closing(sqlite3.connect(str(bench_db), timeout=5.0)) as conn:
+                conn.execute("PRAGMA busy_timeout = 5000")
+                for table in tables:
+                    try:
+                        row = conn.execute(
+                            f"SELECT COUNT(*) FROM {table} WHERE status IN ('pending', 'processing')"
+                        ).fetchone()
+                        if row:
+                            total_pending += row[0]
+                        tables_found += 1
+                    except sqlite3.OperationalError:
+                        pass
 
-            if tables_found == 0 and not logged_no_tables:
-                import warnings
-
-                warnings.warn(
-                    f"_wait_for_queue_drain: none of the expected queue tables exist in "
-                    f"{bench_db} — schema mismatch or empty DB; treating as drained",
-                    stacklevel=2,
-                )
-                logged_no_tables = True
+            # Fail fast on schema mismatch before declaring success.
+            if not schema_checked:
+                if tables_found == 0:
+                    raise RuntimeError(
+                        f"_wait_for_queue_drain: no queue tables present in {bench_db} — "
+                        "schema mismatch, refusing to declare drained. Expected at least one of: "
+                        f"{tables}"
+                    )
+                schema_checked = True
 
             if total_pending == 0:
                 consecutive_empty += 1
@@ -101,8 +121,10 @@ def _wait_for_queue_drain(
                     return False
             else:
                 consecutive_empty = 0
-        except Exception:
-            pass
+        except sqlite3.OperationalError as e:
+            # Transient sqlite errors (e.g. WAL contention with the brain
+            # writer) are not schema mismatches — keep polling.
+            logger.warning("transient sqlite error in queue drain: %s", e)
 
         time.sleep(poll_interval_sec)
 
@@ -110,52 +132,53 @@ def _wait_for_queue_drain(
 
 
 def _collect_event_ids_from_db(bench_db: Path) -> set[str]:
-    """Collect all event IDs from bench DB corpus."""
-    event_ids = set()
+    """Collect all event IDs from bench DB corpus.
 
-    try:
-        conn = sqlite3.connect(str(bench_db))
-
+    Per-source tables are queried independently. Missing tables are debug-logged
+    and skipped — sparse corpora (e.g. shell-only) legitimately don't have all
+    four. Other failures (corruption, permission errors, sqlite open errors)
+    propagate so the caller's _capture pattern records them in JSONL rather
+    than masking them as an empty event_ids set.
+    """
+    event_ids: set[str] = set()
+    with contextlib.closing(sqlite3.connect(str(bench_db))) as conn:
         try:
             shell_rows = conn.execute("SELECT id FROM events").fetchall()
             event_ids.update(f"shell-{row[0]}" for row in shell_rows if row[0])
-        except sqlite3.OperationalError:
-            pass
+        except sqlite3.OperationalError as e:
+            logger.debug("table 'events' missing in corpus, skipping: %s", e)
 
         try:
             claude_rows = conn.execute("SELECT id FROM claude_sessions").fetchall()
             event_ids.update(f"claude-{row[0]}" for row in claude_rows if row[0])
-        except sqlite3.OperationalError:
-            pass
+        except sqlite3.OperationalError as e:
+            logger.debug("table 'claude_sessions' missing in corpus, skipping: %s", e)
 
         try:
             browser_rows = conn.execute("SELECT id FROM browser_events").fetchall()
             event_ids.update(f"browser-{row[0]}" for row in browser_rows if row[0])
-        except sqlite3.OperationalError:
-            pass
+        except sqlite3.OperationalError as e:
+            logger.debug("table 'browser_events' missing in corpus, skipping: %s", e)
 
         try:
             workflow_rows = conn.execute("SELECT id FROM workflow_runs").fetchall()
             event_ids.update(f"workflow-{row[0]}" for row in workflow_rows if row[0])
-        except sqlite3.OperationalError:
-            pass
-
-        conn.close()
-    except Exception:
-        pass
-
+        except sqlite3.OperationalError as e:
+            logger.debug("table 'workflow_runs' missing in corpus, skipping: %s", e)
     return event_ids
 
 
 def _load_corpus_entries(corpus_sqlite: Path) -> list[CorpusEntry]:
-    """Load CorpusEntry objects from the JSONL sidecar next to the SQLite snapshot."""
+    """Load CorpusEntry objects from the JSONL sidecar next to the SQLite snapshot.
+
+    Missing sidecar returns []. Read/parse failures propagate so the caller's
+    _capture pattern records them in JSONL rather than masking them as an
+    empty corpus (which would silently disable warmup + self-consistency).
+    """
     corpus_jsonl = corpus_sqlite.with_suffix(".jsonl")
     if not corpus_jsonl.exists():
         return []
-    try:
-        return list(load_corpus(corpus_jsonl))
-    except Exception:
-        return []
+    return list(load_corpus(corpus_jsonl))
 
 
 def _metrics_snapshot_fn(sampler: MetricsSampler):
@@ -193,7 +216,13 @@ def run_one_model_v2(
     prod_brain_url: str = "http://localhost:8000",
     skip_prod_pause: bool = False,
 ) -> ModelRunResultV2:
-    """Per-model v2 lifecycle."""
+    """Per-model v2 lifecycle.
+
+    BT-03: spawn → teardown is wrapped in try/finally so a raise anywhere in
+    the body still calls teardown_shadow_stack. Without this, model N's
+    failure leaks the shadow process group; model N+1's spawn races on the
+    fixed brain port and either succeeds against stale data or hangs.
+    """
     start_time = time.time()
 
     # 1. Unload all, load target model
@@ -206,103 +235,149 @@ def run_one_model_v2(
     bench_db = run_tree / "hippo.db"
     shutil.copy2(corpus_sqlite, bench_db)
 
-    # 3. Spawn shadow stack
-    stack = spawn_shadow_stack(
-        run_tree=run_tree,
-        run_id=run_id,
-        model_id=model,
-        corpus_version="corpus-v2",
-        embedding_model=embedding_model or "embed-model",
-        brain_port=18923,
-        otel_enabled=False,
-    )
-
-    # 4. Wait for brain ready and record process_ready_ms
-    process_ready_ms = int(wait_for_brain_ready(stack) * 1000)
-
-    # 5. Warmup — direct calls to LM Studio to prime the model before the timed window
-    all_entries = _load_corpus_entries(corpus_sqlite)
-    rng = random.Random(42)
-    if all_entries and warmup_calls > 0:
-        warmup_pool = all_entries[: min(20, len(all_entries))]
-        warmup_entries = rng.sample(warmup_pool, min(warmup_calls, len(warmup_pool)))
-        for entry in warmup_entries:
-            try:
-                call_enrichment(
-                    base_url=lmstudio_url,
-                    model=model,
-                    payload=entry.redacted_content,
-                    source=entry.source,
-                    timeout_sec=timeout_sec,
-                    temperature=temperature,
-                )
-            except Exception:
-                pass
-
-    # 6. Start metrics sampler
-    sampler = MetricsSampler(sample_interval_ms=250)
-    sampler.start()
-
-    # 7. Wait for main queue drain (shadow brain drains naturally)
-    drain_start = time.time()
-    timeout_during_drain = _wait_for_queue_drain(bench_db, drain_timeout_sec)
-    queue_drain_wall_clock_sec = int(time.time() - drain_start)
-
-    # 8. Poll prod brain health every 120s to detect an unexpected restart
+    stack = None
+    sampler: MetricsSampler | None = None
+    process_ready_ms = 0
+    queue_drain_wall_clock_sec = 0
+    timeout_during_drain = False
     prod_brain_restarted_during_bench = False
-    pause_client = PauseRpcClient(prod_brain_url, skip=skip_prod_pause)
-    initial_health = pause_client.probe_health()
-    was_paused = bool(initial_health and initial_health.get("paused", False))
-    # Re-probe only if drain took long enough to be worth checking
-    if queue_drain_wall_clock_sec > 120:
-        health = pause_client.probe_health()
-        if health and not health.get("paused", False) and was_paused:
-            prod_brain_restarted_during_bench = True
-
-    # 9. Run downstream-proxy pass
     downstream_proxy: dict[str, Any] = {}
-    try:
-        event_ids = _collect_event_ids_from_db(bench_db)
-        if embedding_fn:
-            qa_path = bench_qa_path()
-            if qa_path.exists():
-                included_qa, _ = load_qa_items(qa_path, event_ids)
-                if included_qa:
-                    conn = sqlite3.connect(str(bench_db))
-                    downstream_proxy = run_downstream_proxy_pass(
-                        conn,
-                        included_qa,
-                        embedding_fn,
-                    )
-                    conn.close()
-    except Exception:
-        pass
-
-    # 10. Self-consistency pass — 5 events × N runs via direct LM Studio calls
     attempts: list[AttemptRecord] = []
     per_event_vectors: list[list[list[float]]] = []
-    if all_entries and sc_events > 0 and sc_runs > 0:
-        sc_pool = rng.sample(all_entries, min(sc_events, len(all_entries)))
-        try:
-            sc_attempts, sc_vecs = run_self_consistency_pass(
-                base_url=lmstudio_url,
-                model=model,
-                entries=sc_pool,
-                runs_per_event=sc_runs,
-                embedding_model=embedding_model,
-                timeout_sec=timeout_sec,
-                metrics_snapshot=_metrics_snapshot_fn(sampler),
-                temperature=temperature,
-                run_id=run_id,
-            )
-            attempts.extend(sc_attempts)
-            per_event_vectors.extend(sc_vecs)
-        except Exception:
-            pass
+    # BT-04: capture failures inside the body that would otherwise be
+    # swallowed by `except Exception: pass`. Plumbed through to the JSONL
+    # ModelSummaryRecordV2.errors so a silently-zero downstream_proxy or
+    # missing SC pass shows up in the run output instead of looking clean.
+    errors: list[dict[str, str]] = []
 
-    # 11. Teardown
-    sampler.stop()
-    teardown_shadow_stack(stack)
+    def _capture(step: str, exc: Exception) -> None:
+        logger.exception("BT-04: %s failed: %s", step, exc)
+        errors.append({"step": step, "type": type(exc).__name__, "error": str(exc)})
+
+    try:
+        # BT-07: refuse to spawn if port 18923 is already listening — almost
+        # always means the prior model's teardown leaked. Better to fail
+        # loudly than race on the port.
+        from hippo_brain.bench.preflight_v2 import check_brain_port_free
+
+        port_check = check_brain_port_free(18923)
+        if port_check.status == "fail":
+            raise RuntimeError(
+                f"BT-07: shadow brain port preflight failed for model={model!r}: {port_check.detail}"
+            )
+
+        # 3. Spawn shadow stack
+        stack = spawn_shadow_stack(
+            run_tree=run_tree,
+            run_id=run_id,
+            model_id=model,
+            corpus_version="corpus-v2",
+            embedding_model=embedding_model or "embed-model",
+            brain_port=18923,
+            otel_enabled=False,
+        )
+
+        # 4. Wait for brain ready and record process_ready_ms
+        process_ready_ms = int(wait_for_brain_ready(stack) * 1000)
+
+        # 5. Warmup — direct calls to LM Studio to prime the model before the timed window
+        try:
+            all_entries = _load_corpus_entries(corpus_sqlite)
+        except Exception as e:
+            _capture("load_corpus", e)
+            all_entries = []
+        rng = random.Random(42)
+        if all_entries and warmup_calls > 0:
+            warmup_pool = all_entries[: min(20, len(all_entries))]
+            warmup_entries = rng.sample(warmup_pool, min(warmup_calls, len(warmup_pool)))
+            for entry in warmup_entries:
+                try:
+                    call_enrichment(
+                        base_url=lmstudio_url,
+                        model=model,
+                        payload=entry.redacted_content,
+                        source=entry.source,
+                        timeout_sec=timeout_sec,
+                        temperature=temperature,
+                    )
+                except Exception as e:
+                    _capture(f"warmup:{entry.source}", e)
+
+        # 6. Start metrics sampler
+        sampler = MetricsSampler(sample_interval_ms=250)
+        sampler.start()
+
+        # 7. Wait for main queue drain (shadow brain drains naturally)
+        drain_start = time.time()
+        timeout_during_drain = _wait_for_queue_drain(bench_db, drain_timeout_sec)
+        queue_drain_wall_clock_sec = int(time.time() - drain_start)
+
+        # 8. Poll prod brain health every 120s to detect an unexpected restart
+        pause_client = PauseRpcClient(prod_brain_url, skip=skip_prod_pause)
+        initial_health = pause_client.probe_health()
+        was_paused = bool(initial_health and initial_health.get("paused", False))
+        # Re-probe only if drain took long enough to be worth checking
+        if queue_drain_wall_clock_sec > 120:
+            health = pause_client.probe_health()
+            if health and not health.get("paused", False) and was_paused:
+                prod_brain_restarted_during_bench = True
+
+        # 9. Run downstream-proxy pass.
+        # Post-review C-1: wrap the sqlite connection in contextlib.closing so
+        # an exception inside run_downstream_proxy_pass (or anywhere between
+        # open and close) doesn't leak the fd. Per-model leaks compound across
+        # a multi-model bench run and exhaust macOS's 256-fd-per-process limit.
+        try:
+            event_ids = _collect_event_ids_from_db(bench_db)
+            if embedding_fn:
+                qa_path = bench_qa_path()
+                if qa_path.exists():
+                    included_qa, _ = load_qa_items(qa_path, event_ids)
+                    if included_qa:
+                        with contextlib.closing(sqlite3.connect(str(bench_db))) as conn:
+                            downstream_proxy = run_downstream_proxy_pass(
+                                conn,
+                                included_qa,
+                                embedding_fn,
+                            )
+        except Exception as e:
+            _capture("downstream_proxy", e)
+
+        # 10. Self-consistency pass — 5 events × N runs via direct LM Studio calls
+        if all_entries and sc_events > 0 and sc_runs > 0:
+            sc_pool = rng.sample(all_entries, min(sc_events, len(all_entries)))
+            try:
+                sc_attempts, sc_vecs = run_self_consistency_pass(
+                    base_url=lmstudio_url,
+                    model=model,
+                    entries=sc_pool,
+                    runs_per_event=sc_runs,
+                    embedding_model=embedding_model,
+                    timeout_sec=timeout_sec,
+                    metrics_snapshot=_metrics_snapshot_fn(sampler),
+                    temperature=temperature,
+                    run_id=run_id,
+                )
+                attempts.extend(sc_attempts)
+                per_event_vectors.extend(sc_vecs)
+            except Exception as e:
+                _capture("self_consistency", e)
+
+    finally:
+        # 11. Teardown — runs even if any step above raised so we never leak
+        # shadow processes or leave the metrics sampler running.
+        if sampler is not None:
+            try:
+                sampler.stop()
+            except Exception:
+                logger.exception("BT-03: sampler.stop failed during teardown")
+        if stack is not None:
+            try:
+                teardown_shadow_stack(stack)
+            except Exception:
+                logger.exception(
+                    "BT-03: teardown_shadow_stack failed — manual cleanup may be required"
+                )
 
     # 12. Cooldown
     cooldown_start = time.time()
@@ -324,7 +399,7 @@ def run_one_model_v2(
         model=model,
         attempts=attempts,
         per_event_vectors=per_event_vectors,
-        peak_metrics=sampler.peak() or {},
+        peak_metrics=(sampler.peak() if sampler is not None else None) or {},
         wall_clock_sec=wall_clock_sec,
         cooldown_timeout=cooldown_timeout,
         process_ready_ms=process_ready_ms,
@@ -332,4 +407,5 @@ def run_one_model_v2(
         downstream_proxy=downstream_proxy,
         prod_brain_restarted_during_bench=prod_brain_restarted_during_bench,
         timeout_during_drain=timeout_during_drain,
+        errors=errors,
     )

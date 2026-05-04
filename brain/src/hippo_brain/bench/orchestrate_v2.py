@@ -304,6 +304,7 @@ def orchestrate_run_v2(
                     downstream_proxy=result.downstream_proxy,
                     prod_brain_restarted_during_bench=result.prod_brain_restarted_during_bench,
                     timeout_during_drain=result.timeout_during_drain,
+                    errors=result.errors,
                 ).to_dict()
             )
             completed.append(model)
