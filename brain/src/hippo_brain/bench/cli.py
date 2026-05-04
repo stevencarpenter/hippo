@@ -27,6 +27,7 @@ from hippo_brain.bench.corpus import (
     write_corpus,
 )
 from hippo_brain.bench.orchestrate import orchestrate_run
+from hippo_brain.bench.prod_config import default_prod_brain_url
 from hippo_brain.bench.paths import (
     bench_runs_dir,
     corpus_manifest_path,
@@ -343,7 +344,11 @@ def _build_parser() -> argparse.ArgumentParser:
     run.add_argument("--corpus-version", default="corpus-v2")
     run.add_argument("--base-url", default="http://localhost:1234/v1")
     run.add_argument(
-        "--brain-url", default="http://localhost:8000", help="Prod brain base URL (v2)"
+        "--brain-url",
+        default=default_prod_brain_url(),
+        help="Prod brain base URL (v2). Defaults to http://127.0.0.1:<[brain].port> "
+        "read from $XDG_CONFIG_HOME/hippo/config.toml (or $HOME/.config/hippo/config.toml "
+        "if XDG_CONFIG_HOME is unset), falling back to port 9175.",
     )
     run.add_argument("--embedding-model", default="text-embedding-nomic-embed-text-v2-moe")
     run.add_argument(
@@ -483,8 +488,11 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     recover.add_argument(
         "--brain-url",
-        default="http://localhost:8000",
-        help="Prod brain base URL to resume if lockfile doesn't carry one",
+        default=default_prod_brain_url(),
+        help="Prod brain base URL to resume if lockfile doesn't carry one. "
+        "Defaults to http://127.0.0.1:<[brain].port> read from "
+        "$XDG_CONFIG_HOME/hippo/config.toml (or $HOME/.config/hippo/config.toml "
+        "if XDG_CONFIG_HOME is unset).",
     )
     recover.set_defaults(func=_cmd_recover)
 

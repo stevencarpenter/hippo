@@ -29,23 +29,37 @@ def _spawn_kwargs(tmp_path, **overrides):
     }
 
 
-def _capture_popen_calls(monkeypatch):
+def _capture_popen_calls(monkeypatch, tmp_path):
+    """Patch subprocess.Popen, tempfile.mkdtemp, and pgrp syscalls so
+    spawn_shadow_stack runs to completion without touching real binaries.
+
+    Each fake Popen returns poll()=None (alive) so the daemon liveness
+    check inside _spawn_pgrp_pair doesn't raise."""
     calls: list[tuple[tuple, dict]] = []
 
     def fake_popen(*args, **kwargs):
         calls.append((args, kwargs))
         proc = MagicMock()
         proc.pid = 99999
+        proc.poll.return_value = None  # alive
+        proc.returncode = None
         return proc
 
+    def fake_mkdtemp(prefix: str = "tmp", **_kwargs) -> str:
+        d = tmp_path / f"{prefix}fake-mkdtemp"
+        d.mkdir(parents=True, exist_ok=True)
+        return str(d)
+
     monkeypatch.setattr(shadow_stack.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(shadow_stack.tempfile, "mkdtemp", fake_mkdtemp)
     monkeypatch.setattr(shadow_stack.os, "getpgid", lambda _pid: 88888)
+    monkeypatch.setattr(shadow_stack.os, "setpgid", lambda _pid, _pgid: None)
     return calls
 
 
 def test_otel_resource_attributes_contains_namespace(tmp_path, monkeypatch):
     """Every Popen call must carry service.namespace=hippo-bench in OTEL_RESOURCE_ATTRIBUTES."""
-    calls = _capture_popen_calls(monkeypatch)
+    calls = _capture_popen_calls(monkeypatch, tmp_path)
     with patch.dict(os.environ, {}, clear=True):
         spawn_shadow_stack(**_spawn_kwargs(tmp_path))
 
@@ -58,7 +72,7 @@ def test_otel_resource_attributes_contains_namespace(tmp_path, monkeypatch):
 
 def test_otel_resource_attributes_contains_run_id(tmp_path, monkeypatch):
     """Every Popen call must carry bench.run_id=<run_id> in OTEL_RESOURCE_ATTRIBUTES."""
-    calls = _capture_popen_calls(monkeypatch)
+    calls = _capture_popen_calls(monkeypatch, tmp_path)
     with patch.dict(os.environ, {}, clear=True):
         spawn_shadow_stack(**_spawn_kwargs(tmp_path))
 
@@ -71,7 +85,7 @@ def test_otel_resource_attributes_contains_run_id(tmp_path, monkeypatch):
 
 def test_otel_resource_attributes_contains_model_id(tmp_path, monkeypatch):
     """Every Popen call must carry bench.model_id=<model_id> in OTEL_RESOURCE_ATTRIBUTES."""
-    calls = _capture_popen_calls(monkeypatch)
+    calls = _capture_popen_calls(monkeypatch, tmp_path)
     with patch.dict(os.environ, {}, clear=True):
         spawn_shadow_stack(**_spawn_kwargs(tmp_path))
 
@@ -108,7 +122,7 @@ def test_python_sdk_picks_up_env_namespace():
 def test_bench_namespace_is_not_empty(tmp_path, monkeypatch):
     """Prod dashboards filter on empty namespace; bench MUST NOT use empty.
     Otherwise bench spans would leak into prod views."""
-    calls = _capture_popen_calls(monkeypatch)
+    calls = _capture_popen_calls(monkeypatch, tmp_path)
     with patch.dict(os.environ, {}, clear=True):
         spawn_shadow_stack(**_spawn_kwargs(tmp_path))
 
