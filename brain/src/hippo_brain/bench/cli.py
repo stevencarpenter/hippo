@@ -347,7 +347,8 @@ def _build_parser() -> argparse.ArgumentParser:
         "--brain-url",
         default=default_prod_brain_url(),
         help="Prod brain base URL (v2). Defaults to http://127.0.0.1:<[brain].port> "
-        "from ~/.config/hippo/config.toml, falling back to port 9175.",
+        "read from $XDG_CONFIG_HOME/hippo/config.toml (or $HOME/.config/hippo/config.toml "
+        "if XDG_CONFIG_HOME is unset), falling back to port 9175.",
     )
     run.add_argument("--embedding-model", default="text-embedding-nomic-embed-text-v2-moe")
     run.add_argument(
@@ -489,7 +490,9 @@ def _build_parser() -> argparse.ArgumentParser:
         "--brain-url",
         default=default_prod_brain_url(),
         help="Prod brain base URL to resume if lockfile doesn't carry one. "
-        "Defaults to http://127.0.0.1:<[brain].port> from ~/.config/hippo/config.toml.",
+        "Defaults to http://127.0.0.1:<[brain].port> read from "
+        "$XDG_CONFIG_HOME/hippo/config.toml (or $HOME/.config/hippo/config.toml "
+        "if XDG_CONFIG_HOME is unset).",
     )
     recover.set_defaults(func=_cmd_recover)
 

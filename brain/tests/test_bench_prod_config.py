@@ -111,6 +111,20 @@ def test_warns_on_out_of_range_port(tmp_path: Path, capsys: pytest.CaptureFixtur
     assert "99999" in err
 
 
+def test_warns_when_brain_key_is_scalar_not_table(tmp_path: Path, capsys: pytest.CaptureFixture):
+    """Codex review on PR #130: `brain = 1` (scalar at the [brain] key) is
+    valid TOML but would crash `data.get("brain", {}).get("port")` with
+    AttributeError. Since this resolver runs at argparse-default time, the
+    crash would blow up CLI parser construction — before any subcommand
+    can even be requested. Must defend against the non-dict shape."""
+    cfg = tmp_path / "config.toml"
+    cfg.write_text('brain = "not-a-table"\n')
+    assert resolve_prod_brain_port(cfg) == DEFAULT_BRAIN_PORT
+    err = capsys.readouterr().err
+    assert "[brain]" in err
+    assert "not a table" in err
+
+
 def test_xdg_config_home_precedence(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     """When XDG_CONFIG_HOME is set, the resolver looks there first — matching
     `hippo-brain`'s own behavior."""

@@ -55,7 +55,19 @@ def resolve_prod_brain_port(config_path: Path | None = None) -> int:
         _warn(f"malformed TOML in {path}: {e!s}")
         return DEFAULT_BRAIN_PORT
 
-    port = data.get("brain", {}).get("port", DEFAULT_BRAIN_PORT)
+    # Guard against `brain = 1` (or any scalar value at the [brain] key) —
+    # that's valid TOML and would crash `data.get("brain", {}).get("port")`
+    # with AttributeError, blowing up CLI parser construction before any
+    # subcommand can run. Codex review on PR #130.
+    brain_section = data.get("brain", {})
+    if not isinstance(brain_section, dict):
+        _warn(
+            f"[brain] in {path} is not a table "
+            f"(got {type(brain_section).__name__}={brain_section!r})"
+        )
+        return DEFAULT_BRAIN_PORT
+
+    port = brain_section.get("port", DEFAULT_BRAIN_PORT)
     # bool is an int subclass in Python — `port = true` would silently land
     # as port=1 without this guard. Floats and strings are also rejected.
     if not isinstance(port, int) or isinstance(port, bool):

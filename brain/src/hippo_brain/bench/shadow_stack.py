@@ -155,9 +155,18 @@ def _spawn_pgrp_pair(
     except BaseException:
         # Brain spawn failed — kill the daemon (and its pgrp) so we don't leak
         # a process holding the shadow brain port. Re-raise the original.
+        # Adversarial-review followup: also reap the daemon. Without an explicit
+        # wait(), the Popen object is GC'd at function exit and Python's
+        # __del__ reaper runs whenever the GC decides — leaving a zombie
+        # visible in `ps` until then. wait()-with-timeout makes the reap
+        # deterministic without blocking forever if SIGKILL didn't land.
         try:
             os.killpg(daemon_pgid, signal.SIGKILL)
         except ProcessLookupError:
+            pass
+        try:
+            daemon_proc.wait(timeout=2)
+        except subprocess.TimeoutExpired:
             pass
         raise
 
