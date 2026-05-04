@@ -41,6 +41,87 @@ def test_cli_corpus_help_lists_filter_flag(capsys):
     assert "--claude" in out
 
 
+def test_cli_determinism_help_lists_mode_and_budgets(capsys):
+    """BT-29 / post-review M1: `--mode` is the only way for an operator on a
+    non-hybrid retrieval deployment to verify determinism. A refactor that
+    drops the arg would silently fall back to comparing `hybrid` even when
+    the operator passed `--mode semantic` (argparse would `error: unrecognized
+    argument`, which the operator might not notice in a script). Pin both
+    `--mode` and the two budget flags so the parser surface is regression-
+    protected.
+    """
+    with pytest.raises(SystemExit):
+        main(["determinism", "--help"])
+    out = capsys.readouterr().out
+    assert "--mode" in out
+    assert "--mrr-budget" in out
+    assert "--hit-at-1-budget" in out
+
+
+def test_cli_determinism_returns_0_on_passing_runs(tmp_path):
+    """End-to-end CLI dispatch: write two JSONLs whose hybrid-mode metrics
+    differ by < 0.02, invoke `hippo-bench determinism r1 r2`, expect exit 0."""
+    rows_r1 = [
+        {
+            "record_type": "model_summary",
+            "run_id": "t",
+            "model": {"id": "model-A"},
+            "downstream_proxy": {
+                "modes": {"hybrid": {"mrr": 0.40, "hit_at_1": 0.50}},
+                "qa_count": 8,
+                "k": 10,
+                "per_item": [],
+            },
+        }
+    ]
+    rows_r2 = [
+        {
+            "record_type": "model_summary",
+            "run_id": "t",
+            "model": {"id": "model-A"},
+            "downstream_proxy": {
+                "modes": {"hybrid": {"mrr": 0.405, "hit_at_1": 0.50}},
+                "qa_count": 8,
+                "k": 10,
+                "per_item": [],
+            },
+        }
+    ]
+    p1 = tmp_path / "r1.jsonl"
+    p2 = tmp_path / "r2.jsonl"
+    p1.write_text("\n".join(json.dumps(r) for r in rows_r1))
+    p2.write_text("\n".join(json.dumps(r) for r in rows_r2))
+
+    rc = main(["determinism", str(p1), str(p2)])
+    assert rc == 0
+
+
+def test_cli_determinism_returns_1_on_regression(tmp_path):
+    """Operator's CI gate: exit code 1 when any model exceeds budget. Pinned so
+    a refactor that swapped 0/1 returns can't silently flip the gate's polarity.
+    """
+    rows = lambda mrr: [  # noqa: E731 — closure-style helper inside test
+        {
+            "record_type": "model_summary",
+            "run_id": "t",
+            "model": {"id": "model-A"},
+            "downstream_proxy": {
+                "modes": {"hybrid": {"mrr": mrr, "hit_at_1": 0.50}},
+                "qa_count": 8,
+                "k": 10,
+                "per_item": [],
+            },
+        }
+    ]
+    p1 = tmp_path / "r1.jsonl"
+    p2 = tmp_path / "r2.jsonl"
+    p1.write_text(json.dumps(rows(0.40)[0]))
+    p2.write_text(json.dumps(rows(0.50)[0]))  # 0.10 spread, well over 0.02
+
+    rc = main(["determinism", str(p1), str(p2)])
+    assert rc == 1
+
+
 def test_cli_run_dry_run_invokes_orchestrate(monkeypatch, tmp_path, capsys):
     """`hippo-bench run --dry-run` plumbs args through to orchestrate_run."""
     captured = {}

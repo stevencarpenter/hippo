@@ -80,12 +80,13 @@ class ModelDelta:
         if self.missing_metric is not None:
             return False
         # `<=` because "within 0.02" is the inclusive convention (post-review C-3);
-        # a model with exactly 0.02 spread is at-budget, not over-budget. Plus a
-        # tiny epsilon so float-representation slop near the boundary doesn't
-        # surprise operators (e.g. 0.5 - 0.48 = 0.020000000000000018 in IEEE 754).
+        # a model with exactly 0.02 spread is at-budget, not over-budget. The
+        # additive epsilon form (`delta <= budget + eps` rather than the
+        # mathematically-equivalent `delta - budget <= eps`) better signals
+        # "we're padding the budget" to a future reader (post-review M3).
         return (
-            self.mrr_delta - mrr_budget <= _BUDGET_EPSILON
-            and self.hit_at_1_delta - hit_at_1_budget <= _BUDGET_EPSILON
+            self.mrr_delta <= mrr_budget + _BUDGET_EPSILON
+            and self.hit_at_1_delta <= hit_at_1_budget + _BUDGET_EPSILON
         )
 
 

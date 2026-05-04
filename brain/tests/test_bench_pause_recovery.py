@@ -165,3 +165,32 @@ def test_lockfile_unlinked_when_pause_returns_5xx(isolated_lockfile: Path) -> No
             rpc.pause()
 
     assert not isolated_lockfile.exists()
+
+
+def test_pause_cleans_up_orphan_tmp_when_write_lockfile_raises(
+    isolated_lockfile: Path,
+) -> None:
+    """Post-review M2: if `_write_lockfile_atomic` raises mid-write (e.g. disk
+    full, permission error, parent dir disappeared), `.lock.tmp` may exist
+    even though `pause.lock` doesn't — and a future `recover_stale_pause`
+    only looks at `pause.lock`, so the tmp would orphan forever. The
+    rollback path must clean up BOTH paths.
+    """
+    isolated_lockfile.parent.mkdir(parents=True, exist_ok=True)
+    # Simulate the orphan state: tmp exists from a partial prior write.
+    tmp_path = isolated_lockfile.with_suffix(".lock.tmp")
+    tmp_path.write_text("partial content from a previous attempt")
+
+    rpc = pause_rpc.PauseRpcClient(base_url="http://localhost:8000")
+    with patch.object(pause_rpc, "_write_lockfile_atomic") as mock_write:
+        mock_write.side_effect = OSError("synthetic: disk full")
+        with pytest.raises(OSError, match="synthetic: disk full"):
+            rpc.pause()
+
+    # Both paths must be gone — pause.lock never existed, but tmp was
+    # orphaned and the rollback should sweep it.
+    assert not isolated_lockfile.exists()
+    assert not tmp_path.exists(), (
+        "M2: rollback must unlink .lock.tmp too, otherwise a write-time "
+        "failure leaves an orphan that recover_stale_pause never sees"
+    )

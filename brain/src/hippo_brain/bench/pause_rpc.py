@@ -111,30 +111,36 @@ class PauseRpcClient:
         SIGKILL'd between this point and resume(), the next bench start
         finds the lockfile and recovers (BT-06).
 
-        Post-review CC-1: if the HTTP call fails, the lockfile would
-        otherwise remain — and the watchdog would suppress I-2/I-4/I-8
-        invariants up to the 30-min C-1 staleness window even though prod
-        was never actually paused. Unlink on RPC failure so the lockfile
-        only exists when prod truly is paused.
+        Post-review CC-1 + M2: the lockfile is the watchdog's ground truth
+        of "bench has paused prod brain RIGHT NOW", so any failure that
+        leaves a partial or stale lockfile would mute I-2/I-4/I-8 alarms
+        for up to the 30-min C-1 staleness window even though prod was
+        never paused. Both `_write_lockfile_atomic` (rare: disk full,
+        permission errors mid-write — could orphan `.lock.tmp`) and the
+        HTTP call (common: brain unreachable, 5xx) get rolled back here.
         """
         if self.skip:
             return None
-        _write_lockfile_atomic(self.base_url)
         try:
+            _write_lockfile_atomic(self.base_url)
             r = httpx.post(f"{self.base_url}/control/pause", timeout=10.0)
             r.raise_for_status()
         except Exception:
-            # Roll back the lockfile so a transient pause failure can't mute
-            # real watchdog alarms during the suppression window.
-            try:
-                PAUSE_LOCKFILE.unlink(missing_ok=True)
-            except Exception as unlink_err:
-                logger.warning(
-                    "BT-06/CC-1: pause RPC failed AND lockfile unlink failed: %s. "
-                    "Watchdog may suppress I-2/I-4/I-8 until the next bench's "
-                    "recover_stale_pause runs (or the C-1 30-min mtime gate elapses).",
-                    unlink_err,
-                )
+            # Roll back any partial state. Both PAUSE_LOCKFILE (the renamed
+            # final file) and .lock.tmp (the pre-rename target) need cleanup
+            # depending on which step raised; missing_ok=True handles the
+            # case where one or both never got created.
+            for orphan in (PAUSE_LOCKFILE, PAUSE_LOCKFILE.with_suffix(".lock.tmp")):
+                try:
+                    orphan.unlink(missing_ok=True)
+                except Exception as unlink_err:
+                    logger.warning(
+                        "BT-06/CC-1/M2: pause failed AND %s unlink failed: %s. "
+                        "Watchdog may suppress I-2/I-4/I-8 until the next bench's "
+                        "recover_stale_pause runs (or the C-1 30-min mtime gate elapses).",
+                        orphan,
+                        unlink_err,
+                    )
             raise
         return r.json()
 
