@@ -12,9 +12,11 @@ from __future__ import annotations
 
 import os
 import pathlib
+import shutil
 import signal
 import subprocess
 import sys
+import tempfile
 import time
 from unittest.mock import MagicMock, patch
 
@@ -104,21 +106,60 @@ def test_env_injection_xdg_data_home(tmp_path, monkeypatch):
 
 
 def test_env_injection_isolates_tmpdir(tmp_path, monkeypatch):
-    """TMPDIR is overridden to a per-run path so the daemon's socket-fallback
-    (`$TMPDIR/hippo-daemon.sock`) does not collide with prod's. Without this
-    the bench daemon races prod for the same socket."""
-    calls = _capture_popen_calls(monkeypatch, tmp_path)
+    """TMPDIR override uses a per-run path under /tmp (not parent's $TMPDIR
+    where prod's socket lives, and not under run_tree where path-length blows
+    sun_path). Verifies the mkdtemp call shape; sun_path budget is verified
+    end-to-end by test_tmpdir_socket_path_fits_macos_sun_path."""
+    mkdtemp_calls: list[dict] = []
+
+    def fake_mkdtemp(**kwargs):
+        mkdtemp_calls.append(kwargs)
+        d = tmp_path / "fake-mkdtemp"
+        d.mkdir(parents=True, exist_ok=True)
+        return str(d)
+
+    def fake_popen(*_args, **_kwargs):
+        proc = MagicMock()
+        proc.pid = 99999
+        proc.poll.return_value = None
+        return proc
+
+    monkeypatch.setattr(shadow_stack.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(shadow_stack.tempfile, "mkdtemp", fake_mkdtemp)
+    monkeypatch.setattr(shadow_stack.os, "setpgid", lambda _pid, _pgid: None)
+
     with patch.dict(os.environ, {"TMPDIR": "/var/folders/should-not-leak"}, clear=True):
         spawn_shadow_stack(**_spawn_kwargs(tmp_path))
 
-    assert len(calls) == 2
-    for _args, kwargs in calls:
-        env = kwargs["env"]
-        # Must NOT inherit the parent's TMPDIR (where prod's socket lives).
-        assert env["TMPDIR"] != "/var/folders/should-not-leak"
-        # Must point at a per-run path containing the run_id, so concurrent
-        # bench runs don't collide with each other either.
-        assert "run-2026-04-27-abc" in env["TMPDIR"]
+    assert len(mkdtemp_calls) == 1
+    # /tmp is short and POSIX-guaranteed — leaves room under sun_path for the
+    # mkdtemp suffix + "hippo-daemon.sock". macOS $TMPDIR (~51 chars) does NOT.
+    assert mkdtemp_calls[0].get("dir") == "/tmp"
+    # Short prefix preserves headroom for the random suffix.
+    assert mkdtemp_calls[0].get("prefix") == "hb-"
+
+
+def test_tmpdir_socket_path_fits_macos_sun_path():
+    """REGRESSION (BT-29 validation, 2026-05-04): the daemon's socket-fallback
+    is `$TMPDIR/hippo-daemon.sock`, and bind() enforces sun_path (104 bytes
+    on macOS — the tightest constraint we support). The original mkdtemp
+    call used a long run_id-prefixed path under `$TMPDIR`, producing ~133
+    char socket paths that failed bind() with `path must be shorter than
+    SUN_LEN`. Pin the call shape so a future change reverting to a longer
+    prefix or to the system $TMPDIR breaks here, not in production."""
+    macos_sun_path_max = 104
+    socket_name = "hippo-daemon.sock"
+
+    # Same call shape as shadow_stack.spawn_shadow_stack uses in production.
+    tmpdir = tempfile.mkdtemp(prefix="hb-", dir="/tmp")
+    try:
+        socket_path = f"{tmpdir}/{socket_name}"
+        assert len(socket_path) < macos_sun_path_max, (
+            f"socket path is {len(socket_path)} bytes, exceeds macOS sun_path "
+            f"limit of {macos_sun_path_max}: {socket_path}"
+        )
+    finally:
+        shutil.rmtree(tmpdir, ignore_errors=True)
 
 
 def test_pgrp_setup_uses_preexec_fn_in_same_session(tmp_path, monkeypatch):

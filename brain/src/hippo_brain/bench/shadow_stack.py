@@ -180,13 +180,18 @@ def spawn_shadow_stack(
 
     _write_shadow_config(run_tree, brain_port)
 
-    # Per-run tmpdir under the SYSTEM temp dir (not run_tree) — the daemon's
-    # socket fallback is `$TMPDIR/hippo-daemon.sock`, which must fit a Unix
-    # socket sun_path (104 bytes on macOS). The bench run_tree path alone is
-    # too long, so we mkdtemp under the system tmp dir to keep the resulting
-    # socket path short. Without this, bench daemon races prod for the same
-    # `$TMPDIR/hippo-daemon.sock`.
-    tmpdir = pathlib.Path(tempfile.mkdtemp(prefix=f"hippo-bench-{run_id}-"))
+    # Per-run tmpdir for the daemon's socket-fallback (`$TMPDIR/hippo-daemon.sock`).
+    # Two constraints fight here:
+    #   1. Path must fit Unix socket sun_path (104 bytes on macOS).
+    #   2. Must be unique per bench run, so we don't collide with prod's
+    #      $TMPDIR/hippo-daemon.sock.
+    # macOS `$TMPDIR` resolves to `/var/folders/<HASH>/<HASH>/T/` (~51 chars),
+    # leaving only ~36 chars for prefix+suffix+socket name. Our run_id-prefixed
+    # mkdtemp blew that and the daemon failed bind() with "path must be shorter
+    # than SUN_LEN" (BT-29 validation run, 2026-05-04). We use /tmp directly:
+    # POSIX-guaranteed and short, leaving ~85 chars of headroom. Run identity
+    # comes from the daemon log path, not the socket path.
+    tmpdir = pathlib.Path(tempfile.mkdtemp(prefix="hb-", dir="/tmp"))
 
     try:
         env = _build_env(
