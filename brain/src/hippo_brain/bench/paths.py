@@ -26,20 +26,23 @@ def bench_runs_dir(create: bool = False) -> Path:
     return p
 
 
-def corpus_sqlite_path() -> Path:
-    return bench_fixtures_dir() / "corpus-v2.sqlite"
+_DEFAULT_CORPUS_VERSION = "corpus-v2"
 
 
-def corpus_jsonl_path() -> Path:
-    return bench_fixtures_dir() / "corpus-v2.jsonl"
+def corpus_sqlite_path(version: str = _DEFAULT_CORPUS_VERSION) -> Path:
+    return bench_fixtures_dir() / f"{version}.sqlite"
 
 
-def corpus_manifest_path() -> Path:
-    return bench_fixtures_dir() / "corpus-v2.manifest.json"
+def corpus_jsonl_path(version: str = _DEFAULT_CORPUS_VERSION) -> Path:
+    return bench_fixtures_dir() / f"{version}.jsonl"
 
 
-def corpus_overlay_path() -> Path:
-    return bench_fixtures_dir() / "corpus-v2.overlay.sqlite"
+def corpus_manifest_path(version: str = _DEFAULT_CORPUS_VERSION) -> Path:
+    return bench_fixtures_dir() / f"{version}.manifest.json"
+
+
+def corpus_overlay_path(version: str = _DEFAULT_CORPUS_VERSION) -> Path:
+    return bench_fixtures_dir() / f"{version}.overlay.sqlite"
 
 
 def bench_qa_path(version: str = "eval-qa-v1") -> Path:

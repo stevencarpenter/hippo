@@ -40,9 +40,9 @@ _OVERLAY_CAP = 50
 def _cmd_corpus_init(args: argparse.Namespace) -> int:
     corpus_version = args.bump_version if args.bump_version else args.corpus_version
     force = bool(args.bump_version)
-    dest_sqlite = corpus_sqlite_path()
-    dest_jsonl = corpus_jsonl_path()
-    manifest = corpus_manifest_path()
+    dest_sqlite = corpus_sqlite_path(corpus_version)
+    dest_jsonl = corpus_jsonl_path(corpus_version)
+    manifest = corpus_manifest_path(corpus_version)
     try:
         entries = init_corpus(
             db_path=Path(args.db_path),
@@ -70,11 +70,11 @@ def _cmd_corpus_init(args: argparse.Namespace) -> int:
     return 0
 
 
-def _cmd_corpus_verify(_args: argparse.Namespace) -> int:
+def _cmd_corpus_verify(args: argparse.Namespace) -> int:
     ok, detail = verify_corpus(
-        corpus_sqlite_path(),
-        corpus_jsonl_path(),
-        corpus_manifest_path(),
+        corpus_sqlite_path(args.corpus_version),
+        corpus_jsonl_path(args.corpus_version),
+        corpus_manifest_path(args.corpus_version),
     )
     print(detail)
     return 0 if ok else 1

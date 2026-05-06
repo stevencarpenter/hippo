@@ -14,6 +14,7 @@ from typing import TypeVar, cast
 
 import psutil
 
+from hippo_brain.bench import __version__
 from hippo_brain.bench.coordinator import run_one_model
 from hippo_brain.bench.output import (
     ModelSummaryRecord,
@@ -120,9 +121,9 @@ def orchestrate_run(
     out_dir.mkdir(parents=True, exist_ok=True)
 
     if corpus_sqlite is None:
-        corpus_sqlite = corpus_sqlite_path()
+        corpus_sqlite = corpus_sqlite_path(corpus_version)
     if manifest_path is None:
-        manifest_path = corpus_manifest_path()
+        manifest_path = corpus_manifest_path(corpus_version)
 
     corpus_content_hash = _read_manifest_field(
         manifest_path, "corpus_content_hash", "sha256:unknown"
@@ -171,7 +172,7 @@ def orchestrate_run(
                 host=_host_info(),
                 preflight_checks=[],
                 candidate_models=list(candidate_models),
-                bench_version="0.2.0",
+                bench_version=__version__,
                 corpus_version=corpus_version,
                 corpus_content_hash=corpus_content_hash,
                 corpus_schema_version=corpus_schema_version,
@@ -211,7 +212,7 @@ def orchestrate_run(
             host=_host_info(),
             preflight_checks=[c.to_dict() for c in preflight_checks],
             candidate_models=list(candidate_models),
-            bench_version="0.2.0",
+            bench_version=__version__,
             corpus_version=corpus_version,
             corpus_content_hash=corpus_content_hash,
             corpus_schema_version=corpus_schema_version,

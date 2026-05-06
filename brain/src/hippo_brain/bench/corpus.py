@@ -564,6 +564,7 @@ def sample_from_hippo_db(
                 continue
 
             try:
+                # nosemgrep: unfiltered-event-table-select -- probes excluded post-fetch via probe_tag is None filter immediately below
                 rows = conn.execute(spec.select).fetchall()
             except sqlite3.OperationalError:
                 continue
@@ -804,6 +805,7 @@ def _sample_with_rows(
             if not ids:
                 continue
             try:
+                # nosemgrep: unfiltered-event-table-select -- refetch by sampled ids; probes already excluded upstream by sample_from_hippo_db
                 rows = conn.execute(spec.select).fetchall()
             except sqlite3.OperationalError:
                 continue
