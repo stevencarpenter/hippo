@@ -6,39 +6,6 @@ import os
 from pathlib import Path
 
 
-def _xdg_data_home() -> Path:
-    explicit = os.environ.get("XDG_DATA_HOME")
-    if explicit:
-        return Path(explicit)
-    return Path(os.environ["HOME"]) / ".local" / "share"
-
-
-def bench_root() -> Path:
-    return _xdg_data_home() / "hippo" / "bench"
-
-
-def fixtures_dir(create: bool = False) -> Path:
-    p = bench_root() / "fixtures"
-    if create:
-        p.mkdir(parents=True, exist_ok=True)
-    return p
-
-
-def corpus_path(version: str) -> Path:
-    return fixtures_dir() / f"{version}.jsonl"
-
-
-def corpus_manifest_path(version: str) -> Path:
-    return fixtures_dir() / f"{version}.manifest.json"
-
-
-def runs_dir(create: bool = False) -> Path:
-    p = bench_root() / "runs"
-    if create:
-        p.mkdir(parents=True, exist_ok=True)
-    return p
-
-
 def hippo_bench_root() -> Path:
     """XDG root for hippo-bench. Sibling of prod hippo data, NOT a child."""
     xdg = Path(os.environ.get("XDG_DATA_HOME", str(Path.home() / ".local" / "share")))
@@ -59,20 +26,23 @@ def bench_runs_dir(create: bool = False) -> Path:
     return p
 
 
-def corpus_v2_sqlite_path() -> Path:
-    return bench_fixtures_dir() / "corpus-v2.sqlite"
+_DEFAULT_CORPUS_VERSION = "corpus-v2"
 
 
-def corpus_v2_jsonl_path() -> Path:
-    return bench_fixtures_dir() / "corpus-v2.jsonl"
+def corpus_sqlite_path(version: str = _DEFAULT_CORPUS_VERSION) -> Path:
+    return bench_fixtures_dir() / f"{version}.sqlite"
 
 
-def corpus_v2_manifest_path() -> Path:
-    return bench_fixtures_dir() / "corpus-v2.manifest.json"
+def corpus_jsonl_path(version: str = _DEFAULT_CORPUS_VERSION) -> Path:
+    return bench_fixtures_dir() / f"{version}.jsonl"
 
 
-def corpus_v2_overlay_path() -> Path:
-    return bench_fixtures_dir() / "corpus-v2.overlay.sqlite"
+def corpus_manifest_path(version: str = _DEFAULT_CORPUS_VERSION) -> Path:
+    return bench_fixtures_dir() / f"{version}.manifest.json"
+
+
+def corpus_overlay_path(version: str = _DEFAULT_CORPUS_VERSION) -> Path:
+    return bench_fixtures_dir() / f"{version}.overlay.sqlite"
 
 
 def bench_qa_path(version: str = "eval-qa-v1") -> Path:

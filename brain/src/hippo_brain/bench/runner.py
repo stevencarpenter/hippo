@@ -1,4 +1,4 @@
-"""Per-model passes: main (one attempt per event) + self-consistency."""
+"""Per-model self-consistency pass: N attempts per event with embedding."""
 
 from __future__ import annotations
 
@@ -97,49 +97,6 @@ def _compute_gates(call_result, entry: CorpusEntry) -> tuple[dict, dict | None]:
         },
         schema_result.parsed,
     )
-
-
-def run_model_main_pass(
-    *,
-    base_url: str,
-    model: str,
-    entries: list[CorpusEntry],
-    timeout_sec: int,
-    metrics_snapshot: Callable[[], dict],
-    temperature: float,
-    run_id: str = "run-local",
-) -> list[AttemptRecord]:
-    """Single attempt per event. Headline metrics are computed over this pass."""
-    model_dict = {"id": model}
-    attempts: list[AttemptRecord] = []
-    for entry in entries:
-        start_iso = _dt.datetime.now(tz=_dt.UTC).isoformat()
-        start_monotonic_ns = time.monotonic_ns()
-        cr = call_enrichment(
-            base_url=base_url,
-            model=model,
-            payload=entry.redacted_content,
-            source=entry.source,
-            timeout_sec=timeout_sec,
-            temperature=temperature,
-        )
-        gates, parsed = _compute_gates(cr, entry)
-        attempts.append(
-            _build_attempt(
-                run_id=run_id,
-                model=model_dict,
-                entry=entry,
-                attempt_idx=0,
-                purpose="main",
-                call_result=cr,
-                gates=gates,
-                parsed=parsed,
-                system_snapshot=metrics_snapshot(),
-                start_iso=start_iso,
-                start_monotonic_ns=start_monotonic_ns,
-            )
-        )
-    return attempts
 
 
 def run_self_consistency_pass(

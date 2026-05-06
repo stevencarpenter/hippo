@@ -4,8 +4,10 @@ Subcommands:
   run                    — run the bench against one or more candidate models
   corpus init            — sample a fixture from the live hippo DB
   corpus verify          — re-check a fixture against its manifest
-  corpus add-adversarial — add an adversarial event to the v2 overlay
+  corpus add-adversarial — add an adversarial event to the corpus overlay
   summary                — pretty-print a run JSONL file as a text table
+  determinism            — compare N JSONL run files (BT-29 trust gate)
+  recover                — clear a stale pause lockfile from a crashed bench
 
 See `docs/superpowers/specs/2026-04-21-hippo-bench-design.md` for the
 full design and `brain/src/hippo_brain/bench/README.md` for an
@@ -21,101 +23,59 @@ import platform
 import sqlite3
 from pathlib import Path
 
-from hippo_brain.bench.corpus import (
-    sample_from_hippo_db,
-    verify_corpus,
-    write_corpus,
-)
+from hippo_brain.bench.corpus import init_corpus, verify_corpus
 from hippo_brain.bench.orchestrate import orchestrate_run
-from hippo_brain.bench.prod_config import default_prod_brain_url
 from hippo_brain.bench.paths import (
     bench_runs_dir,
+    corpus_jsonl_path,
     corpus_manifest_path,
-    corpus_path,
-    corpus_v2_jsonl_path,
-    corpus_v2_manifest_path,
-    corpus_v2_overlay_path,
-    corpus_v2_sqlite_path,
-    runs_dir,
+    corpus_overlay_path,
+    corpus_sqlite_path,
 )
+from hippo_brain.bench.prod_config import default_prod_brain_url
 
-# Default corpus stratification — mirrors the spec's "shakeout" sizing.
-# Override via --shell, --claude, --browser, --workflow on `corpus init`.
-_DEFAULT_SOURCE_COUNTS = {"shell": 15, "claude": 12, "browser": 10, "workflow": 3}
 _OVERLAY_CAP = 50
 
 
 def _cmd_corpus_init(args: argparse.Namespace) -> int:
-    if args.corpus_version == "corpus-v2":
-        from hippo_brain.bench.corpus_v2 import init_corpus_v2
-
-        corpus_version = args.bump_version if args.bump_version else args.corpus_version
-        force = bool(args.bump_version)
-        dest_sqlite = corpus_v2_sqlite_path()
-        dest_jsonl = corpus_v2_jsonl_path()
-        manifest = corpus_v2_manifest_path()
-        try:
-            entries = init_corpus_v2(
-                db_path=Path(args.db_path),
-                dest_sqlite=dest_sqlite,
-                dest_jsonl=dest_jsonl,
-                manifest_path=manifest,
-                corpus_version=corpus_version,
-                corpus_days=args.corpus_days,
-                corpus_buckets=args.corpus_buckets,
-                shell_min=args.shell_min,
-                claude_min=args.claude_min,
-                browser_min=args.browser_min,
-                workflow_min=args.workflow_min,
-                seed=args.seed,
-                force=force,
-            )
-        except FileExistsError as e:
-            print(f"error: {e}")
-            print("Use --bump-version to overwrite.")
-            return 1
-        print(f"wrote {len(entries)} entries")
-        print(f"sqlite: {dest_sqlite}")
-        print(f"jsonl:  {dest_jsonl}")
-        print(f"manifest: {manifest}")
-        return 0
-
-    # v1 path
-    fixture = corpus_path(args.corpus_version)
-    manifest = corpus_manifest_path(args.corpus_version)
-    counts = {
-        "shell": args.shell,
-        "claude": args.claude,
-        "browser": args.browser,
-        "workflow": args.workflow,
-    }
-    entries = sample_from_hippo_db(
-        db_path=Path(args.db_path),
-        source_counts=counts,
-        seed=args.seed,
-        filter_trivial=not args.no_filter_trivial,
-    )
-    write_corpus(entries, fixture, manifest, args.corpus_version, args.seed)
-    print(f"wrote {len(entries)} entries to {fixture}")
+    corpus_version = args.bump_version if args.bump_version else args.corpus_version
+    force = bool(args.bump_version)
+    dest_sqlite = corpus_sqlite_path(corpus_version)
+    dest_jsonl = corpus_jsonl_path(corpus_version)
+    manifest = corpus_manifest_path(corpus_version)
+    try:
+        entries = init_corpus(
+            db_path=Path(args.db_path),
+            dest_sqlite=dest_sqlite,
+            dest_jsonl=dest_jsonl,
+            manifest_path=manifest,
+            corpus_version=corpus_version,
+            corpus_days=args.corpus_days,
+            corpus_buckets=args.corpus_buckets,
+            shell_min=args.shell_min,
+            claude_min=args.claude_min,
+            browser_min=args.browser_min,
+            workflow_min=args.workflow_min,
+            seed=args.seed,
+            force=force,
+        )
+    except FileExistsError as e:
+        print(f"error: {e}")
+        print("Use --bump-version to overwrite.")
+        return 1
+    print(f"wrote {len(entries)} entries")
+    print(f"sqlite: {dest_sqlite}")
+    print(f"jsonl:  {dest_jsonl}")
     print(f"manifest: {manifest}")
     return 0
 
 
 def _cmd_corpus_verify(args: argparse.Namespace) -> int:
-    if args.corpus_version == "corpus-v2":
-        from hippo_brain.bench.corpus_v2 import verify_corpus_v2
-
-        ok, detail = verify_corpus_v2(
-            corpus_v2_sqlite_path(),
-            corpus_v2_jsonl_path(),
-            corpus_v2_manifest_path(),
-        )
-        print(detail)
-        return 0 if ok else 1
-
-    fixture = corpus_path(args.corpus_version)
-    manifest = corpus_manifest_path(args.corpus_version)
-    ok, detail = verify_corpus(fixture, manifest)
+    ok, detail = verify_corpus(
+        corpus_sqlite_path(args.corpus_version),
+        corpus_jsonl_path(args.corpus_version),
+        corpus_manifest_path(args.corpus_version),
+    )
     print(detail)
     return 0 if ok else 1
 
@@ -142,7 +102,7 @@ def _init_overlay_db(overlay_path: Path) -> sqlite3.Connection:
 def _cmd_corpus_add_adversarial(args: argparse.Namespace) -> int:
     from hippo_brain.redaction import redact
 
-    overlay_path = corpus_v2_overlay_path()
+    overlay_path = corpus_overlay_path()
     conn = _init_overlay_db(overlay_path)
     try:
         count = conn.execute("SELECT COUNT(*) FROM adversarial_events").fetchone()[0]
@@ -244,56 +204,21 @@ def _cmd_run(args: argparse.Namespace) -> int:
     ts = _dt.datetime.now(tz=_dt.UTC).strftime("%Y%m%dT%H%M%S")
     models = [m.strip() for m in args.models.split(",") if m.strip()]
 
-    if args.corpus_version == "corpus-v2":
-        from hippo_brain.bench.orchestrate_v2 import orchestrate_run_v2
-
-        out = (
-            Path(args.out)
-            if args.out
-            else bench_runs_dir(create=True) / f"run-{ts}-{platform.node()}.jsonl"
-        )
-        result = orchestrate_run_v2(
-            candidate_models=models,
-            corpus_version=args.corpus_version,
-            out_path=out,
-            brain_url=args.brain_url,
-            lmstudio_url=args.base_url,
-            embedding_model=args.embedding_model,
-            skip_prod_pause=args.skip_prod_pause,
-            dry_run=args.dry_run,
-            skip_checks=args.skip_checks,
-        )
-        print(f"run_id={result.run_id} out={result.out_path}")
-        if result.models_completed:
-            print(f"completed: {result.models_completed}")
-        if result.models_errored:
-            print(f"errored:   {result.models_errored}")
-        if result.preflight_aborted:
-            return 2
-        if result.models_errored and not result.models_completed:
-            return 3
-        return 0
-
-    # v1 path
-    fixture = corpus_path(args.corpus_version)
-    manifest = corpus_manifest_path(args.corpus_version)
     out = (
-        Path(args.out) if args.out else runs_dir(create=True) / f"run-{ts}-{platform.node()}.jsonl"
+        Path(args.out)
+        if args.out
+        else bench_runs_dir(create=True) / f"run-{ts}-{platform.node()}.jsonl"
     )
     result = orchestrate_run(
         candidate_models=models,
         corpus_version=args.corpus_version,
-        fixture_path=fixture,
-        manifest_path=manifest,
-        base_url=args.base_url,
-        embedding_model=args.embedding_model,
         out_path=out,
-        timeout_sec=args.latency_ceiling_sec,
-        self_consistency_events=args.self_consistency_events,
-        self_consistency_runs=args.self_consistency_runs,
-        skip_checks=args.skip_checks,
+        brain_url=args.brain_url,
+        lmstudio_url=args.base_url,
+        embedding_model=args.embedding_model,
+        skip_prod_pause=args.skip_prod_pause,
         dry_run=args.dry_run,
-        temperature=args.temperature,
+        skip_checks=args.skip_checks,
     )
     print(f"run_id={result.run_id} out={result.out_path}")
     if result.models_completed:
@@ -339,42 +264,20 @@ def _build_parser() -> argparse.ArgumentParser:
 
     run = sub.add_parser("run", help="Run the bench against candidate models")
     run.add_argument("--models", required=True, help="Comma-separated model identifiers")
-    # BT-18: default to v2 — bench v2 is the production path. v1 still
-    # selectable explicitly for legacy comparisons.
-    run.add_argument("--corpus-version", default="corpus-v2")
+    run.add_argument(
+        "--corpus-version",
+        default="corpus-v2",
+        help="Corpus snapshot identifier (string label only).",
+    )
     run.add_argument("--base-url", default="http://localhost:1234/v1")
     run.add_argument(
         "--brain-url",
         default=default_prod_brain_url(),
-        help="Prod brain base URL (v2). Defaults to http://127.0.0.1:<[brain].port> "
+        help="Prod brain base URL. Defaults to http://127.0.0.1:<[brain].port> "
         "read from $XDG_CONFIG_HOME/hippo/config.toml (or $HOME/.config/hippo/config.toml "
         "if XDG_CONFIG_HOME is unset), falling back to port 9175.",
     )
     run.add_argument("--embedding-model", default="text-embedding-nomic-embed-text-v2-moe")
-    run.add_argument(
-        "--latency-ceiling-sec",
-        type=int,
-        default=60,
-        help="Per-call timeout. Calls exceeding this are recorded as timeout.",
-    )
-    run.add_argument(
-        "--self-consistency-events",
-        type=int,
-        default=5,
-        help="How many corpus events to re-run for self-consistency.",
-    )
-    run.add_argument(
-        "--self-consistency-runs",
-        type=int,
-        default=5,
-        help="How many times to re-run each self-consistency event.",
-    )
-    run.add_argument(
-        "--temperature",
-        type=float,
-        default=0.7,
-        help="Sampling temperature. T<0.3 makes self-consistency a vacuous signal.",
-    )
     run.add_argument(
         "--skip-checks",
         action="store_true",
@@ -389,7 +292,7 @@ def _build_parser() -> argparse.ArgumentParser:
     run.add_argument(
         "--skip-prod-pause",
         action="store_true",
-        help="Skip pausing the prod brain before the run (v2 only).",
+        help="Skip pausing the prod brain before the run.",
     )
     run.set_defaults(func=_cmd_run)
 
@@ -397,26 +300,16 @@ def _build_parser() -> argparse.ArgumentParser:
     corpus_sub = corpus.add_subparsers(dest="corpus_command", required=True)
 
     ci = corpus_sub.add_parser("init", help="Sample a fresh fixture from hippo.db")
-    ci.add_argument("--corpus-version", default="corpus-v2")
+    ci.add_argument(
+        "--corpus-version",
+        default="corpus-v2",
+        help="Corpus snapshot identifier (string label only).",
+    )
     ci.add_argument("--seed", type=int, default=42)
     ci.add_argument(
         "--db-path",
         default=str(Path.home() / ".local" / "share" / "hippo" / "hippo.db"),
     )
-    # v1 per-source counts
-    ci.add_argument("--shell", type=int, default=_DEFAULT_SOURCE_COUNTS["shell"])
-    ci.add_argument("--claude", type=int, default=_DEFAULT_SOURCE_COUNTS["claude"])
-    ci.add_argument("--browser", type=int, default=_DEFAULT_SOURCE_COUNTS["browser"])
-    ci.add_argument("--workflow", type=int, default=_DEFAULT_SOURCE_COUNTS["workflow"])
-    ci.add_argument(
-        "--no-filter-trivial",
-        action="store_true",
-        help=(
-            "Disable production-eligibility filter (default: filter trivial events "
-            "via hippo_brain.enrichment.is_enrichment_eligible)."
-        ),
-    )
-    # v2 per-source minimums and time-bucketing
     ci.add_argument("--corpus-days", type=int, default=90)
     ci.add_argument("--corpus-buckets", type=int, default=9)
     ci.add_argument("--shell-min", type=int, default=50)
@@ -427,16 +320,20 @@ def _build_parser() -> argparse.ArgumentParser:
         "--bump-version",
         default=None,
         metavar="VERSION",
-        help="Override corpus version string and force-overwrite existing corpus (v2 only).",
+        help="Override corpus version string and force-overwrite existing corpus.",
     )
     ci.set_defaults(func=_cmd_corpus_init)
 
     cv = corpus_sub.add_parser("verify", help="Re-check a fixture's content hash")
-    cv.add_argument("--corpus-version", default="corpus-v2")
+    cv.add_argument(
+        "--corpus-version",
+        default="corpus-v2",
+        help="Corpus snapshot identifier (string label only).",
+    )
     cv.set_defaults(func=_cmd_corpus_verify)
 
     caa = corpus_sub.add_parser(
-        "add-adversarial", help="Append an adversarial event to the v2 overlay"
+        "add-adversarial", help="Append an adversarial event to the corpus overlay"
     )
     caa.add_argument("event_id", help="Event ID to add (e.g. shell-12345)")
     caa.add_argument("--reason", required=True, help="Why this event is adversarial")
