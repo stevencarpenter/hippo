@@ -7,7 +7,7 @@ For each Q/A item this module:
 - computes Hit@K, MRR, and NDCG@10 with binary relevance against the
   fixture's ``golden_event_id``,
 - aggregates per-mode means and returns the spec-shaped
-  ``downstream_proxy`` block consumed by ``coordinator_v2``.
+  ``downstream_proxy`` block consumed by ``coordinator``.
 
 A separate :func:`run_ask_synthesis_sample` does a deterministic
 sample over Q/A items (sorted by ``qa_id``) and checks
@@ -36,7 +36,7 @@ def load_qa_items(qa_path: Path, corpus_event_ids: set[str]) -> tuple[list[dict]
     """Load Q/A JSONL and drop items whose golden event isn't in the corpus.
 
     ``corpus_event_ids`` is the set of ``{source}-{id}`` identifiers
-    produced by ``corpus_v2.sample_from_hippo_db_v2``. An item with a
+    produced by ``corpus.sample_from_hippo_db``. An item with a
     missing golden event is unscoreable, so we bin it and return the
     count for visibility in the run manifest.
     """
