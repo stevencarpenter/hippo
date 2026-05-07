@@ -93,6 +93,9 @@ async def test_chat_400_body_extraction_failure_does_not_mask_http_error(client)
     # Original HTTPStatusError surfaced — extraction error did not mask it.
     assert isinstance(exc_info.value, httpx.HTTPStatusError)
     assert "Body:" not in str(exc_info.value)
+    # Status code survives — guards against a regression where the synthetic
+    # error is raised but with empty/missing fields.
+    assert exc_info.value.response.status_code == 400
 
 
 async def test_embed_returns_embeddings(client):

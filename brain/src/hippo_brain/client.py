@@ -1,10 +1,13 @@
 import hashlib
+import logging
 import math
 import time
 
 import httpx
 
 from hippo_brain.telemetry import get_meter
+
+logger = logging.getLogger(__name__)
 
 _meter = get_meter()
 _request_duration = (
@@ -39,7 +42,11 @@ def _raise_with_body(resp: httpx.Response) -> None:
     except httpx.HTTPStatusError as e:
         try:
             body = resp.text[:500].strip()
-        except Exception:
+        except Exception as text_err:
+            # Catch broad: any failure to decode (UnicodeDecodeError, ResponseNotRead,
+            # programming bugs in the property accessor) must not mask the real HTTP
+            # error. Log at debug so the loss of body context is greppable in incidents.
+            logger.debug("LM Studio response body extraction failed: %s", text_err)
             body = ""
         if not body:
             raise
