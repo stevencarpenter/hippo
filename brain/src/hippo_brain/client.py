@@ -28,6 +28,23 @@ _prompt_tokens = (
 )
 
 
+def _raise_with_body(resp: httpx.Response) -> None:
+    # LM Studio returns a JSON body on 4xx (e.g. {"error": "Context history must
+    # not be empty."}) that pinpoints the failure. httpx's default raise_for_status
+    # discards it, so we re-raise with the body appended to keep diagnoses visible.
+    try:
+        resp.raise_for_status()
+    except httpx.HTTPStatusError as e:
+        body = resp.text[:500].strip()
+        if not body:
+            raise
+        raise httpx.HTTPStatusError(
+            f"{e.args[0]}\nBody: {body}",
+            request=e.request,
+            response=e.response,
+        ) from e
+
+
 class LMStudioClient:
     def __init__(self, base_url: str = "http://localhost:1234/v1", timeout: float = 300.0):
         self.base_url = base_url.rstrip("/")
@@ -52,7 +69,7 @@ class LMStudioClient:
                         "max_tokens": max_tokens,
                     },
                 )
-                resp.raise_for_status()
+                _raise_with_body(resp)
                 data = resp.json()
                 result = data["choices"][0]["message"]["content"]
             if _request_duration:
@@ -74,7 +91,7 @@ class LMStudioClient:
                     f"{self.base_url}/embeddings",
                     json={"model": model, "input": texts},
                 )
-                resp.raise_for_status()
+                _raise_with_body(resp)
                 data = resp.json()
                 result = [item["embedding"] for item in data["data"]]
             if _request_duration:
@@ -89,7 +106,7 @@ class LMStudioClient:
         """Return IDs of all models currently loaded in LM Studio."""
         async with httpx.AsyncClient(timeout=self.timeout) as client:
             resp = await client.get(f"{self.base_url}/models")
-            resp.raise_for_status()
+            _raise_with_body(resp)
             return [m["id"] for m in resp.json().get("data", [])]
 
     async def is_reachable(self) -> bool:

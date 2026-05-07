@@ -44,6 +44,41 @@ async def test_chat_raises_on_http_error(client):
             await client.chat(messages=[{"role": "user", "content": "hi"}])
 
 
+async def test_chat_400_includes_response_body_in_error(client):
+    """4xx responses must surface LM Studio's error body, not just the status string.
+
+    Without the body, the brain logs only `400 Bad Request for url ...`, hiding
+    the actual reason LM Studio rejected the request (e.g. "Context history must
+    not be empty.", "max_tokens exceeds context window", etc.).
+    """
+    mock_resp = _mock_response(400, {"error": "Context history must not be empty."})
+    with patch("httpx.AsyncClient.post", new_callable=AsyncMock, return_value=mock_resp):
+        with pytest.raises(httpx.HTTPStatusError, match="Context history must not be empty"):
+            await client.chat(messages=[{"role": "user", "content": "hi"}])
+
+
+async def test_embed_400_includes_response_body_in_error(client):
+    """Same body-capture behavior must apply to embeddings."""
+    mock_resp = _mock_response(400, {"error": "embedding model not loaded"})
+    with patch("httpx.AsyncClient.post", new_callable=AsyncMock, return_value=mock_resp):
+        with pytest.raises(httpx.HTTPStatusError, match="embedding model not loaded"):
+            await client.embed(texts=["hi"])
+
+
+async def test_chat_error_with_empty_body_does_not_blow_up(client):
+    """If LM Studio returns a 4xx with no body, behavior matches the original
+    raise_for_status (no synthetic 'Body:' suffix)."""
+    mock_resp = httpx.Response(
+        503,
+        content=b"",
+        request=httpx.Request("POST", "http://localhost:1234/v1/fake"),
+    )
+    with patch("httpx.AsyncClient.post", new_callable=AsyncMock, return_value=mock_resp):
+        with pytest.raises(httpx.HTTPStatusError) as exc_info:
+            await client.chat(messages=[{"role": "user", "content": "hi"}])
+    assert "Body:" not in str(exc_info.value)
+
+
 async def test_embed_returns_embeddings(client):
     """embed() should POST to /embeddings and return list of vectors."""
     mock_resp = _mock_response(
