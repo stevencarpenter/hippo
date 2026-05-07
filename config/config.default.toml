@@ -3,9 +3,9 @@ base_url = "http://localhost:1234/v1"
 timeout_secs = 300
 
 [models]
-enrichment = "qwen3.5-35b-a3b"     # Preferred model; hippo falls back to first available if not loaded
-enrichment_bulk = "qwen3.5-35b-a3b"
-query = "qwen3.5-35b-a3b"
+enrichment = "qwen3.6-35b-a3b-ud-mlx"     # Preferred model; hippo falls back to first available if not loaded
+enrichment_bulk = "qwen3.6-35b-a3b-ud-mlx"
+query = "qwen3.6-35b-a3b-ud-mlx"
 embedding = "text-embedding-nomic-embed-text-v2-moe"     # Purpose-built embedding model, 768d
 
 [daemon]

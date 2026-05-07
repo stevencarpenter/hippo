@@ -44,7 +44,7 @@ locations the harness can compare.
 # across all three runs; BT-29 measures bench-verdict reproducibility at the
 # settings you actually deploy with, not at temperature=0 (which would make
 # self-consistency a vacuous signal).
-MODEL="qwen3.5-35b-a3b-instruct@q4_k_m"
+MODEL="qwen3.6-35b-a3b-ud-mlx"
 
 for i in 1 2 3; do
   uv run --project brain hippo-bench run \
@@ -58,23 +58,12 @@ uv run --project brain hippo-bench determinism \
   /tmp/bt29-r1.jsonl /tmp/bt29-r2.jsonl /tmp/bt29-r3.jsonl
 ```
 
-**Expected output (PASS path):**
-
-```
-# BT-29 determinism report
-
-Runs compared: 3
-Mode: hybrid
-Budget: MRR delta ≤ 0.02, Hit@1 delta ≤ 0.02
-
-| model | n_runs | mrr range | mrr delta | hit@1 range | hit@1 delta | verdict |
-|---|---|---|---|---|---|---|
-| qwen3.5-35b-a3b-instruct@q4_k_m | 3 | 0.4012–0.4133 | 0.0121 | 0.5000–0.5100 | 0.0100 | PASS |
-
-**Overall: PASS**
-```
-
-Exit code 0. Trust foundation is verified for this model.
+The harness prints a determinism report with one row per compared model
+listing the mrr range, mrr delta, hit@1 range, hit@1 delta, and verdict.
+It exits 0 when every model's MRR delta and Hit@1 delta are within budget
+— at which point trust foundation is verified for this model. No reference
+metrics are published in this runbook on purpose: real numbers belong in
+the trust ledger (see below), not in copy-paste templates.
 
 The harness defaults to comparing the `hybrid` retrieval mode (production
 path). To verify a different mode (e.g. semantic-only deployment), pass
@@ -113,7 +102,7 @@ Once a model passes BT-29, append a line to the trust ledger:
 
 ```bash
 # (proposal — table doesn't exist yet, see Phase 3 work)
-echo "$(date -u +%Y-%m-%dT%H:%MZ) | $MODEL | PASS | mrr_delta=0.012 | hit_at_1_delta=0.010" \
+echo "$(date -u +%Y-%m-%dT%H:%MZ) | $MODEL | $VERDICT | mrr_delta=$MRR_DELTA | hit_at_1_delta=$HIT_AT_1_DELTA" \
   >> docs/baselines/bt29-trust-ledger.tsv
 ```
 
