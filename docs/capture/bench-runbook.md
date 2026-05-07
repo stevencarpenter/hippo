@@ -44,7 +44,7 @@ locations the harness can compare.
 # across all three runs; BT-29 measures bench-verdict reproducibility at the
 # settings you actually deploy with, not at temperature=0 (which would make
 # self-consistency a vacuous signal).
-MODEL="qwen3.5-35b-a3b-instruct@q4_k_m"
+MODEL="qwen3.6-35b-a3b-ud-mlx"
 
 for i in 1 2 3; do
   uv run --project brain hippo-bench run \
@@ -69,7 +69,7 @@ Budget: MRR delta ≤ 0.02, Hit@1 delta ≤ 0.02
 
 | model | n_runs | mrr range | mrr delta | hit@1 range | hit@1 delta | verdict |
 |---|---|---|---|---|---|---|
-| qwen3.5-35b-a3b-instruct@q4_k_m | 3 | 0.4012–0.4133 | 0.0121 | 0.5000–0.5100 | 0.0100 | PASS |
+| qwen3.6-35b-a3b-ud-mlx | 3 | 0.4012–0.4133 | 0.0121 | 0.5000–0.5100 | 0.0100 | PASS |
 
 **Overall: PASS**
 ```
