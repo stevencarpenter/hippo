@@ -66,8 +66,8 @@ async def test_embed_400_includes_response_body_in_error(client):
 
 
 async def test_chat_error_with_empty_body_does_not_blow_up(client):
-    """If LM Studio returns a 4xx with no body, behavior matches the original
-    raise_for_status (no synthetic 'Body:' suffix)."""
+    """If LM Studio returns an HTTP error with no body, behavior matches the
+    original raise_for_status (no synthetic 'Body:' suffix)."""
     mock_resp = httpx.Response(
         503,
         content=b"",
