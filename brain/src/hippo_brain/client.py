@@ -1,10 +1,13 @@
 import hashlib
+import logging
 import math
 import time
 
 import httpx
 
 from hippo_brain.telemetry import get_meter
+
+logger = logging.getLogger(__name__)
 
 _meter = get_meter()
 _request_duration = (
@@ -26,6 +29,32 @@ _prompt_tokens = (
     if _meter
     else None
 )
+
+
+def _raise_with_body(resp: httpx.Response) -> None:
+    # LM Studio returns a JSON body on 4xx (e.g. {"error": "Context history must
+    # not be empty."}) that pinpoints the failure. httpx's default raise_for_status
+    # discards it, so we re-raise with the body appended to keep diagnoses visible.
+    # If body extraction itself fails (decode error, body unread, etc.), fall back
+    # to the original raise — never let a body-extraction error mask the real HTTP error.
+    try:
+        resp.raise_for_status()
+    except httpx.HTTPStatusError as e:
+        try:
+            body = resp.text[:500].strip()
+        except Exception as text_err:
+            # Catch broad: any failure to decode (UnicodeDecodeError, ResponseNotRead,
+            # programming bugs in the property accessor) must not mask the real HTTP
+            # error. Log at debug so the loss of body context is greppable in incidents.
+            logger.debug("LM Studio response body extraction failed: %s", text_err)
+            body = ""
+        if not body:
+            raise
+        raise httpx.HTTPStatusError(
+            f"{e.args[0]}\nBody: {body}",
+            request=e.request,
+            response=e.response,
+        ) from e
 
 
 class LMStudioClient:
@@ -52,7 +81,7 @@ class LMStudioClient:
                         "max_tokens": max_tokens,
                     },
                 )
-                resp.raise_for_status()
+                _raise_with_body(resp)
                 data = resp.json()
                 result = data["choices"][0]["message"]["content"]
             if _request_duration:
@@ -74,7 +103,7 @@ class LMStudioClient:
                     f"{self.base_url}/embeddings",
                     json={"model": model, "input": texts},
                 )
-                resp.raise_for_status()
+                _raise_with_body(resp)
                 data = resp.json()
                 result = [item["embedding"] for item in data["data"]]
             if _request_duration:
@@ -89,7 +118,7 @@ class LMStudioClient:
         """Return IDs of all models currently loaded in LM Studio."""
         async with httpx.AsyncClient(timeout=self.timeout) as client:
             resp = await client.get(f"{self.base_url}/models")
-            resp.raise_for_status()
+            _raise_with_body(resp)
             return [m["id"] for m in resp.json().get("data", [])]
 
     async def is_reachable(self) -> bool:

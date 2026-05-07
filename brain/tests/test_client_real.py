@@ -2,7 +2,7 @@
 
 import httpx
 import pytest
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, PropertyMock, patch
 
 from hippo_brain.client import LMStudioClient
 
@@ -42,6 +42,60 @@ async def test_chat_raises_on_http_error(client):
     with patch("httpx.AsyncClient.post", new_callable=AsyncMock, return_value=mock_resp):
         with pytest.raises(httpx.HTTPStatusError):
             await client.chat(messages=[{"role": "user", "content": "hi"}])
+
+
+async def test_chat_400_includes_response_body_in_error(client):
+    """4xx responses must surface LM Studio's error body, not just the status string.
+
+    Without the body, the brain logs only `400 Bad Request for url ...`, hiding
+    the actual reason LM Studio rejected the request (e.g. "Context history must
+    not be empty.", "max_tokens exceeds context window", etc.).
+    """
+    mock_resp = _mock_response(400, {"error": "Context history must not be empty."})
+    with patch("httpx.AsyncClient.post", new_callable=AsyncMock, return_value=mock_resp):
+        with pytest.raises(httpx.HTTPStatusError, match="Context history must not be empty"):
+            await client.chat(messages=[{"role": "user", "content": "hi"}])
+
+
+async def test_embed_400_includes_response_body_in_error(client):
+    """Same body-capture behavior must apply to embeddings."""
+    mock_resp = _mock_response(400, {"error": "embedding model not loaded"})
+    with patch("httpx.AsyncClient.post", new_callable=AsyncMock, return_value=mock_resp):
+        with pytest.raises(httpx.HTTPStatusError, match="embedding model not loaded"):
+            await client.embed(texts=["hi"])
+
+
+async def test_chat_error_with_empty_body_does_not_blow_up(client):
+    """If LM Studio returns an HTTP error with no body, behavior matches the
+    original raise_for_status (no synthetic 'Body:' suffix)."""
+    mock_resp = httpx.Response(
+        503,
+        content=b"",
+        request=httpx.Request("POST", "http://localhost:1234/v1/fake"),
+    )
+    with patch("httpx.AsyncClient.post", new_callable=AsyncMock, return_value=mock_resp):
+        with pytest.raises(httpx.HTTPStatusError) as exc_info:
+            await client.chat(messages=[{"role": "user", "content": "hi"}])
+    assert "Body:" not in str(exc_info.value)
+
+
+async def test_chat_400_body_extraction_failure_does_not_mask_http_error(client):
+    """If reading resp.text itself raises (decode error, body unread, etc.), the
+    helper must still raise the original HTTPStatusError — not the body-extraction
+    exception. Otherwise a transient extraction failure would silently replace the
+    real LM Studio error in caller view (silent-fallback anti-pattern)."""
+    mock_resp = _mock_response(400, {"error": "real LM Studio reason"})
+    with patch.object(httpx.Response, "text", new_callable=PropertyMock) as mock_text:
+        mock_text.side_effect = UnicodeDecodeError("utf-8", b"", 0, 1, "bad")
+        with patch("httpx.AsyncClient.post", new_callable=AsyncMock, return_value=mock_resp):
+            with pytest.raises(httpx.HTTPStatusError) as exc_info:
+                await client.chat(messages=[{"role": "user", "content": "hi"}])
+    # Original HTTPStatusError surfaced — extraction error did not mask it.
+    assert isinstance(exc_info.value, httpx.HTTPStatusError)
+    assert "Body:" not in str(exc_info.value)
+    # Status code survives — guards against a regression where the synthetic
+    # error is raised but with empty/missing fields.
+    assert exc_info.value.response.status_code == 400
 
 
 async def test_embed_returns_embeddings(client):
