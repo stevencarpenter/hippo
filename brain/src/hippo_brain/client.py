@@ -32,10 +32,15 @@ def _raise_with_body(resp: httpx.Response) -> None:
     # LM Studio returns a JSON body on 4xx (e.g. {"error": "Context history must
     # not be empty."}) that pinpoints the failure. httpx's default raise_for_status
     # discards it, so we re-raise with the body appended to keep diagnoses visible.
+    # If body extraction itself fails (decode error, body unread, etc.), fall back
+    # to the original raise — never let a body-extraction error mask the real HTTP error.
     try:
         resp.raise_for_status()
     except httpx.HTTPStatusError as e:
-        body = resp.text[:500].strip()
+        try:
+            body = resp.text[:500].strip()
+        except Exception:
+            body = ""
         if not body:
             raise
         raise httpx.HTTPStatusError(
