@@ -22,6 +22,14 @@ _lm_errors = (
     if _meter
     else None
 )
+_lm_crashes = (
+    _meter.create_counter(
+        "hippo.brain.lmstudio.crashes",
+        description="LM Studio reported model worker crashes (process killed mid-inference)",
+    )
+    if _meter
+    else None
+)
 _prompt_tokens = (
     _meter.create_histogram(
         "hippo.brain.lmstudio.prompt_tokens", description="Prompt size in chars"
@@ -50,6 +58,12 @@ def _raise_with_body(resp: httpx.Response) -> None:
             body = ""
         if not body:
             raise
+        # Surface model-worker crashes as a first-class signal — independent of
+        # the queue-level retries that absorb them. Substring match against the
+        # LM Studio UI string as of 2026-05-07; if LM Studio changes the wording
+        # this stops counting (re-check on LM Studio upgrades).
+        if _lm_crashes and "model has crashed" in body:
+            _lm_crashes.add(1)
         raise httpx.HTTPStatusError(
             f"{e.args[0]}\nBody: {body}",
             request=e.request,
