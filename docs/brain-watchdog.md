@@ -42,3 +42,27 @@ alert rule needs to diagnose a wedge without tailing the full log.
 Metrics: `hippo.brain.enrichment.reaped{queue_name=...}` and
 `hippo.brain.enrichment.preflight_skipped{reason=...}` — watch these to see
 the watchdog actually firing.
+
+## Tracking LM Studio model worker crashes
+
+LM Studio's qwen-MoE worker process can die mid-inference (JIT eviction when
+another client requests a different model, or Metal allocator failures under
+context-cache pressure). Until the worker reloads, the API returns HTTP 4xx
+with body `{"error": "The model has crashed without additional information.
+(Exit code: null)"}`. The brain's queue-level retry transparently re-runs the
+work against a freshly-restarted model, so end-to-end enrichment succeeds —
+but the underlying instability was previously visible only in the workflow
+path's logs (which lack the in-process retry wrapper that claude/shell/browser
+have).
+
+Metric: `hippo.brain.lmstudio.crashes` — incremented by the LM Studio HTTP
+client's `_raise_with_body` helper whenever a 4xx body matches `"model has
+crashed"` (case-insensitive). Path-agnostic: chat, embed, and list_models
+contribute equally. Crashes are a strict subset of `hippo.brain.lmstudio.errors`,
+so a single crash increments both counters; dashboards graphing `crashes /
+errors` see the LM Studio-specific share of failures over time.
+
+Mitigations live in LM Studio settings, not hippo: set
+`unloadPreviousJITModelOnLoad: false` to stop competing-client evictions, and
+cap `defaultContextLength` to a fixed value (e.g. 32768) instead of `"max"`
+to reduce Metal allocator pressure.
