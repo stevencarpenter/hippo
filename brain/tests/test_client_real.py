@@ -123,6 +123,19 @@ async def test_embed_400_with_crash_body_also_increments_crash_counter(client, m
     mock_counter.add.assert_called_once_with(1)
 
 
+async def test_chat_400_crash_match_is_case_insensitive(client, monkeypatch):
+    """Capitalization drift across LM Studio versions (e.g. "Model Has Crashed"
+    or all-caps) must still increment the counter — the substring match is
+    intentionally case-insensitive."""
+    mock_counter = MagicMock()
+    monkeypatch.setattr(client_module, "_lm_crashes", mock_counter)
+    mock_resp = _mock_response(400, {"error": "MODEL HAS CRASHED unexpectedly during inference."})
+    with patch("httpx.AsyncClient.post", new_callable=AsyncMock, return_value=mock_resp):
+        with pytest.raises(httpx.HTTPStatusError):
+            await client.chat(messages=[{"role": "user", "content": "hi"}])
+    mock_counter.add.assert_called_once_with(1)
+
+
 async def test_chat_400_body_extraction_failure_does_not_mask_http_error(client):
     """If reading resp.text itself raises (decode error, body unread, etc.), the
     helper must still raise the original HTTPStatusError — not the body-extraction
