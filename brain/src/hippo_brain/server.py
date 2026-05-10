@@ -262,10 +262,11 @@ class BrainServer:
                 "version": get_version(),
                 "expected_schema_version": EXPECTED_SCHEMA_VERSION,
                 "accepted_read_versions": sorted(ACCEPTED_READ_VERSIONS),
-                # Wire field name kept for backwards compat with consumers
-                # parsing the field by string (e.g. mise.toml install script).
-                # Internal naming has moved to "inference"; we may add a second
-                # "inference_reachable" key in a future release.
+                # Both keys carry the same value during the migration: new
+                # consumers should read "inference_reachable"; "lmstudio_reachable"
+                # remains for older consumers parsing by string (e.g. the
+                # mise.toml install script). Drop the legacy key once those
+                # consumers are confirmed updated.
                 "lmstudio_reachable": reachable,
                 "inference_reachable": reachable,
                 "enrichment_running": self.enrichment_running,

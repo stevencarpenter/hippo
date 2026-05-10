@@ -276,7 +276,7 @@
     },
     {
       "id": 5,
-      "title": "LM Studio Errors / min",
+      "title": "Inference Errors / min",
       "type": "timeseries",
       "gridPos": {
         "x": 8,

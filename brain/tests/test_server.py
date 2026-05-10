@@ -86,6 +86,11 @@ def test_health_endpoint(tmp_db):
     assert "version" in data
     assert data["version"] == get_version()
     assert "inference_reachable" in data
+    # `lmstudio_reachable` is the legacy alias kept for older consumers
+    # (e.g. the mise.toml install script). It must be emitted alongside
+    # `inference_reachable` until those consumers are confirmed updated.
+    assert "lmstudio_reachable" in data
+    assert data["inference_reachable"] == data["lmstudio_reachable"]
     assert "enrichment_running" in data
     assert "db_reachable" in data
     assert "queue_depth" in data
