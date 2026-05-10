@@ -2,8 +2,9 @@
 
 import httpx
 import pytest
-from unittest.mock import AsyncMock, PropertyMock, patch
+from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
+from hippo_brain import client as client_module
 from hippo_brain.client import InferenceClient
 
 
@@ -77,6 +78,62 @@ async def test_chat_error_with_empty_body_does_not_blow_up(client):
         with pytest.raises(httpx.HTTPStatusError) as exc_info:
             await client.chat(messages=[{"role": "user", "content": "hi"}])
     assert "Body:" not in str(exc_info.value)
+
+
+async def test_chat_400_with_crash_body_increments_crash_counter(client, monkeypatch):
+    """The "model has crashed" body must increment the crash counter so
+    diagnostic dashboards can track worker kills independently of which capture
+    path triggered them. The signal is otherwise hidden when queue-level retry
+    absorbs the failure."""
+    mock_counter = MagicMock()
+    monkeypatch.setattr(client_module, "_inference_crashes", mock_counter)
+    mock_resp = _mock_response(
+        400,
+        {"error": "The model has crashed without additional information. (Exit code: null)"},
+    )
+    with patch("httpx.AsyncClient.post", new_callable=AsyncMock, return_value=mock_resp):
+        with pytest.raises(httpx.HTTPStatusError):
+            await client.chat(messages=[{"role": "user", "content": "hi"}])
+    mock_counter.add.assert_called_once_with(1)
+
+
+async def test_chat_400_with_non_crash_body_does_not_increment_crash_counter(client, monkeypatch):
+    """Other 400 reasons (malformed input, context overflow, etc.) must NOT be
+    counted as crashes — false positives would erode the signal."""
+    mock_counter = MagicMock()
+    monkeypatch.setattr(client_module, "_inference_crashes", mock_counter)
+    mock_resp = _mock_response(400, {"error": "Context history must not be empty."})
+    with patch("httpx.AsyncClient.post", new_callable=AsyncMock, return_value=mock_resp):
+        with pytest.raises(httpx.HTTPStatusError):
+            await client.chat(messages=[{"role": "user", "content": "hi"}])
+    mock_counter.add.assert_not_called()
+
+
+async def test_embed_400_with_crash_body_also_increments_crash_counter(client, monkeypatch):
+    """Counter is path-agnostic: embed() crashes are equally diagnostic."""
+    mock_counter = MagicMock()
+    monkeypatch.setattr(client_module, "_inference_crashes", mock_counter)
+    mock_resp = _mock_response(
+        400,
+        {"error": "The model has crashed without additional information."},
+    )
+    with patch("httpx.AsyncClient.post", new_callable=AsyncMock, return_value=mock_resp):
+        with pytest.raises(httpx.HTTPStatusError):
+            await client.embed(texts=["hi"])
+    mock_counter.add.assert_called_once_with(1)
+
+
+async def test_chat_400_crash_match_is_case_insensitive(client, monkeypatch):
+    """Capitalization drift across inference-server versions (e.g. "Model Has
+    Crashed" or all-caps) must still increment the counter — the substring
+    match is intentionally case-insensitive."""
+    mock_counter = MagicMock()
+    monkeypatch.setattr(client_module, "_inference_crashes", mock_counter)
+    mock_resp = _mock_response(400, {"error": "MODEL HAS CRASHED unexpectedly during inference."})
+    with patch("httpx.AsyncClient.post", new_callable=AsyncMock, return_value=mock_resp):
+        with pytest.raises(httpx.HTTPStatusError):
+            await client.chat(messages=[{"role": "user", "content": "hi"}])
+    mock_counter.add.assert_called_once_with(1)
 
 
 async def test_chat_400_body_extraction_failure_does_not_mask_http_error(client):

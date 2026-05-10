@@ -26,6 +26,14 @@ _inference_errors = (
     if _meter
     else None
 )
+_inference_crashes = (
+    _meter.create_counter(
+        "hippo.brain.inference.crashes",
+        description="Inference server reported model worker crashes (process killed mid-inference)",
+    )
+    if _meter
+    else None
+)
 _prompt_tokens = (
     _meter.create_histogram(
         "hippo.brain.inference.prompt_tokens", description="Prompt size in chars"
@@ -55,6 +63,16 @@ def _raise_with_body(resp: httpx.Response) -> None:
             body = ""
         if not body:
             raise
+        # Surface model-worker crashes as a first-class signal — independent of
+        # the queue-level retries that absorb them. Substring match against the
+        # LM Studio UI string ("model has crashed"); case-insensitive to survive
+        # capitalization drift across LM Studio versions. oMLX reports crashes
+        # differently and is not yet covered here — extend the match list when an
+        # oMLX crash signature is observed in production. Crashes are a subset of
+        # _inference_errors (which counts every failed call from chat()/embed()
+        # except blocks): a single crash increments BOTH.
+        if _inference_crashes and "model has crashed" in body.lower():
+            _inference_crashes.add(1)
         raise httpx.HTTPStatusError(
             f"{e.args[0]}\nBody: {body}",
             request=e.request,
