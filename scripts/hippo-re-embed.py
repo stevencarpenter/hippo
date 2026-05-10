@@ -19,7 +19,7 @@ import sys
 import tomllib
 from pathlib import Path
 
-from hippo_brain.client import LMStudioClient
+from hippo_brain.client import InferenceClient
 from hippo_brain.embeddings import (
     EMBED_DIM,
     _pad_or_truncate,
@@ -50,9 +50,8 @@ async def main():
         print("Error: no embedding model configured")
         sys.exit(1)
 
-    lmstudio_url = config.get("lmstudio", {}).get(
-        "base_url", "http://localhost:1234/v1"
-    )
+    inference_section = config.get("inference") or config.get("lmstudio", {})
+    inference_url = inference_section.get("base_url", "http://localhost:8000/v1")
     data_dir = Path(
         config.get("storage", {}).get(
             "data_dir", str(Path.home() / ".local" / "share" / "hippo")
@@ -94,7 +93,7 @@ async def main():
     db = open_vector_db(str(data_dir))
     table = get_or_create_table(db)
 
-    client = LMStudioClient(base_url=lmstudio_url)
+    client = InferenceClient(base_url=inference_url)
 
     for i, (
         node_id,

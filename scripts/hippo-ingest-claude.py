@@ -142,7 +142,7 @@ def main():
 
 async def run_enrichment(config: dict, model_override: str, db_path: Path, data_dir: Path):
     """Run enrichment on pending Claude session segments."""
-    from hippo_brain.client import LMStudioClient
+    from hippo_brain.client import InferenceClient
     from hippo_brain.embeddings import (
         embed_knowledge_node,
         get_or_create_table,
@@ -157,8 +157,9 @@ async def run_enrichment(config: dict, model_override: str, db_path: Path, data_
         print("Error: no enrichment model configured")
         return
 
-    lmstudio_url = config.get("lmstudio", {}).get("base_url", "http://localhost:1234/v1")
-    client = LMStudioClient(base_url=lmstudio_url, timeout=120.0)
+    inference_section = config.get("inference") or config.get("lmstudio", {})
+    inference_url = inference_section.get("base_url", "http://localhost:8000/v1")
+    client = InferenceClient(base_url=inference_url, timeout=120.0)
 
     # Vector store
     vector_table = None
