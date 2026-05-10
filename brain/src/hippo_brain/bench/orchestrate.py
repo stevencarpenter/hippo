@@ -28,6 +28,7 @@ from hippo_brain.bench.paths import (
 )
 from hippo_brain.bench.pause_rpc import PauseRpcClient
 from hippo_brain.bench.preflight import run_all_preflight
+from hippo_brain.bench.prod_config import default_prod_brain_url
 from hippo_brain.schema_version import EXPECTED_SCHEMA_VERSION
 
 _T = TypeVar("_T")
@@ -107,7 +108,7 @@ def orchestrate_run(
     corpus_sqlite: Path | None = None,
     manifest_path: Path | None = None,
     out_path: Path,
-    brain_url: str = "http://localhost:8000",
+    brain_url: str | None = None,
     inference_url: str = "http://localhost:8000",
     embedding_model: str = "",
     drain_timeout_sec: float = 3600.0,
@@ -116,6 +117,14 @@ def orchestrate_run(
     skip_checks: bool = False,
 ) -> OrchestrationResult:
     """Top-level orchestration loop."""
+    # Resolve brain_url at call time, not at import time, so the default
+    # tracks the real prod-brain port (`[brain].port` from config.toml,
+    # falling back to `DEFAULT_BRAIN_PORT`). A literal default at signature
+    # level would freeze the wrong port and silently shadow `inference_url`
+    # when both default to the same host:port.
+    if brain_url is None:
+        brain_url = default_prod_brain_url()
+
     run_id = _build_run_id()
     out_dir = out_path.parent
     out_dir.mkdir(parents=True, exist_ok=True)
