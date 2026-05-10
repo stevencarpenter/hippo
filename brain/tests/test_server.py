@@ -79,18 +79,26 @@ def test_health_endpoint(tmp_db):
     app = _make_app(str(db_path))
     client = TestClient(app)
 
-    resp = client.get("/health")
+    # Force the inference reachability probe to return True so the dual-emit
+    # equality assertion below tests the real contract (both keys carry the
+    # same value) rather than the always-False CI fallback.
+    with patch(
+        "hippo_brain.server.InferenceClient.is_reachable",
+        new_callable=AsyncMock,
+        return_value=True,
+    ):
+        resp = client.get("/health")
     assert resp.status_code == 200
     data = resp.json()
     assert data["status"] == "ok"
     assert "version" in data
     assert data["version"] == get_version()
-    assert "inference_reachable" in data
+    assert data["inference_reachable"] is True
     # `lmstudio_reachable` is the legacy alias kept for older consumers
     # (e.g. the mise.toml install script). It must be emitted alongside
-    # `inference_reachable` until those consumers are confirmed updated.
-    assert "lmstudio_reachable" in data
-    assert data["inference_reachable"] == data["lmstudio_reachable"]
+    # `inference_reachable` and carry the same value until those consumers
+    # are confirmed updated.
+    assert data["lmstudio_reachable"] is True
     assert "enrichment_running" in data
     assert "db_reachable" in data
     assert "queue_depth" in data
