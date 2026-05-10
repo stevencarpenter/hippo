@@ -240,7 +240,7 @@ async def test_retrieval_failure_yields_degraded_result(monkeypatch):
                 )
             ],
             conn=conn,
-            lm_client=None,
+            inference_client=None,
             embedding_model="",
             query_model="",
             mode="lexical",

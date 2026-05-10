@@ -46,8 +46,8 @@ def test_main_serve_dispatches(monkeypatch):
                 return_value={
                     "db_path": "",
                     "data_dir": "",
-                    "lmstudio_base_url": "http://localhost:1234/v1",
-                    "lmstudio_timeout_secs": 300.0,
+                    "inference_base_url": "http://localhost:8000/v1",
+                    "inference_timeout_secs": 300.0,
                     "enrichment_model": "",
                     "embedding_model": "",
                     "query_model": "",
@@ -67,8 +67,8 @@ def test_main_serve_dispatches(monkeypatch):
     mock_create_app.assert_called_once_with(
         db_path="",
         data_dir="",
-        lmstudio_base_url="http://localhost:1234/v1",
-        lmstudio_timeout_secs=300.0,
+        inference_base_url="http://localhost:8000/v1",
+        inference_timeout_secs=300.0,
         enrichment_model="",
         embedding_model="",
         query_model="",
@@ -91,8 +91,8 @@ def test_main_serve_uses_config_runtime_settings(monkeypatch):
     runtime_settings = {
         "db_path": "/tmp/hippo.db",
         "data_dir": "/tmp",
-        "lmstudio_base_url": "http://localhost:2222/v1",
-        "lmstudio_timeout_secs": 300.0,
+        "inference_base_url": "http://localhost:2222/v1",
+        "inference_timeout_secs": 300.0,
         "enrichment_model": "local-model",
         "embedding_model": "local-embed",
         "query_model": "local-query",
@@ -115,8 +115,8 @@ def test_main_serve_uses_config_runtime_settings(monkeypatch):
     mock_create_app.assert_called_once_with(
         db_path="/tmp/hippo.db",
         data_dir="/tmp",
-        lmstudio_base_url="http://localhost:2222/v1",
-        lmstudio_timeout_secs=300.0,
+        inference_base_url="http://localhost:2222/v1",
+        inference_timeout_secs=300.0,
         enrichment_model="local-model",
         embedding_model="local-embed",
         query_model="local-query",

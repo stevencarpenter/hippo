@@ -4,8 +4,11 @@ use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct HippoConfig {
-    #[serde(default)]
-    pub lmstudio: LmStudioConfig,
+    /// Inference-server config. Accepts the modern `[inference]` section
+    /// and the legacy `[lmstudio]` alias so existing user configs keep
+    /// working without a manual edit.
+    #[serde(default, alias = "lmstudio")]
+    pub inference: InferenceConfig,
     #[serde(default)]
     pub models: ModelsConfig,
     #[serde(default)]
@@ -25,19 +28,19 @@ pub struct HippoConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct LmStudioConfig {
-    #[serde(default = "default_lmstudio_base_url")]
+pub struct InferenceConfig {
+    #[serde(default = "default_inference_base_url")]
     pub base_url: String,
 }
 
-fn default_lmstudio_base_url() -> String {
-    "http://localhost:1234/v1".to_string()
+fn default_inference_base_url() -> String {
+    "http://localhost:8000/v1".to_string()
 }
 
-impl Default for LmStudioConfig {
+impl Default for InferenceConfig {
     fn default() -> Self {
         Self {
-            base_url: default_lmstudio_base_url(),
+            base_url: default_inference_base_url(),
         }
     }
 }
@@ -294,6 +297,7 @@ fn default_browser_allowlist_domains() -> Vec<String> {
         "huggingface.co".to_string(),
         "arxiv.org".to_string(),
         "lmstudio.ai".to_string(),
+        "omlx.ai".to_string(),
         // System & OS docs
         "man7.org".to_string(),
         "wiki.archlinux.org".to_string(),
@@ -655,7 +659,7 @@ mod tests {
     #[test]
     fn test_default_config() {
         let config = HippoConfig::default();
-        assert_eq!(config.lmstudio.base_url, "http://localhost:1234/v1");
+        assert_eq!(config.inference.base_url, "http://localhost:8000/v1");
         assert_eq!(config.daemon.flush_interval_ms, 100);
         assert_eq!(config.daemon.flush_batch_size, 50);
         assert_eq!(config.brain.port, 9175);
@@ -665,7 +669,7 @@ mod tests {
     #[test]
     fn test_config_from_toml() {
         let toml_str = r#"
-[lmstudio]
+[inference]
 base_url = "http://custom:5678/v1"
 
 [daemon]
@@ -675,7 +679,7 @@ flush_interval_ms = 200
 port = 8080
 "#;
         let config: HippoConfig = toml::from_str(toml_str).unwrap();
-        assert_eq!(config.lmstudio.base_url, "http://custom:5678/v1");
+        assert_eq!(config.inference.base_url, "http://custom:5678/v1");
         assert_eq!(config.daemon.flush_interval_ms, 200);
         assert_eq!(config.brain.port, 8080);
         // Defaults for unspecified fields
@@ -683,9 +687,22 @@ port = 8080
     }
 
     #[test]
+    fn test_legacy_lmstudio_section_alias() {
+        // Existing user configs use `[lmstudio]`. The serde alias means
+        // those keep deserializing into HippoConfig.inference without
+        // requiring a config edit at upgrade time.
+        let toml_str = r#"
+[lmstudio]
+base_url = "http://legacy:1234/v1"
+"#;
+        let config: HippoConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.inference.base_url, "http://legacy:1234/v1");
+    }
+
+    #[test]
     fn test_missing_config_returns_default() {
         let config = HippoConfig::load(Path::new("/nonexistent/path/config.toml")).unwrap();
-        assert_eq!(config.lmstudio.base_url, "http://localhost:1234/v1");
+        assert_eq!(config.inference.base_url, "http://localhost:8000/v1");
     }
 
     #[test]
@@ -731,7 +748,7 @@ port = 8080
         std::fs::write(
             &config_path,
             r#"
-[lmstudio]
+[inference]
 base_url = "http://custom:9999/v1"
 
 [daemon]
@@ -745,7 +762,7 @@ poll_interval_secs = 10
         )
         .unwrap();
         let config = HippoConfig::load(&config_path).unwrap();
-        assert_eq!(config.lmstudio.base_url, "http://custom:9999/v1");
+        assert_eq!(config.inference.base_url, "http://custom:9999/v1");
         assert_eq!(config.daemon.flush_interval_ms, 500);
         assert_eq!(config.daemon.flush_batch_size, 100);
         assert_eq!(config.brain.port, 7777);

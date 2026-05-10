@@ -1,7 +1,7 @@
 # hippo-brain
 
 Python enrichment and query server for Hippo. Polls the shared SQLite database for new shell events, enriches them via
-local LLMs (LM Studio), and serves knowledge queries over HTTP.
+a local OpenAI-compatible inference server (default oMLX, LM Studio also supported), and serves knowledge queries over HTTP.
 
 ## Setup
 
@@ -60,10 +60,10 @@ uv run --project brain hippo-mcp
 
 | Module          | Purpose                                                                 |
 |-----------------|-------------------------------------------------------------------------|
-| `enrichment.py` | Polls SQLite queue, calls LM Studio for summarization/entity extraction |
+| `enrichment.py` | Polls SQLite queue, calls the inference server for summarization/entity extraction |
 | `server.py`     | Starlette HTTP server for query API                                     |
-| `embeddings.py` | Vector embedding generation via LM Studio                               |
-| `client.py`     | Daemon communication client                                             |
+| `embeddings.py` | Vector embedding generation via the inference server                    |
+| `client.py`     | OpenAI-compatible InferenceClient (HTTP)                                |
 | `models.py`     | Pydantic data models                                                    |
 | `training.py`   | Training data export utilities                                          |
 

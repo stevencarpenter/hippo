@@ -157,8 +157,11 @@ async fn print_brain_health_details(
                         .get("enrichment_running")
                         .and_then(|v| v.as_bool())
                         .unwrap_or(false);
-                    let lmstudio_reachable = json
-                        .get("lmstudio_reachable")
+                    // Wire field stays "lmstudio_reachable" for compat; brain
+                    // also emits "inference_reachable" so we tolerate either.
+                    let inference_reachable = json
+                        .get("inference_reachable")
+                        .or_else(|| json.get("lmstudio_reachable"))
                         .and_then(|v| v.as_bool())
                         .unwrap_or(false);
                     let db_reachable = json
@@ -193,10 +196,10 @@ async fn print_brain_health_details(
                         "[OK] Brain queue depth: {} pending, {} failed",
                         queue_depth, queue_failed
                     );
-                    if lmstudio_reachable {
-                        println!("[OK] Brain LM Studio: reachable");
+                    if inference_reachable {
+                        println!("[OK] Brain inference server: reachable");
                     } else {
-                        println!("[!!] Brain LM Studio: unreachable");
+                        println!("[!!] Brain inference server: unreachable");
                     }
                     if db_reachable {
                         println!("[OK] Brain DB: reachable");
@@ -385,8 +388,8 @@ pub async fn handle_status(config: &HippoConfig) -> Result<()> {
             println!("  DB size:           {} bytes", status.db_size_bytes);
             println!("  Fallback pending:  {}", status.fallback_files_pending);
             println!(
-                "  LM Studio:        {}",
-                if status.lmstudio_reachable {
+                "  Inference server: {}",
+                if status.inference_reachable {
                     "reachable"
                 } else {
                     "unreachable"
@@ -1148,14 +1151,14 @@ pub async fn handle_doctor(config: &HippoConfig, explain: bool) -> Result<()> {
         println!("[--] No config file (using defaults)");
     }
 
-    // Check LM Studio
-    let lm_url = format!("{}/models", config.lmstudio.base_url);
-    match client.get(&lm_url).send().await {
-        Ok(r) if r.status().is_success() => println!("[OK] LM Studio reachable"),
+    // Check inference server
+    let inference_url = format!("{}/models", config.inference.base_url);
+    match client.get(&inference_url).send().await {
+        Ok(r) if r.status().is_success() => println!("[OK] Inference server reachable"),
         _ => {
             println!(
-                "[!!] LM Studio not reachable at {}",
-                config.lmstudio.base_url
+                "[!!] Inference server not reachable at {}",
+                config.inference.base_url
             );
             fail_count += 1;
         }

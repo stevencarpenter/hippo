@@ -14,8 +14,8 @@ def _default_settings() -> dict:
     return {
         "db_path": str(data_dir / "hippo.db"),
         "data_dir": str(data_dir),
-        "lmstudio_base_url": "http://localhost:1234/v1",
-        "lmstudio_timeout_secs": 300.0,
+        "inference_base_url": "http://localhost:8000/v1",
+        "inference_timeout_secs": 300.0,
         "enrichment_model": "",
         "embedding_model": "",
         "query_model": "",
@@ -44,7 +44,9 @@ def _load_runtime_settings() -> dict:
         storage.get("data_dir", Path.home() / ".local" / "share" / "hippo")
     ).expanduser()
 
-    lmstudio = config.get("lmstudio", {})
+    # Accept legacy [lmstudio] section so existing user configs keep working
+    # without a manual edit. New deployments should use [inference].
+    inference = config.get("inference") or config.get("lmstudio", {})
     models = config.get("models", {})
     brain = config.get("brain", {})
     telemetry = config.get("telemetry", {})
@@ -53,8 +55,8 @@ def _load_runtime_settings() -> dict:
     return {
         "db_path": str(data_dir / "hippo.db"),
         "data_dir": str(data_dir),
-        "lmstudio_base_url": lmstudio.get("base_url", "http://localhost:1234/v1"),
-        "lmstudio_timeout_secs": _coerce_float(lmstudio.get("timeout_secs"), 300.0),
+        "inference_base_url": inference.get("base_url", "http://localhost:8000/v1"),
+        "inference_timeout_secs": _coerce_float(inference.get("timeout_secs"), 300.0),
         "enrichment_model": models.get("enrichment", ""),
         "embedding_model": models.get("embedding", ""),
         "query_model": models.get("query", "") or models.get("enrichment", ""),
@@ -113,8 +115,8 @@ def main() -> None:
         app = create_app(
             db_path=settings["db_path"],
             data_dir=settings["data_dir"],
-            lmstudio_base_url=settings["lmstudio_base_url"],
-            lmstudio_timeout_secs=settings["lmstudio_timeout_secs"],
+            inference_base_url=settings["inference_base_url"],
+            inference_timeout_secs=settings["inference_timeout_secs"],
             enrichment_model=settings["enrichment_model"],
             embedding_model=settings["embedding_model"],
             query_model=settings["query_model"],

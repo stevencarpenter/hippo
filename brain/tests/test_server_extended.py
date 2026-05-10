@@ -21,7 +21,7 @@ from hippo_brain.watchdog import PreflightDecision
 def _make_server(db_path: str, **kwargs) -> BrainServer:
     defaults = dict(
         db_path=db_path,
-        lmstudio_base_url="http://localhost:1234/v1",
+        inference_base_url="http://localhost:8000/v1",
         enrichment_model="test-model",
         poll_interval_secs=60,
         enrichment_batch_size=5,
@@ -111,7 +111,7 @@ def test_query_semantic_falls_back_to_lexical_on_embed_failure(tmp_db):
     """When the embedding call raises, semantic search falls back to lexical
     and still returns results with a warning flag.
 
-    Regression target: a transient LM Studio outage must not black-hole user
+    Regression target: a transient inference outage must not black-hole user
     queries — we promise graceful degradation.
     """
     conn, db_path = tmp_db
@@ -240,7 +240,7 @@ async def test_shell_enrichment_schedules_embedding(tmp_db):
     server._embed_node = _rec  # type: ignore[method-assign]
 
     ok = PreflightDecision(proceed=True, reason="ok", loaded_models=["test-model"])
-    with patch("hippo_brain.server.preflight_lm_studio", new_callable=AsyncMock, return_value=ok):
+    with patch("hippo_brain.server.preflight_inference", new_callable=AsyncMock, return_value=ok):
         task = asyncio.create_task(server._enrichment_loop())
         await asyncio.sleep(0.2)
         task.cancel()
@@ -289,7 +289,7 @@ async def test_browser_enrichment_writes_node_and_schedules_embedding(tmp_db):
     server._embed_node = _rec  # type: ignore[method-assign]
 
     ok = PreflightDecision(proceed=True, reason="ok", loaded_models=["test-model"])
-    with patch("hippo_brain.server.preflight_lm_studio", new_callable=AsyncMock, return_value=ok):
+    with patch("hippo_brain.server.preflight_inference", new_callable=AsyncMock, return_value=ok):
         task = asyncio.create_task(server._enrichment_loop())
         await asyncio.sleep(0.2)
         task.cancel()
@@ -336,13 +336,13 @@ async def test_workflow_enrichment_calls_enrich_one_async(tmp_db):
 
     enrich_calls: list[int] = []
 
-    async def _fake_enrich(db_path_arg, run_id, lm, query_model):
+    async def _fake_enrich(db_path_arg, run_id, inference, query_model):
         enrich_calls.append(run_id)
 
     ok = PreflightDecision(proceed=True, reason="ok", loaded_models=["test-model"])
     with (
         patch(
-            "hippo_brain.server.preflight_lm_studio",
+            "hippo_brain.server.preflight_inference",
             new_callable=AsyncMock,
             return_value=ok,
         ),

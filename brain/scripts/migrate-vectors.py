@@ -26,7 +26,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from hippo_brain.client import LMStudioClient  # noqa: E402
+from hippo_brain.client import InferenceClient  # noqa: E402
 from hippo_brain.embeddings import embed_knowledge_node, open_vector_db  # noqa: E402
 
 logging.basicConfig(
@@ -50,11 +50,12 @@ def _default_config_path() -> Path:
 def _load_models(config_path: Path) -> tuple[str, str, str]:
     """Return (base_url, embed_model, command_model) from config.toml."""
     if not config_path.exists():
-        return ("http://localhost:1234/v1", "", "")
+        return ("http://localhost:8000/v1", "", "")
     with config_path.open("rb") as f:
         cfg = tomllib.load(f)
     models = cfg.get("models", {})
-    base_url = cfg.get("lmstudio", {}).get("base_url", "http://localhost:1234/v1")
+    inference = cfg.get("inference") or cfg.get("lmstudio", {})
+    base_url = inference.get("base_url", "http://localhost:8000/v1")
     return (
         base_url,
         models.get("embedding", ""),
@@ -84,7 +85,7 @@ async def run(db_path: Path | None, data_dir: Path | None, config_path: Path) ->
         return 0
 
     log.info("re-embedding %d knowledge_nodes", len(rows))
-    client = LMStudioClient(base_url=base_url)
+    client = InferenceClient(base_url=base_url)
     failed = 0
     for node_id, uuid, _content_json, embed_text in rows:
         node_dict = {
@@ -94,12 +95,18 @@ async def run(db_path: Path | None, data_dir: Path | None, config_path: Path) ->
             "commands_raw": "",
         }
         try:
+            # Re-embedding is the whole purpose of this script — a model
+            # switch is expected (e.g. LM Studio nomic v2-moe → omlx
+            # ModernBERT). Drift guard would otherwise block every write.
+            # The first successful insert calls record_embed_model and
+            # updates the corpus's stored model to the new value.
             await embed_knowledge_node(
                 client,
                 conn,
                 node_dict,
                 embed_model=embed_model,
                 command_model=command_model,
+                allow_embed_switch=True,
             )
         except Exception as exc:
             log.warning("failed to re-embed node id=%s uuid=%s: %s", node_id, uuid, exc)

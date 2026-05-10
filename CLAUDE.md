@@ -97,7 +97,7 @@ Two processes share a SQLite database at ~/.local/share/hippo/hippo.db:
 
 1. hippo-daemon (Rust) - captures shell events via Unix socket, redacts secrets, writes to SQLite, serves CLI queries.
    `hippo doctor` checks version alignment between CLI, running daemon, and brain.
-2. hippo-brain (Python) - polls enrichment queues from SQLite, calls LM Studio API, writes knowledge nodes + embeddings
+2. hippo-brain (Python) - polls enrichment queues from SQLite, calls a local OpenAI-compatible inference server (default oMLX, also tested with LM Studio), writes knowledge nodes + embeddings
    to SQLite (sqlite-vec vec0 virtual tables + FTS5). Shell, Claude, and browser sources are enriched concurrently via `asyncio.gather()`;
    embeddings run as background tasks to overlap with LLM inference.
 

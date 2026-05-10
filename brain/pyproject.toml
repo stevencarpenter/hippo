@@ -48,7 +48,7 @@ docstring-code-format = true
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
-markers = ["live: tests requiring a running LM Studio instance"]
+markers = ["live: tests requiring a running inference server (oMLX, LM Studio, etc.)"]
 
 [tool.coverage.run]
 source_pkgs = ["hippo_brain"]

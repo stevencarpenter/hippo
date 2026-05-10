@@ -126,14 +126,14 @@ pub async fn handle_request(state: &Arc<DaemonState>, request: DaemonRequest) ->
                     .map(|f| f.len() as u64)
                     .unwrap_or(0);
 
-            // Check LM Studio reachability
-            let lm_url = format!("{}/models", state.config.lmstudio.base_url);
+            // Check inference server reachability
+            let inference_url = format!("{}/models", state.config.inference.base_url);
             let client = reqwest::Client::builder()
                 .timeout(Duration::from_secs(1))
                 .build()
                 .unwrap_or_default();
-            status.lmstudio_reachable = client
-                .get(&lm_url)
+            status.inference_reachable = client
+                .get(&inference_url)
                 .send()
                 .await
                 .map(|r| r.status().is_success())
@@ -1190,7 +1190,7 @@ mod tests {
         let (lm_listener, lm_port) = bind_local_http_listener();
         let (brain_listener, brain_port) = bind_local_http_listener();
 
-        config.lmstudio.base_url = format!("http://127.0.0.1:{lm_port}/v1");
+        config.inference.base_url = format!("http://127.0.0.1:{lm_port}/v1");
         config.brain.port = brain_port;
 
         let state = test_state_with_config(config);
@@ -1204,7 +1204,7 @@ mod tests {
 
         lm_started_rx
             .await
-            .expect("LM Studio probe never reached the slow listener");
+            .expect("inference probe never reached the slow listener");
 
         let db_guard = state
             .read_db
@@ -1214,7 +1214,7 @@ mod tests {
 
         let response = request_handle.await.unwrap();
         let status = status_from_response(response);
-        assert!(!status.lmstudio_reachable);
+        assert!(!status.inference_reachable);
         assert!(!status.brain_reachable);
 
         lm_handle.abort();

@@ -1,12 +1,18 @@
-[lmstudio]
-base_url = "http://localhost:1234/v1"
+[inference]
+# OpenAI-compatible local inference server. Tested with oMLX (default) and
+# LM Studio. The legacy section name `[lmstudio]` is still accepted as an
+# alias so existing configs keep working without an edit.
+base_url = "http://localhost:8000/v1"
 timeout_secs = 300
 
 [models]
-enrichment = "qwen3.6-35b-a3b-ud-mlx"     # Preferred model; hippo falls back to first available if not loaded
-enrichment_bulk = "qwen3.6-35b-a3b-ud-mlx"
-query = "qwen3.6-35b-a3b-ud-mlx"
-embedding = "text-embedding-nomic-embed-text-v2-moe"     # Purpose-built embedding model, 768d
+# Model IDs as exposed by your inference server's /v1/models endpoint.
+# omlx defaults to the directory name (e.g. "Qwen3.6-35B-A3B-UD-MLX-4bit");
+# LM Studio uses lowercased aliases (e.g. "qwen3.6-35b-a3b-ud-mlx").
+enrichment = "Qwen3.6-35B-A3B-UD-MLX-4bit"     # Preferred model; hippo falls back to first available if not loaded
+enrichment_bulk = "Qwen3.6-35B-A3B-UD-MLX-4bit"
+query = "Qwen3.6-35B-A3B-UD-MLX-4bit"
+embedding = "nomicai-modernbert-embed-base-8bit"     # 768d MLX embedding (omlx-compatible). LM Studio users: keep "text-embedding-nomic-embed-text-v2-moe".
 
 [daemon]
 flush_interval_ms = 100
@@ -77,6 +83,7 @@ domains = [
     "huggingface.co",
     "arxiv.org",
     "lmstudio.ai",
+    "omlx.ai",
     # System & OS docs
     "man7.org",
     "wiki.archlinux.org",

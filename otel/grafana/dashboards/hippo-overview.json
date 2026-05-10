@@ -309,8 +309,8 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum(rate(hippo_brain_lmstudio_errors_total{service_namespace!~\".+\"}[5m])) * 60",
-          "legendFormat": "LM Studio",
+          "expr": "sum(rate(hippo_brain_inference_errors_total{service_namespace!~\".+\"}[5m])) * 60",
+          "legendFormat": "Inference server",
           "editorMode": "code"
         },
         {

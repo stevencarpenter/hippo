@@ -123,8 +123,8 @@ tail -f ~/.local/share/hippo/brain.stderr.log
 ```
 
 Common causes:
-- LM Studio model unloaded — load the model in LM Studio or set it to stay loaded.
-- LM Studio model swapped — `[models].enrichment` in `~/.config/hippo/config.toml` doesn't match a loaded model.
+- Inference server's chat model unloaded — load the model in oMLX (or LM Studio) or pin it.
+- Inference server's chat model swapped — `[models].enrichment` in `~/.config/hippo/config.toml` doesn't match a loaded model.
 - Brain crashed — `mise run restart` (or `launchctl bootout/bootstrap` the brain agent).
 
 The watchdog reaper handles transient locks (rows stuck in `processing` for > `lock_timeout_secs`); see [`docs/brain-watchdog.md`](../brain-watchdog.md). A persistent backlog is operator-visible — neither the watchdog nor doctor will silently drop work.

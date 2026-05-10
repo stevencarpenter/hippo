@@ -1,9 +1,9 @@
 """Enrichment queue watchdog: reaper + preflight.
 
-Guards against R-22: a worker claims a batch, LM Studio wedges (e.g. returns
-HTTP 400 or goes unreachable), and the lock is held indefinitely while the
-`pending` queue grows behind it. Observed on the live corpus as 417 rows all
-sharing one `locked_at` for 30+ minutes.
+Guards against R-22: a worker claims a batch, the inference server wedges
+(e.g. returns HTTP 400 or goes unreachable), and the lock is held indefinitely
+while the `pending` queue grows behind it. Observed on the live corpus as 417
+rows all sharing one `locked_at` for 30+ minutes.
 
 Mitigations here:
 
@@ -12,9 +12,10 @@ Mitigations here:
   back to `pending` (or `failed` when `retry_count + 1 >= max_retries`), with
   `retry_count` incremented so a permanently bad row doesn't loop forever.
 
-- `preflight_lm_studio` is called before claiming. On unreachable LM Studio or
-  a completely empty model list it returns a decision object the loop uses to
-  skip the cycle and WARN, rather than claiming a batch the LLM can't process.
+- `preflight_inference` is called before claiming. On unreachable inference
+  server or a completely empty model list it returns a decision object the
+  loop uses to skip the cycle and WARN, rather than claiming a batch the LLM
+  can't process.
 
 - Claim functions accept `max_claim_batch` to cap rows claimed per UPDATE per
   cycle, so one bad batch can't poison 400+ rows.
@@ -27,7 +28,7 @@ import sqlite3
 import time
 from dataclasses import dataclass
 
-from hippo_brain.client import LMStudioClient
+from hippo_brain.client import InferenceClient
 from hippo_brain.telemetry import add as _add
 from hippo_brain.telemetry import get_meter
 
@@ -48,7 +49,7 @@ _reaped_counter = (
 _preflight_skipped = (
     _meter.create_counter(
         "hippo.brain.enrichment.preflight_skipped",
-        description="Enrichment cycles skipped by LM Studio preflight",
+        description="Enrichment cycles skipped by inference preflight",
     )
     if _meter
     else None
@@ -147,7 +148,7 @@ def reap_stale_locks(
 
 @dataclass(frozen=True)
 class PreflightDecision:
-    """Outcome of `preflight_lm_studio`.
+    """Outcome of `preflight_inference`.
 
     `proceed` is True when the loop may safely claim work. `reason` is a short
     tag suitable for logs/metrics (`ok`, `unreachable`, `no_models`,
@@ -161,16 +162,16 @@ class PreflightDecision:
     error: str | None = None
 
 
-async def preflight_lm_studio(
-    client: LMStudioClient,
+async def preflight_inference(
+    client: InferenceClient,
     preferred_model: str | None,
     allow_fallback: bool = True,
 ) -> PreflightDecision:
-    """Verify LM Studio is reachable and a chat model is available.
+    """Verify the inference server is reachable and a chat model is available.
 
     Returns `PreflightDecision(proceed=False, ...)` when:
       - `list_models` raises (unreachable / TLS / auth): `reason="unreachable"`.
-      - LM Studio responds with no chat models at all: `reason="no_models"`.
+      - Server responds with no chat models at all: `reason="no_models"`.
       - `allow_fallback=False` and `preferred_model` isn't loaded:
         `reason="model_missing"`.
     Otherwise `proceed=True` with `reason` in {`ok`, `fallback`}.
@@ -180,7 +181,7 @@ async def preflight_lm_studio(
     except Exception as e:
         err = str(e) or type(e).__name__
         logger.warning(
-            "LM Studio preflight: unreachable error=%r preferred_model=%r",
+            "inference preflight: unreachable error=%r preferred_model=%r",
             err,
             preferred_model,
             extra={"stage": "preflight", "reason": "unreachable", "error": err},
@@ -188,12 +189,12 @@ async def preflight_lm_studio(
         _add(_preflight_skipped, reason="unreachable")
         return PreflightDecision(proceed=False, reason="unreachable", loaded_models=[], error=err)
 
-    embedding_hints = ("embed", "nomic", "modernbert")
+    embedding_hints = ("embed", "nomic", "modernbert", "bge", "bert")
     chat_models = [m for m in loaded if not any(h in m.lower() for h in embedding_hints)]
 
     if not chat_models:
         logger.warning(
-            "LM Studio preflight: no chat models loaded loaded_models=%r preferred_model=%r",
+            "inference preflight: no chat models loaded loaded_models=%r preferred_model=%r",
             loaded,
             preferred_model,
             extra={"stage": "preflight", "reason": "no_models"},
@@ -206,7 +207,7 @@ async def preflight_lm_studio(
 
     if not allow_fallback and preferred_model:
         logger.warning(
-            "LM Studio preflight: preferred model not loaded preferred_model=%r loaded_models=%r chat_models=%r",
+            "inference preflight: preferred model not loaded preferred_model=%r loaded_models=%r chat_models=%r",
             preferred_model,
             loaded,
             chat_models,

@@ -152,7 +152,7 @@ def test_enrich_one_creates_knowledge_node(enrichment_db):
     fake_lm = MagicMock()
     fake_lm.complete.return_value = "Push failed due to ruff F401 unused import in brain/x.py"
 
-    enrich_one(enrichment_db, run_id=1, lm=fake_lm, query_model="test-model")
+    enrich_one(enrichment_db, run_id=1, inference=fake_lm, query_model="test-model")
 
     conn = sqlite3.connect(enrichment_db)
     # Knowledge node created
@@ -189,7 +189,7 @@ def test_enrich_one_creates_knowledge_node(enrichment_db):
 
 def test_enrich_one_skips_missing_run(enrichment_db):
     fake_lm = MagicMock()
-    enrich_one(enrichment_db, run_id=999, lm=fake_lm, query_model="test-model")
+    enrich_one(enrichment_db, run_id=999, inference=fake_lm, query_model="test-model")
     fake_lm.complete.assert_not_called()
 
 
@@ -210,7 +210,7 @@ def test_enrich_one_links_claude_sessions(enrichment_db):
     fake_lm = MagicMock()
     fake_lm.complete.return_value = "Summary with session context"
 
-    enrich_one(enrichment_db, run_id=1, lm=fake_lm, query_model="test-model")
+    enrich_one(enrichment_db, run_id=1, inference=fake_lm, query_model="test-model")
 
     conn = sqlite3.connect(enrichment_db)
     link = conn.execute("SELECT * FROM knowledge_node_claude_sessions").fetchone()
@@ -228,7 +228,9 @@ def test_enrich_one_async_creates_knowledge_node(enrichment_db):
     fake_lm = MagicMock()
     fake_lm.chat = AsyncMock(return_value="Async enrichment summary")
 
-    asyncio.run(enrich_one_async(enrichment_db, run_id=1, lm=fake_lm, query_model="test-model"))
+    asyncio.run(
+        enrich_one_async(enrichment_db, run_id=1, inference=fake_lm, query_model="test-model")
+    )
 
     conn = sqlite3.connect(enrichment_db)
     node = conn.execute("SELECT node_type, embed_text, content FROM knowledge_nodes").fetchone()
@@ -270,7 +272,9 @@ def test_enrich_one_async_links_claude_sessions(enrichment_db):
     fake_lm = MagicMock()
     fake_lm.chat = AsyncMock(return_value="Summary")
 
-    asyncio.run(enrich_one_async(enrichment_db, run_id=1, lm=fake_lm, query_model="test-model"))
+    asyncio.run(
+        enrich_one_async(enrichment_db, run_id=1, inference=fake_lm, query_model="test-model")
+    )
 
     conn = sqlite3.connect(enrichment_db)
     link = conn.execute("SELECT * FROM knowledge_node_claude_sessions").fetchone()
@@ -283,7 +287,9 @@ def test_enrich_one_async_skips_missing_run(enrichment_db):
     fake_lm = MagicMock()
     fake_lm.chat = AsyncMock()
 
-    asyncio.run(enrich_one_async(enrichment_db, run_id=999, lm=fake_lm, query_model="test-model"))
+    asyncio.run(
+        enrich_one_async(enrichment_db, run_id=999, inference=fake_lm, query_model="test-model")
+    )
 
     fake_lm.chat.assert_not_called()
 

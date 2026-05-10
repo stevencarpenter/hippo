@@ -61,7 +61,13 @@ pub struct StatusInfo {
     pub queue_depth: u64,
     pub queue_failed: u64,
     pub drop_count: u64,
-    pub lmstudio_reachable: bool,
+    /// Whether the inference server (oMLX, LM Studio, etc.) is reachable.
+    /// Field name kept as `lmstudio_reachable` on the wire for backwards
+    /// compatibility with older CLI consumers (e.g., the install script in
+    /// mise.toml that polls this field by name). The Rust field name is the
+    /// vendor-neutral one; serde renames on serialize/deserialize.
+    #[serde(rename = "lmstudio_reachable", alias = "inference_reachable")]
+    pub inference_reachable: bool,
     pub brain_reachable: bool,
     pub db_size_bytes: u64,
     pub fallback_files_pending: u64,
@@ -156,7 +162,7 @@ mod tests {
                 queue_depth: 5,
                 queue_failed: 0,
                 drop_count: 0,
-                lmstudio_reachable: true,
+                inference_reachable: true,
                 brain_reachable: true,
                 db_size_bytes: 1024000,
                 fallback_files_pending: 0,

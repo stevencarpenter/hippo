@@ -406,7 +406,7 @@ async def test_smoke_end_to_end(monkeypatch):
         report = await run_benchmark(
             questions=questions,
             conn=conn,
-            lm_client=None,  # no synthesis, no judge, no embedding
+            inference_client=None,  # no synthesis, no judge, no embedding
             embedding_model="",
             query_model="",
             mode="lexical",

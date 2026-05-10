@@ -1,16 +1,15 @@
-"""Tests for the real LMStudioClient HTTP methods using httpx mock transport."""
+"""Tests for the real InferenceClient HTTP methods using httpx mock transport."""
 
 import httpx
 import pytest
-from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
+from unittest.mock import AsyncMock, PropertyMock, patch
 
-from hippo_brain import client as client_module
-from hippo_brain.client import LMStudioClient
+from hippo_brain.client import InferenceClient
 
 
 @pytest.fixture
 def client():
-    return LMStudioClient(base_url="http://localhost:1234/v1", timeout=5.0)
+    return InferenceClient(base_url="http://localhost:8000/v1", timeout=5.0)
 
 
 def _mock_response(status_code: int, body: dict) -> httpx.Response:
@@ -18,7 +17,7 @@ def _mock_response(status_code: int, body: dict) -> httpx.Response:
     resp = httpx.Response(
         status_code,
         json=body,
-        request=httpx.Request("POST", "http://localhost:1234/v1/fake"),
+        request=httpx.Request("POST", "http://localhost:8000/v1/fake"),
     )
     return resp
 
@@ -46,11 +45,11 @@ async def test_chat_raises_on_http_error(client):
 
 
 async def test_chat_400_includes_response_body_in_error(client):
-    """4xx responses must surface LM Studio's error body, not just the status string.
+    """4xx responses must surface the inference server's error body, not just the status string.
 
     Without the body, the brain logs only `400 Bad Request for url ...`, hiding
-    the actual reason LM Studio rejected the request (e.g. "Context history must
-    not be empty.", "max_tokens exceeds context window", etc.).
+    the actual reason the server rejected the request (e.g. "Context history
+    must not be empty.", "max_tokens exceeds context window", etc.).
     """
     mock_resp = _mock_response(400, {"error": "Context history must not be empty."})
     with patch("httpx.AsyncClient.post", new_callable=AsyncMock, return_value=mock_resp):
@@ -67,12 +66,12 @@ async def test_embed_400_includes_response_body_in_error(client):
 
 
 async def test_chat_error_with_empty_body_does_not_blow_up(client):
-    """If LM Studio returns an HTTP error with no body, behavior matches the
-    original raise_for_status (no synthetic 'Body:' suffix)."""
+    """If the inference server returns an HTTP error with no body, behavior
+    matches the original raise_for_status (no synthetic 'Body:' suffix)."""
     mock_resp = httpx.Response(
         503,
         content=b"",
-        request=httpx.Request("POST", "http://localhost:1234/v1/fake"),
+        request=httpx.Request("POST", "http://localhost:8000/v1/fake"),
     )
     with patch("httpx.AsyncClient.post", new_callable=AsyncMock, return_value=mock_resp):
         with pytest.raises(httpx.HTTPStatusError) as exc_info:
@@ -80,68 +79,12 @@ async def test_chat_error_with_empty_body_does_not_blow_up(client):
     assert "Body:" not in str(exc_info.value)
 
 
-async def test_chat_400_with_crash_body_increments_crash_counter(client, monkeypatch):
-    """LM Studio's "model has crashed" body must increment the crash counter so
-    diagnostic dashboards can track worker kills independently of which capture
-    path triggered them. The signal is otherwise hidden when queue-level retry
-    absorbs the failure."""
-    mock_counter = MagicMock()
-    monkeypatch.setattr(client_module, "_lm_crashes", mock_counter)
-    mock_resp = _mock_response(
-        400,
-        {"error": "The model has crashed without additional information. (Exit code: null)"},
-    )
-    with patch("httpx.AsyncClient.post", new_callable=AsyncMock, return_value=mock_resp):
-        with pytest.raises(httpx.HTTPStatusError):
-            await client.chat(messages=[{"role": "user", "content": "hi"}])
-    mock_counter.add.assert_called_once_with(1)
-
-
-async def test_chat_400_with_non_crash_body_does_not_increment_crash_counter(client, monkeypatch):
-    """Other 400 reasons (malformed input, context overflow, etc.) must NOT be
-    counted as crashes — false positives would erode the signal."""
-    mock_counter = MagicMock()
-    monkeypatch.setattr(client_module, "_lm_crashes", mock_counter)
-    mock_resp = _mock_response(400, {"error": "Context history must not be empty."})
-    with patch("httpx.AsyncClient.post", new_callable=AsyncMock, return_value=mock_resp):
-        with pytest.raises(httpx.HTTPStatusError):
-            await client.chat(messages=[{"role": "user", "content": "hi"}])
-    mock_counter.add.assert_not_called()
-
-
-async def test_embed_400_with_crash_body_also_increments_crash_counter(client, monkeypatch):
-    """Counter is path-agnostic: embed() crashes are equally diagnostic."""
-    mock_counter = MagicMock()
-    monkeypatch.setattr(client_module, "_lm_crashes", mock_counter)
-    mock_resp = _mock_response(
-        400,
-        {"error": "The model has crashed without additional information."},
-    )
-    with patch("httpx.AsyncClient.post", new_callable=AsyncMock, return_value=mock_resp):
-        with pytest.raises(httpx.HTTPStatusError):
-            await client.embed(texts=["hi"])
-    mock_counter.add.assert_called_once_with(1)
-
-
-async def test_chat_400_crash_match_is_case_insensitive(client, monkeypatch):
-    """Capitalization drift across LM Studio versions (e.g. "Model Has Crashed"
-    or all-caps) must still increment the counter — the substring match is
-    intentionally case-insensitive."""
-    mock_counter = MagicMock()
-    monkeypatch.setattr(client_module, "_lm_crashes", mock_counter)
-    mock_resp = _mock_response(400, {"error": "MODEL HAS CRASHED unexpectedly during inference."})
-    with patch("httpx.AsyncClient.post", new_callable=AsyncMock, return_value=mock_resp):
-        with pytest.raises(httpx.HTTPStatusError):
-            await client.chat(messages=[{"role": "user", "content": "hi"}])
-    mock_counter.add.assert_called_once_with(1)
-
-
 async def test_chat_400_body_extraction_failure_does_not_mask_http_error(client):
     """If reading resp.text itself raises (decode error, body unread, etc.), the
     helper must still raise the original HTTPStatusError — not the body-extraction
     exception. Otherwise a transient extraction failure would silently replace the
-    real LM Studio error in caller view (silent-fallback anti-pattern)."""
-    mock_resp = _mock_response(400, {"error": "real LM Studio reason"})
+    real inference server error in caller view (silent-fallback anti-pattern)."""
+    mock_resp = _mock_response(400, {"error": "real inference server reason"})
     with patch.object(httpx.Response, "text", new_callable=PropertyMock) as mock_text:
         mock_text.side_effect = UnicodeDecodeError("utf-8", b"", 0, 1, "bad")
         with patch("httpx.AsyncClient.post", new_callable=AsyncMock, return_value=mock_resp):
@@ -186,7 +129,7 @@ async def test_is_reachable_returns_true(client):
     mock_resp = httpx.Response(
         200,
         json={"data": []},
-        request=httpx.Request("GET", "http://localhost:1234/v1/models"),
+        request=httpx.Request("GET", "http://localhost:8000/v1/models"),
     )
     with patch("httpx.AsyncClient.get", new_callable=AsyncMock, return_value=mock_resp):
         assert await client.is_reachable() is True
@@ -207,7 +150,7 @@ async def test_is_reachable_returns_false_on_non_200(client):
     mock_resp = httpx.Response(
         503,
         json={"error": "unavailable"},
-        request=httpx.Request("GET", "http://localhost:1234/v1/models"),
+        request=httpx.Request("GET", "http://localhost:8000/v1/models"),
     )
     with patch("httpx.AsyncClient.get", new_callable=AsyncMock, return_value=mock_resp):
         assert await client.is_reachable() is False
@@ -235,11 +178,11 @@ async def test_chat_with_custom_params(client):
 
 def test_client_init_strips_trailing_slash():
     """base_url trailing slash should be stripped."""
-    c = LMStudioClient(base_url="http://localhost:1234/v1/")
-    assert c.base_url == "http://localhost:1234/v1"
+    c = InferenceClient(base_url="http://localhost:8000/v1/")
+    assert c.base_url == "http://localhost:8000/v1"
 
 
 def test_client_default_timeout():
     """Default timeout is 300.0 (large prompts need time for local LLM inference)."""
-    c = LMStudioClient()
+    c = InferenceClient()
     assert c.timeout == 300.0

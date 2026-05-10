@@ -1101,7 +1101,7 @@ pub fn get_status(conn: &Connection) -> Result<crate::protocol::StatusInfo> {
         queue_depth,
         queue_failed,
         drop_count: 0,
-        lmstudio_reachable: false,
+        inference_reachable: false,
         brain_reachable: false,
         db_size_bytes: 0,
         fallback_files_pending: 0,

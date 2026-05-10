@@ -488,7 +488,7 @@ def _resolve_filters(
 
 async def ask(
     question: str,
-    lm_client,
+    inference_client,
     vector_table,
     query_model: str,
     embedding_model: str,
@@ -520,7 +520,7 @@ async def ask(
     Args:
         max_context_chars: Cap on rendered retrieval context; long fields are
             truncated proportionally if the cap is exceeded. Default 8000.
-        skip_preflight: Skip the LM Studio ``health_check`` (useful in tests
+        skip_preflight: Skip the inference server ``health_check`` (useful in tests
             where the client doesn't expose one).
         filters: Fully-formed :class:`retrieval.Filters` object, if the caller
             already has one.
@@ -535,13 +535,13 @@ async def ask(
             ``vector_table`` if not provided (for callers that pass their
             connection positionally).
     """
-    endpoint = getattr(lm_client, "base_url", "<unknown>")
+    endpoint = getattr(inference_client, "base_url", "<unknown>")
 
     # 0. Preflight: is the query model actually loaded?
     if not skip_preflight:
         health = None
         try:
-            probe = getattr(lm_client, "health_check", None)
+            probe = getattr(inference_client, "health_check", None)
             if probe is not None:
                 health = await probe(query_model)
         except Exception as e:
@@ -565,7 +565,7 @@ async def ask(
     # 1. Embed the question.
     try:
         _t0 = time.monotonic()
-        vecs = await lm_client.embed([question], model=embedding_model)
+        vecs = await inference_client.embed([question], model=embedding_model)
         if _rag_duration:
             _rag_duration.record((time.monotonic() - _t0) * 1000, {"stage": "embed"})
     except Exception as e:
@@ -660,7 +660,7 @@ async def ask(
     # 4. Synthesize.
     try:
         _t2 = time.monotonic()
-        answer = await lm_client.chat(messages, model=query_model)
+        answer = await inference_client.chat(messages, model=query_model)
         if _rag_duration:
             _rag_duration.record((time.monotonic() - _t2) * 1000, {"stage": "synthesize"})
     except Exception as e:
