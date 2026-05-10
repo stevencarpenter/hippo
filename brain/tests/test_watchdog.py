@@ -4,9 +4,10 @@ Covers:
   - `reap_stale_locks` flips stale `processing` rows back to `pending`,
     increments `retry_count`, and promotes rows that hit `max_retries` to
     `failed`. Fresh locks are untouched.
-  - `preflight_inference` blocks when LM Studio is unreachable, when no
-    chat models are loaded, and (when fallback is disabled) when the
-    preferred model isn't loaded.
+  - `preflight_inference` blocks when the inference server is
+    unreachable (oMLX, LM Studio, or any OpenAI-compatible server),
+    when no chat models are loaded, and (when fallback is disabled)
+    when the preferred model isn't loaded.
   - `claim_pending_events_by_session`, `claim_pending_claude_segments`, and
     `claim_pending_workflow_runs` each respect `max_claim_batch` so one
     cycle can't vacuum the whole backlog.
