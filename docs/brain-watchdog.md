@@ -57,8 +57,8 @@ wrapper that claude/shell/browser have).
 
 Metric: `hippo.brain.inference.crashes` — incremented by the inference HTTP
 client's `_raise_with_body` helper whenever a 4xx body matches `"model has
-crashed"` (case-insensitive). Path-agnostic: chat and embed contribute
-equally. Crashes are a strict subset of `hippo.brain.inference.errors`, so a
+crashed"` (case-insensitive). Path-agnostic: chat, embed, and list_models
+all route through `_raise_with_body`, so a crash on any of them counts. Crashes are a strict subset of `hippo.brain.inference.errors`, so a
 single crash increments both counters; dashboards graphing `crashes / errors`
 see the share of failures attributable to model-worker crashes over time. The
 substring match is currently calibrated to LM Studio's crash wording — extend
