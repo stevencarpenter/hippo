@@ -39,7 +39,7 @@ def test_attempt_record_serializes():
         raw_output="ok",
         parsed_output={"summary": "x"},
         gates={"schema_valid": True},
-        system_snapshot={"lmstudio_rss_mb": 100.0},
+        system_snapshot={"inference_rss_mb": 100.0},
     )
     d = r.to_dict()
     assert d["record_type"] == "attempt"

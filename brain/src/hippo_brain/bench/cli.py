@@ -214,7 +214,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
         corpus_version=args.corpus_version,
         out_path=out,
         brain_url=args.brain_url,
-        lmstudio_url=args.base_url,
+        inference_url=args.base_url,
         embedding_model=args.embedding_model,
         skip_prod_pause=args.skip_prod_pause,
         dry_run=args.dry_run,
@@ -269,7 +269,12 @@ def _build_parser() -> argparse.ArgumentParser:
         default="corpus-v2",
         help="Corpus snapshot identifier (string label only).",
     )
-    run.add_argument("--base-url", default="http://localhost:1234/v1")
+    run.add_argument(
+        "--base-url",
+        default="http://localhost:8000/v1",
+        help="Inference server base URL. Default targets oMLX on :8000; "
+        "override with http://localhost:1234/v1 for LM Studio.",
+    )
     run.add_argument(
         "--brain-url",
         default=default_prod_brain_url(),
@@ -286,7 +291,7 @@ def _build_parser() -> argparse.ArgumentParser:
     run.add_argument(
         "--dry-run",
         action="store_true",
-        help="Resolve everything and emit a manifest, but make no LM Studio calls.",
+        help="Resolve everything and emit a manifest, but make no inference-server calls.",
     )
     run.add_argument("--out", help="Override output JSONL path.")
     run.add_argument(

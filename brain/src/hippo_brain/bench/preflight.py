@@ -1,7 +1,7 @@
 """Pre-flight checks for hippo-bench.
 
 Verifies prod brain reachability + pauseability, corpus artifact integrity,
-LM Studio reachability, bench-root disk space, and shadow-brain port
+inference server reachability, bench-root disk space, and shadow-brain port
 availability before per-model spawn.
 """
 
@@ -32,22 +32,22 @@ class CheckResult:
         return {"check": self.name, "status": self.status, "detail": self.detail}
 
 
-def check_lmstudio_reachable(url: str) -> CheckResult:
+def check_inference_reachable(url: str) -> CheckResult:
     try:
         resp = httpx.get(url, timeout=5.0)
     except httpx.HTTPError as e:
         return CheckResult(
-            name="lmstudio_reachable",
+            name="inference_reachable",
             status="fail",
             detail=f"HTTP error contacting {url}: {e}",
         )
     if resp.status_code >= 400:
         return CheckResult(
-            name="lmstudio_reachable",
+            name="inference_reachable",
             status="fail",
             detail=f"got HTTP {resp.status_code}",
         )
-    return CheckResult(name="lmstudio_reachable", status="pass", detail=f"HTTP {resp.status_code}")
+    return CheckResult(name="inference_reachable", status="pass", detail=f"HTTP {resp.status_code}")
 
 
 def check_disk_space(path: Path, min_gb: float = 2.0) -> CheckResult:
@@ -220,7 +220,7 @@ def run_all_preflight(
     brain_url: str,
     corpus_sqlite: Path,
     manifest: Path,
-    lmstudio_url: str,
+    inference_url: str,
     skip_prod_pause: bool,
     brain_port: int = 18923,
 ) -> tuple[list[CheckResult], bool]:
@@ -228,7 +228,7 @@ def run_all_preflight(
 
     aborted=True if any hard-fail condition fires:
     - corpus schema mismatch or missing
-    - LM Studio unreachable
+    - inference server unreachable
     - disk < 2 GB under bench root
     - shadow brain port already in use (BT-07)
     - prod brain reachable AND not pauseable AND skip_prod_pause not set
@@ -236,15 +236,15 @@ def run_all_preflight(
     reachable = check_prod_brain_reachable(brain_url)
     pauseable = check_prod_brain_pauseable(brain_url, skip=skip_prod_pause)
     corpus_check = check_corpus_present(corpus_sqlite, manifest)
-    lms_check = check_lmstudio_reachable(lmstudio_url)
+    inference_check = check_inference_reachable(inference_url)
     bench_disk = check_disk_free_bench(hippo_bench_root())
     port_check = check_brain_port_free(brain_port)
 
-    checks = [reachable, pauseable, corpus_check, lms_check, bench_disk, port_check]
+    checks = [reachable, pauseable, corpus_check, inference_check, bench_disk, port_check]
 
     aborted = (
         corpus_check.status == "fail"
-        or lms_check.status == "fail"
+        or inference_check.status == "fail"
         or bench_disk.status == "fail"
         or port_check.status == "fail"
         or (reachable.status == "pass" and pauseable.status == "fail" and not skip_prod_pause)

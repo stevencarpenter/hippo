@@ -3,7 +3,7 @@ from unittest.mock import MagicMock, patch
 from hippo_brain.bench.preflight import (
     CheckResult,
     check_disk_space,
-    check_lmstudio_reachable,
+    check_inference_reachable,
     run_all_preflight,
 )
 
@@ -13,18 +13,18 @@ def test_check_result_is_dict_serializable():
     assert r.to_dict() == {"check": "x", "status": "pass", "detail": "ok"}
 
 
-def test_check_lmstudio_reachable_pass():
+def test_check_inference_reachable_pass():
     fake_resp = MagicMock(status_code=200)
     with patch("httpx.get", return_value=fake_resp):
-        r = check_lmstudio_reachable("http://localhost:1234/v1/models")
+        r = check_inference_reachable("http://localhost:8000/v1/models")
     assert r.status == "pass"
 
 
-def test_check_lmstudio_reachable_fail_on_connection_refused():
+def test_check_inference_reachable_fail_on_connection_refused():
     import httpx
 
     with patch("httpx.get", side_effect=httpx.ConnectError("refused")):
-        r = check_lmstudio_reachable("http://localhost:1234/v1/models")
+        r = check_inference_reachable("http://localhost:8000/v1/models")
     assert r.status == "fail"
 
 
@@ -66,7 +66,7 @@ def test_run_all_preflight_aborts_on_corpus_missing(tmp_path):
             brain_url="http://localhost:9175",
             corpus_sqlite=missing_corpus,
             manifest=missing_manifest,
-            lmstudio_url="http://localhost:1234/v1/models",
+            inference_url="http://localhost:8000/v1/models",
             skip_prod_pause=True,
             brain_port=18923,
         )

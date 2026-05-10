@@ -97,7 +97,7 @@ active window and reported as peaks per model.
 ```
 hippo-bench run --models m1,m2,...
                 [--corpus-version corpus-v2]
-                [--base-url http://localhost:1234/v1]
+                [--base-url http://localhost:8000/v1]
                 [--brain-url http://127.0.0.1:9175]
                 [--embedding-model text-embedding-nomic-embed-text-v2-moe]
                 [--skip-checks] [--dry-run] [--skip-prod-pause]
@@ -135,7 +135,7 @@ hippo-bench recover [--brain-url http://127.0.0.1:9175]
 - `--skip-checks`: bypasses pre-flight (lms availability, prod brain
   reachability, corpus integrity, disk, brain port). Debugging only.
 - `--dry-run`: resolves config, writes a `run_manifest` + `run_end` record, and
-  exits without making any LM Studio calls. Useful for validating config.
+  exits without making any inference-server calls. Useful for validating config.
 - `--skip-prod-pause`: skip pausing the production `hippo-brain` enrichment
   loop. Use this when the prod brain is not running or you're doing a dry-run.
 - `--bump-version` (on `corpus init`): force-overwrite an existing corpus and
@@ -147,7 +147,7 @@ hippo-bench recover [--brain-url http://127.0.0.1:9175]
 
 The bench automatically pauses the production `hippo-brain` enrichment loop
 before spawning the shadow stack, then resumes it after the run completes. This
-prevents the prod brain from consuming LM Studio capacity during the bench
+prevents the prod brain from consuming inference-server capacity during the bench
 window.
 
 - **Automatic** — no flags needed if the prod brain is running
@@ -218,7 +218,7 @@ record types, discriminated by `record_type`:
     "call_error": null
   },
   "system_snapshot": {
-    "lmstudio_rss_mb": 18432, "lmstudio_cpu_pct": 87.2,
+    "inference_rss_mb": 18432, "inference_cpu_pct": 87.2,
     "load_avg_1m": 4.12, "mem_free_mb": 5821
   },
   "timeout": false
@@ -236,7 +236,7 @@ record types, discriminated by `record_type`:
   "attempts_total": 25,
   "gates": {},
   "system_peak": {
-    "lmstudio_rss_mb": 21453, "lmstudio_cpu_pct": 98.1,
+    "inference_rss_mb": 21453, "inference_cpu_pct": 98.1,
     "load_avg_1m": 5.4, "mem_free_mb": 1200,
     "wall_clock_sec": 1854
   },
