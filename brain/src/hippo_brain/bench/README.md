@@ -313,7 +313,7 @@ jq 'select(.record_type=="model_summary") | {model:.model.id, errors:.errors}' "
 | [`paths.py`](paths.py) | XDG path resolution for fixtures and runs |
 | [`schemas.py`](schemas.py) | Per-source enrichment JSON schemas (shell/claude/browser/workflow) |
 | [`gates.py`](gates.py) | Per-attempt gate functions; pure, deterministic, never raise |
-| [`enrich_call.py`](enrich_call.py) | LM Studio HTTP client; classifies errors instead of raising |
+| [`enrich_call.py`](enrich_call.py) | Inference-server HTTP client (vendor-neutral); classifies errors instead of raising |
 | [`lms.py`](lms.py) | `lms` CLI wrapper (load/unload/list) |
 | [`metrics.py`](metrics.py) | Background `MetricsSampler` thread (RSS, CPU, load, memory) |
 | [`preflight.py`](preflight.py) | Pre-flight checks (prod brain reachable / pauseable, corpus, disk, brain port) |
