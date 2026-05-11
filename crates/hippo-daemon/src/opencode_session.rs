@@ -92,7 +92,7 @@ fn make_source_key(db_path: &Path) -> Result<String> {
             .modified()
             .ok()
             .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-            .map(|d| d.as_millis() as u128)
+            .map(|d| d.as_millis())
             .unwrap_or(0);
         Ok(format!("opencode-{}-{}", meta.len(), mtime))
     }
