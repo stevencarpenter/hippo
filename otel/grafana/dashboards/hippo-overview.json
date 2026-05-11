@@ -17,12 +17,125 @@
   "refresh": "30s",
   "panels": [
     {
+      "id": 100,
+      "title": "Stack Health Grade",
+      "description": "Deterministic 0\u2013100 score: 100 = no active capture alarms; subtracts 10 per unresolved+unacked capture_alarms row. Green \u2265 90, yellow 70\u201389, red < 70. Refreshes every 10s from the daemon's hippo.daemon.health.grade observable gauge.",
+      "type": "stat",
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 24,
+        "h": 4
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "hippo_daemon_health_grade{service_namespace!~\".+\"}",
+          "legendFormat": "grade",
+          "editorMode": "code"
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "hippo_daemon_health_active_alarms{service_namespace!~\".+\"}",
+          "legendFormat": "active alarms",
+          "editorMode": "code"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0,
+          "max": 100,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 70
+              },
+              {
+                "color": "green",
+                "value": 90
+              }
+            ]
+          },
+          "mappings": []
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "active alarms"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "short"
+              },
+              {
+                "id": "max",
+                "value": 10
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "green",
+                      "value": null
+                    },
+                    {
+                      "color": "yellow",
+                      "value": 1
+                    },
+                    {
+                      "color": "red",
+                      "value": 3
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "orientation": "horizontal",
+        "textMode": "value_and_name",
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center"
+      }
+    },
+    {
       "id": 1,
       "title": "Events Ingested / min",
       "type": "stat",
       "gridPos": {
         "x": 0,
-        "y": 0,
+        "y": 4,
         "w": 6,
         "h": 4
       },
@@ -73,7 +186,7 @@
       "type": "stat",
       "gridPos": {
         "x": 6,
-        "y": 0,
+        "y": 4,
         "w": 6,
         "h": 4
       },
@@ -128,7 +241,7 @@
       "type": "stat",
       "gridPos": {
         "x": 12,
-        "y": 0,
+        "y": 4,
         "w": 6,
         "h": 4
       },
@@ -187,7 +300,7 @@
       "type": "stat",
       "gridPos": {
         "x": 18,
-        "y": 0,
+        "y": 4,
         "w": 6,
         "h": 4
       },
@@ -238,7 +351,7 @@
       "type": "timeseries",
       "gridPos": {
         "x": 0,
-        "y": 4,
+        "y": 8,
         "w": 8,
         "h": 8
       },
@@ -294,7 +407,7 @@
       "type": "timeseries",
       "gridPos": {
         "x": 8,
-        "y": 4,
+        "y": 8,
         "w": 8,
         "h": 8
       },
@@ -309,8 +422,8 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum(rate(hippo_brain_lmstudio_errors_total{service_namespace!~\".+\"}[5m])) * 60",
-          "legendFormat": "LM Studio",
+          "expr": "sum(rate(hippo_brain_inference_errors_total{service_namespace!~\".+\"}[5m])) * 60",
+          "legendFormat": "Inference",
           "editorMode": "code"
         },
         {
@@ -360,7 +473,7 @@
       "type": "logs",
       "gridPos": {
         "x": 16,
-        "y": 4,
+        "y": 8,
         "w": 8,
         "h": 8
       },

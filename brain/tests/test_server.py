@@ -17,7 +17,7 @@ from hippo_brain.watchdog import PreflightDecision
 def _make_server(db_path: str) -> BrainServer:
     return BrainServer(
         db_path=db_path,
-        lmstudio_base_url="http://localhost:1234/v1",
+        inference_base_url="http://localhost:1234/v1",
         enrichment_model="test-model",
         poll_interval_secs=60,
         enrichment_batch_size=5,
@@ -85,7 +85,7 @@ def test_health_endpoint(tmp_db):
     assert data["status"] == "ok"
     assert "version" in data
     assert data["version"] == get_version()
-    assert "lmstudio_reachable" in data
+    assert "inference_reachable" in data
     assert "enrichment_running" in data
     assert "db_reachable" in data
     assert "queue_depth" in data
@@ -380,7 +380,7 @@ def test_create_app_routes_work(tmp_db):
     _, db_path = tmp_db
     app = create_app(
         db_path=str(db_path),
-        lmstudio_base_url="http://localhost:1234/v1",
+        inference_base_url="http://localhost:1234/v1",
         enrichment_model="test-model",
         poll_interval_secs=9999,
         enrichment_batch_size=5,
@@ -466,7 +466,7 @@ async def test_enrichment_loop_processes_events(tmp_db):
 
     # Bypass preflight — this test is about enrichment processing, not model discovery
     ok = PreflightDecision(proceed=True, reason="ok", loaded_models=["test-model"])
-    with patch("hippo_brain.server.preflight_lm_studio", new_callable=AsyncMock, return_value=ok):
+    with patch("hippo_brain.server.preflight_inference", new_callable=AsyncMock, return_value=ok):
         task = asyncio.create_task(server._enrichment_loop())
         await asyncio.sleep(0.2)
         task.cancel()
@@ -510,7 +510,7 @@ async def test_enrichment_loop_handles_chat_failure(tmp_db):
 
     # Bypass preflight — this test is about error handling, not model discovery
     ok = PreflightDecision(proceed=True, reason="ok", loaded_models=["test-model"])
-    with patch("hippo_brain.server.preflight_lm_studio", new_callable=AsyncMock, return_value=ok):
+    with patch("hippo_brain.server.preflight_inference", new_callable=AsyncMock, return_value=ok):
         task = asyncio.create_task(server._enrichment_loop())
         await asyncio.sleep(0.2)
         task.cancel()
@@ -580,7 +580,7 @@ async def test_enrichment_loop_yields_to_arriving_query(tmp_db):
         preflight_calls += 1
         return PreflightDecision(proceed=False, loaded_models=[])
 
-    with patch("hippo_brain.server.preflight_lm_studio", side_effect=fake_preflight):
+    with patch("hippo_brain.server.preflight_inference", side_effect=fake_preflight):
         task = asyncio.create_task(server._enrichment_loop())
         try:
             # Loop should be sleeping on its first wait_for.
@@ -715,7 +715,7 @@ def test_create_app_starts_and_stops_enrichment_task(tmp_db):
     _, db_path = tmp_db
     app = create_app(
         db_path=str(db_path),
-        lmstudio_base_url="http://localhost:1234/v1",
+        inference_base_url="http://localhost:1234/v1",
         enrichment_model="test",
         poll_interval_secs=9999,
         enrichment_batch_size=5,
@@ -796,7 +796,7 @@ def test_health_exposes_enrichment_model(tmp_db):
     _, db_path = tmp_db
     app = create_app(
         db_path=str(db_path),
-        lmstudio_base_url="http://localhost:1234/v1",
+        inference_base_url="http://localhost:1234/v1",
         enrichment_model="my-model",
         poll_interval_secs=9999,
         enrichment_batch_size=5,

@@ -108,7 +108,7 @@ def orchestrate_run(
     manifest_path: Path | None = None,
     out_path: Path,
     brain_url: str = "http://localhost:8000",
-    lmstudio_url: str = "http://localhost:1234",
+    inference_url: str = "http://localhost:1234",
     embedding_model: str = "",
     drain_timeout_sec: float = 3600.0,
     skip_prod_pause: bool = False,
@@ -199,7 +199,7 @@ def orchestrate_run(
                 brain_url=brain_url,
                 corpus_sqlite=corpus_sqlite,
                 manifest=manifest_path,
-                lmstudio_url=lmstudio_url,
+                inference_url=inference_url,
                 skip_prod_pause=skip_prod_pause,
             )
         else:
@@ -219,7 +219,7 @@ def orchestrate_run(
             embedding_model=embedding_model,
             host_baseline=host_baseline,
             prod_state_at_start=prod_state_at_start,
-            lmstudio_version=_lms_version(),
+            inference_backend_version=_lms_version(),
         )
         writer.write_manifest(manifest_record)
 
@@ -256,9 +256,9 @@ def orchestrate_run(
                     model=model,
                     run_id=run_id,
                     corpus_sqlite=corpus_sqlite,
-                    lmstudio_url=lmstudio_url
-                    if lmstudio_url.endswith("/v1")
-                    else f"{lmstudio_url.rstrip('/')}/v1",
+                    inference_url=inference_url
+                    if inference_url.endswith("/v1")
+                    else f"{inference_url.rstrip('/')}/v1",
                     embedding_model=embedding_model,
                     drain_timeout_sec=drain_timeout_sec,
                     prod_brain_url=brain_url,

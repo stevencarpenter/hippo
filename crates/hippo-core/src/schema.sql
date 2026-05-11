@@ -622,7 +622,11 @@ CREATE TABLE IF NOT EXISTS agentic_cursor (
 -- `agentic-session-opencode` starts at NULL (no opencode data yet).
 INSERT OR IGNORE INTO source_health (source, last_event_ts, updated_at) VALUES
     ('agentic-session-claude',  (SELECT MAX(start_time) FROM agentic_sessions WHERE harness = 'claude-code'), unixepoch('now') * 1000),
-    ('agentic-session-opencode', NULL, unixepoch('now') * 1000);
+    ('agentic-session-opencode', NULL, unixepoch('now') * 1000),
+    -- brain-preflight: the brain's enrichment loop writes here every cycle
+    -- with the inference-backend reachability result. Watchdog I-12 reads
+    -- consecutive_failures to alarm when preflight has been stuck failing.
+    ('brain-preflight',          NULL, unixepoch('now') * 1000);
 
 -- The `claude_session_offsets` table (deprecated since T-5) is preserved
 -- to avoid breaking existing CREATE SCHEMA users.

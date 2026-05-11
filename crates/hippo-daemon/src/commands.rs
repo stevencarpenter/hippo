@@ -157,8 +157,13 @@ async fn print_brain_health_details(
                         .get("enrichment_running")
                         .and_then(|v| v.as_bool())
                         .unwrap_or(false);
-                    let lmstudio_reachable = json
-                        .get("lmstudio_reachable")
+                    // Accept the new field name (`inference_reachable`) first;
+                    // fall back to the legacy `lmstudio_reachable` so a brain
+                    // running an older binary against a newer daemon doesn't
+                    // make this check flap.
+                    let inference_reachable = json
+                        .get("inference_reachable")
+                        .or_else(|| json.get("lmstudio_reachable"))
                         .and_then(|v| v.as_bool())
                         .unwrap_or(false);
                     let db_reachable = json
@@ -193,10 +198,10 @@ async fn print_brain_health_details(
                         "[OK] Brain queue depth: {} pending, {} failed",
                         queue_depth, queue_failed
                     );
-                    if lmstudio_reachable {
-                        println!("[OK] Brain LM Studio: reachable");
+                    if inference_reachable {
+                        println!("[OK] Brain inference backend: reachable");
                     } else {
-                        println!("[!!] Brain LM Studio: unreachable");
+                        println!("[!!] Brain inference backend: unreachable");
                     }
                     if db_reachable {
                         println!("[OK] Brain DB: reachable");
@@ -385,8 +390,8 @@ pub async fn handle_status(config: &HippoConfig) -> Result<()> {
             println!("  DB size:           {} bytes", status.db_size_bytes);
             println!("  Fallback pending:  {}", status.fallback_files_pending);
             println!(
-                "  LM Studio:        {}",
-                if status.lmstudio_reachable {
+                "  Inference:        {}",
+                if status.inference_reachable {
                     "reachable"
                 } else {
                     "unreachable"
@@ -1148,14 +1153,14 @@ pub async fn handle_doctor(config: &HippoConfig, explain: bool) -> Result<()> {
         println!("[--] No config file (using defaults)");
     }
 
-    // Check LM Studio
-    let lm_url = format!("{}/models", config.lmstudio.base_url);
-    match client.get(&lm_url).send().await {
-        Ok(r) if r.status().is_success() => println!("[OK] LM Studio reachable"),
+    // Check the configured inference backend (LM Studio, oMLX, ollama, vLLM, …).
+    let inference_url = format!("{}/models", config.inference.base_url);
+    match client.get(&inference_url).send().await {
+        Ok(r) if r.status().is_success() => println!("[OK] Inference backend reachable"),
         _ => {
             println!(
-                "[!!] LM Studio not reachable at {}",
-                config.lmstudio.base_url
+                "[!!] Inference backend not reachable at {}",
+                config.inference.base_url
             );
             fail_count += 1;
         }
@@ -3267,7 +3272,7 @@ replacement = "***"
             let mut buf = [0u8; 1024];
             let _ = stream.read(&mut buf).await.unwrap();
             let body = format!(
-                r#"{{"status":"ok","version":"{}","lmstudio_reachable":true,"enrichment_running":true,"db_reachable":true,"queue_depth":3,"queue_failed":1,"last_success_at_ms":123456,"last_error":"model offline"}}"#,
+                r#"{{"status":"ok","version":"{}","inference_reachable":true,"enrichment_running":true,"db_reachable":true,"queue_depth":3,"queue_failed":1,"last_success_at_ms":123456,"last_error":"model offline"}}"#,
                 env!("HIPPO_VERSION_FULL")
             );
             let response = format!(

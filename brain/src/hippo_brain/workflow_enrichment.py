@@ -14,7 +14,7 @@ import time
 import uuid
 from pathlib import Path
 
-from hippo_brain.client import LMStudioClient
+from hippo_brain.client import InferenceClient
 from hippo_brain.lessons import ClusterKey, upsert_cluster
 from hippo_brain.watchdog import DEFAULT_LOCK_TIMEOUT_MS
 
@@ -24,7 +24,7 @@ CORRELATION_WINDOW_MS = 15 * 60 * 1000  # ±15 minutes
 def enrich_one(
     db_path: str,
     run_id: int,
-    lm: LMStudioClient,
+    lm: InferenceClient,
     query_model: str,
     *,
     path_prefix_segments: int = 2,
@@ -164,7 +164,7 @@ def enrich_one(
 async def enrich_one_async(
     db_path: str,
     run_id: int,
-    lm: LMStudioClient,
+    lm: InferenceClient,
     query_model: str,
     *,
     path_prefix_segments: int = 2,

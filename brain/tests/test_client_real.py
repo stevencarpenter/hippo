@@ -1,16 +1,16 @@
-"""Tests for the real LMStudioClient HTTP methods using httpx mock transport."""
+"""Tests for the real InferenceClient HTTP methods using httpx mock transport."""
 
 import httpx
 import pytest
 from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
 from hippo_brain import client as client_module
-from hippo_brain.client import LMStudioClient
+from hippo_brain.client import InferenceClient
 
 
 @pytest.fixture
 def client():
-    return LMStudioClient(base_url="http://localhost:1234/v1", timeout=5.0)
+    return InferenceClient(base_url="http://localhost:1234/v1", timeout=5.0)
 
 
 def _mock_response(status_code: int, body: dict) -> httpx.Response:
@@ -86,7 +86,7 @@ async def test_chat_400_with_crash_body_increments_crash_counter(client, monkeyp
     path triggered them. The signal is otherwise hidden when queue-level retry
     absorbs the failure."""
     mock_counter = MagicMock()
-    monkeypatch.setattr(client_module, "_lm_crashes", mock_counter)
+    monkeypatch.setattr(client_module, "_inference_crashes", mock_counter)
     mock_resp = _mock_response(
         400,
         {"error": "The model has crashed without additional information. (Exit code: null)"},
@@ -101,7 +101,7 @@ async def test_chat_400_with_non_crash_body_does_not_increment_crash_counter(cli
     """Other 400 reasons (malformed input, context overflow, etc.) must NOT be
     counted as crashes — false positives would erode the signal."""
     mock_counter = MagicMock()
-    monkeypatch.setattr(client_module, "_lm_crashes", mock_counter)
+    monkeypatch.setattr(client_module, "_inference_crashes", mock_counter)
     mock_resp = _mock_response(400, {"error": "Context history must not be empty."})
     with patch("httpx.AsyncClient.post", new_callable=AsyncMock, return_value=mock_resp):
         with pytest.raises(httpx.HTTPStatusError):
@@ -112,7 +112,7 @@ async def test_chat_400_with_non_crash_body_does_not_increment_crash_counter(cli
 async def test_embed_400_with_crash_body_also_increments_crash_counter(client, monkeypatch):
     """Counter is path-agnostic: embed() crashes are equally diagnostic."""
     mock_counter = MagicMock()
-    monkeypatch.setattr(client_module, "_lm_crashes", mock_counter)
+    monkeypatch.setattr(client_module, "_inference_crashes", mock_counter)
     mock_resp = _mock_response(
         400,
         {"error": "The model has crashed without additional information."},
@@ -128,7 +128,7 @@ async def test_chat_400_crash_match_is_case_insensitive(client, monkeypatch):
     or all-caps) must still increment the counter — the substring match is
     intentionally case-insensitive."""
     mock_counter = MagicMock()
-    monkeypatch.setattr(client_module, "_lm_crashes", mock_counter)
+    monkeypatch.setattr(client_module, "_inference_crashes", mock_counter)
     mock_resp = _mock_response(400, {"error": "MODEL HAS CRASHED unexpectedly during inference."})
     with patch("httpx.AsyncClient.post", new_callable=AsyncMock, return_value=mock_resp):
         with pytest.raises(httpx.HTTPStatusError):
@@ -235,11 +235,11 @@ async def test_chat_with_custom_params(client):
 
 def test_client_init_strips_trailing_slash():
     """base_url trailing slash should be stripped."""
-    c = LMStudioClient(base_url="http://localhost:1234/v1/")
+    c = InferenceClient(base_url="http://localhost:1234/v1/")
     assert c.base_url == "http://localhost:1234/v1"
 
 
 def test_client_default_timeout():
     """Default timeout is 300.0 (large prompts need time for local LLM inference)."""
-    c = LMStudioClient()
+    c = InferenceClient()
     assert c.timeout == 300.0

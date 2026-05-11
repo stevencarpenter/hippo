@@ -61,7 +61,9 @@ pub struct StatusInfo {
     pub queue_depth: u64,
     pub queue_failed: u64,
     pub drop_count: u64,
-    pub lmstudio_reachable: bool,
+    /// True when the configured inference backend (any OpenAI-compatible
+    /// server: LM Studio, oMLX, ollama, vLLM, …) responds to `GET /models`.
+    pub inference_reachable: bool,
     pub brain_reachable: bool,
     pub db_size_bytes: u64,
     pub fallback_files_pending: u64,
@@ -156,7 +158,7 @@ mod tests {
                 queue_depth: 5,
                 queue_failed: 0,
                 drop_count: 0,
-                lmstudio_reachable: true,
+                inference_reachable: true,
                 brain_reachable: true,
                 db_size_bytes: 1024000,
                 fallback_files_pending: 0,
@@ -208,7 +210,7 @@ mod tests {
 
     #[test]
     fn test_status_info_deserializes_without_version_field() {
-        let json = r#"{"type":"Status","data":{"uptime_secs":100,"events_today":5,"sessions_today":1,"queue_depth":0,"queue_failed":0,"drop_count":0,"lmstudio_reachable":false,"brain_reachable":false,"db_size_bytes":0,"fallback_files_pending":0}}"#;
+        let json = r#"{"type":"Status","data":{"uptime_secs":100,"events_today":5,"sessions_today":1,"queue_depth":0,"queue_failed":0,"drop_count":0,"inference_reachable":false,"brain_reachable":false,"db_size_bytes":0,"fallback_files_pending":0}}"#;
         let resp: DaemonResponse = serde_json::from_str(json).unwrap();
         match resp {
             DaemonResponse::Status(status) => assert!(status.version.is_empty()),

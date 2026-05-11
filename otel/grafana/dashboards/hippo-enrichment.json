@@ -210,7 +210,7 @@
     },
     {
       "id": 4,
-      "title": "LM Studio Latency",
+      "title": "Inference Latency",
       "type": "timeseries",
       "gridPos": {
         "x": 0,
@@ -229,7 +229,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "histogram_quantile(0.5, sum(rate(hippo_brain_lmstudio_request_duration_milliseconds_bucket{service_namespace!~\".+\",method=\"chat\"}[5m])) by (le))",
+          "expr": "histogram_quantile(0.5, sum(rate(hippo_brain_inference_request_duration_milliseconds_bucket{service_namespace!~\".+\",method=\"chat\"}[5m])) by (le))",
           "legendFormat": "p50",
           "editorMode": "code"
         },
@@ -239,7 +239,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "histogram_quantile(0.95, sum(rate(hippo_brain_lmstudio_request_duration_milliseconds_bucket{service_namespace!~\".+\",method=\"chat\"}[5m])) by (le))",
+          "expr": "histogram_quantile(0.95, sum(rate(hippo_brain_inference_request_duration_milliseconds_bucket{service_namespace!~\".+\",method=\"chat\"}[5m])) by (le))",
           "legendFormat": "p95",
           "editorMode": "code"
         },
@@ -249,7 +249,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "histogram_quantile(0.99, sum(rate(hippo_brain_lmstudio_request_duration_milliseconds_bucket{service_namespace!~\".+\",method=\"chat\"}[5m])) by (le))",
+          "expr": "histogram_quantile(0.99, sum(rate(hippo_brain_inference_request_duration_milliseconds_bucket{service_namespace!~\".+\",method=\"chat\"}[5m])) by (le))",
           "legendFormat": "p99",
           "editorMode": "code"
         }
@@ -276,7 +276,7 @@
     },
     {
       "id": 5,
-      "title": "LM Studio Errors / min",
+      "title": "Inference Errors / min",
       "type": "timeseries",
       "gridPos": {
         "x": 8,
@@ -295,7 +295,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum(rate(hippo_brain_lmstudio_errors_total{service_namespace!~\".+\"}[5m])) by (method) * 60",
+          "expr": "sum(rate(hippo_brain_inference_errors_total{service_namespace!~\".+\"}[5m])) by (method) * 60",
           "legendFormat": "{{method}}",
           "editorMode": "code"
         }
@@ -341,7 +341,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "histogram_quantile(0.5, sum(rate(hippo_brain_lmstudio_prompt_tokens_bucket{service_namespace!~\".+\"}[5m])) by (le))",
+          "expr": "histogram_quantile(0.5, sum(rate(hippo_brain_inference_prompt_tokens_bucket{service_namespace!~\".+\"}[5m])) by (le))",
           "legendFormat": "p50",
           "editorMode": "code"
         },
@@ -351,7 +351,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "histogram_quantile(0.95, sum(rate(hippo_brain_lmstudio_prompt_tokens_bucket{service_namespace!~\".+\"}[5m])) by (le))",
+          "expr": "histogram_quantile(0.95, sum(rate(hippo_brain_inference_prompt_tokens_bucket{service_namespace!~\".+\"}[5m])) by (le))",
           "legendFormat": "p95",
           "editorMode": "code"
         }

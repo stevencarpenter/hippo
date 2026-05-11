@@ -10,7 +10,7 @@ from pathlib import Path
 
 from mcp.server.fastmcp import FastMCP
 
-from hippo_brain.client import LMStudioClient
+from hippo_brain.client import InferenceClient
 from hippo_brain.embeddings import (
     EMBED_DIM,
     _pad_or_truncate,
@@ -60,13 +60,16 @@ _tool_duration = (
 def _load_config() -> dict:
     """Load Hippo config from ~/.config/hippo/config.toml.
 
-    Returns a dict with db_path, data_dir, lmstudio_base_url, embedding_model, query_model.
+    Returns a dict with db_path, data_dir, inference_base_url, embedding_model, query_model.
+
+    Reads the inference URL from the [inference] section (formerly [lmstudio];
+    see hippo_brain.__init__ for the fail-loud migration guard).
     """
     config_path = Path.home() / ".config" / "hippo" / "config.toml"
     defaults = {
         "db_path": str(Path.home() / ".local" / "share" / "hippo" / "hippo.db"),
         "data_dir": str(Path.home() / ".local" / "share" / "hippo"),
-        "lmstudio_base_url": "http://localhost:1234/v1",
+        "inference_base_url": "http://localhost:1234/v1",
         "embedding_model": "",
         "query_model": "",
     }
@@ -87,8 +90,7 @@ def _load_config() -> dict:
     # on the legacy name; see hippo_brain.__init__ for the matching guard.
     if "lmstudio" in config and "inference" not in config:
         raise RuntimeError(
-            "config.toml uses the deprecated [lmstudio] section. "
-            "Rename it to [inference]."
+            "config.toml uses the deprecated [lmstudio] section. Rename it to [inference]."
         )
     inference = config.get("inference", {})
     models = config.get("models", {})
@@ -96,7 +98,7 @@ def _load_config() -> dict:
     return {
         "db_path": str(data_dir / "hippo.db"),
         "data_dir": str(data_dir),
-        "lmstudio_base_url": inference.get("base_url", "http://localhost:1234/v1"),
+        "inference_base_url": inference.get("base_url", "http://localhost:1234/v1"),
         "embedding_model": models.get("embedding", ""),
         "query_model": models.get("query", "") or models.get("enrichment", ""),
     }
@@ -107,7 +109,7 @@ class _ServerState:
     """Holds initialized resources for the MCP server."""
 
     db_path: str = ""
-    lm_client: LMStudioClient | None = None
+    lm_client: InferenceClient | None = None
     embedding_model: str = ""
     query_model: str = ""
     vector_table: object | None = None  # lancedb.table.Table
@@ -137,7 +139,7 @@ def _init_state() -> None:
     _state.db_path = config["db_path"]
     _state.embedding_model = config["embedding_model"]
     _state.query_model = config["query_model"]
-    _state.lm_client = LMStudioClient(base_url=config["lmstudio_base_url"])
+    _state.lm_client = InferenceClient(base_url=config["inference_base_url"])
 
     try:
         db = open_vector_db(config["data_dir"])

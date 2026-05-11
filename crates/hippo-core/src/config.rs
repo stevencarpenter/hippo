@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct HippoConfig {
     #[serde(default)]
-    pub lmstudio: LmStudioConfig,
+    pub inference: InferenceConfig,
     #[serde(default)]
     pub models: ModelsConfig,
     #[serde(default)]
@@ -26,20 +26,24 @@ pub struct HippoConfig {
     pub opencode: OpenConfig,
 }
 
+/// OpenAI-compatible inference backend (LM Studio, oMLX, ollama, vLLM, etc.).
+/// Section name was `[lmstudio]` historically; renamed to `[inference]` as
+/// part of the vendor-neutrality push. The legacy section is rejected with a
+/// loud error by `HippoConfig::load`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct LmStudioConfig {
-    #[serde(default = "default_lmstudio_base_url")]
+pub struct InferenceConfig {
+    #[serde(default = "default_inference_base_url")]
     pub base_url: String,
 }
 
-fn default_lmstudio_base_url() -> String {
+fn default_inference_base_url() -> String {
     "http://localhost:1234/v1".to_string()
 }
 
-impl Default for LmStudioConfig {
+impl Default for InferenceConfig {
     fn default() -> Self {
         Self {
-            base_url: default_lmstudio_base_url(),
+            base_url: default_inference_base_url(),
         }
     }
 }
@@ -538,6 +542,26 @@ impl HippoConfig {
                 ));
             }
         };
+        // Reject the legacy `[lmstudio]` section explicitly rather than
+        // silently falling back to defaults. The rename happened as part of
+        // the vendor-neutrality push (LM Studio is one OpenAI-compatible
+        // backend among many — oMLX, ollama, vLLM); silently ignoring the
+        // old name caused the brain's preflight to point at the wrong port.
+        let raw: toml::Value = toml::from_str(&content)
+            .map_err(|e| anyhow::anyhow!("failed to parse config at {}: {}", path.display(), e))?;
+        if let Some(table) = raw.as_table()
+            && table.contains_key("lmstudio")
+            && !table.contains_key("inference")
+        {
+            return Err(anyhow::anyhow!(
+                "config at {} uses the deprecated [lmstudio] section. \
+                 Rename it to [inference] — the section was renamed as part \
+                 of the vendor-neutrality push so the same key works for \
+                 LM Studio, oMLX, ollama, vLLM, and any other OpenAI-\
+                 compatible inference backend.",
+                path.display()
+            ));
+        }
         let config: Self = toml::from_str(&content)
             .map_err(|e| anyhow::anyhow!("failed to parse config at {}: {}", path.display(), e))?;
         Ok(config)
@@ -700,7 +724,7 @@ mod tests {
     #[test]
     fn test_default_config() {
         let config = HippoConfig::default();
-        assert_eq!(config.lmstudio.base_url, "http://localhost:1234/v1");
+        assert_eq!(config.inference.base_url, "http://localhost:1234/v1");
         assert_eq!(config.daemon.flush_interval_ms, 100);
         assert_eq!(config.daemon.flush_batch_size, 50);
         assert_eq!(config.brain.port, 9175);
@@ -710,7 +734,7 @@ mod tests {
     #[test]
     fn test_config_from_toml() {
         let toml_str = r#"
-[lmstudio]
+[inference]
 base_url = "http://custom:5678/v1"
 
 [daemon]
@@ -720,7 +744,7 @@ flush_interval_ms = 200
 port = 8080
 "#;
         let config: HippoConfig = toml::from_str(toml_str).unwrap();
-        assert_eq!(config.lmstudio.base_url, "http://custom:5678/v1");
+        assert_eq!(config.inference.base_url, "http://custom:5678/v1");
         assert_eq!(config.daemon.flush_interval_ms, 200);
         assert_eq!(config.brain.port, 8080);
         // Defaults for unspecified fields
@@ -730,7 +754,27 @@ port = 8080
     #[test]
     fn test_missing_config_returns_default() {
         let config = HippoConfig::load(Path::new("/nonexistent/path/config.toml")).unwrap();
-        assert_eq!(config.lmstudio.base_url, "http://localhost:1234/v1");
+        assert_eq!(config.inference.base_url, "http://localhost:1234/v1");
+    }
+
+    #[test]
+    fn test_legacy_lmstudio_section_is_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("config.toml");
+        std::fs::write(
+            &config_path,
+            r#"
+[lmstudio]
+base_url = "http://localhost:1234/v1"
+"#,
+        )
+        .unwrap();
+        let err = HippoConfig::load(&config_path).unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("deprecated [lmstudio]") && msg.contains("[inference]"),
+            "expected migration message, got: {msg}"
+        );
     }
 
     #[test]
@@ -776,7 +820,7 @@ port = 8080
         std::fs::write(
             &config_path,
             r#"
-[lmstudio]
+[inference]
 base_url = "http://custom:9999/v1"
 
 [daemon]
@@ -790,7 +834,7 @@ poll_interval_secs = 10
         )
         .unwrap();
         let config = HippoConfig::load(&config_path).unwrap();
-        assert_eq!(config.lmstudio.base_url, "http://custom:9999/v1");
+        assert_eq!(config.inference.base_url, "http://custom:9999/v1");
         assert_eq!(config.daemon.flush_interval_ms, 500);
         assert_eq!(config.daemon.flush_batch_size, 100);
         assert_eq!(config.brain.port, 7777);

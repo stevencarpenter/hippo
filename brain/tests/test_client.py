@@ -1,12 +1,12 @@
 import math
 import pytest
 
-from hippo_brain.client import MockLMStudioClient
+from hippo_brain.client import MockInferenceClient
 
 
 @pytest.fixture
 def mock_client():
-    return MockLMStudioClient()
+    return MockInferenceClient()
 
 
 async def test_mock_chat(mock_client):
@@ -48,7 +48,7 @@ async def test_mock_reachable(mock_client):
 
 def test_deterministic_vector_non_multiple_of_8_dims():
     """When dims is not a multiple of 8, the inner break on line 97 fires."""
-    vec = MockLMStudioClient._deterministic_vector("test", 10)
+    vec = MockInferenceClient._deterministic_vector("test", 10)
     assert len(vec) == 10
     magnitude = math.sqrt(sum(x * x for x in vec))
     assert abs(magnitude - 1.0) < 1e-6

@@ -142,7 +142,7 @@ class TestLoadConfig:
         monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
         config = _load_config()
         assert "hippo.db" in config["db_path"]
-        assert config["lmstudio_base_url"] == "http://localhost:1234/v1"
+        assert config["inference_base_url"] == "http://localhost:1234/v1"
         assert config["embedding_model"] == ""
         # data_dir should derive from home
         assert config["data_dir"] == str(tmp_path / ".local" / "share" / "hippo")
@@ -153,27 +153,38 @@ class TestLoadConfig:
         config_dir.mkdir(parents=True)
         (config_dir / "config.toml").write_text(
             '[storage]\ndata_dir = "/custom/data"\n\n'
-            '[lmstudio]\nbase_url = "http://custom:5678/v1"\n\n'
+            '[inference]\nbase_url = "http://custom:5678/v1"\n\n'
             '[models]\nembedding = "nomic-embed"\n'
         )
         monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
         config = _load_config()
         assert config["db_path"] == "/custom/data/hippo.db"
         assert config["data_dir"] == "/custom/data"
-        assert config["lmstudio_base_url"] == "http://custom:5678/v1"
+        assert config["inference_base_url"] == "http://custom:5678/v1"
         assert config["embedding_model"] == "nomic-embed"
 
     def test_partial_config_fills_defaults(self, tmp_path, monkeypatch):
         """Missing sections fall back to defaults."""
         config_dir = tmp_path / ".config" / "hippo"
         config_dir.mkdir(parents=True)
-        (config_dir / "config.toml").write_text('[lmstudio]\nbase_url = "http://other:9999/v1"\n')
+        (config_dir / "config.toml").write_text('[inference]\nbase_url = "http://other:9999/v1"\n')
         monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
         config = _load_config()
         # storage section missing → defaults
         assert config["data_dir"] == str(tmp_path / ".local" / "share" / "hippo")
-        assert config["lmstudio_base_url"] == "http://other:9999/v1"
+        assert config["inference_base_url"] == "http://other:9999/v1"
         assert config["embedding_model"] == ""
+
+    def test_legacy_lmstudio_section_is_rejected(self, tmp_path, monkeypatch):
+        """Legacy [lmstudio] section must raise a migration error, not silently
+        fall back to defaults. Mirrors the Rust-side guard in HippoConfig::load
+        and the brain server's guard in hippo_brain.__init__."""
+        config_dir = tmp_path / ".config" / "hippo"
+        config_dir.mkdir(parents=True)
+        (config_dir / "config.toml").write_text('[lmstudio]\nbase_url = "http://custom:5678/v1"\n')
+        monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
+        with pytest.raises(RuntimeError, match=r"\[lmstudio\].*\[inference\]"):
+            _load_config()
 
 
 # ---------------------------------------------------------------------------

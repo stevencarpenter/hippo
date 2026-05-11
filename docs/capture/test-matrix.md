@@ -56,6 +56,7 @@ a one-line change rather than "remember to write the test later".
 | F-26 | Opencode poller mixes `time_created` / `time_updated` cursor semantics — silently skips updated sessions | review of PR #149: cursor field name and read-query filter disagree | rust integration + unit | `crates/hippo-daemon/tests/opencode_session.rs` (poll-tick end-to-end) + `crates/hippo-daemon/src/opencode_session.rs::tests::*` (cursor + summary_text + read-only DB) | new (this PR) | I-11 |
 | F-27 | Opencode brain claim path bypasses `agentic_enrichment_queue` — enrichment failures lose segments | review of PR #149: direct `enriched=1` flip with no retry | brain unit | `brain/tests/test_opencode_sessions.py` (`TestClaimPath`, `TestMarkQueueFailed`) | new (this PR) | I-11 |
 | F-28 | Opencode junction-table insert uses malformed `VALUES (?, ?, …)` clause | review of PR #149: `len(segment_ids)` placeholders for a 2-col table | brain unit | `brain/tests/test_opencode_sessions.py::TestWriteKnowledgeNode` | new (this PR) | — |
+| F-29 | Brain preflight fails silently against a misconfigured inference backend (e.g. `[lmstudio]`→`[inference]` rename drift; oMLX port mismatch) and the enrichment queue stalls indefinitely with no alarm | 2026-05-10 incident: post-omlx config rename pointed brain at port 1234 forever; `lmstudio_reachable=false` was visible on `/health` but no watchdog invariant gated on it | rust unit (invariant) + rust integration (config-section guard) + python unit (config loader) | `crates/hippo-daemon/src/watchdog.rs::tests::watchdog_i12_*`, `crates/hippo-core/src/config.rs::tests::test_legacy_lmstudio_section_is_rejected`, `brain/tests/test_init.py::test_load_runtime_settings_rejects_legacy_lmstudio_section`, `brain/tests/test_mcp_server.py::test_legacy_lmstudio_section_is_rejected` | new (this PR) | I-12 |
 
 ### Phase 1 (Bug A) test coverage — F-25
 
@@ -109,6 +110,7 @@ uv run --project brain pytest brain/tests/test_claude_sessions.py::TestContentHa
 | I-9 Fallback recovery freshness | F-8 | skeleton; blocked on doctor growing an age check |
 | I-10 Capture decoupled from enrichment | F-14 | blocked-on-P0.2 |
 | I-11 Opencode-session coverage proxy | F-26, F-27 | new (this PR) — production probe still deferred |
+| I-12 Brain preflight stuck | F-29 | new (this PR) — gates on `brain-preflight.consecutive_failures > 12` |
 
 Any invariant without at least one `new (this PR)` or `existing` row is by
 definition gated on a P0/P1/P2 task. If you see an invariant listed in

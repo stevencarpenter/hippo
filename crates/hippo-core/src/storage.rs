@@ -745,11 +745,16 @@ pub fn open_db(path: &Path) -> Result<Connection> {
     // v14 from that earlier commit will not re-run the migration block, so
     // we re-apply the seeds on every open. INSERT OR IGNORE is cheap and
     // skips rows that already exist.
+    //
+    // `brain-preflight` is the source the brain writes to every enrichment
+    // loop iteration with the result of its inference-backend reachability
+    // check; watchdog I-12 alarms when `consecutive_failures` climbs there.
     if version == EXPECTED_VERSION {
         let _ = conn.execute_batch(
             "INSERT OR IGNORE INTO source_health (source, last_event_ts, updated_at) VALUES
                 ('agentic-session-claude',  (SELECT MAX(start_time) FROM agentic_sessions WHERE harness = 'claude-code'), unixepoch('now') * 1000),
-                ('agentic-session-opencode', NULL, unixepoch('now') * 1000);",
+                ('agentic-session-opencode', NULL, unixepoch('now') * 1000),
+                ('brain-preflight',          NULL, unixepoch('now') * 1000);",
         );
     }
     Ok(conn)
@@ -1197,7 +1202,7 @@ pub fn get_status(conn: &Connection) -> Result<crate::protocol::StatusInfo> {
         queue_depth,
         queue_failed,
         drop_count: 0,
-        lmstudio_reachable: false,
+        inference_reachable: false,
         brain_reachable: false,
         db_size_bytes: 0,
         fallback_files_pending: 0,

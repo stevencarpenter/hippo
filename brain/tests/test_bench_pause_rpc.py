@@ -14,7 +14,7 @@ from hippo_brain.server import BrainServer
 def _make_app(db_path: str) -> Starlette:
     server = BrainServer(
         db_path=db_path,
-        lmstudio_base_url="http://localhost:1234/v1",
+        inference_base_url="http://localhost:1234/v1",
         enrichment_model="test-model",
         poll_interval_secs=60,
         enrichment_batch_size=5,
@@ -48,7 +48,7 @@ def test_pause_in_flight_finished_false_when_enrichment_active(tmp_db):
     _, db_path = tmp_db
     server = BrainServer(
         db_path=str(db_path),
-        lmstudio_base_url="http://localhost:1234/v1",
+        inference_base_url="http://localhost:1234/v1",
         enrichment_model="test-model",
         poll_interval_secs=60,
         enrichment_batch_size=5,
@@ -66,7 +66,7 @@ def test_resume_sets_resume_event(tmp_db):
     _, db_path = tmp_db
     server = BrainServer(
         db_path=str(db_path),
-        lmstudio_base_url="http://localhost:1234/v1",
+        inference_base_url="http://localhost:1234/v1",
         enrichment_model="test-model",
         poll_interval_secs=60,
         enrichment_batch_size=5,
@@ -164,7 +164,7 @@ async def test_enrichment_active_cleared_on_cancellation(tmp_db):
     Unlike the original BT-13 test (which built a synthetic inner task whose
     own finally cleared the flag — proving Python's language semantic, not the
     application contract), this test runs the actual `_enrichment_loop` task,
-    parks it at `preflight_lm_studio` where `_enrichment_active = True` is
+    parks it at `preflight_inference` where `_enrichment_active = True` is
     already set on server.py:871, then cancels and asserts the loop's own
     `finally` (server.py:949-950) cleared the flag.
     """
@@ -173,20 +173,20 @@ async def test_enrichment_active_cleared_on_cancellation(tmp_db):
     _, db_path = tmp_db
     server = BrainServer(
         db_path=str(db_path),
-        lmstudio_base_url="http://localhost:1234/v1",
+        inference_base_url="http://localhost:1234/v1",
         enrichment_model="test-model",
         poll_interval_secs=0.01,
         enrichment_batch_size=5,
     )
 
-    # Park preflight_lm_studio in a long sleep so the loop reaches the line
+    # Park preflight_inference in a long sleep so the loop reaches the line
     # AFTER `_enrichment_active = True` and waits there until we cancel. The
-    # patch target is `hippo_brain.server.preflight_lm_studio` (where the
+    # patch target is `hippo_brain.server.preflight_inference` (where the
     # symbol is bound by `from ... import ...`), not the source module.
     async def _hang(*_args, **_kwargs):
         await asyncio.sleep(60)
 
-    with patch("hippo_brain.server.preflight_lm_studio", side_effect=_hang):
+    with patch("hippo_brain.server.preflight_inference", side_effect=_hang):
         task = asyncio.create_task(server._enrichment_loop())
         try:
             # Wait up to 1 s for the loop to enter the inner try and set

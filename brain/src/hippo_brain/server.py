@@ -11,7 +11,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.routing import Route
 
-from hippo_brain.client import LMStudioClient
+from hippo_brain.client import InferenceClient
 from hippo_brain.schema_version import EXPECTED_SCHEMA_VERSION, ACCEPTED_READ_VERSIONS
 from hippo_brain.version import get_version
 from hippo_brain.embeddings import (
@@ -60,7 +60,7 @@ from hippo_brain.workflow_enrichment import (
 from hippo_brain.watchdog import (
     DEFAULT_LOCK_TIMEOUT_MS,
     DEFAULT_MAX_CLAIM_BATCH,
-    preflight_lm_studio,
+    preflight_inference,
     reap_stale_locks,
 )
 from hippo_brain.telemetry import (
@@ -125,8 +125,8 @@ class BrainServer:
         self,
         db_path: str = "",
         data_dir: str = "",
-        lmstudio_base_url: str = "http://localhost:1234/v1",
-        lmstudio_timeout_secs: float = 300.0,
+        inference_base_url: str = "http://localhost:1234/v1",
+        inference_timeout_secs: float = 300.0,
         enrichment_model: str = "",
         embedding_model: str = "",
         query_model: str = "",
@@ -143,7 +143,7 @@ class BrainServer:
             data_dir = str(Path.home() / ".local" / "share" / "hippo")
         self.db_path = db_path
         self.data_dir = data_dir
-        self.client = LMStudioClient(base_url=lmstudio_base_url, timeout=lmstudio_timeout_secs)
+        self.client = InferenceClient(base_url=inference_base_url, timeout=inference_timeout_secs)
         self._preferred_model = enrichment_model
         self.enrichment_model = enrichment_model
         self.embedding_model = embedding_model
@@ -269,7 +269,7 @@ class BrainServer:
                 "version": get_version(),
                 "expected_schema_version": EXPECTED_SCHEMA_VERSION,
                 "accepted_read_versions": sorted(ACCEPTED_READ_VERSIONS),
-                "lmstudio_reachable": reachable,
+                "inference_reachable": reachable,
                 "enrichment_running": self.enrichment_running,
                 "paused": self._paused,
                 "paused_at": self._paused_at_iso,
@@ -799,6 +799,56 @@ class BrainServer:
         """Sync model selection from preflight's already-fetched model list."""
         return self._pick_enrichment_model(loaded)
 
+    def _record_preflight_to_source_health(self, decision) -> None:
+        """Mirror the preflight decision into source_health['brain-preflight'].
+
+        The watchdog reads source_health to evaluate invariants. I-12 alarms
+        when `consecutive_failures > 12`, so we need to bump the counter on
+        every failed preflight and reset it on every success. Schema-table
+        absence (test DBs / pre-migration installs) is swallowed silently
+        per the existing source_health convention.
+        """
+        now_ms = int(time.time() * 1000)
+        try:
+            conn = self._get_conn()
+        except Exception as e:
+            logger.debug("brain-preflight source_health: get_conn failed: %s", e)
+            return
+        try:
+            if decision.proceed:
+                conn.execute(
+                    """
+                    UPDATE source_health
+                    SET last_event_ts        = ?1,
+                        last_success_ts      = ?1,
+                        consecutive_failures = 0,
+                        last_error_msg       = NULL,
+                        updated_at           = ?1
+                    WHERE source = 'brain-preflight'
+                    """,
+                    (now_ms,),
+                )
+            else:
+                err_msg = (decision.error or decision.reason or "preflight_failed")[:500]
+                conn.execute(
+                    """
+                    UPDATE source_health
+                    SET last_error_ts        = ?1,
+                        last_error_msg       = ?2,
+                        consecutive_failures = consecutive_failures + 1,
+                        updated_at           = ?1
+                    WHERE source = 'brain-preflight'
+                    """,
+                    (now_ms, err_msg),
+                )
+            conn.commit()
+        except sqlite3.OperationalError as e:
+            # source_health absent or schema older than v8 — swallow per
+            # existing daemon-side convention.
+            logger.debug("brain-preflight source_health write skipped: %s", e)
+        finally:
+            conn.close()
+
     def _pick_enrichment_model(self, loaded: list[str]) -> bool:
         """Filter chat models from `loaded` and set self.enrichment_model.
 
@@ -877,9 +927,14 @@ class BrainServer:
 
                     self._enrichment_active = True
                     try:
-                        decision = await preflight_lm_studio(
+                        decision = await preflight_inference(
                             self.client, self._preferred_model or None, allow_fallback=True
                         )
+                        # Mirror the preflight outcome into source_health so
+                        # watchdog I-12 can alarm on sustained failures
+                        # (motivating incident: silent [lmstudio]->[inference]
+                        # drift made preflight fail for hours with no alarm).
+                        self._record_preflight_to_source_health(decision)
                         if not decision.proceed:
                             continue
 
@@ -1533,8 +1588,8 @@ class BrainServer:
 def create_app(
     db_path: str = "",
     data_dir: str = "",
-    lmstudio_base_url: str = "http://localhost:1234/v1",
-    lmstudio_timeout_secs: float = 300.0,
+    inference_base_url: str = "http://localhost:1234/v1",
+    inference_timeout_secs: float = 300.0,
     enrichment_model: str = "",
     embedding_model: str = "",
     query_model: str = "",
@@ -1548,8 +1603,8 @@ def create_app(
     server = BrainServer(
         db_path=db_path,
         data_dir=data_dir,
-        lmstudio_base_url=lmstudio_base_url,
-        lmstudio_timeout_secs=lmstudio_timeout_secs,
+        inference_base_url=inference_base_url,
+        inference_timeout_secs=inference_timeout_secs,
         enrichment_model=enrichment_model,
         embedding_model=embedding_model,
         query_model=query_model,

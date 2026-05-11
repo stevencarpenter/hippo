@@ -1,4 +1,11 @@
-"""Background sampler for per-model system metrics."""
+"""Background sampler for per-model system metrics.
+
+Tracks RSS / CPU of the inference-backend process. Discovery is currently
+LM-Studio-specific (process-name match) — see `_LMSTUDIO_NAME_HINTS`. For
+other OpenAI-compatible backends (oMLX, ollama, vLLM) the discovery returns
+None and the per-process metrics stay at 0; host-wide metrics (load average,
+free memory) still populate. Adding probes for other backends is a follow-up.
+"""
 
 from __future__ import annotations
 
@@ -13,12 +20,15 @@ import psutil
 @dataclass
 class Snapshot:
     monotonic_ns: int
-    lmstudio_rss_mb: float
-    lmstudio_cpu_pct: float
+    inference_rss_mb: float
+    inference_cpu_pct: float
     load_avg_1m: float  # os.getloadavg()[0] — 1-minute kernel load average
     mem_free_mb: float  # vm.available, not vm.free — kernel's user-accessible memory
 
 
+# Process-name substrings that identify the LM Studio inference server.
+# This is the only LM-Studio-specific bit left in the module; other backends
+# (oMLX, ollama, vLLM) would need their own hints to be discovered by name.
 _LMSTUDIO_NAME_HINTS = ("lm studio", "lmstudio", "lms")
 
 
@@ -31,7 +41,13 @@ class MetricsSampler:
         self._pid: int | None = None
 
     @staticmethod
-    def _discover_lmstudio_pid() -> int | None:
+    def _discover_inference_pid() -> int | None:
+        """Find the PID of the inference backend.
+
+        Currently LM-Studio-specific — matches `_LMSTUDIO_NAME_HINTS` against
+        the process name list. Returns None on non-LM-Studio backends, which
+        leaves the per-process Snapshot fields at 0.
+        """
         best: int | None = None
         best_rss = 0
         for proc in psutil.process_iter(["pid", "name"]):
@@ -62,8 +78,8 @@ class MetricsSampler:
         vm = psutil.virtual_memory()
         return Snapshot(
             monotonic_ns=time.monotonic_ns(),
-            lmstudio_rss_mb=rss_mb,
-            lmstudio_cpu_pct=cpu_pct,
+            inference_rss_mb=rss_mb,
+            inference_cpu_pct=cpu_pct,
             load_avg_1m=load_1,
             mem_free_mb=vm.available / (1024 * 1024),
         )
@@ -82,7 +98,7 @@ class MetricsSampler:
             self._stop.wait(interval)
 
     def start(self) -> None:
-        self._pid = self._discover_lmstudio_pid()
+        self._pid = self._discover_inference_pid()
         self._stop.clear()
         self._samples = []
         self._thread = threading.Thread(target=self._run_loop, name="bench-metrics", daemon=True)
@@ -100,14 +116,14 @@ class MetricsSampler:
     def peak(self) -> dict[str, float]:
         if not self._samples:
             return {
-                "lmstudio_rss_mb": 0.0,
-                "lmstudio_cpu_pct": 0.0,
+                "inference_rss_mb": 0.0,
+                "inference_cpu_pct": 0.0,
                 "load_avg_1m": 0.0,
                 "mem_free_mb": 0.0,
             }
         return {
-            "lmstudio_rss_mb": max(s.lmstudio_rss_mb for s in self._samples),
-            "lmstudio_cpu_pct": max(s.lmstudio_cpu_pct for s in self._samples),
+            "inference_rss_mb": max(s.inference_rss_mb for s in self._samples),
+            "inference_cpu_pct": max(s.inference_cpu_pct for s in self._samples),
             "load_avg_1m": max(s.load_avg_1m for s in self._samples),
             "mem_free_mb": min(s.mem_free_mb for s in self._samples),
         }

@@ -12,27 +12,34 @@ logger = logging.getLogger(__name__)
 _meter = get_meter()
 _request_duration = (
     _meter.create_histogram(
-        "hippo.brain.lmstudio.request_duration", description="LM Studio API latency", unit="ms"
+        "hippo.brain.inference.request_duration",
+        description="Inference-backend API latency",
+        unit="ms",
     )
     if _meter
     else None
 )
-_lm_errors = (
-    _meter.create_counter("hippo.brain.lmstudio.errors", description="Failed LM Studio calls")
+_inference_errors = (
+    _meter.create_counter(
+        "hippo.brain.inference.errors", description="Failed inference-backend calls"
+    )
     if _meter
     else None
 )
-_lm_crashes = (
+_inference_crashes = (
     _meter.create_counter(
-        "hippo.brain.lmstudio.crashes",
-        description="LM Studio reported model worker crashes (process killed mid-inference)",
+        "hippo.brain.inference.crashes",
+        description=(
+            "Model-worker crashes reported by the inference backend "
+            "(LM-Studio-specific 'model has crashed' substring match for now)"
+        ),
     )
     if _meter
     else None
 )
 _prompt_tokens = (
     _meter.create_histogram(
-        "hippo.brain.lmstudio.prompt_tokens", description="Prompt size in chars"
+        "hippo.brain.inference.prompt_tokens", description="Prompt size in chars"
     )
     if _meter
     else None
@@ -40,33 +47,38 @@ _prompt_tokens = (
 
 
 def _raise_with_body(resp: httpx.Response) -> None:
-    # LM Studio returns a JSON body on 4xx (e.g. {"error": "Context history must
-    # not be empty."}) that pinpoints the failure. httpx's default raise_for_status
-    # discards it, so we re-raise with the body appended to keep diagnoses visible.
-    # If body extraction itself fails (decode error, body unread, etc.), fall back
-    # to the original raise — never let a body-extraction error mask the real HTTP error.
+    # OpenAI-compatible backends (LM Studio, oMLX, ollama, vLLM, …) return a
+    # JSON body on 4xx (e.g. {"error": "Context history must not be empty."})
+    # that pinpoints the failure. httpx's default raise_for_status discards it,
+    # so we re-raise with the body appended to keep diagnoses visible.
+    # If body extraction itself fails (decode error, body unread, etc.), fall
+    # back to the original raise — never let a body-extraction error mask the
+    # real HTTP error.
     try:
         resp.raise_for_status()
     except httpx.HTTPStatusError as e:
         try:
             body = resp.text[:500].strip()
         except Exception as text_err:
-            # Catch broad: any failure to decode (UnicodeDecodeError, ResponseNotRead,
-            # programming bugs in the property accessor) must not mask the real HTTP
-            # error. Log at debug so the loss of body context is greppable in incidents.
-            logger.debug("LM Studio response body extraction failed: %s", text_err)
+            # Catch broad: any failure to decode (UnicodeDecodeError,
+            # ResponseNotRead, programming bugs in the property accessor)
+            # must not mask the real HTTP error. Log at debug so the loss of
+            # body context is greppable in incidents.
+            logger.debug("inference response body extraction failed: %s", text_err)
             body = ""
         if not body:
             raise
-        # Surface model-worker crashes as a first-class signal — independent of
-        # the queue-level retries that absorb them. Substring match against the
-        # LM Studio UI string as of 2026-05-07 (case-insensitive to survive
-        # capitalization drift across LM Studio versions); if LM Studio changes
-        # the wording itself, this stops counting — re-check on LM Studio upgrades.
-        # Crashes are a subset of _lm_errors (which counts every failed call from
-        # the chat()/embed() except blocks): a single crash increments BOTH.
-        if _lm_crashes and "model has crashed" in body.lower():
-            _lm_crashes.add(1)
+        # Surface model-worker crashes as a first-class signal — independent
+        # of the queue-level retries that absorb them. Substring match against
+        # the LM Studio UI string as of 2026-05-07 (case-insensitive to
+        # survive capitalization drift). This is LM-Studio-specific; other
+        # backends (oMLX, ollama, vLLM) report crashes differently and won't
+        # increment this counter. Re-check on LM Studio upgrades.
+        # Crashes are a subset of _inference_errors (which counts every failed
+        # call from the chat()/embed() except blocks): a single crash
+        # increments BOTH.
+        if _inference_crashes and "model has crashed" in body.lower():
+            _inference_crashes.add(1)
         raise httpx.HTTPStatusError(
             f"{e.args[0]}\nBody: {body}",
             request=e.request,
@@ -74,7 +86,18 @@ def _raise_with_body(resp: httpx.Response) -> None:
         ) from e
 
 
-class LMStudioClient:
+class InferenceClient:
+    """OpenAI-compatible inference client.
+
+    Works against any backend that speaks the OpenAI chat/embed protocol:
+    LM Studio, oMLX, ollama, vLLM, llama.cpp's server, or a hosted
+    OpenAI-compatible proxy. The class name was previously `LMStudioClient`;
+    it was renamed in the vendor-neutrality push to reflect that LM Studio
+    is one of many backends. No legacy alias is provided — imports that
+    still reference `LMStudioClient` will fail loudly with `ImportError`,
+    which is the intended signal to update the call-site.
+    """
+
     def __init__(self, base_url: str = "http://localhost:1234/v1", timeout: float = 300.0):
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
@@ -108,8 +131,8 @@ class LMStudioClient:
                 _prompt_tokens.record(total_chars)
             return result
         except Exception:
-            if _lm_errors:
-                _lm_errors.add(1, {"method": "chat"})
+            if _inference_errors:
+                _inference_errors.add(1, {"method": "chat"})
             raise
 
     async def embed(self, texts: list[str], model: str = "") -> list[list[float]]:
@@ -127,12 +150,12 @@ class LMStudioClient:
                 _request_duration.record((time.monotonic() - t0) * 1000, {"method": "embed"})
             return result
         except Exception:
-            if _lm_errors:
-                _lm_errors.add(1, {"method": "embed"})
+            if _inference_errors:
+                _inference_errors.add(1, {"method": "embed"})
             raise
 
     async def list_models(self) -> list[str]:
-        """Return IDs of all models currently loaded in LM Studio."""
+        """Return IDs of all models currently loaded on the inference backend."""
         async with httpx.AsyncClient(timeout=self.timeout) as client:
             resp = await client.get(f"{self.base_url}/models")
             _raise_with_body(resp)
@@ -146,7 +169,7 @@ class LMStudioClient:
             return False
 
     async def health_check(self, model: str) -> dict:
-        """Probe LM Studio and verify ``model`` is loaded.
+        """Probe the inference backend and verify ``model`` is loaded.
 
         Returns a dict:
 
@@ -162,7 +185,7 @@ class LMStudioClient:
             return {
                 "ok": False,
                 "reason": (
-                    f"LM Studio unreachable at {self.base_url} "
+                    f"inference backend unreachable at {self.base_url} "
                     f"[{type(e).__name__}]: {str(e) or repr(e)}"
                 ),
                 "loaded_models": [],
@@ -171,15 +194,15 @@ class LMStudioClient:
             return {
                 "ok": False,
                 "reason": (
-                    f"query model {model!r} not loaded in LM Studio at {self.base_url}. "
-                    f"Loaded: {models}"
+                    f"model {model!r} not loaded on inference backend at "
+                    f"{self.base_url}. Loaded: {models}"
                 ),
                 "loaded_models": models,
             }
         return {"ok": True, "reason": None, "loaded_models": models}
 
 
-class MockLMStudioClient(LMStudioClient):
+class MockInferenceClient(InferenceClient):
     CANNED_RESPONSE = (
         '{"summary": "test command", "intent": "testing", "outcome": "success", '
         '"entities": {"projects": [], "tools": [], "files": [], "services": [], "errors": []}, '

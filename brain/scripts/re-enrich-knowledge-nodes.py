@@ -70,7 +70,7 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from hippo_brain import vector_store  # noqa: E402
 from hippo_brain.claude_sessions import CLAUDE_SYSTEM_PROMPT  # noqa: E402
-from hippo_brain.client import LMStudioClient  # noqa: E402
+from hippo_brain.client import InferenceClient  # noqa: E402
 from hippo_brain.embeddings import embed_knowledge_node  # noqa: E402
 from hippo_brain.enrichment import (  # noqa: E402
     CURRENT_ENRICHMENT_VERSION,
@@ -100,7 +100,7 @@ def _default_db_path() -> Path:
 
 
 def _load_settings() -> dict:
-    """Pull lmstudio + model settings from the canonical brain config."""
+    """Pull inference + model settings from the canonical brain config."""
     from hippo_brain import _load_runtime_settings
 
     return _load_runtime_settings()
@@ -190,7 +190,7 @@ def _build_prompt_for(source: str, payload: list[dict]) -> tuple[str, str]:
 
 
 async def _call_llm_with_retries(
-    client: LMStudioClient, system_prompt: str, prompt: str, model: str
+    client: InferenceClient, system_prompt: str, prompt: str, model: str
 ) -> object:
     """Mirror Server._call_llm_with_retries: 3 attempts, parse on each.
 
@@ -303,7 +303,7 @@ def _finalize_node_version(conn: sqlite3.Connection, node_id: int) -> None:
 
 
 async def _re_embed(
-    client: LMStudioClient,
+    client: InferenceClient,
     conn: sqlite3.Connection,
     node_id: int,
     embed_text: str,
@@ -328,7 +328,7 @@ async def _re_embed(
 
 
 async def _process_node(
-    client: LMStudioClient,
+    client: InferenceClient,
     conn: sqlite3.Connection,
     candidate: dict,
     enrichment_model: str,
@@ -395,8 +395,8 @@ async def main_async(args: argparse.Namespace) -> int:
         )
         return 1
 
-    base_url = settings.get("lmstudio_base_url", "http://localhost:1234/v1")
-    timeout = float(settings.get("lmstudio_timeout_secs", 300.0))
+    base_url = settings.get("inference_base_url", "http://localhost:1234/v1")
+    timeout = float(settings.get("inference_timeout_secs", 300.0))
 
     # vector_store.open_conn loads the sqlite-vec extension (vec0) and
     # applies the standard PRAGMAs. Plain sqlite3.connect cannot write to
@@ -428,7 +428,7 @@ async def main_async(args: argparse.Namespace) -> int:
         conn.close()
         return 0
 
-    client = LMStudioClient(base_url=base_url, timeout=timeout)
+    client = InferenceClient(base_url=base_url, timeout=timeout)
 
     successes = 0
     failures = 0

@@ -177,7 +177,7 @@ record types, discriminated by `record_type`:
   "started_at_iso": "2026-05-05T12:00:00Z",
   "finished_at_iso": null,
   "bench_version": "0.2.0",
-  "lmstudio_version": "CLI commit: 0b2a176",
+  "inference_backend_version": "lms CLI commit: 0b2a176",
   "host": {
     "hostname": "...", "os": "darwin 25.4.0", "arch": "arm64",
     "cpu_brand": "Apple M5 Max", "total_mem_gb": 128.0
@@ -218,7 +218,7 @@ record types, discriminated by `record_type`:
     "call_error": null
   },
   "system_snapshot": {
-    "lmstudio_rss_mb": 18432, "lmstudio_cpu_pct": 87.2,
+    "inference_rss_mb": 18432, "inference_cpu_pct": 87.2,
     "load_avg_1m": 4.12, "mem_free_mb": 5821
   },
   "timeout": false
@@ -236,7 +236,7 @@ record types, discriminated by `record_type`:
   "attempts_total": 25,
   "gates": {},
   "system_peak": {
-    "lmstudio_rss_mb": 21453, "lmstudio_cpu_pct": 98.1,
+    "inference_rss_mb": 21453, "inference_cpu_pct": 98.1,
     "load_avg_1m": 5.4, "mem_free_mb": 1200,
     "wall_clock_sec": 1854
   },

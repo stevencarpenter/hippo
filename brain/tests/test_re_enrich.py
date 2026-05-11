@@ -18,7 +18,7 @@ from pathlib import Path
 
 import pytest
 
-from hippo_brain.client import MockLMStudioClient
+from hippo_brain.client import MockInferenceClient
 
 SCRIPT_PATH = Path(__file__).parent.parent / "scripts" / "re-enrich-knowledge-nodes.py"
 
@@ -168,7 +168,7 @@ def test_process_node_updates_in_place(conn, re_enrich):
     original_uuid, original_created_at = before["uuid"], before["created_at"]
 
     candidate = {"id": 42, "uuid": original_uuid, "_source": "shell"}
-    client = MockLMStudioClient()
+    client = MockInferenceClient()
 
     ok = asyncio.run(
         re_enrich._process_node(
@@ -184,7 +184,7 @@ def test_process_node_updates_in_place(conn, re_enrich):
     assert after["created_at"] == original_created_at, "created_at must be preserved"
     assert after["enrichment_version"] == re_enrich.TARGET_ENRICHMENT_VERSION
     new_content = json.loads(after["content"])
-    assert new_content["summary"] == "test command"  # from MockLMStudioClient.CANNED_RESPONSE
+    assert new_content["summary"] == "test command"  # from MockInferenceClient.CANNED_RESPONSE
 
 
 def test_process_claude_node_updates_in_place(conn, re_enrich):
@@ -199,7 +199,7 @@ def test_process_claude_node_updates_in_place(conn, re_enrich):
     original_uuid, original_created_at = before["uuid"], before["created_at"]
 
     candidate = {"id": 55, "uuid": original_uuid, "_source": "claude"}
-    client = MockLMStudioClient()
+    client = MockInferenceClient()
 
     ok = asyncio.run(
         re_enrich._process_node(
@@ -230,7 +230,7 @@ def test_dry_run_makes_no_changes(conn, re_enrich):
 
     _seed_shell_node(conn, node_id=7)
     candidate = {"id": 7, "uuid": "x", "_source": "shell"}
-    client = MockLMStudioClient()
+    client = MockInferenceClient()
 
     ok = asyncio.run(
         re_enrich._process_node(
@@ -253,7 +253,7 @@ def test_failed_node_keeps_old_version_for_retry(conn, re_enrich, monkeypatch):
 
     _seed_shell_node(conn, node_id=99)
 
-    class FailingClient(MockLMStudioClient):
+    class FailingClient(MockInferenceClient):
         async def chat(self, *args, **kwargs):
             raise RuntimeError("simulated lm-studio outage")
 

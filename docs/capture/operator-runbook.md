@@ -123,9 +123,11 @@ tail -f ~/.local/share/hippo/brain.stderr.log
 ```
 
 Common causes:
-- LM Studio model unloaded — load the model in LM Studio or set it to stay loaded.
-- LM Studio model swapped — `[models].enrichment` in `~/.config/hippo/config.toml` doesn't match a loaded model.
+- Inference backend model unloaded — load the model in your backend's UI (LM Studio / oMLX / ollama / …) or set it to stay loaded.
+- Inference backend model swapped — `[models].enrichment` in `~/.config/hippo/config.toml` doesn't match a loaded model on the backend.
+- `[lmstudio]` → `[inference]` config-section drift — upgrading an old install? Rename the section in `~/.config/hippo/config.toml`. Both the daemon and the brain reject the legacy name with a clear migration error. The same `[inference]` key works for LM Studio, oMLX, ollama, vLLM, and any other OpenAI-compatible backend.
 - Brain crashed — `mise run restart` (or `launchctl bootout/bootstrap` the brain agent).
+- Watchdog **I-12** ("brain preflight stuck") will fire after the inference backend has been unreachable for ~1 minute; check `hippo alarms list` and the `Stack Health Grade` panel.
 
 The watchdog reaper handles transient locks (rows stuck in `processing` for > `lock_timeout_secs`); see [`docs/brain-watchdog.md`](../brain-watchdog.md). A persistent backlog is operator-visible — neither the watchdog nor doctor will silently drop work.
 

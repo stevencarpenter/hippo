@@ -783,7 +783,7 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = _parse_args(argv)
-    from hippo_brain.client import LMStudioClient
+    from hippo_brain.client import InferenceClient
     from hippo_brain.mcp import _load_config
     from hippo_brain.vector_store import open_conn
 
@@ -799,9 +799,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     conn = open_conn(cfg["db_path"])
     lm_client: Any | None = None
     try:
-        lm_client = LMStudioClient(base_url=cfg["lmstudio_base_url"])
+        lm_client = InferenceClient(base_url=cfg["inference_base_url"])
     except Exception as e:
-        print(f"LM Studio client unavailable: {e}", file=sys.stderr)
+        print(f"Inference client unavailable: {e}", file=sys.stderr)
 
     report = asyncio.run(
         run_benchmark(

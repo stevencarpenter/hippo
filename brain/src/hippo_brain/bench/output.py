@@ -21,7 +21,10 @@ class RunManifestRecord:
     corpus_content_hash: str = ""
     gate_thresholds: dict[str, Any] = field(default_factory=dict)
     self_consistency_spec: dict[str, Any] = field(default_factory=dict)
-    lmstudio_version: str | None = None
+    # Inference backend version. Currently only populated when the backend is
+    # LM Studio (via `lms --version`); other backends (oMLX, ollama, vLLM)
+    # leave this None until backend-specific probes are added.
+    inference_backend_version: str | None = None
     corpus_schema_version: int = 0
     eval_qa_version: str = "eval-qa-v1"
     embedding_model: str = ""
