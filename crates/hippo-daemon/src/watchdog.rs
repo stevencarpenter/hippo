@@ -1,7 +1,7 @@
 //! Capture-reliability watchdog — `hippo watchdog run`
 //!
 //! Short-lived process invoked every 60 s by launchd (`com.hippo.watchdog`).
-//! Asserts invariants I-1..I-10 against the `source_health` table and writes
+//! Asserts invariants I-1..I-11 against the `source_health` table and writes
 //! rows to `capture_alarms` for any violations detected.  Rate-limited per
 //! invariant per sliding window (default 60 min).
 //!
@@ -9,7 +9,7 @@
 //! the live architectural overview lives at `docs/capture/architecture.md`):
 //!   1. Upsert own heartbeat into `source_health WHERE source='watchdog'`
 //!   2. Read full `source_health` in one `SELECT *`
-//!   3. Assert I-1..I-10 against in-memory rows
+//!   3. Assert I-1..I-11 against in-memory rows
 //!   4. Insert `capture_alarms` rows for violations (rate-limited)
 //!   5. Update `last_success_ts` on watchdog row; return `Ok(())`
 //!
@@ -150,7 +150,7 @@ pub fn run(config: &HippoConfig) -> Result<()> {
     // ── Step 2: Read all source_health rows ───────────────────────────────
     let rows = read_source_health(&conn)?;
 
-    // ── Step 3: Assert invariants I-1..I-10 ──────────────────────────────
+    // ── Step 3: Assert invariants I-1..I-11 ──────────────────────────────
     let violations = check_invariants(&rows, now_ms);
 
     // ── Step 4: Insert capture_alarms rows for violations ─────────────────
@@ -408,7 +408,7 @@ fn is_pause_lockfile_active(path: &std::path::Path, now: std::time::SystemTime) 
     }
 }
 
-/// Evaluate I-1..I-10 against the in-memory `source_health` rows.
+/// Evaluate I-1..I-11 against the in-memory `source_health` rows.
 ///
 /// Returns one `InvariantViolation` per triggered invariant.
 /// Invariants that require filesystem access (I-2 proxy, I-9) or are

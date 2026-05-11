@@ -1360,6 +1360,18 @@ pub fn source_freshness_probes() -> Vec<SourceFreshnessProbe> {
                 hard_ms: 30 * DAY_MS,
             },
         },
+        // Opencode harness rows in `agentic_sessions`. Probe rows excluded
+        // per AP-6. Long-horizon thresholds: opencode is bursty by nature
+        // (sessions only land when the user actively codes with it).
+        SourceFreshnessProbe {
+            name: "agentic-session-opencode",
+            query: "SELECT COUNT(*), MAX(start_time) FROM agentic_sessions \
+                    WHERE harness = 'opencode' AND probe_tag IS NULL",
+            thresholds: FreshnessThresholds {
+                soft_ms: 3 * DAY_MS,
+                hard_ms: 30 * DAY_MS,
+            },
+        },
     ]
 }
 

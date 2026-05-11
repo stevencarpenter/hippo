@@ -100,8 +100,6 @@ def claim_pending_opencode_segments(
         )
         segment_ids = [row[0] for row in cursor.fetchall()]
         conn.commit()
-        if remaining > 0:
-            remaining -= len(segment_ids)
         if not segment_ids:
             continue
 
@@ -160,6 +158,12 @@ def claim_pending_opencode_segments(
             )
 
         segments = _skip_ineligible_opencode_segments(conn, segments)
+        # Decrement the global cap by the number of *eligible* segments only.
+        # If 10 rows were claimed but 8 were ineligible, only 2 enrichable
+        # batches reach the LLM — `max_claim_batch` should reflect what the
+        # caller actually gets, not what we scanned.
+        if remaining > 0:
+            remaining -= len(segments)
         all_batches.extend([seg] for seg in segments)
 
     return all_batches

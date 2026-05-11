@@ -739,6 +739,19 @@ pub fn open_db(path: &Path) -> Result<Connection> {
     if version == 0 {
         conn.execute_batch(SCHEMA)?;
     }
+
+    // Idempotent post-migration normalization. The v13→v14 migration shipped
+    // first without seeding `agentic-session-claude`; databases already at
+    // v14 from that earlier commit will not re-run the migration block, so
+    // we re-apply the seeds on every open. INSERT OR IGNORE is cheap and
+    // skips rows that already exist.
+    if version == EXPECTED_VERSION {
+        let _ = conn.execute_batch(
+            "INSERT OR IGNORE INTO source_health (source, last_event_ts, updated_at) VALUES
+                ('agentic-session-claude',  (SELECT MAX(start_time) FROM agentic_sessions WHERE harness = 'claude-code'), unixepoch('now') * 1000),
+                ('agentic-session-opencode', NULL, unixepoch('now') * 1000);",
+        );
+    }
     Ok(conn)
 }
 

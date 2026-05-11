@@ -35,6 +35,7 @@ fn probes_cover_every_source_from_the_audit_matrix() {
             "claude-session (subagent)",
             "browser",
             "workflow",
+            "agentic-session-opencode",
         ],
         "probe list must stay in sync with docs/capture/sources.md"
     );

@@ -79,11 +79,12 @@ rules:
 
   - id: unfiltered-event-table-select
     message: |
-      SELECT on an event table (events / claude_sessions / browser_events)
-      without 'probe_tag IS NULL' will return synthetic probe rows in
-      production result sets (AP-6: probe contamination). Probe rows look
-      identical to real developer activity and will pollute every user-facing
-      query, knowledge-node retrieval, and fine-tuning corpus.
+      SELECT on an event table (events / claude_sessions / browser_events /
+      agentic_sessions) without 'probe_tag IS NULL' will return synthetic
+      probe rows in production result sets (AP-6: probe contamination).
+      Probe rows look identical to real developer activity and will pollute
+      every user-facing query, knowledge-node retrieval, and fine-tuning
+      corpus.
 
       Add  AND probe_tag IS NULL  to the WHERE clause.
 
@@ -102,7 +103,7 @@ rules:
       - metavariable-regex:
           # metavariable-regex uses fullmatch; (?s) enables DOTALL for multiline SQL strings.
           metavariable: $SQL
-          regex: "(?s).*FROM\\s+(events|claude_sessions|browser_events)\\b.*"
+          regex: "(?s).*FROM\\s+(events|claude_sessions|browser_events|agentic_sessions)\\b.*"
       - pattern-not-regex: "(?i)probe_tag\\s+IS\\s+NULL"
     paths:
       include:

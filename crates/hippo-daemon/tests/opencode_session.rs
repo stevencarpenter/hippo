@@ -238,12 +238,12 @@ fn poll_tick_is_idempotent_when_no_new_writes() {
         hippo_daemon::opencode_session::poll_tick(&config).unwrap(),
         1
     );
-    // Second tick on an unchanged opencode DB must not re-emit the same row.
-    assert_eq!(
-        hippo_daemon::opencode_session::poll_tick(&config).unwrap(),
-        0,
-        "cursor must skip already-seen rows"
-    );
+    // Second tick: with the `>=` cursor the boundary row is re-read and the
+    // ON CONFLICT branch fires (events_sent counts it again) — but the
+    // destination table must remain at 1 row, which is the real invariant.
+    // Trade-off: the cursor design prefers re-reads + idempotent upsert over
+    // a tuple-cursor that silently skips same-ms siblings (F-26).
+    let _ = hippo_daemon::opencode_session::poll_tick(&config).unwrap();
 
     let conn = hippo_core::storage::open_db(&config.db_path()).unwrap();
     let count: i64 = conn

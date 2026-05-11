@@ -99,35 +99,39 @@ fn make_source_key(db_path: &Path) -> Result<String> {
 }
 
 fn read_new_sessions(conn: &rusqlite::Connection, cursor: &Cursor) -> Result<Vec<OpencodeSession>> {
+    // Use `>=` (not `>`) and rely on ON CONFLICT DO UPDATE in `upsert_session`
+    // for idempotency. The previous tuple-cursor `(time_updated > ?1 OR
+    // (time_updated = ?1 AND id > ?2))` was unsafe because opencode session
+    // ids are random UUIDs: a new session inserted with the same `time_updated`
+    // as the previous tail but a lexicographically *earlier* id would be
+    // permanently skipped. Re-reading the at-boundary cluster every tick is
+    // cheap (typically 1–2 rows) and the upsert is idempotent so duplicates
+    // never land.
     let sql = "SELECT id, slug, title, directory, parent_id, agent, model,
                 time_created, time_updated,
                 summary_additions, summary_deletions, summary_files,
                 summary_diffs
          FROM session
-         WHERE time_updated > ?1
-            OR (time_updated = ?1 AND id > ?2)
+         WHERE time_updated >= ?1
          ORDER BY time_updated ASC, id ASC";
     let mut stmt = conn.prepare(sql)?;
-    stmt.query_map(
-        params![cursor.last_seen_updated_at, cursor.last_id],
-        |row| {
-            Ok(OpencodeSession {
-                id: row.get(0)?,
-                slug: row.get(1)?,
-                title: row.get(2)?,
-                directory: row.get(3)?,
-                parent_id: row.get(4)?,
-                agent: row.get(5)?,
-                model: row.get(6)?,
-                time_created: row.get(7)?,
-                time_updated: row.get(8)?,
-                summary_additions: row.get(9)?,
-                summary_deletions: row.get(10)?,
-                summary_files: row.get(11)?,
-                summary_diffs: row.get(12)?,
-            })
-        },
-    )?
+    stmt.query_map(params![cursor.last_seen_updated_at], |row| {
+        Ok(OpencodeSession {
+            id: row.get(0)?,
+            slug: row.get(1)?,
+            title: row.get(2)?,
+            directory: row.get(3)?,
+            parent_id: row.get(4)?,
+            agent: row.get(5)?,
+            model: row.get(6)?,
+            time_created: row.get(7)?,
+            time_updated: row.get(8)?,
+            summary_additions: row.get(9)?,
+            summary_deletions: row.get(10)?,
+            summary_files: row.get(11)?,
+            summary_diffs: row.get(12)?,
+        })
+    })?
     .collect::<Result<Vec<_>, _>>()
     .map_err(Into::into)
 }
@@ -235,18 +239,45 @@ fn upsert_session(conn: &rusqlite::Connection, s: &OpencodeSession) -> Result<()
         params![agentic_session_id, now],
     )?;
 
-    // Bump source_health.last_event_ts. MAX() makes the write idempotent for
-    // a re-ingest where time_updated hasn't actually advanced.
+    // Bump source_health for a successful upsert. Resetting
+    // `consecutive_failures` here is the key piece: it lets watchdog I-11
+    // (which gates on `consecutive_failures > 3`) actually become reachable.
+    // `events_last_1h/24h` are intentionally NOT bumped — the poller uses a
+    // `time_updated >= cursor` predicate that re-reads at-boundary rows on
+    // every tick, so a per-tick increment would over-count idempotent
+    // re-ingests. The daemon's `flush_events` increments those counters
+    // because it processes only fresh socket frames.
     tx.execute(
-        "UPDATE source_health SET
-            last_event_ts = MAX(COALESCE(last_event_ts, 0), ?1),
-            updated_at    = ?2
+        "UPDATE source_health
+         SET last_event_ts        = MAX(COALESCE(last_event_ts, 0), ?1),
+             last_success_ts      = ?2,
+             consecutive_failures = 0,
+             updated_at           = ?2
          WHERE source = 'agentic-session-opencode'",
         params![s.time_updated, now],
     )?;
 
     tx.commit()?;
     Ok(())
+}
+
+/// Record a failed upsert for the watchdog. Mirrors `daemon.rs::flush_events`
+/// error path so I-11 (`consecutive_failures > 3` against
+/// `agentic-session-opencode`) can actually fire when the poller is broken.
+fn record_upsert_error(conn: &rusqlite::Connection, err: &anyhow::Error) {
+    let now = chrono::Utc::now().timestamp_millis();
+    let err_msg = format!("{err:#}");
+    if let Err(e) = conn.execute(
+        "UPDATE source_health
+         SET last_error_ts        = ?1,
+             last_error_msg       = ?2,
+             consecutive_failures = consecutive_failures + 1,
+             updated_at           = ?1
+         WHERE source = 'agentic-session-opencode'",
+        params![now, err_msg],
+    ) {
+        warn!("source_health error update failed: {e}");
+    }
 }
 
 // --- Entry point ---
@@ -264,6 +295,12 @@ fn open_opencode_db(db_path: &Path) -> Result<rusqlite::Connection> {
 
     conn.pragma_update(None, "busy_timeout", "5000")
         .context("failed to set busy_timeout=5000")?;
+    // foreign_keys=ON is a behavioral no-op on a read-only connection (FK
+    // enforcement only fires on writes), but the project's CLAUDE.md rule
+    // says "on every connection" without exception, so we set it explicitly
+    // for consistency rather than silent omission.
+    conn.pragma_update(None, "foreign_keys", "ON")
+        .context("failed to set foreign_keys=ON")?;
 
     Ok(conn)
 }
@@ -325,6 +362,7 @@ pub fn poll_tick(config: &HippoConfig) -> Result<usize> {
             Err(e) => {
                 error!(%e, id = %session.id, "Failed to write session to Hippo DB");
                 errors_sent += 1;
+                record_upsert_error(&hippo_conn, &e);
             }
         }
     }

@@ -939,7 +939,11 @@ class BrainServer:
                                     stale_lock_timeout_ms=self.lock_timeout_ms,
                                 )
                             except Exception as e:
-                                logger.debug("no opencode segments to process: %s", e)
+                                # AP-11: a real exception here (SQL error,
+                                # schema mismatch) is a structural failure and
+                                # must not be downgraded to debug. Mirrors the
+                                # browser/workflow claim paths above.
+                                logger.warning("opencode claim error: %s", e, exc_info=True)
                                 opencode_batches = []
 
                             if (
