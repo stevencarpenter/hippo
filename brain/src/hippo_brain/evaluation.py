@@ -155,14 +155,14 @@ _GROUNDEDNESS_PROMPT = (
 async def groundedness(
     answer: str,
     sources: Sequence[dict],
-    lm_client: Any,
+    inference_client: Any,
     model: str,
 ) -> float:
     """LLM-judge: does every factual claim in ``answer`` appear in ``sources``?
 
     Returns ``nan`` on any error (no LLM, parse failure, etc.).
     """
-    if not answer or not sources or lm_client is None or not model:
+    if not answer or not sources or inference_client is None or not model:
         return float("nan")
     source_blob = "\n\n".join(
         f"[{i + 1}] {s.get('summary', '')} — {s.get('embed_text', '')}"
@@ -176,7 +176,7 @@ async def groundedness(
         },
     ]
     try:
-        raw = await lm_client.chat(messages, model=model, temperature=0.0, max_tokens=32)
+        raw = await inference_client.chat(messages, model=model, temperature=0.0, max_tokens=32)
     except Exception:
         return float("nan")
     if not raw:
@@ -443,7 +443,7 @@ async def score_question(
     q: Question,
     *,
     conn: sqlite3.Connection,
-    lm_client: Any | None,
+    inference_client: Any | None,
     embedding_model: str,
     query_model: str,
     mode: str,
@@ -457,9 +457,9 @@ async def score_question(
     relevance_graded = {uid: 1.0 for uid in relevant}
 
     query_vec: list[float] | None = None
-    if lm_client is not None and embedding_model:
+    if inference_client is not None and embedding_model:
         try:
-            vecs = await lm_client.embed([q.question], model=embedding_model)
+            vecs = await inference_client.embed([q.question], model=embedding_model)
             if vecs:
                 query_vec = list(vecs[0])
         except Exception:
@@ -499,13 +499,13 @@ async def score_question(
     error: str | None = None
     ground = float("nan")
 
-    if run_synthesis and lm_client is not None and query_model:
+    if run_synthesis and inference_client is not None and query_model:
         try:
             from hippo_brain.rag import ask as rag_ask
 
             res = await rag_ask(
                 q.question,
-                lm_client,
+                inference_client,
                 conn,
                 query_model,
                 embedding_model,
@@ -522,7 +522,7 @@ async def score_question(
                 ground = await groundedness(
                     answer,
                     res.get("sources", []),
-                    lm_client,
+                    inference_client,
                     query_model,
                 )
         except Exception as e:
@@ -553,7 +553,7 @@ async def run_benchmark(
     *,
     questions: Sequence[Question],
     conn: sqlite3.Connection,
-    lm_client: Any | None,
+    inference_client: Any | None,
     embedding_model: str,
     query_model: str,
     mode: str = "hybrid",
@@ -570,7 +570,7 @@ async def run_benchmark(
             await score_question(
                 q,
                 conn=conn,
-                lm_client=lm_client,
+                inference_client=inference_client,
                 embedding_model=embedding_model,
                 query_model=query_model,
                 mode=mode,
@@ -797,17 +797,17 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 2
 
     conn = open_conn(cfg["db_path"])
-    lm_client: Any | None = None
+    inference_client: Any | None = None
     try:
-        lm_client = InferenceClient(base_url=cfg["inference_base_url"])
+        inference_client = InferenceClient(base_url=cfg["inference_base_url"])
     except Exception as e:
-        print(f"Inference client unavailable: {e}", file=sys.stderr)
+        print(f"inference client unavailable: {e}", file=sys.stderr)
 
     report = asyncio.run(
         run_benchmark(
             questions=questions,
             conn=conn,
-            lm_client=lm_client,
+            inference_client=inference_client,
             embedding_model=cfg["embedding_model"],
             query_model=cfg["query_model"],
             mode=args.mode,

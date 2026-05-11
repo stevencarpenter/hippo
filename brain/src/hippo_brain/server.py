@@ -750,7 +750,7 @@ class BrainServer:
         try:
             result = await rag_ask(
                 question=question,
-                lm_client=self.client,
+                inference_client=self.client,
                 vector_table=self._vector_table,
                 query_model=model,
                 embedding_model=self.embedding_model,
@@ -769,7 +769,7 @@ class BrainServer:
 
         in_flight_finished reflects both /ask queries and the enrichment
         loop body — bench callers need both quiescent before they own the
-        LM Studio slot.
+        inference server slot.
         """
         if not self._paused:
             self._paused = True
@@ -882,7 +882,7 @@ class BrainServer:
 
         Claims work from all three sources sequentially (fast SQLite ops), then
         processes them concurrently via asyncio.gather. LLM calls still serialize
-        at the LM Studio level, but DB writes and embeddings from one batch
+        at the inference-server level, but DB writes and embeddings from one batch
         overlap with the next LLM call.
         """
         self.enrichment_running = True
@@ -904,7 +904,7 @@ class BrainServer:
                         continue
                     # Sleep up to poll_interval_secs, waking early if a query
                     # arrives mid-sleep. The event-based wake means we yield
-                    # to the LM Studio slot instead of waiting out the full
+                    # to the inference-server slot instead of waiting out the
                     # interval and starting a competing enrichment batch.
                     try:
                         await asyncio.wait_for(
@@ -1035,7 +1035,7 @@ class BrainServer:
             self.enrichment_running = False
 
     async def _call_llm_with_retries(self, system_prompt, prompt, source_label):
-        """Call LM Studio with up to 3 retries on parse failure."""
+        """Call the inference server with up to 3 retries on parse failure."""
         last_err: Exception = RuntimeError("no attempts made")
         for attempt in range(3):
             try:
@@ -1130,7 +1130,7 @@ class BrainServer:
                 logger.debug("browser correlation skipped: %s", e)
 
             prompt = build_enrichment_prompt(events, browser_context=browser_context)
-            logger.info("calling LM Studio (prompt len: %d chars)", len(prompt))
+            logger.info("calling inference server (prompt len: %d chars)", len(prompt))
 
             tracer = _get_tracer()
             span = (
@@ -1413,7 +1413,7 @@ class BrainServer:
                     await enrich_one_async(
                         self.db_path,
                         run_id=run_id,
-                        lm=self.client,
+                        inference=self.client,
                         query_model=query_model,
                     )
                     _add(_nodes_created, source="workflow")

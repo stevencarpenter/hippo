@@ -61,9 +61,6 @@ def _load_config() -> dict:
     """Load Hippo config from ~/.config/hippo/config.toml.
 
     Returns a dict with db_path, data_dir, inference_base_url, embedding_model, query_model.
-
-    Reads the inference URL from the [inference] section (formerly [lmstudio];
-    see hippo_brain.__init__ for the fail-loud migration guard).
     """
     config_path = Path.home() / ".config" / "hippo" / "config.toml"
     defaults = {
@@ -87,7 +84,10 @@ def _load_config() -> dict:
     ).expanduser()
 
     # Section renamed from [lmstudio] -> [inference] in the omlx PR. Fail loud
-    # on the legacy name; see hippo_brain.__init__ for the matching guard.
+    # on the legacy name; see hippo_brain.__init__ and HippoConfig::load
+    # (Rust) for the matching guards. The fail-loud policy was chosen over
+    # silent fallback because the original incident was caused by silent
+    # default-substitution masking a real misconfiguration.
     if "lmstudio" in config and "inference" not in config:
         raise RuntimeError(
             "config.toml uses the deprecated [lmstudio] section. Rename it to [inference]."
@@ -109,7 +109,7 @@ class _ServerState:
     """Holds initialized resources for the MCP server."""
 
     db_path: str = ""
-    lm_client: InferenceClient | None = None
+    inference_client: InferenceClient | None = None
     embedding_model: str = ""
     query_model: str = ""
     vector_table: object | None = None  # lancedb.table.Table
@@ -134,12 +134,12 @@ def _get_conn(db_path: str = "") -> sqlite3.Connection:
 
 
 def _init_state() -> None:
-    """Load config and initialize LM client and vector table (called once at startup)."""
+    """Load config and initialize the inference client and vector table (called once at startup)."""
     config = _load_config()
     _state.db_path = config["db_path"]
     _state.embedding_model = config["embedding_model"]
     _state.query_model = config["query_model"]
-    _state.lm_client = InferenceClient(base_url=config["inference_base_url"])
+    _state.inference_client = InferenceClient(base_url=config["inference_base_url"])
 
     try:
         db = open_vector_db(config["data_dir"])
@@ -183,7 +183,7 @@ async def search_knowledge(
 
     Args:
         query: Search query text.
-        mode: "semantic" (vector similarity via LM Studio) or "lexical" (LIKE match).
+        mode: "semantic" (vector similarity via the inference server) or "lexical" (LIKE match).
               Defaults to "semantic"; falls back to lexical on embedding failure.
         limit: Maximum number of results to return (default 10).
         project: Substring match on cwd or git_repo of linked events/sessions.
@@ -220,12 +220,14 @@ async def search_knowledge(
         try:
             if (
                 mode == "semantic"
-                and _state.lm_client
+                and _state.inference_client
                 and _state.vector_table
                 and not (project or since or source or branch)
             ):
                 try:
-                    vecs = await _state.lm_client.embed([query], model=_state.embedding_model)
+                    vecs = await _state.inference_client.embed(
+                        [query], model=_state.embedding_model
+                    )
                     query_vec = _pad_or_truncate(vecs[0], EMBED_DIM)
                     hits = search_similar(_state.vector_table, query_vec, limit=limit)
                     conn = _get_conn()
@@ -315,8 +317,8 @@ async def ask(
     )
     since_ms = _parse_since_ms(since) if since else None
 
-    if not _state.lm_client or not _state.vector_table:
-        return "Error: Semantic search not available (LM Studio or vector store not initialized)"
+    if not _state.inference_client or not _state.vector_table:
+        return "Error: Semantic search not available (inference client or vector store not initialized)"
 
     if not _state.query_model:
         return "Error: No query model configured (set models.query in config.toml)"
@@ -325,7 +327,7 @@ async def ask(
     try:
         result = await rag_ask(
             question=question,
-            lm_client=_state.lm_client,
+            inference_client=_state.inference_client,
             vector_table=_state.vector_table,
             query_model=_state.query_model,
             embedding_model=_state.embedding_model,
@@ -618,9 +620,9 @@ async def _retrieve_filtered(
     )
 
     query_vec = None
-    if mode in ("hybrid", "semantic") and _state.lm_client and query:
+    if mode in ("hybrid", "semantic") and _state.inference_client and query:
         try:
-            vecs = await _state.lm_client.embed([query], model=_state.embedding_model)
+            vecs = await _state.inference_client.embed([query], model=_state.embedding_model)
             query_vec = _pad_or_truncate(vecs[0], EMBED_DIM)
         except Exception:
             logger.exception("query embedding failed in _retrieve_filtered")

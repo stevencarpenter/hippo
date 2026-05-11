@@ -35,6 +35,7 @@ export const DEFAULT_ALLOWLIST: string[] = [
   "huggingface.co",
   "arxiv.org",
   "lmstudio.ai",
+  "omlx.ai",
   // System & OS docs
   "man7.org",
   "wiki.archlinux.org",

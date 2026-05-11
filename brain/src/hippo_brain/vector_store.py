@@ -254,7 +254,9 @@ def _vec_blob(vec: Iterable[float]) -> bytes:
                 bad = (idx, x, type(x).__name__)
                 break
         nan_count = sum(
-            1 for x in buf if isinstance(x, float) and x != x  # NaN check
+            1
+            for x in buf
+            if isinstance(x, float) and x != x  # NaN check
         )
         raise struct.error(
             f"_vec_blob: cannot pack vector of length {len(buf)}: {e}. "

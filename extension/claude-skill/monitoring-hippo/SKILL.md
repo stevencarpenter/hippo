@@ -1,6 +1,6 @@
 ---
 name: monitoring-hippo
-description: Use when user asks if hippo is working, running, healthy, or needs debugging. Provides commands to check daemon, brain, LM Studio, logs, and enrichment status.
+description: Use when user asks if hippo is working, running, healthy, or needs debugging. Provides commands to check daemon, brain, the inference server (oMLX or LM Studio), logs, and enrichment status.
 ---
 
 # Monitoring Hippo
@@ -13,7 +13,7 @@ Run these commands to verify everything is operational:
 
 ### 1. Check running processes
 ```bash
-ps aux | grep -E "(hippo|lmstudio)" | grep -v grep
+ps aux | grep -E "(hippo|lmstudio|omlx)" | grep -v grep
 ```
 
 ### 2. Check if daemon socket exists and is responsive
@@ -26,9 +26,10 @@ ls -la ~/.local/share/hippo/daemon.sock
 curl -s http://localhost:9175/health
 ```
 
-### 4. Check LM Studio API
+### 4. Check inference server API
 ```bash
-curl -s http://localhost:1234/v1/models
+# omlx default (LM Studio uses port 1234)
+curl -s http://localhost:8000/v1/models
 ```
 
 ## Log Monitoring
@@ -72,7 +73,7 @@ sqlite3 ~/.local/share/hippo/hippo.db "SELECT id, source_type, LENGTH(content) a
 |---------|-------|-----|
 | "brain not reachable" in daemon logs | Brain running on port 9175? | `mise run run:brain` |
 | No enrichment happening | Check `brain.stderr.log` for errors | Restart brain |
-| LM Studio not responding | Check `http://localhost:1234/v1/models` | Start LM Studio, load a model |
+| Inference server not responding | Check `http://localhost:8000/v1/models` (or `:1234` for LM Studio) | Start the server, load a model |
 | Socket not found | Daemon running? | `mise run run:daemon` |
 
 ## OTEL Stack Monitoring
@@ -163,7 +164,7 @@ Run these to confirm hippo is fully operational:
 
 1. Daemon: `cargo run --bin hippo -- status`
 2. Brain health: `curl -s http://localhost:9175/health`
-3. LM Studio: `curl -s http://localhost:1234/v1/models | jq '.data[].id'`
+3. Inference server: `curl -s http://localhost:8000/v1/models | jq '.data[].id'`  (`:1234` for LM Studio)
 4. Recent enrichment: `tail -10 ~/.local/share/hippo/brain.stderr.log | grep enriched`
 5. OTEL collector: `curl -s http://localhost:13133/`
 6. Grafana: `curl -s -u admin:hippo 'http://localhost:3030/api/search' | jq '.[] | .title'`

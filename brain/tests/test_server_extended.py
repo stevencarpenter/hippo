@@ -336,7 +336,7 @@ async def test_workflow_enrichment_calls_enrich_one_async(tmp_db):
 
     enrich_calls: list[int] = []
 
-    async def _fake_enrich(db_path_arg, run_id, lm, query_model):
+    async def _fake_enrich(db_path_arg, run_id, inference, query_model):
         enrich_calls.append(run_id)
 
     ok = PreflightDecision(proceed=True, reason="ok", loaded_models=["test-model"])

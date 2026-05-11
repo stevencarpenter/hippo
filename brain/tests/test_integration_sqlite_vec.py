@@ -245,7 +245,7 @@ async def test_rag_ask_degraded_mode_returns_sources_on_chat_timeout(
         # Avoid FTS5 special chars like '?' — retrieval does not sanitize
         # free-text queries before MATCH (known gap; flagged in scorecard).
         question="retrieval stack",
-        lm_client=_TimeoutClient(),
+        inference_client=_TimeoutClient(),
         vector_table=db,
         query_model="qwen",
         embedding_model="embed",

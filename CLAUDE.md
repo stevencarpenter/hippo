@@ -97,7 +97,7 @@ Two processes share a SQLite database at ~/.local/share/hippo/hippo.db:
 
 1. hippo-daemon (Rust) - captures shell events via Unix socket, redacts secrets, writes to SQLite, serves CLI queries.
    `hippo doctor` checks version alignment between CLI, running daemon, and brain.
-2. hippo-brain (Python) - polls enrichment queues from SQLite, calls LM Studio API, writes knowledge nodes + embeddings
+2. hippo-brain (Python) - polls enrichment queues from SQLite, calls a local OpenAI-compatible inference server (default oMLX, also tested with LM Studio), writes knowledge nodes + embeddings
    to SQLite (sqlite-vec vec0 virtual tables + FTS5). Shell, Claude, and browser sources are enriched concurrently via `asyncio.gather()`;
    embeddings run as background tasks to overlap with LLM inference.
 
@@ -141,7 +141,7 @@ Ingestion is handled by `crates/hippo-daemon/src/watch_claude_sessions.rs`, a lo
 Capture-reliability stack (the result of the P0–P3 overhaul shipped through v0.16). Reference docs live in [`docs/capture/`](docs/capture/architecture.md); historical design records are in [`docs/archive/capture-reliability-overhaul/`](docs/archive/capture-reliability-overhaul/). Key pieces:
 
 - **`source_health` table**: single SQL ground truth of "did the event land?" per source — `shell`, `claude-tool`, `claude-session`, `claude-session-watcher`, `browser`, `watchdog`, `probe`. Every capture path writes its row in the same transaction as the event insert. See [`docs/capture/architecture.md`](docs/capture/architecture.md).
-- **`hippo watchdog run`** (launchd `com.hippo.watchdog`, every 60 s): asserts the I-1..I-10 invariants against `source_health`, writes `capture_alarms` rows on violations, rate-limited per invariant. See [`docs/capture/architecture.md`](docs/capture/architecture.md).
+- **`hippo watchdog run`** (launchd `com.hippo.watchdog`, every 60 s): asserts the I-1..I-12 invariants against `source_health`, writes `capture_alarms` rows on violations, rate-limited per invariant. See [`docs/capture/architecture.md`](docs/capture/architecture.md).
 - **`hippo alarms list / ack`**: CLI for unacknowledged alarms (exit 1 if any).
 - **`hippo doctor`**: ten isolated checks with `[OK]`/`[WW]`/`[!!]`/`[--]` severity, exit code = fail count, total wall-clock < 2 s. `--explain` prints CAUSE/FIX/DOC per failure. See [`docs/capture/operator-runbook.md`](docs/capture/operator-runbook.md).
 - **`hippo probe`** (launchd `com.hippo.probe`, every 5 min): synthetic canary events round-trip through each capture path; latency recorded in `source_health.probe_lag_ms`. All probe rows carry a `probe_tag` and are filtered out of every user-facing query (RAG, MCP tools, `hippo ask`, etc.) by upstream daemon filtering and a Semgrep rule. See [`docs/capture/architecture.md`](docs/capture/architecture.md).

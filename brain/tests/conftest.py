@@ -32,8 +32,8 @@ def tmp_db():
 
 
 @pytest.fixture
-def mock_lmstudio_response():
-    """Canned LM Studio chat completion response."""
+def mock_inference_response():
+    """Canned inference chat completion response."""
     return {
         "id": "chatcmpl-test",
         "object": "chat.completion",

@@ -18,9 +18,9 @@ For the system reference these rules guard, see [`architecture.md`](architecture
 
 ## AP-2: Coupling Capture Health to Enrichment Health
 
-**Forbidden.** Setting `source_health.status = 'degraded'` because LM Studio is unreachable, the `enrichment_queue` is backed up, or `hippo-brain` is offline.
+**Forbidden.** Setting `source_health.status = 'degraded'` because the inference server is unreachable, the `enrichment_queue` is backed up, or `hippo-brain` is offline.
 
-**Why.** Orthogonal failure domains. Capture has operated correctly while enrichment was offline for days. Coupling them means a routine LM Studio model swap triggers a false capture alarm. `hippo doctor` already separates brain health from daemon health; `source_health` must maintain the same boundary. See [`architecture.md`](architecture.md) invariant I-10.
+**Why.** Orthogonal failure domains. Capture has operated correctly while enrichment was offline for days. Coupling them means a routine inference-server model swap triggers a false capture alarm. `hippo doctor` already separates brain health from daemon health; `source_health` must maintain the same boundary. See [`architecture.md`](architecture.md) invariant I-10.
 
 **The right way.** `source_health` tracks only capture-layer observables: `last_event_ts`, `consecutive_failures`, `events_last_1h/24h`. Enrichment health lives in the brain `/health` endpoint. Watchdog fires alarms only on capture metrics; never inspects `enrichment_queue` depth.
 
@@ -70,7 +70,7 @@ For the system reference these rules guard, see [`architecture.md`](architecture
 
 **Forbidden.** Adding a doctor check that performs HTTP without a timeout, does a full table scan on `events` (millions of rows), spawns an unbounded subprocess, or blocks on brain returning healthy.
 
-**Why.** `hippo doctor` is run interactively, especially during incidents. 10-second doctor is useless when something is on fire. Current LM Studio check already enforces 1-second timeout; that constraint extends to every new check.
+**Why.** `hippo doctor` is run interactively, especially during incidents. 10-second doctor is useless when something is on fire. Current inference-server check already enforces 1-second timeout; that constraint extends to every new check.
 
 **The right way.** All new SQL uses indexed columns only. HTTP checks carry 1-second timeout. Any check that can't complete in 500 ms on a loaded machine moves to `hippo doctor --full`. Total wall-clock asserted under 2 s in CI.
 

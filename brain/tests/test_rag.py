@@ -275,9 +275,9 @@ class TestFormatRagResponse:
         assert "Sources:" in text
 
     def test_formats_error_result(self):
-        result = {"error": "LM Studio down", "sources": [], "model": "test-model"}
+        result = {"error": "inference server down", "sources": [], "model": "test-model"}
         text = format_rag_response(result)
-        assert "LM Studio down" in text
+        assert "inference server down" in text
 
     def test_formats_empty_sources(self):
         result = {"answer": "No data found.", "sources": [], "model": "m"}

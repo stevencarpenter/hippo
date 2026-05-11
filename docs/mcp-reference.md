@@ -67,7 +67,7 @@ Sources:
 
 **Pitfalls**
 
-- Returns an error string (not an exception) if `[models].query` is unset or LM Studio is unreachable.
+- Returns an error string (not an exception) if `[models].query` is unset or the inference server is unreachable.
 - Probe events filtered out at the query layer (AP-6) — they will never appear in source citations.
 
 ---
@@ -81,7 +81,7 @@ Search enriched knowledge nodes; no synthesis. Defaults to semantic; falls back 
 | Name | Type | Default | Notes |
 |---|---|---|---|
 | `query` | `str` | required | Search query text. |
-| `mode` | `str` | `"semantic"` | `"semantic"` (vector similarity via LM Studio embedding model) or `"lexical"` (SQL `LIKE` over `knowledge_nodes.content` / `embed_text` — does NOT use the FTS5 index). |
+| `mode` | `str` | `"semantic"` | `"semantic"` (vector similarity via the inference server's embedding model) or `"lexical"` (SQL `LIKE` over `knowledge_nodes.content` / `embed_text` — does NOT use the FTS5 index). |
 | `limit` | `int` | `10` | |
 | `project` / `since` / `source` / `branch` | `str` | `""` | See [Common arguments](#common-arguments). |
 

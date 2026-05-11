@@ -649,7 +649,7 @@ def phase_re_embed(
     if not dry_run and not yes_reembed:
         raise RuntimeError(
             "[re-embed] --yes-reembed flag required. "
-            "Re-embedding ~1.9K nodes takes ~6 min and chews LM Studio capacity."
+            "Re-embedding ~1.9K nodes takes ~6 min and chews inference-server capacity."
         )
 
     script = _SCRIPTS_DIR / "migrate-vectors.py"
@@ -860,7 +860,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--yes-reembed",
         action="store_true",
-        help="Acknowledge re-embed duration and LM Studio cost; required for phase 5.",
+        help="Acknowledge re-embed duration and inference-server cost; required for phase 5.",
     )
     parser.add_argument(
         "--yes-extreme-deletion",

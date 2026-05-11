@@ -246,13 +246,13 @@ def _reset_state():
     """Save and restore _state between tests."""
     old_db = _state.db_path
     old_vt = _state.vector_table
-    old_lm = _state.lm_client
+    old_lm = _state.inference_client
     old_em = _state.embedding_model
     old_qm = _state.query_model
     yield
     _state.db_path = old_db
     _state.vector_table = old_vt
-    _state.lm_client = old_lm
+    _state.inference_client = old_lm
     _state.embedding_model = old_em
     _state.query_model = old_qm
 
@@ -267,7 +267,7 @@ class TestSearchKnowledgeTool:
         conn, db_path = knowledge_db
         _state.db_path = str(db_path)
         _state.vector_table = None
-        _state.lm_client = None
+        _state.inference_client = None
 
         results = asyncio.run(search_knowledge("cargo build", mode="lexical", limit=10))
         assert len(results) == 1
@@ -277,7 +277,7 @@ class TestSearchKnowledgeTool:
         conn, db_path = knowledge_db
         _state.db_path = str(db_path)
         _state.vector_table = None
-        _state.lm_client = None
+        _state.inference_client = None
 
         results = asyncio.run(
             search_knowledge("nonexistent_gibberish_xyz", mode="lexical", limit=10)
@@ -289,7 +289,7 @@ class TestSearchKnowledgeTool:
         conn, db_path = knowledge_db
         _state.db_path = str(db_path)
         _state.vector_table = None
-        _state.lm_client = None
+        _state.inference_client = None
 
         results = asyncio.run(search_knowledge("cargo", mode="semantic", limit=10))
         assert len(results) == 1
@@ -300,7 +300,7 @@ class TestSearchKnowledgeTool:
         conn, db_path = knowledge_db
         _state.db_path = str(db_path)
         _state.vector_table = "fake_table"
-        _state.lm_client = None
+        _state.inference_client = None
 
         results = asyncio.run(search_knowledge("cargo", mode="semantic", limit=10))
         assert len(results) == 1
@@ -313,7 +313,7 @@ class TestSearchKnowledgeTool:
 
         mock_client = AsyncMock()
         mock_client.embed.side_effect = RuntimeError("LM Studio unreachable")
-        _state.lm_client = mock_client
+        _state.inference_client = mock_client
         _state.vector_table = "fake_table"
 
         results = asyncio.run(search_knowledge("cargo", mode="semantic", limit=10))
@@ -327,7 +327,7 @@ class TestSearchKnowledgeTool:
 
         mock_client = AsyncMock()
         mock_client.embed.return_value = [[0.25] * 384]
-        _state.lm_client = mock_client
+        _state.inference_client = mock_client
 
         def fake_search_similar(table, query_vec, limit=10):
             assert table is _state.vector_table
@@ -354,7 +354,7 @@ class TestSearchKnowledgeTool:
         conn, db_path = knowledge_db
         _state.db_path = str(db_path)
         _state.vector_table = None
-        _state.lm_client = None
+        _state.inference_client = None
 
         results = asyncio.run(search_knowledge("", mode="lexical", limit=10))
         assert len(results) == 1
@@ -363,7 +363,7 @@ class TestSearchKnowledgeTool:
         conn, db_path = knowledge_db
         _state.db_path = str(db_path)
         _state.vector_table = None
-        _state.lm_client = None
+        _state.inference_client = None
 
         results = asyncio.run(search_knowledge("cargo", mode="lexical", limit=-1))
         assert results == []
@@ -381,7 +381,7 @@ class TestSearchKnowledgeTool:
 
         _state.db_path = str(db_path)
         _state.vector_table = None
-        _state.lm_client = None
+        _state.inference_client = None
 
         results = asyncio.run(search_knowledge("cargo", mode="lexical", limit=1))
         assert len(results) == 1
@@ -543,7 +543,7 @@ class TestMetricsOnError:
         """When DB doesn't exist, search_knowledge raises."""
         _state.db_path = str(tmp_path / "nonexistent.db")
         _state.vector_table = None
-        _state.lm_client = None
+        _state.inference_client = None
 
         with pytest.raises(Exception):
             asyncio.run(search_knowledge("test", mode="lexical"))
@@ -566,7 +566,7 @@ class TestMetricsOnError:
         """search_knowledge raises when DB doesn't exist."""
         _state.db_path = str(tmp_path / "nonexistent.db")
         _state.vector_table = None
-        _state.lm_client = None
+        _state.inference_client = None
 
         with pytest.raises(Exception):
             asyncio.run(search_knowledge("test", mode="lexical"))
@@ -593,7 +593,7 @@ class TestAskFilterWiring:
         }
         mock_client.embed.return_value = [[0.1] * EMBED_DIM]
         mock_client.chat.return_value = "Synthesized answer"
-        _state.lm_client = mock_client
+        _state.inference_client = mock_client
 
     def test_ask_respects_nonexistent_project_filter(self, tmp_db):
         """Project filter forwarded to rag_ask — nonexistent project yields zero sources."""

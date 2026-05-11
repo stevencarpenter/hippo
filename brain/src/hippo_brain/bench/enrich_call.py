@@ -1,7 +1,9 @@
-"""Bench-owned enrichment + embedding HTTP calls to LM Studio.
+"""Bench-owned enrichment + embedding HTTP calls to the inference server.
 
-Intentionally independent from hippo_brain.client so bench can call
-arbitrary candidate models without disturbing production telemetry.
+Sends to whatever OpenAI-compatible URL is passed via `base_url` (oMLX,
+LM Studio, or any other compatible server). Intentionally independent from
+hippo_brain.client so bench can call arbitrary candidate models without
+disturbing production telemetry.
 
 Errors are CALLER-CLASSIFIED, never raised:
 - Timeout → CallResult(timeout=True, error="timeout")
@@ -9,7 +11,7 @@ Errors are CALLER-CLASSIFIED, never raised:
 
 The runner asks each call: did it return useful data, did it time out,
 or did it fail? It never has to handle a bare exception. This keeps
-multi-event runs robust against transient LM Studio hiccups.
+multi-event runs robust against transient inference-server hiccups.
 """
 
 from __future__ import annotations

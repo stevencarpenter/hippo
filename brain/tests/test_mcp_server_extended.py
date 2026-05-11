@@ -28,13 +28,13 @@ def _reset_state():
     """Save/restore module state so tests don't leak."""
     old_db = _state.db_path
     old_vt = _state.vector_table
-    old_lm = _state.lm_client
+    old_lm = _state.inference_client
     old_em = _state.embedding_model
     old_qm = _state.query_model
     yield
     _state.db_path = old_db
     _state.vector_table = old_vt
-    _state.lm_client = old_lm
+    _state.inference_client = old_lm
     _state.embedding_model = old_em
     _state.query_model = old_qm
 
@@ -52,11 +52,11 @@ class TestAskPrerequisiteErrors:
     silently, all error-handling consumers are broken.
     """
 
-    def test_ask_returns_error_string_when_lm_client_missing(self, tmp_db):
+    def test_ask_returns_error_string_when_inference_client_missing(self, tmp_db):
         _conn, db_path = tmp_db
         _state.db_path = str(db_path)
-        _state.lm_client = None
-        _state.vector_table = object()  # present, but lm_client is not
+        _state.inference_client = None
+        _state.vector_table = object()  # present, but inference_client is not
         _state.query_model = "some-model"
 
         result = asyncio.run(ask(question="anything"))
@@ -67,8 +67,8 @@ class TestAskPrerequisiteErrors:
     def test_ask_returns_error_string_when_vector_table_missing(self, tmp_db):
         _conn, db_path = tmp_db
         _state.db_path = str(db_path)
-        _state.lm_client = AsyncMock()
-        _state.vector_table = None  # present lm_client, missing vector table
+        _state.inference_client = AsyncMock()
+        _state.vector_table = None  # present inference_client, missing vector table
         _state.query_model = "some-model"
 
         result = asyncio.run(ask(question="anything"))
@@ -79,7 +79,7 @@ class TestAskPrerequisiteErrors:
     def test_ask_returns_error_string_when_query_model_unconfigured(self, tmp_db):
         _conn, db_path = tmp_db
         _state.db_path = str(db_path)
-        _state.lm_client = AsyncMock()
+        _state.inference_client = AsyncMock()
         _state.vector_table = object()
         _state.query_model = ""  # misconfigured
 
@@ -113,7 +113,7 @@ class TestSearchHybridTool:
         )
         conn.commit()
         _state.db_path = str(db_path)
-        _state.lm_client = None  # lexical mode should not need embedding
+        _state.inference_client = None  # lexical mode should not need embedding
         _state.vector_table = None
 
         results = asyncio.run(search_hybrid(query="cargo", mode="lexical", limit=5))
@@ -153,7 +153,7 @@ class TestSearchHybridTool:
         )
         conn.commit()
         _state.db_path = str(db_path)
-        _state.lm_client = None
+        _state.inference_client = None
         _state.vector_table = None
 
         results = asyncio.run(search_hybrid(query="zzz_no_match_xyz", mode="lexical", limit=5))
@@ -162,7 +162,7 @@ class TestSearchHybridTool:
     def test_search_hybrid_negative_limit_is_clamped(self, tmp_db):
         _conn, db_path = tmp_db
         _state.db_path = str(db_path)
-        _state.lm_client = None
+        _state.inference_client = None
         _state.vector_table = None
 
         results = asyncio.run(search_hybrid(query="anything", mode="lexical", limit=-1))
@@ -175,7 +175,7 @@ class TestSearchHybridTool:
         """
         _conn, db_path = tmp_db
         _state.db_path = str(db_path) + "_missing"  # bad path → fallback also fails
-        _state.lm_client = None
+        _state.inference_client = None
         _state.vector_table = None
 
         with pytest.raises(Exception):
@@ -199,7 +199,7 @@ class TestGetContextTool:
         )
         conn.commit()
         _state.db_path = str(db_path)
-        _state.lm_client = None
+        _state.inference_client = None
         _state.vector_table = None
 
         # Patch _retrieve_filtered so we run through get_context's shaping
@@ -236,7 +236,7 @@ class TestGetContextTool:
     def test_get_context_empty_results_renders_stub(self, tmp_db):
         _conn, db_path = tmp_db
         _state.db_path = str(db_path)
-        _state.lm_client = None
+        _state.inference_client = None
         _state.vector_table = None
 
         with patch(
@@ -252,7 +252,7 @@ class TestGetContextTool:
     def test_get_context_limit_is_clamped(self, tmp_db):
         _conn, db_path = tmp_db
         _state.db_path = str(db_path)
-        _state.lm_client = None
+        _state.inference_client = None
         _state.vector_table = None
 
         captured_limits = []
@@ -352,7 +352,7 @@ class TestRetrieveFilteredFallback:
         )
         conn.commit()
         _state.db_path = str(db_path)
-        _state.lm_client = None
+        _state.inference_client = None
         _state.vector_table = None
 
         # Force retrieval.search to raise; fall-through should hit lexical SQL.
