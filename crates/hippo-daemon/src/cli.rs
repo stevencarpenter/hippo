@@ -131,6 +131,8 @@ pub enum Commands {
     },
     /// Watch ~/.claude/projects/**/*.jsonl for new session content (FSEvents, KeepAlive service)
     ClaudeSessionWatch,
+    /// Poll opencode's SQLite DB for new sessions (LaunchAgent, OneShot)
+    OpencodePoll,
     /// Run the daemon in the foreground (alias for `daemon run`).
     ///
     /// BT-09: shipped so `hippo serve` no longer fails with "unrecognized

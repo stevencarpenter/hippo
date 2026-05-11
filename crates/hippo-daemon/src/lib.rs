@@ -9,6 +9,7 @@ pub mod git_repo;
 #[cfg(feature = "otel")]
 pub mod metrics;
 pub mod native_messaging;
+pub mod opencode_session;
 pub mod probe;
 #[cfg(feature = "otel")]
 pub mod process_metrics;

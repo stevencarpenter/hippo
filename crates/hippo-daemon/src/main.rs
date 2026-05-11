@@ -2,7 +2,7 @@ mod cli;
 mod install;
 
 use hippo_daemon::{
-    backfill, claude_session, commands, daemon, gh_api, gh_poll, watch_claude_sessions,
+    backfill, claude_session, commands, daemon, gh_api, gh_poll, opencode_session, watch_claude_sessions,
 };
 
 use anyhow::{Context, Result};
@@ -956,6 +956,18 @@ async fn main() -> Result<()> {
         },
         Commands::ClaudeSessionWatch => {
             watch_claude_sessions::run(&config).await?;
+        }
+        Commands::OpencodePoll => {
+            // Use config[opencode].db_path, falling back to the default path.
+            let db_path = config.opencode.db_path.clone();
+            // How many events did we emit?
+            match opencode_session::poll_tick(&db_path) {
+                Ok(n) => tracing::info!(events_sent = n, "opencode poll: completed"),
+                Err(e) => {
+                    eprintln!("Error running opencode poll: {e:#}");
+                    std::process::exit(1);
+                }
+            }
         }
         // BT-09: `hippo serve` is a foreground-run alias for `hippo daemon run`.
         // Honors the same logic so bench code (and any future operator

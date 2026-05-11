@@ -541,4 +541,86 @@ CREATE TABLE IF NOT EXISTS claude_session_parity (
 CREATE INDEX IF NOT EXISTS idx_claude_session_parity_path_window
     ON claude_session_parity (path, window_start);
 
-PRAGMA user_version = 13;
+-- ─── v14: Agentic sessions and cursor tracking (opencode ingestion) ─────
+--
+-- `agentic_sessions` replaces `claude_sessions` semantics. All harnesses
+-- (claude-code, opencode, codex) share the same table; the `harness` column
+-- disambiguates their origin. The brain's enrichment contract reads from
+-- this table and writes knowledge nodes; the daemon's pollers INSERT/UPsert
+-- here independently so a future harness like codex can slot in.
+CREATE TABLE IF NOT EXISTS agentic_sessions (
+    id              INTEGER PRIMARY KEY,
+    session_id      TEXT    NOT NULL,
+    harness         TEXT    NOT NULL DEFAULT 'opencode'
+                        CHECK (harness IN ('claude-code', 'opencode', 'codex')),
+    model           TEXT    NOT NULL DEFAULT '',
+    agent           TEXT    DEFAULT '',
+    project_dir     TEXT    NOT NULL,
+    cwd             TEXT    NOT NULL,
+    slug            TEXT    DEFAULT '',
+    title           TEXT    DEFAULT '',
+    parent_session_id TEXT,
+    summary_text    TEXT    NOT NULL,
+    source_file     TEXT    DEFAULT '',
+    snapshot_diffs_json TEXT DEFAULT 'null',
+    commit_messages_json TEXT DEFAULT '[]',
+    message_count   INTEGER NOT NULL DEFAULT 0,
+    token_count     INTEGER NOT NULL DEFAULT 0,
+    start_time      INTEGER NOT NULL,
+    end_time        INTEGER NOT NULL,
+    created_at      INTEGER NOT NULL DEFAULT (unixepoch('now', 'subsec') * 1000),
+    enriched        INTEGER NOT NULL DEFAULT 0,
+    UNIQUE (session_id, harness)
+);
+
+CREATE INDEX IF NOT EXISTS idx_agentic_sessions_harness ON agentic_sessions (harness);
+CREATE INDEX IF NOT EXISTS idx_agentic_sessions_cwd ON agentic_sessions (cwd);
+CREATE INDEX IF NOT EXISTS idx_agentic_sessions_start_time ON agentic_sessions (start_time DESC);
+CREATE INDEX IF NOT EXISTS idx_agentic_sessions_enriched ON agentic_sessions (enriched) WHERE enriched = 0;
+
+CREATE TABLE IF NOT EXISTS knowledge_node_agentic_sessions (
+    knowledge_node_id  INTEGER NOT NULL REFERENCES knowledge_nodes (id),
+    agentic_session_id INTEGER NOT NULL REFERENCES agentic_sessions (id) ON DELETE CASCADE,
+    PRIMARY KEY (knowledge_node_id, agentic_session_id)
+);
+
+CREATE TABLE IF NOT EXISTS agentic_enrichment_queue (
+    id              INTEGER PRIMARY KEY,
+    session_id      INTEGER NOT NULL UNIQUE REFERENCES agentic_sessions (id),
+    status          TEXT    NOT NULL DEFAULT 'pending'
+                        CHECK (status IN ('pending', 'processing', 'done', 'failed', 'skipped')),
+    priority        INTEGER NOT NULL DEFAULT 5,
+    retry_count     INTEGER NOT NULL DEFAULT 0,
+    max_retries     INTEGER NOT NULL DEFAULT 5,
+    error_message   TEXT,
+    locked_at       INTEGER,
+    locked_by       TEXT,
+    enqueued_at     INTEGER NOT NULL,
+    updated_at      INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_agentic_queue_pending ON agentic_enrichment_queue (status, priority)
+    WHERE status = 'pending';
+
+-- Cursor table for live pollers. `source_key` is the specific harness+inode
+-- so reinstalls of opencode (new inode) don't cause replay.
+CREATE TABLE IF NOT EXISTS agentic_cursor (
+    source_key      TEXT    PRIMARY KEY,
+    last_time_created INTEGER NOT NULL DEFAULT 0,
+    last_id         TEXT    NOT NULL DEFAULT '',
+    updated_at      INTEGER NOT NULL
+);
+
+-- Seed source_health rows for agentic sources.
+-- `agentic-session-claude` uses MAX(start_time) from backend;
+-- `agentic-session-opencode` starts at NULL (no opencode data yet).
+INSERT OR IGNORE INTO source_health (source, last_event_ts, updated_at) VALUES
+    ('agentic-session-claude',  (SELECT MAX(start_time) FROM agentic_sessions WHERE harness = 'claude-code'), unixepoch('now') * 1000),
+    ('agentic-session-opencode', NULL, unixepoch('now') * 1000);
+
+-- This topic is exposed at the /ask endpoint as well. (e.g.,). M i. .
+-- prerequisite.
+-- The `claude_session_offsets` table (deprecated since T-5) is preserved
+-- to avoid breaking existing CREATE SCHEMA users.
+
+PRAGMA user_version = 14;

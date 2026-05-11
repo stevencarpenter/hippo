@@ -168,6 +168,24 @@ notify_macos             = false
 # log_path = ""                   # default: $data_dir/watchdog-alarms.log
 # osascript_title = "Hippo Watchdog"
 
+[opencode]
+# Opencode coding-assistant session ingestion (live SQLite polling).
+#
+# When enabled, a background task polls `~/.local/share/opencode/opencode.db`
+# (or the path configured below) for new/updated sessions, messages, and parts.
+# It extracts session metadata (slug, model, agent, directory), tool calls,
+# and snapshots, writing them into the `agentic_sessions` table. The brain then
+# enriches these segments into knowledge nodes alongside claude-session data.
+#
+# To verify:
+#   1. Ensure `~/.local/share/opencode/opencode.db` exists (open by opencode)
+#   2. Set enabled = true (default)
+#   3. Start daemon: mise run run:daemon or `hippo daemon start`
+#   4. Verify: `hippo doctor` shows healthy `agentic-session-opencode` source
+
+enabled = true
+# poll_interval_secs = 30
+
 [telemetry]
 # OpenTelemetry observability: traces, metrics, and logs to Grafana/Tempo/Loki/Prometheus.
 #

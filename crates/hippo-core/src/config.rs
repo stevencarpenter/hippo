@@ -22,6 +22,8 @@ pub struct HippoConfig {
     pub github: GithubConfig,
     #[serde(default)]
     pub watchdog: WatchdogConfig,
+    #[serde(default)]
+    pub opencode: OpenConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -473,6 +475,49 @@ impl Default for WatchdogConfig {
             notify_macos: false,
             log_path: String::new(),
             osascript_title: default_osascript_title(),
+        }
+    }
+}
+
+fn default_poll_interval_secs_opencode() -> u64 {
+    30
+}
+
+fn default_db_path() -> PathBuf {
+    dirs::home_dir()
+        .map(|h| h.join(".local/share/opencode/opencode.db"))
+        .unwrap_or_else(|| PathBuf::from(".local/share/opencode/opencode.db"))
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OpenConfig {
+    /// Enable opencode session ingestion. When false, no polling or cursor
+    /// bookkeeping happens and the source_health row stays at its last
+    /// persisted value.
+    #[serde(default = "default_opencode_enabled")]
+    pub enabled: bool,
+    /// Path to the opencode SQLite database. Defaults to
+    /// ~/.local/share/opencode/opencode.db.
+    #[serde(default = "default_db_path")]
+    pub db_path: PathBuf,
+    /// Background poll interval in seconds. Default 30 s — a reasonable
+    /// cadence for catching session changes (opencode appends to SQLite
+    /// incrementally; a 30 s poll is usually well within a second of the
+    /// latest write due to WAL mode).
+    #[serde(default = "default_poll_interval_secs_opencode")]
+    pub poll_interval_secs: u64,
+}
+
+fn default_opencode_enabled() -> bool {
+    true
+}
+
+impl Default for OpenConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_opencode_enabled(),
+            db_path: default_db_path(),
+            poll_interval_secs: default_poll_interval_secs_opencode(),
         }
     }
 }
