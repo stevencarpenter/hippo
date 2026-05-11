@@ -25,7 +25,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::time::{self, Duration};
-use tracing::warn;
+use tracing::debug;
 
 /// Refresh cadence. 10s lines up with the typical OTel export interval
 /// without oversampling SQLite.
@@ -100,8 +100,9 @@ fn spawn_refresh_task(state: Arc<State>, db_path: PathBuf) {
                     // keep the last good value. Log at debug so the
                     // signal is greppable without spamming on healthy
                     // installs that simply haven't created capture_alarms
-                    // yet (the table is created in the v8 migration).
-                    warn!(error = %e, "health_score: capture_alarms read failed");
+                    // yet (the table is created in the v8 migration), and
+                    // on transient SQLITE_BUSY against the watchdog writer.
+                    debug!(error = %e, "health_score: capture_alarms read failed");
                 }
             }
         }
@@ -110,6 +111,9 @@ fn spawn_refresh_task(state: Arc<State>, db_path: PathBuf) {
 
 fn read_alarm_count(db_path: &std::path::Path) -> rusqlite::Result<u64> {
     let conn = Connection::open(db_path)?;
+    // CLAUDE.md: every connection sets busy_timeout=5000 so a concurrent
+    // watchdog writer doesn't immediately return SQLITE_BUSY on every tick.
+    conn.busy_timeout(Duration::from_millis(5000))?;
     conn.query_row(
         "SELECT COUNT(*) FROM capture_alarms \
          WHERE acked_at IS NULL AND resolved_at IS NULL",

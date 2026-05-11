@@ -27,11 +27,26 @@ def main():
     import argparse
 
     parser = argparse.ArgumentParser(description="Ingest Claude Code session logs")
-    parser.add_argument("--enrich", action="store_true", help="Also run enrichment after ingestion")
-    parser.add_argument("--model", type=str, default="", help="Override enrichment model")
-    parser.add_argument("--project", type=str, default="", help="Only ingest sessions for a specific project cwd")
-    parser.add_argument("--dry-run", action="store_true", help="Show what would be ingested without writing")
-    parser.add_argument("--claude-dir", type=str, default="", help="Override Claude projects directory")
+    parser.add_argument(
+        "--enrich", action="store_true", help="Also run enrichment after ingestion"
+    )
+    parser.add_argument(
+        "--model", type=str, default="", help="Override enrichment model"
+    )
+    parser.add_argument(
+        "--project",
+        type=str,
+        default="",
+        help="Only ingest sessions for a specific project cwd",
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Show what would be ingested without writing",
+    )
+    parser.add_argument(
+        "--claude-dir", type=str, default="", help="Override Claude projects directory"
+    )
     args = parser.parse_args()
 
     # Load config
@@ -51,7 +66,11 @@ def main():
         print(f"Error: database not found at {db_path}")
         sys.exit(1)
 
-    claude_dir = Path(args.claude_dir) if args.claude_dir else Path.home() / ".claude" / "projects"
+    claude_dir = (
+        Path(args.claude_dir)
+        if args.claude_dir
+        else Path.home() / ".claude" / "projects"
+    )
     if not claude_dir.is_dir():
         print(f"Error: Claude projects directory not found at {claude_dir}")
         sys.exit(1)
@@ -67,7 +86,8 @@ def main():
     # Filter by project if specified
     if args.project:
         session_files = [
-            sf for sf in session_files
+            sf
+            for sf in session_files
             if args.project in sf.project_dir or args.project in str(sf.path)
         ]
         print(f"Filtered to {len(session_files)} files matching '{args.project}'")
@@ -100,11 +120,15 @@ def main():
 
         if args.dry_run:
             main_or_sub = "subagent" if sf.is_subagent else "main"
-            print(f"  {sf.path.name} ({main_or_sub}): {len(segments)} segments, cwd={project_cwd}")
+            print(
+                f"  {sf.path.name} ({main_or_sub}): {len(segments)} segments, cwd={project_cwd}"
+            )
             for seg in segments:
                 prompts_preview = "; ".join(p[:60] for p in seg.user_prompts[:3])
                 tools_count = len(seg.tool_calls)
-                print(f"    seg {seg.segment_index}: {seg.message_count} msgs, {tools_count} tools, prompts: {prompts_preview}")
+                print(
+                    f"    seg {seg.segment_index}: {seg.message_count} msgs, {tools_count} tools, prompts: {prompts_preview}"
+                )
             continue
 
         for seg in segments:
@@ -118,7 +142,9 @@ def main():
         print(f"\nDry run: {total_segments} segments across {len(session_files)} files")
         return
 
-    print(f"\nIngested: {total_inserted} new segments, skipped {total_skipped} duplicates")
+    print(
+        f"\nIngested: {total_inserted} new segments, skipped {total_skipped} duplicates"
+    )
 
     if conn:
         conn.close()
@@ -140,7 +166,9 @@ def main():
             print("\nNo pending segments to enrich.")
 
 
-async def run_enrichment(config: dict, model_override: str, db_path: Path, data_dir: Path):
+async def run_enrichment(
+    config: dict, model_override: str, db_path: Path, data_dir: Path
+):
     """Run enrichment on pending Claude session segments."""
     from hippo_brain.client import InferenceClient
     from hippo_brain.embeddings import (
@@ -150,14 +178,26 @@ async def run_enrichment(config: dict, model_override: str, db_path: Path, data_
     )
 
     models = config.get("models", {})
-    enrichment_model = model_override or models.get("enrichment_bulk") or models.get("enrichment", "")
+    enrichment_model = (
+        model_override or models.get("enrichment_bulk") or models.get("enrichment", "")
+    )
     embedding_model = models.get("embedding", "")
 
     if not enrichment_model:
         print("Error: no enrichment model configured")
         return
 
-    inference_section = config.get("inference") or config.get("lmstudio", {})
+    # Section renamed from [lmstudio] -> [inference] in the omlx PR.
+    # sys.exit (not `return`) so this async helper invoked via asyncio.run
+    # propagates a non-zero exit code through to the shell; bare `return`
+    # would unwind the coroutine and let main() exit 0.
+    if "lmstudio" in config and "inference" not in config:
+        print(
+            "Error: config.toml uses the deprecated [lmstudio] section."
+            " Rename it to [inference]."
+        )
+        sys.exit(1)
+    inference_section = config.get("inference", {})
     inference_url = inference_section.get("base_url", "http://localhost:8000/v1")
     client = InferenceClient(base_url=inference_url, timeout=120.0)
 
@@ -220,7 +260,9 @@ async def run_enrichment(config: dict, model_override: str, db_path: Path, data_
                 total_failed += len(segments)
                 continue
 
-            node_id = write_claude_knowledge_node(conn, result, segment_ids, enrichment_model)
+            node_id = write_claude_knowledge_node(
+                conn, result, segment_ids, enrichment_model
+            )
             total_enriched += len(segments)
             print(f"    -> node {node_id}: {result.summary[:80]}")
 
@@ -247,7 +289,9 @@ async def run_enrichment(config: dict, model_override: str, db_path: Path, data_
                         "git_repo": "",
                         "outcome": result.outcome,
                         "tags": result.tags,
-                        "entities": result.entities if isinstance(result.entities, dict) else {},
+                        "entities": result.entities
+                        if isinstance(result.entities, dict)
+                        else {},
                         "embed_text": result.embed_text,
                         "summary": result.summary,
                         "key_decisions": result.key_decisions,
@@ -261,7 +305,9 @@ async def run_enrichment(config: dict, model_override: str, db_path: Path, data_
                     print(f"    Embedding failed (non-fatal): {e}")
 
     conn.close()
-    print(f"\nEnrichment done. Enriched: {total_enriched} segments, Failed: {total_failed}")
+    print(
+        f"\nEnrichment done. Enriched: {total_enriched} segments, Failed: {total_failed}"
+    )
 
 
 if __name__ == "__main__":

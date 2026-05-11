@@ -2940,7 +2940,15 @@ mod tests {
 
         // Each expected source must have a pre-seeded row; use per-source
         // assertions so adding a new source doesn't silently break this test.
-        for expected_source in &["shell", "claude-tool", "claude-session", "browser"] {
+        for expected_source in &[
+            "shell",
+            "claude-tool",
+            "claude-session",
+            "browser",
+            "agentic-session-claude",
+            "agentic-session-opencode",
+            "brain-preflight",
+        ] {
             let exists: i64 = conn
                 .query_row(
                     "SELECT COUNT(*) FROM source_health WHERE source = ?1",

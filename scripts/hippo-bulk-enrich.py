@@ -82,7 +82,14 @@ async def main():
     if args.model:
         enrichment_model = args.model
 
-    inference_section = config.get("inference") or config.get("lmstudio", {})
+    # Section renamed from [lmstudio] -> [inference] in the omlx PR.
+    if "lmstudio" in config and "inference" not in config:
+        print(
+            "Error: config.toml uses the deprecated [lmstudio] section."
+            " Rename it to [inference]."
+        )
+        sys.exit(1)
+    inference_section = config.get("inference", {})
     inference_url = inference_section.get("base_url", "http://localhost:8000/v1")
     brain_config = config.get("brain", {})
     max_per_chunk = brain_config.get(

@@ -50,7 +50,14 @@ async def main():
         print("Error: no embedding model configured")
         sys.exit(1)
 
-    inference_section = config.get("inference") or config.get("lmstudio", {})
+    # Section renamed from [lmstudio] -> [inference] in the omlx PR.
+    if "lmstudio" in config and "inference" not in config:
+        print(
+            "Error: config.toml uses the deprecated [lmstudio] section."
+            " Rename it to [inference]."
+        )
+        sys.exit(1)
+    inference_section = config.get("inference", {})
     inference_url = inference_section.get("base_url", "http://localhost:8000/v1")
     data_dir = Path(
         config.get("storage", {}).get(

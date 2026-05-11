@@ -815,16 +815,25 @@ class BrainServer:
             logger.debug("brain-preflight source_health: get_conn failed: %s", e)
             return
         try:
+            # Upsert rather than UPDATE-only so a v13→v14-migrated DB whose
+            # daemon has not yet run the post-migration idempotent seed (see
+            # storage.rs:754) still gets a row on the first preflight cycle.
+            # The Rust side uses INSERT OR IGNORE + UPDATE; we collapse that
+            # into a single ON CONFLICT upsert here.
             if decision.proceed:
                 conn.execute(
                     """
-                    UPDATE source_health
-                    SET last_event_ts        = ?1,
+                    INSERT INTO source_health (
+                        source, last_event_ts, last_success_ts,
+                        consecutive_failures, updated_at
+                    )
+                    VALUES ('brain-preflight', ?1, ?1, 0, ?1)
+                    ON CONFLICT(source) DO UPDATE SET
+                        last_event_ts        = ?1,
                         last_success_ts      = ?1,
                         consecutive_failures = 0,
                         last_error_msg       = NULL,
                         updated_at           = ?1
-                    WHERE source = 'brain-preflight'
                     """,
                     (now_ms,),
                 )
@@ -832,12 +841,16 @@ class BrainServer:
                 err_msg = (decision.error or decision.reason or "preflight_failed")[:500]
                 conn.execute(
                     """
-                    UPDATE source_health
-                    SET last_error_ts        = ?1,
+                    INSERT INTO source_health (
+                        source, last_error_ts, last_error_msg,
+                        consecutive_failures, updated_at
+                    )
+                    VALUES ('brain-preflight', ?1, ?2, 1, ?1)
+                    ON CONFLICT(source) DO UPDATE SET
+                        last_error_ts        = ?1,
                         last_error_msg       = ?2,
-                        consecutive_failures = consecutive_failures + 1,
+                        consecutive_failures = source_health.consecutive_failures + 1,
                         updated_at           = ?1
-                    WHERE source = 'brain-preflight'
                     """,
                     (now_ms, err_msg),
                 )

@@ -1251,3 +1251,109 @@ def test_sessions_list_routes_included(tmp_db):
     paths = [r.path for r in routes]
     assert "/sessions" in paths
     assert len(routes) == 9
+
+
+# ---- _record_preflight_to_source_health ----
+
+
+def _read_brain_preflight_row(conn):
+    row = conn.execute(
+        "SELECT last_event_ts, last_success_ts, last_error_ts, last_error_msg, "
+        "consecutive_failures FROM source_health WHERE source = 'brain-preflight'"
+    ).fetchone()
+    return row
+
+
+def test_record_preflight_success_resets_failures(tmp_db):
+    """proceed=True writes success_ts/event_ts and zeros consecutive_failures."""
+    conn, db_path = tmp_db
+    # Seed a prior-failure state so we can confirm the reset.
+    conn.execute(
+        "UPDATE source_health SET consecutive_failures = 5, last_error_msg = 'old' "
+        "WHERE source = 'brain-preflight'"
+    )
+    conn.commit()
+
+    server = _make_server(str(db_path))
+    server._record_preflight_to_source_health(
+        PreflightDecision(proceed=True, reason="ok", loaded_models=["m"])
+    )
+
+    # _record_preflight_to_source_health closes its own connection; reopen.
+    import sqlite3 as _sqlite3
+
+    check = _sqlite3.connect(str(db_path))
+    row = _read_brain_preflight_row(check)
+    check.close()
+
+    assert row is not None
+    last_event_ts, last_success_ts, _, last_error_msg, consecutive_failures = row
+    assert last_event_ts is not None
+    assert last_success_ts == last_event_ts
+    assert last_error_msg is None
+    assert consecutive_failures == 0
+
+
+def test_record_preflight_failure_increments_failures(tmp_db):
+    """proceed=False sets last_error_ts/msg and increments consecutive_failures."""
+    _, db_path = tmp_db
+    server = _make_server(str(db_path))
+
+    server._record_preflight_to_source_health(
+        PreflightDecision(
+            proceed=False, reason="unreachable", loaded_models=[], error="conn refused"
+        )
+    )
+    server._record_preflight_to_source_health(
+        PreflightDecision(
+            proceed=False, reason="unreachable", loaded_models=[], error="conn refused"
+        )
+    )
+
+    import sqlite3 as _sqlite3
+
+    check = _sqlite3.connect(str(db_path))
+    row = _read_brain_preflight_row(check)
+    check.close()
+
+    _, _, last_error_ts, last_error_msg, consecutive_failures = row
+    assert last_error_ts is not None
+    assert last_error_msg == "conn refused"
+    assert consecutive_failures == 2
+
+
+def test_record_preflight_upsert_when_row_missing(tmp_db):
+    """Missing brain-preflight row is inserted by the upsert (v13→v14 migration gap)."""
+    conn, db_path = tmp_db
+    conn.execute("DELETE FROM source_health WHERE source = 'brain-preflight'")
+    conn.commit()
+
+    server = _make_server(str(db_path))
+    server._record_preflight_to_source_health(
+        PreflightDecision(proceed=False, reason="no_models", loaded_models=[])
+    )
+
+    import sqlite3 as _sqlite3
+
+    check = _sqlite3.connect(str(db_path))
+    row = _read_brain_preflight_row(check)
+    check.close()
+
+    assert row is not None, "upsert must insert when no prior row exists"
+    _, _, last_error_ts, last_error_msg, consecutive_failures = row
+    assert last_error_ts is not None
+    assert last_error_msg == "no_models"
+    assert consecutive_failures == 1
+
+
+def test_record_preflight_swallows_missing_table(tmp_db):
+    """OperationalError on missing source_health is swallowed, not raised."""
+    conn, db_path = tmp_db
+    conn.execute("DROP TABLE source_health")
+    conn.commit()
+
+    server = _make_server(str(db_path))
+    # Must not raise — pre-v8 DBs and test fixtures may lack the table.
+    server._record_preflight_to_source_health(
+        PreflightDecision(proceed=True, reason="ok", loaded_models=["m"])
+    )
