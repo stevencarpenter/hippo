@@ -45,6 +45,13 @@ from hippo_brain.claude_sessions import (
     mark_claude_queue_failed,
     write_claude_knowledge_node,
 )
+from hippo_brain.opencode_sessions import (
+    OPENCODE_ENRICHMENT_PROMPT,
+    build_opencode_enrichment_prompt,
+    claim_pending_opencode_segments,
+    mark_opencode_queue_failed,
+    write_opencode_knowledge_node,
+)
 from hippo_brain.workflow_enrichment import (
     claim_pending_workflow_runs,
     enrich_one_async,
@@ -924,12 +931,23 @@ class BrainServer:
                             except Exception as e:
                                 logger.warning("workflow claim error: %s", e, exc_info=True)
                                 workflow_run_ids = []
+                            try:
+                                opencode_batches = claim_pending_opencode_segments(
+                                    conn,
+                                    worker_id,
+                                    max_claim_batch=self.max_claim_batch,
+                                    stale_lock_timeout_ms=self.lock_timeout_ms,
+                                )
+                            except Exception as e:
+                                logger.debug("no opencode segments to process: %s", e)
+                                opencode_batches = []
 
                             if (
                                 not shell_chunks
                                 and not claude_batches
                                 and not browser_batches
                                 and not workflow_run_ids
+                                and not opencode_batches
                             ):
                                 continue
 
@@ -942,6 +960,7 @@ class BrainServer:
                                 self._enrich_claude_batches(claude_batches),
                                 self._enrich_browser_batches(browser_batches),
                                 self._enrich_workflow_runs(workflow_run_ids),
+                                self._enrich_opencode_batches(opencode_batches),
                             )
                             _hist(_loop_duration, (time.monotonic() - t0) * 1000)
                         finally:
@@ -1357,6 +1376,95 @@ class BrainServer:
                         mark_workflow_queue_failed(retry_conn, run_id, err_msg)
                     finally:
                         retry_conn.close()
+
+    async def _enrich_opencode_batches(self, batches):
+        """Process opencode session segment batches via the agentic queue."""
+        if not batches:
+            return
+        embed_tasks = []
+        for segments in batches:
+            segment_ids = [s["id"] for s in segments]
+            prompt = build_opencode_enrichment_prompt(segments)
+            logger.info("claimed %d opencode segments: %s", len(segment_ids), segment_ids)
+            _add(_events_claimed, len(segment_ids), source="opencode")
+
+            tracer = _get_tracer()
+            span = (
+                tracer.start_as_current_span(
+                    "enrichment.opencode",
+                    attributes={
+                        "hippo.event_count": len(segment_ids),
+                        "hippo.model": self.enrichment_model,
+                    },
+                )
+                if tracer
+                else nullcontext()
+            )
+            batch_start_ms = int(time.time() * 1000)
+            with span:
+                try:
+                    result = await self._call_llm_with_retries(
+                        OPENCODE_ENRICHMENT_PROMPT, prompt, "opencode"
+                    )
+                    conn = self._get_conn()
+                    try:
+                        node_id = write_opencode_knowledge_node(
+                            conn,
+                            result,
+                            segment_ids,
+                            self.enrichment_model,
+                        )
+                    finally:
+                        conn.close()
+                    _add(_nodes_created, source="opencode")
+                    self._record_success()
+                    logger.info(
+                        "enriched %d opencode segments -> node %d",
+                        len(segment_ids),
+                        node_id,
+                    )
+
+                    if self.embedding_model:
+                        node_dict = {
+                            "id": node_id,
+                            "session_id": 0,
+                            "captured_at": int(time.time() * 1000),
+                            "commands_raw": "",
+                            "cwd": segments[0].get("cwd", ""),
+                            "git_branch": "",
+                            "git_repo": "",
+                            "outcome": result.outcome,
+                            "tags": result.tags,
+                            "key_decisions": result.key_decisions,
+                            "problems_encountered": result.problems_encountered,
+                            "entities": result.entities
+                            if isinstance(result.entities, dict)
+                            else {},
+                            "embed_text": result.embed_text,
+                            "summary": result.summary,
+                            "enrichment_model": self.enrichment_model,
+                        }
+                        embed_tasks.append(
+                            asyncio.create_task(self._embed_node(node_id, node_dict, "opencode"))
+                        )
+                except Exception as e:
+                    _add(_enrichment_failures, source="opencode")
+                    err_msg = self._record_error(e)
+                    self._log_enrichment_failure(
+                        "agentic_enrichment_queue",
+                        "opencode.chat",
+                        e,
+                        claim_count=len(segment_ids),
+                        claim_age_ms=int(time.time() * 1000) - batch_start_ms,
+                    )
+                    retry_conn = self._get_conn()
+                    try:
+                        mark_opencode_queue_failed(retry_conn, segment_ids, err_msg)
+                    finally:
+                        retry_conn.close()
+
+        if embed_tasks:
+            await asyncio.gather(*embed_tasks, return_exceptions=True)
 
     async def _embed_node(self, node_id, node_dict, source_label):
         """Embed a knowledge node into the vector store (fire-and-forget safe)."""

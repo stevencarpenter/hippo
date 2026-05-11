@@ -570,6 +570,9 @@ CREATE TABLE IF NOT EXISTS agentic_sessions (
     end_time        INTEGER NOT NULL,
     created_at      INTEGER NOT NULL DEFAULT (unixepoch('now', 'subsec') * 1000),
     enriched        INTEGER NOT NULL DEFAULT 0,
+    -- AP-6: synthetic probe rows carry a non-NULL sentinel; every user-facing
+    -- query must add `AND probe_tag IS NULL`. NULL on all real sessions.
+    probe_tag       TEXT,
     UNIQUE (session_id, harness)
 );
 
@@ -603,12 +606,15 @@ CREATE INDEX IF NOT EXISTS idx_agentic_queue_pending ON agentic_enrichment_queue
     WHERE status = 'pending';
 
 -- Cursor table for live pollers. `source_key` is the specific harness+inode
--- so reinstalls of opencode (new inode) don't cause replay.
+-- so reinstalls of opencode (new inode) don't cause replay. The high-water
+-- mark is the source row's `time_updated` (not `time_created`) so we re-poll
+-- sessions whose content changes after creation; the destination's
+-- `ON CONFLICT DO UPDATE` makes re-ingest idempotent.
 CREATE TABLE IF NOT EXISTS agentic_cursor (
-    source_key      TEXT    PRIMARY KEY,
-    last_time_created INTEGER NOT NULL DEFAULT 0,
-    last_id         TEXT    NOT NULL DEFAULT '',
-    updated_at      INTEGER NOT NULL
+    source_key           TEXT    PRIMARY KEY,
+    last_seen_updated_at INTEGER NOT NULL DEFAULT 0,
+    last_id              TEXT    NOT NULL DEFAULT '',
+    updated_at           INTEGER NOT NULL
 );
 
 -- Seed source_health rows for agentic sources.
@@ -618,8 +624,6 @@ INSERT OR IGNORE INTO source_health (source, last_event_ts, updated_at) VALUES
     ('agentic-session-claude',  (SELECT MAX(start_time) FROM agentic_sessions WHERE harness = 'claude-code'), unixepoch('now') * 1000),
     ('agentic-session-opencode', NULL, unixepoch('now') * 1000);
 
--- This topic is exposed at the /ask endpoint as well. (e.g.,). M i. .
--- prerequisite.
 -- The `claude_session_offsets` table (deprecated since T-5) is preserved
 -- to avoid breaking existing CREATE SCHEMA users.
 

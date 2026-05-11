@@ -646,20 +646,16 @@ pub fn open_db(path: &Path) -> Result<Connection> {
         }
     }
 
-    // Migrate from v13 → v14: add `agentic_sessions`, `agentic_enrichment_queue`,
-    // and `agentic_cursor` tables for opencode (and future harness) live ingestion.
-    // Migrate from v13 → v14: add `agentic_sessions`, `agentic_enrichment_queue`,
-    // and `agentic_cursor` tables for opencode (and future harness) live ingestion.
     // v13→v14: create agentic_sessions + cursor tables, seed source_health.
-    let has_source_health: bool = conn.query_row(
-        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='source_health')",
-        [],
-        |r| r.get(0),
-    ).unwrap_or(false);
+    if (1..EXPECTED_VERSION).contains(&version) {
+        let has_source_health: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='source_health')",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap_or(false);
 
-    if version == EXPECTED_VERSION - 1
-        || (version > 0 && version < EXPECTED_VERSION && version != EXPECTED_VERSION - 1)
-    {
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS agentic_sessions (
                 id              INTEGER PRIMARY KEY,
@@ -683,6 +679,7 @@ pub fn open_db(path: &Path) -> Result<Connection> {
                 end_time        INTEGER NOT NULL,
                 created_at      INTEGER NOT NULL DEFAULT (unixepoch('now', 'subsec') * 1000),
                 enriched        INTEGER NOT NULL DEFAULT 0,
+                probe_tag       TEXT,
                 UNIQUE (session_id, harness)
             );
             CREATE INDEX IF NOT EXISTS idx_agentic_sessions_harness ON agentic_sessions (harness);
@@ -711,19 +708,22 @@ pub fn open_db(path: &Path) -> Result<Connection> {
             CREATE INDEX IF NOT EXISTS idx_agentic_queue_pending ON agentic_enrichment_queue (status, priority)
                 WHERE status = 'pending';
             CREATE TABLE IF NOT EXISTS agentic_cursor (
-                source_key      TEXT    PRIMARY KEY,
-                last_time_created INTEGER NOT NULL DEFAULT 0,
-                last_id         TEXT    NOT NULL DEFAULT '',
-                updated_at      INTEGER NOT NULL
+                source_key           TEXT    PRIMARY KEY,
+                last_seen_updated_at INTEGER NOT NULL DEFAULT 0,
+                last_id              TEXT    NOT NULL DEFAULT '',
+                updated_at           INTEGER NOT NULL
             );
             PRAGMA user_version = 14;",
         )?;
 
         // Only seed source_health if the table exists on this DB.
         // Test DBs that bypass v8→v9 or v4→v5 migration don't have source_health.
+        // Both rows must seed in parallel with schema.sql, otherwise fresh
+        // installs and upgrades diverge on which source_health keys exist.
         if has_source_health {
             conn.execute_batch(
                 "INSERT OR IGNORE INTO source_health (source, last_event_ts, updated_at) VALUES
+                    ('agentic-session-claude',  (SELECT MAX(start_time) FROM agentic_sessions WHERE harness = 'claude-code'), unixepoch('now') * 1000),
                     ('agentic-session-opencode', NULL, unixepoch('now') * 1000);",
             )?;
         }

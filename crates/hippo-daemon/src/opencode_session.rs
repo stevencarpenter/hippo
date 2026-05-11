@@ -2,12 +2,14 @@
 //!
 //! Polls `~/.local/share/opencode/opencode.db` for new/updated sessions.
 //! Writes session records into `agentic_sessions` and updates `source_health`
-//! so the watchdog can evaluate freshness invariants.
+//! so the watchdog can evaluate freshness invariants. Each upsert is
+//! transactional and enqueues a row in `agentic_enrichment_queue` for the
+//! brain to consume.
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, anyhow};
+use hippo_core::config::HippoConfig;
 use rusqlite::{OptionalExtension, params};
 use std::path::Path;
-use std::path::PathBuf;
 use tracing::{debug, error, info, warn};
 
 /// Parsed opencode `session` row.
@@ -28,11 +30,12 @@ struct OpencodeSession {
     summary_diffs: Option<String>,
 }
 
-/// High-water cursor in the opencode DB.
-/// Keyed by (harness, db_inode) so reinstalls don't replay.
+/// High-water cursor in the opencode DB. Tracks `time_updated` so updates
+/// to an already-ingested session are re-read on the next poll;
+/// `ON CONFLICT DO UPDATE` keeps the destination row idempotent.
 #[derive(Debug, Clone)]
 struct Cursor {
-    last_time_created: i64,
+    last_seen_updated_at: i64,
     last_id: String,
 }
 
@@ -42,15 +45,15 @@ impl Cursor {
     fn read(conn: &rusqlite::Connection, source_key: &str) -> Result<Self> {
         let result: Option<(i64, String)> = conn
             .query_row(
-                "SELECT last_time_created, last_id FROM agentic_cursor WHERE source_key = ?",
+                "SELECT last_seen_updated_at, last_id FROM agentic_cursor WHERE source_key = ?",
                 params![source_key],
                 |row| Ok((row.get(0)?, row.get(1)?)),
             )
             .optional()?;
 
-        let (tc, lid) = result.unwrap_or((0, String::new()));
+        let (ts, lid) = result.unwrap_or((0, String::new()));
         Ok(Self {
-            last_time_created: tc,
+            last_seen_updated_at: ts,
             last_id: lid,
         })
     }
@@ -58,13 +61,13 @@ impl Cursor {
     fn upsert(conn: &rusqlite::Connection, source_key: &str, c: &Self) -> Result<()> {
         let now = chrono::Utc::now().timestamp_millis();
         conn.execute(
-            "INSERT INTO agentic_cursor (source_key, last_time_created, last_id, updated_at)
+            "INSERT INTO agentic_cursor (source_key, last_seen_updated_at, last_id, updated_at)
              VALUES (?1, ?2, ?3, ?4)
              ON CONFLICT(source_key) DO UPDATE SET
-                 last_time_created = excluded.last_time_created,
-                 last_id           = excluded.last_id,
-                 updated_at        = excluded.updated_at",
-            params![source_key, c.last_time_created, &c.last_id, now],
+                 last_seen_updated_at = excluded.last_seen_updated_at,
+                 last_id              = excluded.last_id,
+                 updated_at           = excluded.updated_at",
+            params![source_key, c.last_seen_updated_at, &c.last_id, now],
         )?;
         Ok(())
     }
@@ -72,19 +75,26 @@ impl Cursor {
 
 // --- Opencode DB read helpers ---
 
-fn make_source_key(db_path: &Path) -> String {
-    if let Some(meta) = std::fs::metadata(db_path).ok() {
-        #[cfg(target_os = "macos")]
-        {
-            use std::os::unix::fs::MetadataExt;
-            format!("opencode-{}", meta.ino())
-        }
-        #[cfg(not(target_os = "macos"))]
-        {
-            format!("opencode-0")
-        }
-    } else {
-        String::new()
+fn make_source_key(db_path: &Path) -> Result<String> {
+    let meta = std::fs::metadata(db_path)
+        .with_context(|| format!("failed to stat opencode DB at {}", db_path.display()))?;
+    #[cfg(target_os = "macos")]
+    {
+        use std::os::unix::fs::MetadataExt;
+        Ok(format!("opencode-{}", meta.ino()))
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        // Hippo is macOS-only in production; non-macOS builds exist for CI
+        // tests. Use the file size + mtime as a coarse inode substitute so
+        // distinct test DBs don't collide on a single cursor row.
+        let mtime = meta
+            .modified()
+            .ok()
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_millis() as u128)
+            .unwrap_or(0);
+        Ok(format!("opencode-{}-{}", meta.len(), mtime))
     }
 }
 
@@ -94,78 +104,140 @@ fn read_new_sessions(conn: &rusqlite::Connection, cursor: &Cursor) -> Result<Vec
                 summary_additions, summary_deletions, summary_files,
                 summary_diffs
          FROM session
-         WHERE time_created > ?1
-            OR (time_created = ?1 AND id > ?2)
-         ORDER BY time_created ASC, id ASC";
+         WHERE time_updated > ?1
+            OR (time_updated = ?1 AND id > ?2)
+         ORDER BY time_updated ASC, id ASC";
     let mut stmt = conn.prepare(sql)?;
-    stmt.query_map(params![cursor.last_time_created, cursor.last_id], |row| {
-        Ok(OpencodeSession {
-            id: row.get(0)?,
-            slug: row.get(1)?,
-            title: row.get(2)?,
-            directory: row.get(3)?,
-            parent_id: row.get(4)?,
-            agent: row.get(5)?,
-            model: row.get(6)?,
-            time_created: row.get(7)?,
-            time_updated: row.get(8)?,
-            summary_additions: row.get(9)?,
-            summary_deletions: row.get(10)?,
-            summary_files: row.get(11)?,
-            summary_diffs: row.get(12)?,
-        })
-    })?
+    stmt.query_map(
+        params![cursor.last_seen_updated_at, cursor.last_id],
+        |row| {
+            Ok(OpencodeSession {
+                id: row.get(0)?,
+                slug: row.get(1)?,
+                title: row.get(2)?,
+                directory: row.get(3)?,
+                parent_id: row.get(4)?,
+                agent: row.get(5)?,
+                model: row.get(6)?,
+                time_created: row.get(7)?,
+                time_updated: row.get(8)?,
+                summary_additions: row.get(9)?,
+                summary_deletions: row.get(10)?,
+                summary_files: row.get(11)?,
+                summary_diffs: row.get(12)?,
+            })
+        },
+    )?
     .collect::<Result<Vec<_>, _>>()
     .map_err(Into::into)
 }
 
 // --- Section helpers ---
 
-fn to_string_opt<T: serde::Serialize>(val: &Option<T>) -> String {
-    match val {
-        Some(v) => serde_json::to_string(v).unwrap_or_else(|_| "null".to_string()),
-        None => "null".to_string(),
+/// Build the prompt text that lands in `agentic_sessions.summary_text` and is
+/// later passed verbatim to the LLM by the brain's enrichment loop. Mirrors
+/// the brain's `build_opencode_enrichment_prompt` shape so the prompt has
+/// real content the model can reason about (not the cwd path).
+fn build_summary_text(s: &OpencodeSession) -> String {
+    let mut lines = Vec::new();
+    lines.push(format!(
+        "Opencode session (project: {}, slug: {})",
+        s.directory, s.slug
+    ));
+    if !s.title.is_empty() {
+        lines.push(format!("Title: {}", s.title));
     }
+    if let Some(agent) = s.agent.as_deref().filter(|a| !a.is_empty()) {
+        lines.push(format!("Agent: {}", agent));
+    }
+    if let Some(model) = s.model.as_deref().filter(|m| !m.is_empty()) {
+        lines.push(format!("Model: {}", model));
+    }
+    let adds = s.summary_additions.unwrap_or(0);
+    let dels = s.summary_deletions.unwrap_or(0);
+    let files = s.summary_files.unwrap_or(0);
+    if adds > 0 || dels > 0 || files > 0 {
+        lines.push(format!(
+            "Snapshot diffs: +{}/-{} lines, {} files",
+            adds, dels, files
+        ));
+    }
+    lines.join("\n")
 }
 
 // --- Write helpers ---
 
 fn upsert_session(conn: &rusqlite::Connection, s: &OpencodeSession) -> Result<()> {
     let now = chrono::Utc::now().timestamp_millis();
-    let diff_text = to_string_opt(&s.summary_diffs);
-    let commit_json = serde_json::json!([]).to_string();
+    // opencode stores `summary_diffs` already serialized as JSON. Pass through
+    // verbatim (NULL → "null") to avoid double-encoding it as a JSON string.
+    let diff_text = s.summary_diffs.as_deref().unwrap_or("null").to_string();
+    let commit_json = "[]".to_string();
+    let summary_text = build_summary_text(s);
 
-    conn.execute(
+    // AP-1: the agentic_sessions write, the queue enqueue, and the
+    // source_health bump must land in the same transaction so the watchdog
+    // sees them in lockstep.
+    let tx = conn.unchecked_transaction()?;
+
+    tx.execute(
         "INSERT INTO agentic_sessions
-            (session_id, harness, model, agent, project_dir, cwd, slug,
+            (session_id, harness, model, agent, project_dir, cwd, slug, title,
              parent_session_id, summary_text, source_file, snapshot_diffs_json,
              commit_messages_json, start_time, end_time, created_at)
-         VALUES (?1, 'opencode', ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
+         VALUES (?1, 'opencode', ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, '', ?10, ?11, ?12, ?13, ?14)
          ON CONFLICT(session_id, harness) DO UPDATE SET
             model              = excluded.model,
             agent              = excluded.agent,
+            title              = excluded.title,
+            summary_text       = excluded.summary_text,
             snapshot_diffs_json = excluded.snapshot_diffs_json,
             commit_messages_json = excluded.commit_messages_json,
             end_time           = excluded.end_time",
         params![
-            &s.id,                                       // ?1 session_id
-            s.model.as_deref(),                          // ?2 model
-            s.agent.as_deref(),                          // ?3 agent
-            &s.directory,                                // ?4 project_dir
-            &s.directory,                                // ?5 cwd
-            &s.slug,                                     // ?6 slug
-            s.parent_id.as_deref(),                      // ?7 parent_session_id
-            s.directory.as_str(),                        // ?8 summary_text
-            &s.id,                                       // ?9 source_file
-            diff_text,                                   // ?10 snapshot_diffs_json
-            commit_json,                                 // ?11 commit_messages_json
-            s.time_created,                              // ?12 start_time
-            s.time_updated,                              // ?13 end_time
-            now,                                         // ?14 created_at
+            &s.id,                  // ?1 session_id
+            s.model.as_deref(),     // ?2 model
+            s.agent.as_deref(),     // ?3 agent
+            &s.directory,           // ?4 project_dir
+            &s.directory,           // ?5 cwd
+            &s.slug,                // ?6 slug
+            &s.title,               // ?7 title
+            s.parent_id.as_deref(), // ?8 parent_session_id
+            summary_text,           // ?9 summary_text
+            diff_text,              // ?10 snapshot_diffs_json
+            commit_json,            // ?11 commit_messages_json
+            s.time_created,         // ?12 start_time
+            s.time_updated,         // ?13 end_time
+            now,                    // ?14 created_at
         ],
     )?;
 
-    conn.execute(
+    // Look up the destination rowid (needed for the enrichment-queue FK).
+    let agentic_session_id: i64 = tx.query_row(
+        "SELECT id FROM agentic_sessions WHERE session_id = ?1 AND harness = 'opencode'",
+        params![&s.id],
+        |r| r.get(0),
+    )?;
+
+    // Enqueue (or re-pend) for the brain. Mirrors claude_session.rs:
+    // re-pending a finished session is fine because the brain's claim WHERE
+    // excludes `processing`. ON CONFLICT keeps re-ingests idempotent.
+    tx.execute(
+        "INSERT INTO agentic_enrichment_queue
+             (session_id, status, retry_count, error_message, enqueued_at, updated_at)
+         VALUES (?1, 'pending', 0, NULL, ?2, ?2)
+         ON CONFLICT(session_id) DO UPDATE SET
+             status        = 'pending',
+             retry_count   = 0,
+             error_message = NULL,
+             updated_at    = excluded.updated_at
+         WHERE agentic_enrichment_queue.status != 'processing'",
+        params![agentic_session_id, now],
+    )?;
+
+    // Bump source_health.last_event_ts. MAX() makes the write idempotent for
+    // a re-ingest where time_updated hasn't actually advanced.
+    tx.execute(
         "UPDATE source_health SET
             last_event_ts = MAX(COALESCE(last_event_ts, 0), ?1),
             updated_at    = ?2
@@ -173,35 +245,43 @@ fn upsert_session(conn: &rusqlite::Connection, s: &OpencodeSession) -> Result<()
         params![s.time_updated, now],
     )?;
 
+    tx.commit()?;
     Ok(())
 }
 
 // --- Entry point ---
 
 fn open_opencode_db(db_path: &Path) -> Result<rusqlite::Connection> {
+    // Read-only open of opencode's own DB. Do NOT set journal_mode here —
+    // the WAL pragma requires write access to the DB header and would fail
+    // with SQLITE_READONLY. opencode manages its own journaling; we are only
+    // a reader.
     let conn = rusqlite::Connection::open_with_flags(
         db_path,
-        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY
-            | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
     )
     .with_context(|| format!("failed to open opencode DB at {}", db_path.display()))?;
 
-    conn.pragma_update(None, "journal_mode", "WAL")
-        .context("failed to set journal_mode=WAL")?;
     conn.pragma_update(None, "busy_timeout", "5000")
         .context("failed to set busy_timeout=5000")?;
 
     Ok(conn)
 }
 
-/// Poll one tick of opencode data.
-pub fn poll_tick(db_path: &Path) -> Result<usize> {
+/// Poll one tick of opencode data. The caller (a launchd-scheduled oneshot)
+/// owns scheduling; this function is a single read+upsert cycle.
+pub fn poll_tick(config: &HippoConfig) -> Result<usize> {
+    if !config.opencode.enabled {
+        debug!("opencode poll disabled by config");
+        return Ok(0);
+    }
+
+    let db_path = &config.opencode.db_path;
     if !db_path.exists() {
         debug!("opencode DB not found at {}", db_path.display());
         return Ok(0);
     }
 
-    // Open opencode DB
     let oc_conn = match open_opencode_db(db_path) {
         Ok(c) => c,
         Err(e) => {
@@ -210,15 +290,9 @@ pub fn poll_tick(db_path: &Path) -> Result<usize> {
         }
     };
 
-    // data_version gate: skip if no new writes since last tick
-    let _data_version: i64 = oc_conn
-        .query_row("PRAGMA data_version", [], |row| row.get(0))?;
-
-    // Open Hippo's DB for cursor management and session upserts
-    let hippo_db_path = dirs::home_dir()
-        .map(|h| h.join(".local/share/hippo/hippo.db"))
-        .unwrap_or_else(|| PathBuf::from(".local/share/hippo/hippo.db"));
-
+    // Resolve the Hippo DB path via the same XDG-aware helper the rest of
+    // the daemon uses, so XDG_DATA_HOME overrides apply consistently.
+    let hippo_db_path = config.db_path();
     let hippo_conn = match hippo_core::storage::open_db(&hippo_db_path) {
         Ok(c) => c,
         Err(e) => {
@@ -227,7 +301,8 @@ pub fn poll_tick(db_path: &Path) -> Result<usize> {
         }
     };
 
-    let source_key = make_source_key(db_path);
+    let source_key = make_source_key(db_path)
+        .map_err(|e| anyhow!("could not derive source_key for opencode DB: {e:#}"))?;
     let cursor = Cursor::read(&hippo_conn, &source_key)?;
 
     let new_sessions = read_new_sessions(&oc_conn, &cursor)?;
@@ -237,34 +312,36 @@ pub fn poll_tick(db_path: &Path) -> Result<usize> {
 
     let mut events_sent = 0usize;
     let mut errors_sent = 0usize;
+    let mut latest_ok: Option<&OpencodeSession> = None;
 
     for session in &new_sessions {
         debug!(id = %session.id, slug = %session.slug, "processing opencode session");
 
-        match upsert_session(&hippo_conn, &session) {
+        match upsert_session(&hippo_conn, session) {
             Ok(()) => {
                 events_sent += 1;
+                latest_ok = Some(session);
             }
             Err(e) => {
-                error!(%e, "Failed to write session to Hippo DB");
+                error!(%e, id = %session.id, "Failed to write session to Hippo DB");
                 errors_sent += 1;
             }
         }
     }
 
-    // Update cursor to latest session
-    let latest = new_sessions.last().expect("non-empty");
-    let new_cursor = Cursor {
-        last_time_created: latest.time_updated,
-        last_id: latest.id.clone(),
-    };
-    Cursor::upsert(&hippo_conn, &source_key, &new_cursor)?;
+    // Advance the cursor only past sessions that landed successfully. If a
+    // session in the middle of the batch failed, we leave the cursor on the
+    // last successful one so the failed row (and everything after it in
+    // time_updated order) is re-attempted on the next tick.
+    if let Some(last) = latest_ok {
+        let new_cursor = Cursor {
+            last_seen_updated_at: last.time_updated,
+            last_id: last.id.clone(),
+        };
+        Cursor::upsert(&hippo_conn, &source_key, &new_cursor)?;
+    }
 
-    info!(
-        events_sent,
-        errors_sent,
-        "opencode tick: completed"
-    );
+    info!(events_sent, errors_sent, "opencode tick: completed");
 
     Ok(events_sent)
 }
