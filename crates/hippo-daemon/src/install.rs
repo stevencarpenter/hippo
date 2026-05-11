@@ -240,6 +240,16 @@ pub fn service_is_loaded(label: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// Optional poll agents should come up automatically during an upgrade of an
+/// already-running stack, even if the specific poller was not loaded before.
+pub fn should_start_optional_poll_agent(
+    installed: bool,
+    was_loaded: bool,
+    stack_was_active: bool,
+) -> bool {
+    installed && (was_loaded || stack_was_active)
+}
+
 /// Unloads a launchd service (sends SIGTERM to the process if running, prevents restart).
 /// Ignores errors silently — a "not loaded" error is harmless.
 pub fn service_bootout(domain: &str, plist: &Path) {
@@ -581,6 +591,26 @@ mod tests {
         assert!(!service_is_loaded(
             "com.hippo.definitely-not-installed-xyzzy"
         ));
+    }
+
+    #[test]
+    fn optional_poll_agent_starts_when_stack_was_active() {
+        assert!(
+            should_start_optional_poll_agent(true, false, true),
+            "enabled poll agents should be loaded during an active stack upgrade"
+        );
+        assert!(
+            should_start_optional_poll_agent(true, true, false),
+            "a previously loaded poll agent should be restored even if it was the only active service"
+        );
+        assert!(
+            !should_start_optional_poll_agent(true, false, false),
+            "fresh standalone installs should still leave manual start to the caller"
+        );
+        assert!(
+            !should_start_optional_poll_agent(false, true, true),
+            "disabled poll agents should never be started"
+        );
     }
 
     #[test]

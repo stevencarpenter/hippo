@@ -599,9 +599,11 @@ rsync -a --delete \
     --exclude='.ruff_cache' \
     --exclude='.pytest_cache' \
     brain/ "$BRAIN_INSTALL_DIR/"
-# Mirror the release tarball layout: shell/ lives alongside brain/ in the repo
-# but must land under $BRAIN_INSTALL_DIR/shell/ so doctor and the Claude hook find it.
+# Mirror the release tarball layout: shell/ and scripts/ live alongside
+# brain/ in the repo but must land under $BRAIN_INSTALL_DIR/ so doctor,
+# hooks, and Xcode ingest LaunchAgents find them.
 rsync -a --delete shell/ "$BRAIN_INSTALL_DIR/shell/"
+rsync -a --delete scripts/ "$BRAIN_INSTALL_DIR/scripts/"
 echo "==> Rebuilding brain venv at ${BRAIN_INSTALL_DIR}..."
 # `uv sync` against a stale .venv has, in the wild, left dist-info present
 # while leaving the namespace package half-extracted (observed 2026-04-26 on
@@ -667,8 +669,7 @@ fi
 
 # ── 8. Start services ───────────────────────────────────────────────
 echo "==> Starting services..."
-launchctl bootstrap "$DOMAIN" "$DAEMON_PLIST" && echo "  Loaded daemon" || echo "  Failed to load daemon"
-launchctl bootstrap "$DOMAIN" "$BRAIN_PLIST" && echo "  Loaded brain" || echo "  Failed to load brain"
+mise run start
 
 # ── 8b. Build Firefox extension dist/ ───────────────────────────────────
 # manifest.json references dist/background.js and dist/content.js. These
@@ -761,8 +762,25 @@ run = """
 #!/usr/bin/env bash
 set -euo pipefail
 DOMAIN="gui/$(id -u)"
-launchctl bootstrap "$DOMAIN" ~/Library/LaunchAgents/com.hippo.daemon.plist 2>/dev/null && echo "Started daemon" || echo "Daemon already loaded (or failed)"
-launchctl bootstrap "$DOMAIN" ~/Library/LaunchAgents/com.hippo.brain.plist 2>/dev/null && echo "Started brain" || echo "Brain already loaded (or failed)"
+for label in \
+  com.hippo.daemon \
+  com.hippo.brain \
+  com.hippo.watchdog \
+  com.hippo.probe \
+  com.hippo.claude-session-watcher \
+  com.hippo.gh-poll \
+  com.hippo.opencode-poll \
+  com.hippo.xcode-claude-ingest \
+  com.hippo.xcode-codex-ingest
+do
+  plist="$HOME/Library/LaunchAgents/${label}.plist"
+  name="${label#com.hippo.}"
+  if [ ! -f "$plist" ]; then
+    echo "Skipped $name (plist not installed)"
+    continue
+  fi
+  launchctl bootstrap "$DOMAIN" "$plist" 2>/dev/null && echo "Started $name" || echo "$name already loaded (or failed)"
+done
 """
 
 [tasks.stop]
@@ -771,8 +789,25 @@ run = """
 #!/usr/bin/env bash
 set -euo pipefail
 DOMAIN="gui/$(id -u)"
-launchctl bootout "$DOMAIN" ~/Library/LaunchAgents/com.hippo.daemon.plist 2>/dev/null && echo "Stopped daemon" || echo "Daemon not loaded"
-launchctl bootout "$DOMAIN" ~/Library/LaunchAgents/com.hippo.brain.plist 2>/dev/null && echo "Stopped brain" || echo "Brain not loaded"
+for label in \
+  com.hippo.daemon \
+  com.hippo.brain \
+  com.hippo.watchdog \
+  com.hippo.probe \
+  com.hippo.claude-session-watcher \
+  com.hippo.gh-poll \
+  com.hippo.opencode-poll \
+  com.hippo.xcode-claude-ingest \
+  com.hippo.xcode-codex-ingest
+do
+  plist="$HOME/Library/LaunchAgents/${label}.plist"
+  name="${label#com.hippo.}"
+  if [ ! -f "$plist" ]; then
+    echo "Skipped $name (plist not installed)"
+    continue
+  fi
+  launchctl bootout "$DOMAIN" "$plist" 2>/dev/null && echo "Stopped $name" || echo "$name not loaded"
+done
 """
 
 [tasks.restart]

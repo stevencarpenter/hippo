@@ -1698,44 +1698,6 @@ fn check_source_staleness(db: &rusqlite::Connection, explain: bool) -> u32 {
         .unwrap_or_default()
         .as_millis() as i64;
 
-    struct Thresholds {
-        warn_secs: i64,
-        fail_secs: i64,
-    }
-
-    let thresholds_for = |source: &str| -> Thresholds {
-        match source {
-            "shell" => Thresholds {
-                warn_secs: 60,
-                fail_secs: 300,
-            },
-            "claude-session" => Thresholds {
-                warn_secs: 300,
-                fail_secs: 1800,
-            },
-            "claude-tool" => Thresholds {
-                warn_secs: 300,
-                fail_secs: 600,
-            },
-            "browser" => Thresholds {
-                warn_secs: 120,
-                fail_secs: 600,
-            },
-            // Opencode polls every 30 s by default. Tolerate one missed
-            // tick before warning, and an hour before failing — a quiet day
-            // in opencode is not a bug, so the suppression check below also
-            // skips the alarm if the opencode DB itself looks idle.
-            "agentic-session-opencode" => Thresholds {
-                warn_secs: 300,
-                fail_secs: 3600,
-            },
-            _ => Thresholds {
-                warn_secs: 300,
-                fail_secs: 1800,
-            },
-        }
-    };
-
     // Check Firefox running (for browser suppression).
     // macOS Firefox (incl. Developer Edition) exposes the main process as `firefox`;
     // `firefox-bin` is Linux-only. Match either to keep the check portable.
@@ -1808,6 +1770,9 @@ fn check_source_staleness(db: &rusqlite::Connection, explain: bool) -> u32 {
     };
 
     let mut fail_count: u32 = 0;
+    let firefox_is_running = firefox_running();
+    let opencode_db_is_recent = opencode_db_recent();
+    let claude_session_is_recent = recent_claude_session();
 
     // All expected sources — report missing ones too.
     let all_sources = [
@@ -1835,32 +1800,28 @@ fn check_source_staleness(db: &rusqlite::Connection, explain: bool) -> u32 {
 
         let age_secs = (now_ms - last_ts) / 1000;
         let human = format_age_secs(age_secs);
-        let thresh = thresholds_for(source);
 
-        if age_secs < thresh.warn_secs {
-            println!("[OK] {}  {}", padded, human);
-        } else if age_secs < thresh.fail_secs {
-            println!("[WW] {}  {} (WARN)", padded, human);
-        } else {
-            // Check suppression conditions.
-            let suppressed = match source {
-                "shell" => row.probe_ok == Some(0),
-                "claude-session" => !recent_claude_session(),
-                "claude-tool" => row.probe_ok == Some(0),
-                "browser" => !firefox_running(),
-                "agentic-session-opencode" => !opencode_db_recent(),
-                _ => false,
-            };
-
-            if suppressed {
-                let reason = match source {
-                    "browser" => "no active Firefox session",
-                    "claude-session" => "no active session",
-                    "agentic-session-opencode" => "opencode DB idle",
-                    _ => "probe disabled",
-                };
-                println!("[WW] {}  {} (suppressed — {})", padded, human, reason);
-            } else {
+        match classify_source_staleness(
+            source,
+            age_secs,
+            row.probe_ok,
+            firefox_is_running,
+            claude_session_is_recent,
+            opencode_db_is_recent,
+        ) {
+            SourceStalenessStatus::Ok => {
+                println!("[OK] {}  {}", padded, human);
+            }
+            SourceStalenessStatus::Warn => {
+                println!("[WW] {}  {} (WARN)", padded, human);
+            }
+            SourceStalenessStatus::Suppressed(reason) => {
+                println!(
+                    "{}",
+                    format_suppressed_source_staleness_line(&label, &human, reason)
+                );
+            }
+            SourceStalenessStatus::Fail => {
                 println!("[!!] {}  {} (FAIL)", padded, human);
                 fail_count += 1;
                 if explain {
@@ -1875,6 +1836,101 @@ fn check_source_staleness(db: &rusqlite::Connection, explain: bool) -> u32 {
     }
 
     fail_count
+}
+
+fn format_suppressed_source_staleness_line(label: &str, human: &str, reason: &str) -> String {
+    format!("[--] {:<29}  {} (suppressed — {})", label, human, reason)
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SourceStalenessStatus {
+    Ok,
+    Warn,
+    Fail,
+    Suppressed(&'static str),
+}
+
+fn classify_source_staleness(
+    source: &str,
+    age_secs: i64,
+    probe_ok: Option<i64>,
+    firefox_running: bool,
+    recent_claude_session: bool,
+    opencode_db_recent: bool,
+) -> SourceStalenessStatus {
+    let thresh = source_staleness_thresholds_for(source);
+    if age_secs < thresh.warn_secs {
+        return SourceStalenessStatus::Ok;
+    }
+
+    if let Some(reason) = source_staleness_suppression_reason(
+        source,
+        probe_ok,
+        firefox_running,
+        recent_claude_session,
+        opencode_db_recent,
+    ) {
+        return SourceStalenessStatus::Suppressed(reason);
+    }
+
+    if age_secs < thresh.fail_secs {
+        SourceStalenessStatus::Warn
+    } else {
+        SourceStalenessStatus::Fail
+    }
+}
+
+fn source_staleness_suppression_reason(
+    source: &str,
+    probe_ok: Option<i64>,
+    firefox_running: bool,
+    recent_claude_session: bool,
+    opencode_db_recent: bool,
+) -> Option<&'static str> {
+    match source {
+        "shell" if probe_ok == Some(0) => Some("probe disabled"),
+        "claude-session" if !recent_claude_session => Some("no active session"),
+        "claude-tool" if probe_ok == Some(0) => Some("probe disabled"),
+        "browser" if !firefox_running => Some("no active Firefox session"),
+        "agentic-session-opencode" if !opencode_db_recent => Some("opencode DB idle"),
+        _ => None,
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct SourceStalenessThresholds {
+    warn_secs: i64,
+    fail_secs: i64,
+}
+
+fn source_staleness_thresholds_for(source: &str) -> SourceStalenessThresholds {
+    match source {
+        // These rows are advanced by 5-minute synthetic probes, so warnings
+        // must not fire between normal probe ticks.
+        "shell" | "browser" => SourceStalenessThresholds {
+            warn_secs: 420,
+            fail_secs: 900,
+        },
+        "claude-session" => SourceStalenessThresholds {
+            warn_secs: 300,
+            fail_secs: 1800,
+        },
+        "claude-tool" => SourceStalenessThresholds {
+            warn_secs: 300,
+            fail_secs: 600,
+        },
+        // Opencode polls every 30 s by default. Tolerate one missed
+        // tick before warning, and an hour before failing; idle DBs are
+        // suppressed below.
+        "agentic-session-opencode" => SourceStalenessThresholds {
+            warn_secs: 300,
+            fail_secs: 3600,
+        },
+        _ => SourceStalenessThresholds {
+            warn_secs: 300,
+            fail_secs: 1800,
+        },
+    }
 }
 
 /// Format age in seconds to a human-readable string.
@@ -2136,6 +2192,23 @@ fn check_legacy_capture_section(config_path: &std::path::Path, explain: bool) ->
     0
 }
 
+#[derive(Debug, PartialEq, Eq)]
+enum WatchdogHeartbeatStatus {
+    Ok,
+    Warn,
+    Fail,
+}
+
+fn watchdog_heartbeat_status(age_secs: i64) -> WatchdogHeartbeatStatus {
+    if age_secs < 120 {
+        WatchdogHeartbeatStatus::Ok
+    } else if age_secs < 180 {
+        WatchdogHeartbeatStatus::Warn
+    } else {
+        WatchdogHeartbeatStatus::Fail
+    }
+}
+
 /// Check 8: Watchdog heartbeat — verify the watchdog row in source_health is fresh.
 ///
 /// Returns 1 if the watchdog row is stale (>= 180s), 0 otherwise.
@@ -2170,17 +2243,19 @@ fn check_watchdog_heartbeat(db: &rusqlite::Connection, explain: bool) -> u32 {
             }
             1
         }
-        Ok(age_secs) => {
-            if age_secs < 60 {
+        Ok(age_secs) => match watchdog_heartbeat_status(age_secs) {
+            WatchdogHeartbeatStatus::Ok => {
                 println!("[OK] {:<29}  {}s ago", "watchdog heartbeat", age_secs);
                 0
-            } else if age_secs < 180 {
+            }
+            WatchdogHeartbeatStatus::Warn => {
                 println!(
-                    "[WW] {:<29}  {}s ago (WARN, expected < 60s)",
+                    "[WW] {:<29}  {}s ago (WARN, expected < 120s)",
                     "watchdog heartbeat", age_secs
                 );
                 0
-            } else {
+            }
+            WatchdogHeartbeatStatus::Fail => {
                 println!(
                     "[!!] {:<29}  stale {}s ago (FAIL)",
                     "watchdog heartbeat", age_secs
@@ -2194,7 +2269,7 @@ fn check_watchdog_heartbeat(db: &rusqlite::Connection, explain: bool) -> u32 {
                 }
                 1
             }
-        }
+        },
     }
 }
 
@@ -3462,6 +3537,82 @@ replacement = "***"
 
         let fail2 = check_source_staleness(&conn, false);
         assert_eq!(fail2, 0, "fresh shell row should return fail_count=0");
+    }
+
+    #[test]
+    fn test_source_staleness_thresholds_tolerate_probe_cadence() {
+        let shell = source_staleness_thresholds_for("shell");
+        assert!(
+            shell.warn_secs > 300,
+            "shell WARN threshold must be longer than the 5 minute probe interval"
+        );
+        assert!(
+            shell.fail_secs >= 900,
+            "shell FAIL threshold should allow multiple missed probe ticks"
+        );
+
+        let browser = source_staleness_thresholds_for("browser");
+        assert!(
+            browser.warn_secs > 300,
+            "browser WARN threshold must be longer than the 5 minute probe interval"
+        );
+        assert!(
+            browser.fail_secs >= 900,
+            "browser FAIL threshold should allow multiple missed probe ticks"
+        );
+    }
+
+    #[test]
+    fn test_suppressed_source_staleness_is_neutral_notice() {
+        let line = format_suppressed_source_staleness_line(
+            "agentic-session-opencode events",
+            "10h ago",
+            "opencode DB idle",
+        );
+
+        assert!(
+            line.starts_with("[--]"),
+            "suppressed idle integrations should not look like actionable warnings: {line}"
+        );
+        assert!(
+            !line.starts_with("[WW]"),
+            "suppressed idle integrations should be neutral notices: {line}"
+        );
+    }
+
+    #[test]
+    fn test_idle_claude_session_staleness_is_suppressed_before_warn() {
+        assert_eq!(
+            classify_source_staleness("claude-session", 12 * 60, None, true, false, true,),
+            SourceStalenessStatus::Suppressed("no active session"),
+            "inactive Claude sessions should not warn just because no new session rows landed"
+        );
+    }
+
+    #[test]
+    fn test_active_claude_session_staleness_still_warns() {
+        assert_eq!(
+            classify_source_staleness("claude-session", 12 * 60, None, true, true, true),
+            SourceStalenessStatus::Warn,
+            "recent Claude JSONL activity should make stale source-health actionable"
+        );
+    }
+
+    #[test]
+    fn test_watchdog_heartbeat_status_tolerates_launchd_jitter() {
+        assert_eq!(
+            watchdog_heartbeat_status(74),
+            WatchdogHeartbeatStatus::Ok,
+            "launchd StartInterval=60 can drift past one minute without an outage"
+        );
+        assert_eq!(
+            watchdog_heartbeat_status(121),
+            WatchdogHeartbeatStatus::Warn
+        );
+        assert_eq!(
+            watchdog_heartbeat_status(180),
+            WatchdogHeartbeatStatus::Fail
+        );
     }
 
     #[test]

@@ -152,6 +152,18 @@ pub fn make_envelope_id(url: &str, dedup_window_minutes: u64, timestamp_ms: i64)
     Uuid::new_v5(&BROWSER_NS, key.as_bytes())
 }
 
+fn make_visit_envelope_id(
+    url: &str,
+    dedup_window_minutes: u64,
+    timestamp_ms: i64,
+    probe_tag: Option<&str>,
+) -> Uuid {
+    match probe_tag {
+        Some(tag) => Uuid::new_v5(&BROWSER_NS, format!("probe:{tag}").as_bytes()),
+        None => make_envelope_id(url, dedup_window_minutes, timestamp_ms),
+    }
+}
+
 /// Send a response back to the Firefox extension.
 fn send_response(status: &'static str, error: Option<String>) {
     let resp = NativeResponse { status, error };
@@ -267,7 +279,23 @@ pub async fn run(config: &HippoConfig) -> Result<()> {
             .as_deref()
             .map(|r| strip_sensitive_params(r, strip_params));
 
-        let envelope_id = make_envelope_id(&clean_url, dedup_window, visit.timestamp);
+        let explicit_probe_tag = if is_probe {
+            visit.probe_tag.clone()
+        } else {
+            if visit.probe_tag.is_some() {
+                warn!(
+                    domain = %visit.domain,
+                    "ignoring probe_tag on non-probe browser visit"
+                );
+            }
+            None
+        };
+        let envelope_id = make_visit_envelope_id(
+            &clean_url,
+            dedup_window,
+            visit.timestamp,
+            explicit_probe_tag.as_deref(),
+        );
 
         let timestamp: DateTime<Utc> = Utc
             .timestamp_millis_opt(visit.timestamp)
@@ -291,7 +319,7 @@ pub async fn run(config: &HippoConfig) -> Result<()> {
         // If the visit carries an explicit probe_tag (e.g., a fresh UUID from the
         // probe orchestrator), use it to avoid false positives from the dedup
         // window catching old rows.
-        let probe_tag = visit.probe_tag.clone().or_else(|| {
+        let probe_tag = explicit_probe_tag.or_else(|| {
             if is_probe {
                 Some(envelope_id.to_string())
             } else {
@@ -373,6 +401,20 @@ mod tests {
 
         let id3 = make_envelope_id("https://example.com/other", 30, ts);
         assert_ne!(id1, id3, "different URL should produce different UUID");
+    }
+
+    #[test]
+    fn probe_visit_envelope_id_uses_probe_tag_to_bypass_dedup() {
+        let ts = 1711900000000i64;
+        let url = "https://probe.hippo.local/synthetic";
+
+        let first = make_visit_envelope_id(url, 30, ts, Some("probe-run-1"));
+        let second = make_visit_envelope_id(url, 30, ts + 60_000, Some("probe-run-2"));
+
+        assert_ne!(
+            first, second,
+            "fresh probe tags in the same browser dedup bucket must insert distinct rows"
+        );
     }
 
     #[test]

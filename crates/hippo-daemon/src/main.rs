@@ -244,8 +244,16 @@ async fn main() -> Result<()> {
                 let probe_was_loaded = install::service_is_loaded("com.hippo.probe");
                 let watcher_was_loaded =
                     install::service_is_loaded("com.hippo.claude-session-watcher");
+                let gh_poll_was_loaded = install::service_is_loaded("com.hippo.gh-poll");
                 let opencode_poll_was_loaded =
                     install::service_is_loaded("com.hippo.opencode-poll");
+                let stack_was_active = daemon_was_loaded
+                    || brain_was_loaded
+                    || watchdog_was_loaded
+                    || probe_was_loaded
+                    || watcher_was_loaded
+                    || gh_poll_was_loaded
+                    || opencode_poll_was_loaded;
 
                 if brain_was_loaded {
                     print!("  Draining brain (waiting for in-flight requests)");
@@ -286,6 +294,13 @@ async fn main() -> Result<()> {
                         &launch_agents.join("com.hippo.claude-session-watcher.plist"),
                     );
                     println!("  Stopped claude-session-watcher");
+                }
+                if gh_poll_was_loaded {
+                    install::service_bootout(
+                        &domain,
+                        &launch_agents.join("com.hippo.gh-poll.plist"),
+                    );
+                    println!("  Stopped gh-poll");
                 }
                 if opencode_poll_was_loaded {
                     install::service_bootout(
@@ -411,14 +426,20 @@ async fn main() -> Result<()> {
                     ),
                 }
 
-                // Reload services that were running before the upgrade.
-                if daemon_was_loaded
-                    || brain_was_loaded
-                    || watchdog_was_loaded
-                    || probe_was_loaded
-                    || watcher_was_loaded
-                    || opencode_poll_was_loaded
-                {
+                let gh_poll_started = install::should_start_optional_poll_agent(
+                    gh_poll_installed,
+                    gh_poll_was_loaded,
+                    stack_was_active,
+                );
+                let opencode_poll_started = install::should_start_optional_poll_agent(
+                    opencode_poll_installed,
+                    opencode_poll_was_loaded,
+                    stack_was_active,
+                );
+
+                // Reload core services that were already running, and ensure
+                // installed support agents are loaded for an active stack.
+                if stack_was_active {
                     println!();
                     println!("Restarting services...");
                     if daemon_was_loaded {
@@ -435,28 +456,29 @@ async fn main() -> Result<()> {
                         )?;
                         println!("  Started brain");
                     }
-                    if watchdog_was_loaded {
+                    install::service_bootstrap(
+                        &domain,
+                        &launch_agents.join("com.hippo.watchdog.plist"),
+                    )?;
+                    println!("  Started watchdog");
+                    install::service_bootstrap(
+                        &domain,
+                        &launch_agents.join("com.hippo.probe.plist"),
+                    )?;
+                    println!("  Started probe");
+                    install::service_bootstrap(
+                        &domain,
+                        &launch_agents.join("com.hippo.claude-session-watcher.plist"),
+                    )?;
+                    println!("  Started claude-session-watcher");
+                    if gh_poll_started {
                         install::service_bootstrap(
                             &domain,
-                            &launch_agents.join("com.hippo.watchdog.plist"),
+                            &launch_agents.join("com.hippo.gh-poll.plist"),
                         )?;
-                        println!("  Started watchdog");
+                        println!("  Started gh-poll");
                     }
-                    if probe_was_loaded {
-                        install::service_bootstrap(
-                            &domain,
-                            &launch_agents.join("com.hippo.probe.plist"),
-                        )?;
-                        println!("  Started probe");
-                    }
-                    if watcher_was_loaded {
-                        install::service_bootstrap(
-                            &domain,
-                            &launch_agents.join("com.hippo.claude-session-watcher.plist"),
-                        )?;
-                        println!("  Started claude-session-watcher");
-                    }
-                    if opencode_poll_was_loaded && opencode_poll_installed {
+                    if opencode_poll_started {
                         install::service_bootstrap(
                             &domain,
                             &launch_agents.join("com.hippo.opencode-poll.plist"),
@@ -468,11 +490,9 @@ async fn main() -> Result<()> {
                 // Only print "Load with:" for services that weren't already cycled.
                 let needs_manual_start = !daemon_was_loaded
                     || !brain_was_loaded
-                    || !watchdog_was_loaded
-                    || !probe_was_loaded
-                    || !watcher_was_loaded
-                    || gh_poll_installed
-                    || (opencode_poll_installed && !opencode_poll_was_loaded);
+                    || !stack_was_active
+                    || (gh_poll_installed && !gh_poll_started)
+                    || (opencode_poll_installed && !opencode_poll_started);
                 if needs_manual_start {
                     println!();
                     println!("Load with:");
@@ -486,27 +506,23 @@ async fn main() -> Result<()> {
                             "  launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.hippo.brain.plist"
                         );
                     }
-                    if !watchdog_was_loaded {
+                    if !stack_was_active {
                         println!(
                             "  launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.hippo.watchdog.plist"
                         );
-                    }
-                    if !probe_was_loaded {
                         println!(
                             "  launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.hippo.probe.plist"
                         );
-                    }
-                    if !watcher_was_loaded {
                         println!(
                             "  launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.hippo.claude-session-watcher.plist"
                         );
                     }
-                    if gh_poll_installed {
+                    if gh_poll_installed && !gh_poll_started {
                         println!(
                             "  launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.hippo.gh-poll.plist"
                         );
                     }
-                    if opencode_poll_installed && !opencode_poll_was_loaded {
+                    if opencode_poll_installed && !opencode_poll_started {
                         println!(
                             "  launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.hippo.opencode-poll.plist"
                         );
