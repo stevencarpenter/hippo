@@ -195,20 +195,20 @@ fn upsert_session(conn: &rusqlite::Connection, s: &OpencodeSession) -> Result<()
             commit_messages_json = excluded.commit_messages_json,
             end_time           = excluded.end_time",
         params![
-            &s.id,                  // ?1 session_id
-            s.model.as_deref(),     // ?2 model
-            s.agent.as_deref(),     // ?3 agent
-            &s.directory,           // ?4 project_dir
-            &s.directory,           // ?5 cwd
-            &s.slug,                // ?6 slug
-            &s.title,               // ?7 title
-            s.parent_id.as_deref(), // ?8 parent_session_id
-            summary_text,           // ?9 summary_text
-            diff_text,              // ?10 snapshot_diffs_json
-            commit_json,            // ?11 commit_messages_json
-            s.time_created,         // ?12 start_time
-            s.time_updated,         // ?13 end_time
-            now,                    // ?14 created_at
+            &s.id,                            // ?1 session_id
+            s.model.as_deref().unwrap_or(""), // ?2 model (NOT NULL)
+            s.agent.as_deref().unwrap_or(""), // ?3 agent
+            &s.directory,                     // ?4 project_dir
+            &s.directory,                     // ?5 cwd
+            &s.slug,                          // ?6 slug
+            &s.title,                         // ?7 title
+            s.parent_id.as_deref(),           // ?8 parent_session_id (nullable)
+            summary_text,                     // ?9 summary_text
+            diff_text,                        // ?10 snapshot_diffs_json
+            commit_json,                      // ?11 commit_messages_json
+            s.time_created,                   // ?12 start_time
+            s.time_updated,                   // ?13 end_time
+            now,                              // ?14 created_at
         ],
     )?;
 

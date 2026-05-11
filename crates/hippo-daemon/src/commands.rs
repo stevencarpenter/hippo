@@ -1629,7 +1629,7 @@ fn check_source_staleness(db: &rusqlite::Connection, explain: bool) -> u32 {
     let rows_result = db.prepare(
         "SELECT source, last_event_ts, last_error_msg, consecutive_failures, events_last_1h, probe_ok \
          FROM source_health \
-         WHERE source IN ('shell', 'browser', 'claude-session', 'claude-tool') \
+         WHERE source IN ('shell', 'browser', 'claude-session', 'claude-tool', 'agentic-session-opencode') \
          ORDER BY source",
     );
 
@@ -1704,6 +1704,14 @@ fn check_source_staleness(db: &rusqlite::Connection, explain: bool) -> u32 {
                 warn_secs: 120,
                 fail_secs: 600,
             },
+            // Opencode polls every 30 s by default. Tolerate one missed
+            // tick before warning, and an hour before failing — a quiet day
+            // in opencode is not a bug, so the suppression check below also
+            // skips the alarm if the opencode DB itself looks idle.
+            "agentic-session-opencode" => Thresholds {
+                warn_secs: 300,
+                fail_secs: 3600,
+            },
             _ => Thresholds {
                 warn_secs: 300,
                 fail_secs: 1800,
@@ -1723,6 +1731,23 @@ fn check_source_staleness(db: &rusqlite::Connection, explain: bool) -> u32 {
                 .map(|s| s.success())
                 .unwrap_or(false)
         })
+    };
+
+    // Check whether the opencode DB itself looks active — the file exists
+    // and has been modified in the last 10 minutes. Stale opencode means
+    // "user just isn't using opencode right now," not "the poller is broken."
+    let opencode_db_recent = || -> bool {
+        let cfg = match hippo_core::config::HippoConfig::load_default() {
+            Ok(c) => c,
+            Err(_) => return false,
+        };
+        let Ok(meta) = std::fs::metadata(&cfg.opencode.db_path) else {
+            return false;
+        };
+        let ten_min_ago = std::time::SystemTime::now()
+            .checked_sub(std::time::Duration::from_secs(600))
+            .unwrap_or(std::time::UNIX_EPOCH);
+        meta.modified().map(|m| m > ten_min_ago).unwrap_or(false)
     };
 
     // Check if there's a recent claude JSONL with mtime < 5 minutes (for claude-session suppression).
@@ -1767,8 +1792,14 @@ fn check_source_staleness(db: &rusqlite::Connection, explain: bool) -> u32 {
 
     let mut fail_count: u32 = 0;
 
-    // All four expected sources — report missing ones too.
-    let all_sources = ["browser", "claude-session", "claude-tool", "shell"];
+    // All expected sources — report missing ones too.
+    let all_sources = [
+        "agentic-session-opencode",
+        "browser",
+        "claude-session",
+        "claude-tool",
+        "shell",
+    ];
     for source in all_sources {
         let label = format!("{} events", source);
         let padded = format!("{:<29}", label);
@@ -1800,6 +1831,7 @@ fn check_source_staleness(db: &rusqlite::Connection, explain: bool) -> u32 {
                 "claude-session" => !recent_claude_session(),
                 "claude-tool" => row.probe_ok == Some(0),
                 "browser" => !firefox_running(),
+                "agentic-session-opencode" => !opencode_db_recent(),
                 _ => false,
             };
 
@@ -1807,6 +1839,7 @@ fn check_source_staleness(db: &rusqlite::Connection, explain: bool) -> u32 {
                 let reason = match source {
                     "browser" => "no active Firefox session",
                     "claude-session" => "no active session",
+                    "agentic-session-opencode" => "opencode DB idle",
                     _ => "probe disabled",
                 };
                 println!("[WW] {}  {} (suppressed — {})", padded, human, reason);

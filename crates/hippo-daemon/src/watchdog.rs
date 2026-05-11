@@ -464,6 +464,11 @@ pub fn check_invariants(rows: &[SourceHealthRow], now_ms: i64) -> Vec<InvariantV
         violations.extend(check_i8_probe_freshness(rows, now_ms));
     }
 
+    // I-11: Opencode-session coverage proxy.
+    if !bench_paused && let Some(v) = check_i11_opencode_coverage_proxy(&by_source, now_ms) {
+        violations.push(v);
+    }
+
     violations
 }
 
@@ -562,6 +567,34 @@ pub fn check_i4_browser_roundtrip(
     } else {
         None
     }
+}
+
+/// I-11: Opencode-session coverage proxy.
+///
+/// Mirrors I-2's shape for the new `agentic-session-opencode` source: alarm
+/// when `consecutive_failures > 3`, meaning the poller has tried and failed
+/// repeatedly. Full freshness coverage is the doctor's responsibility (it
+/// can correlate with opencode DB mtime to suppress idle-day alarms); the
+/// watchdog only catches the "actively broken" case.
+pub fn check_i11_opencode_coverage_proxy(
+    by_source: &std::collections::HashMap<&str, &SourceHealthRow>,
+    now_ms: i64,
+) -> Option<InvariantViolation> {
+    let row = by_source.get("agentic-session-opencode")?;
+    let last_event = row.last_event_ts?;
+    if row.consecutive_failures > 3 {
+        let age_ms = now_ms - last_event;
+        return Some(InvariantViolation {
+            invariant_id: "I-11".to_string(),
+            source: "agentic-session-opencode".to_string(),
+            since_ms: age_ms,
+            details: json!({
+                "consecutive_failures": row.consecutive_failures,
+                "note": "proxy predicate; full freshness check lives in hippo doctor",
+            }),
+        });
+    }
+    None
 }
 
 /// I-8: Probe freshness.
@@ -1049,6 +1082,43 @@ mod tests {
         };
         let rows = vec![row];
         assert!(check_i2_claude_session_proxy(&by_source(&rows), NOW).is_none());
+    }
+
+    // ── I-11 (opencode coverage proxy) ─────────────────────────────────────
+
+    #[test]
+    fn watchdog_i11_fires_on_consecutive_failures() {
+        let row = SourceHealthRow {
+            last_event_ts: Some(NOW - 600_000),
+            consecutive_failures: 5,
+            ..blank_row("agentic-session-opencode")
+        };
+        let rows = vec![row];
+        let result = check_i11_opencode_coverage_proxy(&by_source(&rows), NOW);
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().invariant_id, "I-11");
+    }
+
+    #[test]
+    fn watchdog_i11_suppressed_when_failures_low() {
+        let row = SourceHealthRow {
+            last_event_ts: Some(NOW - 600_000),
+            consecutive_failures: 2,
+            ..blank_row("agentic-session-opencode")
+        };
+        let rows = vec![row];
+        assert!(check_i11_opencode_coverage_proxy(&by_source(&rows), NOW).is_none());
+    }
+
+    #[test]
+    fn watchdog_i11_suppressed_when_never_seen() {
+        let row = SourceHealthRow {
+            last_event_ts: None,
+            consecutive_failures: 10,
+            ..blank_row("agentic-session-opencode")
+        };
+        let rows = vec![row];
+        assert!(check_i11_opencode_coverage_proxy(&by_source(&rows), NOW).is_none());
     }
 
     // ── I-4 ────────────────────────────────────────────────────────────────

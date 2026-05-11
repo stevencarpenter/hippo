@@ -244,6 +244,8 @@ async fn main() -> Result<()> {
                 let probe_was_loaded = install::service_is_loaded("com.hippo.probe");
                 let watcher_was_loaded =
                     install::service_is_loaded("com.hippo.claude-session-watcher");
+                let opencode_poll_was_loaded =
+                    install::service_is_loaded("com.hippo.opencode-poll");
 
                 if brain_was_loaded {
                     print!("  Draining brain (waiting for in-flight requests)");
@@ -285,6 +287,13 @@ async fn main() -> Result<()> {
                     );
                     println!("  Stopped claude-session-watcher");
                 }
+                if opencode_poll_was_loaded {
+                    install::service_bootout(
+                        &domain,
+                        &launch_agents.join("com.hippo.opencode-poll.plist"),
+                    );
+                    println!("  Stopped opencode-poll");
+                }
 
                 let daemon_template = include_str!("../../../launchd/com.hippo.daemon.plist");
                 let brain_template = include_str!("../../../launchd/com.hippo.brain.plist");
@@ -297,6 +306,8 @@ async fn main() -> Result<()> {
                     include_str!("../../../launchd/com.hippo.xcode-claude-ingest.plist");
                 let xcode_codex_template =
                     include_str!("../../../launchd/com.hippo.xcode-codex-ingest.plist");
+                let opencode_poll_template =
+                    include_str!("../../../launchd/com.hippo.opencode-poll.plist");
 
                 install::install_plist("com.hippo.daemon", daemon_template, &vars, force)?;
                 install::install_plist("com.hippo.brain", brain_template, &vars, force)?;
@@ -320,6 +331,21 @@ async fn main() -> Result<()> {
                     &vars,
                     force,
                 )?;
+
+                // Opencode poller plist — only written when the opencode source
+                // is enabled (mirrors the gh-poll gate above).
+                let opencode_poll_installed = if config.opencode.enabled {
+                    install::install_plist(
+                        "com.hippo.opencode-poll",
+                        opencode_poll_template,
+                        &vars,
+                        force,
+                    )?;
+                    true
+                } else {
+                    println!("  (opencode source disabled; skipping opencode-poll plist)");
+                    false
+                };
 
                 // GitHub Actions poller plist — only written when github source is enabled.
                 let gh_poll_installed = if config.github.enabled {
@@ -391,6 +417,7 @@ async fn main() -> Result<()> {
                     || watchdog_was_loaded
                     || probe_was_loaded
                     || watcher_was_loaded
+                    || opencode_poll_was_loaded
                 {
                     println!();
                     println!("Restarting services...");
@@ -429,6 +456,13 @@ async fn main() -> Result<()> {
                         )?;
                         println!("  Started claude-session-watcher");
                     }
+                    if opencode_poll_was_loaded && opencode_poll_installed {
+                        install::service_bootstrap(
+                            &domain,
+                            &launch_agents.join("com.hippo.opencode-poll.plist"),
+                        )?;
+                        println!("  Started opencode-poll");
+                    }
                 }
 
                 // Only print "Load with:" for services that weren't already cycled.
@@ -437,7 +471,8 @@ async fn main() -> Result<()> {
                     || !watchdog_was_loaded
                     || !probe_was_loaded
                     || !watcher_was_loaded
-                    || gh_poll_installed;
+                    || gh_poll_installed
+                    || (opencode_poll_installed && !opencode_poll_was_loaded);
                 if needs_manual_start {
                     println!();
                     println!("Load with:");
@@ -469,6 +504,11 @@ async fn main() -> Result<()> {
                     if gh_poll_installed {
                         println!(
                             "  launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.hippo.gh-poll.plist"
+                        );
+                    }
+                    if opencode_poll_installed && !opencode_poll_was_loaded {
+                        println!(
+                            "  launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.hippo.opencode-poll.plist"
                         );
                     }
                 }
