@@ -235,6 +235,29 @@ def delete_vectors(conn: sqlite3.Connection, knowledge_node_id: int) -> None:
 
 
 def _vec_blob(vec: Iterable[float]) -> bytes:
-    """Serialize a float vector to the little-endian f32 blob sqlite-vec wants."""
+    """Serialize a float vector to the little-endian f32 blob sqlite-vec wants.
+
+    On `struct.error: required argument is not a float`, surface which index
+    has the bad value and what its actual type/repr is. The bare struct error
+    gives zero context, which made diagnosing a 2026-05-11 incident impossible
+    without ad-hoc instrumentation.
+    """
     buf = list(vec)
-    return struct.pack(f"<{len(buf)}f", *buf)
+    try:
+        return struct.pack(f"<{len(buf)}f", *buf)
+    except struct.error as e:
+        # Find the first non-float element so the log has a concrete pointer
+        # at the upstream bug (model returning ints/strings/None, etc.).
+        bad = None
+        for idx, x in enumerate(buf):
+            if not isinstance(x, (int, float)):
+                bad = (idx, x, type(x).__name__)
+                break
+        nan_count = sum(
+            1 for x in buf if isinstance(x, float) and x != x  # NaN check
+        )
+        raise struct.error(
+            f"_vec_blob: cannot pack vector of length {len(buf)}: {e}. "
+            f"first_non_float={bad!r}, nan_count={nan_count}, "
+            f"first_three={buf[:3]!r}"
+        ) from e
