@@ -83,13 +83,20 @@ def _load_config() -> dict:
         storage.get("data_dir", Path.home() / ".local" / "share" / "hippo")
     ).expanduser()
 
-    lmstudio = config.get("lmstudio", {})
+    # Section renamed from [lmstudio] -> [inference] in the omlx PR. Fail loud
+    # on the legacy name; see hippo_brain.__init__ for the matching guard.
+    if "lmstudio" in config and "inference" not in config:
+        raise RuntimeError(
+            "config.toml uses the deprecated [lmstudio] section. "
+            "Rename it to [inference]."
+        )
+    inference = config.get("inference", {})
     models = config.get("models", {})
 
     return {
         "db_path": str(data_dir / "hippo.db"),
         "data_dir": str(data_dir),
-        "lmstudio_base_url": lmstudio.get("base_url", "http://localhost:1234/v1"),
+        "lmstudio_base_url": inference.get("base_url", "http://localhost:1234/v1"),
         "embedding_model": models.get("embedding", ""),
         "query_model": models.get("query", "") or models.get("enrichment", ""),
     }

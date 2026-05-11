@@ -54,7 +54,13 @@ def _load_models(config_path: Path) -> tuple[str, str, str]:
     with config_path.open("rb") as f:
         cfg = tomllib.load(f)
     models = cfg.get("models", {})
-    base_url = cfg.get("lmstudio", {}).get("base_url", "http://localhost:1234/v1")
+    # Section renamed from [lmstudio] -> [inference] in the omlx PR.
+    if "lmstudio" in cfg and "inference" not in cfg:
+        raise RuntimeError(
+            "config.toml uses the deprecated [lmstudio] section. "
+            "Rename it to [inference]."
+        )
+    base_url = cfg.get("inference", {}).get("base_url", "http://localhost:1234/v1")
     return (
         base_url,
         models.get("embedding", ""),
