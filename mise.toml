@@ -694,18 +694,20 @@ echo "==> Verifying..."
 sleep 1
 ~/.local/bin/hippo doctor || true
 
-# Wait for brain to confirm LM Studio connectivity
+# Wait for brain to confirm inference-server connectivity. The brain emits
+# both "inference_reachable" (preferred) and "lmstudio_reachable" (legacy
+# alias kept for older consumers); we read either.
 echo "  Checking brain health..."
 for i in $(seq 1 10); do
     if health=$(curl -sf http://localhost:9175/health 2>/dev/null); then
-        reachable=$(echo "$health" | python3 -c "import sys,json; print(json.load(sys.stdin).get('lmstudio_reachable',''))" 2>/dev/null)
+        reachable=$(echo "$health" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('inference_reachable', d.get('lmstudio_reachable','')))" 2>/dev/null)
         if [ "$reachable" = "True" ]; then
-            echo "  Brain healthy, LM Studio reachable"
+            echo "  Brain healthy, inference server reachable"
             break
         fi
     fi
     if [ "$i" -eq 10 ]; then
-        echo "  WARN: Brain did not confirm LM Studio connectivity within 10s"
+        echo "  WARN: Brain did not confirm inference connectivity within 10s"
         echo "  Check: curl http://localhost:9175/health"
         break
     fi
@@ -843,9 +845,9 @@ if [ -z "${1:-}" ]; then echo "Usage: mise run vectors:search <query>"; exit 1; 
 uv run --project brain python -c "
 import asyncio, sys
 from hippo_brain.embeddings import open_vector_db, get_or_create_table, search_similar
-from hippo_brain.client import LMStudioClient
+from hippo_brain.client import InferenceClient
 async def main():
-    client = LMStudioClient()
+    client = InferenceClient()
     vecs = await client.embed([sys.argv[1]], model='$(grep "^embedding" ~/.config/hippo/config.toml | cut -d'"' -f2)')
     table = get_or_create_table(open_vector_db('$HOME/.local/share/hippo'))
     results = search_similar(table, vecs[0], limit=5)

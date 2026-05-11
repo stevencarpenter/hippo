@@ -210,7 +210,7 @@
     },
     {
       "id": 4,
-      "title": "LM Studio Latency",
+      "title": "Inference Latency",
       "type": "timeseries",
       "gridPos": {
         "x": 0,
@@ -229,7 +229,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "histogram_quantile(0.5, sum(rate(hippo_brain_lmstudio_request_duration_milliseconds_bucket{service_namespace!~\".+\",method=\"chat\"}[5m])) by (le))",
+          "expr": "histogram_quantile(0.5, sum(rate(hippo_brain_inference_request_duration_milliseconds_bucket{service_namespace!~\".+\",method=\"chat\"}[5m])) by (le))",
           "legendFormat": "p50",
           "editorMode": "code"
         },
@@ -239,7 +239,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "histogram_quantile(0.95, sum(rate(hippo_brain_lmstudio_request_duration_milliseconds_bucket{service_namespace!~\".+\",method=\"chat\"}[5m])) by (le))",
+          "expr": "histogram_quantile(0.95, sum(rate(hippo_brain_inference_request_duration_milliseconds_bucket{service_namespace!~\".+\",method=\"chat\"}[5m])) by (le))",
           "legendFormat": "p95",
           "editorMode": "code"
         },
@@ -249,7 +249,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "histogram_quantile(0.99, sum(rate(hippo_brain_lmstudio_request_duration_milliseconds_bucket{service_namespace!~\".+\",method=\"chat\"}[5m])) by (le))",
+          "expr": "histogram_quantile(0.99, sum(rate(hippo_brain_inference_request_duration_milliseconds_bucket{service_namespace!~\".+\",method=\"chat\"}[5m])) by (le))",
           "legendFormat": "p99",
           "editorMode": "code"
         }
@@ -276,7 +276,7 @@
     },
     {
       "id": 5,
-      "title": "LM Studio Errors / min",
+      "title": "Inference Errors / min",
       "type": "timeseries",
       "gridPos": {
         "x": 8,
@@ -295,7 +295,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum(rate(hippo_brain_lmstudio_errors_total{service_namespace!~\".+\"}[5m])) by (method) * 60",
+          "expr": "sum(rate(hippo_brain_inference_errors_total{service_namespace!~\".+\"}[5m])) by (method) * 60",
           "legendFormat": "{{method}}",
           "editorMode": "code"
         }
@@ -341,7 +341,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "histogram_quantile(0.5, sum(rate(hippo_brain_lmstudio_prompt_tokens_bucket{service_namespace!~\".+\"}[5m])) by (le))",
+          "expr": "histogram_quantile(0.5, sum(rate(hippo_brain_inference_prompt_tokens_bucket{service_namespace!~\".+\"}[5m])) by (le))",
           "legendFormat": "p50",
           "editorMode": "code"
         },
@@ -351,7 +351,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "histogram_quantile(0.95, sum(rate(hippo_brain_lmstudio_prompt_tokens_bucket{service_namespace!~\".+\"}[5m])) by (le))",
+          "expr": "histogram_quantile(0.95, sum(rate(hippo_brain_inference_prompt_tokens_bucket{service_namespace!~\".+\"}[5m])) by (le))",
           "legendFormat": "p95",
           "editorMode": "code"
         }
@@ -439,7 +439,7 @@
       "gridPos": {
         "x": 6,
         "y": 16,
-        "w": 3,
+        "w": 6,
         "h": 8
       },
       "datasource": {
@@ -454,7 +454,17 @@
             "uid": "prometheus"
           },
           "expr": "sum(hippo_brain_embedding_failures_total{service_namespace!~\".+\"}) or vector(0)",
-          "legendFormat": "",
+          "legendFormat": "total",
+          "editorMode": "code"
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum(rate(hippo_brain_embedding_failures_total{service_namespace!~\".+\"}[5m])) * 60",
+          "legendFormat": "rate / min",
           "editorMode": "code"
         }
       ],
@@ -469,12 +479,38 @@
                 "value": null
               },
               {
-                "color": "red",
+                "color": "yellow",
                 "value": 1
+              },
+              {
+                "color": "red",
+                "value": 5
               }
             ]
           }
-        }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "total"
+            },
+            "properties": [
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "blue",
+                      "value": null
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        ]
       },
       "options": {
         "reduceOptions": {
@@ -483,18 +519,21 @@
           ]
         },
         "orientation": "auto",
-        "textMode": "auto",
-        "colorMode": "background"
-      }
+        "textMode": "value_and_name",
+        "colorMode": "background",
+        "graphMode": "area",
+        "justifyMode": "auto"
+      },
+      "description": "Cumulative failures (blue) + 5-minute rate per minute (green/yellow/red). Rate > 0 means struct.pack on embedding vectors failed; check ~/.local/share/hippo/brain.stderr.log for `_vec_blob:` lines that name the bad index and value (the helper instruments the error)."
     },
     {
       "id": 9,
       "title": "RAG Latency by Stage",
       "type": "timeseries",
       "gridPos": {
-        "x": 9,
+        "x": 12,
         "y": 16,
-        "w": 8,
+        "w": 6,
         "h": 8
       },
       "datasource": {
@@ -538,9 +577,9 @@
       "title": "RAG Retrieval Hits",
       "type": "timeseries",
       "gridPos": {
-        "x": 17,
+        "x": 18,
         "y": 16,
-        "w": 7,
+        "w": 6,
         "h": 8
       },
       "datasource": {

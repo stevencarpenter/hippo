@@ -18,6 +18,7 @@ For the rules every contributor must follow when adding a new source, see [`anti
 | 8 | **Xcode Codex rollouts** | `com.hippo.xcode-codex-ingest` LaunchAgent → `scripts/hippo-ingest-codex.py` → Python `codex_sessions.py::extract_codex_segments` → `insert_segment` (shared `claude_sessions`; `source='codex'` on segment) | `claude_sessions` (shared), `claude_enrichment_queue` | I-2 (shared) | No | intermittent — Python-only path; not covered by Rust source-audit suite |
 | 9 | **Probe events** | `com.hippo.probe` LaunchAgent → `crates/hippo-daemon/src/probe.rs` → per-source synthetic-event path | `events` / `browser_events` / `claude_sessions` with `probe_tag IS NOT NULL` | I-8 | (drives the others' probes) | healthy |
 | 10 | **Watchdog heartbeat** | `com.hippo.watchdog` → `crates/hippo-daemon/src/watchdog.rs` → `source_health WHERE source='watchdog'` UPDATE every cycle | `source_health` only | I-7 | n/a | healthy |
+| 11 | **Opencode sessions** | `com.hippo.opencode-poll` LaunchAgent (every `[opencode] poll_interval_secs`) → `hippo opencode-poll` → `opencode_session.rs::poll_tick` reads opencode's own SQLite → upserts `agentic_sessions` + enqueues `agentic_enrichment_queue` | `agentic_sessions` (harness='opencode'), `agentic_enrichment_queue`, `agentic_cursor`, `knowledge_node_agentic_sessions` | I-11 | No (deferred; doctor uses opencode DB mtime as a freshness proxy) | new in v14 — no production probe yet |
 
 ## Per-source notes
 
@@ -56,6 +57,20 @@ There is no real-time invariant — doctor's source-freshness probe (`crates/hip
 ### Xcode-side sources (ClaudeAgentConfig + Codex)
 
 Two sibling LaunchAgents poll the Xcode CodingAssistant directories every 5 minutes and feed the Python ingest script. Both write into the shared `claude_sessions` table. Codex rollouts have a distinct JSONL envelope (`session_meta`, `response_item/function_call`) handled by `brain/src/hippo_brain/codex_sessions.py`; the Rust daemon does not parse Codex's shape.
+
+### Opencode sessions
+
+Polled (not watched) — opencode owns its SQLite DB and we open it read-only, so we cannot subscribe to writes the way the Claude FS watcher does for JSONL files. `hippo opencode-poll` runs every `[opencode] poll_interval_secs` (default 30 s) under `com.hippo.opencode-poll`.
+
+Schema-wise this source is harness-agnostic by design: `agentic_sessions` carries a `harness` column (`'claude-code'`, `'opencode'`, `'codex'`) and is the destination for any future agentic-harness poller. v14 only wires opencode; codex/claude-code rows in this table are aspirational.
+
+Cursor (`agentic_cursor`) is keyed by `opencode-<inode>` on macOS so a fresh opencode install (new inode) doesn't replay history. The cursor advances by `time_updated` so an updated session re-polls on the next tick; `INSERT … ON CONFLICT DO UPDATE` keeps the destination row idempotent across re-reads. The cursor is only advanced past sessions whose upsert landed successfully — a mid-batch failure is retried, not silently dropped.
+
+`agentic_sessions.summary_text` is built at write time from the opencode columns we have (`title`, `agent`, `model`, snapshot diff stats). The brain's `_enrich_opencode_batches` reads this column verbatim as the LLM prompt body, so any future enrichment quality work flows through `build_summary_text` in `opencode_session.rs`.
+
+The brain side mirrors `claude_sessions.py`: `claim_pending_opencode_segments` flips queue rows to `processing`, the LLM call produces a `knowledge_nodes` row, `write_opencode_knowledge_node` links via `knowledge_node_agentic_sessions` and closes out the queue entry. Eligibility filter (in `enrichment.py::is_enrichment_eligible`) skips sessions with `<3` messages and no diffs/commits.
+
+No production probe yet — `hippo probe --source opencode` is deferred. The doctor freshness check uses the opencode DB's own mtime as a suppression signal so an idle day in opencode doesn't fail the run.
 
 ### Probes
 

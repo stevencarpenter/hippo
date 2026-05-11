@@ -11,7 +11,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.routing import Route
 
-from hippo_brain.client import LMStudioClient
+from hippo_brain.client import InferenceClient
 from hippo_brain.schema_version import EXPECTED_SCHEMA_VERSION, ACCEPTED_READ_VERSIONS
 from hippo_brain.version import get_version
 from hippo_brain.embeddings import (
@@ -45,6 +45,13 @@ from hippo_brain.claude_sessions import (
     mark_claude_queue_failed,
     write_claude_knowledge_node,
 )
+from hippo_brain.opencode_sessions import (
+    OPENCODE_ENRICHMENT_PROMPT,
+    build_opencode_enrichment_prompt,
+    claim_pending_opencode_segments,
+    mark_opencode_queue_failed,
+    write_opencode_knowledge_node,
+)
 from hippo_brain.workflow_enrichment import (
     claim_pending_workflow_runs,
     enrich_one_async,
@@ -53,7 +60,7 @@ from hippo_brain.workflow_enrichment import (
 from hippo_brain.watchdog import (
     DEFAULT_LOCK_TIMEOUT_MS,
     DEFAULT_MAX_CLAIM_BATCH,
-    preflight_lm_studio,
+    preflight_inference,
     reap_stale_locks,
 )
 from hippo_brain.telemetry import (
@@ -118,8 +125,8 @@ class BrainServer:
         self,
         db_path: str = "",
         data_dir: str = "",
-        lmstudio_base_url: str = "http://localhost:1234/v1",
-        lmstudio_timeout_secs: float = 300.0,
+        inference_base_url: str = "http://localhost:1234/v1",
+        inference_timeout_secs: float = 300.0,
         enrichment_model: str = "",
         embedding_model: str = "",
         query_model: str = "",
@@ -136,7 +143,7 @@ class BrainServer:
             data_dir = str(Path.home() / ".local" / "share" / "hippo")
         self.db_path = db_path
         self.data_dir = data_dir
-        self.client = LMStudioClient(base_url=lmstudio_base_url, timeout=lmstudio_timeout_secs)
+        self.client = InferenceClient(base_url=inference_base_url, timeout=inference_timeout_secs)
         self._preferred_model = enrichment_model
         self.enrichment_model = enrichment_model
         self.embedding_model = embedding_model
@@ -262,7 +269,7 @@ class BrainServer:
                 "version": get_version(),
                 "expected_schema_version": EXPECTED_SCHEMA_VERSION,
                 "accepted_read_versions": sorted(ACCEPTED_READ_VERSIONS),
-                "lmstudio_reachable": reachable,
+                "inference_reachable": reachable,
                 "enrichment_running": self.enrichment_running,
                 "paused": self._paused,
                 "paused_at": self._paused_at_iso,
@@ -743,7 +750,7 @@ class BrainServer:
         try:
             result = await rag_ask(
                 question=question,
-                lm_client=self.client,
+                inference_client=self.client,
                 vector_table=self._vector_table,
                 query_model=model,
                 embedding_model=self.embedding_model,
@@ -762,7 +769,7 @@ class BrainServer:
 
         in_flight_finished reflects both /ask queries and the enrichment
         loop body — bench callers need both quiescent before they own the
-        LM Studio slot.
+        inference server slot.
         """
         if not self._paused:
             self._paused = True
@@ -791,6 +798,69 @@ class BrainServer:
     def _resolve_model_from_preflight(self, loaded: list[str]) -> bool:
         """Sync model selection from preflight's already-fetched model list."""
         return self._pick_enrichment_model(loaded)
+
+    def _record_preflight_to_source_health(self, decision) -> None:
+        """Mirror the preflight decision into source_health['brain-preflight'].
+
+        The watchdog reads source_health to evaluate invariants. I-12 alarms
+        when `consecutive_failures > 12`, so we need to bump the counter on
+        every failed preflight and reset it on every success. Schema-table
+        absence (test DBs / pre-migration installs) is swallowed silently
+        per the existing source_health convention.
+        """
+        now_ms = int(time.time() * 1000)
+        try:
+            conn = self._get_conn()
+        except Exception as e:
+            logger.debug("brain-preflight source_health: get_conn failed: %s", e)
+            return
+        try:
+            # Upsert rather than UPDATE-only so a v13→v14-migrated DB whose
+            # daemon has not yet run the post-migration idempotent seed (see
+            # storage.rs:754) still gets a row on the first preflight cycle.
+            # The Rust side uses INSERT OR IGNORE + UPDATE; we collapse that
+            # into a single ON CONFLICT upsert here.
+            if decision.proceed:
+                conn.execute(
+                    """
+                    INSERT INTO source_health (
+                        source, last_event_ts, last_success_ts,
+                        consecutive_failures, updated_at
+                    )
+                    VALUES ('brain-preflight', ?1, ?1, 0, ?1)
+                    ON CONFLICT(source) DO UPDATE SET
+                        last_event_ts        = ?1,
+                        last_success_ts      = ?1,
+                        consecutive_failures = 0,
+                        last_error_msg       = NULL,
+                        updated_at           = ?1
+                    """,
+                    (now_ms,),
+                )
+            else:
+                err_msg = (decision.error or decision.reason or "preflight_failed")[:500]
+                conn.execute(
+                    """
+                    INSERT INTO source_health (
+                        source, last_error_ts, last_error_msg,
+                        consecutive_failures, updated_at
+                    )
+                    VALUES ('brain-preflight', ?1, ?2, 1, ?1)
+                    ON CONFLICT(source) DO UPDATE SET
+                        last_error_ts        = ?1,
+                        last_error_msg       = ?2,
+                        consecutive_failures = source_health.consecutive_failures + 1,
+                        updated_at           = ?1
+                    """,
+                    (now_ms, err_msg),
+                )
+            conn.commit()
+        except sqlite3.OperationalError as e:
+            # source_health absent or schema older than v8 — swallow per
+            # existing daemon-side convention.
+            logger.debug("brain-preflight source_health write skipped: %s", e)
+        finally:
+            conn.close()
 
     def _pick_enrichment_model(self, loaded: list[str]) -> bool:
         """Filter chat models from `loaded` and set self.enrichment_model.
@@ -825,7 +895,7 @@ class BrainServer:
 
         Claims work from all three sources sequentially (fast SQLite ops), then
         processes them concurrently via asyncio.gather. LLM calls still serialize
-        at the LM Studio level, but DB writes and embeddings from one batch
+        at the inference-server level, but DB writes and embeddings from one batch
         overlap with the next LLM call.
         """
         self.enrichment_running = True
@@ -847,7 +917,7 @@ class BrainServer:
                         continue
                     # Sleep up to poll_interval_secs, waking early if a query
                     # arrives mid-sleep. The event-based wake means we yield
-                    # to the LM Studio slot instead of waiting out the full
+                    # to the inference-server slot instead of waiting out the
                     # interval and starting a competing enrichment batch.
                     try:
                         await asyncio.wait_for(
@@ -870,9 +940,14 @@ class BrainServer:
 
                     self._enrichment_active = True
                     try:
-                        decision = await preflight_lm_studio(
+                        decision = await preflight_inference(
                             self.client, self._preferred_model or None, allow_fallback=True
                         )
+                        # Mirror the preflight outcome into source_health so
+                        # watchdog I-12 can alarm on sustained failures
+                        # (motivating incident: silent [lmstudio]->[inference]
+                        # drift made preflight fail for hours with no alarm).
+                        self._record_preflight_to_source_health(decision)
                         if not decision.proceed:
                             continue
 
@@ -924,12 +999,27 @@ class BrainServer:
                             except Exception as e:
                                 logger.warning("workflow claim error: %s", e, exc_info=True)
                                 workflow_run_ids = []
+                            try:
+                                opencode_batches = claim_pending_opencode_segments(
+                                    conn,
+                                    worker_id,
+                                    max_claim_batch=self.max_claim_batch,
+                                    stale_lock_timeout_ms=self.lock_timeout_ms,
+                                )
+                            except Exception as e:
+                                # AP-11: a real exception here (SQL error,
+                                # schema mismatch) is a structural failure and
+                                # must not be downgraded to debug. Mirrors the
+                                # browser/workflow claim paths above.
+                                logger.warning("opencode claim error: %s", e, exc_info=True)
+                                opencode_batches = []
 
                             if (
                                 not shell_chunks
                                 and not claude_batches
                                 and not browser_batches
                                 and not workflow_run_ids
+                                and not opencode_batches
                             ):
                                 continue
 
@@ -942,6 +1032,7 @@ class BrainServer:
                                 self._enrich_claude_batches(claude_batches),
                                 self._enrich_browser_batches(browser_batches),
                                 self._enrich_workflow_runs(workflow_run_ids),
+                                self._enrich_opencode_batches(opencode_batches),
                             )
                             _hist(_loop_duration, (time.monotonic() - t0) * 1000)
                         finally:
@@ -957,7 +1048,7 @@ class BrainServer:
             self.enrichment_running = False
 
     async def _call_llm_with_retries(self, system_prompt, prompt, source_label):
-        """Call LM Studio with up to 3 retries on parse failure."""
+        """Call the inference server with up to 3 retries on parse failure."""
         last_err: Exception = RuntimeError("no attempts made")
         for attempt in range(3):
             try:
@@ -1052,7 +1143,7 @@ class BrainServer:
                 logger.debug("browser correlation skipped: %s", e)
 
             prompt = build_enrichment_prompt(events, browser_context=browser_context)
-            logger.info("calling LM Studio (prompt len: %d chars)", len(prompt))
+            logger.info("calling inference server (prompt len: %d chars)", len(prompt))
 
             tracer = _get_tracer()
             span = (
@@ -1335,7 +1426,7 @@ class BrainServer:
                     await enrich_one_async(
                         self.db_path,
                         run_id=run_id,
-                        lm=self.client,
+                        inference=self.client,
                         query_model=query_model,
                     )
                     _add(_nodes_created, source="workflow")
@@ -1357,6 +1448,95 @@ class BrainServer:
                         mark_workflow_queue_failed(retry_conn, run_id, err_msg)
                     finally:
                         retry_conn.close()
+
+    async def _enrich_opencode_batches(self, batches):
+        """Process opencode session segment batches via the agentic queue."""
+        if not batches:
+            return
+        embed_tasks = []
+        for segments in batches:
+            segment_ids = [s["id"] for s in segments]
+            prompt = build_opencode_enrichment_prompt(segments)
+            logger.info("claimed %d opencode segments: %s", len(segment_ids), segment_ids)
+            _add(_events_claimed, len(segment_ids), source="opencode")
+
+            tracer = _get_tracer()
+            span = (
+                tracer.start_as_current_span(
+                    "enrichment.opencode",
+                    attributes={
+                        "hippo.event_count": len(segment_ids),
+                        "hippo.model": self.enrichment_model,
+                    },
+                )
+                if tracer
+                else nullcontext()
+            )
+            batch_start_ms = int(time.time() * 1000)
+            with span:
+                try:
+                    result = await self._call_llm_with_retries(
+                        OPENCODE_ENRICHMENT_PROMPT, prompt, "opencode"
+                    )
+                    conn = self._get_conn()
+                    try:
+                        node_id = write_opencode_knowledge_node(
+                            conn,
+                            result,
+                            segment_ids,
+                            self.enrichment_model,
+                        )
+                    finally:
+                        conn.close()
+                    _add(_nodes_created, source="opencode")
+                    self._record_success()
+                    logger.info(
+                        "enriched %d opencode segments -> node %d",
+                        len(segment_ids),
+                        node_id,
+                    )
+
+                    if self.embedding_model:
+                        node_dict = {
+                            "id": node_id,
+                            "session_id": 0,
+                            "captured_at": int(time.time() * 1000),
+                            "commands_raw": "",
+                            "cwd": segments[0].get("cwd", ""),
+                            "git_branch": "",
+                            "git_repo": "",
+                            "outcome": result.outcome,
+                            "tags": result.tags,
+                            "key_decisions": result.key_decisions,
+                            "problems_encountered": result.problems_encountered,
+                            "entities": result.entities
+                            if isinstance(result.entities, dict)
+                            else {},
+                            "embed_text": result.embed_text,
+                            "summary": result.summary,
+                            "enrichment_model": self.enrichment_model,
+                        }
+                        embed_tasks.append(
+                            asyncio.create_task(self._embed_node(node_id, node_dict, "opencode"))
+                        )
+                except Exception as e:
+                    _add(_enrichment_failures, source="opencode")
+                    err_msg = self._record_error(e)
+                    self._log_enrichment_failure(
+                        "agentic_enrichment_queue",
+                        "opencode.chat",
+                        e,
+                        claim_count=len(segment_ids),
+                        claim_age_ms=int(time.time() * 1000) - batch_start_ms,
+                    )
+                    retry_conn = self._get_conn()
+                    try:
+                        mark_opencode_queue_failed(retry_conn, segment_ids, err_msg)
+                    finally:
+                        retry_conn.close()
+
+        if embed_tasks:
+            await asyncio.gather(*embed_tasks, return_exceptions=True)
 
     async def _embed_node(self, node_id, node_dict, source_label):
         """Embed a knowledge node into the vector store (fire-and-forget safe)."""
@@ -1421,8 +1601,8 @@ class BrainServer:
 def create_app(
     db_path: str = "",
     data_dir: str = "",
-    lmstudio_base_url: str = "http://localhost:1234/v1",
-    lmstudio_timeout_secs: float = 300.0,
+    inference_base_url: str = "http://localhost:1234/v1",
+    inference_timeout_secs: float = 300.0,
     enrichment_model: str = "",
     embedding_model: str = "",
     query_model: str = "",
@@ -1436,8 +1616,8 @@ def create_app(
     server = BrainServer(
         db_path=db_path,
         data_dir=data_dir,
-        lmstudio_base_url=lmstudio_base_url,
-        lmstudio_timeout_secs=lmstudio_timeout_secs,
+        inference_base_url=inference_base_url,
+        inference_timeout_secs=inference_timeout_secs,
         enrichment_model=enrichment_model,
         embedding_model=embedding_model,
         query_model=query_model,

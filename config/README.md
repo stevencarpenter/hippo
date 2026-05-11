@@ -6,7 +6,7 @@ Default configuration templates. These are copied to `~/.config/hippo/` on first
 
 | File                  | Purpose                                                                                             |
 |-----------------------|-----------------------------------------------------------------------------------------------------|
-| `config.default.toml` | Main configuration — LM Studio endpoint, model IDs, daemon tuning, brain server port, storage paths |
+| `config.default.toml` | Main configuration — inference-server endpoint (oMLX or LM Studio), model IDs, daemon tuning, brain server port, storage paths |
 | `redact.default.toml` | Secret redaction patterns — regex rules applied to all events before storage                        |
 
 ## Redaction Patterns

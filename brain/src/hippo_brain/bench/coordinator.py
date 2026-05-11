@@ -190,8 +190,8 @@ def _metrics_snapshot_fn(sampler: MetricsSampler):
         if s is None:
             return {}
         return {
-            "lmstudio_rss_mb": s.lmstudio_rss_mb,
-            "lmstudio_cpu_pct": s.lmstudio_cpu_pct,
+            "inference_rss_mb": s.inference_rss_mb,
+            "inference_cpu_pct": s.inference_cpu_pct,
             "load_avg_1m": s.load_avg_1m,
             "mem_free_mb": s.mem_free_mb,
         }
@@ -205,7 +205,7 @@ def run_one_model(
     run_id: str,
     corpus_sqlite: Path,
     embedding_fn=None,
-    lmstudio_url: str = "http://localhost:1234/v1",
+    inference_url: str = "http://localhost:1234/v1",
     embedding_model: str = "",
     drain_timeout_sec: float = 3600.0,
     warmup_calls: int = 3,
@@ -292,7 +292,7 @@ def run_one_model(
             for entry in warmup_entries:
                 try:
                     call_enrichment(
-                        base_url=lmstudio_url,
+                        base_url=inference_url,
                         model=model,
                         payload=entry.redacted_content,
                         source=entry.source,
@@ -347,7 +347,7 @@ def run_one_model(
             sc_pool = rng.sample(all_entries, min(sc_events, len(all_entries)))
             try:
                 sc_attempts, sc_vecs = run_self_consistency_pass(
-                    base_url=lmstudio_url,
+                    base_url=inference_url,
                     model=model,
                     entries=sc_pool,
                     runs_per_event=sc_runs,

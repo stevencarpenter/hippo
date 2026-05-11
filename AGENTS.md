@@ -53,7 +53,7 @@ uv run --project brain hippo-brain serve
 Two long-lived processes share a single SQLite database at `~/.local/share/hippo/hippo.db`:
 
 1. **hippo-daemon** (Rust) — captures events via Unix socket and Native Messaging, redacts secrets, writes to SQLite, serves CLI queries
-2. **hippo-brain** (Python) — polls enrichment queues from SQLite, calls LM Studio API, writes knowledge nodes + vector embeddings to SQLite via sqlite-vec (vec0 virtual tables + FTS5)
+2. **hippo-brain** (Python) — polls enrichment queues from SQLite, calls a local OpenAI-compatible inference server (default oMLX, also tested with LM Studio), writes knowledge nodes + vector embeddings to SQLite via sqlite-vec (vec0 virtual tables + FTS5)
 
 Three additional LaunchAgents support capture reliability and Claude session ingestion:
 

@@ -214,7 +214,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
         corpus_version=args.corpus_version,
         out_path=out,
         brain_url=args.brain_url,
-        lmstudio_url=args.base_url,
+        inference_url=args.base_url,
         embedding_model=args.embedding_model,
         skip_prod_pause=args.skip_prod_pause,
         dry_run=args.dry_run,

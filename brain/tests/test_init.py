@@ -46,8 +46,8 @@ def test_main_serve_dispatches(monkeypatch):
                 return_value={
                     "db_path": "",
                     "data_dir": "",
-                    "lmstudio_base_url": "http://localhost:1234/v1",
-                    "lmstudio_timeout_secs": 300.0,
+                    "inference_base_url": "http://localhost:1234/v1",
+                    "inference_timeout_secs": 300.0,
                     "enrichment_model": "",
                     "embedding_model": "",
                     "query_model": "",
@@ -67,8 +67,8 @@ def test_main_serve_dispatches(monkeypatch):
     mock_create_app.assert_called_once_with(
         db_path="",
         data_dir="",
-        lmstudio_base_url="http://localhost:1234/v1",
-        lmstudio_timeout_secs=300.0,
+        inference_base_url="http://localhost:1234/v1",
+        inference_timeout_secs=300.0,
         enrichment_model="",
         embedding_model="",
         query_model="",
@@ -91,8 +91,8 @@ def test_main_serve_uses_config_runtime_settings(monkeypatch):
     runtime_settings = {
         "db_path": "/tmp/hippo.db",
         "data_dir": "/tmp",
-        "lmstudio_base_url": "http://localhost:2222/v1",
-        "lmstudio_timeout_secs": 300.0,
+        "inference_base_url": "http://localhost:2222/v1",
+        "inference_timeout_secs": 300.0,
         "enrichment_model": "local-model",
         "embedding_model": "local-embed",
         "query_model": "local-query",
@@ -115,8 +115,8 @@ def test_main_serve_uses_config_runtime_settings(monkeypatch):
     mock_create_app.assert_called_once_with(
         db_path="/tmp/hippo.db",
         data_dir="/tmp",
-        lmstudio_base_url="http://localhost:2222/v1",
-        lmstudio_timeout_secs=300.0,
+        inference_base_url="http://localhost:2222/v1",
+        inference_timeout_secs=300.0,
         enrichment_model="local-model",
         embedding_model="local-embed",
         query_model="local-query",
@@ -137,3 +137,37 @@ def test_main_enrich_prints_message(capsys, monkeypatch):
     main()
     captured = capsys.readouterr()
     assert "not yet implemented" in captured.out.lower()
+
+
+def test_load_runtime_settings_rejects_legacy_lmstudio_section(tmp_path, monkeypatch):
+    """Legacy [lmstudio] section must raise a migration error, not silently
+    fall back to defaults. This is the symptom from the omlx-PR-completion
+    incident: brain pointed at localhost:1234 forever because the loader
+    couldn't see the user's [inference] section under the old name."""
+    from pathlib import Path
+
+    from hippo_brain import _load_runtime_settings
+
+    config_dir = tmp_path / ".config" / "hippo"
+    config_dir.mkdir(parents=True)
+    (config_dir / "config.toml").write_text('[lmstudio]\nbase_url = "http://localhost:1234/v1"\n')
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
+    with pytest.raises(RuntimeError, match=r"\[lmstudio\].*\[inference\]"):
+        _load_runtime_settings()
+
+
+def test_load_runtime_settings_reads_inference_section(tmp_path, monkeypatch):
+    """[inference] section is read into inference_base_url + inference_timeout_secs."""
+    from pathlib import Path
+
+    from hippo_brain import _load_runtime_settings
+
+    config_dir = tmp_path / ".config" / "hippo"
+    config_dir.mkdir(parents=True)
+    (config_dir / "config.toml").write_text(
+        '[inference]\nbase_url = "http://omlx:8000/v1"\ntimeout_secs = 120\n'
+    )
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
+    settings = _load_runtime_settings()
+    assert settings["inference_base_url"] == "http://omlx:8000/v1"
+    assert settings["inference_timeout_secs"] == 120.0

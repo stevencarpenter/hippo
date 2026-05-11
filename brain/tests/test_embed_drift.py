@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 from hippo_brain import vector_store
-from hippo_brain.client import MockLMStudioClient
+from hippo_brain.client import MockInferenceClient
 from hippo_brain.embeddings import (
     EMBED_DIM,
     _pad_or_truncate,
@@ -55,7 +55,7 @@ def db_with_schema():
 
 @pytest.fixture
 def mock_client():
-    return MockLMStudioClient()
+    return MockInferenceClient()
 
 
 def _seed_node(conn, node_id: int, embed_text: str = "test text") -> None:
@@ -173,7 +173,7 @@ async def test_embed_node_raises_on_wrong_dim(db_with_schema):
     """embed_knowledge_node raises if the LLM returns a wrong-dim vector."""
     _seed_node(db_with_schema, 1)
 
-    class BadDimClient(MockLMStudioClient):
+    class BadDimClient(MockInferenceClient):
         async def embed(self, texts, model=""):
             # Return 64-dim vectors regardless of EMBED_DIM
             return [[0.1] * 64 for _ in texts]

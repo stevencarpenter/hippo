@@ -26,7 +26,7 @@ def test_self_consistency_pass_embeds_each_output(mock_call, mock_embed):
         runs_per_event=3,
         embedding_model="nomic",
         timeout_sec=10,
-        metrics_snapshot=lambda: {"lmstudio_rss_mb": 0.0},
+        metrics_snapshot=lambda: {"inference_rss_mb": 0.0},
         temperature=0.7,
     )
     assert len(attempts) == 2 * 3

@@ -26,7 +26,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from hippo_brain.client import LMStudioClient  # noqa: E402
+from hippo_brain.client import InferenceClient  # noqa: E402
 from hippo_brain.embeddings import embed_knowledge_node, open_vector_db  # noqa: E402
 
 logging.basicConfig(
@@ -54,7 +54,12 @@ def _load_models(config_path: Path) -> tuple[str, str, str]:
     with config_path.open("rb") as f:
         cfg = tomllib.load(f)
     models = cfg.get("models", {})
-    base_url = cfg.get("lmstudio", {}).get("base_url", "http://localhost:1234/v1")
+    # Section renamed from [lmstudio] -> [inference] in the omlx PR.
+    if "lmstudio" in cfg and "inference" not in cfg:
+        raise RuntimeError(
+            "config.toml uses the deprecated [lmstudio] section. Rename it to [inference]."
+        )
+    base_url = cfg.get("inference", {}).get("base_url", "http://localhost:1234/v1")
     return (
         base_url,
         models.get("embedding", ""),
@@ -84,7 +89,7 @@ async def run(db_path: Path | None, data_dir: Path | None, config_path: Path) ->
         return 0
 
     log.info("re-embedding %d knowledge_nodes", len(rows))
-    client = LMStudioClient(base_url=base_url)
+    client = InferenceClient(base_url=base_url)
     failed = 0
     for node_id, uuid, _content_json, embed_text in rows:
         node_dict = {

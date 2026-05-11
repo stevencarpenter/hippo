@@ -69,6 +69,20 @@ def is_enrichment_eligible(event_dict: dict, source: str) -> tuple[bool, str]:
             )
         return True, "eligible"
 
+    if source == "opencode":
+        msg_count = event_dict.get("message_count") or 0
+        diffs = event_dict.get("snapshot_diffs")
+        commits = event_dict.get("commit_messages") or []
+        has_diffs = bool(diffs) and any(
+            (diffs.get(k) or 0) > 0 for k in ("additions", "deletions", "files")
+        )
+        if msg_count < 3 and not has_diffs and not commits:
+            return (
+                False,
+                f"opencode session message_count={msg_count} < 3, no diffs, no commits",
+            )
+        return True, "eligible"
+
     if source == "browser":
         dwell_ms = event_dict.get("dwell_ms") or 0
         if dwell_ms < 1000:

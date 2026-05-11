@@ -17,7 +17,7 @@ from hippo_brain.watchdog import PreflightDecision
 def _make_server(db_path: str) -> BrainServer:
     return BrainServer(
         db_path=db_path,
-        lmstudio_base_url="http://localhost:1234/v1",
+        inference_base_url="http://localhost:1234/v1",
         enrichment_model="test-model",
         poll_interval_secs=60,
         enrichment_batch_size=5,
@@ -85,7 +85,7 @@ def test_health_endpoint(tmp_db):
     assert data["status"] == "ok"
     assert "version" in data
     assert data["version"] == get_version()
-    assert "lmstudio_reachable" in data
+    assert "inference_reachable" in data
     assert "enrichment_running" in data
     assert "db_reachable" in data
     assert "queue_depth" in data
@@ -380,7 +380,7 @@ def test_create_app_routes_work(tmp_db):
     _, db_path = tmp_db
     app = create_app(
         db_path=str(db_path),
-        lmstudio_base_url="http://localhost:1234/v1",
+        inference_base_url="http://localhost:1234/v1",
         enrichment_model="test-model",
         poll_interval_secs=9999,
         enrichment_batch_size=5,
@@ -466,7 +466,7 @@ async def test_enrichment_loop_processes_events(tmp_db):
 
     # Bypass preflight — this test is about enrichment processing, not model discovery
     ok = PreflightDecision(proceed=True, reason="ok", loaded_models=["test-model"])
-    with patch("hippo_brain.server.preflight_lm_studio", new_callable=AsyncMock, return_value=ok):
+    with patch("hippo_brain.server.preflight_inference", new_callable=AsyncMock, return_value=ok):
         task = asyncio.create_task(server._enrichment_loop())
         await asyncio.sleep(0.2)
         task.cancel()
@@ -510,7 +510,7 @@ async def test_enrichment_loop_handles_chat_failure(tmp_db):
 
     # Bypass preflight — this test is about error handling, not model discovery
     ok = PreflightDecision(proceed=True, reason="ok", loaded_models=["test-model"])
-    with patch("hippo_brain.server.preflight_lm_studio", new_callable=AsyncMock, return_value=ok):
+    with patch("hippo_brain.server.preflight_inference", new_callable=AsyncMock, return_value=ok):
         task = asyncio.create_task(server._enrichment_loop())
         await asyncio.sleep(0.2)
         task.cancel()
@@ -580,7 +580,7 @@ async def test_enrichment_loop_yields_to_arriving_query(tmp_db):
         preflight_calls += 1
         return PreflightDecision(proceed=False, loaded_models=[])
 
-    with patch("hippo_brain.server.preflight_lm_studio", side_effect=fake_preflight):
+    with patch("hippo_brain.server.preflight_inference", side_effect=fake_preflight):
         task = asyncio.create_task(server._enrichment_loop())
         try:
             # Loop should be sleeping on its first wait_for.
@@ -715,7 +715,7 @@ def test_create_app_starts_and_stops_enrichment_task(tmp_db):
     _, db_path = tmp_db
     app = create_app(
         db_path=str(db_path),
-        lmstudio_base_url="http://localhost:1234/v1",
+        inference_base_url="http://localhost:1234/v1",
         enrichment_model="test",
         poll_interval_secs=9999,
         enrichment_batch_size=5,
@@ -796,7 +796,7 @@ def test_health_exposes_enrichment_model(tmp_db):
     _, db_path = tmp_db
     app = create_app(
         db_path=str(db_path),
-        lmstudio_base_url="http://localhost:1234/v1",
+        inference_base_url="http://localhost:1234/v1",
         enrichment_model="my-model",
         poll_interval_secs=9999,
         enrichment_batch_size=5,
@@ -1251,3 +1251,109 @@ def test_sessions_list_routes_included(tmp_db):
     paths = [r.path for r in routes]
     assert "/sessions" in paths
     assert len(routes) == 9
+
+
+# ---- _record_preflight_to_source_health ----
+
+
+def _read_brain_preflight_row(conn):
+    row = conn.execute(
+        "SELECT last_event_ts, last_success_ts, last_error_ts, last_error_msg, "
+        "consecutive_failures FROM source_health WHERE source = 'brain-preflight'"
+    ).fetchone()
+    return row
+
+
+def test_record_preflight_success_resets_failures(tmp_db):
+    """proceed=True writes success_ts/event_ts and zeros consecutive_failures."""
+    conn, db_path = tmp_db
+    # Seed a prior-failure state so we can confirm the reset.
+    conn.execute(
+        "UPDATE source_health SET consecutive_failures = 5, last_error_msg = 'old' "
+        "WHERE source = 'brain-preflight'"
+    )
+    conn.commit()
+
+    server = _make_server(str(db_path))
+    server._record_preflight_to_source_health(
+        PreflightDecision(proceed=True, reason="ok", loaded_models=["m"])
+    )
+
+    # _record_preflight_to_source_health closes its own connection; reopen.
+    import sqlite3 as _sqlite3
+
+    check = _sqlite3.connect(str(db_path))
+    row = _read_brain_preflight_row(check)
+    check.close()
+
+    assert row is not None
+    last_event_ts, last_success_ts, _, last_error_msg, consecutive_failures = row
+    assert last_event_ts is not None
+    assert last_success_ts == last_event_ts
+    assert last_error_msg is None
+    assert consecutive_failures == 0
+
+
+def test_record_preflight_failure_increments_failures(tmp_db):
+    """proceed=False sets last_error_ts/msg and increments consecutive_failures."""
+    _, db_path = tmp_db
+    server = _make_server(str(db_path))
+
+    server._record_preflight_to_source_health(
+        PreflightDecision(
+            proceed=False, reason="unreachable", loaded_models=[], error="conn refused"
+        )
+    )
+    server._record_preflight_to_source_health(
+        PreflightDecision(
+            proceed=False, reason="unreachable", loaded_models=[], error="conn refused"
+        )
+    )
+
+    import sqlite3 as _sqlite3
+
+    check = _sqlite3.connect(str(db_path))
+    row = _read_brain_preflight_row(check)
+    check.close()
+
+    _, _, last_error_ts, last_error_msg, consecutive_failures = row
+    assert last_error_ts is not None
+    assert last_error_msg == "conn refused"
+    assert consecutive_failures == 2
+
+
+def test_record_preflight_upsert_when_row_missing(tmp_db):
+    """Missing brain-preflight row is inserted by the upsert (v13→v14 migration gap)."""
+    conn, db_path = tmp_db
+    conn.execute("DELETE FROM source_health WHERE source = 'brain-preflight'")
+    conn.commit()
+
+    server = _make_server(str(db_path))
+    server._record_preflight_to_source_health(
+        PreflightDecision(proceed=False, reason="no_models", loaded_models=[])
+    )
+
+    import sqlite3 as _sqlite3
+
+    check = _sqlite3.connect(str(db_path))
+    row = _read_brain_preflight_row(check)
+    check.close()
+
+    assert row is not None, "upsert must insert when no prior row exists"
+    _, _, last_error_ts, last_error_msg, consecutive_failures = row
+    assert last_error_ts is not None
+    assert last_error_msg == "no_models"
+    assert consecutive_failures == 1
+
+
+def test_record_preflight_swallows_missing_table(tmp_db):
+    """OperationalError on missing source_health is swallowed, not raised."""
+    conn, db_path = tmp_db
+    conn.execute("DROP TABLE source_health")
+    conn.commit()
+
+    server = _make_server(str(db_path))
+    # Must not raise — pre-v8 DBs and test fixtures may lack the table.
+    server._record_preflight_to_source_health(
+        PreflightDecision(proceed=True, reason="ok", loaded_models=["m"])
+    )

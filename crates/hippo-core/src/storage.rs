@@ -13,7 +13,7 @@ const SCHEMA: &str = include_str!("schema.sql");
 /// startup code (e.g. the brain handshake) can cross-check without
 /// re-declaring the value. Keep in sync with
 /// `brain/src/hippo_brain/schema_version.py::EXPECTED_SCHEMA_VERSION`.
-pub const EXPECTED_VERSION: i64 = 13;
+pub const EXPECTED_VERSION: i64 = 14;
 
 /// Idempotent `ALTER TABLE … ADD COLUMN`. Pre-checks `PRAGMA table_info`
 /// for the column name; if absent, runs the supplied DDL. Used by
@@ -644,6 +644,89 @@ pub fn open_db(path: &Path) -> Result<Connection> {
             // claude_sessions.
             conn.execute_batch("PRAGMA user_version = 13;")?;
         }
+    }
+
+    // v13→v14: create agentic_sessions + cursor tables, seed source_health.
+    if (1..EXPECTED_VERSION).contains(&version) {
+        let has_source_health: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='source_health')",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap_or(false);
+
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS agentic_sessions (
+                id              INTEGER PRIMARY KEY,
+                session_id      TEXT    NOT NULL,
+                harness         TEXT    NOT NULL DEFAULT 'opencode'
+                    CHECK (harness IN ('claude-code', 'opencode', 'codex')),
+                model           TEXT    NOT NULL DEFAULT '',
+                agent           TEXT    DEFAULT '',
+                project_dir     TEXT    NOT NULL,
+                cwd             TEXT    NOT NULL,
+                slug            TEXT    DEFAULT '',
+                title           TEXT    DEFAULT '',
+                parent_session_id TEXT,
+                summary_text    TEXT    NOT NULL,
+                source_file     TEXT    DEFAULT '',
+                snapshot_diffs_json TEXT DEFAULT 'null',
+                commit_messages_json TEXT DEFAULT '[]',
+                message_count   INTEGER NOT NULL DEFAULT 0,
+                token_count     INTEGER NOT NULL DEFAULT 0,
+                start_time      INTEGER NOT NULL,
+                end_time        INTEGER NOT NULL,
+                created_at      INTEGER NOT NULL DEFAULT (unixepoch('now', 'subsec') * 1000),
+                enriched        INTEGER NOT NULL DEFAULT 0,
+                probe_tag       TEXT,
+                UNIQUE (session_id, harness)
+            );
+            CREATE INDEX IF NOT EXISTS idx_agentic_sessions_harness ON agentic_sessions (harness);
+            CREATE INDEX IF NOT EXISTS idx_agentic_sessions_cwd ON agentic_sessions (cwd);
+            CREATE INDEX IF NOT EXISTS idx_agentic_sessions_start_time ON agentic_sessions (start_time DESC);
+            CREATE INDEX IF NOT EXISTS idx_agentic_sessions_enriched ON agentic_sessions (enriched) WHERE enriched = 0;
+            CREATE TABLE IF NOT EXISTS knowledge_node_agentic_sessions (
+                knowledge_node_id  INTEGER NOT NULL REFERENCES knowledge_nodes (id),
+                agentic_session_id INTEGER NOT NULL REFERENCES agentic_sessions (id) ON DELETE CASCADE,
+                PRIMARY KEY (knowledge_node_id, agentic_session_id)
+            );
+            CREATE TABLE IF NOT EXISTS agentic_enrichment_queue (
+                id              INTEGER PRIMARY KEY,
+                session_id      INTEGER NOT NULL UNIQUE REFERENCES agentic_sessions (id),
+                status          TEXT    NOT NULL DEFAULT 'pending'
+                    CHECK (status IN ('pending', 'processing', 'done', 'failed', 'skipped')),
+                priority        INTEGER NOT NULL DEFAULT 5,
+                retry_count     INTEGER NOT NULL DEFAULT 0,
+                max_retries     INTEGER NOT NULL DEFAULT 5,
+                error_message   TEXT,
+                locked_at       INTEGER,
+                locked_by       TEXT,
+                enqueued_at     INTEGER NOT NULL,
+                updated_at      INTEGER NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_agentic_queue_pending ON agentic_enrichment_queue (status, priority)
+                WHERE status = 'pending';
+            CREATE TABLE IF NOT EXISTS agentic_cursor (
+                source_key           TEXT    PRIMARY KEY,
+                last_seen_updated_at INTEGER NOT NULL DEFAULT 0,
+                last_id              TEXT    NOT NULL DEFAULT '',
+                updated_at           INTEGER NOT NULL
+            );
+            PRAGMA user_version = 14;",
+        )?;
+
+        // Only seed source_health if the table exists on this DB.
+        // Test DBs that bypass v8→v9 or v4→v5 migration don't have source_health.
+        // Both rows must seed in parallel with schema.sql, otherwise fresh
+        // installs and upgrades diverge on which source_health keys exist.
+        if has_source_health {
+            conn.execute_batch(
+                "INSERT OR IGNORE INTO source_health (source, last_event_ts, updated_at) VALUES
+                    ('agentic-session-claude',  (SELECT MAX(start_time) FROM agentic_sessions WHERE harness = 'claude-code'), unixepoch('now') * 1000),
+                    ('agentic-session-opencode', NULL, unixepoch('now') * 1000);",
+            )?;
+        }
     } else if version != 0 && version != EXPECTED_VERSION {
         anyhow::bail!(
             "DB schema version mismatch: expected {}, found {}. \
@@ -655,6 +738,24 @@ pub fn open_db(path: &Path) -> Result<Connection> {
 
     if version == 0 {
         conn.execute_batch(SCHEMA)?;
+    }
+
+    // Idempotent post-migration normalization. The v13→v14 migration shipped
+    // first without seeding `agentic-session-claude`; databases already at
+    // v14 from that earlier commit will not re-run the migration block, so
+    // we re-apply the seeds on every open. INSERT OR IGNORE is cheap and
+    // skips rows that already exist.
+    //
+    // `brain-preflight` is the source the brain writes to every enrichment
+    // loop iteration with the result of its inference-backend reachability
+    // check; watchdog I-12 alarms when `consecutive_failures` climbs there.
+    if version == EXPECTED_VERSION {
+        let _ = conn.execute_batch(
+            "INSERT OR IGNORE INTO source_health (source, last_event_ts, updated_at) VALUES
+                ('agentic-session-claude',  (SELECT MAX(start_time) FROM agentic_sessions WHERE harness = 'claude-code'), unixepoch('now') * 1000),
+                ('agentic-session-opencode', NULL, unixepoch('now') * 1000),
+                ('brain-preflight',          NULL, unixepoch('now') * 1000);",
+        );
     }
     Ok(conn)
 }
@@ -1101,7 +1202,7 @@ pub fn get_status(conn: &Connection) -> Result<crate::protocol::StatusInfo> {
         queue_depth,
         queue_failed,
         drop_count: 0,
-        lmstudio_reachable: false,
+        inference_reachable: false,
         brain_reachable: false,
         db_size_bytes: 0,
         fallback_files_pending: 0,
@@ -2839,7 +2940,15 @@ mod tests {
 
         // Each expected source must have a pre-seeded row; use per-source
         // assertions so adding a new source doesn't silently break this test.
-        for expected_source in &["shell", "claude-tool", "claude-session", "browser"] {
+        for expected_source in &[
+            "shell",
+            "claude-tool",
+            "claude-session",
+            "browser",
+            "agentic-session-claude",
+            "agentic-session-opencode",
+            "brain-preflight",
+        ] {
             let exists: i64 = conn
                 .query_row(
                     "SELECT COUNT(*) FROM source_health WHERE source = ?1",

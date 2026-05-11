@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from hippo_brain.client import MockLMStudioClient
+from hippo_brain.client import MockInferenceClient
 from hippo_brain.embeddings import (
     EMBED_DIM,
     _pad_or_truncate,
@@ -49,7 +49,7 @@ def vector_db():
 
 @pytest.fixture
 def mock_client():
-    return MockLMStudioClient()
+    return MockInferenceClient()
 
 
 def _seed_node(conn, node_id: int, embed_text: str, *, summary: str = "") -> None:

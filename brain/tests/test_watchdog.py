@@ -4,7 +4,7 @@ Covers:
   - `reap_stale_locks` flips stale `processing` rows back to `pending`,
     increments `retry_count`, and promotes rows that hit `max_retries` to
     `failed`. Fresh locks are untouched.
-  - `preflight_lm_studio` blocks when LM Studio is unreachable, when no
+  - `preflight_inference` blocks when LM Studio is unreachable, when no
     chat models are loaded, and (when fallback is disabled) when the
     preferred model isn't loaded.
   - `claim_pending_events_by_session`, `claim_pending_claude_segments`, and
@@ -25,7 +25,7 @@ from hippo_brain.claude_sessions import (
 from hippo_brain.enrichment import claim_pending_events_by_session
 from hippo_brain.watchdog import (
     DEFAULT_LOCK_TIMEOUT_MS,
-    preflight_lm_studio,
+    preflight_inference,
     reap_stale_locks,
 )
 from hippo_brain.workflow_enrichment import claim_pending_workflow_runs
@@ -187,7 +187,7 @@ def test_reaper_propagates_non_missing_table_operational_error():
 
 
 class _FakeClient:
-    """Stand-in for LMStudioClient that only needs list_models()."""
+    """Stand-in for InferenceClient that only needs list_models()."""
 
     def __init__(self, models=None, error=None):
         self._models = models or []
@@ -202,7 +202,7 @@ class _FakeClient:
 @pytest.mark.asyncio
 async def test_preflight_blocks_when_unreachable():
     client = _FakeClient(error=ConnectionError("connection refused"))
-    decision = await preflight_lm_studio(client, preferred_model="qwen-test")
+    decision = await preflight_inference(client, preferred_model="qwen-test")
     assert decision.proceed is False
     assert decision.reason == "unreachable"
     assert "connection refused" in (decision.error or "")
@@ -211,7 +211,7 @@ async def test_preflight_blocks_when_unreachable():
 @pytest.mark.asyncio
 async def test_preflight_blocks_when_no_models_loaded():
     client = _FakeClient(models=[])
-    decision = await preflight_lm_studio(client, preferred_model="qwen-test")
+    decision = await preflight_inference(client, preferred_model="qwen-test")
     assert decision.proceed is False
     assert decision.reason == "no_models"
 
@@ -220,7 +220,7 @@ async def test_preflight_blocks_when_no_models_loaded():
 async def test_preflight_blocks_when_only_embedding_models_loaded():
     # The embedding-hint filter should strip these out and leave no chat models.
     client = _FakeClient(models=["text-embedding-nomic-embed-text-v2", "modernbert-base"])
-    decision = await preflight_lm_studio(client, preferred_model="qwen-test")
+    decision = await preflight_inference(client, preferred_model="qwen-test")
     assert decision.proceed is False
     assert decision.reason == "no_models"
 
@@ -228,7 +228,7 @@ async def test_preflight_blocks_when_only_embedding_models_loaded():
 @pytest.mark.asyncio
 async def test_preflight_ok_when_preferred_model_loaded():
     client = _FakeClient(models=["qwen-test", "text-embedding-nomic"])
-    decision = await preflight_lm_studio(client, preferred_model="qwen-test")
+    decision = await preflight_inference(client, preferred_model="qwen-test")
     assert decision.proceed is True
     assert decision.reason == "ok"
     assert "qwen-test" in decision.loaded_models
@@ -237,7 +237,7 @@ async def test_preflight_ok_when_preferred_model_loaded():
 @pytest.mark.asyncio
 async def test_preflight_falls_back_when_preferred_missing():
     client = _FakeClient(models=["some-other-chat-model"])
-    decision = await preflight_lm_studio(client, preferred_model="qwen-test", allow_fallback=True)
+    decision = await preflight_inference(client, preferred_model="qwen-test", allow_fallback=True)
     assert decision.proceed is True
     assert decision.reason == "fallback"
 
@@ -245,7 +245,7 @@ async def test_preflight_falls_back_when_preferred_missing():
 @pytest.mark.asyncio
 async def test_preflight_blocks_when_preferred_missing_and_fallback_disabled():
     client = _FakeClient(models=["some-other-chat-model"])
-    decision = await preflight_lm_studio(client, preferred_model="qwen-test", allow_fallback=False)
+    decision = await preflight_inference(client, preferred_model="qwen-test", allow_fallback=False)
     assert decision.proceed is False
     assert decision.reason == "model_missing"
 

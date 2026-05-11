@@ -19,19 +19,15 @@ DB-attach guard in line: pre-v12 DBs are rejected at connect time rather
 than crashing later inside the enrichment loop on `no such column:
 content_hash`.
 
-v12→v13 extends the entities.type CHECK list with 'env_var' so the
-enrichment pipeline can bucket environment variable names as a first-
-class identifier type. Brain now writes `env_var`-typed entity rows
-(via `SHELL_ENTITY_TYPE_MAP["env_vars"]`), so a pre-v13 DB would fail
-with a CHECK constraint error on the first env_var insert. This
-collapses `ACCEPTED_READ_VERSIONS` to a single element: v5–v12 all
-carry the same older entities.type CHECK and would all reject the
-new write, so none of them are safely readable any more.
+v12→v13 extends the entities.type CHECK list with 'env_var' so the enrichment pipeline can bucket environment variable names as a first-class identifier type.
+v13→v14 adds `agentic_sessions`, `agentic_enrichment_queue`,
+and `agentic_cursor` tables. Brain now claims pending opencode
+segments from `agentic_sessions` in parallel with Claude sessions.
 """
 
 from __future__ import annotations
 
-EXPECTED_SCHEMA_VERSION: int = 13
+EXPECTED_SCHEMA_VERSION: int = 14
 
 # Versions brain can read without erroring.
 #

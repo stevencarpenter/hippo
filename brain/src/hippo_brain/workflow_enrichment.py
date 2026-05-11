@@ -14,7 +14,7 @@ import time
 import uuid
 from pathlib import Path
 
-from hippo_brain.client import LMStudioClient
+from hippo_brain.client import InferenceClient
 from hippo_brain.lessons import ClusterKey, upsert_cluster
 from hippo_brain.watchdog import DEFAULT_LOCK_TIMEOUT_MS
 
@@ -24,7 +24,7 @@ CORRELATION_WINDOW_MS = 15 * 60 * 1000  # ±15 minutes
 def enrich_one(
     db_path: str,
     run_id: int,
-    lm: LMStudioClient,
+    inference: InferenceClient,
     query_model: str,
     *,
     path_prefix_segments: int = 2,
@@ -93,7 +93,7 @@ def enrich_one(
 
         # Build and run enrichment prompt
         prompt = _build_prompt(run, shell_rows, claude_rows, ann_rows)
-        summary = lm.complete(model=query_model, prompt=prompt, max_tokens=300)
+        summary = inference.complete(model=query_model, prompt=prompt, max_tokens=300)
 
         node_uuid = str(uuid.uuid4())
         title = f"{repo_name}@{head_sha[:7]} — {run['conclusion']}"
@@ -164,7 +164,7 @@ def enrich_one(
 async def enrich_one_async(
     db_path: str,
     run_id: int,
-    lm: LMStudioClient,
+    inference: InferenceClient,
     query_model: str,
     *,
     path_prefix_segments: int = 2,
@@ -233,7 +233,7 @@ async def enrich_one_async(
 
         # Build prompt and call LLM (async)
         prompt = _build_prompt(run, shell_rows, claude_rows, ann_rows)
-        summary = await lm.chat(
+        summary = await inference.chat(
             messages=[
                 {
                     "role": "user",

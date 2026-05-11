@@ -157,8 +157,13 @@ async fn print_brain_health_details(
                         .get("enrichment_running")
                         .and_then(|v| v.as_bool())
                         .unwrap_or(false);
-                    let lmstudio_reachable = json
-                        .get("lmstudio_reachable")
+                    // Accept the new field name (`inference_reachable`) first;
+                    // fall back to the legacy `lmstudio_reachable` so a brain
+                    // running an older binary against a newer daemon doesn't
+                    // make this check flap.
+                    let inference_reachable = json
+                        .get("inference_reachable")
+                        .or_else(|| json.get("lmstudio_reachable"))
                         .and_then(|v| v.as_bool())
                         .unwrap_or(false);
                     let db_reachable = json
@@ -193,10 +198,10 @@ async fn print_brain_health_details(
                         "[OK] Brain queue depth: {} pending, {} failed",
                         queue_depth, queue_failed
                     );
-                    if lmstudio_reachable {
-                        println!("[OK] Brain LM Studio: reachable");
+                    if inference_reachable {
+                        println!("[OK] Brain inference backend: reachable");
                     } else {
-                        println!("[!!] Brain LM Studio: unreachable");
+                        println!("[!!] Brain inference backend: unreachable");
                     }
                     if db_reachable {
                         println!("[OK] Brain DB: reachable");
@@ -385,8 +390,8 @@ pub async fn handle_status(config: &HippoConfig) -> Result<()> {
             println!("  DB size:           {} bytes", status.db_size_bytes);
             println!("  Fallback pending:  {}", status.fallback_files_pending);
             println!(
-                "  LM Studio:        {}",
-                if status.lmstudio_reachable {
+                "  Inference:        {}",
+                if status.inference_reachable {
                     "reachable"
                 } else {
                     "unreachable"
@@ -1148,14 +1153,14 @@ pub async fn handle_doctor(config: &HippoConfig, explain: bool) -> Result<()> {
         println!("[--] No config file (using defaults)");
     }
 
-    // Check LM Studio
-    let lm_url = format!("{}/models", config.lmstudio.base_url);
-    match client.get(&lm_url).send().await {
-        Ok(r) if r.status().is_success() => println!("[OK] LM Studio reachable"),
+    // Check the configured inference backend (LM Studio, oMLX, ollama, vLLM, …).
+    let inference_url = format!("{}/models", config.inference.base_url);
+    match client.get(&inference_url).send().await {
+        Ok(r) if r.status().is_success() => println!("[OK] Inference backend reachable"),
         _ => {
             println!(
-                "[!!] LM Studio not reachable at {}",
-                config.lmstudio.base_url
+                "[!!] Inference backend not reachable at {}",
+                config.inference.base_url
             );
             fail_count += 1;
         }
@@ -1355,6 +1360,18 @@ pub fn source_freshness_probes() -> Vec<SourceFreshnessProbe> {
         SourceFreshnessProbe {
             name: "workflow",
             query: "SELECT COUNT(*), MAX(started_at) FROM workflow_runs",
+            thresholds: FreshnessThresholds {
+                soft_ms: 3 * DAY_MS,
+                hard_ms: 30 * DAY_MS,
+            },
+        },
+        // Opencode harness rows in `agentic_sessions`. Probe rows excluded
+        // per AP-6. Long-horizon thresholds: opencode is bursty by nature
+        // (sessions only land when the user actively codes with it).
+        SourceFreshnessProbe {
+            name: "agentic-session-opencode",
+            query: "SELECT COUNT(*), MAX(start_time) FROM agentic_sessions \
+                    WHERE harness = 'opencode' AND probe_tag IS NULL",
             thresholds: FreshnessThresholds {
                 soft_ms: 3 * DAY_MS,
                 hard_ms: 30 * DAY_MS,
@@ -1629,7 +1646,7 @@ fn check_source_staleness(db: &rusqlite::Connection, explain: bool) -> u32 {
     let rows_result = db.prepare(
         "SELECT source, last_event_ts, last_error_msg, consecutive_failures, events_last_1h, probe_ok \
          FROM source_health \
-         WHERE source IN ('shell', 'browser', 'claude-session', 'claude-tool') \
+         WHERE source IN ('shell', 'browser', 'claude-session', 'claude-tool', 'agentic-session-opencode') \
          ORDER BY source",
     );
 
@@ -1704,6 +1721,14 @@ fn check_source_staleness(db: &rusqlite::Connection, explain: bool) -> u32 {
                 warn_secs: 120,
                 fail_secs: 600,
             },
+            // Opencode polls every 30 s by default. Tolerate one missed
+            // tick before warning, and an hour before failing — a quiet day
+            // in opencode is not a bug, so the suppression check below also
+            // skips the alarm if the opencode DB itself looks idle.
+            "agentic-session-opencode" => Thresholds {
+                warn_secs: 300,
+                fail_secs: 3600,
+            },
             _ => Thresholds {
                 warn_secs: 300,
                 fail_secs: 1800,
@@ -1723,6 +1748,23 @@ fn check_source_staleness(db: &rusqlite::Connection, explain: bool) -> u32 {
                 .map(|s| s.success())
                 .unwrap_or(false)
         })
+    };
+
+    // Check whether the opencode DB itself looks active — the file exists
+    // and has been modified in the last 10 minutes. Stale opencode means
+    // "user just isn't using opencode right now," not "the poller is broken."
+    let opencode_db_recent = || -> bool {
+        let cfg = match hippo_core::config::HippoConfig::load_default() {
+            Ok(c) => c,
+            Err(_) => return false,
+        };
+        let Ok(meta) = std::fs::metadata(&cfg.opencode.db_path) else {
+            return false;
+        };
+        let ten_min_ago = std::time::SystemTime::now()
+            .checked_sub(std::time::Duration::from_secs(600))
+            .unwrap_or(std::time::UNIX_EPOCH);
+        meta.modified().map(|m| m > ten_min_ago).unwrap_or(false)
     };
 
     // Check if there's a recent claude JSONL with mtime < 5 minutes (for claude-session suppression).
@@ -1767,8 +1809,14 @@ fn check_source_staleness(db: &rusqlite::Connection, explain: bool) -> u32 {
 
     let mut fail_count: u32 = 0;
 
-    // All four expected sources — report missing ones too.
-    let all_sources = ["browser", "claude-session", "claude-tool", "shell"];
+    // All expected sources — report missing ones too.
+    let all_sources = [
+        "agentic-session-opencode",
+        "browser",
+        "claude-session",
+        "claude-tool",
+        "shell",
+    ];
     for source in all_sources {
         let label = format!("{} events", source);
         let padded = format!("{:<29}", label);
@@ -1800,6 +1848,7 @@ fn check_source_staleness(db: &rusqlite::Connection, explain: bool) -> u32 {
                 "claude-session" => !recent_claude_session(),
                 "claude-tool" => row.probe_ok == Some(0),
                 "browser" => !firefox_running(),
+                "agentic-session-opencode" => !opencode_db_recent(),
                 _ => false,
             };
 
@@ -1807,6 +1856,7 @@ fn check_source_staleness(db: &rusqlite::Connection, explain: bool) -> u32 {
                 let reason = match source {
                     "browser" => "no active Firefox session",
                     "claude-session" => "no active session",
+                    "agentic-session-opencode" => "opencode DB idle",
                     _ => "probe disabled",
                 };
                 println!("[WW] {}  {} (suppressed — {})", padded, human, reason);
@@ -3222,7 +3272,7 @@ replacement = "***"
             let mut buf = [0u8; 1024];
             let _ = stream.read(&mut buf).await.unwrap();
             let body = format!(
-                r#"{{"status":"ok","version":"{}","lmstudio_reachable":true,"enrichment_running":true,"db_reachable":true,"queue_depth":3,"queue_failed":1,"last_success_at_ms":123456,"last_error":"model offline"}}"#,
+                r#"{{"status":"ok","version":"{}","inference_reachable":true,"enrichment_running":true,"db_reachable":true,"queue_depth":3,"queue_failed":1,"last_success_at_ms":123456,"last_error":"model offline"}}"#,
                 env!("HIPPO_VERSION_FULL")
             );
             let response = format!(

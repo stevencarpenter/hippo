@@ -5,7 +5,7 @@
 [![Rust](https://img.shields.io/badge/rust-edition_2024-orange.svg)](https://blog.rust-lang.org/2025/02/20/Rust-1.85.0/)
 [![Python](https://img.shields.io/badge/python-3.14%2B-blue.svg)](https://www.python.org/)
 
-Local-first knowledge capture daemon for macOS. Hippo watches your shell activity, Claude Code sessions, and Firefox browsing, redacts known secret formats, enriches events with a local LLM, and builds a searchable second brain — all without sending data to third-party services. LLM inference runs through LM Studio on your machine; telemetry is off by default and points at localhost when on. See [Privacy and Security](#privacy-and-security) for the full data-flow story.
+Local-first knowledge capture daemon for macOS. Hippo watches your shell activity, Claude Code sessions, and Firefox browsing, redacts known secret formats, enriches events with a local LLM, and builds a searchable second brain — all without sending data to third-party services. LLM inference runs against any OpenAI-compatible local server on your machine — defaults target [oMLX](https://omlx.ai) (continuous batching + tiered KV cache for Apple Silicon), and [LM Studio](https://lmstudio.ai/) works as a drop-in alternative. Telemetry is off by default and points at localhost when on. See [Privacy and Security](#privacy-and-security) for the full data-flow story.
 
 ## Why hippo
 
@@ -63,7 +63,7 @@ If `hippo events` returns nothing, see [Troubleshooting](#troubleshooting) below
 | Component | Language | Role |
 |-----------|----------|------|
 | **hippo-daemon** | Rust | Captures events via Unix socket and Native Messaging. Applies secret redaction, stores to SQLite, serves CLI queries. |
-| **hippo-brain** | Python | Polls enrichment queues, calls LM Studio for summarization, correlates browser research with shell activity, writes knowledge nodes + vector embeddings to SQLite via sqlite-vec. |
+| **hippo-brain** | Python | Polls enrichment queues, calls the local inference server for summarization, correlates browser research with shell activity, writes knowledge nodes + vector embeddings to SQLite via sqlite-vec. |
 | **hippo-mcp** | Python | MCP server exposing the knowledge base over stdio. Claude Code queries your personal knowledge base mid-conversation. |
 
 Five LaunchAgents run under `gui/$(id -u)`:
@@ -86,7 +86,7 @@ Five LaunchAgents run under `gui/$(id -u)`:
 | [Rust](https://rustup.rs/) | Yes | Edition 2024 (1.85+). No `rust-toolchain.toml` is shipped; CI runs against the latest stable. |
 | [Python](https://www.python.org/) | Yes | 3.14+ |
 | [uv](https://docs.astral.sh/uv/) | Yes | Python package manager |
-| [LM Studio](https://lmstudio.ai/) | Yes | Local LLM inference. Default config targets `qwen3.6-35b-a3b-ud-mlx` (MoE, ~3 B active params). Plan on 32 GB+ unified memory for the default model; smaller models work with smaller machines — adjust the `[models]` section. |
+| [oMLX](https://omlx.ai) or [LM Studio](https://lmstudio.ai/) | Yes | Local OpenAI-compatible LLM server. Default config targets oMLX on `:8000` and the `Qwen3.6-35B-A3B-UD-MLX-4bit` chat model + `nomicai-modernbert-embed-base-8bit` embeddings (768d MLX). Plan on 32 GB+ unified memory for the default chat model; smaller models work with smaller machines — adjust the `[models]` section. LM Studio users: change `[inference].base_url` to `http://localhost:1234/v1` and use LM Studio's model IDs (e.g. `qwen3.6-35b-a3b-ud-mlx`, `text-embedding-nomic-embed-text-v2-moe`). |
 | [mise](https://mise.jdx.dev/) | Recommended | Task runner; all workflows are defined in `mise.toml` |
 | [glow](https://github.com/charmbracelet/glow) | Recommended | Renders `hippo ask` markdown output in the terminal |
 | [Firefox Dev Edition](https://www.mozilla.org/en-US/firefox/developer/) | Optional | Browser activity capture (allowlisted developer domains) |
@@ -106,24 +106,27 @@ echo "source $(pwd)/shell/hippo-env.zsh" >> ~/.zshenv
 echo "source $(pwd)/shell/hippo.zsh"     >> ~/.zshrc
 exec zsh  # reload
 
-# Configure your LM Studio model
+# Configure your inference server + models
 hippo config edit
 ```
 
-In the config editor, set the `[models]` section to match a model loaded in LM Studio. To list loaded models:
+In the config editor, set the `[models]` section to match models loaded on your inference server. To list loaded models (default is omlx on :8000; LM Studio users use :1234):
 
 ```bash
-curl -s http://localhost:1234/v1/models | python3 -m json.tool
+curl -s http://localhost:8000/v1/models | python3 -m json.tool
 ```
 
 Then edit:
 
 ```toml
+[inference]
+base_url = "http://localhost:8000/v1"   # omlx default; LM Studio uses :1234
+
 [models]
-enrichment = "your-model-name"
-enrichment_bulk = "your-model-name"
-query = "your-model-name"
-embedding = "text-embedding-nomic-embed-text-v2-moe"
+enrichment = "your-chat-model"
+enrichment_bulk = "your-chat-model"
+query = "your-chat-model"
+embedding = "your-embedding-model"      # 768d; e.g. nomicai-modernbert-embed-base-8bit (omlx) or text-embedding-nomic-embed-text-v2-moe (LM Studio)
 ```
 
 Verify everything is wired up:
@@ -167,10 +170,10 @@ Common first-day failures, in rough order of frequency:
 | Symptom | Likely cause | Fix |
 |---|---|---|
 | `hippo events` returns nothing after several minutes of shell activity | Shell hook not sourced — `~/.zshrc` / `~/.zshenv` weren't reloaded after install. | `exec zsh` or open a new terminal. Verify with `grep -l 'hippo.zsh' ~/.zshrc ~/.zshenv ~/.config/zsh/*.zsh 2>/dev/null`. |
-| `hippo ask` returns "I don't have enough information" | Brain hasn't enriched yet, or LM Studio model isn't loaded. | `hippo doctor` to confirm. Open LM Studio and load the model in `[models].enrichment`. |
-| `hippo doctor` says LM Studio isn't reachable | LM Studio app isn't running, or it's serving on a non-default port. | Open LM Studio. Check the API base URL in `~/.config/hippo/config.toml` (`[lmstudio].base_url`). |
+| `hippo ask` returns "I don't have enough information" | Brain hasn't enriched yet, or the configured chat model isn't loaded. | `hippo doctor` to confirm. Open omlx (or LM Studio) and load the model in `[models].enrichment`. |
+| `hippo doctor` says inference server isn't reachable | omlx/LM Studio isn't running, or it's serving on a non-default port. | Start the server. Check the API base URL in `~/.config/hippo/config.toml` (`[inference].base_url`). The legacy `[lmstudio]` section is rejected with a migration error — rename it to `[inference]`. |
 | Daemon won't start; `hippo doctor` says schema mismatch | Daemon and brain have different `EXPECTED_SCHEMA_VERSION` constants — happens after partial upgrades. | `mise run install --clean` brings everything to the same version. |
-| Brain queue backs up | LM Studio model unloaded or swapped for one not in `[models].enrichment`. | Load the configured model. The reaper handles transient locks; persistent backlog is operator-visible. See [`docs/brain-watchdog.md`](docs/brain-watchdog.md). |
+| Brain queue backs up | Configured chat model unloaded or swapped for one not in `[models].enrichment`. | Load the configured model. The reaper handles transient locks; persistent backlog is operator-visible. See [`docs/brain-watchdog.md`](docs/brain-watchdog.md). |
 | Firefox extension shows no recent visits | Native messaging manifest missing, or extension not loaded. | `hippo daemon install --force` rewrites the manifest. Reload the extension in `about:debugging`. See [`extension/firefox/README.md`](extension/firefox/README.md). |
 
 For anything not in this table, run `hippo doctor --explain` and follow the DOC link in each failure block. The full operator runbook lives at [`docs/capture/operator-runbook.md`](docs/capture/operator-runbook.md).
@@ -230,13 +233,13 @@ The native messaging host is installed by `hippo daemon install --force` (also c
 
 Created automatically by `mise run install`. Edit with `hippo config edit`. See [`config/config.default.toml`](config/config.default.toml) and [`config/redact.default.toml`](config/redact.default.toml) for the templates and inline documentation of each key.
 
-The `[models]` section must be configured for enrichment to work. Set the model name to whatever LM Studio is serving — verify with `curl -s http://localhost:1234/v1/models | python3 -m json.tool`.
+The `[models]` section must be configured for enrichment to work. Set the model name to whatever your inference server exposes — verify with `curl -s http://localhost:8000/v1/models | python3 -m json.tool` (or `:1234` for LM Studio).
 
 ## Privacy and Security
 
 Hippo captures shell commands (including stdout/stderr), Claude Code session transcripts, and browser visits from allowlisted domains. All data is stored locally in `~/.local/share/hippo/hippo.db` (SQLite, unencrypted — use macOS FileVault for full-disk encryption). No data is sent to Anthropic, OpenAI, or any cloud service.
 
-**LLM calls are local.** Enrichment and RAG queries go to LM Studio at `http://localhost:1234/v1`. If you point LM Studio at a remote backend, your shell history and session transcripts travel that path.
+**LLM calls are local.** Enrichment and RAG queries go to whichever local OpenAI-compatible server you configure (`[inference].base_url`, default `http://localhost:8000/v1` for omlx). If you point that URL at a remote backend, your shell history and session transcripts travel that path.
 
 **Redaction is best-effort.** Hippo redacts known secret formats (AWS keys, GitHub tokens, `password=` assignments, JWTs, PEM headers) before storage. Regex-based redaction cannot catch secrets in positional arguments, non-standard env-var names, or multi-line stdout payloads. Treat it as a noise filter, not a security guarantee. Test patterns with `hippo redact test "your candidate string"`. Full reference (default rules, evaluation model, custom patterns, known false-negatives, browser URL redaction): [`docs/redaction.md`](docs/redaction.md).
 

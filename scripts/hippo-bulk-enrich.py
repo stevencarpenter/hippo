@@ -21,7 +21,7 @@ import time
 import tomllib
 from pathlib import Path
 
-from hippo_brain.client import LMStudioClient
+from hippo_brain.client import InferenceClient
 from hippo_brain.embeddings import (
     embed_knowledge_node,
     get_or_create_table,
@@ -82,9 +82,15 @@ async def main():
     if args.model:
         enrichment_model = args.model
 
-    lmstudio_url = config.get("lmstudio", {}).get(
-        "base_url", "http://localhost:1234/v1"
-    )
+    # Section renamed from [lmstudio] -> [inference] in the omlx PR.
+    if "lmstudio" in config and "inference" not in config:
+        print(
+            "Error: config.toml uses the deprecated [lmstudio] section."
+            " Rename it to [inference]."
+        )
+        sys.exit(1)
+    inference_section = config.get("inference", {})
+    inference_url = inference_section.get("base_url", "http://localhost:8000/v1")
     brain_config = config.get("brain", {})
     max_per_chunk = brain_config.get(
         "max_events_per_chunk", brain_config.get("enrichment_batch_size", 30)
@@ -106,7 +112,7 @@ async def main():
     conn.execute("PRAGMA foreign_keys=ON")
     conn.execute("PRAGMA busy_timeout=5000")
 
-    client = LMStudioClient(base_url=lmstudio_url, timeout=120.0)
+    client = InferenceClient(base_url=inference_url, timeout=120.0)
 
     # Set up vector store
     vector_table = None
