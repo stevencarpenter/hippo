@@ -531,9 +531,9 @@
       "title": "RAG Latency by Stage",
       "type": "timeseries",
       "gridPos": {
-        "x": 9,
+        "x": 12,
         "y": 16,
-        "w": 8,
+        "w": 6,
         "h": 8
       },
       "datasource": {
@@ -577,9 +577,9 @@
       "title": "RAG Retrieval Hits",
       "type": "timeseries",
       "gridPos": {
-        "x": 17,
+        "x": 18,
         "y": 16,
-        "w": 7,
+        "w": 6,
         "h": 8
       },
       "datasource": {
