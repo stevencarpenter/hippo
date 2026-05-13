@@ -441,12 +441,13 @@ async fn main() -> Result<()> {
                 // installed support agents are loaded for an active stack.
                 //
                 // Core services (daemon, brain) stay strict: if either fails to
-                // start, the install should abort loudly. Support agents
-                // (watchdog/probe/watcher) are auto-promoted — bootstrapped even
-                // if they weren't loaded before this upgrade — so a transient
-                // launchctl failure on one of them is downgraded to a warning
-                // rather than aborting the whole install. This mirrors the
-                // graceful pattern used by `configure_claude_session_hook` above.
+                // start, the install should abort loudly. All other support
+                // agents — watchdog, probe, claude-session-watcher, gh-poll,
+                // opencode-poll — are auto-promoted onto an active stack, so a
+                // transient launchctl failure on any one of them is downgraded
+                // to a warning rather than aborting the whole install. This
+                // mirrors the graceful pattern used by
+                // `configure_claude_session_hook` above.
                 if stack_was_active {
                     println!();
                     println!("Restarting services...");
@@ -464,32 +465,29 @@ async fn main() -> Result<()> {
                         )?;
                         println!("  Started brain");
                     }
-                    for (label, plist) in [
-                        ("watchdog", "com.hippo.watchdog.plist"),
-                        ("probe", "com.hippo.probe.plist"),
+                    let support_agents = [
+                        ("watchdog", "com.hippo.watchdog.plist", true),
+                        ("probe", "com.hippo.probe.plist", true),
                         (
                             "claude-session-watcher",
                             "com.hippo.claude-session-watcher.plist",
+                            true,
                         ),
-                    ] {
+                        ("gh-poll", "com.hippo.gh-poll.plist", gh_poll_started),
+                        (
+                            "opencode-poll",
+                            "com.hippo.opencode-poll.plist",
+                            opencode_poll_started,
+                        ),
+                    ];
+                    for (label, plist, gated) in support_agents {
+                        if !gated {
+                            continue;
+                        }
                         match install::service_bootstrap(&domain, &launch_agents.join(plist)) {
                             Ok(()) => println!("  Started {label}"),
                             Err(e) => eprintln!("  Warning: failed to start {label}: {e}"),
                         }
-                    }
-                    if gh_poll_started {
-                        install::service_bootstrap(
-                            &domain,
-                            &launch_agents.join("com.hippo.gh-poll.plist"),
-                        )?;
-                        println!("  Started gh-poll");
-                    }
-                    if opencode_poll_started {
-                        install::service_bootstrap(
-                            &domain,
-                            &launch_agents.join("com.hippo.opencode-poll.plist"),
-                        )?;
-                        println!("  Started opencode-poll");
                     }
                 }
 
