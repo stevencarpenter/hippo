@@ -1,7 +1,7 @@
 import math
 import pytest
 
-from hippo_brain.client import MockInferenceClient
+from hippo_brain.client import MockInferenceClient, _parse_embed_response
 
 
 @pytest.fixture
@@ -52,3 +52,39 @@ def test_deterministic_vector_non_multiple_of_8_dims():
     assert len(vec) == 10
     magnitude = math.sqrt(sum(x * x for x in vec))
     assert abs(magnitude - 1.0) < 1e-6
+
+
+def test_parse_embed_response_accepts_valid_floats():
+    response = {
+        "data": [
+            {"embedding": [0.1, 0.2, 0.3]},
+            {"embedding": [-0.4, 0.0, 0.5]},
+        ],
+    }
+    result = _parse_embed_response(response, source="http://test/v1")
+    assert result == [[0.1, 0.2, 0.3], [-0.4, 0.0, 0.5]]
+
+
+def test_parse_embed_response_raises_on_null_element():
+    """Defense-in-depth: oMLX has a known bug where batched embeddings of
+    disparate-length inputs return all-null vectors for the shorter item.
+    The parser must refuse rather than let nulls reach _vec_blob/struct.pack.
+    """
+    response = {
+        "data": [
+            {"embedding": [0.1, 0.2, 0.3]},
+            {"embedding": [None, None, None]},
+        ],
+    }
+    with pytest.raises(ValueError, match=r"None at item\[1\]\.embedding\[0\]"):
+        _parse_embed_response(response, source="http://omlx-test/v1")
+
+
+def test_parse_embed_response_raises_on_null_buried_mid_vector():
+    response = {
+        "data": [
+            {"embedding": [0.1, 0.2, None, 0.4]},
+        ],
+    }
+    with pytest.raises(ValueError, match=r"None at item\[0\]\.embedding\[2\]"):
+        _parse_embed_response(response, source="http://test/v1")
