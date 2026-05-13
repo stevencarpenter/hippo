@@ -314,11 +314,21 @@ pub async fn run(config: &HippoConfig) -> Result<()> {
             content_hash: None,
         };
 
-        // Probe events (probe_domain) carry their envelope_id as probe_tag so
-        // flush_events can skip enqueueing them and all queries can exclude them.
-        // If the visit carries an explicit probe_tag (e.g., a fresh UUID from the
-        // probe orchestrator), use it to avoid false positives from the dedup
-        // window catching old rows.
+        // Tag probe events so flush_events can skip enqueueing them and all
+        // user-facing queries can exclude them (see AP-6 in capture
+        // anti-patterns).
+        //
+        // Two paths:
+        //   1. Modern: the probe orchestrator supplied a fresh per-run UUID in
+        //      `explicit_probe_tag`. That same UUID also feeds `envelope_id`
+        //      above (via `make_visit_envelope_id`), so the row is guaranteed
+        //      unique even if the URL collides with a recent real visit —
+        //      probe rows bypass the URL/time-bucket dedup window. The
+        //      envelope_id is a v5 hash of `probe:{tag}`, not equal to the
+        //      tag itself.
+        //   2. Legacy: no explicit tag, but `is_probe` was inferred from
+        //      `probe_domain`. Reuse `envelope_id` as the probe_tag so the
+        //      row is still identifiable as a probe.
         let probe_tag = explicit_probe_tag.or_else(|| {
             if is_probe {
                 Some(envelope_id.to_string())

@@ -21,7 +21,7 @@ Every capture path writes two things in the same SQLite transaction: the event r
                               |  watchdog       |      |  doctor / CLI   |
                               |  every 60s,     |----> |  reads alarms,  |
                               |  asserts I-1..  |      |  shows status   |
-                              |  I-11           |      +-----------------+
+                              |  I-12           |      +-----------------+
                               +-----------------+
                                        ^
                                        |
@@ -64,7 +64,7 @@ Append-only ledger of invariant violations. The watchdog writes; `hippo alarms a
 | Column | Meaning |
 |---|---|
 | `id` | PK |
-| `invariant` | One of `I-1` … `I-11` |
+| `invariant` | One of `I-1` … `I-12` |
 | `source` | Affected source (or `watchdog` for I-7) |
 | `fired_at` | First detection time |
 | `last_seen_at` | Most recent confirmation; updated when the watchdog re-asserts the same violation |

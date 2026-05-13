@@ -348,7 +348,9 @@ async fn main() -> Result<()> {
                 )?;
 
                 // Opencode poller plist — only written when the opencode source
-                // is enabled (mirrors the gh-poll gate above).
+                // is enabled (mirrors the gh-poll gate above). When disabled,
+                // also remove any stale plist on disk so generic loaders
+                // (e.g. `mise run start`) can't resurrect it.
                 let opencode_poll_installed = if config.opencode.enabled {
                     install::install_plist(
                         "com.hippo.opencode-poll",
@@ -359,6 +361,7 @@ async fn main() -> Result<()> {
                     true
                 } else {
                     println!("  (opencode source disabled; skipping opencode-poll plist)");
+                    install::remove_plist("com.hippo.opencode-poll")?;
                     false
                 };
 
@@ -386,6 +389,12 @@ async fn main() -> Result<()> {
                     true
                 } else {
                     println!("  (github source disabled; skipping gh-poll plist)");
+                    // Source disabled → strip any stale plist + wrapper so
+                    // generic loaders (`mise run start`, an inherited
+                    // ~/Library/LaunchAgents from an earlier install)
+                    // can't resurrect the poller against the current config.
+                    install::remove_plist("com.hippo.gh-poll")?;
+                    install::remove_gh_poll_wrapper(&vars.data_dir)?;
                     println!(
                         "  To enable CI ingest: set [github] enabled = true in {},",
                         config.storage.config_dir.join("config.toml").display()

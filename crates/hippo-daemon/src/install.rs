@@ -231,6 +231,48 @@ pub fn install_plist(
     Ok(dest)
 }
 
+/// Remove a LaunchAgent plist from `~/Library/LaunchAgents/`, if present.
+/// Idempotent — succeeds silently if the file isn't there.
+///
+/// Use after `service_bootout` when a source is being disabled, so a stale
+/// plist can't be re-bootstrapped by anything that iterates the
+/// LaunchAgents directory (e.g., `mise run start`). Pairs with
+/// `remove_gh_poll_wrapper` when the github source is disabled.
+pub fn remove_plist(label: &str) -> Result<()> {
+    let launch_agents = dirs::home_dir()
+        .context("cannot determine home directory")?
+        .join("Library/LaunchAgents");
+    let plist = launch_agents.join(format!("{}.plist", label));
+    remove_plist_at(&plist)
+}
+
+fn remove_plist_at(plist: &Path) -> Result<()> {
+    match std::fs::remove_file(plist) {
+        Ok(()) => {
+            println!("  Removed {}", plist.display());
+            Ok(())
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e).with_context(|| format!("cannot remove {}", plist.display())),
+    }
+}
+
+/// Remove the gh-poll runtime wrapper from the data dir, if present.
+/// Idempotent. Pair with `remove_plist("com.hippo.gh-poll")` when the
+/// github source is disabled so no orphan secret-touching script is left
+/// on disk.
+pub fn remove_gh_poll_wrapper(data_dir: &Path) -> Result<()> {
+    let wrapper = data_dir.join("gh-poll-wrapper.sh");
+    match std::fs::remove_file(&wrapper) {
+        Ok(()) => {
+            println!("  Removed {}", wrapper.display());
+            Ok(())
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e).with_context(|| format!("cannot remove {}", wrapper.display())),
+    }
+}
+
 /// Returns true if a launchd service label is currently loaded in the user session.
 pub fn service_is_loaded(label: &str) -> bool {
     std::process::Command::new("launchctl")
@@ -918,5 +960,44 @@ mod tests {
             std::fs::read_to_string(&settings).unwrap(),
             "{ this is not json }"
         );
+    }
+
+    #[test]
+    fn remove_plist_at_deletes_existing_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let plist = tmp.path().join("com.hippo.gh-poll.plist");
+        std::fs::write(&plist, "<plist/>").unwrap();
+        assert!(plist.exists());
+
+        remove_plist_at(&plist).unwrap();
+        assert!(!plist.exists());
+    }
+
+    #[test]
+    fn remove_plist_at_is_idempotent_when_missing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let plist = tmp.path().join("com.hippo.gh-poll.plist");
+        // File never existed — must succeed silently.
+        remove_plist_at(&plist).unwrap();
+        // And again — still ok.
+        remove_plist_at(&plist).unwrap();
+    }
+
+    #[test]
+    fn remove_gh_poll_wrapper_deletes_when_present() {
+        let tmp = tempfile::tempdir().unwrap();
+        let wrapper = tmp.path().join("gh-poll-wrapper.sh");
+        std::fs::write(&wrapper, "#!/bin/bash\n").unwrap();
+        assert!(wrapper.exists());
+
+        remove_gh_poll_wrapper(tmp.path()).unwrap();
+        assert!(!wrapper.exists());
+    }
+
+    #[test]
+    fn remove_gh_poll_wrapper_is_idempotent_when_missing() {
+        let tmp = tempfile::tempdir().unwrap();
+        // No wrapper installed — must succeed silently.
+        remove_gh_poll_wrapper(tmp.path()).unwrap();
     }
 }
