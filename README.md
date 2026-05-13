@@ -66,7 +66,7 @@ If `hippo events` returns nothing, see [Troubleshooting](#troubleshooting) below
 | **hippo-brain** | Python | Polls enrichment queues, calls the local inference server for summarization, correlates browser research with shell activity, writes knowledge nodes + vector embeddings to SQLite via sqlite-vec. |
 | **hippo-mcp** | Python | MCP server exposing the knowledge base over stdio. Claude Code queries your personal knowledge base mid-conversation. |
 
-Five LaunchAgents run under `gui/$(id -u)`:
+Five core LaunchAgents run under `gui/$(id -u)`:
 
 | Agent | Role |
 |-------|------|
@@ -77,6 +77,11 @@ Five LaunchAgents run under `gui/$(id -u)`:
 | `com.hippo.probe` | Synthetic canary probes; runs every 5 min, round-trips a real event through each capture path and records latency in `source_health` |
 
 `hippo daemon install --force` writes the plists and bootstraps all five. The capture-reliability stack (source health, invariants, watchdog, probes, alarms) is documented in [`docs/capture/`](docs/capture/) — start with [`architecture.md`](docs/capture/architecture.md). For an end-to-end trace of how a shell command, Claude session segment, or browser visit becomes a knowledge node, see [`docs/lifecycle.md`](docs/lifecycle.md). Review-blocker rules every contributor must follow live in [`docs/capture/anti-patterns.md`](docs/capture/anti-patterns.md).
+
+If Hippo is configured to use oMLX, `mise run install:omlx` installs an
+optional `com.hippo.omlx` LaunchAgent. It starts `/opt/homebrew/opt/omlx/bin/omlx
+serve` on `127.0.0.1:8000` at login and keeps it in Hippo's service lifecycle,
+so no terminal session has to stay open.
 
 ## Prerequisites
 
@@ -108,6 +113,9 @@ exec zsh  # reload
 
 # Configure your inference server + models
 hippo config edit
+
+# Optional: make oMLX start through launchd for Hippo
+mise run install:omlx
 ```
 
 In the config editor, set the `[models]` section to match models loaded on your inference server. To list loaded models (default is omlx on :8000; LM Studio users use :1234):
@@ -171,7 +179,7 @@ Common first-day failures, in rough order of frequency:
 |---|---|---|
 | `hippo events` returns nothing after several minutes of shell activity | Shell hook not sourced — `~/.zshrc` / `~/.zshenv` weren't reloaded after install. | `exec zsh` or open a new terminal. Verify with `grep -l 'hippo.zsh' ~/.zshrc ~/.zshenv ~/.config/zsh/*.zsh 2>/dev/null`. |
 | `hippo ask` returns "I don't have enough information" | Brain hasn't enriched yet, or the configured chat model isn't loaded. | `hippo doctor` to confirm. Open omlx (or LM Studio) and load the model in `[models].enrichment`. |
-| `hippo doctor` says inference server isn't reachable | omlx/LM Studio isn't running, or it's serving on a non-default port. | Start the server. Check the API base URL in `~/.config/hippo/config.toml` (`[inference].base_url`). The legacy `[lmstudio]` section is rejected with a migration error — rename it to `[inference]`. |
+| `hippo doctor` says inference server isn't reachable | omlx/LM Studio isn't running, or it's serving on a non-default port. | Start the server. For oMLX, run `mise run install:omlx`; for LM Studio, start it manually. Check the API base URL in `~/.config/hippo/config.toml` (`[inference].base_url`). The legacy `[lmstudio]` section is rejected with a migration error — rename it to `[inference]`. |
 | Daemon won't start; `hippo doctor` says schema mismatch | Daemon and brain have different `EXPECTED_SCHEMA_VERSION` constants — happens after partial upgrades. | `mise run install --clean` brings everything to the same version. |
 | Brain queue backs up | Configured chat model unloaded or swapped for one not in `[models].enrichment`. | Load the configured model. The reaper handles transient locks; persistent backlog is operator-visible. See [`docs/brain-watchdog.md`](docs/brain-watchdog.md). |
 | Firefox extension shows no recent visits | Native messaging manifest missing, or extension not loaded. | `hippo daemon install --force` rewrites the manifest. Reload the extension in `about:debugging`. See [`extension/firefox/README.md`](extension/firefox/README.md). |
@@ -309,6 +317,7 @@ mise run start              # Start daemon + brain via launchd
 mise run stop               # Stop both services
 mise run restart            # Stop + start
 mise run nuke               # SIGKILL everything (preserves data)
+mise run install:omlx       # Optional: install + start Hippo's oMLX LaunchAgent
 ```
 
 ### Contributing

@@ -706,6 +706,34 @@ mod tests {
     }
 
     #[test]
+    fn omlx_launchagent_template_renders_with_existing_vars() {
+        let template = include_str!("../../../launchd/com.hippo.omlx.plist");
+        let vars = PlistVars {
+            hippo_bin: PathBuf::from("/usr/local/bin/hippo"),
+            uv_bin: PathBuf::from("/opt/homebrew/bin/uv"),
+            brain_dir: PathBuf::from("/Users/me/.local/share/hippo-brain"),
+            scripts_dir: PathBuf::from("/Users/me/.local/share/hippo-brain/scripts"),
+            home: PathBuf::from("/Users/me"),
+            path: "/opt/homebrew/bin:/usr/bin:/bin".to_string(),
+            data_dir: PathBuf::from("/Users/me/.local/share/hippo"),
+            otel_enabled: "0".to_string(),
+            otel_endpoint: "http://localhost:4318".to_string(),
+            opencode_poll_interval_secs: 30,
+        };
+
+        let rendered = render_plist(template, &vars);
+
+        assert!(!rendered.contains("__"));
+        assert!(rendered.contains("<string>com.hippo.omlx</string>"));
+        assert!(rendered.contains("<string>/opt/homebrew/opt/omlx/bin/omlx</string>"));
+        assert!(rendered.contains("<string>serve</string>"));
+        assert!(rendered.contains("<string>8000</string>"));
+        assert!(rendered.contains("<string>/Users/me/.local/share/hippo/omlx.stdout.log</string>"));
+        assert!(rendered.contains("<string>/Users/me/.local/share/hippo/omlx.stderr.log</string>"));
+        assert!(rendered.contains("<string>/Users/me</string>"));
+    }
+
+    #[test]
     fn parse_launchctl_pid_extracts_running_process_pid() {
         // Actual `launchctl list com.hippo.brain` output for a healthy service.
         let sample = "{\n\

@@ -492,6 +492,57 @@ echo "Manual recovery: rm -rf '$BRAIN_INSTALL_DIR/.venv' && cd '$BRAIN_INSTALL_D
 exit 1
 '''
 
+[tasks."install:omlx"]
+description = "Install and start the optional oMLX LaunchAgent used by Hippo's local inference backend"
+run = '''
+#!/usr/bin/env bash
+set -euo pipefail
+
+DOMAIN="gui/$(id -u)"
+DEST="$HOME/Library/LaunchAgents/com.hippo.omlx.plist"
+DATA_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/hippo"
+OMLX_BIN="/opt/homebrew/opt/omlx/bin/omlx"
+
+if [ ! -x "$OMLX_BIN" ]; then
+    echo "ERROR: oMLX is not installed at $OMLX_BIN"
+    echo "Install it with: brew install jundot/omlx/omlx"
+    exit 1
+fi
+
+mkdir -p "$DATA_DIR"
+
+# Render and write the plist through hippo's render_plist path (same code path
+# the unit test exercises). PATH is pinned to a launchd-safe set so the rendered
+# plist environment matches the rest of Hippo's LaunchAgents, independent of the
+# operator's shell at install time.
+PATH="/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin" \
+    hippo daemon install-omlx --force
+
+plutil -lint "$DEST" >/dev/null
+
+# Retire competing managers before loading Hippo's oMLX agent. The Homebrew
+# service is a user LaunchAgent too, but it is invisible to Hippo's service
+# lifecycle and can drift to a different port than ~/.config/hippo/config.toml.
+brew services stop jundot/omlx/omlx >/dev/null 2>&1 || brew services stop omlx >/dev/null 2>&1 || true
+launchctl bootout "$DOMAIN" "$DEST" >/dev/null 2>&1 || true
+pkill -f '/opt/homebrew/.*/omlx serve' >/dev/null 2>&1 || true
+
+launchctl bootstrap "$DOMAIN" "$DEST"
+
+for _ in {1..60}; do
+    if curl -fsS --max-time 2 http://127.0.0.1:8000/v1/models >/dev/null 2>&1; then
+        echo "Started com.hippo.omlx on http://127.0.0.1:8000/v1"
+        exit 0
+    fi
+    sleep 1
+done
+
+echo "ERROR: com.hippo.omlx started but http://127.0.0.1:8000/v1/models did not respond within 60s"
+echo "Inspect with: launchctl print $DOMAIN/com.hippo.omlx"
+echo "Logs: $DATA_DIR/omlx.stderr.log"
+exit 1
+'''
+
 [tasks.install]
 description = "Full clean-install: stop, build, install, configure, start, verify"
 run = '''
@@ -763,6 +814,7 @@ run = """
 set -euo pipefail
 DOMAIN="gui/$(id -u)"
 for label in \
+  com.hippo.omlx \
   com.hippo.daemon \
   com.hippo.brain \
   com.hippo.watchdog \
@@ -790,6 +842,7 @@ run = """
 set -euo pipefail
 DOMAIN="gui/$(id -u)"
 for label in \
+  com.hippo.omlx \
   com.hippo.daemon \
   com.hippo.brain \
   com.hippo.watchdog \
@@ -823,10 +876,12 @@ set -uo pipefail
 DOMAIN="gui/$(id -u)"
 
 echo "Unloading LaunchAgents..."
+launchctl bootout "$DOMAIN" ~/Library/LaunchAgents/com.hippo.omlx.plist 2>/dev/null && echo "  Unloaded com.hippo.omlx" || echo "  com.hippo.omlx not loaded"
 launchctl bootout "$DOMAIN" ~/Library/LaunchAgents/com.hippo.daemon.plist 2>/dev/null && echo "  Unloaded com.hippo.daemon" || echo "  com.hippo.daemon not loaded"
 launchctl bootout "$DOMAIN" ~/Library/LaunchAgents/com.hippo.brain.plist 2>/dev/null && echo "  Unloaded com.hippo.brain" || echo "  com.hippo.brain not loaded"
 
 echo "Killing all hippo processes (SIGKILL)..."
+pkill -9 -f '/opt/homebrew/.*/omlx serve' 2>/dev/null && echo "  Killed oMLX serve processes" || echo "  No oMLX serve processes found"
 pkill -9 -f 'hippo.*(daemon|send-event)' 2>/dev/null && echo "  Killed daemon processes" || echo "  No daemon processes found"
 pkill -9 -f 'hippo ingest claude-session' 2>/dev/null && echo "  Killed session tailers" || echo "  No session tailers found"
 pkill -9 -f 'hippo-brain' 2>/dev/null && echo "  Killed brain processes" || echo "  No brain processes found"

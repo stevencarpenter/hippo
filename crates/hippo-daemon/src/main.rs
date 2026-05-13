@@ -439,6 +439,14 @@ async fn main() -> Result<()> {
 
                 // Reload core services that were already running, and ensure
                 // installed support agents are loaded for an active stack.
+                //
+                // Core services (daemon, brain) stay strict: if either fails to
+                // start, the install should abort loudly. Support agents
+                // (watchdog/probe/watcher) are auto-promoted — bootstrapped even
+                // if they weren't loaded before this upgrade — so a transient
+                // launchctl failure on one of them is downgraded to a warning
+                // rather than aborting the whole install. This mirrors the
+                // graceful pattern used by `configure_claude_session_hook` above.
                 if stack_was_active {
                     println!();
                     println!("Restarting services...");
@@ -456,21 +464,19 @@ async fn main() -> Result<()> {
                         )?;
                         println!("  Started brain");
                     }
-                    install::service_bootstrap(
-                        &domain,
-                        &launch_agents.join("com.hippo.watchdog.plist"),
-                    )?;
-                    println!("  Started watchdog");
-                    install::service_bootstrap(
-                        &domain,
-                        &launch_agents.join("com.hippo.probe.plist"),
-                    )?;
-                    println!("  Started probe");
-                    install::service_bootstrap(
-                        &domain,
-                        &launch_agents.join("com.hippo.claude-session-watcher.plist"),
-                    )?;
-                    println!("  Started claude-session-watcher");
+                    for (label, plist) in [
+                        ("watchdog", "com.hippo.watchdog.plist"),
+                        ("probe", "com.hippo.probe.plist"),
+                        (
+                            "claude-session-watcher",
+                            "com.hippo.claude-session-watcher.plist",
+                        ),
+                    ] {
+                        match install::service_bootstrap(&domain, &launch_agents.join(plist)) {
+                            Ok(()) => println!("  Started {label}"),
+                            Err(e) => eprintln!("  Warning: failed to start {label}: {e}"),
+                        }
+                    }
                     if gh_poll_started {
                         install::service_bootstrap(
                             &domain,
@@ -528,6 +534,18 @@ async fn main() -> Result<()> {
                         );
                     }
                 }
+            }
+            DaemonAction::InstallOmlx { force } => {
+                // The omlx plist only references __HOME__/__PATH__/__DATA_DIR__,
+                // all of which PlistVars already provides. brain_dir is unused
+                // by the template but required to materialise PlistVars; the
+                // default is fine.
+                let brain_dir = dirs::home_dir()
+                    .context("cannot determine home directory")?
+                    .join(".local/share/hippo-brain");
+                let vars = install::detect_vars(&brain_dir)?;
+                let template = include_str!("../../../launchd/com.hippo.omlx.plist");
+                install::install_plist("com.hippo.omlx", template, &vars, force)?;
             }
         },
         Commands::Brain { action } => match action {
