@@ -1256,7 +1256,7 @@ pub async fn handle_doctor(config: &HippoConfig, explain: bool) -> Result<()> {
 ///
 /// Emits one line per source, color-coded by how long since the freshest
 /// row (staleness thresholds defined in `source_freshness_probes()`
-/// below; see also the I-1..I-10 freshness invariants in
+/// below; see also the I-1..I-12 freshness invariants in
 /// `docs/capture/architecture.md`). Queries the underlying tables
 /// directly so it works without the `source_health` table (which is
 /// still a P0.1 roadmap item).

@@ -73,7 +73,7 @@ Five core LaunchAgents run under `gui/$(id -u)`:
 | `com.hippo.daemon` | Long-lived Rust daemon (KeepAlive) |
 | `com.hippo.brain` | Long-lived Python brain server (KeepAlive) |
 | `com.hippo.claude-session-watcher` | FSEvents watcher on `~/.claude/projects/**/*.jsonl` (KeepAlive); ingests Claude Code sessions |
-| `com.hippo.watchdog` | Capture-reliability monitor; runs every 60 s, asserts I-1..I-10 invariants, writes `capture_alarms` rows |
+| `com.hippo.watchdog` | Capture-reliability monitor; runs every 60 s, asserts I-1..I-12 invariants, writes `capture_alarms` rows |
 | `com.hippo.probe` | Synthetic canary probes; runs every 5 min, round-trips a real event through each capture path and records latency in `source_health` |
 
 `hippo daemon install --force` writes the plists and bootstraps all five. The capture-reliability stack (source health, invariants, watchdog, probes, alarms) is documented in [`docs/capture/`](docs/capture/) — start with [`architecture.md`](docs/capture/architecture.md). For an end-to-end trace of how a shell command, Claude session segment, or browser visit becomes a knowledge node, see [`docs/lifecycle.md`](docs/lifecycle.md). Review-blocker rules every contributor must follow live in [`docs/capture/anti-patterns.md`](docs/capture/anti-patterns.md).
@@ -356,7 +356,7 @@ All paths follow XDG defaults. Override with `XDG_DATA_HOME` / `XDG_CONFIG_HOME`
 | Logs | `~/.local/share/hippo/*.log` | Daemon and brain logs |
 | Fallback | `~/.local/share/hippo/*.fallback.jsonl` | Last-resort durability backstop when the daemon socket is unreachable; replayed on next daemon start |
 
-Schema uses `PRAGMA user_version = N` (current: v13). Daemon and brain handshake on this constant at startup. See [`docs/schema.md`](docs/schema.md) for the per-version changelog, table map, and version-mismatch recovery; see [`docs/release.md`](docs/release.md) for the lockstep release workflow.
+Schema uses `PRAGMA user_version = N` (current: v14). Daemon and brain handshake on this constant at startup. See [`docs/schema.md`](docs/schema.md) for the per-version changelog, table map, and version-mismatch recovery; see [`docs/release.md`](docs/release.md) for the lockstep release workflow.
 
 ## License
 
