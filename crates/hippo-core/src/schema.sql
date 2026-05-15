@@ -486,7 +486,7 @@ INSERT OR IGNORE INTO source_health (source, last_event_ts, updated_at) VALUES
 
 -- ─── v9: capture_alarms table for watchdog invariant violations ────────
 --
--- Written by `hippo watchdog run` when an invariant (I-1..I-10) fires.
+-- Written by `hippo watchdog run` when an invariant (I-1..I-12) fires.
 -- Rate-limited per invariant per sliding window (default 60 min).
 -- Acked via `hippo alarms ack <id>` (T-2).
 CREATE TABLE IF NOT EXISTS capture_alarms (

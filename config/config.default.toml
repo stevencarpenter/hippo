@@ -162,7 +162,7 @@ watched_repos = []             # e.g., ["stevencarpenter/hippo"]
 # Capture-reliability watchdog — enabled by default since T-2 (launchd plist ships).
 #
 # `hippo watchdog run` (invoked every 60 s by launchd via com.hippo.watchdog)
-# reads the `source_health` table, asserts invariants I-1..I-10, and writes rows
+# reads the `source_health` table, asserts invariants I-1..I-12, and writes rows
 # to `capture_alarms` for any violations.  Rate-limited to one alarm per invariant
 # per `alarm_rate_limit_minutes` window (60 min during v0.17 soak; step down to
 # 15 min in v0.18 after 7-day clean run — see docs/capture/architecture.md).

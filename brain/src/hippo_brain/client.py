@@ -86,6 +86,29 @@ def _raise_with_body(resp: httpx.Response) -> None:
         ) from e
 
 
+def _parse_embed_response(data: dict, *, source: str) -> list[list[float]]:
+    """Parse an OpenAI-compatible `/v1/embeddings` response into vectors.
+
+    Raises `ValueError` if any returned vector contains a `None` element.
+    oMLX has a known bug where batched embedding requests with
+    disparate-length inputs return all-null vectors for the shorter
+    items; the brain triggers this loudly here so a backend regression
+    can't silently corrupt the knowledge corpus.
+    """
+    result: list[list[float]] = []
+    for idx, item in enumerate(data["data"]):
+        vec = item["embedding"]
+        none_idx = next((i for i, x in enumerate(vec) if x is None), None)
+        if none_idx is not None:
+            raise ValueError(
+                f"embedding response from {source} contains None at "
+                f"item[{idx}].embedding[{none_idx}] "
+                f"(vector_len={len(vec)}); refusing to corrupt corpus"
+            )
+        result.append(vec)
+    return result
+
+
 class InferenceClient:
     """OpenAI-compatible inference client.
 
@@ -145,7 +168,7 @@ class InferenceClient:
                 )
                 _raise_with_body(resp)
                 data = resp.json()
-                result = [item["embedding"] for item in data["data"]]
+                result = _parse_embed_response(data, source=self.base_url)
             if _request_duration:
                 _request_duration.record((time.monotonic() - t0) * 1000, {"method": "embed"})
             return result

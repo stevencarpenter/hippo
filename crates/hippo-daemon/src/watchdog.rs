@@ -30,6 +30,10 @@ use tracing::{error, info, warn};
 /// active alarm. Set to 2 so a single transient recovery doesn't clear an
 /// alarm that's about to flap back.
 const AUTO_RESOLVE_CLEAN_TICKS: i64 = 2;
+const PROBE_INTERVAL_MS: i64 = 300_000;
+const LIVENESS_GRACE_MS: i64 = 120_000;
+const SHELL_LIVENESS_STALE_MS: i64 = PROBE_INTERVAL_MS + LIVENESS_GRACE_MS;
+const BROWSER_ROUNDTRIP_STALE_MS: i64 = PROBE_INTERVAL_MS + LIVENESS_GRACE_MS;
 
 // DDL used by the pre-migration safety path only.  The authoritative definition
 // lives in `schema.sql` and `storage.rs`; this is a fallback for the case where
@@ -480,7 +484,8 @@ pub fn check_invariants(rows: &[SourceHealthRow], now_ms: i64) -> Vec<InvariantV
 }
 
 /// I-1: Shell liveness.
-/// Fires when `shell.last_event_ts` is more than 60 s old **and**
+/// Fires when `shell.last_event_ts` is older than the probe cadence plus
+/// launchd/SQLite jitter grace **and**
 /// `shell.probe_ok = 1` (shell active: zsh running, hippo.zsh sourced,
 /// user not idle).  Sources with `last_event_ts IS NULL` (never seen) are
 /// skipped — a fresh install should not alarm before the first shell event.
@@ -499,7 +504,7 @@ pub fn check_i1_shell_liveness(
     }
 
     let age_ms = now_ms - last_event;
-    if age_ms > 60_000 {
+    if age_ms > SHELL_LIVENESS_STALE_MS {
         Some(InvariantViolation {
             invariant_id: "I-1".to_string(),
             source: "shell".to_string(),
@@ -544,7 +549,8 @@ pub fn check_i2_claude_session_proxy(
 }
 
 /// I-4: Browser round-trip.
-/// Fires when `browser.last_event_ts` is more than 2 min old **and**
+/// Fires when `browser.last_event_ts` is older than the probe cadence plus
+/// launchd/SQLite jitter grace **and**
 /// `browser.probe_ok = 1` (Firefox running + extension heartbeat fresh).
 pub fn check_i4_browser_roundtrip(
     by_source: &std::collections::HashMap<&str, &SourceHealthRow>,
@@ -561,7 +567,7 @@ pub fn check_i4_browser_roundtrip(
     }
 
     let age_ms = now_ms - last_event;
-    if age_ms > 120_000 {
+    if age_ms > BROWSER_ROUNDTRIP_STALE_MS {
         Some(InvariantViolation {
             invariant_id: "I-4".to_string(),
             source: "browser".to_string(),
@@ -1032,7 +1038,7 @@ mod tests {
     #[test]
     fn watchdog_i1_fires_when_stale_and_probe_active() {
         let row = SourceHealthRow {
-            last_event_ts: Some(NOW - 90_000), // 90 s ago > 60 s threshold
+            last_event_ts: Some(NOW - 480_000), // beyond 5 min cadence + grace
             probe_ok: Some(1),
             ..blank_row("shell")
         };
@@ -1042,7 +1048,23 @@ mod tests {
         let v = result.unwrap();
         assert_eq!(v.invariant_id, "I-1");
         assert_eq!(v.source, "shell");
-        assert!(v.since_ms >= 90_000);
+        assert!(v.since_ms >= 480_000);
+    }
+
+    #[test]
+    fn watchdog_i1_suppressed_between_probe_ticks() {
+        let row = SourceHealthRow {
+            last_event_ts: Some(NOW - 300_000), // one 5 min probe interval
+            probe_ok: Some(1),
+            consecutive_failures: 0,
+            events_last_1h: 20,
+            ..blank_row("shell")
+        };
+        let rows = vec![row];
+        assert!(
+            check_i1_shell_liveness(&by_source(&rows), NOW).is_none(),
+            "shell liveness should tolerate the normal 5 minute probe cadence"
+        );
     }
 
     #[test]
@@ -1204,7 +1226,7 @@ mod tests {
     #[test]
     fn watchdog_i4_fires_when_stale_and_probe_active() {
         let row = SourceHealthRow {
-            last_event_ts: Some(NOW - 180_000), // 3 min > 2 min threshold
+            last_event_ts: Some(NOW - 480_000), // beyond 5 min cadence + grace
             probe_ok: Some(1),
             last_heartbeat_ts: Some(NOW - 60_000),
             ..blank_row("browser")
@@ -1214,7 +1236,22 @@ mod tests {
         assert!(result.is_some());
         let v = result.unwrap();
         assert_eq!(v.invariant_id, "I-4");
-        assert!(v.since_ms >= 180_000);
+        assert!(v.since_ms >= 480_000);
+    }
+
+    #[test]
+    fn watchdog_i4_suppressed_between_probe_ticks() {
+        let row = SourceHealthRow {
+            last_event_ts: Some(NOW - 300_000), // one 5 min probe interval
+            probe_ok: Some(1),
+            last_heartbeat_ts: Some(NOW - 60_000),
+            ..blank_row("browser")
+        };
+        let rows = vec![row];
+        assert!(
+            check_i4_browser_roundtrip(&by_source(&rows), NOW).is_none(),
+            "browser liveness should tolerate the normal 5 minute probe cadence"
+        );
     }
 
     #[test]
