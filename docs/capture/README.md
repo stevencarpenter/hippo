@@ -16,7 +16,7 @@ Reference documentation for hippo's capture-reliability stack — what every sou
 
 | Doc | Topic |
 |---|---|
-| [`architecture.md`](architecture.md) | The four layers (capture path / `source_health` / watchdog / probe / alarms), I-1..I-10 invariants with thresholds, how the pieces interact. |
+| [`architecture.md`](architecture.md) | The four layers (capture path / `source_health` / watchdog / probe / alarms), I-1..I-12 invariants with thresholds, how the pieces interact. |
 | [`sources.md`](sources.md) | Per-source coverage matrix: shell, claude-session, browser, workflow runs, and the rest. Entry point, tables, invariants, probe coverage. |
 | [`anti-patterns.md`](anti-patterns.md) | AP-1..AP-12: forbidden patterns with rationale and the right alternative. Review blockers. |
 | [`adding-a-source.md`](adding-a-source.md) | Eleven-step contract for plugging in a new capture source. Includes a worked example. |

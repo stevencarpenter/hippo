@@ -206,6 +206,18 @@ pub enum DaemonAction {
         #[arg(long)]
         brain_dir: Option<std::path::PathBuf>,
     },
+    /// Render and install the optional com.hippo.omlx LaunchAgent.
+    ///
+    /// Routes the plist through the same `render_plist` / `install_plist`
+    /// path as the core agents so there's a single, tested rendering
+    /// implementation. The shell-side `mise run install:omlx` wraps this
+    /// with brew-services takedown, launchctl bootstrap, and a readiness
+    /// probe — concerns that don't belong in the daemon binary.
+    InstallOmlx {
+        /// Overwrite an existing plist file
+        #[arg(long)]
+        force: bool,
+    },
 }
 
 #[derive(Subcommand)]

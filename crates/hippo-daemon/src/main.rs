@@ -244,8 +244,16 @@ async fn main() -> Result<()> {
                 let probe_was_loaded = install::service_is_loaded("com.hippo.probe");
                 let watcher_was_loaded =
                     install::service_is_loaded("com.hippo.claude-session-watcher");
+                let gh_poll_was_loaded = install::service_is_loaded("com.hippo.gh-poll");
                 let opencode_poll_was_loaded =
                     install::service_is_loaded("com.hippo.opencode-poll");
+                let stack_was_active = daemon_was_loaded
+                    || brain_was_loaded
+                    || watchdog_was_loaded
+                    || probe_was_loaded
+                    || watcher_was_loaded
+                    || gh_poll_was_loaded
+                    || opencode_poll_was_loaded;
 
                 if brain_was_loaded {
                     print!("  Draining brain (waiting for in-flight requests)");
@@ -286,6 +294,13 @@ async fn main() -> Result<()> {
                         &launch_agents.join("com.hippo.claude-session-watcher.plist"),
                     );
                     println!("  Stopped claude-session-watcher");
+                }
+                if gh_poll_was_loaded {
+                    install::service_bootout(
+                        &domain,
+                        &launch_agents.join("com.hippo.gh-poll.plist"),
+                    );
+                    println!("  Stopped gh-poll");
                 }
                 if opencode_poll_was_loaded {
                     install::service_bootout(
@@ -333,7 +348,9 @@ async fn main() -> Result<()> {
                 )?;
 
                 // Opencode poller plist — only written when the opencode source
-                // is enabled (mirrors the gh-poll gate above).
+                // is enabled (mirrors the gh-poll gate above). When disabled,
+                // also remove any stale plist on disk so generic loaders
+                // (e.g. `mise run start`) can't resurrect it.
                 let opencode_poll_installed = if config.opencode.enabled {
                     install::install_plist(
                         "com.hippo.opencode-poll",
@@ -344,6 +361,7 @@ async fn main() -> Result<()> {
                     true
                 } else {
                     println!("  (opencode source disabled; skipping opencode-poll plist)");
+                    install::remove_plist("com.hippo.opencode-poll")?;
                     false
                 };
 
@@ -371,6 +389,12 @@ async fn main() -> Result<()> {
                     true
                 } else {
                     println!("  (github source disabled; skipping gh-poll plist)");
+                    // Source disabled → strip any stale plist + wrapper so
+                    // generic loaders (`mise run start`, an inherited
+                    // ~/Library/LaunchAgents from an earlier install)
+                    // can't resurrect the poller against the current config.
+                    install::remove_plist("com.hippo.gh-poll")?;
+                    install::remove_gh_poll_wrapper(&vars.data_dir)?;
                     println!(
                         "  To enable CI ingest: set [github] enabled = true in {},",
                         config.storage.config_dir.join("config.toml").display()
@@ -411,14 +435,29 @@ async fn main() -> Result<()> {
                     ),
                 }
 
-                // Reload services that were running before the upgrade.
-                if daemon_was_loaded
-                    || brain_was_loaded
-                    || watchdog_was_loaded
-                    || probe_was_loaded
-                    || watcher_was_loaded
-                    || opencode_poll_was_loaded
-                {
+                let gh_poll_started = install::should_start_optional_poll_agent(
+                    gh_poll_installed,
+                    gh_poll_was_loaded,
+                    stack_was_active,
+                );
+                let opencode_poll_started = install::should_start_optional_poll_agent(
+                    opencode_poll_installed,
+                    opencode_poll_was_loaded,
+                    stack_was_active,
+                );
+
+                // Reload core services that were already running, and ensure
+                // installed support agents are loaded for an active stack.
+                //
+                // Core services (daemon, brain) stay strict: if either fails to
+                // start, the install should abort loudly. All other support
+                // agents — watchdog, probe, claude-session-watcher, gh-poll,
+                // opencode-poll — are auto-promoted onto an active stack, so a
+                // transient launchctl failure on any one of them is downgraded
+                // to a warning rather than aborting the whole install. This
+                // mirrors the graceful pattern used by
+                // `configure_claude_session_hook` above.
+                if stack_was_active {
                     println!();
                     println!("Restarting services...");
                     if daemon_was_loaded {
@@ -435,44 +474,38 @@ async fn main() -> Result<()> {
                         )?;
                         println!("  Started brain");
                     }
-                    if watchdog_was_loaded {
-                        install::service_bootstrap(
-                            &domain,
-                            &launch_agents.join("com.hippo.watchdog.plist"),
-                        )?;
-                        println!("  Started watchdog");
-                    }
-                    if probe_was_loaded {
-                        install::service_bootstrap(
-                            &domain,
-                            &launch_agents.join("com.hippo.probe.plist"),
-                        )?;
-                        println!("  Started probe");
-                    }
-                    if watcher_was_loaded {
-                        install::service_bootstrap(
-                            &domain,
-                            &launch_agents.join("com.hippo.claude-session-watcher.plist"),
-                        )?;
-                        println!("  Started claude-session-watcher");
-                    }
-                    if opencode_poll_was_loaded && opencode_poll_installed {
-                        install::service_bootstrap(
-                            &domain,
-                            &launch_agents.join("com.hippo.opencode-poll.plist"),
-                        )?;
-                        println!("  Started opencode-poll");
+                    let support_agents = [
+                        ("watchdog", "com.hippo.watchdog.plist", true),
+                        ("probe", "com.hippo.probe.plist", true),
+                        (
+                            "claude-session-watcher",
+                            "com.hippo.claude-session-watcher.plist",
+                            true,
+                        ),
+                        ("gh-poll", "com.hippo.gh-poll.plist", gh_poll_started),
+                        (
+                            "opencode-poll",
+                            "com.hippo.opencode-poll.plist",
+                            opencode_poll_started,
+                        ),
+                    ];
+                    for (label, plist, gated) in support_agents {
+                        if !gated {
+                            continue;
+                        }
+                        match install::service_bootstrap(&domain, &launch_agents.join(plist)) {
+                            Ok(()) => println!("  Started {label}"),
+                            Err(e) => eprintln!("  Warning: failed to start {label}: {e}"),
+                        }
                     }
                 }
 
                 // Only print "Load with:" for services that weren't already cycled.
                 let needs_manual_start = !daemon_was_loaded
                     || !brain_was_loaded
-                    || !watchdog_was_loaded
-                    || !probe_was_loaded
-                    || !watcher_was_loaded
-                    || gh_poll_installed
-                    || (opencode_poll_installed && !opencode_poll_was_loaded);
+                    || !stack_was_active
+                    || (gh_poll_installed && !gh_poll_started)
+                    || (opencode_poll_installed && !opencode_poll_started);
                 if needs_manual_start {
                     println!();
                     println!("Load with:");
@@ -486,32 +519,40 @@ async fn main() -> Result<()> {
                             "  launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.hippo.brain.plist"
                         );
                     }
-                    if !watchdog_was_loaded {
+                    if !stack_was_active {
                         println!(
                             "  launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.hippo.watchdog.plist"
                         );
-                    }
-                    if !probe_was_loaded {
                         println!(
                             "  launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.hippo.probe.plist"
                         );
-                    }
-                    if !watcher_was_loaded {
                         println!(
                             "  launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.hippo.claude-session-watcher.plist"
                         );
                     }
-                    if gh_poll_installed {
+                    if gh_poll_installed && !gh_poll_started {
                         println!(
                             "  launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.hippo.gh-poll.plist"
                         );
                     }
-                    if opencode_poll_installed && !opencode_poll_was_loaded {
+                    if opencode_poll_installed && !opencode_poll_started {
                         println!(
                             "  launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.hippo.opencode-poll.plist"
                         );
                     }
                 }
+            }
+            DaemonAction::InstallOmlx { force } => {
+                // The omlx plist only references __HOME__/__PATH__/__DATA_DIR__,
+                // all of which PlistVars already provides. brain_dir is unused
+                // by the template but required to materialise PlistVars; the
+                // default is fine.
+                let brain_dir = dirs::home_dir()
+                    .context("cannot determine home directory")?
+                    .join(".local/share/hippo-brain");
+                let vars = install::detect_vars(&brain_dir)?;
+                let template = include_str!("../../../launchd/com.hippo.omlx.plist");
+                install::install_plist("com.hippo.omlx", template, &vars, force)?;
             }
         },
         Commands::Brain { action } => match action {

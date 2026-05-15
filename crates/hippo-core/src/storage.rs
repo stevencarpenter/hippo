@@ -37,6 +37,59 @@ fn add_column_if_missing(
     Ok(())
 }
 
+fn table_exists(conn: &Connection, table: &str) -> Result<bool> {
+    Ok(conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1)",
+        [table],
+        |row| row.get(0),
+    )?)
+}
+
+fn normalize_agentic_sessions_schema(conn: &Connection) -> Result<()> {
+    if !table_exists(conn, "agentic_sessions")? {
+        return Ok(());
+    }
+
+    add_column_if_missing(
+        conn,
+        "agentic_sessions",
+        "probe_tag",
+        "ALTER TABLE agentic_sessions ADD COLUMN probe_tag TEXT",
+    )
+}
+
+fn normalize_agentic_cursor_schema(conn: &Connection) -> Result<()> {
+    if !table_exists(conn, "agentic_cursor")? {
+        return Ok(());
+    }
+
+    add_column_if_missing(
+        conn,
+        "agentic_cursor",
+        "last_seen_updated_at",
+        "ALTER TABLE agentic_cursor ADD COLUMN last_seen_updated_at INTEGER NOT NULL DEFAULT 0",
+    )?;
+
+    let legacy_last_time_created_exists: bool = conn.query_row(
+        "SELECT EXISTS(
+            SELECT 1 FROM pragma_table_info('agentic_cursor')
+            WHERE name = 'last_time_created'
+        )",
+        [],
+        |row| row.get(0),
+    )?;
+    if legacy_last_time_created_exists {
+        conn.execute(
+            "UPDATE agentic_cursor
+             SET last_seen_updated_at = last_time_created
+             WHERE last_seen_updated_at = 0",
+            [],
+        )?;
+    }
+
+    Ok(())
+}
+
 pub fn open_db(path: &Path) -> Result<Connection> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
@@ -739,6 +792,9 @@ pub fn open_db(path: &Path) -> Result<Connection> {
     if version == 0 {
         conn.execute_batch(SCHEMA)?;
     }
+
+    normalize_agentic_sessions_schema(&conn)?;
+    normalize_agentic_cursor_schema(&conn)?;
 
     // Idempotent post-migration normalization. The v13→v14 migration shipped
     // first without seeding `agentic-session-claude`; databases already at
@@ -2461,6 +2517,122 @@ mod tests {
             )
             .unwrap();
         assert_eq!(exists, 0);
+    }
+
+    #[test]
+    fn test_v14_normalization_adds_missing_agentic_probe_tag() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("test.db");
+
+        {
+            let conn = rusqlite::Connection::open(&db_path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE agentic_sessions (
+                    id              INTEGER PRIMARY KEY,
+                    session_id      TEXT    NOT NULL,
+                    harness         TEXT    NOT NULL DEFAULT 'opencode',
+                    model           TEXT    NOT NULL DEFAULT '',
+                    agent           TEXT    DEFAULT '',
+                    project_dir     TEXT    NOT NULL,
+                    cwd             TEXT    NOT NULL,
+                    slug            TEXT    DEFAULT '',
+                    title           TEXT    DEFAULT '',
+                    parent_session_id TEXT,
+                    summary_text    TEXT    NOT NULL,
+                    source_file     TEXT    DEFAULT '',
+                    snapshot_diffs_json TEXT DEFAULT 'null',
+                    commit_messages_json TEXT DEFAULT '[]',
+                    message_count   INTEGER NOT NULL DEFAULT 0,
+                    token_count     INTEGER NOT NULL DEFAULT 0,
+                    start_time      INTEGER NOT NULL,
+                    end_time        INTEGER NOT NULL,
+                    created_at      INTEGER NOT NULL DEFAULT 1700000000000,
+                    enriched        INTEGER NOT NULL DEFAULT 0,
+                    UNIQUE (session_id, harness)
+                );
+                INSERT INTO agentic_sessions
+                    (session_id, harness, project_dir, cwd, summary_text, start_time, end_time)
+                VALUES
+                    ('sess-1', 'opencode', '/project', '/project', 'summary', 1700000000000, 1700000001000);
+                PRAGMA user_version = 14;",
+            )
+            .unwrap();
+        }
+
+        let conn = open_db(&db_path).unwrap();
+
+        let probe_tag_exists: bool = conn
+            .query_row(
+                "SELECT EXISTS(
+                    SELECT 1 FROM pragma_table_info('agentic_sessions')
+                    WHERE name = 'probe_tag'
+                )",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(
+            probe_tag_exists,
+            "already-v14 databases must be normalized with agentic_sessions.probe_tag"
+        );
+
+        let preserved: i64 = conn
+            .query_row("SELECT COUNT(*) FROM agentic_sessions", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(preserved, 1, "normalization must preserve existing rows");
+    }
+
+    #[test]
+    fn test_v14_normalization_repairs_legacy_agentic_cursor() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("test.db");
+
+        {
+            let conn = rusqlite::Connection::open(&db_path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE agentic_cursor (
+                    source_key        TEXT PRIMARY KEY,
+                    last_time_created INTEGER NOT NULL DEFAULT 0,
+                    last_id           TEXT NOT NULL DEFAULT '',
+                    updated_at        INTEGER NOT NULL
+                );
+                INSERT INTO agentic_cursor
+                    (source_key, last_time_created, last_id, updated_at)
+                VALUES
+                    ('opencode-1', 1700000000123, 'sess-1', 1700000000456);
+                PRAGMA user_version = 14;",
+            )
+            .unwrap();
+        }
+
+        let conn = open_db(&db_path).unwrap();
+
+        let repaired: bool = conn
+            .query_row(
+                "SELECT EXISTS(
+                    SELECT 1 FROM pragma_table_info('agentic_cursor')
+                    WHERE name = 'last_seen_updated_at'
+                )",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(
+            repaired,
+            "already-v14 databases must be normalized with agentic_cursor.last_seen_updated_at"
+        );
+
+        let last_seen: i64 = conn
+            .query_row(
+                "SELECT last_seen_updated_at FROM agentic_cursor WHERE source_key = 'opencode-1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            last_seen, 1700000000123,
+            "normalization should preserve the legacy cursor high-water mark"
+        );
     }
 
     #[test]

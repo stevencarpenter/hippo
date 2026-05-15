@@ -1539,7 +1539,14 @@ class BrainServer:
             await asyncio.gather(*embed_tasks, return_exceptions=True)
 
     async def _embed_node(self, node_id, node_dict, source_label):
-        """Embed a knowledge node into the vector store (fire-and-forget safe)."""
+        """Embed a knowledge node into the vector store.
+
+        Exceptions are caught so a single failure does not cancel sibling
+        embed tasks running under ``asyncio.gather(..., return_exceptions=True)``.
+        Failures are surfaced via ``logger.error`` and (when OTel telemetry is
+        configured) the ``_embed_failures`` counter incremented by
+        ``embed_knowledge_node`` before reraising.
+        """
         try:
             await embed_knowledge_node(
                 self.client,
@@ -1549,7 +1556,13 @@ class BrainServer:
             )
             logger.info("embedded %s node %d into vector store", source_label, node_id)
         except Exception as e:
-            logger.warning("%s embedding failed (non-fatal): %s", source_label, e, exc_info=True)
+            logger.error(
+                "%s embedding failed for node %d: %s",
+                source_label,
+                node_id,
+                e,
+                exc_info=True,
+            )
 
     async def _reaper_loop(self):
         """Independent reaper task — fires on its own timer regardless of gather state.

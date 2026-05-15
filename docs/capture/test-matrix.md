@@ -3,7 +3,7 @@
 # Test Matrix for Capture Reliability
 
 This matrix is the companion to [`architecture.md`](architecture.md) (where
-the I-1..I-10 invariants live) and [`anti-patterns.md`](anti-patterns.md). It
+the I-1..I-12 invariants live) and [`anti-patterns.md`](anti-patterns.md). It
 exists to make one question answerable at a glance: **for every failure
 avenue we know about, is there a test that would have caught it?**
 
@@ -22,7 +22,7 @@ a one-line change rather than "remember to write the test later".
 - **`blocked-on-P0.X`** — test skeleton exists with `#[ignore]`; fires when the named roadmap task lands
 - **`source-change-required`** — test cannot be written without a source change that is outside the scope of this PR; noted here so the gap is explicit
 
-"Invariant" refers to I-1..I-10 defined in architecture.md.
+"Invariant" refers to I-1..I-12 defined in architecture.md.
 
 ## Failure modes
 

@@ -121,3 +121,29 @@ def test_open_vector_db_creates_parent_dir(tmp_path: Path):
     conn = open_vector_db(target)
     assert (target / "hippo.db").exists()
     conn.close()
+
+
+async def test_embed_knowledge_node_issues_two_single_item_calls(vector_db, mock_client):
+    """Knowledge and command vectors must be requested as separate single-item
+    calls, never batched together. Batching disparate-length inputs triggers
+    an oMLX server bug where the shorter item returns an all-null vector.
+    """
+    conn, handle = vector_db
+    _seed_node(conn, 1, "long identifier-dense summary " * 200, summary="x")
+
+    node = sample_node(
+        node_id=1,
+        embed_text="long identifier-dense summary " * 200,
+    )
+    node["commands_raw"] = "cargo test"  # short — would trigger oMLX bug if batched
+
+    await embed_knowledge_node(mock_client, handle, node, embed_model="test")
+
+    assert len(mock_client.embed_calls) == 2, (
+        f"expected two separate single-item embed calls, got "
+        f"{len(mock_client.embed_calls)}: {mock_client.embed_calls!r}"
+    )
+    for call in mock_client.embed_calls:
+        assert len(call["texts"]) == 1, (
+            f"each call must be single-item to avoid the batch bug; got {call!r}"
+        )

@@ -146,19 +146,20 @@ async def embed_knowledge_node(
         cmd_model = command_model or embed_model
         cmd_text = commands_raw or embed_text
 
-        if cmd_model == embed_model:
-            vecs = await client.embed([embed_text, cmd_text], model=embed_model)
-            _check_vec_dim(vecs[0], "knowledge")
-            _check_vec_dim(vecs[1], "command")
-            vec_knowledge = vecs[0]
-            vec_command = vecs[1]
-        else:
-            knowledge_vecs = await client.embed([embed_text], model=embed_model)
-            _check_vec_dim(knowledge_vecs[0], "knowledge")
-            vec_knowledge = knowledge_vecs[0]
-            command_vecs = await client.embed([cmd_text], model=cmd_model)
-            _check_vec_dim(command_vecs[0], "command")
-            vec_command = command_vecs[0]
+        # Issue each embed call as a single-item request, even when both
+        # vectors share a model. Batching disparate-length inputs
+        # (e.g. a long identifier-dense summary alongside a short
+        # commands snippet) triggers an oMLX server bug where the
+        # shorter item comes back as a 768-vector of nulls, which then
+        # crashes `_vec_blob`. Two round-trips are sub-millisecond
+        # against a local inference server; the lost batch isn't worth
+        # the silent-corpus-corruption exposure.
+        knowledge_vecs = await client.embed([embed_text], model=embed_model)
+        _check_vec_dim(knowledge_vecs[0], "knowledge")
+        vec_knowledge = knowledge_vecs[0]
+        command_vecs = await client.embed([cmd_text], model=cmd_model)
+        _check_vec_dim(command_vecs[0], "command")
+        vec_command = command_vecs[0]
 
         vector_store.insert_vectors(handle, node_id, vec_knowledge, vec_command)
         record_embed_model(handle, embed_model)

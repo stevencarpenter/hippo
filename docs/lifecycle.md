@@ -186,7 +186,7 @@ Probe events are filtered out of every user-facing query at the daemon-side quer
 
 ## Where capture can fail silently
 
-The historical reasons hippo built [`capture/architecture.md`](capture/architecture.md)'s I-1..I-10 invariants:
+The historical reasons hippo built [`capture/architecture.md`](capture/architecture.md)'s I-1..I-12 invariants:
 
 - **Hook not sourced.** The user's `~/.zshrc` was edited but never re-loaded. No errors anywhere — events just never appear.
 - **NM manifest missing.** The Firefox extension was reloaded but `hippo daemon install --force` wasn't re-run. The extension can't reach the daemon. Captured by I-4.
