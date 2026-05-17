@@ -209,8 +209,10 @@ After the v13→v14 migration block (~line 790), add:
 // v14→v15: seed the source_health row for the Codex poller. The poller's
 // source_health UPDATE is a silent no-op without this row. Codex writes the
 // claude_sessions table, but its capture-path health key is
-// `agentic-session-codex` (health-row names are decoupled from table names —
-// Claude likewise writes claude_sessions but reports as agentic-session-claude).
+// `agentic-session-codex`: source_health keys identify the capture path, not
+// the destination table. (Existing keys are not uniform — the Claude ingester
+// writes `claude-session`, the opencode poller `agentic-session-opencode`;
+// Codex follows the newer `agentic-session-*` form.)
 if version < 15 {
     let has_source_health: bool = conn
         .query_row(
@@ -291,7 +293,7 @@ mod tests {
 
     #[test]
     fn parse_ts_handles_iso_and_garbage() {
-        assert_eq!(parse_ts("2026-04-04T07:47:59.376Z"), 1775634479376);
+        assert_eq!(parse_ts("2026-04-04T07:47:59.376Z"), 1775288879376);
         assert_eq!(parse_ts(""), 0);
         assert_eq!(parse_ts("not-a-date"), 0);
     }
@@ -386,7 +388,7 @@ pub(crate) fn tool_summary(arguments: &str) -> String {
 - [ ] **Step 5: Run test to verify it passes**
 
 Run: `cargo test -p hippo-daemon codex_session`
-Expected: PASS. (Verify the `parse_ts` epoch value against the test — adjust the expected constant if your timezone math differs; `1775634479376` is `2026-04-04T07:47:59.376Z` in UTC.)
+Expected: PASS. (`1775288879376` = `2026-04-04T07:47:59.376Z`; an RFC3339 `Z` timestamp is an absolute instant, so this constant is machine-independent — do not adjust it for local time.)
 
 - [ ] **Step 6: Commit**
 
@@ -917,16 +919,66 @@ fn upsert_writes_claude_session_and_enqueues() {
 
 `CodexSegment`, `ToolCall`, and `upsert_segment` must be reachable from the integration test, so change their visibility from `pub(crate)` to `pub` in `codex_session.rs`.
 
+Also add this unit test for the enqueue gate to the inline `#[cfg(test)] mod tests` in `crates/hippo-daemon/src/codex_session.rs`. `decide_enqueue` (Step 3) is private to the module, so it is tested inline, not from the integration file:
+
+```rust
+#[test]
+fn decide_enqueue_gates_on_content_change() {
+    let now = 2_000_000_000_000;
+    let stale = now - 600_000; // 10 min ago — past the 5-min debounce
+    // New segment — always enqueued.
+    assert!(decide_enqueue(true, "h1", None, None, None, now));
+    // A worker holds the row — never trample it.
+    assert!(!decide_enqueue(false, "h1", None, Some("processing"), Some(stale), now));
+    // Content unchanged since last enrichment — skip.
+    assert!(!decide_enqueue(false, "h1", Some("h1"), Some("done"), Some(stale), now));
+    // Content changed — re-enqueue.
+    assert!(decide_enqueue(false, "h2", Some("h1"), Some("done"), Some(stale), now));
+    // Changed, but a re-pend already landed inside the debounce window — skip.
+    assert!(!decide_enqueue(false, "h2", Some("h1"), Some("done"), Some(now - 1_000), now));
+}
+```
+
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cargo test -p hippo-daemon --test codex_session`
+Run: `cargo test -p hippo-daemon codex_session`
 Expected: FAIL — `upsert_segment` not defined.
 
 - [ ] **Step 3: Implement `upsert_segment`**
 
-Add `use rusqlite::params;` to imports, then:
+Add `use rusqlite::{params, OptionalExtension};` to imports, then:
 
 ```rust
+/// Decide whether a just-upserted segment should be (re-)enqueued for
+/// enrichment. A direct port of `claude_session::decide_enqueue` — Codex
+/// segments share `claude_enrichment_queue` with Claude, so they must share
+/// its re-enrichment gate, or a resumed rollout (grown file, bumped mtime)
+/// re-pends every already-enriched earlier segment on every poll.
+fn decide_enqueue(
+    was_insert: bool,
+    current_hash: &str,
+    prior_last_enriched_hash: Option<&str>,
+    prior_queue_status: Option<&str>,
+    prior_queue_updated_at_ms: Option<i64>,
+    now_ms: i64,
+) -> bool {
+    if was_insert {
+        return true; // new segment — always needs first enrichment
+    }
+    if prior_queue_status == Some("processing") {
+        return false; // a worker holds it
+    }
+    if prior_last_enriched_hash == Some(current_hash) {
+        return false; // content unchanged since last successful enrichment
+    }
+    if let Some(updated_at) = prior_queue_updated_at_ms
+        && (now_ms - updated_at) < 300_000
+    {
+        return false; // 5-minute debounce
+    }
+    true
+}
+
 /// Upsert one segment into `claude_sessions` and (re-)enqueue it for
 /// enrichment, inside a caller-supplied transaction. Idempotent via
 /// `ON CONFLICT (session_id, segment_index)`. `ingest_file` (Task 7) calls
@@ -939,6 +991,25 @@ pub fn upsert_segment_tx(tx: &rusqlite::Transaction, seg: &CodexSegment) -> Resu
         serde_json::to_string(&seg.user_prompts).unwrap_or_else(|_| "[]".into());
     let summary_text = build_summary_text(seg);
     let content_hash = compute_content_hash(seg);
+
+    // Read prior state BEFORE the upsert so the enqueue gate can compare the
+    // new content_hash against what was last enriched. One SELECT, mirroring
+    // `claude_session::insert_segments`.
+    #[allow(clippy::type_complexity)]
+    let prior: Option<(i64, Option<String>, Option<String>, Option<i64>)> = tx
+        .query_row(
+            "SELECT cs.id, cs.last_enriched_content_hash, ceq.status, ceq.updated_at
+             FROM claude_sessions cs
+             LEFT JOIN claude_enrichment_queue ceq ON ceq.claude_session_id = cs.id
+             WHERE cs.session_id = ?1 AND cs.segment_index = ?2",
+            params![seg.session_id, seg.segment_index],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        )
+        .optional()?;
+    let was_insert = prior.is_none();
+    let prior_last_enriched_hash = prior.as_ref().and_then(|(_, h, _, _)| h.as_deref());
+    let prior_queue_status = prior.as_ref().and_then(|(_, _, s, _)| s.as_deref());
+    let prior_queue_updated_at_ms = prior.as_ref().and_then(|(_, _, _, u)| *u);
 
     tx.execute(
         "INSERT INTO claude_sessions
@@ -971,25 +1042,41 @@ pub fn upsert_segment_tx(tx: &rusqlite::Transaction, seg: &CodexSegment) -> Resu
         ],
     )?;
 
-    let claude_session_id: i64 = tx.query_row(
-        "SELECT id FROM claude_sessions WHERE session_id = ?1 AND segment_index = ?2",
-        params![seg.session_id, seg.segment_index],
-        |r| r.get(0),
-    )?;
+    // `INSERT … ON CONFLICT` keeps the rowid stable, so reuse the prior id on
+    // an update; `last_insert_rowid()` is only meaningful for a fresh insert.
+    let claude_session_id: i64 = if was_insert {
+        tx.last_insert_rowid()
+    } else {
+        prior.as_ref().map(|(id, _, _, _)| *id).unwrap()
+    };
 
-    // Re-pend for enrichment unless a worker currently holds it.
-    tx.execute(
-        "INSERT INTO claude_enrichment_queue
-             (claude_session_id, status, retry_count, error_message, created_at, updated_at)
-         VALUES (?1, 'pending', 0, NULL, ?2, ?2)
-         ON CONFLICT(claude_session_id) DO UPDATE SET
-             status        = 'pending',
-             retry_count   = 0,
-             error_message = NULL,
-             updated_at    = excluded.updated_at
-         WHERE claude_enrichment_queue.status != 'processing'",
-        params![claude_session_id, now_ms],
-    )?;
+    // Re-pend for enrichment only on genuinely new content (decide_enqueue).
+    // `last_enriched_content_hash` is written by the brain, never here. A bare
+    // file-mtime bump that re-parses unchanged segments must NOT re-enqueue
+    // them — the gate is what stops a resumed rollout from re-enriching every
+    // earlier segment. The `WHERE … != 'processing'` clause is a second guard
+    // so a concurrent worker's lock is never trampled.
+    if decide_enqueue(
+        was_insert,
+        &content_hash,
+        prior_last_enriched_hash,
+        prior_queue_status,
+        prior_queue_updated_at_ms,
+        now_ms,
+    ) {
+        tx.execute(
+            "INSERT INTO claude_enrichment_queue
+                 (claude_session_id, status, retry_count, error_message, created_at, updated_at)
+             VALUES (?1, 'pending', 0, NULL, ?2, ?2)
+             ON CONFLICT(claude_session_id) DO UPDATE SET
+                 status        = 'pending',
+                 retry_count   = 0,
+                 error_message = NULL,
+                 updated_at    = excluded.updated_at
+             WHERE claude_enrichment_queue.status != 'processing'",
+            params![claude_session_id, now_ms],
+        )?;
+    }
     Ok(())
 }
 
@@ -1005,10 +1092,10 @@ pub fn upsert_segment(conn: &rusqlite::Connection, seg: &CodexSegment) -> Result
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `cargo test -p hippo-daemon --test codex_session`
+Run: `cargo test -p hippo-daemon codex_session`
 Expected: PASS.
 
-> Note: if `claude_enrichment_queue` columns differ from `(claude_session_id, status, retry_count, error_message, created_at, updated_at)`, match the actual schema in `crates/hippo-core/src/schema.sql` — the statement above is copied verbatim from `claude_session.rs:1083`.
+> Note: if `claude_enrichment_queue` columns differ from `(claude_session_id, status, retry_count, error_message, created_at, updated_at)`, match the actual schema in `crates/hippo-core/src/schema.sql`. Both the queue `INSERT` and the `decide_enqueue` gate are ported from `claude_session.rs` (`decide_enqueue` ~line 892, the queue `INSERT` ~line 1083): Codex shares `claude_enrichment_queue` with the Claude watcher, so it must share the content-hash gate — without it a resumed rollout re-enriches every already-enriched segment on each poll.
 
 - [ ] **Step 5: Commit**
 
@@ -1090,7 +1177,7 @@ Add `filetime` as a dev-dependency in `crates/hippo-daemon/Cargo.toml` under `[d
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cargo test -p hippo-daemon --test codex_session`
+Run: `cargo test -p hippo-daemon codex_session`
 Expected: FAIL — `poll_tick` / `test_config` not defined.
 
 - [ ] **Step 3: Implement `poll_tick` and the cursor**
@@ -1252,7 +1339,7 @@ file's segments commit in one transaction (spec §4.3, AP-1).
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `cargo test -p hippo-daemon --test codex_session`
+Run: `cargo test -p hippo-daemon codex_session`
 Expected: PASS (all tests).
 
 - [ ] **Step 5: Run clippy and fmt**
@@ -1674,4 +1761,4 @@ git commit -m "docs(codex): add [codex] config section and CLAUDE.md notes"
 
 - **Spec coverage:** §3 data model → Task 6; §4.2 segmentation → Task 4; §4.3 poller → Task 7; §4.4 parser (both user-message shapes) → Task 4; §4.5 cursor → Task 7; §5 config → Tasks 1, 12; §5 CLI → Task 8; §5 launchd → Task 9; §5 schema v15 → Task 2; §5 doctor/watchdog → Task 10; §6 retire legacy → Task 11; §7 harness derivation → no code (migration concern, documented in spec). §8 tests → Tasks 3–7, 10.
 - **Open verification carried into tasks:** spec's "does brain enrichment need Codex-specific framing" — Task 11 Step 4 surfaces it via the brain test run; framing is baked into `summary_text` by the Rust poller (Task 5), so no brain change is expected.
-- **Type consistency:** `CodexSegment`, `ToolCall`, `extract_segments`, `build_summary_text`, `compute_content_hash`, `upsert_segment`/`upsert_segment_tx`, `poll_tick`, `test_config` are used consistently across Tasks 3–8.
+- **Type consistency:** `CodexSegment`, `ToolCall`, `extract_segments`, `build_summary_text`, `compute_content_hash`, `decide_enqueue`, `upsert_segment`/`upsert_segment_tx`, `poll_tick`, `test_config` are used consistently across Tasks 3–8.

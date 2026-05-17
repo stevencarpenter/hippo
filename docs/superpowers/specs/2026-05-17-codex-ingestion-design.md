@@ -105,9 +105,11 @@ alone (it `SELECT`s `summary_text`, `tool_calls_json`, `user_prompts_json`):
   sub-session concept)
 - `git_branch` — best-effort from cwd, or NULL
 
-Enqueue each upserted segment into `claude_enrichment_queue`
-(`ON CONFLICT(claude_session_id) DO UPDATE` re-pending unless `processing`),
-mirroring the Claude watcher.
+Enqueue each upserted segment into `claude_enrichment_queue`, gated exactly as
+the Claude watcher gates it (`claude_session::decide_enqueue`): a new segment is
+always enqueued; an existing segment is re-pended only when its `content_hash`
+differs from the last-enriched hash and no worker holds it. A bare file-mtime
+bump must never re-enqueue an unchanged segment.
 
 ### 4.2 Segmentation
 
@@ -156,7 +158,9 @@ A Rust port of the `codex_sessions.py` rollout parser. Line handling:
   `event_msg` with `payload.type == "user_message"`, **and** `response_item`
   with `payload.type == "message"`, `role == "user"`. (The standalone CLI and
   Xcode-embedded Codex have been observed emitting different shapes; the
-  implementation plan must validate against real fixtures from both roots.)
+  implementation plan validates the parser against real rollouts from both
+  roots locally, committing only synthetic hand-authored fixtures — see plan
+  Task 4.)
 - Tool calls — `response_item` with `payload.type` in
   `{function_call, custom_tool_call}`; summarized via the `_tool_summary`
   heuristic (cmd / command / path / query → short string).
@@ -203,10 +207,12 @@ triggering a re-parse; `content_hash` ensures only changed segments re-enqueue.
   to coalesce bursts. Update the install wiring in `main.rs` / `install.rs`
   (the two `xcode-codex-ingest` references) and `mise.toml`.
 - **Schema v15** — bump `PRAGMA user_version` 14 → 15. The migration is a single
-  `INSERT OR IGNORE INTO source_health` for `agentic-session-codex` (the
-  capture-path key; health-row names are already decoupled from table names —
-  Claude writes `claude_sessions` but its health row is `agentic-session-claude`).
-  Without the row, the poller's `source_health` `UPDATE` is a silent no-op.
+  `INSERT OR IGNORE INTO source_health` for `agentic-session-codex` — the
+  capture-path key, which identifies the ingestion path, not the destination
+  table. (Existing keys are not uniform: the Claude ingester writes
+  `claude-session`, the opencode poller `agentic-session-opencode`; Codex
+  follows the newer `agentic-session-*` form.) Without the row, the poller's
+  `source_health` `UPDATE` is a silent no-op.
 - **doctor** — add `'agentic-session-codex'` to `check_source_staleness`'s
   `WHERE source IN (...)` list.
 - **watchdog** — add Codex freshness coverage mirroring `agentic-session-opencode`.
@@ -253,7 +259,7 @@ benefit over an already-unambiguous path signal.
 
 Rust unit tests, mirroring `opencode_session` / Claude-watcher coverage:
 
-- **Parser** — fixture rollout files (real samples exist under both roots):
+- **Parser** — synthetic, hand-authored fixture rollouts (never commit real rollout files — see plan Task 4):
   segmentation at 5-minute gaps, both user-message shapes, tool-call
   summarization, developer-message skip, Xcode-context stripping.
 - **`poll_tick`** — temp hippo DB: first-run backfill, cursor advance,
