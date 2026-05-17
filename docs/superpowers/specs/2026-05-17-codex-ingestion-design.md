@@ -4,6 +4,8 @@
 **Status:** Approved, ready for implementation planning
 **Scope:** Add OpenAI Codex CLI sessions as a hippo capture source, alongside
 Claude Code and opencode.
+**Tracking:** GitHub issue #154 (this feature), under epic #113 (agentic
+ingestion). Implementation plan: `docs/superpowers/plans/2026-05-17-codex-ingestion.md`.
 
 ## 1. Summary
 
@@ -277,6 +279,11 @@ it, unifying the enrichment queues and `knowledge_node_*` link tables,
 backfilling existing rows (harness derived per §7), and dropping the legacy
 tables.
 
-This work is tracked as a dedicated GitHub issue series, created alongside this
-spec. This Codex feature is explicitly the interim step; it is designed so the
-migration can absorb it cleanly via the §7 harness derivation.
+This work is tracked under epic #113 as issues #155–#160 (Unification 1/6
+through 6/6). Per a four-expert review, the migration is a **direct single-host
+cutover** — stop services, run the schema rebuild + backfill, restart — not an
+expand/contract dual-write: hippo is one personal host with no zero-downtime
+requirement, and the SQLite file is the rollback unit.
+
+This Codex feature (issue #154) is explicitly the interim step; it is designed
+so the migration can absorb it cleanly via the §7 harness derivation.
