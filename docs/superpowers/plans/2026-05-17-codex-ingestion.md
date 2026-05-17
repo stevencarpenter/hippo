@@ -1480,6 +1480,14 @@ Second, extend the `agentic-session-opencode` arm of `source_staleness_threshold
         },
 ```
 
+Also update the comment immediately above that arm — it currently reads "Opencode polls every 30 s by default… idle DBs are suppressed below", which is opencode-specific and becomes misleading once Codex shares the arm. Replace it with text accurate for both pollers, e.g.:
+
+```rust
+        // Opencode and Codex are both interval pollers — tolerate a missed
+        // tick before warning, an hour before failing. Opencode additionally
+        // suppresses idle-source warnings below; Codex does not yet (see #154).
+```
+
 Scope note: opencode additionally *suppresses* idle-source warnings inside `check_source_staleness` (see the "idle DBs are suppressed below" comment at `commands.rs:1924`). A Codex equivalent — suppressing the warning when no `session_roots` file changed recently — is **out of scope** for this feature; without it a Codex-idle day yields a `[WW]` warning, never a `[!!]` failure. State this in issue #154 rather than silently absorbing it.
 
 - [ ] **Step 2: Write the failing watchdog test**
