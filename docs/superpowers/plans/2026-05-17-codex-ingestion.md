@@ -407,11 +407,18 @@ Reference: `codex_sessions.py` `extract_codex_segments` (lines 138–303). The R
 
 - [ ] **Step 1: Write the failing test**
 
-Add a fixture-driven test. Place a real rollout sample at `crates/hippo-daemon/tests/fixtures/codex/rollout-cli.jsonl` (copy a small real file from `~/.codex/sessions/`, redacting nothing — these are local fixtures) and a second from the Xcode root as `rollout-xcode.jsonl`.
+Add fixture-driven tests. Create a **synthetic, hand-authored** fixture committed to the repo at `crates/hippo-daemon/tests/fixtures/codex/rollout-cli.jsonl`. **Do not copy a real session file** — hippo is a public repository, and a real rollout contains the owner's actual prompts, code, and filesystem paths. Hand-author a small fixture that exercises the line types the parser handles (`session_meta`, `event_msg`/`user_message`, `response_item` function call + assistant message):
+
+```jsonl
+{"timestamp":"2026-04-04T07:47:59.376Z","type":"session_meta","payload":{"id":"019d5776-0000-7a03-8832-synthfixture0","timestamp":"2026-04-04T07:47:55.190Z","cwd":"/Users/dev/proj","originator":"Codex Desktop","cli_version":"0.0.0-test"}}
+{"timestamp":"2026-04-04T07:48:00.000Z","type":"event_msg","payload":{"type":"user_message","message":"add a unit test for the parser"}}
+{"timestamp":"2026-04-04T07:48:02.000Z","type":"response_item","payload":{"type":"function_call","name":"shell","arguments":"{\"command\":\"cargo test\"}"}}
+{"timestamp":"2026-04-04T07:48:05.000Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Added the test and it passes."}]}}
+```
 
 ```rust
 #[test]
-fn extract_segments_parses_a_real_cli_rollout() {
+fn extract_segments_parses_committed_cli_fixture() {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests/fixtures/codex/rollout-cli.jsonl");
     let segs = extract_segments(&path).expect("parse");
@@ -453,6 +460,14 @@ fn extract_segments_handles_response_item_user_role() {
     assert_eq!(segs.len(), 1);
     assert!(segs[0].user_prompts.iter().any(|p| p.contains("hello codex")));
 }
+
+#[test]
+fn extract_user_text_strips_xcode_status_prefix() {
+    // Faithful to codex_sessions.py _XCODE_STATUS_PATTERN: the real user text
+    // follows the last "The user ... " status line.
+    let msg = "Project structure:\n  src/\nThe user has no code selected.\nrefactor the parser";
+    assert_eq!(extract_user_text(msg), "refactor the parser");
+}
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -466,15 +481,27 @@ Add to `codex_session.rs`:
 
 ```rust
 /// Pull the actual user request out of a Codex user message, stripping the
-/// Xcode-injected project-context prefix. Mirrors
-/// `_extract_user_text_from_codex_message`: take the text after the last
-/// "The user has/is ... " status line, else the last paragraph, capped 500.
+/// Xcode-injected project-context prefix. Substring port of
+/// `_extract_user_text_from_codex_message` in `codex_sessions.py`, whose
+/// `_XCODE_STATUS_PATTERN` (case-insensitive regex) is:
+///   `The user (?:has (?:no )?(?:code selected|file currently open)|is`
+///   `currently inside this file:[^\n]*)\.?\n`
+/// hippo-daemon has no `regex` dependency, so this matches the three
+/// distinctive tails as substrings — derived from the regex alternatives, not
+/// invented — advances past the rest of that status line, and takes the text
+/// after the last marker (else the last `\n\n` paragraph), capped at 500.
 fn extract_user_text(message: &str) -> String {
-    let markers = ["code selected.", "file currently open.", "inside this file:"];
+    let markers = ["code selected", "file currently open", "inside this file:"];
     let mut cut = 0usize;
     for m in markers {
         if let Some(idx) = message.rfind(m) {
-            cut = cut.max(idx + m.len());
+            // Advance through the rest of that status line (its trailing `\n`).
+            let after = idx + m.len();
+            let line_end = message[after..]
+                .find('\n')
+                .map(|n| after + n + 1)
+                .unwrap_or(message.len());
+            cut = cut.max(line_end);
         }
     }
     let candidate = message[cut..].trim();
@@ -683,7 +710,7 @@ pub(crate) fn extract_segments(path: &Path) -> Result<Vec<CodexSegment>> {
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `cargo test -p hippo-daemon codex_session`
-Expected: PASS (all four tests). If `extract_segments_parses_a_real_cli_rollout` fails, inspect the fixture — the real format is authoritative; adjust the parser to match observed line shapes and document any deviation from the Python reference.
+Expected: PASS (all five tests). If `extract_segments_parses_committed_cli_fixture` fails, the real rollout format is authoritative — diff the synthetic fixture against a real `~/.codex/sessions/` rollout locally (do not commit the real one), adjust the parser to match observed line shapes, and document any deviation from the Python reference.
 
 - [ ] **Step 5: Commit**
 
@@ -754,25 +781,37 @@ Add `use sha2::{Digest, Sha256};` to the imports, then:
 /// Build the Codex-framed enrichment digest stored in
 /// `claude_sessions.summary_text` and read by the brain's enrichment loop.
 pub(crate) fn build_summary_text(seg: &CodexSegment) -> String {
+    // Count caps bound summary_text. The 5-min / 12k-char segmentation split
+    // only fires on user-message lines, so a segment with one prompt followed
+    // by thousands of tool calls would otherwise produce an unbounded digest.
+    const MAX_PROMPTS: usize = 30;
+    const MAX_TOOLS: usize = 60;
+    const MAX_ASSISTANT: usize = 5;
     let mut lines = vec![format!("Codex session (project: {})", seg.cwd)];
     if !seg.user_prompts.is_empty() {
         lines.push(String::new());
         lines.push("User requests:".to_string());
-        for (i, p) in seg.user_prompts.iter().enumerate() {
+        for (i, p) in seg.user_prompts.iter().take(MAX_PROMPTS).enumerate() {
             lines.push(format!("  {}. \"{}\"", i + 1, p));
+        }
+        if seg.user_prompts.len() > MAX_PROMPTS {
+            lines.push(format!("  … (+{} more)", seg.user_prompts.len() - MAX_PROMPTS));
         }
     }
     if !seg.tool_calls.is_empty() {
         lines.push(String::new());
         lines.push("Work performed:".to_string());
-        for tc in &seg.tool_calls {
+        for tc in seg.tool_calls.iter().take(MAX_TOOLS) {
             lines.push(format!("  - {}: {}", tc.name, tc.summary));
+        }
+        if seg.tool_calls.len() > MAX_TOOLS {
+            lines.push(format!("  … (+{} more)", seg.tool_calls.len() - MAX_TOOLS));
         }
     }
     if !seg.assistant_texts.is_empty() {
         lines.push(String::new());
         lines.push("Assistant responses (excerpts):".to_string());
-        for t in seg.assistant_texts.iter().take(5) {
+        for t in seg.assistant_texts.iter().take(MAX_ASSISTANT) {
             lines.push(format!("  - \"{}\"", t));
         }
     }
@@ -889,8 +928,11 @@ Add `use rusqlite::params;` to imports, then:
 
 ```rust
 /// Upsert one segment into `claude_sessions` and (re-)enqueue it for
-/// enrichment. Idempotent via `ON CONFLICT (session_id, segment_index)`.
-pub fn upsert_segment(conn: &rusqlite::Connection, seg: &CodexSegment) -> Result<()> {
+/// enrichment, inside a caller-supplied transaction. Idempotent via
+/// `ON CONFLICT (session_id, segment_index)`. `ingest_file` (Task 7) calls
+/// this directly so a whole rollout file's segments commit atomically
+/// (spec §4.3, AP-1).
+pub fn upsert_segment_tx(tx: &rusqlite::Transaction, seg: &CodexSegment) -> Result<()> {
     let now_ms = chrono::Utc::now().timestamp_millis();
     let tool_calls_json = serde_json::to_string(&seg.tool_calls).unwrap_or_else(|_| "[]".into());
     let user_prompts_json =
@@ -898,7 +940,6 @@ pub fn upsert_segment(conn: &rusqlite::Connection, seg: &CodexSegment) -> Result
     let summary_text = build_summary_text(seg);
     let content_hash = compute_content_hash(seg);
 
-    let tx = conn.unchecked_transaction()?;
     tx.execute(
         "INSERT INTO claude_sessions
             (session_id, project_dir, cwd, git_branch, segment_index,
@@ -949,7 +990,14 @@ pub fn upsert_segment(conn: &rusqlite::Connection, seg: &CodexSegment) -> Result
          WHERE claude_enrichment_queue.status != 'processing'",
         params![claude_session_id, now_ms],
     )?;
+    Ok(())
+}
 
+/// Convenience wrapper: upsert one segment in its own transaction. Used by the
+/// Task 6 test; `ingest_file` (Task 7) uses `upsert_segment_tx` directly.
+pub fn upsert_segment(conn: &rusqlite::Connection, seg: &CodexSegment) -> Result<()> {
+    let tx = conn.unchecked_transaction()?;
+    upsert_segment_tx(&tx, seg)?;
     tx.commit()?;
     Ok(())
 }
@@ -1056,12 +1104,8 @@ use walkdir::WalkDir;
 
 /// Stable inode-keyed cursor key for one rollout file. Inode survives the
 /// `mv` Codex performs on archival, so archived files aren't re-parsed.
-#[cfg(target_os = "macos")]
-fn cursor_key(meta: &std::fs::Metadata) -> String {
-    use std::os::unix::fs::MetadataExt;
-    format!("codex-{}", meta.ino())
-}
-#[cfg(not(target_os = "macos"))]
+/// `ino()` is available on every Unix target via `MetadataExt` — no per-OS
+/// `cfg` split is needed.
 fn cursor_key(meta: &std::fs::Metadata) -> String {
     use std::os::unix::fs::MetadataExt;
     format!("codex-{}", meta.ino())
@@ -1203,11 +1247,8 @@ pub fn test_config(data_dir: &Path, roots: &[PathBuf]) -> HippoConfig {
 }
 ```
 
-Refactor Task 6's `upsert_segment` so the SQL body lives in a transaction-taking
-`upsert_segment_tx(tx: &rusqlite::Transaction, seg: &CodexSegment)`, and keep
-the public `upsert_segment(conn, seg)` as a thin wrapper that opens a
-transaction and calls it — so `ingest_file` can batch a whole file's segments
-atomically (spec §4.3, AP-1).
+`ingest_file` calls `upsert_segment_tx` (defined in Task 6) so a whole rollout
+file's segments commit in one transaction (spec §4.3, AP-1).
 
 - [ ] **Step 4: Run test to verify it passes**
 
@@ -1424,11 +1465,22 @@ git commit -m "feat(codex): replace xcode-codex-ingest launchd job with codex-se
 
 - [ ] **Step 1: Update the doctor staleness check**
 
-In `commands.rs`, change the `WHERE source IN (...)` list to include codex:
+Two edits in `commands.rs`. First, change the `check_source_staleness` `WHERE source IN (...)` list (~line 1647) to include codex:
 
 ```rust
          WHERE source IN ('shell', 'browser', 'claude-session', 'claude-tool', 'agentic-session-opencode', 'agentic-session-codex') \
 ```
+
+Second, extend the `agentic-session-opencode` arm of `source_staleness_thresholds_for` (~line 1925) to an or-pattern covering Codex. The Codex poller is interval-driven like opencode and needs the same lenient `fail_secs` (not the 1800 s `_` default); an or-pattern (rather than a second identical arm) avoids a `clippy::match_same_arms` warning that would fail the `-D warnings` build:
+
+```rust
+        "agentic-session-opencode" | "agentic-session-codex" => SourceStalenessThresholds {
+            warn_secs: 300,
+            fail_secs: 3600,
+        },
+```
+
+Scope note: opencode additionally *suppresses* idle-source warnings inside `check_source_staleness` (see the "idle DBs are suppressed below" comment at `commands.rs:1924`). A Codex equivalent — suppressing the warning when no `session_roots` file changed recently — is **out of scope** for this feature; without it a Codex-idle day yields a `[WW]` warning, never a `[!!]` failure. State this in issue #154 rather than silently absorbing it.
 
 - [ ] **Step 2: Write the failing watchdog test**
 
@@ -1487,7 +1539,7 @@ pub fn check_i13_codex_coverage_proxy(
 }
 ```
 
-Wire `check_i13_codex_coverage_proxy` into the watchdog's invariant-evaluation loop wherever `check_i11_opencode_coverage_proxy` is called (search the file for `i11`). Use `I-13` only if free — grep `watchdog.rs` for the highest existing `I-NN` and pick the next integer if `I-13` is taken.
+Wire `check_i13_codex_coverage_proxy` into the watchdog's invariant-evaluation loop wherever `check_i11_opencode_coverage_proxy` is called (search the file for `i11`). The highest existing invariant is `I-12`, so `I-13` is the correct next ID.
 
 - [ ] **Step 5: Run tests + clippy**
 
