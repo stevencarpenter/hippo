@@ -4,6 +4,7 @@
 use anyhow::{Context, Result};
 use chrono::DateTime;
 use hippo_core::config::HippoConfig;
+use hippo_core::redaction::RedactionEngine;
 use rusqlite::{OptionalExtension, params};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
@@ -128,7 +129,12 @@ fn content_text(content: &serde_json::Value) -> String {
 }
 
 /// Parse a Codex rollout JSONL file into task-boundary segments.
-pub(crate) fn extract_segments(path: &Path) -> Result<Vec<CodexSegment>> {
+///
+/// `redaction` — applied to `user_prompts`, `assistant_texts`, and each
+/// tool-call summary before the values are stored. Matches the Python
+/// `redact_segment_secrets` step; the builtin pattern set is shared with
+/// `hippo_brain.redaction`.
+pub(crate) fn extract_segments(path: &Path, redaction: &RedactionEngine) -> Result<Vec<CodexSegment>> {
     let raw = std::fs::read_to_string(path)
         .with_context(|| format!("read codex rollout {}", path.display()))?;
     let source_file = path.to_string_lossy().to_string();
@@ -250,8 +256,9 @@ pub(crate) fn extract_segments(path: &Path) -> Result<Vec<CodexSegment>> {
             }
             seg.message_count += 1;
             if !user_text.is_empty() {
-                current_chars += user_text.len();
-                seg.user_prompts.push(user_text);
+                let redacted = redaction.redact(&user_text).text;
+                current_chars += redacted.len();
+                seg.user_prompts.push(redacted);
             }
             continue;
         }
@@ -282,7 +289,7 @@ pub(crate) fn extract_segments(path: &Path) -> Result<Vec<CodexSegment>> {
                 Some(other) => other.to_string(),
                 None => String::new(),
             };
-            let summary = tool_summary(&args);
+            let summary = redaction.redact(&tool_summary(&args)).text;
             current_chars += summary.len();
             seg.tool_calls.push(ToolCall {
                 name: name.to_string(),
@@ -295,8 +302,9 @@ pub(crate) fn extract_segments(path: &Path) -> Result<Vec<CodexSegment>> {
             let text = content_text(payload.get("content").unwrap_or(&serde_json::Value::Null));
             if !text.is_empty() {
                 let capped: String = text.chars().take(300).collect();
-                current_chars += capped.len();
-                seg.assistant_texts.push(capped);
+                let redacted = redaction.redact(&capped).text;
+                current_chars += redacted.len();
+                seg.assistant_texts.push(redacted);
             }
         }
     }
@@ -659,7 +667,8 @@ pub fn poll_tick(config: &HippoConfig) -> Result<usize> {
 
 /// Parse one file and upsert all its segments in a single transaction.
 fn ingest_file(conn: &rusqlite::Connection, path: &Path) -> Result<(usize, String)> {
-    let segments = extract_segments(path)?;
+    let redaction = RedactionEngine::builtin();
+    let segments = extract_segments(path, &redaction)?;
     if segments.is_empty() {
         return Ok((0, String::new()));
     }
@@ -758,7 +767,7 @@ mod tests {
     fn extract_segments_parses_committed_cli_fixture() {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("tests/fixtures/codex/rollout-cli.jsonl");
-        let segs = extract_segments(&path).expect("parse");
+        let segs = extract_segments(&path, &RedactionEngine::builtin()).expect("parse");
         assert!(!segs.is_empty(), "expected at least one segment");
         let s = &segs[0];
         assert!(!s.session_id.is_empty());
@@ -779,7 +788,7 @@ mod tests {
             r#"{"timestamp":"2026-04-04T00:10:01.000Z","type":"event_msg","payload":{"type":"user_message","message":"second request"}}"#,
         ];
         std::fs::write(&p, lines.join("\n")).unwrap();
-        let segs = extract_segments(&p).unwrap();
+        let segs = extract_segments(&p, &RedactionEngine::builtin()).unwrap();
         assert_eq!(segs.len(), 2, "10-minute gap must split the session");
         assert_eq!(segs[1].segment_index, 1);
     }
@@ -793,7 +802,7 @@ mod tests {
             r#"{"timestamp":"2026-04-04T00:00:01.000Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"hello codex"}]}}"#,
         ];
         std::fs::write(&p, lines.join("\n")).unwrap();
-        let segs = extract_segments(&p).unwrap();
+        let segs = extract_segments(&p, &RedactionEngine::builtin()).unwrap();
         assert_eq!(segs.len(), 1);
         assert!(
             segs[0]
@@ -852,13 +861,50 @@ mod tests {
                 .to_string(),
         );
         std::fs::write(&p, lines.join("\n")).unwrap();
-        let segs = extract_segments(&p).unwrap();
+        let segs = extract_segments(&p, &RedactionEngine::builtin()).unwrap();
         assert_eq!(
             segs.len(),
             2,
             "accumulated chars over MAX_SEGMENT_CHARS must split the session"
         );
         assert_eq!(segs[1].segment_index, 1);
+    }
+
+    /// Regression guard: user prompts must NOT contain the raw secret after
+    /// `extract_segments` runs with the builtin redaction engine.
+    ///
+    /// Pattern used: `AKIAIOSFODNN7EXAMPLE` — a canonical AWS access key
+    /// caught by the `aws_access_key` builtin rule (verified by
+    /// `hippo_core::redaction` tests).  The resulting user_prompts entry must
+    /// contain `[REDACTED]` and must not contain the raw key.
+    #[test]
+    fn extract_segments_redacts_secret_in_user_prompt() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("rollout-sec.jsonl");
+        // Embed an AWS-key-shaped value that the builtin engine matches.
+        let secret = "AKIAIOSFODNN7EXAMPLE";
+        let message = format!("my key is {secret}");
+        let lines = [
+            r#"{"timestamp":"2026-04-04T00:00:00.000Z","type":"session_meta","payload":{"id":"sec","cwd":"/proj"}}"#.to_string(),
+            format!(
+                r#"{{"timestamp":"2026-04-04T00:00:01.000Z","type":"event_msg","payload":{{"type":"user_message","message":"{message}"}}}}"#
+            ),
+        ];
+        std::fs::write(&p, lines.join("\n")).unwrap();
+        let segs = extract_segments(&p, &RedactionEngine::builtin()).unwrap();
+        assert_eq!(segs.len(), 1);
+        let prompts = &segs[0].user_prompts;
+        assert!(!prompts.is_empty(), "expected at least one user prompt");
+        for prompt in prompts {
+            assert!(
+                !prompt.contains(secret),
+                "raw secret must not appear in user_prompts; got: {prompt:?}"
+            );
+            assert!(
+                prompt.contains("[REDACTED]"),
+                "expected [REDACTED] placeholder in user_prompts; got: {prompt:?}"
+            );
+        }
     }
 
     #[test]
