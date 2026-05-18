@@ -16,6 +16,11 @@ use crate::framing::{read_frame, write_frame};
 
 const REQUEST_TIMEOUT_MS: u64 = 5_000;
 
+/// 10-minute idle window shared by the opencode and Codex `hippo doctor`
+/// idle probes: a poller-backed source whose backing files have not changed
+/// within this window is "idle" (user not using it), not "broken".
+const IDLE_WINDOW_SECS: u64 = 600;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SocketProbeResult {
     Missing,
@@ -1713,25 +1718,35 @@ fn check_source_staleness(db: &rusqlite::Connection, explain: bool) -> u32 {
         })
     };
 
+    // Load the runtime config once for both poller-backed idle probes below
+    // (codex + opencode). A single parse avoids two TOML reads per doctor run
+    // and the tiny TOCTOU window if the file changed between them. On a load
+    // error each closure degrades exactly as it did with its own load: codex
+    // reports `(false, false)`, opencode reports `false` — i.e. no suppression.
+    let doctor_config = hippo_core::config::HippoConfig::load_default();
+
     // Inspect the Codex rollout files under the configured session roots.
     // Two facts drive doctor suppression, mirroring opencode's DB checks:
     //   - `any_exist`: at least one `rollout-*.jsonl` file is present.
     //     False ⇒ "user has never run Codex" — suppress rather than alarm.
     //   - `any_recent`: at least one `rollout-*.jsonl` was modified within the
-    //     last 10 minutes (the same window opencode uses for its DB mtime).
-    //     False (with files present) ⇒ "user just isn't using Codex right
-    //     now" — suppress.  True with a stale `source_health` row ⇒ a genuine
-    //     ingestion failure, so it is NOT suppressed.
+    //     IDLE_WINDOW_SECS window (the same window opencode uses for its DB
+    //     mtime). False (with files present) ⇒ "user just isn't using Codex
+    //     right now" — suppress.  True with a stale `source_health` row ⇒ a
+    //     genuine ingestion failure, so it is NOT suppressed.
     let codex_session_state = || -> (bool, bool) {
-        let cfg = match hippo_core::config::HippoConfig::load_default() {
-            Ok(c) => c,
-            Err(_) => return (false, false),
+        let Ok(cfg) = doctor_config.as_ref() else {
+            return (false, false);
         };
-        let ten_min_ago = std::time::SystemTime::now()
-            .checked_sub(std::time::Duration::from_secs(600))
+        let idle_cutoff = std::time::SystemTime::now()
+            .checked_sub(std::time::Duration::from_secs(IDLE_WINDOW_SECS))
             .unwrap_or(std::time::UNIX_EPOCH);
         let mut any_exist = false;
         for root in &cfg.codex.session_roots {
+            // Skip roots that don't exist, mirroring `codex_session::poll_tick`.
+            if !root.is_dir() {
+                continue;
+            }
             // rollout-*.jsonl files can live nested under the root (Codex
             // shards sessions into date-stamped subdirectories), so walk
             // recursively rather than reading one level.
@@ -1744,7 +1759,7 @@ fn check_source_staleness(db: &rusqlite::Connection, explain: bool) -> u32 {
                 any_exist = true;
                 if let Ok(meta) = entry.metadata()
                     && let Ok(modified) = meta.modified()
-                    && modified > ten_min_ago
+                    && modified > idle_cutoff
                 {
                     // A recent file settles both facts — stop walking.
                     return (true, true);
@@ -1756,20 +1771,19 @@ fn check_source_staleness(db: &rusqlite::Connection, explain: bool) -> u32 {
     };
 
     // Check whether the opencode DB itself looks active — the file exists
-    // and has been modified in the last 10 minutes. Stale opencode means
+    // and has been modified within IDLE_WINDOW_SECS. Stale opencode means
     // "user just isn't using opencode right now," not "the poller is broken."
     let opencode_db_recent = || -> bool {
-        let cfg = match hippo_core::config::HippoConfig::load_default() {
-            Ok(c) => c,
-            Err(_) => return false,
+        let Ok(cfg) = doctor_config.as_ref() else {
+            return false;
         };
         let Ok(meta) = std::fs::metadata(&cfg.opencode.db_path) else {
             return false;
         };
-        let ten_min_ago = std::time::SystemTime::now()
-            .checked_sub(std::time::Duration::from_secs(600))
+        let idle_cutoff = std::time::SystemTime::now()
+            .checked_sub(std::time::Duration::from_secs(IDLE_WINDOW_SECS))
             .unwrap_or(std::time::UNIX_EPOCH);
-        meta.modified().map(|m| m > ten_min_ago).unwrap_or(false)
+        meta.modified().map(|m| m > idle_cutoff).unwrap_or(false)
     };
 
     // Check if there's a recent claude JSONL with mtime < 5 minutes (for claude-session suppression).
