@@ -3,6 +3,7 @@
 
 use anyhow::{Context, Result};
 use chrono::DateTime;
+use rusqlite::{OptionalExtension, params};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::path::Path;
@@ -15,30 +16,29 @@ const MAX_SEGMENT_CHARS: usize = 12_000;
 /// A single tool call, summarized for enrichment. Serialized into
 /// `claude_sessions.tool_calls_json`.
 #[derive(Debug, Clone, Serialize)]
-pub(crate) struct ToolCall {
-    pub(crate) name: String,
-    pub(crate) summary: String,
+pub struct ToolCall {
+    pub name: String,
+    pub summary: String,
 }
 
 /// A parsed Codex conversation segment, upserted into `claude_sessions`.
-#[allow(dead_code)] // fields consumed in Task 7
 #[derive(Debug, Clone)]
-pub(crate) struct CodexSegment {
-    pub(crate) session_id: String,
-    pub(crate) project_dir: String,
-    pub(crate) cwd: String,
-    pub(crate) segment_index: i64,
-    pub(crate) start_time: i64,
-    pub(crate) end_time: i64,
-    pub(crate) user_prompts: Vec<String>,
-    pub(crate) assistant_texts: Vec<String>,
-    pub(crate) tool_calls: Vec<ToolCall>,
-    pub(crate) message_count: i64,
-    pub(crate) source_file: String,
+pub struct CodexSegment {
+    pub session_id: String,
+    pub project_dir: String,
+    pub cwd: String,
+    pub segment_index: i64,
+    pub start_time: i64,
+    pub end_time: i64,
+    pub user_prompts: Vec<String>,
+    pub assistant_texts: Vec<String>,
+    pub tool_calls: Vec<ToolCall>,
+    pub message_count: i64,
+    pub source_file: String,
 }
 
 /// Parse an ISO-8601 timestamp to epoch milliseconds; 0 on any failure.
-pub(crate) fn parse_ts(ts: &str) -> i64 {
+pub fn parse_ts(ts: &str) -> i64 {
     if ts.is_empty() {
         return 0;
     }
@@ -50,7 +50,7 @@ pub(crate) fn parse_ts(ts: &str) -> i64 {
 /// Short human-readable summary of a tool call's argument JSON. Mirrors
 /// `_tool_summary` in codex_sessions.py: prefer the most informative single
 /// argument, else the first non-empty string value, else the raw string.
-pub(crate) fn tool_summary(arguments: &str) -> String {
+pub fn tool_summary(arguments: &str) -> String {
     let parsed: serde_json::Value =
         serde_json::from_str(arguments).unwrap_or(serde_json::Value::Null);
     if let Some(obj) = parsed.as_object() {
@@ -83,7 +83,7 @@ pub(crate) fn tool_summary(arguments: &str) -> String {
 /// invented — advances past the rest of that status line, and takes the text
 /// after the last marker (else the last `\n\n` paragraph), capped at 500.
 #[allow(dead_code)] // consumed in Task 7
-pub(crate) fn extract_user_text(message: &str) -> String {
+pub fn extract_user_text(message: &str) -> String {
     let markers = ["code selected", "file currently open", "inside this file:"];
     let mut cut = 0usize;
     let mut found_marker = false;
@@ -127,7 +127,7 @@ fn content_text(content: &serde_json::Value) -> String {
 
 /// Parse a Codex rollout JSONL file into task-boundary segments.
 #[allow(dead_code)] // consumed in Task 7
-pub(crate) fn extract_segments(path: &Path) -> Result<Vec<CodexSegment>> {
+pub fn extract_segments(path: &Path) -> Result<Vec<CodexSegment>> {
     let raw = std::fs::read_to_string(path)
         .with_context(|| format!("read codex rollout {}", path.display()))?;
     let source_file = path.to_string_lossy().to_string();
@@ -312,8 +312,7 @@ pub(crate) fn extract_segments(path: &Path) -> Result<Vec<CodexSegment>> {
 
 /// Build the Codex-framed enrichment digest stored in
 /// `claude_sessions.summary_text` and read by the brain's enrichment loop.
-#[allow(dead_code)] // consumed in Task 6
-pub(crate) fn build_summary_text(seg: &CodexSegment) -> String {
+pub fn build_summary_text(seg: &CodexSegment) -> String {
     // Count caps bound summary_text. The 5-min / 12k-char segmentation split
     // only fires on user-message lines, so a segment with one prompt followed
     // by thousands of tool calls would otherwise produce an unbounded digest.
@@ -357,8 +356,7 @@ pub(crate) fn build_summary_text(seg: &CodexSegment) -> String {
 /// SHA256 (lowercase hex) of enrichment-relevant content. Same construction as
 /// `claude_session::compute_segment_content_hash`: tool_calls_json | "|" |
 /// user_prompts_json | "|" | assistant_texts joined by "\n".
-#[allow(dead_code)] // consumed in Task 6
-pub(crate) fn compute_content_hash(seg: &CodexSegment) -> String {
+pub fn compute_content_hash(seg: &CodexSegment) -> String {
     let tool_calls_json = serde_json::to_string(&seg.tool_calls).unwrap_or_else(|_| "[]".into());
     let user_prompts_json =
         serde_json::to_string(&seg.user_prompts).unwrap_or_else(|_| "[]".into());
@@ -374,6 +372,146 @@ pub(crate) fn compute_content_hash(seg: &CodexSegment) -> String {
         .iter()
         .map(|b| format!("{b:02x}"))
         .collect()
+}
+
+/// Decide whether a just-upserted segment should be (re-)enqueued for
+/// enrichment. A direct port of `claude_session::decide_enqueue` — Codex
+/// segments share `claude_enrichment_queue` with Claude, so they must share
+/// its re-enrichment gate, or a resumed rollout (grown file, bumped mtime)
+/// re-pends every already-enriched earlier segment on every poll.
+fn decide_enqueue(
+    was_insert: bool,
+    current_hash: &str,
+    prior_last_enriched_hash: Option<&str>,
+    prior_queue_status: Option<&str>,
+    prior_queue_updated_at_ms: Option<i64>,
+    now_ms: i64,
+) -> bool {
+    if was_insert {
+        return true; // new segment — always needs first enrichment
+    }
+    if prior_queue_status == Some("processing") {
+        return false; // a worker holds it
+    }
+    if prior_last_enriched_hash == Some(current_hash) {
+        return false; // content unchanged since last successful enrichment
+    }
+    if let Some(updated_at) = prior_queue_updated_at_ms
+        && (now_ms - updated_at) < 300_000
+    {
+        return false; // 5-minute debounce
+    }
+    true
+}
+
+/// Upsert one segment into `claude_sessions` and (re-)enqueue it for
+/// enrichment, inside a caller-supplied transaction. Idempotent via
+/// `ON CONFLICT (session_id, segment_index)`. `ingest_file` (Task 7) calls
+/// this directly so a whole rollout file's segments commit atomically
+/// (spec §4.3, AP-1).
+pub fn upsert_segment_tx(tx: &rusqlite::Transaction, seg: &CodexSegment) -> Result<()> {
+    let now_ms = chrono::Utc::now().timestamp_millis();
+    let tool_calls_json = serde_json::to_string(&seg.tool_calls).unwrap_or_else(|_| "[]".into());
+    let user_prompts_json =
+        serde_json::to_string(&seg.user_prompts).unwrap_or_else(|_| "[]".into());
+    let summary_text = build_summary_text(seg);
+    let content_hash = compute_content_hash(seg);
+
+    // Read prior state BEFORE the upsert so the enqueue gate can compare the
+    // new content_hash against what was last enriched. One SELECT, mirroring
+    // `claude_session::insert_segments`.
+    #[allow(clippy::type_complexity)]
+    let prior: Option<(i64, Option<String>, Option<String>, Option<i64>)> = tx
+        .query_row(
+            "SELECT cs.id, cs.last_enriched_content_hash, ceq.status, ceq.updated_at
+             FROM claude_sessions cs
+             LEFT JOIN claude_enrichment_queue ceq ON ceq.claude_session_id = cs.id
+             WHERE cs.session_id = ?1 AND cs.segment_index = ?2",
+            params![seg.session_id, seg.segment_index],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        )
+        .optional()?;
+    let was_insert = prior.is_none();
+    let prior_last_enriched_hash = prior.as_ref().and_then(|(_, h, _, _)| h.as_deref());
+    let prior_queue_status = prior.as_ref().and_then(|(_, _, s, _)| s.as_deref());
+    let prior_queue_updated_at_ms = prior.as_ref().and_then(|(_, _, _, u)| *u);
+
+    tx.execute(
+        "INSERT INTO claude_sessions
+            (session_id, project_dir, cwd, git_branch, segment_index,
+             start_time, end_time, summary_text, tool_calls_json,
+             user_prompts_json, message_count, token_count, source_file,
+             is_subagent, parent_session_id, content_hash, created_at)
+         VALUES (?1, ?2, ?3, NULL, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 0, ?11, 0, NULL, ?12, ?13)
+         ON CONFLICT (session_id, segment_index) DO UPDATE SET
+             end_time          = excluded.end_time,
+             summary_text      = excluded.summary_text,
+             tool_calls_json   = excluded.tool_calls_json,
+             user_prompts_json = excluded.user_prompts_json,
+             message_count     = excluded.message_count,
+             content_hash      = excluded.content_hash",
+        params![
+            seg.session_id,
+            seg.project_dir,
+            seg.cwd,
+            seg.segment_index,
+            seg.start_time,
+            seg.end_time,
+            summary_text,
+            tool_calls_json,
+            user_prompts_json,
+            seg.message_count,
+            seg.source_file,
+            content_hash,
+            now_ms,
+        ],
+    )?;
+
+    // `INSERT … ON CONFLICT` keeps the rowid stable, so reuse the prior id on
+    // an update; `last_insert_rowid()` is only meaningful for a fresh insert.
+    let claude_session_id: i64 = if was_insert {
+        tx.last_insert_rowid()
+    } else {
+        prior.as_ref().map(|(id, _, _, _)| *id).unwrap()
+    };
+
+    // Re-pend for enrichment only on genuinely new content (decide_enqueue).
+    // `last_enriched_content_hash` is written by the brain, never here. A bare
+    // file-mtime bump that re-parses unchanged segments must NOT re-enqueue
+    // them — the gate is what stops a resumed rollout from re-enriching every
+    // earlier segment. The `WHERE … != 'processing'` clause is a second guard
+    // so a concurrent worker's lock is never trampled.
+    if decide_enqueue(
+        was_insert,
+        &content_hash,
+        prior_last_enriched_hash,
+        prior_queue_status,
+        prior_queue_updated_at_ms,
+        now_ms,
+    ) {
+        tx.execute(
+            "INSERT INTO claude_enrichment_queue
+                 (claude_session_id, status, retry_count, error_message, created_at, updated_at)
+             VALUES (?1, 'pending', 0, NULL, ?2, ?2)
+             ON CONFLICT(claude_session_id) DO UPDATE SET
+                 status        = 'pending',
+                 retry_count   = 0,
+                 error_message = NULL,
+                 updated_at    = excluded.updated_at
+             WHERE claude_enrichment_queue.status != 'processing'",
+            params![claude_session_id, now_ms],
+        )?;
+    }
+    Ok(())
+}
+
+/// Convenience wrapper: upsert one segment in its own transaction. Used by the
+/// Task 6 test; `ingest_file` (Task 7) uses `upsert_segment_tx` directly.
+pub fn upsert_segment(conn: &rusqlite::Connection, seg: &CodexSegment) -> Result<()> {
+    let tx = conn.unchecked_transaction()?;
+    upsert_segment_tx(&tx, seg)?;
+    tx.commit()?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -551,5 +689,49 @@ mod tests {
             "accumulated chars over MAX_SEGMENT_CHARS must split the session"
         );
         assert_eq!(segs[1].segment_index, 1);
+    }
+
+    #[test]
+    fn decide_enqueue_gates_on_content_change() {
+        let now = 2_000_000_000_000;
+        let stale = now - 600_000; // 10 min ago — past the 5-min debounce
+        // New segment — always enqueued.
+        assert!(decide_enqueue(true, "h1", None, None, None, now));
+        // A worker holds the row — never trample it.
+        assert!(!decide_enqueue(
+            false,
+            "h1",
+            None,
+            Some("processing"),
+            Some(stale),
+            now
+        ));
+        // Content unchanged since last enrichment — skip.
+        assert!(!decide_enqueue(
+            false,
+            "h1",
+            Some("h1"),
+            Some("done"),
+            Some(stale),
+            now
+        ));
+        // Content changed — re-enqueue.
+        assert!(decide_enqueue(
+            false,
+            "h2",
+            Some("h1"),
+            Some("done"),
+            Some(stale),
+            now
+        ));
+        // Changed, but a re-pend already landed inside the debounce window — skip.
+        assert!(!decide_enqueue(
+            false,
+            "h2",
+            Some("h1"),
+            Some("done"),
+            Some(now - 1_000),
+            now
+        ));
     }
 }
