@@ -13,7 +13,7 @@ const SCHEMA: &str = include_str!("schema.sql");
 /// startup code (e.g. the brain handshake) can cross-check without
 /// re-declaring the value. Keep in sync with
 /// `brain/src/hippo_brain/schema_version.py::EXPECTED_SCHEMA_VERSION`.
-pub const EXPECTED_VERSION: i64 = 14;
+pub const EXPECTED_VERSION: i64 = 15;
 
 /// Idempotent `ALTER TABLE … ADD COLUMN`. Pre-checks `PRAGMA table_info`
 /// for the column name; if absent, runs the supplied DDL. Used by
@@ -780,6 +780,30 @@ pub fn open_db(path: &Path) -> Result<Connection> {
                     ('agentic-session-opencode', NULL, unixepoch('now') * 1000);",
             )?;
         }
+    }
+
+    // v14→v15: seed the source_health row for the Codex poller. The poller's
+    // source_health UPDATE is a silent no-op without this row. Codex writes the
+    // claude_sessions table, but its capture-path health key is
+    // `agentic-session-codex`: source_health keys identify the capture path, not
+    // the destination table. (Existing keys are not uniform — the Claude ingester
+    // writes `claude-session`, the opencode poller `agentic-session-opencode`;
+    // Codex follows the newer `agentic-session-*` form.)
+    if version > 0 && version < 15 {
+        let has_source_health: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='source_health')",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap_or(false);
+        if has_source_health {
+            conn.execute_batch(
+                "INSERT OR IGNORE INTO source_health (source, last_event_ts, updated_at) VALUES
+                    ('agentic-session-codex', NULL, unixepoch('now') * 1000);",
+            )?;
+        }
+        conn.execute_batch("PRAGMA user_version = 15;")?;
     } else if version != 0 && version != EXPECTED_VERSION {
         anyhow::bail!(
             "DB schema version mismatch: expected {}, found {}. \
@@ -3293,6 +3317,45 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM events", [], |r| r.get(0))
             .unwrap();
         assert_eq!(event_count_after, 1);
+    }
+
+    #[test]
+    fn test_migrate_v14_to_v15_seeds_codex_source_health() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("test.db");
+        {
+            let conn = rusqlite::Connection::open(&db_path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE source_health (
+                    source TEXT PRIMARY KEY,
+                    last_event_ts INTEGER,
+                    last_success_ts INTEGER,
+                    last_error_ts INTEGER,
+                    last_error_msg TEXT,
+                    consecutive_failures INTEGER NOT NULL DEFAULT 0,
+                    events_last_1h INTEGER NOT NULL DEFAULT 0,
+                    events_last_24h INTEGER NOT NULL DEFAULT 0,
+                    probe_ok INTEGER,
+                    probe_lag_ms INTEGER,
+                    updated_at INTEGER NOT NULL DEFAULT 0
+                );
+                PRAGMA user_version = 14;",
+            )
+            .unwrap();
+        }
+        let conn = open_db(&db_path).unwrap();
+        let exists: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM source_health WHERE source = 'agentic-session-codex')",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(exists, "v15 migration must seed agentic-session-codex");
+        let v: i64 = conn
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(v, EXPECTED_VERSION);
     }
 }
 
