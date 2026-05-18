@@ -163,6 +163,31 @@ class TestClaimPath:
         assert "message_count" in row[1]
 
 
+class TestPromptFormatting:
+    def test_prompt_includes_daemon_transcript_summary_text(self):
+        prompt = build_opencode_enrichment_prompt(
+            [
+                {
+                    "cwd": "/proj",
+                    "slug": "capture",
+                    "summary_text": (
+                        "User requests:\n"
+                        '  1. "Capture opencode message parts"\n'
+                        "Work performed:\n"
+                        "  - bash: rg opencode brain/src/hippo_brain"
+                    ),
+                    "snapshot_diffs": None,
+                    "commit_messages": [],
+                    "message_count": 2,
+                    "token_count": 42,
+                }
+            ]
+        )
+
+        assert "Capture opencode message parts" in prompt
+        assert "bash: rg opencode brain/src/hippo_brain" in prompt
+
+
 class TestWriteKnowledgeNode:
     """Regression tests for F-28 — the original malformed VALUES clause."""
 

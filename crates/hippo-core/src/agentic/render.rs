@@ -7,7 +7,7 @@ use serde_json::Value;
 
 pub fn render_command(tool_name: &str, input: &Value) -> String {
     match tool_name {
-        "Bash" => input
+        "Bash" | "bash" => input
             .get("command")
             .and_then(Value::as_str)
             .unwrap_or("bash")
@@ -17,16 +17,16 @@ pub fn render_command(tool_name: &str, input: &Value) -> String {
             .and_then(Value::as_str)
             .unwrap_or("exec")
             .to_string(),
-        "Read" => format!("read {}", str_field(input, "file_path", "<unknown>")),
-        "Edit" => format!("edit {}", str_field(input, "file_path", "<unknown>")),
-        "Write" => format!("write {}", str_field(input, "file_path", "<unknown>")),
-        "Grep" => format!(
+        "Read" | "read" => format!("read {}", str_field(input, "file_path", "<unknown>")),
+        "Edit" | "edit" => format!("edit {}", str_field(input, "file_path", "<unknown>")),
+        "Write" | "write" => format!("write {}", str_field(input, "file_path", "<unknown>")),
+        "Grep" | "grep" => format!(
             "grep '{}' {}",
             str_field(input, "pattern", "*"),
             str_field(input, "path", ".")
         ),
-        "Glob" => format!("glob '{}'", str_field(input, "pattern", "*")),
-        "Agent" => format!("agent: {}", str_field(input, "description", "agent task")),
+        "Glob" | "glob" => format!("glob '{}'", str_field(input, "pattern", "*")),
+        "Agent" | "agent" => format!("agent: {}", str_field(input, "description", "agent task")),
         "TaskCreate" => format!("task: {}", str_field(input, "subject", "task")),
         "TaskUpdate" => format!(
             "task-update: {} {}",

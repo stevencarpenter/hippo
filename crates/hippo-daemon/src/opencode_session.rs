@@ -7,8 +7,12 @@
 //! brain to consume.
 
 use anyhow::{Context, Result, anyhow};
+use hippo_core::agentic::render_command;
 use hippo_core::config::HippoConfig;
+use hippo_core::redaction::RedactionEngine;
 use rusqlite::{OptionalExtension, params};
+use serde_json::Value;
+use std::collections::HashSet;
 use std::path::Path;
 use tracing::{debug, error, info, warn};
 
@@ -28,6 +32,17 @@ struct OpencodeSession {
     summary_deletions: Option<i64>,
     summary_files: Option<i64>,
     summary_diffs: Option<String>,
+    context: OpencodeContext,
+}
+
+#[derive(Debug, Clone, Default)]
+struct OpencodeContext {
+    user_prompts: Vec<String>,
+    assistant_texts: Vec<String>,
+    tool_calls: Vec<String>,
+    files_touched: Vec<String>,
+    message_count: i64,
+    token_count: i64,
 }
 
 /// High-water cursor in the opencode DB. Tracks `time_updated` so updates
@@ -98,7 +113,11 @@ fn make_source_key(db_path: &Path) -> Result<String> {
     }
 }
 
-fn read_new_sessions(conn: &rusqlite::Connection, cursor: &Cursor) -> Result<Vec<OpencodeSession>> {
+fn read_new_sessions(
+    conn: &rusqlite::Connection,
+    cursor: &Cursor,
+    known_session_ids: &HashSet<String>,
+) -> Result<Vec<OpencodeSession>> {
     // Use `>=` (not `>`) and rely on ON CONFLICT DO UPDATE in `upsert_session`
     // for idempotency. The previous tuple-cursor `(time_updated > ?1 OR
     // (time_updated = ?1 AND id > ?2))` was unsafe because opencode session
@@ -107,33 +126,259 @@ fn read_new_sessions(conn: &rusqlite::Connection, cursor: &Cursor) -> Result<Vec
     // permanently skipped. Re-reading the at-boundary cluster every tick is
     // cheap (typically 1–2 rows) and the upsert is idempotent so duplicates
     // never land.
+    // Read the opencode session index and filter in Rust. The `time_updated`
+    // cursor keeps normal polling cheap, while the `known_session_ids` check
+    // guarantees historical rows that are missing from Hippo are backfilled
+    // even when the cursor has already advanced past them.
     let sql = "SELECT id, slug, title, directory, parent_id, agent, model,
                 time_created, time_updated,
                 summary_additions, summary_deletions, summary_files,
                 summary_diffs
          FROM session
-         WHERE time_updated >= ?1
          ORDER BY time_updated ASC, id ASC";
     let mut stmt = conn.prepare(sql)?;
-    stmt.query_map(params![cursor.last_seen_updated_at], |row| {
-        Ok(OpencodeSession {
-            id: row.get(0)?,
-            slug: row.get(1)?,
-            title: row.get(2)?,
-            directory: row.get(3)?,
-            parent_id: row.get(4)?,
-            agent: row.get(5)?,
-            model: row.get(6)?,
-            time_created: row.get(7)?,
-            time_updated: row.get(8)?,
-            summary_additions: row.get(9)?,
-            summary_deletions: row.get(10)?,
-            summary_files: row.get(11)?,
-            summary_diffs: row.get(12)?,
+    let sessions = stmt
+        .query_map([], |row| {
+            Ok(OpencodeSession {
+                id: row.get(0)?,
+                slug: row.get(1)?,
+                title: row.get(2)?,
+                directory: row.get(3)?,
+                parent_id: row.get(4)?,
+                agent: row.get(5)?,
+                model: row.get(6)?,
+                time_created: row.get(7)?,
+                time_updated: row.get(8)?,
+                summary_additions: row.get(9)?,
+                summary_deletions: row.get(10)?,
+                summary_files: row.get(11)?,
+                summary_diffs: row.get(12)?,
+                context: OpencodeContext::default(),
+            })
+        })?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+
+    Ok(sessions
+        .into_iter()
+        .filter(|s| {
+            s.time_updated >= cursor.last_seen_updated_at || !known_session_ids.contains(&s.id)
         })
-    })?
-    .collect::<Result<Vec<_>, _>>()
-    .map_err(Into::into)
+        .collect())
+}
+
+fn read_known_opencode_session_ids(conn: &rusqlite::Connection) -> Result<HashSet<String>> {
+    let mut stmt =
+        conn.prepare("SELECT session_id FROM agentic_sessions WHERE harness = 'opencode'")?;
+    stmt.query_map([], |row| row.get::<_, String>(0))?
+        .collect::<std::result::Result<HashSet<_>, _>>()
+        .map_err(Into::into)
+}
+
+fn opencode_table_exists(conn: &rusqlite::Connection, table_name: &str) -> Result<bool> {
+    Ok(conn.query_row(
+        "SELECT EXISTS(
+            SELECT 1 FROM sqlite_master
+            WHERE type = 'table' AND name = ?1
+        )",
+        params![table_name],
+        |row| row.get(0),
+    )?)
+}
+
+fn trunc(s: &str, max_chars: usize) -> String {
+    s.chars().take(max_chars).collect()
+}
+
+fn first_non_empty_str<'a>(value: &'a Value, keys: &[&str]) -> Option<&'a str> {
+    keys.iter()
+        .find_map(|key| value.get(*key).and_then(Value::as_str))
+        .filter(|s| !s.trim().is_empty())
+}
+
+fn tokens_from_value(value: &Value) -> i64 {
+    match value {
+        Value::Number(n) => n.as_i64().unwrap_or(0),
+        Value::Object(obj) => {
+            if let Some(total) = obj.get("total").and_then(Value::as_i64) {
+                return total;
+            }
+            obj.values().map(tokens_from_value).sum()
+        }
+        _ => 0,
+    }
+}
+
+fn push_redacted(
+    target: &mut Vec<String>,
+    text: &str,
+    max_chars: usize,
+    redaction: &RedactionEngine,
+) {
+    let redacted = redaction.redact(&trunc(text.trim(), max_chars)).text;
+    if !redacted.is_empty() && !target.contains(&redacted) {
+        target.push(redacted);
+    }
+}
+
+fn summarize_tool(tool: &str, part: &Value, redaction: &RedactionEngine) -> String {
+    let input = part
+        .pointer("/state/input")
+        .or_else(|| part.get("input"))
+        .unwrap_or(&Value::Null);
+    let rendered = render_command(tool, input);
+    let mut summary = if rendered == tool {
+        first_non_empty_str(
+            input,
+            &[
+                "command",
+                "cmd",
+                "filePath",
+                "file_path",
+                "path",
+                "query",
+                "pattern",
+                "description",
+            ],
+        )
+        .map(ToOwned::to_owned)
+        .unwrap_or_else(|| tool.to_string())
+    } else {
+        rendered
+    };
+
+    if let Some(output) = part.pointer("/state/output").and_then(Value::as_str) {
+        let first_line = output.lines().find(|line| !line.trim().is_empty());
+        if let Some(first_line) = first_line {
+            summary.push_str(" -> ");
+            summary.push_str(&trunc(first_line, 120));
+        }
+    }
+
+    redaction.redact(&trunc(&summary, 300)).text
+}
+
+fn extract_patch_files(part: &Value) -> Vec<String> {
+    let Some(files) = part.get("files").and_then(Value::as_array) else {
+        return Vec::new();
+    };
+    files
+        .iter()
+        .filter_map(|file| {
+            file.as_str()
+                .or_else(|| first_non_empty_str(file, &["path", "name"]))
+        })
+        .filter(|path| !path.trim().is_empty())
+        .map(|path| trunc(path, 240))
+        .collect()
+}
+
+fn read_session_context(
+    conn: &rusqlite::Connection,
+    session_id: &str,
+    redaction: &RedactionEngine,
+) -> Result<OpencodeContext> {
+    let mut context = OpencodeContext::default();
+
+    if opencode_table_exists(conn, "message")? {
+        let mut stmt = conn.prepare(
+            "SELECT data
+             FROM message
+             WHERE session_id = ?1
+             ORDER BY time_created ASC, id ASC",
+        )?;
+        let rows = stmt.query_map(params![session_id], |row| row.get::<_, String>(0))?;
+        for row in rows {
+            let data = row?;
+            let Ok(value) = serde_json::from_str::<Value>(&data) else {
+                continue;
+            };
+            context.message_count += 1;
+            if let Some(tokens) = value.get("tokens") {
+                context.token_count += tokens_from_value(tokens);
+            }
+        }
+    }
+
+    if !opencode_table_exists(conn, "part")? {
+        return Ok(context);
+    }
+    let count_step_finish_tokens = context.token_count == 0;
+
+    let has_message_table = opencode_table_exists(conn, "message")?;
+    let sql = if has_message_table {
+        "SELECT COALESCE(m.data, '{}'), p.data
+         FROM part p
+         LEFT JOIN message m ON m.id = p.message_id
+         WHERE p.session_id = ?1
+         ORDER BY p.time_created ASC, p.id ASC"
+    } else {
+        "SELECT '{}', p.data
+         FROM part p
+         WHERE p.session_id = ?1
+         ORDER BY p.time_created ASC, p.id ASC"
+    };
+    let mut stmt = conn.prepare(sql)?;
+    let rows = stmt.query_map(params![session_id], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+    })?;
+
+    for row in rows {
+        let (message_data, part_data) = row?;
+        let message_value = serde_json::from_str::<Value>(&message_data).unwrap_or(Value::Null);
+        let part_value = serde_json::from_str::<Value>(&part_data).unwrap_or(Value::Null);
+        let role = message_value
+            .get("role")
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        let part_type = part_value.get("type").and_then(Value::as_str).unwrap_or("");
+
+        match part_type {
+            "text" => {
+                if let Some(text) = part_value.get("text").and_then(Value::as_str) {
+                    if role == "user" {
+                        push_redacted(&mut context.user_prompts, text, 500, redaction);
+                    } else if role == "assistant" {
+                        push_redacted(&mut context.assistant_texts, text, 300, redaction);
+                    }
+                }
+            }
+            "tool" => {
+                let tool = part_value
+                    .get("tool")
+                    .and_then(Value::as_str)
+                    .unwrap_or("tool");
+                let summary = summarize_tool(tool, &part_value, redaction);
+                if !summary.is_empty() {
+                    let line = format!("{tool}: {summary}");
+                    if !context.tool_calls.contains(&line) {
+                        context.tool_calls.push(line);
+                    }
+                }
+            }
+            "patch" => {
+                for file in extract_patch_files(&part_value) {
+                    if !context.files_touched.contains(&file) {
+                        context.files_touched.push(file);
+                    }
+                }
+            }
+            "file" => {
+                if let Some(path) = first_non_empty_str(&part_value, &["path", "filename", "name"])
+                    && !context.files_touched.iter().any(|file| file == path)
+                {
+                    context.files_touched.push(trunc(path, 240));
+                }
+            }
+            "step-finish" => {
+                if count_step_finish_tokens && let Some(tokens) = part_value.get("tokens") {
+                    context.token_count += tokens_from_value(tokens);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    Ok(context)
 }
 
 // --- Section helpers ---
@@ -166,6 +411,30 @@ fn build_summary_text(s: &OpencodeSession) -> String {
             adds, dels, files
         ));
     }
+    if !s.context.user_prompts.is_empty() {
+        lines.push("User requests:".to_string());
+        for (idx, prompt) in s.context.user_prompts.iter().take(20).enumerate() {
+            lines.push(format!("  {}. \"{}\"", idx + 1, prompt));
+        }
+    }
+    if !s.context.tool_calls.is_empty() {
+        lines.push("Work performed:".to_string());
+        for tool in s.context.tool_calls.iter().take(40) {
+            lines.push(format!("  - {tool}"));
+        }
+    }
+    if !s.context.files_touched.is_empty() {
+        lines.push("Files touched:".to_string());
+        for path in s.context.files_touched.iter().take(40) {
+            lines.push(format!("  - {path}"));
+        }
+    }
+    if !s.context.assistant_texts.is_empty() {
+        lines.push("Assistant excerpts:".to_string());
+        for text in s.context.assistant_texts.iter().take(10) {
+            lines.push(format!("  - \"{text}\""));
+        }
+    }
     lines.join("\n")
 }
 
@@ -188,8 +457,8 @@ fn upsert_session(conn: &rusqlite::Connection, s: &OpencodeSession) -> Result<()
         "INSERT INTO agentic_sessions
             (session_id, harness, model, agent, project_dir, cwd, slug, title,
              parent_session_id, summary_text, source_file, snapshot_diffs_json,
-             commit_messages_json, start_time, end_time, created_at)
-         VALUES (?1, 'opencode', ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, '', ?10, ?11, ?12, ?13, ?14)
+             commit_messages_json, message_count, token_count, start_time, end_time, created_at)
+         VALUES (?1, 'opencode', ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, '', ?10, ?11, ?12, ?13, ?14, ?15, ?16)
          ON CONFLICT(session_id, harness) DO UPDATE SET
             model              = excluded.model,
             agent              = excluded.agent,
@@ -197,6 +466,8 @@ fn upsert_session(conn: &rusqlite::Connection, s: &OpencodeSession) -> Result<()
             summary_text       = excluded.summary_text,
             snapshot_diffs_json = excluded.snapshot_diffs_json,
             commit_messages_json = excluded.commit_messages_json,
+            message_count      = excluded.message_count,
+            token_count        = excluded.token_count,
             end_time           = excluded.end_time",
         params![
             &s.id,                            // ?1 session_id
@@ -210,9 +481,11 @@ fn upsert_session(conn: &rusqlite::Connection, s: &OpencodeSession) -> Result<()
             summary_text,                     // ?9 summary_text
             diff_text,                        // ?10 snapshot_diffs_json
             commit_json,                      // ?11 commit_messages_json
-            s.time_created,                   // ?12 start_time
-            s.time_updated,                   // ?13 end_time
-            now,                              // ?14 created_at
+            s.context.message_count,          // ?12 message_count
+            s.context.token_count,            // ?13 token_count
+            s.time_created,                   // ?14 start_time
+            s.time_updated,                   // ?15 end_time
+            now,                              // ?16 created_at
         ],
     )?;
 
@@ -341,10 +614,18 @@ pub fn poll_tick(config: &HippoConfig) -> Result<usize> {
     let source_key = make_source_key(db_path)
         .map_err(|e| anyhow!("could not derive source_key for opencode DB: {e:#}"))?;
     let cursor = Cursor::read(&hippo_conn, &source_key)?;
+    let known_session_ids = read_known_opencode_session_ids(&hippo_conn)?;
 
-    let new_sessions = read_new_sessions(&oc_conn, &cursor)?;
+    let mut new_sessions = read_new_sessions(&oc_conn, &cursor, &known_session_ids)?;
     if new_sessions.is_empty() {
         return Ok(0);
+    }
+    let redaction = RedactionEngine::builtin();
+    for session in &mut new_sessions {
+        match read_session_context(&oc_conn, &session.id, &redaction) {
+            Ok(context) => session.context = context,
+            Err(e) => warn!(id = %session.id, "opencode context read failed: {e:#}"),
+        }
     }
 
     let mut events_sent = 0usize;
