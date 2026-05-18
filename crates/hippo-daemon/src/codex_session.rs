@@ -85,6 +85,7 @@ pub(crate) fn tool_summary(arguments: &str) -> String {
 pub(crate) fn extract_user_text(message: &str) -> String {
     let markers = ["code selected", "file currently open", "inside this file:"];
     let mut cut = 0usize;
+    let mut found_marker = false;
     for m in markers {
         if let Some(idx) = message.rfind(m) {
             // Advance through the rest of that status line (its trailing `\n`).
@@ -93,12 +94,14 @@ pub(crate) fn extract_user_text(message: &str) -> String {
                 .find('\n')
                 .map(|n| after + n + 1)
                 .unwrap_or(message.len());
-            cut = cut.max(line_end);
+            if line_end > cut {
+                cut = line_end;
+                found_marker = true;
+            }
         }
     }
-    let candidate = message[cut..].trim();
-    let text = if !candidate.is_empty() {
-        candidate
+    let text = if found_marker {
+        message[cut..].trim()
     } else if let Some(idx) = message.rfind("\n\n") {
         message[idx + 2..].trim()
     } else {
@@ -380,5 +383,55 @@ mod tests {
         // follows the last "The user ... " status line.
         let msg = "Project structure:\n  src/\nThe user has no code selected.\nrefactor the parser";
         assert_eq!(extract_user_text(msg), "refactor the parser");
+    }
+
+    #[test]
+    fn extract_user_text_uses_last_paragraph_when_no_marker() {
+        // No Xcode status marker -> fall back to the last `\n\n` paragraph,
+        // matching the Python reference (and this function's doc comment).
+        let msg = "some preamble context\n\nthe actual request";
+        assert_eq!(extract_user_text(msg), "the actual request");
+    }
+
+    #[test]
+    fn extract_segments_splits_on_max_segment_chars() {
+        // Two user prompts close in time (no 5-minute gap) with enough
+        // accumulated tool-call summary between them to exceed
+        // MAX_SEGMENT_CHARS -> the char-cap branch of the boundary OR splits.
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("rollout-cap.jsonl");
+        let mut lines: Vec<String> = Vec::new();
+        lines.push(
+            r#"{"timestamp":"2026-04-04T00:00:00.000Z","type":"session_meta","payload":{"id":"cap","timestamp":"2026-04-04T00:00:00.000Z","cwd":"/proj"}}"#
+                .to_string(),
+        );
+        lines.push(
+            r#"{"timestamp":"2026-04-04T00:00:01.000Z","type":"event_msg","payload":{"type":"user_message","message":"first request"}}"#
+                .to_string(),
+        );
+        // Each function_call's `command` is 120 chars; tool_summary caps at 120,
+        // so every call adds 120 to current_chars. 120 calls = 14_400 > 12_000.
+        let long_cmd = "x".repeat(120);
+        for i in 0..120 {
+            lines.push(format!(
+                r#"{{"timestamp":"2026-04-04T00:00:0{}.000Z","type":"response_item","payload":{{"type":"function_call","name":"shell","arguments":"{{\"command\":\"{}\"}}"}}}}"#,
+                2 + (i % 8),
+                long_cmd,
+            ));
+        }
+        // Second prompt is only seconds after the first -> no time-gap split;
+        // the split must come purely from the char cap.
+        lines.push(
+            r#"{"timestamp":"2026-04-04T00:00:30.000Z","type":"event_msg","payload":{"type":"user_message","message":"second request"}}"#
+                .to_string(),
+        );
+        std::fs::write(&p, lines.join("\n")).unwrap();
+        let segs = extract_segments(&p).unwrap();
+        assert_eq!(
+            segs.len(),
+            2,
+            "accumulated chars over MAX_SEGMENT_CHARS must split the session"
+        );
+        assert_eq!(segs[1].segment_index, 1);
     }
 }
