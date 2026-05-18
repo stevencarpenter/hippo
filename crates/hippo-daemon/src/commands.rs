@@ -1646,7 +1646,7 @@ fn check_source_staleness(db: &rusqlite::Connection, explain: bool) -> u32 {
     let rows_result = db.prepare(
         "SELECT source, last_event_ts, last_error_msg, consecutive_failures, events_last_1h, probe_ok \
          FROM source_health \
-         WHERE source IN ('shell', 'browser', 'claude-session', 'claude-tool', 'agentic-session-opencode') \
+         WHERE source IN ('shell', 'browser', 'claude-session', 'claude-tool', 'agentic-session-opencode', 'agentic-session-codex') \
          ORDER BY source",
     );
 
@@ -1919,10 +1919,10 @@ fn source_staleness_thresholds_for(source: &str) -> SourceStalenessThresholds {
             warn_secs: 300,
             fail_secs: 600,
         },
-        // Opencode polls every 30 s by default. Tolerate one missed
-        // tick before warning, and an hour before failing; idle DBs are
-        // suppressed below.
-        "agentic-session-opencode" => SourceStalenessThresholds {
+        // Opencode and Codex are both interval pollers — tolerate a missed
+        // tick before warning, an hour before failing. Opencode additionally
+        // suppresses idle-source warnings below; Codex does not yet (see #154).
+        "agentic-session-opencode" | "agentic-session-codex" => SourceStalenessThresholds {
             warn_secs: 300,
             fail_secs: 3600,
         },

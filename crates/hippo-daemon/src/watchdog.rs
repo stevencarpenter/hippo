@@ -473,6 +473,11 @@ pub fn check_invariants(rows: &[SourceHealthRow], now_ms: i64) -> Vec<InvariantV
         violations.push(v);
     }
 
+    // I-13: Codex-session coverage proxy.
+    if !bench_paused && let Some(v) = check_i13_codex_coverage_proxy(&by_source, now_ms) {
+        violations.push(v);
+    }
+
     // I-12: Brain preflight stuck. Not suppressed during bench pause —
     // bench pauses prod brain enrichment but doesn't make preflight stop
     // running; a stuck preflight is real either way.
@@ -635,6 +640,29 @@ pub fn check_i11_opencode_coverage_proxy(
         return Some(InvariantViolation {
             invariant_id: "I-11".to_string(),
             source: "agentic-session-opencode".to_string(),
+            since_ms: age_ms,
+            details: json!({
+                "consecutive_failures": row.consecutive_failures,
+                "note": "proxy predicate; full freshness check lives in hippo doctor",
+            }),
+        });
+    }
+    None
+}
+
+/// I-13: Codex-session coverage proxy. Mirrors I-11: alarm when the Codex
+/// poller has failed repeatedly. Full freshness coverage is the doctor's job.
+pub fn check_i13_codex_coverage_proxy(
+    by_source: &std::collections::HashMap<&str, &SourceHealthRow>,
+    now_ms: i64,
+) -> Option<InvariantViolation> {
+    let row = by_source.get("agentic-session-codex")?;
+    let last_event = row.last_event_ts?;
+    if row.consecutive_failures > 3 {
+        let age_ms = now_ms - last_event;
+        return Some(InvariantViolation {
+            invariant_id: "I-13".to_string(),
+            source: "agentic-session-codex".to_string(),
             since_ms: age_ms,
             details: json!({
                 "consecutive_failures": row.consecutive_failures,
@@ -1689,6 +1717,21 @@ mod tests {
             !limited,
             "resolved alarm must not suppress new raises via rate-limit"
         );
+    }
+
+    // ── I-13 (codex coverage proxy) ────────────────────────────────────────
+
+    #[test]
+    fn i13_codex_alarms_on_repeated_failures() {
+        let row = SourceHealthRow {
+            last_event_ts: Some(NOW - 10_000),
+            consecutive_failures: 4,
+            ..blank_row("agentic-session-codex")
+        };
+        let rows = vec![row];
+        let v = check_i13_codex_coverage_proxy(&by_source(&rows), NOW);
+        assert!(v.is_some());
+        assert_eq!(v.unwrap().invariant_id, "I-13");
     }
 
     /// check_invariants must return an empty Vec when no violations exist.
