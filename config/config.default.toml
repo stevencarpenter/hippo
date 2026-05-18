@@ -195,9 +195,10 @@ enabled = true
 #
 # When enabled, `hippo codex-poll` (invoked every 60 s by the
 # `com.hippo.codex-session` LaunchAgent) walks `session_roots` for
-# `rollout-*.jsonl` files, parses each entry into segments, and writes them
-# into `claude_sessions` with `harness = 'codex'`.  The brain then enriches
-# these segments into knowledge nodes alongside Claude Code session data.
+# `rollout-*.jsonl` files, parses each into task-boundary segments, and writes
+# them as segmented rows in `claude_sessions` — distinguished by the `.codex/`
+# path stored in the `source_file` column, with no `harness` marker. The brain
+# then enriches these segments into knowledge nodes alongside Claude Code data.
 #
 # `session_roots` defaults to:
 #   ~/.codex/sessions
