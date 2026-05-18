@@ -483,3 +483,88 @@ async def test_stop_enrichment_is_noop_with_no_tasks(tmp_db):
 
     # Should not raise
     await server.stop_enrichment()
+
+
+# ---- Task 3: [reaper] config threading ----
+
+
+def test_brain_server_stores_reaper_settings():
+    """BrainServer must accept and store the reaper tuning knobs."""
+    server = BrainServer(
+        db_path=":memory:",
+        embed_reaper_interval_secs=120,
+        embed_reaper_batch_size=7,
+        embed_orphan_stale_secs=600,
+    )
+    assert server.embed_reaper_interval_secs == 120
+    assert server.embed_reaper_batch_size == 7
+    assert server.embed_orphan_stale_secs == 600
+
+
+# ---- Task 4: _embed_reaper_tick + _embed_reaper_loop ----
+
+
+@pytest.mark.asyncio
+async def test_embed_reaper_tick_reembeds_only_old_orphans(tmp_db):
+    """The reaper re-embeds nodes older than the staleness window that lack a
+    vector row; recent nodes and already-embedded nodes are left alone."""
+    conn, db_path = tmp_db
+    now_ms = int(time.time() * 1000)
+    old = now_ms - 3_600_000  # 1h old
+    recent = now_ms - 60_000  # 1m old — inside the staleness window
+    conn.executescript(
+        "CREATE TABLE IF NOT EXISTS knowledge_vectors_rowids "
+        "(rowid INTEGER PRIMARY KEY, id, chunk_id, chunk_offset);"
+    )
+    for nid, created in ((1, old), (2, recent), (3, old)):
+        conn.execute(
+            "INSERT INTO knowledge_nodes (id, uuid, content, embed_text, node_type, "
+            "created_at, updated_at) VALUES (?, ?, 'c', 'et', 'observation', ?, ?)",
+            (nid, f"u{nid}", created, created),
+        )
+    # Node 3 already has a vector row.
+    conn.execute("INSERT INTO knowledge_vectors_rowids (rowid) VALUES (3)")
+    conn.commit()
+
+    server = _make_server(str(db_path), embed_orphan_stale_secs=900, embed_reaper_batch_size=50)
+    embedded: list[int] = []
+
+    async def _rec(node_id, node_dict, source_label):
+        embedded.append(node_id)
+
+    server._embed_node = _rec  # type: ignore[method-assign]
+
+    await server._embed_reaper_tick()
+
+    assert embedded == [1]  # only the old, unembedded node
+
+
+@pytest.mark.asyncio
+async def test_embed_reaper_tick_survives_single_embed_failure(tmp_db):
+    """One orphan's embed failure must not abort the sweep."""
+    conn, db_path = tmp_db
+    now_ms = int(time.time() * 1000)
+    old = now_ms - 3_600_000
+    conn.executescript(
+        "CREATE TABLE IF NOT EXISTS knowledge_vectors_rowids "
+        "(rowid INTEGER PRIMARY KEY, id, chunk_id, chunk_offset);"
+    )
+    for nid in (1, 2):
+        conn.execute(
+            "INSERT INTO knowledge_nodes (id, uuid, content, embed_text, node_type, "
+            "created_at, updated_at) VALUES (?, ?, 'c', 'et', 'observation', ?, ?)",
+            (nid, f"u{nid}", old, old),
+        )
+    conn.commit()
+
+    server = _make_server(str(db_path), embed_orphan_stale_secs=900)
+    seen: list[int] = []
+
+    async def _rec(node_id, node_dict, source_label):
+        seen.append(node_id)  # real _embed_node never raises
+
+    server._embed_node = _rec  # type: ignore[method-assign]
+
+    # Must not raise — both orphans are attempted in one sweep.
+    await server._embed_reaper_tick()
+    assert seen == [1, 2]

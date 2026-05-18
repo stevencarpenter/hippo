@@ -28,6 +28,9 @@ def _default_settings() -> dict:
         "max_claim_batch": 10,
         "lock_timeout_secs": 600,
         "long_dwell_bypass_ms": 120_000,
+        "embed_reaper_interval_secs": 300,
+        "embed_reaper_batch_size": 50,
+        "embed_orphan_stale_secs": 900,
     }
 
 
@@ -61,6 +64,7 @@ def _load_runtime_settings() -> dict:
     brain = config.get("brain", {})
     telemetry = config.get("telemetry", {})
     browser = config.get("browser", {})
+    reaper = config.get("reaper", {})
 
     return {
         "db_path": str(data_dir / "hippo.db"),
@@ -81,6 +85,9 @@ def _load_runtime_settings() -> dict:
         "max_claim_batch": brain.get("max_claim_batch", 10),
         "lock_timeout_secs": brain.get("lock_timeout_secs", 600),
         "long_dwell_bypass_ms": browser.get("long_dwell_bypass_ms", 120_000),
+        "embed_reaper_interval_secs": reaper.get("interval_secs", 300),
+        "embed_reaper_batch_size": reaper.get("batch_size", 50),
+        "embed_orphan_stale_secs": reaper.get("orphan_stale_secs", 900),
     }
 
 
@@ -136,6 +143,9 @@ def main() -> None:
             max_claim_batch=settings["max_claim_batch"],
             lock_timeout_ms=int(settings["lock_timeout_secs"]) * 1000,
             long_dwell_bypass_ms=settings["long_dwell_bypass_ms"],
+            embed_reaper_interval_secs=settings["embed_reaper_interval_secs"],
+            embed_reaper_batch_size=settings["embed_reaper_batch_size"],
+            embed_orphan_stale_secs=settings["embed_orphan_stale_secs"],
         )
         try:
             uvicorn.run(app, host="127.0.0.1", port=settings["port"])
