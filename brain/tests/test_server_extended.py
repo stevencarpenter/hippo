@@ -483,3 +483,19 @@ async def test_stop_enrichment_is_noop_with_no_tasks(tmp_db):
 
     # Should not raise
     await server.stop_enrichment()
+
+
+# ---- Task 3: [reaper] config threading ----
+
+
+def test_brain_server_stores_reaper_settings():
+    """BrainServer must accept and store the reaper tuning knobs."""
+    server = BrainServer(
+        db_path=":memory:",
+        embed_reaper_interval_secs=120,
+        embed_reaper_batch_size=7,
+        embed_orphan_stale_secs=600,
+    )
+    assert server.embed_reaper_interval_secs == 120
+    assert server.embed_reaper_batch_size == 7
+    assert server.embed_orphan_stale_secs == 600

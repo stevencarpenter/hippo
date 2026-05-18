@@ -196,6 +196,9 @@ class BrainServer:
         max_claim_batch: int = DEFAULT_MAX_CLAIM_BATCH,
         lock_timeout_ms: int = DEFAULT_LOCK_TIMEOUT_MS,
         long_dwell_bypass_ms: int = 120_000,
+        embed_reaper_interval_secs: int = 300,
+        embed_reaper_batch_size: int = 50,
+        embed_orphan_stale_secs: int = 900,
     ):
         if not db_path:
             db_path = str(Path.home() / ".local" / "share" / "hippo" / "hippo.db")
@@ -214,6 +217,9 @@ class BrainServer:
         self.max_claim_batch = max_claim_batch
         self.lock_timeout_ms = lock_timeout_ms
         self.long_dwell_bypass_ms = long_dwell_bypass_ms
+        self.embed_reaper_interval_secs = embed_reaper_interval_secs
+        self.embed_reaper_batch_size = embed_reaper_batch_size
+        self.embed_orphan_stale_secs = embed_orphan_stale_secs
         self.enrichment_running = False
         self._paused: bool = False
         self._paused_at_iso: str | None = None
@@ -1687,6 +1693,9 @@ def create_app(
     max_claim_batch: int = DEFAULT_MAX_CLAIM_BATCH,
     lock_timeout_ms: int = DEFAULT_LOCK_TIMEOUT_MS,
     long_dwell_bypass_ms: int = 120_000,
+    embed_reaper_interval_secs: int = 300,
+    embed_reaper_batch_size: int = 50,
+    embed_orphan_stale_secs: int = 900,
 ) -> Starlette:
     server = BrainServer(
         db_path=db_path,
@@ -1702,6 +1711,9 @@ def create_app(
         max_claim_batch=max_claim_batch,
         lock_timeout_ms=lock_timeout_ms,
         long_dwell_bypass_ms=long_dwell_bypass_ms,
+        embed_reaper_interval_secs=embed_reaper_interval_secs,
+        embed_reaper_batch_size=embed_reaper_batch_size,
+        embed_orphan_stale_secs=embed_orphan_stale_secs,
     )
 
     if _meter:
