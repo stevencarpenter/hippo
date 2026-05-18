@@ -247,13 +247,16 @@ async fn main() -> Result<()> {
                 let gh_poll_was_loaded = install::service_is_loaded("com.hippo.gh-poll");
                 let opencode_poll_was_loaded =
                     install::service_is_loaded("com.hippo.opencode-poll");
+                let codex_session_was_loaded =
+                    install::service_is_loaded("com.hippo.codex-session");
                 let stack_was_active = daemon_was_loaded
                     || brain_was_loaded
                     || watchdog_was_loaded
                     || probe_was_loaded
                     || watcher_was_loaded
                     || gh_poll_was_loaded
-                    || opencode_poll_was_loaded;
+                    || opencode_poll_was_loaded
+                    || codex_session_was_loaded;
 
                 if brain_was_loaded {
                     print!("  Draining brain (waiting for in-flight requests)");
@@ -309,6 +312,20 @@ async fn main() -> Result<()> {
                     );
                     println!("  Stopped opencode-poll");
                 }
+                if codex_session_was_loaded {
+                    install::service_bootout(
+                        &domain,
+                        &launch_agents.join("com.hippo.codex-session.plist"),
+                    );
+                    println!("  Stopped codex-session");
+                }
+                // Always boot out the renamed legacy job on every reinstall so
+                // a stale com.hippo.xcode-codex-ingest plist cannot be
+                // re-bootstrapped by anything iterating LaunchAgents.
+                install::service_bootout(
+                    &domain,
+                    &launch_agents.join("com.hippo.xcode-codex-ingest.plist"),
+                );
 
                 let daemon_template = include_str!("../../../launchd/com.hippo.daemon.plist");
                 let brain_template = include_str!("../../../launchd/com.hippo.brain.plist");
@@ -319,8 +336,8 @@ async fn main() -> Result<()> {
                     include_str!("../../../launchd/com.hippo.claude-session-watcher.plist");
                 let xcode_claude_template =
                     include_str!("../../../launchd/com.hippo.xcode-claude-ingest.plist");
-                let xcode_codex_template =
-                    include_str!("../../../launchd/com.hippo.xcode-codex-ingest.plist");
+                let codex_session_template =
+                    include_str!("../../../launchd/com.hippo.codex-session.plist");
                 let opencode_poll_template =
                     include_str!("../../../launchd/com.hippo.opencode-poll.plist");
 
@@ -340,12 +357,23 @@ async fn main() -> Result<()> {
                     &vars,
                     force,
                 )?;
-                install::install_plist(
-                    "com.hippo.xcode-codex-ingest",
-                    xcode_codex_template,
-                    &vars,
-                    force,
-                )?;
+                // Codex poller plist — only written when the codex source is
+                // enabled (mirrors the opencode-poll gate). When disabled,
+                // also remove any stale plist on disk so generic loaders
+                // (e.g. `mise run start`) can't resurrect it.
+                let codex_session_installed = if config.codex.enabled {
+                    install::install_plist(
+                        "com.hippo.codex-session",
+                        codex_session_template,
+                        &vars,
+                        force,
+                    )?;
+                    true
+                } else {
+                    println!("  (codex source disabled; skipping codex-session plist)");
+                    install::remove_plist("com.hippo.codex-session")?;
+                    false
+                };
 
                 // Opencode poller plist — only written when the opencode source
                 // is enabled (mirrors the gh-poll gate above). When disabled,
@@ -445,6 +473,11 @@ async fn main() -> Result<()> {
                     opencode_poll_was_loaded,
                     stack_was_active,
                 );
+                let codex_session_started = install::should_start_optional_poll_agent(
+                    codex_session_installed,
+                    codex_session_was_loaded,
+                    stack_was_active,
+                );
 
                 // Reload core services that were already running, and ensure
                 // installed support agents are loaded for an active stack.
@@ -452,7 +485,7 @@ async fn main() -> Result<()> {
                 // Core services (daemon, brain) stay strict: if either fails to
                 // start, the install should abort loudly. All other support
                 // agents — watchdog, probe, claude-session-watcher, gh-poll,
-                // opencode-poll — are auto-promoted onto an active stack, so a
+                // opencode-poll, codex-session — are auto-promoted onto an active stack, so a
                 // transient launchctl failure on any one of them is downgraded
                 // to a warning rather than aborting the whole install. This
                 // mirrors the graceful pattern used by
@@ -488,6 +521,11 @@ async fn main() -> Result<()> {
                             "com.hippo.opencode-poll.plist",
                             opencode_poll_started,
                         ),
+                        (
+                            "codex-session",
+                            "com.hippo.codex-session.plist",
+                            codex_session_started,
+                        ),
                     ];
                     for (label, plist, gated) in support_agents {
                         if !gated {
@@ -505,7 +543,8 @@ async fn main() -> Result<()> {
                     || !brain_was_loaded
                     || !stack_was_active
                     || (gh_poll_installed && !gh_poll_started)
-                    || (opencode_poll_installed && !opencode_poll_started);
+                    || (opencode_poll_installed && !opencode_poll_started)
+                    || (codex_session_installed && !codex_session_started);
                 if needs_manual_start {
                     println!();
                     println!("Load with:");
@@ -538,6 +577,11 @@ async fn main() -> Result<()> {
                     if opencode_poll_installed && !opencode_poll_started {
                         println!(
                             "  launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.hippo.opencode-poll.plist"
+                        );
+                    }
+                    if codex_session_installed && !codex_session_started {
+                        println!(
+                            "  launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.hippo.codex-session.plist"
                         );
                     }
                 }

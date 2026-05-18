@@ -18,6 +18,10 @@ pub fn render_plist(template: &str, vars: &PlistVars) -> String {
             "__OPENCODE_POLL_INTERVAL_SECS__",
             &vars.opencode_poll_interval_secs.to_string(),
         )
+        .replace(
+            "__CODEX_POLL_INTERVAL_SECS__",
+            &vars.codex_poll_interval_secs.to_string(),
+        )
 }
 
 pub struct PlistVars {
@@ -31,6 +35,7 @@ pub struct PlistVars {
     pub otel_enabled: String,
     pub otel_endpoint: String,
     pub opencode_poll_interval_secs: u64,
+    pub codex_poll_interval_secs: u64,
 }
 
 /// Auto-detect system paths for plist variable substitution.
@@ -53,6 +58,10 @@ pub fn detect_vars(brain_dir: &Path) -> Result<PlistVars> {
         .as_ref()
         .map(|c| c.opencode.poll_interval_secs)
         .unwrap_or(30);
+    let codex_poll_interval_secs = cfg
+        .as_ref()
+        .map(|c| c.codex.poll_interval_secs)
+        .unwrap_or(60);
 
     let scripts_dir = brain_dir.join("scripts");
 
@@ -78,6 +87,7 @@ pub fn detect_vars(brain_dir: &Path) -> Result<PlistVars> {
             parsed.to_string()
         },
         opencode_poll_interval_secs,
+        codex_poll_interval_secs,
     })
 }
 
@@ -715,7 +725,8 @@ mod tests {
 <string>__DATA_DIR__</string>
 <string>__HIPPO_OTEL_ENABLED__</string>
 <string>__OTEL_ENDPOINT__</string>
-<integer>__OPENCODE_POLL_INTERVAL_SECS__</integer>"#;
+<integer>__OPENCODE_POLL_INTERVAL_SECS__</integer>
+<integer>__CODEX_POLL_INTERVAL_SECS__</integer>"#;
 
         let vars = PlistVars {
             hippo_bin: PathBuf::from("/usr/local/bin/hippo"),
@@ -728,6 +739,7 @@ mod tests {
             otel_enabled: "0".to_string(),
             otel_endpoint: "http://localhost:4318".to_string(),
             opencode_poll_interval_secs: 30,
+            codex_poll_interval_secs: 60,
         };
 
         let result = render_plist(template, &vars);
@@ -741,6 +753,7 @@ mod tests {
         assert!(!result.contains("__HIPPO_OTEL_ENABLED__"));
         assert!(!result.contains("__OTEL_ENDPOINT__"));
         assert!(!result.contains("__OPENCODE_POLL_INTERVAL_SECS__"));
+        assert!(!result.contains("__CODEX_POLL_INTERVAL_SECS__"));
         assert!(result.contains("/usr/local/bin/hippo"));
         assert!(result.contains("/usr/local/bin/uv"));
         assert!(result.contains("http://localhost:4318"));
@@ -761,6 +774,7 @@ mod tests {
             otel_enabled: "0".to_string(),
             otel_endpoint: "http://localhost:4318".to_string(),
             opencode_poll_interval_secs: 30,
+            codex_poll_interval_secs: 60,
         };
 
         let rendered = render_plist(template, &vars);
