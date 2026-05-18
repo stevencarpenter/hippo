@@ -110,10 +110,14 @@ fn read_new_sessions(
     // permanently skipped. Re-reading the at-boundary cluster every tick is
     // cheap (typically 1–2 rows) and the upsert is idempotent so duplicates
     // never land.
-    // Read the opencode session index and filter in Rust. The `time_updated`
-    // cursor keeps normal polling cheap, while the `known_session_ids` check
-    // guarantees historical rows that are missing from Hippo are backfilled
-    // even when the cursor has already advanced past them.
+    // Read the full opencode session index on every tick and filter in Rust.
+    // A cursor-bounded SQL query (WHERE time_updated > cursor) would skip
+    // sessions that are older than the cursor but still missing from Hippo
+    // (e.g. a session that was never ingested because it arrived while the
+    // poller was stopped).  The full scan ensures those sessions are backfilled.
+    // The `known_session_ids` set from Hippo is what drives the diff; sessions
+    // already present are skipped via upsert, so the full read is still cheap
+    // for a typical opencode DB of a few hundred sessions.
     let sql = "SELECT id, slug, title, directory, parent_id, agent, model,
                 time_created, time_updated,
                 summary_additions, summary_deletions, summary_files,
