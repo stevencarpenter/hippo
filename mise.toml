@@ -823,7 +823,7 @@ for label in \
   com.hippo.gh-poll \
   com.hippo.opencode-poll \
   com.hippo.xcode-claude-ingest \
-  com.hippo.xcode-codex-ingest
+  com.hippo.codex-session
 do
   plist="$HOME/Library/LaunchAgents/${label}.plist"
   name="${label#com.hippo.}"
@@ -851,7 +851,7 @@ for label in \
   com.hippo.gh-poll \
   com.hippo.opencode-poll \
   com.hippo.xcode-claude-ingest \
-  com.hippo.xcode-codex-ingest
+  com.hippo.codex-session
 do
   plist="$HOME/Library/LaunchAgents/${label}.plist"
   name="${label#com.hippo.}"
