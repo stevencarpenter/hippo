@@ -2,7 +2,7 @@ mod cli;
 mod install;
 
 use hippo_daemon::{
-    backfill, claude_session, commands, daemon, gh_api, gh_poll, opencode_session,
+    backfill, claude_session, codex_session, commands, daemon, gh_api, gh_poll, opencode_session,
     watch_claude_sessions,
 };
 
@@ -1050,6 +1050,13 @@ async fn main() -> Result<()> {
                 }
             }
         }
+        Commands::CodexPoll => match codex_session::poll_tick(&config) {
+            Ok(n) => tracing::info!(ingested = n, "codex poll: completed"),
+            Err(e) => {
+                eprintln!("Error running codex poll: {e:#}");
+                std::process::exit(1);
+            }
+        },
         // BT-09: `hippo serve` is a foreground-run alias for `hippo daemon run`.
         // Honors the same logic so bench code (and any future operator
         // muscle-memory) doesn't have to know about the daemon subcommand
