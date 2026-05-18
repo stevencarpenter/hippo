@@ -519,8 +519,11 @@ pub fn upsert_segment(conn: &rusqlite::Connection, seg: &CodexSegment) -> Result
 
 /// Stable inode-keyed cursor key for one rollout file. Inode survives the
 /// `mv` Codex performs on archival, so archived files aren't re-parsed.
-/// `ino()` is available on every Unix target via `MetadataExt` — no per-OS
-/// `cfg` split is needed.
+/// APFS inode numbers are 64-bit and monotonically assigned; they are not
+/// realistically reused within a host's lifetime, so the cursor key stays
+/// stable across the archival `mv` with no risk of a stale row aliasing a
+/// different file. `ino()` is available on every Unix target via
+/// `MetadataExt` — no per-OS `cfg` split is needed.
 fn cursor_key(meta: &std::fs::Metadata) -> String {
     use std::os::unix::fs::MetadataExt;
     format!("codex-{}", meta.ino())
@@ -629,7 +632,16 @@ pub fn poll_tick(config: &HippoConfig) -> Result<usize> {
             match ingest_file(&conn, path) {
                 Ok((count, session_id)) => {
                     ingested += count;
-                    bump_health_ok(&conn, mtime_ms);
+                    // Only bump health when real segments landed. A rollout
+                    // that parsed to zero segments (e.g. a `session_meta`-only
+                    // file with no user messages) captured nothing, so
+                    // `last_event_ts` must not move — mirroring how a poll
+                    // that finds no files at all never bumps health. The
+                    // cursor still advances so the empty file is not
+                    // re-parsed every tick.
+                    if count > 0 {
+                        bump_health_ok(&conn, mtime_ms);
+                    }
                     if let Err(e) = write_cursor(&conn, &key, mtime_ms, &session_id) {
                         warn!("codex cursor write failed for {}: {e:#}", path.display());
                     }
@@ -661,6 +673,9 @@ fn ingest_file(conn: &rusqlite::Connection, path: &Path) -> Result<(usize, Strin
 }
 
 /// Test-only constructor for a `HippoConfig` pointed at a temp data dir.
+/// `pub` so the crate-external integration test can reach it, but
+/// `#[doc(hidden)]` because it is test scaffolding, not public API.
+#[doc(hidden)]
 pub fn test_config(data_dir: &Path, roots: &[PathBuf]) -> HippoConfig {
     let mut cfg = HippoConfig::default();
     cfg.storage.data_dir = data_dir.to_path_buf();

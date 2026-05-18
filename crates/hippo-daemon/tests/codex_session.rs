@@ -114,6 +114,16 @@ fn poll_tick_ingests_idle_files_and_advances_cursor() {
 }
 
 #[test]
+fn poll_tick_returns_zero_when_disabled() {
+    let tmp = TempDir::new().unwrap();
+    let data_dir = tmp.path().join("data");
+    std::fs::create_dir_all(&data_dir).unwrap();
+    let mut config = hippo_daemon::codex_session::test_config(&data_dir, &[]);
+    config.codex.enabled = false;
+    assert_eq!(hippo_daemon::codex_session::poll_tick(&config).unwrap(), 0);
+}
+
+#[test]
 fn poll_tick_skips_in_flight_files() {
     let tmp = TempDir::new().unwrap();
     let roots = tmp.path().join("sessions");
