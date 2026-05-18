@@ -91,26 +91,10 @@ impl Cursor {
 // --- Opencode DB read helpers ---
 
 fn make_source_key(db_path: &Path) -> Result<String> {
+    use std::os::unix::fs::MetadataExt;
     let meta = std::fs::metadata(db_path)
         .with_context(|| format!("failed to stat opencode DB at {}", db_path.display()))?;
-    #[cfg(target_os = "macos")]
-    {
-        use std::os::unix::fs::MetadataExt;
-        Ok(format!("opencode-{}", meta.ino()))
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        // Hippo is macOS-only in production; non-macOS builds exist for CI
-        // tests. Use the file size + mtime as a coarse inode substitute so
-        // distinct test DBs don't collide on a single cursor row.
-        let mtime = meta
-            .modified()
-            .ok()
-            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-            .map(|d| d.as_millis())
-            .unwrap_or(0);
-        Ok(format!("opencode-{}-{}", meta.len(), mtime))
-    }
+    Ok(format!("opencode-{}", meta.ino()))
 }
 
 fn read_new_sessions(

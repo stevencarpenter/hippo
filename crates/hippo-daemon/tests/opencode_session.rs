@@ -134,22 +134,9 @@ fn test_config(tmp: &TempDir, opencode_db: &std::path::Path) -> HippoConfig {
     config
 }
 
-#[cfg(target_os = "macos")]
 fn opencode_source_key(path: &std::path::Path) -> String {
     use std::os::unix::fs::MetadataExt;
     format!("opencode-{}", std::fs::metadata(path).unwrap().ino())
-}
-
-#[cfg(not(target_os = "macos"))]
-fn opencode_source_key(path: &std::path::Path) -> String {
-    let meta = std::fs::metadata(path).unwrap();
-    let mtime = meta
-        .modified()
-        .ok()
-        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-        .map(|d| d.as_millis())
-        .unwrap_or(0);
-    format!("opencode-{}-{}", meta.len(), mtime)
 }
 
 #[test]
