@@ -1712,6 +1712,29 @@ fn check_source_staleness(db: &rusqlite::Connection, explain: bool) -> u32 {
         })
     };
 
+    // Check whether any Codex rollout-*.jsonl files exist in the session roots.
+    // Absence means "user has never run Codex" — suppress rather than alarm.
+    let codex_sessions_exist = || -> bool {
+        let cfg = match hippo_core::config::HippoConfig::load_default() {
+            Ok(c) => c,
+            Err(_) => return false,
+        };
+        for root in &cfg.codex.session_roots {
+            // Walk one level — rollout-*.jsonl files live directly under the root.
+            let Ok(entries) = std::fs::read_dir(root) else {
+                continue;
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                if name.starts_with("rollout-") && name.ends_with(".jsonl") {
+                    return true;
+                }
+            }
+        }
+        false
+    };
+
     // Check whether the opencode DB itself looks active — the file exists
     // and has been modified in the last 10 minutes. Stale opencode means
     // "user just isn't using opencode right now," not "the poller is broken."
@@ -1773,9 +1796,11 @@ fn check_source_staleness(db: &rusqlite::Connection, explain: bool) -> u32 {
     let firefox_is_running = firefox_running();
     let opencode_db_is_recent = opencode_db_recent();
     let claude_session_is_recent = recent_claude_session();
+    let codex_sessions_do_exist = codex_sessions_exist();
 
     // All expected sources — report missing ones too.
     let all_sources = [
+        "agentic-session-codex",
         "agentic-session-opencode",
         "browser",
         "claude-session",
@@ -1808,6 +1833,7 @@ fn check_source_staleness(db: &rusqlite::Connection, explain: bool) -> u32 {
             firefox_is_running,
             claude_session_is_recent,
             opencode_db_is_recent,
+            codex_sessions_do_exist,
         ) {
             SourceStalenessStatus::Ok => {
                 println!("[OK] {}  {}", padded, human);
@@ -1857,6 +1883,7 @@ fn classify_source_staleness(
     firefox_running: bool,
     recent_claude_session: bool,
     opencode_db_recent: bool,
+    codex_sessions_exist: bool,
 ) -> SourceStalenessStatus {
     let thresh = source_staleness_thresholds_for(source);
     if age_secs < thresh.warn_secs {
@@ -1869,6 +1896,7 @@ fn classify_source_staleness(
         firefox_running,
         recent_claude_session,
         opencode_db_recent,
+        codex_sessions_exist,
     ) {
         return SourceStalenessStatus::Suppressed(reason);
     }
@@ -1886,6 +1914,7 @@ fn source_staleness_suppression_reason(
     firefox_running: bool,
     recent_claude_session: bool,
     opencode_db_recent: bool,
+    codex_sessions_exist: bool,
 ) -> Option<&'static str> {
     match source {
         "shell" if probe_ok == Some(0) => Some("probe disabled"),
@@ -1893,6 +1922,7 @@ fn source_staleness_suppression_reason(
         "claude-tool" if probe_ok == Some(0) => Some("probe disabled"),
         "browser" if !firefox_running => Some("no active Firefox session"),
         "agentic-session-opencode" if !opencode_db_recent => Some("opencode DB idle"),
+        "agentic-session-codex" if !codex_sessions_exist => Some("no Codex sessions found"),
         _ => None,
     }
 }
@@ -3583,7 +3613,7 @@ replacement = "***"
     #[test]
     fn test_idle_claude_session_staleness_is_suppressed_before_warn() {
         assert_eq!(
-            classify_source_staleness("claude-session", 12 * 60, None, true, false, true,),
+            classify_source_staleness("claude-session", 12 * 60, None, true, false, true, true),
             SourceStalenessStatus::Suppressed("no active session"),
             "inactive Claude sessions should not warn just because no new session rows landed"
         );
@@ -3592,9 +3622,44 @@ replacement = "***"
     #[test]
     fn test_active_claude_session_staleness_still_warns() {
         assert_eq!(
-            classify_source_staleness("claude-session", 12 * 60, None, true, true, true),
+            classify_source_staleness("claude-session", 12 * 60, None, true, true, true, true),
             SourceStalenessStatus::Warn,
             "recent Claude JSONL activity should make stale source-health actionable"
+        );
+    }
+
+    #[test]
+    fn test_codex_staleness_suppressed_when_no_sessions_exist() {
+        assert_eq!(
+            classify_source_staleness(
+                "agentic-session-codex",
+                2 * 3600,
+                None,
+                false,
+                false,
+                false,
+                false,
+            ),
+            SourceStalenessStatus::Suppressed("no Codex sessions found"),
+            "machines without any Codex session files should not alarm"
+        );
+    }
+
+    #[test]
+    fn test_codex_staleness_warns_when_sessions_exist_and_stale() {
+        // warn_secs = 300 for agentic-session-codex; 600s > 300s → should warn
+        assert_eq!(
+            classify_source_staleness(
+                "agentic-session-codex",
+                600,
+                None,
+                false,
+                false,
+                false,
+                true,
+            ),
+            SourceStalenessStatus::Warn,
+            "stale codex source with sessions present should warn"
         );
     }
 
