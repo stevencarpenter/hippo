@@ -74,17 +74,27 @@ fn i14_embedding_orphans_alarms_over_threshold() {
     assert_eq!(v.unwrap().invariant_id, "I-14");
 
     // threshold 5 -> 3 orphans must NOT alarm.
-    assert!(check_i14_embedding_orphans(&conn, now_ms, 900_000, 5).unwrap().is_none());
+    assert!(
+        check_i14_embedding_orphans(&conn, now_ms, 900_000, 5)
+            .unwrap()
+            .is_none()
+    );
 }
 
 #[test]
 fn i14_embedding_orphans_silent_when_shadow_table_absent() {
     use hippo_daemon::watchdog::check_i14_embedding_orphans;
     let conn = rusqlite::Connection::open_in_memory().unwrap();
-    conn.execute_batch("CREATE TABLE knowledge_nodes (id INTEGER PRIMARY KEY, created_at INTEGER NOT NULL);")
-        .unwrap();
+    conn.execute_batch(
+        "CREATE TABLE knowledge_nodes (id INTEGER PRIMARY KEY, created_at INTEGER NOT NULL);",
+    )
+    .unwrap();
     // No knowledge_vectors_rowids table -> fresh install -> must not alarm.
-    assert!(check_i14_embedding_orphans(&conn, 10_000_000, 900_000, 0).unwrap().is_none());
+    assert!(
+        check_i14_embedding_orphans(&conn, 10_000_000, 900_000, 0)
+            .unwrap()
+            .is_none()
+    );
 }
 
 // ============================================================================

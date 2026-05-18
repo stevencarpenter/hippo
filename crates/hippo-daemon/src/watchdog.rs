@@ -718,7 +718,11 @@ pub fn check_i14_embedding_orphans(
     )?;
 
     if orphan_count > threshold {
-        let since_ms = if oldest_created > 0 { now_ms - oldest_created } else { 0 };
+        let since_ms = if oldest_created > 0 {
+            now_ms - oldest_created
+        } else {
+            0
+        };
         Ok(Some(InvariantViolation {
             invariant_id: "I-14".to_string(),
             source: "embedding".to_string(),

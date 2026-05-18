@@ -530,10 +530,18 @@ impl Default for OpenConfig {
     }
 }
 
-fn default_reaper_interval_secs() -> u64 { 300 }
-fn default_reaper_batch_size() -> u64 { 50 }
-fn default_reaper_orphan_stale_secs() -> u64 { 900 }
-fn default_reaper_alarm_threshold() -> u64 { 25 }
+fn default_reaper_interval_secs() -> u64 {
+    300
+}
+fn default_reaper_batch_size() -> u64 {
+    50
+}
+fn default_reaper_orphan_stale_secs() -> u64 {
+    900
+}
+fn default_reaper_alarm_threshold() -> u64 {
+    25
+}
 
 /// Embedding orphan-reaper + watchdog invariant I-14 tuning.
 #[derive(Debug, Clone, Serialize, Deserialize)]
