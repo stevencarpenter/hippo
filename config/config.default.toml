@@ -190,6 +190,31 @@ notify_macos             = false
 enabled = true
 # poll_interval_secs = 30
 
+[codex]
+# OpenAI Codex CLI rollout-session ingestion.
+#
+# When enabled, `hippo codex-poll` (invoked every 60 s by the
+# `com.hippo.codex-session` LaunchAgent) walks `session_roots` for
+# `rollout-*.jsonl` files, parses each entry into segments, and writes them
+# into `claude_sessions` with `harness = 'codex'`.  The brain then enriches
+# these segments into knowledge nodes alongside Claude Code session data.
+#
+# `session_roots` defaults to:
+#   ~/.codex/sessions
+#   ~/.codex/archived_sessions
+#   ~/Library/Developer/Xcode/CodingAssistant/codex/sessions
+# Override only if Codex stores sessions in a non-standard location.
+#
+# To verify:
+#   1. Ensure `~/.codex/sessions` contains `rollout-*.jsonl` files
+#   2. Run once: `hippo codex-poll`
+#   3. Verify: `hippo doctor` shows healthy `agentic-session-codex` source
+
+enabled = true
+# min_idle_secs = 60
+# poll_interval_secs = 60
+# session_roots = []  # leave commented out; Rust default supplies the three paths above
+
 [telemetry]
 # OpenTelemetry observability: traces, metrics, and logs to Grafana/Tempo/Loki/Prometheus.
 #

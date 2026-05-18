@@ -136,6 +136,22 @@ Ingestion is handled by `crates/hippo-daemon/src/watch_claude_sessions.rs`, a lo
 
 **Hook install:** `hippo daemon install` writes the hook entry into `~/.claude/settings.json`. `hippo doctor` verifies the hook path matches the repo.
 
+### Codex Session Ingestion
+
+Ingestion is handled by `hippo codex-poll` (`crates/hippo-daemon/src/poll_codex_sessions.rs`), a periodic poller launched every 60 s by the `com.hippo.codex-session` LaunchAgent. It walks the `session_roots` directories (default: `~/.codex/sessions`, `~/.codex/archived_sessions`, and `~/Library/Developer/Xcode/CodingAssistant/codex/sessions`) for `rollout-*.jsonl` files, parses each entry into segments via `extract_codex_segments`, and upserts them into `claude_sessions` with `harness = 'codex'` via `INSERT OR IGNORE` on `(source_file, segment_index)`. Per-file resume state lives in `codex_session_offsets`. The brain enriches Codex segments into knowledge nodes alongside Claude Code and opencode data.
+
+**Config:** `[codex]` section in `~/.config/hippo/config.toml`. `session_roots` may be omitted — Rust supplies the three default paths. Set `enabled = false` to disable the LaunchAgent.
+
+**Verify:**
+```bash
+hippo codex-poll   # one-shot ingest; exits 0
+hippo doctor       # should show healthy agentic-session-codex line
+```
+
+**Schema:** v15 migration seeds the `agentic-session-codex` row in `source_health`.
+
+**Spec:** `docs/superpowers/specs/2026-05-17-codex-ingestion-design.md`
+
 ### Capture Reliability (v0.16+)
 
 Capture-reliability stack (the result of the P0–P3 overhaul shipped through v0.16). Reference docs live in [`docs/capture/`](docs/capture/architecture.md); historical design records are in [`docs/archive/capture-reliability-overhaul/`](docs/archive/capture-reliability-overhaul/). Key pieces:
