@@ -169,8 +169,12 @@ async def enrich_one_async(
     *,
     path_prefix_segments: int = 2,
     min_occurrences: int = 2,
-) -> None:
-    """Async wrapper around enrich_one for use in the enrichment scheduler."""
+) -> tuple[int, dict] | None:
+    """Async wrapper around enrich_one for use in the enrichment scheduler.
+
+    Returns ``(node_id, node_dict)`` for the created knowledge node so the
+    caller can schedule embedding, or ``None`` when ``run_id`` does not exist.
+    """
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
     try:
@@ -306,6 +310,8 @@ async def enrich_one_async(
                 now_ms=now,
             )
 
+        assert node_id is not None  # INSERT always populates lastrowid
+        return node_id, {"id": node_id, "embed_text": title, "commands_raw": ""}
     finally:
         conn.close()
 
