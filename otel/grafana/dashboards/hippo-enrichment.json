@@ -61,6 +61,36 @@
           "expr": "hippo_brain_enrichment_queue_depth{service_namespace!~\".+\",source=\"browser\"}",
           "legendFormat": "{{source}} \u00b7 {{status}}",
           "editorMode": "code"
+        },
+        {
+          "refId": "D",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "hippo_brain_enrichment_queue_depth{service_namespace!~\".+\",source=\"codex\"}",
+          "legendFormat": "{{source}} \u00b7 {{status}}",
+          "editorMode": "code"
+        },
+        {
+          "refId": "E",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "hippo_brain_enrichment_queue_depth{service_namespace!~\".+\",source=\"workflow\"}",
+          "legendFormat": "{{source}} \u00b7 {{status}}",
+          "editorMode": "code"
+        },
+        {
+          "refId": "F",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "hippo_brain_enrichment_queue_depth{service_namespace!~\".+\",source=\"opencode\"}",
+          "legendFormat": "{{source}} \u00b7 {{status}}",
+          "editorMode": "code"
         }
       ],
       "fieldConfig": {
@@ -181,6 +211,36 @@
           },
           "expr": "rate(hippo_brain_enrichment_events_claimed_total{service_namespace!~\".+\",source=\"browser\"}[5m]) * 60",
           "legendFormat": "browser",
+          "editorMode": "code"
+        },
+        {
+          "refId": "D",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "rate(hippo_brain_enrichment_events_claimed_total{service_namespace!~\".+\",source=\"codex\"}[5m]) * 60",
+          "legendFormat": "codex",
+          "editorMode": "code"
+        },
+        {
+          "refId": "E",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "rate(hippo_brain_enrichment_events_claimed_total{service_namespace!~\".+\",source=\"workflow\"}[5m]) * 60",
+          "legendFormat": "workflow",
+          "editorMode": "code"
+        },
+        {
+          "refId": "F",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "rate(hippo_brain_enrichment_events_claimed_total{service_namespace!~\".+\",source=\"opencode\"}[5m]) * 60",
+          "legendFormat": "opencode",
           "editorMode": "code"
         }
       ],

@@ -210,6 +210,11 @@ def build_opencode_enrichment_prompt(segments: list[dict]) -> str:
             header += f"\nModel: {seg['model']}"
 
         lines = [header]
+        summary_text = (seg.get("summary_text") or "").strip()
+        if summary_text:
+            lines.append("")
+            lines.append("Session summary:")
+            lines.append(summary_text)
         diffs = seg.get("snapshot_diffs")
         if diffs:
             lines.append("")

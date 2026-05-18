@@ -15,6 +15,7 @@ from starlette.applications import Starlette
 from starlette.testclient import TestClient
 
 from hippo_brain.server import BrainServer
+from hippo_brain.server import _collect_queue_depths, _source_label_for_claude_segments
 from hippo_brain.watchdog import PreflightDecision
 
 
@@ -33,6 +34,110 @@ def _make_server(db_path: str, **kwargs) -> BrainServer:
 def _make_app(db_path: str, **kwargs) -> Starlette:
     server = _make_server(db_path, **kwargs)
     return Starlette(routes=server.get_routes())
+
+
+# ---- Enrichment queue telemetry source coverage ----
+
+
+def test_collect_queue_depths_splits_agentic_sources():
+    """The queue-depth gauge must expose Codex and opencode as first-class
+    sources, not hide them under claude or omit them entirely."""
+    import sqlite3
+
+    conn = sqlite3.connect(":memory:")
+    conn.executescript(
+        """
+        CREATE TABLE enrichment_queue (status TEXT NOT NULL);
+        CREATE TABLE claude_sessions (
+            id INTEGER PRIMARY KEY,
+            source_file TEXT NOT NULL,
+            probe_tag TEXT
+        );
+        CREATE TABLE claude_enrichment_queue (
+            claude_session_id INTEGER NOT NULL,
+            status TEXT NOT NULL
+        );
+        CREATE TABLE browser_enrichment_queue (status TEXT NOT NULL);
+        CREATE TABLE workflow_enrichment_queue (status TEXT NOT NULL);
+        CREATE TABLE agentic_sessions (
+            id INTEGER PRIMARY KEY,
+            harness TEXT NOT NULL,
+            probe_tag TEXT
+        );
+        CREATE TABLE agentic_enrichment_queue (
+            session_id INTEGER NOT NULL,
+            status TEXT NOT NULL
+        );
+        INSERT INTO enrichment_queue (status) VALUES ('pending');
+        INSERT INTO claude_sessions (id, source_file, probe_tag) VALUES
+            (1, '/Users/me/.claude/projects/proj/session.jsonl', NULL),
+            (2, '/Users/me/.codex/sessions/rollout-codex.jsonl', NULL),
+            (3, '/Users/me/Library/Developer/Xcode/CodingAssistant/codex/sessions/rollout-x.jsonl', NULL),
+            (4, '/Users/me/.codex/sessions/probe.jsonl', 'probe');
+        INSERT INTO claude_enrichment_queue (claude_session_id, status) VALUES
+            (1, 'pending'), (2, 'pending'), (3, 'pending'), (4, 'pending');
+        INSERT INTO browser_enrichment_queue (status) VALUES ('failed');
+        INSERT INTO workflow_enrichment_queue (status) VALUES ('processing');
+        INSERT INTO agentic_sessions (id, harness, probe_tag) VALUES
+            (1, 'opencode', NULL),
+            (2, 'claude-code', NULL),
+            (3, 'opencode', 'probe');
+        INSERT INTO agentic_enrichment_queue (session_id, status) VALUES
+            (1, 'failed'), (2, 'pending'), (3, 'pending');
+        """
+    )
+
+    rows = {(source, status): count for source, status, count in _collect_queue_depths(conn)}
+
+    assert rows[("shell", "pending")] == 1
+    assert rows[("claude", "pending")] == 1
+    assert rows[("codex", "pending")] == 2
+    assert rows[("opencode", "failed")] == 1
+    assert rows[("workflow", "processing")] == 1
+    assert rows[("browser", "failed")] == 1
+
+
+def test_collect_queue_depths_tolerates_missing_table():
+    """A missing table must drop only that source, not blank the whole metric.
+
+    Regression target: on an older schema missing workflow_enrichment_queue or
+    agentic_sessions/agentic_enrichment_queue, the entire gauge callback went
+    blank instead of just omitting the unavailable source.
+    """
+    import sqlite3
+
+    # DB with only the shell enrichment_queue table — all others absent.
+    conn = sqlite3.connect(":memory:")
+    conn.executescript(
+        """
+        CREATE TABLE enrichment_queue (status TEXT NOT NULL);
+        INSERT INTO enrichment_queue (status) VALUES ('pending');
+        INSERT INTO enrichment_queue (status) VALUES ('pending');
+        """
+    )
+
+    rows = {(source, status): count for source, status, count in _collect_queue_depths(conn)}
+
+    # Shell depths must be populated even though other tables are missing.
+    assert rows[("shell", "pending")] == 2
+    # Sources whose tables do not exist must be absent, not raise.
+    assert ("workflow", "pending") not in rows
+    assert ("opencode", "pending") not in rows
+
+
+def test_source_label_for_claude_segments_splits_codex_metrics():
+    assert (
+        _source_label_for_claude_segments(
+            [{"source_file": "/Users/me/.codex/sessions/rollout-abc.jsonl"}]
+        )
+        == "codex"
+    )
+    assert (
+        _source_label_for_claude_segments(
+            [{"source_file": "/Users/me/.claude/projects/proj/session.jsonl"}]
+        )
+        == "claude"
+    )
 
 
 # ---- /health embed_model_drift ----

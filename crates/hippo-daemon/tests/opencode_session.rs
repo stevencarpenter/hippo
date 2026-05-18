@@ -33,6 +33,19 @@ fn init_opencode_db(path: &std::path::Path) -> Connection {
             summary_deletions INTEGER,
             summary_files     INTEGER,
             summary_diffs     TEXT
+        );
+        CREATE TABLE message (
+            id           TEXT PRIMARY KEY,
+            session_id   TEXT NOT NULL,
+            data         TEXT NOT NULL,
+            time_created INTEGER NOT NULL
+        );
+        CREATE TABLE part (
+            id           TEXT PRIMARY KEY,
+            session_id   TEXT NOT NULL,
+            message_id   TEXT NOT NULL,
+            data         TEXT NOT NULL,
+            time_created INTEGER NOT NULL
         );",
     )
     .unwrap();
@@ -77,6 +90,41 @@ fn insert_session(
     .unwrap();
 }
 
+fn insert_message(
+    conn: &Connection,
+    id: &str,
+    session_id: &str,
+    role: &str,
+    time_created: i64,
+    tokens_total: Option<i64>,
+) {
+    let data = match tokens_total {
+        Some(total) => format!(r#"{{"role":"{role}","tokens":{{"total":{total}}}}}"#),
+        None => format!(r#"{{"role":"{role}"}}"#),
+    };
+    conn.execute(
+        "INSERT INTO message (id, session_id, data, time_created) VALUES (?1, ?2, ?3, ?4)",
+        params![id, session_id, data, time_created],
+    )
+    .unwrap();
+}
+
+fn insert_part(
+    conn: &Connection,
+    id: &str,
+    session_id: &str,
+    message_id: &str,
+    data: &str,
+    time_created: i64,
+) {
+    conn.execute(
+        "INSERT INTO part (id, session_id, message_id, data, time_created)
+         VALUES (?1, ?2, ?3, ?4, ?5)",
+        params![id, session_id, message_id, data, time_created],
+    )
+    .unwrap();
+}
+
 fn test_config(tmp: &TempDir, opencode_db: &std::path::Path) -> HippoConfig {
     let mut config = HippoConfig::default();
     config.storage.data_dir = tmp.path().join("data");
@@ -84,6 +132,11 @@ fn test_config(tmp: &TempDir, opencode_db: &std::path::Path) -> HippoConfig {
     config.opencode.db_path = opencode_db.to_path_buf();
     config.opencode.enabled = true;
     config
+}
+
+fn opencode_source_key(path: &std::path::Path) -> String {
+    use std::os::unix::fs::MetadataExt;
+    format!("opencode-{}", std::fs::metadata(path).unwrap().ino())
 }
 
 #[test]
@@ -320,6 +373,201 @@ fn poll_tick_re_polls_session_on_time_updated_advance() {
         .unwrap();
     assert_eq!(status, "pending");
     assert_eq!(retries, 0);
+}
+
+#[test]
+fn poll_tick_backfills_hippo_missing_sessions_older_than_cursor() {
+    let tmp = TempDir::new().unwrap();
+    let opencode_db_path = tmp.path().join("opencode.db");
+    let oc = init_opencode_db(&opencode_db_path);
+    insert_session(
+        &oc,
+        "newer",
+        "newer",
+        "Newer",
+        "/proj",
+        None,
+        None,
+        1_700_000_000_000,
+        1_700_000_002_000,
+        None,
+    );
+    drop(oc);
+
+    let config = test_config(&tmp, &opencode_db_path);
+    let _ = hippo_core::storage::open_db(&config.db_path()).unwrap();
+    assert_eq!(
+        hippo_daemon::opencode_session::poll_tick(&config).unwrap(),
+        1
+    );
+
+    let oc = Connection::open(&opencode_db_path).unwrap();
+    insert_session(
+        &oc,
+        "older-missing",
+        "older-missing",
+        "Older Missing",
+        "/proj",
+        None,
+        None,
+        1_700_000_000_000,
+        1_700_000_001_000,
+        None,
+    );
+    drop(oc);
+
+    let hippo_conn = hippo_core::storage::open_db(&config.db_path()).unwrap();
+    let (cursor_ts, cursor_id): (i64, String) = hippo_conn
+        .query_row(
+            "SELECT last_seen_updated_at, last_id
+             FROM agentic_cursor WHERE source_key = ?1",
+            params![opencode_source_key(&opencode_db_path)],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(cursor_ts, 1_700_000_002_000);
+    assert_eq!(cursor_id, "newer");
+    drop(hippo_conn);
+
+    hippo_daemon::opencode_session::poll_tick(&config).unwrap();
+
+    let conn = hippo_core::storage::open_db(&config.db_path()).unwrap();
+    let landed: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM agentic_sessions WHERE harness = 'opencode'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        landed, 2,
+        "opencode poll must backfill sessions missing from Hippo even when their time_updated is older than the cursor",
+    );
+    let queued_missing: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM agentic_enrichment_queue q
+             JOIN agentic_sessions s ON q.session_id = s.id
+             WHERE s.session_id = 'older-missing' AND q.status = 'pending'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(queued_missing, 1);
+}
+
+#[test]
+fn poll_tick_extracts_opencode_message_parts_into_enrichment_summary() {
+    let tmp = TempDir::new().unwrap();
+    let opencode_db_path = tmp.path().join("opencode.db");
+    let oc = init_opencode_db(&opencode_db_path);
+    insert_session(
+        &oc,
+        "sess-context",
+        "capture-context",
+        "Capture useful opencode context",
+        "/Users/me/hippo",
+        Some("build"),
+        Some("gpt-5"),
+        1_700_000_000_000,
+        1_700_000_010_000,
+        None,
+    );
+    insert_message(
+        &oc,
+        "msg-user",
+        "sess-context",
+        "user",
+        1_700_000_000_100,
+        None,
+    );
+    insert_part(
+        &oc,
+        "part-user",
+        "sess-context",
+        "msg-user",
+        r#"{"type":"text","text":"Make Hippo capture useful opencode context from message parts."}"#,
+        1_700_000_000_100,
+    );
+    insert_message(
+        &oc,
+        "msg-assistant",
+        "sess-context",
+        "assistant",
+        1_700_000_000_200,
+        Some(42),
+    );
+    insert_part(
+        &oc,
+        "part-tool",
+        "sess-context",
+        "msg-assistant",
+        r#"{"type":"tool","tool":"bash","state":{"status":"completed","input":{"command":"rg opencode brain/src/hippo_brain"},"output":"brain/src/hippo_brain/server.py\n"}}"#,
+        1_700_000_000_210,
+    );
+    insert_part(
+        &oc,
+        "part-secret-tool",
+        "sess-context",
+        "msg-assistant",
+        r#"{"type":"tool","tool":"bash","state":{"status":"completed","input":{"command":"export API_KEY=sk-1234567890abcdef"},"output":"ok"}}"#,
+        1_700_000_000_220,
+    );
+    insert_part(
+        &oc,
+        "part-assistant",
+        "sess-context",
+        "msg-assistant",
+        r#"{"type":"text","text":"Updated brain/src/hippo_brain/server.py and the opencode poller."}"#,
+        1_700_000_000_230,
+    );
+    insert_part(
+        &oc,
+        "part-patch",
+        "sess-context",
+        "msg-assistant",
+        r#"{"type":"patch","files":[{"path":"brain/src/hippo_brain/server.py"},{"path":"crates/hippo-daemon/src/opencode_session.rs"}]}"#,
+        1_700_000_000_240,
+    );
+    drop(oc);
+
+    let config = test_config(&tmp, &opencode_db_path);
+    let _ = hippo_core::storage::open_db(&config.db_path()).unwrap();
+
+    let events = hippo_daemon::opencode_session::poll_tick(&config).unwrap();
+    assert_eq!(events, 1);
+
+    let conn = hippo_core::storage::open_db(&config.db_path()).unwrap();
+    let (summary, message_count, token_count): (String, i64, i64) = conn
+        .query_row(
+            "SELECT summary_text, message_count, token_count
+             FROM agentic_sessions WHERE session_id = 'sess-context'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .unwrap();
+
+    assert!(
+        summary.contains("Make Hippo capture useful opencode context"),
+        "user text parts should land in summary_text, got: {summary}",
+    );
+    assert!(
+        summary.contains("bash: rg opencode brain/src/hippo_brain"),
+        "tool calls should land in summary_text, got: {summary}",
+    );
+    assert!(
+        summary.contains("brain/src/hippo_brain/server.py"),
+        "patch/file context should land in summary_text, got: {summary}",
+    );
+    assert!(
+        summary.contains("[REDACTED]"),
+        "tool inputs must be redacted before storage, got: {summary}",
+    );
+    assert!(
+        !summary.contains("sk-1234567890abcdef"),
+        "raw secrets must not be stored in opencode summaries",
+    );
+    assert_eq!(message_count, 2);
+    assert_eq!(token_count, 42);
 }
 
 #[test]
