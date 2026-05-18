@@ -1759,6 +1759,6 @@ git commit -m "docs(codex): add [codex] config section and CLAUDE.md notes"
 
 ## Self-Review notes
 
-- **Spec coverage:** §3 data model → Task 6; §4.2 segmentation → Task 4; §4.3 poller → Task 7; §4.4 parser (both user-message shapes) → Task 4; §4.5 cursor → Task 7; §5 config → Tasks 1, 12; §5 CLI → Task 8; §5 launchd → Task 9; §5 schema v15 → Task 2; §5 doctor/watchdog → Task 10; §6 retire legacy → Task 11; §7 harness derivation → no code (migration concern, documented in spec). §8 tests → Tasks 3–7, 10.
+- **Spec coverage:** §4.1 data model → Task 6; §4.2 segmentation → Task 4; §4.3 poller → Task 7; §4.4 parser (both user-message shapes) → Task 4; §4.5 cursor → Task 7; §5 config → Tasks 1, 12; §5 CLI → Task 8; §5 launchd → Task 9; §5 schema v15 → Task 2; §5 doctor/watchdog → Task 10; §6 retire legacy → Task 11; §7 harness derivation → no code (migration concern, documented in spec). §8 tests → Tasks 3–7, 10.
 - **Open verification carried into tasks:** spec's "does brain enrichment need Codex-specific framing" — Task 11 Step 4 surfaces it via the brain test run; framing is baked into `summary_text` by the Rust poller (Task 5), so no brain change is expected.
 - **Type consistency:** `CodexSegment`, `ToolCall`, `extract_segments`, `build_summary_text`, `compute_content_hash`, `decide_enqueue`, `upsert_segment`/`upsert_segment_tx`, `poll_tick`, `test_config` are used consistently across Tasks 3–8.
