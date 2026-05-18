@@ -732,5 +732,7 @@ mod tests {
             Some(now - 1_000),
             now
         ));
+        // Content changed, no prior queue row at all — must enqueue.
+        assert!(decide_enqueue(false, "h2", Some("h1"), None, None, now));
     }
 }

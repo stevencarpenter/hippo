@@ -53,4 +53,15 @@ fn upsert_writes_claude_session_and_enqueues() {
         )
         .unwrap();
     assert_eq!(cnt2, 1, "re-upsert must not duplicate");
+
+    let queued2: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM claude_enrichment_queue q
+             JOIN claude_sessions s ON s.id = q.claude_session_id
+             WHERE s.session_id = 'codex-1'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(queued2, 1, "re-upsert must not create a second queue row");
 }
