@@ -410,6 +410,17 @@ mod tests {
     }
 
     #[test]
+    fn summary_text_emits_overflow_line_past_prompt_cap() {
+        let mut seg = sample_segment();
+        seg.user_prompts = (0..31).map(|i| format!("prompt {i}")).collect();
+        let s = build_summary_text(&seg);
+        assert!(
+            s.contains("… (+1 more)"),
+            "31 prompts past MAX_PROMPTS=30 must show overflow line"
+        );
+    }
+
+    #[test]
     fn content_hash_is_stable_and_changes_with_content() {
         let a = compute_content_hash(&sample_segment());
         let b = compute_content_hash(&sample_segment());
