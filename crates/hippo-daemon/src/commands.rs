@@ -12,6 +12,7 @@ use tokio::net::UnixStream;
 use uuid::Uuid;
 use walkdir::WalkDir;
 
+use crate::codex_session;
 use crate::framing::{read_frame, write_frame};
 
 const REQUEST_TIMEOUT_MS: u64 = 5_000;
@@ -1212,6 +1213,7 @@ pub async fn handle_doctor(config: &HippoConfig, explain: bool) -> Result<()> {
         && let Ok(conn) = hippo_core::storage::open_db(&db_path)
     {
         fail_count += check_source_staleness(&conn, explain);
+        fail_count += check_codex_state_coverage(config, &conn, explain);
         fail_count += check_watchdog_heartbeat(&conn, explain);
         // Auto-resolved alarm count is informational — never increments fail_count.
         check_resolved_alarm_count(&conn);
@@ -1897,6 +1899,92 @@ fn check_source_staleness(db: &rusqlite::Connection, explain: bool) -> u32 {
     }
 
     fail_count
+}
+
+fn check_codex_state_coverage(
+    config: &HippoConfig,
+    db: &rusqlite::Connection,
+    explain: bool,
+) -> u32 {
+    let label = "Codex state coverage";
+    let padded = format!("{:<29}", label);
+    if !config.codex.enabled {
+        println!("[--] {}  disabled", padded);
+        return 0;
+    }
+
+    let Some(home) = dirs::home_dir() else {
+        println!("[--] {}  no home dir", padded);
+        return 0;
+    };
+    let state_path = home.join(".codex/state_5.sqlite");
+    if !state_path.exists() {
+        println!("[--] {}  no Codex state DB", padded);
+        return 0;
+    }
+    let logs_path = home.join(".codex/logs_2.sqlite");
+    let logs_arg = logs_path.exists().then_some(logs_path.as_path());
+
+    match codex_session::check_codex_coverage(db, &state_path, logs_arg, config.codex.min_idle_secs)
+    {
+        Ok(report) => {
+            let missing_count =
+                report.missing_hippo_threads.len() + report.missing_rollout_threads.len();
+            if missing_count == 0 {
+                println!(
+                    "[OK] {}  {}/{} threads captured ({} in-flight, {} log-only diagnostics)",
+                    padded,
+                    report.covered_threads,
+                    report.total_state_threads,
+                    report.in_flight_threads.len(),
+                    report.log_only_thread_count
+                );
+                return 0;
+            }
+
+            println!(
+                "[!!] {}  {}/{} threads captured; {} missing from Hippo, {} missing rollout files ({} in-flight)",
+                padded,
+                report.covered_threads,
+                report.total_state_threads,
+                report.missing_hippo_threads.len(),
+                report.missing_rollout_threads.len(),
+                report.in_flight_threads.len()
+            );
+            if explain {
+                if !report.missing_hippo_threads.is_empty() {
+                    println!(
+                        "     MISSING HIPPO: {}",
+                        report
+                            .missing_hippo_threads
+                            .iter()
+                            .take(10)
+                            .cloned()
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    );
+                }
+                if !report.missing_rollout_threads.is_empty() {
+                    println!(
+                        "     MISSING ROLLOUT: {}",
+                        report
+                            .missing_rollout_threads
+                            .iter()
+                            .take(10)
+                            .cloned()
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    );
+                }
+                println!("     FIX:    run `hippo codex-poll`, then re-run `hippo doctor`");
+            }
+            1
+        }
+        Err(e) => {
+            println!("[!!] {}  coverage check failed: {e}", padded);
+            1
+        }
+    }
 }
 
 fn format_suppressed_source_staleness_line(label: &str, human: &str, reason: &str) -> String {

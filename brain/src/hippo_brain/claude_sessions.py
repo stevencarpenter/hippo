@@ -567,7 +567,7 @@ def claim_pending_claude_segments(
             SELECT id, session_id, project_dir, cwd, git_branch, segment_index,
                    start_time, end_time, summary_text, tool_calls_json,
                    user_prompts_json, message_count, token_count, is_subagent,
-                   content_hash
+                   content_hash, source_file
             FROM claude_sessions
             WHERE id IN ({placeholders}) AND probe_tag IS NULL
             ORDER BY start_time ASC
@@ -594,6 +594,7 @@ def claim_pending_claude_segments(
                     "token_count": row[12],
                     "is_subagent": row[13],
                     "content_hash": row[14],
+                    "source_file": row[15],
                 }
             )
 

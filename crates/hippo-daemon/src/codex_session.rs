@@ -5,9 +5,10 @@ use anyhow::{Context, Result};
 use chrono::DateTime;
 use hippo_core::config::HippoConfig;
 use hippo_core::redaction::RedactionEngine;
-use rusqlite::{OptionalExtension, params};
+use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use tracing::{debug, error, info, warn};
 use walkdir::WalkDir;
@@ -554,6 +555,166 @@ pub fn upsert_segment(conn: &rusqlite::Connection, seg: &CodexSegment) -> Result
     Ok(())
 }
 
+// ─── Codex SQLite coverage oracle ────────────────────────────────────────────
+
+/// Coverage comparison between Codex's own SQLite state and Hippo's ingested
+/// Codex rows. Rollout JSONL remains the transcript source of truth; the
+/// SQLite state DB is used to prove Hippo has seen every thread Codex knows
+/// about, excluding files still inside the configured idle window.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CodexCoverageReport {
+    pub total_state_threads: usize,
+    pub covered_threads: usize,
+    pub in_flight_threads: Vec<String>,
+    pub missing_rollout_threads: Vec<String>,
+    pub missing_hippo_threads: Vec<String>,
+    pub log_only_thread_count: usize,
+}
+
+#[derive(Debug, Clone)]
+struct CodexStateThread {
+    id: String,
+    rollout_path: PathBuf,
+}
+
+fn open_readonly_sqlite(path: &Path) -> Result<Connection> {
+    let conn = Connection::open_with_flags(
+        path,
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )
+    .with_context(|| format!("failed to open SQLite DB read-only at {}", path.display()))?;
+    conn.pragma_update(None, "busy_timeout", "5000")
+        .context("failed to set busy_timeout=5000")?;
+    conn.pragma_update(None, "foreign_keys", "ON")
+        .context("failed to set foreign_keys=ON")?;
+    Ok(conn)
+}
+
+fn sqlite_table_exists(conn: &Connection, table_name: &str) -> Result<bool> {
+    Ok(conn.query_row(
+        "SELECT EXISTS(
+            SELECT 1 FROM sqlite_master
+            WHERE type = 'table' AND name = ?1
+        )",
+        params![table_name],
+        |row| row.get(0),
+    )?)
+}
+
+fn read_codex_state_threads(conn: &Connection) -> Result<Vec<CodexStateThread>> {
+    let mut stmt = conn.prepare("SELECT id, rollout_path FROM threads ORDER BY id ASC")?;
+    stmt.query_map([], |row| {
+        let id: String = row.get(0)?;
+        let rollout_path: String = row.get(1)?;
+        Ok(CodexStateThread {
+            id,
+            rollout_path: PathBuf::from(rollout_path),
+        })
+    })?
+    .collect::<std::result::Result<Vec<_>, _>>()
+    .map_err(Into::into)
+}
+
+fn read_hippo_session_ids(conn: &Connection) -> Result<HashSet<String>> {
+    let mut stmt = conn.prepare(
+        "SELECT DISTINCT session_id FROM claude_sessions
+         WHERE (source_file LIKE '%/.codex/%'
+                OR source_file LIKE '%/CodingAssistant/codex/%')
+           AND probe_tag IS NULL",
+    )?;
+    stmt.query_map([], |row| row.get::<_, String>(0))?
+        .collect::<std::result::Result<HashSet<_>, _>>()
+        .map_err(Into::into)
+}
+
+fn read_log_thread_ids(conn: &Connection) -> Result<HashSet<String>> {
+    if !sqlite_table_exists(conn, "logs")? {
+        return Ok(HashSet::new());
+    }
+    let mut stmt = conn.prepare(
+        "SELECT DISTINCT thread_id
+         FROM logs
+         WHERE thread_id IS NOT NULL AND thread_id != ''",
+    )?;
+    stmt.query_map([], |row| row.get::<_, String>(0))?
+        .collect::<std::result::Result<HashSet<_>, _>>()
+        .map_err(Into::into)
+}
+
+fn is_file_in_idle_window(path: &Path, min_idle_secs: u64) -> bool {
+    let Ok(meta) = std::fs::metadata(path) else {
+        return false;
+    };
+    let Ok(modified) = meta.modified() else {
+        return false;
+    };
+    match modified.elapsed() {
+        Ok(age) => age < std::time::Duration::from_secs(min_idle_secs),
+        Err(_) => true,
+    }
+}
+
+/// Compare `~/.codex/state_5.sqlite` thread rows against Hippo's Codex
+/// ingestion rows. `logs_2.sqlite` is intentionally diagnostic-only: it is
+/// counted as log-only coverage but never treated as a transcript source.
+pub fn check_codex_coverage(
+    hippo_conn: &Connection,
+    state_db_path: &Path,
+    logs_db_path: Option<&Path>,
+    min_idle_secs: u64,
+) -> Result<CodexCoverageReport> {
+    let state_conn = open_readonly_sqlite(state_db_path)?;
+    let state_threads = read_codex_state_threads(&state_conn)?;
+    let hippo_ids = read_hippo_session_ids(hippo_conn)?;
+
+    let mut state_ids = HashSet::new();
+    let mut covered_threads = 0usize;
+    let mut in_flight_threads = Vec::new();
+    let mut missing_rollout_threads = Vec::new();
+    let mut missing_hippo_threads = Vec::new();
+
+    for thread in &state_threads {
+        state_ids.insert(thread.id.clone());
+        if hippo_ids.contains(&thread.id) {
+            covered_threads += 1;
+            continue;
+        }
+        if !thread.rollout_path.exists() {
+            missing_rollout_threads.push(thread.id.clone());
+            continue;
+        }
+        if is_file_in_idle_window(&thread.rollout_path, min_idle_secs) {
+            in_flight_threads.push(thread.id.clone());
+            continue;
+        }
+        missing_hippo_threads.push(thread.id.clone());
+    }
+
+    let log_only_thread_count = match logs_db_path.filter(|path| path.exists()) {
+        Some(path) => {
+            let logs_conn = open_readonly_sqlite(path)?;
+            read_log_thread_ids(&logs_conn)?
+                .difference(&state_ids)
+                .filter(|id| !hippo_ids.contains(*id))
+                .count()
+        }
+        None => 0,
+    };
+
+    in_flight_threads.sort();
+    missing_rollout_threads.sort();
+    missing_hippo_threads.sort();
+
+    Ok(CodexCoverageReport {
+        total_state_threads: state_threads.len(),
+        covered_threads,
+        in_flight_threads,
+        missing_rollout_threads,
+        missing_hippo_threads,
+        log_only_thread_count,
+    })
+}
+
 // ─── poll_tick: file walk, cursor, source_health ─────────────────────────────
 
 /// Stable inode-keyed cursor key for one rollout file. Inode survives the
@@ -1035,5 +1196,74 @@ mod tests {
         ));
         // Content changed, no prior queue row at all — must enqueue.
         assert!(decide_enqueue(false, "h2", Some("h1"), None, None, now));
+    }
+
+    #[test]
+    fn read_hippo_session_ids_excludes_non_codex_and_probe_rows() {
+        let tmp = tempfile::tempdir().unwrap();
+        let db_path = tmp.path().join("hippo.db");
+        let conn = hippo_core::storage::open_db(&db_path).unwrap();
+
+        // Insert a real Codex row (should be included).
+        let codex_seg = CodexSegment {
+            session_id: "codex-covered".into(),
+            project_dir: "proj".into(),
+            cwd: "/work/proj".into(),
+            segment_index: 0,
+            start_time: 1_775_634_000_000,
+            end_time: 1_775_634_500_000,
+            user_prompts: vec!["codex prompt".into()],
+            assistant_texts: vec![],
+            tool_calls: vec![],
+            message_count: 1,
+            source_file: "/Users/me/.codex/sessions/rollout-x.jsonl".into(),
+        };
+        upsert_segment(&conn, &codex_seg).unwrap();
+
+        // Insert a non-Codex row with a .claude/ source_file (must be excluded).
+        conn.execute(
+            "INSERT INTO claude_sessions
+                 (session_id, project_dir, cwd, segment_index,
+                  start_time, end_time, summary_text, tool_calls_json,
+                  user_prompts_json, message_count, source_file,
+                  is_subagent, created_at)
+             VALUES ('claude-session', 'proj', '/work', 0,
+                     1_775_634_000_000, 1_775_634_500_000, 'summary', '[]',
+                     '[]', 1,
+                     '/Users/me/.claude/projects/abc/session.jsonl',
+                     0, 1_775_634_000_000)",
+            [],
+        )
+        .unwrap();
+
+        // Insert a Codex row with probe_tag set (must be excluded).
+        conn.execute(
+            "INSERT INTO claude_sessions
+                 (session_id, project_dir, cwd, segment_index,
+                  start_time, end_time, summary_text, tool_calls_json,
+                  user_prompts_json, message_count, source_file,
+                  is_subagent, probe_tag, created_at)
+             VALUES ('codex-probe', 'proj', '/work', 0,
+                     1_775_634_000_000, 1_775_634_500_000, 'summary', '[]',
+                     '[]', 1,
+                     '/Users/me/.codex/sessions/rollout-probe.jsonl',
+                     0, 'test-probe', 1_775_634_000_000)",
+            [],
+        )
+        .unwrap();
+
+        let ids = read_hippo_session_ids(&conn).unwrap();
+        assert!(
+            ids.contains("codex-covered"),
+            "Codex row must be included; got {ids:?}"
+        );
+        assert!(
+            !ids.contains("claude-session"),
+            "non-Codex .claude/ row must be excluded; got {ids:?}"
+        );
+        assert!(
+            !ids.contains("codex-probe"),
+            "probe row must be excluded; got {ids:?}"
+        );
     }
 }

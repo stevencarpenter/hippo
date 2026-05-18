@@ -119,6 +119,66 @@ MAX_QUERY_LIMIT = 100
 # accidentally serializing tens of thousands of rows into one response.
 MAX_LIST_LIMIT = 500
 
+QUEUE_DEPTH_STATUSES = ("pending", "processing", "failed")
+CODEX_SOURCE_SQL = (
+    "s.source_file LIKE '%/.codex/%' OR s.source_file LIKE '%/CodingAssistant/codex/%'"
+)
+
+
+def _is_codex_source_file(source_file: str | None) -> bool:
+    return bool(
+        source_file and ("/.codex/" in source_file or "/CodingAssistant/codex/" in source_file)
+    )
+
+
+def _source_label_for_claude_segments(segments: list[dict]) -> str:
+    if segments and all(_is_codex_source_file(seg.get("source_file")) for seg in segments):
+        return "codex"
+    return "claude"
+
+
+def _collect_queue_depths(conn: sqlite3.Connection) -> list[tuple[str, str, int]]:
+    queries = {
+        "shell": "SELECT COUNT(*) FROM enrichment_queue WHERE status = ?",
+        "claude": f"""
+            SELECT COUNT(*)
+            FROM claude_enrichment_queue q
+            JOIN claude_sessions s ON q.claude_session_id = s.id
+            WHERE q.status = ?
+              AND s.probe_tag IS NULL
+              AND NOT ({CODEX_SOURCE_SQL})
+        """,
+        "codex": f"""
+            SELECT COUNT(*)
+            FROM claude_enrichment_queue q
+            JOIN claude_sessions s ON q.claude_session_id = s.id
+            WHERE q.status = ?
+              AND s.probe_tag IS NULL
+              AND ({CODEX_SOURCE_SQL})
+        """,
+        "browser": "SELECT COUNT(*) FROM browser_enrichment_queue WHERE status = ?",
+        "workflow": "SELECT COUNT(*) FROM workflow_enrichment_queue WHERE status = ?",
+        "opencode": """
+            SELECT COUNT(*)
+            FROM agentic_enrichment_queue q
+            JOIN agentic_sessions s ON q.session_id = s.id
+            WHERE q.status = ?
+              AND s.harness = 'opencode'
+              AND s.probe_tag IS NULL
+        """,
+    }
+    depths: list[tuple[str, str, int]] = []
+    for source, sql in queries.items():
+        for status in QUEUE_DEPTH_STATUSES:
+            try:
+                count = conn.execute(sql, (status,)).fetchone()[0]
+                depths.append((source, status, int(count)))
+            except sqlite3.OperationalError:
+                # Table does not exist on this DB schema version; skip this
+                # source rather than blanking the entire metric.
+                break
+    return depths
+
 
 class BrainServer:
     def __init__(
@@ -1221,14 +1281,15 @@ class BrainServer:
         embed_tasks = []
         for segments in batches:
             segment_ids = [s["id"] for s in segments]
+            source_label = _source_label_for_claude_segments(segments)
             prompt = "\n---\n\n".join(s["summary_text"] for s in segments)
-            logger.info("claimed %d claude segments: %s", len(segment_ids), segment_ids)
-            _add(_events_claimed, len(segment_ids), source="claude")
+            logger.info("claimed %d %s segments: %s", len(segment_ids), source_label, segment_ids)
+            _add(_events_claimed, len(segment_ids), source=source_label)
 
             tracer = _get_tracer()
             span = (
                 tracer.start_as_current_span(
-                    "enrichment.claude",
+                    f"enrichment.{source_label}",
                     attributes={
                         "hippo.event_count": len(segment_ids),
                         "hippo.model": self.enrichment_model,
@@ -1241,7 +1302,7 @@ class BrainServer:
             with span:
                 try:
                     result = await self._call_llm_with_retries(
-                        CLAUDE_SYSTEM_PROMPT, prompt, "claude"
+                        CLAUDE_SYSTEM_PROMPT, prompt, source_label
                     )
                     conn = self._get_conn()
                     try:
@@ -1254,11 +1315,12 @@ class BrainServer:
                         )
                     finally:
                         conn.close()
-                    _add(_nodes_created, source="claude")
+                    _add(_nodes_created, source=source_label)
                     self._record_success()
                     logger.info(
-                        "enriched %d claude segments -> node %d",
+                        "enriched %d %s segments -> node %d",
                         len(segment_ids),
+                        source_label,
                         node_id,
                     )
 
@@ -1292,14 +1354,14 @@ class BrainServer:
                             "enrichment_model": self.enrichment_model,
                         }
                         embed_tasks.append(
-                            asyncio.create_task(self._embed_node(node_id, node_dict, "claude"))
+                            asyncio.create_task(self._embed_node(node_id, node_dict, source_label))
                         )
                 except Exception as e:
-                    _add(_enrichment_failures, source="claude")
+                    _add(_enrichment_failures, source=source_label)
                     err_msg = self._record_error(e)
                     self._log_enrichment_failure(
                         "claude_enrichment_queue",
-                        "claude.chat",
+                        f"{source_label}.chat",
                         e,
                         claim_count=len(segment_ids),
                         claim_age_ms=int(time.time() * 1000) - batch_start_ms,
@@ -1643,33 +1705,14 @@ def create_app(
     )
 
     if _meter:
-        _QUEUE_TABLES = {
-            "shell": "enrichment_queue",
-            "claude": "claude_enrichment_queue",
-            "browser": "browser_enrichment_queue",
-        }
         _resolved_db_path = server.db_path
 
         def _observe_queue_depths(callback_options):
             try:
                 conn = sqlite3.connect(f"file:{_resolved_db_path}?mode=ro", uri=True)
                 try:
-                    for source, table in _QUEUE_TABLES.items():
-                        # table is from a hardcoded whitelist — no user input involved.
-                        # Use a pre-built mapping to keep the query fixed-form.
-                        sql = {
-                            "enrichment_queue": "SELECT COUNT(*) FROM enrichment_queue WHERE status = ?",
-                            "claude_enrichment_queue": "SELECT COUNT(*) FROM claude_enrichment_queue WHERE status = ?",
-                            "browser_enrichment_queue": "SELECT COUNT(*) FROM browser_enrichment_queue WHERE status = ?",
-                        }[table]
-                        for status in ("pending", "processing", "failed"):
-                            try:
-                                count = conn.execute(sql, (status,)).fetchone()[0]
-                                yield otel_metrics.Observation(
-                                    count, {"source": source, "status": status}
-                                )
-                            except Exception:
-                                pass
+                    for source, status, count in _collect_queue_depths(conn):
+                        yield otel_metrics.Observation(count, {"source": source, "status": status})
                 finally:
                     conn.close()
             except Exception:

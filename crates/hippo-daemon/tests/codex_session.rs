@@ -1,4 +1,6 @@
 use hippo_core::storage::open_db;
+use rusqlite::{Connection, params};
+use std::path::Path;
 use tempfile::TempDir;
 
 #[test]
@@ -123,6 +125,38 @@ fn write_rollout(dir: &std::path::Path, id: &str, prompt: &str) -> std::path::Pa
     p
 }
 
+fn init_codex_state_db(path: &Path) -> Connection {
+    let conn = Connection::open(path).unwrap();
+    conn.execute_batch(
+        "CREATE TABLE threads (
+            id TEXT PRIMARY KEY,
+            rollout_path TEXT NOT NULL
+        );",
+    )
+    .unwrap();
+    conn
+}
+
+fn insert_state_thread(conn: &Connection, id: &str, rollout_path: &Path) {
+    conn.execute(
+        "INSERT INTO threads (id, rollout_path) VALUES (?1, ?2)",
+        params![id, rollout_path.to_string_lossy()],
+    )
+    .unwrap();
+}
+
+fn init_codex_logs_db(path: &Path) -> Connection {
+    let conn = Connection::open(path).unwrap();
+    conn.execute_batch(
+        "CREATE TABLE logs (
+            id INTEGER PRIMARY KEY,
+            thread_id TEXT
+        );",
+    )
+    .unwrap();
+    conn
+}
+
 #[test]
 fn poll_tick_ingests_idle_files_and_advances_cursor() {
     let tmp = TempDir::new().unwrap();
@@ -232,4 +266,70 @@ fn poll_tick_skips_in_flight_files() {
     let _ = open_db(&config.db_path()).unwrap();
     let n = hippo_daemon::codex_session::poll_tick(&config).unwrap();
     assert_eq!(n, 0, "files within min_idle_secs are skipped");
+}
+
+#[test]
+fn codex_state_coverage_reports_covered_missing_in_flight_and_log_only_threads() {
+    let tmp = TempDir::new().unwrap();
+    let rollout_dir = tmp.path().join("sessions");
+    std::fs::create_dir_all(&rollout_dir).unwrap();
+
+    let covered_rollout = write_rollout(&rollout_dir, "covered", "covered prompt");
+    let missing_rollout = write_rollout(&rollout_dir, "missing-hippo", "not captured yet");
+    let in_flight_rollout = write_rollout(&rollout_dir, "fresh", "still being written");
+    let missing_file_rollout = rollout_dir.join("rollout-missing-file.jsonl");
+
+    let old = std::time::SystemTime::now() - std::time::Duration::from_secs(3600);
+    filetime::set_file_mtime(&covered_rollout, filetime::FileTime::from_system_time(old)).unwrap();
+    filetime::set_file_mtime(&missing_rollout, filetime::FileTime::from_system_time(old)).unwrap();
+
+    let state_path = tmp.path().join("state_5.sqlite");
+    let state = init_codex_state_db(&state_path);
+    insert_state_thread(&state, "covered", &covered_rollout);
+    insert_state_thread(&state, "missing-hippo", &missing_rollout);
+    insert_state_thread(&state, "fresh", &in_flight_rollout);
+    insert_state_thread(&state, "missing-file", &missing_file_rollout);
+    drop(state);
+
+    let logs_path = tmp.path().join("logs_2.sqlite");
+    let logs = init_codex_logs_db(&logs_path);
+    logs.execute(
+        "INSERT INTO logs (thread_id) VALUES ('covered'), ('log-only')",
+        [],
+    )
+    .unwrap();
+    drop(logs);
+
+    let hippo_db_path = tmp.path().join("hippo.db");
+    let hippo_conn = open_db(&hippo_db_path).unwrap();
+    let seg = hippo_daemon::codex_session::CodexSegment {
+        session_id: "covered".into(),
+        project_dir: "proj".into(),
+        cwd: "/proj".into(),
+        segment_index: 0,
+        start_time: 1_775_634_000_000,
+        end_time: 1_775_634_500_000,
+        user_prompts: vec!["covered prompt".into()],
+        assistant_texts: vec![],
+        tool_calls: vec![],
+        message_count: 1,
+        // Use a canonical .codex/ path so read_hippo_session_ids picks it up.
+        source_file: "/Users/me/.codex/sessions/rollout-covered.jsonl".into(),
+    };
+    hippo_daemon::codex_session::upsert_segment(&hippo_conn, &seg).unwrap();
+
+    let report = hippo_daemon::codex_session::check_codex_coverage(
+        &hippo_conn,
+        &state_path,
+        Some(&logs_path),
+        60,
+    )
+    .unwrap();
+
+    assert_eq!(report.total_state_threads, 4);
+    assert_eq!(report.covered_threads, 1);
+    assert_eq!(report.in_flight_threads, vec!["fresh"]);
+    assert_eq!(report.missing_rollout_threads, vec!["missing-file"]);
+    assert_eq!(report.missing_hippo_threads, vec!["missing-hippo"]);
+    assert_eq!(report.log_only_thread_count, 1);
 }
