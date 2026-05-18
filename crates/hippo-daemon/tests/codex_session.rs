@@ -65,3 +65,64 @@ fn upsert_writes_claude_session_and_enqueues() {
         .unwrap();
     assert_eq!(queued2, 1, "re-upsert must not create a second queue row");
 }
+
+fn write_rollout(dir: &std::path::Path, id: &str, prompt: &str) -> std::path::PathBuf {
+    let p = dir.join(format!("rollout-{id}.jsonl"));
+    let lines = [
+        format!(
+            r#"{{"timestamp":"2026-04-04T00:00:00.000Z","type":"session_meta","payload":{{"id":"{id}","cwd":"/proj"}}}}"#
+        ),
+        format!(
+            r#"{{"timestamp":"2026-04-04T00:00:01.000Z","type":"event_msg","payload":{{"type":"user_message","message":"{prompt}"}}}}"#
+        ),
+    ];
+    std::fs::write(&p, lines.join("\n")).unwrap();
+    p
+}
+
+#[test]
+fn poll_tick_ingests_idle_files_and_advances_cursor() {
+    let tmp = TempDir::new().unwrap();
+    let roots = tmp.path().join("sessions");
+    std::fs::create_dir_all(&roots).unwrap();
+    let f = write_rollout(&roots, "p1", "hello");
+    // Backdate mtime so the file is "idle".
+    let old = std::time::SystemTime::now() - std::time::Duration::from_secs(3600);
+    filetime::set_file_mtime(&f, filetime::FileTime::from_system_time(old)).unwrap();
+
+    let data_dir = tmp.path().join("data");
+    std::fs::create_dir_all(&data_dir).unwrap();
+    let config = hippo_daemon::codex_session::test_config(&data_dir, std::slice::from_ref(&roots));
+    let _ = open_db(&config.db_path()).unwrap();
+
+    let n = hippo_daemon::codex_session::poll_tick(&config).unwrap();
+    assert_eq!(n, 1, "one new segment ingested");
+
+    // Second tick: file unchanged -> cursor skip, zero new.
+    let n2 = hippo_daemon::codex_session::poll_tick(&config).unwrap();
+    assert_eq!(n2, 0, "unchanged file must be skipped");
+
+    let conn = open_db(&config.db_path()).unwrap();
+    let health: i64 = conn
+        .query_row(
+            "SELECT last_success_ts FROM source_health WHERE source = 'agentic-session-codex'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(health > 0, "source_health must be bumped");
+}
+
+#[test]
+fn poll_tick_skips_in_flight_files() {
+    let tmp = TempDir::new().unwrap();
+    let roots = tmp.path().join("sessions");
+    std::fs::create_dir_all(&roots).unwrap();
+    write_rollout(&roots, "fresh", "in flight"); // mtime = now
+    let data_dir = tmp.path().join("data");
+    std::fs::create_dir_all(&data_dir).unwrap();
+    let config = hippo_daemon::codex_session::test_config(&data_dir, &[roots]);
+    let _ = open_db(&config.db_path()).unwrap();
+    let n = hippo_daemon::codex_session::poll_tick(&config).unwrap();
+    assert_eq!(n, 0, "files within min_idle_secs are skipped");
+}

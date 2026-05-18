@@ -3,10 +3,13 @@
 
 use anyhow::{Context, Result};
 use chrono::DateTime;
+use hippo_core::config::HippoConfig;
 use rusqlite::{OptionalExtension, params};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use tracing::{debug, error, info, warn};
+use walkdir::WalkDir;
 
 /// 5-minute gap between user prompts marks a task boundary.
 const TASK_GAP_MS: i64 = 5 * 60 * 1000;
@@ -125,7 +128,6 @@ fn content_text(content: &serde_json::Value) -> String {
 }
 
 /// Parse a Codex rollout JSONL file into task-boundary segments.
-#[allow(dead_code)] // consumed in Task 7
 pub(crate) fn extract_segments(path: &Path) -> Result<Vec<CodexSegment>> {
     let raw = std::fs::read_to_string(path)
         .with_context(|| format!("read codex rollout {}", path.display()))?;
@@ -511,6 +513,160 @@ pub fn upsert_segment(conn: &rusqlite::Connection, seg: &CodexSegment) -> Result
     upsert_segment_tx(&tx, seg)?;
     tx.commit()?;
     Ok(())
+}
+
+// ─── poll_tick: file walk, cursor, source_health ─────────────────────────────
+
+/// Stable inode-keyed cursor key for one rollout file. Inode survives the
+/// `mv` Codex performs on archival, so archived files aren't re-parsed.
+/// `ino()` is available on every Unix target via `MetadataExt` — no per-OS
+/// `cfg` split is needed.
+fn cursor_key(meta: &std::fs::Metadata) -> String {
+    use std::os::unix::fs::MetadataExt;
+    format!("codex-{}", meta.ino())
+}
+
+fn read_cursor(conn: &rusqlite::Connection, key: &str) -> i64 {
+    conn.query_row(
+        "SELECT last_seen_updated_at FROM agentic_cursor WHERE source_key = ?1",
+        params![key],
+        |r| r.get(0),
+    )
+    .unwrap_or(0)
+}
+
+fn write_cursor(
+    conn: &rusqlite::Connection,
+    key: &str,
+    mtime_ms: i64,
+    session_id: &str,
+) -> Result<()> {
+    let now = chrono::Utc::now().timestamp_millis();
+    conn.execute(
+        "INSERT INTO agentic_cursor (source_key, last_seen_updated_at, last_id, updated_at)
+         VALUES (?1, ?2, ?3, ?4)
+         ON CONFLICT(source_key) DO UPDATE SET
+             last_seen_updated_at = excluded.last_seen_updated_at,
+             last_id              = excluded.last_id,
+             updated_at           = excluded.updated_at",
+        params![key, mtime_ms, session_id, now],
+    )?;
+    Ok(())
+}
+
+fn bump_health_ok(conn: &rusqlite::Connection, last_event_ms: i64) {
+    let now = chrono::Utc::now().timestamp_millis();
+    let _ = conn.execute(
+        "UPDATE source_health
+         SET last_event_ts        = MAX(COALESCE(last_event_ts, 0), ?1),
+             last_success_ts      = ?2,
+             consecutive_failures = 0,
+             updated_at           = ?2
+         WHERE source = 'agentic-session-codex'",
+        params![last_event_ms, now],
+    );
+}
+
+fn record_error(conn: &rusqlite::Connection, err: &anyhow::Error) {
+    let now = chrono::Utc::now().timestamp_millis();
+    if let Err(e) = conn.execute(
+        "UPDATE source_health
+         SET last_error_ts        = ?1,
+             last_error_msg       = ?2,
+             consecutive_failures = consecutive_failures + 1,
+             updated_at           = ?1
+         WHERE source = 'agentic-session-codex'",
+        params![now, format!("{err:#}")],
+    ) {
+        warn!("codex source_health error update failed: {e}");
+    }
+}
+
+/// One poll cycle: walk every root, ingest changed idle rollout files.
+pub fn poll_tick(config: &HippoConfig) -> Result<usize> {
+    if !config.codex.enabled {
+        debug!("codex poll disabled by config");
+        return Ok(0);
+    }
+    let conn = hippo_core::storage::open_db(&config.db_path())?;
+    let now_ms = chrono::Utc::now().timestamp_millis();
+    let min_idle_ms = config.codex.min_idle_secs as i64 * 1000;
+
+    let mut ingested = 0usize;
+    for root in &config.codex.session_roots {
+        if !root.is_dir() {
+            continue;
+        }
+        for entry in WalkDir::new(root).into_iter().filter_map(|e| e.ok()) {
+            let path = entry.path();
+            let is_rollout = path.extension().map(|e| e == "jsonl").unwrap_or(false)
+                && path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .map(|n| n.starts_with("rollout-"))
+                    .unwrap_or(false);
+            if !is_rollout {
+                continue;
+            }
+            let meta = match entry.metadata() {
+                Ok(m) => m,
+                Err(_) => continue,
+            };
+            let mtime_ms = meta
+                .modified()
+                .ok()
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|d| d.as_millis() as i64)
+                .unwrap_or(0);
+            // Skip in-flight files (avoid partial reads).
+            if now_ms - mtime_ms < min_idle_ms {
+                continue;
+            }
+            let key = cursor_key(&meta);
+            if mtime_ms <= read_cursor(&conn, &key) {
+                continue; // unchanged since last successful parse
+            }
+            match ingest_file(&conn, path) {
+                Ok((count, session_id)) => {
+                    ingested += count;
+                    bump_health_ok(&conn, mtime_ms);
+                    if let Err(e) = write_cursor(&conn, &key, mtime_ms, &session_id) {
+                        warn!("codex cursor write failed for {}: {e:#}", path.display());
+                    }
+                }
+                Err(e) => {
+                    error!("codex ingest failed for {}: {e:#}", path.display());
+                    record_error(&conn, &e);
+                }
+            }
+        }
+    }
+    info!(ingested, "codex poll tick: completed");
+    Ok(ingested)
+}
+
+/// Parse one file and upsert all its segments in a single transaction.
+fn ingest_file(conn: &rusqlite::Connection, path: &Path) -> Result<(usize, String)> {
+    let segments = extract_segments(path)?;
+    if segments.is_empty() {
+        return Ok((0, String::new()));
+    }
+    let session_id = segments[0].session_id.clone();
+    let tx = conn.unchecked_transaction()?;
+    for seg in &segments {
+        upsert_segment_tx(&tx, seg)?;
+    }
+    tx.commit()?;
+    Ok((segments.len(), session_id))
+}
+
+/// Test-only constructor for a `HippoConfig` pointed at a temp data dir.
+pub fn test_config(data_dir: &Path, roots: &[PathBuf]) -> HippoConfig {
+    let mut cfg = HippoConfig::default();
+    cfg.storage.data_dir = data_dir.to_path_buf();
+    cfg.codex.session_roots = roots.to_vec();
+    cfg.codex.min_idle_secs = 60;
+    cfg
 }
 
 #[cfg(test)]
