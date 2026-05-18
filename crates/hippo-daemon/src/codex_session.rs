@@ -114,13 +114,27 @@ pub(crate) fn extract_user_text(message: &str) -> String {
     text.chars().take(500).collect()
 }
 
-/// Extract input_text/output_text from a content-block array.
+/// Extract text from `input_text` and `output_text` content blocks only.
+///
+/// Mirrors the Python reference in `codex_sessions.py`, which filters to
+/// `block.get("type") == "output_text"` for assistant content. The Rust
+/// port serves both user (`input_text`) and assistant (`output_text`) paths
+/// with a single helper, so both types are allowed. Any block whose `type`
+/// is absent or is anything else (e.g. `"reasoning"`) is skipped, even if it
+/// carries a `text` field, to avoid leaking non-displayable intermediate
+/// reasoning into the knowledge base.
 fn content_text(content: &serde_json::Value) -> String {
     content
         .as_array()
         .map(|blocks| {
             blocks
                 .iter()
+                .filter(|b| {
+                    matches!(
+                        b.get("type").and_then(|t| t.as_str()),
+                        Some("input_text") | Some("output_text")
+                    )
+                })
                 .filter_map(|b| b.get("text").and_then(|t| t.as_str()))
                 .collect::<Vec<_>>()
                 .join("\n")
@@ -880,6 +894,33 @@ mod tests {
             "accumulated chars over MAX_SEGMENT_CHARS must split the session"
         );
         assert_eq!(segs[1].segment_index, 1);
+    }
+
+    /// `content_text` must only include blocks whose type is `input_text` or
+    /// `output_text`. Blocks with any other type (e.g. `"reasoning"`) are
+    /// skipped even when they carry a `text` field, so non-displayable
+    /// intermediate reasoning never leaks into the knowledge base.
+    #[test]
+    fn content_text_filters_to_text_bearing_block_types() {
+        let content = serde_json::json!([
+            {"type": "output_text", "text": "answer from assistant"},
+            {"type": "reasoning", "text": "internal thought that must not appear"},
+            {"type": "input_text", "text": "user input text"},
+            {"type": "image_url", "url": "https://example.com/img.png"},
+        ]);
+        let result = content_text(&content);
+        assert!(
+            result.contains("answer from assistant"),
+            "output_text block must be included"
+        );
+        assert!(
+            result.contains("user input text"),
+            "input_text block must be included"
+        );
+        assert!(
+            !result.contains("internal thought"),
+            "reasoning block must NOT be included"
+        );
     }
 
     /// Regression guard: a rollout with no `session_meta` line must produce a
