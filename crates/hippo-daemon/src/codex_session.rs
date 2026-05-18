@@ -225,6 +225,18 @@ pub(crate) fn extract_segments(path: &Path, redaction: &RedactionEngine) -> Resu
             }
 
             let seg = current.get_or_insert_with(|| {
+                // If session_meta was missing or malformed, fall back to the
+                // file stem (e.g. "rollout-<id>"). This is unique per file and
+                // deterministic, so ON CONFLICT (session_id, segment_index)
+                // never collides across two different rollout files that both
+                // lack session_meta.
+                let effective_session_id = if session_id.is_empty() {
+                    path.file_stem()
+                        .map(|s| s.to_string_lossy().into_owned())
+                        .unwrap_or_else(|| "codex-unknown".into())
+                } else {
+                    session_id.clone()
+                };
                 let cwd = if session_cwd.is_empty() {
                     path.parent()
                         .map(|p| p.to_string_lossy().to_string())
@@ -235,9 +247,9 @@ pub(crate) fn extract_segments(path: &Path, redaction: &RedactionEngine) -> Resu
                 let project_dir = Path::new(&cwd)
                     .file_name()
                     .map(|n| n.to_string_lossy().to_string())
-                    .unwrap_or_else(|| session_id.clone());
+                    .unwrap_or_else(|| effective_session_id.clone());
                 CodexSegment {
-                    session_id: session_id.clone(),
+                    session_id: effective_session_id,
                     project_dir,
                     cwd,
                     segment_index: segments.len() as i64,
@@ -868,6 +880,32 @@ mod tests {
             "accumulated chars over MAX_SEGMENT_CHARS must split the session"
         );
         assert_eq!(segs[1].segment_index, 1);
+    }
+
+    /// Regression guard: a rollout with no `session_meta` line must produce a
+    /// non-empty `session_id` equal to the file stem, not the empty string.
+    /// An empty session_id would collide in ON CONFLICT (session_id, segment_index)
+    /// across any two files that both lack session_meta.
+    #[test]
+    fn extract_segments_falls_back_to_file_stem_when_no_session_meta() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("rollout-nosessionmeta.jsonl");
+        // No session_meta line at all — only a user message.
+        let lines = [
+            r#"{"timestamp":"2026-04-04T00:00:01.000Z","type":"event_msg","payload":{"type":"user_message","message":"hello without meta"}}"#,
+        ];
+        std::fs::write(&p, lines.join("\n")).unwrap();
+        let segs = extract_segments(&p, &RedactionEngine::builtin()).unwrap();
+        assert_eq!(segs.len(), 1);
+        let sid = &segs[0].session_id;
+        assert!(
+            !sid.is_empty(),
+            "session_id must be non-empty when session_meta is absent"
+        );
+        assert_eq!(
+            sid, "rollout-nosessionmeta",
+            "session_id must be the file stem when session_meta is absent"
+        );
     }
 
     /// Regression guard: user prompts must NOT contain the raw secret after
