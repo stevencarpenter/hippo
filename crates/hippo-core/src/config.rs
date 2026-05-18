@@ -24,6 +24,8 @@ pub struct HippoConfig {
     pub watchdog: WatchdogConfig,
     #[serde(default)]
     pub opencode: OpenConfig,
+    #[serde(default)]
+    pub codex: CodexConfig,
 }
 
 /// OpenAI-compatible inference backend (LM Studio, oMLX, ollama, vLLM, etc.).
@@ -522,6 +524,57 @@ impl Default for OpenConfig {
             enabled: default_opencode_enabled(),
             db_path: default_db_path(),
             poll_interval_secs: default_poll_interval_secs_opencode(),
+        }
+    }
+}
+
+fn default_codex_enabled() -> bool {
+    true
+}
+
+fn default_codex_poll_interval_secs() -> u64 {
+    60
+}
+
+fn default_codex_min_idle_secs() -> u64 {
+    60
+}
+
+fn default_codex_session_roots() -> Vec<PathBuf> {
+    let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
+    vec![
+        home.join(".codex/sessions"),
+        home.join(".codex/archived_sessions"),
+        home.join("Library/Developer/Xcode/CodingAssistant/codex/sessions"),
+    ]
+}
+
+/// Codex CLI rollout-session ingestion. The poller walks `session_roots` for
+/// `rollout-*.jsonl` files and writes segmented rows into `claude_sessions`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CodexConfig {
+    /// Enable Codex session ingestion. When false, `poll_tick` is a no-op.
+    #[serde(default = "default_codex_enabled")]
+    pub enabled: bool,
+    /// Directories scanned recursively for `rollout-*.jsonl` files.
+    #[serde(default = "default_codex_session_roots")]
+    pub session_roots: Vec<PathBuf>,
+    /// Skip files modified within this many seconds — they may be in-flight
+    /// and a partial read would freeze the segment at an early state.
+    #[serde(default = "default_codex_min_idle_secs")]
+    pub min_idle_secs: u64,
+    /// launchd StartInterval for the codex-poll job, in seconds.
+    #[serde(default = "default_codex_poll_interval_secs")]
+    pub poll_interval_secs: u64,
+}
+
+impl Default for CodexConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_codex_enabled(),
+            session_roots: default_codex_session_roots(),
+            min_idle_secs: default_codex_min_idle_secs(),
+            poll_interval_secs: default_codex_poll_interval_secs(),
         }
     }
 }
@@ -1043,6 +1096,31 @@ strip_params = ["secret", "nonce"]
             config.browser.url_redaction.strip_params,
             vec!["secret", "nonce"]
         );
+    }
+
+    #[test]
+    fn codex_config_defaults_are_sane() {
+        let c = CodexConfig::default();
+        assert!(c.enabled);
+        assert_eq!(c.poll_interval_secs, 60);
+        assert_eq!(c.min_idle_secs, 60);
+        assert!(
+            c.session_roots
+                .iter()
+                .any(|p| p.ends_with(".codex/sessions"))
+        );
+        assert!(
+            c.session_roots
+                .iter()
+                .any(|p| p.ends_with(".codex/archived_sessions"))
+        );
+    }
+
+    #[test]
+    fn hippo_config_has_codex_with_default() {
+        let toml = "";
+        let cfg: HippoConfig = toml::from_str(toml).unwrap();
+        assert!(cfg.codex.enabled);
     }
 
     #[test]
