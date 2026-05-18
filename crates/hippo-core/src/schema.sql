@@ -619,7 +619,8 @@ CREATE TABLE IF NOT EXISTS agentic_cursor (
 
 -- Seed source_health rows for agentic sources.
 -- `agentic-session-claude` uses MAX(start_time) from backend;
--- `agentic-session-opencode` starts at NULL (no opencode data yet).
+-- `agentic-session-opencode` and `agentic-session-codex` start at NULL
+-- (no opencode/codex data yet on a fresh database).
 INSERT OR IGNORE INTO source_health (source, last_event_ts, updated_at) VALUES
     ('agentic-session-claude',  (SELECT MAX(start_time) FROM agentic_sessions WHERE harness = 'claude-code'), unixepoch('now') * 1000),
     ('agentic-session-opencode', NULL, unixepoch('now') * 1000),

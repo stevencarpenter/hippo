@@ -700,7 +700,7 @@ pub fn open_db(path: &Path) -> Result<Connection> {
     }
 
     // v13→v14: create agentic_sessions + cursor tables, seed source_health.
-    if (1..EXPECTED_VERSION).contains(&version) {
+    if (1..14).contains(&version) {
         let has_source_health: bool = conn
             .query_row(
                 "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='source_health')",
