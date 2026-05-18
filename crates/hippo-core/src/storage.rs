@@ -789,7 +789,7 @@ pub fn open_db(path: &Path) -> Result<Connection> {
     // the destination table. (Existing keys are not uniform — the Claude ingester
     // writes `claude-session`, the opencode poller `agentic-session-opencode`;
     // Codex follows the newer `agentic-session-*` form.)
-    if version > 0 && version < 15 {
+    if (1..15).contains(&version) {
         let has_source_health: bool = conn
             .query_row(
                 "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='source_health')",
