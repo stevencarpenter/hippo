@@ -313,7 +313,8 @@ fn codex_state_coverage_reports_covered_missing_in_flight_and_log_only_threads()
         assistant_texts: vec![],
         tool_calls: vec![],
         message_count: 1,
-        source_file: covered_rollout.to_string_lossy().into_owned(),
+        // Use a canonical .codex/ path so read_hippo_session_ids picks it up.
+        source_file: "/Users/me/.codex/sessions/rollout-covered.jsonl".into(),
     };
     hippo_daemon::codex_session::upsert_segment(&hippo_conn, &seg).unwrap();
 

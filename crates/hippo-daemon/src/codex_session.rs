@@ -616,7 +616,12 @@ fn read_codex_state_threads(conn: &Connection) -> Result<Vec<CodexStateThread>> 
 }
 
 fn read_hippo_session_ids(conn: &Connection) -> Result<HashSet<String>> {
-    let mut stmt = conn.prepare("SELECT DISTINCT session_id FROM claude_sessions")?;
+    let mut stmt = conn.prepare(
+        "SELECT DISTINCT session_id FROM claude_sessions
+         WHERE (source_file LIKE '%/.codex/%'
+                OR source_file LIKE '%/CodingAssistant/codex/%')
+           AND probe_tag IS NULL",
+    )?;
     stmt.query_map([], |row| row.get::<_, String>(0))?
         .collect::<std::result::Result<HashSet<_>, _>>()
         .map_err(Into::into)
@@ -1191,5 +1196,74 @@ mod tests {
         ));
         // Content changed, no prior queue row at all — must enqueue.
         assert!(decide_enqueue(false, "h2", Some("h1"), None, None, now));
+    }
+
+    #[test]
+    fn read_hippo_session_ids_excludes_non_codex_and_probe_rows() {
+        let tmp = tempfile::tempdir().unwrap();
+        let db_path = tmp.path().join("hippo.db");
+        let conn = hippo_core::storage::open_db(&db_path).unwrap();
+
+        // Insert a real Codex row (should be included).
+        let codex_seg = CodexSegment {
+            session_id: "codex-covered".into(),
+            project_dir: "proj".into(),
+            cwd: "/work/proj".into(),
+            segment_index: 0,
+            start_time: 1_775_634_000_000,
+            end_time: 1_775_634_500_000,
+            user_prompts: vec!["codex prompt".into()],
+            assistant_texts: vec![],
+            tool_calls: vec![],
+            message_count: 1,
+            source_file: "/Users/me/.codex/sessions/rollout-x.jsonl".into(),
+        };
+        upsert_segment(&conn, &codex_seg).unwrap();
+
+        // Insert a non-Codex row with a .claude/ source_file (must be excluded).
+        conn.execute(
+            "INSERT INTO claude_sessions
+                 (session_id, project_dir, cwd, segment_index,
+                  start_time, end_time, summary_text, tool_calls_json,
+                  user_prompts_json, message_count, source_file,
+                  is_subagent, created_at)
+             VALUES ('claude-session', 'proj', '/work', 0,
+                     1_775_634_000_000, 1_775_634_500_000, 'summary', '[]',
+                     '[]', 1,
+                     '/Users/me/.claude/projects/abc/session.jsonl',
+                     0, 1_775_634_000_000)",
+            [],
+        )
+        .unwrap();
+
+        // Insert a Codex row with probe_tag set (must be excluded).
+        conn.execute(
+            "INSERT INTO claude_sessions
+                 (session_id, project_dir, cwd, segment_index,
+                  start_time, end_time, summary_text, tool_calls_json,
+                  user_prompts_json, message_count, source_file,
+                  is_subagent, probe_tag, created_at)
+             VALUES ('codex-probe', 'proj', '/work', 0,
+                     1_775_634_000_000, 1_775_634_500_000, 'summary', '[]',
+                     '[]', 1,
+                     '/Users/me/.codex/sessions/rollout-probe.jsonl',
+                     0, 'test-probe', 1_775_634_000_000)",
+            [],
+        )
+        .unwrap();
+
+        let ids = read_hippo_session_ids(&conn).unwrap();
+        assert!(
+            ids.contains("codex-covered"),
+            "Codex row must be included; got {ids:?}"
+        );
+        assert!(
+            !ids.contains("claude-session"),
+            "non-Codex .claude/ row must be excluded; got {ids:?}"
+        );
+        assert!(
+            !ids.contains("codex-probe"),
+            "probe row must be excluded; got {ids:?}"
+        );
     }
 }
