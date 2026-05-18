@@ -26,6 +26,8 @@ pub struct HippoConfig {
     pub opencode: OpenConfig,
     #[serde(default)]
     pub codex: CodexConfig,
+    #[serde(default)]
+    pub reaper: ReaperConfig,
 }
 
 /// OpenAI-compatible inference backend (LM Studio, oMLX, ollama, vLLM, etc.).
@@ -524,6 +526,48 @@ impl Default for OpenConfig {
             enabled: default_opencode_enabled(),
             db_path: default_db_path(),
             poll_interval_secs: default_poll_interval_secs_opencode(),
+        }
+    }
+}
+
+fn default_reaper_interval_secs() -> u64 {
+    300
+}
+fn default_reaper_batch_size() -> u64 {
+    50
+}
+fn default_reaper_orphan_stale_secs() -> u64 {
+    900
+}
+fn default_reaper_alarm_threshold() -> u64 {
+    25
+}
+
+/// Embedding orphan-reaper + watchdog invariant I-14 tuning.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReaperConfig {
+    /// Brain reaper loop cadence, in seconds.
+    #[serde(default = "default_reaper_interval_secs")]
+    pub interval_secs: u64,
+    /// Orphans re-embedded per reaper tick.
+    #[serde(default = "default_reaper_batch_size")]
+    pub batch_size: u64,
+    /// Minimum node age (seconds) before it counts as an orphan — also the
+    /// race guard against in-flight inline embeds.
+    #[serde(default = "default_reaper_orphan_stale_secs")]
+    pub orphan_stale_secs: u64,
+    /// Orphan count above which watchdog invariant I-14 alarms.
+    #[serde(default = "default_reaper_alarm_threshold")]
+    pub alarm_threshold: u64,
+}
+
+impl Default for ReaperConfig {
+    fn default() -> Self {
+        Self {
+            interval_secs: default_reaper_interval_secs(),
+            batch_size: default_reaper_batch_size(),
+            orphan_stale_secs: default_reaper_orphan_stale_secs(),
+            alarm_threshold: default_reaper_alarm_threshold(),
         }
     }
 }
@@ -1096,6 +1140,22 @@ strip_params = ["secret", "nonce"]
             config.browser.url_redaction.strip_params,
             vec!["secret", "nonce"]
         );
+    }
+
+    #[test]
+    fn reaper_config_defaults() {
+        let cfg: ReaperConfig = toml::from_str("").unwrap();
+        assert_eq!(cfg.interval_secs, 300);
+        assert_eq!(cfg.batch_size, 50);
+        assert_eq!(cfg.orphan_stale_secs, 900);
+        assert_eq!(cfg.alarm_threshold, 25);
+    }
+
+    #[test]
+    fn reaper_config_parses_overrides() {
+        let cfg: ReaperConfig = toml::from_str("alarm_threshold = 10").unwrap();
+        assert_eq!(cfg.alarm_threshold, 10);
+        assert_eq!(cfg.interval_secs, 300); // unspecified key keeps default
     }
 
     #[test]
