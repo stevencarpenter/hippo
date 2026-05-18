@@ -59,22 +59,28 @@ Each tick:
    ```sql
    SELECT id, embed_text FROM knowledge_nodes
    WHERE created_at < :now_ms - :stale_ms
-     AND id NOT IN (SELECT knowledge_node_id FROM knowledge_vectors)
+     AND id NOT IN (SELECT rowid FROM knowledge_vectors_rowids)
+   ORDER BY created_at
    LIMIT :batch_size
    ```
 4. For each orphan:
    `await self._embed_node(id, {"id": id, "embed_text": embed_text, "commands_raw": ""}, "reaper")`.
 5. Log a one-line summary if any orphans were processed.
 
-The brain process has the `vec0` module loaded, so the reaper queries the
-`knowledge_vectors` virtual table directly. The loop is stateless: no new table, no
+The reaper uses a plain connection (`_get_conn()`) and queries the
+`knowledge_vectors_rowids` **shadow table** — whose `rowid` column is the
+`knowledge_node_id` — rather than the `knowledge_vectors` virtual table, so it needs no
+`vec0` module loaded. A missing shadow table (fresh install, no embeddings yet) is
+caught and treated as "no orphans", the same `sqlite3.OperationalError` pattern
+`_collect_queue_depths` already uses. Embedding itself still goes through the existing
+`_embed_node` → `self._vector_table` vec0 handle. The loop is stateless: no new table, no
 migration. A failed orphan stays an orphan and is retried next tick. The first ticks
 drain the ~344-node backlog (~7 ticks at the default batch size).
 
 ### B. Watchdog invariant — Rust, `crates/hippo-daemon/src/watchdog.rs`
 
-A new invariant — the next in the I-N series (I-13 at time of writing) — run by the
-existing `com.hippo.watchdog` launchd job every 60s.
+A new invariant — **I-14** (I-1..I-13 are already in use) — run by the existing
+`com.hippo.watchdog` launchd job every 60s.
 
 It asserts that:
 ```sql
