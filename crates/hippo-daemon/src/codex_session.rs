@@ -484,7 +484,9 @@ pub fn upsert_segment_tx(tx: &rusqlite::Transaction, seg: &CodexSegment) -> Resu
              tool_calls_json   = excluded.tool_calls_json,
              user_prompts_json = excluded.user_prompts_json,
              message_count     = excluded.message_count,
-             content_hash      = excluded.content_hash",
+             content_hash      = excluded.content_hash,
+             cwd               = excluded.cwd,
+             project_dir       = excluded.project_dir",
         params![
             seg.session_id,
             seg.project_dir,

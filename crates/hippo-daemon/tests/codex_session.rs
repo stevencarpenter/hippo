@@ -66,6 +66,46 @@ fn upsert_writes_claude_session_and_enqueues() {
     assert_eq!(queued2, 1, "re-upsert must not create a second queue row");
 }
 
+/// Regression guard: when the same `(session_id, segment_index)` is upserted
+/// twice with a changed `cwd`, the row's `cwd` and `project_dir` must reflect
+/// the new values (not be frozen at the original insert).
+#[test]
+fn upsert_refreshes_cwd_and_project_dir_on_conflict() {
+    let tmp = TempDir::new().unwrap();
+    let db_path = tmp.path().join("hippo.db");
+    let conn = open_db(&db_path).unwrap();
+
+    let mut seg = hippo_daemon::codex_session::CodexSegment {
+        session_id: "cwd-test".into(),
+        project_dir: "old-proj".into(),
+        cwd: "/old/path".into(),
+        segment_index: 0,
+        start_time: 1_775_634_000_000,
+        end_time: 1_775_634_500_000,
+        user_prompts: vec!["initial prompt".into()],
+        assistant_texts: vec![],
+        tool_calls: vec![],
+        message_count: 1,
+        source_file: "/Users/x/.codex/sessions/rollout-cwd-test.jsonl".into(),
+    };
+    hippo_daemon::codex_session::upsert_segment(&conn, &seg).unwrap();
+
+    // Re-upsert with updated cwd (Codex emits turn_context with new cwd).
+    seg.cwd = "/new/path".into();
+    seg.project_dir = "new-proj".into();
+    hippo_daemon::codex_session::upsert_segment(&conn, &seg).unwrap();
+
+    let (cwd, project_dir): (String, String) = conn
+        .query_row(
+            "SELECT cwd, project_dir FROM claude_sessions WHERE session_id = 'cwd-test'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(cwd, "/new/path", "cwd must be updated on re-upsert");
+    assert_eq!(project_dir, "new-proj", "project_dir must be updated on re-upsert");
+}
+
 fn write_rollout(dir: &std::path::Path, id: &str, prompt: &str) -> std::path::PathBuf {
     let p = dir.join(format!("rollout-{id}.jsonl"));
     let lines = [
