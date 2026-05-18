@@ -170,8 +170,13 @@ def _collect_queue_depths(conn: sqlite3.Connection) -> list[tuple[str, str, int]
     depths: list[tuple[str, str, int]] = []
     for source, sql in queries.items():
         for status in QUEUE_DEPTH_STATUSES:
-            count = conn.execute(sql, (status,)).fetchone()[0]
-            depths.append((source, status, int(count)))
+            try:
+                count = conn.execute(sql, (status,)).fetchone()[0]
+                depths.append((source, status, int(count)))
+            except sqlite3.OperationalError:
+                # Table does not exist on this DB schema version; skip this
+                # source rather than blanking the entire metric.
+                break
     return depths
 
 

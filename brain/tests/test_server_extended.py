@@ -97,6 +97,34 @@ def test_collect_queue_depths_splits_agentic_sources():
     assert rows[("browser", "failed")] == 1
 
 
+def test_collect_queue_depths_tolerates_missing_table():
+    """A missing table must drop only that source, not blank the whole metric.
+
+    Regression target: on an older schema missing workflow_enrichment_queue or
+    agentic_sessions/agentic_enrichment_queue, the entire gauge callback went
+    blank instead of just omitting the unavailable source.
+    """
+    import sqlite3
+
+    # DB with only the shell enrichment_queue table — all others absent.
+    conn = sqlite3.connect(":memory:")
+    conn.executescript(
+        """
+        CREATE TABLE enrichment_queue (status TEXT NOT NULL);
+        INSERT INTO enrichment_queue (status) VALUES ('pending');
+        INSERT INTO enrichment_queue (status) VALUES ('pending');
+        """
+    )
+
+    rows = {(source, status): count for source, status, count in _collect_queue_depths(conn)}
+
+    # Shell depths must be populated even though other tables are missing.
+    assert rows[("shell", "pending")] == 2
+    # Sources whose tables do not exist must be absent, not raise.
+    assert ("workflow", "pending") not in rows
+    assert ("opencode", "pending") not in rows
+
+
 def test_source_label_for_claude_segments_splits_codex_metrics():
     assert (
         _source_label_for_claude_segments(
