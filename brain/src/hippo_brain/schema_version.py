@@ -23,11 +23,13 @@ v12→v13 extends the entities.type CHECK list with 'env_var' so the enrichment 
 v13→v14 adds `agentic_sessions`, `agentic_enrichment_queue`,
 and `agentic_cursor` tables. Brain now claims pending opencode
 segments from `agentic_sessions` in parallel with Claude sessions.
+v14→v15 seeds the `agentic-session-codex` row in `source_health`
+so the Codex poller's health UPDATE is not a silent no-op.
 """
 
 from __future__ import annotations
 
-EXPECTED_SCHEMA_VERSION: int = 14
+EXPECTED_SCHEMA_VERSION: int = 15
 
 # Versions brain can read without erroring.
 #

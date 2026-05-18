@@ -136,6 +136,24 @@ Ingestion is handled by `crates/hippo-daemon/src/watch_claude_sessions.rs`, a lo
 
 **Hook install:** `hippo daemon install` writes the hook entry into `~/.claude/settings.json`. `hippo doctor` verifies the hook path matches the repo.
 
+### Codex Session Ingestion
+
+Ingestion is handled by `codex_session::poll_tick` in `crates/hippo-daemon/src/codex_session.rs`, invoked by the `hippo codex-poll` CLI command. It runs under launchd (`com.hippo.codex-session`), `StartInterval`-driven on the `[codex] poll_interval_secs` cadence (default 60 s). Each tick walks the `[codex] session_roots` directories (default: `~/.codex/sessions`, `~/.codex/archived_sessions`, `~/Library/Developer/Xcode/CodingAssistant/codex/sessions`) for `rollout-*.jsonl` files. It skips in-flight files (modified within `min_idle_secs`, default 60 s, to avoid partial reads) and skips unchanged files via an inode-keyed cursor in the `agentic_cursor` table (`source_key = codex-{inode}`; inode survives Codex's archival `mv`).
+
+For each changed file, `extract_segments` parses the rollout into task-boundary segments, then `upsert_segment_tx` upserts each segment into the `claude_sessions` table (a single transaction per file) via `INSERT … ON CONFLICT (session_id, segment_index) DO UPDATE SET …` — so re-ingest of a grown rollout updates existing rows rather than duplicating them. Codex rows are plain `claude_sessions` rows with no `harness` column; the `.codex/` path stored in `source_file` is what distinguishes them from Claude Code rows. Genuinely new content is re-enqueued into `claude_enrichment_queue`, which Codex shares with Claude sessions, so the brain enriches Codex segments into knowledge nodes through the same path.
+
+**Config:** `[codex]` section in `~/.config/hippo/config.toml`. `session_roots` may be omitted — the Rust default supplies the three paths above. Set `enabled = false` to make `poll_tick` a no-op.
+
+**Verify:**
+```bash
+hippo codex-poll   # one-shot ingest; exits 0
+hippo doctor       # shows the agentic-session-codex line
+```
+
+**Schema:** v15 migration seeds the `agentic-session-codex` row in `source_health` (the capture-health key for this source).
+
+**Spec:** `docs/superpowers/specs/2026-05-17-codex-ingestion-design.md`
+
 ### Capture Reliability (v0.16+)
 
 Capture-reliability stack (the result of the P0–P3 overhaul shipped through v0.16). Reference docs live in [`docs/capture/`](docs/capture/architecture.md); historical design records are in [`docs/archive/capture-reliability-overhaul/`](docs/archive/capture-reliability-overhaul/). Key pieces:

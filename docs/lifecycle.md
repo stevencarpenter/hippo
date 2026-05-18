@@ -132,7 +132,7 @@ knowledge_nodes (one node per claim batch) + entities + embedding
 
 **Subagent sessions** (`<project>/<parent>/subagents/<id>.jsonl`) follow the same path; `is_subagent=1` and `parent_session_id` are set during segment extraction.
 
-**Codex/Xcode-side rollouts** are Python-only — `brain/src/hippo_brain/codex_sessions.py::extract_codex_segments` parses the distinct envelope shape, then writes through the same `claude_sessions` table with `source='codex'` on the segment. The Rust daemon does not parse Codex's JSONL.
+**Codex/Xcode-side rollouts** are ingested by a Rust poller — the `com.hippo.codex-session` launchd job runs `hippo codex-poll`, whose `codex_session::poll_tick` (in `crates/hippo-daemon/src/codex_session.rs`) parses the distinct envelope shape and writes segmented rows through the same `claude_sessions` table, sharing `claude_enrichment_queue` for enrichment. Capture-health is keyed `agentic-session-codex`.
 
 ## Browser visit
 

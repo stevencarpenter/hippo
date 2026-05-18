@@ -133,6 +133,8 @@ pub enum Commands {
     ClaudeSessionWatch,
     /// Poll opencode's SQLite DB for new sessions (LaunchAgent, OneShot)
     OpencodePoll,
+    /// Poll Codex CLI rollout files and ingest new sessions.
+    CodexPoll,
     /// Run the daemon in the foreground (alias for `daemon run`).
     ///
     /// BT-09: shipped so `hippo serve` no longer fails with "unrecognized

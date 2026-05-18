@@ -1,7 +1,7 @@
 //! Capture-reliability watchdog — `hippo watchdog run`
 //!
 //! Short-lived process invoked every 60 s by launchd (`com.hippo.watchdog`).
-//! Asserts invariants I-1..I-12 against the `source_health` table and writes
+//! Asserts invariants I-1..I-13 against the `source_health` table and writes
 //! rows to `capture_alarms` for any violations detected.  Rate-limited per
 //! invariant per sliding window (default 60 min).
 //!
@@ -9,7 +9,7 @@
 //! the live architectural overview lives at `docs/capture/architecture.md`):
 //!   1. Upsert own heartbeat into `source_health WHERE source='watchdog'`
 //!   2. Read full `source_health` in one `SELECT *`
-//!   3. Assert I-1..I-12 against in-memory rows
+//!   3. Assert I-1..I-13 against in-memory rows
 //!   4. Insert `capture_alarms` rows for violations (rate-limited)
 //!   5. Update `last_success_ts` on watchdog row; return `Ok(())`
 //!
@@ -154,7 +154,7 @@ pub fn run(config: &HippoConfig) -> Result<()> {
     // ── Step 2: Read all source_health rows ───────────────────────────────
     let rows = read_source_health(&conn)?;
 
-    // ── Step 3: Assert invariants I-1..I-12 ──────────────────────────────
+    // ── Step 3: Assert invariants I-1..I-13 ──────────────────────────────
     let violations = check_invariants(&rows, now_ms);
 
     // ── Step 4: Insert capture_alarms rows for violations ─────────────────
@@ -412,7 +412,7 @@ fn is_pause_lockfile_active(path: &std::path::Path, now: std::time::SystemTime) 
     }
 }
 
-/// Evaluate I-1..I-12 against the in-memory `source_health` rows.
+/// Evaluate I-1..I-13 against the in-memory `source_health` rows.
 ///
 /// Returns one `InvariantViolation` per triggered invariant.
 /// Invariants that require filesystem access (I-2 proxy, I-9) or are
@@ -470,6 +470,11 @@ pub fn check_invariants(rows: &[SourceHealthRow], now_ms: i64) -> Vec<InvariantV
 
     // I-11: Opencode-session coverage proxy.
     if !bench_paused && let Some(v) = check_i11_opencode_coverage_proxy(&by_source, now_ms) {
+        violations.push(v);
+    }
+
+    // I-13: Codex-session coverage proxy.
+    if !bench_paused && let Some(v) = check_i13_codex_coverage_proxy(&by_source, now_ms) {
         violations.push(v);
     }
 
@@ -635,6 +640,29 @@ pub fn check_i11_opencode_coverage_proxy(
         return Some(InvariantViolation {
             invariant_id: "I-11".to_string(),
             source: "agentic-session-opencode".to_string(),
+            since_ms: age_ms,
+            details: json!({
+                "consecutive_failures": row.consecutive_failures,
+                "note": "proxy predicate; full freshness check lives in hippo doctor",
+            }),
+        });
+    }
+    None
+}
+
+/// I-13: Codex-session coverage proxy. Mirrors I-11: alarm when the Codex
+/// poller has failed repeatedly. Full freshness coverage is the doctor's job.
+pub fn check_i13_codex_coverage_proxy(
+    by_source: &std::collections::HashMap<&str, &SourceHealthRow>,
+    now_ms: i64,
+) -> Option<InvariantViolation> {
+    let row = by_source.get("agentic-session-codex")?;
+    let last_event = row.last_event_ts?;
+    if row.consecutive_failures > 3 {
+        let age_ms = now_ms - last_event;
+        return Some(InvariantViolation {
+            invariant_id: "I-13".to_string(),
+            source: "agentic-session-codex".to_string(),
             since_ms: age_ms,
             details: json!({
                 "consecutive_failures": row.consecutive_failures,
@@ -1689,6 +1717,43 @@ mod tests {
             !limited,
             "resolved alarm must not suppress new raises via rate-limit"
         );
+    }
+
+    // ── I-13 (codex coverage proxy) ────────────────────────────────────────
+
+    #[test]
+    fn i13_codex_alarms_on_repeated_failures() {
+        let row = SourceHealthRow {
+            last_event_ts: Some(NOW - 10_000),
+            consecutive_failures: 4,
+            ..blank_row("agentic-session-codex")
+        };
+        let rows = vec![row];
+        let v = check_i13_codex_coverage_proxy(&by_source(&rows), NOW);
+        assert!(v.is_some());
+        assert_eq!(v.unwrap().invariant_id, "I-13");
+    }
+
+    #[test]
+    fn i13_codex_suppressed_when_failures_low() {
+        let row = SourceHealthRow {
+            last_event_ts: Some(NOW - 600_000),
+            consecutive_failures: 2, // <= 3
+            ..blank_row("agentic-session-codex")
+        };
+        let rows = vec![row];
+        assert!(check_i13_codex_coverage_proxy(&by_source(&rows), NOW).is_none());
+    }
+
+    #[test]
+    fn i13_codex_suppressed_when_never_seen() {
+        let row = SourceHealthRow {
+            last_event_ts: None,
+            consecutive_failures: 10,
+            ..blank_row("agentic-session-codex")
+        };
+        let rows = vec![row];
+        assert!(check_i13_codex_coverage_proxy(&by_source(&rows), NOW).is_none());
     }
 
     /// check_invariants must return an empty Vec when no violations exist.

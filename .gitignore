@@ -15,6 +15,7 @@ __pycache__/
 !docs/baselines/**/*.jsonl
 !brain/src/hippo_brain/bench/qa_template.jsonl
 !brain/tests/fixtures/**/*.jsonl
+!crates/hippo-daemon/tests/fixtures/**/*.jsonl
 .venv/
 brain/.venv/
 *.egg-info/

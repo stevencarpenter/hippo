@@ -10,10 +10,16 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use tokio::net::UnixStream;
 use uuid::Uuid;
+use walkdir::WalkDir;
 
 use crate::framing::{read_frame, write_frame};
 
 const REQUEST_TIMEOUT_MS: u64 = 5_000;
+
+/// 10-minute idle window shared by the opencode and Codex `hippo doctor`
+/// idle probes: a poller-backed source whose backing files have not changed
+/// within this window is "idle" (user not using it), not "broken".
+const IDLE_WINDOW_SECS: u64 = 600;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SocketProbeResult {
@@ -1646,7 +1652,7 @@ fn check_source_staleness(db: &rusqlite::Connection, explain: bool) -> u32 {
     let rows_result = db.prepare(
         "SELECT source, last_event_ts, last_error_msg, consecutive_failures, events_last_1h, probe_ok \
          FROM source_health \
-         WHERE source IN ('shell', 'browser', 'claude-session', 'claude-tool', 'agentic-session-opencode') \
+         WHERE source IN ('shell', 'browser', 'claude-session', 'claude-tool', 'agentic-session-opencode', 'agentic-session-codex') \
          ORDER BY source",
     );
 
@@ -1712,21 +1718,72 @@ fn check_source_staleness(db: &rusqlite::Connection, explain: bool) -> u32 {
         })
     };
 
+    // Load the runtime config once for both poller-backed idle probes below
+    // (codex + opencode). A single parse avoids two TOML reads per doctor run
+    // and the tiny TOCTOU window if the file changed between them. On a load
+    // error each closure degrades exactly as it did with its own load: codex
+    // reports `(false, false)`, opencode reports `false` — i.e. no suppression.
+    let doctor_config = hippo_core::config::HippoConfig::load_default();
+
+    // Inspect the Codex rollout files under the configured session roots.
+    // Two facts drive doctor suppression, mirroring opencode's DB checks:
+    //   - `any_exist`: at least one `rollout-*.jsonl` file is present.
+    //     False ⇒ "user has never run Codex" — suppress rather than alarm.
+    //   - `any_recent`: at least one `rollout-*.jsonl` was modified within the
+    //     IDLE_WINDOW_SECS window (the same window opencode uses for its DB
+    //     mtime). False (with files present) ⇒ "user just isn't using Codex
+    //     right now" — suppress.  True with a stale `source_health` row ⇒ a
+    //     genuine ingestion failure, so it is NOT suppressed.
+    let codex_session_state = || -> (bool, bool) {
+        let Ok(cfg) = doctor_config.as_ref() else {
+            return (false, false);
+        };
+        let idle_cutoff = std::time::SystemTime::now()
+            .checked_sub(std::time::Duration::from_secs(IDLE_WINDOW_SECS))
+            .unwrap_or(std::time::UNIX_EPOCH);
+        let mut any_exist = false;
+        for root in &cfg.codex.session_roots {
+            // Skip roots that don't exist, mirroring `codex_session::poll_tick`.
+            if !root.is_dir() {
+                continue;
+            }
+            // rollout-*.jsonl files can live nested under the root (Codex
+            // shards sessions into date-stamped subdirectories), so walk
+            // recursively rather than reading one level.
+            for entry in WalkDir::new(root).into_iter().filter_map(|e| e.ok()) {
+                let path = entry.path();
+                let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                if !(name.starts_with("rollout-") && name.ends_with(".jsonl")) {
+                    continue;
+                }
+                any_exist = true;
+                if let Ok(meta) = entry.metadata()
+                    && let Ok(modified) = meta.modified()
+                    && modified > idle_cutoff
+                {
+                    // A recent file settles both facts — stop walking.
+                    return (true, true);
+                }
+            }
+        }
+        // Walk exhausted with no recent file: `any_recent` is necessarily false.
+        (any_exist, false)
+    };
+
     // Check whether the opencode DB itself looks active — the file exists
-    // and has been modified in the last 10 minutes. Stale opencode means
+    // and has been modified within IDLE_WINDOW_SECS. Stale opencode means
     // "user just isn't using opencode right now," not "the poller is broken."
     let opencode_db_recent = || -> bool {
-        let cfg = match hippo_core::config::HippoConfig::load_default() {
-            Ok(c) => c,
-            Err(_) => return false,
+        let Ok(cfg) = doctor_config.as_ref() else {
+            return false;
         };
         let Ok(meta) = std::fs::metadata(&cfg.opencode.db_path) else {
             return false;
         };
-        let ten_min_ago = std::time::SystemTime::now()
-            .checked_sub(std::time::Duration::from_secs(600))
+        let idle_cutoff = std::time::SystemTime::now()
+            .checked_sub(std::time::Duration::from_secs(IDLE_WINDOW_SECS))
             .unwrap_or(std::time::UNIX_EPOCH);
-        meta.modified().map(|m| m > ten_min_ago).unwrap_or(false)
+        meta.modified().map(|m| m > idle_cutoff).unwrap_or(false)
     };
 
     // Check if there's a recent claude JSONL with mtime < 5 minutes (for claude-session suppression).
@@ -1770,12 +1827,19 @@ fn check_source_staleness(db: &rusqlite::Connection, explain: bool) -> u32 {
     };
 
     let mut fail_count: u32 = 0;
-    let firefox_is_running = firefox_running();
-    let opencode_db_is_recent = opencode_db_recent();
-    let claude_session_is_recent = recent_claude_session();
+    let (codex_sessions_do_exist, codex_sessions_are_recent) = codex_session_state();
+    let suppression_env = SuppressionSignals {
+        probe_ok: None, // per-row; filled in inside the loop
+        firefox_running: firefox_running(),
+        recent_claude_session: recent_claude_session(),
+        opencode_db_recent: opencode_db_recent(),
+        codex_sessions_exist: codex_sessions_do_exist,
+        codex_sessions_recent: codex_sessions_are_recent,
+    };
 
     // All expected sources — report missing ones too.
     let all_sources = [
+        "agentic-session-codex",
         "agentic-session-opencode",
         "browser",
         "claude-session",
@@ -1801,14 +1865,11 @@ fn check_source_staleness(db: &rusqlite::Connection, explain: bool) -> u32 {
         let age_secs = (now_ms - last_ts) / 1000;
         let human = format_age_secs(age_secs);
 
-        match classify_source_staleness(
-            source,
-            age_secs,
-            row.probe_ok,
-            firefox_is_running,
-            claude_session_is_recent,
-            opencode_db_is_recent,
-        ) {
+        let signals = SuppressionSignals {
+            probe_ok: row.probe_ok,
+            ..suppression_env
+        };
+        match classify_source_staleness(source, age_secs, signals) {
             SourceStalenessStatus::Ok => {
                 println!("[OK] {}  {}", padded, human);
             }
@@ -1850,26 +1911,37 @@ enum SourceStalenessStatus {
     Suppressed(&'static str),
 }
 
+/// Environment facts that let a stale `source_health` row be suppressed as
+/// "the user just isn't using this source right now" rather than alarmed as a
+/// capture failure. Bundled into one struct so the staleness helpers stay
+/// under clippy's argument-count limit and the call sites are self-documenting.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct SuppressionSignals {
+    /// `probe_ok` column from `source_health` (synthetic-probe state).
+    probe_ok: Option<i64>,
+    /// A Firefox process is currently running.
+    firefox_running: bool,
+    /// A Claude session JSONL was modified within the last 5 minutes.
+    recent_claude_session: bool,
+    /// The opencode DB file was modified within the last 10 minutes.
+    opencode_db_recent: bool,
+    /// At least one Codex `rollout-*.jsonl` file exists under the roots.
+    codex_sessions_exist: bool,
+    /// At least one Codex `rollout-*.jsonl` file changed within 10 minutes.
+    codex_sessions_recent: bool,
+}
+
 fn classify_source_staleness(
     source: &str,
     age_secs: i64,
-    probe_ok: Option<i64>,
-    firefox_running: bool,
-    recent_claude_session: bool,
-    opencode_db_recent: bool,
+    signals: SuppressionSignals,
 ) -> SourceStalenessStatus {
     let thresh = source_staleness_thresholds_for(source);
     if age_secs < thresh.warn_secs {
         return SourceStalenessStatus::Ok;
     }
 
-    if let Some(reason) = source_staleness_suppression_reason(
-        source,
-        probe_ok,
-        firefox_running,
-        recent_claude_session,
-        opencode_db_recent,
-    ) {
+    if let Some(reason) = source_staleness_suppression_reason(source, signals) {
         return SourceStalenessStatus::Suppressed(reason);
     }
 
@@ -1882,17 +1954,22 @@ fn classify_source_staleness(
 
 fn source_staleness_suppression_reason(
     source: &str,
-    probe_ok: Option<i64>,
-    firefox_running: bool,
-    recent_claude_session: bool,
-    opencode_db_recent: bool,
+    signals: SuppressionSignals,
 ) -> Option<&'static str> {
     match source {
-        "shell" if probe_ok == Some(0) => Some("probe disabled"),
-        "claude-session" if !recent_claude_session => Some("no active session"),
-        "claude-tool" if probe_ok == Some(0) => Some("probe disabled"),
-        "browser" if !firefox_running => Some("no active Firefox session"),
-        "agentic-session-opencode" if !opencode_db_recent => Some("opencode DB idle"),
+        "shell" if signals.probe_ok == Some(0) => Some("probe disabled"),
+        "claude-session" if !signals.recent_claude_session => Some("no active session"),
+        "claude-tool" if signals.probe_ok == Some(0) => Some("probe disabled"),
+        "browser" if !signals.firefox_running => Some("no active Firefox session"),
+        "agentic-session-opencode" if !signals.opencode_db_recent => Some("opencode DB idle"),
+        // Codex has two distinct idle cases. Never-installed (no rollout files
+        // at all) is checked first. Otherwise, files exist but none changed
+        // recently ⇒ the user simply isn't running Codex right now. A recent
+        // rollout file with a stale `source_health` row is intentionally NOT
+        // matched here — that combination is a genuine ingestion failure and
+        // must still alarm.
+        "agentic-session-codex" if !signals.codex_sessions_exist => Some("no Codex sessions found"),
+        "agentic-session-codex" if !signals.codex_sessions_recent => Some("Codex sessions idle"),
         _ => None,
     }
 }
@@ -1919,10 +1996,11 @@ fn source_staleness_thresholds_for(source: &str) -> SourceStalenessThresholds {
             warn_secs: 300,
             fail_secs: 600,
         },
-        // Opencode polls every 30 s by default. Tolerate one missed
-        // tick before warning, and an hour before failing; idle DBs are
-        // suppressed below.
-        "agentic-session-opencode" => SourceStalenessThresholds {
+        // Opencode and Codex are both interval pollers — tolerate a missed
+        // tick before warning, an hour before failing. Both also suppress
+        // idle-source warnings in `source_staleness_suppression_reason`:
+        // opencode keys off its DB mtime, Codex off its rollout-file mtimes.
+        "agentic-session-opencode" | "agentic-session-codex" => SourceStalenessThresholds {
             warn_secs: 300,
             fail_secs: 3600,
         },
@@ -3580,10 +3658,28 @@ replacement = "***"
         );
     }
 
+    /// Build `SuppressionSignals` for staleness tests. Defaults to "nothing
+    /// suppressible" (no probe state, no recent activity, Codex never seen);
+    /// each test overrides only the fields it exercises.
+    fn signals(
+        recent_claude_session: bool,
+        codex_sessions_exist: bool,
+        codex_sessions_recent: bool,
+    ) -> SuppressionSignals {
+        SuppressionSignals {
+            probe_ok: None,
+            firefox_running: false,
+            recent_claude_session,
+            opencode_db_recent: false,
+            codex_sessions_exist,
+            codex_sessions_recent,
+        }
+    }
+
     #[test]
     fn test_idle_claude_session_staleness_is_suppressed_before_warn() {
         assert_eq!(
-            classify_source_staleness("claude-session", 12 * 60, None, true, false, true,),
+            classify_source_staleness("claude-session", 12 * 60, signals(false, false, false),),
             SourceStalenessStatus::Suppressed("no active session"),
             "inactive Claude sessions should not warn just because no new session rows landed"
         );
@@ -3592,9 +3688,65 @@ replacement = "***"
     #[test]
     fn test_active_claude_session_staleness_still_warns() {
         assert_eq!(
-            classify_source_staleness("claude-session", 12 * 60, None, true, true, true),
+            classify_source_staleness("claude-session", 12 * 60, signals(true, false, false),),
             SourceStalenessStatus::Warn,
             "recent Claude JSONL activity should make stale source-health actionable"
+        );
+    }
+
+    #[test]
+    fn test_codex_staleness_suppressed_when_no_sessions_exist() {
+        // No rollout files at all → never-installed → suppress.
+        assert_eq!(
+            classify_source_staleness(
+                "agentic-session-codex",
+                2 * 3600,
+                signals(false, false, false),
+            ),
+            SourceStalenessStatus::Suppressed("no Codex sessions found"),
+            "machines without any Codex session files should not alarm"
+        );
+    }
+
+    #[test]
+    fn test_codex_staleness_suppressed_when_sessions_exist_but_idle() {
+        // Rollout files exist but none changed recently → user just isn't
+        // running Codex right now → suppress (mirrors idle opencode).
+        assert_eq!(
+            classify_source_staleness(
+                "agentic-session-codex",
+                2 * 3600,
+                signals(false, true, false),
+            ),
+            SourceStalenessStatus::Suppressed("Codex sessions idle"),
+            "previously-used but idle Codex should be suppressed, not alarmed"
+        );
+    }
+
+    #[test]
+    fn test_codex_staleness_alarms_when_files_fresh_but_health_stale() {
+        // A rollout file changed recently yet `source_health` is stale: the
+        // poller is wedged. This is a genuine ingestion failure and must NOT
+        // be suppressed — age past fail_secs (3600) → FAIL.
+        assert_eq!(
+            classify_source_staleness(
+                "agentic-session-codex",
+                2 * 3600,
+                signals(false, true, true),
+            ),
+            SourceStalenessStatus::Fail,
+            "fresh rollout files + stale source_health is a real ingestion bug — must alarm"
+        );
+    }
+
+    #[test]
+    fn test_codex_staleness_warns_when_files_fresh_but_health_briefly_stale() {
+        // warn_secs = 300 for agentic-session-codex; 600s is past warn but
+        // under fail (3600). Fresh files → not suppressed → WARN.
+        assert_eq!(
+            classify_source_staleness("agentic-session-codex", 600, signals(false, true, true),),
+            SourceStalenessStatus::Warn,
+            "fresh codex files with briefly-stale source-health should warn"
         );
     }
 

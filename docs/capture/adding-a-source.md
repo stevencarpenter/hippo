@@ -12,7 +12,7 @@ Adding a source is a multi-week piece of work, not a weekend project. The steps 
 |---|---|---|
 | Bash history | Shell hook (`hippo.zsh`) — bash equivalent welcome as a small variant rather than new source kind | A bash version of `hippo.zsh` belongs in `shell/` and reuses the daemon socket; no new `source_kind` needed unless metadata diverges |
 | macOS Notification Center events | Not yet | New source — full contract below |
-| Cursor IDE / Aider sessions | Not yet (Codex flows through ClaudeAgentConfig path; Cursor would be analogous) | New source if the JSONL shape diverges from Anthropic's |
+| Cursor IDE / Aider sessions | Not yet (Codex has its own `com.hippo.codex-session` Rust poller; Cursor would be analogous) | New source if the JSONL shape diverges from Anthropic's |
 | iMessage / Slack messages | No, and probably should not be added — privacy footprint exceeds redaction's reach | Don't |
 
 If after that filter you still want to add a source, read on.
