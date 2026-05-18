@@ -326,6 +326,12 @@ async fn main() -> Result<()> {
                     &domain,
                     &launch_agents.join("com.hippo.xcode-codex-ingest.plist"),
                 );
+                // Also delete the plist file itself — service_bootout only
+                // unloads the running job. Without this the file remains in
+                // ~/Library/LaunchAgents/ and launchd re-bootstraps the job
+                // (whose program was deleted) on every login, producing a
+                // repeatedly-failing job.
+                install::remove_plist("com.hippo.xcode-codex-ingest")?;
 
                 let daemon_template = include_str!("../../../launchd/com.hippo.daemon.plist");
                 let brain_template = include_str!("../../../launchd/com.hippo.brain.plist");
