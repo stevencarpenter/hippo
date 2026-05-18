@@ -123,6 +123,60 @@ fn poll_tick_returns_zero_when_disabled() {
     assert_eq!(hippo_daemon::codex_session::poll_tick(&config).unwrap(), 0);
 }
 
+/// Write a rollout file containing only a `session_meta` line — no
+/// user-message line, so `extract_segments` opens no segment and yields zero.
+fn write_empty_rollout(dir: &std::path::Path, id: &str) -> std::path::PathBuf {
+    let p = dir.join(format!("rollout-{id}.jsonl"));
+    let line = format!(
+        r#"{{"timestamp":"2026-04-04T00:00:00.000Z","type":"session_meta","payload":{{"id":"{id}","cwd":"/proj"}}}}"#
+    );
+    std::fs::write(&p, line).unwrap();
+    p
+}
+
+#[test]
+fn poll_tick_zero_segment_file_advances_cursor_without_health_bump() {
+    let tmp = TempDir::new().unwrap();
+    let roots = tmp.path().join("sessions");
+    std::fs::create_dir_all(&roots).unwrap();
+    // session_meta-only file -> extract_segments yields zero segments.
+    let f = write_empty_rollout(&roots, "emptyseg");
+    // Backdate mtime so the file is past min_idle_secs ("idle").
+    let old = std::time::SystemTime::now() - std::time::Duration::from_secs(3600);
+    filetime::set_file_mtime(&f, filetime::FileTime::from_system_time(old)).unwrap();
+
+    let data_dir = tmp.path().join("data");
+    std::fs::create_dir_all(&data_dir).unwrap();
+    let config = hippo_daemon::codex_session::test_config(&data_dir, std::slice::from_ref(&roots));
+    let _ = open_db(&config.db_path()).unwrap();
+
+    let n = hippo_daemon::codex_session::poll_tick(&config).unwrap();
+    assert_eq!(n, 0, "a zero-segment file ingests nothing");
+
+    let conn = open_db(&config.db_path()).unwrap();
+    // last_event_ts must stay NULL: a zero-segment file captured no real data,
+    // so the health bump must be withheld (regression guard for Task 7).
+    let last_event_ts: Option<i64> = conn
+        .query_row(
+            "SELECT last_event_ts FROM source_health WHERE source = 'agentic-session-codex'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        last_event_ts, None,
+        "zero-segment file must NOT bump source_health.last_event_ts"
+    );
+
+    // The cursor still advanced: a second tick re-finds the same idle file but
+    // skips it via the cursor instead of re-parsing it.
+    let n2 = hippo_daemon::codex_session::poll_tick(&config).unwrap();
+    assert_eq!(
+        n2, 0,
+        "cursor must advance so the empty file is not re-parsed"
+    );
+}
+
 #[test]
 fn poll_tick_skips_in_flight_files() {
     let tmp = TempDir::new().unwrap();
