@@ -154,8 +154,17 @@ pub fn run(config: &HippoConfig) -> Result<()> {
     // ── Step 2: Read all source_health rows ───────────────────────────────
     let rows = read_source_health(&conn)?;
 
-    // ── Step 3: Assert invariants I-1..I-13 ──────────────────────────────
-    let violations = check_invariants(&rows, now_ms);
+    // ── Step 3: Assert invariants I-1..I-14 ──────────────────────────────
+    let mut violations = check_invariants(&rows, now_ms);
+    // I-14 needs a DB query, not just source_health rows — checked here.
+    if let Some(v) = check_i14_embedding_orphans(
+        &conn,
+        now_ms,
+        config.reaper.orphan_stale_secs as i64 * 1000,
+        config.reaper.alarm_threshold as i64,
+    )? {
+        violations.push(v);
+    }
 
     // ── Step 4: Insert capture_alarms rows for violations ─────────────────
     let log_path = resolve_log_path(config);
@@ -671,6 +680,58 @@ pub fn check_i13_codex_coverage_proxy(
         });
     }
     None
+}
+
+/// I-14: Embedding orphan backlog.
+///
+/// Fires when the count of `knowledge_nodes` older than `stale_ms` with no row
+/// in the `knowledge_vectors_rowids` vec0 shadow table exceeds `threshold`. A
+/// healthy embedding orphan-reaper keeps this near zero; a sustained backlog
+/// means the reaper is down or wedged.
+///
+/// Returns `Ok(None)` when the shadow table does not yet exist — a fresh
+/// install with no embeddings must not alarm. `knowledge_vectors_rowids.rowid`
+/// is the `knowledge_node_id` (vec0 aliases an `INTEGER PRIMARY KEY` to rowid).
+pub fn check_i14_embedding_orphans(
+    conn: &Connection,
+    now_ms: i64,
+    stale_ms: i64,
+    threshold: i64,
+) -> Result<Option<InvariantViolation>> {
+    let shadow_exists: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master
+                       WHERE type='table' AND name='knowledge_vectors_rowids')",
+        [],
+        |row| row.get(0),
+    )?;
+    if !shadow_exists {
+        return Ok(None);
+    }
+
+    let cutoff = now_ms - stale_ms;
+    let (orphan_count, oldest_created): (i64, i64) = conn.query_row(
+        "SELECT count(*), COALESCE(MIN(created_at), 0) FROM knowledge_nodes
+         WHERE created_at < ?1
+           AND id NOT IN (SELECT rowid FROM knowledge_vectors_rowids)",
+        rusqlite::params![cutoff],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
+
+    if orphan_count > threshold {
+        let since_ms = if oldest_created > 0 { now_ms - oldest_created } else { 0 };
+        Ok(Some(InvariantViolation {
+            invariant_id: "I-14".to_string(),
+            source: "embedding".to_string(),
+            since_ms,
+            details: json!({
+                "orphan_count": orphan_count,
+                "threshold": threshold,
+                "stale_ms": stale_ms,
+            }),
+        }))
+    } else {
+        Ok(None)
+    }
 }
 
 /// I-8: Probe freshness.

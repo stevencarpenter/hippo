@@ -46,6 +46,48 @@ fn i1_shell_liveness_suppressed_when_no_zsh_process() {
 }
 
 // ============================================================================
+// I-14 — embedding orphan backlog
+// ============================================================================
+
+#[test]
+fn i14_embedding_orphans_alarms_over_threshold() {
+    use hippo_daemon::watchdog::check_i14_embedding_orphans;
+    let conn = rusqlite::Connection::open_in_memory().unwrap();
+    conn.execute_batch(
+        "CREATE TABLE knowledge_nodes (id INTEGER PRIMARY KEY, created_at INTEGER NOT NULL);
+         CREATE TABLE knowledge_vectors_rowids (rowid INTEGER PRIMARY KEY, id, chunk_id, chunk_offset);",
+    )
+    .unwrap();
+    let now_ms: i64 = 10_000_000;
+    let old = now_ms - 3_600_000; // 1h old — well past staleness
+    // 3 orphan nodes, none embedded.
+    for id in 1..=3 {
+        conn.execute(
+            "INSERT INTO knowledge_nodes (id, created_at) VALUES (?1, ?2)",
+            rusqlite::params![id, old],
+        )
+        .unwrap();
+    }
+    // threshold 2 -> 3 orphans must alarm.
+    let v = check_i14_embedding_orphans(&conn, now_ms, 900_000, 2).unwrap();
+    assert!(v.is_some());
+    assert_eq!(v.unwrap().invariant_id, "I-14");
+
+    // threshold 5 -> 3 orphans must NOT alarm.
+    assert!(check_i14_embedding_orphans(&conn, now_ms, 900_000, 5).unwrap().is_none());
+}
+
+#[test]
+fn i14_embedding_orphans_silent_when_shadow_table_absent() {
+    use hippo_daemon::watchdog::check_i14_embedding_orphans;
+    let conn = rusqlite::Connection::open_in_memory().unwrap();
+    conn.execute_batch("CREATE TABLE knowledge_nodes (id INTEGER PRIMARY KEY, created_at INTEGER NOT NULL);")
+        .unwrap();
+    // No knowledge_vectors_rowids table -> fresh install -> must not alarm.
+    assert!(check_i14_embedding_orphans(&conn, 10_000_000, 900_000, 0).unwrap().is_none());
+}
+
+// ============================================================================
 // F-10 / I-2 — Claude-session end-to-end
 // ============================================================================
 
