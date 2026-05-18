@@ -1,7 +1,8 @@
 //! Capture-reliability watchdog — `hippo watchdog run`
 //!
 //! Short-lived process invoked every 60 s by launchd (`com.hippo.watchdog`).
-//! Asserts invariants I-1..I-13 against the `source_health` table and writes
+//! Asserts invariants I-1..I-14 — most against the `source_health` table,
+//! I-14 against the knowledge-node vector store — and writes
 //! rows to `capture_alarms` for any violations detected.  Rate-limited per
 //! invariant per sliding window (default 60 min).
 //!

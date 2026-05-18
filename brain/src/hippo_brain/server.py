@@ -1676,12 +1676,17 @@ class BrainServer:
         if not rows:
             return
         for node_id, embed_text in rows:
-            await self._embed_node(
-                node_id,
-                {"id": node_id, "embed_text": embed_text, "commands_raw": ""},
-                "reaper",
-            )
-        logger.info("embed reaper: re-embedded %d orphaned node(s)", len(rows))
+            try:
+                await self._embed_node(
+                    node_id,
+                    {"id": node_id, "embed_text": embed_text, "commands_raw": ""},
+                    "reaper",
+                )
+            except Exception:
+                # One bad node must not abandon the rest of the batch; it stays
+                # an orphan and is retried next tick.
+                logger.warning("embed reaper: re-embed failed for node %d", node_id, exc_info=True)
+        logger.info("embed reaper: swept %d orphaned node(s)", len(rows))
 
     async def _embed_reaper_loop(self):
         """Independent loop that periodically runs _embed_reaper_tick."""

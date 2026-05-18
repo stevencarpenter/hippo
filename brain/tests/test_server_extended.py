@@ -541,7 +541,7 @@ async def test_embed_reaper_tick_reembeds_only_old_orphans(tmp_db):
 
 @pytest.mark.asyncio
 async def test_embed_reaper_tick_survives_single_embed_failure(tmp_db):
-    """One orphan's embed failure must not abort the sweep."""
+    """One orphan's embed failure must not abort the rest of the sweep."""
     conn, db_path = tmp_db
     now_ms = int(time.time() * 1000)
     old = now_ms - 3_600_000
@@ -561,10 +561,13 @@ async def test_embed_reaper_tick_survives_single_embed_failure(tmp_db):
     seen: list[int] = []
 
     async def _rec(node_id, node_dict, source_label):
-        seen.append(node_id)  # real _embed_node never raises
+        seen.append(node_id)
+        if node_id == 1:
+            raise RuntimeError("embed boom")
 
     server._embed_node = _rec  # type: ignore[method-assign]
 
-    # Must not raise — both orphans are attempted in one sweep.
+    # Node 1 raising must not abort the sweep — node 2 is still attempted, and
+    # the tick itself does not propagate the failure.
     await server._embed_reaper_tick()
     assert seen == [1, 2]
