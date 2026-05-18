@@ -237,6 +237,7 @@ class BrainServer:
         self._resume_event = asyncio.Event()
         self._enrichment_task = None
         self._reaper_task = None
+        self._embed_reaper_task = None
         self._vector_db = None
         self._vector_table = None
         if self.embedding_model:
@@ -1649,12 +1650,59 @@ class BrainServer:
             except Exception as e:
                 logger.warning("reaper loop error: %s", e, exc_info=True)
 
+    async def _embed_reaper_tick(self):
+        """One reaper sweep: re-embed knowledge_nodes that have no vector row.
+
+        Source-agnostic — finds orphans by anti-join, not queue membership, so
+        any source that fails to embed is healed regardless of which one.
+        """
+        now_ms = int(time.time() * 1000)
+        cutoff = now_ms - self.embed_orphan_stale_secs * 1000
+        conn = self._get_conn()
+        try:
+            rows = conn.execute(
+                "SELECT id, embed_text FROM knowledge_nodes "
+                "WHERE created_at < ? "
+                "AND id NOT IN (SELECT rowid FROM knowledge_vectors_rowids) "
+                "ORDER BY created_at LIMIT ?",
+                (cutoff, self.embed_reaper_batch_size),
+            ).fetchall()
+        except sqlite3.OperationalError:
+            # knowledge_vectors_rowids absent — fresh install, nothing embedded
+            # yet. Same tolerance as _collect_queue_depths for missing tables.
+            return
+        finally:
+            conn.close()
+        if not rows:
+            return
+        for node_id, embed_text in rows:
+            await self._embed_node(
+                node_id,
+                {"id": node_id, "embed_text": embed_text, "commands_raw": ""},
+                "reaper",
+            )
+        logger.info("embed reaper: re-embedded %d orphaned node(s)", len(rows))
+
+    async def _embed_reaper_loop(self):
+        """Independent loop that periodically runs _embed_reaper_tick."""
+        while True:
+            await asyncio.sleep(self.embed_reaper_interval_secs)
+            try:
+                await self._embed_reaper_tick()
+            except Exception as e:
+                logger.warning("embed reaper loop error: %s", e, exc_info=True)
+
     def start_enrichment(self):
         self._enrichment_task = asyncio.create_task(self._enrichment_loop())
         self._reaper_task = asyncio.create_task(self._reaper_loop())
+        self._embed_reaper_task = asyncio.create_task(self._embed_reaper_loop())
 
     async def stop_enrichment(self):
-        tasks = [t for t in (self._enrichment_task, self._reaper_task) if t is not None]
+        tasks = [
+            t
+            for t in (self._enrichment_task, self._reaper_task, self._embed_reaper_task)
+            if t is not None
+        ]
         if not tasks:
             return
         for t in tasks:
@@ -1664,6 +1712,7 @@ class BrainServer:
                 await t
         self._enrichment_task = None
         self._reaper_task = None
+        self._embed_reaper_task = None
 
     def get_routes(self) -> list[Route]:
         return [
