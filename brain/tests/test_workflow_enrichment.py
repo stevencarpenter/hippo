@@ -3,7 +3,7 @@
 import asyncio
 import sqlite3
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -292,6 +292,36 @@ def test_enrich_one_async_skips_missing_run(enrichment_db):
     )
 
     fake_lm.chat.assert_not_called()
+
+
+def test_enrich_one_async_survives_clustering_failure(enrichment_db):
+    """A lesson-clustering failure must not fail the run.
+
+    The knowledge node and queue 'done' status are committed before lesson
+    clustering runs; if clustering raises, the run must NOT propagate the
+    error (which would mark it failed, re-enrich, and duplicate the node).
+    """
+    fake_lm = MagicMock()
+    fake_lm.chat = AsyncMock(return_value="Async enrichment summary")
+
+    with patch(
+        "hippo_brain.workflow_enrichment.upsert_cluster",
+        side_effect=RuntimeError("clustering boom"),
+    ):
+        result = asyncio.run(
+            enrich_one_async(enrichment_db, run_id=1, inference=fake_lm, query_model="test-model")
+        )
+
+    assert result is not None  # completed despite the clustering failure
+
+    conn = sqlite3.connect(enrichment_db)
+    node = conn.execute("SELECT id FROM knowledge_nodes").fetchone()
+    assert node is not None
+    status = conn.execute("SELECT status FROM workflow_enrichment_queue WHERE run_id=1").fetchone()[
+        0
+    ]
+    assert status == "done"
+    conn.close()
 
 
 # ---------------------------------------------------------------------------
