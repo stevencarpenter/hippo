@@ -103,7 +103,10 @@ fn upsert_refreshes_cwd_and_project_dir_on_conflict() {
         )
         .unwrap();
     assert_eq!(cwd, "/new/path", "cwd must be updated on re-upsert");
-    assert_eq!(project_dir, "new-proj", "project_dir must be updated on re-upsert");
+    assert_eq!(
+        project_dir, "new-proj",
+        "project_dir must be updated on re-upsert"
+    );
 }
 
 fn write_rollout(dir: &std::path::Path, id: &str, prompt: &str) -> std::path::PathBuf {

@@ -148,7 +148,10 @@ fn content_text(content: &serde_json::Value) -> String {
 /// tool-call summary before the values are stored. Matches the Python
 /// `redact_segment_secrets` step; the builtin pattern set is shared with
 /// `hippo_brain.redaction`.
-pub(crate) fn extract_segments(path: &Path, redaction: &RedactionEngine) -> Result<Vec<CodexSegment>> {
+pub(crate) fn extract_segments(
+    path: &Path,
+    redaction: &RedactionEngine,
+) -> Result<Vec<CodexSegment>> {
     let raw = std::fs::read_to_string(path)
         .with_context(|| format!("read codex rollout {}", path.display()))?;
     let source_file = path.to_string_lossy().to_string();
