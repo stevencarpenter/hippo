@@ -38,7 +38,7 @@ pub struct CodexSegment {
 }
 
 /// Parse an ISO-8601 timestamp to epoch milliseconds; 0 on any failure.
-pub fn parse_ts(ts: &str) -> i64 {
+pub(crate) fn parse_ts(ts: &str) -> i64 {
     if ts.is_empty() {
         return 0;
     }
@@ -50,7 +50,7 @@ pub fn parse_ts(ts: &str) -> i64 {
 /// Short human-readable summary of a tool call's argument JSON. Mirrors
 /// `_tool_summary` in codex_sessions.py: prefer the most informative single
 /// argument, else the first non-empty string value, else the raw string.
-pub fn tool_summary(arguments: &str) -> String {
+pub(crate) fn tool_summary(arguments: &str) -> String {
     let parsed: serde_json::Value =
         serde_json::from_str(arguments).unwrap_or(serde_json::Value::Null);
     if let Some(obj) = parsed.as_object() {
@@ -82,8 +82,7 @@ pub fn tool_summary(arguments: &str) -> String {
 /// distinctive tails as substrings — derived from the regex alternatives, not
 /// invented — advances past the rest of that status line, and takes the text
 /// after the last marker (else the last `\n\n` paragraph), capped at 500.
-#[allow(dead_code)] // consumed in Task 7
-pub fn extract_user_text(message: &str) -> String {
+pub(crate) fn extract_user_text(message: &str) -> String {
     let markers = ["code selected", "file currently open", "inside this file:"];
     let mut cut = 0usize;
     let mut found_marker = false;
@@ -127,7 +126,7 @@ fn content_text(content: &serde_json::Value) -> String {
 
 /// Parse a Codex rollout JSONL file into task-boundary segments.
 #[allow(dead_code)] // consumed in Task 7
-pub fn extract_segments(path: &Path) -> Result<Vec<CodexSegment>> {
+pub(crate) fn extract_segments(path: &Path) -> Result<Vec<CodexSegment>> {
     let raw = std::fs::read_to_string(path)
         .with_context(|| format!("read codex rollout {}", path.display()))?;
     let source_file = path.to_string_lossy().to_string();
@@ -312,7 +311,7 @@ pub fn extract_segments(path: &Path) -> Result<Vec<CodexSegment>> {
 
 /// Build the Codex-framed enrichment digest stored in
 /// `claude_sessions.summary_text` and read by the brain's enrichment loop.
-pub fn build_summary_text(seg: &CodexSegment) -> String {
+pub(crate) fn build_summary_text(seg: &CodexSegment) -> String {
     // Count caps bound summary_text. The 5-min / 12k-char segmentation split
     // only fires on user-message lines, so a segment with one prompt followed
     // by thousands of tool calls would otherwise produce an unbounded digest.
@@ -356,7 +355,7 @@ pub fn build_summary_text(seg: &CodexSegment) -> String {
 /// SHA256 (lowercase hex) of enrichment-relevant content. Same construction as
 /// `claude_session::compute_segment_content_hash`: tool_calls_json | "|" |
 /// user_prompts_json | "|" | assistant_texts joined by "\n".
-pub fn compute_content_hash(seg: &CodexSegment) -> String {
+pub(crate) fn compute_content_hash(seg: &CodexSegment) -> String {
     let tool_calls_json = serde_json::to_string(&seg.tool_calls).unwrap_or_else(|_| "[]".into());
     let user_prompts_json =
         serde_json::to_string(&seg.user_prompts).unwrap_or_else(|_| "[]".into());
