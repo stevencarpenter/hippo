@@ -571,3 +571,56 @@ async def test_embed_reaper_tick_survives_single_embed_failure(tmp_db):
     # the tick itself does not propagate the failure.
     await server._embed_reaper_tick()
     assert seen == [1, 2]
+
+
+@pytest.mark.asyncio
+async def test_embed_reaper_tick_skips_when_paused(tmp_db):
+    """A paused brain (hippo-bench isolation) must not run reaper embeds —
+    they would issue inference calls and corrupt benchmark isolation."""
+    conn, db_path = tmp_db
+    now_ms = int(time.time() * 1000)
+    old = now_ms - 3_600_000
+    conn.executescript(
+        "CREATE TABLE IF NOT EXISTS knowledge_vectors_rowids "
+        "(rowid INTEGER PRIMARY KEY, id, chunk_id, chunk_offset);"
+    )
+    conn.execute(
+        "INSERT INTO knowledge_nodes (id, uuid, content, embed_text, node_type, "
+        "created_at, updated_at) VALUES (1, 'u1', 'c', 'et', 'observation', ?, ?)",
+        (old, old),
+    )
+    conn.commit()
+
+    server = _make_server(str(db_path), embed_orphan_stale_secs=900)
+    server._paused = True
+    embedded: list[int] = []
+
+    async def _rec(node_id, node_dict, source_label):
+        embedded.append(node_id)
+
+    server._embed_node = _rec  # type: ignore[method-assign]
+
+    await server._embed_reaper_tick()
+    assert embedded == []  # paused — no embeds issued
+
+
+@pytest.mark.asyncio
+async def test_embed_reaper_tick_propagates_non_missing_table_errors(tmp_db):
+    """Only a missing shadow table is tolerated; a real operational error
+    (locked DB, bad SQL) must surface, not be masked as a healthy idle reaper."""
+    import sqlite3
+
+    _, db_path = tmp_db
+    server = _make_server(str(db_path), embed_orphan_stale_secs=900)
+
+    class _LockedConn:
+        def execute(self, *args, **kwargs):
+            raise sqlite3.OperationalError("database is locked")
+
+        def close(self):
+            pass
+
+    server._get_conn = lambda: _LockedConn()  # type: ignore[method-assign]
+
+    with pytest.raises(sqlite3.OperationalError, match="database is locked"):
+        await server._embed_reaper_tick()

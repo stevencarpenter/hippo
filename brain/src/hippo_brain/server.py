@@ -1656,6 +1656,10 @@ class BrainServer:
         Source-agnostic — finds orphans by anti-join, not queue membership, so
         any source that fails to embed is healed regardless of which one.
         """
+        if self._paused:
+            # Quiescent during a /control/pause window (hippo-bench isolation);
+            # firing embeds would issue inference calls and corrupt the run.
+            return
         now_ms = int(time.time() * 1000)
         cutoff = now_ms - self.embed_orphan_stale_secs * 1000
         conn = self._get_conn()
@@ -1667,9 +1671,13 @@ class BrainServer:
                 "ORDER BY created_at LIMIT ?",
                 (cutoff, self.embed_reaper_batch_size),
             ).fetchall()
-        except sqlite3.OperationalError:
-            # knowledge_vectors_rowids absent — fresh install, nothing embedded
-            # yet. Same tolerance as _collect_queue_depths for missing tables.
+        except sqlite3.OperationalError as e:
+            # Tolerate only the missing knowledge_vectors_rowids shadow table
+            # (fresh install, nothing embedded yet). Any other operational
+            # error — locked DB, I/O failure, bad SQL — must surface via the
+            # loop's logging rather than masquerade as a healthy idle reaper.
+            if "no such table" not in str(e):
+                raise
             return
         finally:
             conn.close()

@@ -7,10 +7,13 @@
 //! archived at `docs/archive/capture-reliability-overhaul/06-claude-session-watcher.md`;
 //! shipped in PR #86) and not yet wired in here.
 //!
-//! Every test in this file is `#[ignore]` with an explanation pointing at
-//! the blocking roadmap task (see `docs/archive/capture-reliability-overhaul/07-roadmap.md`).
-//! The file is committed so that when each P0/P1/P2 phase lands, the test
-//! is a one-line enable, not a "remember to write this later" TODO.
+//! Most tests in this file are `#[ignore]` skeletons with an explanation
+//! pointing at the blocking roadmap task (see
+//! `docs/archive/capture-reliability-overhaul/07-roadmap.md`); they are
+//! committed so that when each P0/P1/P2 phase lands, the test is a one-line
+//! enable, not a "remember to write this later" TODO. The exception is the
+//! I-14 (embedding orphan backlog) tests at the end of the file, which are
+//! live, runnable tests.
 //!
 //! Tracking: docs/capture/test-matrix.md rows F-10..F-14.
 

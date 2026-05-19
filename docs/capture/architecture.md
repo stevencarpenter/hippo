@@ -35,7 +35,7 @@ Every capture path writes two things in the same SQLite transaction: the event r
 
 1. **Capture path** — the per-source code that writes events. Shell hook → daemon socket. FSEvents watcher → daemon. Native messaging → daemon. Each path writes to its source's events table AND to `source_health` in the same SQLite transaction. (See [`anti-patterns.md`](anti-patterns.md) AP-1: writing health from inside the user's interactive prompt is forbidden — health writes happen in the daemon's `flush_events`, never in `shell/hippo.zsh`.)
 2. **`source_health` table** — one row per source, holds the latest "did the event land?" signal: `last_event_ts`, `consecutive_failures`, `events_last_1h`, `probe_ok`, `probe_last_run_ts`, `probe_lag_ms`. Single SQL ground truth.
-3. **Watchdog** (`com.hippo.watchdog`, every 60 s) — asserts fourteen invariants against `source_health`, writes `capture_alarms` rows on violations. Rate-limited per invariant (one alarm per invariant per hour). Implemented in `crates/hippo-daemon/src/watchdog.rs`.
+3. **Watchdog** (`com.hippo.watchdog`, every 60 s) — asserts fourteen invariants (most against `source_health`; I-14 against the knowledge-node vector store), writes `capture_alarms` rows on violations. Rate-limited per invariant (one alarm per invariant per hour). Implemented in `crates/hippo-daemon/src/watchdog.rs`.
 4. **Probe** (`com.hippo.probe`, every 5 minutes) — sends synthetic events through each capture path, measures end-to-end latency, records `probe_lag_ms` in `source_health`. Probe rows carry `probe_tag IS NOT NULL` and are filtered out of every user-facing query (RAG, MCP tools, `hippo events`). See `crates/hippo-daemon/src/probe.rs`. (See [`anti-patterns.md`](anti-patterns.md) AP-6: probe rows must never appear in user-facing queries.)
 
 Operator interface: [`hippo doctor`](operator-runbook.md#doctor) for a snapshot, [`hippo alarms`](operator-runbook.md#alarms) for unacknowledged violations, [`hippo probe`](operator-runbook.md#probes) to run a one-off synthetic check.
@@ -64,12 +64,13 @@ Append-only ledger of invariant violations. The watchdog writes; `hippo alarms a
 | Column | Meaning |
 |---|---|
 | `id` | PK |
-| `invariant` | One of `I-1` … `I-14` |
-| `source` | Affected source (or `watchdog` for I-7) |
-| `fired_at` | First detection time |
-| `last_seen_at` | Most recent confirmation; updated when the watchdog re-asserts the same violation |
-| `last_notified_at` | Last macOS notification; rate-limit gate |
-| `acknowledged_at` | NULL until `hippo alarms ack <id>` |
+| `invariant_id` | One of `I-1` … `I-14` |
+| `raised_at` | First detection time (epoch ms) |
+| `details_json` | Invariant-specific diagnostic context — affected source, `since_ms`, and per-invariant details |
+| `acked_at` | NULL until `hippo alarms ack <id>` |
+| `ack_note` | Optional note supplied at acknowledgment |
+| `resolved_at` | Set once the invariant has stayed clean for 2 consecutive ticks |
+| `clean_ticks` | Consecutive-clean tick count driving the auto-resolve loop |
 | `note` | Operator notes from `--note "..."` |
 
 ## Invariants (I-1..I-14)
