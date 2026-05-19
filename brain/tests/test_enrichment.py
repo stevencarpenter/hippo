@@ -142,9 +142,18 @@ def test_parse_skips_non_string_entity_items():
     assert result.entities["tools"] == ["cargo"]
 
 
-def test_parse_rejects_entities_not_dict():
-    data = _valid_enrichment_dict(entities=["not", "a", "dict"])
-    with pytest.raises(ValueError, match="entities must be a dict"):
+def test_parse_normalizes_flat_entity_list():
+    data = _valid_enrichment_dict(entities=["cargo", "brain/src/server.py", "HIPPO_DB"])
+    result = parse_enrichment_response(json.dumps(data))
+
+    assert result.entities["tools"] == ["cargo"]
+    assert result.entities["files"] == ["brain/src/server.py"]
+    assert result.entities["env_vars"] == ["HIPPO_DB"]
+
+
+def test_parse_rejects_entities_not_dict_or_list():
+    data = _valid_enrichment_dict(entities="cargo")
+    with pytest.raises(ValueError, match="entities must be a dict or list"):
         parse_enrichment_response(json.dumps(data))
 
 

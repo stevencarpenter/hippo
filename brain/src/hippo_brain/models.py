@@ -1,3 +1,4 @@
+import re
 from dataclasses import dataclass, field
 
 
@@ -77,6 +78,83 @@ class Lesson:
 
 _VALID_OUTCOMES = {"success", "partial", "failure", "unknown"}
 _ENTITY_KEYS = ("projects", "tools", "files", "services", "errors", "env_vars", "domains")
+_ENV_VAR_RE = re.compile(r"^[A-Z][A-Z0-9_]{2,}$")
+_DOMAIN_RE = re.compile(r"^[a-z0-9][a-z0-9.-]*\.[a-z]{2,}$", re.IGNORECASE)
+_FILE_SUFFIX_RE = re.compile(r"\.[A-Za-z0-9]{1,12}(?::\d+)?$")
+
+
+def _empty_entities() -> dict[str, list[str]]:
+    return {key: [] for key in _ENTITY_KEYS}
+
+
+def _append_unique(entities: dict[str, list[str]], key: str, value: str) -> None:
+    value = value.strip()
+    if value and value not in entities[key]:
+        entities[key].append(value)
+
+
+def _entity_key_from_type(raw_type) -> str | None:
+    if not isinstance(raw_type, str):
+        return None
+    normalized = raw_type.strip().lower().replace("-", "_").replace(" ", "_")
+    aliases = {
+        "project": "projects",
+        "projects": "projects",
+        "tool": "tools",
+        "tools": "tools",
+        "cli": "tools",
+        "file": "files",
+        "files": "files",
+        "path": "files",
+        "paths": "files",
+        "service": "services",
+        "services": "services",
+        "api": "services",
+        "database": "services",
+        "error": "errors",
+        "errors": "errors",
+        "exception": "errors",
+        "env_var": "env_vars",
+        "env_vars": "env_vars",
+        "environment_variable": "env_vars",
+        "domain": "domains",
+        "domains": "domains",
+        "hostname": "domains",
+    }
+    return aliases.get(normalized)
+
+
+def _infer_entity_key(value: str) -> str:
+    lower = value.lower()
+    if _ENV_VAR_RE.match(value):
+        return "env_vars"
+    if "/" in value or value.startswith(".") or _FILE_SUFFIX_RE.search(value):
+        return "files"
+    if "error" in lower or "exception" in lower or "failed" in lower or "traceback" in lower:
+        return "errors"
+    if "://" not in value and " " not in value and _DOMAIN_RE.match(value):
+        return "domains"
+    return "tools"
+
+
+def _coerce_entity_list(raw_entities: list) -> dict[str, list[str]]:
+    """Recover common local-LLM output: `entities` as a flat list."""
+    entities = _empty_entities()
+    for item in raw_entities:
+        if isinstance(item, str):
+            value = item.strip()
+            if value:
+                _append_unique(entities, _infer_entity_key(value), value)
+            continue
+        if isinstance(item, dict):
+            name = item.get("name") or item.get("value") or item.get("entity") or item.get("text")
+            if not isinstance(name, str) or not name.strip():
+                continue
+            key = _entity_key_from_type(
+                item.get("type") or item.get("category") or item.get("kind")
+            )
+            _append_unique(entities, key or _infer_entity_key(name), name)
+    return entities
 
 
 def validate_enrichment_data(data: dict) -> EnrichmentResult:
@@ -96,10 +174,12 @@ def validate_enrichment_data(data: dict) -> EnrichmentResult:
     if outcome not in _VALID_OUTCOMES:
         raise ValueError(f"outcome must be one of {sorted(_VALID_OUTCOMES)}, got {outcome!r}")
 
-    # Entities must be a dict (default to empty dict if missing)
+    # Entities should be a dict, but local LLMs sometimes return a flat list.
     raw_entities = data.get("entities", {})
-    if not isinstance(raw_entities, dict):
-        raise ValueError(f"entities must be a dict, got {type(raw_entities).__name__}")
+    if isinstance(raw_entities, list):
+        raw_entities = _coerce_entity_list(raw_entities)
+    elif not isinstance(raw_entities, dict):
+        raise ValueError(f"entities must be a dict or list, got {type(raw_entities).__name__}")
 
     # Filter each entity list to contain only strings
     entities: dict[str, list[str]] = {}

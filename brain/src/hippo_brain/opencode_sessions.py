@@ -35,7 +35,14 @@ Output a JSON object with these fields:
 - outcome: One of "success", "partial", "failure", "unknown"
 - key_decisions: List of decisions made and why
 - problems_encountered: List of errors/failures and how they were resolved
-- entities: Tool/file/service identifiers extracted
+- entities: An object with lists of extracted entities:
+  - projects: Project names mentioned or inferred
+  - tools: CLI tools, editor tools, package managers, or agent tools used
+  - files: Specific files or paths referenced
+  - services: Services, databases, APIs, or inference backends interacted with
+  - errors: Actual error messages encountered
+  - env_vars: Environment variable names referenced
+  - domains: Hostnames or domains referenced
 - tags: Descriptive, specific tags
 - embed_text: A detailed, identifier-dense paragraph optimized for keyword retrieval
 
