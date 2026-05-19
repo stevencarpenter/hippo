@@ -71,7 +71,6 @@ Append-only ledger of invariant violations. The watchdog writes; `hippo alarms a
 | `ack_note` | Optional note supplied at acknowledgment |
 | `resolved_at` | Set once the invariant has stayed clean for 2 consecutive ticks |
 | `clean_ticks` | Consecutive-clean tick count driving the auto-resolve loop |
-| `note` | Operator notes from `--note "..."` |
 
 ## Invariants (I-1..I-14)
 
