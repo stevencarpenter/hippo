@@ -74,6 +74,43 @@ def _seed_processing_queue_row(
     conn.commit()
 
 
+def _seed_agentic_processing_queue_row(
+    conn,
+    *,
+    session_id: int,
+    locked_at_ms: int,
+    retry_count: int = 0,
+    max_retries: int = 5,
+    worker_id: str = "wedged-worker",
+):
+    """Seed an opencode agentic queue row in 'processing' state."""
+    conn.execute(
+        """INSERT INTO agentic_sessions
+           (id, session_id, harness, model, agent, project_dir, cwd, slug, title,
+            summary_text, source_file, snapshot_diffs_json, commit_messages_json,
+            message_count, token_count, start_time, end_time)
+           VALUES (?, ?, 'opencode', '', '', '/p', '/p', '', 'title',
+                   'summary', '', 'null', '[]', 3, 0, ?, ?)""",
+        (session_id, f"opencode-{session_id}", locked_at_ms, locked_at_ms),
+    )
+    conn.execute(
+        """INSERT INTO agentic_enrichment_queue
+           (session_id, status, locked_at, locked_by, retry_count, max_retries,
+            enqueued_at, updated_at)
+           VALUES (?, 'processing', ?, ?, ?, ?, ?, ?)""",
+        (
+            session_id,
+            locked_at_ms,
+            worker_id,
+            retry_count,
+            max_retries,
+            locked_at_ms,
+            locked_at_ms,
+        ),
+    )
+    conn.commit()
+
+
 def test_reaper_flips_stale_processing_to_pending(tmp_db):
     conn, _ = tmp_db
     now_ms = int(time.time() * 1000)
@@ -85,6 +122,25 @@ def test_reaper_flips_stale_processing_to_pending(tmp_db):
     assert result["shell"] == 1
     row = conn.execute(
         "SELECT status, locked_at, locked_by, retry_count FROM enrichment_queue WHERE event_id = 1"
+    ).fetchone()
+    assert row[0] == "pending"
+    assert row[1] is None
+    assert row[2] is None
+    assert row[3] == 1
+
+
+def test_reaper_flips_stale_agentic_processing_to_pending(tmp_db):
+    conn, _ = tmp_db
+    now_ms = int(time.time() * 1000)
+    stale_at = now_ms - (DEFAULT_LOCK_TIMEOUT_MS + 60_000)
+    _seed_agentic_processing_queue_row(conn, session_id=1, locked_at_ms=stale_at)
+
+    result = reap_stale_locks(conn, lock_timeout_ms=DEFAULT_LOCK_TIMEOUT_MS, now_ms=now_ms)
+
+    assert result["agentic"] == 1
+    row = conn.execute(
+        "SELECT status, locked_at, locked_by, retry_count "
+        "FROM agentic_enrichment_queue WHERE session_id = 1"
     ).fetchone()
     assert row[0] == "pending"
     assert row[1] is None

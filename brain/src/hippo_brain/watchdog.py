@@ -75,6 +75,7 @@ QUEUES: tuple[QueueSpec, ...] = (
     QueueSpec("claude", "claude_enrichment_queue", "id"),
     QueueSpec("browser", "browser_enrichment_queue", "id"),
     QueueSpec("workflow", "workflow_enrichment_queue", "run_id"),
+    QueueSpec("agentic", "agentic_enrichment_queue", "id"),
 )
 
 

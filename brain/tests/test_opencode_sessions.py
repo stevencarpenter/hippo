@@ -11,6 +11,7 @@ Acts as the regression bed for F-26..F-28 in `docs/capture/test-matrix.md`.
 from hippo_brain.enrichment import is_enrichment_eligible
 from hippo_brain.models import EnrichmentResult
 from hippo_brain.opencode_sessions import (
+    OPENCODE_ENRICHMENT_PROMPT,
     build_opencode_enrichment_prompt,
     claim_pending_opencode_segments,
     mark_opencode_queue_failed,
@@ -186,6 +187,10 @@ class TestPromptFormatting:
 
         assert "Capture opencode message parts" in prompt
         assert "bash: rg opencode brain/src/hippo_brain" in prompt
+
+    def test_system_prompt_requires_structured_entities_object(self):
+        assert "entities: An object with lists of extracted entities" in OPENCODE_ENRICHMENT_PROMPT
+        assert "env_vars" in OPENCODE_ENRICHMENT_PROMPT
 
 
 class TestWriteKnowledgeNode:

@@ -230,3 +230,14 @@ enabled = true
 # OTel Collector health: http://localhost:13133
 enabled = false
 endpoint = "http://localhost:4317"
+
+[reaper]
+# Embedding orphan-reaper + watchdog invariant I-14.
+#
+# The brain runs an in-process loop that finds knowledge_nodes with no vector
+# row (an anti-join, so it is source-agnostic) and re-embeds them. Watchdog
+# invariant I-14 alarms when the orphan backlog grows past alarm_threshold.
+interval_secs = 300       # brain reaper loop cadence
+batch_size = 50           # orphans re-embedded per tick
+orphan_stale_secs = 900   # min node age before it counts as an orphan
+alarm_threshold = 25      # orphan count above which I-14 alarms
