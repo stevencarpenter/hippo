@@ -465,6 +465,50 @@ async def test_workflow_enrichment_calls_enrich_one_async(tmp_db):
     assert 42 in enrich_calls
 
 
+@pytest.mark.asyncio
+async def test_workflow_enrichment_schedules_embedding(tmp_db):
+    """Workflow enrichment must schedule _embed_node, like every other source.
+
+    Regression target: workflow/CI knowledge nodes were written to SQLite but
+    never embedded, silently falling out of semantic search.
+    """
+    conn, db_path = tmp_db
+    now_ms = int(time.time() * 1000)
+    conn.execute(
+        "INSERT INTO workflow_runs (id, repo, head_sha, event, status, conclusion, "
+        "html_url, raw_json, first_seen_at, last_seen_at) "
+        "VALUES (42, 'org/repo', 'abc123', 'push', 'completed', 'success', "
+        "'https://x', '{}', ?, ?)",
+        (now_ms, now_ms),
+    )
+    conn.execute(
+        "INSERT INTO workflow_enrichment_queue (run_id, enqueued_at, updated_at) VALUES (42, ?, ?)",
+        (now_ms, now_ms),
+    )
+    conn.commit()
+
+    server = _make_server(str(db_path), embedding_model="fake-embed")
+    server.poll_interval_secs = 0
+    server.client.chat = AsyncMock(return_value="CI run completed successfully")
+
+    embed_calls: list[tuple[int, str]] = []
+
+    async def _rec(node_id, node_dict, source_label):
+        embed_calls.append((node_id, source_label))
+
+    server._embed_node = _rec  # type: ignore[method-assign]
+
+    ok = PreflightDecision(proceed=True, reason="ok", loaded_models=["test-model"])
+    with patch("hippo_brain.server.preflight_inference", new_callable=AsyncMock, return_value=ok):
+        task = asyncio.create_task(server._enrichment_loop())
+        await asyncio.sleep(0.2)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    assert any(src == "workflow" for _, src in embed_calls)
+
+
 # ---- stop_enrichment with no tasks ----
 
 

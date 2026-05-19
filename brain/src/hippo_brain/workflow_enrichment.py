@@ -9,6 +9,7 @@ For each completed workflow run in the enrichment queue:
 6. For each failing annotation, call lessons.upsert_cluster
 """
 
+import logging
 import sqlite3
 import time
 import uuid
@@ -17,6 +18,8 @@ from pathlib import Path
 from hippo_brain.client import InferenceClient
 from hippo_brain.lessons import ClusterKey, upsert_cluster
 from hippo_brain.watchdog import DEFAULT_LOCK_TIMEOUT_MS
+
+logger = logging.getLogger("hippo_brain")
 
 CORRELATION_WINDOW_MS = 15 * 60 * 1000  # ±15 minutes
 
@@ -169,8 +172,12 @@ async def enrich_one_async(
     *,
     path_prefix_segments: int = 2,
     min_occurrences: int = 2,
-) -> None:
-    """Async wrapper around enrich_one for use in the enrichment scheduler."""
+) -> tuple[int, dict] | None:
+    """Async wrapper around enrich_one for use in the enrichment scheduler.
+
+    Returns ``(node_id, node_dict)`` for the created knowledge node so the
+    caller can schedule embedding, or ``None`` when ``run_id`` does not exist.
+    """
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
     try:
@@ -290,22 +297,34 @@ async def enrich_one_async(
         )
         conn.commit()
 
-        # Lesson clustering for each failing annotation (sync — opens its own connection)
-        for a in ann_rows:
-            path_prefix = _path_prefix(a["path"], path_prefix_segments)
-            upsert_cluster(
-                db_path,
-                ClusterKey(
-                    repo=repo_name,
-                    tool=a["tool"] or "",
-                    rule_id=a["rule_id"] or "",
-                    path_prefix=path_prefix or "",
-                ),
-                min_occurrences=min_occurrences,
-                summary_fn=lambda k: f"{k.tool}:{k.rule_id} in {k.path_prefix}",
-                now_ms=now,
+        # Lesson clustering for each failing annotation (sync — opens its own
+        # connection). Best-effort: the node and queue 'done' status are already
+        # committed above, so a clustering failure must not propagate — that would
+        # mark the run failed and re-enrich it into a duplicate node.
+        try:
+            for a in ann_rows:
+                path_prefix = _path_prefix(a["path"], path_prefix_segments)
+                upsert_cluster(
+                    db_path,
+                    ClusterKey(
+                        repo=repo_name,
+                        tool=a["tool"] or "",
+                        rule_id=a["rule_id"] or "",
+                        path_prefix=path_prefix or "",
+                    ),
+                    min_occurrences=min_occurrences,
+                    summary_fn=lambda k: f"{k.tool}:{k.rule_id} in {k.path_prefix}",
+                    now_ms=now,
+                )
+        except Exception:
+            logger.warning(
+                "lesson clustering failed for workflow run %d; node already persisted",
+                run_id,
+                exc_info=True,
             )
 
+        assert node_id is not None  # INSERT always populates lastrowid
+        return node_id, {"id": node_id, "embed_text": title, "commands_raw": ""}
     finally:
         conn.close()
 

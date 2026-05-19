@@ -1473,6 +1473,7 @@ class BrainServer:
         if not run_ids:
             return
         query_model = self.query_model or self.enrichment_model
+        embed_tasks = []
         for run_id in run_ids:
             logger.info("enriching workflow run %d", run_id)
             _add(_events_claimed, 1, source="workflow")
@@ -1492,7 +1493,7 @@ class BrainServer:
             batch_start_ms = int(time.time() * 1000)
             with span:
                 try:
-                    await enrich_one_async(
+                    result = await enrich_one_async(
                         self.db_path,
                         run_id=run_id,
                         inference=self.client,
@@ -1501,6 +1502,11 @@ class BrainServer:
                     _add(_nodes_created, source="workflow")
                     self._record_success()
                     logger.info("enriched workflow run %d -> knowledge node", run_id)
+                    if result is not None and self.embedding_model:
+                        node_id, node_dict = result
+                        embed_tasks.append(
+                            asyncio.create_task(self._embed_node(node_id, node_dict, "workflow"))
+                        )
                 except Exception as e:
                     _add(_enrichment_failures, source="workflow")
                     err_msg = self._record_error(e)
@@ -1517,6 +1523,9 @@ class BrainServer:
                         mark_workflow_queue_failed(retry_conn, run_id, err_msg)
                     finally:
                         retry_conn.close()
+
+        if embed_tasks:
+            await asyncio.gather(*embed_tasks, return_exceptions=True)
 
     async def _enrich_opencode_batches(self, batches):
         """Process opencode session segment batches via the agentic queue."""
