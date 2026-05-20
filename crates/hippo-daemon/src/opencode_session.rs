@@ -103,18 +103,40 @@ fn read_new_sessions(
     known_session_ids: &HashSet<String>,
 ) -> Result<Vec<OpencodeSession>> {
     // A session is (re-)read when EITHER it is new to Hippo
-    // (`!known_session_ids`) OR its `time_updated` has advanced strictly past
-    // the cursor watermark (`>`). The watermark is set to the max
-    // `time_updated` seen, so a *finished* session sits exactly on it. Using
-    // `>=` here would re-select that boundary session on every tick, and
-    // because each enrichment mints a fresh knowledge node, the queue's
-    // ON CONFLICT re-pend (see `upsert_session`) would spawn an unbounded
-    // stream of duplicate nodes for one unchanged session. `>` re-reads a
-    // session only when its content actually grew. The earlier worry — that a
-    // new session sharing the previous tail's `time_updated` but with a
-    // lexicographically *earlier* random-UUID id could be skipped — is moot:
-    // such a session is not yet in Hippo, so the `!known_session_ids` clause
-    // selects it regardless of timestamp ordering.
+    // (`!known_session_ids`) OR its `(time_updated, id)` pair has advanced
+    // strictly past the cursor watermark `(last_seen_updated_at, last_id)`.
+    //
+    // The watermark is a *keyset* (tuple) cursor over the same
+    // `(time_updated, id)` ordering used to scan the table — not a scalar on
+    // `time_updated` alone. That distinction only matters at a shared-timestamp
+    // boundary, but it matters a lot there:
+    //   * A scalar `>=` re-selects the finished boundary session every tick.
+    //     Each re-select re-pends its `agentic_enrichment_queue` row (see
+    //     `upsert_session`) and the brain mints a fresh knowledge node per
+    //     enrichment, so one unchanged session spawns unbounded duplicate
+    //     nodes — the "loop of sadness" this guards against.
+    //   * A scalar `>` kills the storm but skips a *known* session that shares
+    //     `time_updated` with the watermark yet sorts after `last_id` (e.g. a
+    //     same-ms sibling whose upsert failed on the tick a lower-id sibling
+    //     advanced the cursor): it is neither `> watermark` nor new, so it is
+    //     lost.
+    //   * The tuple `>` re-selects exactly those after-the-boundary rows while
+    //     still excluding the boundary row itself, so it is both gap-free and
+    //     duplicate-free.
+    //
+    // New sessions never depend on the tuple ordering: `!known_session_ids`
+    // selects them regardless of how their random-UUID id sorts relative to the
+    // watermark, so the historical "earlier-UUID new session is skipped" hazard
+    // cannot occur.
+    //
+    // Residual limit: a *known* session whose upsert fails while a same-ms
+    // sibling with a *higher* id succeeds sorts <= the advanced watermark and is
+    // skipped until its `time_updated` next advances. A single watermark cannot
+    // represent "all processed except this middle row" without either
+    // re-processing the successes (re-introducing duplicate nodes) or tracking
+    // per-row state; the rare lost update is accepted because the failed upsert
+    // bumps `consecutive_failures` (watchdog I-11) and an active session's next
+    // write re-selects it.
     // Read the full opencode session index on every tick and filter in Rust.
     // A cursor-bounded SQL query (WHERE time_updated > cursor) would skip
     // sessions that are older than the cursor but still missing from Hippo
@@ -154,7 +176,8 @@ fn read_new_sessions(
     Ok(sessions
         .into_iter()
         .filter(|s| {
-            s.time_updated > cursor.last_seen_updated_at || !known_session_ids.contains(&s.id)
+            (s.time_updated, s.id.as_str()) > (cursor.last_seen_updated_at, cursor.last_id.as_str())
+                || !known_session_ids.contains(&s.id)
         })
         .collect())
 }
@@ -493,10 +516,10 @@ fn upsert_session(conn: &rusqlite::Connection, s: &OpencodeSession) -> Result<()
     // guard only prevents clobbering a row the brain is mid-claim on — it does
     // NOT make re-pending free: a re-pended `done` session is re-enriched into
     // a *new* knowledge node. That is correct only because `read_new_sessions`
-    // returns a known session solely when its `time_updated` has advanced
-    // (i.e. real new content). If that predicate ever weakens to `>=`, an
-    // unchanged boundary session re-pends every tick and spawns unbounded
-    // duplicate nodes.
+    // returns a known session solely when its `(time_updated, id)` advances past
+    // the keyset watermark (i.e. real new content). If that predicate ever
+    // weakens to a scalar `>=`, an unchanged boundary session re-pends every
+    // tick and spawns unbounded duplicate nodes.
     tx.execute(
         "INSERT INTO agentic_enrichment_queue
              (session_id, status, retry_count, error_message, enqueued_at, updated_at)
@@ -513,10 +536,10 @@ fn upsert_session(conn: &rusqlite::Connection, s: &OpencodeSession) -> Result<()
     // Bump source_health for a successful upsert. Resetting
     // `consecutive_failures` here is the key piece: it lets watchdog I-11
     // (which gates on `consecutive_failures > 3`) actually become reachable.
-    // `events_last_1h/24h` are intentionally NOT bumped — the poller uses a
-    // `time_updated >= cursor` predicate that re-reads at-boundary rows on
-    // every tick, so a per-tick increment would over-count idempotent
-    // re-ingests. The daemon's `flush_events` increments those counters
+    // `events_last_1h/24h` are intentionally NOT bumped — the poller re-reads
+    // and re-upserts a session every time its content grows (and full-scans the
+    // index for backfill), so a per-tick increment would over-count these
+    // idempotent re-ingests. The daemon's `flush_events` owns those counters
     // because it processes only fresh socket frames.
     tx.execute(
         "UPDATE source_health
@@ -646,16 +669,26 @@ pub fn poll_tick(config: &HippoConfig) -> Result<usize> {
         }
     }
 
-    // Advance the cursor only past sessions that landed successfully. If a
-    // session in the middle of the batch failed, we leave the cursor on the
-    // last successful one so the failed row (and everything after it in
-    // time_updated order) is re-attempted on the next tick.
+    // Advance the cursor to the highest successfully-processed
+    // `(time_updated, id)`, but NEVER backward. `latest_ok` is the last success
+    // in the `(time_updated, id) ASC` scan — i.e. the batch's max-ordered
+    // success. A backfill batch can consist solely of sessions older than the
+    // current watermark (selected via `!known_session_ids`); writing their
+    // `(time_updated, id)` would regress the cursor and make the next tick
+    // re-select every known newer session, re-pending finished queue rows into
+    // duplicate nodes. The monotonicity guard keeps the keyset cursor moving
+    // forward only; backfilled older sessions are kept out of the next scan by
+    // their now-`known` status, not by the watermark.
     if let Some(last) = latest_ok {
-        let new_cursor = Cursor {
-            last_seen_updated_at: last.time_updated,
-            last_id: last.id.clone(),
-        };
-        Cursor::upsert(&hippo_conn, &source_key, &new_cursor)?;
+        let advanced = (last.time_updated, last.id.as_str())
+            > (cursor.last_seen_updated_at, cursor.last_id.as_str());
+        if advanced {
+            let new_cursor = Cursor {
+                last_seen_updated_at: last.time_updated,
+                last_id: last.id.clone(),
+            };
+            Cursor::upsert(&hippo_conn, &source_key, &new_cursor)?;
+        }
     }
 
     info!(events_sent, errors_sent, "opencode tick: completed");
