@@ -910,3 +910,120 @@ fn poll_tick_retries_known_session_with_stale_end_time() {
         "an unchanged sibling must NOT be re-enqueued"
     );
 }
+
+#[test]
+fn poll_tick_skips_session_being_enriched_then_retries() {
+    // Lost-update race (pre-existing, surfaced in #171 review): a session that
+    // grows while the brain is mid-enrichment must NOT have its watermark
+    // advanced. The queue re-pend in `upsert_session` is guarded by
+    // `WHERE status != 'processing'` and would no-op, so advancing `end_time`
+    // anyway would strand the grown content — once the brain sets the row to
+    // 'done', `time_updated == end_time` and the session is never re-selected.
+    // The poller defers a session whose queue row is 'processing', leaving its
+    // watermark behind so the per-session diff retries it once the brain
+    // releases the row.
+    let tmp = TempDir::new().unwrap();
+    let opencode_db_path = tmp.path().join("opencode.db");
+    let oc = init_opencode_db(&opencode_db_path);
+    insert_session(
+        &oc,
+        "sess",
+        "slug",
+        "Title",
+        "/proj",
+        None,
+        None,
+        1_700_000_000_000,
+        1_700_000_001_000,
+        None,
+    );
+    drop(oc);
+
+    let config = test_config(&tmp, &opencode_db_path);
+    let _ = hippo_core::storage::open_db(&config.db_path()).unwrap();
+    assert_eq!(
+        hippo_daemon::opencode_session::poll_tick(&config).unwrap(),
+        1
+    );
+
+    // Brain claims the session for enrichment.
+    let conn = hippo_core::storage::open_db(&config.db_path()).unwrap();
+    conn.execute(
+        "UPDATE agentic_enrichment_queue SET status = 'processing'
+         WHERE session_id IN (SELECT id FROM agentic_sessions WHERE session_id = 'sess')",
+        [],
+    )
+    .unwrap();
+    drop(conn);
+
+    // The session grows WHILE the brain is processing it.
+    let oc = Connection::open(&opencode_db_path).unwrap();
+    oc.execute(
+        "UPDATE session SET time_updated = ?1 WHERE id = 'sess'",
+        params![1_700_000_002_000_i64],
+    )
+    .unwrap();
+    drop(oc);
+
+    // Tick during enrichment: the session must be DEFERRED — not upserted, its
+    // watermark left behind, the brain's claim untouched.
+    assert_eq!(
+        hippo_daemon::opencode_session::poll_tick(&config).unwrap(),
+        0,
+        "a session under active enrichment must be deferred, not re-upserted"
+    );
+    let conn = hippo_core::storage::open_db(&config.db_path()).unwrap();
+    let (status, end): (String, i64) = conn
+        .query_row(
+            "SELECT q.status, s.end_time FROM agentic_enrichment_queue q
+             JOIN agentic_sessions s ON q.session_id = s.id
+             WHERE s.session_id = 'sess'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        status, "processing",
+        "the brain's claim must not be disturbed"
+    );
+    assert_eq!(
+        end, 1_700_000_001_000,
+        "watermark must not advance past content that could not be re-enqueued"
+    );
+    drop(conn);
+
+    // Brain finishes enrichment.
+    let conn = hippo_core::storage::open_db(&config.db_path()).unwrap();
+    conn.execute(
+        "UPDATE agentic_enrichment_queue SET status = 'done'
+         WHERE session_id IN (SELECT id FROM agentic_sessions WHERE session_id = 'sess')",
+        [],
+    )
+    .unwrap();
+    drop(conn);
+
+    // Next tick: the grown content is finally picked up and re-enqueued.
+    assert_eq!(
+        hippo_daemon::opencode_session::poll_tick(&config).unwrap(),
+        1,
+        "the grown content must be retried once enrichment is no longer in progress"
+    );
+    let conn = hippo_core::storage::open_db(&config.db_path()).unwrap();
+    let (status, end): (String, i64) = conn
+        .query_row(
+            "SELECT q.status, s.end_time FROM agentic_enrichment_queue q
+             JOIN agentic_sessions s ON q.session_id = s.id
+             WHERE s.session_id = 'sess'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        status, "pending",
+        "the grown content must be re-enqueued for enrichment"
+    );
+    assert_eq!(
+        end, 1_700_000_002_000,
+        "watermark advances only once the update is enqueued"
+    );
+}

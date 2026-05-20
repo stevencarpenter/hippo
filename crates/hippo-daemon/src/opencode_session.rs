@@ -12,7 +12,7 @@ use hippo_core::config::HippoConfig;
 use hippo_core::redaction::RedactionEngine;
 use rusqlite::params;
 use serde_json::Value;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use tracing::{debug, error, info, warn};
 
@@ -127,6 +127,25 @@ fn read_known_opencode_session_end_times(
     })?
     .collect::<std::result::Result<HashMap<_, _>, _>>()
     .map_err(Into::into)
+}
+
+/// opencode `session_id`s whose enrichment-queue row is currently `processing`
+/// — the brain has claimed them. A content update that arrives while a session
+/// is being enriched must be deferred: `upsert_session`'s queue re-pend is
+/// guarded by `WHERE status != 'processing'` and would no-op, so advancing the
+/// per-session watermark (`end_time`) now would strand the new content (once the
+/// brain sets the row to `done`, `time_updated == end_time` and it is never
+/// re-selected). Deferring leaves the watermark behind so the next tick retries
+/// the session after the brain releases the row.
+fn read_processing_opencode_session_ids(conn: &rusqlite::Connection) -> Result<HashSet<String>> {
+    let mut stmt = conn.prepare(
+        "SELECT s.session_id FROM agentic_enrichment_queue q
+         JOIN agentic_sessions s ON q.session_id = s.id
+         WHERE s.harness = 'opencode' AND q.status = 'processing'",
+    )?;
+    stmt.query_map([], |row| row.get::<_, String>(0))?
+        .collect::<std::result::Result<HashSet<_>, _>>()
+        .map_err(Into::into)
 }
 
 fn opencode_table_exists(conn: &rusqlite::Connection, table_name: &str) -> Result<bool> {
@@ -572,8 +591,22 @@ pub fn poll_tick(config: &HippoConfig) -> Result<usize> {
     };
 
     let known_end_times = read_known_opencode_session_end_times(&hippo_conn)?;
+    let processing_ids = read_processing_opencode_session_ids(&hippo_conn)?;
 
     let mut new_sessions = read_new_sessions(&oc_conn, &known_end_times)?;
+    // Defer any session the brain is mid-enrichment on: re-pending it would
+    // no-op against the `processing` row, and advancing its watermark now would
+    // strand the new content. Leaving it untouched lets the per-session diff
+    // retry it once the brain releases the row.
+    let before = new_sessions.len();
+    new_sessions.retain(|s| !processing_ids.contains(&s.id));
+    let deferred = before - new_sessions.len();
+    if deferred > 0 {
+        debug!(
+            deferred,
+            "deferred opencode sessions under active enrichment"
+        );
+    }
     if new_sessions.is_empty() {
         return Ok(0);
     }
