@@ -3,8 +3,10 @@
 //! Production path: `com.hippo.opencode-poll` LaunchAgent fires
 //! `hippo opencode-poll` every `[opencode] poll_interval_secs` →
 //! `opencode_session::poll_tick` reads the opencode DB read-only → upserts
-//! `agentic_sessions`, enqueues `agentic_enrichment_queue`, bumps
-//! `source_health`, advances `agentic_cursor` — all in one transaction.
+//! `agentic_sessions`, enqueues `agentic_enrichment_queue`, and bumps
+//! `source_health` — all in one transaction. Change detection is a
+//! per-session watermark (source `time_updated` vs. stored `end_time`); the
+//! poller does not use `agentic_cursor`.
 //!
 //! These tests drive the poller end-to-end against a fabricated opencode
 //! DB and assert every destination is updated correctly.
@@ -251,6 +253,21 @@ fn poll_tick_writes_session_queue_health_in_one_call() {
         last_event_ts,
         Some(1_700_000_001_000),
         "source_health.last_event_ts should mirror the session's time_updated"
+    );
+
+    // The poller must NOT write an opencode row to `agentic_cursor` — change
+    // detection is per-session now. (The table still exists for codex's
+    // per-file cursor.) Guards against anyone reinstating a global cursor.
+    let opencode_cursor_rows: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM agentic_cursor WHERE source_key LIKE 'opencode-%'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        opencode_cursor_rows, 0,
+        "opencode poller must not write to agentic_cursor"
     );
 }
 
