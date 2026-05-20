@@ -70,6 +70,12 @@ fn read_new_sessions(
     //   * Random-UUID id ordering is irrelevant: nothing compares ids, so the
     //     historical "earlier-UUID session is skipped" hazard cannot occur.
     //
+    // Assumed not to occur: a *backward* `time_updated` (clock skew,
+    // restore-from-backup) would leave a change unseen until `time_updated`
+    // climbs back past the stored value. opencode writes `time_updated`
+    // monotonically, and the retired global cursor carried the same `>`
+    // assumption, so this is not a regression.
+    //
     // Read the full opencode session index on every tick and filter in Rust.
     // A bounded SQL query (WHERE time_updated > X) would skip sessions older
     // than the bound but still missing from Hippo (e.g. one that arrived while
@@ -136,7 +142,10 @@ fn read_known_opencode_session_end_times(
 /// per-session watermark (`end_time`) now would strand the new content (once the
 /// brain sets the row to `done`, `time_updated == end_time` and it is never
 /// re-selected). Deferring leaves the watermark behind so the next tick retries
-/// the session after the brain releases the row.
+/// the session after the brain releases the row. The deferral is bounded by the
+/// brain's stale-lock reaper: if a worker crashes mid-enrichment the row stays
+/// `processing`, but the reaper eventually flips an abandoned claim back to
+/// `pending`/`failed`, after which the poller re-selects the session normally.
 fn read_processing_opencode_session_ids(conn: &rusqlite::Connection) -> Result<HashSet<String>> {
     let mut stmt = conn.prepare(
         "SELECT s.session_id FROM agentic_enrichment_queue q
