@@ -291,18 +291,92 @@ fn poll_tick_is_idempotent_when_no_new_writes() {
         hippo_daemon::opencode_session::poll_tick(&config).unwrap(),
         1
     );
-    // Second tick: with the `>=` cursor the boundary row is re-read and the
-    // ON CONFLICT branch fires (events_sent counts it again) — but the
-    // destination table must remain at 1 row, which is the real invariant.
-    // Trade-off: the cursor design prefers re-reads + idempotent upsert over
-    // a tuple-cursor that silently skips same-ms siblings (F-26).
-    let _ = hippo_daemon::opencode_session::poll_tick(&config).unwrap();
+    // Second tick with nothing changed: the boundary session sits exactly on
+    // the cursor watermark, and the keyset `(time_updated, id) > watermark`
+    // comparison must NOT re-read it. A scalar `>=` re-read would re-pend the
+    // queue row and re-enrich one unchanged session into unbounded duplicate
+    // nodes. New same-ms siblings are caught by `!known_session_ids`; a *known*
+    // same-ms sibling that sorts after `last_id` is caught by the tuple
+    // watermark — so no genuine session is skipped (F-26).
+    assert_eq!(
+        hippo_daemon::opencode_session::poll_tick(&config).unwrap(),
+        0,
+        "an unchanged session must not be re-read on a second poll"
+    );
 
     let conn = hippo_core::storage::open_db(&config.db_path()).unwrap();
     let count: i64 = conn
         .query_row("SELECT COUNT(*) FROM agentic_sessions", [], |r| r.get(0))
         .unwrap();
     assert_eq!(count, 1, "no duplicate row should land on a second poll");
+}
+
+#[test]
+fn poll_tick_does_not_repend_done_session() {
+    // Regression: the newest finished session sits exactly on the cursor
+    // watermark. With a scalar `>=` boundary comparison the poller re-read it
+    // every tick and the queue's ON CONFLICT branch reset the already-`done`
+    // row to `pending`, so the brain re-enriched one unchanged session into an
+    // unbounded stream of duplicate knowledge nodes. The keyset
+    // `(time_updated, id) > watermark` comparison excludes the boundary row, so
+    // the finished session is left alone.
+    let tmp = TempDir::new().unwrap();
+    let opencode_db_path = tmp.path().join("opencode.db");
+    let oc = init_opencode_db(&opencode_db_path);
+    insert_session(
+        &oc,
+        "sess-1",
+        "slug",
+        "Title",
+        "/proj",
+        None,
+        None,
+        1_700_000_000_000,
+        1_700_000_001_000,
+        None,
+    );
+    drop(oc);
+
+    let config = test_config(&tmp, &opencode_db_path);
+    let _ = hippo_core::storage::open_db(&config.db_path()).unwrap();
+
+    assert_eq!(
+        hippo_daemon::opencode_session::poll_tick(&config).unwrap(),
+        1
+    );
+
+    // Simulate the brain finishing enrichment: flip the queue row to 'done'.
+    let conn = hippo_core::storage::open_db(&config.db_path()).unwrap();
+    conn.execute(
+        "UPDATE agentic_enrichment_queue SET status = 'done'
+         WHERE session_id IN (SELECT id FROM agentic_sessions WHERE session_id = 'sess-1')",
+        [],
+    )
+    .unwrap();
+    drop(conn);
+
+    // Poll again with NOTHING changed in the opencode source DB.
+    assert_eq!(
+        hippo_daemon::opencode_session::poll_tick(&config).unwrap(),
+        0,
+        "an unchanged finished session must not be re-polled"
+    );
+
+    // The finished queue row must remain 'done', never resurrected to 'pending'.
+    let conn = hippo_core::storage::open_db(&config.db_path()).unwrap();
+    let status: String = conn
+        .query_row(
+            "SELECT q.status FROM agentic_enrichment_queue q
+             JOIN agentic_sessions s ON q.session_id = s.id
+             WHERE s.session_id = 'sess-1'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        status, "done",
+        "re-pending a done session re-enriches it into a duplicate node"
+    );
 }
 
 #[test]
@@ -617,5 +691,208 @@ fn poll_tick_no_op_when_opencode_db_missing() {
     assert_eq!(
         hippo_daemon::opencode_session::poll_tick(&config).unwrap(),
         0
+    );
+}
+
+#[test]
+fn poll_tick_backfill_keeps_cursor_monotonic() {
+    // Codex P1 regression: a backfill-only batch must NOT drag the cursor
+    // backward. `read_new_sessions` full-scans the index and selects an older,
+    // not-yet-known session via `!known_session_ids`. If `poll_tick` then
+    // advanced the cursor to that older row's `(time_updated, id)`, the
+    // watermark would regress below already-ingested newer sessions, and the
+    // next tick would re-select those *known* newer rows — re-pending their
+    // finished queue entries into unbounded duplicate knowledge nodes (the very
+    // "loop of sadness" this PR fixes). The cursor must only move forward in
+    // `(time_updated, id)` order.
+    let tmp = TempDir::new().unwrap();
+    let opencode_db_path = tmp.path().join("opencode.db");
+    let oc = init_opencode_db(&opencode_db_path);
+    insert_session(
+        &oc,
+        "newer",
+        "newer",
+        "Newer",
+        "/proj",
+        None,
+        None,
+        1_700_000_000_000,
+        1_700_000_002_000,
+        None,
+    );
+    drop(oc);
+
+    let config = test_config(&tmp, &opencode_db_path);
+    let _ = hippo_core::storage::open_db(&config.db_path()).unwrap();
+    assert_eq!(
+        hippo_daemon::opencode_session::poll_tick(&config).unwrap(),
+        1
+    );
+
+    // Brain finishes enrichment of "newer".
+    let conn = hippo_core::storage::open_db(&config.db_path()).unwrap();
+    conn.execute(
+        "UPDATE agentic_enrichment_queue SET status = 'done'
+         WHERE session_id IN (SELECT id FROM agentic_sessions WHERE session_id = 'newer')",
+        [],
+    )
+    .unwrap();
+    drop(conn);
+
+    // An older session Hippo never ingested shows up (e.g. it arrived while the
+    // poller was stopped). Its time_updated is below the cursor watermark.
+    let oc = Connection::open(&opencode_db_path).unwrap();
+    insert_session(
+        &oc,
+        "older-missing",
+        "older-missing",
+        "Older Missing",
+        "/proj",
+        None,
+        None,
+        1_700_000_000_000,
+        1_700_000_001_000,
+        None,
+    );
+    drop(oc);
+
+    // Backfill tick: ingests the older session...
+    assert_eq!(
+        hippo_daemon::opencode_session::poll_tick(&config).unwrap(),
+        1
+    );
+
+    // ...but must NOT regress the cursor below "newer".
+    let conn = hippo_core::storage::open_db(&config.db_path()).unwrap();
+    let (cursor_ts, cursor_id): (i64, String) = conn
+        .query_row(
+            "SELECT last_seen_updated_at, last_id
+             FROM agentic_cursor WHERE source_key = ?1",
+            params![opencode_source_key(&opencode_db_path)],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        cursor_ts, 1_700_000_002_000,
+        "cursor timestamp must not regress on backfill"
+    );
+    assert_eq!(cursor_id, "newer", "cursor id must not regress on backfill");
+
+    // Brain finishes "older-missing" too.
+    conn.execute(
+        "UPDATE agentic_enrichment_queue SET status = 'done'
+         WHERE session_id IN (SELECT id FROM agentic_sessions WHERE session_id = 'older-missing')",
+        [],
+    )
+    .unwrap();
+    drop(conn);
+
+    // Steady-state tick: nothing changed in opencode → no re-reads, and the
+    // finished "newer" row must stay 'done' (never re-enqueued).
+    assert_eq!(
+        hippo_daemon::opencode_session::poll_tick(&config).unwrap(),
+        0,
+        "after backfill, an unchanged corpus must not re-read any session"
+    );
+    let conn = hippo_core::storage::open_db(&config.db_path()).unwrap();
+    let newer_status: String = conn
+        .query_row(
+            "SELECT q.status FROM agentic_enrichment_queue q
+             JOIN agentic_sessions s ON q.session_id = s.id
+             WHERE s.session_id = 'newer'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        newer_status, "done",
+        "a known newer session must not be re-enqueued after a backfill"
+    );
+}
+
+#[test]
+fn poll_tick_reselects_same_ms_known_session_above_cursor_id() {
+    // Copilot regression: with a scalar `time_updated > watermark` predicate,
+    // two known sessions sharing one `time_updated` are mishandled when the
+    // higher-id one fails to upsert. The failure path advances the cursor to
+    // the lower-id *success*, so the higher-id session sits exactly on the
+    // watermark (`time_updated == last_seen_updated_at`), is not strictly
+    // greater, and — being already known — is skipped forever (a lost update).
+    // The tuple watermark `(time_updated, id) > (last_seen, last_id)` re-selects
+    // it because its id is above `last_id`.
+    let tmp = TempDir::new().unwrap();
+    let opencode_db_path = tmp.path().join("opencode.db");
+    let oc = init_opencode_db(&opencode_db_path);
+    insert_session(
+        &oc,
+        "aaa",
+        "a",
+        "A",
+        "/proj",
+        None,
+        None,
+        1_700_000_000_000,
+        1_700_000_001_000,
+        None,
+    );
+    insert_session(
+        &oc,
+        "bbb",
+        "b",
+        "B",
+        "/proj",
+        None,
+        None,
+        1_700_000_000_000,
+        1_700_000_001_000,
+        None,
+    );
+    drop(oc);
+
+    let config = test_config(&tmp, &opencode_db_path);
+    let _ = hippo_core::storage::open_db(&config.db_path()).unwrap();
+    assert_eq!(
+        hippo_daemon::opencode_session::poll_tick(&config).unwrap(),
+        2
+    );
+
+    // Reproduce the partial-failure state from the review: "bbb" failed to
+    // upsert on the tick where "aaa" succeeded, so the cursor only advanced to
+    // (1000, "aaa") even though "bbb" shares the same time_updated and is
+    // already known. Mark "bbb" finished so a re-enqueue is observable.
+    let conn = hippo_core::storage::open_db(&config.db_path()).unwrap();
+    conn.execute(
+        "UPDATE agentic_cursor SET last_id = 'aaa' WHERE source_key = ?1",
+        params![opencode_source_key(&opencode_db_path)],
+    )
+    .unwrap();
+    conn.execute(
+        "UPDATE agentic_enrichment_queue SET status = 'done'
+         WHERE session_id IN (SELECT id FROM agentic_sessions WHERE session_id = 'bbb')",
+        [],
+    )
+    .unwrap();
+    drop(conn);
+
+    // The next tick must re-select "bbb" (id above the cursor's last_id at the
+    // same time_updated) and re-pend it — not silently skip it.
+    assert_eq!(
+        hippo_daemon::opencode_session::poll_tick(&config).unwrap(),
+        1,
+        "same-ms known session above the cursor id must be re-selected"
+    );
+    let conn = hippo_core::storage::open_db(&config.db_path()).unwrap();
+    let bbb_status: String = conn
+        .query_row(
+            "SELECT q.status FROM agentic_enrichment_queue q
+             JOIN agentic_sessions s ON q.session_id = s.id
+             WHERE s.session_id = 'bbb'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        bbb_status, "pending",
+        "a re-selected known session must be re-enqueued"
     );
 }
