@@ -605,11 +605,13 @@ CREATE TABLE IF NOT EXISTS agentic_enrichment_queue (
 CREATE INDEX IF NOT EXISTS idx_agentic_queue_pending ON agentic_enrichment_queue (status, priority)
     WHERE status = 'pending';
 
--- Cursor table for live pollers. `source_key` is the specific harness+inode
--- so reinstalls of opencode (new inode) don't cause replay. The high-water
--- mark is the source row's `time_updated` (not `time_created`) so we re-poll
--- sessions whose content changes after creation; the destination's
--- `ON CONFLICT DO UPDATE` makes re-ingest idempotent.
+-- Cursor table for live pollers. Today only the codex poller uses it: one row
+-- per rollout file keyed `codex-{inode}` (the inode survives codex's archival
+-- `mv`), storing the file's last-seen `time_updated` high-water mark so
+-- unchanged files are skipped. The opencode poller no longer uses this table —
+-- it diffs each source session's `time_updated` against the per-session
+-- `end_time` stored in `agentic_sessions`. `last_id` is a legacy tie-breaker
+-- column retained for schema stability; codex leaves it ''.
 CREATE TABLE IF NOT EXISTS agentic_cursor (
     source_key           TEXT    PRIMARY KEY,
     last_seen_updated_at INTEGER NOT NULL DEFAULT 0,

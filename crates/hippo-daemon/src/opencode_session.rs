@@ -6,13 +6,13 @@
 //! transactional and enqueues a row in `agentic_enrichment_queue` for the
 //! brain to consume.
 
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Context, Result};
 use hippo_core::agentic::render_command;
 use hippo_core::config::HippoConfig;
 use hippo_core::redaction::RedactionEngine;
-use rusqlite::{OptionalExtension, params};
+use rusqlite::params;
 use serde_json::Value;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use tracing::{debug, error, info, warn};
 
@@ -45,106 +45,42 @@ struct OpencodeContext {
     token_count: i64,
 }
 
-/// High-water cursor in the opencode DB. Tracks `time_updated` so updates
-/// to an already-ingested session are re-read on the next poll;
-/// `ON CONFLICT DO UPDATE` keeps the destination row idempotent.
-#[derive(Debug, Clone)]
-struct Cursor {
-    last_seen_updated_at: i64,
-    last_id: String,
-}
-
-// --- Cursor management (writes to Hippo's own DB) ---
-
-impl Cursor {
-    fn read(conn: &rusqlite::Connection, source_key: &str) -> Result<Self> {
-        let result: Option<(i64, String)> = conn
-            .query_row(
-                "SELECT last_seen_updated_at, last_id FROM agentic_cursor WHERE source_key = ?",
-                params![source_key],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            )
-            .optional()?;
-
-        let (ts, lid) = result.unwrap_or((0, String::new()));
-        Ok(Self {
-            last_seen_updated_at: ts,
-            last_id: lid,
-        })
-    }
-
-    fn upsert(conn: &rusqlite::Connection, source_key: &str, c: &Self) -> Result<()> {
-        let now = chrono::Utc::now().timestamp_millis();
-        conn.execute(
-            "INSERT INTO agentic_cursor (source_key, last_seen_updated_at, last_id, updated_at)
-             VALUES (?1, ?2, ?3, ?4)
-             ON CONFLICT(source_key) DO UPDATE SET
-                 last_seen_updated_at = excluded.last_seen_updated_at,
-                 last_id              = excluded.last_id,
-                 updated_at           = excluded.updated_at",
-            params![source_key, c.last_seen_updated_at, &c.last_id, now],
-        )?;
-        Ok(())
-    }
-}
-
 // --- Opencode DB read helpers ---
-
-fn make_source_key(db_path: &Path) -> Result<String> {
-    use std::os::unix::fs::MetadataExt;
-    let meta = std::fs::metadata(db_path)
-        .with_context(|| format!("failed to stat opencode DB at {}", db_path.display()))?;
-    Ok(format!("opencode-{}", meta.ino()))
-}
 
 fn read_new_sessions(
     conn: &rusqlite::Connection,
-    cursor: &Cursor,
-    known_session_ids: &HashSet<String>,
+    known_end_times: &HashMap<String, i64>,
 ) -> Result<Vec<OpencodeSession>> {
-    // A session is (re-)read when EITHER it is new to Hippo
-    // (`!known_session_ids`) OR its `(time_updated, id)` pair has advanced
-    // strictly past the cursor watermark `(last_seen_updated_at, last_id)`.
+    // Per-session watermark. A session is (re-)read when EITHER it is new to
+    // Hippo (no row in `known_end_times`) OR the source's `time_updated` has
+    // advanced past the `end_time` Hippo last stored *for that same session*.
     //
-    // The watermark is a *keyset* (tuple) cursor over the same
-    // `(time_updated, id)` ordering used to scan the table — not a scalar on
-    // `time_updated` alone. That distinction only matters at a shared-timestamp
-    // boundary, but it matters a lot there:
-    //   * A scalar `>=` re-selects the finished boundary session every tick.
-    //     Each re-select re-pends its `agentic_enrichment_queue` row (see
-    //     `upsert_session`) and the brain mints a fresh knowledge node per
-    //     enrichment, so one unchanged session spawns unbounded duplicate
-    //     nodes — the "loop of sadness" this guards against.
-    //   * A scalar `>` kills the storm but skips a *known* session that shares
-    //     `time_updated` with the watermark yet sorts after `last_id` (e.g. a
-    //     same-ms sibling whose upsert failed on the tick a lower-id sibling
-    //     advanced the cursor): it is neither `> watermark` nor new, so it is
-    //     lost.
-    //   * The tuple `>` re-selects exactly those after-the-boundary rows while
-    //     still excluding the boundary row itself, so it is both gap-free and
-    //     duplicate-free.
+    // Each session is its own watermark — there is no global cursor. That is
+    // what makes this both gap-free and duplicate-free, even under partial
+    // batch failure:
+    //   * An unchanged finished session has `time_updated == stored end_time`,
+    //     so it is never re-selected — no re-pend, no duplicate knowledge nodes
+    //     (the "loop of sadness" this guards against).
+    //   * A session whose upsert failed last tick still has its *old* stored
+    //     end_time (the failed transaction rolled back), so `time_updated >
+    //     stored` stays true and it is retried next tick — no lost update, even
+    //     when a same-ms sibling was processed in the same batch. A single
+    //     global watermark cannot express "all done except this one failed row";
+    //     a per-session watermark needs no such expression.
+    //   * Random-UUID id ordering is irrelevant: nothing compares ids, so the
+    //     historical "earlier-UUID session is skipped" hazard cannot occur.
     //
-    // New sessions never depend on the tuple ordering: `!known_session_ids`
-    // selects them regardless of how their random-UUID id sorts relative to the
-    // watermark, so the historical "earlier-UUID new session is skipped" hazard
-    // cannot occur.
+    // Assumed not to occur: a *backward* `time_updated` (clock skew,
+    // restore-from-backup) would leave a change unseen until `time_updated`
+    // climbs back past the stored value. opencode writes `time_updated`
+    // monotonically, and the retired global cursor carried the same `>`
+    // assumption, so this is not a regression.
     //
-    // Residual limit: a *known* session whose upsert fails while a same-ms
-    // sibling with a *higher* id succeeds sorts <= the advanced watermark and is
-    // skipped until its `time_updated` next advances. A single watermark cannot
-    // represent "all processed except this middle row" without either
-    // re-processing the successes (re-introducing duplicate nodes) or tracking
-    // per-row state; the rare lost update is accepted because the failed upsert
-    // bumps `consecutive_failures` (watchdog I-11) and an active session's next
-    // write re-selects it.
     // Read the full opencode session index on every tick and filter in Rust.
-    // A cursor-bounded SQL query (WHERE time_updated > cursor) would skip
-    // sessions that are older than the cursor but still missing from Hippo
-    // (e.g. a session that was never ingested because it arrived while the
-    // poller was stopped).  The full scan ensures those sessions are backfilled.
-    // The `known_session_ids` set from Hippo is what drives the diff; sessions
-    // already present are skipped via upsert, so the full read is still cheap
-    // for a typical opencode DB of a few hundred sessions.
+    // A bounded SQL query (WHERE time_updated > X) would skip sessions older
+    // than the bound but still missing from Hippo (e.g. one that arrived while
+    // the poller was stopped). The full scan plus the per-session diff backfills
+    // those, and stays cheap for a typical opencode DB of a few hundred sessions.
     let sql = "SELECT id, slug, title, directory, parent_id, agent, model,
                 time_created, time_updated,
                 summary_additions, summary_deletions, summary_files,
@@ -175,16 +111,47 @@ fn read_new_sessions(
 
     Ok(sessions
         .into_iter()
-        .filter(|s| {
-            (s.time_updated, s.id.as_str()) > (cursor.last_seen_updated_at, cursor.last_id.as_str())
-                || !known_session_ids.contains(&s.id)
+        .filter(|s| match known_end_times.get(&s.id) {
+            None => true,
+            Some(stored_end_time) => s.time_updated > *stored_end_time,
         })
         .collect())
 }
 
-fn read_known_opencode_session_ids(conn: &rusqlite::Connection) -> Result<HashSet<String>> {
-    let mut stmt =
-        conn.prepare("SELECT session_id FROM agentic_sessions WHERE harness = 'opencode'")?;
+/// Map of opencode `session_id` → the `end_time` (last successfully ingested
+/// `time_updated`) Hippo has stored for it. This is the per-session watermark:
+/// a known session is re-read only when the source's `time_updated` exceeds the
+/// value already persisted, so a failed upsert (which leaves `end_time` behind)
+/// is naturally retried and an unchanged session is never re-read.
+fn read_known_opencode_session_end_times(
+    conn: &rusqlite::Connection,
+) -> Result<HashMap<String, i64>> {
+    let mut stmt = conn
+        .prepare("SELECT session_id, end_time FROM agentic_sessions WHERE harness = 'opencode'")?;
+    stmt.query_map([], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+    })?
+    .collect::<std::result::Result<HashMap<_, _>, _>>()
+    .map_err(Into::into)
+}
+
+/// opencode `session_id`s whose enrichment-queue row is currently `processing`
+/// — the brain has claimed them. A content update that arrives while a session
+/// is being enriched must be deferred: `upsert_session`'s queue re-pend is
+/// guarded by `WHERE status != 'processing'` and would no-op, so advancing the
+/// per-session watermark (`end_time`) now would strand the new content (once the
+/// brain sets the row to `done`, `time_updated == end_time` and it is never
+/// re-selected). Deferring leaves the watermark behind so the next tick retries
+/// the session after the brain releases the row. The deferral is bounded by the
+/// brain's stale-lock reaper: if a worker crashes mid-enrichment the row stays
+/// `processing`, but the reaper eventually flips an abandoned claim back to
+/// `pending`/`failed`, after which the poller re-selects the session normally.
+fn read_processing_opencode_session_ids(conn: &rusqlite::Connection) -> Result<HashSet<String>> {
+    let mut stmt = conn.prepare(
+        "SELECT s.session_id FROM agentic_enrichment_queue q
+         JOIN agentic_sessions s ON q.session_id = s.id
+         WHERE s.harness = 'opencode' AND q.status = 'processing'",
+    )?;
     stmt.query_map([], |row| row.get::<_, String>(0))?
         .collect::<std::result::Result<HashSet<_>, _>>()
         .map_err(Into::into)
@@ -516,10 +483,10 @@ fn upsert_session(conn: &rusqlite::Connection, s: &OpencodeSession) -> Result<()
     // guard only prevents clobbering a row the brain is mid-claim on — it does
     // NOT make re-pending free: a re-pended `done` session is re-enriched into
     // a *new* knowledge node. That is correct only because `read_new_sessions`
-    // returns a known session solely when its `(time_updated, id)` advances past
-    // the keyset watermark (i.e. real new content). If that predicate ever
-    // weakens to a scalar `>=`, an unchanged boundary session re-pends every
-    // tick and spawns unbounded duplicate nodes.
+    // returns a known session solely when the source's `time_updated` exceeds
+    // the `end_time` stored for it (i.e. real new content). If that predicate
+    // ever weakened to `>=`, an unchanged session would re-pend every tick and
+    // spawn unbounded duplicate nodes.
     tx.execute(
         "INSERT INTO agentic_enrichment_queue
              (session_id, status, retry_count, error_message, enqueued_at, updated_at)
@@ -632,12 +599,23 @@ pub fn poll_tick(config: &HippoConfig) -> Result<usize> {
         }
     };
 
-    let source_key = make_source_key(db_path)
-        .map_err(|e| anyhow!("could not derive source_key for opencode DB: {e:#}"))?;
-    let cursor = Cursor::read(&hippo_conn, &source_key)?;
-    let known_session_ids = read_known_opencode_session_ids(&hippo_conn)?;
+    let known_end_times = read_known_opencode_session_end_times(&hippo_conn)?;
+    let processing_ids = read_processing_opencode_session_ids(&hippo_conn)?;
 
-    let mut new_sessions = read_new_sessions(&oc_conn, &cursor, &known_session_ids)?;
+    let mut new_sessions = read_new_sessions(&oc_conn, &known_end_times)?;
+    // Defer any session the brain is mid-enrichment on: re-pending it would
+    // no-op against the `processing` row, and advancing its watermark now would
+    // strand the new content. Leaving it untouched lets the per-session diff
+    // retry it once the brain releases the row.
+    let before = new_sessions.len();
+    new_sessions.retain(|s| !processing_ids.contains(&s.id));
+    let deferred = before - new_sessions.len();
+    if deferred > 0 {
+        debug!(
+            deferred,
+            "deferred opencode sessions under active enrichment"
+        );
+    }
     if new_sessions.is_empty() {
         return Ok(0);
     }
@@ -651,43 +629,21 @@ pub fn poll_tick(config: &HippoConfig) -> Result<usize> {
 
     let mut events_sent = 0usize;
     let mut errors_sent = 0usize;
-    let mut latest_ok: Option<&OpencodeSession> = None;
 
     for session in &new_sessions {
         debug!(id = %session.id, slug = %session.slug, "processing opencode session");
 
+        // Each session carries its own watermark (its stored `end_time`), so a
+        // failed upsert leaves that watermark behind and the session is retried
+        // on the next tick — no global cursor to advance, regress, or strand a
+        // mid-batch failure behind.
         match upsert_session(&hippo_conn, session) {
-            Ok(()) => {
-                events_sent += 1;
-                latest_ok = Some(session);
-            }
+            Ok(()) => events_sent += 1,
             Err(e) => {
                 error!(%e, id = %session.id, "Failed to write session to Hippo DB");
                 errors_sent += 1;
                 record_upsert_error(&hippo_conn, &e);
             }
-        }
-    }
-
-    // Advance the cursor to the highest successfully-processed
-    // `(time_updated, id)`, but NEVER backward. `latest_ok` is the last success
-    // in the `(time_updated, id) ASC` scan — i.e. the batch's max-ordered
-    // success. A backfill batch can consist solely of sessions older than the
-    // current watermark (selected via `!known_session_ids`); writing their
-    // `(time_updated, id)` would regress the cursor and make the next tick
-    // re-select every known newer session, re-pending finished queue rows into
-    // duplicate nodes. The monotonicity guard keeps the keyset cursor moving
-    // forward only; backfilled older sessions are kept out of the next scan by
-    // their now-`known` status, not by the watermark.
-    if let Some(last) = latest_ok {
-        let advanced = (last.time_updated, last.id.as_str())
-            > (cursor.last_seen_updated_at, cursor.last_id.as_str());
-        if advanced {
-            let new_cursor = Cursor {
-                last_seen_updated_at: last.time_updated,
-                last_id: last.id.clone(),
-            };
-            Cursor::upsert(&hippo_conn, &source_key, &new_cursor)?;
         }
     }
 
