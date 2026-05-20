@@ -7,6 +7,24 @@ description: Use when user asks if hippo is working, running, healthy, or needs 
 
 Use this skill when the user asks if Hippo is working, running, healthy, or needs debugging.
 
+Hippo installs a `hippo` binary on PATH (`~/.local/bin/hippo`) and runs as
+launchd services (`com.hippo.*`). The `hippo` and `curl`/`sqlite3`/`launchctl`
+commands below work from any directory. The `mise run …` commands require the
+hippo checkout (`cd ~/projects/hippo` first).
+
+## Start Here: `hippo doctor`
+
+The canonical health check. Runs diagnostic checks across the daemon, brain,
+inference server, and per-source data freshness in one shot:
+
+```bash
+hippo doctor      # full diagnostics — start here
+hippo status      # daemon status only (faster)
+```
+
+If `doctor` is green, you're done. Use the deeper checks below only to chase a
+specific failure it reports.
+
 ## Quick Health Check
 
 Run these commands to verify everything is operational:
@@ -52,9 +70,19 @@ tail -20 ~/.local/share/hippo/daemon.stderr.log
 
 ## Database Status
 
-### Check enrichment queue
+There is one enrichment queue **per source**, each with a `status` column
+(`pending` / `processing` / `done` / `failed` / `skipped`):
+`enrichment_queue` (shell), `claude_enrichment_queue`,
+`browser_enrichment_queue`, `workflow_enrichment_queue`,
+`agentic_enrichment_queue` (Codex / opencode).
+
+### Check enrichment queue depth (all sources)
 ```bash
-sqlite3 ~/.local/share/hippo/hippo.db "SELECT status, COUNT(*) FROM claude_segments GROUP BY status;"
+for q in enrichment_queue claude_enrichment_queue browser_enrichment_queue \
+         workflow_enrichment_queue agentic_enrichment_queue; do
+  echo "== $q =="
+  sqlite3 ~/.local/share/hippo/hippo.db "SELECT status, COUNT(*) FROM $q GROUP BY status;"
+done
 ```
 
 ### Check knowledge nodes count
@@ -62,19 +90,40 @@ sqlite3 ~/.local/share/hippo/hippo.db "SELECT status, COUNT(*) FROM claude_segme
 sqlite3 ~/.local/share/hippo/hippo.db "SELECT COUNT(*) FROM knowledge_nodes;"
 ```
 
-### Check pending segments
+### Inspect failed enrichment (with error messages)
 ```bash
-sqlite3 ~/.local/share/hippo/hippo.db "SELECT id, source_type, LENGTH(content) as len FROM claude_segments WHERE status = 'pending' ORDER BY id DESC LIMIT 10;"
+sqlite3 ~/.local/share/hippo/hippo.db "SELECT id, retry_count, error_message FROM claude_enrichment_queue WHERE status = 'failed' ORDER BY updated_at DESC LIMIT 10;"
+```
+
+## Service Management (launchd)
+
+Hippo runs as launchd agents under `gui/$(id -u)`: `com.hippo.daemon`,
+`com.hippo.brain`, `com.hippo.omlx`, plus `watchdog`, `probe`,
+`claude-session-watcher`, `gh-poll`, `opencode-poll`, `codex-session`.
+
+```bash
+launchctl list | grep com.hippo                       # which services are loaded
+launchctl kickstart -k "gui/$(id -u)/com.hippo.brain" # restart one service (from anywhere)
+```
+
+From the hippo checkout (`cd ~/projects/hippo`):
+```bash
+mise run start     # bootstrap all services
+mise run stop      # bootout all services
+mise run restart   # stop + start all services
+mise run monitor   # live enrichment pipeline view (refreshes every 5s)
+mise run nuke      # SIGKILL everything + remove socket (hard reset; data preserved)
 ```
 
 ## Common Issues
 
 | Symptom | Check | Fix |
 |---------|-------|-----|
-| "brain not reachable" in daemon logs | Brain running on port 9175? | `mise run run:brain` |
-| No enrichment happening | Check `brain.stderr.log` for errors | Restart brain |
-| Inference server not responding | Check `http://localhost:8000/v1/models` (or `:1234` for LM Studio) | Start the server, load a model |
-| Socket not found | Daemon running? | `mise run run:daemon` |
+| "brain not reachable" in daemon logs | Brain on port 9175? `curl localhost:9175/health` | `launchctl kickstart -k "gui/$(id -u)/com.hippo.brain"` |
+| No enrichment happening | `brain.stderr.log` for errors; queue depth growing? | Restart brain (kickstart), then `hippo doctor` |
+| Inference server not responding | `curl http://localhost:8000/v1/models` (`:1234` for LM Studio) | `launchctl kickstart -k "gui/$(id -u)/com.hippo.omlx"`, ensure a model is loaded |
+| Socket not found | Daemon loaded? `launchctl list \| grep daemon` | `launchctl kickstart -k "gui/$(id -u)/com.hippo.daemon"` |
+| Multiple things wedged | — | `cd ~/projects/hippo && mise run restart` (or `mise run nuke` then `mise run start`) |
 
 ## OTEL Stack Monitoring
 
@@ -162,9 +211,10 @@ mise run otel:up
 
 Run these to confirm hippo is fully operational:
 
-1. Daemon: `cargo run --bin hippo -- status`
-2. Brain health: `curl -s http://localhost:9175/health`
-3. Inference server: `curl -s http://localhost:8000/v1/models | jq '.data[].id'`  (`:1234` for LM Studio)
-4. Recent enrichment: `tail -10 ~/.local/share/hippo/brain.stderr.log | grep enriched`
-5. OTEL collector: `curl -s http://localhost:13133/`
-6. Grafana: `curl -s -u admin:hippo 'http://localhost:3030/api/search' | jq '.[] | .title'`
+1. Everything at once: `hippo doctor`
+2. Daemon: `hippo status`
+3. Brain health: `curl -s http://localhost:9175/health`
+4. Inference server: `curl -s http://localhost:8000/v1/models | jq '.data[].id'`  (`:1234` for LM Studio)
+5. Recent enrichment: `tail -10 ~/.local/share/hippo/brain.stderr.log | grep enriched`
+6. OTEL collector: `curl -s http://localhost:13133/`
+7. Grafana: `curl -s -u admin:hippo 'http://localhost:3030/api/search' | jq '.[] | .title'`

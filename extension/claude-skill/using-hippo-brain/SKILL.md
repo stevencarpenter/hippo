@@ -34,13 +34,42 @@ a fix — don't bury it. If CI passed, no need to mention unless asked.
 
 ## Tool selection
 
-- `get_ci_status(repo, sha)` — structured CI outcome. Use for "did it pass."
-- `get_lessons(repo?, path?, tool?)` — distilled past mistakes. Use pre-flight.
-- `search_knowledge(query)` — semantic retrieval over knowledge nodes.
-- `search_events(query)` — raw event timeline.
-- `ask(question)` — synthesized prose answer. Use for human-shaped questions.
-- `get_entities(...)` — graph exploration.
+Retrieval, cheapest/most-structured first:
 
-Prefer the structured tools over `ask` when you know what shape you
-want — they are cheaper and machine-friendly. `ask` runs a full RAG
-pipeline and returns prose.
+- `search_hybrid(query, mode=hybrid|semantic|lexical|recent)` — ranked hits
+  as structured dicts (uuid, score, summary, outcome, cwd, branch, …), no
+  synthesis. The default general-purpose retriever.
+- `search_knowledge(query, mode=semantic|lexical)` — enriched knowledge
+  nodes only. Use when you specifically want distilled knowledge, not raw events.
+- `search_events(query, source=shell|claude|browser|all)` — raw event
+  timeline (shell commands, sessions, browser history).
+- `get_context(query)` — hybrid retrieval rendered as a Markdown block ready
+  to paste into a prompt. Use when you want context *for the model*, not a list.
+- `ask(question)` — synthesized prose answer (full RAG pipeline). The most
+  expensive option; use only for human-shaped questions where prose is wanted.
+
+Targeted lookups:
+
+- `get_ci_status(repo, sha=…|branch=…)` — structured CI outcome. Use for "did it pass."
+- `get_lessons(repo?, path?, tool?)` — distilled past mistakes. Use pre-flight.
+  Only patterns seen 2+ times graduate — a single failure won't appear.
+- `get_entities(type?, query?)` — knowledge-graph entities (project, tool,
+  file, domain, concept, service).
+- `list_projects()` — distinct projects seen. Use for discovery before scoping.
+
+Prefer the structured retrievers (`search_hybrid` / `search_knowledge`) over
+`ask` when you know what shape you want — they are cheaper and machine-friendly.
+
+## Scope every query
+
+All retrieval tools (`search_hybrid`, `search_knowledge`, `search_events`,
+`get_context`, `ask`) share these filters — using them is the biggest
+precision win:
+
+- `project=<repo-or-cwd-substring>` — restrict to the repo you're in.
+- `since="24h"` / `"7d"` / `"30m"` — bound the time window.
+- `source="shell"|"claude"|"browser"|"workflow"` — restrict by origin.
+- `branch=<git-branch>` — exact-match the branch.
+
+When working in a specific repo, default to scoping by `project` — an
+unscoped query searches every project you've ever touched.
