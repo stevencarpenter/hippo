@@ -102,14 +102,19 @@ fn read_new_sessions(
     cursor: &Cursor,
     known_session_ids: &HashSet<String>,
 ) -> Result<Vec<OpencodeSession>> {
-    // Use `>=` (not `>`) and rely on ON CONFLICT DO UPDATE in `upsert_session`
-    // for idempotency. The previous tuple-cursor `(time_updated > ?1 OR
-    // (time_updated = ?1 AND id > ?2))` was unsafe because opencode session
-    // ids are random UUIDs: a new session inserted with the same `time_updated`
-    // as the previous tail but a lexicographically *earlier* id would be
-    // permanently skipped. Re-reading the at-boundary cluster every tick is
-    // cheap (typically 1–2 rows) and the upsert is idempotent so duplicates
-    // never land.
+    // A session is (re-)read when EITHER it is new to Hippo
+    // (`!known_session_ids`) OR its `time_updated` has advanced strictly past
+    // the cursor watermark (`>`). The watermark is set to the max
+    // `time_updated` seen, so a *finished* session sits exactly on it. Using
+    // `>=` here would re-select that boundary session on every tick, and
+    // because each enrichment mints a fresh knowledge node, the queue's
+    // ON CONFLICT re-pend (see `upsert_session`) would spawn an unbounded
+    // stream of duplicate nodes for one unchanged session. `>` re-reads a
+    // session only when its content actually grew. The earlier worry — that a
+    // new session sharing the previous tail's `time_updated` but with a
+    // lexicographically *earlier* random-UUID id could be skipped — is moot:
+    // such a session is not yet in Hippo, so the `!known_session_ids` clause
+    // selects it regardless of timestamp ordering.
     // Read the full opencode session index on every tick and filter in Rust.
     // A cursor-bounded SQL query (WHERE time_updated > cursor) would skip
     // sessions that are older than the cursor but still missing from Hippo
@@ -149,7 +154,7 @@ fn read_new_sessions(
     Ok(sessions
         .into_iter()
         .filter(|s| {
-            s.time_updated >= cursor.last_seen_updated_at || !known_session_ids.contains(&s.id)
+            s.time_updated > cursor.last_seen_updated_at || !known_session_ids.contains(&s.id)
         })
         .collect())
 }
@@ -484,9 +489,14 @@ fn upsert_session(conn: &rusqlite::Connection, s: &OpencodeSession) -> Result<()
         |r| r.get(0),
     )?;
 
-    // Enqueue (or re-pend) for the brain. Mirrors claude_session.rs:
-    // re-pending a finished session is fine because the brain's claim WHERE
-    // excludes `processing`. ON CONFLICT keeps re-ingests idempotent.
+    // Enqueue (or re-pend) for the brain. The `WHERE status != 'processing'`
+    // guard only prevents clobbering a row the brain is mid-claim on — it does
+    // NOT make re-pending free: a re-pended `done` session is re-enriched into
+    // a *new* knowledge node. That is correct only because `read_new_sessions`
+    // returns a known session solely when its `time_updated` has advanced
+    // (i.e. real new content). If that predicate ever weakens to `>=`, an
+    // unchanged boundary session re-pends every tick and spawns unbounded
+    // duplicate nodes.
     tx.execute(
         "INSERT INTO agentic_enrichment_queue
              (session_id, status, retry_count, error_message, enqueued_at, updated_at)

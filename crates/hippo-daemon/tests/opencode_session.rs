@@ -291,18 +291,90 @@ fn poll_tick_is_idempotent_when_no_new_writes() {
         hippo_daemon::opencode_session::poll_tick(&config).unwrap(),
         1
     );
-    // Second tick: with the `>=` cursor the boundary row is re-read and the
-    // ON CONFLICT branch fires (events_sent counts it again) — but the
-    // destination table must remain at 1 row, which is the real invariant.
-    // Trade-off: the cursor design prefers re-reads + idempotent upsert over
-    // a tuple-cursor that silently skips same-ms siblings (F-26).
-    let _ = hippo_daemon::opencode_session::poll_tick(&config).unwrap();
+    // Second tick with nothing changed: the boundary session sits exactly on
+    // the cursor watermark, and the strict `>` comparison must NOT re-read it.
+    // A `>=` re-read re-pends the queue row and re-enriches one unchanged
+    // session into unbounded duplicate nodes. New same-ms siblings are still
+    // caught by the `!known_session_ids` clause, so no genuine session is
+    // skipped (F-26).
+    assert_eq!(
+        hippo_daemon::opencode_session::poll_tick(&config).unwrap(),
+        0,
+        "an unchanged session must not be re-read on a second poll"
+    );
 
     let conn = hippo_core::storage::open_db(&config.db_path()).unwrap();
     let count: i64 = conn
         .query_row("SELECT COUNT(*) FROM agentic_sessions", [], |r| r.get(0))
         .unwrap();
     assert_eq!(count, 1, "no duplicate row should land on a second poll");
+}
+
+#[test]
+fn poll_tick_does_not_repend_done_session() {
+    // Regression: the newest finished session sits exactly on the cursor
+    // watermark. With a `>=` boundary comparison the poller re-read it every
+    // tick and the queue's ON CONFLICT branch reset the already-`done` row to
+    // `pending`, so the brain re-enriched one unchanged session into an
+    // unbounded stream of duplicate knowledge nodes. With `>` the finished row
+    // is left alone.
+    let tmp = TempDir::new().unwrap();
+    let opencode_db_path = tmp.path().join("opencode.db");
+    let oc = init_opencode_db(&opencode_db_path);
+    insert_session(
+        &oc,
+        "sess-1",
+        "slug",
+        "Title",
+        "/proj",
+        None,
+        None,
+        1_700_000_000_000,
+        1_700_000_001_000,
+        None,
+    );
+    drop(oc);
+
+    let config = test_config(&tmp, &opencode_db_path);
+    let _ = hippo_core::storage::open_db(&config.db_path()).unwrap();
+
+    assert_eq!(
+        hippo_daemon::opencode_session::poll_tick(&config).unwrap(),
+        1
+    );
+
+    // Simulate the brain finishing enrichment: flip the queue row to 'done'.
+    let conn = hippo_core::storage::open_db(&config.db_path()).unwrap();
+    conn.execute(
+        "UPDATE agentic_enrichment_queue SET status = 'done'
+         WHERE session_id IN (SELECT id FROM agentic_sessions WHERE session_id = 'sess-1')",
+        [],
+    )
+    .unwrap();
+    drop(conn);
+
+    // Poll again with NOTHING changed in the opencode source DB.
+    assert_eq!(
+        hippo_daemon::opencode_session::poll_tick(&config).unwrap(),
+        0,
+        "an unchanged finished session must not be re-polled"
+    );
+
+    // The finished queue row must remain 'done', never resurrected to 'pending'.
+    let conn = hippo_core::storage::open_db(&config.db_path()).unwrap();
+    let status: String = conn
+        .query_row(
+            "SELECT q.status FROM agentic_enrichment_queue q
+             JOIN agentic_sessions s ON q.session_id = s.id
+             WHERE s.session_id = 'sess-1'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        status, "done",
+        "re-pending a done session re-enriches it into a duplicate node"
+    );
 }
 
 #[test]
