@@ -12,6 +12,6 @@
   "devDependencies": {
     "esbuild": "^0.25",
     "typescript": "^5.8",
-    "web-ext": "^10.1.0"
+    "web-ext": "^10.2.0"
   }
 }
