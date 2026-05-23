@@ -1,7 +1,7 @@
 {
   "version": "1.0.0",
-  "gitCommitHash": "1038e985ddb6175e8d573d03939da1d9bfef795b",
-  "generatedAt": "2026-05-22T10:35:03.707Z",
+  "gitCommitHash": "50aec2d61e2c7f2f26e065d13bf9b6b553463715",
+  "generatedAt": "2026-05-23T10:26:38.536Z",
   "files": {
     ".github/workflows/extension.yml": {
       "filePath": ".github/workflows/extension.yml",
@@ -27203,6 +27203,706 @@
       "totalLines": 47,
       "hasStructuralAnalysis": true
     },
+    "docs/archive/README.md": {
+      "filePath": "docs/archive/README.md",
+      "contentHash": "8e8c6a16d44377649dc3343608b7fdc2b6c3dcb0f140923fbcfca2ac1073b20e",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 167,
+      "hasStructuralAnalysis": true
+    },
+    "docs/archive/capture-reliability-overhaul/00-overview.md": {
+      "filePath": "docs/archive/capture-reliability-overhaul/00-overview.md",
+      "contentHash": "bede55e2a8f7d7f10e181238927202daf48aab2c9e0ef113d5d4be96387e6098",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 121,
+      "hasStructuralAnalysis": true
+    },
+    "docs/archive/capture-reliability-overhaul/01-source-health.md": {
+      "filePath": "docs/archive/capture-reliability-overhaul/01-source-health.md",
+      "contentHash": "9770f98fa67a6ae9c9c402f91f5b2763872127c59ec53f82fac43313d3a43d7c",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 290,
+      "hasStructuralAnalysis": true
+    },
+    "docs/archive/capture-reliability-overhaul/02-invariants.md": {
+      "filePath": "docs/archive/capture-reliability-overhaul/02-invariants.md",
+      "contentHash": "3fe5d05817ed9bcabed956f4e26ccbc4b574645635fcc7be28af819fe47f9a5e",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 221,
+      "hasStructuralAnalysis": true
+    },
+    "docs/archive/capture-reliability-overhaul/03-doctor-upgrades.md": {
+      "filePath": "docs/archive/capture-reliability-overhaul/03-doctor-upgrades.md",
+      "contentHash": "63f34c81f9f7c7f4f281b8a89f096e1b24f6265ff725dbc4888719f279abb2e7",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 278,
+      "hasStructuralAnalysis": true
+    },
+    "docs/archive/capture-reliability-overhaul/04-watchdog.md": {
+      "filePath": "docs/archive/capture-reliability-overhaul/04-watchdog.md",
+      "contentHash": "3a625610b32f5e27a1c3e1ba1b86b9c60cb466647f6011b2ebb0d9af95d4168e",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 237,
+      "hasStructuralAnalysis": true
+    },
+    "docs/archive/capture-reliability-overhaul/05-synthetic-probes.md": {
+      "filePath": "docs/archive/capture-reliability-overhaul/05-synthetic-probes.md",
+      "contentHash": "d64218ee006f0946d808186556488e3d0ab8d093f9b73a0244800bee2ccde340",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 283,
+      "hasStructuralAnalysis": true
+    },
+    "docs/archive/capture-reliability-overhaul/06-claude-session-watcher.md": {
+      "filePath": "docs/archive/capture-reliability-overhaul/06-claude-session-watcher.md",
+      "contentHash": "9ab4f6c5be2cac93cb4eb4e818acd0ace6e2da02faee1fd06025b58870106c37",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 327,
+      "hasStructuralAnalysis": true
+    },
+    "docs/archive/capture-reliability-overhaul/07-roadmap-review.csv": {
+      "filePath": "docs/archive/capture-reliability-overhaul/07-roadmap-review.csv",
+      "contentHash": "4a82ba52cbdd01155a7d36952ac2a8d5f086de49bb4802b9ffffd4d5c0107cff",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 26,
+      "hasStructuralAnalysis": false
+    },
+    "docs/archive/capture-reliability-overhaul/07-roadmap.md": {
+      "filePath": "docs/archive/capture-reliability-overhaul/07-roadmap.md",
+      "contentHash": "6e1f0d7eb121bd51f6a65f5fee5b1ac3956d3772eff50d861c3e78c05a232efb",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 397,
+      "hasStructuralAnalysis": true
+    },
+    "docs/archive/capture-reliability-overhaul/08-anti-patterns.md": {
+      "filePath": "docs/archive/capture-reliability-overhaul/08-anti-patterns.md",
+      "contentHash": "52857e2b33c2b8168f8493b291f57f393c451c96f00d243a6d9bb19eee565a5f",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 151,
+      "hasStructuralAnalysis": true
+    },
+    "docs/archive/capture-reliability-overhaul/09-test-matrix.md": {
+      "filePath": "docs/archive/capture-reliability-overhaul/09-test-matrix.md",
+      "contentHash": "fa6ef16cd4bfc2188dafbc624f4a0643769dae952c85dd6e3ad7951f890458ac",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 171,
+      "hasStructuralAnalysis": true
+    },
+    "docs/archive/capture-reliability-overhaul/10-source-audit.md": {
+      "filePath": "docs/archive/capture-reliability-overhaul/10-source-audit.md",
+      "contentHash": "84dc130fe5e6e69b8d4a1095c8773e404bb2b32d8792bdfaa0f2f4e2e3ec6dee",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 100,
+      "hasStructuralAnalysis": true
+    },
+    "docs/archive/capture-reliability-overhaul/11-watcher-data-loss-fix.md": {
+      "filePath": "docs/archive/capture-reliability-overhaul/11-watcher-data-loss-fix.md",
+      "contentHash": "9e8ebcfe23a9fc4d42af1267fce220bcf4db0d66575b53355af450cb279e2195",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 201,
+      "hasStructuralAnalysis": true
+    },
+    "docs/archive/capture-reliability-overhaul/m3-decision.md": {
+      "filePath": "docs/archive/capture-reliability-overhaul/m3-decision.md",
+      "contentHash": "1cc9447849b0322b46e7b2599cd8894341daeb8d13f6a3c5520e172ce867c60e",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 163,
+      "hasStructuralAnalysis": true
+    },
+    "docs/archive/feature-waves/2026-03-27-hippo-design.md": {
+      "filePath": "docs/archive/feature-waves/2026-03-27-hippo-design.md",
+      "contentHash": "17c802222e6cf4c87f0194a33f44463c7d61bfaa1c7d812aa5e2ac9b36da1184",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 484,
+      "hasStructuralAnalysis": true
+    },
+    "docs/archive/feature-waves/2026-03-27-hippo-v1.md": {
+      "filePath": "docs/archive/feature-waves/2026-03-27-hippo-v1.md",
+      "contentHash": "1beba321523c15091db224db77088da85e771034a67420026dea6ff402809b78",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 1173,
+      "hasStructuralAnalysis": true
+    },
+    "docs/archive/feature-waves/2026-03-28-service-lifecycle-fixes.md": {
+      "filePath": "docs/archive/feature-waves/2026-03-28-service-lifecycle-fixes.md",
+      "contentHash": "9403a441376ff4d9bb7de11adbcdc39ccf58abf7877ea64f4d2ac58045ec99d4",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 620,
+      "hasStructuralAnalysis": true
+    },
+    "docs/archive/feature-waves/2026-03-29-enrichment-pipeline-redesign.md": {
+      "filePath": "docs/archive/feature-waves/2026-03-29-enrichment-pipeline-redesign.md",
+      "contentHash": "3d5c8cc70843edf9beaec03e496b57ec3d084e26916470c5f07fcb5c28be1fbe",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 288,
+      "hasStructuralAnalysis": true
+    },
+    "docs/archive/feature-waves/2026-03-29-enrichment-pipeline.md": {
+      "filePath": "docs/archive/feature-waves/2026-03-29-enrichment-pipeline.md",
+      "contentHash": "079ca97042fd01ec1c92db56b9fa422036fc14daaa4061f73eb0de4868c9b293",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 1302,
+      "hasStructuralAnalysis": true
+    },
+    "docs/archive/feature-waves/2026-03-29-versioning-design.md": {
+      "filePath": "docs/archive/feature-waves/2026-03-29-versioning-design.md",
+      "contentHash": "6a1bc7ccf4c4ede5724ee465faf0e5643d4b321a8ff43bbb25fde5e5a097f17c",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 148,
+      "hasStructuralAnalysis": true
+    },
+    "docs/archive/feature-waves/2026-03-29-versioning.md": {
+      "filePath": "docs/archive/feature-waves/2026-03-29-versioning.md",
+      "contentHash": "3849777cd091b5cdfb6a7139d659c0ae53102e36994c57d840937f93883e49cc",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 577,
+      "hasStructuralAnalysis": true
+    },
+    "docs/archive/feature-waves/2026-03-31-firefox-browser-source-design.md": {
+      "filePath": "docs/archive/feature-waves/2026-03-31-firefox-browser-source-design.md",
+      "contentHash": "6087d4814706ed187f4a7ce7942e74e75cf9952e4d0b74f051ed18100659f0da",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 365,
+      "hasStructuralAnalysis": true
+    },
+    "docs/archive/feature-waves/2026-03-31-firefox-browser-source.md": {
+      "filePath": "docs/archive/feature-waves/2026-03-31-firefox-browser-source.md",
+      "contentHash": "c702058672fe22b57c09b1d4b0f8f8523c72e642ba9dea4b031eb5ee886269fa",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 2304,
+      "hasStructuralAnalysis": true
+    },
+    "docs/archive/feature-waves/2026-04-01-hippo-mcp-server-design.md": {
+      "filePath": "docs/archive/feature-waves/2026-04-01-hippo-mcp-server-design.md",
+      "contentHash": "80f29ea3b3ef7565c12018f38a49b934303d960dfa2343402fc11014438b8216",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 206,
+      "hasStructuralAnalysis": true
+    },
+    "docs/archive/feature-waves/2026-04-01-hippo-mcp-server.md": {
+      "filePath": "docs/archive/feature-waves/2026-04-01-hippo-mcp-server.md",
+      "contentHash": "f7315eb50786450684533652a9a960673d542b91735504d283b674d749c15926",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 1419,
+      "hasStructuralAnalysis": true
+    },
+    "docs/archive/feature-waves/2026-04-02-firefox-extension-typescript-rewrite.md": {
+      "filePath": "docs/archive/feature-waves/2026-04-02-firefox-extension-typescript-rewrite.md",
+      "contentHash": "a5e443f2a6ffa86cc3eb3b5d88803ebdc231d158d0da45f5ff1f7ead8eabc47a",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 289,
+      "hasStructuralAnalysis": true
+    },
+    "docs/archive/feature-waves/2026-04-02-firefox-extension-typescript.md": {
+      "filePath": "docs/archive/feature-waves/2026-04-02-firefox-extension-typescript.md",
+      "contentHash": "d33cc23d7a5161409d907022935e0fb285996c39787b3692cea3781b7276bdb2",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 876,
+      "hasStructuralAnalysis": true
+    },
+    "docs/archive/feature-waves/2026-04-02-otel-observability-stack.md": {
+      "filePath": "docs/archive/feature-waves/2026-04-02-otel-observability-stack.md",
+      "contentHash": "44e2caa43295772757259dfbe52ff6f1d06759fe761d2f2b5b212b1e90f6b024",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 1594,
+      "hasStructuralAnalysis": true
+    },
+    "docs/archive/feature-waves/2026-04-04-rag-query-design.md": {
+      "filePath": "docs/archive/feature-waves/2026-04-04-rag-query-design.md",
+      "contentHash": "f0658fdd0e5dd8d6eff152692d32e93087d8c0f37c6e19de62714bf3be7894eb",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 184,
+      "hasStructuralAnalysis": true
+    },
+    "docs/archive/feature-waves/2026-04-04-rag-query.md": {
+      "filePath": "docs/archive/feature-waves/2026-04-04-rag-query.md",
+      "contentHash": "6a9f83378ddf04b3f44ee1e799b722837b4bf91bbf0aabafb7ddd79ccb254534",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 1073,
+      "hasStructuralAnalysis": true
+    },
+    "docs/archive/feature-waves/2026-04-08-cicd-design.md": {
+      "filePath": "docs/archive/feature-waves/2026-04-08-cicd-design.md",
+      "contentHash": "5a43f2cc857480412d74345bf6560225fd0f962cb9c67e348f18d43993330612",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 206,
+      "hasStructuralAnalysis": true
+    },
+    "docs/archive/feature-waves/2026-04-08-cicd-implementation.md": {
+      "filePath": "docs/archive/feature-waves/2026-04-08-cicd-implementation.md",
+      "contentHash": "152707f649ee72dbdbcc1144fdcf012613af32e05b4a1d715f1b23eebf335962",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 528,
+      "hasStructuralAnalysis": true
+    },
+    "docs/archive/feature-waves/2026-04-08-otel-metrics-design.md": {
+      "filePath": "docs/archive/feature-waves/2026-04-08-otel-metrics-design.md",
+      "contentHash": "6d1f6b5d5b2ba603d17b007faf29d753f7940bf0a72f13b92e4bf146593a8cb8",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 256,
+      "hasStructuralAnalysis": true
+    },
+    "docs/archive/feature-waves/2026-04-08-otel-metrics-implementation.md": {
+      "filePath": "docs/archive/feature-waves/2026-04-08-otel-metrics-implementation.md",
+      "contentHash": "8225c30ef69dda94fbf24e69988dbec805d9e633d8ac37457a311e2775c4f49c",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 1187,
+      "hasStructuralAnalysis": true
+    },
+    "docs/archive/feature-waves/2026-04-15-github-actions-source-and-hippo-skill-design.md": {
+      "filePath": "docs/archive/feature-waves/2026-04-15-github-actions-source-and-hippo-skill-design.md",
+      "contentHash": "318826a89e3be76958e727e391ab66d18cd447bb904fa72aa678d42d2544c27a",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 403,
+      "hasStructuralAnalysis": true
+    },
+    "docs/archive/feature-waves/2026-04-15-github-actions-source-and-hippo-skill.md": {
+      "filePath": "docs/archive/feature-waves/2026-04-15-github-actions-source-and-hippo-skill.md",
+      "contentHash": "45d16cdf687b60125b607d6cc27e2d0e5268ea273b1c17d4a156fab4ecdde5b3",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 2676,
+      "hasStructuralAnalysis": true
+    },
+    "docs/archive/feature-waves/2026-04-17-agentic-session-ingestion.md": {
+      "filePath": "docs/archive/feature-waves/2026-04-17-agentic-session-ingestion.md",
+      "contentHash": "5140a5e8643e78939e462573573b5cc6d48f32f6204fa1bf3dfbd7ba752b4dd2",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 439,
+      "hasStructuralAnalysis": true
+    },
+    "docs/archive/feature-waves/2026-04-17-corpus-health-report.md": {
+      "filePath": "docs/archive/feature-waves/2026-04-17-corpus-health-report.md",
+      "contentHash": "0c716bc76cb5f4c29251757f849a1021707abf096929e65a05c1e93800ea07b6",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 391,
+      "hasStructuralAnalysis": true
+    },
+    "docs/archive/feature-waves/2026-04-17-eval-harness-design.md": {
+      "filePath": "docs/archive/feature-waves/2026-04-17-eval-harness-design.md",
+      "contentHash": "8b62672b4606044df6e3ab33a6bc86ccfcdc402f3e7c9d5722adf7fa86a38d1c",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 209,
+      "hasStructuralAnalysis": true
+    },
+    "docs/archive/feature-waves/2026-04-17-opencode-ingestion-and-agentic-labeling-design.md": {
+      "filePath": "docs/archive/feature-waves/2026-04-17-opencode-ingestion-and-agentic-labeling-design.md",
+      "contentHash": "bd0a9ba73bfc5b882afca35a8971814e2886fbfabae732b736a0cf5ad3eef8e3",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 480,
+      "hasStructuralAnalysis": true
+    },
+    "docs/archive/feature-waves/2026-04-17-retrieval-benchmark.md": {
+      "filePath": "docs/archive/feature-waves/2026-04-17-retrieval-benchmark.md",
+      "contentHash": "5f412de4614d855b32020ec5dd68a73274d5313f098c89bce98cee27ad76a757",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 70,
+      "hasStructuralAnalysis": true
+    },
+    "docs/archive/feature-waves/2026-04-17-risk-register.md": {
+      "filePath": "docs/archive/feature-waves/2026-04-17-risk-register.md",
+      "contentHash": "6ffdba542a0825490c0a83db0c8207e4a34ddfe1e46ce9e8ef6d327dcc352979",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 328,
+      "hasStructuralAnalysis": true
+    },
+    "docs/archive/feature-waves/2026-04-17-session-handoff.md": {
+      "filePath": "docs/archive/feature-waves/2026-04-17-session-handoff.md",
+      "contentHash": "d28b774d7b1df8d3aff224762aac0bd5f5bd3010e83e4f499331d81135d31ab9",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 126,
+      "hasStructuralAnalysis": true
+    },
+    "docs/archive/feature-waves/2026-04-17-sqlite-vec-consolidation-design.md": {
+      "filePath": "docs/archive/feature-waves/2026-04-17-sqlite-vec-consolidation-design.md",
+      "contentHash": "7e68cc4f6e19281abf0d1539818c61bc421f9a26985804e546ca4326ae9b1941",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 317,
+      "hasStructuralAnalysis": true
+    },
+    "docs/archive/feature-waves/2026-04-17-sqlite-vec-consolidation-scorecard.md": {
+      "filePath": "docs/archive/feature-waves/2026-04-17-sqlite-vec-consolidation-scorecard.md",
+      "contentHash": "fde9ab472a9da3b34df59246d67bac92123a5bbd1c22f95b4be20f2d3d38dcb4",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 66,
+      "hasStructuralAnalysis": true
+    },
+    "docs/archive/feature-waves/2026-04-18-eval-baseline-post-cutover.md": {
+      "filePath": "docs/archive/feature-waves/2026-04-18-eval-baseline-post-cutover.md",
+      "contentHash": "1d9d97983f7d283c960d2666fcf16d496480482665a0e3224c4886d72c47fcc5",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 126,
+      "hasStructuralAnalysis": true
+    },
+    "docs/archive/feature-waves/2026-04-18-eval-baseline-pre-cutover.md": {
+      "filePath": "docs/archive/feature-waves/2026-04-18-eval-baseline-pre-cutover.md",
+      "contentHash": "73f797e56f83e22503eb69ca648e00a7de6530927979f8cf7a352d4fcd59d912",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 244,
+      "hasStructuralAnalysis": true
+    },
+    "docs/archive/feature-waves/2026-04-18-hippo-gui-design.md": {
+      "filePath": "docs/archive/feature-waves/2026-04-18-hippo-gui-design.md",
+      "contentHash": "d28d28689777fe89bd6576a6ea915a2103cdc38a570f758b329a704ce865131e",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 310,
+      "hasStructuralAnalysis": true
+    },
+    "docs/archive/feature-waves/2026-04-18-hippo-gui-implementation.md": {
+      "filePath": "docs/archive/feature-waves/2026-04-18-hippo-gui-implementation.md",
+      "contentHash": "28c1c22101b4704c544f4835ff4ccd42652bd672f9de3f97c98b5d7ba24a3390",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 1076,
+      "hasStructuralAnalysis": true
+    },
+    "docs/archive/feature-waves/2026-04-18-migration-review.md": {
+      "filePath": "docs/archive/feature-waves/2026-04-18-migration-review.md",
+      "contentHash": "9597edcca3f193f457c53e10f83705829aa5c31a1bca3f7209b6f2cd069a296f",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 442,
+      "hasStructuralAnalysis": true
+    },
+    "docs/archive/feature-waves/2026-04-18-phase1-code-review.md": {
+      "filePath": "docs/archive/feature-waves/2026-04-18-phase1-code-review.md",
+      "contentHash": "c7bd03fd6952760a24cf279508277963a2068b8b00ec64b1c6e402b3db1239bb",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 159,
+      "hasStructuralAnalysis": true
+    },
+    "docs/archive/feature-waves/2026-04-18-r22-r23-audit.md": {
+      "filePath": "docs/archive/feature-waves/2026-04-18-r22-r23-audit.md",
+      "contentHash": "b3d198d6607aed14299d3bdeb762a53a61945fa31d3472e0ada65e316595d08e",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 113,
+      "hasStructuralAnalysis": true
+    },
+    "docs/archive/feature-waves/2026-04-18-session-handoff.md": {
+      "filePath": "docs/archive/feature-waves/2026-04-18-session-handoff.md",
+      "contentHash": "9a17f6cf2244097446719d6fdb6879924e347d82d3619231a886f1f8ede3b663",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 82,
+      "hasStructuralAnalysis": true
+    },
+    "docs/archive/feature-waves/2026-04-18-wave-b-sqlite-vec-rollout-design.md": {
+      "filePath": "docs/archive/feature-waves/2026-04-18-wave-b-sqlite-vec-rollout-design.md",
+      "contentHash": "f732babdb5b8c90673e190bfd02c1a0ca326e43428d4f71736cf0cd20d503031",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 172,
+      "hasStructuralAnalysis": true
+    },
+    "docs/archive/feature-waves/2026-04-18-wave-b-sqlite-vec-rollout.md": {
+      "filePath": "docs/archive/feature-waves/2026-04-18-wave-b-sqlite-vec-rollout.md",
+      "contentHash": "888ec808e8b09cfeb0797ac6117c074a7c0647810809c974d35979a71243cb6e",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 197,
+      "hasStructuralAnalysis": true
+    },
+    "docs/archive/feature-waves/2026-04-22-browser-yield-improvements.md": {
+      "filePath": "docs/archive/feature-waves/2026-04-22-browser-yield-improvements.md",
+      "contentHash": "26712522fee9f00f8aa68e772b160892c2cf8f2f1b2d76df27c66c5e0bb4f863",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 554,
+      "hasStructuralAnalysis": true
+    },
+    "docs/archive/feature-waves/2026-04-27-rag-entity-surfacing-design.md": {
+      "filePath": "docs/archive/feature-waves/2026-04-27-rag-entity-surfacing-design.md",
+      "contentHash": "e48c9f4e077f48397545080275080d2a2ca53b1ce0ffa563f77977183a4adfe8",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 255,
+      "hasStructuralAnalysis": true
+    },
+    "docs/archive/feature-waves/2026-04-27-rag-entity-surfacing-ralph.md": {
+      "filePath": "docs/archive/feature-waves/2026-04-27-rag-entity-surfacing-ralph.md",
+      "contentHash": "2b42b7e43ec57baac0b4e2a09ddf0fd7693bf8f95f428c7fd9dff6d138cc5f56",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 229,
+      "hasStructuralAnalysis": true
+    },
+    "docs/archive/hippo-bench-v2-cleanup/2026-04-21-hippo-bench-mvp.md": {
+      "filePath": "docs/archive/hippo-bench-v2-cleanup/2026-04-21-hippo-bench-mvp.md",
+      "contentHash": "923ed7458ee87e9cfa6ae45bcaf94aad9908822a06da9dbd076b2ded21262dc2",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 4439,
+      "hasStructuralAnalysis": true
+    },
+    "docs/archive/hippo-bench-v2-cleanup/2026-04-27-hippo-bench-v2-implementation.md": {
+      "filePath": "docs/archive/hippo-bench-v2-cleanup/2026-04-27-hippo-bench-v2-implementation.md",
+      "contentHash": "b92bf35e1f940b9f7e2a0b34952c4dd6fb3953f6a4c1d33d884a7b5065053c84",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 392,
+      "hasStructuralAnalysis": true
+    },
+    "docs/archive/hippo-bench-v2-cleanup/2026-04-27-hippo-bench-v2-ralph-plan.md": {
+      "filePath": "docs/archive/hippo-bench-v2-cleanup/2026-04-27-hippo-bench-v2-ralph-plan.md",
+      "contentHash": "58eb86db00fac2df5846a6bcecf4414076c503e0d8c60ed713513ea18ae1b559",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 1479,
+      "hasStructuralAnalysis": true
+    },
+    "docs/archive/hippo-bench-v2-cleanup/2026-04-27-hippo-bench-v2-ralph-runbook.md": {
+      "filePath": "docs/archive/hippo-bench-v2-cleanup/2026-04-27-hippo-bench-v2-ralph-runbook.md",
+      "contentHash": "4e38d93b955682a186b2848a439bfd47a9b604533f137507dfed117d4ae60491",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 353,
+      "hasStructuralAnalysis": true
+    },
+    "docs/archive/hippo-bench-v2-cleanup/README.md": {
+      "filePath": "docs/archive/hippo-bench-v2-cleanup/README.md",
+      "contentHash": "15ef3b72dd5c5006f0d0306e9672479a024ff773d93a29e1bd1f07e70ce6ca98",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 22,
+      "hasStructuralAnalysis": true
+    },
+    "docs/archive/incident-2026-04-22/capture-recovery.md": {
+      "filePath": "docs/archive/incident-2026-04-22/capture-recovery.md",
+      "contentHash": "b245ac1407d7bd446685a6f17316ef2b8d0de0e9da867d9ffefb7a0c25e04370",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 1093,
+      "hasStructuralAnalysis": true
+    },
+    "docs/archive/v0.9-to-v0.16-history/FEATURE_TIMELINE.md": {
+      "filePath": "docs/archive/v0.9-to-v0.16-history/FEATURE_TIMELINE.md",
+      "contentHash": "e83b3b7d686b92116a5bbc94e5d525baa77c6dc572de655899a4dd9a5c5b9103",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 194,
+      "hasStructuralAnalysis": true
+    },
+    "docs/archive/v0.9-to-v0.16-history/agent-execution-plan.md": {
+      "filePath": "docs/archive/v0.9-to-v0.16-history/agent-execution-plan.md",
+      "contentHash": "01bb5516884a8c7dbddda0c3bc542ff96613fc629ffe443a4711c740c6fb7762",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 1290,
+      "hasStructuralAnalysis": true
+    },
+    "docs/archive/v0.9-to-v0.16-history/architecture-review-tracker.md": {
+      "filePath": "docs/archive/v0.9-to-v0.16-history/architecture-review-tracker.md",
+      "contentHash": "67bfbea0ed08eeeded6d7b8bbb8c519f56fa5cd9f068a19073563f8f22dc0665",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 1309,
+      "hasStructuralAnalysis": true
+    },
+    "docs/archive/v0.9-to-v0.16-history/schema-migration-strategy.md": {
+      "filePath": "docs/archive/v0.9-to-v0.16-history/schema-migration-strategy.md",
+      "contentHash": "8a6e75cdab1ca750de91eb28b32546b82a8aeed00bf80441f502de6077968af9",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 101,
+      "hasStructuralAnalysis": true
+    },
+    "docs/archive/v0.9-to-v0.16-history/smoke-test-and-risk-assessment.md": {
+      "filePath": "docs/archive/v0.9-to-v0.16-history/smoke-test-and-risk-assessment.md",
+      "contentHash": "d4c9f31e6765c05bd81c4b07d73470e4231aaf971115332c5244dd59b8793965",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 363,
+      "hasStructuralAnalysis": true
+    },
     "docs/baselines/2026-04-29-pre-v3/FINAL_REPORT.md": {
       "filePath": "docs/baselines/2026-04-29-pre-v3/FINAL_REPORT.md",
       "contentHash": "b08a02d1750078d63386aeb6e6b1a63d707ad37ad7508f27946679cee8f9e28a",
@@ -27847,6 +28547,16 @@
       "totalLines": 566,
       "hasStructuralAnalysis": true
     },
+    "docs/superpowers/plans/2026-05-23-understand-static-pages-deploy.md": {
+      "filePath": "docs/superpowers/plans/2026-05-23-understand-static-pages-deploy.md",
+      "contentHash": "c60cec539263d0fb09a2099abafc705f803ec1670f69210e35d7e103462c116e",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 457,
+      "hasStructuralAnalysis": true
+    },
     "docs/superpowers/specs/2026-04-21-hippo-bench-design.md": {
       "filePath": "docs/superpowers/specs/2026-04-21-hippo-bench-design.md",
       "contentHash": "6079790acdcf203600e44d28503c2de83ef416326c1580c96816f8bba417628c",
@@ -28273,6 +28983,584 @@
       "imports": [],
       "exports": [],
       "totalLines": 16,
+      "hasStructuralAnalysis": true
+    },
+    "hippo-gui/.mcp.json": {
+      "filePath": "hippo-gui/.mcp.json",
+      "contentHash": "b12bedee465366dc4a94ebf3365d4e21504c9c5450ee7429e50f954d879e6cbc",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 10,
+      "hasStructuralAnalysis": true
+    },
+    "hippo-gui/.swift-format": {
+      "filePath": "hippo-gui/.swift-format",
+      "contentHash": "0a824b594216bb91eaeac6e13f029055af5309325a4a613f1ae680172a1e98bd",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 15,
+      "hasStructuralAnalysis": false
+    },
+    "hippo-gui/.swiftlint.yml": {
+      "filePath": "hippo-gui/.swiftlint.yml",
+      "contentHash": "8d7b74074f16a7bda274e79e2604ebcd2388c4e7559314fe216c647234e66558",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 32,
+      "hasStructuralAnalysis": true
+    },
+    "hippo-gui/AppBundle/Info.plist": {
+      "filePath": "hippo-gui/AppBundle/Info.plist",
+      "contentHash": "9d4d4be827d88ee55ea372a689a16ba427da8ab9e03a4868ddca0f617110f387",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 33,
+      "hasStructuralAnalysis": false
+    },
+    "hippo-gui/Docs/Plans/plan-hippoGuiMacosApp.prompt.md": {
+      "filePath": "hippo-gui/Docs/Plans/plan-hippoGuiMacosApp.prompt.md",
+      "contentHash": "dde304dd7934818979b71e0593f0a126211694032811709d47b9fd32e5a6f9ab",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 124,
+      "hasStructuralAnalysis": true
+    },
+    "hippo-gui/Package.resolved": {
+      "filePath": "hippo-gui/Package.resolved",
+      "contentHash": "85e338169fd3bce7fd16d27f7aa80594f3619644733d54d3dcf9dfd7df0d276a",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 97,
+      "hasStructuralAnalysis": false
+    },
+    "hippo-gui/Package.swift": {
+      "filePath": "hippo-gui/Package.swift",
+      "contentHash": "2d1e7697eb0c1091294df9f6bb05841064fe5cf1d2e9a52616ca25c27309117e",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 35,
+      "hasStructuralAnalysis": false
+    },
+    "hippo-gui/README.md": {
+      "filePath": "hippo-gui/README.md",
+      "contentHash": "dab467a29e3b3c9374283491219562414cb75ffac023edb88930940aa7599d9a",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 153,
+      "hasStructuralAnalysis": true
+    },
+    "hippo-gui/Resources/Assets.xcassets/AppIcon.appiconset/Contents.json": {
+      "filePath": "hippo-gui/Resources/Assets.xcassets/AppIcon.appiconset/Contents.json",
+      "contentHash": "0549c30089adf516257b757f4880be25be200545eacec1d79eeca5c1e91029cb",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 18,
+      "hasStructuralAnalysis": true
+    },
+    "hippo-gui/Resources/Assets.xcassets/Contents.json": {
+      "filePath": "hippo-gui/Resources/Assets.xcassets/Contents.json",
+      "contentHash": "3068ae11b833a8ea03990d2ea2a2b5fe7b3c47fbda56de956a4b84888f6c6af8",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 6,
+      "hasStructuralAnalysis": true
+    },
+    "hippo-gui/Sources/HippoGUI/App/AppMetadata.swift": {
+      "filePath": "hippo-gui/Sources/HippoGUI/App/AppMetadata.swift",
+      "contentHash": "7405459d125db2f8d51074250e2309fbde4a55dd7425ed12409c6827744214c3",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 51,
+      "hasStructuralAnalysis": false
+    },
+    "hippo-gui/Sources/HippoGUI/App/HippoGUIApp.swift": {
+      "filePath": "hippo-gui/Sources/HippoGUI/App/HippoGUIApp.swift",
+      "contentHash": "e45731b200c217f08141072bd81a29254716919a5f2945f3d905292f95dcf6a3",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 88,
+      "hasStructuralAnalysis": false
+    },
+    "hippo-gui/Sources/HippoGUI/Models/AskResponse.swift": {
+      "filePath": "hippo-gui/Sources/HippoGUI/Models/AskResponse.swift",
+      "contentHash": "b0298aeda196b32ac5a4a79a817a7ec33e145faa130a536a252109c0eee913dc",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 86,
+      "hasStructuralAnalysis": false
+    },
+    "hippo-gui/Sources/HippoGUI/Models/Event.swift": {
+      "filePath": "hippo-gui/Sources/HippoGUI/Models/Event.swift",
+      "contentHash": "237855a52a327967eadf8f619e8a678b33726aa7f85f07e12dd49af9b1f508b0",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 28,
+      "hasStructuralAnalysis": false
+    },
+    "hippo-gui/Sources/HippoGUI/Models/HealthResponse.swift": {
+      "filePath": "hippo-gui/Sources/HippoGUI/Models/HealthResponse.swift",
+      "contentHash": "4a027e849e482a96620dc3a23076b1da81d356dd3cd42de5a18fb538fb3ab3ac",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 87,
+      "hasStructuralAnalysis": false
+    },
+    "hippo-gui/Sources/HippoGUI/Models/KnowledgeNode.swift": {
+      "filePath": "hippo-gui/Sources/HippoGUI/Models/KnowledgeNode.swift",
+      "contentHash": "967b1ecc60b60894ffdd318a48a94ff84f1092409d22127cc8133154def5dd7c",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 91,
+      "hasStructuralAnalysis": false
+    },
+    "hippo-gui/Sources/HippoGUI/Models/QueryResponse.swift": {
+      "filePath": "hippo-gui/Sources/HippoGUI/Models/QueryResponse.swift",
+      "contentHash": "a54763064766b4601609c42b807f9c47d6cbcd797b0e66e08d2995bbcf59d880",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 189,
+      "hasStructuralAnalysis": false
+    },
+    "hippo-gui/Sources/HippoGUI/Models/Session.swift": {
+      "filePath": "hippo-gui/Sources/HippoGUI/Models/Session.swift",
+      "contentHash": "d777f3f5b0da4c085257bdb60ec06705453faefe30bea5238d83ce43177099a3",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 22,
+      "hasStructuralAnalysis": false
+    },
+    "hippo-gui/Sources/HippoGUI/Models/SidebarSection.swift": {
+      "filePath": "hippo-gui/Sources/HippoGUI/Models/SidebarSection.swift",
+      "contentHash": "49ae625c596da1006dddfceb69d8714f93277a1f96908210ffbf75c1ba72e286",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 37,
+      "hasStructuralAnalysis": false
+    },
+    "hippo-gui/Sources/HippoGUI/Models/TimeFilterPreset.swift": {
+      "filePath": "hippo-gui/Sources/HippoGUI/Models/TimeFilterPreset.swift",
+      "contentHash": "22690b8d16d0382f9fd6e9587f60bed27282d284215906a7379cfe91e2ebe61d",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 33,
+      "hasStructuralAnalysis": false
+    },
+    "hippo-gui/Sources/HippoGUI/Services/BrainClient.swift": {
+      "filePath": "hippo-gui/Sources/HippoGUI/Services/BrainClient.swift",
+      "contentHash": "c124a64c28abf458d1f7bd3c9af07bafecf0fe4e8e155a2607d4555064947861",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 226,
+      "hasStructuralAnalysis": false
+    },
+    "hippo-gui/Sources/HippoGUI/Services/BrainClientEnvironment.swift": {
+      "filePath": "hippo-gui/Sources/HippoGUI/Services/BrainClientEnvironment.swift",
+      "contentHash": "c4e0f3f82949693342fa9b0999f89e434ee7e522607b144a1639b2f8eec9ec3e",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 53,
+      "hasStructuralAnalysis": false
+    },
+    "hippo-gui/Sources/HippoGUI/Services/ConfigClient.swift": {
+      "filePath": "hippo-gui/Sources/HippoGUI/Services/ConfigClient.swift",
+      "contentHash": "87720eb5e5d05f2fce3c6ef1df3a43daf73307ea28da8b4ba1b0cdd9a712a9f5",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 102,
+      "hasStructuralAnalysis": false
+    },
+    "hippo-gui/Sources/HippoGUI/Services/DaemonSocketClient.swift": {
+      "filePath": "hippo-gui/Sources/HippoGUI/Services/DaemonSocketClient.swift",
+      "contentHash": "8f8495cad16be3468599a500ad8166a76a160b9352942d2038f706dbeb0a423c",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 84,
+      "hasStructuralAnalysis": false
+    },
+    "hippo-gui/Sources/HippoGUI/Services/PreviewBrainClient.swift": {
+      "filePath": "hippo-gui/Sources/HippoGUI/Services/PreviewBrainClient.swift",
+      "contentHash": "bc10440b87492364ff916966a354067005aa11c50016935728f35317c3a11ddd",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 97,
+      "hasStructuralAnalysis": false
+    },
+    "hippo-gui/Sources/HippoGUI/ViewModels/EventBrowserViewModel.swift": {
+      "filePath": "hippo-gui/Sources/HippoGUI/ViewModels/EventBrowserViewModel.swift",
+      "contentHash": "4b8d1b04f87f8f0f7bac17b07029eb17a2760c743c2ffd7972910d70d065f077",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 192,
+      "hasStructuralAnalysis": false
+    },
+    "hippo-gui/Sources/HippoGUI/ViewModels/KnowledgeViewModel.swift": {
+      "filePath": "hippo-gui/Sources/HippoGUI/ViewModels/KnowledgeViewModel.swift",
+      "contentHash": "622effba608b8737783398b19d69a5d469c6d6dca2f3923df7a8827f3d31fdbd",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 144,
+      "hasStructuralAnalysis": false
+    },
+    "hippo-gui/Sources/HippoGUI/ViewModels/QueryViewModel.swift": {
+      "filePath": "hippo-gui/Sources/HippoGUI/ViewModels/QueryViewModel.swift",
+      "contentHash": "cb903196fb37c7e2cd6df741af2d7e04cdb6c3d2ec51805fb11135ea6a66a3c9",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 90,
+      "hasStructuralAnalysis": false
+    },
+    "hippo-gui/Sources/HippoGUI/ViewModels/StatusViewModel.swift": {
+      "filePath": "hippo-gui/Sources/HippoGUI/ViewModels/StatusViewModel.swift",
+      "contentHash": "265e1bd1f681b1d215422081be695383baa62996a7ede709766bcb3e79777458",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 116,
+      "hasStructuralAnalysis": false
+    },
+    "hippo-gui/Sources/HippoGUI/Views/AboutSettingsView.swift": {
+      "filePath": "hippo-gui/Sources/HippoGUI/Views/AboutSettingsView.swift",
+      "contentHash": "a2528c1ed45bc8a37a5d764440474ece19666f08697ca264f2a0afe28da586cb",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 69,
+      "hasStructuralAnalysis": false
+    },
+    "hippo-gui/Sources/HippoGUI/Views/ContentView.swift": {
+      "filePath": "hippo-gui/Sources/HippoGUI/Views/ContentView.swift",
+      "contentHash": "a7afc8ff323fa770d368a0e23b9fd4b691c7693bcbee0e06fd6047fe470f91ed",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 43,
+      "hasStructuralAnalysis": false
+    },
+    "hippo-gui/Sources/HippoGUI/Views/ErrorBannerView.swift": {
+      "filePath": "hippo-gui/Sources/HippoGUI/Views/ErrorBannerView.swift",
+      "contentHash": "0cb9865fd0ddc25acb8c0e2fa325cec2c4b70ab13d2091ffbd85d2bd8029622a",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 43,
+      "hasStructuralAnalysis": false
+    },
+    "hippo-gui/Sources/HippoGUI/Views/EventBrowserView.swift": {
+      "filePath": "hippo-gui/Sources/HippoGUI/Views/EventBrowserView.swift",
+      "contentHash": "be24fd84846766f0c723f088b341aabd213483c59919af3df253eea26702549b",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 299,
+      "hasStructuralAnalysis": false
+    },
+    "hippo-gui/Sources/HippoGUI/Views/KnowledgeView.swift": {
+      "filePath": "hippo-gui/Sources/HippoGUI/Views/KnowledgeView.swift",
+      "contentHash": "4959eadf8ab02b56787436a2a7a9d7d9f17201f6ab38d5e76c0cdc64d2ef863b",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 358,
+      "hasStructuralAnalysis": false
+    },
+    "hippo-gui/Sources/HippoGUI/Views/QueryAskView.swift": {
+      "filePath": "hippo-gui/Sources/HippoGUI/Views/QueryAskView.swift",
+      "contentHash": "24c649352af5dfd3999f66ebc0d8ac1a7a07f545d7da742440f7fe96be48b3f6",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 227,
+      "hasStructuralAnalysis": false
+    },
+    "hippo-gui/Sources/HippoGUI/Views/StatusView.swift": {
+      "filePath": "hippo-gui/Sources/HippoGUI/Views/StatusView.swift",
+      "contentHash": "530855fa460000381db787d40f68380599d17c19ba21f92698c36d62ed842812",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 150,
+      "hasStructuralAnalysis": false
+    },
+    "hippo-gui/Sources/HippoGUIPackageApp/HippoGUIPackageApp.swift": {
+      "filePath": "hippo-gui/Sources/HippoGUIPackageApp/HippoGUIPackageApp.swift",
+      "contentHash": "28d5f47016d38e933a2e8e0605ae5331da61a25f5c620deb8a542df9ebcf038f",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 12,
+      "hasStructuralAnalysis": false
+    },
+    "hippo-gui/Tests/HippoGUITests/AppMetadataTests.swift": {
+      "filePath": "hippo-gui/Tests/HippoGUITests/AppMetadataTests.swift",
+      "contentHash": "ca1175fc2f466fb5640e3c06c429eaeb0757a3cf6b4d374ef696833b2d156ae5",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 106,
+      "hasStructuralAnalysis": false
+    },
+    "hippo-gui/Tests/HippoGUITests/ConfigClientTests.swift": {
+      "filePath": "hippo-gui/Tests/HippoGUITests/ConfigClientTests.swift",
+      "contentHash": "caf08ff2a72e75a47b36298311db8da496750cb9c2a95702dc6fe2266a81be0d",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 107,
+      "hasStructuralAnalysis": false
+    },
+    "hippo-gui/Tests/HippoGUITests/DecodingTests.swift": {
+      "filePath": "hippo-gui/Tests/HippoGUITests/DecodingTests.swift",
+      "contentHash": "884441240b31bc9c967155dbd1e9db2d1e3620115606ffc762a0c34a488d2248",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 228,
+      "hasStructuralAnalysis": false
+    },
+    "hippo-gui/Tests/HippoGUITests/MockBrainClient.swift": {
+      "filePath": "hippo-gui/Tests/HippoGUITests/MockBrainClient.swift",
+      "contentHash": "a2aefa710e65f28a04342aa6efbbbbc4f6b84bf36f33b30e11cd6b5ca5ef240b",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 154,
+      "hasStructuralAnalysis": false
+    },
+    "hippo-gui/Tests/HippoGUITests/ModelTests.swift": {
+      "filePath": "hippo-gui/Tests/HippoGUITests/ModelTests.swift",
+      "contentHash": "3155cf43d6c6402a8d9f237a68e1b138754bc4e554c539094250d5cb2b36bd35",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 241,
+      "hasStructuralAnalysis": false
+    },
+    "hippo-gui/Tests/HippoGUITests/ViewModelTests.swift": {
+      "filePath": "hippo-gui/Tests/HippoGUITests/ViewModelTests.swift",
+      "contentHash": "68a7c047e1795a49cd28fefcf79e80d1ec6b317d0fe3ea9abcad689b8b79de8e",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 525,
+      "hasStructuralAnalysis": false
+    },
+    "hippo-gui/VERSION": {
+      "filePath": "hippo-gui/VERSION",
+      "contentHash": "f635cb36f28e15f2f0b8d31cab9a8eb1dfbaa628d282e9d55dd80669d23c0602",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 2,
+      "hasStructuralAnalysis": false
+    },
+    "hippo-gui/XcodeApp/HippoGUIXcodeApp.swift": {
+      "filePath": "hippo-gui/XcodeApp/HippoGUIXcodeApp.swift",
+      "contentHash": "cdab865b4119ba25b24a91a90d0324d10336d1defff5ef7708f99416c89494df",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 12,
+      "hasStructuralAnalysis": false
+    },
+    "hippo-gui/scripts/build-native-app.sh": {
+      "filePath": "hippo-gui/scripts/build-native-app.sh",
+      "contentHash": "11482ff066973e070bb46f3f8593ba4343295a8d28907ecc4bc07a51df00f5df",
+      "functions": [
+        {
+          "name": "usage",
+          "params": [],
+          "exported": false,
+          "lineCount": 15
+        }
+      ],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 97,
+      "hasStructuralAnalysis": true
+    },
+    "hippo-gui/scripts/generate-app-icon.swift": {
+      "filePath": "hippo-gui/scripts/generate-app-icon.swift",
+      "contentHash": "9458139668a9a70086c10cd77bd035c2280653b848badf8210231c11581a227c",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 218,
+      "hasStructuralAnalysis": false
+    },
+    "hippo-gui/scripts/release-gui.sh": {
+      "filePath": "hippo-gui/scripts/release-gui.sh",
+      "contentHash": "0f834e8d9442c3cc413422a8a16aff10c2b4ffd8e5038ff9dca3db8056acb084",
+      "functions": [
+        {
+          "name": "usage",
+          "params": [],
+          "exported": false,
+          "lineCount": 10
+        },
+        {
+          "name": "emit_json",
+          "params": [],
+          "exported": false,
+          "lineCount": 34
+        }
+      ],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 192,
+      "hasStructuralAnalysis": true
+    },
+    "hippo-gui/scripts/run-native-app.sh": {
+      "filePath": "hippo-gui/scripts/run-native-app.sh",
+      "contentHash": "bfc20c71f8408e23ba8293b48c9bf9e1b4c934efdcaffc13ca1d152ab948e69c",
+      "functions": [
+        {
+          "name": "usage",
+          "params": [],
+          "exported": false,
+          "lineCount": 12
+        }
+      ],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 35,
+      "hasStructuralAnalysis": true
+    },
+    "hippo-gui/scripts/setup-codex-mcp.sh": {
+      "filePath": "hippo-gui/scripts/setup-codex-mcp.sh",
+      "contentHash": "811d026b306e2ac480cf93436e590cd9e53117e55745c392018cb74604a02245",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 16,
+      "hasStructuralAnalysis": true
+    },
+    "hippo-gui/scripts/stamp-app-version.sh": {
+      "filePath": "hippo-gui/scripts/stamp-app-version.sh",
+      "contentHash": "83721c67ed31cfa057422656f5b42b7d62e210ec473045b41d1914d2268f80d6",
+      "functions": [
+        {
+          "name": "usage",
+          "params": [],
+          "exported": false,
+          "lineCount": 3
+        },
+        {
+          "name": "fail",
+          "params": [],
+          "exported": false,
+          "lineCount": 4
+        },
+        {
+          "name": "resolve_marketing_version",
+          "params": [],
+          "exported": false,
+          "lineCount": 27
+        },
+        {
+          "name": "resolve_build_number",
+          "params": [],
+          "exported": false,
+          "lineCount": 18
+        },
+        {
+          "name": "set_plist_key",
+          "params": [],
+          "exported": false,
+          "lineCount": 11
+        }
+      ],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 109,
+      "hasStructuralAnalysis": true
+    },
+    "hippo-gui/scripts/xcode-mcp-proxy.sh": {
+      "filePath": "hippo-gui/scripts/xcode-mcp-proxy.sh",
+      "contentHash": "0eea2885970ee697b58dc36e522f8684c043fd532eda996b254682c3b3688ee4",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 30,
       "hasStructuralAnalysis": true
     },
     "launchd/com.hippo.brain.plist": {
@@ -29102,6 +30390,1594 @@
       "imports": [],
       "exports": [],
       "totalLines": 156,
+      "hasStructuralAnalysis": true
+    },
+    "site/CONTRIBUTING.md": {
+      "filePath": "site/CONTRIBUTING.md",
+      "contentHash": "20dd0b4ddbdfb945e578ecb89b76f3319d5069a7cca99f0f402bb6c7cb4fa705",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 142,
+      "hasStructuralAnalysis": true
+    },
+    "site/README.md": {
+      "filePath": "site/README.md",
+      "contentHash": "8327f6eb6cbe3aff91ff08e492ca532967724cbe4131c71ce92111ac47238fe4",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 62,
+      "hasStructuralAnalysis": true
+    },
+    "site/astro.config.mjs": {
+      "filePath": "site/astro.config.mjs",
+      "contentHash": "57ef9076200e5a70d7554d608d5918d84dad4ecf64bcecb9861494ffa574dcee",
+      "functions": [],
+      "classes": [],
+      "imports": [
+        {
+          "source": "astro/config",
+          "specifiers": [
+            "defineConfig"
+          ]
+        },
+        {
+          "source": "@astrojs/sitemap",
+          "specifiers": [
+            "sitemap"
+          ]
+        },
+        {
+          "source": "astro-pagefind",
+          "specifiers": [
+            "pagefind"
+          ]
+        },
+        {
+          "source": "rehype-slug",
+          "specifiers": [
+            "rehypeSlug"
+          ]
+        },
+        {
+          "source": "rehype-autolink-headings",
+          "specifiers": [
+            "rehypeAutolinkHeadings"
+          ]
+        },
+        {
+          "source": "./src/lib/rehype/link-rewrite.ts",
+          "specifiers": [
+            "rehypeLinkRewrite"
+          ]
+        },
+        {
+          "source": "./src/lib/rehype/image-resolve.ts",
+          "specifiers": [
+            "rehypeImageResolve"
+          ]
+        },
+        {
+          "source": "./src/lib/remark/edit-on-github.ts",
+          "specifiers": [
+            "remarkEditOnGithub"
+          ]
+        },
+        {
+          "source": "./integrations/copy-doc-images.ts",
+          "specifiers": [
+            "copyDocImages"
+          ]
+        },
+        {
+          "source": "./integrations/copy-public-assets.ts",
+          "specifiers": [
+            "copyPublicAssets"
+          ]
+        }
+      ],
+      "exports": [],
+      "totalLines": 58,
+      "hasStructuralAnalysis": true
+    },
+    "site/integrations/copy-doc-images.ts": {
+      "filePath": "site/integrations/copy-doc-images.ts",
+      "contentHash": "d1545e6a3448fd7f48a29f56003bd83e99a5441ab8611c98d15f8fa64be752b1",
+      "functions": [
+        {
+          "name": "copyDocImages",
+          "params": [],
+          "returnType": "AstroIntegration",
+          "exported": true,
+          "lineCount": 18
+        },
+        {
+          "name": "walkAndCopy",
+          "params": [
+            "srcDir",
+            "destDir",
+            "rel"
+          ],
+          "returnType": "number",
+          "exported": false,
+          "lineCount": 18
+        }
+      ],
+      "classes": [],
+      "imports": [
+        {
+          "source": "astro",
+          "specifiers": [
+            "AstroIntegration"
+          ]
+        },
+        {
+          "source": "node:fs",
+          "specifiers": [
+            "mkdirSync",
+            "copyFileSync",
+            "existsSync",
+            "readdirSync",
+            "statSync"
+          ]
+        },
+        {
+          "source": "node:path",
+          "specifiers": [
+            "path"
+          ]
+        }
+      ],
+      "exports": [
+        "copyDocImages"
+      ],
+      "totalLines": 57,
+      "hasStructuralAnalysis": true
+    },
+    "site/integrations/copy-public-assets.ts": {
+      "filePath": "site/integrations/copy-public-assets.ts",
+      "contentHash": "4461d610b50592dc345733627f1a583146a2c6a664e230184552af7dd033cec8",
+      "functions": [
+        {
+          "name": "copyPublicAssets",
+          "params": [],
+          "returnType": "AstroIntegration",
+          "exported": true,
+          "lineCount": 28
+        }
+      ],
+      "classes": [],
+      "imports": [
+        {
+          "source": "astro",
+          "specifiers": [
+            "AstroIntegration"
+          ]
+        },
+        {
+          "source": "node:fs",
+          "specifiers": [
+            "copyFileSync",
+            "existsSync",
+            "mkdirSync"
+          ]
+        },
+        {
+          "source": "node:path",
+          "specifiers": [
+            "path"
+          ]
+        }
+      ],
+      "exports": [
+        "copyPublicAssets"
+      ],
+      "totalLines": 41,
+      "hasStructuralAnalysis": true
+    },
+    "site/package.json": {
+      "filePath": "site/package.json",
+      "contentHash": "8a8a6d7ddf8418bc9dbcd9034ad6825b49195d072d6379b298f6776e48bb1ded",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 51,
+      "hasStructuralAnalysis": true
+    },
+    "site/public/CNAME": {
+      "filePath": "site/public/CNAME",
+      "contentHash": "c96ea0eb515ed4daeb302cc451fcf4024b6926a176f4e3d517f27049093a2b13",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 2,
+      "hasStructuralAnalysis": false
+    },
+    "site/public/robots.txt": {
+      "filePath": "site/public/robots.txt",
+      "contentHash": "7ecac59b5c3f866fe50a61676ed186c798e8e1e24fbcf4087b0afde1a1df48bb",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 5,
+      "hasStructuralAnalysis": false
+    },
+    "site/scripts/generate-og.js": {
+      "filePath": "site/scripts/generate-og.js",
+      "contentHash": "873ef1b408e1debc3c2695c24e03c267553d1d222665cdc3c6fe3d1d6215ed94",
+      "functions": [],
+      "classes": [],
+      "imports": [
+        {
+          "source": "sharp",
+          "specifiers": [
+            "sharp"
+          ]
+        },
+        {
+          "source": "node:path",
+          "specifiers": [
+            "path"
+          ]
+        },
+        {
+          "source": "node:url",
+          "specifiers": [
+            "fileURLToPath"
+          ]
+        }
+      ],
+      "exports": [],
+      "totalLines": 29,
+      "hasStructuralAnalysis": true
+    },
+    "site/src/components/Admonition.astro": {
+      "filePath": "site/src/components/Admonition.astro",
+      "contentHash": "51cef89632fe136f9d12b7847752963e49f89c38027bbcbc684c8e1f39ba2852",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 14,
+      "hasStructuralAnalysis": false
+    },
+    "site/src/components/ChangelogEntry.astro": {
+      "filePath": "site/src/components/ChangelogEntry.astro",
+      "contentHash": "cedfd334b6fce839f9e19ae58c2feb87532c6a9e94bd792f180b3e2b5fb6daed",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 51,
+      "hasStructuralAnalysis": false
+    },
+    "site/src/components/ChapterMark.astro": {
+      "filePath": "site/src/components/ChapterMark.astro",
+      "contentHash": "854c410e3d46800808925d5e6c0ad37f82b136a10c66a7a593a4c49325ed20d5",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 23,
+      "hasStructuralAnalysis": false
+    },
+    "site/src/components/CodeBlock.astro": {
+      "filePath": "site/src/components/CodeBlock.astro",
+      "contentHash": "78c32af3f065da9120506e760255ade639f90ec02e64dd5bc1ed737d2ad89f2f",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 53,
+      "hasStructuralAnalysis": false
+    },
+    "site/src/components/DocsBreadcrumb.astro": {
+      "filePath": "site/src/components/DocsBreadcrumb.astro",
+      "contentHash": "a6031a39e59b94e048aa0e60d4f6b35e20b8c60e5c28ee1e9bdd91533164ba20",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 27,
+      "hasStructuralAnalysis": false
+    },
+    "site/src/components/DocsOutline.astro": {
+      "filePath": "site/src/components/DocsOutline.astro",
+      "contentHash": "a7f4de2f84c9735a2bbe9f30f569ddb987c9f5d4e269d76dee5d14f585e79e50",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 57,
+      "hasStructuralAnalysis": false
+    },
+    "site/src/components/DocsRail.astro": {
+      "filePath": "site/src/components/DocsRail.astro",
+      "contentHash": "b09e66f2e18f6eb3ee5770fc68b14a462e7b60fa8058fe3fa9e9f75f00bc6585",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 54,
+      "hasStructuralAnalysis": false
+    },
+    "site/src/components/EditOnGitHub.astro": {
+      "filePath": "site/src/components/EditOnGitHub.astro",
+      "contentHash": "5e4f4ef53e67169f2415c7452a10380499967ac1ae1c367bd405f768431ec08a",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 22,
+      "hasStructuralAnalysis": false
+    },
+    "site/src/components/Footer.astro": {
+      "filePath": "site/src/components/Footer.astro",
+      "contentHash": "801df786844d637223b1b045dc2d29620375579ec430d26808e7bb0cea3fcc52",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 105,
+      "hasStructuralAnalysis": false
+    },
+    "site/src/components/Head.astro": {
+      "filePath": "site/src/components/Head.astro",
+      "contentHash": "9d1a17d13ce3e19bf0ce47c98483058b8d7e3cd96e614432639b705ecc455dde",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 62,
+      "hasStructuralAnalysis": false
+    },
+    "site/src/components/Header.astro": {
+      "filePath": "site/src/components/Header.astro",
+      "contentHash": "7707afe8a1c7e6781915bdea3637ff43d633c0e9c7ca45178b0ff9cb0babd372",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 80,
+      "hasStructuralAnalysis": false
+    },
+    "site/src/components/Hero.astro": {
+      "filePath": "site/src/components/Hero.astro",
+      "contentHash": "f80402307adefa019f1727d8d703d5e37255ca826c7f334813e1008356d50db3",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 37,
+      "hasStructuralAnalysis": false
+    },
+    "site/src/components/Marginalia.astro": {
+      "filePath": "site/src/components/Marginalia.astro",
+      "contentHash": "4a978aa77b8dca506fb4956cb7fb1ad8ff9eaa53097a94cbc3002de0110b9292",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 10,
+      "hasStructuralAnalysis": false
+    },
+    "site/src/components/PlateBadge.astro": {
+      "filePath": "site/src/components/PlateBadge.astro",
+      "contentHash": "0bc8d4efb0b06ed6c6811a232597a933f7c45005f5469d348b377f9101ae983f",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 20,
+      "hasStructuralAnalysis": false
+    },
+    "site/src/components/Search.astro": {
+      "filePath": "site/src/components/Search.astro",
+      "contentHash": "1c75feeaa5b5fe3189d32850de85904d256a0c16802306b98e5ae9893914851d",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 75,
+      "hasStructuralAnalysis": false
+    },
+    "site/src/components/StatusBadge.astro": {
+      "filePath": "site/src/components/StatusBadge.astro",
+      "contentHash": "61b9a97bd9505a1dbf51fa0699e7b3efd5e965f31c5acfd0d3da29d7453ff3d7",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 13,
+      "hasStructuralAnalysis": false
+    },
+    "site/src/components/Wordmark.astro": {
+      "filePath": "site/src/components/Wordmark.astro",
+      "contentHash": "cea861b757e743de6ddaaeb2fc1048060faf8a0eea6e5031b430f9114997eb4b",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 24,
+      "hasStructuralAnalysis": false
+    },
+    "site/src/components/motifs/CornuAmmonis.astro": {
+      "filePath": "site/src/components/motifs/CornuAmmonis.astro",
+      "contentHash": "a5f495c146ffff9d54f8d133189365fd97a77ac14933d20aa7ae3d13a0cf06e2",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 61,
+      "hasStructuralAnalysis": false
+    },
+    "site/src/components/motifs/Fasciculus.astro": {
+      "filePath": "site/src/components/motifs/Fasciculus.astro",
+      "contentHash": "b0c014780c45e42dc07e8b11537f856df5bb572f3435757c3f812f880f633a09",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 55,
+      "hasStructuralAnalysis": false
+    },
+    "site/src/components/motifs/MarginaliaMotif.astro": {
+      "filePath": "site/src/components/motifs/MarginaliaMotif.astro",
+      "contentHash": "71154117e2b822e8f1d371589240db261f1eb7d7a0814e20b53804bf67660350",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 68,
+      "hasStructuralAnalysis": false
+    },
+    "site/src/components/motifs/PlateFrame.astro": {
+      "filePath": "site/src/components/motifs/PlateFrame.astro",
+      "contentHash": "8494ee08a369951fc11f28360ed87181606fa17d143bcaa8be6b5dab7e4c2839",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 55,
+      "hasStructuralAnalysis": false
+    },
+    "site/src/components/motifs/SectioCoronalis.astro": {
+      "filePath": "site/src/components/motifs/SectioCoronalis.astro",
+      "contentHash": "0edd70959f329c4a0784cb64c148fb385c2db20245dd1b3e25787b6bf5118389",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 49,
+      "hasStructuralAnalysis": false
+    },
+    "site/src/components/motifs/TrisynapticCircuit.astro": {
+      "filePath": "site/src/components/motifs/TrisynapticCircuit.astro",
+      "contentHash": "a5dd9fda79b0e5b8269fa9aae19da14d9fd39c8f9376876120f4270944bc36f1",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 58,
+      "hasStructuralAnalysis": false
+    },
+    "site/src/content.config.ts": {
+      "filePath": "site/src/content.config.ts",
+      "contentHash": "39a70096bed9bd3daea4ba8dd858e65fe6b367325675d91b7ab7163483231fca",
+      "functions": [],
+      "classes": [],
+      "imports": [
+        {
+          "source": "astro:content",
+          "specifiers": [
+            "defineCollection"
+          ]
+        },
+        {
+          "source": "astro/loaders",
+          "specifiers": [
+            "glob"
+          ]
+        },
+        {
+          "source": "zod",
+          "specifiers": [
+            "z"
+          ]
+        },
+        {
+          "source": "./lib/markdown-file-loader.ts",
+          "specifiers": [
+            "docsLoader",
+            "singleMarkdownLoader"
+          ]
+        }
+      ],
+      "exports": [
+        "collections"
+      ],
+      "totalLines": 65,
+      "hasStructuralAnalysis": true
+    },
+    "site/src/content/blog/.gitkeep": {
+      "filePath": "site/src/content/blog/.gitkeep",
+      "contentHash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 1,
+      "hasStructuralAnalysis": false
+    },
+    "site/src/content/blog/_placeholder.md": {
+      "filePath": "site/src/content/blog/_placeholder.md",
+      "contentHash": "bbba0ff9b1f46784d0f14083dabfde2549e6ac871cb22c82a1ec25b792240149",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 13,
+      "hasStructuralAnalysis": true
+    },
+    "site/src/data/github-fallback.json": {
+      "filePath": "site/src/data/github-fallback.json",
+      "contentHash": "974e07bd24190d69b3b221f5312211527681a29e66b89d8e2514c63010e7b2d8",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 8,
+      "hasStructuralAnalysis": true
+    },
+    "site/src/env.d.ts": {
+      "filePath": "site/src/env.d.ts",
+      "contentHash": "5a498a2ff3c0abb338aff60209dfe32fb591fc5ad359182c5a14910f4c2fff8f",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 3,
+      "hasStructuralAnalysis": true
+    },
+    "site/src/layouts/BlogPost.astro": {
+      "filePath": "site/src/layouts/BlogPost.astro",
+      "contentHash": "1142259869edc7046630873013666a8239d39c2faa595ca085d5fe2635a08d08",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 48,
+      "hasStructuralAnalysis": false
+    },
+    "site/src/layouts/Tier1.astro": {
+      "filePath": "site/src/layouts/Tier1.astro",
+      "contentHash": "bac281f30fd8f431f63ed00f15b32e79b4d7e23f8ea2b6d5c9734a14bf9f0ae3",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 30,
+      "hasStructuralAnalysis": false
+    },
+    "site/src/layouts/Tier2.astro": {
+      "filePath": "site/src/layouts/Tier2.astro",
+      "contentHash": "b0ac9b05949da2bf551b87645b71c12d4b8b7ecd667483dcc5737f7769618238",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 47,
+      "hasStructuralAnalysis": false
+    },
+    "site/src/lib/docs.ts": {
+      "filePath": "site/src/lib/docs.ts",
+      "contentHash": "b4a93c124a9aa0e7d70145210ddb505cf446fe6ff0aa40ee859abed4e8697101",
+      "functions": [
+        {
+          "name": "gitHubSourcePath",
+          "params": [
+            "slug"
+          ],
+          "returnType": "string",
+          "exported": true,
+          "lineCount": 9
+        },
+        {
+          "name": "sourcePathToSlug",
+          "params": [
+            "repoRelPath"
+          ],
+          "returnType": "string | null",
+          "exported": true,
+          "lineCount": 17
+        },
+        {
+          "name": "motifForSlug",
+          "params": [
+            "slug"
+          ],
+          "returnType": "MotifId",
+          "exported": true,
+          "lineCount": 11
+        },
+        {
+          "name": "defaultTitleForSlug",
+          "params": [
+            "slug"
+          ],
+          "returnType": "string",
+          "exported": true,
+          "lineCount": 6
+        },
+        {
+          "name": "firstMarkdownH1",
+          "params": [
+            "body"
+          ],
+          "returnType": "string | undefined",
+          "exported": true,
+          "lineCount": 8
+        },
+        {
+          "name": "resolveTitle",
+          "params": [
+            "data",
+            "body",
+            "slug"
+          ],
+          "returnType": "string",
+          "exported": false,
+          "lineCount": 11
+        },
+        {
+          "name": "routeSlugForDocsEntry",
+          "params": [
+            "entryId"
+          ],
+          "returnType": "string",
+          "exported": true,
+          "lineCount": 8
+        },
+        {
+          "name": "buildRoutableDocsSlugs",
+          "params": [
+            "docsEntries",
+            "rootEntries",
+            "contribEntries"
+          ],
+          "returnType": "Set<string>",
+          "exported": true,
+          "lineCount": 18
+        },
+        {
+          "name": "buildSidebar",
+          "params": [
+            "docsEntries",
+            "rootEntries",
+            "contribEntries"
+          ],
+          "returnType": "SidebarSection[]",
+          "exported": true,
+          "lineCount": 116
+        }
+      ],
+      "classes": [],
+      "imports": [
+        {
+          "source": "astro:content",
+          "specifiers": [
+            "CollectionEntry"
+          ]
+        }
+      ],
+      "exports": [
+        "gitHubSourcePath",
+        "sourcePathToSlug",
+        "motifForSlug",
+        "defaultTitleForSlug",
+        "firstMarkdownH1",
+        "routeSlugForDocsEntry",
+        "buildRoutableDocsSlugs",
+        "buildSidebar"
+      ],
+      "totalLines": 269,
+      "hasStructuralAnalysis": true
+    },
+    "site/src/lib/github.ts": {
+      "filePath": "site/src/lib/github.ts",
+      "contentHash": "c9239c15b98db760cf62ee14dec9e8babeb34557cd060e9a9da8290f3a047567",
+      "functions": [
+        {
+          "name": "authHeaders",
+          "params": [],
+          "returnType": "Record<string, string>",
+          "exported": false,
+          "lineCount": 13
+        },
+        {
+          "name": "fetchWithRetry",
+          "params": [
+            "url",
+            "retries"
+          ],
+          "returnType": "Promise<Response>",
+          "exported": false,
+          "lineCount": 26
+        },
+        {
+          "name": "loadFallback",
+          "params": [],
+          "returnType": "GithubFallback",
+          "exported": false,
+          "lineCount": 16
+        },
+        {
+          "name": "saveFallback",
+          "params": [
+            "data"
+          ],
+          "returnType": "void",
+          "exported": false,
+          "lineCount": 8
+        },
+        {
+          "name": "loadGithubState",
+          "params": [],
+          "returnType": "Promise<GithubFallback>",
+          "exported": false,
+          "lineCount": 80
+        },
+        {
+          "name": "listReleases",
+          "params": [],
+          "returnType": "Promise<Release[]>",
+          "exported": true,
+          "lineCount": 3
+        },
+        {
+          "name": "latestCommit",
+          "params": [],
+          "returnType": "Promise<CommitInfo | null>",
+          "exported": true,
+          "lineCount": 3
+        },
+        {
+          "name": "latestCIRun",
+          "params": [],
+          "returnType": "Promise<CIRun | null>",
+          "exported": true,
+          "lineCount": 3
+        },
+        {
+          "name": "openIssueCount",
+          "params": [],
+          "returnType": "Promise<number | null>",
+          "exported": true,
+          "lineCount": 3
+        }
+      ],
+      "classes": [],
+      "imports": [
+        {
+          "source": "node:fs",
+          "specifiers": [
+            "readFileSync",
+            "writeFileSync",
+            "existsSync",
+            "mkdirSync"
+          ]
+        },
+        {
+          "source": "node:path",
+          "specifiers": [
+            "path"
+          ]
+        },
+        {
+          "source": "node:url",
+          "specifiers": [
+            "fileURLToPath"
+          ]
+        }
+      ],
+      "exports": [
+        "listReleases",
+        "latestCommit",
+        "latestCIRun",
+        "openIssueCount"
+      ],
+      "totalLines": 207,
+      "hasStructuralAnalysis": true
+    },
+    "site/src/lib/markdown-file-loader.ts": {
+      "filePath": "site/src/lib/markdown-file-loader.ts",
+      "contentHash": "6e1dc10df7b14b672bf6bf46e2cca737fc255334a161424202ceb3a511e9d137",
+      "functions": [
+        {
+          "name": "withSourcePath",
+          "params": [
+            "inner",
+            "computeSourcePath"
+          ],
+          "returnType": "Loader",
+          "exported": true,
+          "lineCount": 31
+        },
+        {
+          "name": "docsLoader",
+          "params": [],
+          "returnType": "Loader",
+          "exported": true,
+          "lineCount": 10
+        },
+        {
+          "name": "singleMarkdownLoader",
+          "params": [
+            "opts"
+          ],
+          "returnType": "Loader",
+          "exported": true,
+          "lineCount": 17
+        }
+      ],
+      "classes": [],
+      "imports": [
+        {
+          "source": "astro/loaders",
+          "specifiers": [
+            "Loader"
+          ]
+        },
+        {
+          "source": "astro/loaders",
+          "specifiers": [
+            "astroGlob"
+          ]
+        },
+        {
+          "source": "node:path",
+          "specifiers": [
+            "path"
+          ]
+        }
+      ],
+      "exports": [
+        "withSourcePath",
+        "EXCLUDED_DOCS_PREFIXES",
+        "docsLoader",
+        "singleMarkdownLoader"
+      ],
+      "totalLines": 84,
+      "hasStructuralAnalysis": true
+    },
+    "site/src/lib/motifs.ts": {
+      "filePath": "site/src/lib/motifs.ts",
+      "contentHash": "0dc46c4f9e817256612f5f86e9e74f6e99764d56048c4ed0a7742a3957cb6479",
+      "functions": [
+        {
+          "name": "getMotif",
+          "params": [
+            "id"
+          ],
+          "exported": true,
+          "lineCount": 3
+        }
+      ],
+      "classes": [],
+      "imports": [
+        {
+          "source": "./docs.ts",
+          "specifiers": [
+            "MotifId"
+          ]
+        },
+        {
+          "source": "../components/motifs/CornuAmmonis.astro",
+          "specifiers": [
+            "CornuAmmonis"
+          ]
+        },
+        {
+          "source": "../components/motifs/SectioCoronalis.astro",
+          "specifiers": [
+            "SectioCoronalis"
+          ]
+        },
+        {
+          "source": "../components/motifs/TrisynapticCircuit.astro",
+          "specifiers": [
+            "TrisynapticCircuit"
+          ]
+        },
+        {
+          "source": "../components/motifs/MarginaliaMotif.astro",
+          "specifiers": [
+            "MarginaliaMotif"
+          ]
+        },
+        {
+          "source": "../components/motifs/PlateFrame.astro",
+          "specifiers": [
+            "PlateFrame"
+          ]
+        },
+        {
+          "source": "../components/motifs/Fasciculus.astro",
+          "specifiers": [
+            "Fasciculus"
+          ]
+        }
+      ],
+      "exports": [
+        "motifs",
+        "motifCaptions",
+        "getMotif"
+      ],
+      "totalLines": 31,
+      "hasStructuralAnalysis": true
+    },
+    "site/src/lib/rehype/image-resolve.ts": {
+      "filePath": "site/src/lib/rehype/image-resolve.ts",
+      "contentHash": "e6ee7e2837ea74dffd03d2d24c9d86ae94a2825406ec63aedf939c90e12cfb7e",
+      "functions": [
+        {
+          "name": "rehypeImageResolve",
+          "params": [],
+          "exported": true,
+          "lineCount": 27
+        }
+      ],
+      "classes": [],
+      "imports": [
+        {
+          "source": "unified",
+          "specifiers": [
+            "Plugin"
+          ]
+        },
+        {
+          "source": "hast",
+          "specifiers": [
+            "Element",
+            "Root"
+          ]
+        },
+        {
+          "source": "unist-util-visit",
+          "specifiers": [
+            "visit"
+          ]
+        },
+        {
+          "source": "node:path",
+          "specifiers": [
+            "path"
+          ]
+        },
+        {
+          "source": "../source-path.ts",
+          "specifiers": [
+            "resolveSourcePath"
+          ]
+        }
+      ],
+      "exports": [
+        "rehypeImageResolve"
+      ],
+      "totalLines": 41,
+      "hasStructuralAnalysis": true
+    },
+    "site/src/lib/rehype/link-rewrite.ts": {
+      "filePath": "site/src/lib/rehype/link-rewrite.ts",
+      "contentHash": "86f9dce8dee7e216a8b9625cfd697b33fe7415557074e3dd6993c263dccccd56",
+      "functions": [
+        {
+          "name": "repoPathToSitePath",
+          "params": [
+            "repoRelPath"
+          ],
+          "returnType": "string | null",
+          "exported": true,
+          "lineCount": 14
+        },
+        {
+          "name": "ghBlob",
+          "params": [
+            "repoPath",
+            "fragment"
+          ],
+          "returnType": "string",
+          "exported": false,
+          "lineCount": 3
+        },
+        {
+          "name": "ghTree",
+          "params": [
+            "repoPath",
+            "fragment"
+          ],
+          "returnType": "string",
+          "exported": false,
+          "lineCount": 5
+        },
+        {
+          "name": "appendArrow",
+          "params": [
+            "node"
+          ],
+          "returnType": "void",
+          "exported": false,
+          "lineCount": 18
+        },
+        {
+          "name": "rehypeLinkRewrite",
+          "params": [],
+          "returnType": "(tree: Root, file: import(\"vfile\").VFile) => void",
+          "exported": true,
+          "lineCount": 99
+        }
+      ],
+      "classes": [],
+      "imports": [
+        {
+          "source": "unified",
+          "specifiers": [
+            "Plugin"
+          ]
+        },
+        {
+          "source": "hast",
+          "specifiers": [
+            "Root",
+            "Element"
+          ]
+        },
+        {
+          "source": "unist-util-visit",
+          "specifiers": [
+            "visit"
+          ]
+        },
+        {
+          "source": "node:path",
+          "specifiers": [
+            "path"
+          ]
+        },
+        {
+          "source": "../source-path.ts",
+          "specifiers": [
+            "resolveSourcePath"
+          ]
+        }
+      ],
+      "exports": [
+        "repoPathToSitePath",
+        "rehypeLinkRewrite"
+      ],
+      "totalLines": 182,
+      "hasStructuralAnalysis": true
+    },
+    "site/src/lib/remark/edit-on-github.ts": {
+      "filePath": "site/src/lib/remark/edit-on-github.ts",
+      "contentHash": "df1cfa3d58a99755e41f8b8818a8b32f5e0c1c61a33f6846f4e7373ed78e47f0",
+      "functions": [
+        {
+          "name": "remarkEditOnGithub",
+          "params": [],
+          "exported": true,
+          "lineCount": 15
+        }
+      ],
+      "classes": [],
+      "imports": [
+        {
+          "source": "unified",
+          "specifiers": [
+            "Plugin"
+          ]
+        },
+        {
+          "source": "mdast",
+          "specifiers": [
+            "Root"
+          ]
+        },
+        {
+          "source": "./types.ts",
+          "specifiers": [
+            "isAstroVFile"
+          ]
+        },
+        {
+          "source": "./git-timestamp.ts",
+          "specifiers": [
+            "gitLastUpdated"
+          ]
+        },
+        {
+          "source": "../source-path.ts",
+          "specifiers": [
+            "resolveSourcePath"
+          ]
+        }
+      ],
+      "exports": [
+        "remarkEditOnGithub"
+      ],
+      "totalLines": 32,
+      "hasStructuralAnalysis": true
+    },
+    "site/src/lib/remark/git-timestamp.ts": {
+      "filePath": "site/src/lib/remark/git-timestamp.ts",
+      "contentHash": "5e17f5e8eb3b7da52792f526e2bc278391073a0c4152b39152c95407a82966ad",
+      "functions": [
+        {
+          "name": "loadBatchCache",
+          "params": [],
+          "returnType": "Map<string, string>",
+          "exported": false,
+          "lineCount": 27
+        },
+        {
+          "name": "gitLastUpdated",
+          "params": [
+            "repoRelPath"
+          ],
+          "returnType": "string",
+          "exported": true,
+          "lineCount": 3
+        }
+      ],
+      "classes": [],
+      "imports": [
+        {
+          "source": "node:child_process",
+          "specifiers": [
+            "execFileSync"
+          ]
+        },
+        {
+          "source": "node:path",
+          "specifiers": [
+            "path"
+          ]
+        }
+      ],
+      "exports": [
+        "gitLastUpdated"
+      ],
+      "totalLines": 45,
+      "hasStructuralAnalysis": true
+    },
+    "site/src/lib/remark/types.ts": {
+      "filePath": "site/src/lib/remark/types.ts",
+      "contentHash": "dd8546763f610f2e5fc92de861b638a0c936d1344bc27da7efe761c169d8570e",
+      "functions": [
+        {
+          "name": "isAstroVFile",
+          "params": [
+            "file"
+          ],
+          "exported": true,
+          "lineCount": 4
+        }
+      ],
+      "classes": [],
+      "imports": [
+        {
+          "source": "vfile",
+          "specifiers": [
+            "VFile"
+          ]
+        }
+      ],
+      "exports": [
+        "isAstroVFile"
+      ],
+      "totalLines": 19,
+      "hasStructuralAnalysis": true
+    },
+    "site/src/lib/source-path.ts": {
+      "filePath": "site/src/lib/source-path.ts",
+      "contentHash": "689df9861f158dcba3a4b5f13e708a42abf96d6128451c2d544aade0adc0e799",
+      "functions": [
+        {
+          "name": "resolveSourcePath",
+          "params": [
+            "file"
+          ],
+          "returnType": "string | undefined",
+          "exported": true,
+          "lineCount": 16
+        }
+      ],
+      "classes": [],
+      "imports": [
+        {
+          "source": "node:path",
+          "specifiers": [
+            "path"
+          ]
+        },
+        {
+          "source": "vfile",
+          "specifiers": [
+            "VFile"
+          ]
+        },
+        {
+          "source": "./remark/types.ts",
+          "specifiers": [
+            "isAstroVFile"
+          ]
+        }
+      ],
+      "exports": [
+        "resolveSourcePath"
+      ],
+      "totalLines": 38,
+      "hasStructuralAnalysis": true
+    },
+    "site/src/pages/404.astro": {
+      "filePath": "site/src/pages/404.astro",
+      "contentHash": "a8e51ab33a16521d90035e485729f2abdf153635324e6fcaf52e6c78244234fa",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 42,
+      "hasStructuralAnalysis": false
+    },
+    "site/src/pages/blog/[...slug].astro": {
+      "filePath": "site/src/pages/blog/[...slug].astro",
+      "contentHash": "114555acb01228f9b9a4fc8fb2ccd63cbfcedeb54bbbb5579156bc3bee7f60fd",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 28,
+      "hasStructuralAnalysis": false
+    },
+    "site/src/pages/blog/index.astro": {
+      "filePath": "site/src/pages/blog/index.astro",
+      "contentHash": "4fc605a8d71a6e2f75e64a08f37d9f7df7c19e37cfd5bbbc9dccf8e0ee213954",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 49,
+      "hasStructuralAnalysis": false
+    },
+    "site/src/pages/blog/rss.xml.ts": {
+      "filePath": "site/src/pages/blog/rss.xml.ts",
+      "contentHash": "8476a54aa32c5cbccb9c3c3babba9d1e569e955fcd1d044c168ae28fdb821c61",
+      "functions": [
+        {
+          "name": "GET",
+          "params": [
+            "context"
+          ],
+          "exported": true,
+          "lineCount": 17
+        }
+      ],
+      "classes": [],
+      "imports": [
+        {
+          "source": "@astrojs/rss",
+          "specifiers": [
+            "rss"
+          ]
+        },
+        {
+          "source": "astro:content",
+          "specifiers": [
+            "getCollection"
+          ]
+        },
+        {
+          "source": "astro",
+          "specifiers": [
+            "APIContext"
+          ]
+        }
+      ],
+      "exports": [
+        "GET"
+      ],
+      "totalLines": 22,
+      "hasStructuralAnalysis": true
+    },
+    "site/src/pages/changelog.astro": {
+      "filePath": "site/src/pages/changelog.astro",
+      "contentHash": "d970d03b6f91db4562973e05b0ef7a2477a3ce95765bd048bc7754318f3decef",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 82,
+      "hasStructuralAnalysis": false
+    },
+    "site/src/pages/changelog/rss.xml.ts": {
+      "filePath": "site/src/pages/changelog/rss.xml.ts",
+      "contentHash": "61e3f766409b8267b719ec6f01b15e55d050aebd61187eb01484d3b9cf415b51",
+      "functions": [
+        {
+          "name": "GET",
+          "params": [
+            "context"
+          ],
+          "exported": true,
+          "lineCount": 15
+        }
+      ],
+      "classes": [],
+      "imports": [
+        {
+          "source": "@astrojs/rss",
+          "specifiers": [
+            "rss"
+          ]
+        },
+        {
+          "source": "astro",
+          "specifiers": [
+            "APIContext"
+          ]
+        },
+        {
+          "source": "../../lib/github.ts",
+          "specifiers": [
+            "listReleases"
+          ]
+        }
+      ],
+      "exports": [
+        "GET"
+      ],
+      "totalLines": 20,
+      "hasStructuralAnalysis": true
+    },
+    "site/src/pages/docs/[...slug].astro": {
+      "filePath": "site/src/pages/docs/[...slug].astro",
+      "contentHash": "a79d9f04ab8df7758c2573dc949494613bdf48c8d72cf791d9c9e7882c21fe1e",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 123,
+      "hasStructuralAnalysis": false
+    },
+    "site/src/pages/docs/index.astro": {
+      "filePath": "site/src/pages/docs/index.astro",
+      "contentHash": "9e5bd62984d8f67f766a15defc39122eae5f76128bb164b2cda4d107cfe38bb7",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 51,
+      "hasStructuralAnalysis": false
+    },
+    "site/src/pages/faq.astro": {
+      "filePath": "site/src/pages/faq.astro",
+      "contentHash": "dfa062ab9493a0fe3dd55f81f437398c22684feb896f33381a5732a0f6025a2c",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 91,
+      "hasStructuralAnalysis": false
+    },
+    "site/src/pages/index.astro": {
+      "filePath": "site/src/pages/index.astro",
+      "contentHash": "6356e81977241c699ed4b43e56f25009dd7feef9efab76ff4d5b0752e5abc3a2",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 197,
+      "hasStructuralAnalysis": false
+    },
+    "site/src/pages/install.astro": {
+      "filePath": "site/src/pages/install.astro",
+      "contentHash": "da8d4f6c7f14564b068ce5dc3df61ccf71f54152b346a4b87bc8ea5fcb377769",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 86,
+      "hasStructuralAnalysis": false
+    },
+    "site/src/pages/privacy.astro": {
+      "filePath": "site/src/pages/privacy.astro",
+      "contentHash": "0a4931a2940ce0292bb94ee6e80cf3b4840538f1b336dfadcebd5954906b37ac",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 113,
+      "hasStructuralAnalysis": false
+    },
+    "site/src/pages/search.astro": {
+      "filePath": "site/src/pages/search.astro",
+      "contentHash": "657641d5b8646e78e7d9c9164778999fd93e453d1fab72a5f0671e01714c52d4",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 28,
+      "hasStructuralAnalysis": false
+    },
+    "site/src/pages/status.astro": {
+      "filePath": "site/src/pages/status.astro",
+      "contentHash": "2ae699c7a0d0bdeb8ceddf7be86c0e6e098fa0fec314a8a71c8caeb85cb7ea67",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 118,
+      "hasStructuralAnalysis": false
+    },
+    "site/src/pages/why.astro": {
+      "filePath": "site/src/pages/why.astro",
+      "contentHash": "fb98d9da58828ba3925535f986000a5bbac95d28c927259119c45296a5d523b5",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 64,
+      "hasStructuralAnalysis": false
+    },
+    "site/src/styles/code.css": {
+      "filePath": "site/src/styles/code.css",
+      "contentHash": "76b8bae0524e871f03e7bf10f680e7465d72417908ac1b7f7d72420ebf4cf673",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 98,
+      "hasStructuralAnalysis": false
+    },
+    "site/src/styles/fonts.css": {
+      "filePath": "site/src/styles/fonts.css",
+      "contentHash": "495bca3e1713f79882c084983e828ce3b534e146390acd034c1a8e06ac16f017",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 54,
+      "hasStructuralAnalysis": false
+    },
+    "site/src/styles/print.css": {
+      "filePath": "site/src/styles/print.css",
+      "contentHash": "aca7afea40ebf6537bdf029b942108eb54ab20466a2bc45cc8c154b9abac558a",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 24,
+      "hasStructuralAnalysis": false
+    },
+    "site/src/styles/prose.css": {
+      "filePath": "site/src/styles/prose.css",
+      "contentHash": "a245ef43a9d908fe913ac1be0c9ecda4126e97a561ccb8f945e880a959d9ed30",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 219,
+      "hasStructuralAnalysis": false
+    },
+    "site/src/styles/reset.css": {
+      "filePath": "site/src/styles/reset.css",
+      "contentHash": "e471d057831cd7265c900ee6259af32c56b6021a9bb831c60440cf4b35e32366",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 93,
+      "hasStructuralAnalysis": false
+    },
+    "site/src/styles/tier-1.css": {
+      "filePath": "site/src/styles/tier-1.css",
+      "contentHash": "b8fd600fb6d91572ac50f920b2d10a4ef53c2a149b555a98bb7e50ca46a01006",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 281,
+      "hasStructuralAnalysis": false
+    },
+    "site/src/styles/tier-2.css": {
+      "filePath": "site/src/styles/tier-2.css",
+      "contentHash": "95aa589f5728a9b33697b9cdc6ed23a6f5044f56af88e2b1c6f71d9ab02352be",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 225,
+      "hasStructuralAnalysis": false
+    },
+    "site/src/styles/tokens.css": {
+      "filePath": "site/src/styles/tokens.css",
+      "contentHash": "4bd980ce2c9254a88312d14366847c807dedd80cf4020f8a8944cdf64af37c58",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 95,
+      "hasStructuralAnalysis": false
+    },
+    "site/tests/rehype-link-rewrite.test.ts": {
+      "filePath": "site/tests/rehype-link-rewrite.test.ts",
+      "contentHash": "835f8f805a23613d4f98eead83609e7cdff7aef8d9c0f37aad86679807cfa164",
+      "functions": [
+        {
+          "name": "runWithSource",
+          "params": [
+            "html",
+            "sourcePath"
+          ],
+          "returnType": "Promise<string>",
+          "exported": false,
+          "lineCount": 11
+        }
+      ],
+      "classes": [],
+      "imports": [
+        {
+          "source": "vitest",
+          "specifiers": [
+            "describe",
+            "expect",
+            "it"
+          ]
+        },
+        {
+          "source": "unified",
+          "specifiers": [
+            "unified"
+          ]
+        },
+        {
+          "source": "rehype-parse",
+          "specifiers": [
+            "rehypeParse"
+          ]
+        },
+        {
+          "source": "rehype-stringify",
+          "specifiers": [
+            "rehypeStringify"
+          ]
+        },
+        {
+          "source": "../src/lib/rehype/link-rewrite.ts",
+          "specifiers": [
+            "rehypeLinkRewrite",
+            "repoPathToSitePath"
+          ]
+        }
+      ],
+      "exports": [],
+      "totalLines": 253,
+      "hasStructuralAnalysis": true
+    },
+    "site/tsconfig.json": {
+      "filePath": "site/tsconfig.json",
+      "contentHash": "f6d09be4015c9d32fdadcf95dd5fd295f5b31990db2160eee4e0dafa1800da0a",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 13,
       "hasStructuralAnalysis": true
     },
     "tests/semgrep/silent_swallow_fixture.rs": {

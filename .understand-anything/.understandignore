@@ -4,12 +4,10 @@
 # Built-in defaults (always excluded unless negated):
 #   node_modules/, .git/, dist/, build/, obj/, target/, *.lock, *.min.js, etc.
 
-# --- Scope: "Core: daemon + brain" (chosen 2026-05-22) ---
-# Center the graph on hippo's capture -> enrich -> serve system.
-# Exclude peripheral surfaces:
-site/
-hippo-gui/
-docs/archive/
+# --- Scope: "Everything" (chosen 2026-05-23, understand-everything branch) ---
+# Full-repo coverage: Rust daemon + Python brain + Swift GUI + Astro site + all docs.
+# Previous "Core: daemon + brain" scope excluded site/, hippo-gui/, docs/archive/;
+# widened on 2026-05-23 to index every code surface and the historical docs too.
 
 # --- Build / vendor artifacts (belt-and-suspenders over built-in defaults) ---
 target/
@@ -20,6 +18,13 @@ brain/.venv/
 .pytest_cache/
 .ruff_cache/
 .coverage
+# Swift / Xcode build + generated project metadata (hippo-gui)
+.build/
+.swiftpm/
+DerivedData/
+*.xcodeproj/
+# Astro / Node build output (site)
+.astro/
 
 # --- Generated / data ---
 brain/src/hippo_brain/_version.py
@@ -31,4 +36,5 @@ brain/src/hippo_brain/_version.py
 .idea/
 .claude/
 .understand-anything/
+.codegraph/
 .DS_Store
