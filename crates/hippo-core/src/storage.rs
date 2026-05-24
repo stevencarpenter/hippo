@@ -975,7 +975,6 @@ pub fn open_db(path: &Path) -> Result<Connection> {
             "INSERT OR IGNORE INTO source_health (source, last_event_ts, updated_at) VALUES
                 ('agentic-session-claude',  (SELECT MAX(start_time) FROM agentic_sessions WHERE harness = 'claude-code'), unixepoch('now') * 1000),
                 ('agentic-session-opencode', NULL, unixepoch('now') * 1000),
-                ('agentic-session-codex',    NULL, unixepoch('now') * 1000),
                 ('brain-preflight',          NULL, unixepoch('now') * 1000);",
         );
     }
@@ -3300,17 +3299,28 @@ mod tests {
             );
         }
 
-        let claude_row_count: i64 = conn
+        let canonical_claude_exists: i64 = conn
             .query_row(
-                "SELECT COUNT(*) FROM source_health
-                 WHERE source IN ('claude-session', 'agentic-session-claude')",
+                "SELECT COUNT(*) FROM source_health WHERE source = 'agentic-session-claude'",
                 [],
                 |r| r.get(0),
             )
             .unwrap();
         assert_eq!(
-            claude_row_count, 1,
-            "fresh DB must expose exactly one Claude session source_health row"
+            canonical_claude_exists, 1,
+            "fresh DB must seed the canonical Claude session source_health row"
+        );
+
+        let legacy_claude_exists: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM source_health WHERE source = 'claude-session'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            legacy_claude_exists, 0,
+            "fresh DB must not seed the legacy claude-session source_health row"
         );
 
         // Verify key columns exist via PRAGMA table_info
