@@ -1,7 +1,7 @@
 {
   "version": "1.0.0",
-  "gitCommitHash": "50aec2d61e2c7f2f26e065d13bf9b6b553463715",
-  "generatedAt": "2026-05-23T10:26:38.536Z",
+  "gitCommitHash": "ffb3fc9b2467e5bb88b99daacd82c7192292be28",
+  "generatedAt": "2026-05-24T04:08:19.936Z",
   "files": {
     ".github/workflows/extension.yml": {
       "filePath": ".github/workflows/extension.yml",
@@ -11,16 +11,6 @@
       "imports": [],
       "exports": [],
       "totalLines": 45,
-      "hasStructuralAnalysis": true
-    },
-    ".github/workflows/gui.yml": {
-      "filePath": ".github/workflows/gui.yml",
-      "contentHash": "165108ab5da04546767984a920d8d8818943e40825fa5c81075cc50469a74cb6",
-      "functions": [],
-      "classes": [],
-      "imports": [],
-      "exports": [],
-      "totalLines": 67,
       "hasStructuralAnalysis": true
     },
     ".github/workflows/python.yml": {
@@ -35,12 +25,12 @@
     },
     ".github/workflows/release.yml": {
       "filePath": ".github/workflows/release.yml",
-      "contentHash": "b66f11139c1fdb808050a745c2816f62e74ec9ab836125654d7620bced7689c2",
+      "contentHash": "a3aac15d612a31fc3e4d07c9edf565d5e98d509c87121fd799651af915ae6023",
       "functions": [],
       "classes": [],
       "imports": [],
       "exports": [],
-      "totalLines": 338,
+      "totalLines": 279,
       "hasStructuralAnalysis": true
     },
     ".github/workflows/rust.yml": {
@@ -115,22 +105,22 @@
     },
     "CLAUDE.md": {
       "filePath": "CLAUDE.md",
-      "contentHash": "ff7fc5f67f42949b69fb08f820a5eeb6bd1254e90bf6a4ad3c2d1d2e89cde229",
+      "contentHash": "2d9a4ad1890aa20d57c9695c141307dabc4edf93b212c87354fb3853b4431b7c",
       "functions": [],
       "classes": [],
       "imports": [],
       "exports": [],
-      "totalLines": 175,
+      "totalLines": 163,
       "hasStructuralAnalysis": true
     },
     "CONTRIBUTING.md": {
       "filePath": "CONTRIBUTING.md",
-      "contentHash": "a07a9911ffa1e64111ca0dddbd58523b3ba95034ee19ac875d2c88fb7d88de73",
+      "contentHash": "74fdc91e41da0efd3fe99012350314bdce2102093a571b74166f8b0c1bbb02b7",
       "functions": [],
       "classes": [],
       "imports": [],
       "exports": [],
-      "totalLines": 187,
+      "totalLines": 184,
       "hasStructuralAnalysis": true
     },
     "Cargo.toml": {
@@ -155,12 +145,12 @@
     },
     "README.md": {
       "filePath": "README.md",
-      "contentHash": "2f55f11cdc5013e5ccba3af8d0cfdaffef76f0367bc283994c461279bdf08124",
+      "contentHash": "03864efcf930997c96e775db2b15d8dbd0002ab51a0ff69ec2bae7490bb60928",
       "functions": [],
       "classes": [],
       "imports": [],
       "exports": [],
-      "totalLines": 364,
+      "totalLines": 354,
       "hasStructuralAnalysis": true
     },
     "brain/README.md": {
@@ -28459,17 +28449,17 @@
     },
     "docs/release.md": {
       "filePath": "docs/release.md",
-      "contentHash": "7e33b248727ad0b12a474442b0b427a655a62f4569dd8e8f55280cc1260cdb54",
+      "contentHash": "e30a1a7b3edc2d6a9058e24466290fc1c7993508f65e6d718c7cda67968580bd",
       "functions": [],
       "classes": [],
       "imports": [],
       "exports": [],
-      "totalLines": 189,
+      "totalLines": 176,
       "hasStructuralAnalysis": true
     },
     "docs/schema.md": {
       "filePath": "docs/schema.md",
-      "contentHash": "4c00f6ed209d29e378e4f34b620343d199a15402aa682e429ea430f5d677b1cf",
+      "contentHash": "a3a7727d5be421739324875d56c49a637542c91985deaa50aaa0acb13e413859",
       "functions": [],
       "classes": [],
       "imports": [],
@@ -28549,12 +28539,12 @@
     },
     "docs/superpowers/plans/2026-05-23-understand-static-pages-deploy.md": {
       "filePath": "docs/superpowers/plans/2026-05-23-understand-static-pages-deploy.md",
-      "contentHash": "c60cec539263d0fb09a2099abafc705f803ec1670f69210e35d7e103462c116e",
+      "contentHash": "a30e14715df6af16a6a2a6f61cd22a7a39a3dd0f42362ecd1d05dbb6251b7776",
       "functions": [],
       "classes": [],
       "imports": [],
       "exports": [],
-      "totalLines": 457,
+      "totalLines": 526,
       "hasStructuralAnalysis": true
     },
     "docs/superpowers/specs/2026-04-21-hippo-bench-design.md": {
@@ -28985,584 +28975,6 @@
       "totalLines": 16,
       "hasStructuralAnalysis": true
     },
-    "hippo-gui/.mcp.json": {
-      "filePath": "hippo-gui/.mcp.json",
-      "contentHash": "b12bedee465366dc4a94ebf3365d4e21504c9c5450ee7429e50f954d879e6cbc",
-      "functions": [],
-      "classes": [],
-      "imports": [],
-      "exports": [],
-      "totalLines": 10,
-      "hasStructuralAnalysis": true
-    },
-    "hippo-gui/.swift-format": {
-      "filePath": "hippo-gui/.swift-format",
-      "contentHash": "0a824b594216bb91eaeac6e13f029055af5309325a4a613f1ae680172a1e98bd",
-      "functions": [],
-      "classes": [],
-      "imports": [],
-      "exports": [],
-      "totalLines": 15,
-      "hasStructuralAnalysis": false
-    },
-    "hippo-gui/.swiftlint.yml": {
-      "filePath": "hippo-gui/.swiftlint.yml",
-      "contentHash": "8d7b74074f16a7bda274e79e2604ebcd2388c4e7559314fe216c647234e66558",
-      "functions": [],
-      "classes": [],
-      "imports": [],
-      "exports": [],
-      "totalLines": 32,
-      "hasStructuralAnalysis": true
-    },
-    "hippo-gui/AppBundle/Info.plist": {
-      "filePath": "hippo-gui/AppBundle/Info.plist",
-      "contentHash": "9d4d4be827d88ee55ea372a689a16ba427da8ab9e03a4868ddca0f617110f387",
-      "functions": [],
-      "classes": [],
-      "imports": [],
-      "exports": [],
-      "totalLines": 33,
-      "hasStructuralAnalysis": false
-    },
-    "hippo-gui/Docs/Plans/plan-hippoGuiMacosApp.prompt.md": {
-      "filePath": "hippo-gui/Docs/Plans/plan-hippoGuiMacosApp.prompt.md",
-      "contentHash": "dde304dd7934818979b71e0593f0a126211694032811709d47b9fd32e5a6f9ab",
-      "functions": [],
-      "classes": [],
-      "imports": [],
-      "exports": [],
-      "totalLines": 124,
-      "hasStructuralAnalysis": true
-    },
-    "hippo-gui/Package.resolved": {
-      "filePath": "hippo-gui/Package.resolved",
-      "contentHash": "85e338169fd3bce7fd16d27f7aa80594f3619644733d54d3dcf9dfd7df0d276a",
-      "functions": [],
-      "classes": [],
-      "imports": [],
-      "exports": [],
-      "totalLines": 97,
-      "hasStructuralAnalysis": false
-    },
-    "hippo-gui/Package.swift": {
-      "filePath": "hippo-gui/Package.swift",
-      "contentHash": "2d1e7697eb0c1091294df9f6bb05841064fe5cf1d2e9a52616ca25c27309117e",
-      "functions": [],
-      "classes": [],
-      "imports": [],
-      "exports": [],
-      "totalLines": 35,
-      "hasStructuralAnalysis": false
-    },
-    "hippo-gui/README.md": {
-      "filePath": "hippo-gui/README.md",
-      "contentHash": "dab467a29e3b3c9374283491219562414cb75ffac023edb88930940aa7599d9a",
-      "functions": [],
-      "classes": [],
-      "imports": [],
-      "exports": [],
-      "totalLines": 153,
-      "hasStructuralAnalysis": true
-    },
-    "hippo-gui/Resources/Assets.xcassets/AppIcon.appiconset/Contents.json": {
-      "filePath": "hippo-gui/Resources/Assets.xcassets/AppIcon.appiconset/Contents.json",
-      "contentHash": "0549c30089adf516257b757f4880be25be200545eacec1d79eeca5c1e91029cb",
-      "functions": [],
-      "classes": [],
-      "imports": [],
-      "exports": [],
-      "totalLines": 18,
-      "hasStructuralAnalysis": true
-    },
-    "hippo-gui/Resources/Assets.xcassets/Contents.json": {
-      "filePath": "hippo-gui/Resources/Assets.xcassets/Contents.json",
-      "contentHash": "3068ae11b833a8ea03990d2ea2a2b5fe7b3c47fbda56de956a4b84888f6c6af8",
-      "functions": [],
-      "classes": [],
-      "imports": [],
-      "exports": [],
-      "totalLines": 6,
-      "hasStructuralAnalysis": true
-    },
-    "hippo-gui/Sources/HippoGUI/App/AppMetadata.swift": {
-      "filePath": "hippo-gui/Sources/HippoGUI/App/AppMetadata.swift",
-      "contentHash": "7405459d125db2f8d51074250e2309fbde4a55dd7425ed12409c6827744214c3",
-      "functions": [],
-      "classes": [],
-      "imports": [],
-      "exports": [],
-      "totalLines": 51,
-      "hasStructuralAnalysis": false
-    },
-    "hippo-gui/Sources/HippoGUI/App/HippoGUIApp.swift": {
-      "filePath": "hippo-gui/Sources/HippoGUI/App/HippoGUIApp.swift",
-      "contentHash": "e45731b200c217f08141072bd81a29254716919a5f2945f3d905292f95dcf6a3",
-      "functions": [],
-      "classes": [],
-      "imports": [],
-      "exports": [],
-      "totalLines": 88,
-      "hasStructuralAnalysis": false
-    },
-    "hippo-gui/Sources/HippoGUI/Models/AskResponse.swift": {
-      "filePath": "hippo-gui/Sources/HippoGUI/Models/AskResponse.swift",
-      "contentHash": "b0298aeda196b32ac5a4a79a817a7ec33e145faa130a536a252109c0eee913dc",
-      "functions": [],
-      "classes": [],
-      "imports": [],
-      "exports": [],
-      "totalLines": 86,
-      "hasStructuralAnalysis": false
-    },
-    "hippo-gui/Sources/HippoGUI/Models/Event.swift": {
-      "filePath": "hippo-gui/Sources/HippoGUI/Models/Event.swift",
-      "contentHash": "237855a52a327967eadf8f619e8a678b33726aa7f85f07e12dd49af9b1f508b0",
-      "functions": [],
-      "classes": [],
-      "imports": [],
-      "exports": [],
-      "totalLines": 28,
-      "hasStructuralAnalysis": false
-    },
-    "hippo-gui/Sources/HippoGUI/Models/HealthResponse.swift": {
-      "filePath": "hippo-gui/Sources/HippoGUI/Models/HealthResponse.swift",
-      "contentHash": "4a027e849e482a96620dc3a23076b1da81d356dd3cd42de5a18fb538fb3ab3ac",
-      "functions": [],
-      "classes": [],
-      "imports": [],
-      "exports": [],
-      "totalLines": 87,
-      "hasStructuralAnalysis": false
-    },
-    "hippo-gui/Sources/HippoGUI/Models/KnowledgeNode.swift": {
-      "filePath": "hippo-gui/Sources/HippoGUI/Models/KnowledgeNode.swift",
-      "contentHash": "967b1ecc60b60894ffdd318a48a94ff84f1092409d22127cc8133154def5dd7c",
-      "functions": [],
-      "classes": [],
-      "imports": [],
-      "exports": [],
-      "totalLines": 91,
-      "hasStructuralAnalysis": false
-    },
-    "hippo-gui/Sources/HippoGUI/Models/QueryResponse.swift": {
-      "filePath": "hippo-gui/Sources/HippoGUI/Models/QueryResponse.swift",
-      "contentHash": "a54763064766b4601609c42b807f9c47d6cbcd797b0e66e08d2995bbcf59d880",
-      "functions": [],
-      "classes": [],
-      "imports": [],
-      "exports": [],
-      "totalLines": 189,
-      "hasStructuralAnalysis": false
-    },
-    "hippo-gui/Sources/HippoGUI/Models/Session.swift": {
-      "filePath": "hippo-gui/Sources/HippoGUI/Models/Session.swift",
-      "contentHash": "d777f3f5b0da4c085257bdb60ec06705453faefe30bea5238d83ce43177099a3",
-      "functions": [],
-      "classes": [],
-      "imports": [],
-      "exports": [],
-      "totalLines": 22,
-      "hasStructuralAnalysis": false
-    },
-    "hippo-gui/Sources/HippoGUI/Models/SidebarSection.swift": {
-      "filePath": "hippo-gui/Sources/HippoGUI/Models/SidebarSection.swift",
-      "contentHash": "49ae625c596da1006dddfceb69d8714f93277a1f96908210ffbf75c1ba72e286",
-      "functions": [],
-      "classes": [],
-      "imports": [],
-      "exports": [],
-      "totalLines": 37,
-      "hasStructuralAnalysis": false
-    },
-    "hippo-gui/Sources/HippoGUI/Models/TimeFilterPreset.swift": {
-      "filePath": "hippo-gui/Sources/HippoGUI/Models/TimeFilterPreset.swift",
-      "contentHash": "22690b8d16d0382f9fd6e9587f60bed27282d284215906a7379cfe91e2ebe61d",
-      "functions": [],
-      "classes": [],
-      "imports": [],
-      "exports": [],
-      "totalLines": 33,
-      "hasStructuralAnalysis": false
-    },
-    "hippo-gui/Sources/HippoGUI/Services/BrainClient.swift": {
-      "filePath": "hippo-gui/Sources/HippoGUI/Services/BrainClient.swift",
-      "contentHash": "c124a64c28abf458d1f7bd3c9af07bafecf0fe4e8e155a2607d4555064947861",
-      "functions": [],
-      "classes": [],
-      "imports": [],
-      "exports": [],
-      "totalLines": 226,
-      "hasStructuralAnalysis": false
-    },
-    "hippo-gui/Sources/HippoGUI/Services/BrainClientEnvironment.swift": {
-      "filePath": "hippo-gui/Sources/HippoGUI/Services/BrainClientEnvironment.swift",
-      "contentHash": "c4e0f3f82949693342fa9b0999f89e434ee7e522607b144a1639b2f8eec9ec3e",
-      "functions": [],
-      "classes": [],
-      "imports": [],
-      "exports": [],
-      "totalLines": 53,
-      "hasStructuralAnalysis": false
-    },
-    "hippo-gui/Sources/HippoGUI/Services/ConfigClient.swift": {
-      "filePath": "hippo-gui/Sources/HippoGUI/Services/ConfigClient.swift",
-      "contentHash": "87720eb5e5d05f2fce3c6ef1df3a43daf73307ea28da8b4ba1b0cdd9a712a9f5",
-      "functions": [],
-      "classes": [],
-      "imports": [],
-      "exports": [],
-      "totalLines": 102,
-      "hasStructuralAnalysis": false
-    },
-    "hippo-gui/Sources/HippoGUI/Services/DaemonSocketClient.swift": {
-      "filePath": "hippo-gui/Sources/HippoGUI/Services/DaemonSocketClient.swift",
-      "contentHash": "8f8495cad16be3468599a500ad8166a76a160b9352942d2038f706dbeb0a423c",
-      "functions": [],
-      "classes": [],
-      "imports": [],
-      "exports": [],
-      "totalLines": 84,
-      "hasStructuralAnalysis": false
-    },
-    "hippo-gui/Sources/HippoGUI/Services/PreviewBrainClient.swift": {
-      "filePath": "hippo-gui/Sources/HippoGUI/Services/PreviewBrainClient.swift",
-      "contentHash": "bc10440b87492364ff916966a354067005aa11c50016935728f35317c3a11ddd",
-      "functions": [],
-      "classes": [],
-      "imports": [],
-      "exports": [],
-      "totalLines": 97,
-      "hasStructuralAnalysis": false
-    },
-    "hippo-gui/Sources/HippoGUI/ViewModels/EventBrowserViewModel.swift": {
-      "filePath": "hippo-gui/Sources/HippoGUI/ViewModels/EventBrowserViewModel.swift",
-      "contentHash": "4b8d1b04f87f8f0f7bac17b07029eb17a2760c743c2ffd7972910d70d065f077",
-      "functions": [],
-      "classes": [],
-      "imports": [],
-      "exports": [],
-      "totalLines": 192,
-      "hasStructuralAnalysis": false
-    },
-    "hippo-gui/Sources/HippoGUI/ViewModels/KnowledgeViewModel.swift": {
-      "filePath": "hippo-gui/Sources/HippoGUI/ViewModels/KnowledgeViewModel.swift",
-      "contentHash": "622effba608b8737783398b19d69a5d469c6d6dca2f3923df7a8827f3d31fdbd",
-      "functions": [],
-      "classes": [],
-      "imports": [],
-      "exports": [],
-      "totalLines": 144,
-      "hasStructuralAnalysis": false
-    },
-    "hippo-gui/Sources/HippoGUI/ViewModels/QueryViewModel.swift": {
-      "filePath": "hippo-gui/Sources/HippoGUI/ViewModels/QueryViewModel.swift",
-      "contentHash": "cb903196fb37c7e2cd6df741af2d7e04cdb6c3d2ec51805fb11135ea6a66a3c9",
-      "functions": [],
-      "classes": [],
-      "imports": [],
-      "exports": [],
-      "totalLines": 90,
-      "hasStructuralAnalysis": false
-    },
-    "hippo-gui/Sources/HippoGUI/ViewModels/StatusViewModel.swift": {
-      "filePath": "hippo-gui/Sources/HippoGUI/ViewModels/StatusViewModel.swift",
-      "contentHash": "265e1bd1f681b1d215422081be695383baa62996a7ede709766bcb3e79777458",
-      "functions": [],
-      "classes": [],
-      "imports": [],
-      "exports": [],
-      "totalLines": 116,
-      "hasStructuralAnalysis": false
-    },
-    "hippo-gui/Sources/HippoGUI/Views/AboutSettingsView.swift": {
-      "filePath": "hippo-gui/Sources/HippoGUI/Views/AboutSettingsView.swift",
-      "contentHash": "a2528c1ed45bc8a37a5d764440474ece19666f08697ca264f2a0afe28da586cb",
-      "functions": [],
-      "classes": [],
-      "imports": [],
-      "exports": [],
-      "totalLines": 69,
-      "hasStructuralAnalysis": false
-    },
-    "hippo-gui/Sources/HippoGUI/Views/ContentView.swift": {
-      "filePath": "hippo-gui/Sources/HippoGUI/Views/ContentView.swift",
-      "contentHash": "a7afc8ff323fa770d368a0e23b9fd4b691c7693bcbee0e06fd6047fe470f91ed",
-      "functions": [],
-      "classes": [],
-      "imports": [],
-      "exports": [],
-      "totalLines": 43,
-      "hasStructuralAnalysis": false
-    },
-    "hippo-gui/Sources/HippoGUI/Views/ErrorBannerView.swift": {
-      "filePath": "hippo-gui/Sources/HippoGUI/Views/ErrorBannerView.swift",
-      "contentHash": "0cb9865fd0ddc25acb8c0e2fa325cec2c4b70ab13d2091ffbd85d2bd8029622a",
-      "functions": [],
-      "classes": [],
-      "imports": [],
-      "exports": [],
-      "totalLines": 43,
-      "hasStructuralAnalysis": false
-    },
-    "hippo-gui/Sources/HippoGUI/Views/EventBrowserView.swift": {
-      "filePath": "hippo-gui/Sources/HippoGUI/Views/EventBrowserView.swift",
-      "contentHash": "be24fd84846766f0c723f088b341aabd213483c59919af3df253eea26702549b",
-      "functions": [],
-      "classes": [],
-      "imports": [],
-      "exports": [],
-      "totalLines": 299,
-      "hasStructuralAnalysis": false
-    },
-    "hippo-gui/Sources/HippoGUI/Views/KnowledgeView.swift": {
-      "filePath": "hippo-gui/Sources/HippoGUI/Views/KnowledgeView.swift",
-      "contentHash": "4959eadf8ab02b56787436a2a7a9d7d9f17201f6ab38d5e76c0cdc64d2ef863b",
-      "functions": [],
-      "classes": [],
-      "imports": [],
-      "exports": [],
-      "totalLines": 358,
-      "hasStructuralAnalysis": false
-    },
-    "hippo-gui/Sources/HippoGUI/Views/QueryAskView.swift": {
-      "filePath": "hippo-gui/Sources/HippoGUI/Views/QueryAskView.swift",
-      "contentHash": "24c649352af5dfd3999f66ebc0d8ac1a7a07f545d7da742440f7fe96be48b3f6",
-      "functions": [],
-      "classes": [],
-      "imports": [],
-      "exports": [],
-      "totalLines": 227,
-      "hasStructuralAnalysis": false
-    },
-    "hippo-gui/Sources/HippoGUI/Views/StatusView.swift": {
-      "filePath": "hippo-gui/Sources/HippoGUI/Views/StatusView.swift",
-      "contentHash": "530855fa460000381db787d40f68380599d17c19ba21f92698c36d62ed842812",
-      "functions": [],
-      "classes": [],
-      "imports": [],
-      "exports": [],
-      "totalLines": 150,
-      "hasStructuralAnalysis": false
-    },
-    "hippo-gui/Sources/HippoGUIPackageApp/HippoGUIPackageApp.swift": {
-      "filePath": "hippo-gui/Sources/HippoGUIPackageApp/HippoGUIPackageApp.swift",
-      "contentHash": "28d5f47016d38e933a2e8e0605ae5331da61a25f5c620deb8a542df9ebcf038f",
-      "functions": [],
-      "classes": [],
-      "imports": [],
-      "exports": [],
-      "totalLines": 12,
-      "hasStructuralAnalysis": false
-    },
-    "hippo-gui/Tests/HippoGUITests/AppMetadataTests.swift": {
-      "filePath": "hippo-gui/Tests/HippoGUITests/AppMetadataTests.swift",
-      "contentHash": "ca1175fc2f466fb5640e3c06c429eaeb0757a3cf6b4d374ef696833b2d156ae5",
-      "functions": [],
-      "classes": [],
-      "imports": [],
-      "exports": [],
-      "totalLines": 106,
-      "hasStructuralAnalysis": false
-    },
-    "hippo-gui/Tests/HippoGUITests/ConfigClientTests.swift": {
-      "filePath": "hippo-gui/Tests/HippoGUITests/ConfigClientTests.swift",
-      "contentHash": "caf08ff2a72e75a47b36298311db8da496750cb9c2a95702dc6fe2266a81be0d",
-      "functions": [],
-      "classes": [],
-      "imports": [],
-      "exports": [],
-      "totalLines": 107,
-      "hasStructuralAnalysis": false
-    },
-    "hippo-gui/Tests/HippoGUITests/DecodingTests.swift": {
-      "filePath": "hippo-gui/Tests/HippoGUITests/DecodingTests.swift",
-      "contentHash": "884441240b31bc9c967155dbd1e9db2d1e3620115606ffc762a0c34a488d2248",
-      "functions": [],
-      "classes": [],
-      "imports": [],
-      "exports": [],
-      "totalLines": 228,
-      "hasStructuralAnalysis": false
-    },
-    "hippo-gui/Tests/HippoGUITests/MockBrainClient.swift": {
-      "filePath": "hippo-gui/Tests/HippoGUITests/MockBrainClient.swift",
-      "contentHash": "a2aefa710e65f28a04342aa6efbbbbc4f6b84bf36f33b30e11cd6b5ca5ef240b",
-      "functions": [],
-      "classes": [],
-      "imports": [],
-      "exports": [],
-      "totalLines": 154,
-      "hasStructuralAnalysis": false
-    },
-    "hippo-gui/Tests/HippoGUITests/ModelTests.swift": {
-      "filePath": "hippo-gui/Tests/HippoGUITests/ModelTests.swift",
-      "contentHash": "3155cf43d6c6402a8d9f237a68e1b138754bc4e554c539094250d5cb2b36bd35",
-      "functions": [],
-      "classes": [],
-      "imports": [],
-      "exports": [],
-      "totalLines": 241,
-      "hasStructuralAnalysis": false
-    },
-    "hippo-gui/Tests/HippoGUITests/ViewModelTests.swift": {
-      "filePath": "hippo-gui/Tests/HippoGUITests/ViewModelTests.swift",
-      "contentHash": "68a7c047e1795a49cd28fefcf79e80d1ec6b317d0fe3ea9abcad689b8b79de8e",
-      "functions": [],
-      "classes": [],
-      "imports": [],
-      "exports": [],
-      "totalLines": 525,
-      "hasStructuralAnalysis": false
-    },
-    "hippo-gui/VERSION": {
-      "filePath": "hippo-gui/VERSION",
-      "contentHash": "f635cb36f28e15f2f0b8d31cab9a8eb1dfbaa628d282e9d55dd80669d23c0602",
-      "functions": [],
-      "classes": [],
-      "imports": [],
-      "exports": [],
-      "totalLines": 2,
-      "hasStructuralAnalysis": false
-    },
-    "hippo-gui/XcodeApp/HippoGUIXcodeApp.swift": {
-      "filePath": "hippo-gui/XcodeApp/HippoGUIXcodeApp.swift",
-      "contentHash": "cdab865b4119ba25b24a91a90d0324d10336d1defff5ef7708f99416c89494df",
-      "functions": [],
-      "classes": [],
-      "imports": [],
-      "exports": [],
-      "totalLines": 12,
-      "hasStructuralAnalysis": false
-    },
-    "hippo-gui/scripts/build-native-app.sh": {
-      "filePath": "hippo-gui/scripts/build-native-app.sh",
-      "contentHash": "11482ff066973e070bb46f3f8593ba4343295a8d28907ecc4bc07a51df00f5df",
-      "functions": [
-        {
-          "name": "usage",
-          "params": [],
-          "exported": false,
-          "lineCount": 15
-        }
-      ],
-      "classes": [],
-      "imports": [],
-      "exports": [],
-      "totalLines": 97,
-      "hasStructuralAnalysis": true
-    },
-    "hippo-gui/scripts/generate-app-icon.swift": {
-      "filePath": "hippo-gui/scripts/generate-app-icon.swift",
-      "contentHash": "9458139668a9a70086c10cd77bd035c2280653b848badf8210231c11581a227c",
-      "functions": [],
-      "classes": [],
-      "imports": [],
-      "exports": [],
-      "totalLines": 218,
-      "hasStructuralAnalysis": false
-    },
-    "hippo-gui/scripts/release-gui.sh": {
-      "filePath": "hippo-gui/scripts/release-gui.sh",
-      "contentHash": "0f834e8d9442c3cc413422a8a16aff10c2b4ffd8e5038ff9dca3db8056acb084",
-      "functions": [
-        {
-          "name": "usage",
-          "params": [],
-          "exported": false,
-          "lineCount": 10
-        },
-        {
-          "name": "emit_json",
-          "params": [],
-          "exported": false,
-          "lineCount": 34
-        }
-      ],
-      "classes": [],
-      "imports": [],
-      "exports": [],
-      "totalLines": 192,
-      "hasStructuralAnalysis": true
-    },
-    "hippo-gui/scripts/run-native-app.sh": {
-      "filePath": "hippo-gui/scripts/run-native-app.sh",
-      "contentHash": "bfc20c71f8408e23ba8293b48c9bf9e1b4c934efdcaffc13ca1d152ab948e69c",
-      "functions": [
-        {
-          "name": "usage",
-          "params": [],
-          "exported": false,
-          "lineCount": 12
-        }
-      ],
-      "classes": [],
-      "imports": [],
-      "exports": [],
-      "totalLines": 35,
-      "hasStructuralAnalysis": true
-    },
-    "hippo-gui/scripts/setup-codex-mcp.sh": {
-      "filePath": "hippo-gui/scripts/setup-codex-mcp.sh",
-      "contentHash": "811d026b306e2ac480cf93436e590cd9e53117e55745c392018cb74604a02245",
-      "functions": [],
-      "classes": [],
-      "imports": [],
-      "exports": [],
-      "totalLines": 16,
-      "hasStructuralAnalysis": true
-    },
-    "hippo-gui/scripts/stamp-app-version.sh": {
-      "filePath": "hippo-gui/scripts/stamp-app-version.sh",
-      "contentHash": "83721c67ed31cfa057422656f5b42b7d62e210ec473045b41d1914d2268f80d6",
-      "functions": [
-        {
-          "name": "usage",
-          "params": [],
-          "exported": false,
-          "lineCount": 3
-        },
-        {
-          "name": "fail",
-          "params": [],
-          "exported": false,
-          "lineCount": 4
-        },
-        {
-          "name": "resolve_marketing_version",
-          "params": [],
-          "exported": false,
-          "lineCount": 27
-        },
-        {
-          "name": "resolve_build_number",
-          "params": [],
-          "exported": false,
-          "lineCount": 18
-        },
-        {
-          "name": "set_plist_key",
-          "params": [],
-          "exported": false,
-          "lineCount": 11
-        }
-      ],
-      "classes": [],
-      "imports": [],
-      "exports": [],
-      "totalLines": 109,
-      "hasStructuralAnalysis": true
-    },
-    "hippo-gui/scripts/xcode-mcp-proxy.sh": {
-      "filePath": "hippo-gui/scripts/xcode-mcp-proxy.sh",
-      "contentHash": "0eea2885970ee697b58dc36e522f8684c043fd532eda996b254682c3b3688ee4",
-      "functions": [],
-      "classes": [],
-      "imports": [],
-      "exports": [],
-      "totalLines": 30,
-      "hasStructuralAnalysis": true
-    },
     "launchd/com.hippo.brain.plist": {
       "filePath": "launchd/com.hippo.brain.plist",
       "contentHash": "664753f81f96a35f1ca2548956826cfc2be11ea05cea3294eda0beeb74ba0fd6",
@@ -29665,12 +29077,12 @@
     },
     "mise.toml": {
       "filePath": "mise.toml",
-      "contentHash": "90b6930a5736dcd692ab859faddb56c77df42df0b9e29a4f2324d00cc748974a",
+      "contentHash": "5390653168a659b656a31a3dd111a54cbcd84ef3a56a64dec6af06829501174a",
       "functions": [],
       "classes": [],
       "imports": [],
       "exports": [],
-      "totalLines": 1232,
+      "totalLines": 1195,
       "hasStructuralAnalysis": true
     },
     "otel/README.md": {
@@ -30114,13 +29526,13 @@
     },
     "scripts/install.sh": {
       "filePath": "scripts/install.sh",
-      "contentHash": "4ec1f8ffad501defeb6f6ae9b0d50e2ad0b4c52638f4c7c5699425a4ce64736b",
+      "contentHash": "9f23bf974b73d5f4bc204f5e8311350e1da23a915de749fe6b0decc34fb3bbaf",
       "functions": [
         {
           "name": "usage",
           "params": [],
           "exported": false,
-          "lineCount": 35
+          "lineCount": 34
         },
         {
           "name": "log_info",
@@ -30207,12 +29619,6 @@
           "lineCount": 96
         },
         {
-          "name": "install_gui",
-          "params": [],
-          "exported": false,
-          "lineCount": 61
-        },
-        {
           "name": "setup_config",
           "params": [],
           "exported": false,
@@ -30246,13 +29652,13 @@
           "name": "main",
           "params": [],
           "exported": false,
-          "lineCount": 62
+          "lineCount": 59
         }
       ],
       "classes": [],
       "imports": [],
       "exports": [],
-      "totalLines": 738,
+      "totalLines": 671,
       "hasStructuralAnalysis": true
     },
     "scripts/ralph-loop-bench-v2.sh": {

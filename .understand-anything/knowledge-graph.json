@@ -19,7 +19,6 @@
       "rust",
       "shell",
       "sql",
-      "swift",
       "toml",
       "txt",
       "typescript",
@@ -39,8 +38,9 @@
       "pytest"
     ],
     "description": "Hippo is a local-first knowledge-capture daemon for macOS that watches shell activity, Claude Code sessions, and Firefox browsing, redacts known secret formats, and enriches events with a local LLM to build a searchable, fully local second brain. A Rust daemon captures and stores events in SQLite, a Python brain handles enrichment/embeddings and exposes RAG via an MCP server, with a Swift GUI and an Astro marketing site rounding out the project. Note: this project has over 100 source files; consider scoping analysis to a subdirectory for faster results.",
-    "analyzedAt": "2026-05-23T10:24:50.505639Z",
-    "gitCommitHash": "50aec2d61e2c7f2f26e065d13bf9b6b553463715"
+    "analyzedAt": "2026-05-24T04:07:12.638060Z",
+    "gitCommitHash": "ffb3fc9b2467e5bb88b99daacd82c7192292be28",
+    "analyzedFiles": 485
   },
   "nodes": [
     {
@@ -58,21 +58,6 @@
       "complexity": "simple"
     },
     {
-      "id": "pipeline:.github/workflows/gui.yml",
-      "type": "pipeline",
-      "name": "gui.yml",
-      "filePath": ".github/workflows/gui.yml",
-      "summary": "GitHub Actions workflow that runs Swift tests and packages the HippoGUI release app on a macOS runner, stamping the workspace version from Cargo.toml.",
-      "tags": [
-        "ci-cd",
-        "infrastructure",
-        "deployment",
-        "swift"
-      ],
-      "complexity": "moderate",
-      "languageNotes": "Uses an inline Python heredoc to extract the workspace version from Cargo.toml for the marketing-version env var."
-    },
-    {
       "id": "pipeline:.github/workflows/python.yml",
       "type": "pipeline",
       "name": "python.yml",
@@ -86,21 +71,6 @@
       ],
       "complexity": "moderate",
       "languageNotes": "Stamps a dev version into brain/src/hippo_brain/_version.py from git describe before running tests."
-    },
-    {
-      "id": "pipeline:.github/workflows/release.yml",
-      "type": "pipeline",
-      "name": "release.yml",
-      "filePath": ".github/workflows/release.yml",
-      "summary": "GitHub Actions release workflow triggered by v*.*.* tags that builds, strips, and checksums the aarch64-apple-darwin hippo daemon binary and publishes release artifacts.",
-      "tags": [
-        "ci-cd",
-        "infrastructure",
-        "deployment",
-        "release"
-      ],
-      "complexity": "complex",
-      "languageNotes": "Tag-driven release pipeline producing macOS arm64 artifacts with derived checksums."
     },
     {
       "id": "pipeline:.github/workflows/rust.yml",
@@ -205,33 +175,6 @@
       "complexity": "moderate"
     },
     {
-      "id": "document:CLAUDE.md",
-      "type": "document",
-      "name": "CLAUDE.md",
-      "filePath": "CLAUDE.md",
-      "summary": "Primary project memory for Claude covering hippo's structure, build/test commands, path conventions, two-process architecture, and the browser/Claude/Codex/capture-reliability subsystems.",
-      "tags": [
-        "documentation",
-        "entry-point",
-        "development",
-        "architecture"
-      ],
-      "complexity": "complex"
-    },
-    {
-      "id": "document:CONTRIBUTING.md",
-      "type": "document",
-      "name": "CONTRIBUTING.md",
-      "filePath": "CONTRIBUTING.md",
-      "summary": "Contributor guide describing the project shape, setup, test strategy, dev loop, cross-language coupling, CI behavior, formatting/linting, code-review expectations, and PR/release conventions.",
-      "tags": [
-        "documentation",
-        "development",
-        "contributing"
-      ],
-      "complexity": "moderate"
-    },
-    {
       "id": "document:IMPL_NOTES.md",
       "type": "document",
       "name": "IMPL_NOTES.md",
@@ -243,20 +186,6 @@
         "rag"
       ],
       "complexity": "moderate"
-    },
-    {
-      "id": "document:README.md",
-      "type": "document",
-      "name": "README.md",
-      "filePath": "README.md",
-      "summary": "Top-level project README covering hippo's value proposition, quick install, architecture, prerequisites, manual installation, usage, troubleshooting, MCP server, Firefox extension, configuration, privacy, and development.",
-      "tags": [
-        "documentation",
-        "entry-point",
-        "overview",
-        "installation"
-      ],
-      "complexity": "complex"
     },
     {
       "id": "document:brain/README.md",
@@ -16101,34 +16030,6 @@
       "complexity": "moderate"
     },
     {
-      "id": "document:docs/release.md",
-      "type": "document",
-      "name": "release.md",
-      "filePath": "docs/release.md",
-      "summary": "Release process documentation covering tag-triggered GitHub Actions jobs (build-daemon, build-brain, build-gui, release), artifacts, installation script, caching, security, and troubleshooting.",
-      "tags": [
-        "documentation",
-        "release",
-        "ci-cd",
-        "deployment"
-      ],
-      "complexity": "moderate"
-    },
-    {
-      "id": "document:docs/schema.md",
-      "type": "document",
-      "name": "schema.md",
-      "filePath": "docs/schema.md",
-      "summary": "SQLite schema reference with a per-version changelog, table map, foreign-key relationships, migration guarantees, version-mismatch recovery, and how to add a new migration.",
-      "tags": [
-        "documentation",
-        "database",
-        "schema-definition",
-        "reference"
-      ],
-      "complexity": "moderate"
-    },
-    {
       "id": "document:docs/superpowers/plans/2026-05-01-hippobrain-org-mvp-addendum.md",
       "type": "document",
       "name": "2026-05-01-hippobrain-org-mvp-addendum.md",
@@ -16223,20 +16124,6 @@
         "plan",
         "embeddings",
         "reliability"
-      ],
-      "complexity": "complex"
-    },
-    {
-      "id": "document:docs/superpowers/plans/2026-05-23-understand-static-pages-deploy.md",
-      "type": "document",
-      "name": "2026-05-23-understand-static-pages-deploy.md",
-      "filePath": "docs/superpowers/plans/2026-05-23-understand-static-pages-deploy.md",
-      "summary": "Implementation plan to publish the Understand-Anything knowledge-graph dashboard to hippobrain.org/understand/ via a portable build script, graph publish/sanitize, header link, and Site Deploy.",
-      "tags": [
-        "documentation",
-        "plan",
-        "deployment",
-        "website"
       ],
       "complexity": "complex"
     },
@@ -16690,1276 +16577,6 @@
       "complexity": "simple"
     },
     {
-      "id": "config:hippo-gui/.mcp.json",
-      "type": "config",
-      "name": ".mcp.json",
-      "filePath": "hippo-gui/.mcp.json",
-      "summary": "MCP client configuration for the hippo-gui project registering an HTTP xcode-proxy MCP server on localhost:9876 for Xcode tooling integration.",
-      "tags": [
-        "configuration",
-        "mcp",
-        "tooling",
-        "swift-gui"
-      ],
-      "complexity": "simple"
-    },
-    {
-      "id": "file:hippo-gui/.swift-format",
-      "type": "file",
-      "name": ".swift-format",
-      "filePath": "hippo-gui/.swift-format",
-      "summary": "swift-format configuration for the HippoGUI Swift package specifying 4-space indentation, a 120-column line length, trailing commas for multi-element collections, and related formatting rules.",
-      "tags": [
-        "configuration",
-        "formatting",
-        "swift",
-        "swift-gui"
-      ],
-      "complexity": "simple"
-    },
-    {
-      "id": "config:hippo-gui/.swiftlint.yml",
-      "type": "config",
-      "name": ".swiftlint.yml",
-      "filePath": "hippo-gui/.swiftlint.yml",
-      "summary": "SwiftLint configuration for HippoGUI listing excluded paths, opt-in rules, disabled rules deferred to swift-format, and warning/error thresholds for line, file, function-body, and type-body length.",
-      "tags": [
-        "configuration",
-        "linting",
-        "swift",
-        "swift-gui"
-      ],
-      "complexity": "simple"
-    },
-    {
-      "id": "config:hippo-gui/AppBundle/Info.plist",
-      "type": "config",
-      "name": "Info.plist",
-      "filePath": "hippo-gui/AppBundle/Info.plist",
-      "summary": "macOS application bundle property list for HippoGUI declaring the bundle identifier com.hippo.HippoGUI, executable name, version strings, developer-tools category, and high-resolution support.",
-      "tags": [
-        "configuration",
-        "macos",
-        "app-bundle",
-        "swift-gui"
-      ],
-      "complexity": "simple"
-    },
-    {
-      "id": "document:hippo-gui/Docs/Plans/plan-hippoGuiMacosApp.prompt.md",
-      "type": "document",
-      "name": "plan-hippoGuiMacosApp.prompt.md",
-      "filePath": "hippo-gui/Docs/Plans/plan-hippoGuiMacosApp.prompt.md",
-      "summary": "Phased (and now-implemented) plan to evolve HippoGUI into a spec-compliant read-only macOS SwiftUI app, covering Swift 6 concurrency, MVVM, navigation/search/filters, feature enrichment, and testing.",
-      "tags": [
-        "documentation",
-        "plan",
-        "swift-gui",
-        "architecture"
-      ],
-      "complexity": "moderate"
-    },
-    {
-      "id": "file:hippo-gui/Package.resolved",
-      "type": "file",
-      "name": "Package.resolved",
-      "filePath": "hippo-gui/Package.resolved",
-      "summary": "Swift Package Manager dependency lock file pinning exact revisions and versions of HippoGUI's transitive dependencies, dominated by SwiftLint and its toolchain (swift-syntax, SourceKitten, Yams, etc.).",
-      "tags": [
-        "dependency-lock",
-        "swift",
-        "package-manager",
-        "swift-gui"
-      ],
-      "complexity": "simple",
-      "languageNotes": "SwiftPM Package.resolved v3 format; the pinned graph is almost entirely SwiftLint's build-tool-plugin dependencies."
-    },
-    {
-      "id": "file:hippo-gui/Package.swift",
-      "type": "file",
-      "name": "Package.swift",
-      "filePath": "hippo-gui/Package.swift",
-      "summary": "Swift Package Manager manifest for HippoGUI declaring the HippoGUIKit library, the executable app target, and a test target on macOS 26 with Swift 6 language mode and a SwiftLint build-tool plugin.",
-      "tags": [
-        "build-system",
-        "swift",
-        "package-manifest",
-        "entry-point"
-      ],
-      "complexity": "simple",
-      "languageNotes": "swift-tools-version 6.3 manifest opting into swiftLanguageModes [.v6] and wiring SwiftLintBuildToolPlugin into every target."
-    },
-    {
-      "id": "document:hippo-gui/README.md",
-      "type": "document",
-      "name": "README.md",
-      "filePath": "hippo-gui/README.md",
-      "summary": "Developer guide for the HippoGUI SwiftUI macOS app covering its package-first architecture (HippoGUIKit library + thin Xcode/package hosts), build and test commands, mise tasks, release versioning/stamping flow, the About/Settings windows, and SwiftUI preview mocks.",
-      "tags": [
-        "documentation",
-        "entry-point",
-        "swiftui",
-        "build-system",
-        "macos"
-      ],
-      "complexity": "moderate"
-    },
-    {
-      "id": "config:hippo-gui/Resources/Assets.xcassets/AppIcon.appiconset/Contents.json",
-      "type": "config",
-      "name": "Contents.json",
-      "filePath": "hippo-gui/Resources/Assets.xcassets/AppIcon.appiconset/Contents.json",
-      "summary": "Xcode asset catalog manifest for the app icon set, declaring the platform-agnostic single-size app icon image and catalog metadata.",
-      "tags": [
-        "configuration",
-        "asset-catalog",
-        "app-icon",
-        "macos"
-      ],
-      "complexity": "simple"
-    },
-    {
-      "id": "config:hippo-gui/Resources/Assets.xcassets/Contents.json",
-      "type": "config",
-      "name": "Contents.json",
-      "filePath": "hippo-gui/Resources/Assets.xcassets/Contents.json",
-      "summary": "Root Xcode asset catalog manifest carrying authoring metadata for the HippoGUI resource bundle.",
-      "tags": [
-        "configuration",
-        "asset-catalog",
-        "macos"
-      ],
-      "complexity": "simple"
-    },
-    {
-      "id": "file:hippo-gui/Sources/HippoGUI/App/AppMetadata.swift",
-      "type": "file",
-      "name": "AppMetadata.swift",
-      "filePath": "hippo-gui/Sources/HippoGUI/App/AppMetadata.swift",
-      "summary": "Resolves app display name, bundle identifier, and marketing/build version strings from the bundle Info dictionary with sensible development fallbacks, exposing computed helpers for human-readable version text and release-stamp detection.",
-      "tags": [
-        "data-model",
-        "app-metadata",
-        "versioning",
-        "swift"
-      ],
-      "complexity": "simple",
-      "languageNotes": "Sendable value type; static keyed lookup helper trims and falls back across multiple Info.plist keys."
-    },
-    {
-      "id": "class:hippo-gui/Sources/HippoGUI/App/AppMetadata.swift:AppMetadata",
-      "type": "class",
-      "name": "AppMetadata",
-      "filePath": "hippo-gui/Sources/HippoGUI/App/AppMetadata.swift",
-      "lineRange": [
-        3,
-        50
-      ],
-      "summary": "Sendable struct that reads CFBundle* keys from an Info dictionary (or live bundle) and derives versionDescription and isReleaseStamped, defaulting to development metadata when unstamped.",
-      "tags": [
-        "data-model",
-        "versioning",
-        "app-metadata",
-        "swift"
-      ],
-      "complexity": "simple"
-    },
-    {
-      "id": "file:hippo-gui/Sources/HippoGUI/App/HippoGUIApp.swift",
-      "type": "file",
-      "name": "HippoGUIApp.swift",
-      "filePath": "hippo-gui/Sources/HippoGUI/App/HippoGUIApp.swift",
-      "summary": "App shell types shared by both hosts: the main Scene that owns a BrainClient and wires the root ContentView and About window, the AppKit application delegate, the root view wrapper, and the About menu command group.",
-      "tags": [
-        "entry-point",
-        "swiftui",
-        "app-shell",
-        "scene",
-        "swift"
-      ],
-      "complexity": "moderate",
-      "languageNotes": "Defines a SwiftUI Scene, an NSApplicationDelegate, and a Commands group; injects BrainClient into the environment via the .brainClient view modifier."
-    },
-    {
-      "id": "class:hippo-gui/Sources/HippoGUI/App/HippoGUIApp.swift:HippoGUIMainScene",
-      "type": "class",
-      "name": "HippoGUIMainScene",
-      "filePath": "hippo-gui/Sources/HippoGUI/App/HippoGUIApp.swift",
-      "lineRange": [
-        61,
-        87
-      ],
-      "summary": "Primary SwiftUI Scene that instantiates the shared BrainClient, presents the main and About windows, configures default sizing/resizability, and installs the custom About command group.",
-      "tags": [
-        "swiftui",
-        "scene",
-        "app-shell",
-        "swift"
-      ],
-      "complexity": "simple"
-    },
-    {
-      "id": "class:hippo-gui/Sources/HippoGUI/App/HippoGUIApp.swift:HippoGUIAppDelegate",
-      "type": "class",
-      "name": "HippoGUIAppDelegate",
-      "filePath": "hippo-gui/Sources/HippoGUI/App/HippoGUIApp.swift",
-      "lineRange": [
-        33,
-        51
-      ],
-      "summary": "NSApplicationDelegate that disables window tabbing and skips state restoration when the process has no bundle identifier (unbundled development runs).",
-      "tags": [
-        "app-shell",
-        "appkit",
-        "lifecycle",
-        "swift"
-      ],
-      "complexity": "simple"
-    },
-    {
-      "id": "file:hippo-gui/Sources/HippoGUI/Models/AskResponse.swift",
-      "type": "file",
-      "name": "AskResponse.swift",
-      "filePath": "hippo-gui/Sources/HippoGUI/Models/AskResponse.swift",
-      "summary": "Codable models for the brain /ask endpoint: the top-level AskResponse (answer, sources, degraded/stage flags) and AskSource with custom snake_case coding and decoding that synthesizes a stable UUID and defaults linked event ids.",
-      "tags": [
-        "data-model",
-        "serialization",
-        "api-response",
-        "swift"
-      ],
-      "complexity": "moderate",
-      "languageNotes": "Hand-written init(from:) / encode(to:) to map snake_case JSON keys and tolerate missing linked_event_ids."
-    },
-    {
-      "id": "class:hippo-gui/Sources/HippoGUI/Models/AskResponse.swift:AskSource",
-      "type": "class",
-      "name": "AskSource",
-      "filePath": "hippo-gui/Sources/HippoGUI/Models/AskResponse.swift",
-      "lineRange": [
-        12,
-        85
-      ],
-      "summary": "Identifiable/Hashable source citation for an ask answer with custom Codable conformance mapping snake_case keys and assigning a fresh UUID on decode.",
-      "tags": [
-        "data-model",
-        "serialization",
-        "swift"
-      ],
-      "complexity": "moderate"
-    },
-    {
-      "id": "file:hippo-gui/Sources/HippoGUI/Models/Event.swift",
-      "type": "file",
-      "name": "Event.swift",
-      "filePath": "hippo-gui/Sources/HippoGUI/Models/Event.swift",
-      "summary": "Codable models for shell command events: Event (command, exit code, duration, cwd, git branch with snake_case coding keys) and the EventListResponse pagination wrapper.",
-      "tags": [
-        "data-model",
-        "serialization",
-        "api-response",
-        "swift"
-      ],
-      "complexity": "simple"
-    },
-    {
-      "id": "file:hippo-gui/Sources/HippoGUI/Models/HealthResponse.swift",
-      "type": "file",
-      "name": "HealthResponse.swift",
-      "filePath": "hippo-gui/Sources/HippoGUI/Models/HealthResponse.swift",
-      "summary": "Codable health model mirroring the brain /health endpoint with per-source enrichment queue depths/failures and derived helpers for reachability and total pending/failed queue sizes; includes a DEBUG preview fixture.",
-      "tags": [
-        "data-model",
-        "serialization",
-        "health-check",
-        "swift"
-      ],
-      "complexity": "moderate",
-      "languageNotes": "Aggregates shell/claude/browser/workflow queue counters into computed totals; #if DEBUG static preview value."
-    },
-    {
-      "id": "class:hippo-gui/Sources/HippoGUI/Models/HealthResponse.swift:HealthResponse",
-      "type": "class",
-      "name": "HealthResponse",
-      "filePath": "hippo-gui/Sources/HippoGUI/Models/HealthResponse.swift",
-      "lineRange": [
-        3,
-        59
-      ],
-      "summary": "Hashable Codable struct of brain daemon health fields with computed brainReachable and aggregated queue-depth/failure helpers across all enrichment sources.",
-      "tags": [
-        "data-model",
-        "health-check",
-        "serialization",
-        "swift"
-      ],
-      "complexity": "moderate"
-    },
-    {
-      "id": "file:hippo-gui/Sources/HippoGUI/Models/KnowledgeNode.swift",
-      "type": "file",
-      "name": "KnowledgeNode.swift",
-      "filePath": "hippo-gui/Sources/HippoGUI/Models/KnowledgeNode.swift",
-      "summary": "Codable knowledge-node models: KnowledgeNode with tolerant decoding of tags/related entities/events, related-entity and related-event structs, a displaySummary helper that unwraps JSON content, and the KnowledgeListResponse wrapper.",
-      "tags": [
-        "data-model",
-        "serialization",
-        "knowledge-graph",
-        "swift"
-      ],
-      "complexity": "moderate",
-      "languageNotes": "Custom init(from:) defends against missing arrays; displaySummary parses embedded JSON content for a summary field."
-    },
-    {
-      "id": "class:hippo-gui/Sources/HippoGUI/Models/KnowledgeNode.swift:KnowledgeNode",
-      "type": "class",
-      "name": "KnowledgeNode",
-      "filePath": "hippo-gui/Sources/HippoGUI/Models/KnowledgeNode.swift",
-      "lineRange": [
-        3,
-        62
-      ],
-      "summary": "Identifiable Hashable Codable knowledge node with snake_case coding keys, a memberwise initializer, and a defensive decoder that defaults tags and related collections when absent.",
-      "tags": [
-        "data-model",
-        "serialization",
-        "knowledge-graph",
-        "swift"
-      ],
-      "complexity": "moderate"
-    },
-    {
-      "id": "file:hippo-gui/Sources/HippoGUI/Models/QueryResponse.swift",
-      "type": "file",
-      "name": "QueryResponse.swift",
-      "filePath": "hippo-gui/Sources/HippoGUI/Models/QueryResponse.swift",
-      "summary": "Codable models for the brain /query endpoint covering hybrid search results: QueryResponse plus SemanticQueryResult, LexicalQueryEvent, LexicalKnowledgeMatch, and the QueryMode enum, with defensive decoding that accepts string arrays either inline or as JSON-encoded strings.",
-      "tags": [
-        "data-model",
-        "serialization",
-        "search",
-        "swift"
-      ],
-      "complexity": "complex",
-      "languageNotes": "decodeStringArrayIfNeeded tolerates server fields encoded either as JSON arrays or stringified JSON; QueryMode drives ask-vs-search UI behavior."
-    },
-    {
-      "id": "class:hippo-gui/Sources/HippoGUI/Models/QueryResponse.swift:SemanticQueryResult",
-      "type": "class",
-      "name": "SemanticQueryResult",
-      "filePath": "hippo-gui/Sources/HippoGUI/Models/QueryResponse.swift",
-      "lineRange": [
-        46,
-        140
-      ],
-      "summary": "Identifiable semantic search hit with snake_case coding, memberwise and decoder initializers, custom encoding, and a helper that decodes string-array fields whether delivered as arrays or JSON strings.",
-      "tags": [
-        "data-model",
-        "serialization",
-        "search",
-        "swift"
-      ],
-      "complexity": "moderate"
-    },
-    {
-      "id": "file:hippo-gui/Sources/HippoGUI/Models/Session.swift",
-      "type": "file",
-      "name": "Session.swift",
-      "filePath": "hippo-gui/Sources/HippoGUI/Models/Session.swift",
-      "summary": "Codable models for shell sessions: Session (start time, hostname, shell, event count with snake_case coding keys) and the SessionListResponse pagination wrapper.",
-      "tags": [
-        "data-model",
-        "serialization",
-        "api-response",
-        "swift"
-      ],
-      "complexity": "simple"
-    },
-    {
-      "id": "file:hippo-gui/Sources/HippoGUI/Models/SidebarSection.swift",
-      "type": "file",
-      "name": "SidebarSection.swift",
-      "filePath": "hippo-gui/Sources/HippoGUI/Models/SidebarSection.swift",
-      "summary": "Enum of the four primary navigation sections (Query, Knowledge, Events, Status) with display titles and SF Symbol names, driving the sidebar of the main split view.",
-      "tags": [
-        "data-model",
-        "navigation",
-        "enum",
-        "swift"
-      ],
-      "complexity": "simple"
-    },
-    {
-      "id": "file:hippo-gui/Sources/HippoGUI/Models/TimeFilterPreset.swift",
-      "type": "file",
-      "name": "TimeFilterPreset.swift",
-      "filePath": "hippo-gui/Sources/HippoGUI/Models/TimeFilterPreset.swift",
-      "summary": "Enum of time-window filter presets (last 24 hours, last 7 days, all) with display titles and a sinceMs helper that converts each preset to an epoch-millisecond lower bound for queries.",
-      "tags": [
-        "data-model",
-        "filtering",
-        "enum",
-        "swift"
-      ],
-      "complexity": "simple"
-    },
-    {
-      "id": "file:hippo-gui/Sources/HippoGUI/Services/BrainClient.swift",
-      "type": "file",
-      "name": "BrainClient.swift",
-      "filePath": "hippo-gui/Sources/HippoGUI/Services/BrainClient.swift",
-      "summary": "Core HTTP client for the brain local server: defines BrainClientError, the BrainClientProtocol surface, and the BrainClient actor that builds localhost URLs from ConfigClient and performs typed GET/POST requests for knowledge, events, sessions, ask, query, and health.",
-      "tags": [
-        "service",
-        "api-handler",
-        "networking",
-        "actor",
-        "swift"
-      ],
-      "complexity": "complex",
-      "languageNotes": "Swift actor with typed throws (throws(BrainClientError)); URLSession timeout sourced from ConfigClient; generic execute/validateResponse helpers."
-    },
-    {
-      "id": "class:hippo-gui/Sources/HippoGUI/Services/BrainClient.swift:BrainClient",
-      "type": "class",
-      "name": "BrainClient",
-      "filePath": "hippo-gui/Sources/HippoGUI/Services/BrainClient.swift",
-      "lineRange": [
-        46,
-        225
-      ],
-      "summary": "Actor implementation of BrainClientProtocol that constructs a localhost base URL/timeout from ConfigClient and issues typed GET/POST requests, decoding responses and surfacing typed BrainClientError failures.",
-      "tags": [
-        "service",
-        "api-handler",
-        "actor",
-        "networking",
-        "swift"
-      ],
-      "complexity": "complex"
-    },
-    {
-      "id": "class:hippo-gui/Sources/HippoGUI/Services/BrainClient.swift:BrainClientProtocol",
-      "type": "class",
-      "name": "BrainClientProtocol",
-      "filePath": "hippo-gui/Sources/HippoGUI/Services/BrainClient.swift",
-      "lineRange": [
-        32,
-        44
-      ],
-      "summary": "Sendable protocol defining the brain client surface (listKnowledge, getKnowledge, listEvents, listSessions, ask, query, health) used as the abstraction injected into view models and SwiftUI environment.",
-      "tags": [
-        "type-definition",
-        "service",
-        "protocol",
-        "swift"
-      ],
-      "complexity": "simple"
-    },
-    {
-      "id": "class:hippo-gui/Sources/HippoGUI/Services/BrainClient.swift:BrainClientError",
-      "type": "class",
-      "name": "BrainClientError",
-      "filePath": "hippo-gui/Sources/HippoGUI/Services/BrainClient.swift",
-      "lineRange": [
-        3,
-        30
-      ],
-      "summary": "LocalizedError enum enumerating brain client failure cases (invalid URL/response, encoding/decoding, network, server status, not configured) with user-facing descriptions.",
-      "tags": [
-        "type-definition",
-        "error-handling",
-        "swift"
-      ],
-      "complexity": "simple"
-    },
-    {
-      "id": "file:hippo-gui/Sources/HippoGUI/Services/BrainClientEnvironment.swift",
-      "type": "file",
-      "name": "BrainClientEnvironment.swift",
-      "filePath": "hippo-gui/Sources/HippoGUI/Services/BrainClientEnvironment.swift",
-      "summary": "SwiftUI dependency-injection plumbing for the brain client: an EnvironmentKey and EnvironmentValues accessor, a .brainClient(_:) View modifier, and an UnconfiguredBrainClient default that throws notConfigured for every call.",
-      "tags": [
-        "service",
-        "dependency-injection",
-        "swiftui",
-        "swift"
-      ],
-      "complexity": "simple",
-      "languageNotes": "Provides a no-op default conforming actor so views can resolve a BrainClientProtocol before one is injected."
-    },
-    {
-      "id": "class:hippo-gui/Sources/HippoGUI/Services/BrainClientEnvironment.swift:UnconfiguredBrainClient",
-      "type": "class",
-      "name": "UnconfiguredBrainClient",
-      "filePath": "hippo-gui/Sources/HippoGUI/Services/BrainClientEnvironment.swift",
-      "lineRange": [
-        20,
-        52
-      ],
-      "summary": "Default actor stand-in for BrainClientProtocol that throws BrainClientError.notConfigured from every endpoint, used as the SwiftUI environment default before a real client is injected.",
-      "tags": [
-        "service",
-        "dependency-injection",
-        "null-object",
-        "swift"
-      ],
-      "complexity": "simple"
-    },
-    {
-      "id": "file:hippo-gui/Sources/HippoGUI/Services/ConfigClient.swift",
-      "type": "file",
-      "name": "ConfigClient.swift",
-      "filePath": "hippo-gui/Sources/HippoGUI/Services/ConfigClient.swift",
-      "summary": "Reads hippo's ~/.config/hippo/config.toml with a minimal hand-rolled TOML section/key parser to resolve the brain port, query timeout, and data directory (expanding ~), falling back to documented defaults when unset.",
-      "tags": [
-        "service",
-        "configuration",
-        "toml-parser",
-        "swift"
-      ],
-      "complexity": "moderate",
-      "languageNotes": "Self-contained line-based TOML parser (section headers, key=value, inline # comments, quote stripping) avoiding any TOML dependency."
-    },
-    {
-      "id": "class:hippo-gui/Sources/HippoGUI/Services/ConfigClient.swift:ConfigClient",
-      "type": "class",
-      "name": "ConfigClient",
-      "filePath": "hippo-gui/Sources/HippoGUI/Services/ConfigClient.swift",
-      "lineRange": [
-        11,
-        101
-      ],
-      "summary": "Sendable config reader that parses config.toml on demand to supply the brain port, query timeout, and resolved data directory with home-relative path expansion and default fallbacks.",
-      "tags": [
-        "service",
-        "configuration",
-        "toml-parser",
-        "swift"
-      ],
-      "complexity": "moderate"
-    },
-    {
-      "id": "file:hippo-gui/Sources/HippoGUI/Services/DaemonSocketClient.swift",
-      "type": "file",
-      "name": "DaemonSocketClient.swift",
-      "filePath": "hippo-gui/Sources/HippoGUI/Services/DaemonSocketClient.swift",
-      "summary": "Probes whether the hippo daemon's Unix domain socket is reachable using a low-level Darwin connect(2) with send/receive timeouts, dispatching the blocking call off the main actor so SwiftUI view models never stall.",
-      "tags": [
-        "service",
-        "ipc",
-        "unix-socket",
-        "swift"
-      ],
-      "complexity": "moderate",
-      "languageNotes": "Manual sockaddr_un construction via withUnsafeMutableBytes; blocking connect run on a detached Task to keep the UI responsive."
-    },
-    {
-      "id": "class:hippo-gui/Sources/HippoGUI/Services/DaemonSocketClient.swift:DaemonSocketClient",
-      "type": "class",
-      "name": "DaemonSocketClient",
-      "filePath": "hippo-gui/Sources/HippoGUI/Services/DaemonSocketClient.swift",
-      "lineRange": [
-        4,
-        83
-      ],
-      "summary": "Sendable client that resolves the daemon.sock path from ConfigClient and exposes async isResponsive plus a blocking implementation that performs a timed Darwin connect to the Unix socket.",
-      "tags": [
-        "service",
-        "ipc",
-        "unix-socket",
-        "swift"
-      ],
-      "complexity": "moderate"
-    },
-    {
-      "id": "file:hippo-gui/Sources/HippoGUI/Services/PreviewBrainClient.swift",
-      "type": "file",
-      "name": "PreviewBrainClient.swift",
-      "filePath": "hippo-gui/Sources/HippoGUI/Services/PreviewBrainClient.swift",
-      "summary": "DEBUG-only stub conforming to BrainClientProtocol that returns configurable canned Result values for each endpoint, letting SwiftUI #Preview blocks render without a live backend and without depending on the test target's MockBrainClient.",
-      "tags": [
-        "service",
-        "test-double",
-        "preview",
-        "swift"
-      ],
-      "complexity": "moderate",
-      "languageNotes": "Wrapped in #if DEBUG; stores per-endpoint Result fixtures so previews can simulate success and failure."
-    },
-    {
-      "id": "class:hippo-gui/Sources/HippoGUI/Services/PreviewBrainClient.swift:PreviewBrainClient",
-      "type": "class",
-      "name": "PreviewBrainClient",
-      "filePath": "hippo-gui/Sources/HippoGUI/Services/PreviewBrainClient.swift",
-      "lineRange": [
-        9,
-        96
-      ],
-      "summary": "BrainClientProtocol implementation backed by configurable Result fixtures per endpoint, used exclusively in SwiftUI previews to render success/failure states offline.",
-      "tags": [
-        "service",
-        "test-double",
-        "preview",
-        "swift"
-      ],
-      "complexity": "moderate"
-    },
-    {
-      "id": "file:hippo-gui/Sources/HippoGUI/ViewModels/EventBrowserViewModel.swift",
-      "type": "file",
-      "name": "EventBrowserViewModel.swift",
-      "filePath": "hippo-gui/Sources/HippoGUI/ViewModels/EventBrowserViewModel.swift",
-      "summary": "Observable main-actor view model for the event browser that paginates sessions and their events through a BrainClientProtocol, manages selection, time/project/command filtering, loading flags, and error state.",
-      "tags": [
-        "view-model",
-        "pagination",
-        "state-management",
-        "swift"
-      ],
-      "complexity": "complex",
-      "languageNotes": "@Observable @MainActor with @ObservationIgnored client; cascades session selection into event loading and de-duplicates appended pages."
-    },
-    {
-      "id": "class:hippo-gui/Sources/HippoGUI/ViewModels/EventBrowserViewModel.swift:EventBrowserViewModel",
-      "type": "class",
-      "name": "EventBrowserViewModel",
-      "filePath": "hippo-gui/Sources/HippoGUI/ViewModels/EventBrowserViewModel.swift",
-      "lineRange": [
-        6,
-        191
-      ],
-      "summary": "Main-actor observable model coordinating paginated session/event loading via the injected brain client, with selection cascade, command/time/project filters, and per-list error handling.",
-      "tags": [
-        "view-model",
-        "pagination",
-        "state-management",
-        "swift"
-      ],
-      "complexity": "complex"
-    },
-    {
-      "id": "file:hippo-gui/Sources/HippoGUI/ViewModels/KnowledgeViewModel.swift",
-      "type": "file",
-      "name": "KnowledgeViewModel.swift",
-      "filePath": "hippo-gui/Sources/HippoGUI/ViewModels/KnowledgeViewModel.swift",
-      "summary": "Observable main-actor view model for the knowledge browser that paginates knowledge nodes by type and time window, loads node detail on selection, and supports in-memory search over summary and tags.",
-      "tags": [
-        "view-model",
-        "pagination",
-        "state-management",
-        "swift"
-      ],
-      "complexity": "complex",
-      "languageNotes": "@Observable @MainActor; selection drives a separate detail fetch with graceful fallback to the list item on error."
-    },
-    {
-      "id": "class:hippo-gui/Sources/HippoGUI/ViewModels/KnowledgeViewModel.swift:KnowledgeViewModel",
-      "type": "class",
-      "name": "KnowledgeViewModel",
-      "filePath": "hippo-gui/Sources/HippoGUI/ViewModels/KnowledgeViewModel.swift",
-      "lineRange": [
-        6,
-        143
-      ],
-      "summary": "Main-actor observable model that lists/paginates knowledge nodes via the brain client, filters them locally, and fetches per-node detail on selection.",
-      "tags": [
-        "view-model",
-        "pagination",
-        "state-management",
-        "swift"
-      ],
-      "complexity": "complex"
-    },
-    {
-      "id": "file:hippo-gui/Sources/HippoGUI/ViewModels/QueryViewModel.swift",
-      "type": "file",
-      "name": "QueryViewModel.swift",
-      "filePath": "hippo-gui/Sources/HippoGUI/ViewModels/QueryViewModel.swift",
-      "summary": "Observable main-actor view model backing the Ask/Search screen that submits the query to either the brain ask or query endpoint based on mode, exposing prompt titles, results, loading, and error state plus retry/clear actions.",
-      "tags": [
-        "view-model",
-        "state-management",
-        "search",
-        "swift"
-      ],
-      "complexity": "moderate",
-      "languageNotes": "@Observable @MainActor; mode.isSearchMode switches between ask (answer + sources) and query (hybrid search) calls."
-    },
-    {
-      "id": "class:hippo-gui/Sources/HippoGUI/ViewModels/QueryViewModel.swift:QueryViewModel",
-      "type": "class",
-      "name": "QueryViewModel",
-      "filePath": "hippo-gui/Sources/HippoGUI/ViewModels/QueryViewModel.swift",
-      "lineRange": [
-        6,
-        89
-      ],
-      "summary": "Main-actor observable model that drives ask-vs-search submission against the brain client and surfaces answer text, sources, search results, and error/loading state.",
-      "tags": [
-        "view-model",
-        "state-management",
-        "search",
-        "swift"
-      ],
-      "complexity": "moderate"
-    },
-    {
-      "id": "file:hippo-gui/Sources/HippoGUI/ViewModels/StatusViewModel.swift",
-      "type": "file",
-      "name": "StatusViewModel.swift",
-      "filePath": "hippo-gui/Sources/HippoGUI/ViewModels/StatusViewModel.swift",
-      "summary": "Observable main-actor view model for the Status screen that concurrently checks daemon socket responsiveness and brain health, formats a last-checked description, and runs a cancellable 30-second auto-refresh loop.",
-      "tags": [
-        "view-model",
-        "health-check",
-        "polling",
-        "swift"
-      ],
-      "complexity": "moderate",
-      "languageNotes": "@Observable @MainActor; uses async let to fan out daemon + health checks and a weak-self Task loop for periodic refresh."
-    },
-    {
-      "id": "class:hippo-gui/Sources/HippoGUI/ViewModels/StatusViewModel.swift:StatusViewModel",
-      "type": "class",
-      "name": "StatusViewModel",
-      "filePath": "hippo-gui/Sources/HippoGUI/ViewModels/StatusViewModel.swift",
-      "lineRange": [
-        6,
-        115
-      ],
-      "summary": "Main-actor observable model combining DaemonSocketClient probing with brain health polling, exposing reachability flags, a relative last-checked label, and start/stop auto-refresh controls.",
-      "tags": [
-        "view-model",
-        "health-check",
-        "polling",
-        "swift"
-      ],
-      "complexity": "moderate"
-    },
-    {
-      "id": "file:hippo-gui/Sources/HippoGUI/Views/AboutSettingsView.swift",
-      "type": "file",
-      "name": "AboutSettingsView.swift",
-      "filePath": "hippo-gui/Sources/HippoGUI/Views/AboutSettingsView.swift",
-      "summary": "SwiftUI view rendering the About/Settings panel: app icon, display name and version from AppMetadata, a grouped build-information form, and a release-workflow note indicating whether the bundle uses stamped metadata.",
-      "tags": [
-        "component",
-        "swiftui",
-        "settings",
-        "swift"
-      ],
-      "complexity": "simple"
-    },
-    {
-      "id": "file:hippo-gui/Sources/HippoGUI/Views/ContentView.swift",
-      "type": "file",
-      "name": "ContentView.swift",
-      "filePath": "hippo-gui/Sources/HippoGUI/Views/ContentView.swift",
-      "summary": "Root SwiftUI view presenting a NavigationSplitView whose sidebar lists the SidebarSection cases and whose detail pane swaps between the Query, Knowledge, Events, and Status screens, persisting the selected tab via @AppStorage.",
-      "tags": [
-        "component",
-        "swiftui",
-        "navigation",
-        "entry-point",
-        "swift"
-      ],
-      "complexity": "simple"
-    },
-    {
-      "id": "file:hippo-gui/Sources/HippoGUI/Views/ErrorBannerView.swift",
-      "type": "file",
-      "name": "ErrorBannerView.swift",
-      "filePath": "hippo-gui/Sources/HippoGUI/Views/ErrorBannerView.swift",
-      "summary": "Reusable SwiftUI banner that displays an error message with a warning icon and a retry button wired to an async main-actor action, used across screens to surface load failures.",
-      "tags": [
-        "component",
-        "swiftui",
-        "error-handling",
-        "reusable",
-        "swift"
-      ],
-      "complexity": "simple"
-    },
-    {
-      "id": "file:hippo-gui/Sources/HippoGUI/Views/EventBrowserView.swift",
-      "type": "file",
-      "name": "EventBrowserView.swift",
-      "filePath": "hippo-gui/Sources/HippoGUI/Views/EventBrowserView.swift",
-      "summary": "SwiftUI three-pane browser for captured shell sessions and their events, with time-range and project filters, pagination, and a detail inspector. Drives an EventBrowserViewModel injected via the brainClient environment.",
-      "tags": [
-        "component",
-        "swiftui",
-        "view",
-        "gui",
-        "event-browser"
-      ],
-      "complexity": "complex",
-      "languageNotes": "Uses HSplitView with nested ContentUnavailableView placeholders and Observation-backed @State view model."
-    },
-    {
-      "id": "class:hippo-gui/Sources/HippoGUI/Views/EventBrowserView.swift:EventBrowserView",
-      "type": "class",
-      "name": "EventBrowserView",
-      "filePath": "hippo-gui/Sources/HippoGUI/Views/EventBrowserView.swift",
-      "lineRange": [
-        3,
-        268
-      ],
-      "summary": "SwiftUI View struct rendering the sessions list, filtered event list, and per-event detail panel; bridges UI actions to async EventBrowserViewModel calls.",
-      "tags": [
-        "component",
-        "swiftui",
-        "view",
-        "event-browser"
-      ],
-      "complexity": "complex"
-    },
-    {
-      "id": "file:hippo-gui/Sources/HippoGUI/Views/KnowledgeView.swift",
-      "type": "file",
-      "name": "KnowledgeView.swift",
-      "filePath": "hippo-gui/Sources/HippoGUI/Views/KnowledgeView.swift",
-      "summary": "SwiftUI split view that lists enriched knowledge nodes with type/time filtering and search, and renders a parsed detail panel including related entities and events. Backed by a KnowledgeViewModel.",
-      "tags": [
-        "component",
-        "swiftui",
-        "view",
-        "gui",
-        "knowledge"
-      ],
-      "complexity": "complex",
-      "languageNotes": "Includes a private ParsedKnowledgeContent value type that decodes node JSON content into displayable rows."
-    },
-    {
-      "id": "class:hippo-gui/Sources/HippoGUI/Views/KnowledgeView.swift:KnowledgeView",
-      "type": "class",
-      "name": "KnowledgeView",
-      "filePath": "hippo-gui/Sources/HippoGUI/Views/KnowledgeView.swift",
-      "lineRange": [
-        3,
-        249
-      ],
-      "summary": "SwiftUI View struct rendering the knowledge node list and detail inspector with filters, search, and JSON disclosure.",
-      "tags": [
-        "component",
-        "swiftui",
-        "view",
-        "knowledge"
-      ],
-      "complexity": "complex"
-    },
-    {
-      "id": "class:hippo-gui/Sources/HippoGUI/Views/KnowledgeView.swift:ParsedKnowledgeContent",
-      "type": "class",
-      "name": "ParsedKnowledgeContent",
-      "filePath": "hippo-gui/Sources/HippoGUI/Views/KnowledgeView.swift",
-      "lineRange": [
-        251,
-        316
-      ],
-      "summary": "Value type that parses a knowledge node's raw JSON content into summary, outcome, tags, additional rows, and pretty-printed JSON for display.",
-      "tags": [
-        "serialization",
-        "parsing",
-        "value-type",
-        "json"
-      ],
-      "complexity": "moderate"
-    },
-    {
-      "id": "file:hippo-gui/Sources/HippoGUI/Views/QueryAskView.swift",
-      "type": "file",
-      "name": "QueryAskView.swift",
-      "filePath": "hippo-gui/Sources/HippoGUI/Views/QueryAskView.swift",
-      "summary": "SwiftUI view offering an Ask (RAG answer) and Search (semantic/lexical) mode against the brain, rendering answers, scored sources, and result cards. Backed by a QueryViewModel.",
-      "tags": [
-        "component",
-        "swiftui",
-        "view",
-        "gui",
-        "query"
-      ],
-      "complexity": "complex",
-      "languageNotes": "Uses a generic @ViewBuilder sourceCard helper with a default EmptyView extra-content closure."
-    },
-    {
-      "id": "class:hippo-gui/Sources/HippoGUI/Views/QueryAskView.swift:QueryAskView",
-      "type": "class",
-      "name": "QueryAskView",
-      "filePath": "hippo-gui/Sources/HippoGUI/Views/QueryAskView.swift",
-      "lineRange": [
-        3,
-        187
-      ],
-      "summary": "SwiftUI View struct for the ask/search query screen, dispatching submit/retry to an async QueryViewModel and rendering answers, sources, and match cards.",
-      "tags": [
-        "component",
-        "swiftui",
-        "view",
-        "query"
-      ],
-      "complexity": "complex"
-    },
-    {
-      "id": "file:hippo-gui/Sources/HippoGUI/Views/StatusView.swift",
-      "type": "file",
-      "name": "StatusView.swift",
-      "filePath": "hippo-gui/Sources/HippoGUI/Views/StatusView.swift",
-      "summary": "SwiftUI dashboard showing daemon socket and brain HTTP reachability plus per-source enrichment queue depths and failures. Backed by a StatusViewModel with auto-refresh.",
-      "tags": [
-        "component",
-        "swiftui",
-        "view",
-        "gui",
-        "monitoring"
-      ],
-      "complexity": "moderate"
-    },
-    {
-      "id": "class:hippo-gui/Sources/HippoGUI/Views/StatusView.swift:StatusView",
-      "type": "class",
-      "name": "StatusView",
-      "filePath": "hippo-gui/Sources/HippoGUI/Views/StatusView.swift",
-      "lineRange": [
-        3,
-        142
-      ],
-      "summary": "SwiftUI View struct rendering health status cards, queue summary grid, and a manual refresh control driven by StatusViewModel.",
-      "tags": [
-        "component",
-        "swiftui",
-        "view",
-        "monitoring"
-      ],
-      "complexity": "moderate"
-    },
-    {
-      "id": "file:hippo-gui/Sources/HippoGUIPackageApp/HippoGUIPackageApp.swift",
-      "type": "file",
-      "name": "HippoGUIPackageApp.swift",
-      "filePath": "hippo-gui/Sources/HippoGUIPackageApp/HippoGUIPackageApp.swift",
-      "summary": "SwiftPM executable entry point (@main App) that adopts HippoGUIAppDelegate and renders the shared HippoGUIMainScene from HippoGUIKit.",
-      "tags": [
-        "entry-point",
-        "swiftui",
-        "app",
-        "gui"
-      ],
-      "complexity": "simple"
-    },
-    {
-      "id": "file:hippo-gui/Tests/HippoGUITests/AppMetadataTests.swift",
-      "type": "file",
-      "name": "AppMetadataTests.swift",
-      "filePath": "hippo-gui/Tests/HippoGUITests/AppMetadataTests.swift",
-      "summary": "swift-testing suite verifying AppMetadata reads stamped Info.plist bundle values, falls back for development runs, trims whitespace, and prefers display name over bundle name.",
-      "tags": [
-        "test",
-        "swift-testing",
-        "app-metadata",
-        "gui"
-      ],
-      "complexity": "moderate"
-    },
-    {
-      "id": "file:hippo-gui/Tests/HippoGUITests/ConfigClientTests.swift",
-      "type": "file",
-      "name": "ConfigClientTests.swift",
-      "filePath": "hippo-gui/Tests/HippoGUITests/ConfigClientTests.swift",
-      "summary": "swift-testing suite for ConfigClient TOML parsing: exact-key matching, section scoping, comment/blank-line handling, and default fallbacks for port and query timeout.",
-      "tags": [
-        "test",
-        "swift-testing",
-        "config",
-        "gui"
-      ],
-      "complexity": "moderate"
-    },
-    {
-      "id": "file:hippo-gui/Tests/HippoGUITests/DecodingTests.swift",
-      "type": "file",
-      "name": "DecodingTests.swift",
-      "filePath": "hippo-gui/Tests/HippoGUITests/DecodingTests.swift",
-      "summary": "swift-testing suite covering JSON decoding of brain API models: KnowledgeNode relations, semantic/lexical QueryResponse, string-encoded arrays, AskSource, HealthResponse, and paginated list responses.",
-      "tags": [
-        "test",
-        "swift-testing",
-        "serialization",
-        "data-model"
-      ],
-      "complexity": "complex"
-    },
-    {
-      "id": "file:hippo-gui/Tests/HippoGUITests/MockBrainClient.swift",
-      "type": "file",
-      "name": "MockBrainClient.swift",
-      "filePath": "hippo-gui/Tests/HippoGUITests/MockBrainClient.swift",
-      "summary": "Test double actor implementing BrainClientProtocol with configurable per-call results, response sequences for pagination, and request snapshots for assertions.",
-      "tags": [
-        "test",
-        "mock",
-        "test-double",
-        "actor"
-      ],
-      "complexity": "moderate",
-      "languageNotes": "Swift actor with typed throws(BrainClientError) conformance and tuple-based request snapshots."
-    },
-    {
-      "id": "class:hippo-gui/Tests/HippoGUITests/MockBrainClient.swift:MockBrainClient",
-      "type": "class",
-      "name": "MockBrainClient",
-      "filePath": "hippo-gui/Tests/HippoGUITests/MockBrainClient.swift",
-      "lineRange": [
-        4,
-        153
-      ],
-      "summary": "Actor conforming to BrainClientProtocol that returns canned knowledge/event/session/ask/query/health responses and records the last request per method for verification.",
-      "tags": [
-        "test",
-        "mock",
-        "test-double",
-        "actor"
-      ],
-      "complexity": "moderate"
-    },
-    {
-      "id": "file:hippo-gui/Tests/HippoGUITests/ModelTests.swift",
-      "type": "file",
-      "name": "ModelTests.swift",
-      "filePath": "hippo-gui/Tests/HippoGUITests/ModelTests.swift",
-      "summary": "swift-testing suite for model computed properties and enums: HealthResponse reachability and queue totals, KnowledgeNode.displaySummary, QueryResponse.isEmpty, SidebarSection, TimeFilterPreset, and BrainClientError descriptions.",
-      "tags": [
-        "test",
-        "swift-testing",
-        "data-model",
-        "gui"
-      ],
-      "complexity": "complex"
-    },
-    {
-      "id": "file:hippo-gui/Tests/HippoGUITests/ViewModelTests.swift",
-      "type": "file",
-      "name": "ViewModelTests.swift",
-      "filePath": "hippo-gui/Tests/HippoGUITests/ViewModelTests.swift",
-      "summary": "MainActor swift-testing suite exercising QueryViewModel, KnowledgeViewModel, EventBrowserViewModel, and StatusViewModel against MockBrainClient: success, pagination/filtering, error handling, and computed state.",
-      "tags": [
-        "test",
-        "swift-testing",
-        "view-model",
-        "gui"
-      ],
-      "complexity": "complex"
-    },
-    {
-      "id": "file:hippo-gui/VERSION",
-      "type": "file",
-      "name": "VERSION",
-      "filePath": "hippo-gui/VERSION",
-      "summary": "Single-line marketing version string (0.26.1) consumed by stamp-app-version.sh to set CFBundleShortVersionString in the app bundle.",
-      "tags": [
-        "version",
-        "build-system",
-        "gui"
-      ],
-      "complexity": "simple"
-    },
-    {
-      "id": "file:hippo-gui/XcodeApp/HippoGUIXcodeApp.swift",
-      "type": "file",
-      "name": "HippoGUIXcodeApp.swift",
-      "filePath": "hippo-gui/XcodeApp/HippoGUIXcodeApp.swift",
-      "summary": "Xcode project executable entry point (@main App) that adopts HippoGUIAppDelegate and renders the shared HippoGUIMainScene from HippoGUIKit, mirroring the SwiftPM entry point.",
-      "tags": [
-        "entry-point",
-        "swiftui",
-        "app",
-        "gui"
-      ],
-      "complexity": "simple"
-    },
-    {
-      "id": "file:hippo-gui/scripts/build-native-app.sh",
-      "type": "file",
-      "name": "build-native-app.sh",
-      "filePath": "hippo-gui/scripts/build-native-app.sh",
-      "summary": "Bash build script that compiles the HippoGUI product via swift build, assembles a .app bundle, stamps its version, compiles the asset catalog with actool, and ad-hoc codesigns the result.",
-      "tags": [
-        "script",
-        "build-system",
-        "deployment",
-        "gui"
-      ],
-      "complexity": "moderate"
-    },
-    {
-      "id": "file:hippo-gui/scripts/generate-app-icon.swift",
-      "type": "file",
-      "name": "generate-app-icon.swift",
-      "filePath": "hippo-gui/scripts/generate-app-icon.swift",
-      "summary": "Standalone AppKit script that procedurally draws the Hippo app icon at all required macOS sizes and writes the PNGs plus Contents.json into the AppIcon.appiconset asset catalog.",
-      "tags": [
-        "script",
-        "asset-generation",
-        "appkit",
-        "gui"
-      ],
-      "complexity": "complex",
-      "languageNotes": "Executable Swift script (shebang) using NSBitmapImageRep/NSBezierPath to render icons offscreen."
-    },
-    {
-      "id": "function:hippo-gui/scripts/generate-app-icon.swift:drawIcon",
-      "type": "function",
-      "name": "drawIcon",
-      "filePath": "hippo-gui/scripts/generate-app-icon.swift",
-      "lineRange": [
-        92,
-        180
-      ],
-      "summary": "Renders the full Hippo icon at a given pixel size into an NSBitmapImageRep, drawing the gradient background, hippo face, eyes, smile, and spiral motif.",
-      "tags": [
-        "asset-generation",
-        "appkit",
-        "rendering"
-      ],
-      "complexity": "complex"
-    },
-    {
-      "id": "function:hippo-gui/scripts/generate-app-icon.swift:strokeSpiral",
-      "type": "function",
-      "name": "strokeSpiral",
-      "filePath": "hippo-gui/scripts/generate-app-icon.swift",
-      "lineRange": [
-        51,
-        90
-      ],
-      "summary": "Strokes the parametric hippocampus spiral motif (with a soft glow underlay) into the current graphics context.",
-      "tags": [
-        "asset-generation",
-        "appkit",
-        "rendering"
-      ],
-      "complexity": "moderate"
-    },
-    {
-      "id": "file:hippo-gui/scripts/release-gui.sh",
-      "type": "file",
-      "name": "release-gui.sh",
-      "filePath": "hippo-gui/scripts/release-gui.sh",
-      "summary": "Bash release packager that builds the app via build-native-app.sh, zips it with ditto, generates and verifies a SHA-256 checksum, records the codesign signature, and emits human/JSON/Markdown release metadata.",
-      "tags": [
-        "script",
-        "release",
-        "deployment",
-        "gui"
-      ],
-      "complexity": "complex"
-    },
-    {
-      "id": "function:hippo-gui/scripts/release-gui.sh:emit_json",
-      "type": "function",
-      "name": "emit_json",
-      "filePath": "hippo-gui/scripts/release-gui.sh",
-      "lineRange": [
-        134,
-        167
-      ],
-      "summary": "Serializes the release artifact metadata (paths, version, checksum, signature, verify command) to indented JSON via an embedded python3 heredoc.",
-      "tags": [
-        "release",
-        "serialization",
-        "json"
-      ],
-      "complexity": "moderate"
-    },
-    {
-      "id": "file:hippo-gui/scripts/run-native-app.sh",
-      "type": "file",
-      "name": "run-native-app.sh",
-      "filePath": "hippo-gui/scripts/run-native-app.sh",
-      "summary": "Bash convenience script that builds the HippoGUI bundle via build-native-app.sh and opens the resulting .app.",
-      "tags": [
-        "script",
-        "build-system",
-        "gui"
-      ],
-      "complexity": "simple"
-    },
-    {
-      "id": "file:hippo-gui/scripts/setup-codex-mcp.sh",
-      "type": "file",
-      "name": "setup-codex-mcp.sh",
-      "filePath": "hippo-gui/scripts/setup-codex-mcp.sh",
-      "summary": "Idempotent Bash script that registers the local xcode-proxy MCP HTTP endpoint with the codex CLI, skipping if already present.",
-      "tags": [
-        "script",
-        "mcp",
-        "tooling",
-        "gui"
-      ],
-      "complexity": "simple"
-    },
-    {
-      "id": "file:hippo-gui/scripts/stamp-app-version.sh",
-      "type": "file",
-      "name": "stamp-app-version.sh",
-      "filePath": "hippo-gui/scripts/stamp-app-version.sh",
-      "summary": "Bash script that resolves the marketing version (from env, VERSION file, or Cargo.toml) and a build number (env or git commit count) and stamps CFBundleShortVersionString/CFBundleVersion into a target Info.plist via PlistBuddy.",
-      "tags": [
-        "script",
-        "build-system",
-        "versioning",
-        "gui"
-      ],
-      "complexity": "moderate"
-    },
-    {
-      "id": "function:hippo-gui/scripts/stamp-app-version.sh:resolve_marketing_version",
-      "type": "function",
-      "name": "resolve_marketing_version",
-      "filePath": "hippo-gui/scripts/stamp-app-version.sh",
-      "lineRange": [
-        32,
-        58
-      ],
-      "summary": "Resolves the marketing version by preferring HIPPO_MARKETING_VERSION, then the GUI VERSION file, then the workspace.package version parsed from Cargo.toml via awk.",
-      "tags": [
-        "build-system",
-        "versioning"
-      ],
-      "complexity": "moderate"
-    },
-    {
-      "id": "function:hippo-gui/scripts/stamp-app-version.sh:resolve_build_number",
-      "type": "function",
-      "name": "resolve_build_number",
-      "filePath": "hippo-gui/scripts/stamp-app-version.sh",
-      "lineRange": [
-        60,
-        77
-      ],
-      "summary": "Resolves the build number from HIPPO_BUILD_NUMBER, BUILD_NUMBER, the git commit count, or a fallback of 1.",
-      "tags": [
-        "build-system",
-        "versioning"
-      ],
-      "complexity": "simple"
-    },
-    {
-      "id": "file:hippo-gui/scripts/xcode-mcp-proxy.sh",
-      "type": "file",
-      "name": "xcode-mcp-proxy.sh",
-      "filePath": "hippo-gui/scripts/xcode-mcp-proxy.sh",
-      "summary": "Idempotent Bash script that launches mcp-proxy wrapping `xcrun mcpbridge` on port 9876 so multiple agents share one long-lived Xcode MCP connection.",
-      "tags": [
-        "script",
-        "mcp",
-        "tooling",
-        "gui"
-      ],
-      "complexity": "simple"
-    },
-    {
       "id": "service:launchd/com.hippo.brain.plist",
       "type": "service",
       "name": "com.hippo.brain.plist",
@@ -18108,22 +16725,6 @@
       ],
       "complexity": "simple",
       "languageNotes": "WatchPaths only fires on the projects-root mtime change (new project subdir), so StartInterval provides the steady-state poll for appends inside existing project dirs."
-    },
-    {
-      "id": "config:mise.toml",
-      "type": "config",
-      "name": "mise.toml",
-      "filePath": "mise.toml",
-      "summary": "The project's mise task runner manifest defining ~70 tasks for building, testing, linting, formatting, installing, running, and operating every component (Rust daemon, Python brain, Swift GUI, browser extension, OTel stack).",
-      "tags": [
-        "configuration",
-        "build-system",
-        "task-runner",
-        "tooling",
-        "ci-cd"
-      ],
-      "complexity": "complex",
-      "languageNotes": "Tasks embed inline bash scripts; the `install` task (lines 546+) orchestrates the full clean-install flow including launchd plist templating and verification."
     },
     {
       "id": "document:otel/README.md",
@@ -18558,334 +17159,6 @@
       ],
       "complexity": "moderate",
       "languageNotes": "Aggregates the three enrichment queues (shell, claude, browser) in one SQL UNION ALL and shells out to `uv run` for the LanceDB vector count."
-    },
-    {
-      "id": "file:scripts/install.sh",
-      "type": "file",
-      "name": "install.sh",
-      "filePath": "scripts/install.sh",
-      "summary": "End-to-end Hippo installer that downloads the daemon, brain, and GUI from the latest GitHub release, verifies SHA256 checksums, writes per-component receipts for idempotent re-runs, configures, and starts services on macOS.",
-      "tags": [
-        "script",
-        "installer",
-        "deployment",
-        "checksum-verification",
-        "idempotent"
-      ],
-      "complexity": "complex",
-      "languageNotes": "Receipt-based idempotency: each component records its installed checksum so re-running skips unchanged artifacts unless HIPPO_FORCE is set."
-    },
-    {
-      "id": "function:scripts/install.sh:usage",
-      "type": "function",
-      "name": "usage",
-      "filePath": "scripts/install.sh",
-      "lineRange": [
-        6,
-        40
-      ],
-      "summary": "Prints the installer's help text covering invocation, the HIPPO_FORCE env var, install locations, and requirements.",
-      "tags": [
-        "script",
-        "cli",
-        "help"
-      ],
-      "complexity": "simple"
-    },
-    {
-      "id": "function:scripts/install.sh:detect_platform",
-      "type": "function",
-      "name": "detect_platform",
-      "filePath": "scripts/install.sh",
-      "lineRange": [
-        92,
-        114
-      ],
-      "summary": "Detects the host OS and CPU architecture to pick the correct release asset, refusing to run on anything but macOS.",
-      "tags": [
-        "script",
-        "platform-detection",
-        "installer"
-      ],
-      "complexity": "simple"
-    },
-    {
-      "id": "function:scripts/install.sh:get_latest_release",
-      "type": "function",
-      "name": "get_latest_release",
-      "filePath": "scripts/install.sh",
-      "lineRange": [
-        117,
-        134
-      ],
-      "summary": "Resolves the latest Hippo release tag from the GitHub releases API for use in asset download URLs.",
-      "tags": [
-        "script",
-        "github-release",
-        "installer"
-      ],
-      "complexity": "simple"
-    },
-    {
-      "id": "function:scripts/install.sh:download_file",
-      "type": "function",
-      "name": "download_file",
-      "filePath": "scripts/install.sh",
-      "lineRange": [
-        137,
-        148
-      ],
-      "summary": "Downloads a single release artifact via curl with error handling for the install flow.",
-      "tags": [
-        "script",
-        "download",
-        "installer"
-      ],
-      "complexity": "simple"
-    },
-    {
-      "id": "function:scripts/install.sh:verify_checksum",
-      "type": "function",
-      "name": "verify_checksum",
-      "filePath": "scripts/install.sh",
-      "lineRange": [
-        151,
-        166
-      ],
-      "summary": "Verifies a downloaded artifact's SHA256 against the release's SHA256SUMS.txt before installation.",
-      "tags": [
-        "script",
-        "checksum-verification",
-        "security"
-      ],
-      "complexity": "simple"
-    },
-    {
-      "id": "function:scripts/install.sh:parse_checksum",
-      "type": "function",
-      "name": "parse_checksum",
-      "filePath": "scripts/install.sh",
-      "lineRange": [
-        169,
-        191
-      ],
-      "summary": "Extracts the expected SHA256 hash for a given asset name out of the release checksum manifest.",
-      "tags": [
-        "script",
-        "checksum-verification",
-        "parsing"
-      ],
-      "complexity": "simple"
-    },
-    {
-      "id": "function:scripts/install.sh:check_receipt",
-      "type": "function",
-      "name": "check_receipt",
-      "filePath": "scripts/install.sh",
-      "lineRange": [
-        196,
-        213
-      ],
-      "summary": "Reads a component's install receipt and reports whether the installed checksum already matches, enabling idempotent skips.",
-      "tags": [
-        "script",
-        "idempotent",
-        "installer"
-      ],
-      "complexity": "simple"
-    },
-    {
-      "id": "function:scripts/install.sh:write_receipt",
-      "type": "function",
-      "name": "write_receipt",
-      "filePath": "scripts/install.sh",
-      "lineRange": [
-        219,
-        232
-      ],
-      "summary": "Records a per-component install receipt (checksum + version) under the XDG state directory after a successful install.",
-      "tags": [
-        "script",
-        "idempotent",
-        "installer"
-      ],
-      "complexity": "simple"
-    },
-    {
-      "id": "function:scripts/install.sh:install_daemon",
-      "type": "function",
-      "name": "install_daemon",
-      "filePath": "scripts/install.sh",
-      "lineRange": [
-        235,
-        260
-      ],
-      "summary": "Installs the Rust daemon binary to ~/.local/bin/hippo, verifying its checksum and writing a receipt.",
-      "tags": [
-        "script",
-        "installer",
-        "daemon"
-      ],
-      "complexity": "simple"
-    },
-    {
-      "id": "function:scripts/install.sh:verify_brain_imports",
-      "type": "function",
-      "name": "verify_brain_imports",
-      "filePath": "scripts/install.sh",
-      "lineRange": [
-        266,
-        285
-      ],
-      "summary": "Smoke-tests the installed Python brain by importing its modules to catch broken or incomplete installs early.",
-      "tags": [
-        "script",
-        "installer",
-        "validation",
-        "brain"
-      ],
-      "complexity": "simple"
-    },
-    {
-      "id": "function:scripts/install.sh:install_brain",
-      "type": "function",
-      "name": "install_brain",
-      "filePath": "scripts/install.sh",
-      "lineRange": [
-        288,
-        383
-      ],
-      "summary": "Installs the Python brain package and its uv-managed dependencies, including bundled scripts and shell hooks, then verifies the import surface.",
-      "tags": [
-        "script",
-        "installer",
-        "brain",
-        "uv"
-      ],
-      "complexity": "moderate"
-    },
-    {
-      "id": "function:scripts/install.sh:install_gui",
-      "type": "function",
-      "name": "install_gui",
-      "filePath": "scripts/install.sh",
-      "lineRange": [
-        386,
-        446
-      ],
-      "summary": "Installs the macOS HippoGUI.app bundle into /Applications with checksum verification and receipt tracking.",
-      "tags": [
-        "script",
-        "installer",
-        "gui",
-        "macos"
-      ],
-      "complexity": "moderate"
-    },
-    {
-      "id": "function:scripts/install.sh:setup_config",
-      "type": "function",
-      "name": "setup_config",
-      "filePath": "scripts/install.sh",
-      "lineRange": [
-        449,
-        461
-      ],
-      "summary": "Seeds the default config under ~/.config/hippo when no user configuration is present yet.",
-      "tags": [
-        "script",
-        "installer",
-        "configuration"
-      ],
-      "complexity": "simple"
-    },
-    {
-      "id": "function:scripts/install.sh:install_services",
-      "type": "function",
-      "name": "install_services",
-      "filePath": "scripts/install.sh",
-      "lineRange": [
-        464,
-        479
-      ],
-      "summary": "Registers and starts the Hippo launchd services after the binaries and config are in place.",
-      "tags": [
-        "script",
-        "installer",
-        "launchd",
-        "service"
-      ],
-      "complexity": "simple"
-    },
-    {
-      "id": "function:scripts/install.sh:verify_installation",
-      "type": "function",
-      "name": "verify_installation",
-      "filePath": "scripts/install.sh",
-      "lineRange": [
-        486,
-        562
-      ],
-      "summary": "Runs a battery of post-install checks (binary on PATH, brain imports, services running) to confirm a healthy installation.",
-      "tags": [
-        "script",
-        "installer",
-        "validation"
-      ],
-      "complexity": "moderate"
-    },
-    {
-      "id": "function:scripts/install.sh:check_dependencies",
-      "type": "function",
-      "name": "check_dependencies",
-      "filePath": "scripts/install.sh",
-      "lineRange": [
-        565,
-        583
-      ],
-      "summary": "Verifies required host tools (bash, curl, uv, python3) are available before proceeding with installation.",
-      "tags": [
-        "script",
-        "installer",
-        "dependency-check"
-      ],
-      "complexity": "simple"
-    },
-    {
-      "id": "function:scripts/install.sh:warn_on_stale_shell_hook_sources",
-      "type": "function",
-      "name": "warn_on_stale_shell_hook_sources",
-      "filePath": "scripts/install.sh",
-      "lineRange": [
-        586,
-        602
-      ],
-      "summary": "Warns the user when their shell rc files still source outdated Hippo hook paths after an install.",
-      "tags": [
-        "script",
-        "installer",
-        "shell-integration",
-        "diagnostics"
-      ],
-      "complexity": "simple"
-    },
-    {
-      "id": "function:scripts/install.sh:main",
-      "type": "function",
-      "name": "main",
-      "filePath": "scripts/install.sh",
-      "lineRange": [
-        674,
-        735
-      ],
-      "summary": "Orchestrates the full install sequence: dependency checks, platform detection, release resolution, component installs, config setup, service start, and verification.",
-      "tags": [
-        "script",
-        "installer",
-        "entry-point",
-        "orchestration"
-      ],
-      "complexity": "moderate"
     },
     {
       "id": "file:scripts/ralph-loop-bench-v2.sh",
@@ -20790,6 +19063,431 @@
         "argument-parsing"
       ],
       "complexity": "simple"
+    },
+    {
+      "id": "pipeline:.github/workflows/release.yml",
+      "type": "pipeline",
+      "name": "release.yml",
+      "filePath": ".github/workflows/release.yml",
+      "summary": "GitHub Actions release pipeline triggered by v*.*.* tags that builds the Rust daemon binary and the Python brain package on macOS runners, then publishes a GitHub Release with checksummed artifacts. The Swift GUI build job has been removed now that the GUI lives in a separate repository.",
+      "tags": [
+        "ci-cd",
+        "deployment",
+        "infrastructure",
+        "release",
+        "github-actions"
+      ],
+      "complexity": "complex",
+      "languageNotes": "Three-job DAG (build-daemon, build-brain, release) with job outputs (artifact_name, checksum) consumed by the downstream release job; cross-job dependency via needs."
+    },
+    {
+      "id": "document:CLAUDE.md",
+      "type": "document",
+      "name": "CLAUDE.md",
+      "filePath": "CLAUDE.md",
+      "summary": "Project guide for Claude Code describing hippo's two-process architecture (Rust daemon + Python brain), repository layout, mise commands, ingestion sources, capture-reliability stack, and coding style. No longer references the Swift GUI which now lives in its own repo.",
+      "tags": [
+        "documentation",
+        "entry-point",
+        "architecture",
+        "developer-guide"
+      ],
+      "complexity": "moderate"
+    },
+    {
+      "id": "document:CONTRIBUTING.md",
+      "type": "document",
+      "name": "CONTRIBUTING.md",
+      "filePath": "CONTRIBUTING.md",
+      "summary": "Contributor guide covering project shape, setup, test strategy, dev loop, cross-language coupling between Rust and Python, CI behavior, formatting/linting, code-review expectations, PR conventions, and the release process.",
+      "tags": [
+        "documentation",
+        "development",
+        "contributing",
+        "test-strategy"
+      ],
+      "complexity": "moderate"
+    },
+    {
+      "id": "document:README.md",
+      "type": "document",
+      "name": "README.md",
+      "filePath": "README.md",
+      "summary": "Top-level project overview with quick install, architecture diagram, prerequisites, manual installation, usage, troubleshooting, MCP server setup, Firefox extension, configuration, and project structure. Documents that the native macOS GUI now lives in the separate stevencarpenter/hippo-gui repository.",
+      "tags": [
+        "documentation",
+        "entry-point",
+        "overview",
+        "installation"
+      ],
+      "complexity": "complex"
+    },
+    {
+      "id": "document:docs/release.md",
+      "type": "document",
+      "name": "release.md",
+      "filePath": "docs/release.md",
+      "summary": "Reference for the automated release pipeline: how to trigger a tag-driven release, the daemon/brain lockstep versioning and schema handshake, the release artifacts, the per-job breakdown of the GitHub Actions workflow, and troubleshooting steps.",
+      "tags": [
+        "documentation",
+        "release",
+        "ci-cd",
+        "operations"
+      ],
+      "complexity": "moderate"
+    },
+    {
+      "id": "document:docs/schema.md",
+      "type": "document",
+      "name": "schema.md",
+      "filePath": "docs/schema.md",
+      "summary": "SQLite schema reference documenting the per-version changelog, how to read the live schema, the top-level table map, foreign-key relationships, migration guarantees, version-mismatch recovery, and how to add a new migration.",
+      "tags": [
+        "documentation",
+        "database",
+        "schema-definition",
+        "migration"
+      ],
+      "complexity": "moderate"
+    },
+    {
+      "id": "document:docs/superpowers/plans/2026-05-23-understand-static-pages-deploy.md",
+      "type": "document",
+      "name": "2026-05-23-understand-static-pages-deploy.md",
+      "filePath": "docs/superpowers/plans/2026-05-23-understand-static-pages-deploy.md",
+      "summary": "Implementation plan for publishing the Understand-Anything knowledge-graph dashboard to hippobrain.org/understand/, broken into seven tasks covering a portable build script, graph publish/sanitize, local verification, landing page, deploy, GitHub raw source preview, and a one-command refresh.",
+      "tags": [
+        "documentation",
+        "planning",
+        "deployment",
+        "static-site",
+        "knowledge-graph"
+      ],
+      "complexity": "complex"
+    },
+    {
+      "id": "config:mise.toml",
+      "type": "config",
+      "name": "mise.toml",
+      "filePath": "mise.toml",
+      "summary": "mise task runner and toolchain configuration defining the full developer/operator command surface for hippo: build, test, lint, fmt, install, service start/stop/restart/nuke, enrichment/embedding maintenance, ingestion, OpenTelemetry stack, and skill install. No longer contains GUI build tasks.",
+      "tags": [
+        "configuration",
+        "build-system",
+        "task-runner",
+        "tooling"
+      ],
+      "complexity": "complex",
+      "languageNotes": "Large TOML with 60+ task definitions; many tasks embed multi-line shell scripts (heredocs and conditionals) inline rather than delegating to external scripts."
+    },
+    {
+      "id": "file:scripts/install.sh",
+      "type": "file",
+      "name": "install.sh",
+      "filePath": "scripts/install.sh",
+      "summary": "Standalone curl-pipeable installer that detects the platform, fetches the latest GitHub release, downloads and checksum-verifies the daemon binary and brain package, installs them, sets up config and launchd services, and verifies the installation. Builds daemon + brain only (no GUI).",
+      "tags": [
+        "script",
+        "installer",
+        "deployment",
+        "shell",
+        "verification"
+      ],
+      "complexity": "complex",
+      "languageNotes": "Bash with set -euo pipefail-style strictness; idempotent installs gated on a receipt file (check_receipt/write_receipt); structured logging via log_info/log_success/log_warning/log_error helpers."
+    },
+    {
+      "id": "function:scripts/install.sh:usage",
+      "type": "function",
+      "name": "usage",
+      "filePath": "scripts/install.sh",
+      "lineRange": [
+        6,
+        39
+      ],
+      "summary": "Prints the installer's command-line usage, flags, and environment-variable overrides to stdout.",
+      "tags": [
+        "utility",
+        "cli",
+        "help"
+      ],
+      "complexity": "simple"
+    },
+    {
+      "id": "function:scripts/install.sh:detect_platform",
+      "type": "function",
+      "name": "detect_platform",
+      "filePath": "scripts/install.sh",
+      "lineRange": [
+        91,
+        113
+      ],
+      "summary": "Detects the host OS and CPU architecture and resolves the matching release artifact identifier, erroring out on unsupported platforms.",
+      "tags": [
+        "utility",
+        "platform-detection",
+        "installer"
+      ],
+      "complexity": "simple"
+    },
+    {
+      "id": "function:scripts/install.sh:get_latest_release",
+      "type": "function",
+      "name": "get_latest_release",
+      "filePath": "scripts/install.sh",
+      "lineRange": [
+        116,
+        133
+      ],
+      "summary": "Queries the GitHub releases API to determine the latest release tag to install.",
+      "tags": [
+        "utility",
+        "github-api",
+        "installer"
+      ],
+      "complexity": "simple"
+    },
+    {
+      "id": "function:scripts/install.sh:download_file",
+      "type": "function",
+      "name": "download_file",
+      "filePath": "scripts/install.sh",
+      "lineRange": [
+        136,
+        147
+      ],
+      "summary": "Downloads a remote file to a local path using curl with error handling.",
+      "tags": [
+        "utility",
+        "download",
+        "network"
+      ],
+      "complexity": "simple"
+    },
+    {
+      "id": "function:scripts/install.sh:verify_checksum",
+      "type": "function",
+      "name": "verify_checksum",
+      "filePath": "scripts/install.sh",
+      "lineRange": [
+        150,
+        165
+      ],
+      "summary": "Verifies a downloaded artifact's SHA-256 checksum against the expected value and aborts on mismatch.",
+      "tags": [
+        "validation",
+        "security",
+        "checksum"
+      ],
+      "complexity": "simple"
+    },
+    {
+      "id": "function:scripts/install.sh:parse_checksum",
+      "type": "function",
+      "name": "parse_checksum",
+      "filePath": "scripts/install.sh",
+      "lineRange": [
+        168,
+        190
+      ],
+      "summary": "Parses the expected SHA-256 value for a given artifact out of the release checksums manifest.",
+      "tags": [
+        "utility",
+        "parsing",
+        "checksum"
+      ],
+      "complexity": "simple"
+    },
+    {
+      "id": "function:scripts/install.sh:check_receipt",
+      "type": "function",
+      "name": "check_receipt",
+      "filePath": "scripts/install.sh",
+      "lineRange": [
+        195,
+        212
+      ],
+      "summary": "Reads the install receipt to decide whether the requested version is already installed, supporting idempotent re-runs.",
+      "tags": [
+        "utility",
+        "idempotency",
+        "installer"
+      ],
+      "complexity": "simple"
+    },
+    {
+      "id": "function:scripts/install.sh:write_receipt",
+      "type": "function",
+      "name": "write_receipt",
+      "filePath": "scripts/install.sh",
+      "lineRange": [
+        218,
+        231
+      ],
+      "summary": "Writes the install receipt recording the installed version and metadata after a successful install.",
+      "tags": [
+        "utility",
+        "idempotency",
+        "installer"
+      ],
+      "complexity": "simple"
+    },
+    {
+      "id": "function:scripts/install.sh:install_daemon",
+      "type": "function",
+      "name": "install_daemon",
+      "filePath": "scripts/install.sh",
+      "lineRange": [
+        234,
+        259
+      ],
+      "summary": "Downloads, verifies, and installs the hippo daemon binary into the XDG bin path, making it executable.",
+      "tags": [
+        "installer",
+        "daemon",
+        "deployment"
+      ],
+      "complexity": "moderate"
+    },
+    {
+      "id": "function:scripts/install.sh:verify_brain_imports",
+      "type": "function",
+      "name": "verify_brain_imports",
+      "filePath": "scripts/install.sh",
+      "lineRange": [
+        265,
+        284
+      ],
+      "summary": "Smoke-tests the installed Python brain by importing its top-level modules to catch missing dependencies before declaring success.",
+      "tags": [
+        "validation",
+        "brain",
+        "python",
+        "smoke-test"
+      ],
+      "complexity": "moderate"
+    },
+    {
+      "id": "function:scripts/install.sh:install_brain",
+      "type": "function",
+      "name": "install_brain",
+      "filePath": "scripts/install.sh",
+      "lineRange": [
+        287,
+        382
+      ],
+      "summary": "Downloads and installs the Python brain package and its dependencies into a managed environment, then verifies its imports. The largest install step in the script.",
+      "tags": [
+        "installer",
+        "brain",
+        "python",
+        "deployment"
+      ],
+      "complexity": "complex"
+    },
+    {
+      "id": "function:scripts/install.sh:setup_config",
+      "type": "function",
+      "name": "setup_config",
+      "filePath": "scripts/install.sh",
+      "lineRange": [
+        385,
+        397
+      ],
+      "summary": "Seeds the default config files into the XDG config directory if they do not already exist.",
+      "tags": [
+        "installer",
+        "configuration",
+        "setup"
+      ],
+      "complexity": "simple"
+    },
+    {
+      "id": "function:scripts/install.sh:install_services",
+      "type": "function",
+      "name": "install_services",
+      "filePath": "scripts/install.sh",
+      "lineRange": [
+        400,
+        415
+      ],
+      "summary": "Installs and registers the launchd LaunchAgents so the daemon and brain run as managed background services.",
+      "tags": [
+        "installer",
+        "launchd",
+        "service",
+        "deployment"
+      ],
+      "complexity": "simple"
+    },
+    {
+      "id": "function:scripts/install.sh:verify_installation",
+      "type": "function",
+      "name": "verify_installation",
+      "filePath": "scripts/install.sh",
+      "lineRange": [
+        422,
+        498
+      ],
+      "summary": "Post-install health check that confirms the binary, brain, config, and services are present and operational, surfacing actionable errors on failure.",
+      "tags": [
+        "validation",
+        "health-check",
+        "installer"
+      ],
+      "complexity": "moderate"
+    },
+    {
+      "id": "function:scripts/install.sh:check_dependencies",
+      "type": "function",
+      "name": "check_dependencies",
+      "filePath": "scripts/install.sh",
+      "lineRange": [
+        501,
+        519
+      ],
+      "summary": "Verifies required external tools (curl, shasum, etc.) are available before attempting installation.",
+      "tags": [
+        "validation",
+        "dependencies",
+        "installer"
+      ],
+      "complexity": "simple"
+    },
+    {
+      "id": "function:scripts/install.sh:warn_on_stale_shell_hook_sources",
+      "type": "function",
+      "name": "warn_on_stale_shell_hook_sources",
+      "filePath": "scripts/install.sh",
+      "lineRange": [
+        522,
+        538
+      ],
+      "summary": "Detects and warns about stale shell-hook source lines from prior installs that could shadow the freshly installed hooks.",
+      "tags": [
+        "validation",
+        "shell-hook",
+        "installer",
+        "warning"
+      ],
+      "complexity": "simple"
+    },
+    {
+      "id": "function:scripts/install.sh:main",
+      "type": "function",
+      "name": "main",
+      "filePath": "scripts/install.sh",
+      "lineRange": [
+        610,
+        668
+      ],
+      "summary": "Installer entry point that parses arguments and orchestrates the full sequence: dependency check, platform detection, release resolution, daemon and brain install, config setup, service install, and final verification.",
+      "tags": [
+        "entry-point",
+        "installer",
+        "orchestration"
+      ],
+      "complexity": "moderate"
     }
   ],
   "edges": [
@@ -21131,20 +19829,6 @@
     },
     {
       "source": "document:brain/README.md",
-      "target": "file:brain/src/hippo_brain/__init__.py",
-      "type": "documents",
-      "direction": "forward",
-      "weight": 0.5
-    },
-    {
-      "source": "document:README.md",
-      "target": "file:brain/src/hippo_brain/__init__.py",
-      "type": "documents",
-      "direction": "forward",
-      "weight": 0.5
-    },
-    {
-      "source": "document:CLAUDE.md",
       "target": "file:brain/src/hippo_brain/__init__.py",
       "type": "documents",
       "direction": "forward",
@@ -30755,13 +29439,6 @@
       "weight": 0.5
     },
     {
-      "source": "document:docs/diagrams/04-data-model.excalidraw",
-      "target": "document:docs/schema.md",
-      "type": "related",
-      "direction": "forward",
-      "weight": 0.5
-    },
-    {
       "source": "document:docs/superpowers/specs/2026-04-21-hippo-bench-design.md",
       "target": "document:docs/superpowers/specs/2026-04-27-hippo-bench-v2-design.md",
       "type": "related",
@@ -30804,13 +29481,6 @@
       "weight": 0.5
     },
     {
-      "source": "document:docs/superpowers/plans/2026-05-23-understand-static-pages-deploy.md",
-      "target": "document:docs/superpowers/specs/2026-05-01-hippobrain-org-design.md",
-      "type": "related",
-      "direction": "forward",
-      "weight": 0.5
-    },
-    {
       "source": "document:docs/superpowers/plans/2026-05-17-agentic-session-coverage.md",
       "target": "document:docs/superpowers/specs/2026-05-17-agentic-session-coverage-design.md",
       "type": "related",
@@ -30827,13 +29497,6 @@
     {
       "source": "document:docs/superpowers/plans/2026-05-17-codex-ingestion.md",
       "target": "document:docs/capture/sources.md",
-      "type": "related",
-      "direction": "forward",
-      "weight": 0.5
-    },
-    {
-      "source": "document:docs/superpowers/plans/2026-05-18-embedding-orphan-reaper.md",
-      "target": "document:docs/schema.md",
       "type": "related",
       "direction": "forward",
       "weight": 0.5
@@ -31077,496 +29740,6 @@
       "weight": 0.5
     },
     {
-      "source": "config:hippo-gui/.swiftlint.yml",
-      "target": "file:hippo-gui/Package.swift",
-      "type": "configures",
-      "direction": "forward",
-      "weight": 0.6
-    },
-    {
-      "source": "file:hippo-gui/.swift-format",
-      "target": "file:hippo-gui/Package.swift",
-      "type": "configures",
-      "direction": "forward",
-      "weight": 0.6
-    },
-    {
-      "source": "file:hippo-gui/Package.resolved",
-      "target": "file:hippo-gui/Package.swift",
-      "type": "depends_on",
-      "direction": "forward",
-      "weight": 0.6
-    },
-    {
-      "source": "document:hippo-gui/Docs/Plans/plan-hippoGuiMacosApp.prompt.md",
-      "target": "file:hippo-gui/Package.swift",
-      "type": "documents",
-      "direction": "forward",
-      "weight": 0.5
-    },
-    {
-      "source": "file:hippo-gui/Sources/HippoGUI/App/AppMetadata.swift",
-      "target": "class:hippo-gui/Sources/HippoGUI/App/AppMetadata.swift:AppMetadata",
-      "type": "contains",
-      "direction": "forward",
-      "weight": 1.0
-    },
-    {
-      "source": "file:hippo-gui/Sources/HippoGUI/App/HippoGUIApp.swift",
-      "target": "class:hippo-gui/Sources/HippoGUI/App/HippoGUIApp.swift:HippoGUIMainScene",
-      "type": "contains",
-      "direction": "forward",
-      "weight": 1.0
-    },
-    {
-      "source": "file:hippo-gui/Sources/HippoGUI/App/HippoGUIApp.swift",
-      "target": "class:hippo-gui/Sources/HippoGUI/App/HippoGUIApp.swift:HippoGUIAppDelegate",
-      "type": "contains",
-      "direction": "forward",
-      "weight": 1.0
-    },
-    {
-      "source": "file:hippo-gui/Sources/HippoGUI/App/HippoGUIApp.swift",
-      "target": "class:hippo-gui/Sources/HippoGUI/Services/BrainClient.swift:BrainClient",
-      "type": "depends_on",
-      "direction": "forward",
-      "weight": 0.6
-    },
-    {
-      "source": "file:hippo-gui/Sources/HippoGUI/App/HippoGUIApp.swift",
-      "target": "file:hippo-gui/Sources/HippoGUI/Views/ContentView.swift",
-      "type": "depends_on",
-      "direction": "forward",
-      "weight": 0.6
-    },
-    {
-      "source": "file:hippo-gui/Sources/HippoGUI/App/HippoGUIApp.swift",
-      "target": "file:hippo-gui/Sources/HippoGUI/Views/AboutSettingsView.swift",
-      "type": "depends_on",
-      "direction": "forward",
-      "weight": 0.6
-    },
-    {
-      "source": "file:hippo-gui/Sources/HippoGUI/App/HippoGUIApp.swift",
-      "target": "file:hippo-gui/Sources/HippoGUI/Services/BrainClientEnvironment.swift",
-      "type": "depends_on",
-      "direction": "forward",
-      "weight": 0.6
-    },
-    {
-      "source": "file:hippo-gui/Sources/HippoGUI/Models/AskResponse.swift",
-      "target": "class:hippo-gui/Sources/HippoGUI/Models/AskResponse.swift:AskSource",
-      "type": "contains",
-      "direction": "forward",
-      "weight": 1.0
-    },
-    {
-      "source": "file:hippo-gui/Sources/HippoGUI/Models/HealthResponse.swift",
-      "target": "class:hippo-gui/Sources/HippoGUI/Models/HealthResponse.swift:HealthResponse",
-      "type": "contains",
-      "direction": "forward",
-      "weight": 1.0
-    },
-    {
-      "source": "file:hippo-gui/Sources/HippoGUI/Models/KnowledgeNode.swift",
-      "target": "class:hippo-gui/Sources/HippoGUI/Models/KnowledgeNode.swift:KnowledgeNode",
-      "type": "contains",
-      "direction": "forward",
-      "weight": 1.0
-    },
-    {
-      "source": "file:hippo-gui/Sources/HippoGUI/Models/QueryResponse.swift",
-      "target": "class:hippo-gui/Sources/HippoGUI/Models/QueryResponse.swift:SemanticQueryResult",
-      "type": "contains",
-      "direction": "forward",
-      "weight": 1.0
-    },
-    {
-      "source": "file:hippo-gui/Sources/HippoGUI/Services/BrainClient.swift",
-      "target": "class:hippo-gui/Sources/HippoGUI/Services/BrainClient.swift:BrainClient",
-      "type": "contains",
-      "direction": "forward",
-      "weight": 1.0
-    },
-    {
-      "source": "file:hippo-gui/Sources/HippoGUI/Services/BrainClient.swift",
-      "target": "class:hippo-gui/Sources/HippoGUI/Services/BrainClient.swift:BrainClientProtocol",
-      "type": "contains",
-      "direction": "forward",
-      "weight": 1.0
-    },
-    {
-      "source": "file:hippo-gui/Sources/HippoGUI/Services/BrainClient.swift",
-      "target": "class:hippo-gui/Sources/HippoGUI/Services/BrainClient.swift:BrainClientError",
-      "type": "contains",
-      "direction": "forward",
-      "weight": 1.0
-    },
-    {
-      "source": "class:hippo-gui/Sources/HippoGUI/Services/BrainClient.swift:BrainClient",
-      "target": "class:hippo-gui/Sources/HippoGUI/Services/BrainClient.swift:BrainClientProtocol",
-      "type": "implements",
-      "direction": "forward",
-      "weight": 0.9
-    },
-    {
-      "source": "class:hippo-gui/Sources/HippoGUI/Services/BrainClient.swift:BrainClient",
-      "target": "class:hippo-gui/Sources/HippoGUI/Services/ConfigClient.swift:ConfigClient",
-      "type": "depends_on",
-      "direction": "forward",
-      "weight": 0.6
-    },
-    {
-      "source": "file:hippo-gui/Sources/HippoGUI/Services/BrainClientEnvironment.swift",
-      "target": "class:hippo-gui/Sources/HippoGUI/Services/BrainClientEnvironment.swift:UnconfiguredBrainClient",
-      "type": "contains",
-      "direction": "forward",
-      "weight": 1.0
-    },
-    {
-      "source": "class:hippo-gui/Sources/HippoGUI/Services/BrainClientEnvironment.swift:UnconfiguredBrainClient",
-      "target": "class:hippo-gui/Sources/HippoGUI/Services/BrainClient.swift:BrainClientProtocol",
-      "type": "implements",
-      "direction": "forward",
-      "weight": 0.9
-    },
-    {
-      "source": "file:hippo-gui/Sources/HippoGUI/Services/BrainClientEnvironment.swift",
-      "target": "class:hippo-gui/Sources/HippoGUI/Services/BrainClient.swift:BrainClientProtocol",
-      "type": "depends_on",
-      "direction": "forward",
-      "weight": 0.6
-    },
-    {
-      "source": "file:hippo-gui/Sources/HippoGUI/Services/ConfigClient.swift",
-      "target": "class:hippo-gui/Sources/HippoGUI/Services/ConfigClient.swift:ConfigClient",
-      "type": "contains",
-      "direction": "forward",
-      "weight": 1.0
-    },
-    {
-      "source": "file:hippo-gui/Sources/HippoGUI/Services/DaemonSocketClient.swift",
-      "target": "class:hippo-gui/Sources/HippoGUI/Services/DaemonSocketClient.swift:DaemonSocketClient",
-      "type": "contains",
-      "direction": "forward",
-      "weight": 1.0
-    },
-    {
-      "source": "class:hippo-gui/Sources/HippoGUI/Services/DaemonSocketClient.swift:DaemonSocketClient",
-      "target": "class:hippo-gui/Sources/HippoGUI/Services/ConfigClient.swift:ConfigClient",
-      "type": "depends_on",
-      "direction": "forward",
-      "weight": 0.6
-    },
-    {
-      "source": "file:hippo-gui/Sources/HippoGUI/Services/PreviewBrainClient.swift",
-      "target": "class:hippo-gui/Sources/HippoGUI/Services/PreviewBrainClient.swift:PreviewBrainClient",
-      "type": "contains",
-      "direction": "forward",
-      "weight": 1.0
-    },
-    {
-      "source": "class:hippo-gui/Sources/HippoGUI/Services/PreviewBrainClient.swift:PreviewBrainClient",
-      "target": "class:hippo-gui/Sources/HippoGUI/Services/BrainClient.swift:BrainClientProtocol",
-      "type": "implements",
-      "direction": "forward",
-      "weight": 0.9
-    },
-    {
-      "source": "file:hippo-gui/Sources/HippoGUI/ViewModels/EventBrowserViewModel.swift",
-      "target": "class:hippo-gui/Sources/HippoGUI/ViewModels/EventBrowserViewModel.swift:EventBrowserViewModel",
-      "type": "contains",
-      "direction": "forward",
-      "weight": 1.0
-    },
-    {
-      "source": "class:hippo-gui/Sources/HippoGUI/ViewModels/EventBrowserViewModel.swift:EventBrowserViewModel",
-      "target": "class:hippo-gui/Sources/HippoGUI/Services/BrainClient.swift:BrainClientProtocol",
-      "type": "depends_on",
-      "direction": "forward",
-      "weight": 0.6
-    },
-    {
-      "source": "file:hippo-gui/Sources/HippoGUI/ViewModels/KnowledgeViewModel.swift",
-      "target": "class:hippo-gui/Sources/HippoGUI/ViewModels/KnowledgeViewModel.swift:KnowledgeViewModel",
-      "type": "contains",
-      "direction": "forward",
-      "weight": 1.0
-    },
-    {
-      "source": "class:hippo-gui/Sources/HippoGUI/ViewModels/KnowledgeViewModel.swift:KnowledgeViewModel",
-      "target": "class:hippo-gui/Sources/HippoGUI/Services/BrainClient.swift:BrainClientProtocol",
-      "type": "depends_on",
-      "direction": "forward",
-      "weight": 0.6
-    },
-    {
-      "source": "file:hippo-gui/Sources/HippoGUI/ViewModels/QueryViewModel.swift",
-      "target": "class:hippo-gui/Sources/HippoGUI/ViewModels/QueryViewModel.swift:QueryViewModel",
-      "type": "contains",
-      "direction": "forward",
-      "weight": 1.0
-    },
-    {
-      "source": "class:hippo-gui/Sources/HippoGUI/ViewModels/QueryViewModel.swift:QueryViewModel",
-      "target": "class:hippo-gui/Sources/HippoGUI/Services/BrainClient.swift:BrainClientProtocol",
-      "type": "depends_on",
-      "direction": "forward",
-      "weight": 0.6
-    },
-    {
-      "source": "file:hippo-gui/Sources/HippoGUI/ViewModels/StatusViewModel.swift",
-      "target": "class:hippo-gui/Sources/HippoGUI/ViewModels/StatusViewModel.swift:StatusViewModel",
-      "type": "contains",
-      "direction": "forward",
-      "weight": 1.0
-    },
-    {
-      "source": "class:hippo-gui/Sources/HippoGUI/ViewModels/StatusViewModel.swift:StatusViewModel",
-      "target": "class:hippo-gui/Sources/HippoGUI/Services/BrainClient.swift:BrainClientProtocol",
-      "type": "depends_on",
-      "direction": "forward",
-      "weight": 0.6
-    },
-    {
-      "source": "class:hippo-gui/Sources/HippoGUI/ViewModels/StatusViewModel.swift:StatusViewModel",
-      "target": "class:hippo-gui/Sources/HippoGUI/Services/DaemonSocketClient.swift:DaemonSocketClient",
-      "type": "depends_on",
-      "direction": "forward",
-      "weight": 0.6
-    },
-    {
-      "source": "file:hippo-gui/Sources/HippoGUI/Views/AboutSettingsView.swift",
-      "target": "class:hippo-gui/Sources/HippoGUI/App/AppMetadata.swift:AppMetadata",
-      "type": "depends_on",
-      "direction": "forward",
-      "weight": 0.6
-    },
-    {
-      "source": "file:hippo-gui/Sources/HippoGUI/Views/ContentView.swift",
-      "target": "file:hippo-gui/Sources/HippoGUI/Models/SidebarSection.swift",
-      "type": "depends_on",
-      "direction": "forward",
-      "weight": 0.6
-    },
-    {
-      "source": "file:hippo-gui/Sources/HippoGUI/Views/ContentView.swift",
-      "target": "class:hippo-gui/Sources/HippoGUI/Services/PreviewBrainClient.swift:PreviewBrainClient",
-      "type": "depends_on",
-      "direction": "forward",
-      "weight": 0.6
-    },
-    {
-      "source": "document:hippo-gui/README.md",
-      "target": "file:hippo-gui/Sources/HippoGUI/Services/PreviewBrainClient.swift",
-      "type": "documents",
-      "direction": "forward",
-      "weight": 0.5
-    },
-    {
-      "source": "document:hippo-gui/README.md",
-      "target": "file:hippo-gui/Sources/HippoGUI/Services/BrainClientEnvironment.swift",
-      "type": "documents",
-      "direction": "forward",
-      "weight": 0.5
-    },
-    {
-      "source": "document:hippo-gui/README.md",
-      "target": "file:hippo-gui/Sources/HippoGUI/App/HippoGUIApp.swift",
-      "type": "documents",
-      "direction": "forward",
-      "weight": 0.5
-    },
-    {
-      "source": "config:hippo-gui/Resources/Assets.xcassets/AppIcon.appiconset/Contents.json",
-      "target": "file:hippo-gui/Sources/HippoGUI/Views/AboutSettingsView.swift",
-      "type": "configures",
-      "direction": "forward",
-      "weight": 0.6
-    },
-    {
-      "source": "file:hippo-gui/Sources/HippoGUI/Views/EventBrowserView.swift",
-      "target": "class:hippo-gui/Sources/HippoGUI/Views/EventBrowserView.swift:EventBrowserView",
-      "type": "contains",
-      "direction": "forward",
-      "weight": 1.0
-    },
-    {
-      "source": "file:hippo-gui/Sources/HippoGUI/Views/EventBrowserView.swift",
-      "target": "file:hippo-gui/Sources/HippoGUI/ViewModels/EventBrowserViewModel.swift",
-      "type": "depends_on",
-      "direction": "forward",
-      "weight": 0.6
-    },
-    {
-      "source": "file:hippo-gui/Sources/HippoGUI/Views/EventBrowserView.swift",
-      "target": "file:hippo-gui/Sources/HippoGUI/Views/ErrorBannerView.swift",
-      "type": "depends_on",
-      "direction": "forward",
-      "weight": 0.6
-    },
-    {
-      "source": "file:hippo-gui/Sources/HippoGUI/Views/KnowledgeView.swift",
-      "target": "class:hippo-gui/Sources/HippoGUI/Views/KnowledgeView.swift:KnowledgeView",
-      "type": "contains",
-      "direction": "forward",
-      "weight": 1.0
-    },
-    {
-      "source": "file:hippo-gui/Sources/HippoGUI/Views/KnowledgeView.swift",
-      "target": "class:hippo-gui/Sources/HippoGUI/Views/KnowledgeView.swift:ParsedKnowledgeContent",
-      "type": "contains",
-      "direction": "forward",
-      "weight": 1.0
-    },
-    {
-      "source": "file:hippo-gui/Sources/HippoGUI/Views/KnowledgeView.swift",
-      "target": "file:hippo-gui/Sources/HippoGUI/ViewModels/KnowledgeViewModel.swift",
-      "type": "depends_on",
-      "direction": "forward",
-      "weight": 0.6
-    },
-    {
-      "source": "file:hippo-gui/Sources/HippoGUI/Views/KnowledgeView.swift",
-      "target": "file:hippo-gui/Sources/HippoGUI/Views/ErrorBannerView.swift",
-      "type": "depends_on",
-      "direction": "forward",
-      "weight": 0.6
-    },
-    {
-      "source": "file:hippo-gui/Sources/HippoGUI/Views/QueryAskView.swift",
-      "target": "class:hippo-gui/Sources/HippoGUI/Views/QueryAskView.swift:QueryAskView",
-      "type": "contains",
-      "direction": "forward",
-      "weight": 1.0
-    },
-    {
-      "source": "file:hippo-gui/Sources/HippoGUI/Views/QueryAskView.swift",
-      "target": "file:hippo-gui/Sources/HippoGUI/ViewModels/QueryViewModel.swift",
-      "type": "depends_on",
-      "direction": "forward",
-      "weight": 0.6
-    },
-    {
-      "source": "file:hippo-gui/Sources/HippoGUI/Views/QueryAskView.swift",
-      "target": "file:hippo-gui/Sources/HippoGUI/Views/ErrorBannerView.swift",
-      "type": "depends_on",
-      "direction": "forward",
-      "weight": 0.6
-    },
-    {
-      "source": "file:hippo-gui/Sources/HippoGUI/Views/StatusView.swift",
-      "target": "class:hippo-gui/Sources/HippoGUI/Views/StatusView.swift:StatusView",
-      "type": "contains",
-      "direction": "forward",
-      "weight": 1.0
-    },
-    {
-      "source": "file:hippo-gui/Sources/HippoGUI/Views/StatusView.swift",
-      "target": "file:hippo-gui/Sources/HippoGUI/ViewModels/StatusViewModel.swift",
-      "type": "depends_on",
-      "direction": "forward",
-      "weight": 0.6
-    },
-    {
-      "source": "file:hippo-gui/Sources/HippoGUI/Views/StatusView.swift",
-      "target": "file:hippo-gui/Sources/HippoGUI/Views/ErrorBannerView.swift",
-      "type": "depends_on",
-      "direction": "forward",
-      "weight": 0.6
-    },
-    {
-      "source": "file:hippo-gui/Sources/HippoGUIPackageApp/HippoGUIPackageApp.swift",
-      "target": "file:hippo-gui/Sources/HippoGUI/App/HippoGUIApp.swift",
-      "type": "depends_on",
-      "direction": "forward",
-      "weight": 0.6
-    },
-    {
-      "source": "file:hippo-gui/XcodeApp/HippoGUIXcodeApp.swift",
-      "target": "file:hippo-gui/Sources/HippoGUI/App/HippoGUIApp.swift",
-      "type": "depends_on",
-      "direction": "forward",
-      "weight": 0.6
-    },
-    {
-      "source": "file:hippo-gui/Tests/HippoGUITests/MockBrainClient.swift",
-      "target": "class:hippo-gui/Tests/HippoGUITests/MockBrainClient.swift:MockBrainClient",
-      "type": "contains",
-      "direction": "forward",
-      "weight": 1.0
-    },
-    {
-      "source": "file:hippo-gui/Tests/HippoGUITests/ViewModelTests.swift",
-      "target": "file:hippo-gui/Tests/HippoGUITests/MockBrainClient.swift",
-      "type": "depends_on",
-      "direction": "forward",
-      "weight": 0.6
-    },
-    {
-      "source": "file:hippo-gui/scripts/generate-app-icon.swift",
-      "target": "function:hippo-gui/scripts/generate-app-icon.swift:drawIcon",
-      "type": "contains",
-      "direction": "forward",
-      "weight": 1.0
-    },
-    {
-      "source": "file:hippo-gui/scripts/generate-app-icon.swift",
-      "target": "function:hippo-gui/scripts/generate-app-icon.swift:strokeSpiral",
-      "type": "contains",
-      "direction": "forward",
-      "weight": 1.0
-    },
-    {
-      "source": "file:hippo-gui/scripts/release-gui.sh",
-      "target": "function:hippo-gui/scripts/release-gui.sh:emit_json",
-      "type": "contains",
-      "direction": "forward",
-      "weight": 1.0
-    },
-    {
-      "source": "file:hippo-gui/scripts/release-gui.sh",
-      "target": "file:hippo-gui/scripts/build-native-app.sh",
-      "type": "depends_on",
-      "direction": "forward",
-      "weight": 0.6
-    },
-    {
-      "source": "file:hippo-gui/scripts/run-native-app.sh",
-      "target": "file:hippo-gui/scripts/build-native-app.sh",
-      "type": "depends_on",
-      "direction": "forward",
-      "weight": 0.6
-    },
-    {
-      "source": "file:hippo-gui/scripts/build-native-app.sh",
-      "target": "file:hippo-gui/scripts/stamp-app-version.sh",
-      "type": "depends_on",
-      "direction": "forward",
-      "weight": 0.6
-    },
-    {
-      "source": "file:hippo-gui/scripts/stamp-app-version.sh",
-      "target": "function:hippo-gui/scripts/stamp-app-version.sh:resolve_marketing_version",
-      "type": "contains",
-      "direction": "forward",
-      "weight": 1.0
-    },
-    {
-      "source": "file:hippo-gui/scripts/stamp-app-version.sh",
-      "target": "function:hippo-gui/scripts/stamp-app-version.sh:resolve_build_number",
-      "type": "contains",
-      "direction": "forward",
-      "weight": 1.0
-    },
-    {
-      "source": "file:hippo-gui/scripts/stamp-app-version.sh",
-      "target": "file:hippo-gui/VERSION",
-      "type": "depends_on",
-      "direction": "forward",
-      "weight": 0.6
-    },
-    {
       "source": "service:launchd/com.hippo.brain.plist",
       "target": "file:brain/src/hippo_brain/server.py",
       "type": "deploys",
@@ -31791,34 +29964,6 @@
       "weight": 0.5
     },
     {
-      "source": "config:mise.toml",
-      "target": "service:otel/docker-compose.yml",
-      "type": "configures",
-      "direction": "forward",
-      "weight": 0.6
-    },
-    {
-      "source": "config:mise.toml",
-      "target": "file:scripts/hippo-ingest-claude.py",
-      "type": "configures",
-      "direction": "forward",
-      "weight": 0.6
-    },
-    {
-      "source": "config:mise.toml",
-      "target": "file:scripts/hippo-re-embed.py",
-      "type": "configures",
-      "direction": "forward",
-      "weight": 0.6
-    },
-    {
-      "source": "config:mise.toml",
-      "target": "file:scripts/hippo-monitor.sh",
-      "type": "configures",
-      "direction": "forward",
-      "weight": 0.6
-    },
-    {
       "source": "file:scripts/hippo-bulk-enrich.py",
       "target": "file:brain/src/hippo_brain/client.py",
       "type": "imports",
@@ -31964,132 +30109,6 @@
       "type": "calls",
       "direction": "forward",
       "weight": 0.8
-    },
-    {
-      "source": "file:scripts/install.sh",
-      "target": "function:scripts/install.sh:usage",
-      "type": "contains",
-      "direction": "forward",
-      "weight": 1.0
-    },
-    {
-      "source": "file:scripts/install.sh",
-      "target": "function:scripts/install.sh:detect_platform",
-      "type": "contains",
-      "direction": "forward",
-      "weight": 1.0
-    },
-    {
-      "source": "file:scripts/install.sh",
-      "target": "function:scripts/install.sh:get_latest_release",
-      "type": "contains",
-      "direction": "forward",
-      "weight": 1.0
-    },
-    {
-      "source": "file:scripts/install.sh",
-      "target": "function:scripts/install.sh:download_file",
-      "type": "contains",
-      "direction": "forward",
-      "weight": 1.0
-    },
-    {
-      "source": "file:scripts/install.sh",
-      "target": "function:scripts/install.sh:verify_checksum",
-      "type": "contains",
-      "direction": "forward",
-      "weight": 1.0
-    },
-    {
-      "source": "file:scripts/install.sh",
-      "target": "function:scripts/install.sh:parse_checksum",
-      "type": "contains",
-      "direction": "forward",
-      "weight": 1.0
-    },
-    {
-      "source": "file:scripts/install.sh",
-      "target": "function:scripts/install.sh:check_receipt",
-      "type": "contains",
-      "direction": "forward",
-      "weight": 1.0
-    },
-    {
-      "source": "file:scripts/install.sh",
-      "target": "function:scripts/install.sh:write_receipt",
-      "type": "contains",
-      "direction": "forward",
-      "weight": 1.0
-    },
-    {
-      "source": "file:scripts/install.sh",
-      "target": "function:scripts/install.sh:install_daemon",
-      "type": "contains",
-      "direction": "forward",
-      "weight": 1.0
-    },
-    {
-      "source": "file:scripts/install.sh",
-      "target": "function:scripts/install.sh:verify_brain_imports",
-      "type": "contains",
-      "direction": "forward",
-      "weight": 1.0
-    },
-    {
-      "source": "file:scripts/install.sh",
-      "target": "function:scripts/install.sh:install_brain",
-      "type": "contains",
-      "direction": "forward",
-      "weight": 1.0
-    },
-    {
-      "source": "file:scripts/install.sh",
-      "target": "function:scripts/install.sh:install_gui",
-      "type": "contains",
-      "direction": "forward",
-      "weight": 1.0
-    },
-    {
-      "source": "file:scripts/install.sh",
-      "target": "function:scripts/install.sh:setup_config",
-      "type": "contains",
-      "direction": "forward",
-      "weight": 1.0
-    },
-    {
-      "source": "file:scripts/install.sh",
-      "target": "function:scripts/install.sh:install_services",
-      "type": "contains",
-      "direction": "forward",
-      "weight": 1.0
-    },
-    {
-      "source": "file:scripts/install.sh",
-      "target": "function:scripts/install.sh:verify_installation",
-      "type": "contains",
-      "direction": "forward",
-      "weight": 1.0
-    },
-    {
-      "source": "file:scripts/install.sh",
-      "target": "function:scripts/install.sh:check_dependencies",
-      "type": "contains",
-      "direction": "forward",
-      "weight": 1.0
-    },
-    {
-      "source": "file:scripts/install.sh",
-      "target": "function:scripts/install.sh:warn_on_stale_shell_hook_sources",
-      "type": "contains",
-      "direction": "forward",
-      "weight": 1.0
-    },
-    {
-      "source": "file:scripts/install.sh",
-      "target": "function:scripts/install.sh:main",
-      "type": "contains",
-      "direction": "forward",
-      "weight": 1.0
     },
     {
       "source": "file:scripts/ralph-loop-bench-v2.sh",
@@ -32286,13 +30305,6 @@
       "type": "documents",
       "direction": "forward",
       "weight": 0.5
-    },
-    {
-      "source": "file:scripts/install.sh",
-      "target": "file:shell/hippo.zsh",
-      "type": "depends_on",
-      "direction": "forward",
-      "weight": 0.6
     },
     {
       "source": "file:site/src/components/EditOnGitHub.astro",
@@ -33378,6 +31390,174 @@
       "type": "defines_schema",
       "direction": "forward",
       "weight": 0.8
+    },
+    {
+      "source": "file:scripts/install.sh",
+      "target": "function:scripts/install.sh:usage",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:scripts/install.sh",
+      "target": "function:scripts/install.sh:detect_platform",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:scripts/install.sh",
+      "target": "function:scripts/install.sh:get_latest_release",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:scripts/install.sh",
+      "target": "function:scripts/install.sh:download_file",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:scripts/install.sh",
+      "target": "function:scripts/install.sh:verify_checksum",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:scripts/install.sh",
+      "target": "function:scripts/install.sh:parse_checksum",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:scripts/install.sh",
+      "target": "function:scripts/install.sh:check_receipt",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:scripts/install.sh",
+      "target": "function:scripts/install.sh:write_receipt",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:scripts/install.sh",
+      "target": "function:scripts/install.sh:install_daemon",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:scripts/install.sh",
+      "target": "function:scripts/install.sh:verify_brain_imports",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:scripts/install.sh",
+      "target": "function:scripts/install.sh:install_brain",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:scripts/install.sh",
+      "target": "function:scripts/install.sh:setup_config",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:scripts/install.sh",
+      "target": "function:scripts/install.sh:install_services",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:scripts/install.sh",
+      "target": "function:scripts/install.sh:verify_installation",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:scripts/install.sh",
+      "target": "function:scripts/install.sh:check_dependencies",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:scripts/install.sh",
+      "target": "function:scripts/install.sh:warn_on_stale_shell_hook_sources",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:scripts/install.sh",
+      "target": "function:scripts/install.sh:main",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "document:README.md",
+      "target": "document:CONTRIBUTING.md",
+      "type": "documents",
+      "direction": "forward",
+      "weight": 0.5
+    },
+    {
+      "source": "document:README.md",
+      "target": "document:docs/schema.md",
+      "type": "documents",
+      "direction": "forward",
+      "weight": 0.5
+    },
+    {
+      "source": "document:README.md",
+      "target": "document:docs/release.md",
+      "type": "documents",
+      "direction": "forward",
+      "weight": 0.5
+    },
+    {
+      "source": "document:docs/release.md",
+      "target": "pipeline:.github/workflows/release.yml",
+      "type": "documents",
+      "direction": "forward",
+      "weight": 0.5
+    },
+    {
+      "source": "document:docs/release.md",
+      "target": "file:scripts/install.sh",
+      "type": "documents",
+      "direction": "forward",
+      "weight": 0.5
+    },
+    {
+      "source": "document:CONTRIBUTING.md",
+      "target": "document:docs/release.md",
+      "type": "documents",
+      "direction": "forward",
+      "weight": 0.5
+    },
+    {
+      "source": "pipeline:.github/workflows/release.yml",
+      "target": "file:scripts/install.sh",
+      "type": "depends_on",
+      "direction": "forward",
+      "weight": 0.6
     }
   ],
   "layers": [
@@ -33630,65 +31810,6 @@
       ]
     },
     {
-      "id": "layer:swift-gui",
-      "name": "Swift macOS GUI",
-      "description": "The hippo-gui SwiftUI/MVVM macOS app: views, view models, brain client services, Swift Package manifest, resources, tests, and build/lint scripts.",
-      "nodeIds": [
-        "config:hippo-gui/.mcp.json",
-        "file:hippo-gui/.swift-format",
-        "config:hippo-gui/.swiftlint.yml",
-        "config:hippo-gui/AppBundle/Info.plist",
-        "document:hippo-gui/Docs/Plans/plan-hippoGuiMacosApp.prompt.md",
-        "file:hippo-gui/Package.resolved",
-        "file:hippo-gui/Package.swift",
-        "document:hippo-gui/README.md",
-        "config:hippo-gui/Resources/Assets.xcassets/AppIcon.appiconset/Contents.json",
-        "config:hippo-gui/Resources/Assets.xcassets/Contents.json",
-        "file:hippo-gui/Sources/HippoGUI/App/AppMetadata.swift",
-        "file:hippo-gui/Sources/HippoGUI/App/HippoGUIApp.swift",
-        "file:hippo-gui/Sources/HippoGUI/Models/AskResponse.swift",
-        "file:hippo-gui/Sources/HippoGUI/Models/Event.swift",
-        "file:hippo-gui/Sources/HippoGUI/Models/HealthResponse.swift",
-        "file:hippo-gui/Sources/HippoGUI/Models/KnowledgeNode.swift",
-        "file:hippo-gui/Sources/HippoGUI/Models/QueryResponse.swift",
-        "file:hippo-gui/Sources/HippoGUI/Models/Session.swift",
-        "file:hippo-gui/Sources/HippoGUI/Models/SidebarSection.swift",
-        "file:hippo-gui/Sources/HippoGUI/Models/TimeFilterPreset.swift",
-        "file:hippo-gui/Sources/HippoGUI/Services/BrainClient.swift",
-        "file:hippo-gui/Sources/HippoGUI/Services/BrainClientEnvironment.swift",
-        "file:hippo-gui/Sources/HippoGUI/Services/ConfigClient.swift",
-        "file:hippo-gui/Sources/HippoGUI/Services/DaemonSocketClient.swift",
-        "file:hippo-gui/Sources/HippoGUI/Services/PreviewBrainClient.swift",
-        "file:hippo-gui/Sources/HippoGUI/ViewModels/EventBrowserViewModel.swift",
-        "file:hippo-gui/Sources/HippoGUI/ViewModels/KnowledgeViewModel.swift",
-        "file:hippo-gui/Sources/HippoGUI/ViewModels/QueryViewModel.swift",
-        "file:hippo-gui/Sources/HippoGUI/ViewModels/StatusViewModel.swift",
-        "file:hippo-gui/Sources/HippoGUI/Views/AboutSettingsView.swift",
-        "file:hippo-gui/Sources/HippoGUI/Views/ContentView.swift",
-        "file:hippo-gui/Sources/HippoGUI/Views/ErrorBannerView.swift",
-        "file:hippo-gui/Sources/HippoGUI/Views/EventBrowserView.swift",
-        "file:hippo-gui/Sources/HippoGUI/Views/KnowledgeView.swift",
-        "file:hippo-gui/Sources/HippoGUI/Views/QueryAskView.swift",
-        "file:hippo-gui/Sources/HippoGUI/Views/StatusView.swift",
-        "file:hippo-gui/Sources/HippoGUIPackageApp/HippoGUIPackageApp.swift",
-        "file:hippo-gui/Tests/HippoGUITests/AppMetadataTests.swift",
-        "file:hippo-gui/Tests/HippoGUITests/ConfigClientTests.swift",
-        "file:hippo-gui/Tests/HippoGUITests/DecodingTests.swift",
-        "file:hippo-gui/Tests/HippoGUITests/MockBrainClient.swift",
-        "file:hippo-gui/Tests/HippoGUITests/ModelTests.swift",
-        "file:hippo-gui/Tests/HippoGUITests/ViewModelTests.swift",
-        "file:hippo-gui/VERSION",
-        "file:hippo-gui/XcodeApp/HippoGUIXcodeApp.swift",
-        "file:hippo-gui/scripts/build-native-app.sh",
-        "file:hippo-gui/scripts/generate-app-icon.swift",
-        "file:hippo-gui/scripts/release-gui.sh",
-        "file:hippo-gui/scripts/run-native-app.sh",
-        "file:hippo-gui/scripts/setup-codex-mcp.sh",
-        "file:hippo-gui/scripts/stamp-app-version.sh",
-        "file:hippo-gui/scripts/xcode-mcp-proxy.sh"
-      ]
-    },
-    {
       "id": "layer:website",
       "name": "Marketing & Docs Website",
       "description": "The Astro marketing/documentation site (TypeScript): pages, components, content, RSS endpoints, integrations, public assets, config, and site tests.",
@@ -33799,7 +31920,6 @@
       "description": "Operational plumbing: launchd LaunchAgents, OpenTelemetry/Grafana/Loki/Tempo/Prometheus stack, GitHub Actions pipelines, zsh shell hooks, ops scripts, and shell/Semgrep tests.",
       "nodeIds": [
         "pipeline:.github/workflows/extension.yml",
-        "pipeline:.github/workflows/gui.yml",
         "pipeline:.github/workflows/python.yml",
         "pipeline:.github/workflows/release.yml",
         "pipeline:.github/workflows/rust.yml",
@@ -34155,7 +32275,6 @@
       "title": "Surfaces & Operations",
       "description": "Finish with how hippo is presented and kept running. The Swift GUI's HippoGUIApp.swift owns a BrainClient and a NavigationSplitView (Query/Knowledge/Events/Status), giving the daemon+brain a native macOS face, while the Astro site's index.astro is the public marketing/architecture page. Operationally, the launchd plists are what actually supervise each long-lived process \u2014 daemon, brain, the Claude watcher, watchdog, and probe \u2014 and otel/docker-compose.yml stands up the optional Grafana/Tempo/Loki/Prometheus observability stack. This closes the loop from code to a running, observable system.",
       "nodeIds": [
-        "file:hippo-gui/Sources/HippoGUI/App/HippoGUIApp.swift",
         "file:site/src/pages/index.astro",
         "service:launchd/com.hippo.daemon.plist",
         "service:launchd/com.hippo.watchdog.plist",
