@@ -153,63 +153,9 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-  build-gui:
-    name: Build GUI Application
-    runs-on: macos-26
-    timeout-minutes: 30
-    outputs:
-      artifact_name: ${{ steps.artifact.outputs.name }}
-      checksum: ${{ steps.checksum.outputs.checksum }}
-    steps:
-      - uses: actions/checkout@v6
-
-      - name: Setup Xcode
-        uses: maxim-lobanov/setup-xcode@v1
-        with:
-          xcode-version: '26'
-
-      - name: Extract version from tag
-        id: version
-        run: |
-          VERSION="${GITHUB_REF_NAME#v}"
-          echo "version=${VERSION}" >> "${GITHUB_OUTPUT}"
-          echo "Version: ${VERSION}"
-
-      - name: Set version environment
-        run: |
-          echo "HIPPO_MARKETING_VERSION=${{ steps.version.outputs.version }}" >> "${GITHUB_ENV}"
-          echo "HIPPO_BUILD_NUMBER=${GITHUB_RUN_NUMBER}" >> "${GITHUB_ENV}"
-
-      - name: Build GUI app
-        id: artifact
-        run: |
-          cd hippo-gui
-          RELEASE_JSON="$(./scripts/release-gui.sh release --json)"
-          ARCHIVE_PATH="$(echo "${RELEASE_JSON}" | python3 -c 'import sys, json; print(json.load(sys.stdin)["archive_path"])')"
-          ARTIFACT_NAME="$(basename "${ARCHIVE_PATH}")"
-          echo "name=${ARTIFACT_NAME}" >> "${GITHUB_OUTPUT}"
-          echo "path=${ARCHIVE_PATH}" >> "${GITHUB_OUTPUT}"
-          echo "Artifact: ${ARTIFACT_NAME}"
-
-      - name: Generate checksum
-        id: checksum
-        run: |
-          ARCHIVE_PATH="${{ steps.artifact.outputs.path }}"
-          CHECKSUM="$(shasum -a 256 "${ARCHIVE_PATH}" | awk '{print $1}')"
-          echo "checksum=${CHECKSUM}" >> "${GITHUB_OUTPUT}"
-          echo "Checksum: ${CHECKSUM}"
-
-      - name: Upload GUI artifact
-        uses: actions/upload-artifact@v7
-        with:
-          name: gui-app
-          path: ${{ steps.artifact.outputs.path }}
-          if-no-files-found: error
-          retention-days: 7
-
   release:
     name: Create Release
-    needs: [build-daemon, build-brain, build-gui]
+    needs: [build-daemon, build-brain]
     runs-on: macos-latest
     timeout-minutes: 15
     steps:
@@ -233,7 +179,6 @@ jobs:
           # Move artifacts to release directory
           mv artifacts/daemon-binary/${{ needs.build-daemon.outputs.artifact_name }} release-files/
           mv artifacts/brain-package/${{ needs.build-brain.outputs.artifact_name }} release-files/
-          mv artifacts/gui-app/${{ needs.build-gui.outputs.artifact_name }} release-files/
 
           # Copy install script
           cp scripts/install.sh release-files/install.sh
@@ -247,7 +192,6 @@ jobs:
           {
             echo "${{ needs.build-daemon.outputs.checksum }}  ${{ needs.build-daemon.outputs.artifact_name }}"
             echo "${{ needs.build-brain.outputs.checksum }}  ${{ needs.build-brain.outputs.artifact_name }}"
-            echo "${{ needs.build-gui.outputs.checksum }}  ${{ needs.build-gui.outputs.artifact_name }}"
           } > SHA256SUMS.txt
 
           # Verify checksums
@@ -283,13 +227,11 @@ jobs:
           |-----------|------|---------|
           | Daemon (CLI) | \`${{ needs.build-daemon.outputs.artifact_name }}\` | \`${{ needs.build-daemon.outputs.checksum }}\` |
           | Brain (Python) | \`${{ needs.build-brain.outputs.artifact_name }}\` | \`${{ needs.build-brain.outputs.checksum }}\` |
-          | GUI (macOS App) | \`${{ needs.build-gui.outputs.artifact_name }}\` | \`${{ needs.build-gui.outputs.checksum }}\` |
 
           ## Components
 
           - **hippo-daemon**: Rust binary for shell capture, secret redaction, and CLI queries
           - **hippo-brain**: Python enrichment server with LLM integration and vector embeddings
-          - **HippoGUI**: Native macOS SwiftUI app for browsing knowledge and events
 
           ## Verification
 
@@ -329,7 +271,6 @@ jobs:
           echo "#### Artifacts" >> "${GITHUB_STEP_SUMMARY}"
           echo "- Daemon: \`${{ needs.build-daemon.outputs.artifact_name }}\`" >> "${GITHUB_STEP_SUMMARY}"
           echo "- Brain: \`${{ needs.build-brain.outputs.artifact_name }}\`" >> "${GITHUB_STEP_SUMMARY}"
-          echo "- GUI: \`${{ needs.build-gui.outputs.artifact_name }}\`" >> "${GITHUB_STEP_SUMMARY}"
           echo "" >> "${GITHUB_STEP_SUMMARY}"
           echo "#### Quick Install" >> "${GITHUB_STEP_SUMMARY}"
           echo '```bash' >> "${GITHUB_STEP_SUMMARY}"

@@ -22,9 +22,6 @@ honest.
 
    # Python brain
    vim brain/pyproject.toml        # [project].version
-
-   # GUI fallback version used by local packaging when HIPPO_MARKETING_VERSION is unset
-   vim hippo-gui/VERSION
    ```
    Lockfiles (`Cargo.lock`, `brain/uv.lock`) refresh on the next build.
 
@@ -45,7 +42,6 @@ honest.
 4. The release workflow will automatically:
    - Build the daemon binary for macOS (aarch64)
    - Package the brain Python project
-   - Build the HippoGUI macOS app
    - Create SHA256 checksums for all artifacts
    - Create a GitHub Release with all artifacts attached
    - Include the `install.sh` script for one-liner installation
@@ -58,13 +54,12 @@ Each release includes:
 |----------|-------------|---------|
 | `hippo-darwin-arm64` | Daemon binary for macOS Apple Silicon | `hippo-darwin-arm64` |
 | `hippo-brain-{version}.tar.gz` | Python brain project (including uv.lock, scripts, and runtime dependencies resolved via `uv` during install) | `hippo-brain-X.Y.Z.tar.gz` |
-| `HippoGUI-{version}-{build}.zip` | GUI app bundle ready for `/Applications` | `HippoGUI-X.Y.Z-N.zip` |
 | `SHA256SUMS.txt` | Checksums for all artifacts | Contains SHA-256 hashes |
 | `install.sh` | One-liner installation script | Downloads and verifies all components |
 
 ## Workflow Jobs
 
-The release workflow consists of three parallel build jobs and a final release job:
+The release workflow consists of two parallel build jobs and a final release job:
 
 ### 1. `build-daemon` (macOS runner)
 - Builds the Rust daemon binary for `aarch64-apple-darwin`
@@ -78,15 +73,8 @@ The release workflow consists of three parallel build jobs and a final release j
 - Generates SHA-256 checksum
 - Uploads artifact for release job
 
-### 3. `build-gui` (macOS runner)
-- Builds the GUI app using the existing `release-gui.sh` script
-- Creates a versioned ZIP archive with the `.app` bundle
-- Generates SHA-256 checksum
-- Uploads artifact for release job
-- The same packaging path is now exercised on `main` and PRs by `GUI CI`
-
-### 4. `release` (macOS runner)
-- Depends on all three build jobs
+### 3. `release` (macOS runner)
+- Depends on both build jobs
 - Downloads all artifacts
 - Creates `SHA256SUMS.txt` with all checksums
 - Generates release notes with installation instructions
@@ -109,7 +97,6 @@ The script:
 5. Installs components to standard locations:
    - Daemon: `~/.local/bin/hippo`
    - Brain: `~/.local/share/hippo-brain/`
-   - GUI: `/Applications/HippoGUI.app`
 6. Sets up configuration at `~/.config/hippo/`
 7. Installs LaunchAgents via `hippo daemon install`
 

@@ -8,8 +8,7 @@ rust = "1.95"
 # ── Build ────────────────────────────────────────────────────────────
 
 [tasks.build]
-description = "Build all Rust crates and HippoGUI"
-depends = ["gui:build"]
+description = "Build all Rust crates"
 run = "cargo build"
 
 [tasks."build:release"]
@@ -247,8 +246,7 @@ echo "Stamped brain version: ${FULL_VERSION}"
 # ── Test ─────────────────────────────────────────────────────────────
 
 [tasks.test]
-description = "Run all tests (Rust unit + integration + Python + GUI)"
-depends = ["gui:test", "gui:lint"]
+description = "Run all tests (Rust unit + integration + Python)"
 run = """
 #!/usr/bin/env bash
 set -euo pipefail
@@ -312,15 +310,11 @@ run = "cargo test -p hippo-daemon --tests"
 description = "Run Python brain tests with coverage"
 run = "uv run --project brain pytest brain/tests -v --cov=hippo_brain --cov-report=term-missing"
 
-[tasks."gui:test"]
-description = "Run HippoGUI unit tests"
-run = "swift test --package-path hippo-gui"
-
 # ── Lint ─────────────────────────────────────────────────────────────
 
 [tasks.lint]
 description = "Run all linters (check only)"
-depends = ["lint:rust", "lint:python", "gui:lint"]
+depends = ["lint:rust", "lint:python"]
 
 [tasks."lint:rust"]
 description = "Run clippy on all Rust targets"
@@ -330,15 +324,11 @@ run = "cargo clippy --all-targets -- -D warnings"
 description = "Run ruff check on Python brain"
 run = "uv run --project brain ruff check brain/"
 
-[tasks."gui:lint"]
-description = "Lint Swift sources with SwiftLint"
-run = "swiftlint lint --config hippo-gui/.swiftlint.yml hippo-gui/Sources"
-
 # ── Fix (auto-correct lint + format) ────────────────────────────────
 
 [tasks.fix]
 description = "Auto-fix all lint and format issues"
-depends = ["fix:rust", "fix:python", "gui:fix", "fmt:sql"]
+depends = ["fix:rust", "fix:python", "fmt:sql"]
 
 [tasks."fix:rust"]
 description = "Auto-fix Rust clippy warnings and format"
@@ -354,24 +344,11 @@ run = [
   "uv run --project brain ruff format brain/",
 ]
 
-[tasks."fix:swift"]
-description = "Auto-fix SwiftLint warnings in HippoGUI"
-run = "swiftlint lint --fix --config hippo-gui/.swiftlint.yml hippo-gui/Sources"
-
-[tasks."gui:fix"]
-description = "Auto-fix all HippoGUI lint and format issues (SwiftLint + swift-format)"
-# swift-format runs first to normalize, SwiftLint runs second to enforce preferences
-# (same-line braces). Sequential order matters — parallel execution causes races.
-run = [
-    "swift-format format --configuration hippo-gui/.swift-format -r -i hippo-gui/Sources",
-    "swiftlint lint --fix --config hippo-gui/.swiftlint.yml hippo-gui/Sources",
-]
-
 # ── Format ───────────────────────────────────────────────────────────
 
 [tasks.fmt]
 description = "Format all code (no lint fixes)"
-depends = ["fmt:rust", "fmt:python", "gui:format"]
+depends = ["fmt:rust", "fmt:python"]
 
 [tasks."fmt:rust"]
 description = "Format Rust code"
@@ -380,10 +357,6 @@ run = "cargo fmt"
 [tasks."fmt:python"]
 description = "Format Python code"
 run = "uv run --project brain ruff format brain/"
-
-[tasks."gui:format"]
-description = "Format Swift sources with swift-format"
-run = "swift-format format --configuration hippo-gui/.swift-format -r -i hippo-gui/Sources"
 
 [tasks."fmt:sql"]
 description = "Format SQL files with sqlfluff"
@@ -394,7 +367,6 @@ description = "Check formatting without modifying files"
 run = [
   "cargo fmt --check",
   "uv run --project brain ruff format --check brain/",
-  "swift-format lint --configuration hippo-gui/.swift-format -r hippo-gui/Sources",
 ]
 
 # ── Check (CI-equivalent) ───────────────────────────────────────────
@@ -412,10 +384,6 @@ run = "cargo run --bin hippo -- daemon run"
 [tasks."run:brain"]
 description = "Run the brain enrichment server"
 run = "uv run --project brain hippo-brain serve"
-
-[tasks."gui:open"]
-description = "Open HippoGUI app (built release)"
-run = "open hippo-gui/build/Release/HippoGUI.app"
 
 [tasks.status]
 description = "Show daemon status"
@@ -1069,12 +1037,7 @@ description = "Remove build artifacts"
 run = [
   "cargo clean",
   "rm -rf brain/.venv brain/.pytest_cache brain/.ruff_cache",
-  "rm -rf hippo-gui/.build hippo-gui/build hippo-gui/dist",
 ]
-
-[tasks."gui:build"]
-description = "Build HippoGUI (release)"
-run = "xcodebuild -quiet -project hippo-gui/HippoGUI.xcodeproj -scheme HippoGUI -configuration Release -derivedDataPath hippo-gui/build CONFIGURATION_BUILD_DIR=hippo-gui/build/Release build"
 
 # ── Observability (OTel) ────────────────────────────────────────────
 

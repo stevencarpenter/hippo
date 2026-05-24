@@ -159,7 +159,7 @@ When you bump `EXPECTED_VERSION` from N to N+1:
 1. Write the migration block in `storage.rs::open_db` guarded by `if (1..=N).contains(&version)`.
 2. Update `crates/hippo-core/src/schema.sql` so fresh installs match.
 3. Bump `EXPECTED_VERSION` in `storage.rs` AND `EXPECTED_SCHEMA_VERSION` in `brain/src/hippo_brain/schema_version.py` in the same PR (they must agree).
-4. Bump `[workspace.package].version` in `Cargo.toml`, `[project].version` in `brain/pyproject.toml`, and `hippo-gui/VERSION` for the lockstep release (see [`docs/release.md`](release.md)).
+4. Bump `[workspace.package].version` in `Cargo.toml` and `[project].version` in `brain/pyproject.toml` for the lockstep release (see [`docs/release.md`](release.md)).
 5. Add a row to the changelog table above.
 6. If your migration touches `entities.type` or other CHECK constraints, follow the 12-step table-recreate recipe from v13. Test the partial-success-crash case: kill the migration mid-way and confirm re-run lands cleanly.
 

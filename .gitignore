@@ -1,5 +1,4 @@
 /target
-hippo-gui/.build/
 brain/src/hippo_brain/_version.py
 *.swp
 *.swo
