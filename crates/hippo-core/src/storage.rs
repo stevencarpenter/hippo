@@ -160,15 +160,7 @@ fn merge_error_message(
             .last_error_msg
             .clone()
             .or_else(|| legacy.last_error_msg.clone()),
-        (None, Some(_)) => legacy
-            .last_error_msg
-            .clone()
-            .or_else(|| canonical.last_error_msg.clone()),
-        (Some(_), None) => canonical
-            .last_error_msg
-            .clone()
-            .or_else(|| legacy.last_error_msg.clone()),
-        (None, None) => canonical
+        _ => canonical
             .last_error_msg
             .clone()
             .or_else(|| legacy.last_error_msg.clone()),
@@ -3278,13 +3270,13 @@ mod tests {
         // Each expected source must have a pre-seeded row; use per-source
         // assertions so adding a new source doesn't silently break this test.
         for expected_source in &[
-            "shell",
-            "claude-tool",
-            "browser",
             "agentic-session-claude",
-            "agentic-session-opencode",
             "agentic-session-codex",
+            "agentic-session-opencode",
             "brain-preflight",
+            "browser",
+            "claude-tool",
+            "shell",
         ] {
             let exists: i64 = conn
                 .query_row(
