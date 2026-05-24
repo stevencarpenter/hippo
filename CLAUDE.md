@@ -146,7 +146,7 @@ hippo doctor       # shows the agentic-session-codex line
 
 Capture-reliability stack (the result of the P0–P3 overhaul shipped through v0.16). Reference docs live in [`docs/capture/`](docs/capture/architecture.md); historical design records are in [`docs/archive/capture-reliability-overhaul/`](docs/archive/capture-reliability-overhaul/). Key pieces:
 
-- **`source_health` table**: single SQL ground truth of "did the event land?" per source — `shell`, `claude-tool`, `claude-session`, `claude-session-watcher`, `browser`, `watchdog`, `probe`. Every capture path writes its row in the same transaction as the event insert. See [`docs/capture/architecture.md`](docs/capture/architecture.md).
+- **`source_health` table**: single SQL ground truth of "did the event land?" per source — `shell`, `claude-tool`, `agentic-session-claude`, `claude-session-watcher`, `browser`, `watchdog`, `probe`. Every capture path writes its row in the same transaction as the event insert. See [`docs/capture/architecture.md`](docs/capture/architecture.md).
 - **`hippo watchdog run`** (launchd `com.hippo.watchdog`, every 60 s): asserts the I-1..I-12 invariants against `source_health`, writes `capture_alarms` rows on violations, rate-limited per invariant. See [`docs/capture/architecture.md`](docs/capture/architecture.md).
 - **`hippo alarms list / ack`**: CLI for unacknowledged alarms (exit 1 if any).
 - **`hippo doctor`**: ten isolated checks with `[OK]`/`[WW]`/`[!!]`/`[--]` severity, exit code = fail count, total wall-clock < 2 s. `--explain` prints CAUSE/FIX/DOC per failure. See [`docs/capture/operator-runbook.md`](docs/capture/operator-runbook.md).

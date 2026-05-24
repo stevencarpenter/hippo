@@ -69,12 +69,12 @@ pub async fn run(config: &HippoConfig, source: Option<&str>) -> Result<()> {
                     if ok { "OK" } else { "FAIL" },
                     lag.map(|l| l.to_string()).as_deref().unwrap_or("N/A")
                 );
-                write_probe_result(config, "claude-session", ok, lag)?;
+                write_probe_result(config, "agentic-session-claude", ok, lag)?;
             }
             Err(e) => {
                 warn!("claude-session probe error: {e:#}");
                 println!("[probe] claude-session: ERROR — {e:#}");
-                write_probe_result(config, "claude-session", false, None)?;
+                write_probe_result(config, "agentic-session-claude", false, None)?;
             }
         }
     }

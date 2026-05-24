@@ -537,12 +537,12 @@ pub fn check_i1_shell_liveness(
 /// I-2 proxy: Claude-session coverage.
 /// Full predicate (iterate JSONL files, cross-check with DB) belongs in T-4
 /// (doctor check 5).  Here we use `consecutive_failures > 3` as a proxy
-/// signal that the claude-session ingest path is actively broken.
+/// signal that the Claude session ingest path is actively broken.
 pub fn check_i2_claude_session_proxy(
     by_source: &std::collections::HashMap<&str, &SourceHealthRow>,
     now_ms: i64,
 ) -> Option<InvariantViolation> {
-    let row = by_source.get("claude-session")?;
+    let row = by_source.get("agentic-session-claude")?;
 
     // Skip if the source has never delivered an event.
     let last_event = row.last_event_ts?;
@@ -551,7 +551,7 @@ pub fn check_i2_claude_session_proxy(
         let age_ms = now_ms - last_event;
         return Some(InvariantViolation {
             invariant_id: "I-2".to_string(),
-            source: "claude-session".to_string(),
+            source: "agentic-session-claude".to_string(),
             since_ms: age_ms,
             details: json!({
                 "consecutive_failures": row.consecutive_failures,
@@ -1212,7 +1212,7 @@ mod tests {
         let row = SourceHealthRow {
             last_event_ts: Some(NOW - 600_000), // 10 min ago
             consecutive_failures: 5,
-            ..blank_row("claude-session")
+            ..blank_row("agentic-session-claude")
         };
         let rows = vec![row];
         let result = check_i2_claude_session_proxy(&by_source(&rows), NOW);
@@ -1225,7 +1225,7 @@ mod tests {
         let row = SourceHealthRow {
             last_event_ts: Some(NOW - 600_000),
             consecutive_failures: 2, // <= 3
-            ..blank_row("claude-session")
+            ..blank_row("agentic-session-claude")
         };
         let rows = vec![row];
         assert!(check_i2_claude_session_proxy(&by_source(&rows), NOW).is_none());
@@ -1236,7 +1236,7 @@ mod tests {
         let row = SourceHealthRow {
             last_event_ts: None,
             consecutive_failures: 10,
-            ..blank_row("claude-session")
+            ..blank_row("agentic-session-claude")
         };
         let rows = vec![row];
         assert!(check_i2_claude_session_proxy(&by_source(&rows), NOW).is_none());
@@ -1828,7 +1828,7 @@ mod tests {
         // All rows have NULL last_event_ts and NULL probe_ok → everything suppressed.
         let rows = vec![
             blank_row("shell"),
-            blank_row("claude-session"),
+            blank_row("agentic-session-claude"),
             blank_row("browser"),
             blank_row("watchdog"),
         ];

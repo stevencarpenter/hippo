@@ -209,7 +209,7 @@ pub async fn handle_request(state: &Arc<DaemonState>, request: DaemonRequest) ->
             // watchdog/doctor queries.
             const ALLOWED_SOURCES: &[&str] = &[
                 "browser",
-                "claude-session",
+                "agentic-session-claude",
                 "claude-tool",
                 "shell",
                 "watchdog",
@@ -609,7 +609,11 @@ async fn recompute_rolling_counts(state: Arc<DaemonState>) {
         for (source, c1h, c24h) in [
             ("shell", counts.shell_1h, counts.shell_24h),
             ("claude-tool", counts.tool_1h, counts.tool_24h),
-            ("claude-session", counts.session_1h, counts.session_24h),
+            (
+                "agentic-session-claude",
+                counts.session_1h,
+                counts.session_24h,
+            ),
             ("browser", counts.browser_1h, counts.browser_24h),
         ] {
             match db.execute(

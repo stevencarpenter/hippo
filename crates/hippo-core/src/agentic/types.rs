@@ -29,10 +29,8 @@ impl Harness {
     }
 
     /// Short basename for `source_health` row composition. Returns "claude" for
-    /// `ClaudeCode` (NOT "claude-code") because v8 already seeded source_health
-    /// with `claude-tool` and `claude-session` (see schema.sql v8 INSERT), and
-    /// the Phase 2 v9→v10 migration preserves `claude-tool` while renaming
-    /// `claude-session` → `agentic-session-claude` — both keying off the
+    /// `ClaudeCode` (NOT "claude-code") because the canonical Claude capture
+    /// keys are `claude-tool` and `agentic-session-claude`, both keying off the
     /// "claude" basename. Future ingesters compose `<basename>-tool` and
     /// `agentic-session-<basename>` via this method to avoid the
     /// "claude" vs "claude-code" footgun.
