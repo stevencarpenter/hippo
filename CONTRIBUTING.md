@@ -1,6 +1,6 @@
 # Contributing to Hippo
 
-Hippo is a multi-language project (Rust + Python + Swift + TypeScript) with a strong opinion on capture reliability. This guide walks new contributors from "I have a clean checkout" to "I just shipped a PR" in order. The goal is for the first contribution to land with no surprises.
+Hippo is a multi-language project (Rust + Python + TypeScript) with a strong opinion on capture reliability. This guide walks new contributors from "I have a clean checkout" to "I just shipped a PR" in order. The goal is for the first contribution to land with no surprises.
 
 For the codebase's architectural shape, see the [README](README.md) and [`docs/capture/architecture.md`](docs/capture/architecture.md) first. This document is workflow-shaped — what to do, in what order, when contributing.
 
@@ -11,7 +11,6 @@ For the codebase's architectural shape, see the [README](README.md) and [`docs/c
 | `hippo-daemon` | Rust (workspace, edition 2024) | Capture from shell + Native Messaging + FSEvents. Stores events to SQLite. Runs the watchdog and probe LaunchAgents. Serves CLI queries over a Unix socket. |
 | `hippo-core` | Rust (library) | Shared types, config schemas, the redaction engine, the SQLite migration runner. |
 | `hippo-brain` | Python 3.14+ (uv-managed) | Polls per-source enrichment queues. Calls LM Studio. Writes knowledge nodes + entities. Embeds via sqlite-vec. Serves the brain HTTP server (`127.0.0.1:9175`) and the `hippo-mcp` MCP server. |
-| `hippo-gui` | Swift (Xcode project + `HippoGUIKit` package) | Native macOS app for browsing knowledge. |
 | `extension/firefox` | TypeScript (web-ext) | Firefox WebExtension that captures allowlisted browsing through native messaging. |
 | `shell/` | zsh | The `preexec`/`precmd` hooks that send shell events to the daemon. |
 | `crates/hippo-core/src/schema.sql` | SQL | The canonical schema for fresh installs. The migration runner in `storage.rs::open_db` keeps existing DBs in sync. |
@@ -26,7 +25,7 @@ git clone https://github.com/stevencarpenter/hippo.git
 cd hippo
 
 # 2. Install build prerequisites
-brew install rustup-init mise glow swiftlint swift-format
+brew install rustup-init mise glow
 rustup-init -y                # then `source ~/.cargo/env`
 mise install                  # installs the rest of the tool chain via mise.toml
 
@@ -36,7 +35,7 @@ mise run build:brain          # uv sync --project brain
 mise run test                 # full suite: Rust + Python + lint + format check
 ```
 
-The `mise run test` target is the most reliable single command. It runs the per-crate Rust suites (`hippo-core`, `hippo-daemon` lib + integration), the Python suite via `uv run --project brain pytest brain/tests --cov`, Swift package tests + lint via the `gui:test` / `gui:lint` task dependencies, `cargo clippy --all-targets -- -D warnings`, `cargo fmt --check`, and `ruff check` / `ruff format --check` against the brain.
+The `mise run test` target is the most reliable single command. It runs the per-crate Rust suites (`hippo-core`, `hippo-daemon` lib + integration), the Python suite via `uv run --project brain pytest brain/tests --cov`, `cargo clippy --all-targets -- -D warnings`, `cargo fmt --check`, and `ruff check` / `ruff format --check` against the brain.
 
 It is **not** byte-for-byte CI: `mise run test` does **not** add the `--locked` / `--no-fail-fast` flags that CI passes to `cargo test`, does **not** run `cargo audit`, and does **not** build the Firefox extension. Treat it as the high-leverage local smoke test, not a guarantee. See [CI behavior](#ci-behavior) below for the differences.
 
@@ -50,7 +49,6 @@ Tests are organized by layer. Cite the level you should add to when fixing a bug
 | Rust integration | `crates/hippo-daemon/tests/*.rs` | End-to-end-style tests against a real SQLite DB. Source audit, capture invariants, NM round-trip, doctor checks, schema handshake. Run with `cargo test --test <name>` for one file or just `cargo test` for all. |
 | Python unit | `brain/tests/test_*.py` | Pure-function tests on parsing, prompt construction, retrieval result shaping. Fast. |
 | Python integration | `brain/tests/test_*.py` (the ones with `tmp_db` fixture) | End-to-end against a real SQLite DB seeded with the live schema. Enrichment writers, dedup script, RAG retrieval. |
-| Swift | `hippo-gui/HippoGUIKitTests/` | Swift package tests via `mise run gui:test` or `swift test` from `hippo-gui/`. |
 | Shell | `tests/shell/*.sh` | Shell-hook integration tests. Limited (the watcher pattern replaced most tmux-era tests). |
 | Semgrep | `.semgrep.yml` + `tests/semgrep/*.rs` fixture | Static-analysis rules currently scoped to the Rust capture paths plus `brain/src/hippo_brain/` (run locally with `semgrep --config .semgrep.yml crates/ brain/`). Semgrep is **not** wired into CI today; it's a local-only / code-review check. |
 
@@ -84,7 +82,7 @@ Most changes live entirely in one language. The exceptions:
 | Adding a column to `events` | Migration + Rust write path + Python read path | Both daemon and brain query `events`. |
 | New MCP tool | Brain only (`brain/src/hippo_brain/mcp.py`); daemon doesn't know about MCP | Update [`docs/mcp-reference.md`](docs/mcp-reference.md). |
 | New config key | `config/config.default.toml` + Rust `HippoConfig` (in `hippo-core/src/config.rs`) + brain settings loader (`brain/src/hippo_brain/__init__.py::_load_runtime_settings`) | Both sides read from `~/.config/hippo/config.toml`. |
-| Release / version bump | `Cargo.toml`, `brain/pyproject.toml`, `hippo-gui/VERSION` — all three move together | Lockstep. See [`docs/release.md`](docs/release.md). |
+| Release / version bump | `Cargo.toml`, `brain/pyproject.toml` — both move together | Lockstep. See [`docs/release.md`](docs/release.md). |
 
 ## CI behavior
 
@@ -92,7 +90,6 @@ Most changes live entirely in one language. The exceptions:
 
 - **python.yml** — `ruff` + `pytest` on the brain when `brain/` changes.
 - **rust.yml** — `cargo build --all-targets --locked`, `cargo clippy --all-targets --locked --no-deps -- -D warnings`, `cargo test --locked --no-fail-fast`, and `cargo audit --file Cargo.lock` when Rust paths change.
-- **gui.yml** — Swift package tests when `hippo-gui/` changes.
 - **extension.yml** — Firefox extension build / checks when `extension/firefox/` changes.
 - **security.yml** — repository-level security checks (note: this workflow does **not** currently run Semgrep; the `.semgrep.yml` rules are local-only).
 - **release.yml** — fires on `v*.*.*` tags. See [`docs/release.md`](docs/release.md).
@@ -144,7 +141,7 @@ The full review-blocker list is [`docs/capture/anti-patterns.md`](docs/capture/a
 - `chore(release): bump version to 0.20.1 across all relevant files`
 - `docs(capture): add adding-a-source guide`
 
-Types in use: `fix`, `feat`, `chore`, `docs`, `test`, `refactor`. Scopes in use: `daemon`, `brain`, `gui`, `core`, `release`, `capture`, plus per-component scopes like `(re-enrich)` and `(mcp-reference)` when appropriate.
+Types in use: `fix`, `feat`, `chore`, `docs`, `test`, `refactor`. Scopes in use: `daemon`, `brain`, `core`, `release`, `capture`, plus per-component scopes like `(re-enrich)` and `(mcp-reference)` when appropriate.
 
 **Body.** What changed and why, in that order. Cite issue numbers (`Closes #N`) when applicable. Test plan as a checklist:
 

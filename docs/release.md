@@ -8,23 +8,20 @@ When a version tag is pushed (format: `v*.*.*`), GitHub Actions automatically bu
 
 ## Triggering a Release
 
-Hippo's daemon, brain, and GUI ship in lockstep: one tag → one GitHub Release
-with all three artifacts. The daemon's startup handshake (see
+Hippo's daemon and brain ship in lockstep: one tag → one GitHub Release
+with both artifacts. The daemon's startup handshake (see
 `crates/hippo-daemon/src/schema_handshake.rs`) requires the brain to run a
 matching schema version; a mismatch causes the daemon to refuse to bind its
 socket. Bumping the daemon and brain versions together keeps the handshake
 honest.
 
-1. Bump the version in the shared manifests to the same `X.Y.Z`, and keep the GUI fallback version aligned:
+1. Bump the version in the shared manifests to the same `X.Y.Z`:
    ```bash
    # Rust workspace (covers hippo-core + hippo-daemon)
    vim Cargo.toml                  # [workspace.package].version
 
    # Python brain
    vim brain/pyproject.toml        # [project].version
-
-   # GUI fallback version used by local packaging when HIPPO_MARKETING_VERSION is unset
-   vim hippo-gui/VERSION
    ```
    Lockfiles (`Cargo.lock`, `brain/uv.lock`) refresh on the next build.
 
@@ -45,7 +42,6 @@ honest.
 4. The release workflow will automatically:
    - Build the daemon binary for macOS (aarch64)
    - Package the brain Python project
-   - Build the HippoGUI macOS app
    - Create SHA256 checksums for all artifacts
    - Create a GitHub Release with all artifacts attached
    - Include the `install.sh` script for one-liner installation
@@ -58,13 +54,12 @@ Each release includes:
 |----------|-------------|---------|
 | `hippo-darwin-arm64` | Daemon binary for macOS Apple Silicon | `hippo-darwin-arm64` |
 | `hippo-brain-{version}.tar.gz` | Python brain project (including uv.lock, scripts, and runtime dependencies resolved via `uv` during install) | `hippo-brain-X.Y.Z.tar.gz` |
-| `HippoGUI-{version}-{build}.zip` | GUI app bundle ready for `/Applications` | `HippoGUI-X.Y.Z-N.zip` |
 | `SHA256SUMS.txt` | Checksums for all artifacts | Contains SHA-256 hashes |
 | `install.sh` | One-liner installation script | Downloads and verifies all components |
 
 ## Workflow Jobs
 
-The release workflow consists of three parallel build jobs and a final release job:
+The release workflow consists of two parallel build jobs and a final release job:
 
 ### 1. `build-daemon` (macOS runner)
 - Builds the Rust daemon binary for `aarch64-apple-darwin`
@@ -78,15 +73,8 @@ The release workflow consists of three parallel build jobs and a final release j
 - Generates SHA-256 checksum
 - Uploads artifact for release job
 
-### 3. `build-gui` (macOS runner)
-- Builds the GUI app using the existing `release-gui.sh` script
-- Creates a versioned ZIP archive with the `.app` bundle
-- Generates SHA-256 checksum
-- Uploads artifact for release job
-- The same packaging path is now exercised on `main` and PRs by `GUI CI`
-
-### 4. `release` (macOS runner)
-- Depends on all three build jobs
+### 3. `release` (macOS runner)
+- Depends on both build jobs
 - Downloads all artifacts
 - Creates `SHA256SUMS.txt` with all checksums
 - Generates release notes with installation instructions
@@ -109,7 +97,6 @@ The script:
 5. Installs components to standard locations:
    - Daemon: `~/.local/bin/hippo`
    - Brain: `~/.local/share/hippo-brain/`
-   - GUI: `/Applications/HippoGUI.app`
 6. Sets up configuration at `~/.config/hippo/`
 7. Installs LaunchAgents via `hippo daemon install`
 
@@ -145,7 +132,6 @@ To test the workflow without creating a real release:
 The workflow uses caching to speed up builds:
 
 - **Rust cache**: `Swatinem/rust-cache@v2` caches Cargo dependencies
-- **Xcode cache**: Xcode derived data is implicitly cached by the macOS runner
 
 ## Security
 
@@ -164,7 +150,7 @@ The workflow uses caching to speed up builds:
 
 ### Missing artifacts
 
-- Check that all three build jobs completed successfully
+- Check that both build jobs completed successfully
 - Verify the artifact upload steps didn't fail
 - Check the release job logs for download issues
 
@@ -179,10 +165,8 @@ The workflow uses caching to speed up builds:
 Potential improvements to the release pipeline:
 
 - [ ] Add x86_64 (Intel) macOS builds
-- [ ] Create DMG instead of ZIP for GUI app
 - [ ] Add automatic changelog generation
 - [ ] Sign artifacts with Developer ID certificate
-- [ ] Notarize the GUI app with Apple
 - [ ] Add Linux builds for daemon and brain
 - [ ] Create Homebrew formula
 - [ ] Add release notes from git commits

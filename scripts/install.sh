@@ -7,7 +7,7 @@ usage() {
     cat <<'EOF'
 Hippo installer
 
-Downloads and installs the daemon, brain, and GUI from the latest GitHub
+Downloads and installs the daemon and brain from the latest GitHub
 release. Re-running is safe: components whose installed checksum matches the
 release's SHA256SUMS.txt are skipped.
 
@@ -28,7 +28,6 @@ INSTALL LOCATIONS:
     ~/.local/bin/hippo                          daemon binary
     ~/.local/share/hippo-brain/                 brain package (includes scripts/
                                                 and shell/)
-    /Applications/HippoGUI.app                  macOS GUI
     ~/.local/state/hippo/install-receipts/      per-component install receipts
                                                 (respects XDG_STATE_HOME)
     ~/.config/hippo/                            config
@@ -382,69 +381,6 @@ install_brain() {
     fi
 }
 
-# Install GUI application
-install_gui() {
-    local tag="$1"
-    local checksums_file="$2"
-    local temp_dir="$3"
-
-    # Extract version from tag (remove 'v' prefix)
-    local version="${tag#v}"
-
-    # The GUI artifact name includes the build number, so we need to find it from checksums
-    local gui_pattern="HippoGUI-${version}-"
-    local gui_filename="$(grep "${gui_pattern}" "${checksums_file}" | awk '{print $2}' | head -n 1)"
-
-    if [ -z "${gui_filename}" ]; then
-        log_warning "GUI artifact not found in checksums file, skipping GUI installation"
-        return 0
-    fi
-
-    local expected_checksum
-    expected_checksum="$(parse_checksum "${checksums_file}" "${gui_filename}")"
-
-    if check_receipt "gui" "${expected_checksum}" "/Applications/HippoGUI.app"; then
-        log_info "HippoGUI already at ${tag}, skipping"
-        return 0
-    fi
-
-    local gui_path="${temp_dir}/${gui_filename}"
-    download_file "${tag}" "${gui_filename}" "${gui_path}"
-    verify_checksum "${gui_path}" "${expected_checksum}"
-
-    log_info "Installing HippoGUI to /Applications..."
-
-    # Extract the .app from the zip
-    unzip -q "${gui_path}" -d "${temp_dir}"
-
-    # Find the .app bundle (BSD/macOS find does not support -maxdepth)
-    local app_bundle
-    app_bundle="$(find "${temp_dir}" -name "HippoGUI.app" -type d | head -n 1)"
-
-    if [ -z "${app_bundle}" ] || [ ! -d "${app_bundle}" ]; then
-        log_warning "HippoGUI.app not found in archive, skipping GUI installation"
-        return 0
-    fi
-
-    # Swap the bundle into /Applications from the unzipped copy in $TMPDIR.
-    # We deliberately do NOT stage inside /Applications: Launch Services
-    # crawls /Applications recursively, and whether a transient bundle
-    # inside a dot-prefixed subdirectory gets registered is not a
-    # guaranteed property of lsregister across macOS versions. A $TMPDIR
-    # staging path is outside Launch Services' scope entirely.
-    #
-    # On a standard macOS install, $TMPDIR (/var/folders/.../T) and
-    # /Applications both live on /System/Volumes/Data, so `mv` resolves
-    # to rename(2) and the swap is atomic. If a user's $TMPDIR is on a
-    # different volume (e.g., external disk), `mv` falls back to cp+rm;
-    # still correct, just non-atomic in the rm-then-mv window.
-    rm -rf "/Applications/HippoGUI.app"
-    mv "${app_bundle}" "/Applications/HippoGUI.app"
-
-    write_receipt "gui" "${expected_checksum}"
-    log_success "HippoGUI installed to /Applications"
-}
-
 # Setup configuration
 setup_config() {
     log_info "Setting up configuration..."
@@ -702,9 +638,6 @@ main() {
     echo ""
 
     warn_on_stale_shell_hook_sources
-    echo ""
-
-    install_gui "${tag}" "${temp_dir}/SHA256SUMS.txt" "${temp_dir}"
     echo ""
 
     # Setup

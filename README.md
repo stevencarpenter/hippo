@@ -26,7 +26,7 @@ curl -fsSL https://github.com/stevencarpenter/hippo/releases/latest/download/ins
 
 The release binaries are **arm64-only**. Intel Macs need to build from source — see [Manual Installation](#manual-installation).
 
-The installer downloads the daemon, brain, and GUI app with checksum verification, writes LaunchAgent plists, and prints a `hippo doctor` summary on completion. See the install script source at the link above for what it touches.
+The installer downloads the daemon and brain with checksum verification, writes LaunchAgent plists, and prints a `hippo doctor` summary on completion. See the install script source at the link above for what it touches.
 
 ## Verify it's working
 
@@ -297,18 +297,9 @@ uv run --project brain ruff format --check brain/
 uv run --project brain hippo-mcp
 ```
 
-### HippoGUI
+### HippoGUI (separate repository)
 
-`hippo-gui/` is a native macOS app project layered over a local Swift package library (`HippoGUIKit`) for browsing Hippo knowledge, events, sessions, and system status.
-
-```bash
-cd hippo-gui
-swift test
-xed HippoGUI.xcodeproj
-./scripts/build-native-app.sh
-```
-
-See [`hippo-gui/README.md`](hippo-gui/README.md) for app-specific notes on Xcode, previews, package tests, and bundle builds. Note: GUI commands run from inside `hippo-gui/`, unlike the rest of the workflow which runs from the repo root.
+The native macOS GUI lives in its own repo: [stevencarpenter/hippo-gui](https://github.com/stevencarpenter/hippo-gui). It's a standalone Swift/Xcode app that talks to the daemon over the local socket and the brain over HTTP — build and release it from there.
 
 ### Service management
 
@@ -331,7 +322,6 @@ crates/
   hippo-core/              Shared library (types, config, storage, redaction; SQL schema in src/schema.sql)
   hippo-daemon/            Binary (daemon + CLI + native messaging host)
 brain/                     Python enrichment, query server, and MCP server
-hippo-gui/                 SwiftUI macOS app (Swift Package)
 extension/
   firefox/                 Firefox WebExtension for browser activity capture
 shell/                     zsh hooks (preexec/precmd integration)

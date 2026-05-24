@@ -1,11 +1,12 @@
 /target
-hippo-gui/.build/
 brain/src/hippo_brain/_version.py
 *.swp
 *.swo
 .DS_Store
 .superpowers/
 .worktrees/
+# codegraph local index (binary SQLite; machine-local, regenerable, not for git)
+.codegraph/
 __pycache__/
 *.pyc
 *.db

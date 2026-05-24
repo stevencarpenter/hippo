@@ -1,0 +1,36 @@
+# .understandignore — patterns for files/dirs to exclude from analysis
+# Syntax: same as .gitignore (globs, # comments, ! negation, trailing / for dirs)
+#
+# Built-in defaults (always excluded unless negated):
+#   node_modules/, .git/, dist/, build/, obj/, target/, *.lock, *.min.js, etc.
+
+# --- Scope: "Everything" (chosen 2026-05-23, understand-everything branch) ---
+# Full-repo coverage: Rust daemon + Python brain + Astro site + Firefox extension + all docs.
+# The macOS GUI lives in a separate repo (stevencarpenter/hippo-gui) and is not analyzed here.
+# Earlier "Core: daemon + brain" scope excluded site/ and docs/archive/; widened on 2026-05-23
+# to index every code surface and the historical docs too.
+
+# --- Build / vendor artifacts (belt-and-suspenders over built-in defaults) ---
+target/
+brain/.venv/
+.venv/
+**/__pycache__/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.coverage
+# Astro / Node build output (site)
+.astro/
+
+# --- Generated / data ---
+brain/src/hippo_brain/_version.py
+*.db
+*.db-wal
+*.db-shm
+
+# --- Editor / tooling noise ---
+.idea/
+.claude/
+.understand-anything/
+.codegraph/
+.DS_Store
