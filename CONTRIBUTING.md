@@ -141,7 +141,7 @@ The full review-blocker list is [`docs/capture/anti-patterns.md`](docs/capture/a
 - `chore(release): bump version to 0.20.1 across all relevant files`
 - `docs(capture): add adding-a-source guide`
 
-Types in use: `fix`, `feat`, `chore`, `docs`, `test`, `refactor`. Scopes in use: `daemon`, `brain`, `gui`, `core`, `release`, `capture`, plus per-component scopes like `(re-enrich)` and `(mcp-reference)` when appropriate.
+Types in use: `fix`, `feat`, `chore`, `docs`, `test`, `refactor`. Scopes in use: `daemon`, `brain`, `core`, `release`, `capture`, plus per-component scopes like `(re-enrich)` and `(mcp-reference)` when appropriate.
 
 **Body.** What changed and why, in that order. Cite issue numbers (`Closes #N`) when applicable. Test plan as a checklist:
 

@@ -8,14 +8,14 @@ When a version tag is pushed (format: `v*.*.*`), GitHub Actions automatically bu
 
 ## Triggering a Release
 
-Hippo's daemon, brain, and GUI ship in lockstep: one tag → one GitHub Release
-with all three artifacts. The daemon's startup handshake (see
+Hippo's daemon and brain ship in lockstep: one tag → one GitHub Release
+with both artifacts. The daemon's startup handshake (see
 `crates/hippo-daemon/src/schema_handshake.rs`) requires the brain to run a
 matching schema version; a mismatch causes the daemon to refuse to bind its
 socket. Bumping the daemon and brain versions together keeps the handshake
 honest.
 
-1. Bump the version in the shared manifests to the same `X.Y.Z`, and keep the GUI fallback version aligned:
+1. Bump the version in the shared manifests to the same `X.Y.Z`:
    ```bash
    # Rust workspace (covers hippo-core + hippo-daemon)
    vim Cargo.toml                  # [workspace.package].version
@@ -132,7 +132,6 @@ To test the workflow without creating a real release:
 The workflow uses caching to speed up builds:
 
 - **Rust cache**: `Swatinem/rust-cache@v2` caches Cargo dependencies
-- **Xcode cache**: Xcode derived data is implicitly cached by the macOS runner
 
 ## Security
 
@@ -151,7 +150,7 @@ The workflow uses caching to speed up builds:
 
 ### Missing artifacts
 
-- Check that all three build jobs completed successfully
+- Check that both build jobs completed successfully
 - Verify the artifact upload steps didn't fail
 - Check the release job logs for download issues
 
@@ -166,10 +165,8 @@ The workflow uses caching to speed up builds:
 Potential improvements to the release pipeline:
 
 - [ ] Add x86_64 (Intel) macOS builds
-- [ ] Create DMG instead of ZIP for GUI app
 - [ ] Add automatic changelog generation
 - [ ] Sign artifacts with Developer ID certificate
-- [ ] Notarize the GUI app with Apple
 - [ ] Add Linux builds for daemon and brain
 - [ ] Create Homebrew formula
 - [ ] Add release notes from git commits

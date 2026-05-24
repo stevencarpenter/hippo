@@ -329,7 +329,7 @@ const commit = (graph.project?.gitCommitHash ?? "").slice(0, 7) || "unknown";
     <h1>The hippo codebase, mapped</h1>
     <p>
       An interactive knowledge graph of hippo's source — the Rust capture daemon,
-      the Python enrichment brain, the Swift GUI, this site, and the docs — built
+      the Python enrichment brain, this site, and the docs — built
       automatically by the <code>/understand</code> tool. Explore the architecture
       by layer, follow the guided tour, or jump to any file's source on GitHub.
     </p>
