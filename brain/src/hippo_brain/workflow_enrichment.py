@@ -9,6 +9,7 @@ For each completed workflow run in the enrichment queue:
 6. For each failing annotation, call lessons.upsert_cluster
 """
 
+import json
 import logging
 import sqlite3
 import time
@@ -16,12 +17,31 @@ import uuid
 from pathlib import Path
 
 from hippo_brain.client import InferenceClient
+from hippo_brain.enrichment import parse_enrichment_response
 from hippo_brain.lessons import ClusterKey, upsert_cluster
 from hippo_brain.watchdog import DEFAULT_LOCK_TIMEOUT_MS
 
 logger = logging.getLogger("hippo_brain")
 
 CORRELATION_WINDOW_MS = 15 * 60 * 1000  # ±15 minutes
+
+WORKFLOW_SYSTEM_PROMPT = """You are a CI/CD activity analyst. You receive a summary of a GitHub Actions workflow run and the developer activity around it.
+
+Produce structured enrichment data capturing what changed, whether it succeeded, and — if it failed — the root cause and a one-line fix suggestion.
+
+Be specific: use actual tool names, rule IDs, file paths, and error messages from the run data. Generic descriptions are unacceptable. If you are unsure of an exact identifier, omit it rather than guess.
+
+Output a JSON object with these fields:
+- summary: Specific description of what the run did and its outcome (include root cause + one-line fix if it failed)
+- intent: The goal of the change under test (e.g., "ci debugging", "feature development", "dependency bump")
+- outcome: One of "success", "partial", "failure", "unknown"
+- key_decisions: List of notable decisions (empty list if none)
+- problems_encountered: List of failures/errors and how they were (or should be) resolved
+- entities: An object with lists of strings: projects, tools, files, services, errors, env_vars
+- tags: Descriptive, specific tags
+- embed_text: A detailed, identifier-dense paragraph optimized for keyword retrieval (tool names, rule IDs, file paths, error strings)
+
+Output ONLY valid JSON, no markdown fences or extra text."""
 
 
 def enrich_one(
@@ -238,31 +258,50 @@ async def enrich_one_async(
             (run_id,),
         ).fetchall()
 
-        # Build prompt and call LLM (async)
+        # Build prompt and call LLM (async). The system prompt demands a JSON
+        # object; parse_enrichment_response validates it (and repairs stray
+        # escapes). Storing the raw reply — as this path used to — let a
+        # reasoning model's chain-of-thought land in `content`, producing
+        # invalid-JSON nodes. On un-parseable output it raises, so no garbage
+        # node is written and the caller marks the run failed.
         prompt = _build_prompt(run, shell_rows, claude_rows, ann_rows)
-        summary = await inference.chat(
+        raw = await inference.chat(
             messages=[
-                {
-                    "role": "user",
-                    "content": prompt,
-                }
+                {"role": "system", "content": WORKFLOW_SYSTEM_PROMPT},
+                {"role": "user", "content": prompt},
             ],
             model=query_model,
-            max_tokens=300,
+            max_tokens=600,
+        )
+        result = parse_enrichment_response(raw)
+        content = json.dumps(
+            {
+                "summary": result.summary,
+                "intent": result.intent,
+                "outcome": result.outcome,
+                "entities": result.entities,
+                "tags": result.tags,
+                "key_decisions": result.key_decisions,
+                "problems_encountered": result.problems_encountered,
+                "design_decisions": result.design_decisions,
+            }
         )
 
         node_uuid = str(uuid.uuid4())
         title = f"{repo_name}@{head_sha[:7]} — {run['conclusion']}"
-        # Write knowledge node
+        # Write knowledge node. `outcome` column keeps the authoritative GitHub
+        # conclusion; embed_text stays the title (repo@sha) for retrieval.
         cur = conn.execute(
             """INSERT INTO knowledge_nodes
-               (uuid, content, embed_text, node_type, outcome, created_at, updated_at)
-               VALUES (?, ?, ?, 'change_outcome', ?, ?, ?)""",
+               (uuid, content, embed_text, node_type, outcome, enrichment_model,
+                created_at, updated_at)
+               VALUES (?, ?, ?, 'change_outcome', ?, ?, ?, ?)""",
             (
                 node_uuid,
-                summary,
+                content,
                 title,
                 run["conclusion"],
+                query_model,
                 now,
                 now,
             ),

@@ -1,6 +1,7 @@
 """Tests for workflow_enrichment.enrich_one."""
 
 import asyncio
+import json
 import sqlite3
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -226,7 +227,7 @@ def test_enrich_one_links_claude_sessions(enrichment_db):
 def test_enrich_one_async_creates_knowledge_node(enrichment_db):
     """enrich_one_async creates knowledge node, links run, marks queue done."""
     fake_lm = MagicMock()
-    fake_lm.chat = AsyncMock(return_value="Async enrichment summary")
+    fake_lm.chat = AsyncMock(return_value=_VALID_WORKFLOW_JSON)
 
     asyncio.run(
         enrich_one_async(enrichment_db, run_id=1, inference=fake_lm, query_model="test-model")
@@ -256,6 +257,71 @@ def test_enrich_one_async_creates_knowledge_node(enrichment_db):
     conn.close()
 
 
+_VALID_WORKFLOW_JSON = json.dumps(
+    {
+        "summary": "CI failed: ruff F401 unused import in brain/x.py",
+        "intent": "ci debugging",
+        "outcome": "failure",
+        "entities": {
+            "projects": ["hippo"],
+            "tools": ["ruff"],
+            "files": ["brain/x.py"],
+            "services": [],
+            "errors": ["F401"],
+        },
+        "tags": ["ci", "ruff"],
+        "embed_text": "ruff F401 brain/x.py unused import workflow failure",
+    }
+)
+
+
+def test_enrich_one_async_stores_valid_json_and_model(enrichment_db):
+    """Workflow nodes must persist validated JSON content and record the model.
+
+    Regression: the path stored the raw LLM string (often a reasoning model's
+    chain-of-thought) directly into content with a blank enrichment_model,
+    producing thousands of invalid-JSON nodes.
+    """
+    fake_lm = MagicMock()
+    fake_lm.chat = AsyncMock(return_value=_VALID_WORKFLOW_JSON)
+
+    asyncio.run(
+        enrich_one_async(enrichment_db, run_id=1, inference=fake_lm, query_model="test-model")
+    )
+
+    conn = sqlite3.connect(enrichment_db)
+    row = conn.execute(
+        "SELECT content, enrichment_model, json_valid(content) FROM knowledge_nodes"
+    ).fetchone()
+    conn.close()
+    assert row is not None
+    assert row[2] == 1, "workflow node content must be valid JSON"
+    assert json.loads(row[0])["summary"].startswith("CI failed")
+    assert row[1] == "test-model", "enrichment_model must be recorded on the node"
+
+
+def test_enrich_one_async_rejects_non_json_output(enrichment_db):
+    """A reasoning model emitting chain-of-thought must NOT create a garbage node.
+
+    Better to fail the enrichment (so it can retry / go terminal) than to persist
+    an invalid-JSON node that breaks RAG/search.
+    """
+    fake_lm = MagicMock()
+    fake_lm.chat = AsyncMock(
+        return_value="Here's a thinking process:\n1. Analyze the run. The branch is main..."
+    )
+
+    with pytest.raises(json.JSONDecodeError):
+        asyncio.run(
+            enrich_one_async(enrichment_db, run_id=1, inference=fake_lm, query_model="test-model")
+        )
+
+    conn = sqlite3.connect(enrichment_db)
+    n = conn.execute("SELECT COUNT(*) FROM knowledge_nodes").fetchone()[0]
+    conn.close()
+    assert n == 0, "no node should be written when model output isn't valid JSON"
+
+
 def test_enrich_one_async_links_claude_sessions(enrichment_db):
     """enrich_one_async links co-temporal Claude sessions."""
     conn = sqlite3.connect(enrichment_db)
@@ -270,7 +336,7 @@ def test_enrich_one_async_links_claude_sessions(enrichment_db):
     conn.close()
 
     fake_lm = MagicMock()
-    fake_lm.chat = AsyncMock(return_value="Summary")
+    fake_lm.chat = AsyncMock(return_value=_VALID_WORKFLOW_JSON)
 
     asyncio.run(
         enrich_one_async(enrichment_db, run_id=1, inference=fake_lm, query_model="test-model")
@@ -302,7 +368,7 @@ def test_enrich_one_async_survives_clustering_failure(enrichment_db):
     error (which would mark it failed, re-enrich, and duplicate the node).
     """
     fake_lm = MagicMock()
-    fake_lm.chat = AsyncMock(return_value="Async enrichment summary")
+    fake_lm.chat = AsyncMock(return_value=_VALID_WORKFLOW_JSON)
 
     with patch(
         "hippo_brain.workflow_enrichment.upsert_cluster",
