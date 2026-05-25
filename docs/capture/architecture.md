@@ -4,7 +4,7 @@ Reference for hippo's capture-reliability stack: how events land, what the syste
 
 ## TL;DR
 
-Every capture path writes two things in the same SQLite transaction: the event row and a `source_health` row. A background watchdog reads `source_health` once a minute, asserts fourteen named invariants, and writes alarms to `capture_alarms` on violations. A separate probe job sends synthetic events through each path every five minutes and records round-trip latency. Operators see all of this through `hippo doctor` and `hippo alarms`.
+Every capture path writes two things in the same SQLite transaction: the event row and a `source_health` row. A background watchdog reads `source_health` once a minute, asserts fifteen named invariants, and writes alarms to `capture_alarms` on violations. A separate probe job sends synthetic events through each path every five minutes and records round-trip latency. Operators see all of this through `hippo doctor` and `hippo alarms`.
 
 ## The four layers
 
@@ -35,7 +35,7 @@ Every capture path writes two things in the same SQLite transaction: the event r
 
 1. **Capture path** — the per-source code that writes events. Shell hook → daemon socket. FSEvents watcher → daemon. Native messaging → daemon. Each path writes to its source's events table AND to `source_health` in the same SQLite transaction. (See [`anti-patterns.md`](anti-patterns.md) AP-1: writing health from inside the user's interactive prompt is forbidden — health writes happen in the daemon's `flush_events`, never in `shell/hippo.zsh`.)
 2. **`source_health` table** — one row per source, holds the latest "did the event land?" signal: `last_event_ts`, `consecutive_failures`, `events_last_1h`, `probe_ok`, `probe_last_run_ts`, `probe_lag_ms`. Single SQL ground truth.
-3. **Watchdog** (`com.hippo.watchdog`, every 60 s) — asserts fourteen invariants (most against `source_health`; I-14 against the knowledge-node vector store), writes `capture_alarms` rows on violations. Rate-limited per invariant (one alarm per invariant per hour). Implemented in `crates/hippo-daemon/src/watchdog.rs`.
+3. **Watchdog** (`com.hippo.watchdog`, every 60 s) — asserts fifteen invariants (most against `source_health`; I-14 against the knowledge-node vector store), writes `capture_alarms` rows on violations. Rate-limited per invariant (one alarm per invariant per hour). Implemented in `crates/hippo-daemon/src/watchdog.rs`.
 4. **Probe** (`com.hippo.probe`, every 5 minutes) — sends synthetic events through each capture path, measures end-to-end latency, records `probe_lag_ms` in `source_health`. Probe rows carry `probe_tag IS NOT NULL` and are filtered out of every user-facing query (RAG, MCP tools, `hippo events`). See `crates/hippo-daemon/src/probe.rs`. (See [`anti-patterns.md`](anti-patterns.md) AP-6: probe rows must never appear in user-facing queries.)
 
 Operator interface: [`hippo doctor`](operator-runbook.md#doctor) for a snapshot, [`hippo alarms`](operator-runbook.md#alarms) for unacknowledged violations, [`hippo probe`](operator-runbook.md#probes) to run a one-off synthetic check.
@@ -48,7 +48,7 @@ One row per source. Updated in the same transaction as event writes; the watchdo
 
 | Column | Type | Meaning |
 |---|---|---|
-| `source` | TEXT PK | Source name (one row per source; non-exhaustive): `shell`, `claude-tool`, `agentic-session-claude`, `agentic-session-opencode`, `agentic-session-codex`, `browser`, `claude-session-watcher`, `workflow`, `watchdog`, `brain-preflight`. (There is no `probe` row — the probe job writes `probe_*` columns onto each real source's row, not a separate probe heartbeat.) |
+| `source` | TEXT PK | Source name (one row per source; non-exhaustive): `shell`, `claude-tool`, `agentic-session-claude`, `agentic-session-opencode`, `agentic-session-codex`, `agentic-session-cursor`, `browser`, `claude-session-watcher`, `workflow`, `watchdog`, `brain-preflight`. (There is no `probe` row — the probe job writes `probe_*` columns onto each real source's row, not a separate probe heartbeat.) |
 | `last_event_ts` | INTEGER | Epoch ms of the most recent successful event write for this source. |
 | `consecutive_failures` | INTEGER | Bumped on each failure; reset on success. Backstop for I-1, I-4 freshness alarms. |
 | `events_last_1h` / `_24h` | INTEGER | Rolling counts. Maintained by the daemon: incremented per-write in `crates/hippo-daemon/src/daemon.rs::flush_events`, then periodically corrected by `recompute_rolling_counts` (same file, every 5 min) which overwrites them with fresh `COUNT(*)` queries against `events` / `claude_sessions` / `browser_events`. The watchdog reads these values; it does not compute them. |
@@ -92,6 +92,7 @@ Asserted by the watchdog every 60 s. Each has a formal predicate in `crates/hipp
 | **I-12** Brain preflight stuck | If `brain-preflight.consecutive_failures > 12` (≈ 1 minute at the brain's 5 s poll), the inference backend has been unreachable for long enough to be a real outage. Motivating incident: silent `[lmstudio]` → `[inference]` config-section drift made the brain point at port 1234 forever with no alarm. | ~1 min | — | Watchdog alarm. Doctor surfaces it via the existing `Brain inference backend: unreachable` line. |
 | **I-13** Codex-session coverage | If `agentic-session-codex.consecutive_failures > 3`, the Codex rollout poller is actively broken. Proxy predicate; full freshness check lives in `hippo doctor`. | proxy | Bench pause window. | Watchdog alarm + doctor `[!!] agentic-session-codex events`. |
 | **I-14** Embedding orphan backlog | Count of `knowledge_nodes` older than `reaper.orphan_stale_secs` with no row in the `knowledge_vectors` shadow table must stay ≤ `reaper.alarm_threshold`. A sustained backlog means the embedding orphan-reaper is down or wedged. | 25 orphans (configurable) | Shadow table absent — fresh install, nothing embedded yet. | Watchdog alarm. |
+| **I-15** Cursor-session coverage | If `agentic-session-cursor.consecutive_failures > 3`, the Cursor poller is actively broken. Proxy predicate; full freshness in `hippo doctor`. | proxy | Bench pause window. | Watchdog alarm + doctor `[!!] agentic-session-cursor events`. |
 
 ## Probes
 

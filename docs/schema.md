@@ -6,7 +6,7 @@ The state of `~/.local/share/hippo/hippo.db`: the live tables, the per-version m
 
 | Fact | Value |
 |---|---|
-| Current version | **15** |
+| Current version | **16** |
 | Authoritative schema | [`crates/hippo-core/src/schema.sql`](../crates/hippo-core/src/schema.sql) |
 | Version constant (Rust) | `crates/hippo-core/src/storage.rs::EXPECTED_VERSION` |
 | Version constant (Python) | `brain/src/hippo_brain/schema_version.py::EXPECTED_SCHEMA_VERSION` |
@@ -40,6 +40,7 @@ The Rust migration runner at `storage.rs::open_db` walks every version from the 
 | **v13** | `env_var` entity type. | `entities.type` CHECK list extended with `'env_var'`. SQLite cannot ALTER a CHECK constraint, so the migration follows the 12-step table-recreate recipe (PRAGMA `foreign_keys=OFF` → BEGIN → DROP TABLE IF EXISTS entities_new → CREATE TABLE entities_new with the expanded CHECK → INSERT … SELECT → DROP TABLE entities → ALTER TABLE entities_new RENAME TO entities → recreate indexes → `foreign_key_check` → `PRAGMA user_version = 13` → COMMIT → `foreign_keys=ON`). The `user_version` bump is inside the same `execute_batch` as the COMMIT, so a crash after rename can't leave the DB at v12 with the new CHECK. | RAG synthesis surfaces env-var identifiers (`HIPPO_FORCE`, `HIPPO_PROJECT_ROOTS`, etc.) on the dedicated `Entities:` line that lives outside the truncatable `Detail:` block. Closed [#108](https://github.com/stevencarpenter/hippo/issues/108). |
 | **v14** | Agentic session ingestion. | `agentic_sessions`, `knowledge_node_agentic_sessions`, `agentic_enrichment_queue`, `agentic_cursor`; source-health rows for `agentic-session-claude`, `agentic-session-opencode`, and `brain-preflight`. | Adds opencode session ingestion and the I-11/I-12 watchdog coverage for agentic-session failures and stuck brain preflight. |
 | **v15** | Codex session ingestion capture-health. | No new tables. Seeds the `source_health` row `agentic-session-codex` (NULL `last_event_ts`) via `INSERT OR IGNORE` (gated on the `source_health` table existing), then bumps `PRAGMA user_version = 15` in a follow-up `execute_batch`. | The Codex poller (`hippo codex-poll`, launchd `com.hippo.codex-session`) records capture health under `agentic-session-codex`; without this row its `source_health` UPDATE is a silent no-op. Codex segments land in `claude_sessions` (distinguished by their `.codex/` `source_file` path, not a `harness` column), but the capture-path health key follows the newer `agentic-session-*` form. See [`docs/superpowers/specs/2026-05-17-codex-ingestion-design.md`](superpowers/specs/2026-05-17-codex-ingestion-design.md). |
+| **v16** | Cursor session ingestion capture-health. | No new tables. Seeds the `source_health` row `agentic-session-cursor` (NULL `last_event_ts`) via `INSERT OR IGNORE`, then bumps `PRAGMA user_version = 16` in a follow-up `execute_batch`. | The Cursor poller (`hippo cursor-poll`, launchd `com.hippo.cursor-session`) records capture health under `agentic-session-cursor`; Cursor segments land in `claude_sessions` distinguished by their `.cursor/` `source_file` path. See [`docs/superpowers/specs/2026-05-25-cursor-ingestion-design.md`](superpowers/specs/2026-05-25-cursor-ingestion-design.md). |
 
 ## Reading the live schema
 

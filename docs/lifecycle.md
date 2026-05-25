@@ -134,6 +134,8 @@ knowledge_nodes (one node per claim batch) + entities + embedding
 
 **Codex/Xcode-side rollouts** are ingested by a Rust poller — the `com.hippo.codex-session` launchd job runs `hippo codex-poll`, whose `codex_session::poll_tick` (in `crates/hippo-daemon/src/codex_session.rs`) parses the distinct envelope shape and writes segmented rows through the same `claude_sessions` table, sharing `claude_enrichment_queue` for enrichment. Capture-health is keyed `agentic-session-codex`.
 
+**Cursor Agent sessions** are ingested by a parallel Rust poller — the `com.hippo.cursor-session` launchd job runs `hippo cursor-poll`, whose `cursor_session::poll_tick` (in `crates/hippo-daemon/src/cursor_session.rs`) walks `~/.cursor/projects/**/agent-transcripts/**/*.jsonl` (main sessions and subagents), parses the Anthropic-style transcript into char-bounded segments stamped from file mtime, and writes segmented rows into `claude_sessions`, sharing `claude_enrichment_queue` with Claude Code and Codex for enrichment. Subagents land with `is_subagent=1` and `parent_session_id` set. Capture-health is keyed `agentic-session-cursor`; watchdog invariant I-15 gates on proxy consecutive-failures.
+
 ## Browser visit
 
 ```

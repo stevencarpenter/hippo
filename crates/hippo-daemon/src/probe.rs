@@ -21,7 +21,7 @@ const POLL_INTERVAL_MS: u64 = 200;
 /// Run one or all probes, then write results to `source_health`.
 ///
 /// `source` is one of `"shell"`, `"claude-tool"`, `"agentic-session-claude"`,
-/// `"browser"`, or `None` to run all four in sequence.
+/// `"agentic-session-cursor"`, `"browser"`, or `None` to run all in sequence.
 pub async fn run(config: &HippoConfig, source: Option<&str>) -> Result<()> {
     let run_all = source.is_none();
 
