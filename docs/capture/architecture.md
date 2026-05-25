@@ -48,7 +48,7 @@ One row per source. Updated in the same transaction as event writes; the watchdo
 
 | Column | Type | Meaning |
 |---|---|---|
-| `source` | TEXT PK | Source name: `shell`, `claude-tool`, `agentic-session-claude`, `claude-session-watcher`, `browser`, `workflow`, `watchdog`. (There is no `probe` row — the probe job writes `probe_*` columns onto each real source's row, not a separate probe heartbeat.) |
+| `source` | TEXT PK | Source name (one row per source; non-exhaustive): `shell`, `claude-tool`, `agentic-session-claude`, `agentic-session-opencode`, `agentic-session-codex`, `browser`, `claude-session-watcher`, `workflow`, `watchdog`, `brain-preflight`. (There is no `probe` row — the probe job writes `probe_*` columns onto each real source's row, not a separate probe heartbeat.) |
 | `last_event_ts` | INTEGER | Epoch ms of the most recent successful event write for this source. |
 | `consecutive_failures` | INTEGER | Bumped on each failure; reset on success. Backstop for I-1, I-4 freshness alarms. |
 | `events_last_1h` / `_24h` | INTEGER | Rolling counts. Maintained by the daemon: incremented per-write in `crates/hippo-daemon/src/daemon.rs::flush_events`, then periodically corrected by `recompute_rolling_counts` (same file, every 5 min) which overwrites them with fresh `COUNT(*)` queries against `events` / `claude_sessions` / `browser_events`. The watchdog reads these values; it does not compute them. |
