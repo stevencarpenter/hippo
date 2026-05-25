@@ -710,6 +710,33 @@ class TestContentHashPropagation:
         ).fetchone()
         assert row[0] == "old456", "failure path must not overwrite last_enriched_content_hash"
 
+    def test_transient_failure_does_not_advance_watermark_from_null(self, tmp_db):
+        """A transient failure (retries remain -> 'pending') must NOT advance the
+        watermark, even starting from NULL — otherwise a single transient error
+        would permanently close the dedup gate on a recoverable segment.
+        """
+        db_conn, _ = tmp_db
+        seg_id = insert_segment(db_conn, self._make_seg("hash-transient-null-s"))
+        db_conn.execute(
+            "UPDATE claude_sessions SET content_hash = ? WHERE id = ?",
+            ("real-hash", seg_id),
+        )
+        # last_enriched_content_hash stays NULL; retry_count 0 -> next fail is transient.
+        db_conn.commit()
+
+        mark_claude_queue_failed(db_conn, [seg_id], "transient error")
+
+        status = db_conn.execute(
+            "SELECT status FROM claude_enrichment_queue WHERE claude_session_id = ?",
+            (seg_id,),
+        ).fetchone()[0]
+        assert status == "pending", "a single failure with retries left stays pending"
+        leh = db_conn.execute(
+            "SELECT last_enriched_content_hash FROM claude_sessions WHERE id = ?",
+            (seg_id,),
+        ).fetchone()[0]
+        assert leh is None, "transient failure must NOT advance the watermark from NULL"
+
     def test_terminal_failure_advances_watermark(self, tmp_db):
         """Exhausting retries closes the dedup gate so the watcher stops re-enqueuing.
 

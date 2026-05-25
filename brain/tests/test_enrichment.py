@@ -162,6 +162,15 @@ def test_parse_rejects_invalid_json():
         parse_enrichment_response("not json")
 
 
+def test_parse_raises_on_unrepairable_json():
+    """Escape-repair fixes lone backslashes but cannot fix structural invalidity.
+    The error must still propagate (the repair retry must not swallow it) so the
+    terminal-failure watermark can fire and stop the segment re-enqueuing forever.
+    """
+    with pytest.raises(json.JSONDecodeError):
+        parse_enrichment_response("{not: valid json at all \\d}")
+
+
 def test_parse_accepts_raw_control_chars_in_strings():
     # Local LLMs (e.g. gpt-oss-120b) emit raw \n inside string values when
     # generating multi-line summaries. JSON spec disallows it, but rejecting
