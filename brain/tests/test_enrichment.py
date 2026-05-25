@@ -162,6 +162,15 @@ def test_parse_rejects_invalid_json():
         parse_enrichment_response("not json")
 
 
+def test_parse_raises_on_unrepairable_json():
+    """Escape-repair fixes lone backslashes but cannot fix structural invalidity.
+    The error must still propagate (the repair retry must not swallow it) so the
+    terminal-failure watermark can fire and stop the segment re-enqueuing forever.
+    """
+    with pytest.raises(json.JSONDecodeError):
+        parse_enrichment_response("{not: valid json at all \\d}")
+
+
 def test_parse_accepts_raw_control_chars_in_strings():
     # Local LLMs (e.g. gpt-oss-120b) emit raw \n inside string values when
     # generating multi-line summaries. JSON spec disallows it, but rejecting
@@ -177,6 +186,38 @@ def test_parse_accepts_raw_control_chars_in_strings():
     result = parse_enrichment_response(raw)
     assert "line one" in result.summary
     assert "line two" in result.summary
+
+
+def test_parse_repairs_invalid_backslash_escape():
+    # Local LLMs sometimes emit an invalid backslash escape inside a string
+    # value (e.g. a regex like \d or a stray backslash). JSON rejects \d, and
+    # before repair a deterministically-failing segment looped forever because
+    # the dedup watermark only advances on success. parse_enrichment_response
+    # must repair the escape and parse rather than raise.
+    raw = (
+        '{"summary": "matched pattern \\d+ in the log", '
+        '"intent": "testing", "outcome": "success", '
+        '"entities": {"projects": [], "tools": [], "files": [], '
+        '"services": [], "errors": []}, '
+        '"tags": [], "embed_text": "x"}'
+    )
+    result = parse_enrichment_response(raw)
+    assert "\\d+" in result.summary  # literal backslash preserved
+
+
+def test_parse_repair_preserves_valid_escapes():
+    # When repair runs (because some escape is invalid), it must NOT mangle the
+    # valid escapes in the same payload (\" and \\). Here \" is valid and \d is
+    # invalid; only \d should be repaired.
+    raw = (
+        '{"summary": "say \\"hi\\" then match \\d+", '
+        '"intent": "t", "outcome": "success", '
+        '"entities": {"projects": [], "tools": [], "files": [], '
+        '"services": [], "errors": []}, '
+        '"tags": [], "embed_text": "x"}'
+    )
+    result = parse_enrichment_response(raw)
+    assert result.summary == 'say "hi" then match \\d+'
 
 
 # ---------------------------------------------------------------------------
