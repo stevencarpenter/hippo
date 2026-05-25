@@ -1,0 +1,2 @@
+{"role":"user","message":{"content":[{"type":"text","text":"<user_query>\nYou are PR agent 1. Merge PR 42.\n</user_query>"}]}}
+{"role":"assistant","message":{"content":[{"type":"text","text":"Checking out PR 42."},{"type":"tool_use","name":"Shell","input":{"command":"gh pr checkout 42"}}]}}
