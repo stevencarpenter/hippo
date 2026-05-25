@@ -287,7 +287,7 @@ pub(crate) fn extract_segments(
             seg.message_count += 1;
             if !user_text.is_empty() {
                 let redacted = redaction.redact(&user_text).text;
-                current_chars += redacted.len();
+                current_chars += redacted.chars().count();
                 seg.user_prompts.push(redacted);
             }
             continue;
@@ -320,7 +320,7 @@ pub(crate) fn extract_segments(
                 None => String::new(),
             };
             let summary = redaction.redact(&tool_summary(&args)).text;
-            current_chars += summary.len();
+            current_chars += summary.chars().count();
             seg.tool_calls.push(ToolCall {
                 name: name.to_string(),
                 summary,
@@ -333,7 +333,7 @@ pub(crate) fn extract_segments(
             if !text.is_empty() {
                 let capped: String = text.chars().take(300).collect();
                 let redacted = redaction.redact(&capped).text;
-                current_chars += redacted.len();
+                current_chars += redacted.chars().count();
                 seg.assistant_texts.push(redacted);
             }
         }
@@ -815,12 +815,21 @@ pub fn poll_tick(config: &HippoConfig) -> Result<usize> {
                 Ok(m) => m,
                 Err(_) => continue,
             };
-            let mtime_ms = meta
+            // Finding 3: an unreadable mtime would otherwise fall back to 0 and
+            // be silently skipped forever (mtime_ms <= cursor). Warn (naming the
+            // file) instead of skipping silently, then skip this tick.
+            let Some(mtime_ms) = meta
                 .modified()
                 .ok()
                 .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
                 .map(|d| d.as_millis() as i64)
-                .unwrap_or(0);
+            else {
+                warn!(
+                    "codex: unreadable mtime for {}, skipping this tick",
+                    path.display()
+                );
+                continue;
+            };
             // Skip in-flight files (avoid partial reads).
             if now_ms - mtime_ms < min_idle_ms {
                 continue;

@@ -76,20 +76,40 @@ pub(crate) fn tool_summary(input: &serde_json::Value) -> String {
 }
 
 /// Identity derived entirely from a transcript's path. Cursor transcripts
-/// carry no session id, cwd, or subagent marker inside the file.
+/// carry no session id, cwd, or subagent marker inside the file. `cwd` here is
+/// *provisional* — decoded from the (ambiguous) slug; `extract_segments`
+/// overrides it with `recover_cwd_from_paths` once it has scanned the
+/// transcript's own absolute paths.
 #[derive(Debug, Clone)]
 pub(crate) struct PathIdentity {
     pub session_id: String,
     pub project_dir: String,
     pub cwd: String,
+    pub slug: String,
     pub is_subagent: bool,
     pub parent_session_id: Option<String>,
+}
+
+/// Derive the `project_dir` (last path component) for a given cwd, falling back
+/// to the slug when the cwd is empty (ephemeral slugs).
+fn project_dir_for(cwd: &str, slug: &str) -> String {
+    Path::new(cwd)
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| slug.to_string())
 }
 
 /// Decode a `~/.cursor/projects/<slug>/` slug into a cwd. The slug encodes a
 /// path with `-` for `/` (same convention as ~/.claude/projects). Ephemeral
 /// slugs (`empty-window`, all-digit ids, `var-folders-*` temp dirs) have no
 /// real project path, so they decode to an empty cwd.
+///
+/// NOTE: this decode is AMBIGUOUS — Cursor's slug maps both `/` and any literal
+/// `-` in the real path onto the same `-`, so `/Users/me/my-app` and
+/// `/Users/me/my/app` both encode to `Users-me-my-app`. This heuristic always
+/// splits on `-`, so it returns the wrong cwd for the (common) hyphenated
+/// project dir. It is the *fallback* only; `recover_cwd_from_paths` resolves the
+/// ambiguity exactly when the transcript carries an absolute path.
 fn decode_slug_to_cwd(slug: &str) -> String {
     if slug == "empty-window"
         || slug.starts_with("var-folders")
@@ -98,6 +118,68 @@ fn decode_slug_to_cwd(slug: &str) -> String {
         return String::new();
     }
     format!("/{}", slug.replace('-', "/"))
+}
+
+/// Whitespace-split a shell command and keep only the absolute-path-looking
+/// tokens (those starting with `/`), trimming common surrounding quote/paren
+/// punctuation. Cheap and good enough to surface a cwd-bearing path.
+fn absolute_tokens_in_command(command: &str) -> Vec<String> {
+    command
+        .split_whitespace()
+        .map(|tok| tok.trim_matches(|c: char| "\"'`(),;:".contains(c)))
+        .filter(|tok| tok.starts_with('/'))
+        .map(|tok| tok.to_string())
+        .collect()
+}
+
+/// Collect candidate absolute paths from a `tool_use` block's `input` object:
+/// the well-known path-bearing keys plus absolute tokens inside `command`.
+/// Non-absolute values are ignored — only paths starting with `/` can carry a
+/// real cwd. Appends into `out` (encounter order preserved).
+fn collect_tool_paths(input: &serde_json::Value, out: &mut Vec<String>) {
+    let Some(obj) = input.as_object() else {
+        return;
+    };
+    for key in ["path", "file_path", "cwd", "target_directory"] {
+        if let Some(v) = obj.get(key).and_then(|v| v.as_str())
+            && v.starts_with('/')
+        {
+            out.push(v.to_string());
+        }
+    }
+    if let Some(cmd) = obj.get("command").and_then(|v| v.as_str()) {
+        out.extend(absolute_tokens_in_command(cmd));
+    }
+}
+
+/// Recover the *true* cwd from absolute paths found in the transcript, using
+/// the slug as the disambiguation target. For each candidate path `P`, test
+/// every ancestor prefix `pre` (longest first): if encoding `pre` the way
+/// Cursor encodes a cwd (`pre` without its leading `/`, with `/`→`-`) equals
+/// `slug`, then `pre` is the ground-truth cwd. Returns the first exact match.
+///
+/// This is exact and content-only (no filesystem access): the match means an
+/// ancestor of a real path used in the session encodes to exactly this slug,
+/// so it disambiguates `my-app` (one dir) from `my/app` (two dirs).
+fn recover_cwd_from_paths(slug: &str, candidate_paths: &[String]) -> Option<String> {
+    if slug.is_empty() {
+        return None;
+    }
+    for cand in candidate_paths {
+        for pre in Path::new(cand).ancestors() {
+            // Skip the bare root: it strips to "" and can't match a real slug.
+            let Some(rel) = pre.to_str().and_then(|s| s.strip_prefix('/')) else {
+                continue;
+            };
+            if rel.is_empty() {
+                continue;
+            }
+            if rel.replace('/', "-") == slug {
+                return Some(pre.to_string_lossy().into_owned());
+            }
+        }
+    }
+    None
 }
 
 impl PathIdentity {
@@ -134,16 +216,16 @@ impl PathIdentity {
             .and_then(|i| comps.get(i))
             .cloned()
             .unwrap_or_default();
+        // Provisional cwd from the ambiguous slug; extract_segments overrides
+        // it once it can disambiguate against the transcript's own paths.
         let cwd = decode_slug_to_cwd(&slug);
-        let project_dir = Path::new(&cwd)
-            .file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_else(|| slug.clone());
+        let project_dir = project_dir_for(&cwd, &slug);
 
         PathIdentity {
             session_id,
             project_dir,
             cwd,
+            slug,
             is_subagent,
             parent_session_id,
         }
@@ -216,6 +298,9 @@ pub(crate) fn extract_segments(
     let mut segments: Vec<CursorSegment> = Vec::new();
     let mut current: Option<CursorSegment> = None;
     let mut current_chars: usize = 0;
+    // Absolute paths seen in tool_use inputs, used after the scan to recover the
+    // true cwd from the ambiguous slug (Finding 1).
+    let mut candidate_paths: Vec<String> = Vec::new();
 
     for line in raw.lines() {
         let line = line.trim();
@@ -254,7 +339,7 @@ pub(crate) fn extract_segments(
             seg.message_count += 1;
             for p in prompts {
                 let redacted = redaction.redact(&p).text;
-                current_chars += redacted.len();
+                current_chars += redacted.chars().count();
                 seg.user_prompts.push(redacted);
             }
             continue;
@@ -274,7 +359,7 @@ pub(crate) fn extract_segments(
                 }
                 let capped: String = t.chars().take(300).collect();
                 let redacted = redaction.redact(&capped).text;
-                current_chars += redacted.len();
+                current_chars += redacted.chars().count();
                 seg.assistant_texts.push(redacted);
             }
             if let Some(blocks) = content.as_array() {
@@ -287,8 +372,9 @@ pub(crate) fn extract_segments(
                         continue;
                     }
                     let input = b.get("input").cloned().unwrap_or(serde_json::Value::Null);
+                    collect_tool_paths(&input, &mut candidate_paths);
                     let summary = redaction.redact(&tool_summary(&input)).text;
-                    current_chars += summary.len();
+                    current_chars += summary.chars().count();
                     seg.tool_calls.push(ToolCall {
                         name: name.to_string(),
                         summary,
@@ -305,6 +391,19 @@ pub(crate) fn extract_segments(
     {
         segments.push(seg);
     }
+
+    // Finding 1: the slug-derived cwd is ambiguous for hyphenated project dirs.
+    // Now that the whole transcript has been scanned, try to recover the true
+    // cwd from an absolute path whose ancestor encodes to exactly this slug. On
+    // a match, override the provisional cwd/project_dir on every segment.
+    if let Some(real_cwd) = recover_cwd_from_paths(&id.slug, &candidate_paths) {
+        let real_project_dir = project_dir_for(&real_cwd, &id.slug);
+        for seg in &mut segments {
+            seg.cwd = real_cwd.clone();
+            seg.project_dir = real_project_dir.clone();
+        }
+    }
+
     Ok(segments)
 }
 
@@ -605,12 +704,21 @@ pub fn poll_tick(config: &HippoConfig) -> Result<usize> {
                 Ok(m) => m,
                 Err(_) => continue,
             };
-            let mtime_ms = meta
+            // Finding 3: an unreadable mtime would otherwise fall back to 0 and
+            // be silently skipped forever (mtime_ms <= cursor). Warn (naming the
+            // file) instead of skipping silently, then skip this tick.
+            let Some(mtime_ms) = meta
                 .modified()
                 .ok()
                 .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
                 .map(|d| d.as_millis() as i64)
-                .unwrap_or(0);
+            else {
+                warn!(
+                    "cursor: unreadable mtime for {}, skipping this tick",
+                    path.display()
+                );
+                continue;
+            };
             if now_ms - mtime_ms < min_idle_ms {
                 continue;
             }
@@ -862,5 +970,199 @@ mod tests {
             segs.len()
         );
         assert_eq!(segs[1].segment_index, 1);
+    }
+
+    // ── Finding 1: recover_cwd_from_paths disambiguates the slug ──────────────
+
+    #[test]
+    fn recover_cwd_prefers_hyphenated_dir_over_split() {
+        // Slug is ambiguous: it could be /Users/me/projects/my-app (one dir) or
+        // /Users/me/projects/my/app (two dirs). A real path under my-app must
+        // resolve it to the hyphenated form.
+        let slug = "Users-me-projects-my-app";
+        let paths = vec!["/Users/me/projects/my-app/src/main.rs".to_string()];
+        assert_eq!(
+            recover_cwd_from_paths(slug, &paths).as_deref(),
+            Some("/Users/me/projects/my-app")
+        );
+    }
+
+    #[test]
+    fn recover_cwd_returns_none_when_no_path_matches_slug() {
+        let slug = "Users-me-projects-my-app";
+        // An unrelated absolute path can't disambiguate this slug.
+        let paths = vec!["/tmp/scratch/file.txt".to_string()];
+        assert_eq!(recover_cwd_from_paths(slug, &paths), None);
+        // No candidate paths at all -> None (fall back to decode heuristic).
+        assert_eq!(recover_cwd_from_paths(slug, &[]), None);
+    }
+
+    #[test]
+    fn recover_cwd_uses_first_matching_candidate() {
+        let slug = "Users-me-projects-my-app";
+        let paths = vec![
+            "/elsewhere/file".to_string(),
+            "/Users/me/projects/my-app/a.rs".to_string(),
+            "/Users/me/projects/my-app/deeper/b.rs".to_string(),
+        ];
+        assert_eq!(
+            recover_cwd_from_paths(slug, &paths).as_deref(),
+            Some("/Users/me/projects/my-app")
+        );
+    }
+
+    #[test]
+    fn extract_segments_recovers_hyphenated_cwd_from_tool_path() {
+        // Slug `Users-me-projects-my-app` would WRONGLY decode to
+        // `/Users/me/projects/my/app`; a tool_use `path` under the real dir must
+        // correct it to `/Users/me/projects/my-app`.
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp
+            .path()
+            .join("Users-me-projects-my-app/agent-transcripts/sess-1");
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("sess-1.jsonl");
+        let lines = [
+            r#"{"role":"user","message":{"content":[{"type":"text","text":"<user_query>fix it</user_query>"}]}}"#,
+            r#"{"role":"assistant","message":{"content":[{"type":"tool_use","name":"Read","input":{"path":"/Users/me/projects/my-app/src/main.rs"}}]}}"#,
+        ];
+        std::fs::write(&p, lines.join("\n")).unwrap();
+        let segs = extract_segments(&p, 1_775_000_000_000, &RedactionEngine::builtin()).unwrap();
+        assert_eq!(segs.len(), 1);
+        assert_eq!(
+            segs[0].cwd, "/Users/me/projects/my-app",
+            "tool path must recover the hyphenated cwd, not the slug-split one"
+        );
+        assert_eq!(
+            segs[0].project_dir, "my-app",
+            "project_dir must match the corrected cwd"
+        );
+    }
+
+    #[test]
+    fn extract_segments_recovers_cwd_from_absolute_command_token() {
+        // The cwd-bearing path arrives only inside a shell `command` string.
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp
+            .path()
+            .join("Users-me-projects-my-app/agent-transcripts/sess-2");
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("sess-2.jsonl");
+        let lines = [
+            r#"{"role":"user","message":{"content":[{"type":"text","text":"<user_query>build</user_query>"}]}}"#,
+            r#"{"role":"assistant","message":{"content":[{"type":"tool_use","name":"Shell","input":{"command":"cargo build --manifest-path /Users/me/projects/my-app/Cargo.toml"}}]}}"#,
+        ];
+        std::fs::write(&p, lines.join("\n")).unwrap();
+        let segs = extract_segments(&p, 1_775_000_000_000, &RedactionEngine::builtin()).unwrap();
+        assert_eq!(segs.len(), 1);
+        assert_eq!(segs[0].cwd, "/Users/me/projects/my-app");
+        assert_eq!(segs[0].project_dir, "my-app");
+    }
+
+    #[test]
+    fn extract_segments_falls_back_to_slug_decode_without_tool_path() {
+        // No tool path disambiguates the slug -> keep the decode heuristic. With
+        // a non-hyphenated project dir the heuristic is already correct.
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp
+            .path()
+            .join("Users-me-projects-foo/agent-transcripts/sess-3");
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("sess-3.jsonl");
+        let lines = [
+            r#"{"role":"user","message":{"content":[{"type":"text","text":"<user_query>hi</user_query>"}]}}"#,
+            r#"{"role":"assistant","message":{"content":[{"type":"text","text":"hello"}]}}"#,
+        ];
+        std::fs::write(&p, lines.join("\n")).unwrap();
+        let segs = extract_segments(&p, 1_775_000_000_000, &RedactionEngine::builtin()).unwrap();
+        assert_eq!(segs.len(), 1);
+        assert_eq!(
+            segs[0].cwd, "/Users/me/projects/foo",
+            "no tool path -> slug decode heuristic stands"
+        );
+        assert_eq!(segs[0].project_dir, "foo");
+    }
+
+    // ── Finding 2: char cap counts chars, not bytes ──────────────────────────
+
+    #[test]
+    fn extract_segments_does_not_split_multibyte_under_char_cap() {
+        // A single segment whose UTF-8 BYTE length exceeds MAX_SEGMENT_CHARS but
+        // whose CHARACTER count is well under it must NOT split. Each "🦛" is 4
+        // bytes but 1 char. extract_user_text caps a prompt at 500 chars, so we
+        // spread the content across several user turns close together: byte-len
+        // > 12_000, char-count < 12_000.
+        let tmp = tempfile::tempdir().unwrap();
+        let p = tmp.path().join("multibyte.jsonl");
+        // 5 turns × 400 hippos = 2_000 chars (< 12_000) but 8_000 bytes; add
+        // more turns to push bytes past 12_000 while chars stay under.
+        // 10 turns × 400 = 4_000 chars, 16_000 bytes.
+        let hippos = "🦛".repeat(400); // 400 chars, 1_600 bytes, under the 500 cap
+        let mut lines = Vec::new();
+        for _ in 0..10 {
+            lines.push(format!(
+                r#"{{"role":"user","message":{{"content":[{{"type":"text","text":"{hippos}"}}]}}}}"#
+            ));
+        }
+        let raw = lines.join("\n");
+        std::fs::write(&p, &raw).unwrap();
+
+        let segs = extract_segments(&p, 1_000, &RedactionEngine::builtin()).unwrap();
+        // Sanity: total stored prompt bytes exceed the cap, chars do not.
+        let total_chars: usize = segs
+            .iter()
+            .flat_map(|s| s.user_prompts.iter())
+            .map(|p| p.chars().count())
+            .sum();
+        let total_bytes: usize = segs
+            .iter()
+            .flat_map(|s| s.user_prompts.iter())
+            .map(|p| p.len())
+            .sum();
+        assert!(
+            total_bytes > MAX_SEGMENT_CHARS,
+            "fixture must exceed cap in bytes ({total_bytes} <= {MAX_SEGMENT_CHARS})"
+        );
+        assert!(
+            total_chars < MAX_SEGMENT_CHARS,
+            "fixture must stay under cap in chars ({total_chars} >= {MAX_SEGMENT_CHARS})"
+        );
+        assert_eq!(
+            segs.len(),
+            1,
+            "multibyte content under the CHAR cap must stay one segment (byte-len counting split it ~3x early), got {}",
+            segs.len()
+        );
+    }
+
+    #[test]
+    fn collect_tool_paths_gathers_keys_and_command_tokens() {
+        let mut out = Vec::new();
+        collect_tool_paths(
+            &serde_json::json!({"path": "/a/b", "file_path": "/c/d", "cwd": "/e"}),
+            &mut out,
+        );
+        assert!(out.contains(&"/a/b".to_string()));
+        assert!(out.contains(&"/c/d".to_string()));
+        assert!(out.contains(&"/e".to_string()));
+
+        let mut out2 = Vec::new();
+        collect_tool_paths(
+            &serde_json::json!({"command": "ls -la /Users/me/x && cat relative.txt"}),
+            &mut out2,
+        );
+        assert!(
+            out2.contains(&"/Users/me/x".to_string()),
+            "absolute token from command must be collected; got {out2:?}"
+        );
+        assert!(
+            !out2.iter().any(|p| p.contains("relative.txt")),
+            "relative tokens must be ignored; got {out2:?}"
+        );
+
+        // Non-absolute values for path keys are ignored.
+        let mut out3 = Vec::new();
+        collect_tool_paths(&serde_json::json!({"path": "relative/x"}), &mut out3);
+        assert!(out3.is_empty(), "relative path value must be ignored");
     }
 }
