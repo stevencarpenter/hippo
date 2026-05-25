@@ -25,11 +25,13 @@ and `agentic_cursor` tables. Brain now claims pending opencode
 segments from `agentic_sessions` in parallel with Claude sessions.
 v14→v15 seeds the `agentic-session-codex` row in `source_health`
 so the Codex poller's health UPDATE is not a silent no-op.
+v15→v16 seeds the `agentic-session-cursor` row in `source_health`
+so the Cursor poller's health UPDATE is not a silent no-op.
 """
 
 from __future__ import annotations
 
-EXPECTED_SCHEMA_VERSION: int = 15
+EXPECTED_SCHEMA_VERSION: int = 16
 
 # Versions brain can read without erroring.
 #
