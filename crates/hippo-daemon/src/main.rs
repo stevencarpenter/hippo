@@ -2,8 +2,8 @@ mod cli;
 mod install;
 
 use hippo_daemon::{
-    backfill, claude_session, codex_session, commands, daemon, gh_api, gh_poll, opencode_session,
-    watch_claude_sessions,
+    backfill, claude_session, codex_session, commands, cursor_session, daemon, gh_api, gh_poll,
+    opencode_session, watch_claude_sessions,
 };
 
 use anyhow::{Context, Result};
@@ -971,6 +971,41 @@ async fn main() -> Result<()> {
                     claude_session::ingest_batch(path, &socket, timeout, &db).await?;
                 println!("Batch import complete: {sent} events sent, {errors} errors");
             }
+            IngestSource::CursorSession {
+                path,
+                wait_for_file,
+            } => {
+                let path = std::path::Path::new(&path);
+                if !path.exists() {
+                    if wait_for_file > 0 {
+                        let deadline = std::time::Instant::now()
+                            + std::time::Duration::from_secs(wait_for_file);
+                        eprint!("Waiting for {}...", path.display());
+                        while !path.exists() {
+                            if std::time::Instant::now() >= deadline {
+                                eprintln!(
+                                    "\nFile not found after {}s: {}",
+                                    wait_for_file,
+                                    path.display()
+                                );
+                                std::process::exit(1);
+                            }
+                            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                        }
+                        eprintln!(" found.");
+                    } else {
+                        eprintln!("File not found: {}", path.display());
+                        std::process::exit(1);
+                    }
+                }
+                match cursor_session::ingest_one(&config, path) {
+                    Ok(n) => println!("Cursor import complete: {n} segments ingested"),
+                    Err(e) => {
+                        eprintln!("Error importing cursor session: {e:#}");
+                        std::process::exit(1);
+                    }
+                }
+            }
             IngestSource::ClaudeSessionBackfill {
                 glob,
                 since,
@@ -1104,6 +1139,13 @@ async fn main() -> Result<()> {
             Ok(n) => tracing::info!(ingested = n, "codex poll: completed"),
             Err(e) => {
                 eprintln!("Error running codex poll: {e:#}");
+                std::process::exit(1);
+            }
+        },
+        Commands::CursorPoll => match cursor_session::poll_tick(&config) {
+            Ok(n) => tracing::info!(ingested = n, "cursor poll: completed"),
+            Err(e) => {
+                eprintln!("Error running cursor poll: {e:#}");
                 std::process::exit(1);
             }
         },

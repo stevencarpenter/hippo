@@ -639,6 +639,23 @@ pub fn poll_tick(config: &HippoConfig) -> Result<usize> {
     Ok(ingested)
 }
 
+/// One-shot manual import of a single Cursor transcript (recovery/backfill).
+/// Mirrors the `hippo ingest cursor-session <path>` entry point.
+pub fn ingest_one(config: &HippoConfig, path: &Path) -> Result<usize> {
+    let conn = hippo_core::storage::open_db(&config.db_path())?;
+    let mtime_ms = std::fs::metadata(path)
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or_else(|| chrono::Utc::now().timestamp_millis());
+    let (count, _) = ingest_file(&conn, path, mtime_ms)?;
+    if count > 0 {
+        bump_health_ok(&conn, mtime_ms);
+    }
+    Ok(count)
+}
+
 /// Parse one file and upsert all its segments in a single transaction.
 fn ingest_file(conn: &rusqlite::Connection, path: &Path, mtime_ms: i64) -> Result<(usize, String)> {
     let redaction = RedactionEngine::builtin();
