@@ -5,9 +5,12 @@ import sqlite3
 import tempfile
 from pathlib import Path
 
+import pytest
+
 from hippo_brain.claude_sessions import (
     SessionFile,
     SessionSegment,
+    _skip_ineligible_claude_segments,
     build_claude_enrichment_prompt,
     claim_pending_claude_segments,
     ensure_claude_tables,
@@ -708,6 +711,221 @@ class TestContentHashPropagation:
             (seg_id,),
         ).fetchone()
         assert row[0] == "old456", "failure path must not overwrite last_enriched_content_hash"
+
+    def test_transient_failure_does_not_advance_watermark_from_null(self, tmp_db):
+        """A transient failure (retries remain -> 'pending') must NOT advance the
+        watermark, even starting from NULL — otherwise a single transient error
+        would permanently close the dedup gate on a recoverable segment.
+        """
+        db_conn, _ = tmp_db
+        seg_id = insert_segment(db_conn, self._make_seg("hash-transient-null-s"))
+        db_conn.execute(
+            "UPDATE claude_sessions SET content_hash = ? WHERE id = ?",
+            ("real-hash", seg_id),
+        )
+        # last_enriched_content_hash stays NULL; retry_count 0 -> next fail is transient.
+        db_conn.commit()
+
+        # Even with a valid attempted hash, a transient failure must not advance.
+        mark_claude_queue_failed(db_conn, [seg_id], "transient error", content_hashes=["real-hash"])
+
+        status = db_conn.execute(
+            "SELECT status FROM claude_enrichment_queue WHERE claude_session_id = ?",
+            (seg_id,),
+        ).fetchone()[0]
+        assert status == "pending", "a single failure with retries left stays pending"
+        leh = db_conn.execute(
+            "SELECT last_enriched_content_hash FROM claude_sessions WHERE id = ?",
+            (seg_id,),
+        ).fetchone()[0]
+        assert leh is None, "transient failure must NOT advance the watermark from NULL"
+
+    def test_terminal_failure_advances_watermark(self, tmp_db):
+        """Exhausting retries closes the dedup gate so the watcher stops re-enqueuing.
+
+        A deterministic enrichment failure (e.g. the LLM emitting invalid JSON for
+        one segment's content) can never succeed, so the success-only watermark would
+        never advance and the watcher would re-enqueue it forever. Once the queue row
+        goes terminal ('failed'), the watermark must catch up to content_hash.
+        """
+        db_conn, _ = tmp_db
+        seg_id = insert_segment(db_conn, self._make_seg("hash-terminal-s"))
+        db_conn.execute(
+            "UPDATE claude_sessions SET content_hash = ? WHERE id = ?",
+            ("poison-hash", seg_id),
+        )
+        # Drive retry_count to max_retries - 1 so the next failure is terminal.
+        db_conn.execute(
+            "UPDATE claude_enrichment_queue "
+            "SET retry_count = max_retries - 1 WHERE claude_session_id = ?",
+            (seg_id,),
+        )
+        db_conn.commit()
+
+        mark_claude_queue_failed(
+            db_conn, [seg_id], "JSONDecodeError", content_hashes=["poison-hash"]
+        )
+
+        status = db_conn.execute(
+            "SELECT status FROM claude_enrichment_queue WHERE claude_session_id = ?",
+            (seg_id,),
+        ).fetchone()[0]
+        assert status == "failed", "row should be terminal after exhausting retries"
+
+        leh = db_conn.execute(
+            "SELECT last_enriched_content_hash FROM claude_sessions WHERE id = ?",
+            (seg_id,),
+        ).fetchone()[0]
+        assert leh == "poison-hash", "terminal failure must advance the dedup watermark"
+
+    def test_terminal_failure_null_content_hash_skips_watermark(self, tmp_db):
+        """A terminal failure on a legacy row (NULL content_hash) must not write a hash."""
+        db_conn, _ = tmp_db
+        seg_id = insert_segment(db_conn, self._make_seg("hash-terminal-null-s"))
+        # content_hash stays NULL (legacy row the daemon never hashed).
+        db_conn.execute(
+            "UPDATE claude_enrichment_queue "
+            "SET retry_count = max_retries - 1 WHERE claude_session_id = ?",
+            (seg_id,),
+        )
+        db_conn.commit()
+
+        mark_claude_queue_failed(db_conn, [seg_id], "JSONDecodeError", content_hashes=[None])
+
+        leh = db_conn.execute(
+            "SELECT last_enriched_content_hash FROM claude_sessions WHERE id = ?",
+            (seg_id,),
+        ).fetchone()[0]
+        assert leh is None, "NULL content_hash must not be propagated to the watermark"
+
+    def test_terminal_failure_does_not_watermark_changed_content(self, tmp_db):
+        """If the daemon upsert a newer content_hash while the worker was enriching,
+        a terminal failure on the OLD content must NOT watermark the new content —
+        else the never-attempted new content is stranded (gate closed, no re-enqueue).
+        """
+        db_conn, _ = tmp_db
+        seg_id = insert_segment(db_conn, self._make_seg("hash-changed-s"))
+        # Row now holds NEW content (daemon reparsed during processing); the worker
+        # attempted the OLD content.
+        db_conn.execute(
+            "UPDATE claude_sessions SET content_hash = ? WHERE id = ?",
+            ("new-content", seg_id),
+        )
+        db_conn.execute(
+            "UPDATE claude_enrichment_queue "
+            "SET retry_count = max_retries - 1 WHERE claude_session_id = ?",
+            (seg_id,),
+        )
+        db_conn.commit()
+
+        mark_claude_queue_failed(
+            db_conn, [seg_id], "JSONDecodeError", content_hashes=["old-content"]
+        )
+
+        leh = db_conn.execute(
+            "SELECT last_enriched_content_hash FROM claude_sessions WHERE id = ?",
+            (seg_id,),
+        ).fetchone()[0]
+        assert leh is None, "must not watermark content that was never attempted"
+
+    def test_mark_failed_rejects_misaligned_content_hashes(self, tmp_db):
+        """content_hashes must align 1:1 with segment_ids — fail fast instead of
+        silently zipping to the shorter list and watermarking the wrong segment."""
+        db_conn, _ = tmp_db
+        with pytest.raises(ValueError, match="does not match"):
+            mark_claude_queue_failed(db_conn, [1, 2], "err", content_hashes=["only-one"])
+
+    def test_write_node_rejects_misaligned_content_hashes(self, tmp_db):
+        """write_claude_knowledge_node guards against misaligned content_hashes too."""
+        db_conn, _ = tmp_db
+        with pytest.raises(ValueError, match="does not match"):
+            write_claude_knowledge_node(
+                db_conn, self._RESULT, [1], "test-model", content_hashes=["a", "b"]
+            )
+
+    def test_skip_ineligible_advances_watermark(self, tmp_db):
+        """A skipped (ineligible) segment closes its dedup gate so it isn't re-enqueued forever.
+
+        Marking a segment 'skipped' is terminal — re-running eligibility produces the same
+        verdict. Leaving the success-only watermark untouched meant the watcher re-enqueued
+        every skipped segment on each restart/file-change (cheap but perpetual churn, and a
+        duplicate node per legacy segment). Skipping must advance the watermark too.
+        """
+        db_conn, _ = tmp_db
+        seg_id = insert_segment(db_conn, self._make_seg("hash-skip-s"))
+        db_conn.execute(
+            "UPDATE claude_sessions SET content_hash = ? WHERE id = ?",
+            ("skip-hash", seg_id),
+        )
+        db_conn.commit()
+
+        # Ineligible: claude segment with message_count < 3 and no tool calls.
+        ineligible = {
+            "id": seg_id,
+            "content_hash": "skip-hash",
+            "message_count": 1,
+            "tool_calls_json": None,
+        }
+        kept = _skip_ineligible_claude_segments(db_conn, [ineligible])
+
+        assert kept == [], "ineligible segment must not be returned for enrichment"
+        status = db_conn.execute(
+            "SELECT status FROM claude_enrichment_queue WHERE claude_session_id = ?",
+            (seg_id,),
+        ).fetchone()[0]
+        assert status == "skipped"
+        leh = db_conn.execute(
+            "SELECT last_enriched_content_hash FROM claude_sessions WHERE id = ?",
+            (seg_id,),
+        ).fetchone()[0]
+        assert leh == "skip-hash", "skipped segment must advance the dedup watermark"
+
+    def test_skip_ineligible_null_content_hash_skips_watermark(self, tmp_db):
+        """Skipping a legacy row (NULL content_hash) must not write a hash."""
+        db_conn, _ = tmp_db
+        seg_id = insert_segment(db_conn, self._make_seg("hash-skip-null-s"))
+        # content_hash stays NULL.
+        ineligible = {
+            "id": seg_id,
+            "content_hash": None,
+            "message_count": 1,
+            "tool_calls_json": None,
+        }
+        _skip_ineligible_claude_segments(db_conn, [ineligible])
+
+        leh = db_conn.execute(
+            "SELECT last_enriched_content_hash FROM claude_sessions WHERE id = ?",
+            (seg_id,),
+        ).fetchone()[0]
+        assert leh is None, "NULL content_hash must not be propagated to the watermark"
+
+    def test_skip_ineligible_does_not_watermark_changed_content(self, tmp_db):
+        """If the row's content_hash changed since claim, skipping must not advance the
+        watermark to the claimed (stale) hash — the new content needs its own
+        eligibility check, not to inherit this skip verdict.
+        """
+        db_conn, _ = tmp_db
+        seg_id = insert_segment(db_conn, self._make_seg("hash-skip-changed-s"))
+        # Row now holds NEW content; the skip decision was made on the OLD claimed hash.
+        db_conn.execute(
+            "UPDATE claude_sessions SET content_hash = ? WHERE id = ?",
+            ("new-content", seg_id),
+        )
+        db_conn.commit()
+
+        ineligible = {
+            "id": seg_id,
+            "content_hash": "old-content",
+            "message_count": 1,
+            "tool_calls_json": None,
+        }
+        _skip_ineligible_claude_segments(db_conn, [ineligible])
+
+        leh = db_conn.execute(
+            "SELECT last_enriched_content_hash FROM claude_sessions WHERE id = ?",
+            (seg_id,),
+        ).fetchone()[0]
+        assert leh is None, "must not watermark a hash that no longer matches the row"
 
     def test_null_content_hash_skips_write(self, tmp_db):
         """When content_hash is NULL (legacy row), last_enriched_content_hash stays NULL."""
