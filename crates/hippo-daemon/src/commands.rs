@@ -1341,9 +1341,19 @@ pub fn source_freshness_probes() -> Vec<SourceFreshnessProbe> {
                 hard_ms: 7 * DAY_MS,
             },
         },
+        // Exclude Codex rows (source_file under .codex/ or Xcode CodingAssistant)
+        // and Cursor rows (source_file under .cursor/) — those are counted by their
+        // own dedicated probes below. Without these filters a machine that only runs
+        // Cursor or Codex would show a false-green "claude-session: OK".
         SourceFreshnessProbe {
             name: "claude-session (main)",
-            query: "SELECT COUNT(*), MAX(start_time) FROM claude_sessions WHERE is_subagent = 0",
+            query: "SELECT COUNT(*), MAX(start_time) FROM claude_sessions \
+                    WHERE is_subagent = 0 \
+                    AND (source_file IS NULL OR ( \
+                        source_file NOT LIKE '%/.codex/%' \
+                        AND source_file NOT LIKE '%/CodingAssistant/codex/%' \
+                        AND source_file NOT LIKE '%/.cursor/%' \
+                    ))",
             thresholds: FreshnessThresholds {
                 soft_ms: 12 * HOUR_MS,
                 hard_ms: 7 * DAY_MS,
@@ -1351,7 +1361,13 @@ pub fn source_freshness_probes() -> Vec<SourceFreshnessProbe> {
         },
         SourceFreshnessProbe {
             name: "claude-session (subagent)",
-            query: "SELECT COUNT(*), MAX(start_time) FROM claude_sessions WHERE is_subagent = 1",
+            query: "SELECT COUNT(*), MAX(start_time) FROM claude_sessions \
+                    WHERE is_subagent = 1 \
+                    AND (source_file IS NULL OR ( \
+                        source_file NOT LIKE '%/.codex/%' \
+                        AND source_file NOT LIKE '%/CodingAssistant/codex/%' \
+                        AND source_file NOT LIKE '%/.cursor/%' \
+                    ))",
             thresholds: FreshnessThresholds {
                 soft_ms: 7 * DAY_MS,
                 hard_ms: 30 * DAY_MS,
@@ -1380,6 +1396,32 @@ pub fn source_freshness_probes() -> Vec<SourceFreshnessProbe> {
             name: "agentic-session-opencode",
             query: "SELECT COUNT(*), MAX(start_time) FROM agentic_sessions \
                     WHERE harness = 'opencode' AND probe_tag IS NULL",
+            thresholds: FreshnessThresholds {
+                soft_ms: 3 * DAY_MS,
+                hard_ms: 30 * DAY_MS,
+            },
+        },
+        // Codex rows stored in `claude_sessions` (distinguished by .codex/ path in
+        // source_file). Probe rows excluded per AP-6. Thresholds mirror opencode:
+        // Codex is bursty — sessions only land when the user actively codes with it.
+        SourceFreshnessProbe {
+            name: "agentic-session-codex",
+            query: "SELECT COUNT(*), MAX(start_time) FROM claude_sessions \
+                    WHERE (source_file LIKE '%/.codex/%' \
+                        OR source_file LIKE '%/CodingAssistant/codex/%') \
+                    AND probe_tag IS NULL",
+            thresholds: FreshnessThresholds {
+                soft_ms: 3 * DAY_MS,
+                hard_ms: 30 * DAY_MS,
+            },
+        },
+        // Cursor rows stored in `claude_sessions` (distinguished by .cursor/ path in
+        // source_file). Probe rows excluded per AP-6. Thresholds mirror opencode.
+        SourceFreshnessProbe {
+            name: "agentic-session-cursor",
+            query: "SELECT COUNT(*), MAX(start_time) FROM claude_sessions \
+                    WHERE source_file LIKE '%/.cursor/%' \
+                    AND probe_tag IS NULL",
             thresholds: FreshnessThresholds {
                 soft_ms: 3 * DAY_MS,
                 hard_ms: 30 * DAY_MS,
@@ -1874,15 +1916,24 @@ fn check_source_staleness(db: &rusqlite::Connection, explain: bool) -> u32 {
     let mut fail_count: u32 = 0;
     let (codex_sessions_do_exist, codex_sessions_are_recent) = codex_session_state();
     let (cursor_sessions_do_exist, cursor_sessions_are_recent) = cursor_session_state();
+    // Extract enabled flags from config; fall back to `true` (no suppression) on
+    // a config-load error so a broken config file doesn't silently hide real failures.
+    let (opencode_enabled, codex_enabled, cursor_enabled) = doctor_config
+        .as_ref()
+        .map(|cfg| (cfg.opencode.enabled, cfg.codex.enabled, cfg.cursor.enabled))
+        .unwrap_or((true, true, true));
     let suppression_env = SuppressionSignals {
         probe_ok: None, // per-row; filled in inside the loop
         firefox_running: firefox_running(),
         recent_claude_session: recent_claude_session(),
         opencode_db_recent: opencode_db_recent(),
+        opencode_enabled,
         codex_sessions_exist: codex_sessions_do_exist,
         codex_sessions_recent: codex_sessions_are_recent,
+        codex_enabled,
         cursor_sessions_exist: cursor_sessions_do_exist,
         cursor_sessions_recent: cursor_sessions_are_recent,
+        cursor_enabled,
     };
 
     // All expected sources — report missing ones too.
@@ -2060,14 +2111,23 @@ struct SuppressionSignals {
     recent_claude_session: bool,
     /// The opencode DB file was modified within the last 10 minutes.
     opencode_db_recent: bool,
+    /// `[opencode] enabled` from config — false means the source is intentionally
+    /// disabled and staleness alarms must not fire regardless of file activity.
+    opencode_enabled: bool,
     /// At least one Codex `rollout-*.jsonl` file exists under the roots.
     codex_sessions_exist: bool,
     /// At least one Codex `rollout-*.jsonl` file changed within 10 minutes.
     codex_sessions_recent: bool,
+    /// `[codex] enabled` from config — false means the source is intentionally
+    /// disabled and staleness alarms must not fire regardless of file activity.
+    codex_enabled: bool,
     /// At least one Cursor agent-transcript `.jsonl` exists under the roots.
     cursor_sessions_exist: bool,
     /// At least one Cursor agent-transcript `.jsonl` changed within 10 minutes.
     cursor_sessions_recent: bool,
+    /// `[cursor] enabled` from config — false means the source is intentionally
+    /// disabled and staleness alarms must not fire regardless of file activity.
+    cursor_enabled: bool,
 }
 
 fn classify_source_staleness(
@@ -2100,7 +2160,13 @@ fn source_staleness_suppression_reason(
         "agentic-session-claude" if !signals.recent_claude_session => Some("no active session"),
         "claude-tool" if signals.probe_ok == Some(0) => Some("probe disabled"),
         "browser" if !signals.firefox_running => Some("no active Firefox session"),
+        // Disabled sources are suppressed before any idle / file-activity checks.
+        // A user who sets `enabled = false` in config is opting out intentionally;
+        // even if transcript files exist on disk, the poller is halted so a stale
+        // `source_health` row is expected — not a capture failure.
+        "agentic-session-opencode" if !signals.opencode_enabled => Some("source disabled"),
         "agentic-session-opencode" if !signals.opencode_db_recent => Some("opencode DB idle"),
+        "agentic-session-codex" if !signals.codex_enabled => Some("source disabled"),
         // Codex has two distinct idle cases. Never-installed (no rollout files
         // at all) is checked first. Otherwise, files exist but none changed
         // recently ⇒ the user simply isn't running Codex right now. A recent
@@ -2109,6 +2175,7 @@ fn source_staleness_suppression_reason(
         // must still alarm.
         "agentic-session-codex" if !signals.codex_sessions_exist => Some("no Codex sessions found"),
         "agentic-session-codex" if !signals.codex_sessions_recent => Some("Codex sessions idle"),
+        "agentic-session-cursor" if !signals.cursor_enabled => Some("source disabled"),
         "agentic-session-cursor" if !signals.cursor_sessions_exist => {
             Some("no Cursor sessions found")
         }
@@ -3803,8 +3870,8 @@ replacement = "***"
     }
 
     /// Build `SuppressionSignals` for staleness tests. Defaults to "nothing
-    /// suppressible" (no probe state, no recent activity, Codex/Cursor never seen);
-    /// each test overrides only the fields it exercises.
+    /// suppressible" (no probe state, no recent activity, Codex/Cursor never seen,
+    /// all sources enabled); each test overrides only the fields it exercises.
     fn signals(
         recent_claude_session: bool,
         codex_sessions_exist: bool,
@@ -3817,10 +3884,16 @@ replacement = "***"
             firefox_running: false,
             recent_claude_session,
             opencode_db_recent: false,
+            // Default all enabled flags to `true` so existing tests keep their
+            // meaning — they test idle/not-installed suppression, not disabled-source
+            // suppression.
+            opencode_enabled: true,
             codex_sessions_exist,
             codex_sessions_recent,
+            codex_enabled: true,
             cursor_sessions_exist,
             cursor_sessions_recent,
+            cursor_enabled: true,
         }
     }
 
@@ -3943,6 +4016,56 @@ replacement = "***"
                 signals(false, false, false, true, true),
             ),
             SourceStalenessStatus::Fail,
+        );
+    }
+
+    /// Finding 1 regression test: a disabled source (cursor_enabled=false) must
+    /// suppress the staleness alarm even when transcript files exist on disk.
+    /// Without this fix `cursor_sessions_recent = true` would reach the Fail arm.
+    #[test]
+    fn test_cursor_disabled_suppresses_staleness() {
+        let sig = SuppressionSignals {
+            cursor_enabled: false,
+            // files exist AND are recent — would alarm if the enabled check is absent
+            cursor_sessions_exist: true,
+            cursor_sessions_recent: true,
+            ..signals(false, false, false, false, false)
+        };
+        assert_eq!(
+            classify_source_staleness("agentic-session-cursor", 2 * 3600, sig),
+            SourceStalenessStatus::Suppressed("source disabled"),
+            "cursor with enabled=false must be suppressed regardless of file activity"
+        );
+    }
+
+    /// Same class fix — disabled Codex must suppress regardless of file activity.
+    #[test]
+    fn test_codex_disabled_suppresses_staleness() {
+        let sig = SuppressionSignals {
+            codex_enabled: false,
+            codex_sessions_exist: true,
+            codex_sessions_recent: true,
+            ..signals(false, false, false, false, false)
+        };
+        assert_eq!(
+            classify_source_staleness("agentic-session-codex", 2 * 3600, sig),
+            SourceStalenessStatus::Suppressed("source disabled"),
+            "codex with enabled=false must be suppressed regardless of file activity"
+        );
+    }
+
+    /// Same class fix — disabled opencode must suppress regardless of DB mtime.
+    #[test]
+    fn test_opencode_disabled_suppresses_staleness() {
+        let sig = SuppressionSignals {
+            opencode_enabled: false,
+            opencode_db_recent: true, // DB looks active — would alarm if check absent
+            ..signals(false, false, false, false, false)
+        };
+        assert_eq!(
+            classify_source_staleness("agentic-session-opencode", 2 * 3600, sig),
+            SourceStalenessStatus::Suppressed("source disabled"),
+            "opencode with enabled=false must be suppressed regardless of DB mtime"
         );
     }
 
