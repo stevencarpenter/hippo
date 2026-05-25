@@ -1,16 +1,16 @@
 //! Capture-reliability watchdog — `hippo watchdog run`
 //!
 //! Short-lived process invoked every 60 s by launchd (`com.hippo.watchdog`).
-//! Asserts invariants I-1..I-15 — most against the `source_health` table,
-//! I-14 against the knowledge-node vector store — and writes
-//! rows to `capture_alarms` for any violations detected.  Rate-limited per
-//! invariant per sliding window (default 60 min).
+//! Asserts invariants I-1..I-13 and I-15 via `check_invariants` (against the
+//! `source_health` table), plus I-14 directly against the knowledge-node
+//! vector store — and writes rows to `capture_alarms` for any violations
+//! detected.  Rate-limited per invariant per sliding window (default 60 min).
 //!
 //! Five-step flow (detailed spec in `docs/archive/capture-reliability-overhaul/04-watchdog.md`;
 //! the live architectural overview lives at `docs/capture/architecture.md`):
 //!   1. Upsert own heartbeat into `source_health WHERE source='watchdog'`
 //!   2. Read full `source_health` in one `SELECT *`
-//!   3. Assert I-1..I-15 against in-memory rows
+//!   3. Assert I-1..I-13 + I-15 via check_invariants; I-14 via DB query
 //!   4. Insert `capture_alarms` rows for violations (rate-limited)
 //!   5. Update `last_success_ts` on watchdog row; return `Ok(())`
 //!
@@ -155,7 +155,9 @@ pub fn run(config: &HippoConfig) -> Result<()> {
     // ── Step 2: Read all source_health rows ───────────────────────────────
     let rows = read_source_health(&conn)?;
 
-    // ── Step 3: Assert invariants I-1..I-15 ──────────────────────────────
+    // ── Step 3: Assert invariants via check_invariants (I-1..I-13, I-15) ───
+    // I-14 runs outside check_invariants: it needs a DB query against
+    // knowledge_vectors, not just the in-memory source_health rows.
     let mut violations = check_invariants(&rows, now_ms);
     // I-14 needs a DB query, not just source_health rows — checked here.
     if let Some(v) = check_i14_embedding_orphans(
@@ -422,7 +424,12 @@ fn is_pause_lockfile_active(path: &std::path::Path, now: std::time::SystemTime) 
     }
 }
 
-/// Evaluate I-1..I-15 against the in-memory `source_health` rows.
+/// Evaluate I-1, I-2, I-4, I-8, I-11, I-12, I-13, I-15 against the
+/// in-memory `source_health` rows.
+///
+/// I-14 (embedding orphan backlog) is NOT included — it requires a DB query
+/// against `knowledge_vectors_rowids` and is evaluated by the caller
+/// immediately after this function returns.
 ///
 /// Returns one `InvariantViolation` per triggered invariant.
 /// Invariants that require filesystem access (I-2 proxy, I-9) or are
@@ -430,9 +437,9 @@ fn is_pause_lockfile_active(path: &std::path::Path, now: std::time::SystemTime) 
 /// violation or `None`; their full implementations land in later tasks.
 ///
 /// BT-16: when a hippo-bench pause window is active (per
-/// `bench_pause_window_active()`), I-2, I-4, and I-8 are suppressed —
-/// during a bench run prod brain is intentionally paused and capture
-/// freshness predicates would fire spuriously, drowning real alarms.
+/// `bench_pause_window_active()`), I-2, I-4, I-8, I-11, I-13, and I-15 are
+/// suppressed — during a bench run prod brain is intentionally paused and
+/// capture freshness predicates would fire spuriously, drowning real alarms.
 pub fn check_invariants(rows: &[SourceHealthRow], now_ms: i64) -> Vec<InvariantViolation> {
     let by_source: std::collections::HashMap<&str, &SourceHealthRow> =
         rows.iter().map(|r| (r.source.as_str(), r)).collect();

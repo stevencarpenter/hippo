@@ -44,4 +44,23 @@ fn cursor_agent_transcript_lands_row_and_bumps_health() {
         )
         .unwrap();
     assert_eq!(rows, 1);
+
+    // source_health must be updated — fulfils the docstring contract.
+    let (last_event_ts, last_success_ts): (Option<i64>, Option<i64>) = conn
+        .query_row(
+            "SELECT last_event_ts, last_success_ts FROM source_health WHERE source = 'agentic-session-cursor'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert!(
+        last_event_ts.is_some() && last_event_ts.unwrap() > 0,
+        "source_health.last_event_ts must be set after poll_tick, got {:?}",
+        last_event_ts,
+    );
+    assert!(
+        last_success_ts.is_some() && last_success_ts.unwrap() > 0,
+        "source_health.last_success_ts must be set after poll_tick, got {:?}",
+        last_success_ts,
+    );
 }

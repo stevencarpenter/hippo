@@ -119,14 +119,23 @@ fn poll_tick_ingests_idle_files_and_advances_cursor() {
     );
 
     let conn = open_db(&config.db_path()).unwrap();
-    let health: i64 = conn
+    let (last_success_ts, last_event_ts): (i64, Option<i64>) = conn
         .query_row(
-            "SELECT last_success_ts FROM source_health WHERE source = 'agentic-session-cursor'",
+            "SELECT last_success_ts, last_event_ts FROM source_health WHERE source = 'agentic-session-cursor'",
             [],
-            |r| r.get(0),
+            |r| Ok((r.get(0)?, r.get(1)?)),
         )
         .unwrap();
-    assert!(health > 0, "source_health must be bumped");
+    assert!(
+        last_success_ts > 0,
+        "source_health.last_success_ts must be bumped"
+    );
+    assert!(
+        last_event_ts.is_some() && last_event_ts.unwrap() > 0,
+        "source_health.last_event_ts must be set (got {:?}); regression guard — \
+         poll_tick must write last_event_ts, not only last_success_ts",
+        last_event_ts,
+    );
 }
 
 #[test]

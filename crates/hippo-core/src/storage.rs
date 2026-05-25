@@ -1030,6 +1030,8 @@ pub fn open_db(path: &Path) -> Result<Connection> {
             "INSERT OR IGNORE INTO source_health (source, last_event_ts, updated_at) VALUES
                 ('agentic-session-claude',  (SELECT MAX(start_time) FROM agentic_sessions WHERE harness = 'claude-code'), unixepoch('now') * 1000),
                 ('agentic-session-opencode', NULL, unixepoch('now') * 1000),
+                ('agentic-session-codex',    NULL, unixepoch('now') * 1000),
+                ('agentic-session-cursor',   NULL, unixepoch('now') * 1000),
                 ('brain-preflight',          NULL, unixepoch('now') * 1000);",
         );
     }
@@ -3794,6 +3796,55 @@ mod tests {
             triple,
             (Some(0), Some(99), Some(2000)),
             "probe triple must be taken from the row with the latest probe_last_run_ts, not per-field max"
+        );
+    }
+
+    /// Regression guard for the idempotent re-seed block in `open_db`.
+    ///
+    /// If a live database is at `EXPECTED_VERSION` and an agentic-source row is
+    /// accidentally deleted, `open_db` must re-insert it via the
+    /// `INSERT OR IGNORE` block so `bump_health_ok` never silently no-ops and
+    /// the watchdog can see the source again.
+    ///
+    /// We test `agentic-session-cursor` specifically because it was the last
+    /// source added and was omitted from the original re-seed block (Finding 1).
+    #[test]
+    fn test_open_db_reseeds_agentic_cursor_row_when_deleted() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("test.db");
+
+        // Open once so all migrations run and the row is seeded.
+        {
+            let conn = open_db(&db_path).unwrap();
+            let exists: bool = conn
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM source_health WHERE source = 'agentic-session-cursor')",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert!(exists, "first open must seed agentic-session-cursor");
+
+            // Simulate accidental deletion (e.g. operator mishap, bad migration).
+            conn.execute(
+                "DELETE FROM source_health WHERE source = 'agentic-session-cursor'",
+                [],
+            )
+            .unwrap();
+        }
+
+        // Re-open: the idempotent INSERT OR IGNORE block must restore the row.
+        let conn = open_db(&db_path).unwrap();
+        let exists: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM source_health WHERE source = 'agentic-session-cursor')",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(
+            exists,
+            "open_db must re-seed agentic-session-cursor row after deletion"
         );
     }
 }
