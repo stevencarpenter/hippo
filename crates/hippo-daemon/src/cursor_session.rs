@@ -6,16 +6,17 @@
 //! derived from the path, time from the file mtime, and segments split on
 //! accumulated character count only.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
+use hippo_core::config::HippoConfig;
 use hippo_core::redaction::RedactionEngine;
 use rusqlite::{OptionalExtension, params};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
+use tracing::{debug, error, info, warn};
+use walkdir::WalkDir;
 
-// live once Task 8 wires poll_tick → ingest_file
-#[allow(dead_code)]
 const MAX_SEGMENT_CHARS: usize = 12_000;
 
 /// A single tool call, summarized for enrichment. Serialized into
@@ -47,8 +48,6 @@ pub struct CursorSegment {
 /// Short human-readable summary of a Cursor `tool_use` block's `input` object.
 /// Prefer the most informative single argument, else the first non-empty
 /// string value, else the compact JSON.
-// live once Task 8 wires poll_tick → ingest_file
-#[allow(dead_code)]
 pub(crate) fn tool_summary(input: &serde_json::Value) -> String {
     if let Some(obj) = input.as_object() {
         for key in [
@@ -78,8 +77,6 @@ pub(crate) fn tool_summary(input: &serde_json::Value) -> String {
 
 /// Identity derived entirely from a transcript's path. Cursor transcripts
 /// carry no session id, cwd, or subagent marker inside the file.
-// live once Task 8 wires poll_tick → ingest_file
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub(crate) struct PathIdentity {
     pub session_id: String,
@@ -93,8 +90,6 @@ pub(crate) struct PathIdentity {
 /// path with `-` for `/` (same convention as ~/.claude/projects). Ephemeral
 /// slugs (`empty-window`, all-digit ids, `var-folders-*` temp dirs) have no
 /// real project path, so they decode to an empty cwd.
-// live once Task 8 wires poll_tick → ingest_file
-#[allow(dead_code)]
 fn decode_slug_to_cwd(slug: &str) -> String {
     if slug == "empty-window"
         || slug.starts_with("var-folders")
@@ -105,8 +100,6 @@ fn decode_slug_to_cwd(slug: &str) -> String {
     format!("/{}", slug.replace('-', "/"))
 }
 
-// live once Task 8 wires poll_tick → ingest_file
-#[allow(dead_code)]
 impl PathIdentity {
     pub(crate) fn from_path(path: &Path) -> Self {
         let comps: Vec<String> = path
@@ -160,8 +153,6 @@ impl PathIdentity {
 /// Pull the user's request out of a text block. Cursor wraps the first user
 /// turn in `<user_query>…</user_query>`; take the inner text when present,
 /// else the whole block. Capped at 500 chars (Codex parity).
-// live once Task 8 wires poll_tick → ingest_file
-#[allow(dead_code)]
 pub(crate) fn extract_user_text(text: &str) -> String {
     let inner = match (text.find("<user_query>"), text.find("</user_query>")) {
         (Some(start), Some(end)) if end > start => {
@@ -174,8 +165,6 @@ pub(crate) fn extract_user_text(text: &str) -> String {
 }
 
 /// Join the `text` of every block of the given `kind` in a `content` array.
-// live once Task 8 wires poll_tick → ingest_file
-#[allow(dead_code)]
 fn text_blocks(content: &serde_json::Value, kind: &str) -> Vec<String> {
     content
         .as_array()
@@ -198,8 +187,6 @@ fn text_blocks(content: &serde_json::Value, kind: &str) -> Vec<String> {
 /// `mtime_ms` stamps every segment's start/end time — Cursor transcripts have
 /// no per-line timestamps. `redaction` is applied to prompts, assistant text,
 /// and tool summaries before they are stored.
-// live once Task 8 wires poll_tick → ingest_file
-#[allow(dead_code)]
 pub(crate) fn extract_segments(
     path: &Path,
     mtime_ms: i64,
@@ -520,6 +507,164 @@ pub fn upsert_segment(conn: &rusqlite::Connection, seg: &CursorSegment) -> Resul
     Ok(())
 }
 
+/// Stable inode-keyed cursor for one transcript file. The `cursor-agent-`
+/// prefix disambiguates from the `agentic_cursor` table's own name. Inode
+/// survives a project-dir rename, so a renamed project's files aren't
+/// re-parsed.
+fn cursor_key(meta: &std::fs::Metadata) -> String {
+    use std::os::unix::fs::MetadataExt;
+    format!("cursor-agent-{}", meta.ino())
+}
+
+fn read_cursor(conn: &rusqlite::Connection, key: &str) -> i64 {
+    conn.query_row(
+        "SELECT last_seen_updated_at FROM agentic_cursor WHERE source_key = ?1",
+        params![key],
+        |r| r.get(0),
+    )
+    .unwrap_or(0)
+}
+
+fn write_cursor(
+    conn: &rusqlite::Connection,
+    key: &str,
+    mtime_ms: i64,
+    session_id: &str,
+) -> Result<()> {
+    let now = chrono::Utc::now().timestamp_millis();
+    conn.execute(
+        "INSERT INTO agentic_cursor (source_key, last_seen_updated_at, last_id, updated_at)
+         VALUES (?1, ?2, ?3, ?4)
+         ON CONFLICT(source_key) DO UPDATE SET
+             last_seen_updated_at = excluded.last_seen_updated_at,
+             last_id              = excluded.last_id,
+             updated_at           = excluded.updated_at",
+        params![key, mtime_ms, session_id, now],
+    )?;
+    Ok(())
+}
+
+fn bump_health_ok(conn: &rusqlite::Connection, last_event_ms: i64) {
+    let now = chrono::Utc::now().timestamp_millis();
+    let _ = conn.execute(
+        "UPDATE source_health
+         SET last_event_ts        = MAX(COALESCE(last_event_ts, 0), ?1),
+             last_success_ts      = ?2,
+             consecutive_failures = 0,
+             updated_at           = ?2
+         WHERE source = 'agentic-session-cursor'",
+        params![last_event_ms, now],
+    );
+}
+
+fn record_error(conn: &rusqlite::Connection, err: &anyhow::Error) {
+    let now = chrono::Utc::now().timestamp_millis();
+    if let Err(e) = conn.execute(
+        "UPDATE source_health
+         SET last_error_ts        = ?1,
+             last_error_msg       = ?2,
+             consecutive_failures = consecutive_failures + 1,
+             updated_at           = ?1
+         WHERE source = 'agentic-session-cursor'",
+        params![now, format!("{err:#}")],
+    ) {
+        warn!("cursor source_health error update failed: {e}");
+    }
+}
+
+/// True for `**/agent-transcripts/**/*.jsonl` (main + subagents).
+fn is_transcript(path: &Path) -> bool {
+    let is_jsonl = path.extension().map(|e| e == "jsonl").unwrap_or(false);
+    let under_transcripts = path
+        .components()
+        .any(|c| c.as_os_str() == "agent-transcripts");
+    is_jsonl && under_transcripts
+}
+
+/// One poll cycle: walk every root, ingest changed idle transcript files.
+pub fn poll_tick(config: &HippoConfig) -> Result<usize> {
+    if !config.cursor.enabled {
+        debug!("cursor poll disabled by config");
+        return Ok(0);
+    }
+    let conn = hippo_core::storage::open_db(&config.db_path())?;
+    let now_ms = chrono::Utc::now().timestamp_millis();
+    let min_idle_ms = config.cursor.min_idle_secs as i64 * 1000;
+
+    let mut ingested = 0usize;
+    for root in &config.cursor.session_roots {
+        if !root.is_dir() {
+            continue;
+        }
+        for entry in WalkDir::new(root).into_iter().filter_map(|e| e.ok()) {
+            let path = entry.path();
+            if !is_transcript(path) {
+                continue;
+            }
+            let meta = match entry.metadata() {
+                Ok(m) => m,
+                Err(_) => continue,
+            };
+            let mtime_ms = meta
+                .modified()
+                .ok()
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|d| d.as_millis() as i64)
+                .unwrap_or(0);
+            if now_ms - mtime_ms < min_idle_ms {
+                continue;
+            }
+            let key = cursor_key(&meta);
+            if mtime_ms <= read_cursor(&conn, &key) {
+                continue;
+            }
+            match ingest_file(&conn, path, mtime_ms) {
+                Ok((count, session_id)) => {
+                    ingested += count;
+                    if count > 0 {
+                        bump_health_ok(&conn, mtime_ms);
+                    }
+                    if let Err(e) = write_cursor(&conn, &key, mtime_ms, &session_id) {
+                        warn!("cursor cursor write failed for {}: {e:#}", path.display());
+                    }
+                }
+                Err(e) => {
+                    error!("cursor ingest failed for {}: {e:#}", path.display());
+                    record_error(&conn, &e);
+                }
+            }
+        }
+    }
+    info!(ingested, "cursor poll tick: completed");
+    Ok(ingested)
+}
+
+/// Parse one file and upsert all its segments in a single transaction.
+fn ingest_file(conn: &rusqlite::Connection, path: &Path, mtime_ms: i64) -> Result<(usize, String)> {
+    let redaction = RedactionEngine::builtin();
+    let segments = extract_segments(path, mtime_ms, &redaction)?;
+    if segments.is_empty() {
+        return Ok((0, String::new()));
+    }
+    let session_id = segments[0].session_id.clone();
+    let tx = conn.unchecked_transaction()?;
+    for seg in &segments {
+        upsert_segment_tx(&tx, seg)?;
+    }
+    tx.commit()?;
+    Ok((segments.len(), session_id))
+}
+
+/// Test-only constructor for a `HippoConfig` pointed at a temp data dir.
+#[doc(hidden)]
+pub fn test_config(data_dir: &Path, roots: &[PathBuf]) -> HippoConfig {
+    let mut cfg = HippoConfig::default();
+    cfg.storage.data_dir = data_dir.to_path_buf();
+    cfg.cursor.session_roots = roots.to_vec();
+    cfg.cursor.min_idle_secs = 60;
+    cfg
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -680,10 +825,9 @@ mod tests {
 
     #[test]
     fn extract_segments_splits_on_char_cap_without_timestamps() {
-        // extract_user_text caps each prompt at 500 chars, so a segment holds
-        // ~24 prompts (~12000 chars) before the next user turn forces a split.
-        // 40 turns therefore yields >1 segment — proving the split works with
-        // NO timestamps anywhere.
+        // ~25 prompts push current_chars past the 12_000 cap; the next user
+        // turn then splits. 40 turns therefore yields >1 segment — proving the
+        // split works with NO timestamps anywhere.
         let tmp = tempfile::tempdir().unwrap();
         let p = tmp.path().join("big.jsonl");
         let big = "x".repeat(600); // capped to 500 by extract_user_text

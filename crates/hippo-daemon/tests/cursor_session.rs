@@ -1,6 +1,22 @@
 use hippo_core::storage::open_db;
 use tempfile::TempDir;
 
+fn write_transcript(
+    root: &std::path::Path,
+    slug: &str,
+    uuid: &str,
+    prompt: &str,
+) -> std::path::PathBuf {
+    let dir = root.join(slug).join("agent-transcripts").join(uuid);
+    std::fs::create_dir_all(&dir).unwrap();
+    let p = dir.join(format!("{uuid}.jsonl"));
+    let line = format!(
+        r#"{{"role":"user","message":{{"content":[{{"type":"text","text":"<user_query>\n{prompt}\n</user_query>"}}]}}}}"#
+    );
+    std::fs::write(&p, line).unwrap();
+    p
+}
+
 fn seg(
     session_id: &str,
     is_subagent: bool,
@@ -80,4 +96,57 @@ fn upsert_subagent_records_parent_link() {
         .unwrap();
     assert_eq!(is_sub, 1);
     assert_eq!(parent.as_deref(), Some("parent-1"));
+}
+
+#[test]
+fn poll_tick_ingests_idle_files_and_advances_cursor() {
+    let tmp = TempDir::new().unwrap();
+    let roots = tmp.path().join("projects");
+    let f = write_transcript(&roots, "Users-x-projects-foo", "sess-1", "hello cursor");
+    let old = std::time::SystemTime::now() - std::time::Duration::from_secs(3600);
+    filetime::set_file_mtime(&f, filetime::FileTime::from_system_time(old)).unwrap();
+
+    let data_dir = tmp.path().join("data");
+    std::fs::create_dir_all(&data_dir).unwrap();
+    let config = hippo_daemon::cursor_session::test_config(&data_dir, std::slice::from_ref(&roots));
+    let _ = open_db(&config.db_path()).unwrap();
+
+    assert_eq!(hippo_daemon::cursor_session::poll_tick(&config).unwrap(), 1);
+    assert_eq!(
+        hippo_daemon::cursor_session::poll_tick(&config).unwrap(),
+        0,
+        "unchanged file must be skipped via cursor"
+    );
+
+    let conn = open_db(&config.db_path()).unwrap();
+    let health: i64 = conn
+        .query_row(
+            "SELECT last_success_ts FROM source_health WHERE source = 'agentic-session-cursor'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(health > 0, "source_health must be bumped");
+}
+
+#[test]
+fn poll_tick_skips_in_flight_files() {
+    let tmp = TempDir::new().unwrap();
+    let roots = tmp.path().join("projects");
+    write_transcript(&roots, "Users-x-projects-foo", "fresh", "in flight"); // mtime = now
+    let data_dir = tmp.path().join("data");
+    std::fs::create_dir_all(&data_dir).unwrap();
+    let config = hippo_daemon::cursor_session::test_config(&data_dir, &[roots]);
+    let _ = open_db(&config.db_path()).unwrap();
+    assert_eq!(hippo_daemon::cursor_session::poll_tick(&config).unwrap(), 0);
+}
+
+#[test]
+fn poll_tick_returns_zero_when_disabled() {
+    let tmp = TempDir::new().unwrap();
+    let data_dir = tmp.path().join("data");
+    std::fs::create_dir_all(&data_dir).unwrap();
+    let mut config = hippo_daemon::cursor_session::test_config(&data_dir, &[]);
+    config.cursor.enabled = false;
+    assert_eq!(hippo_daemon::cursor_session::poll_tick(&config).unwrap(), 0);
 }

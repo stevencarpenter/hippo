@@ -36,5 +36,8 @@ mod claude_subagent;
 #[path = "source_audit/xcode_codingassistant.rs"]
 mod xcode_codingassistant;
 
+#[path = "source_audit/cursor_agent.rs"]
+mod cursor_agent;
+
 #[path = "source_audit/doctor_freshness.rs"]
 mod doctor_freshness;
