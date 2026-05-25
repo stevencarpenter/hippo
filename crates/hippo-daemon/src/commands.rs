@@ -1772,6 +1772,15 @@ fn check_source_staleness(db: &rusqlite::Connection, explain: bool) -> u32 {
         (any_exist, false)
     };
 
+    // Inspect the Cursor agent-transcript files under the configured session
+    // roots. Two facts drive doctor suppression, mirroring opencode's DB checks:
+    //   - `any_exist`: at least one `agent-transcripts/*.jsonl` file is present.
+    //     False ⇒ "user has never run Cursor" — suppress rather than alarm.
+    //   - `any_recent`: at least one `agent-transcripts/*.jsonl` was modified
+    //     within the IDLE_WINDOW_SECS window (the same window opencode uses for
+    //     its DB mtime). False (with files present) ⇒ "user just isn't using
+    //     Cursor right now" — suppress.  True with a stale `source_health` row ⇒
+    //     a genuine ingestion failure, so it is NOT suppressed.
     let cursor_session_state = || -> (bool, bool) {
         let Ok(cfg) = doctor_config.as_ref() else {
             return (false, false);
@@ -1798,6 +1807,7 @@ fn check_source_staleness(db: &rusqlite::Connection, explain: bool) -> u32 {
                     && let Ok(modified) = meta.modified()
                     && modified > idle_cutoff
                 {
+                    // A recent file settles both facts — stop walking.
                     return (true, true);
                 }
             }
@@ -3909,6 +3919,18 @@ replacement = "***"
                 signals(false, false, false, false, false),
             ),
             SourceStalenessStatus::Suppressed("no Cursor sessions found"),
+        );
+    }
+
+    #[test]
+    fn test_cursor_staleness_suppressed_when_sessions_exist_but_idle() {
+        assert_eq!(
+            classify_source_staleness(
+                "agentic-session-cursor",
+                2 * 3600,
+                signals(false, false, false, true, false),
+            ),
+            SourceStalenessStatus::Suppressed("Cursor sessions idle"),
         );
     }
 
