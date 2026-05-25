@@ -644,9 +644,8 @@ pub fn check_i11_opencode_coverage_proxy(
     now_ms: i64,
 ) -> Option<InvariantViolation> {
     let row = by_source.get("agentic-session-opencode")?;
-    let last_event = row.last_event_ts?;
     if row.consecutive_failures > 3 {
-        let age_ms = now_ms - last_event;
+        let age_ms = coverage_proxy_since_ms(row, now_ms);
         return Some(InvariantViolation {
             invariant_id: "I-11".to_string(),
             source: "agentic-session-opencode".to_string(),
@@ -667,9 +666,8 @@ pub fn check_i13_codex_coverage_proxy(
     now_ms: i64,
 ) -> Option<InvariantViolation> {
     let row = by_source.get("agentic-session-codex")?;
-    let last_event = row.last_event_ts?;
     if row.consecutive_failures > 3 {
-        let age_ms = now_ms - last_event;
+        let age_ms = coverage_proxy_since_ms(row, now_ms);
         return Some(InvariantViolation {
             invariant_id: "I-13".to_string(),
             source: "agentic-session-codex".to_string(),
@@ -681,6 +679,11 @@ pub fn check_i13_codex_coverage_proxy(
         });
     }
     None
+}
+
+fn coverage_proxy_since_ms(row: &SourceHealthRow, now_ms: i64) -> i64 {
+    let since_ts = row.last_event_ts.unwrap_or(row.updated_at);
+    now_ms.saturating_sub(since_ts)
 }
 
 /// I-14: Embedding orphan backlog.
@@ -1269,14 +1272,17 @@ mod tests {
     }
 
     #[test]
-    fn watchdog_i11_suppressed_when_never_seen() {
+    fn watchdog_i11_fires_on_first_run_failures() {
         let row = SourceHealthRow {
             last_event_ts: None,
             consecutive_failures: 10,
+            updated_at: NOW - 30_000,
             ..blank_row("agentic-session-opencode")
         };
         let rows = vec![row];
-        assert!(check_i11_opencode_coverage_proxy(&by_source(&rows), NOW).is_none());
+        let result = check_i11_opencode_coverage_proxy(&by_source(&rows), NOW).unwrap();
+        assert_eq!(result.invariant_id, "I-11");
+        assert_eq!(result.since_ms, 30_000);
     }
 
     // ── I-12 (brain preflight stuck) ───────────────────────────────────────
@@ -1812,14 +1818,17 @@ mod tests {
     }
 
     #[test]
-    fn i13_codex_suppressed_when_never_seen() {
+    fn i13_codex_alarms_on_first_run_failures() {
         let row = SourceHealthRow {
             last_event_ts: None,
             consecutive_failures: 10,
+            updated_at: NOW - 45_000,
             ..blank_row("agentic-session-codex")
         };
         let rows = vec![row];
-        assert!(check_i13_codex_coverage_proxy(&by_source(&rows), NOW).is_none());
+        let result = check_i13_codex_coverage_proxy(&by_source(&rows), NOW).unwrap();
+        assert_eq!(result.invariant_id, "I-13");
+        assert_eq!(result.since_ms, 45_000);
     }
 
     /// check_invariants must return an empty Vec when no violations exist.
