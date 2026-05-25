@@ -10,6 +10,7 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 use hippo_core::redaction::RedactionEngine;
+use rusqlite::{OptionalExtension, params};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 
@@ -322,8 +323,6 @@ pub(crate) fn extract_segments(
 
 /// Build the Cursor-framed enrichment digest stored in
 /// `claude_sessions.summary_text`.
-// live once Task 7 wires upsert_segment_tx
-#[allow(dead_code)]
 pub(crate) fn build_summary_text(seg: &CursorSegment) -> String {
     const MAX_PROMPTS: usize = 30;
     const MAX_TOOLS: usize = 60;
@@ -370,8 +369,6 @@ pub(crate) fn build_summary_text(seg: &CursorSegment) -> String {
 /// SHA256 (lowercase hex) of enrichment-relevant content: tool_calls_json |
 /// user_prompts_json | assistant_texts joined by "\n". Same construction as
 /// `codex_session::compute_content_hash`.
-// live once Task 7 wires upsert_segment_tx
-#[allow(dead_code)]
 pub(crate) fn compute_content_hash(seg: &CursorSegment) -> String {
     let tool_calls_json = serde_json::to_string(&seg.tool_calls).unwrap_or_else(|_| "[]".into());
     let user_prompts_json =
@@ -390,9 +387,164 @@ pub(crate) fn compute_content_hash(seg: &CursorSegment) -> String {
         .collect()
 }
 
+/// Decide whether a just-upserted segment should be (re-)enqueued for
+/// enrichment. Direct port of `codex_session::decide_enqueue` — Cursor shares
+/// `claude_enrichment_queue`, so it must share the re-enrichment gate or a
+/// re-parsed (mtime-bumped) file re-pends every already-enriched segment.
+fn decide_enqueue(
+    was_insert: bool,
+    current_hash: &str,
+    prior_last_enriched_hash: Option<&str>,
+    prior_queue_status: Option<&str>,
+    prior_queue_updated_at_ms: Option<i64>,
+    now_ms: i64,
+) -> bool {
+    if was_insert {
+        return true;
+    }
+    if prior_queue_status == Some("processing") {
+        return false;
+    }
+    if prior_last_enriched_hash == Some(current_hash) {
+        return false;
+    }
+    if let Some(updated_at) = prior_queue_updated_at_ms
+        && (now_ms - updated_at) < 300_000
+    {
+        return false;
+    }
+    true
+}
+
+/// Upsert one segment into `claude_sessions` and (re-)enqueue it, inside a
+/// caller-supplied transaction. Idempotent via `ON CONFLICT (session_id,
+/// segment_index)`. Unlike Codex, Cursor passes real `is_subagent` /
+/// `parent_session_id` values.
+pub fn upsert_segment_tx(tx: &rusqlite::Transaction, seg: &CursorSegment) -> Result<()> {
+    let now_ms = chrono::Utc::now().timestamp_millis();
+    let tool_calls_json = serde_json::to_string(&seg.tool_calls).unwrap_or_else(|_| "[]".into());
+    let user_prompts_json =
+        serde_json::to_string(&seg.user_prompts).unwrap_or_else(|_| "[]".into());
+    let summary_text = build_summary_text(seg);
+    let content_hash = compute_content_hash(seg);
+
+    #[allow(clippy::type_complexity)]
+    let prior: Option<(i64, Option<String>, Option<String>, Option<i64>)> = tx
+        .query_row(
+            "SELECT cs.id, cs.last_enriched_content_hash, ceq.status, ceq.updated_at
+             FROM claude_sessions cs
+             LEFT JOIN claude_enrichment_queue ceq ON ceq.claude_session_id = cs.id
+             WHERE cs.session_id = ?1 AND cs.segment_index = ?2",
+            params![seg.session_id, seg.segment_index],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        )
+        .optional()?;
+    let was_insert = prior.is_none();
+    let prior_last_enriched_hash = prior.as_ref().and_then(|(_, h, _, _)| h.as_deref());
+    let prior_queue_status = prior.as_ref().and_then(|(_, _, s, _)| s.as_deref());
+    let prior_queue_updated_at_ms = prior.as_ref().and_then(|(_, _, _, u)| *u);
+
+    let is_subagent_i = if seg.is_subagent { 1 } else { 0 };
+    tx.execute(
+        "INSERT INTO claude_sessions
+            (session_id, project_dir, cwd, git_branch, segment_index,
+             start_time, end_time, summary_text, tool_calls_json,
+             user_prompts_json, message_count, token_count, source_file,
+             is_subagent, parent_session_id, content_hash, created_at)
+         VALUES (?1, ?2, ?3, NULL, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 0, ?11, ?12, ?13, ?14, ?15)
+         ON CONFLICT (session_id, segment_index) DO UPDATE SET
+             end_time          = excluded.end_time,
+             summary_text      = excluded.summary_text,
+             tool_calls_json   = excluded.tool_calls_json,
+             user_prompts_json = excluded.user_prompts_json,
+             message_count     = excluded.message_count,
+             content_hash      = excluded.content_hash,
+             cwd               = excluded.cwd,
+             project_dir       = excluded.project_dir,
+             is_subagent       = excluded.is_subagent,
+             parent_session_id = excluded.parent_session_id",
+        params![
+            seg.session_id,
+            seg.project_dir,
+            seg.cwd,
+            seg.segment_index,
+            seg.start_time,
+            seg.end_time,
+            summary_text,
+            tool_calls_json,
+            user_prompts_json,
+            seg.message_count,
+            seg.source_file,
+            is_subagent_i,
+            seg.parent_session_id,
+            content_hash,
+            now_ms,
+        ],
+    )?;
+
+    let claude_session_id: i64 = if was_insert {
+        tx.last_insert_rowid()
+    } else {
+        prior.as_ref().map(|(id, _, _, _)| *id).unwrap()
+    };
+
+    if decide_enqueue(
+        was_insert,
+        &content_hash,
+        prior_last_enriched_hash,
+        prior_queue_status,
+        prior_queue_updated_at_ms,
+        now_ms,
+    ) {
+        tx.execute(
+            "INSERT INTO claude_enrichment_queue
+                 (claude_session_id, status, retry_count, error_message, created_at, updated_at)
+             VALUES (?1, 'pending', 0, NULL, ?2, ?2)
+             ON CONFLICT(claude_session_id) DO UPDATE SET
+                 status        = 'pending',
+                 retry_count   = 0,
+                 error_message = NULL,
+                 updated_at    = excluded.updated_at
+             WHERE claude_enrichment_queue.status != 'processing'",
+            params![claude_session_id, now_ms],
+        )?;
+    }
+    Ok(())
+}
+
+/// Convenience wrapper: upsert one segment in its own transaction.
+pub fn upsert_segment(conn: &rusqlite::Connection, seg: &CursorSegment) -> Result<()> {
+    let tx = conn.unchecked_transaction()?;
+    upsert_segment_tx(&tx, seg)?;
+    tx.commit()?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn decide_enqueue_gates_on_content_change() {
+        assert!(decide_enqueue(true, "h1", None, None, None, 1_000));
+        assert!(!decide_enqueue(false, "h1", Some("h1"), None, None, 1_000));
+        assert!(!decide_enqueue(
+            false,
+            "h2",
+            Some("h1"),
+            Some("processing"),
+            None,
+            1_000
+        ));
+        assert!(decide_enqueue(
+            false,
+            "h2",
+            Some("h1"),
+            Some("failed"),
+            Some(0),
+            400_000
+        ));
+    }
 
     fn sample_segment() -> CursorSegment {
         CursorSegment {
