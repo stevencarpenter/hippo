@@ -27,7 +27,7 @@ Two distinct identifiers are involved; pick a value for each.
 
 **`events.source_kind`** distinguishes rows in the events table. Today's set: `'shell'` and `'claude-tool'` (rows where `tool_name IS NOT NULL`). Pick a kebab-case value if your source writes into the `events` table. Sources with their own table (browser, claude-session) don't need a `source_kind` value.
 
-**`source_health.source`** is the watchdog's per-source heartbeat key. Today's set: `'shell'`, `'claude-tool'`, `'claude-session'`, `'claude-session-watcher'`, `'browser'`, `'workflow'`, `'watchdog'`. (Note: there is no `'probe'` row — probes write `probe_ok` / `probe_lag_ms` / `probe_last_run_ts` onto the *real* source's row, not into a separate probe heartbeat.)
+**`source_health.source`** is the watchdog's per-source heartbeat key. Today's set: `'shell'`, `'claude-tool'`, `'agentic-session-claude'`, `'claude-session-watcher'`, `'browser'`, `'workflow'`, `'watchdog'`. (Note: there is no `'probe'` row — probes write `probe_ok` / `probe_lag_ms` / `probe_last_run_ts` onto the *real* source's row, not into a separate probe heartbeat.)
 
 The new value goes in:
 

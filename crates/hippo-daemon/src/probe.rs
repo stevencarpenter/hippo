@@ -20,7 +20,7 @@ const POLL_INTERVAL_MS: u64 = 200;
 
 /// Run one or all probes, then write results to `source_health`.
 ///
-/// `source` is one of `"shell"`, `"claude-tool"`, `"claude-session"`,
+/// `source` is one of `"shell"`, `"claude-tool"`, `"agentic-session-claude"`,
 /// `"browser"`, or `None` to run all four in sequence.
 pub async fn run(config: &HippoConfig, source: Option<&str>) -> Result<()> {
     let run_all = source.is_none();
@@ -61,20 +61,20 @@ pub async fn run(config: &HippoConfig, source: Option<&str>) -> Result<()> {
         }
     }
 
-    if run_all || source == Some("claude-session") {
+    if run_all || source == Some("agentic-session-claude") {
         match probe_claude_session(config) {
             Ok((ok, lag)) => {
                 println!(
-                    "[probe] claude-session: {} (lag={}ms)",
+                    "[probe] agentic-session-claude: {} (lag={}ms)",
                     if ok { "OK" } else { "FAIL" },
                     lag.map(|l| l.to_string()).as_deref().unwrap_or("N/A")
                 );
-                write_probe_result(config, "claude-session", ok, lag)?;
+                write_probe_result(config, "agentic-session-claude", ok, lag)?;
             }
             Err(e) => {
-                warn!("claude-session probe error: {e:#}");
-                println!("[probe] claude-session: ERROR — {e:#}");
-                write_probe_result(config, "claude-session", false, None)?;
+                warn!("agentic-session-claude probe error: {e:#}");
+                println!("[probe] agentic-session-claude: ERROR — {e:#}");
+                write_probe_result(config, "agentic-session-claude", false, None)?;
             }
         }
     }
@@ -98,10 +98,13 @@ pub async fn run(config: &HippoConfig, source: Option<&str>) -> Result<()> {
     }
 
     if let Some(s) = source
-        && !matches!(s, "shell" | "claude-tool" | "claude-session" | "browser")
+        && !matches!(
+            s,
+            "shell" | "claude-tool" | "agentic-session-claude" | "browser"
+        )
     {
         anyhow::bail!(
-            "unknown probe source '{}'; valid: shell, claude-tool, claude-session, browser",
+            "unknown probe source '{}'; valid: shell, claude-tool, agentic-session-claude, browser",
             s
         );
     }

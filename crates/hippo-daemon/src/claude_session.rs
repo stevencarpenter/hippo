@@ -1094,7 +1094,8 @@ fn insert_segments(conn: &Connection, segments: &[SessionSegment]) -> Result<(us
             )?;
         }
 
-        // Update source_health for claude-session only when this upsert
+        // Update source_health for the canonical Claude session key only when
+        // this upsert
         // actually represented new or changed content. Reparses of unchanged
         // segments would otherwise inflate `events_last_1h/24h` and refresh
         // `last_success_ts` on every FSEvents tick, masking real drops in
@@ -1109,7 +1110,7 @@ fn insert_segments(conn: &Connection, segments: &[SessionSegment]) -> Result<(us
                      events_last_24h      = events_last_24h + 1,
                      consecutive_failures = 0,
                      updated_at           = ?2
-                 WHERE source = 'claude-session'",
+                 WHERE source = 'agentic-session-claude'",
                 rusqlite::params![seg_ts, now_ms],
             ) {
                 Err(e) if !crate::is_missing_source_health_table_error(&e) => {
@@ -2306,7 +2307,7 @@ mod tests {
                  events_last_24h      = 0,
                  consecutive_failures = 0,
                  updated_at           = ?1
-             WHERE source = 'claude-session'",
+             WHERE source = 'agentic-session-claude'",
             rusqlite::params![now_ms],
         )
         .unwrap();
@@ -2316,7 +2317,7 @@ mod tests {
         let (e1h_after_insert, e24h_after_insert): (i64, i64) = conn
             .query_row(
                 "SELECT events_last_1h, events_last_24h FROM source_health
-                 WHERE source = 'claude-session'",
+                 WHERE source = 'agentic-session-claude'",
                 [],
                 |row| Ok((row.get(0)?, row.get(1)?)),
             )
@@ -2330,7 +2331,7 @@ mod tests {
         let (e1h_after_reparse, e24h_after_reparse): (i64, i64) = conn
             .query_row(
                 "SELECT events_last_1h, events_last_24h FROM source_health
-                 WHERE source = 'claude-session'",
+                 WHERE source = 'agentic-session-claude'",
                 [],
                 |row| Ok((row.get(0)?, row.get(1)?)),
             )

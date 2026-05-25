@@ -90,11 +90,144 @@ fn normalize_agentic_cursor_schema(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
+#[derive(Debug, Clone)]
+struct SourceHealthSnapshot {
+    last_event_ts: Option<i64>,
+    last_success_ts: Option<i64>,
+    last_error_ts: Option<i64>,
+    last_error_msg: Option<String>,
+    consecutive_failures: i64,
+    events_last_1h: i64,
+    events_last_24h: i64,
+    probe_ok: Option<i64>,
+    probe_lag_ms: Option<i64>,
+}
+
+fn read_source_health_snapshot(
+    conn: &Connection,
+    source: &str,
+) -> Result<Option<SourceHealthSnapshot>> {
+    conn.query_row(
+        "SELECT last_event_ts,
+                last_success_ts,
+                last_error_ts,
+                last_error_msg,
+                consecutive_failures,
+                events_last_1h,
+                events_last_24h,
+                probe_ok,
+                probe_lag_ms
+           FROM source_health
+          WHERE source = ?1",
+        [source],
+        |row| {
+            Ok(SourceHealthSnapshot {
+                last_event_ts: row.get(0)?,
+                last_success_ts: row.get(1)?,
+                last_error_ts: row.get(2)?,
+                last_error_msg: row.get(3)?,
+                consecutive_failures: row.get(4)?,
+                events_last_1h: row.get(5)?,
+                events_last_24h: row.get(6)?,
+                probe_ok: row.get(7)?,
+                probe_lag_ms: row.get(8)?,
+            })
+        },
+    )
+    .optional()
+    .map_err(Into::into)
+}
+
+fn max_opt_i64(a: Option<i64>, b: Option<i64>) -> Option<i64> {
+    match (a, b) {
+        (Some(a), Some(b)) => Some(a.max(b)),
+        (Some(a), None) => Some(a),
+        (None, Some(b)) => Some(b),
+        (None, None) => None,
+    }
+}
+
+fn merge_error_message(
+    canonical: &SourceHealthSnapshot,
+    legacy: &SourceHealthSnapshot,
+) -> Option<String> {
+    match (canonical.last_error_ts, legacy.last_error_ts) {
+        (Some(canon_ts), Some(legacy_ts)) if legacy_ts > canon_ts => legacy
+            .last_error_msg
+            .clone()
+            .or_else(|| canonical.last_error_msg.clone()),
+        (Some(_), Some(_)) => canonical
+            .last_error_msg
+            .clone()
+            .or_else(|| legacy.last_error_msg.clone()),
+        _ => canonical
+            .last_error_msg
+            .clone()
+            .or_else(|| legacy.last_error_msg.clone()),
+    }
+}
+
+fn normalize_claude_session_source_health(conn: &mut Connection) -> Result<()> {
+    if !table_exists(conn, "source_health")? {
+        return Ok(());
+    }
+
+    let now_ms = Utc::now().timestamp_millis();
+    let tx = conn.transaction()?;
+    tx.execute(
+        "INSERT OR IGNORE INTO source_health (source, updated_at)
+         VALUES ('agentic-session-claude', ?1)",
+        [now_ms],
+    )?;
+
+    let Some(legacy) = read_source_health_snapshot(&tx, "claude-session")? else {
+        tx.commit()?;
+        return Ok(());
+    };
+    let canonical = read_source_health_snapshot(&tx, "agentic-session-claude")?
+        .expect("agentic-session-claude row must exist after INSERT OR IGNORE");
+
+    tx.execute(
+        "UPDATE source_health
+            SET last_event_ts        = ?1,
+                last_success_ts      = ?2,
+                last_error_ts        = ?3,
+                last_error_msg       = ?4,
+                consecutive_failures = ?5,
+                events_last_1h       = ?6,
+                events_last_24h      = ?7,
+                probe_ok             = ?8,
+                probe_lag_ms         = ?9,
+                updated_at           = ?10
+          WHERE source = 'agentic-session-claude'",
+        rusqlite::params![
+            max_opt_i64(canonical.last_event_ts, legacy.last_event_ts),
+            max_opt_i64(canonical.last_success_ts, legacy.last_success_ts),
+            max_opt_i64(canonical.last_error_ts, legacy.last_error_ts),
+            merge_error_message(&canonical, &legacy),
+            canonical
+                .consecutive_failures
+                .max(legacy.consecutive_failures),
+            canonical.events_last_1h.max(legacy.events_last_1h),
+            canonical.events_last_24h.max(legacy.events_last_24h),
+            max_opt_i64(canonical.probe_ok, legacy.probe_ok),
+            max_opt_i64(canonical.probe_lag_ms, legacy.probe_lag_ms),
+            now_ms,
+        ],
+    )?;
+    tx.execute(
+        "DELETE FROM source_health WHERE source = 'claude-session'",
+        [],
+    )?;
+    tx.commit()?;
+    Ok(())
+}
+
 pub fn open_db(path: &Path) -> Result<Connection> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    let conn = Connection::open(path)?;
+    let mut conn = Connection::open(path)?;
     conn.execute_batch(
         "PRAGMA journal_mode=WAL;
          PRAGMA foreign_keys=ON;
@@ -453,7 +586,7 @@ pub fn open_db(path: &Path) -> Result<Connection> {
              INSERT OR IGNORE INTO source_health (source, last_event_ts, updated_at) VALUES
                  ('shell',         (SELECT MAX(timestamp)  FROM events          WHERE source_kind = 'shell'),   unixepoch('now') * 1000),
                  ('claude-tool',   (SELECT MAX(timestamp)  FROM events          WHERE source_kind = 'claude-tool'), unixepoch('now') * 1000),
-                 ('claude-session',(SELECT MAX(start_time) FROM claude_sessions),                               unixepoch('now') * 1000),
+                 ('agentic-session-claude',(SELECT MAX(start_time) FROM claude_sessions),                      unixepoch('now') * 1000),
                  ('browser',       (SELECT MAX(timestamp)  FROM browser_events),                                unixepoch('now') * 1000);",
         )?;
         // ALTER TABLE doesn't support IF NOT EXISTS in SQLite. A crash
@@ -786,9 +919,8 @@ pub fn open_db(path: &Path) -> Result<Connection> {
     // source_health UPDATE is a silent no-op without this row. Codex writes the
     // claude_sessions table, but its capture-path health key is
     // `agentic-session-codex`: source_health keys identify the capture path, not
-    // the destination table. (Existing keys are not uniform — the Claude ingester
-    // writes `claude-session`, the opencode poller `agentic-session-opencode`;
-    // Codex follows the newer `agentic-session-*` form.)
+    // the destination table. Claude, opencode, and Codex all use the
+    // `agentic-session-*` form.
     if (1..15).contains(&version) {
         let has_source_health: bool = conn
             .query_row(
@@ -819,6 +951,7 @@ pub fn open_db(path: &Path) -> Result<Connection> {
 
     normalize_agentic_sessions_schema(&conn)?;
     normalize_agentic_cursor_schema(&conn)?;
+    normalize_claude_session_source_health(&mut conn)?;
 
     // Idempotent post-migration normalization. The v13→v14 migration shipped
     // first without seeding `agentic-session-claude`; databases already at
@@ -3137,13 +3270,13 @@ mod tests {
         // Each expected source must have a pre-seeded row; use per-source
         // assertions so adding a new source doesn't silently break this test.
         for expected_source in &[
-            "shell",
-            "claude-tool",
-            "claude-session",
-            "browser",
             "agentic-session-claude",
+            "agentic-session-codex",
             "agentic-session-opencode",
             "brain-preflight",
+            "browser",
+            "claude-tool",
+            "shell",
         ] {
             let exists: i64 = conn
                 .query_row(
@@ -3157,6 +3290,30 @@ mod tests {
                 "source_health missing pre-seeded row for '{expected_source}'"
             );
         }
+
+        let canonical_claude_exists: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM source_health WHERE source = 'agentic-session-claude'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            canonical_claude_exists, 1,
+            "fresh DB must seed the canonical Claude session source_health row"
+        );
+
+        let legacy_claude_exists: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM source_health WHERE source = 'claude-session'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            legacy_claude_exists, 0,
+            "fresh DB must not seed the legacy claude-session source_health row"
+        );
 
         // Verify key columns exist via PRAGMA table_info
         let mut stmt = conn
@@ -3356,6 +3513,106 @@ mod tests {
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
         assert_eq!(v, EXPECTED_VERSION);
+    }
+
+    #[test]
+    fn test_normalize_legacy_claude_session_source_health_merges_history() {
+        #[derive(Debug, PartialEq, Eq)]
+        struct MergedClaudeHealthRow {
+            last_event_ts: Option<i64>,
+            last_success_ts: Option<i64>,
+            last_error_ts: Option<i64>,
+            last_error_msg: Option<String>,
+            consecutive_failures: i64,
+            events_last_1h: i64,
+            events_last_24h: i64,
+            probe_ok: Option<i64>,
+            probe_lag_ms: Option<i64>,
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("test.db");
+        {
+            let conn = rusqlite::Connection::open(&db_path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE source_health (
+                    source TEXT PRIMARY KEY,
+                    last_event_ts INTEGER,
+                    last_success_ts INTEGER,
+                    last_error_ts INTEGER,
+                    last_error_msg TEXT,
+                    consecutive_failures INTEGER NOT NULL DEFAULT 0,
+                    events_last_1h INTEGER NOT NULL DEFAULT 0,
+                    events_last_24h INTEGER NOT NULL DEFAULT 0,
+                    probe_ok INTEGER,
+                    probe_lag_ms INTEGER,
+                    updated_at INTEGER NOT NULL DEFAULT 0
+                );
+                INSERT INTO source_health
+                    (source, last_event_ts, last_success_ts, last_error_ts, last_error_msg,
+                     consecutive_failures, events_last_1h, events_last_24h, probe_ok, probe_lag_ms, updated_at)
+                VALUES
+                    ('claude-session', 1234, 1200, 1100, 'legacy error', 4, 9, 11, 1, 42, 1300),
+                    ('agentic-session-claude', NULL, NULL, NULL, NULL, 0, 0, 0, NULL, NULL, 1000),
+                    ('agentic-session-opencode', NULL, NULL, NULL, NULL, 0, 0, 0, NULL, NULL, 1000),
+                    ('agentic-session-codex', NULL, NULL, NULL, NULL, 0, 0, 0, NULL, NULL, 1000),
+                    ('brain-preflight', NULL, NULL, NULL, NULL, 0, 0, 0, NULL, NULL, 1000);
+                PRAGMA user_version = 15;",
+            )
+            .unwrap();
+        }
+
+        let conn = open_db(&db_path).unwrap();
+
+        let merged: MergedClaudeHealthRow = conn
+            .query_row(
+                "SELECT last_event_ts, last_success_ts, last_error_ts, last_error_msg,
+                        consecutive_failures, events_last_1h, events_last_24h, probe_ok, probe_lag_ms
+                   FROM source_health
+                  WHERE source = 'agentic-session-claude'",
+                [],
+                |row| {
+                    Ok(MergedClaudeHealthRow {
+                        last_event_ts: row.get(0)?,
+                        last_success_ts: row.get(1)?,
+                        last_error_ts: row.get(2)?,
+                        last_error_msg: row.get(3)?,
+                        consecutive_failures: row.get(4)?,
+                        events_last_1h: row.get(5)?,
+                        events_last_24h: row.get(6)?,
+                        probe_ok: row.get(7)?,
+                        probe_lag_ms: row.get(8)?,
+                    })
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            merged,
+            MergedClaudeHealthRow {
+                last_event_ts: Some(1234),
+                last_success_ts: Some(1200),
+                last_error_ts: Some(1100),
+                last_error_msg: Some("legacy error".to_string()),
+                consecutive_failures: 4,
+                events_last_1h: 9,
+                events_last_24h: 11,
+                probe_ok: Some(1),
+                probe_lag_ms: Some(42),
+            },
+            "legacy claude-session history must be preserved on the canonical row"
+        );
+
+        let legacy_exists: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM source_health WHERE source = 'claude-session')",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(
+            !legacy_exists,
+            "legacy claude-session row must be removed after normalization"
+        );
     }
 }
 

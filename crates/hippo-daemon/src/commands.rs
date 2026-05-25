@@ -1654,7 +1654,7 @@ fn check_source_staleness(db: &rusqlite::Connection, explain: bool) -> u32 {
     let rows_result = db.prepare(
         "SELECT source, last_event_ts, last_error_msg, consecutive_failures, events_last_1h, probe_ok \
          FROM source_health \
-         WHERE source IN ('shell', 'browser', 'claude-session', 'claude-tool', 'agentic-session-opencode', 'agentic-session-codex') \
+         WHERE source IN ('shell', 'browser', 'agentic-session-claude', 'claude-tool', 'agentic-session-opencode', 'agentic-session-codex') \
          ORDER BY source",
     );
 
@@ -1844,7 +1844,7 @@ fn check_source_staleness(db: &rusqlite::Connection, explain: bool) -> u32 {
         "agentic-session-codex",
         "agentic-session-opencode",
         "browser",
-        "claude-session",
+        "agentic-session-claude",
         "claude-tool",
         "shell",
     ];
@@ -2046,7 +2046,7 @@ fn source_staleness_suppression_reason(
 ) -> Option<&'static str> {
     match source {
         "shell" if signals.probe_ok == Some(0) => Some("probe disabled"),
-        "claude-session" if !signals.recent_claude_session => Some("no active session"),
+        "agentic-session-claude" if !signals.recent_claude_session => Some("no active session"),
         "claude-tool" if signals.probe_ok == Some(0) => Some("probe disabled"),
         "browser" if !signals.firefox_running => Some("no active Firefox session"),
         "agentic-session-opencode" if !signals.opencode_db_recent => Some("opencode DB idle"),
@@ -2076,7 +2076,7 @@ fn source_staleness_thresholds_for(source: &str) -> SourceStalenessThresholds {
             warn_secs: 420,
             fail_secs: 900,
         },
-        "claude-session" => SourceStalenessThresholds {
+        "agentic-session-claude" => SourceStalenessThresholds {
             warn_secs: 300,
             fail_secs: 1800,
         },
@@ -3767,7 +3767,11 @@ replacement = "***"
     #[test]
     fn test_idle_claude_session_staleness_is_suppressed_before_warn() {
         assert_eq!(
-            classify_source_staleness("claude-session", 12 * 60, signals(false, false, false),),
+            classify_source_staleness(
+                "agentic-session-claude",
+                12 * 60,
+                signals(false, false, false),
+            ),
             SourceStalenessStatus::Suppressed("no active session"),
             "inactive Claude sessions should not warn just because no new session rows landed"
         );
@@ -3776,7 +3780,11 @@ replacement = "***"
     #[test]
     fn test_active_claude_session_staleness_still_warns() {
         assert_eq!(
-            classify_source_staleness("claude-session", 12 * 60, signals(true, false, false),),
+            classify_source_staleness(
+                "agentic-session-claude",
+                12 * 60,
+                signals(true, false, false),
+            ),
             SourceStalenessStatus::Warn,
             "recent Claude JSONL activity should make stale source-health actionable"
         );

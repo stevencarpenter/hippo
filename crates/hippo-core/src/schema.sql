@@ -481,7 +481,7 @@ CREATE TABLE IF NOT EXISTS source_health (
 INSERT OR IGNORE INTO source_health (source, last_event_ts, updated_at) VALUES
     ('shell',         (SELECT MAX(timestamp)  FROM events          WHERE source_kind = 'shell'),   unixepoch('now') * 1000),
     ('claude-tool',   (SELECT MAX(timestamp)  FROM events          WHERE source_kind = 'claude-tool'), unixepoch('now') * 1000),
-    ('claude-session',(SELECT MAX(start_time) FROM claude_sessions),                               unixepoch('now') * 1000),
+    ('agentic-session-claude',(SELECT MAX(start_time) FROM claude_sessions),                      unixepoch('now') * 1000),
     ('browser',       (SELECT MAX(timestamp)  FROM browser_events),                                unixepoch('now') * 1000);
 
 -- ─── v9: capture_alarms table for watchdog invariant violations ────────
