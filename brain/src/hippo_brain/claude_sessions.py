@@ -622,18 +622,25 @@ def _skip_ineligible_claude_segments(conn, segments: list[dict]) -> list[dict]:
                 "WHERE claude_session_id = ?",
                 (reason, now_ms, seg["id"]),
             )
+            conn.execute(
+                "UPDATE claude_sessions SET enriched = 1 WHERE id = ?",
+                (seg["id"],),
+            )
             # Advance the dedup watermark so the watcher does not re-enqueue this
             # segment on every restart/file-change. Skipping is terminal — the
             # eligibility verdict is deterministic — so an open gate is pure churn
-            # (and a duplicate node per legacy segment on re-run). COALESCE keeps
-            # an existing watermark untouched when content_hash is NULL (legacy).
-            conn.execute(
-                "UPDATE claude_sessions "
-                "SET enriched = 1, "
-                "    last_enriched_content_hash = COALESCE(content_hash, last_enriched_content_hash) "
-                "WHERE id = ?",
-                (seg["id"],),
-            )
+            # (and a duplicate node per legacy segment on re-run). Use the
+            # *claimed* content_hash (the value the skip decision was made on) and
+            # only advance if the row's content_hash still equals it: the daemon
+            # may upsert newer content while we hold the row, and that newer
+            # content must get its own eligibility check, not inherit this skip.
+            seg_hash = seg.get("content_hash")
+            if seg_hash is not None:
+                conn.execute(
+                    "UPDATE claude_sessions SET last_enriched_content_hash = ? "
+                    "WHERE id = ? AND content_hash = ?",
+                    (seg_hash, seg["id"], seg_hash),
+                )
     if len(eligible) != len(segments):
         conn.commit()
     return eligible
@@ -749,21 +756,38 @@ def write_claude_knowledge_node(
         raise
 
 
-def mark_claude_queue_failed(conn, segment_ids: list[int], error: str) -> None:
+def mark_claude_queue_failed(
+    conn,
+    segment_ids: list[int],
+    error: str,
+    content_hashes: list[str | None] | None = None,
+) -> None:
     """Increment retry_count; reset to pending if retries remain, failed if exhausted.
 
     On a *terminal* failure (retries exhausted -> status 'failed'), advance
-    ``last_enriched_content_hash`` to the current ``content_hash``.  A
-    deterministic failure (e.g. the LLM emitting invalid JSON for one segment)
-    can never succeed, so leaving the success-only watermark untouched would let
-    the watcher re-enqueue the same content forever — the cap is reset on every
-    re-enqueue.  Closing the gate stops the loop; if the content later changes,
+    ``last_enriched_content_hash`` to the hash that was actually attempted
+    (``content_hashes[i]``, the value read at claim time). A deterministic
+    failure (e.g. the LLM emitting invalid JSON for one segment) can never
+    succeed, so leaving the success-only watermark untouched would let the
+    watcher re-enqueue the same content forever — the cap resets on every
+    re-enqueue. Closing the gate stops the loop; if the content later changes,
     ``content_hash`` diverges again and the segment gets a fresh attempt.
-    Transient failures (status flips back to 'pending') do NOT touch the
-    watermark, so they retry normally.
+
+    The advance is gated on ``content_hash`` STILL equalling the attempted hash:
+    the daemon upserts a newer ``content_hash`` on every reparse (without
+    re-enqueuing while the row is 'processing'), so watermarking blindly could
+    mark *newer*, never-attempted content as handled and strand it. When
+    ``content_hashes`` is omitted the watermark is left untouched (caller didn't
+    say what was attempted). Transient failures ('pending') never touch it.
     """
+    if content_hashes is not None and len(content_hashes) != len(segment_ids):
+        raise ValueError(
+            f"content_hashes length ({len(content_hashes)}) does not match "
+            f"segment_ids length ({len(segment_ids)})"
+        )
     now_ms = int(time.time() * 1000)
-    for seg_id in segment_ids:
+    hashes = content_hashes if content_hashes is not None else [None] * len(segment_ids)
+    for seg_id, attempted_hash in zip(segment_ids, hashes, strict=True):
         conn.execute(
             """
             UPDATE claude_enrichment_queue
@@ -780,15 +804,16 @@ def mark_claude_queue_failed(conn, segment_ids: list[int], error: str) -> None:
             """,
             (error, now_ms, seg_id),
         )
-        conn.execute(
-            """
-            UPDATE claude_sessions
-            SET last_enriched_content_hash = content_hash
-            WHERE id = ?
-              AND content_hash IS NOT NULL
-              AND (SELECT status FROM claude_enrichment_queue
-                   WHERE claude_session_id = ?) = 'failed'
-            """,
-            (seg_id, seg_id),
-        )
+        if attempted_hash is not None:
+            conn.execute(
+                """
+                UPDATE claude_sessions
+                SET last_enriched_content_hash = ?
+                WHERE id = ?
+                  AND content_hash = ?
+                  AND (SELECT status FROM claude_enrichment_queue
+                       WHERE claude_session_id = ?) = 'failed'
+                """,
+                (attempted_hash, seg_id, attempted_hash, seg_id),
+            )
     conn.commit()

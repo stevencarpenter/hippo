@@ -252,7 +252,9 @@ def build_enrichment_prompt(events: list[dict], browser_context: str = "") -> st
     return prompt
 
 
-# A backslash that begins a valid JSON escape: \" \\ \/ \b \f \n \r \t or \uXXXX.
+# Matches EITHER a valid JSON escape (\" \\ \/ \b \f \n \r \t \uXXXX) OR a single
+# lone backslash. The two alternatives let _repair_json_escapes keep the former
+# intact (leftmost-match consumes it whole) and double the latter into a literal.
 _VALID_JSON_ESCAPE = re.compile(r'\\(?:["\\/bfnrt]|u[0-9a-fA-F]{4})|\\')
 
 
