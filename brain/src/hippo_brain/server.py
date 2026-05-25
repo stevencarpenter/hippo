@@ -1375,7 +1375,12 @@ class BrainServer:
                     )
                     retry_conn = self._get_conn()
                     try:
-                        mark_claude_queue_failed(retry_conn, segment_ids, err_msg)
+                        mark_claude_queue_failed(
+                            retry_conn,
+                            segment_ids,
+                            err_msg,
+                            content_hashes=[s.get("content_hash") for s in segments],
+                        )
                     finally:
                         retry_conn.close()
 
