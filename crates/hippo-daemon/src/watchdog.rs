@@ -683,7 +683,7 @@ pub fn check_i13_codex_coverage_proxy(
 
 fn coverage_proxy_since_ms(row: &SourceHealthRow, now_ms: i64) -> i64 {
     let since_ts = row.last_event_ts.unwrap_or(row.updated_at);
-    now_ms.saturating_sub(since_ts)
+    now_ms.saturating_sub(since_ts).max(0)
 }
 
 /// I-14: Embedding orphan backlog.
@@ -1283,6 +1283,25 @@ mod tests {
         let result = check_i11_opencode_coverage_proxy(&by_source(&rows), NOW).unwrap();
         assert_eq!(result.invariant_id, "I-11");
         assert_eq!(result.since_ms, 30_000);
+    }
+
+    #[test]
+    fn watchdog_coverage_proxy_since_ms_clamps_to_zero_under_clock_skew() {
+        // A fallback timestamp ahead of `now` (NTP step / clock skew) must not
+        // produce a negative alarm age — `saturating_sub` only guards overflow,
+        // not sign.
+        let row = SourceHealthRow {
+            last_event_ts: None,
+            consecutive_failures: 10,
+            updated_at: NOW + 30_000, // fallback timestamp in the future
+            ..blank_row("agentic-session-opencode")
+        };
+        let rows = vec![row];
+        let result = check_i11_opencode_coverage_proxy(&by_source(&rows), NOW).unwrap();
+        assert_eq!(
+            result.since_ms, 0,
+            "since_ms must clamp to 0 under clock skew, never go negative"
+        );
     }
 
     // ── I-12 (brain preflight stuck) ───────────────────────────────────────
