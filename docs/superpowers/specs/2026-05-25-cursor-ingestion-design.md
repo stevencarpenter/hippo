@@ -203,10 +203,12 @@ Cursor passes real `is_subagent` / `parent_session_id` values instead of
   `source_freshness_probes()`, `cursor_sessions_exist` / `cursor_sessions_recent`
   signals, and a `SourceStalenessThresholds` arm (warn 300s, mirroring
   Codex/opencode).
-- **watchdog** — new invariant **I-14** (I-13 is the current max, Codex):
-  proxy predicate — `agentic-session-cursor.consecutive_failures > 3` ⇒ the
-  poller is actively broken. Inherently activity-gated (only fires after the
-  poller ran and failed), satisfying AP-3. Document in `architecture.md`.
+- **watchdog** — new invariant **I-15** (I-13 is Codex, I-14 is the
+  embedding-orphan reaper; I-15 is the next free id): proxy predicate —
+  `agentic-session-cursor.consecutive_failures > 3` ⇒ the poller is actively
+  broken. Inherently activity-gated (only fires after the poller ran and
+  failed), satisfying AP-3. Mirrors `check_i13_codex_coverage_proxy`. Document
+  in `architecture.md`.
 - **probe** — **assertion-only** (mirror claude-session, not inject-and-poll):
   *every agent-transcript JSONL with mtime in the last 5 min (and older than
   `min_idle`) has a matching `claude_sessions` row*. `probe_ok` = at least one
