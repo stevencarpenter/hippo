@@ -119,11 +119,11 @@ async def enrich_one_async(
         ).fetchall()
 
         # Build prompt and call LLM (async). The system prompt demands a JSON
-        # object; parse_enrichment_response validates it (and repairs stray
-        # escapes). Storing the raw reply — as this path used to — let a
-        # reasoning model's chain-of-thought land in `content`, producing
-        # invalid-JSON nodes. On un-parseable output it raises, so no garbage
-        # node is written and the caller marks the run failed.
+        # object; parse_enrichment_response strips fences and validates it as
+        # JSON. Storing the raw reply — as this path used to — let a reasoning
+        # model's chain-of-thought land in `content`, producing invalid-JSON
+        # nodes. On un-parseable output it raises, so no garbage node is written
+        # and the caller marks the run failed.
         prompt = _build_prompt(run, shell_rows, claude_rows, ann_rows)
         # No max_tokens cap: a full EnrichmentResult JSON object can exceed a
         # few hundred tokens, and truncation mid-JSON would fail parsing on every
