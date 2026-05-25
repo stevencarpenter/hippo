@@ -79,6 +79,24 @@ pub async fn run(config: &HippoConfig, source: Option<&str>) -> Result<()> {
         }
     }
 
+    if run_all || source == Some("agentic-session-cursor") {
+        match probe_cursor_session(config) {
+            Ok((ok, lag)) => {
+                println!(
+                    "[probe] agentic-session-cursor: {} (lag={}ms)",
+                    if ok { "OK" } else { "FAIL" },
+                    lag.map(|l| l.to_string()).as_deref().unwrap_or("N/A")
+                );
+                write_probe_result(config, "agentic-session-cursor", ok, lag)?;
+            }
+            Err(e) => {
+                warn!("agentic-session-cursor probe error: {e:#}");
+                println!("[probe] agentic-session-cursor: ERROR — {e:#}");
+                write_probe_result(config, "agentic-session-cursor", false, None)?;
+            }
+        }
+    }
+
     if run_all || source == Some("browser") {
         match probe_browser(config).await {
             Ok((ok, lag)) => {
@@ -100,11 +118,15 @@ pub async fn run(config: &HippoConfig, source: Option<&str>) -> Result<()> {
     if let Some(s) = source
         && !matches!(
             s,
-            "shell" | "claude-tool" | "agentic-session-claude" | "browser"
+            "shell"
+                | "claude-tool"
+                | "agentic-session-claude"
+                | "browser"
+                | "agentic-session-cursor"
         )
     {
         anyhow::bail!(
-            "unknown probe source '{}'; valid: shell, claude-tool, agentic-session-claude, browser",
+            "unknown probe source '{}'; valid: shell, claude-tool, agentic-session-claude, browser, agentic-session-cursor",
             s
         );
     }
@@ -278,6 +300,82 @@ fn probe_claude_session(config: &HippoConfig) -> Result<(bool, Option<i64>)> {
         }
     }
 
+    Ok((all_ok, latest_lag))
+}
+
+/// Cursor-session probe: assertion-based, mirrors `probe_claude_session`.
+///
+/// For every `~/.cursor/projects/**/agent-transcripts/**/*.jsonl` whose mtime
+/// falls in the window [now-5min, now-2*min_idle], assert a `claude_sessions`
+/// row exists with that `source_file`. Files newer than 2*min_idle are skipped
+/// — the 60 s poller has not necessarily ingested them yet, so asserting on
+/// them would spuriously fail.
+fn probe_cursor_session(config: &HippoConfig) -> Result<(bool, Option<i64>)> {
+    let now_ms = chrono::Utc::now().timestamp_millis();
+    let window_ms: i64 = 5 * 60 * 1000;
+    let settle_ms: i64 = (config.cursor.min_idle_secs as i64 * 2) * 1000;
+
+    let roots = &config.cursor.session_roots;
+    let mut recent: Vec<(std::path::PathBuf, i64)> = Vec::new();
+    for root in roots {
+        if !root.is_dir() {
+            continue;
+        }
+        for entry in walkdir::WalkDir::new(root)
+            .into_iter()
+            .filter_map(|e| e.ok())
+        {
+            let path = entry.path();
+            let is_jsonl = path.extension().map(|e| e == "jsonl").unwrap_or(false);
+            let under = path
+                .components()
+                .any(|c| c.as_os_str() == "agent-transcripts");
+            if !(is_jsonl && under) {
+                continue;
+            }
+            let Some(mtime_ms) = entry.metadata().ok().and_then(|m| {
+                m.modified().ok().and_then(|t| {
+                    t.duration_since(std::time::UNIX_EPOCH)
+                        .ok()
+                        .map(|d| d.as_millis() as i64)
+                })
+            }) else {
+                continue;
+            };
+            let age = now_ms - mtime_ms;
+            if age >= settle_ms && age <= window_ms {
+                recent.push((path.to_path_buf(), mtime_ms));
+            }
+        }
+    }
+
+    if recent.is_empty() {
+        info!("cursor-session probe: no settled recent transcripts — trivial pass");
+        return Ok((true, None));
+    }
+
+    let db =
+        storage::open_db(&config.db_path()).context("cannot open DB for cursor-session probe")?;
+    let mut all_ok = true;
+    let mut latest_lag: Option<i64> = None;
+    for (path, mtime_ms) in &recent {
+        let path_str = path.to_string_lossy();
+        let count: i64 = db
+            .query_row(
+                "SELECT COUNT(*) FROM claude_sessions
+                 WHERE source_file = ?1 AND probe_tag IS NULL AND end_time >= ?2",
+                rusqlite::params![path_str.as_ref(), mtime_ms - window_ms],
+                |row| row.get(0),
+            )
+            .with_context(|| format!("failed to query claude_sessions for {}", path_str))?;
+        if count == 0 {
+            warn!("cursor-session probe: no row for {}", path_str);
+            all_ok = false;
+        } else {
+            let lag = now_ms - mtime_ms;
+            latest_lag = Some(latest_lag.map_or(lag, |p: i64| p.max(lag)));
+        }
+    }
     Ok((all_ok, latest_lag))
 }
 
@@ -462,4 +560,20 @@ fn write_probe_result(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn cursor_probe_trivial_pass_when_no_transcripts() {
+        let tmp = tempfile::tempdir().unwrap();
+        let data = tmp.path().join("data");
+        std::fs::create_dir_all(&data).unwrap();
+        let mut config = hippo_core::config::HippoConfig::default();
+        config.storage.data_dir = data;
+        config.cursor.session_roots = vec![tmp.path().join("nonexistent")];
+        let (ok, lag) = super::probe_cursor_session(&config).unwrap();
+        assert!(ok);
+        assert_eq!(lag, None);
+    }
 }
