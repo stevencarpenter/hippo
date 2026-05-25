@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.hippo.cursor-session</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>__HIPPO_BIN__</string>
+        <string>cursor-poll</string>
+    </array>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>HOME</key>
+        <string>__HOME__</string>
+        <key>PATH</key>
+        <string>__PATH__</string>
+    </dict>
+    <key>StartInterval</key><integer>__CURSOR_POLL_INTERVAL_SECS__</integer>
+    <key>ThrottleInterval</key><integer>30</integer>
+    <key>RunAtLoad</key><false/>
+    <key>WatchPaths</key>
+    <array>
+        <string>__HOME__/.cursor/projects</string>
+    </array>
+    <key>StandardOutPath</key>
+    <string>__DATA_DIR__/cursor-session.stdout.log</string>
+    <key>StandardErrorPath</key>
+    <string>__DATA_DIR__/cursor-session.stderr.log</string>
+    <key>WorkingDirectory</key>
+    <string>__HOME__</string>
+</dict>
+</plist>
