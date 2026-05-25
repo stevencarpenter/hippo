@@ -11,6 +11,7 @@ use std::path::Path;
 use anyhow::{Context, Result};
 use hippo_core::redaction::RedactionEngine;
 use serde::Serialize;
+use sha2::{Digest, Sha256};
 
 // live once Task 8 wires poll_tick → ingest_file
 #[allow(dead_code)]
@@ -319,9 +320,120 @@ pub(crate) fn extract_segments(
     Ok(segments)
 }
 
+/// Build the Cursor-framed enrichment digest stored in
+/// `claude_sessions.summary_text`.
+// live once Task 7 wires upsert_segment_tx
+#[allow(dead_code)]
+pub(crate) fn build_summary_text(seg: &CursorSegment) -> String {
+    const MAX_PROMPTS: usize = 30;
+    const MAX_TOOLS: usize = 60;
+    const MAX_ASSISTANT: usize = 5;
+    let header = if seg.is_subagent {
+        format!("Cursor session (subagent, project: {})", seg.cwd)
+    } else {
+        format!("Cursor session (project: {})", seg.cwd)
+    };
+    let mut lines = vec![header];
+    if !seg.user_prompts.is_empty() {
+        lines.push(String::new());
+        lines.push("User requests:".to_string());
+        for (i, p) in seg.user_prompts.iter().take(MAX_PROMPTS).enumerate() {
+            lines.push(format!("  {}. \"{}\"", i + 1, p));
+        }
+        if seg.user_prompts.len() > MAX_PROMPTS {
+            lines.push(format!(
+                "  … (+{} more)",
+                seg.user_prompts.len() - MAX_PROMPTS
+            ));
+        }
+    }
+    if !seg.tool_calls.is_empty() {
+        lines.push(String::new());
+        lines.push("Work performed:".to_string());
+        for tc in seg.tool_calls.iter().take(MAX_TOOLS) {
+            lines.push(format!("  - {}: {}", tc.name, tc.summary));
+        }
+        if seg.tool_calls.len() > MAX_TOOLS {
+            lines.push(format!("  … (+{} more)", seg.tool_calls.len() - MAX_TOOLS));
+        }
+    }
+    if !seg.assistant_texts.is_empty() {
+        lines.push(String::new());
+        lines.push("Assistant responses (excerpts):".to_string());
+        for t in seg.assistant_texts.iter().take(MAX_ASSISTANT) {
+            lines.push(format!("  - \"{}\"", t));
+        }
+    }
+    lines.join("\n")
+}
+
+/// SHA256 (lowercase hex) of enrichment-relevant content: tool_calls_json |
+/// user_prompts_json | assistant_texts joined by "\n". Same construction as
+/// `codex_session::compute_content_hash`.
+// live once Task 7 wires upsert_segment_tx
+#[allow(dead_code)]
+pub(crate) fn compute_content_hash(seg: &CursorSegment) -> String {
+    let tool_calls_json = serde_json::to_string(&seg.tool_calls).unwrap_or_else(|_| "[]".into());
+    let user_prompts_json =
+        serde_json::to_string(&seg.user_prompts).unwrap_or_else(|_| "[]".into());
+    let assistant_text = seg.assistant_texts.join("\n");
+    let mut hasher = Sha256::new();
+    hasher.update(tool_calls_json.as_bytes());
+    hasher.update(b"|");
+    hasher.update(user_prompts_json.as_bytes());
+    hasher.update(b"|");
+    hasher.update(assistant_text.as_bytes());
+    hasher
+        .finalize()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn sample_segment() -> CursorSegment {
+        CursorSegment {
+            session_id: "s1".into(),
+            project_dir: "proj".into(),
+            cwd: "/work/proj".into(),
+            segment_index: 0,
+            start_time: 1_775_634_000_000,
+            end_time: 1_775_634_500_000,
+            user_prompts: vec!["fix the bug".into()],
+            assistant_texts: vec!["done".into()],
+            tool_calls: vec![ToolCall {
+                name: "Shell".into(),
+                summary: "cargo test".into(),
+            }],
+            message_count: 3,
+            source_file: "/Users/x/.cursor/projects/p/agent-transcripts/s1/s1.jsonl".into(),
+            is_subagent: false,
+            parent_session_id: None,
+        }
+    }
+
+    #[test]
+    fn summary_text_includes_prompts_tools_and_project() {
+        let s = build_summary_text(&sample_segment());
+        assert!(s.contains("Cursor session"));
+        assert!(s.contains("/work/proj"));
+        assert!(s.contains("fix the bug"));
+        assert!(s.contains("Shell"));
+        assert!(s.contains("cargo test"));
+    }
+
+    #[test]
+    fn content_hash_is_stable_and_changes_with_content() {
+        let a = compute_content_hash(&sample_segment());
+        assert_eq!(a, compute_content_hash(&sample_segment()));
+        let mut changed = sample_segment();
+        changed.user_prompts = vec!["different".into()];
+        assert_ne!(a, compute_content_hash(&changed));
+        assert_eq!(a.len(), 64);
+    }
 
     #[test]
     fn tool_summary_prefers_command_then_path() {
