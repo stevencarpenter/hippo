@@ -1,15 +1,16 @@
-"""Tests for workflow_enrichment.enrich_one."""
+"""Tests for workflow_enrichment.enrich_one_async."""
 
 import asyncio
+import json
 import sqlite3
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from hippo_brain.enrichment import CURRENT_ENRICHMENT_VERSION
 from hippo_brain.workflow_enrichment import (
     _path_prefix,
-    enrich_one,
     enrich_one_async,
     mark_workflow_queue_failed,
 )
@@ -148,76 +149,6 @@ def enrichment_db(tmp_path: Path) -> str:
     return str(db)
 
 
-def test_enrich_one_creates_knowledge_node(enrichment_db):
-    fake_lm = MagicMock()
-    fake_lm.complete.return_value = "Push failed due to ruff F401 unused import in brain/x.py"
-
-    enrich_one(enrichment_db, run_id=1, inference=fake_lm, query_model="test-model")
-
-    conn = sqlite3.connect(enrichment_db)
-    # Knowledge node created
-    node = conn.execute(
-        "SELECT node_type, embed_text, content, outcome FROM knowledge_nodes"
-    ).fetchone()
-    assert node is not None
-    assert node[0] == "change_outcome"
-    assert "abc123" in node[1]  # SHA in embed_text (title)
-    assert "ruff" in node[2].lower() or "F401" in node[2]  # LLM summary in content
-
-    # Linked to workflow run
-    link = conn.execute("SELECT * FROM knowledge_node_workflow_runs").fetchone()
-    assert link is not None
-
-    # Linked to shell event
-    event_link = conn.execute("SELECT * FROM knowledge_node_events").fetchone()
-    assert event_link is not None
-
-    # Queue marked done
-    q = conn.execute("SELECT status FROM workflow_enrichment_queue WHERE run_id=1").fetchone()
-    assert q[0] == "done"
-
-    # Run marked enriched
-    r = conn.execute("SELECT enriched FROM workflow_runs WHERE id=1").fetchone()
-    assert r[0] == 1
-
-    # Lesson pending created (first occurrence — not promoted yet)
-    pending = conn.execute("SELECT count FROM lesson_pending WHERE tool='ruff'").fetchone()
-    assert pending is not None and pending[0] == 1
-
-    conn.close()
-
-
-def test_enrich_one_skips_missing_run(enrichment_db):
-    fake_lm = MagicMock()
-    enrich_one(enrichment_db, run_id=999, inference=fake_lm, query_model="test-model")
-    fake_lm.complete.assert_not_called()
-
-
-def test_enrich_one_links_claude_sessions(enrichment_db):
-    """enrich_one links co-temporal Claude sessions to the knowledge node (line 106)."""
-    conn = sqlite3.connect(enrichment_db)
-    # start_time=100 <= started+window, end_time=2000 >= started-window → within ±15min
-    conn.execute("""
-        INSERT INTO claude_sessions
-          (id, session_id, project_dir, cwd, segment_index, start_time, end_time,
-           summary_text, message_count, source_file, enriched, created_at)
-        VALUES (200, 'sess-abc', '/hippo', '/hippo', 0, 100, 2000,
-                'Worked on CI fix', 1, 'sess.jsonl', 0, 1000)
-    """)
-    conn.commit()
-    conn.close()
-
-    fake_lm = MagicMock()
-    fake_lm.complete.return_value = "Summary with session context"
-
-    enrich_one(enrichment_db, run_id=1, inference=fake_lm, query_model="test-model")
-
-    conn = sqlite3.connect(enrichment_db)
-    link = conn.execute("SELECT * FROM knowledge_node_claude_sessions").fetchone()
-    assert link is not None
-    conn.close()
-
-
 # ---------------------------------------------------------------------------
 # enrich_one_async tests
 # ---------------------------------------------------------------------------
@@ -226,7 +157,7 @@ def test_enrich_one_links_claude_sessions(enrichment_db):
 def test_enrich_one_async_creates_knowledge_node(enrichment_db):
     """enrich_one_async creates knowledge node, links run, marks queue done."""
     fake_lm = MagicMock()
-    fake_lm.chat = AsyncMock(return_value="Async enrichment summary")
+    fake_lm.chat = AsyncMock(return_value=_VALID_WORKFLOW_JSON)
 
     asyncio.run(
         enrich_one_async(enrichment_db, run_id=1, inference=fake_lm, query_model="test-model")
@@ -236,7 +167,7 @@ def test_enrich_one_async_creates_knowledge_node(enrichment_db):
     node = conn.execute("SELECT node_type, embed_text, content FROM knowledge_nodes").fetchone()
     assert node is not None
     assert node[0] == "change_outcome"
-    assert "abc123" in node[1]  # SHA in embed_text
+    assert "ruff" in node[1]  # LLM embed_text (identifier-dense), not the title
 
     link = conn.execute("SELECT * FROM knowledge_node_workflow_runs").fetchone()
     assert link is not None
@@ -254,6 +185,105 @@ def test_enrich_one_async_creates_knowledge_node(enrichment_db):
     assert pending is not None and pending[0] == 1
 
     conn.close()
+
+
+_VALID_WORKFLOW_JSON = json.dumps(
+    {
+        "summary": "CI failed: ruff F401 unused import in brain/x.py",
+        "intent": "ci debugging",
+        "outcome": "failure",
+        "entities": {
+            "projects": ["hippo"],
+            "tools": ["ruff"],
+            "files": ["brain/x.py"],
+            "services": [],
+            "errors": ["F401"],
+        },
+        "tags": ["ci", "ruff"],
+        "embed_text": "ruff F401 brain/x.py unused import workflow failure",
+    }
+)
+
+
+def test_enrich_one_async_stores_valid_json_and_model(enrichment_db):
+    """Workflow nodes must persist validated JSON content and record the model.
+
+    Regression: the path stored the raw LLM string (often a reasoning model's
+    chain-of-thought) directly into content with a blank enrichment_model,
+    producing thousands of invalid-JSON nodes.
+    """
+    fake_lm = MagicMock()
+    fake_lm.chat = AsyncMock(return_value=_VALID_WORKFLOW_JSON)
+
+    asyncio.run(
+        enrich_one_async(enrichment_db, run_id=1, inference=fake_lm, query_model="test-model")
+    )
+
+    conn = sqlite3.connect(enrichment_db)
+    row = conn.execute(
+        "SELECT content, enrichment_model, json_valid(content), embed_text, tags, "
+        "enrichment_version FROM knowledge_nodes"
+    ).fetchone()
+    conn.close()
+    assert row is not None
+    assert row[2] == 1, "workflow node content must be valid JSON"
+    assert json.loads(row[0])["summary"].startswith("CI failed")
+    assert row[1] == "test-model", "enrichment_model must be recorded on the node"
+    # embed_text is the LLM's identifier-dense field, not the weak repo@sha title.
+    assert row[3] == "ruff F401 brain/x.py unused import workflow failure"
+    # tags column + enrichment_version mirror the claude path (not left NULL/stale).
+    assert json.loads(row[4]) == ["ci", "ruff"]
+    assert row[5] == CURRENT_ENRICHMENT_VERSION
+    # A full EnrichmentResult JSON can't fit in a few hundred tokens — no tiny cap.
+    max_tokens = fake_lm.chat.call_args.kwargs.get("max_tokens")
+    assert max_tokens is None or max_tokens >= 2048
+
+
+def test_enrich_one_async_rejects_non_json_output(enrichment_db):
+    """A reasoning model emitting chain-of-thought must NOT create a garbage node.
+
+    Better to fail the enrichment (so it can retry / go terminal) than to persist
+    an invalid-JSON node that breaks RAG/search.
+    """
+    fake_lm = MagicMock()
+    fake_lm.chat = AsyncMock(
+        return_value="Here's a thinking process:\n1. Analyze the run. The branch is main..."
+    )
+
+    with pytest.raises(json.JSONDecodeError):
+        asyncio.run(
+            enrich_one_async(enrichment_db, run_id=1, inference=fake_lm, query_model="test-model")
+        )
+
+    conn = sqlite3.connect(enrichment_db)
+    n = conn.execute("SELECT COUNT(*) FROM knowledge_nodes").fetchone()[0]
+    conn.close()
+    assert n == 0, "no node should be written when model output isn't valid JSON"
+
+
+def test_enrich_one_async_rejects_invalid_field(enrichment_db):
+    """Valid JSON but a bad field (out-of-vocab outcome) must also fail the run via
+    validate_enrichment_data — not write a node. Covers the ValueError branch, the
+    most common local-LLM failure after raw chain-of-thought.
+    """
+    fake_lm = MagicMock()
+    fake_lm.chat = AsyncMock(
+        return_value=(
+            '{"summary": "ran", "intent": "ci", "outcome": "flaky", '
+            '"entities": {"projects": [], "tools": [], "files": [], '
+            '"services": [], "errors": []}, "tags": [], "embed_text": "x"}'
+        )
+    )
+
+    with pytest.raises(ValueError):
+        asyncio.run(
+            enrich_one_async(enrichment_db, run_id=1, inference=fake_lm, query_model="test-model")
+        )
+
+    conn = sqlite3.connect(enrichment_db)
+    n = conn.execute("SELECT COUNT(*) FROM knowledge_nodes").fetchone()[0]
+    conn.close()
+    assert n == 0, "no node should be written when validation fails"
 
 
 def test_enrich_one_async_links_claude_sessions(enrichment_db):
@@ -270,7 +300,7 @@ def test_enrich_one_async_links_claude_sessions(enrichment_db):
     conn.close()
 
     fake_lm = MagicMock()
-    fake_lm.chat = AsyncMock(return_value="Summary")
+    fake_lm.chat = AsyncMock(return_value=_VALID_WORKFLOW_JSON)
 
     asyncio.run(
         enrich_one_async(enrichment_db, run_id=1, inference=fake_lm, query_model="test-model")
@@ -302,7 +332,7 @@ def test_enrich_one_async_survives_clustering_failure(enrichment_db):
     error (which would mark it failed, re-enrich, and duplicate the node).
     """
     fake_lm = MagicMock()
-    fake_lm.chat = AsyncMock(return_value="Async enrichment summary")
+    fake_lm.chat = AsyncMock(return_value=_VALID_WORKFLOW_JSON)
 
     with patch(
         "hippo_brain.workflow_enrichment.upsert_cluster",

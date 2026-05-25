@@ -489,7 +489,14 @@ async def test_workflow_enrichment_schedules_embedding(tmp_db):
 
     server = _make_server(str(db_path), embedding_model="fake-embed")
     server.poll_interval_secs = 0
-    server.client.chat = AsyncMock(return_value="CI run completed successfully")
+    server.client.chat = AsyncMock(
+        return_value=(
+            '{"summary": "CI run completed successfully", "intent": "ci", '
+            '"outcome": "success", "entities": {"projects": [], "tools": [], '
+            '"files": [], "services": [], "errors": []}, "tags": [], '
+            '"embed_text": "ci run org/repo abc123 success"}'
+        )
+    )
 
     embed_calls: list[tuple[int, str]] = []
 
