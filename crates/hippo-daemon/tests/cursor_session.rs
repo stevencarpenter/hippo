@@ -150,3 +150,56 @@ fn poll_tick_returns_zero_when_disabled() {
     config.cursor.enabled = false;
     assert_eq!(hippo_daemon::cursor_session::poll_tick(&config).unwrap(), 0);
 }
+
+#[test]
+fn poll_tick_zero_segment_file_advances_cursor_without_health_bump() {
+    let tmp = TempDir::new().unwrap();
+    let roots = tmp.path().join("projects");
+    // An assistant-only transcript: extract_segments never opens a segment
+    // (a segment is only created on a user turn), so it yields zero segments.
+    let dir = roots
+        .join("Users-x-projects-foo")
+        .join("agent-transcripts")
+        .join("emptyseg");
+    std::fs::create_dir_all(&dir).unwrap();
+    let f = dir.join("emptyseg.jsonl");
+    std::fs::write(
+        &f,
+        r#"{"role":"assistant","message":{"content":[{"type":"text","text":"no user turn here"}]}}"#,
+    )
+    .unwrap();
+    // Backdate mtime so the file is past min_idle_secs ("idle").
+    let old = std::time::SystemTime::now() - std::time::Duration::from_secs(3600);
+    filetime::set_file_mtime(&f, filetime::FileTime::from_system_time(old)).unwrap();
+
+    let data_dir = tmp.path().join("data");
+    std::fs::create_dir_all(&data_dir).unwrap();
+    let config = hippo_daemon::cursor_session::test_config(&data_dir, std::slice::from_ref(&roots));
+    let _ = open_db(&config.db_path()).unwrap();
+
+    let n = hippo_daemon::cursor_session::poll_tick(&config).unwrap();
+    assert_eq!(n, 0, "a zero-segment file ingests nothing");
+
+    let conn = open_db(&config.db_path()).unwrap();
+    // last_event_ts must stay NULL: a zero-segment file captured no real data,
+    // so the health bump must be withheld.
+    let last_event_ts: Option<i64> = conn
+        .query_row(
+            "SELECT last_event_ts FROM source_health WHERE source = 'agentic-session-cursor'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        last_event_ts, None,
+        "zero-segment file must NOT bump source_health.last_event_ts"
+    );
+
+    // The cursor still advanced: a second tick re-finds the same idle file but
+    // skips it via the cursor instead of re-parsing it.
+    let n2 = hippo_daemon::cursor_session::poll_tick(&config).unwrap();
+    assert_eq!(
+        n2, 0,
+        "cursor must advance so the empty file is not re-parsed"
+    );
+}

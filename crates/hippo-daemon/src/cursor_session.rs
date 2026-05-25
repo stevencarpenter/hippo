@@ -625,7 +625,7 @@ pub fn poll_tick(config: &HippoConfig) -> Result<usize> {
                         bump_health_ok(&conn, mtime_ms);
                     }
                     if let Err(e) = write_cursor(&conn, &key, mtime_ms, &session_id) {
-                        warn!("cursor cursor write failed for {}: {e:#}", path.display());
+                        warn!("cursor write failed for {}: {e:#}", path.display());
                     }
                 }
                 Err(e) => {
