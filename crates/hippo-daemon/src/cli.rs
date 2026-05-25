@@ -114,7 +114,7 @@ pub enum Commands {
     },
     /// Run synthetic capture probes and record results in source_health
     Probe {
-        /// Run only the named source probe (shell, claude-tool, claude-session, browser).
+        /// Run only the named source probe (shell, claude-tool, agentic-session-claude, browser).
         /// Omit to run all probes.
         #[arg(long)]
         source: Option<String>,
