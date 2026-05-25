@@ -17,7 +17,7 @@ import uuid
 from pathlib import Path
 
 from hippo_brain.client import InferenceClient
-from hippo_brain.enrichment import parse_enrichment_response
+from hippo_brain.enrichment import CURRENT_ENRICHMENT_VERSION, parse_enrichment_response
 from hippo_brain.lessons import ClusterKey, upsert_cluster
 from hippo_brain.watchdog import DEFAULT_LOCK_TIMEOUT_MS
 
@@ -44,146 +44,6 @@ Output a JSON object with these fields:
 Output ONLY valid JSON, no markdown fences or extra text."""
 
 
-def enrich_one(
-    db_path: str,
-    run_id: int,
-    inference: InferenceClient,
-    query_model: str,
-    *,
-    path_prefix_segments: int = 2,
-    min_occurrences: int = 2,
-) -> None:
-    """Enrich a single workflow run: create knowledge node + update lessons."""
-    conn = sqlite3.connect(db_path)
-    conn.row_factory = sqlite3.Row
-    try:
-        run = conn.execute("SELECT * FROM workflow_runs WHERE id = ?", (run_id,)).fetchone()
-        if run is None:
-            return
-
-        now = int(time.time() * 1000)
-        started = run["started_at"] or now
-
-        # Co-temporal shell events: prefer exact SHA match; only fall back to time
-        # window for push-related commands from the same repo.
-        head_sha = run["head_sha"]
-        repo_name = run["repo"]
-
-        shell_rows = conn.execute(
-            """SELECT id, command, git_commit FROM events
-               WHERE git_commit = ?
-                 AND probe_tag IS NULL
-               LIMIT 20""",
-            (head_sha,),
-        ).fetchall()
-
-        if not shell_rows:
-            shell_rows = conn.execute(
-                """SELECT id, command, git_commit FROM events
-                   WHERE timestamp BETWEEN ? AND ?
-                     AND command LIKE '%git push%'
-                     AND (git_repo IS NULL OR git_repo = ?)
-                     AND probe_tag IS NULL
-                   LIMIT 20""",
-                (
-                    started - CORRELATION_WINDOW_MS,
-                    started + CORRELATION_WINDOW_MS,
-                    repo_name,
-                ),
-            ).fetchall()
-
-        # Co-temporal Claude sessions
-        claude_rows = conn.execute(
-            """SELECT id, session_id, summary_text FROM claude_sessions
-               WHERE start_time <= ? AND end_time >= ?
-                 AND probe_tag IS NULL
-               LIMIT 10""",
-            (
-                started + CORRELATION_WINDOW_MS,
-                started - CORRELATION_WINDOW_MS,
-            ),
-        ).fetchall()
-
-        # Top failing annotations (up to 10)
-        ann_rows = conn.execute(
-            """SELECT a.tool, a.rule_id, a.path, a.start_line, a.message
-               FROM workflow_annotations a
-               JOIN workflow_jobs j ON j.id = a.job_id
-               WHERE j.run_id = ? AND a.level = 'failure'
-               ORDER BY a.id LIMIT 10""",
-            (run_id,),
-        ).fetchall()
-
-        # Build and run enrichment prompt
-        prompt = _build_prompt(run, shell_rows, claude_rows, ann_rows)
-        summary = inference.complete(model=query_model, prompt=prompt, max_tokens=300)
-
-        node_uuid = str(uuid.uuid4())
-        title = f"{repo_name}@{head_sha[:7]} — {run['conclusion']}"
-        # Write knowledge node
-        cur = conn.execute(
-            """INSERT INTO knowledge_nodes
-               (uuid, content, embed_text, node_type, outcome, created_at, updated_at)
-               VALUES (?, ?, ?, 'change_outcome', ?, ?, ?)""",
-            (
-                node_uuid,
-                summary,
-                title,
-                run["conclusion"],
-                now,
-                now,
-            ),
-        )
-        node_id = cur.lastrowid
-
-        # Link to workflow run
-        conn.execute(
-            "INSERT INTO knowledge_node_workflow_runs (knowledge_node_id, run_id) VALUES (?,?)",
-            (node_id, run_id),
-        )
-
-        # Link to shell events
-        for s in shell_rows:
-            conn.execute(
-                "INSERT OR IGNORE INTO knowledge_node_events (knowledge_node_id, event_id) VALUES (?,?)",
-                (node_id, s["id"]),
-            )
-
-        # Link to Claude sessions
-        for c in claude_rows:
-            conn.execute(
-                "INSERT OR IGNORE INTO knowledge_node_claude_sessions (knowledge_node_id, claude_session_id) VALUES (?,?)",
-                (node_id, c["id"]),
-            )
-
-        # Mark run enriched + queue done
-        conn.execute("UPDATE workflow_runs SET enriched = 1 WHERE id = ?", (run_id,))
-        conn.execute(
-            "UPDATE workflow_enrichment_queue SET status='done', updated_at=? WHERE run_id=?",
-            (now, run_id),
-        )
-        conn.commit()
-
-        # Lesson clustering for each failing annotation
-        for a in ann_rows:
-            path_prefix = _path_prefix(a["path"], path_prefix_segments)
-            upsert_cluster(
-                db_path,
-                ClusterKey(
-                    repo=repo_name,
-                    tool=a["tool"] or "",
-                    rule_id=a["rule_id"] or "",
-                    path_prefix=path_prefix or "",
-                ),
-                min_occurrences=min_occurrences,
-                summary_fn=lambda k: f"{k.tool}:{k.rule_id} in {k.path_prefix}",
-                now_ms=now,
-            )
-
-    finally:
-        conn.close()
-
-
 async def enrich_one_async(
     db_path: str,
     run_id: int,
@@ -193,7 +53,7 @@ async def enrich_one_async(
     path_prefix_segments: int = 2,
     min_occurrences: int = 2,
 ) -> tuple[int, dict] | None:
-    """Async wrapper around enrich_one for use in the enrichment scheduler.
+    """Enrich a single workflow run into a knowledge node (async; scheduler entry point).
 
     Returns ``(node_id, node_dict)`` for the created knowledge node so the
     caller can schedule embedding, or ``None`` when ``run_id`` does not exist.
@@ -265,13 +125,15 @@ async def enrich_one_async(
         # invalid-JSON nodes. On un-parseable output it raises, so no garbage
         # node is written and the caller marks the run failed.
         prompt = _build_prompt(run, shell_rows, claude_rows, ann_rows)
+        # No max_tokens cap: a full EnrichmentResult JSON object can exceed a
+        # few hundred tokens, and truncation mid-JSON would fail parsing on every
+        # run. Use the client default, like the claude/shell paths.
         raw = await inference.chat(
             messages=[
                 {"role": "system", "content": WORKFLOW_SYSTEM_PROMPT},
                 {"role": "user", "content": prompt},
             ],
             model=query_model,
-            max_tokens=600,
         )
         result = parse_enrichment_response(raw)
         content = json.dumps(
@@ -288,20 +150,23 @@ async def enrich_one_async(
         )
 
         node_uuid = str(uuid.uuid4())
-        title = f"{repo_name}@{head_sha[:7]} — {run['conclusion']}"
-        # Write knowledge node. `outcome` column keeps the authoritative GitHub
-        # conclusion; embed_text stays the title (repo@sha) for retrieval.
+        # Write knowledge node, mirroring the claude path's columns. The `outcome`
+        # column keeps the authoritative GitHub conclusion; embed_text uses the
+        # LLM's identifier-dense embed_text so workflow nodes are actually
+        # searchable (the old repo@sha title gave the vector store almost no signal).
         cur = conn.execute(
             """INSERT INTO knowledge_nodes
-               (uuid, content, embed_text, node_type, outcome, enrichment_model,
-                created_at, updated_at)
-               VALUES (?, ?, ?, 'change_outcome', ?, ?, ?, ?)""",
+               (uuid, content, embed_text, node_type, outcome, tags,
+                enrichment_model, enrichment_version, created_at, updated_at)
+               VALUES (?, ?, ?, 'change_outcome', ?, ?, ?, ?, ?, ?)""",
             (
                 node_uuid,
                 content,
-                title,
+                result.embed_text,
                 run["conclusion"],
+                json.dumps(result.tags),
                 query_model,
+                CURRENT_ENRICHMENT_VERSION,
                 now,
                 now,
             ),
@@ -363,7 +228,7 @@ async def enrich_one_async(
             )
 
         assert node_id is not None  # INSERT always populates lastrowid
-        return node_id, {"id": node_id, "embed_text": title, "commands_raw": ""}
+        return node_id, {"id": node_id, "embed_text": result.embed_text, "commands_raw": ""}
     finally:
         conn.close()
 
