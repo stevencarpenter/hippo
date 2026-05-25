@@ -99,8 +99,11 @@ struct SourceHealthSnapshot {
     consecutive_failures: i64,
     events_last_1h: i64,
     events_last_24h: i64,
+    expected_min_per_hour: Option<i64>,
     probe_ok: Option<i64>,
     probe_lag_ms: Option<i64>,
+    probe_last_run_ts: Option<i64>,
+    last_heartbeat_ts: Option<i64>,
 }
 
 fn read_source_health_snapshot(
@@ -115,8 +118,11 @@ fn read_source_health_snapshot(
                 consecutive_failures,
                 events_last_1h,
                 events_last_24h,
+                expected_min_per_hour,
                 probe_ok,
-                probe_lag_ms
+                probe_lag_ms,
+                probe_last_run_ts,
+                last_heartbeat_ts
            FROM source_health
           WHERE source = ?1",
         [source],
@@ -129,13 +135,38 @@ fn read_source_health_snapshot(
                 consecutive_failures: row.get(4)?,
                 events_last_1h: row.get(5)?,
                 events_last_24h: row.get(6)?,
-                probe_ok: row.get(7)?,
-                probe_lag_ms: row.get(8)?,
+                expected_min_per_hour: row.get(7)?,
+                probe_ok: row.get(8)?,
+                probe_lag_ms: row.get(9)?,
+                probe_last_run_ts: row.get(10)?,
+                last_heartbeat_ts: row.get(11)?,
             })
         },
     )
     .optional()
     .map_err(Into::into)
+}
+
+/// Probe results (`probe_ok` / `probe_lag_ms` / `probe_last_run_ts`) are written
+/// together by a single probe run, so they must be carried forward as a coherent
+/// triple from whichever row probed most recently — merging per-field could pair
+/// a stale `probe_ok` flag with a fresher lag, or invert the boolean (a stale
+/// `OK` outranking a recent `FAIL` under `max`).
+fn merge_probe_state(
+    canonical: &SourceHealthSnapshot,
+    legacy: &SourceHealthSnapshot,
+) -> (Option<i64>, Option<i64>, Option<i64>) {
+    let canonical_newer = match (canonical.probe_last_run_ts, legacy.probe_last_run_ts) {
+        (Some(c), Some(l)) => c >= l,
+        (None, Some(_)) => false,
+        _ => true,
+    };
+    let chosen = if canonical_newer { canonical } else { legacy };
+    (
+        chosen.probe_ok,
+        chosen.probe_lag_ms,
+        chosen.probe_last_run_ts,
+    )
 }
 
 fn max_opt_i64(a: Option<i64>, b: Option<i64>) -> Option<i64> {
@@ -187,18 +218,23 @@ fn normalize_claude_session_source_health(conn: &mut Connection) -> Result<()> {
     let canonical = read_source_health_snapshot(&tx, "agentic-session-claude")?
         .expect("agentic-session-claude row must exist after INSERT OR IGNORE");
 
+    let (probe_ok, probe_lag_ms, probe_last_run_ts) = merge_probe_state(&canonical, &legacy);
+
     tx.execute(
         "UPDATE source_health
-            SET last_event_ts        = ?1,
-                last_success_ts      = ?2,
-                last_error_ts        = ?3,
-                last_error_msg       = ?4,
-                consecutive_failures = ?5,
-                events_last_1h       = ?6,
-                events_last_24h      = ?7,
-                probe_ok             = ?8,
-                probe_lag_ms         = ?9,
-                updated_at           = ?10
+            SET last_event_ts         = ?1,
+                last_success_ts       = ?2,
+                last_error_ts         = ?3,
+                last_error_msg        = ?4,
+                consecutive_failures  = ?5,
+                events_last_1h        = ?6,
+                events_last_24h       = ?7,
+                expected_min_per_hour = ?8,
+                probe_ok              = ?9,
+                probe_lag_ms          = ?10,
+                probe_last_run_ts     = ?11,
+                last_heartbeat_ts     = ?12,
+                updated_at            = ?13
           WHERE source = 'agentic-session-claude'",
         rusqlite::params![
             max_opt_i64(canonical.last_event_ts, legacy.last_event_ts),
@@ -210,8 +246,13 @@ fn normalize_claude_session_source_health(conn: &mut Connection) -> Result<()> {
                 .max(legacy.consecutive_failures),
             canonical.events_last_1h.max(legacy.events_last_1h),
             canonical.events_last_24h.max(legacy.events_last_24h),
-            max_opt_i64(canonical.probe_ok, legacy.probe_ok),
-            max_opt_i64(canonical.probe_lag_ms, legacy.probe_lag_ms),
+            canonical
+                .expected_min_per_hour
+                .or(legacy.expected_min_per_hour),
+            probe_ok,
+            probe_lag_ms,
+            probe_last_run_ts,
+            max_opt_i64(canonical.last_heartbeat_ts, legacy.last_heartbeat_ts),
             now_ms,
         ],
     )?;
@@ -3484,17 +3525,20 @@ mod tests {
             let conn = rusqlite::Connection::open(&db_path).unwrap();
             conn.execute_batch(
                 "CREATE TABLE source_health (
-                    source TEXT PRIMARY KEY,
-                    last_event_ts INTEGER,
-                    last_success_ts INTEGER,
-                    last_error_ts INTEGER,
-                    last_error_msg TEXT,
-                    consecutive_failures INTEGER NOT NULL DEFAULT 0,
-                    events_last_1h INTEGER NOT NULL DEFAULT 0,
-                    events_last_24h INTEGER NOT NULL DEFAULT 0,
-                    probe_ok INTEGER,
-                    probe_lag_ms INTEGER,
-                    updated_at INTEGER NOT NULL DEFAULT 0
+                    source                 TEXT PRIMARY KEY,
+                    last_event_ts          INTEGER,
+                    last_success_ts        INTEGER,
+                    last_error_ts          INTEGER,
+                    last_error_msg         TEXT,
+                    consecutive_failures   INTEGER NOT NULL DEFAULT 0,
+                    events_last_1h         INTEGER NOT NULL DEFAULT 0,
+                    events_last_24h        INTEGER NOT NULL DEFAULT 0,
+                    expected_min_per_hour  INTEGER,
+                    probe_ok               INTEGER,
+                    probe_lag_ms           INTEGER,
+                    probe_last_run_ts      INTEGER,
+                    last_heartbeat_ts      INTEGER,
+                    updated_at             INTEGER NOT NULL DEFAULT 0
                 );
                 PRAGMA user_version = 14;",
             )
@@ -3526,37 +3570,47 @@ mod tests {
             consecutive_failures: i64,
             events_last_1h: i64,
             events_last_24h: i64,
+            expected_min_per_hour: Option<i64>,
             probe_ok: Option<i64>,
             probe_lag_ms: Option<i64>,
+            probe_last_run_ts: Option<i64>,
+            last_heartbeat_ts: Option<i64>,
         }
 
         let dir = tempfile::tempdir().unwrap();
         let db_path = dir.path().join("test.db");
         {
             let conn = rusqlite::Connection::open(&db_path).unwrap();
+            // Mirror the real source_health schema exactly so the test exercises
+            // every mergeable column; a trimmed-down table would mask data loss
+            // for columns the normalization forgets to carry forward.
             conn.execute_batch(
                 "CREATE TABLE source_health (
-                    source TEXT PRIMARY KEY,
-                    last_event_ts INTEGER,
-                    last_success_ts INTEGER,
-                    last_error_ts INTEGER,
-                    last_error_msg TEXT,
-                    consecutive_failures INTEGER NOT NULL DEFAULT 0,
-                    events_last_1h INTEGER NOT NULL DEFAULT 0,
-                    events_last_24h INTEGER NOT NULL DEFAULT 0,
-                    probe_ok INTEGER,
-                    probe_lag_ms INTEGER,
-                    updated_at INTEGER NOT NULL DEFAULT 0
+                    source                 TEXT PRIMARY KEY,
+                    last_event_ts          INTEGER,
+                    last_success_ts        INTEGER,
+                    last_error_ts          INTEGER,
+                    last_error_msg         TEXT,
+                    consecutive_failures   INTEGER NOT NULL DEFAULT 0,
+                    events_last_1h         INTEGER NOT NULL DEFAULT 0,
+                    events_last_24h        INTEGER NOT NULL DEFAULT 0,
+                    expected_min_per_hour  INTEGER,
+                    probe_ok               INTEGER,
+                    probe_lag_ms           INTEGER,
+                    probe_last_run_ts      INTEGER,
+                    last_heartbeat_ts      INTEGER,
+                    updated_at             INTEGER NOT NULL DEFAULT 0
                 );
                 INSERT INTO source_health
                     (source, last_event_ts, last_success_ts, last_error_ts, last_error_msg,
-                     consecutive_failures, events_last_1h, events_last_24h, probe_ok, probe_lag_ms, updated_at)
+                     consecutive_failures, events_last_1h, events_last_24h, expected_min_per_hour,
+                     probe_ok, probe_lag_ms, probe_last_run_ts, last_heartbeat_ts, updated_at)
                 VALUES
-                    ('claude-session', 1234, 1200, 1100, 'legacy error', 4, 9, 11, 1, 42, 1300),
-                    ('agentic-session-claude', NULL, NULL, NULL, NULL, 0, 0, 0, NULL, NULL, 1000),
-                    ('agentic-session-opencode', NULL, NULL, NULL, NULL, 0, 0, 0, NULL, NULL, 1000),
-                    ('agentic-session-codex', NULL, NULL, NULL, NULL, 0, 0, 0, NULL, NULL, 1000),
-                    ('brain-preflight', NULL, NULL, NULL, NULL, 0, 0, 0, NULL, NULL, 1000);
+                    ('claude-session', 1234, 1200, 1100, 'legacy error', 4, 9, 11, 6, 1, 42, 1250, 1280, 1300),
+                    ('agentic-session-claude', NULL, NULL, NULL, NULL, 0, 0, 0, NULL, NULL, NULL, NULL, NULL, 1000),
+                    ('agentic-session-opencode', NULL, NULL, NULL, NULL, 0, 0, 0, NULL, NULL, NULL, NULL, NULL, 1000),
+                    ('agentic-session-codex', NULL, NULL, NULL, NULL, 0, 0, 0, NULL, NULL, NULL, NULL, NULL, 1000),
+                    ('brain-preflight', NULL, NULL, NULL, NULL, 0, 0, 0, NULL, NULL, NULL, NULL, NULL, 1000);
                 PRAGMA user_version = 15;",
             )
             .unwrap();
@@ -3567,7 +3621,8 @@ mod tests {
         let merged: MergedClaudeHealthRow = conn
             .query_row(
                 "SELECT last_event_ts, last_success_ts, last_error_ts, last_error_msg,
-                        consecutive_failures, events_last_1h, events_last_24h, probe_ok, probe_lag_ms
+                        consecutive_failures, events_last_1h, events_last_24h, expected_min_per_hour,
+                        probe_ok, probe_lag_ms, probe_last_run_ts, last_heartbeat_ts
                    FROM source_health
                   WHERE source = 'agentic-session-claude'",
                 [],
@@ -3580,8 +3635,11 @@ mod tests {
                         consecutive_failures: row.get(4)?,
                         events_last_1h: row.get(5)?,
                         events_last_24h: row.get(6)?,
-                        probe_ok: row.get(7)?,
-                        probe_lag_ms: row.get(8)?,
+                        expected_min_per_hour: row.get(7)?,
+                        probe_ok: row.get(8)?,
+                        probe_lag_ms: row.get(9)?,
+                        probe_last_run_ts: row.get(10)?,
+                        last_heartbeat_ts: row.get(11)?,
                     })
                 },
             )
@@ -3596,8 +3654,11 @@ mod tests {
                 consecutive_failures: 4,
                 events_last_1h: 9,
                 events_last_24h: 11,
+                expected_min_per_hour: Some(6),
                 probe_ok: Some(1),
                 probe_lag_ms: Some(42),
+                probe_last_run_ts: Some(1250),
+                last_heartbeat_ts: Some(1280),
             },
             "legacy claude-session history must be preserved on the canonical row"
         );
@@ -3612,6 +3673,63 @@ mod tests {
         assert!(
             !legacy_exists,
             "legacy claude-session row must be removed after normalization"
+        );
+    }
+
+    #[test]
+    fn test_normalize_claude_session_health_keeps_latest_probe_triple() {
+        // The probe result columns (probe_ok / probe_lag_ms / probe_last_run_ts)
+        // are written together by a single probe run, so they must be merged as a
+        // coherent triple taken from whichever row probed most recently — not
+        // per-field, which could pair a stale `probe_ok` with a fresh lag.
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("test.db");
+        {
+            let conn = rusqlite::Connection::open(&db_path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE source_health (
+                    source                 TEXT PRIMARY KEY,
+                    last_event_ts          INTEGER,
+                    last_success_ts        INTEGER,
+                    last_error_ts          INTEGER,
+                    last_error_msg         TEXT,
+                    consecutive_failures   INTEGER NOT NULL DEFAULT 0,
+                    events_last_1h         INTEGER NOT NULL DEFAULT 0,
+                    events_last_24h        INTEGER NOT NULL DEFAULT 0,
+                    expected_min_per_hour  INTEGER,
+                    probe_ok               INTEGER,
+                    probe_lag_ms           INTEGER,
+                    probe_last_run_ts      INTEGER,
+                    last_heartbeat_ts      INTEGER,
+                    updated_at             INTEGER NOT NULL DEFAULT 0
+                );
+                INSERT INTO source_health
+                    (source, expected_min_per_hour, probe_ok, probe_lag_ms, probe_last_run_ts, updated_at)
+                VALUES
+                    -- legacy probed OK long ago
+                    ('claude-session', NULL, 1, 10, 1000, 1000),
+                    -- canonical probed (and FAILED) more recently
+                    ('agentic-session-claude', NULL, 0, 99, 2000, 1500);
+                PRAGMA user_version = 15;",
+            )
+            .unwrap();
+        }
+
+        let conn = open_db(&db_path).unwrap();
+
+        let triple: (Option<i64>, Option<i64>, Option<i64>) = conn
+            .query_row(
+                "SELECT probe_ok, probe_lag_ms, probe_last_run_ts
+                   FROM source_health
+                  WHERE source = 'agentic-session-claude'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            triple,
+            (Some(0), Some(99), Some(2000)),
+            "probe triple must be taken from the row with the latest probe_last_run_ts, not per-field max"
         );
     }
 }
