@@ -151,9 +151,12 @@ async def enrich_one_async(
 
         node_uuid = str(uuid.uuid4())
         # Write knowledge node, mirroring the claude path's columns. The `outcome`
-        # column keeps the authoritative GitHub conclusion; embed_text uses the
-        # LLM's identifier-dense embed_text so workflow nodes are actually
-        # searchable (the old repo@sha title gave the vector store almost no signal).
+        # column intentionally holds the raw GitHub conclusion (success/failure/
+        # cancelled/timed_out/…), which differs from content.outcome (the LLM's
+        # constrained success/partial/failure/unknown vocab) — so e.g. training.py's
+        # `outcome IN ('success','partial')` filter never sees a workflow 'partial'.
+        # embed_text uses the LLM's identifier-dense embed_text so workflow nodes are
+        # actually searchable (the old repo@sha title gave the vector store no signal).
         cur = conn.execute(
             """INSERT INTO knowledge_nodes
                (uuid, content, embed_text, node_type, outcome, tags,

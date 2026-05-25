@@ -261,6 +261,31 @@ def test_enrich_one_async_rejects_non_json_output(enrichment_db):
     assert n == 0, "no node should be written when model output isn't valid JSON"
 
 
+def test_enrich_one_async_rejects_invalid_field(enrichment_db):
+    """Valid JSON but a bad field (out-of-vocab outcome) must also fail the run via
+    validate_enrichment_data — not write a node. Covers the ValueError branch, the
+    most common local-LLM failure after raw chain-of-thought.
+    """
+    fake_lm = MagicMock()
+    fake_lm.chat = AsyncMock(
+        return_value=(
+            '{"summary": "ran", "intent": "ci", "outcome": "flaky", '
+            '"entities": {"projects": [], "tools": [], "files": [], '
+            '"services": [], "errors": []}, "tags": [], "embed_text": "x"}'
+        )
+    )
+
+    with pytest.raises(ValueError):
+        asyncio.run(
+            enrich_one_async(enrichment_db, run_id=1, inference=fake_lm, query_model="test-model")
+        )
+
+    conn = sqlite3.connect(enrichment_db)
+    n = conn.execute("SELECT COUNT(*) FROM knowledge_nodes").fetchone()[0]
+    conn.close()
+    assert n == 0, "no node should be written when validation fails"
+
+
 def test_enrich_one_async_links_claude_sessions(enrichment_db):
     """enrich_one_async links co-temporal Claude sessions."""
     conn = sqlite3.connect(enrichment_db)
