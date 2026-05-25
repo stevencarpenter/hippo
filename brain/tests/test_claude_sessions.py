@@ -8,6 +8,7 @@ from pathlib import Path
 from hippo_brain.claude_sessions import (
     SessionFile,
     SessionSegment,
+    _skip_ineligible_claude_segments,
     build_claude_enrichment_prompt,
     claim_pending_claude_segments,
     ensure_claude_tables,
@@ -758,6 +759,62 @@ class TestContentHashPropagation:
         db_conn.commit()
 
         mark_claude_queue_failed(db_conn, [seg_id], "JSONDecodeError")
+
+        leh = db_conn.execute(
+            "SELECT last_enriched_content_hash FROM claude_sessions WHERE id = ?",
+            (seg_id,),
+        ).fetchone()[0]
+        assert leh is None, "NULL content_hash must not be propagated to the watermark"
+
+    def test_skip_ineligible_advances_watermark(self, tmp_db):
+        """A skipped (ineligible) segment closes its dedup gate so it isn't re-enqueued forever.
+
+        Marking a segment 'skipped' is terminal — re-running eligibility produces the same
+        verdict. Leaving the success-only watermark untouched meant the watcher re-enqueued
+        every skipped segment on each restart/file-change (cheap but perpetual churn, and a
+        duplicate node per legacy segment). Skipping must advance the watermark too.
+        """
+        db_conn, _ = tmp_db
+        seg_id = insert_segment(db_conn, self._make_seg("hash-skip-s"))
+        db_conn.execute(
+            "UPDATE claude_sessions SET content_hash = ? WHERE id = ?",
+            ("skip-hash", seg_id),
+        )
+        db_conn.commit()
+
+        # Ineligible: claude segment with message_count < 3 and no tool calls.
+        ineligible = {
+            "id": seg_id,
+            "content_hash": "skip-hash",
+            "message_count": 1,
+            "tool_calls_json": None,
+        }
+        kept = _skip_ineligible_claude_segments(db_conn, [ineligible])
+
+        assert kept == [], "ineligible segment must not be returned for enrichment"
+        status = db_conn.execute(
+            "SELECT status FROM claude_enrichment_queue WHERE claude_session_id = ?",
+            (seg_id,),
+        ).fetchone()[0]
+        assert status == "skipped"
+        leh = db_conn.execute(
+            "SELECT last_enriched_content_hash FROM claude_sessions WHERE id = ?",
+            (seg_id,),
+        ).fetchone()[0]
+        assert leh == "skip-hash", "skipped segment must advance the dedup watermark"
+
+    def test_skip_ineligible_null_content_hash_skips_watermark(self, tmp_db):
+        """Skipping a legacy row (NULL content_hash) must not write a hash."""
+        db_conn, _ = tmp_db
+        seg_id = insert_segment(db_conn, self._make_seg("hash-skip-null-s"))
+        # content_hash stays NULL.
+        ineligible = {
+            "id": seg_id,
+            "content_hash": None,
+            "message_count": 1,
+            "tool_calls_json": None,
+        }
+        _skip_ineligible_claude_segments(db_conn, [ineligible])
 
         leh = db_conn.execute(
             "SELECT last_enriched_content_hash FROM claude_sessions WHERE id = ?",

@@ -622,8 +622,16 @@ def _skip_ineligible_claude_segments(conn, segments: list[dict]) -> list[dict]:
                 "WHERE claude_session_id = ?",
                 (reason, now_ms, seg["id"]),
             )
+            # Advance the dedup watermark so the watcher does not re-enqueue this
+            # segment on every restart/file-change. Skipping is terminal — the
+            # eligibility verdict is deterministic — so an open gate is pure churn
+            # (and a duplicate node per legacy segment on re-run). COALESCE keeps
+            # an existing watermark untouched when content_hash is NULL (legacy).
             conn.execute(
-                "UPDATE claude_sessions SET enriched = 1 WHERE id = ?",
+                "UPDATE claude_sessions "
+                "SET enriched = 1, "
+                "    last_enriched_content_hash = COALESCE(content_hash, last_enriched_content_hash) "
+                "WHERE id = ?",
                 (seg["id"],),
             )
     if len(eligible) != len(segments):
