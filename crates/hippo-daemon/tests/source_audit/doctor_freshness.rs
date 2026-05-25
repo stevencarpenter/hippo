@@ -36,6 +36,8 @@ fn probes_cover_every_source_from_the_audit_matrix() {
             "browser",
             "workflow",
             "agentic-session-opencode",
+            "agentic-session-codex",
+            "agentic-session-cursor",
         ],
         "probe list must stay in sync with docs/capture/sources.md"
     );
