@@ -1654,7 +1654,7 @@ fn check_source_staleness(db: &rusqlite::Connection, explain: bool) -> u32 {
     let rows_result = db.prepare(
         "SELECT source, last_event_ts, last_error_msg, consecutive_failures, events_last_1h, probe_ok \
          FROM source_health \
-         WHERE source IN ('shell', 'browser', 'agentic-session-claude', 'claude-tool', 'agentic-session-opencode', 'agentic-session-codex') \
+         WHERE source IN ('shell', 'browser', 'agentic-session-claude', 'claude-tool', 'agentic-session-opencode', 'agentic-session-codex', 'agentic-session-cursor') \
          ORDER BY source",
     );
 
@@ -1772,6 +1772,39 @@ fn check_source_staleness(db: &rusqlite::Connection, explain: bool) -> u32 {
         (any_exist, false)
     };
 
+    let cursor_session_state = || -> (bool, bool) {
+        let Ok(cfg) = doctor_config.as_ref() else {
+            return (false, false);
+        };
+        let idle_cutoff = std::time::SystemTime::now()
+            .checked_sub(std::time::Duration::from_secs(IDLE_WINDOW_SECS))
+            .unwrap_or(std::time::UNIX_EPOCH);
+        let mut any_exist = false;
+        for root in &cfg.cursor.session_roots {
+            if !root.is_dir() {
+                continue;
+            }
+            for entry in WalkDir::new(root).into_iter().filter_map(|e| e.ok()) {
+                let path = entry.path();
+                let is_jsonl = path.extension().map(|e| e == "jsonl").unwrap_or(false);
+                let under = path
+                    .components()
+                    .any(|c| c.as_os_str() == "agent-transcripts");
+                if !(is_jsonl && under) {
+                    continue;
+                }
+                any_exist = true;
+                if let Ok(meta) = entry.metadata()
+                    && let Ok(modified) = meta.modified()
+                    && modified > idle_cutoff
+                {
+                    return (true, true);
+                }
+            }
+        }
+        (any_exist, false)
+    };
+
     // Check whether the opencode DB itself looks active — the file exists
     // and has been modified within IDLE_WINDOW_SECS. Stale opencode means
     // "user just isn't using opencode right now," not "the poller is broken."
@@ -1830,6 +1863,7 @@ fn check_source_staleness(db: &rusqlite::Connection, explain: bool) -> u32 {
 
     let mut fail_count: u32 = 0;
     let (codex_sessions_do_exist, codex_sessions_are_recent) = codex_session_state();
+    let (cursor_sessions_do_exist, cursor_sessions_are_recent) = cursor_session_state();
     let suppression_env = SuppressionSignals {
         probe_ok: None, // per-row; filled in inside the loop
         firefox_running: firefox_running(),
@@ -1837,11 +1871,14 @@ fn check_source_staleness(db: &rusqlite::Connection, explain: bool) -> u32 {
         opencode_db_recent: opencode_db_recent(),
         codex_sessions_exist: codex_sessions_do_exist,
         codex_sessions_recent: codex_sessions_are_recent,
+        cursor_sessions_exist: cursor_sessions_do_exist,
+        cursor_sessions_recent: cursor_sessions_are_recent,
     };
 
     // All expected sources — report missing ones too.
     let all_sources = [
         "agentic-session-codex",
+        "agentic-session-cursor",
         "agentic-session-opencode",
         "browser",
         "agentic-session-claude",
@@ -2017,6 +2054,10 @@ struct SuppressionSignals {
     codex_sessions_exist: bool,
     /// At least one Codex `rollout-*.jsonl` file changed within 10 minutes.
     codex_sessions_recent: bool,
+    /// At least one Cursor agent-transcript `.jsonl` exists under the roots.
+    cursor_sessions_exist: bool,
+    /// At least one Cursor agent-transcript `.jsonl` changed within 10 minutes.
+    cursor_sessions_recent: bool,
 }
 
 fn classify_source_staleness(
@@ -2058,6 +2099,10 @@ fn source_staleness_suppression_reason(
         // must still alarm.
         "agentic-session-codex" if !signals.codex_sessions_exist => Some("no Codex sessions found"),
         "agentic-session-codex" if !signals.codex_sessions_recent => Some("Codex sessions idle"),
+        "agentic-session-cursor" if !signals.cursor_sessions_exist => {
+            Some("no Cursor sessions found")
+        }
+        "agentic-session-cursor" if !signals.cursor_sessions_recent => Some("Cursor sessions idle"),
         _ => None,
     }
 }
@@ -2084,14 +2129,15 @@ fn source_staleness_thresholds_for(source: &str) -> SourceStalenessThresholds {
             warn_secs: 300,
             fail_secs: 600,
         },
-        // Opencode and Codex are both interval pollers — tolerate a missed
-        // tick before warning, an hour before failing. Both also suppress
-        // idle-source warnings in `source_staleness_suppression_reason`:
-        // opencode keys off its DB mtime, Codex off its rollout-file mtimes.
-        "agentic-session-opencode" | "agentic-session-codex" => SourceStalenessThresholds {
-            warn_secs: 300,
-            fail_secs: 3600,
-        },
+        // Opencode, Codex, and Cursor are all interval pollers — tolerate a
+        // missed tick before warning, an hour before failing. All three also
+        // suppress idle-source warnings in `source_staleness_suppression_reason`.
+        "agentic-session-opencode" | "agentic-session-codex" | "agentic-session-cursor" => {
+            SourceStalenessThresholds {
+                warn_secs: 300,
+                fail_secs: 3600,
+            }
+        }
         _ => SourceStalenessThresholds {
             warn_secs: 300,
             fail_secs: 1800,
@@ -3747,12 +3793,14 @@ replacement = "***"
     }
 
     /// Build `SuppressionSignals` for staleness tests. Defaults to "nothing
-    /// suppressible" (no probe state, no recent activity, Codex never seen);
+    /// suppressible" (no probe state, no recent activity, Codex/Cursor never seen);
     /// each test overrides only the fields it exercises.
     fn signals(
         recent_claude_session: bool,
         codex_sessions_exist: bool,
         codex_sessions_recent: bool,
+        cursor_sessions_exist: bool,
+        cursor_sessions_recent: bool,
     ) -> SuppressionSignals {
         SuppressionSignals {
             probe_ok: None,
@@ -3761,6 +3809,8 @@ replacement = "***"
             opencode_db_recent: false,
             codex_sessions_exist,
             codex_sessions_recent,
+            cursor_sessions_exist,
+            cursor_sessions_recent,
         }
     }
 
@@ -3770,7 +3820,7 @@ replacement = "***"
             classify_source_staleness(
                 "agentic-session-claude",
                 12 * 60,
-                signals(false, false, false),
+                signals(false, false, false, false, false),
             ),
             SourceStalenessStatus::Suppressed("no active session"),
             "inactive Claude sessions should not warn just because no new session rows landed"
@@ -3783,7 +3833,7 @@ replacement = "***"
             classify_source_staleness(
                 "agentic-session-claude",
                 12 * 60,
-                signals(true, false, false),
+                signals(true, false, false, false, false),
             ),
             SourceStalenessStatus::Warn,
             "recent Claude JSONL activity should make stale source-health actionable"
@@ -3797,7 +3847,7 @@ replacement = "***"
             classify_source_staleness(
                 "agentic-session-codex",
                 2 * 3600,
-                signals(false, false, false),
+                signals(false, false, false, false, false),
             ),
             SourceStalenessStatus::Suppressed("no Codex sessions found"),
             "machines without any Codex session files should not alarm"
@@ -3812,7 +3862,7 @@ replacement = "***"
             classify_source_staleness(
                 "agentic-session-codex",
                 2 * 3600,
-                signals(false, true, false),
+                signals(false, true, false, false, false),
             ),
             SourceStalenessStatus::Suppressed("Codex sessions idle"),
             "previously-used but idle Codex should be suppressed, not alarmed"
@@ -3828,7 +3878,7 @@ replacement = "***"
             classify_source_staleness(
                 "agentic-session-codex",
                 2 * 3600,
-                signals(false, true, true),
+                signals(false, true, true, false, false),
             ),
             SourceStalenessStatus::Fail,
             "fresh rollout files + stale source_health is a real ingestion bug — must alarm"
@@ -3840,9 +3890,37 @@ replacement = "***"
         // warn_secs = 300 for agentic-session-codex; 600s is past warn but
         // under fail (3600). Fresh files → not suppressed → WARN.
         assert_eq!(
-            classify_source_staleness("agentic-session-codex", 600, signals(false, true, true),),
+            classify_source_staleness(
+                "agentic-session-codex",
+                600,
+                signals(false, true, true, false, false),
+            ),
             SourceStalenessStatus::Warn,
             "fresh codex files with briefly-stale source-health should warn"
+        );
+    }
+
+    #[test]
+    fn test_cursor_staleness_suppressed_when_no_sessions_exist() {
+        assert_eq!(
+            classify_source_staleness(
+                "agentic-session-cursor",
+                2 * 3600,
+                signals(false, false, false, false, false),
+            ),
+            SourceStalenessStatus::Suppressed("no Cursor sessions found"),
+        );
+    }
+
+    #[test]
+    fn test_cursor_staleness_alarms_when_files_fresh_but_health_stale() {
+        assert_eq!(
+            classify_source_staleness(
+                "agentic-session-cursor",
+                2 * 3600,
+                signals(false, false, false, true, true),
+            ),
+            SourceStalenessStatus::Fail,
         );
     }
 

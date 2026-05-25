@@ -488,6 +488,11 @@ pub fn check_invariants(rows: &[SourceHealthRow], now_ms: i64) -> Vec<InvariantV
         violations.push(v);
     }
 
+    // I-15: Cursor-session coverage proxy.
+    if !bench_paused && let Some(v) = check_i15_cursor_coverage_proxy(&by_source, now_ms) {
+        violations.push(v);
+    }
+
     // I-12: Brain preflight stuck. Not suppressed during bench pause —
     // bench pauses prod brain enrichment but doesn't make preflight stop
     // running; a stuck preflight is real either way.
@@ -671,6 +676,28 @@ pub fn check_i13_codex_coverage_proxy(
         return Some(InvariantViolation {
             invariant_id: "I-13".to_string(),
             source: "agentic-session-codex".to_string(),
+            since_ms: age_ms,
+            details: json!({
+                "consecutive_failures": row.consecutive_failures,
+                "note": "proxy predicate; full freshness check lives in hippo doctor",
+            }),
+        });
+    }
+    None
+}
+
+/// I-15: Cursor-session coverage proxy. Mirrors I-13: alarm when the Cursor
+/// poller has failed repeatedly. Full freshness coverage is the doctor's job.
+pub fn check_i15_cursor_coverage_proxy(
+    by_source: &std::collections::HashMap<&str, &SourceHealthRow>,
+    now_ms: i64,
+) -> Option<InvariantViolation> {
+    let row = by_source.get("agentic-session-cursor")?;
+    if row.consecutive_failures > 3 {
+        let age_ms = coverage_proxy_since_ms(row, now_ms);
+        return Some(InvariantViolation {
+            invariant_id: "I-15".to_string(),
+            source: "agentic-session-cursor".to_string(),
             since_ms: age_ms,
             details: json!({
                 "consecutive_failures": row.consecutive_failures,
@@ -1848,6 +1875,32 @@ mod tests {
         let result = check_i13_codex_coverage_proxy(&by_source(&rows), NOW).unwrap();
         assert_eq!(result.invariant_id, "I-13");
         assert_eq!(result.since_ms, 45_000);
+    }
+
+    // ── I-15 (cursor coverage proxy) ───────────────────────────────────────
+
+    #[test]
+    fn i15_cursor_alarms_on_repeated_failures() {
+        let row = SourceHealthRow {
+            last_event_ts: Some(NOW - 10_000),
+            consecutive_failures: 4,
+            ..blank_row("agentic-session-cursor")
+        };
+        let rows = vec![row];
+        let v = check_i15_cursor_coverage_proxy(&by_source(&rows), NOW);
+        assert!(v.is_some());
+        assert_eq!(v.unwrap().invariant_id, "I-15");
+    }
+
+    #[test]
+    fn i15_cursor_suppressed_when_failures_low() {
+        let row = SourceHealthRow {
+            last_event_ts: Some(NOW - 600_000),
+            consecutive_failures: 2,
+            ..blank_row("agentic-session-cursor")
+        };
+        let rows = vec![row];
+        assert!(check_i15_cursor_coverage_proxy(&by_source(&rows), NOW).is_none());
     }
 
     /// check_invariants must return an empty Vec when no violations exist.
