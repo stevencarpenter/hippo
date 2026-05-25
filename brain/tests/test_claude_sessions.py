@@ -5,6 +5,8 @@ import sqlite3
 import tempfile
 from pathlib import Path
 
+import pytest
+
 from hippo_brain.claude_sessions import (
     SessionFile,
     SessionSegment,
@@ -825,6 +827,21 @@ class TestContentHashPropagation:
             (seg_id,),
         ).fetchone()[0]
         assert leh is None, "must not watermark content that was never attempted"
+
+    def test_mark_failed_rejects_misaligned_content_hashes(self, tmp_db):
+        """content_hashes must align 1:1 with segment_ids — fail fast instead of
+        silently zipping to the shorter list and watermarking the wrong segment."""
+        db_conn, _ = tmp_db
+        with pytest.raises(ValueError, match="does not match"):
+            mark_claude_queue_failed(db_conn, [1, 2], "err", content_hashes=["only-one"])
+
+    def test_write_node_rejects_misaligned_content_hashes(self, tmp_db):
+        """write_claude_knowledge_node guards against misaligned content_hashes too."""
+        db_conn, _ = tmp_db
+        with pytest.raises(ValueError, match="does not match"):
+            write_claude_knowledge_node(
+                db_conn, self._RESULT, [1], "test-model", content_hashes=["a", "b"]
+            )
 
     def test_skip_ineligible_advances_watermark(self, tmp_db):
         """A skipped (ineligible) segment closes its dedup gate so it isn't re-enqueued forever.

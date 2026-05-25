@@ -634,6 +634,9 @@ def _skip_ineligible_claude_segments(conn, segments: list[dict]) -> list[dict]:
             # only advance if the row's content_hash still equals it: the daemon
             # may upsert newer content while we hold the row, and that newer
             # content must get its own eligibility check, not inherit this skip.
+            # No status gate is needed here (unlike the failure path) — the
+            # 'skipped' status was set unconditionally just above, so there is no
+            # transient state to guard against.
             seg_hash = seg.get("content_hash")
             if seg_hash is not None:
                 conn.execute(
