@@ -179,6 +179,38 @@ def test_parse_accepts_raw_control_chars_in_strings():
     assert "line two" in result.summary
 
 
+def test_parse_repairs_invalid_backslash_escape():
+    # Local LLMs sometimes emit an invalid backslash escape inside a string
+    # value (e.g. a regex like \d or a stray backslash). JSON rejects \d, and
+    # before repair a deterministically-failing segment looped forever because
+    # the dedup watermark only advances on success. parse_enrichment_response
+    # must repair the escape and parse rather than raise.
+    raw = (
+        '{"summary": "matched pattern \\d+ in the log", '
+        '"intent": "testing", "outcome": "success", '
+        '"entities": {"projects": [], "tools": [], "files": [], '
+        '"services": [], "errors": []}, '
+        '"tags": [], "embed_text": "x"}'
+    )
+    result = parse_enrichment_response(raw)
+    assert "\\d+" in result.summary  # literal backslash preserved
+
+
+def test_parse_repair_preserves_valid_escapes():
+    # When repair runs (because some escape is invalid), it must NOT mangle the
+    # valid escapes in the same payload (\" and \\). Here \" is valid and \d is
+    # invalid; only \d should be repaired.
+    raw = (
+        '{"summary": "say \\"hi\\" then match \\d+", '
+        '"intent": "t", "outcome": "success", '
+        '"entities": {"projects": [], "tools": [], "files": [], '
+        '"services": [], "errors": []}, '
+        '"tags": [], "embed_text": "x"}'
+    )
+    result = parse_enrichment_response(raw)
+    assert result.summary == 'say "hi" then match \\d+'
+
+
 # ---------------------------------------------------------------------------
 # Issue #98 F3: design_decisions field validation.
 # ---------------------------------------------------------------------------

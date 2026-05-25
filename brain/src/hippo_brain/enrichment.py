@@ -252,6 +252,23 @@ def build_enrichment_prompt(events: list[dict], browser_context: str = "") -> st
     return prompt
 
 
+# A backslash that begins a valid JSON escape: \" \\ \/ \b \f \n \r \t or \uXXXX.
+_VALID_JSON_ESCAPE = re.compile(r'\\(?:["\\/bfnrt]|u[0-9a-fA-F]{4})|\\')
+
+
+def _repair_json_escapes(text: str) -> str:
+    """Double any backslash that does not begin a valid JSON escape.
+
+    Local LLMs occasionally emit an invalid escape (e.g. a regex ``\\d`` or a
+    stray backslash) inside a string value, which ``json.loads`` rejects. Such
+    failures are deterministic — the same content produces the same bad output
+    every time — so without repair the segment can never be enriched. The
+    leftmost-match regex consumes valid escapes (including ``\\\\``) first, so
+    only genuinely lone backslashes are doubled into literals.
+    """
+    return _VALID_JSON_ESCAPE.sub(lambda m: m.group(0) if len(m.group(0)) > 1 else "\\\\", text)
+
+
 def parse_enrichment_response(raw: str) -> EnrichmentResult:
     """Strip markdown code fences if present, parse JSON, return dataclass."""
     if not raw:
@@ -266,7 +283,13 @@ def parse_enrichment_response(raw: str) -> EnrichmentResult:
     # string values. JSON spec disallows them, but local LLMs routinely emit
     # them inside multi-line `summary`/`embed_text` values; rejecting these
     # responses sends the retry loop into a hot loop of full-model inferences.
-    data = json.loads(text, strict=False)
+    try:
+        data = json.loads(text, strict=False)
+    except json.JSONDecodeError:
+        # Repair invalid backslash escapes and retry once. If it still fails the
+        # error propagates; the terminal-failure watermark (mark_claude_queue_failed)
+        # then stops the segment from re-enqueuing forever.
+        data = json.loads(_repair_json_escapes(text), strict=False)
     return validate_enrichment_data(data)
 
 

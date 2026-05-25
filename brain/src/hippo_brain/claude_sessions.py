@@ -742,7 +742,18 @@ def write_claude_knowledge_node(
 
 
 def mark_claude_queue_failed(conn, segment_ids: list[int], error: str) -> None:
-    """Increment retry_count; reset to pending if retries remain, failed if exhausted."""
+    """Increment retry_count; reset to pending if retries remain, failed if exhausted.
+
+    On a *terminal* failure (retries exhausted -> status 'failed'), advance
+    ``last_enriched_content_hash`` to the current ``content_hash``.  A
+    deterministic failure (e.g. the LLM emitting invalid JSON for one segment)
+    can never succeed, so leaving the success-only watermark untouched would let
+    the watcher re-enqueue the same content forever — the cap is reset on every
+    re-enqueue.  Closing the gate stops the loop; if the content later changes,
+    ``content_hash`` diverges again and the segment gets a fresh attempt.
+    Transient failures (status flips back to 'pending') do NOT touch the
+    watermark, so they retry normally.
+    """
     now_ms = int(time.time() * 1000)
     for seg_id in segment_ids:
         conn.execute(
@@ -760,5 +771,16 @@ def mark_claude_queue_failed(conn, segment_ids: list[int], error: str) -> None:
             WHERE claude_session_id = ?
             """,
             (error, now_ms, seg_id),
+        )
+        conn.execute(
+            """
+            UPDATE claude_sessions
+            SET last_enriched_content_hash = content_hash
+            WHERE id = ?
+              AND content_hash IS NOT NULL
+              AND (SELECT status FROM claude_enrichment_queue
+                   WHERE claude_session_id = ?) = 'failed'
+            """,
+            (seg_id, seg_id),
         )
     conn.commit()
