@@ -689,6 +689,7 @@ pub fn poll_tick(config: &HippoConfig) -> Result<usize> {
     let conn = hippo_core::storage::open_db(&config.db_path())?;
     let now_ms = chrono::Utc::now().timestamp_millis();
     let min_idle_ms = config.cursor.min_idle_secs as i64 * 1000;
+    let redaction = crate::load_redaction_engine(config);
 
     let mut ingested = 0usize;
     for root in &config.cursor.session_roots {
@@ -726,7 +727,7 @@ pub fn poll_tick(config: &HippoConfig) -> Result<usize> {
             if mtime_ms <= read_cursor(&conn, &key) {
                 continue;
             }
-            match ingest_file(&conn, path, mtime_ms) {
+            match ingest_file(&conn, path, mtime_ms, &redaction) {
                 Ok((count, session_id)) => {
                     ingested += count;
                     if count > 0 {
@@ -757,7 +758,8 @@ pub fn ingest_one(config: &HippoConfig, path: &Path) -> Result<usize> {
         .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
         .map(|d| d.as_millis() as i64)
         .unwrap_or_else(|| chrono::Utc::now().timestamp_millis());
-    let (count, _) = ingest_file(&conn, path, mtime_ms)?;
+    let redaction = crate::load_redaction_engine(config);
+    let (count, _) = ingest_file(&conn, path, mtime_ms, &redaction)?;
     if count > 0 {
         bump_health_ok(&conn, mtime_ms);
     }
@@ -765,9 +767,13 @@ pub fn ingest_one(config: &HippoConfig, path: &Path) -> Result<usize> {
 }
 
 /// Parse one file and upsert all its segments in a single transaction.
-fn ingest_file(conn: &rusqlite::Connection, path: &Path, mtime_ms: i64) -> Result<(usize, String)> {
-    let redaction = RedactionEngine::builtin();
-    let segments = extract_segments(path, mtime_ms, &redaction)?;
+fn ingest_file(
+    conn: &rusqlite::Connection,
+    path: &Path,
+    mtime_ms: i64,
+    redaction: &RedactionEngine,
+) -> Result<(usize, String)> {
+    let segments = extract_segments(path, mtime_ms, redaction)?;
     if segments.is_empty() {
         return Ok((0, String::new()));
     }

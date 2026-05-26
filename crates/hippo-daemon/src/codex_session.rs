@@ -794,6 +794,7 @@ pub fn poll_tick(config: &HippoConfig) -> Result<usize> {
     let conn = hippo_core::storage::open_db(&config.db_path())?;
     let now_ms = chrono::Utc::now().timestamp_millis();
     let min_idle_ms = config.codex.min_idle_secs as i64 * 1000;
+    let redaction = crate::load_redaction_engine(config);
 
     let mut ingested = 0usize;
     for root in &config.codex.session_roots {
@@ -838,7 +839,7 @@ pub fn poll_tick(config: &HippoConfig) -> Result<usize> {
             if mtime_ms <= read_cursor(&conn, &key) {
                 continue; // unchanged since last successful parse
             }
-            match ingest_file(&conn, path) {
+            match ingest_file(&conn, path, &redaction) {
                 Ok((count, session_id)) => {
                     ingested += count;
                     // Only bump health when real segments landed. A rollout
@@ -867,9 +868,12 @@ pub fn poll_tick(config: &HippoConfig) -> Result<usize> {
 }
 
 /// Parse one file and upsert all its segments in a single transaction.
-fn ingest_file(conn: &rusqlite::Connection, path: &Path) -> Result<(usize, String)> {
-    let redaction = RedactionEngine::builtin();
-    let segments = extract_segments(path, &redaction)?;
+fn ingest_file(
+    conn: &rusqlite::Connection,
+    path: &Path,
+    redaction: &RedactionEngine,
+) -> Result<(usize, String)> {
+    let segments = extract_segments(path, redaction)?;
     if segments.is_empty() {
         return Ok((0, String::new()));
     }

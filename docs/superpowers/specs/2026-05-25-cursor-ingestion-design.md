@@ -210,10 +210,18 @@ Cursor passes real `is_subagent` / `parent_session_id` values instead of
   failed), satisfying AP-3. Mirrors `check_i13_codex_coverage_proxy`. Document
   in `architecture.md`.
 - **probe** — **assertion-only** (mirror claude-session, not inject-and-poll):
-  *every agent-transcript JSONL with mtime in the last 5 min (and older than
-  `min_idle`) has a matching `claude_sessions` row*. `probe_ok` = at least one
-  fresh-mtime transcript exists. Add a `"cursor"` arm to `probe.rs::run` and a
-  `probe_cursor` function. **AP-6 is satisfied by construction**: assertion-only
+  for every agent-transcript JSONL whose age (`now - mtime`) falls in the
+  eligibility window `[CURSOR_PROBE_SETTLE_MS, CURSOR_PROBE_WINDOW_MS]`
+  (90 s settle floor … 10 min outer edge), assert a matching `claude_sessions`
+  row exists. The settle floor is a **fixed 90 s constant decoupled from
+  `cursor.min_idle_secs`** on purpose: deriving it from config (the old
+  `2 * min_idle` formula) let a large `min_idle_secs` push the floor past the
+  window, collapsing the eligibility window to empty so the probe silently
+  trivial-passed and stopped covering the source. Transcripts that parse to
+  **zero segments are skipped** (an empty transcript legitimately produces no
+  row), and if no settled transcript is in-window the probe trivially passes.
+  Implemented as the `agentic-session-cursor` arm in `probe.rs::run` +
+  `probe_cursor_session`. **AP-6 is satisfied by construction**: assertion-only
   means no synthetic rows are ever written, so none can leak into user-facing
   queries.
 
@@ -240,8 +248,14 @@ does.
 - **Per-file isolation:** a parse/IO error on one transcript calls `record_error`
   (bumps `consecutive_failures` + `last_error_msg`, `error!` log) and continues
   to the next file. One bad file never halts the poll.
-- **No silent swallowing (AP-11):** every skip/error logs; no
-  `.filter_map(Result::ok)` / `.ok().unwrap_or_default()` in write paths.
+- **No silent swallowing in write paths (AP-11):** every parse/upsert/cursor
+  skip or error logs — per-file `metadata`/`mtime` failures `warn!` and name the
+  file, parse/IO failures `record_error` + `error!` — and no
+  `.ok().unwrap_or_default()` swallows a write result. The one deliberate
+  exception is the top-level directory traversal
+  (`WalkDir::…filter_map(|e| e.ok())`, mirroring Codex), which skips an
+  unreadable directory entry so a single bad dir can't abort the whole poll;
+  the next tick re-walks, so any transcript that matters resurfaces.
 - **Ordering is the crash-safety design:** within a poll, per file —
   (1) parse + upsert all segments in one transaction and commit,
   (2) bump `source_health` only if ≥1 segment landed,
