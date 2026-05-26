@@ -52,13 +52,16 @@ const blogPosts = (await getCollection("blog", ({ data }) => !data.draft))
       <div class="arch">
         <svg viewBox="0 0 800 240" role="img" aria-labelledby="arch-title arch-desc" class="arch-diagram">
           <title id="arch-title">Hippo architecture: capture sources feed the daemon, the brain enriches with a local LLM, the MCP server answers questions.</title>
-          <desc id="arch-desc">Three capture sources on the left — zsh hook, Claude Code session watcher, Firefox WebExtension — write events to the hippo-daemon Rust process via a Unix socket. The daemon redacts secrets and writes to a SQLite database with FTS5 plus sqlite-vec. The hippo-brain Python process reads enrichment queues from SQLite, calls a local LLM via the LM Studio HTTP API, and writes knowledge nodes back to SQLite. An MCP server exposes ask, search_knowledge, search_events, and get_entities tools to client editors over stdio.</desc>
+          <desc id="arch-desc">Three capture-source families on the left — zsh hook, agentic-CLI session watchers for Claude Code, Codex, and Cursor, and the Firefox WebExtension — write events to the hippo-daemon Rust process via a Unix socket. The daemon redacts secrets and writes to a SQLite database with FTS5 plus sqlite-vec. The hippo-brain Python process reads enrichment queues from SQLite, calls a local OpenAI-compatible inference server (oMLX by default; LM Studio also works), and writes knowledge nodes back to SQLite. An MCP server exposes ask, search_knowledge, search_events, and get_entities tools to client editors over stdio.</desc>
           <g fill="none" stroke="currentColor" stroke-width="1.5" font-family="var(--font-display), serif" font-size="13" stroke-linecap="round">
             <!-- sources column -->
             <rect x="20" y="20" width="150" height="40"/>
             <text x="95" y="44" text-anchor="middle" fill="currentColor" stroke="none">zsh hook</text>
-            <rect x="20" y="100" width="150" height="40"/>
-            <text x="95" y="124" text-anchor="middle" fill="currentColor" stroke="none">Claude session watch</text>
+            <rect x="20" y="75" width="150" height="90"/>
+            <text x="95" y="97" text-anchor="middle" fill="currentColor" stroke="none">Agentic CLIs</text>
+            <text x="95" y="118" text-anchor="middle" font-style="italic" font-size="11" fill="currentColor" stroke="none">Claude Code</text>
+            <text x="95" y="135" text-anchor="middle" font-style="italic" font-size="11" fill="currentColor" stroke="none">Codex</text>
+            <text x="95" y="152" text-anchor="middle" font-style="italic" font-size="11" fill="currentColor" stroke="none">Cursor</text>
             <rect x="20" y="180" width="150" height="40"/>
             <text x="95" y="204" text-anchor="middle" fill="currentColor" stroke="none">Firefox extension</text>
             <!-- arrows to daemon -->
@@ -78,7 +81,7 @@ const blogPosts = (await getCollection("blog", ({ data }) => !data.draft))
             <!-- brain -->
             <rect x="640" y="20" width="140" height="60"/>
             <text x="710" y="48" text-anchor="middle" fill="currentColor" stroke="none">hippo-brain</text>
-            <text x="710" y="66" text-anchor="middle" font-style="italic" font-size="11" fill="currentColor" stroke="none">Python · LM Studio</text>
+            <text x="710" y="66" text-anchor="middle" font-style="italic" font-size="11" fill="currentColor" stroke="none">Python · oMLX</text>
             <!-- mcp -->
             <rect x="640" y="160" width="140" height="60"/>
             <text x="710" y="186" text-anchor="middle" fill="currentColor" stroke="none">MCP server</text>
@@ -90,7 +93,7 @@ const blogPosts = (await getCollection("blog", ({ data }) => !data.draft))
         </svg>
         <p class="fig-caption" lang="la"><em>fig. 3 — sectio architectonica.</em> Capture sources feed the Rust daemon; the brain reads enrichment queues; the MCP server answers questions over stdio.</p>
       </div>
-      <p class="body-lede">Two processes share a SQLite database. The daemon captures, redacts, and writes; the brain enriches; the MCP server answers questions. Inference runs on your GPU via LM Studio. The architecture is documented at <a href="/docs/reference/lifecycle">/docs/reference/lifecycle</a>.</p>
+      <p class="body-lede">Two processes share a SQLite database. The daemon captures, redacts, and writes; the brain enriches; the MCP server answers questions. Inference runs on your GPU via a local OpenAI-compatible server (oMLX by default; LM Studio also works). The architecture is documented at <a href="/docs/reference/lifecycle">/docs/reference/lifecycle</a>.</p>
     </div>
   </section>
 
@@ -102,7 +105,7 @@ const blogPosts = (await getCollection("blog", ({ data }) => !data.draft))
       <div class="three-col">
         <div class="col">
           <h3>All inference local.</h3>
-          <p>Hippo's brain calls LM Studio on <code>localhost</code>. The model file lives on your disk; the inference runs on your GPU. There is no network call to a hosted LLM, ever.</p>
+          <p>Hippo's brain calls a local OpenAI-compatible server (oMLX by default; LM Studio also works) on <code>localhost</code>. The model file lives on your disk; the inference runs on your GPU. There is no network call to a hosted LLM, ever.</p>
         </div>
         <div class="col">
           <h3>No telemetry by default.</h3>
@@ -134,7 +137,7 @@ const blogPosts = (await getCollection("blog", ({ data }) => !data.draft))
 [OK]   browser NM   ~/Library/Application Support/Mozilla/NativeMessagingHosts/hippo_daemon.json
 [OK]   probes       last canary round-trip 247ms (shell)
 [OK]   alarms       0 unacknowledged
-[OK]   LM Studio    http://127.0.0.1:1234 reachable; loaded model qwen3-coder
+[OK]   inference    http://127.0.0.1:1234 reachable; loaded model qwen3-coder
 ten checks complete in 0.61s — all green.</code></pre>
       </CodeBlock>
 
