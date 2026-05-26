@@ -1323,6 +1323,16 @@ const DAY_MS: i64 = 24 * HOUR_MS;
 /// Every raw-data source hippo is supposed to collect, with the query
 /// that answers "when did we last see a row?" and a soft/hard threshold
 /// tuned to how long that source can legitimately sit idle.
+///
+/// Session-table probes (claude-session, agentic-session-*) use `MAX(end_time)`
+/// rather than `MAX(start_time)` on purpose: the upsert pattern across
+/// `claude_session.rs`, `codex_session.rs`, `cursor_session.rs`, and
+/// `opencode_session.rs` advances `end_time` on every conflict-update but
+/// deliberately preserves `start_time`, so `end_time` is the column that tracks
+/// "most recent activity" — the question freshness is actually asking. Using
+/// `start_time` would let a long-running session's freshness lag by the segment
+/// duration (`TASK_GAP_MS` = 5 min for Codex/Claude, up to the char cap), which
+/// is negligible at the 3-day/30-day thresholds but wrong in principle.
 pub fn source_freshness_probes() -> Vec<SourceFreshnessProbe> {
     vec![
         SourceFreshnessProbe {
@@ -1347,7 +1357,7 @@ pub fn source_freshness_probes() -> Vec<SourceFreshnessProbe> {
         // Cursor or Codex would show a false-green "claude-session: OK".
         SourceFreshnessProbe {
             name: "claude-session (main)",
-            query: "SELECT COUNT(*), MAX(start_time) FROM claude_sessions \
+            query: "SELECT COUNT(*), MAX(end_time) FROM claude_sessions \
                     WHERE is_subagent = 0 \
                     AND (source_file IS NULL OR ( \
                         source_file NOT LIKE '%/.codex/%' \
@@ -1361,7 +1371,7 @@ pub fn source_freshness_probes() -> Vec<SourceFreshnessProbe> {
         },
         SourceFreshnessProbe {
             name: "claude-session (subagent)",
-            query: "SELECT COUNT(*), MAX(start_time) FROM claude_sessions \
+            query: "SELECT COUNT(*), MAX(end_time) FROM claude_sessions \
                     WHERE is_subagent = 1 \
                     AND (source_file IS NULL OR ( \
                         source_file NOT LIKE '%/.codex/%' \
@@ -1394,7 +1404,7 @@ pub fn source_freshness_probes() -> Vec<SourceFreshnessProbe> {
         // (sessions only land when the user actively codes with it).
         SourceFreshnessProbe {
             name: "agentic-session-opencode",
-            query: "SELECT COUNT(*), MAX(start_time) FROM agentic_sessions \
+            query: "SELECT COUNT(*), MAX(end_time) FROM agentic_sessions \
                     WHERE harness = 'opencode' AND probe_tag IS NULL",
             thresholds: FreshnessThresholds {
                 soft_ms: 3 * DAY_MS,
@@ -1406,7 +1416,7 @@ pub fn source_freshness_probes() -> Vec<SourceFreshnessProbe> {
         // Codex is bursty — sessions only land when the user actively codes with it.
         SourceFreshnessProbe {
             name: "agentic-session-codex",
-            query: "SELECT COUNT(*), MAX(start_time) FROM claude_sessions \
+            query: "SELECT COUNT(*), MAX(end_time) FROM claude_sessions \
                     WHERE (source_file LIKE '%/.codex/%' \
                         OR source_file LIKE '%/CodingAssistant/codex/%') \
                     AND probe_tag IS NULL",
@@ -1419,7 +1429,7 @@ pub fn source_freshness_probes() -> Vec<SourceFreshnessProbe> {
         // source_file). Probe rows excluded per AP-6. Thresholds mirror opencode.
         SourceFreshnessProbe {
             name: "agentic-session-cursor",
-            query: "SELECT COUNT(*), MAX(start_time) FROM claude_sessions \
+            query: "SELECT COUNT(*), MAX(end_time) FROM claude_sessions \
                     WHERE source_file LIKE '%/.cursor/%' \
                     AND probe_tag IS NULL",
             thresholds: FreshnessThresholds {
