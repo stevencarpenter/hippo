@@ -783,6 +783,7 @@ pub async fn run_with_mode(config: HippoConfig, bench_mode: bool) -> Result<()> 
 
         crate::process_metrics::register();
         crate::health_score::register(state.config.db_path());
+        crate::source_health_metric::register(state.config.db_path());
 
         let state_ref = Arc::clone(&state);
         let _ = meter

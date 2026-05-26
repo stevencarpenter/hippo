@@ -20,6 +20,7 @@
     {
       "id": 1,
       "title": "Queue Depth by Source & Status",
+      "description": "Auto-aggregated by source label. Any new source the brain emits appears here automatically \u2014 no dashboard edit required.",
       "type": "timeseries",
       "gridPos": {
         "x": 0,
@@ -38,57 +39,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "hippo_brain_enrichment_queue_depth{service_namespace!~\".+\",source=\"shell\"}",
-          "legendFormat": "{{source}} \u00b7 {{status}}",
-          "editorMode": "code"
-        },
-        {
-          "refId": "B",
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "expr": "hippo_brain_enrichment_queue_depth{service_namespace!~\".+\",source=\"claude\"}",
-          "legendFormat": "{{source}} \u00b7 {{status}}",
-          "editorMode": "code"
-        },
-        {
-          "refId": "C",
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "expr": "hippo_brain_enrichment_queue_depth{service_namespace!~\".+\",source=\"browser\"}",
-          "legendFormat": "{{source}} \u00b7 {{status}}",
-          "editorMode": "code"
-        },
-        {
-          "refId": "D",
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "expr": "hippo_brain_enrichment_queue_depth{service_namespace!~\".+\",source=\"codex\"}",
-          "legendFormat": "{{source}} \u00b7 {{status}}",
-          "editorMode": "code"
-        },
-        {
-          "refId": "E",
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "expr": "hippo_brain_enrichment_queue_depth{service_namespace!~\".+\",source=\"workflow\"}",
-          "legendFormat": "{{source}} \u00b7 {{status}}",
-          "editorMode": "code"
-        },
-        {
-          "refId": "F",
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "expr": "hippo_brain_enrichment_queue_depth{service_namespace!~\".+\",source=\"opencode\"}",
+          "expr": "sum by (source, status) (hippo_brain_enrichment_queue_depth{service_namespace!~\".+\"})",
           "legendFormat": "{{source}} \u00b7 {{status}}",
           "editorMode": "code"
         }
@@ -171,6 +122,7 @@
     {
       "id": 3,
       "title": "Events Claimed / min",
+      "description": "Auto-aggregated by source label. Any new source the brain emits appears here automatically — no dashboard edit required.",
       "type": "timeseries",
       "gridPos": {
         "x": 12,
@@ -189,58 +141,8 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "rate(hippo_brain_enrichment_events_claimed_total{service_namespace!~\".+\",source=\"shell\"}[5m]) * 60",
-          "legendFormat": "shell",
-          "editorMode": "code"
-        },
-        {
-          "refId": "B",
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "expr": "rate(hippo_brain_enrichment_events_claimed_total{service_namespace!~\".+\",source=\"claude\"}[5m]) * 60",
-          "legendFormat": "claude",
-          "editorMode": "code"
-        },
-        {
-          "refId": "C",
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "expr": "rate(hippo_brain_enrichment_events_claimed_total{service_namespace!~\".+\",source=\"browser\"}[5m]) * 60",
-          "legendFormat": "browser",
-          "editorMode": "code"
-        },
-        {
-          "refId": "D",
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "expr": "rate(hippo_brain_enrichment_events_claimed_total{service_namespace!~\".+\",source=\"codex\"}[5m]) * 60",
-          "legendFormat": "codex",
-          "editorMode": "code"
-        },
-        {
-          "refId": "E",
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "expr": "rate(hippo_brain_enrichment_events_claimed_total{service_namespace!~\".+\",source=\"workflow\"}[5m]) * 60",
-          "legendFormat": "workflow",
-          "editorMode": "code"
-        },
-        {
-          "refId": "F",
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "expr": "rate(hippo_brain_enrichment_events_claimed_total{service_namespace!~\".+\",source=\"opencode\"}[5m]) * 60",
-          "legendFormat": "opencode",
+          "expr": "sum by (source) (rate(hippo_brain_enrichment_events_claimed_total{service_namespace!~\".+\"}[5m])) * 60",
+          "legendFormat": "{{source}}",
           "editorMode": "code"
         }
       ],

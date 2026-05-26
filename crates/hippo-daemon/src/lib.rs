@@ -19,6 +19,8 @@ pub mod probe;
 pub mod process_metrics;
 pub mod schema_handshake;
 #[cfg(feature = "otel")]
+pub mod source_health_metric;
+#[cfg(feature = "otel")]
 pub mod telemetry;
 pub mod watch_claude_sessions;
 pub mod watchdog;

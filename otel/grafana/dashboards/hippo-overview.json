@@ -505,6 +505,121 @@
         "dedupStrategy": "none",
         "sortOrder": "Descending"
       }
+    },
+    {
+      "id": 8,
+      "title": "Capture Lag by Source",
+      "description": "Seconds since each capture source produced any signal of life (event or heartbeat). One line per source means OTel sees that source. Sourced from the source_health table — the same SQL ground truth the watchdog evaluates invariants against. Sources with no rows ever (NULL last_event_ts AND last_heartbeat_ts) intentionally emit nothing rather than spike to infinity.",
+      "type": "timeseries",
+      "gridPos": {
+        "x": 0,
+        "y": 16,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "hippo_daemon_source_health_lag_milliseconds{service_namespace!~\".+\"} / 1000",
+          "legendFormat": "{{source}}",
+          "editorMode": "code"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 5,
+            "lineWidth": 1,
+            "showPoints": "never"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 300
+              },
+              {
+                "color": "red",
+                "value": 1800
+              }
+            ]
+          }
+        }
+      },
+      "options": {
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        },
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      }
+    },
+    {
+      "id": 9,
+      "title": "Watchdog Invariant Violations by Source (per min)",
+      "description": "Per-minute rate (5m average) of capture-invariant violations the watchdog has fired, sliced by source. A line at zero means that source is healthy; any positive value means an invariant (I-1..I-15) is currently failing for that source. Pair with the Capture Lag panel: nonzero violations + rising lag = capture is broken for that source right now.",
+      "type": "timeseries",
+      "gridPos": {
+        "x": 12,
+        "y": 16,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum by (source) (rate(hippo_watchdog_invariant_violation_total{service_namespace!~\".+\"}[5m])) * 60",
+          "legendFormat": "{{source}}",
+          "editorMode": "code"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "lineWidth": 1,
+            "showPoints": "never"
+          }
+        }
+      },
+      "options": {
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        },
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      }
     }
   ]
 }
