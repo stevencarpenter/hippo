@@ -574,8 +574,8 @@
     },
     {
       "id": 9,
-      "title": "Watchdog Invariant Violations by Source",
-      "description": "Cumulative count of capture-invariant violations the watchdog has fired, sliced by source. A flat line means that source is healthy; a rising line means an invariant (I-1..I-15) is currently failing for that source. Pair with the Capture Lag panel: rising violations + rising lag = capture is broken for that source right now.",
+      "title": "Watchdog Invariant Violations by Source (per min)",
+      "description": "Per-minute rate (5m average) of capture-invariant violations the watchdog has fired, sliced by source. A line at zero means that source is healthy; any positive value means an invariant (I-1..I-15) is currently failing for that source. Pair with the Capture Lag panel: nonzero violations + rising lag = capture is broken for that source right now.",
       "type": "timeseries",
       "gridPos": {
         "x": 12,

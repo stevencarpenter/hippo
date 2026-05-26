@@ -28,26 +28,37 @@
 //!   the dashboard show a per-source canary status without parsing the
 //!   `capture_alarms` table.
 
+use crate::is_missing_source_health_table_error;
 use opentelemetry::KeyValue;
 use opentelemetry::global;
-use rusqlite::Connection;
+use rusqlite::{Connection, OpenFlags};
 use std::path::PathBuf;
 use std::time::Duration;
 use tracing::debug;
 
 /// Open the operator DB read-only with the standard `busy_timeout` so the
-/// observer never starves a concurrent writer. Returns `None` on any error so
-/// the gauges fail open (omit the tick) rather than fail loud — a transient
-/// SQLITE_BUSY against the watchdog would otherwise blank the dashboard.
+/// observer never starves a concurrent writer, and never creates a stray
+/// file if the path is missing (the OTel callback runs on its own thread —
+/// fail open, don't pollute the data dir). Returns `None` on any error so
+/// the gauges omit the tick rather than fail loud — a transient SQLITE_BUSY
+/// against the watchdog would otherwise blank the dashboard.
 fn open_conn(db_path: &std::path::Path) -> Option<Connection> {
-    let conn = Connection::open(db_path).ok()?;
+    let conn = Connection::open_with_flags(
+        db_path,
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )
+    .ok()?;
     conn.busy_timeout(Duration::from_millis(5000)).ok()?;
     Some(conn)
 }
 
-/// One row's worth of derived gauge state. Populated by a single
-/// `SELECT … FROM source_health` so we never read the table more than once
-/// per export tick, no matter how many gauges are registered.
+/// One row's worth of derived gauge state, populated by a single
+/// `SELECT … FROM source_health`. Three observable gauges are registered
+/// from this module and each runs its own callback (the OTel API binds one
+/// callback per instrument), so the table is read up to three times per
+/// export tick. That's accepted on purpose: the query is an indexed scan of
+/// a ~10-row table and the connection is read-only + NO_MUTEX, so the cost
+/// is negligible compared to the complexity of a shared TTL cache.
 struct Row {
     source: String,
     lag_ms: Option<u64>,
@@ -64,6 +75,10 @@ fn read_rows(db_path: &std::path::Path, now_ms: i64) -> Vec<Row> {
            FROM source_health",
     ) {
         Ok(s) => s,
+        // Pre-migration DBs lack `source_health`; this is the expected steady
+        // state until the schema migration runs, so don't log on every tick.
+        // Any other prepare error is genuinely surprising — keep that visible.
+        Err(e) if is_missing_source_health_table_error(&e) => return Vec::new(),
         Err(e) => {
             debug!(error = %e, "source_health_metric: prepare failed");
             return Vec::new();
