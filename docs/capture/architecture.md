@@ -64,7 +64,7 @@ Append-only ledger of invariant violations. The watchdog writes; `hippo alarms a
 | Column | Meaning |
 |---|---|
 | `id` | PK |
-| `invariant_id` | One of `I-1` … `I-14` |
+| `invariant_id` | One of `I-1` … `I-15` |
 | `raised_at` | First detection time (epoch ms) |
 | `details_json` | Invariant-specific diagnostic context — affected source, `since_ms`, and per-invariant details |
 | `acked_at` | NULL until `hippo alarms ack <id>` |
@@ -72,7 +72,7 @@ Append-only ledger of invariant violations. The watchdog writes; `hippo alarms a
 | `resolved_at` | Set once the invariant has stayed clean for 2 consecutive ticks |
 | `clean_ticks` | Consecutive-clean tick count driving the auto-resolve loop |
 
-## Invariants (I-1..I-14)
+## Invariants (I-1..I-15)
 
 Asserted by the watchdog every 60 s. Each has a formal predicate in `crates/hippo-daemon/src/watchdog.rs`. Violations create or refresh a `capture_alarms` row; the doctor surfaces them with `[!!]` severity.
 

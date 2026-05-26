@@ -55,7 +55,7 @@ brain/src/hippo_brain/enrichment.py::is_enrichment_eligible
        v
 brain/src/hippo_brain/server.py::_enrich_shell_batches
        |  -- builds prompt via build_enrichment_prompt
-       |  -- 3 retries via _call_llm_with_retries (LM Studio /v1/chat/completions)
+       |  -- 3 retries via _call_llm_with_retries (inference backend /v1/chat/completions)
        v
 brain/src/hippo_brain/enrichment.py::write_knowledge_node
        |  -- single transaction: knowledge_nodes + tags + entities + link tables
@@ -132,7 +132,7 @@ knowledge_nodes (one node per claim batch) + entities + embedding
 
 **Subagent sessions** (`<project>/<parent>/subagents/<id>.jsonl`) follow the same path; `is_subagent=1` and `parent_session_id` are set during segment extraction.
 
-**Codex/Xcode-side rollouts** are ingested by a Rust poller — the `com.hippo.codex-session` launchd job runs `hippo codex-poll`, whose `codex_session::poll_tick` (in `crates/hippo-daemon/src/codex_session.rs`) parses the distinct envelope shape and writes segmented rows through the same `claude_sessions` table, sharing `claude_enrichment_queue` for enrichment. Capture-health is keyed `agentic-session-codex`.
+**Codex sessions** are ingested by a Rust poller — the `com.hippo.codex-session` launchd job runs `hippo codex-poll`, whose `codex_session::poll_tick` (in `crates/hippo-daemon/src/codex_session.rs`) walks `~/.codex/sessions` (plus `~/.codex/archived_sessions` and Xcode's `CodingAssistant/codex/sessions` as secondary locations), parses the distinct envelope shape, and writes segmented rows through the same `claude_sessions` table, sharing `claude_enrichment_queue` for enrichment. Capture-health is keyed `agentic-session-codex`.
 
 **Cursor Agent sessions** are ingested by a parallel Rust poller — the `com.hippo.cursor-session` launchd job runs `hippo cursor-poll`, whose `cursor_session::poll_tick` (in `crates/hippo-daemon/src/cursor_session.rs`) walks `~/.cursor/projects/**/agent-transcripts/**/*.jsonl` (main sessions and subagents), parses the Anthropic-style transcript into char-bounded segments stamped from file mtime, and writes segmented rows into `claude_sessions`, sharing `claude_enrichment_queue` with Claude Code and Codex for enrichment. Subagents land with `is_subagent=1` and `parent_session_id` set. Capture-health is keyed `agentic-session-cursor`; watchdog invariant I-15 gates on proxy consecutive-failures.
 
@@ -188,7 +188,7 @@ Probe events are filtered out of every user-facing query at the daemon-side quer
 
 ## Where capture can fail silently
 
-The historical reasons hippo built [`capture/architecture.md`](capture/architecture.md)'s I-1..I-12 invariants:
+The historical reasons hippo built [`capture/architecture.md`](capture/architecture.md)'s I-1..I-15 invariants:
 
 - **Hook not sourced.** The user's `~/.zshrc` was edited but never re-loaded. No errors anywhere — events just never appear.
 - **NM manifest missing.** The Firefox extension was reloaded but `hippo daemon install --force` wasn't re-run. The extension can't reach the daemon. Captured by I-4.
@@ -234,7 +234,7 @@ SELECT status, COUNT(*) FROM claude_enrichment_queue GROUP BY status;
 SELECT status, COUNT(*) FROM browser_enrichment_queue GROUP BY status;
 ```
 
-`pending` climbing means the brain isn't claiming fast enough (LM Studio slow / unloaded / wrong model name in `[models].enrichment`).
+`pending` climbing means the brain isn't claiming fast enough (inference backend slow / unloaded / wrong model name in `[models].enrichment`).
 `processing` rows older than `lock_timeout_secs` are reaped by [`docs/brain-watchdog.md`](brain-watchdog.md). A persistent `failed` count means rows hit `max_retries` — inspect with:
 
 ```sql

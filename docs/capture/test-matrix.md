@@ -3,7 +3,7 @@
 # Test Matrix for Capture Reliability
 
 This matrix is the companion to [`architecture.md`](architecture.md) (where
-the I-1..I-12 invariants live) and [`anti-patterns.md`](anti-patterns.md). It
+the I-1..I-15 invariants live) and [`anti-patterns.md`](anti-patterns.md). It
 exists to make one question answerable at a glance: **for every failure
 avenue we know about, is there a test that would have caught it?**
 
@@ -22,7 +22,7 @@ a one-line change rather than "remember to write the test later".
 - **`blocked-on-P0.X`** — test skeleton exists with `#[ignore]`; fires when the named roadmap task lands
 - **`source-change-required`** — test cannot be written without a source change that is outside the scope of this PR; noted here so the gap is explicit
 
-"Invariant" refers to I-1..I-12 defined in architecture.md.
+"Invariant" refers to I-1..I-15 defined in architecture.md.
 
 ## Failure modes
 
@@ -131,7 +131,7 @@ These are the failure modes that **cannot** be tested against `main` today:
 
 - **F-6 NM manifest validation** — `hippo doctor` never reads the NM manifest. The doctor check would need ~20 lines in `commands.rs` (read JSON, resolve `path`, assert executable, assert `allowed_extensions` contains `hippo-browser@local`). Test skeleton exists; remove `#[ignore]` once the source check lands.
 - **F-8 Fallback age in doctor** — `storage::list_fallback_files` returns paths sorted by name; doctor only prints a count. An age check requires either (a) reading each file's mtime in doctor, or (b) a new `storage::list_stale_fallback_files(dir, cutoff_ms)` helper. Test skeleton exists; source change tracked by follow-up issue.
-- **F-10..F-14** — All require `source_health` table and the watchdog/probe subsystems from architecture.md, architecture.md, architecture.md. Skeletons live in `crates/hippo-daemon/tests/capture_invariants.rs`.
+- **F-10..F-14** — All require `source_health` table and the watchdog/probe subsystems from architecture.md. Skeletons live in `crates/hippo-daemon/tests/capture_invariants.rs`.
 - **F-15** — `#53` is about the plumbing from "hippo CI failure" → `upsert_cluster`; the `lessons.py` logic itself has solid unit coverage (`brain/tests/test_lessons.py`). Our xfail test asserts the **end-to-end** pipeline. It will stay xfail until the plumbing ships.
 
 ## Running the tests
