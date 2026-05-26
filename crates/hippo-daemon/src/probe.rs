@@ -8,6 +8,7 @@
 
 use anyhow::{Context, Result};
 use hippo_core::config::HippoConfig;
+use hippo_core::redaction::RedactionEngine;
 use hippo_core::storage;
 use rusqlite::OptionalExtension;
 use std::time::Instant;
@@ -394,37 +395,22 @@ fn probe_cursor_session(config: &HippoConfig) -> Result<(bool, Option<i64>)> {
 
     let db =
         storage::open_db(&config.db_path()).context("cannot open DB for cursor-session probe")?;
-    let redaction = crate::load_redaction_engine(config);
+    // Lazy-load the redaction engine: only the DB-miss branch below actually
+    // needs it (to re-parse a file we suspect was never written). The happy
+    // path — file present, row exists — skips disk I/O for `redact.toml` and
+    // the regex recompile entirely.
+    let mut redaction: Option<RedactionEngine> = None;
     let mut all_ok = true;
     let mut latest_lag: Option<i64> = None;
     for (path, mtime_ms) in &recent {
         let path_str = path.to_string_lossy();
 
-        // Determine whether this transcript should have produced a row at all.
-        // `poll_tick` writes zero rows for a segment-less transcript (no user
-        // turn), so we must not assert a row exists for one. Mirror the real
-        // ingestion exactly by parsing with the same extractor it uses; a read
-        // error is transient (the poller will retry), so we skip rather than
-        // FAIL on it.
-        let segment_count =
-            match crate::cursor_session::extract_segments(path, *mtime_ms, &redaction) {
-                Ok(segs) => segs.len(),
-                Err(e) => {
-                    warn!(
-                        "cursor-session probe: cannot parse {} ({e:#}) — skipping",
-                        path_str
-                    );
-                    continue;
-                }
-            };
-        if segment_count == 0 {
-            info!(
-                "cursor-session probe: {} yields no segments — no row expected, skipping",
-                path_str
-            );
-            continue;
-        }
-
+        // Cheap path first: ask the DB whether this transcript already has a
+        // row in the same window the existence check uses. The common case is
+        // that `poll_tick` already ingested the file and wrote a row, so the
+        // probe satisfies its assertion without touching the file or running
+        // any redaction patterns — a meaningful saving for a directory with
+        // many in-window transcripts.
         let count: i64 = db
             .query_row(
                 "SELECT COUNT(*) FROM claude_sessions
@@ -433,12 +419,11 @@ fn probe_cursor_session(config: &HippoConfig) -> Result<(bool, Option<i64>)> {
                 |row| row.get(0),
             )
             .with_context(|| format!("failed to query claude_sessions for {}", path_str))?;
-        if count == 0 {
-            warn!("cursor-session probe: no row for {}", path_str);
-            all_ok = false;
-        } else {
-            // Lag = now - MAX(end_time) of the matched rows: true ingestion
-            // latency (mirrors probe_claude_session), not the file's age.
+
+        if count > 0 {
+            // Assertion satisfied. Lag = now - MAX(end_time) of the matched
+            // rows — true ingestion latency (mirrors probe_claude_session),
+            // not the file's age.
             let max_end: Option<i64> = db
                 .query_row(
                     "SELECT MAX(end_time) FROM claude_sessions
@@ -456,7 +441,43 @@ fn probe_cursor_session(config: &HippoConfig) -> Result<(bool, Option<i64>)> {
                 let lag = now_ms - end;
                 latest_lag = Some(latest_lag.map_or(lag, |p: i64| p.max(lag)));
             }
+            continue;
         }
+
+        // DB miss: parse to decide whether a row was even expected.
+        // `poll_tick` writes zero rows for a segment-less transcript (no user
+        // turn), so we must not assert a row exists for one. Mirror the real
+        // ingestion exactly by parsing with the same extractor it uses; a read
+        // error is transient (the poller will retry), so we skip rather than
+        // FAIL on it. This is the only branch that pays parse + redaction
+        // cost, so we lazy-load the redaction engine on first use.
+        let engine = match redaction.as_ref() {
+            Some(r) => r,
+            None => {
+                redaction = Some(crate::load_redaction_engine(config));
+                redaction.as_ref().expect("just set above")
+            }
+        };
+        let segment_count = match crate::cursor_session::extract_segments(path, *mtime_ms, engine) {
+            Ok(segs) => segs.len(),
+            Err(e) => {
+                warn!(
+                    "cursor-session probe: cannot parse {} ({e:#}) — skipping",
+                    path_str
+                );
+                continue;
+            }
+        };
+        if segment_count == 0 {
+            info!(
+                "cursor-session probe: {} yields no segments — no row expected, skipping",
+                path_str
+            );
+            continue;
+        }
+        // Segment-bearing transcript with no row: genuine FAIL.
+        warn!("cursor-session probe: no row for {}", path_str);
+        all_ok = false;
     }
     Ok((all_ok, latest_lag))
 }

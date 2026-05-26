@@ -779,16 +779,33 @@ pub fn ingest_one(config: &HippoConfig, path: &Path) -> Result<usize> {
     let path = std::path::absolute(path)
         .with_context(|| format!("absolutize cursor ingest path {}", path.display()))?;
     let conn = hippo_core::storage::open_db(&config.db_path())?;
-    let mtime_ms = std::fs::metadata(&path)
-        .and_then(|m| m.modified())
+    // Need the full Metadata (not just mtime) so we can compute the inode key
+    // for `write_cursor` below. Fail loudly on unreadable metadata rather than
+    // silently fabricating mtime = now() — for a manual recovery command, an
+    // unreadable file should surface, not be papered over as a fresh capture.
+    let meta = std::fs::metadata(&path)
+        .with_context(|| format!("read metadata for cursor ingest path {}", path.display()))?;
+    let mtime_ms = meta
+        .modified()
         .ok()
         .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
         .map(|d| d.as_millis() as i64)
         .unwrap_or_else(|| chrono::Utc::now().timestamp_millis());
     let redaction = crate::load_redaction_engine(config);
-    let (count, _) = ingest_file(&conn, &path, mtime_ms, &redaction)?;
+    let (count, session_id) = ingest_file(&conn, &path, mtime_ms, &redaction)?;
     if count > 0 {
         bump_health_ok(&conn, mtime_ms);
+    }
+    // Advance the inode cursor so subsequent `poll_tick` runs don't re-parse
+    // this file every interval forever. `poll_tick` writes the cursor
+    // unconditionally on a successful ingest (regardless of segment count);
+    // mirror that here so manual backfills behave the same as automatic
+    // ingestion. Without this step, every transcript imported via
+    // `hippo ingest cursor-session` is re-read + re-parsed + re-redacted by
+    // the poller every interval until it's overwritten by real activity.
+    let key = cursor_key(&meta);
+    if let Err(e) = write_cursor(&conn, &key, mtime_ms, &session_id) {
+        warn!("cursor write failed for {}: {e:#}", path.display());
     }
     Ok(count)
 }
