@@ -339,6 +339,14 @@ const CURSOR_PROBE_WINDOW_MS: i64 = 600_000;
 /// Lag is reported as `now - MAX(end_time)` of the matched rows (true ingestion
 /// latency), mirroring `probe_claude_session`, not the file's age.
 fn probe_cursor_session(config: &HippoConfig) -> Result<(bool, Option<i64>)> {
+    // A disabled source intentionally ingests nothing (`poll_tick` early-returns),
+    // so transcripts left on disk will never have matching `claude_sessions` rows.
+    // Asserting against them would write `probe_ok = 0` and trip watchdog I-8 as a
+    // false alarm. Trivially pass instead, mirroring `poll_tick`'s disabled guard.
+    if !config.cursor.enabled {
+        info!("cursor-session probe: cursor ingestion disabled — trivial pass");
+        return Ok((true, None));
+    }
     let now_ms = chrono::Utc::now().timestamp_millis();
     let window_ms: i64 = CURSOR_PROBE_WINDOW_MS;
     // Clamp the settle floor strictly below the window so `[settle_ms, window_ms]`
@@ -743,6 +751,31 @@ mod tests {
             !ok,
             "probe must FAIL when a segment-bearing in-window transcript has no row"
         );
+    }
+
+    /// Disabled-source guard (#3): with `[cursor] enabled = false` the poller
+    /// ingests nothing, so a settled segment-bearing transcript has no row — but
+    /// the probe must trivially PASS rather than write `probe_ok = 0` and trip
+    /// watchdog I-8 on an intentionally disabled source. Mirror of
+    /// `cursor_probe_fails_when_expected_row_missing` with the source disabled.
+    #[test]
+    fn cursor_probe_trivial_pass_when_disabled() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("roots");
+        let mut config = test_config(tmp.path(), &root);
+        config.cursor.enabled = false;
+        // Settled, in-window, segment-bearing — would FAIL if enabled, but it
+        // was never ingested because the source is off.
+        write_transcript(
+            &root,
+            "disabled-1",
+            &user_transcript(),
+            Duration::from_secs(180),
+        );
+
+        let (ok, lag) = super::probe_cursor_session(&config).unwrap();
+        assert!(ok, "disabled cursor probe must trivially pass, not FAIL");
+        assert_eq!(lag, None);
     }
 
     /// Zero-segment skip (finding #2): an assistant-only in-window transcript

@@ -52,7 +52,9 @@ pub(crate) fn tool_summary(input: &serde_json::Value) -> String {
     if let Some(obj) = input.as_object() {
         for key in [
             "command",
+            "cmd",
             "file_path",
+            "filePath",
             "path",
             "glob_pattern",
             "pattern",
@@ -140,15 +142,17 @@ fn collect_tool_paths(input: &serde_json::Value, out: &mut Vec<String>) {
     let Some(obj) = input.as_object() else {
         return;
     };
-    for key in ["path", "file_path", "cwd", "target_directory"] {
+    for key in ["path", "file_path", "filePath", "cwd", "target_directory"] {
         if let Some(v) = obj.get(key).and_then(|v| v.as_str())
             && v.starts_with('/')
         {
             out.push(v.to_string());
         }
     }
-    if let Some(cmd) = obj.get("command").and_then(|v| v.as_str()) {
-        out.extend(absolute_tokens_in_command(cmd));
+    for cmd_key in ["command", "cmd"] {
+        if let Some(cmd) = obj.get(cmd_key).and_then(|v| v.as_str()) {
+            out.extend(absolute_tokens_in_command(cmd));
+        }
     }
 }
 
@@ -877,6 +881,15 @@ mod tests {
             tool_summary(&serde_json::json!({"glob_pattern": "**/*.ts"})),
             "**/*.ts"
         );
+        // camelCase / cmd variants Cursor also emits (aligned with Codex).
+        assert_eq!(
+            tool_summary(&serde_json::json!({"cmd": "git status"})),
+            "git status"
+        );
+        assert_eq!(
+            tool_summary(&serde_json::json!({"filePath": "/tmp/y.rs"})),
+            "/tmp/y.rs"
+        );
         assert_eq!(tool_summary(&serde_json::json!({})), "{}");
     }
 
@@ -1170,5 +1183,20 @@ mod tests {
         let mut out3 = Vec::new();
         collect_tool_paths(&serde_json::json!({"path": "relative/x"}), &mut out3);
         assert!(out3.is_empty(), "relative path value must be ignored");
+
+        // camelCase filePath + cmd command tokens (Cursor emits these too).
+        let mut out4 = Vec::new();
+        collect_tool_paths(
+            &serde_json::json!({"filePath": "/f/g", "cmd": "rg foo /Users/me/z"}),
+            &mut out4,
+        );
+        assert!(
+            out4.contains(&"/f/g".to_string()),
+            "filePath value must be collected; got {out4:?}"
+        );
+        assert!(
+            out4.contains(&"/Users/me/z".to_string()),
+            "absolute token from cmd must be collected; got {out4:?}"
+        );
     }
 }
