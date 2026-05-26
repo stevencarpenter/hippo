@@ -164,14 +164,27 @@ pub(crate) fn extract_segments(
     let mut session_id = String::new();
     let mut session_cwd = String::new();
 
-    for line in raw.lines() {
+    for (line_idx, line) in raw.lines().enumerate() {
         let line = line.trim();
         if line.is_empty() {
             continue;
         }
         let obj: serde_json::Value = match serde_json::from_str(line) {
             Ok(v) => v,
-            Err(_) => continue,
+            Err(e) => {
+                // The `min_idle_secs` settle gate means the file is complete at
+                // ingest time, so a parse error indicates real corruption. Warn
+                // (naming file:line) instead of silently dropping content —
+                // AP-11. Continue rather than `return Err`: one corrupt line
+                // should not permanently wedge an otherwise-valid rollout by
+                // blocking cursor advance.
+                warn!(
+                    "codex: skipping unparseable JSON at {}:{} ({e})",
+                    path.display(),
+                    line_idx + 1
+                );
+                continue;
+            }
         };
         let entry_type = obj.get("type").and_then(|v| v.as_str()).unwrap_or("");
         let ts = parse_ts(obj.get("timestamp").and_then(|v| v.as_str()).unwrap_or(""));
@@ -1277,6 +1290,26 @@ mod tests {
         assert!(
             !ids.contains("codex-probe"),
             "probe row must be excluded; got {ids:?}"
+        );
+    }
+
+    /// Round-3 #1: a single corrupted JSONL line must NOT wedge the rollout.
+    /// The bad line is skipped (warn logged) and surrounding valid lines still
+    /// produce a segment. Mirrors cursor_session for parser-class parity.
+    #[test]
+    fn extract_segments_warns_and_continues_on_unparseable_line() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("rollout-bad.jsonl");
+        let lines = [
+            r#"{"timestamp":"2026-04-04T00:00:00.000Z","type":"session_meta","payload":{"id":"abc","timestamp":"2026-04-04T00:00:00.000Z","cwd":"/proj"}}"#,
+            r#"{this is not { valid json"#,
+            r#"{"timestamp":"2026-04-04T00:00:01.000Z","type":"event_msg","payload":{"type":"user_message","message":"first request"}}"#,
+        ];
+        std::fs::write(&p, lines.join("\n")).unwrap();
+        let segs = extract_segments(&p, &RedactionEngine::builtin()).unwrap();
+        assert!(
+            !segs.is_empty(),
+            "valid lines must still yield a segment despite the corrupt middle line"
         );
     }
 }

@@ -306,14 +306,27 @@ pub(crate) fn extract_segments(
     // true cwd from the ambiguous slug (Finding 1).
     let mut candidate_paths: Vec<String> = Vec::new();
 
-    for line in raw.lines() {
+    for (line_idx, line) in raw.lines().enumerate() {
         let line = line.trim();
         if line.is_empty() {
             continue;
         }
         let obj: serde_json::Value = match serde_json::from_str(line) {
             Ok(v) => v,
-            Err(_) => continue,
+            Err(e) => {
+                // The `min_idle_secs` settle gate means the file is complete at
+                // ingest time, so a parse error indicates real corruption.
+                // Warn (naming file:line) instead of silently dropping content —
+                // AP-11. We deliberately continue rather than `return Err`: one
+                // corrupt line should not permanently wedge an otherwise-valid
+                // transcript by blocking cursor advance.
+                warn!(
+                    "cursor: skipping unparseable JSON at {}:{} ({e})",
+                    path.display(),
+                    line_idx + 1
+                );
+                continue;
+            }
         };
         let role = obj.get("role").and_then(|v| v.as_str()).unwrap_or("");
         let content = obj
@@ -755,15 +768,25 @@ pub fn poll_tick(config: &HippoConfig) -> Result<usize> {
 /// One-shot manual import of a single Cursor transcript (recovery/backfill).
 /// Mirrors the `hippo ingest cursor-session <path>` entry point.
 pub fn ingest_one(config: &HippoConfig, path: &Path) -> Result<usize> {
+    // Absolutize the user-supplied path so the stored `source_file` matches
+    // what `poll_tick` and the probe discover via `WalkDir` (which always
+    // yields absolute paths under `session_roots`). A relative-path manual
+    // ingest would otherwise produce a row that the probe's exact
+    // `WHERE source_file = ?` match can never satisfy, persistently FAILing
+    // once the file enters the probe eligibility window — and the upsert's
+    // `ON CONFLICT DO UPDATE` doesn't rewrite `source_file`, so a later poll
+    // tick can't heal it.
+    let path = std::path::absolute(path)
+        .with_context(|| format!("absolutize cursor ingest path {}", path.display()))?;
     let conn = hippo_core::storage::open_db(&config.db_path())?;
-    let mtime_ms = std::fs::metadata(path)
+    let mtime_ms = std::fs::metadata(&path)
         .and_then(|m| m.modified())
         .ok()
         .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
         .map(|d| d.as_millis() as i64)
         .unwrap_or_else(|| chrono::Utc::now().timestamp_millis());
     let redaction = crate::load_redaction_engine(config);
-    let (count, _) = ingest_file(&conn, path, mtime_ms, &redaction)?;
+    let (count, _) = ingest_file(&conn, &path, mtime_ms, &redaction)?;
     if count > 0 {
         bump_health_ok(&conn, mtime_ms);
     }
@@ -779,7 +802,10 @@ fn ingest_file(
 ) -> Result<(usize, String)> {
     let segments = extract_segments(path, mtime_ms, redaction)?;
     if segments.is_empty() {
-        return Ok((0, String::new()));
+        // Cursor advance is intentional for segment-less transcripts; surface
+        // the path-derived session id so `agentic_cursor.last_id` is meaningful
+        // for inspection rather than an empty string.
+        return Ok((0, PathIdentity::from_path(path).session_id));
     }
     let session_id = segments[0].session_id.clone();
     let tx = conn.unchecked_transaction()?;
@@ -1197,6 +1223,37 @@ mod tests {
         assert!(
             out4.contains(&"/Users/me/z".to_string()),
             "absolute token from cmd must be collected; got {out4:?}"
+        );
+    }
+
+    /// Round-3 #1: a single corrupted JSONL line must NOT wedge the file.
+    /// The bad line is skipped (warn logged) and surrounding valid lines still
+    /// produce a segment. Mirrored in codex_session for parser-class parity.
+    #[test]
+    fn extract_segments_warns_and_continues_on_unparseable_line() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp
+            .path()
+            .join("Users-me-projects-foo/agent-transcripts/t1");
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("t1.jsonl");
+        let lines = [
+            r#"{"role":"user","message":{"content":[{"type":"text","text":"<user_query>\nfix the build\n</user_query>"}]}}"#,
+            r#"{this is not { valid json"#,
+            r#"{"role":"assistant","message":{"content":[{"type":"text","text":"On it."}]}}"#,
+        ];
+        std::fs::write(&p, lines.join("\n")).unwrap();
+        let segs = extract_segments(&p, 1_775_000_000_000, &RedactionEngine::builtin()).unwrap();
+        assert_eq!(
+            segs.len(),
+            1,
+            "valid lines must still yield a segment despite the corrupt middle line"
+        );
+        assert_eq!(segs[0].user_prompts, vec!["fix the build".to_string()]);
+        assert!(
+            segs[0].assistant_texts.iter().any(|t| t.contains("On it")),
+            "assistant turn after the bad line must still be parsed; got {:?}",
+            segs[0].assistant_texts
         );
     }
 }
