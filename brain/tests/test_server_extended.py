@@ -140,6 +140,19 @@ def test_source_label_for_claude_segments_splits_codex_metrics():
     )
 
 
+def test_source_label_for_cursor_segments():
+    from hippo_brain.server import _source_label_for_claude_segments
+
+    cursor_segs = [{"source_file": "/Users/me/.cursor/projects/p/agent-transcripts/s/s.jsonl"}]
+    assert _source_label_for_claude_segments(cursor_segs) == "cursor"
+
+    mixed = [
+        {"source_file": "/Users/me/.cursor/projects/p/agent-transcripts/s/s.jsonl"},
+        {"source_file": "/Users/me/.claude/projects/p/s.jsonl"},
+    ]
+    assert _source_label_for_claude_segments(mixed) == "claude"
+
+
 # ---- /health embed_model_drift ----
 
 

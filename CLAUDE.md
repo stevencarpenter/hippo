@@ -142,12 +142,32 @@ hippo doctor       # shows the agentic-session-codex line
 
 **Spec:** `docs/superpowers/specs/2026-05-17-codex-ingestion-design.md`
 
+### Cursor Session Ingestion
+
+Ingestion is handled by `cursor_session::poll_tick` in `crates/hippo-daemon/src/cursor_session.rs`, invoked by the `hippo cursor-poll` CLI command. It runs under launchd (`com.hippo.cursor-session`), `StartInterval`-driven on the `[cursor] poll_interval_secs` cadence (default 60 s). Each tick walks the `[cursor] session_roots` directories (default: `~/.cursor/projects`) for `agent-transcripts/**/*.jsonl` files. It skips in-flight files (modified within `min_idle_secs`, default 60 s, to avoid partial reads) and skips unchanged files via an inode-keyed cursor in the `agentic_cursor` table (`source_key = cursor-agent-{inode}`).
+
+Cursor transcripts carry no per-line timestamps, so segments are bounded by accumulated character count rather than time gaps, and are time-stamped from the file mtime. For each changed file, `extract_segments` parses the transcript into char-capped segments, then `upsert_segment_tx` upserts each segment into the `claude_sessions` table via `INSERT … ON CONFLICT (session_id, segment_index) DO UPDATE SET …` — so re-ingest of a grown transcript updates existing rows rather than duplicating them. Cursor rows are plain `claude_sessions` rows; the `.cursor/` path stored in `source_file` distinguishes them from Claude Code and Codex rows. Subagents are ingested as their own sessions with `is_subagent=1` and `parent_session_id` set. Genuinely new content is re-enqueued into `claude_enrichment_queue`, which Cursor shares with Claude Code and Codex sessions, so the brain enriches Cursor segments into knowledge nodes through the same path.
+
+**Config:** `[cursor]` section in `~/.config/hippo/config.toml`. `session_roots` may be omitted — the Rust default supplies `~/.cursor/projects`. Set `enabled = false` to make `poll_tick` a no-op.
+
+**Verify:**
+```bash
+hippo cursor-poll   # one-shot ingest; exits 0
+hippo doctor        # shows the agentic-session-cursor line
+```
+
+**Schema:** v16 migration seeds the `agentic-session-cursor` row in `source_health` (the capture-health key for this source).
+
+**Manual recovery:** `hippo ingest cursor-session <path>` does a one-shot batch import (handy if the poller is wedged or for backfilling a single file).
+
+**Spec:** `docs/superpowers/specs/2026-05-25-cursor-ingestion-design.md`
+
 ### Capture Reliability (v0.16+)
 
 Capture-reliability stack (the result of the P0–P3 overhaul shipped through v0.16). Reference docs live in [`docs/capture/`](docs/capture/architecture.md); historical design records are in [`docs/archive/capture-reliability-overhaul/`](docs/archive/capture-reliability-overhaul/). Key pieces:
 
-- **`source_health` table**: single SQL ground truth of "did the event land?" per source (non-exhaustive: `shell`, `claude-tool`, `agentic-session-claude`, `agentic-session-opencode`, `agentic-session-codex`, `browser`, `claude-session-watcher`, `watchdog`, `brain-preflight`). Every capture path writes its row in the same transaction as the event insert. (There is no `probe` row — the probe job writes `probe_*` columns onto each real source's row.) See [`docs/capture/architecture.md`](docs/capture/architecture.md).
-- **`hippo watchdog run`** (launchd `com.hippo.watchdog`, every 60 s): asserts the I-1..I-12 invariants against `source_health`, writes `capture_alarms` rows on violations, rate-limited per invariant. See [`docs/capture/architecture.md`](docs/capture/architecture.md).
+- **`source_health` table**: single SQL ground truth of "did the event land?" per source (non-exhaustive: `shell`, `claude-tool`, `agentic-session-claude`, `agentic-session-opencode`, `agentic-session-codex`, `agentic-session-cursor`, `browser`, `claude-session-watcher`, `watchdog`, `brain-preflight`). Every capture path writes its row in the same transaction as the event insert. (There is no `probe` row — the probe job writes `probe_*` columns onto each real source's row.) See [`docs/capture/architecture.md`](docs/capture/architecture.md).
+- **`hippo watchdog run`** (launchd `com.hippo.watchdog`, every 60 s): asserts the I-1..I-15 invariants against `source_health`, writes `capture_alarms` rows on violations, rate-limited per invariant. See [`docs/capture/architecture.md`](docs/capture/architecture.md).
 - **`hippo alarms list / ack`**: CLI for unacknowledged alarms (exit 1 if any).
 - **`hippo doctor`**: ten isolated checks with `[OK]`/`[WW]`/`[!!]`/`[--]` severity, exit code = fail count, total wall-clock < 2 s. `--explain` prints CAUSE/FIX/DOC per failure. See [`docs/capture/operator-runbook.md`](docs/capture/operator-runbook.md).
 - **`hippo probe`** (launchd `com.hippo.probe`, every 5 min): synthetic canary events round-trip through each capture path; latency recorded in `source_health.probe_lag_ms`. All probe rows carry a `probe_tag` and are filtered out of every user-facing query (RAG, MCP tools, `hippo ask`, etc.) by upstream daemon filtering and a Semgrep rule. See [`docs/capture/architecture.md`](docs/capture/architecture.md).

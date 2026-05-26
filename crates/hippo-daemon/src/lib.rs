@@ -2,6 +2,7 @@ pub mod backfill;
 pub mod claude_session;
 pub mod codex_session;
 pub mod commands;
+pub mod cursor_session;
 pub mod daemon;
 pub mod framing;
 pub mod gh_api;

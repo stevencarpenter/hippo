@@ -2,8 +2,8 @@ mod cli;
 mod install;
 
 use hippo_daemon::{
-    backfill, claude_session, codex_session, commands, daemon, gh_api, gh_poll, opencode_session,
-    watch_claude_sessions,
+    backfill, claude_session, codex_session, commands, cursor_session, daemon, gh_api, gh_poll,
+    opencode_session, watch_claude_sessions,
 };
 
 use anyhow::{Context, Result};
@@ -249,6 +249,8 @@ async fn main() -> Result<()> {
                     install::service_is_loaded("com.hippo.opencode-poll");
                 let codex_session_was_loaded =
                     install::service_is_loaded("com.hippo.codex-session");
+                let cursor_session_was_loaded =
+                    install::service_is_loaded("com.hippo.cursor-session");
                 let stack_was_active = daemon_was_loaded
                     || brain_was_loaded
                     || watchdog_was_loaded
@@ -256,7 +258,8 @@ async fn main() -> Result<()> {
                     || watcher_was_loaded
                     || gh_poll_was_loaded
                     || opencode_poll_was_loaded
-                    || codex_session_was_loaded;
+                    || codex_session_was_loaded
+                    || cursor_session_was_loaded;
 
                 if brain_was_loaded {
                     print!("  Draining brain (waiting for in-flight requests)");
@@ -319,6 +322,13 @@ async fn main() -> Result<()> {
                     );
                     println!("  Stopped codex-session");
                 }
+                if cursor_session_was_loaded {
+                    install::service_bootout(
+                        &domain,
+                        &launch_agents.join("com.hippo.cursor-session.plist"),
+                    );
+                    println!("  Stopped cursor-session");
+                }
                 // Always boot out the renamed legacy job on every reinstall so
                 // a stale com.hippo.xcode-codex-ingest plist cannot be
                 // re-bootstrapped by anything iterating LaunchAgents.
@@ -344,6 +354,8 @@ async fn main() -> Result<()> {
                     include_str!("../../../launchd/com.hippo.xcode-claude-ingest.plist");
                 let codex_session_template =
                     include_str!("../../../launchd/com.hippo.codex-session.plist");
+                let cursor_session_template =
+                    include_str!("../../../launchd/com.hippo.cursor-session.plist");
                 let opencode_poll_template =
                     include_str!("../../../launchd/com.hippo.opencode-poll.plist");
 
@@ -378,6 +390,20 @@ async fn main() -> Result<()> {
                 } else {
                     println!("  (codex source disabled; skipping codex-session plist)");
                     install::remove_plist("com.hippo.codex-session")?;
+                    false
+                };
+
+                let cursor_session_installed = if config.cursor.enabled {
+                    install::install_plist(
+                        "com.hippo.cursor-session",
+                        cursor_session_template,
+                        &vars,
+                        force,
+                    )?;
+                    true
+                } else {
+                    println!("  (cursor source disabled; skipping cursor-session plist)");
+                    install::remove_plist("com.hippo.cursor-session")?;
                     false
                 };
 
@@ -484,6 +510,11 @@ async fn main() -> Result<()> {
                     codex_session_was_loaded,
                     stack_was_active,
                 );
+                let cursor_session_started = install::should_start_optional_poll_agent(
+                    cursor_session_installed,
+                    cursor_session_was_loaded,
+                    stack_was_active,
+                );
 
                 // Reload core services that were already running, and ensure
                 // installed support agents are loaded for an active stack.
@@ -532,6 +563,11 @@ async fn main() -> Result<()> {
                             "com.hippo.codex-session.plist",
                             codex_session_started,
                         ),
+                        (
+                            "cursor-session",
+                            "com.hippo.cursor-session.plist",
+                            cursor_session_started,
+                        ),
                     ];
                     for (label, plist, gated) in support_agents {
                         if !gated {
@@ -550,7 +586,8 @@ async fn main() -> Result<()> {
                     || !stack_was_active
                     || (gh_poll_installed && !gh_poll_started)
                     || (opencode_poll_installed && !opencode_poll_started)
-                    || (codex_session_installed && !codex_session_started);
+                    || (codex_session_installed && !codex_session_started)
+                    || (cursor_session_installed && !cursor_session_started);
                 if needs_manual_start {
                     println!();
                     println!("Load with:");
@@ -588,6 +625,11 @@ async fn main() -> Result<()> {
                     if codex_session_installed && !codex_session_started {
                         println!(
                             "  launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.hippo.codex-session.plist"
+                        );
+                    }
+                    if cursor_session_installed && !cursor_session_started {
+                        println!(
+                            "  launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.hippo.cursor-session.plist"
                         );
                     }
                 }
@@ -971,6 +1013,41 @@ async fn main() -> Result<()> {
                     claude_session::ingest_batch(path, &socket, timeout, &db).await?;
                 println!("Batch import complete: {sent} events sent, {errors} errors");
             }
+            IngestSource::CursorSession {
+                path,
+                wait_for_file,
+            } => {
+                let path = std::path::Path::new(&path);
+                if !path.exists() {
+                    if wait_for_file > 0 {
+                        let deadline = std::time::Instant::now()
+                            + std::time::Duration::from_secs(wait_for_file);
+                        eprint!("Waiting for {}...", path.display());
+                        while !path.exists() {
+                            if std::time::Instant::now() >= deadline {
+                                eprintln!(
+                                    "\nFile not found after {}s: {}",
+                                    wait_for_file,
+                                    path.display()
+                                );
+                                std::process::exit(1);
+                            }
+                            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                        }
+                        eprintln!(" found.");
+                    } else {
+                        eprintln!("File not found: {}", path.display());
+                        std::process::exit(1);
+                    }
+                }
+                match cursor_session::ingest_one(&config, path) {
+                    Ok(n) => println!("Cursor import complete: {n} segments ingested"),
+                    Err(e) => {
+                        eprintln!("Error importing cursor session: {e:#}");
+                        std::process::exit(1);
+                    }
+                }
+            }
             IngestSource::ClaudeSessionBackfill {
                 glob,
                 since,
@@ -1104,6 +1181,13 @@ async fn main() -> Result<()> {
             Ok(n) => tracing::info!(ingested = n, "codex poll: completed"),
             Err(e) => {
                 eprintln!("Error running codex poll: {e:#}");
+                std::process::exit(1);
+            }
+        },
+        Commands::CursorPoll => match cursor_session::poll_tick(&config) {
+            Ok(n) => tracing::info!(ingested = n, "cursor poll: completed"),
+            Err(e) => {
+                eprintln!("Error running cursor poll: {e:#}");
                 std::process::exit(1);
             }
         },

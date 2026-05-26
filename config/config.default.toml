@@ -1,9 +1,10 @@
 # OpenAI-compatible inference backend. Section was renamed from [lmstudio]
-# to [inference] so the same key works for LM Studio (the historical
-# default, port 1234), oMLX (port 8000), ollama (port 11434), vLLM, and
-# any other backend that speaks /v1/chat/completions + /v1/embeddings.
+# to [inference] so the same key works for oMLX (the current default,
+# port 8000), LM Studio (port 1234, the historical default), ollama
+# (port 11434), vLLM, and any other backend that speaks
+# /v1/chat/completions + /v1/embeddings.
 [inference]
-base_url = "http://localhost:1234/v1"
+base_url = "http://localhost:8000/v1"
 timeout_secs = 300
 
 [models]
@@ -215,6 +216,33 @@ enabled = true
 # min_idle_secs = 60
 # poll_interval_secs = 60
 # session_roots = []  # leave commented out; Rust default supplies the three paths above
+
+[cursor]
+# Cursor Agent CLI transcript ingestion.
+#
+# When enabled, `hippo cursor-poll` (invoked every 60 s by the
+# `com.hippo.cursor-session` LaunchAgent) walks `session_roots` for
+# `agent-transcripts/**/*.jsonl` files (main sessions + subagents), parses each
+# into char-bounded segments, and writes them as segmented rows in
+# `claude_sessions` — distinguished by the `.cursor/` path stored in the
+# `source_file` column. Subagents are ingested as their own sessions with a
+# parent_session_id link. The brain enriches these alongside Claude Code data.
+#
+# Cursor transcripts carry no per-line timestamps, so segments are bounded by
+# accumulated character count and time-stamped from the file mtime.
+#
+# `session_roots` defaults to:
+#   ~/.cursor/projects
+#
+# To verify:
+#   1. Ensure `~/.cursor/projects` contains agent-transcripts/**/*.jsonl files
+#   2. Run once: `hippo cursor-poll`
+#   3. Verify: `hippo doctor` shows healthy `agentic-session-cursor` source
+
+enabled = true
+# min_idle_secs = 60
+# poll_interval_secs = 60
+# session_roots = []  # leave commented out; Rust default supplies ~/.cursor/projects
 
 [telemetry]
 # OpenTelemetry observability: traces, metrics, and logs to Grafana/Tempo/Loki/Prometheus.

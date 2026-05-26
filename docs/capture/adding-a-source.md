@@ -12,7 +12,7 @@ Adding a source is a multi-week piece of work, not a weekend project. The steps 
 |---|---|---|
 | Bash history | Shell hook (`hippo.zsh`) — bash equivalent welcome as a small variant rather than new source kind | A bash version of `hippo.zsh` belongs in `shell/` and reuses the daemon socket; no new `source_kind` needed unless metadata diverges |
 | macOS Notification Center events | Not yet | New source — full contract below |
-| Cursor IDE / Aider sessions | Not yet (Codex has its own `com.hippo.codex-session` Rust poller; Cursor would be analogous) | New source if the JSONL shape diverges from Anthropic's |
+| Cursor Agent CLI sessions | Covered — `com.hippo.cursor-session` Rust poller (`cursor_session.rs`); see `docs/superpowers/specs/2026-05-25-cursor-ingestion-design.md` | Aider is a separate tool and would require its own source if the JSONL shape diverges |
 | iMessage / Slack messages | No, and probably should not be added — privacy footprint exceeds redaction's reach | Don't |
 
 If after that filter you still want to add a source, read on.
@@ -27,7 +27,7 @@ Two distinct identifiers are involved; pick a value for each.
 
 **`events.source_kind`** distinguishes rows in the events table. Today's set: `'shell'` and `'claude-tool'` (rows where `tool_name IS NOT NULL`). Pick a kebab-case value if your source writes into the `events` table. Sources with their own table (browser, claude-session) don't need a `source_kind` value.
 
-**`source_health.source`** is the watchdog's per-source heartbeat key. Today's set: `'shell'`, `'claude-tool'`, `'agentic-session-claude'`, `'claude-session-watcher'`, `'browser'`, `'workflow'`, `'watchdog'`. (Note: there is no `'probe'` row — probes write `probe_ok` / `probe_lag_ms` / `probe_last_run_ts` onto the *real* source's row, not into a separate probe heartbeat.)
+**`source_health.source`** is the watchdog's per-source heartbeat key. Today's set: `'shell'`, `'claude-tool'`, `'agentic-session-claude'`, `'agentic-session-opencode'`, `'agentic-session-codex'`, `'agentic-session-cursor'`, `'browser'`, `'claude-session-watcher'`, `'watchdog'`, `'brain-preflight'`. (Note: there is no `'probe'` row — probes write `probe_ok` / `probe_lag_ms` / `probe_last_run_ts` onto the *real* source's row, not into a separate probe heartbeat.)
 
 The new value goes in:
 

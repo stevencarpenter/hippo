@@ -3,7 +3,7 @@
 # Test Matrix for Capture Reliability
 
 This matrix is the companion to [`architecture.md`](architecture.md) (where
-the I-1..I-12 invariants live) and [`anti-patterns.md`](anti-patterns.md). It
+the I-1..I-15 invariants live) and [`anti-patterns.md`](anti-patterns.md). It
 exists to make one question answerable at a glance: **for every failure
 avenue we know about, is there a test that would have caught it?**
 
@@ -22,7 +22,7 @@ a one-line change rather than "remember to write the test later".
 - **`blocked-on-P0.X`** — test skeleton exists with `#[ignore]`; fires when the named roadmap task lands
 - **`source-change-required`** — test cannot be written without a source change that is outside the scope of this PR; noted here so the gap is explicit
 
-"Invariant" refers to I-1..I-12 defined in architecture.md.
+"Invariant" refers to I-1..I-15 defined in architecture.md.
 
 ## Failure modes
 
@@ -57,6 +57,11 @@ a one-line change rather than "remember to write the test later".
 | F-27 | Opencode brain claim path bypasses `agentic_enrichment_queue` — enrichment failures lose segments | review of PR #149: direct `enriched=1` flip with no retry | brain unit | `brain/tests/test_opencode_sessions.py` (`TestClaimPath`, `TestMarkQueueFailed`) | new (this PR) | I-11 |
 | F-28 | Opencode junction-table insert uses malformed `VALUES (?, ?, …)` clause | review of PR #149: `len(segment_ids)` placeholders for a 2-col table | brain unit | `brain/tests/test_opencode_sessions.py::TestWriteKnowledgeNode` | new (this PR) | — |
 | F-29 | Brain preflight fails silently against a misconfigured inference backend (e.g. `[lmstudio]`→`[inference]` rename drift; oMLX port mismatch) and the enrichment queue stalls indefinitely with no alarm | 2026-05-10 incident: post-omlx config rename pointed brain at port 1234 forever; `lmstudio_reachable=false` was visible on `/health` but no watchdog invariant gated on it | rust unit (invariant) + rust integration (config-section guard) + python unit (config loader) | `crates/hippo-daemon/src/watchdog.rs::tests::watchdog_i12_*`, `crates/hippo-core/src/config.rs::tests::test_legacy_lmstudio_section_is_rejected`, `brain/tests/test_init.py::test_load_runtime_settings_rejects_legacy_lmstudio_section`, `brain/tests/test_mcp_server.py::test_legacy_lmstudio_section_is_rejected` | new (this PR) | I-12 |
+| F-30 | Cursor transcript lands zero rows in `claude_sessions` (poll_tick silent skip) | cursor_session poller ships; I-15 guards proxy predicate | rust integration | `crates/hippo-daemon/tests/source_audit/cursor_agent.rs::cursor_agent_transcript_lands_row_and_bumps_health` | new (cursor-ingestion PR) | I-15 |
+| F-31 | Cursor `source_health` row not bumped on successful ingest | same as F-30 | rust integration | `crates/hippo-daemon/tests/cursor_session.rs::poll_tick_ingests_idle_files_and_advances_cursor` | new (cursor-ingestion PR) | I-15 |
+| F-32 | Zero-segment Cursor transcript bumps `source_health` erroneously | boundary: file with no parseable segments | rust unit | `crates/hippo-daemon/tests/cursor_session.rs::poll_tick_zero_segment_file_advances_cursor_without_health_bump` | new (cursor-ingestion PR) | I-15 |
+| F-33 | Cursor probe fails when `~/.cursor/projects` is absent or contains no settled transcripts | probe trivial-pass path | rust unit | `crates/hippo-daemon/src/probe.rs::tests::cursor_probe_trivial_pass_when_no_transcripts` | new (cursor-ingestion PR) | I-15 |
+| F-34 | Cursor probe rows appear in user-facing queries (AP-6 regression) | shared `probe_tag IS NULL` filter | static analysis (semgrep) | shared `.semgrep.yml` rule — same `probe_tag IS NULL` Semgrep rule covers all `claude_sessions` queries | existing (shared filter) | AP-6 |
 
 ### Phase 1 (Bug A) test coverage — F-25
 
@@ -111,6 +116,9 @@ uv run --project brain pytest brain/tests/test_claude_sessions.py::TestContentHa
 | I-10 Capture decoupled from enrichment | F-14 | blocked-on-P0.2 |
 | I-11 Opencode-session coverage proxy | F-26, F-27 | new (this PR) — production probe still deferred |
 | I-12 Brain preflight stuck | F-29 | new (this PR) — gates on `brain-preflight.consecutive_failures > 12` |
+| I-13 Codex-session coverage proxy | — | implemented in watchdog; test coverage via watchdog unit tests |
+| I-14 Embedding orphan backlog | — | implemented in watchdog; test coverage via watchdog unit tests |
+| I-15 Cursor-session coverage proxy | F-30, F-31, F-32, F-33, F-34 | new (cursor-ingestion PR) |
 
 Any invariant without at least one `new (this PR)` or `existing` row is by
 definition gated on a P0/P1/P2 task. If you see an invariant listed in
@@ -123,7 +131,7 @@ These are the failure modes that **cannot** be tested against `main` today:
 
 - **F-6 NM manifest validation** — `hippo doctor` never reads the NM manifest. The doctor check would need ~20 lines in `commands.rs` (read JSON, resolve `path`, assert executable, assert `allowed_extensions` contains `hippo-browser@local`). Test skeleton exists; remove `#[ignore]` once the source check lands.
 - **F-8 Fallback age in doctor** — `storage::list_fallback_files` returns paths sorted by name; doctor only prints a count. An age check requires either (a) reading each file's mtime in doctor, or (b) a new `storage::list_stale_fallback_files(dir, cutoff_ms)` helper. Test skeleton exists; source change tracked by follow-up issue.
-- **F-10..F-14** — All require `source_health` table and the watchdog/probe subsystems from architecture.md, architecture.md, architecture.md. Skeletons live in `crates/hippo-daemon/tests/capture_invariants.rs`.
+- **F-10..F-14** — All require `source_health` table and the watchdog/probe subsystems from architecture.md. Skeletons live in `crates/hippo-daemon/tests/capture_invariants.rs`.
 - **F-15** — `#53` is about the plumbing from "hippo CI failure" → `upsert_cluster`; the `lessons.py` logic itself has solid unit coverage (`brain/tests/test_lessons.py`). Our xfail test asserts the **end-to-end** pipeline. It will stay xfail until the plumbing ships.
 
 ## Running the tests

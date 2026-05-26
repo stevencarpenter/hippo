@@ -135,6 +135,8 @@ pub enum Commands {
     OpencodePoll,
     /// Poll Codex CLI rollout files and ingest new sessions.
     CodexPoll,
+    /// Poll Cursor Agent CLI transcript files and ingest new sessions.
+    CursorPoll,
     /// Run the daemon in the foreground (alias for `daemon run`).
     ///
     /// BT-09: shipped so `hippo serve` no longer fails with "unrecognized
@@ -295,6 +297,14 @@ pub enum IngestSource {
     /// Import a Claude Code session JSONL file
     ClaudeSession {
         /// Path to the JSONL session file
+        path: String,
+        /// Wait up to N seconds for the file to appear before importing (default: 0 = no wait)
+        #[arg(long, default_value_t = 0)]
+        wait_for_file: u64,
+    },
+    /// Import a Cursor Agent transcript JSONL file
+    CursorSession {
+        /// Path to the JSONL transcript file
         path: String,
         /// Wait up to N seconds for the file to appear before importing (default: 0 = no wait)
         #[arg(long, default_value_t = 0)]

@@ -27,6 +27,8 @@ pub struct HippoConfig {
     #[serde(default)]
     pub codex: CodexConfig,
     #[serde(default)]
+    pub cursor: CursorConfig,
+    #[serde(default)]
     pub reaper: ReaperConfig,
 }
 
@@ -623,6 +625,55 @@ impl Default for CodexConfig {
     }
 }
 
+fn default_cursor_enabled() -> bool {
+    true
+}
+
+fn default_cursor_poll_interval_secs() -> u64 {
+    60
+}
+
+fn default_cursor_min_idle_secs() -> u64 {
+    60
+}
+
+fn default_cursor_session_roots() -> Vec<PathBuf> {
+    let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
+    vec![home.join(".cursor/projects")]
+}
+
+/// Cursor Agent CLI transcript ingestion. The poller walks `session_roots`
+/// for `agent-transcripts/**/*.jsonl` files (main + subagents) and writes
+/// segmented rows into `claude_sessions`, distinguished by the `.cursor/`
+/// path stored in the `source_file` column.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CursorConfig {
+    /// Enable Cursor session ingestion. When false, `poll_tick` is a no-op.
+    #[serde(default = "default_cursor_enabled")]
+    pub enabled: bool,
+    /// Directories scanned recursively for `agent-transcripts/**/*.jsonl`.
+    #[serde(default = "default_cursor_session_roots")]
+    pub session_roots: Vec<PathBuf>,
+    /// Skip files modified within this many seconds — they may be in-flight
+    /// and a partial read would freeze the segment at an early state.
+    #[serde(default = "default_cursor_min_idle_secs")]
+    pub min_idle_secs: u64,
+    /// launchd StartInterval for the cursor-poll job, in seconds.
+    #[serde(default = "default_cursor_poll_interval_secs")]
+    pub poll_interval_secs: u64,
+}
+
+impl Default for CursorConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_cursor_enabled(),
+            session_roots: default_cursor_session_roots(),
+            min_idle_secs: default_cursor_min_idle_secs(),
+            poll_interval_secs: default_cursor_poll_interval_secs(),
+        }
+    }
+}
+
 impl HippoConfig {
     pub fn load(path: &Path) -> Result<Self> {
         // nosemgrep
@@ -1201,5 +1252,25 @@ strip_params = ["secret", "nonce"]
         assert_eq!(cfg.github.token_env, "HIPPO_GITHUB_TOKEN");
         assert_eq!(cfg.github.lessons.cluster_window_days, 30);
         assert_eq!(cfg.github.lessons.path_prefix_segments, 2);
+    }
+
+    #[test]
+    fn cursor_config_defaults_are_sane() {
+        let c = CursorConfig::default();
+        assert!(c.enabled);
+        assert_eq!(c.poll_interval_secs, 60);
+        assert_eq!(c.min_idle_secs, 60);
+        assert!(
+            c.session_roots
+                .iter()
+                .any(|p| p.ends_with(".cursor/projects"))
+        );
+    }
+
+    #[test]
+    fn hippo_config_has_cursor_with_default() {
+        let toml = "";
+        let cfg: HippoConfig = toml::from_str(toml).unwrap();
+        assert!(cfg.cursor.enabled);
     }
 }

@@ -1,16 +1,16 @@
 //! Capture-reliability watchdog — `hippo watchdog run`
 //!
 //! Short-lived process invoked every 60 s by launchd (`com.hippo.watchdog`).
-//! Asserts invariants I-1..I-14 — most against the `source_health` table,
-//! I-14 against the knowledge-node vector store — and writes
-//! rows to `capture_alarms` for any violations detected.  Rate-limited per
-//! invariant per sliding window (default 60 min).
+//! Asserts invariants I-1..I-13 and I-15 via `check_invariants` (against the
+//! `source_health` table), plus I-14 directly against the knowledge-node
+//! vector store — and writes rows to `capture_alarms` for any violations
+//! detected.  Rate-limited per invariant per sliding window (default 60 min).
 //!
 //! Five-step flow (detailed spec in `docs/archive/capture-reliability-overhaul/04-watchdog.md`;
 //! the live architectural overview lives at `docs/capture/architecture.md`):
 //!   1. Upsert own heartbeat into `source_health WHERE source='watchdog'`
 //!   2. Read full `source_health` in one `SELECT *`
-//!   3. Assert I-1..I-13 against in-memory rows
+//!   3. Assert I-1..I-13 + I-15 via check_invariants; I-14 via DB query
 //!   4. Insert `capture_alarms` rows for violations (rate-limited)
 //!   5. Update `last_success_ts` on watchdog row; return `Ok(())`
 //!
@@ -155,7 +155,9 @@ pub fn run(config: &HippoConfig) -> Result<()> {
     // ── Step 2: Read all source_health rows ───────────────────────────────
     let rows = read_source_health(&conn)?;
 
-    // ── Step 3: Assert invariants I-1..I-14 ──────────────────────────────
+    // ── Step 3: Assert invariants via check_invariants (I-1..I-13, I-15) ───
+    // I-14 runs outside check_invariants: it needs a DB query against
+    // knowledge_vectors, not just the in-memory source_health rows.
     let mut violations = check_invariants(&rows, now_ms);
     // I-14 needs a DB query, not just source_health rows — checked here.
     if let Some(v) = check_i14_embedding_orphans(
@@ -422,7 +424,12 @@ fn is_pause_lockfile_active(path: &std::path::Path, now: std::time::SystemTime) 
     }
 }
 
-/// Evaluate I-1..I-13 against the in-memory `source_health` rows.
+/// Evaluate I-1, I-2, I-4, I-8, I-11, I-12, I-13, I-15 against the
+/// in-memory `source_health` rows.
+///
+/// I-14 (embedding orphan backlog) is NOT included — it requires a DB query
+/// against `knowledge_vectors_rowids` and is evaluated by the caller
+/// immediately after this function returns.
 ///
 /// Returns one `InvariantViolation` per triggered invariant.
 /// Invariants that require filesystem access (I-2 proxy, I-9) or are
@@ -430,9 +437,9 @@ fn is_pause_lockfile_active(path: &std::path::Path, now: std::time::SystemTime) 
 /// violation or `None`; their full implementations land in later tasks.
 ///
 /// BT-16: when a hippo-bench pause window is active (per
-/// `bench_pause_window_active()`), I-2, I-4, and I-8 are suppressed —
-/// during a bench run prod brain is intentionally paused and capture
-/// freshness predicates would fire spuriously, drowning real alarms.
+/// `bench_pause_window_active()`), I-2, I-4, I-8, I-11, I-13, and I-15 are
+/// suppressed — during a bench run prod brain is intentionally paused and
+/// capture freshness predicates would fire spuriously, drowning real alarms.
 pub fn check_invariants(rows: &[SourceHealthRow], now_ms: i64) -> Vec<InvariantViolation> {
     let by_source: std::collections::HashMap<&str, &SourceHealthRow> =
         rows.iter().map(|r| (r.source.as_str(), r)).collect();
@@ -485,6 +492,11 @@ pub fn check_invariants(rows: &[SourceHealthRow], now_ms: i64) -> Vec<InvariantV
 
     // I-13: Codex-session coverage proxy.
     if !bench_paused && let Some(v) = check_i13_codex_coverage_proxy(&by_source, now_ms) {
+        violations.push(v);
+    }
+
+    // I-15: Cursor-session coverage proxy.
+    if !bench_paused && let Some(v) = check_i15_cursor_coverage_proxy(&by_source, now_ms) {
         violations.push(v);
     }
 
@@ -671,6 +683,28 @@ pub fn check_i13_codex_coverage_proxy(
         return Some(InvariantViolation {
             invariant_id: "I-13".to_string(),
             source: "agentic-session-codex".to_string(),
+            since_ms: age_ms,
+            details: json!({
+                "consecutive_failures": row.consecutive_failures,
+                "note": "proxy predicate; full freshness check lives in hippo doctor",
+            }),
+        });
+    }
+    None
+}
+
+/// I-15: Cursor-session coverage proxy. Mirrors I-13: alarm when the Cursor
+/// poller has failed repeatedly. Full freshness coverage is the doctor's job.
+pub fn check_i15_cursor_coverage_proxy(
+    by_source: &std::collections::HashMap<&str, &SourceHealthRow>,
+    now_ms: i64,
+) -> Option<InvariantViolation> {
+    let row = by_source.get("agentic-session-cursor")?;
+    if row.consecutive_failures > 3 {
+        let age_ms = coverage_proxy_since_ms(row, now_ms);
+        return Some(InvariantViolation {
+            invariant_id: "I-15".to_string(),
+            source: "agentic-session-cursor".to_string(),
             since_ms: age_ms,
             details: json!({
                 "consecutive_failures": row.consecutive_failures,
@@ -1847,6 +1881,46 @@ mod tests {
         let rows = vec![row];
         let result = check_i13_codex_coverage_proxy(&by_source(&rows), NOW).unwrap();
         assert_eq!(result.invariant_id, "I-13");
+        assert_eq!(result.since_ms, 45_000);
+    }
+
+    // ── I-15 (cursor coverage proxy) ───────────────────────────────────────
+
+    #[test]
+    fn i15_cursor_alarms_on_repeated_failures() {
+        let row = SourceHealthRow {
+            last_event_ts: Some(NOW - 10_000),
+            consecutive_failures: 4,
+            ..blank_row("agentic-session-cursor")
+        };
+        let rows = vec![row];
+        let v = check_i15_cursor_coverage_proxy(&by_source(&rows), NOW);
+        assert!(v.is_some());
+        assert_eq!(v.unwrap().invariant_id, "I-15");
+    }
+
+    #[test]
+    fn i15_cursor_suppressed_when_failures_low() {
+        let row = SourceHealthRow {
+            last_event_ts: Some(NOW - 600_000),
+            consecutive_failures: 2,
+            ..blank_row("agentic-session-cursor")
+        };
+        let rows = vec![row];
+        assert!(check_i15_cursor_coverage_proxy(&by_source(&rows), NOW).is_none());
+    }
+
+    #[test]
+    fn i15_cursor_alarms_on_first_run_failures() {
+        let row = SourceHealthRow {
+            last_event_ts: None,
+            consecutive_failures: 10,
+            updated_at: NOW - 45_000,
+            ..blank_row("agentic-session-cursor")
+        };
+        let rows = vec![row];
+        let result = check_i15_cursor_coverage_proxy(&by_source(&rows), NOW).unwrap();
+        assert_eq!(result.invariant_id, "I-15");
         assert_eq!(result.since_ms, 45_000);
     }
 

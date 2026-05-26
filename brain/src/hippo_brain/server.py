@@ -123,6 +123,7 @@ QUEUE_DEPTH_STATUSES = ("pending", "processing", "failed")
 CODEX_SOURCE_SQL = (
     "s.source_file LIKE '%/.codex/%' OR s.source_file LIKE '%/CodingAssistant/codex/%'"
 )
+CURSOR_SOURCE_SQL = "s.source_file LIKE '%/.cursor/%'"
 
 
 def _is_codex_source_file(source_file: str | None) -> bool:
@@ -131,9 +132,15 @@ def _is_codex_source_file(source_file: str | None) -> bool:
     )
 
 
+def _is_cursor_source_file(source_file: str | None) -> bool:
+    return bool(source_file and "/.cursor/" in source_file)
+
+
 def _source_label_for_claude_segments(segments: list[dict]) -> str:
     if segments and all(_is_codex_source_file(seg.get("source_file")) for seg in segments):
         return "codex"
+    if segments and all(_is_cursor_source_file(seg.get("source_file")) for seg in segments):
+        return "cursor"
     return "claude"
 
 
@@ -147,6 +154,15 @@ def _collect_queue_depths(conn: sqlite3.Connection) -> list[tuple[str, str, int]
             WHERE q.status = ?
               AND s.probe_tag IS NULL
               AND NOT ({CODEX_SOURCE_SQL})
+              AND NOT ({CURSOR_SOURCE_SQL})
+        """,
+        "cursor": f"""
+            SELECT COUNT(*)
+            FROM claude_enrichment_queue q
+            JOIN claude_sessions s ON q.claude_session_id = s.id
+            WHERE q.status = ?
+              AND s.probe_tag IS NULL
+              AND ({CURSOR_SOURCE_SQL})
         """,
         "codex": f"""
             SELECT COUNT(*)

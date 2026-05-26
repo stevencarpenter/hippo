@@ -164,14 +164,27 @@ pub(crate) fn extract_segments(
     let mut session_id = String::new();
     let mut session_cwd = String::new();
 
-    for line in raw.lines() {
+    for (line_idx, line) in raw.lines().enumerate() {
         let line = line.trim();
         if line.is_empty() {
             continue;
         }
         let obj: serde_json::Value = match serde_json::from_str(line) {
             Ok(v) => v,
-            Err(_) => continue,
+            Err(e) => {
+                // The `min_idle_secs` settle gate means the file is complete at
+                // ingest time, so a parse error indicates real corruption. Warn
+                // (naming file:line) instead of silently dropping content —
+                // AP-11. Continue rather than `return Err`: one corrupt line
+                // should not permanently wedge an otherwise-valid rollout by
+                // blocking cursor advance.
+                warn!(
+                    "codex: skipping unparseable JSON at {}:{} ({e})",
+                    path.display(),
+                    line_idx + 1
+                );
+                continue;
+            }
         };
         let entry_type = obj.get("type").and_then(|v| v.as_str()).unwrap_or("");
         let ts = parse_ts(obj.get("timestamp").and_then(|v| v.as_str()).unwrap_or(""));
@@ -287,7 +300,7 @@ pub(crate) fn extract_segments(
             seg.message_count += 1;
             if !user_text.is_empty() {
                 let redacted = redaction.redact(&user_text).text;
-                current_chars += redacted.len();
+                current_chars += redacted.chars().count();
                 seg.user_prompts.push(redacted);
             }
             continue;
@@ -320,7 +333,7 @@ pub(crate) fn extract_segments(
                 None => String::new(),
             };
             let summary = redaction.redact(&tool_summary(&args)).text;
-            current_chars += summary.len();
+            current_chars += summary.chars().count();
             seg.tool_calls.push(ToolCall {
                 name: name.to_string(),
                 summary,
@@ -333,7 +346,7 @@ pub(crate) fn extract_segments(
             if !text.is_empty() {
                 let capped: String = text.chars().take(300).collect();
                 let redacted = redaction.redact(&capped).text;
-                current_chars += redacted.len();
+                current_chars += redacted.chars().count();
                 seg.assistant_texts.push(redacted);
             }
         }
@@ -794,6 +807,7 @@ pub fn poll_tick(config: &HippoConfig) -> Result<usize> {
     let conn = hippo_core::storage::open_db(&config.db_path())?;
     let now_ms = chrono::Utc::now().timestamp_millis();
     let min_idle_ms = config.codex.min_idle_secs as i64 * 1000;
+    let redaction = crate::load_redaction_engine(config);
 
     let mut ingested = 0usize;
     for root in &config.codex.session_roots {
@@ -815,12 +829,21 @@ pub fn poll_tick(config: &HippoConfig) -> Result<usize> {
                 Ok(m) => m,
                 Err(_) => continue,
             };
-            let mtime_ms = meta
+            // Finding 3: an unreadable mtime would otherwise fall back to 0 and
+            // be silently skipped forever (mtime_ms <= cursor). Warn (naming the
+            // file) instead of skipping silently, then skip this tick.
+            let Some(mtime_ms) = meta
                 .modified()
                 .ok()
                 .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
                 .map(|d| d.as_millis() as i64)
-                .unwrap_or(0);
+            else {
+                warn!(
+                    "codex: unreadable mtime for {}, skipping this tick",
+                    path.display()
+                );
+                continue;
+            };
             // Skip in-flight files (avoid partial reads).
             if now_ms - mtime_ms < min_idle_ms {
                 continue;
@@ -829,7 +852,7 @@ pub fn poll_tick(config: &HippoConfig) -> Result<usize> {
             if mtime_ms <= read_cursor(&conn, &key) {
                 continue; // unchanged since last successful parse
             }
-            match ingest_file(&conn, path) {
+            match ingest_file(&conn, path, &redaction) {
                 Ok((count, session_id)) => {
                     ingested += count;
                     // Only bump health when real segments landed. A rollout
@@ -858,9 +881,12 @@ pub fn poll_tick(config: &HippoConfig) -> Result<usize> {
 }
 
 /// Parse one file and upsert all its segments in a single transaction.
-fn ingest_file(conn: &rusqlite::Connection, path: &Path) -> Result<(usize, String)> {
-    let redaction = RedactionEngine::builtin();
-    let segments = extract_segments(path, &redaction)?;
+fn ingest_file(
+    conn: &rusqlite::Connection,
+    path: &Path,
+    redaction: &RedactionEngine,
+) -> Result<(usize, String)> {
+    let segments = extract_segments(path, redaction)?;
     if segments.is_empty() {
         return Ok((0, String::new()));
     }
@@ -1264,6 +1290,26 @@ mod tests {
         assert!(
             !ids.contains("codex-probe"),
             "probe row must be excluded; got {ids:?}"
+        );
+    }
+
+    /// Round-3 #1: a single corrupted JSONL line must NOT wedge the rollout.
+    /// The bad line is skipped (warn logged) and surrounding valid lines still
+    /// produce a segment. Mirrors cursor_session for parser-class parity.
+    #[test]
+    fn extract_segments_warns_and_continues_on_unparseable_line() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("rollout-bad.jsonl");
+        let lines = [
+            r#"{"timestamp":"2026-04-04T00:00:00.000Z","type":"session_meta","payload":{"id":"abc","timestamp":"2026-04-04T00:00:00.000Z","cwd":"/proj"}}"#,
+            r#"{this is not { valid json"#,
+            r#"{"timestamp":"2026-04-04T00:00:01.000Z","type":"event_msg","payload":{"type":"user_message","message":"first request"}}"#,
+        ];
+        std::fs::write(&p, lines.join("\n")).unwrap();
+        let segs = extract_segments(&p, &RedactionEngine::builtin()).unwrap();
+        assert!(
+            !segs.is_empty(),
+            "valid lines must still yield a segment despite the corrupt middle line"
         );
     }
 }
