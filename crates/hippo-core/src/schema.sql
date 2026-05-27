@@ -541,39 +541,54 @@ CREATE TABLE IF NOT EXISTS claude_session_parity (
 CREATE INDEX IF NOT EXISTS idx_claude_session_parity_path_window
     ON claude_session_parity (path, window_start);
 
--- ─── v14: Agentic sessions and cursor tracking (opencode ingestion) ─────
+-- ─── v14/v17: Agentic sessions and cursor tracking ─────────────────────
 --
 -- `agentic_sessions` replaces `claude_sessions` semantics. All harnesses
--- (claude-code, opencode, codex) share the same table; the `harness` column
--- disambiguates their origin. The brain's enrichment contract reads from
--- this table and writes knowledge nodes; the daemon's pollers INSERT/UPsert
--- here independently so a future harness like codex can slot in.
+-- (claude-code, opencode, codex, cursor) share the same table; the `harness`
+-- column disambiguates their origin. The brain's enrichment contract reads
+-- from this table and writes knowledge nodes; the daemon's pollers
+-- INSERT/UPSERT here independently.
+--
+-- v14 shipped this table opencode-shaped: one row per session, no
+-- `segment_index`. v17 rebuilt it to be **segment-capable** so claude-code,
+-- codex, and cursor (which all segment their sessions) can be migrated onto
+-- it in Wave 2 of the unification series (#155). Today (post-v17) only the
+-- opencode poller writes here — every row has `segment_index = 0`. The
+-- 'cursor' harness value is accepted by the CHECK so Wave 2 won't be blocked
+-- on another rebuild, but no rows carry it yet.
 CREATE TABLE IF NOT EXISTS agentic_sessions (
-    id              INTEGER PRIMARY KEY,
-    session_id      TEXT    NOT NULL,
-    harness         TEXT    NOT NULL DEFAULT 'opencode'
-                        CHECK (harness IN ('claude-code', 'opencode', 'codex')),
-    model           TEXT    NOT NULL DEFAULT '',
-    agent           TEXT    DEFAULT '',
-    project_dir     TEXT    NOT NULL,
-    cwd             TEXT    NOT NULL,
-    slug            TEXT    DEFAULT '',
-    title           TEXT    DEFAULT '',
-    parent_session_id TEXT,
-    summary_text    TEXT    NOT NULL,
-    source_file     TEXT    DEFAULT '',
-    snapshot_diffs_json TEXT DEFAULT 'null',
-    commit_messages_json TEXT DEFAULT '[]',
-    message_count   INTEGER NOT NULL DEFAULT 0,
-    token_count     INTEGER NOT NULL DEFAULT 0,
-    start_time      INTEGER NOT NULL,
-    end_time        INTEGER NOT NULL,
-    created_at      INTEGER NOT NULL DEFAULT (unixepoch('now', 'subsec') * 1000),
-    enriched        INTEGER NOT NULL DEFAULT 0,
+    id                          INTEGER PRIMARY KEY,
+    session_id                  TEXT    NOT NULL,
+    harness                     TEXT    NOT NULL DEFAULT 'opencode'
+                                    CHECK (harness IN ('claude-code', 'opencode', 'codex', 'cursor')),
+    segment_index               INTEGER NOT NULL DEFAULT 0,
+    model                       TEXT    NOT NULL DEFAULT '',
+    agent                       TEXT    DEFAULT '',
+    project_dir                 TEXT    NOT NULL,
+    cwd                         TEXT    NOT NULL,
+    git_branch                  TEXT,
+    slug                        TEXT    DEFAULT '',
+    title                       TEXT    DEFAULT '',
+    parent_session_id           TEXT,
+    is_subagent                 INTEGER NOT NULL DEFAULT 0,
+    summary_text                TEXT    NOT NULL,
+    tool_calls_json             TEXT,
+    user_prompts_json           TEXT,
+    source_file                 TEXT    DEFAULT '',
+    snapshot_diffs_json         TEXT    DEFAULT 'null',
+    commit_messages_json        TEXT    DEFAULT '[]',
+    message_count               INTEGER NOT NULL DEFAULT 0,
+    token_count                 INTEGER NOT NULL DEFAULT 0,
+    start_time                  INTEGER NOT NULL,
+    end_time                    INTEGER NOT NULL,
+    content_hash                TEXT,
+    last_enriched_content_hash  TEXT,
+    created_at                  INTEGER NOT NULL DEFAULT (unixepoch('now', 'subsec') * 1000),
+    enriched                    INTEGER NOT NULL DEFAULT 0,
     -- AP-6: synthetic probe rows carry a non-NULL sentinel; every user-facing
     -- query must add `AND probe_tag IS NULL`. NULL on all real sessions.
-    probe_tag       TEXT,
-    UNIQUE (session_id, harness)
+    probe_tag                   TEXT,
+    UNIQUE (session_id, harness, segment_index)
 );
 
 CREATE INDEX IF NOT EXISTS idx_agentic_sessions_harness ON agentic_sessions (harness);
@@ -636,4 +651,4 @@ INSERT OR IGNORE INTO source_health (source, last_event_ts, updated_at) VALUES
 -- The `claude_session_offsets` table (deprecated since T-5) is preserved
 -- to avoid breaking existing CREATE SCHEMA users.
 
-PRAGMA user_version = 16;
+PRAGMA user_version = 17;

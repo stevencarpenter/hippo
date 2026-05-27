@@ -13,7 +13,7 @@ const SCHEMA: &str = include_str!("schema.sql");
 /// startup code (e.g. the brain handshake) can cross-check without
 /// re-declaring the value. Keep in sync with
 /// `brain/src/hippo_brain/schema_version.py::EXPECTED_SCHEMA_VERSION`.
-pub const EXPECTED_VERSION: i64 = 16;
+pub const EXPECTED_VERSION: i64 = 17;
 
 /// Idempotent `ALTER TABLE … ADD COLUMN`. Pre-checks `PRAGMA table_info`
 /// for the column name; if absent, runs the supplied DDL. Used by
@@ -43,6 +43,41 @@ fn table_exists(conn: &Connection, table: &str) -> Result<bool> {
         [table],
         |row| row.get(0),
     )?)
+}
+
+/// Verify a just-rebuilt table has no foreign-key violations.
+///
+/// `PRAGMA foreign_key_check` returns one result row per violation
+/// — `(table, rowid, parent, fkid)` — and does NOT raise an error. Run
+/// inside `execute_batch` those rows are silently discarded, so the
+/// migration would happily commit `user_version` past a broken rebuild.
+/// This helper runs the check as a real query that inspects rows, and
+/// bails with `anyhow::Error` when any are returned.
+///
+/// Call after the DDL portion of a table-rebuild migration and BEFORE
+/// committing the version bump; on bail, the open transaction rolls back
+/// implicitly when the connection drops.
+fn enforce_no_fk_violations(conn: &Connection, context: &str) -> Result<()> {
+    let violations: Vec<(String, Option<i64>, String, i64)> = conn
+        .prepare("PRAGMA foreign_key_check")?
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, Option<i64>>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, i64>(3)?,
+            ))
+        })?
+        .collect::<rusqlite::Result<_>>()?;
+
+    if !violations.is_empty() {
+        anyhow::bail!(
+            "Foreign-key violations detected after {} migration: {:?}",
+            context,
+            violations
+        );
+    }
+    Ok(())
 }
 
 fn normalize_agentic_sessions_schema(conn: &Connection) -> Result<()> {
@@ -826,6 +861,10 @@ pub fn open_db(path: &Path) -> Result<Connection> {
             |row| row.get(0),
         )?;
         if entities_exists {
+            // Phase 1: rebuild the table inside an explicit transaction.
+            // foreign_keys is OFF for the whole rebuild so the textual-FK
+            // rename in `ALTER TABLE … RENAME` doesn't trip a transient
+            // violation. The transaction stays open across phases.
             conn.execute_batch(
                 "PRAGMA foreign_keys = OFF;
                  BEGIN;
@@ -852,15 +891,18 @@ pub fn open_db(path: &Path) -> Result<Connection> {
                  ALTER TABLE entities_new RENAME TO entities;
                  CREATE INDEX IF NOT EXISTS idx_entities_type_name ON entities (type, name);
                  CREATE INDEX IF NOT EXISTS idx_entities_canonical ON entities (canonical)
-                     WHERE canonical IS NOT NULL;
-                 -- Defensive: SQLite's table-recreate recipe recommends a
-                 -- foreign_key_check before COMMIT so a future schema
-                 -- evolution that breaks the textual-FK-name resolution
-                 -- assumption surfaces here, not at the next FK-touching
-                 -- write. Cheap (one-pass scan of FK rows) and runs once
-                 -- per upgrade.
-                 PRAGMA foreign_key_check;
-                 PRAGMA user_version = 13;
+                     WHERE canonical IS NOT NULL;",
+            )?;
+
+            // Phase 2: verify FK invariants. MUST be a query, not
+            // `execute_batch` — `PRAGMA foreign_key_check` returns rows
+            // for violations and never errors, so a bundled check would
+            // be silently dropped on the floor.
+            enforce_no_fk_violations(&conn, "v12→v13 entities rebuild")?;
+
+            // Phase 3: bump version + commit + re-enable FK enforcement.
+            conn.execute_batch(
+                "PRAGMA user_version = 13;
                  COMMIT;
                  PRAGMA foreign_keys = ON;",
             )?;
@@ -999,6 +1041,134 @@ pub fn open_db(path: &Path) -> Result<Connection> {
             )?;
         }
         conn.execute_batch("PRAGMA user_version = 16;")?;
+    }
+
+    // v16→v17: rebuild `agentic_sessions` to be segment-capable so all four
+    // harnesses (claude-code, opencode, codex, cursor) can share one table.
+    // The v14 shape was opencode-only — one row per session, no
+    // `segment_index` — which blocks unification with claude-code/codex/cursor
+    // (each segments by task boundary, char cap, etc.).
+    //
+    // Changes vs. v16:
+    //   - 7 columns added: `segment_index`, `git_branch`, `is_subagent`,
+    //     `tool_calls_json`, `user_prompts_json`, `content_hash`,
+    //     `last_enriched_content_hash`. Each comes with a default so existing
+    //     opencode rows migrate cleanly; `segment_index` is hard-set to 0 in
+    //     the INSERT … SELECT.
+    //   - harness CHECK widens to include 'cursor'. No rows carry that value
+    //     yet (Wave 2 starts writing them); the constraint must accept it
+    //     now so Wave 2 isn't blocked on another rebuild.
+    //   - UNIQUE constraint swaps from `(session_id, harness)` to
+    //     `(session_id, harness, segment_index)`. SQLite can't alter UNIQUE
+    //     in place — only the table-rebuild recipe works.
+    //
+    // FK-resolution-by-name: `knowledge_node_agentic_sessions` and
+    // `agentic_enrichment_queue` both reference `agentic_sessions(id)` by
+    // textual name, so the ALTER TABLE RENAME re-binds them automatically.
+    // The `PRAGMA foreign_key_check` before COMMIT guards against a future
+    // edit that breaks this assumption — a clean DB returns no rows.
+    //
+    // Idempotency: `DROP TABLE IF EXISTS agentic_sessions_new` at the top of
+    // BEGIN lets a partial-success crash (e.g. crash between INSERT and DROP)
+    // be safely retried. Modeled on the v12→v13 entities rebuild at line ~822.
+    if (1..=16).contains(&version) {
+        let agentic_sessions_exists: bool = conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='agentic_sessions')",
+            [],
+            |row| row.get(0),
+        )?;
+        if agentic_sessions_exists {
+            // Normalize first so the SELECT in the rebuild can always reference
+            // `probe_tag` — already-v14 databases that bypassed the normalize
+            // step would otherwise be missing it. Idempotent no-op when present.
+            normalize_agentic_sessions_schema(&conn)?;
+
+            // Phase 1: rebuild the table inside an explicit transaction.
+            // foreign_keys is OFF for the whole rebuild so the textual-FK
+            // rename in `ALTER TABLE … RENAME` doesn't trip a transient
+            // violation. The transaction stays open across phases.
+            conn.execute_batch(
+                "PRAGMA foreign_keys = OFF;
+                 BEGIN;
+                 DROP TABLE IF EXISTS agentic_sessions_new;
+                 CREATE TABLE agentic_sessions_new (
+                     id                          INTEGER PRIMARY KEY,
+                     session_id                  TEXT    NOT NULL,
+                     harness                     TEXT    NOT NULL DEFAULT 'opencode'
+                                                     CHECK (harness IN ('claude-code', 'opencode', 'codex', 'cursor')),
+                     segment_index               INTEGER NOT NULL DEFAULT 0,
+                     model                       TEXT    NOT NULL DEFAULT '',
+                     agent                       TEXT    DEFAULT '',
+                     project_dir                 TEXT    NOT NULL,
+                     cwd                         TEXT    NOT NULL,
+                     git_branch                  TEXT,
+                     slug                        TEXT    DEFAULT '',
+                     title                       TEXT    DEFAULT '',
+                     parent_session_id           TEXT,
+                     is_subagent                 INTEGER NOT NULL DEFAULT 0,
+                     summary_text                TEXT    NOT NULL,
+                     tool_calls_json             TEXT,
+                     user_prompts_json           TEXT,
+                     source_file                 TEXT    DEFAULT '',
+                     snapshot_diffs_json         TEXT    DEFAULT 'null',
+                     commit_messages_json        TEXT    DEFAULT '[]',
+                     message_count               INTEGER NOT NULL DEFAULT 0,
+                     token_count                 INTEGER NOT NULL DEFAULT 0,
+                     start_time                  INTEGER NOT NULL,
+                     end_time                    INTEGER NOT NULL,
+                     content_hash                TEXT,
+                     last_enriched_content_hash  TEXT,
+                     created_at                  INTEGER NOT NULL DEFAULT (unixepoch('now', 'subsec') * 1000),
+                     enriched                    INTEGER NOT NULL DEFAULT 0,
+                     -- AP-6: synthetic probe rows carry a non-NULL sentinel;
+                     -- every user-facing query must add `AND probe_tag IS NULL`.
+                     probe_tag                   TEXT,
+                     UNIQUE (session_id, harness, segment_index)
+                 );
+                 INSERT INTO agentic_sessions_new
+                    (id, session_id, harness, segment_index, model, agent,
+                     project_dir, cwd, slug, title, parent_session_id,
+                     summary_text, source_file, snapshot_diffs_json,
+                     commit_messages_json, message_count, token_count,
+                     start_time, end_time, created_at, enriched, probe_tag)
+                 SELECT
+                    id, session_id, harness, 0 AS segment_index, model, agent,
+                    project_dir, cwd, slug, title, parent_session_id,
+                    summary_text, source_file, snapshot_diffs_json,
+                    commit_messages_json, message_count, token_count,
+                    start_time, end_time, created_at, enriched, probe_tag
+                 FROM agentic_sessions;
+                 DROP TABLE agentic_sessions;
+                 ALTER TABLE agentic_sessions_new RENAME TO agentic_sessions;
+                 CREATE INDEX IF NOT EXISTS idx_agentic_sessions_harness
+                     ON agentic_sessions (harness);
+                 CREATE INDEX IF NOT EXISTS idx_agentic_sessions_cwd
+                     ON agentic_sessions (cwd);
+                 CREATE INDEX IF NOT EXISTS idx_agentic_sessions_start_time
+                     ON agentic_sessions (start_time DESC);
+                 CREATE INDEX IF NOT EXISTS idx_agentic_sessions_enriched
+                     ON agentic_sessions (enriched) WHERE enriched = 0;",
+            )?;
+
+            // Phase 2: verify FK invariants. MUST be a query, not
+            // `execute_batch` — `PRAGMA foreign_key_check` returns rows
+            // for violations and never errors, so a bundled check would
+            // be silently dropped on the floor and a broken rebuild
+            // would commit `user_version = 17` anyway.
+            enforce_no_fk_violations(&conn, "v16→v17 agentic_sessions rebuild")?;
+
+            // Phase 3: bump version + commit + re-enable FK enforcement.
+            conn.execute_batch(
+                "PRAGMA user_version = 17;
+                 COMMIT;
+                 PRAGMA foreign_keys = ON;",
+            )?;
+        } else {
+            // No agentic_sessions table to rebuild (only happens in partial-
+            // schema test DBs); still advance the version so the migration
+            // doesn't re-trigger on every open. Mirrors v12→v13 / v11→v12.
+            conn.execute_batch("PRAGMA user_version = 17;")?;
+        }
     } else if version != 0 && version != EXPECTED_VERSION {
         anyhow::bail!(
             "DB schema version mismatch: expected {}, found {}. \
@@ -3539,6 +3709,303 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM events", [], |r| r.get(0))
             .unwrap();
         assert_eq!(event_count_after, 1);
+    }
+
+    /// v16→v17: rebuild `agentic_sessions` to be segment-capable so all four
+    /// harnesses (claude-code, opencode, codex, cursor) can share the same
+    /// table. The migration adds `segment_index`, `git_branch`, `is_subagent`,
+    /// `tool_calls_json`, `user_prompts_json`, `content_hash`,
+    /// `last_enriched_content_hash`, widens the `harness` CHECK to include
+    /// 'cursor', and swaps `UNIQUE(session_id, harness)` to
+    /// `UNIQUE(session_id, harness, segment_index)`. Existing opencode rows
+    /// are migrated to `segment_index = 0`.
+    ///
+    /// `PRAGMA foreign_key_check` returns rows for violations and never
+    /// raises — bundling it inside `execute_batch` silently discards them,
+    /// so the migration would commit a broken rebuild. `enforce_no_fk_violations`
+    /// queries the rows explicitly. Verify the happy path is a no-op.
+    #[test]
+    fn test_enforce_no_fk_violations_passes_clean_db() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE parent (id INTEGER PRIMARY KEY);
+             CREATE TABLE child (id INTEGER PRIMARY KEY, parent_id INTEGER REFERENCES parent(id));
+             INSERT INTO parent VALUES (1);
+             INSERT INTO child VALUES (1, 1);",
+        )
+        .unwrap();
+        enforce_no_fk_violations(&conn, "test").expect("clean DB must pass FK check");
+    }
+
+    /// Synthetic orphan: a child row whose FK points at a non-existent
+    /// parent (inserted with foreign_keys=OFF, as a real broken-rebuild
+    /// would leave behind). The helper must surface this — proving that
+    /// the migration code path now catches what `execute_batch` ignored.
+    #[test]
+    fn test_enforce_no_fk_violations_bails_on_orphan() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "PRAGMA foreign_keys = OFF;
+             CREATE TABLE parent (id INTEGER PRIMARY KEY);
+             CREATE TABLE child (id INTEGER PRIMARY KEY, parent_id INTEGER REFERENCES parent(id));
+             INSERT INTO child VALUES (1, 999);",
+        )
+        .unwrap();
+        let err = enforce_no_fk_violations(&conn, "v99→v100 test rebuild")
+            .expect_err("orphaned FK must trigger bail");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("Foreign-key violations"),
+            "error must name the failure mode: {msg}"
+        );
+        assert!(
+            msg.contains("v99→v100 test rebuild"),
+            "error must include the migration context label: {msg}"
+        );
+        assert!(
+            msg.contains("child"),
+            "error must include the offending child table: {msg}"
+        );
+    }
+
+    /// This test is the golden migration test for #155 (unification 1/6).
+    #[test]
+    fn test_migrate_v16_to_v17_rebuilds_agentic_sessions_for_segments() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("test.db");
+
+        // Build a v16-shaped agentic_sessions table plus its FK dependents
+        // (knowledge_node_agentic_sessions, agentic_enrichment_queue), and
+        // seed one opencode row + a related queue row + a related
+        // knowledge-node join row so we can prove every kind of FK survives
+        // the rebuild.
+        {
+            let conn = rusqlite::Connection::open(&db_path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE knowledge_nodes (
+                    id INTEGER PRIMARY KEY
+                );
+                INSERT INTO knowledge_nodes (id) VALUES (1);
+
+                CREATE TABLE agentic_sessions (
+                    id              INTEGER PRIMARY KEY,
+                    session_id      TEXT    NOT NULL,
+                    harness         TEXT    NOT NULL DEFAULT 'opencode'
+                                        CHECK (harness IN ('claude-code', 'opencode', 'codex')),
+                    model           TEXT    NOT NULL DEFAULT '',
+                    agent           TEXT    DEFAULT '',
+                    project_dir     TEXT    NOT NULL,
+                    cwd             TEXT    NOT NULL,
+                    slug            TEXT    DEFAULT '',
+                    title           TEXT    DEFAULT '',
+                    parent_session_id TEXT,
+                    summary_text    TEXT    NOT NULL,
+                    source_file     TEXT    DEFAULT '',
+                    snapshot_diffs_json TEXT DEFAULT 'null',
+                    commit_messages_json TEXT DEFAULT '[]',
+                    message_count   INTEGER NOT NULL DEFAULT 0,
+                    token_count     INTEGER NOT NULL DEFAULT 0,
+                    start_time      INTEGER NOT NULL,
+                    end_time        INTEGER NOT NULL,
+                    created_at      INTEGER NOT NULL DEFAULT 1700000000000,
+                    enriched        INTEGER NOT NULL DEFAULT 0,
+                    probe_tag       TEXT,
+                    UNIQUE (session_id, harness)
+                );
+                CREATE INDEX idx_agentic_sessions_harness ON agentic_sessions (harness);
+                CREATE INDEX idx_agentic_sessions_cwd ON agentic_sessions (cwd);
+                CREATE INDEX idx_agentic_sessions_start_time ON agentic_sessions (start_time DESC);
+                CREATE INDEX idx_agentic_sessions_enriched ON agentic_sessions (enriched) WHERE enriched = 0;
+
+                CREATE TABLE knowledge_node_agentic_sessions (
+                    knowledge_node_id  INTEGER NOT NULL REFERENCES knowledge_nodes (id),
+                    agentic_session_id INTEGER NOT NULL REFERENCES agentic_sessions (id) ON DELETE CASCADE,
+                    PRIMARY KEY (knowledge_node_id, agentic_session_id)
+                );
+
+                CREATE TABLE agentic_enrichment_queue (
+                    id              INTEGER PRIMARY KEY,
+                    session_id      INTEGER NOT NULL UNIQUE REFERENCES agentic_sessions (id),
+                    status          TEXT    NOT NULL DEFAULT 'pending'
+                                        CHECK (status IN ('pending', 'processing', 'done', 'failed', 'skipped')),
+                    priority        INTEGER NOT NULL DEFAULT 5,
+                    retry_count     INTEGER NOT NULL DEFAULT 0,
+                    max_retries     INTEGER NOT NULL DEFAULT 5,
+                    error_message   TEXT,
+                    locked_at       INTEGER,
+                    locked_by       TEXT,
+                    enqueued_at     INTEGER NOT NULL,
+                    updated_at      INTEGER NOT NULL
+                );
+
+                INSERT INTO agentic_sessions
+                    (id, session_id, harness, project_dir, cwd, summary_text,
+                     start_time, end_time, token_count)
+                VALUES
+                    (42, 'sess-keep', 'opencode', '/proj', '/proj',
+                     'pre-migration summary', 1700000000000, 1700000001000, 7);
+
+                INSERT INTO knowledge_node_agentic_sessions
+                    (knowledge_node_id, agentic_session_id) VALUES (1, 42);
+
+                INSERT INTO agentic_enrichment_queue
+                    (session_id, status, enqueued_at, updated_at)
+                VALUES
+                    (42, 'done', 1700000000500, 1700000000500);
+
+                PRAGMA user_version = 16;",
+            )
+            .unwrap();
+        }
+
+        let conn = open_db(&db_path).unwrap();
+
+        // 1) Schema lands at EXPECTED_VERSION (v17 after this PR).
+        let v: i64 = conn
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(v, EXPECTED_VERSION, "must reach EXPECTED_VERSION");
+        assert_eq!(v, 17, "EXPECTED_VERSION must have been bumped to 17");
+
+        // 2) The pre-migration opencode row is preserved with segment_index = 0
+        // and all its other values intact (rowid, end_time, token_count, summary).
+        let (sid, sx, end_time, tok, summary, harness): (String, i64, i64, i64, String, String) =
+            conn.query_row(
+                "SELECT session_id, segment_index, end_time, token_count, summary_text, harness
+                 FROM agentic_sessions WHERE id = 42",
+                [],
+                |r| {
+                    Ok((
+                        r.get(0)?,
+                        r.get(1)?,
+                        r.get(2)?,
+                        r.get(3)?,
+                        r.get(4)?,
+                        r.get(5)?,
+                    ))
+                },
+            )
+            .unwrap();
+        assert_eq!(sid, "sess-keep");
+        assert_eq!(sx, 0, "every migrated row must have segment_index = 0");
+        assert_eq!(end_time, 1_700_000_001_000);
+        assert_eq!(tok, 7);
+        assert_eq!(summary, "pre-migration summary");
+        assert_eq!(harness, "opencode");
+
+        // 3) Foreign-key references survived rename: the
+        // knowledge_node_agentic_sessions row still resolves to rowid 42, and
+        // the agentic_enrichment_queue row still does too.
+        let kn_join: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM knowledge_node_agentic_sessions
+                 WHERE knowledge_node_id = 1 AND agentic_session_id = 42",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(kn_join, 1, "knowledge_node_agentic_sessions FK survives");
+        let queue_status: String = conn
+            .query_row(
+                "SELECT status FROM agentic_enrichment_queue WHERE session_id = 42",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(queue_status, "done", "agentic_enrichment_queue FK survives");
+
+        // 4) PRAGMA foreign_key_check returns zero violations after migration.
+        let mut stmt = conn.prepare("PRAGMA foreign_key_check").unwrap();
+        let count: usize = stmt
+            .query_map([], |_| Ok(()))
+            .unwrap()
+            .filter_map(|r| r.ok())
+            .count();
+        assert_eq!(count, 0, "foreign_key_check must report no violations");
+
+        // 5) The CHECK now accepts harness='cursor' (Wave 2 will start writing
+        // these; this PR widens the constraint so Wave 2 doesn't get blocked).
+        conn.execute(
+            "INSERT INTO agentic_sessions
+                (session_id, harness, segment_index, project_dir, cwd, summary_text,
+                 start_time, end_time)
+             VALUES ('sess-cursor', 'cursor', 0, '/p', '/p', 'cursor summary',
+                     1700000010000, 1700000011000)",
+            [],
+        )
+        .expect("post-migration cursor harness insert must succeed");
+
+        // 6) New unique constraint is (session_id, harness, segment_index):
+        // inserting the same triple raises a UNIQUE violation, but a new
+        // segment_index on the same (session_id, harness) succeeds.
+        let err = conn
+            .execute(
+                "INSERT INTO agentic_sessions
+                    (session_id, harness, segment_index, project_dir, cwd, summary_text,
+                     start_time, end_time)
+                 VALUES ('sess-cursor', 'cursor', 0, '/p', '/p', 'dup',
+                         1700000020000, 1700000021000)",
+                [],
+            )
+            .expect_err("duplicate (session_id, harness, segment_index) must fail");
+        let err_msg = format!("{err}");
+        assert!(
+            err_msg.to_lowercase().contains("unique"),
+            "expected UNIQUE violation, got: {err_msg}",
+        );
+
+        conn.execute(
+            "INSERT INTO agentic_sessions
+                (session_id, harness, segment_index, project_dir, cwd, summary_text,
+                 start_time, end_time)
+             VALUES ('sess-cursor', 'cursor', 1, '/p', '/p', 'seg 1',
+                     1700000020000, 1700000021000)",
+            [],
+        )
+        .expect("a new segment_index on the same (session_id, harness) must succeed");
+
+        // 7) All seven added columns exist on the post-migration table.
+        for col in [
+            "segment_index",
+            "git_branch",
+            "is_subagent",
+            "tool_calls_json",
+            "user_prompts_json",
+            "content_hash",
+            "last_enriched_content_hash",
+        ] {
+            let exists: bool = conn
+                .query_row(
+                    "SELECT EXISTS(
+                        SELECT 1 FROM pragma_table_info('agentic_sessions')
+                        WHERE name = ?1
+                    )",
+                    [col],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert!(exists, "post-migration column '{col}' must exist");
+        }
+
+        // 8) The four indexes are recreated on the renamed table.
+        let idx_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master
+                 WHERE type='index' AND tbl_name='agentic_sessions'
+                 AND name IN (
+                    'idx_agentic_sessions_harness',
+                    'idx_agentic_sessions_cwd',
+                    'idx_agentic_sessions_start_time',
+                    'idx_agentic_sessions_enriched'
+                 )",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            idx_count, 4,
+            "all four agentic_sessions indexes must be recreated"
+        );
     }
 
     #[test]

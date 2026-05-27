@@ -27,11 +27,19 @@ v14→v15 seeds the `agentic-session-codex` row in `source_health`
 so the Codex poller's health UPDATE is not a silent no-op.
 v15→v16 seeds the `agentic-session-cursor` row in `source_health`
 so the Cursor poller's health UPDATE is not a silent no-op.
+v16→v17 rebuilds `agentic_sessions` to be segment-capable: adds
+`segment_index`, `git_branch`, `is_subagent`, `tool_calls_json`,
+`user_prompts_json`, `content_hash`, `last_enriched_content_hash`,
+widens the `harness` CHECK to include 'cursor', and swaps the unique
+constraint to `(session_id, harness, segment_index)`. Today only the
+opencode poller writes here (every row at `segment_index = 0`); Wave 2
+of the unification series migrates the other three harnesses onto this
+shape.
 """
 
 from __future__ import annotations
 
-EXPECTED_SCHEMA_VERSION: int = 16
+EXPECTED_SCHEMA_VERSION: int = 17
 
 # Versions brain can read without erroring.
 #
