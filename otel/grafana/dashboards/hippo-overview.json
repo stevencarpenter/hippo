@@ -14,7 +14,7 @@
     "to": "now"
   },
   "timepicker": {},
-  "refresh": "30s",
+  "refresh": "10s",
   "panels": [
     {
       "id": 100,
