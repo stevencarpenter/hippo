@@ -45,6 +45,41 @@ fn table_exists(conn: &Connection, table: &str) -> Result<bool> {
     )?)
 }
 
+/// Verify a just-rebuilt table has no foreign-key violations.
+///
+/// `PRAGMA foreign_key_check` returns one result row per violation
+/// — `(table, rowid, parent, fkid)` — and does NOT raise an error. Run
+/// inside `execute_batch` those rows are silently discarded, so the
+/// migration would happily commit `user_version` past a broken rebuild.
+/// This helper runs the check as a real query that inspects rows, and
+/// bails with `anyhow::Error` when any are returned.
+///
+/// Call after the DDL portion of a table-rebuild migration and BEFORE
+/// committing the version bump; on bail, the open transaction rolls back
+/// implicitly when the connection drops.
+fn enforce_no_fk_violations(conn: &Connection, context: &str) -> Result<()> {
+    let violations: Vec<(String, Option<i64>, String, i64)> = conn
+        .prepare("PRAGMA foreign_key_check")?
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, Option<i64>>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, i64>(3)?,
+            ))
+        })?
+        .collect::<rusqlite::Result<_>>()?;
+
+    if !violations.is_empty() {
+        anyhow::bail!(
+            "Foreign-key violations detected after {} migration: {:?}",
+            context,
+            violations
+        );
+    }
+    Ok(())
+}
+
 fn normalize_agentic_sessions_schema(conn: &Connection) -> Result<()> {
     if !table_exists(conn, "agentic_sessions")? {
         return Ok(());
@@ -826,6 +861,10 @@ pub fn open_db(path: &Path) -> Result<Connection> {
             |row| row.get(0),
         )?;
         if entities_exists {
+            // Phase 1: rebuild the table inside an explicit transaction.
+            // foreign_keys is OFF for the whole rebuild so the textual-FK
+            // rename in `ALTER TABLE … RENAME` doesn't trip a transient
+            // violation. The transaction stays open across phases.
             conn.execute_batch(
                 "PRAGMA foreign_keys = OFF;
                  BEGIN;
@@ -852,15 +891,18 @@ pub fn open_db(path: &Path) -> Result<Connection> {
                  ALTER TABLE entities_new RENAME TO entities;
                  CREATE INDEX IF NOT EXISTS idx_entities_type_name ON entities (type, name);
                  CREATE INDEX IF NOT EXISTS idx_entities_canonical ON entities (canonical)
-                     WHERE canonical IS NOT NULL;
-                 -- Defensive: SQLite's table-recreate recipe recommends a
-                 -- foreign_key_check before COMMIT so a future schema
-                 -- evolution that breaks the textual-FK-name resolution
-                 -- assumption surfaces here, not at the next FK-touching
-                 -- write. Cheap (one-pass scan of FK rows) and runs once
-                 -- per upgrade.
-                 PRAGMA foreign_key_check;
-                 PRAGMA user_version = 13;
+                     WHERE canonical IS NOT NULL;",
+            )?;
+
+            // Phase 2: verify FK invariants. MUST be a query, not
+            // `execute_batch` — `PRAGMA foreign_key_check` returns rows
+            // for violations and never errors, so a bundled check would
+            // be silently dropped on the floor.
+            enforce_no_fk_violations(&conn, "v12→v13 entities rebuild")?;
+
+            // Phase 3: bump version + commit + re-enable FK enforcement.
+            conn.execute_batch(
+                "PRAGMA user_version = 13;
                  COMMIT;
                  PRAGMA foreign_keys = ON;",
             )?;
@@ -1041,6 +1083,10 @@ pub fn open_db(path: &Path) -> Result<Connection> {
             // step would otherwise be missing it. Idempotent no-op when present.
             normalize_agentic_sessions_schema(&conn)?;
 
+            // Phase 1: rebuild the table inside an explicit transaction.
+            // foreign_keys is OFF for the whole rebuild so the textual-FK
+            // rename in `ALTER TABLE … RENAME` doesn't trip a transient
+            // violation. The transaction stays open across phases.
             conn.execute_batch(
                 "PRAGMA foreign_keys = OFF;
                  BEGIN;
@@ -1101,12 +1147,19 @@ pub fn open_db(path: &Path) -> Result<Connection> {
                  CREATE INDEX IF NOT EXISTS idx_agentic_sessions_start_time
                      ON agentic_sessions (start_time DESC);
                  CREATE INDEX IF NOT EXISTS idx_agentic_sessions_enriched
-                     ON agentic_sessions (enriched) WHERE enriched = 0;
-                 -- Defensive: surfaces a future schema evolution that breaks
-                 -- the textual-FK-name resolution assumption. Cheap (one-pass
-                 -- scan), runs once per upgrade. Precedent: v12→v13.
-                 PRAGMA foreign_key_check;
-                 PRAGMA user_version = 17;
+                     ON agentic_sessions (enriched) WHERE enriched = 0;",
+            )?;
+
+            // Phase 2: verify FK invariants. MUST be a query, not
+            // `execute_batch` — `PRAGMA foreign_key_check` returns rows
+            // for violations and never errors, so a bundled check would
+            // be silently dropped on the floor and a broken rebuild
+            // would commit `user_version = 17` anyway.
+            enforce_no_fk_violations(&conn, "v16→v17 agentic_sessions rebuild")?;
+
+            // Phase 3: bump version + commit + re-enable FK enforcement.
+            conn.execute_batch(
+                "PRAGMA user_version = 17;
                  COMMIT;
                  PRAGMA foreign_keys = ON;",
             )?;
@@ -3667,6 +3720,54 @@ mod tests {
     /// `UNIQUE(session_id, harness, segment_index)`. Existing opencode rows
     /// are migrated to `segment_index = 0`.
     ///
+    /// `PRAGMA foreign_key_check` returns rows for violations and never
+    /// raises — bundling it inside `execute_batch` silently discards them,
+    /// so the migration would commit a broken rebuild. `enforce_no_fk_violations`
+    /// queries the rows explicitly. Verify the happy path is a no-op.
+    #[test]
+    fn test_enforce_no_fk_violations_passes_clean_db() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE parent (id INTEGER PRIMARY KEY);
+             CREATE TABLE child (id INTEGER PRIMARY KEY, parent_id INTEGER REFERENCES parent(id));
+             INSERT INTO parent VALUES (1);
+             INSERT INTO child VALUES (1, 1);",
+        )
+        .unwrap();
+        enforce_no_fk_violations(&conn, "test").expect("clean DB must pass FK check");
+    }
+
+    /// Synthetic orphan: a child row whose FK points at a non-existent
+    /// parent (inserted with foreign_keys=OFF, as a real broken-rebuild
+    /// would leave behind). The helper must surface this — proving that
+    /// the migration code path now catches what `execute_batch` ignored.
+    #[test]
+    fn test_enforce_no_fk_violations_bails_on_orphan() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "PRAGMA foreign_keys = OFF;
+             CREATE TABLE parent (id INTEGER PRIMARY KEY);
+             CREATE TABLE child (id INTEGER PRIMARY KEY, parent_id INTEGER REFERENCES parent(id));
+             INSERT INTO child VALUES (1, 999);",
+        )
+        .unwrap();
+        let err = enforce_no_fk_violations(&conn, "v99→v100 test rebuild")
+            .expect_err("orphaned FK must trigger bail");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("Foreign-key violations"),
+            "error must name the failure mode: {msg}"
+        );
+        assert!(
+            msg.contains("v99→v100 test rebuild"),
+            "error must include the migration context label: {msg}"
+        );
+        assert!(
+            msg.contains("child"),
+            "error must include the offending child table: {msg}"
+        );
+    }
+
     /// This test is the golden migration test for #155 (unification 1/6).
     #[test]
     fn test_migrate_v16_to_v17_rebuilds_agentic_sessions_for_segments() {
