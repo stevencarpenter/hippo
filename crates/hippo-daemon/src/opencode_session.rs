@@ -436,13 +436,16 @@ fn upsert_session(conn: &rusqlite::Connection, s: &OpencodeSession) -> Result<()
     // sees them in lockstep.
     let tx = conn.unchecked_transaction()?;
 
+    // segment_index is hard-coded to 0: opencode sessions are not segmented
+    // (one row per session), and the v17 UNIQUE constraint
+    // `(session_id, harness, segment_index)` requires an explicit value here.
     tx.execute(
         "INSERT INTO agentic_sessions
-            (session_id, harness, model, agent, project_dir, cwd, slug, title,
+            (session_id, harness, segment_index, model, agent, project_dir, cwd, slug, title,
              parent_session_id, summary_text, source_file, snapshot_diffs_json,
              commit_messages_json, message_count, token_count, start_time, end_time, created_at)
-         VALUES (?1, 'opencode', ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, '', ?10, ?11, ?12, ?13, ?14, ?15, ?16)
-         ON CONFLICT(session_id, harness) DO UPDATE SET
+         VALUES (?1, 'opencode', 0, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, '', ?10, ?11, ?12, ?13, ?14, ?15, ?16)
+         ON CONFLICT(session_id, harness, segment_index) DO UPDATE SET
             model              = excluded.model,
             agent              = excluded.agent,
             title              = excluded.title,
@@ -473,8 +476,12 @@ fn upsert_session(conn: &rusqlite::Connection, s: &OpencodeSession) -> Result<()
     )?;
 
     // Look up the destination rowid (needed for the enrichment-queue FK).
+    // segment_index = 0 is explicit because the v17 UNIQUE is on the triple;
+    // although today only one opencode segment per session exists, pinning
+    // the lookup to (session_id, harness, segment_index) matches the INSERT.
     let agentic_session_id: i64 = tx.query_row(
-        "SELECT id FROM agentic_sessions WHERE session_id = ?1 AND harness = 'opencode'",
+        "SELECT id FROM agentic_sessions
+         WHERE session_id = ?1 AND harness = 'opencode' AND segment_index = 0",
         params![&s.id],
         |r| r.get(0),
     )?;
