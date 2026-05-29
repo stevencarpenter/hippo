@@ -42,7 +42,7 @@ fn seg(
 }
 
 #[test]
-fn upsert_writes_claude_session_and_enqueues() {
+fn upsert_writes_agentic_session_and_enqueues() {
     let tmp = TempDir::new().unwrap();
     let conn = open_db(&tmp.path().join("hippo.db")).unwrap();
     let s = seg("cur-1", false, None);
@@ -50,7 +50,8 @@ fn upsert_writes_claude_session_and_enqueues() {
 
     let (cnt, src): (i64, String) = conn
         .query_row(
-            "SELECT COUNT(*), MAX(source_file) FROM claude_sessions WHERE session_id = 'cur-1'",
+            "SELECT COUNT(*), MAX(source_file) FROM agentic_sessions
+             WHERE session_id = 'cur-1' AND harness = 'cursor'",
             [],
             |r| Ok((r.get(0)?, r.get(1)?)),
         )
@@ -60,9 +61,9 @@ fn upsert_writes_claude_session_and_enqueues() {
 
     let queued: i64 = conn
         .query_row(
-            "SELECT COUNT(*) FROM claude_enrichment_queue q
-             JOIN claude_sessions s ON s.id = q.claude_session_id
-             WHERE s.session_id = 'cur-1' AND q.status = 'pending'",
+            "SELECT COUNT(*) FROM agentic_enrichment_queue q
+             JOIN agentic_sessions s ON s.id = q.session_id
+             WHERE s.session_id = 'cur-1' AND s.harness = 'cursor' AND q.status = 'pending'",
             [],
             |r| r.get(0),
         )
@@ -72,7 +73,8 @@ fn upsert_writes_claude_session_and_enqueues() {
     hippo_daemon::cursor_session::upsert_segment(&conn, &s).unwrap();
     let cnt2: i64 = conn
         .query_row(
-            "SELECT COUNT(*) FROM claude_sessions WHERE session_id = 'cur-1'",
+            "SELECT COUNT(*) FROM agentic_sessions
+             WHERE session_id = 'cur-1' AND harness = 'cursor'",
             [],
             |r| r.get(0),
         )
@@ -89,7 +91,8 @@ fn upsert_subagent_records_parent_link() {
 
     let (is_sub, parent): (i64, Option<String>) = conn
         .query_row(
-            "SELECT is_subagent, parent_session_id FROM claude_sessions WHERE session_id = 'sub-1'",
+            "SELECT is_subagent, parent_session_id FROM agentic_sessions
+             WHERE session_id = 'sub-1' AND harness = 'cursor'",
             [],
             |r| Ok((r.get(0)?, r.get(1)?)),
         )

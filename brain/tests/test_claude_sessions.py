@@ -317,13 +317,13 @@ class TestInsertAndClaim:
 
         # Verify in database
         row = db_conn.execute(
-            "SELECT session_id, cwd FROM claude_sessions WHERE id = ?", (seg_id,)
+            "SELECT session_id, cwd, harness FROM agentic_sessions WHERE id = ?", (seg_id,)
         ).fetchone()
-        assert row == ("test-session", "/projects/test")
+        assert row == ("test-session", "/projects/test", "claude-code")
 
         # Verify queue entry
         queue = db_conn.execute(
-            "SELECT status FROM claude_enrichment_queue WHERE claude_session_id = ?",
+            "SELECT status FROM agentic_enrichment_queue WHERE session_id = ?",
             (seg_id,),
         ).fetchone()
         assert queue[0] == "pending"
@@ -416,20 +416,20 @@ class TestInsertAndClaim:
 
         # Verify link table
         link = db_conn.execute(
-            "SELECT claude_session_id FROM knowledge_node_claude_sessions WHERE knowledge_node_id = ?",
+            "SELECT agentic_session_id FROM knowledge_node_agentic_sessions WHERE knowledge_node_id = ?",
             (node_id,),
         ).fetchone()
         assert link[0] == seg_id
 
         # Verify segment marked enriched
         enriched = db_conn.execute(
-            "SELECT enriched FROM claude_sessions WHERE id = ?", (seg_id,)
+            "SELECT enriched FROM agentic_sessions WHERE id = ?", (seg_id,)
         ).fetchone()
         assert enriched[0] == 1
 
         # Verify queue done
         status = db_conn.execute(
-            "SELECT status FROM claude_enrichment_queue WHERE claude_session_id = ?",
+            "SELECT status FROM agentic_enrichment_queue WHERE session_id = ?",
             (seg_id,),
         ).fetchone()
         assert status[0] == "done"
@@ -519,7 +519,7 @@ class TestInsertAndClaim:
         mark_claude_queue_failed(db_conn, [seg_id], "test error")
 
         row = db_conn.execute(
-            "SELECT status, retry_count, error_message FROM claude_enrichment_queue WHERE claude_session_id = ?",
+            "SELECT status, retry_count, error_message FROM agentic_enrichment_queue WHERE session_id = ?",
             (seg_id,),
         ).fetchone()
         assert row[0] == "pending"  # still pending, retry_count < max_retries
@@ -598,7 +598,7 @@ class TestClaudeEligibilityFilter:
         assert batches == []
 
         row = db_conn.execute(
-            "SELECT status, error_message FROM claude_enrichment_queue"
+            "SELECT status, error_message FROM agentic_enrichment_queue"
         ).fetchone()
         assert row[0] == "skipped"
         assert "message_count=1" in row[1]
@@ -659,7 +659,7 @@ class TestContentHashPropagation:
         seg_id = insert_segment(db_conn, self._make_seg("hash-claim-s"))
         # Simulate daemon writing the hash after insert.
         db_conn.execute(
-            "UPDATE claude_sessions SET content_hash = ? WHERE id = ?",
+            "UPDATE agentic_sessions SET content_hash = ? WHERE id = ?",
             ("abc123", seg_id),
         )
         db_conn.commit()
@@ -674,7 +674,7 @@ class TestContentHashPropagation:
         db_conn, _ = tmp_db
         seg_id = insert_segment(db_conn, self._make_seg("hash-write-s"))
         db_conn.execute(
-            "UPDATE claude_sessions SET content_hash = ? WHERE id = ?",
+            "UPDATE agentic_sessions SET content_hash = ? WHERE id = ?",
             ("abc123", seg_id),
         )
         db_conn.commit()
@@ -688,7 +688,7 @@ class TestContentHashPropagation:
         )
 
         row = db_conn.execute(
-            "SELECT last_enriched_content_hash FROM claude_sessions WHERE id = ?",
+            "SELECT last_enriched_content_hash FROM agentic_sessions WHERE id = ?",
             (seg_id,),
         ).fetchone()
         assert row[0] == "abc123"
@@ -699,7 +699,7 @@ class TestContentHashPropagation:
         seg_id = insert_segment(db_conn, self._make_seg("hash-fail-s"))
         # Pre-set content_hash and an existing last_enriched_content_hash.
         db_conn.execute(
-            "UPDATE claude_sessions SET content_hash = ?, last_enriched_content_hash = ? WHERE id = ?",
+            "UPDATE agentic_sessions SET content_hash = ?, last_enriched_content_hash = ? WHERE id = ?",
             ("abc123", "old456", seg_id),
         )
         db_conn.commit()
@@ -707,7 +707,7 @@ class TestContentHashPropagation:
         mark_claude_queue_failed(db_conn, [seg_id], "LLM timeout")
 
         row = db_conn.execute(
-            "SELECT last_enriched_content_hash FROM claude_sessions WHERE id = ?",
+            "SELECT last_enriched_content_hash FROM agentic_sessions WHERE id = ?",
             (seg_id,),
         ).fetchone()
         assert row[0] == "old456", "failure path must not overwrite last_enriched_content_hash"
@@ -720,7 +720,7 @@ class TestContentHashPropagation:
         db_conn, _ = tmp_db
         seg_id = insert_segment(db_conn, self._make_seg("hash-transient-null-s"))
         db_conn.execute(
-            "UPDATE claude_sessions SET content_hash = ? WHERE id = ?",
+            "UPDATE agentic_sessions SET content_hash = ? WHERE id = ?",
             ("real-hash", seg_id),
         )
         # last_enriched_content_hash stays NULL; retry_count 0 -> next fail is transient.
@@ -730,12 +730,12 @@ class TestContentHashPropagation:
         mark_claude_queue_failed(db_conn, [seg_id], "transient error", content_hashes=["real-hash"])
 
         status = db_conn.execute(
-            "SELECT status FROM claude_enrichment_queue WHERE claude_session_id = ?",
+            "SELECT status FROM agentic_enrichment_queue WHERE session_id = ?",
             (seg_id,),
         ).fetchone()[0]
         assert status == "pending", "a single failure with retries left stays pending"
         leh = db_conn.execute(
-            "SELECT last_enriched_content_hash FROM claude_sessions WHERE id = ?",
+            "SELECT last_enriched_content_hash FROM agentic_sessions WHERE id = ?",
             (seg_id,),
         ).fetchone()[0]
         assert leh is None, "transient failure must NOT advance the watermark from NULL"
@@ -751,13 +751,13 @@ class TestContentHashPropagation:
         db_conn, _ = tmp_db
         seg_id = insert_segment(db_conn, self._make_seg("hash-terminal-s"))
         db_conn.execute(
-            "UPDATE claude_sessions SET content_hash = ? WHERE id = ?",
+            "UPDATE agentic_sessions SET content_hash = ? WHERE id = ?",
             ("poison-hash", seg_id),
         )
         # Drive retry_count to max_retries - 1 so the next failure is terminal.
         db_conn.execute(
-            "UPDATE claude_enrichment_queue "
-            "SET retry_count = max_retries - 1 WHERE claude_session_id = ?",
+            "UPDATE agentic_enrichment_queue "
+            "SET retry_count = max_retries - 1 WHERE session_id = ?",
             (seg_id,),
         )
         db_conn.commit()
@@ -767,13 +767,13 @@ class TestContentHashPropagation:
         )
 
         status = db_conn.execute(
-            "SELECT status FROM claude_enrichment_queue WHERE claude_session_id = ?",
+            "SELECT status FROM agentic_enrichment_queue WHERE session_id = ?",
             (seg_id,),
         ).fetchone()[0]
         assert status == "failed", "row should be terminal after exhausting retries"
 
         leh = db_conn.execute(
-            "SELECT last_enriched_content_hash FROM claude_sessions WHERE id = ?",
+            "SELECT last_enriched_content_hash FROM agentic_sessions WHERE id = ?",
             (seg_id,),
         ).fetchone()[0]
         assert leh == "poison-hash", "terminal failure must advance the dedup watermark"
@@ -784,8 +784,8 @@ class TestContentHashPropagation:
         seg_id = insert_segment(db_conn, self._make_seg("hash-terminal-null-s"))
         # content_hash stays NULL (legacy row the daemon never hashed).
         db_conn.execute(
-            "UPDATE claude_enrichment_queue "
-            "SET retry_count = max_retries - 1 WHERE claude_session_id = ?",
+            "UPDATE agentic_enrichment_queue "
+            "SET retry_count = max_retries - 1 WHERE session_id = ?",
             (seg_id,),
         )
         db_conn.commit()
@@ -793,7 +793,7 @@ class TestContentHashPropagation:
         mark_claude_queue_failed(db_conn, [seg_id], "JSONDecodeError", content_hashes=[None])
 
         leh = db_conn.execute(
-            "SELECT last_enriched_content_hash FROM claude_sessions WHERE id = ?",
+            "SELECT last_enriched_content_hash FROM agentic_sessions WHERE id = ?",
             (seg_id,),
         ).fetchone()[0]
         assert leh is None, "NULL content_hash must not be propagated to the watermark"
@@ -808,12 +808,12 @@ class TestContentHashPropagation:
         # Row now holds NEW content (daemon reparsed during processing); the worker
         # attempted the OLD content.
         db_conn.execute(
-            "UPDATE claude_sessions SET content_hash = ? WHERE id = ?",
+            "UPDATE agentic_sessions SET content_hash = ? WHERE id = ?",
             ("new-content", seg_id),
         )
         db_conn.execute(
-            "UPDATE claude_enrichment_queue "
-            "SET retry_count = max_retries - 1 WHERE claude_session_id = ?",
+            "UPDATE agentic_enrichment_queue "
+            "SET retry_count = max_retries - 1 WHERE session_id = ?",
             (seg_id,),
         )
         db_conn.commit()
@@ -823,7 +823,7 @@ class TestContentHashPropagation:
         )
 
         leh = db_conn.execute(
-            "SELECT last_enriched_content_hash FROM claude_sessions WHERE id = ?",
+            "SELECT last_enriched_content_hash FROM agentic_sessions WHERE id = ?",
             (seg_id,),
         ).fetchone()[0]
         assert leh is None, "must not watermark content that was never attempted"
@@ -854,7 +854,7 @@ class TestContentHashPropagation:
         db_conn, _ = tmp_db
         seg_id = insert_segment(db_conn, self._make_seg("hash-skip-s"))
         db_conn.execute(
-            "UPDATE claude_sessions SET content_hash = ? WHERE id = ?",
+            "UPDATE agentic_sessions SET content_hash = ? WHERE id = ?",
             ("skip-hash", seg_id),
         )
         db_conn.commit()
@@ -870,12 +870,12 @@ class TestContentHashPropagation:
 
         assert kept == [], "ineligible segment must not be returned for enrichment"
         status = db_conn.execute(
-            "SELECT status FROM claude_enrichment_queue WHERE claude_session_id = ?",
+            "SELECT status FROM agentic_enrichment_queue WHERE session_id = ?",
             (seg_id,),
         ).fetchone()[0]
         assert status == "skipped"
         leh = db_conn.execute(
-            "SELECT last_enriched_content_hash FROM claude_sessions WHERE id = ?",
+            "SELECT last_enriched_content_hash FROM agentic_sessions WHERE id = ?",
             (seg_id,),
         ).fetchone()[0]
         assert leh == "skip-hash", "skipped segment must advance the dedup watermark"
@@ -894,7 +894,7 @@ class TestContentHashPropagation:
         _skip_ineligible_claude_segments(db_conn, [ineligible])
 
         leh = db_conn.execute(
-            "SELECT last_enriched_content_hash FROM claude_sessions WHERE id = ?",
+            "SELECT last_enriched_content_hash FROM agentic_sessions WHERE id = ?",
             (seg_id,),
         ).fetchone()[0]
         assert leh is None, "NULL content_hash must not be propagated to the watermark"
@@ -908,7 +908,7 @@ class TestContentHashPropagation:
         seg_id = insert_segment(db_conn, self._make_seg("hash-skip-changed-s"))
         # Row now holds NEW content; the skip decision was made on the OLD claimed hash.
         db_conn.execute(
-            "UPDATE claude_sessions SET content_hash = ? WHERE id = ?",
+            "UPDATE agentic_sessions SET content_hash = ? WHERE id = ?",
             ("new-content", seg_id),
         )
         db_conn.commit()
@@ -922,7 +922,7 @@ class TestContentHashPropagation:
         _skip_ineligible_claude_segments(db_conn, [ineligible])
 
         leh = db_conn.execute(
-            "SELECT last_enriched_content_hash FROM claude_sessions WHERE id = ?",
+            "SELECT last_enriched_content_hash FROM agentic_sessions WHERE id = ?",
             (seg_id,),
         ).fetchone()[0]
         assert leh is None, "must not watermark a hash that no longer matches the row"
@@ -942,7 +942,7 @@ class TestContentHashPropagation:
         )
 
         row = db_conn.execute(
-            "SELECT last_enriched_content_hash FROM claude_sessions WHERE id = ?",
+            "SELECT last_enriched_content_hash FROM agentic_sessions WHERE id = ?",
             (seg_id,),
         ).fetchone()
         assert row[0] is None, (
@@ -951,7 +951,7 @@ class TestContentHashPropagation:
 
         # Enrichment must still have completed normally (queue = done).
         status = db_conn.execute(
-            "SELECT status FROM claude_enrichment_queue WHERE claude_session_id = ?",
+            "SELECT status FROM agentic_enrichment_queue WHERE session_id = ?",
             (seg_id,),
         ).fetchone()
         assert status[0] == "done"

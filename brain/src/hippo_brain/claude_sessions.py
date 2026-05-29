@@ -21,6 +21,7 @@ STALE_LOCK_TIMEOUT_MS = DEFAULT_LOCK_TIMEOUT_MS
 
 # 5-minute gap between user prompts = task boundary
 TASK_GAP_MS = 5 * 60 * 1000
+CLAUDE_LIKE_HARNESSES = ("claude-code", "codex", "cursor")
 
 CLAUDE_SYSTEM_PROMPT = """You are a developer activity analyst. You receive a summary of a Claude Code AI assistant session segment — what the developer asked and what the AI did on their behalf.
 
@@ -388,6 +389,12 @@ def build_claude_enrichment_prompt(segments: list[SessionSegment]) -> str:
     return "\n---\n\n".join(parts)
 
 
+def _eligibility_source_for_harness(harness: str | None) -> str:
+    if harness in {None, "", "claude-code", "codex", "cursor"}:
+        return "claude"
+    return harness
+
+
 def ensure_claude_tables(conn) -> None:
     """Ensure Claude session tables exist (Python-side migration for v2 → v3)."""
     version = conn.execute("PRAGMA user_version").fetchone()[0]
@@ -459,37 +466,37 @@ def insert_segment(conn, segment: SessionSegment) -> int | None:
     try:
         cursor = conn.execute(
             """
-            INSERT INTO claude_sessions
-                (session_id, project_dir, cwd, git_branch, segment_index,
-                 start_time, end_time, summary_text, tool_calls_json,
-                 user_prompts_json, message_count, token_count, source_file,
-                 is_subagent, parent_session_id, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO agentic_sessions
+                (session_id, harness, segment_index, model, agent, project_dir, cwd,
+                 git_branch, slug, title, parent_session_id, is_subagent, summary_text,
+                 tool_calls_json, user_prompts_json, source_file, snapshot_diffs_json,
+                 commit_messages_json, message_count, token_count, start_time, end_time, created_at)
+            VALUES (?, 'claude-code', ?, '', '', ?, ?, ?, '', '', ?, ?, ?, ?, ?, ?, 'null', '[]', ?, ?, ?, ?, ?)
             """,
             (
                 segment.session_id,
+                segment.segment_index,
                 segment.project_dir,
                 segment.cwd,
                 segment.git_branch,
-                segment.segment_index,
-                segment.start_time,
-                segment.end_time,
+                segment.parent_session_id,
+                1 if segment.is_subagent else 0,
                 summary_text,
                 tool_calls_json,
                 user_prompts_json,
+                segment.source_file,
                 segment.message_count,
                 segment.token_count,
-                segment.source_file,
-                1 if segment.is_subagent else 0,
-                segment.parent_session_id,
+                segment.start_time,
+                segment.end_time,
                 now_ms,
             ),
         )
         segment_id = cursor.lastrowid
 
         conn.execute(
-            "INSERT INTO claude_enrichment_queue (claude_session_id, created_at) VALUES (?, ?)",
-            (segment_id, now_ms),
+            "INSERT INTO agentic_enrichment_queue (session_id, enqueued_at, updated_at) VALUES (?, ?, ?)",
+            (segment_id, now_ms, now_ms),
         )
         conn.commit()
         return segment_id
@@ -514,19 +521,22 @@ def claim_pending_claude_segments(
     stale_before_ms = now_ms - stale_lock_timeout_ms
     remaining = max_claim_batch if max_claim_batch is not None else -1
 
+    harness_placeholders = ",".join("?" * len(CLAUDE_LIKE_HARNESSES))
+
     # Get pending segments grouped by cwd (exclude probe rows — belt-and-braces).
     cursor = conn.execute(
-        """
-        SELECT cs.cwd, COUNT(*) as cnt
-        FROM claude_enrichment_queue ceq
-        JOIN claude_sessions cs ON ceq.claude_session_id = cs.id
-        WHERE (ceq.status = 'pending'
-           OR (ceq.status = 'processing' AND COALESCE(ceq.locked_at, 0) <= ?))
-          AND cs.probe_tag IS NULL
-        GROUP BY cs.cwd
-        ORDER BY MIN(cs.start_time) ASC
+        f"""
+        SELECT s.cwd, COUNT(*) as cnt
+        FROM agentic_enrichment_queue q
+        JOIN agentic_sessions s ON q.session_id = s.id
+        WHERE (q.status = 'pending'
+           OR (q.status = 'processing' AND COALESCE(q.locked_at, 0) <= ?))
+          AND s.harness IN ({harness_placeholders})
+          AND s.probe_tag IS NULL
+        GROUP BY s.cwd
+        ORDER BY MIN(s.start_time) ASC
         """,
-        (stale_before_ms,),
+        (stale_before_ms, *CLAUDE_LIKE_HARNESSES),
     )
     cwd_groups = cursor.fetchall()
 
@@ -536,22 +546,23 @@ def claim_pending_claude_segments(
             break
         limit = remaining if remaining > 0 else -1
         cursor = conn.execute(
-            """
-            UPDATE claude_enrichment_queue
+            f"""
+            UPDATE agentic_enrichment_queue
             SET status = 'processing', locked_at = ?, locked_by = ?, updated_at = ?
             WHERE id IN (
-                SELECT ceq.id FROM claude_enrichment_queue ceq
-                JOIN claude_sessions cs ON ceq.claude_session_id = cs.id
-                WHERE cs.cwd = ?
-                  AND cs.probe_tag IS NULL
-                  AND (ceq.status = 'pending'
-                       OR (ceq.status = 'processing' AND COALESCE(ceq.locked_at, 0) <= ?))
-                ORDER BY cs.start_time ASC, ceq.id ASC
+                SELECT q.id FROM agentic_enrichment_queue q
+                JOIN agentic_sessions s ON q.session_id = s.id
+                WHERE s.cwd = ?
+                  AND s.harness IN ({harness_placeholders})
+                  AND s.probe_tag IS NULL
+                  AND (q.status = 'pending'
+                       OR (q.status = 'processing' AND COALESCE(q.locked_at, 0) <= ?))
+                ORDER BY s.start_time ASC, q.id ASC
                 LIMIT ?
             )
-            RETURNING claude_session_id
+            RETURNING session_id
             """,
-            (now_ms, worker_id, now_ms, cwd, stale_before_ms, limit),
+            (now_ms, worker_id, now_ms, cwd, *CLAUDE_LIKE_HARNESSES, stale_before_ms, limit),
         )
         segment_ids = [row[0] for row in cursor.fetchall()]
         conn.commit()
@@ -564,15 +575,17 @@ def claim_pending_claude_segments(
         placeholders = ",".join("?" * len(segment_ids))
         cursor = conn.execute(
             f"""
-            SELECT id, session_id, project_dir, cwd, git_branch, segment_index,
+            SELECT id, session_id, harness, project_dir, cwd, git_branch, segment_index,
                    start_time, end_time, summary_text, tool_calls_json,
                    user_prompts_json, message_count, token_count, is_subagent,
                    content_hash, source_file
-            FROM claude_sessions
-            WHERE id IN ({placeholders}) AND probe_tag IS NULL
+            FROM agentic_sessions
+            WHERE id IN ({placeholders})
+              AND harness IN ({harness_placeholders})
+              AND probe_tag IS NULL
             ORDER BY start_time ASC
             """,
-            segment_ids,
+            [*segment_ids, *CLAUDE_LIKE_HARNESSES],
         )
 
         segments = []
@@ -581,20 +594,21 @@ def claim_pending_claude_segments(
                 {
                     "id": row[0],
                     "session_id": row[1],
-                    "project_dir": row[2],
-                    "cwd": row[3],
-                    "git_branch": row[4],
-                    "segment_index": row[5],
-                    "start_time": row[6],
-                    "end_time": row[7],
-                    "summary_text": row[8],
-                    "tool_calls_json": row[9],
-                    "user_prompts_json": row[10],
-                    "message_count": row[11],
-                    "token_count": row[12],
-                    "is_subagent": row[13],
-                    "content_hash": row[14],
-                    "source_file": row[15],
+                    "harness": row[2],
+                    "project_dir": row[3],
+                    "cwd": row[4],
+                    "git_branch": row[5],
+                    "segment_index": row[6],
+                    "start_time": row[7],
+                    "end_time": row[8],
+                    "summary_text": row[9],
+                    "tool_calls_json": row[10],
+                    "user_prompts_json": row[11],
+                    "message_count": row[12],
+                    "token_count": row[13],
+                    "is_subagent": row[14],
+                    "content_hash": row[15],
+                    "source_file": row[16],
                 }
             )
 
@@ -607,23 +621,25 @@ def claim_pending_claude_segments(
 
 
 def _skip_ineligible_claude_segments(conn, segments: list[dict]) -> list[dict]:
-    """Mark ineligible Claude session segments as skipped, return the rest."""
+    """Mark ineligible Claude-like agentic session segments as skipped, return the rest."""
     eligible = []
     now_ms = int(time.time() * 1000)
     for seg in segments:
-        ok, reason = is_enrichment_eligible(seg, "claude")
+        ok, reason = is_enrichment_eligible(
+            seg, _eligibility_source_for_harness(seg.get("harness"))
+        )
         if ok:
             eligible.append(seg)
         else:
             conn.execute(
-                "UPDATE claude_enrichment_queue "
+                "UPDATE agentic_enrichment_queue "
                 "SET status = 'skipped', error_message = ?, "
                 "    locked_at = NULL, locked_by = NULL, updated_at = ? "
-                "WHERE claude_session_id = ?",
+                "WHERE session_id = ?",
                 (reason, now_ms, seg["id"]),
             )
             conn.execute(
-                "UPDATE claude_sessions SET enriched = 1 WHERE id = ?",
+                "UPDATE agentic_sessions SET enriched = 1 WHERE id = ?",
                 (seg["id"],),
             )
             # Advance the dedup watermark so the watcher does not re-enqueue this
@@ -640,7 +656,7 @@ def _skip_ineligible_claude_segments(conn, segments: list[dict]) -> list[dict]:
             seg_hash = seg.get("content_hash")
             if seg_hash is not None:
                 conn.execute(
-                    "UPDATE claude_sessions SET last_enriched_content_hash = ? "
+                    "UPDATE agentic_sessions SET last_enriched_content_hash = ? "
                     "WHERE id = ? AND content_hash = ?",
                     (seg_hash, seg["id"], seg_hash),
                 )
@@ -656,11 +672,11 @@ def write_claude_knowledge_node(
     model_name: str,
     content_hashes: list[str | None] | None = None,
 ) -> int:
-    """Insert knowledge node linked to Claude session segments.
+    """Insert knowledge node linked to Claude-like agentic session segments.
 
     ``content_hashes`` must be the same length as ``segment_ids`` when
     provided.  Each entry is the ``content_hash`` value read from
-    ``claude_sessions`` at claim time (daemon-computed; brain never recomputes
+    ``agentic_sessions`` at claim time (daemon-computed; brain never recomputes
     it).  For each segment whose hash is not ``None``, the corresponding
     ``last_enriched_content_hash`` column is updated so the watcher dedup
     logic can detect future content changes.  ``None`` entries are skipped to
@@ -715,24 +731,24 @@ def write_claude_knowledge_node(
         )
         node_id = cursor.lastrowid
 
-        # Link to claude sessions
+        # Link to agentic sessions
         conn.executemany(
-            "INSERT INTO knowledge_node_claude_sessions (knowledge_node_id, claude_session_id) VALUES (?, ?)",
+            "INSERT INTO knowledge_node_agentic_sessions (knowledge_node_id, agentic_session_id) VALUES (?, ?)",
             [(node_id, sid) for sid in segment_ids],
         )
 
         # Mark segments as enriched
         placeholders = ",".join("?" * len(segment_ids))
         conn.execute(
-            f"UPDATE claude_sessions SET enriched = 1 WHERE id IN ({placeholders})",
+            f"UPDATE agentic_sessions SET enriched = 1 WHERE id IN ({placeholders})",
             segment_ids,
         )
 
         # Mark queue entries done
         conn.execute(
             f"""
-            UPDATE claude_enrichment_queue SET status = 'done', updated_at = ?
-            WHERE claude_session_id IN ({placeholders})
+            UPDATE agentic_enrichment_queue SET status = 'done', updated_at = ?
+            WHERE session_id IN ({placeholders})
             """,
             [now_ms, *segment_ids],
         )
@@ -745,7 +761,7 @@ def write_claude_knowledge_node(
             for seg_id, ch in zip(segment_ids, content_hashes, strict=True):
                 if ch is not None:
                     conn.execute(
-                        "UPDATE claude_sessions SET last_enriched_content_hash = ? WHERE id = ?",
+                        "UPDATE agentic_sessions SET last_enriched_content_hash = ? WHERE id = ?",
                         (ch, seg_id),
                     )
 
@@ -793,7 +809,7 @@ def mark_claude_queue_failed(
     for seg_id, attempted_hash in zip(segment_ids, hashes, strict=True):
         conn.execute(
             """
-            UPDATE claude_enrichment_queue
+            UPDATE agentic_enrichment_queue
             SET retry_count   = retry_count + 1,
                 error_message = ?,
                 locked_at     = NULL,
@@ -803,19 +819,19 @@ def mark_claude_queue_failed(
                                     WHEN retry_count + 1 >= max_retries THEN 'failed'
                                     ELSE 'pending'
                                 END
-            WHERE claude_session_id = ?
+            WHERE session_id = ?
             """,
             (error, now_ms, seg_id),
         )
         if attempted_hash is not None:
             conn.execute(
                 """
-                UPDATE claude_sessions
+                UPDATE agentic_sessions
                 SET last_enriched_content_hash = ?
                 WHERE id = ?
                   AND content_hash = ?
-                  AND (SELECT status FROM claude_enrichment_queue
-                       WHERE claude_session_id = ?) = 'failed'
+                  AND (SELECT status FROM agentic_enrichment_queue
+                       WHERE session_id = ?) = 'failed'
                 """,
                 (attempted_hash, seg_id, attempted_hash, seg_id),
             )

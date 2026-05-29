@@ -112,11 +112,11 @@ def _insert_claude_session(
     message_count: int = 10,
 ) -> None:
     conn.execute(
-        """INSERT INTO claude_sessions
-               (id, session_id, project_dir, cwd, segment_index, start_time,
+        """INSERT INTO agentic_sessions
+               (id, session_id, harness, project_dir, cwd, segment_index, start_time,
                 end_time, summary_text, tool_calls_json, user_prompts_json,
                 message_count, source_file, created_at, probe_tag)
-           VALUES (?, ?, ?, ?, 0, ?, ?, ?, '[]', '[]', ?, '/tmp/s.jsonl', ?, ?)""",
+           VALUES (?, ?, 'claude-code', ?, ?, 0, ?, ?, ?, '[]', '[]', ?, '/tmp/s.jsonl', ?, ?)""",
         (
             seg_id,
             f"sess-{seg_id}",
@@ -131,8 +131,8 @@ def _insert_claude_session(
         ),
     )
     conn.execute(
-        "INSERT INTO claude_enrichment_queue (claude_session_id, created_at) VALUES (?, ?)",
-        (seg_id, ts),
+        "INSERT INTO agentic_enrichment_queue (session_id, enqueued_at, updated_at) VALUES (?, ?, ?)",
+        (seg_id, ts, ts),
     )
 
 

@@ -9,7 +9,7 @@
 //! types (`queue-operation`) that the Rust `process_line` silently
 //! skips. If a user ever runs `hippo ingest claude-session`
 //! against an Xcode JSONL, the Rust path MUST produce the same
-//! `claude_sessions` and `claude-tool` events as it would for a regular
+//! `agentic_sessions` and `claude-tool` events as it would for a regular
 //! Claude Code JSONL.
 //!
 //! This test feeds an Xcode-shaped JSONL (including the queue-operation
@@ -78,18 +78,19 @@ async fn xcode_format_jsonl_flows_through_same_ingest_path() {
 
     let conn = hippo_core::storage::open_db(&db_path).unwrap();
 
-    // claude_sessions row must land — same contract as a regular Claude
+    // agentic_sessions row must land — same contract as a regular Claude
     // Code JSONL.
     let sessions: i64 = conn
         .query_row(
-            "SELECT COUNT(*) FROM claude_sessions WHERE session_id = ?1",
+            "SELECT COUNT(*) FROM agentic_sessions
+             WHERE session_id = ?1 AND harness = 'claude-code'",
             [FIXTURE_SESSION_ID],
             |r| r.get(0),
         )
         .unwrap();
     assert!(
         sessions >= 1,
-        "Xcode JSONL must produce ≥1 claude_sessions row, got {sessions}"
+        "Xcode JSONL must produce ≥1 agentic_sessions row, got {sessions}"
     );
 
     // tool events flow through too.
@@ -108,9 +109,9 @@ async fn xcode_format_jsonl_flows_through_same_ingest_path() {
     // Enrichment queue wired up for the Xcode session row too.
     let queued: i64 = conn
         .query_row(
-            "SELECT COUNT(*) FROM claude_enrichment_queue ceq
-             JOIN claude_sessions cs ON ceq.claude_session_id = cs.id
-             WHERE cs.session_id = ?1",
+            "SELECT COUNT(*) FROM agentic_enrichment_queue q
+             JOIN agentic_sessions s ON q.session_id = s.id
+             WHERE s.session_id = ?1 AND s.harness = 'claude-code'",
             [FIXTURE_SESSION_ID],
             |r| r.get(0),
         )

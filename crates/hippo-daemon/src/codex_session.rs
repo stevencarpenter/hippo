@@ -456,9 +456,9 @@ fn decide_enqueue(
     true
 }
 
-/// Upsert one segment into `claude_sessions` and (re-)enqueue it for
+/// Upsert one segment into `agentic_sessions` and (re-)enqueue it for
 /// enrichment, inside a caller-supplied transaction. Idempotent via
-/// `ON CONFLICT (session_id, segment_index)`. `ingest_file` (Task 7) calls
+/// `ON CONFLICT (session_id, harness, segment_index)`. `ingest_file` (Task 7) calls
 /// this directly so a whole rollout file's segments commit atomically
 /// (spec §4.3, AP-1).
 pub fn upsert_segment_tx(tx: &rusqlite::Transaction, seg: &CodexSegment) -> Result<()> {
@@ -475,10 +475,12 @@ pub fn upsert_segment_tx(tx: &rusqlite::Transaction, seg: &CodexSegment) -> Resu
     #[allow(clippy::type_complexity)]
     let prior: Option<(i64, Option<String>, Option<String>, Option<i64>)> = tx
         .query_row(
-            "SELECT cs.id, cs.last_enriched_content_hash, ceq.status, ceq.updated_at
-             FROM claude_sessions cs
-             LEFT JOIN claude_enrichment_queue ceq ON ceq.claude_session_id = cs.id
-             WHERE cs.session_id = ?1 AND cs.segment_index = ?2",
+            "SELECT s.id, s.last_enriched_content_hash, q.status, q.updated_at
+             FROM agentic_sessions s
+             LEFT JOIN agentic_enrichment_queue q ON q.session_id = s.id
+             WHERE s.session_id = ?1
+               AND s.harness = 'codex'
+               AND s.segment_index = ?2",
             params![seg.session_id, seg.segment_index],
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
         )
@@ -489,13 +491,15 @@ pub fn upsert_segment_tx(tx: &rusqlite::Transaction, seg: &CodexSegment) -> Resu
     let prior_queue_updated_at_ms = prior.as_ref().and_then(|(_, _, _, u)| *u);
 
     tx.execute(
-        "INSERT INTO claude_sessions
-            (session_id, project_dir, cwd, git_branch, segment_index,
-             start_time, end_time, summary_text, tool_calls_json,
-             user_prompts_json, message_count, token_count, source_file,
-             is_subagent, parent_session_id, content_hash, created_at)
-         VALUES (?1, ?2, ?3, NULL, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 0, ?11, 0, NULL, ?12, ?13)
-         ON CONFLICT (session_id, segment_index) DO UPDATE SET
+        "INSERT INTO agentic_sessions
+            (session_id, harness, segment_index, model, agent, project_dir, cwd,
+             git_branch, slug, title, parent_session_id, is_subagent, summary_text,
+             tool_calls_json, user_prompts_json, source_file, snapshot_diffs_json,
+             commit_messages_json, message_count, token_count, start_time, end_time,
+             content_hash, created_at)
+         VALUES (?1, 'codex', ?2, '', '', ?3, ?4, NULL, '', '', NULL, 0, ?5, ?6, ?7, ?8,
+                 'null', '[]', ?9, 0, ?10, ?11, ?12, ?13)
+         ON CONFLICT (session_id, harness, segment_index) DO UPDATE SET
              end_time          = excluded.end_time,
              summary_text      = excluded.summary_text,
              tool_calls_json   = excluded.tool_calls_json,
@@ -506,16 +510,16 @@ pub fn upsert_segment_tx(tx: &rusqlite::Transaction, seg: &CodexSegment) -> Resu
              project_dir       = excluded.project_dir",
         params![
             seg.session_id,
+            seg.segment_index,
             seg.project_dir,
             seg.cwd,
-            seg.segment_index,
-            seg.start_time,
-            seg.end_time,
             summary_text,
             tool_calls_json,
             user_prompts_json,
-            seg.message_count,
             seg.source_file,
+            seg.message_count,
+            seg.start_time,
+            seg.end_time,
             content_hash,
             now_ms,
         ],
@@ -523,7 +527,7 @@ pub fn upsert_segment_tx(tx: &rusqlite::Transaction, seg: &CodexSegment) -> Resu
 
     // `INSERT … ON CONFLICT` keeps the rowid stable, so reuse the prior id on
     // an update; `last_insert_rowid()` is only meaningful for a fresh insert.
-    let claude_session_id: i64 = if was_insert {
+    let agentic_session_id: i64 = if was_insert {
         tx.last_insert_rowid()
     } else {
         prior.as_ref().map(|(id, _, _, _)| *id).unwrap()
@@ -544,16 +548,16 @@ pub fn upsert_segment_tx(tx: &rusqlite::Transaction, seg: &CodexSegment) -> Resu
         now_ms,
     ) {
         tx.execute(
-            "INSERT INTO claude_enrichment_queue
-                 (claude_session_id, status, retry_count, error_message, created_at, updated_at)
+            "INSERT INTO agentic_enrichment_queue
+                 (session_id, status, retry_count, error_message, enqueued_at, updated_at)
              VALUES (?1, 'pending', 0, NULL, ?2, ?2)
-             ON CONFLICT(claude_session_id) DO UPDATE SET
+             ON CONFLICT(session_id) DO UPDATE SET
                  status        = 'pending',
                  retry_count   = 0,
                  error_message = NULL,
                  updated_at    = excluded.updated_at
-             WHERE claude_enrichment_queue.status != 'processing'",
-            params![claude_session_id, now_ms],
+             WHERE agentic_enrichment_queue.status != 'processing'",
+            params![agentic_session_id, now_ms],
         )?;
     }
     Ok(())
@@ -630,9 +634,9 @@ fn read_codex_state_threads(conn: &Connection) -> Result<Vec<CodexStateThread>> 
 
 fn read_hippo_session_ids(conn: &Connection) -> Result<HashSet<String>> {
     let mut stmt = conn.prepare(
-        "SELECT DISTINCT session_id FROM claude_sessions
-         WHERE (source_file LIKE '%/.codex/%'
-                OR source_file LIKE '%/CodingAssistant/codex/%')
+        "SELECT DISTINCT session_id
+         FROM agentic_sessions
+         WHERE harness = 'codex'
            AND probe_tag IS NULL",
     )?;
     stmt.query_map([], |row| row.get::<_, String>(0))?

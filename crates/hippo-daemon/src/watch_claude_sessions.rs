@@ -280,9 +280,8 @@ fn upsert_heartbeat(conn: &Connection) {
     }
 }
 
-/// Return true when `err` indicates that the v12 columns (`content_hash`,
-/// `last_enriched_content_hash`) or the `claude_enrichment_queue` table are
-/// absent — i.e., the DB has not yet been migrated from v11→v12.
+/// Return true when `err` indicates that the content-hash columns or the
+/// agentic enrichment queue table are absent.
 ///
 /// Used by `run_settling_sweep` and `check_backfill_needed` to no-op
 /// gracefully on pre-migration databases rather than propagating a confusing
@@ -291,10 +290,13 @@ fn upsert_heartbeat(conn: &Connection) {
 fn is_missing_claude_session_columns_error(err: &rusqlite::Error) -> bool {
     let msg = err.to_string();
     msg.contains("no such column: cs.content_hash")
+        || msg.contains("no such column: s.content_hash")
         || msg.contains("no such column: content_hash")
         || msg.contains("no such column: cs.last_enriched_content_hash")
+        || msg.contains("no such column: s.last_enriched_content_hash")
         || msg.contains("no such column: last_enriched_content_hash")
-        || msg.contains("no such table: claude_enrichment_queue")
+        || msg.contains("no such table: agentic_sessions")
+        || msg.contains("no such table: agentic_enrichment_queue")
 }
 
 /// Sentinel: emit the pre-migration `warn!` at most once per process lifetime.
@@ -345,20 +347,21 @@ fn run_settling_sweep(
         // content would never be re-enqueued by the settling sweep even though
         // its content_hash had changed.
         let mut stmt = match conn.prepare(
-            "SELECT cs.id, cs.source_file
-             FROM claude_sessions cs
-             LEFT JOIN claude_enrichment_queue ceq ON ceq.claude_session_id = cs.id
-             WHERE cs.probe_tag IS NULL
-               AND cs.content_hash IS NOT NULL
-               AND (cs.last_enriched_content_hash IS NULL
-                    OR cs.content_hash != cs.last_enriched_content_hash)
+            "SELECT s.id, s.source_file
+             FROM agentic_sessions s
+             LEFT JOIN agentic_enrichment_queue q ON q.session_id = s.id
+             WHERE s.harness = 'claude-code'
+               AND s.probe_tag IS NULL
+               AND s.content_hash IS NOT NULL
+               AND (s.last_enriched_content_hash IS NULL
+                    OR s.content_hash != s.last_enriched_content_hash)
                AND (
-                 json_array_length(COALESCE(cs.tool_calls_json,   '[]')) > 0
-                 OR json_array_length(COALESCE(cs.user_prompts_json, '[]')) > 0
-                 OR length(COALESCE(cs.summary_text, '')) > 0
+                 json_array_length(COALESCE(s.tool_calls_json,   '[]')) > 0
+                 OR json_array_length(COALESCE(s.user_prompts_json, '[]')) > 0
+                 OR length(COALESCE(s.summary_text, '')) > 0
                )
-               AND (ceq.id IS NULL OR ceq.status IN ('done','failed'))
-             ORDER BY cs.end_time ASC
+               AND (q.id IS NULL OR q.status IN ('done','failed'))
+             ORDER BY s.end_time ASC
              LIMIT ?1",
         ) {
             Err(ref e) if is_missing_claude_session_columns_error(e) => {
@@ -415,11 +418,11 @@ fn run_settling_sweep(
         e
     })?;
 
-    // `claude_session_row_id` is `claude_sessions.id` (an integer rowid),
-    // not the textual `claude_sessions.session_id`. The
-    // `claude_enrichment_queue.claude_session_id` foreign key joins on
+    // `agentic_session_row_id` is `agentic_sessions.id` (an integer rowid),
+    // not the textual `agentic_sessions.session_id`. The
+    // `agentic_enrichment_queue.session_id` foreign key joins on
     // this rowid.
-    for (claude_session_row_id, source_file) in candidates {
+    for (agentic_session_row_id, source_file) in candidates {
         if enqueued >= max_per_tick {
             break;
         }
@@ -453,16 +456,16 @@ fn run_settling_sweep(
         // Keeps the worker's lock safe; resets retry_count because a new
         // content version deserves a fresh retry budget.
         match tx.execute(
-            "INSERT INTO claude_enrichment_queue
-                 (claude_session_id, status, retry_count, error_message, created_at, updated_at)
+            "INSERT INTO agentic_enrichment_queue
+                 (session_id, status, retry_count, error_message, enqueued_at, updated_at)
              VALUES (?1, 'pending', 0, NULL, ?2, ?2)
-             ON CONFLICT(claude_session_id) DO UPDATE SET
+             ON CONFLICT(session_id) DO UPDATE SET
                  status        = 'pending',
                  retry_count   = 0,
                  error_message = NULL,
                  updated_at    = excluded.updated_at
-             WHERE claude_enrichment_queue.status != 'processing'",
-            params![claude_session_row_id, now_ms],
+             WHERE agentic_enrichment_queue.status != 'processing'",
+            params![agentic_session_row_id, now_ms],
         ) {
             Ok(rows_changed) => {
                 // The WHERE clause may no-op the UPDATE if a concurrent brain
@@ -481,7 +484,7 @@ fn run_settling_sweep(
                 return Ok(enqueued);
             }
             Err(e) => {
-                warn!(%e, claude_session_row_id, "watcher: settling sweep enqueue failed");
+                warn!(%e, agentic_session_row_id, "watcher: settling sweep enqueue failed");
                 // Non-fatal: continue trying remaining candidates.
             }
         }
@@ -549,8 +552,9 @@ fn check_backfill_needed(conn: &Connection) -> usize {
     // `strftime('%s', '2026-04-25')` returns seconds; multiply by 1000 to
     // compare against epoch-ms `end_time`.
     let count: rusqlite::Result<i64> = conn.query_row(
-        "SELECT COUNT(*) FROM claude_sessions
-         WHERE content_hash IS NULL
+        "SELECT COUNT(*) FROM agentic_sessions
+         WHERE harness = 'claude-code'
+           AND content_hash IS NULL
            AND probe_tag IS NULL
            AND end_time > strftime('%s', '2026-04-25') * 1000",
         [],
@@ -901,7 +905,8 @@ mod tests {
         // Verify no duplicates: count distinct (session_id, segment_index) pairs.
         let count: usize = conn
             .query_row(
-                "SELECT COUNT(*) FROM claude_sessions WHERE session_id = ?1",
+                "SELECT COUNT(*) FROM agentic_sessions
+                 WHERE session_id = ?1 AND harness = 'claude-code'",
                 [session_id],
                 |row| row.get::<_, i64>(0),
             )
@@ -917,8 +922,8 @@ mod tests {
             .query_row(
                 "SELECT COUNT(*) FROM (
                      SELECT session_id, segment_index, COUNT(*) AS n
-                     FROM claude_sessions
-                     WHERE session_id = ?1
+                     FROM agentic_sessions
+                     WHERE session_id = ?1 AND harness = 'claude-code'
                      GROUP BY session_id, segment_index
                      HAVING n > 1
                  )",
@@ -965,7 +970,7 @@ mod tests {
         }
     }
 
-    /// Seed a `claude_sessions` row directly for sweep tests.
+    /// Seed an `agentic_sessions` row directly for sweep tests.
     #[allow(clippy::too_many_arguments)]
     fn seed_session(
         conn: &Connection,
@@ -979,11 +984,14 @@ mod tests {
     ) {
         let now_ms = 1_700_000_000_000i64;
         conn.execute(
-            "INSERT INTO claude_sessions
-                 (id, session_id, project_dir, cwd, segment_index, start_time, end_time,
-                  summary_text, tool_calls_json, user_prompts_json, message_count, source_file,
-                  content_hash, last_enriched_content_hash, created_at)
-             VALUES (?1, ?2, '/tmp', '/tmp', 0, ?3, ?3, 'test', ?4, ?5, 1, ?6, ?7, ?8, ?3)",
+            "INSERT INTO agentic_sessions
+                 (id, session_id, harness, segment_index, model, project_dir, cwd, git_branch,
+                  slug, title, parent_session_id, is_subagent, summary_text, tool_calls_json,
+                  user_prompts_json, source_file, snapshot_diffs_json, commit_messages_json,
+                  message_count, token_count, start_time, end_time, content_hash,
+                  last_enriched_content_hash, created_at)
+             VALUES (?1, ?2, 'claude-code', 0, '', '/tmp', '/tmp', NULL, '', '', NULL, 0,
+                     'test', ?4, ?5, ?6, 'null', '[]', 1, 0, ?3, ?3, ?7, ?8, ?3)",
             params![
                 row_id,
                 session_id,
@@ -999,22 +1007,22 @@ mod tests {
     }
 
     /// Seed a queue row for a session.
-    fn seed_queue(conn: &Connection, claude_session_id: i64, status: &str) {
+    fn seed_queue(conn: &Connection, agentic_session_id: i64, status: &str) {
         let now_ms = 1_700_000_000_000i64;
         conn.execute(
-            "INSERT INTO claude_enrichment_queue
-                 (claude_session_id, status, created_at, updated_at)
+            "INSERT INTO agentic_enrichment_queue
+                 (session_id, status, enqueued_at, updated_at)
              VALUES (?1, ?2, ?3, ?3)",
-            params![claude_session_id, status, now_ms],
+            params![agentic_session_id, status, now_ms],
         )
         .expect("seed_queue");
     }
 
     /// Read the queue status for a session.
-    fn queue_status(conn: &Connection, claude_session_id: i64) -> Option<String> {
+    fn queue_status(conn: &Connection, agentic_session_id: i64) -> Option<String> {
         conn.query_row(
-            "SELECT status FROM claude_enrichment_queue WHERE claude_session_id = ?1",
-            params![claude_session_id],
+            "SELECT status FROM agentic_enrichment_queue WHERE session_id = ?1",
+            params![agentic_session_id],
             |row| row.get(0),
         )
         .ok()
@@ -1161,7 +1169,7 @@ mod tests {
         // updated_at should be fresh (within a few seconds of now).
         let updated_at: i64 = conn
             .query_row(
-                "SELECT updated_at FROM claude_enrichment_queue WHERE claude_session_id = 5",
+                "SELECT updated_at FROM agentic_enrichment_queue WHERE session_id = 5",
                 [],
                 |row| row.get(0),
             )
@@ -1197,7 +1205,7 @@ mod tests {
         // are zero — otherwise the P2 sweep coverage clause would (correctly)
         // pick this segment up as having assistant content.
         conn.execute(
-            "UPDATE claude_sessions SET summary_text = '' WHERE id = 6",
+            "UPDATE agentic_sessions SET summary_text = '' WHERE id = 6",
             [],
         )
         .unwrap();
@@ -1273,7 +1281,7 @@ mod tests {
         // The remaining 5 should still have no queue row (or be untouched).
         let pending_count: i64 = conn
             .query_row(
-                "SELECT COUNT(*) FROM claude_enrichment_queue WHERE status = 'pending'",
+                "SELECT COUNT(*) FROM agentic_enrichment_queue WHERE status = 'pending'",
                 [],
                 |row| row.get(0),
             )
@@ -1375,16 +1383,16 @@ mod tests {
     /// `retry_count` fields (simulating a brain worker that claimed it).
     fn seed_queue_processing(
         conn: &Connection,
-        claude_session_id: i64,
+        agentic_session_id: i64,
         locked_by: &str,
         retry_count: i64,
     ) {
         let now_ms = 1_700_000_000_000i64;
         conn.execute(
-            "INSERT INTO claude_enrichment_queue
-                 (claude_session_id, status, retry_count, locked_by, locked_at, created_at, updated_at)
+            "INSERT INTO agentic_enrichment_queue
+                 (session_id, status, retry_count, locked_by, locked_at, enqueued_at, updated_at)
              VALUES (?1, 'processing', ?2, ?3, ?4, ?4, ?4)",
-            params![claude_session_id, retry_count, locked_by, now_ms],
+            params![agentic_session_id, retry_count, locked_by, now_ms],
         )
         .expect("seed_queue_processing");
     }
@@ -1421,15 +1429,15 @@ mod tests {
         // Attempt to upsert to 'pending' — the WHERE clause must block this.
         let now_ms = chrono::Utc::now().timestamp_millis();
         conn.execute(
-            "INSERT INTO claude_enrichment_queue
-                 (claude_session_id, status, retry_count, error_message, created_at, updated_at)
+            "INSERT INTO agentic_enrichment_queue
+                 (session_id, status, retry_count, error_message, enqueued_at, updated_at)
              VALUES (?1, 'pending', 0, NULL, ?2, ?2)
-             ON CONFLICT(claude_session_id) DO UPDATE SET
+             ON CONFLICT(session_id) DO UPDATE SET
                  status        = 'pending',
                  retry_count   = 0,
                  error_message = NULL,
                  updated_at    = excluded.updated_at
-             WHERE claude_enrichment_queue.status != 'processing'",
+             WHERE agentic_enrichment_queue.status != 'processing'",
             params![100i64, now_ms],
         )
         .expect("upsert should succeed (no-op due to WHERE)");
@@ -1438,7 +1446,7 @@ mod tests {
         let (status, locked_by, retry_count): (String, Option<String>, i64) = conn
             .query_row(
                 "SELECT status, locked_by, retry_count
-                 FROM claude_enrichment_queue WHERE claude_session_id = 100",
+                 FROM agentic_enrichment_queue WHERE session_id = 100",
                 [],
                 |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )
@@ -1492,7 +1500,8 @@ mod tests {
         // (retry_count=3 is an arbitrary non-zero value to detect resets.)
         let session_row_id: i64 = conn
             .query_row(
-                "SELECT id FROM claude_sessions WHERE session_id = ?1 LIMIT 1",
+                "SELECT id FROM agentic_sessions
+                 WHERE session_id = ?1 AND harness = 'claude-code' LIMIT 1",
                 [session_id],
                 |row| row.get(0),
             )
@@ -1500,7 +1509,7 @@ mod tests {
 
         let current_hash: String = conn
             .query_row(
-                "SELECT content_hash FROM claude_sessions WHERE id = ?1",
+                "SELECT content_hash FROM agentic_sessions WHERE id = ?1",
                 [session_row_id],
                 |row| row.get(0),
             )
@@ -1508,13 +1517,13 @@ mod tests {
 
         // Mark the queue row done with retry_count=3 and record the enriched hash.
         conn.execute(
-            "UPDATE claude_enrichment_queue SET status='done', retry_count=3, updated_at=0
-             WHERE claude_session_id = ?1",
+            "UPDATE agentic_enrichment_queue SET status='done', retry_count=3, updated_at=0
+             WHERE session_id = ?1",
             [session_row_id],
         )
         .unwrap();
         conn.execute(
-            "UPDATE claude_sessions SET last_enriched_content_hash = ?1 WHERE id = ?2",
+            "UPDATE agentic_sessions SET last_enriched_content_hash = ?1 WHERE id = ?2",
             params![current_hash, session_row_id],
         )
         .unwrap();
@@ -1531,8 +1540,8 @@ mod tests {
         // The queue row retry_count should still be 3 (not reset to 0).
         let (status, retry): (String, i64) = conn
             .query_row(
-                "SELECT status, retry_count FROM claude_enrichment_queue
-                 WHERE claude_session_id = ?1",
+                "SELECT status, retry_count FROM agentic_enrichment_queue
+                 WHERE session_id = ?1",
                 [session_row_id],
                 |row| Ok((row.get(0)?, row.get(1)?)),
             )
@@ -1559,11 +1568,14 @@ mod tests {
         // Convert to epoch-ms: 1777161600000
         let post_cutoff_ms = 1_777_161_600_000i64;
         conn.execute(
-            "INSERT INTO claude_sessions
-                 (session_id, project_dir, cwd, segment_index, start_time, end_time,
-                  summary_text, message_count, source_file, created_at)
-             VALUES ('backfill-warn-sess', '/tmp', '/tmp', 0, ?1, ?1,
-                     'test', 1, '/tmp/backfill-warn.jsonl', ?1)",
+            "INSERT INTO agentic_sessions
+                 (session_id, harness, segment_index, model, project_dir, cwd, git_branch,
+                  slug, title, parent_session_id, is_subagent, summary_text, source_file,
+                  snapshot_diffs_json, commit_messages_json, message_count, token_count,
+                  start_time, end_time, created_at)
+             VALUES ('backfill-warn-sess', 'claude-code', 0, '', '/tmp', '/tmp', NULL,
+                     '', '', NULL, 0, 'test', '/tmp/backfill-warn.jsonl',
+                     'null', '[]', 1, 0, ?1, ?1, ?1)",
             params![post_cutoff_ms],
         )
         .expect("seed backfill-warn session");
@@ -1586,11 +1598,14 @@ mod tests {
         // epoch-ms for 2026-04-26 00:00:00 UTC (after the 2026-04-25 cutoff).
         let post_cutoff_ms = 1_777_161_600_000i64;
         conn.execute(
-            "INSERT INTO claude_sessions
-                 (session_id, project_dir, cwd, segment_index, start_time, end_time,
-                  summary_text, message_count, source_file, content_hash, created_at)
-             VALUES ('backfill-ok-sess', '/tmp', '/tmp', 0, ?1, ?1,
-                     'test', 1, '/tmp/backfill-ok.jsonl', 'somehash', ?1)",
+            "INSERT INTO agentic_sessions
+                 (session_id, harness, segment_index, model, project_dir, cwd, git_branch,
+                  slug, title, parent_session_id, is_subagent, summary_text, source_file,
+                  snapshot_diffs_json, commit_messages_json, message_count, token_count,
+                  start_time, end_time, content_hash, created_at)
+             VALUES ('backfill-ok-sess', 'claude-code', 0, '', '/tmp', '/tmp', NULL,
+                     '', '', NULL, 0, 'test', '/tmp/backfill-ok.jsonl',
+                     'null', '[]', 1, 0, ?1, ?1, 'somehash', ?1)",
             params![post_cutoff_ms],
         )
         .expect("seed backfill-ok session");

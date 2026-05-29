@@ -30,15 +30,15 @@ fn cursor_agent_transcript_lands_row_and_bumps_health() {
     let _ = open_db(&config.db_path()).unwrap();
 
     let n = hippo_daemon::cursor_session::poll_tick(&config).unwrap();
-    assert_eq!(
-        n, 1,
-        "Cursor transcript must produce one claude_sessions row"
-    );
+    assert_eq!(n, 1, "Cursor transcript must produce one agentic_sessions row");
 
     let conn = open_db(&config.db_path()).unwrap();
     let rows: i64 = conn
         .query_row(
-            "SELECT COUNT(*) FROM claude_sessions WHERE session_id = 'sess-audit' AND source_file LIKE '%/.cursor/%'",
+            "SELECT COUNT(*) FROM agentic_sessions
+             WHERE session_id = 'sess-audit'
+               AND harness = 'cursor'
+               AND source_file LIKE '%/.cursor/%'",
             [],
             |r| r.get(0),
         )
