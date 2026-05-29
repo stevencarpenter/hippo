@@ -89,6 +89,30 @@ def enrichment_db(tmp_path: Path) -> str:
             claude_session_id INTEGER NOT NULL,
             PRIMARY KEY (knowledge_node_id, claude_session_id)
         );
+        CREATE TABLE IF NOT EXISTS agentic_sessions (
+            id INTEGER PRIMARY KEY,
+            session_id TEXT NOT NULL,
+            harness TEXT NOT NULL DEFAULT 'opencode'
+                CHECK (harness IN ('claude-code','opencode','codex','cursor')),
+            segment_index INTEGER NOT NULL DEFAULT 0,
+            project_dir TEXT NOT NULL DEFAULT '',
+            cwd TEXT NOT NULL DEFAULT '',
+            summary_text TEXT NOT NULL DEFAULT '',
+            message_count INTEGER NOT NULL DEFAULT 0,
+            token_count INTEGER NOT NULL DEFAULT 0,
+            start_time INTEGER NOT NULL,
+            end_time INTEGER NOT NULL,
+            source_file TEXT NOT NULL DEFAULT '',
+            enriched INTEGER NOT NULL DEFAULT 0,
+            created_at INTEGER NOT NULL DEFAULT 0,
+            probe_tag TEXT DEFAULT NULL,
+            UNIQUE (session_id, harness, segment_index)
+        );
+        CREATE TABLE IF NOT EXISTS knowledge_node_agentic_sessions (
+            knowledge_node_id INTEGER NOT NULL,
+            agentic_session_id INTEGER NOT NULL,
+            PRIMARY KEY (knowledge_node_id, agentic_session_id)
+        );
         CREATE TABLE IF NOT EXISTS workflow_enrichment_queue (
             run_id          INTEGER PRIMARY KEY REFERENCES workflow_runs(id) ON DELETE CASCADE,
             status          TEXT NOT NULL DEFAULT 'pending',
@@ -286,14 +310,19 @@ def test_enrich_one_async_rejects_invalid_field(enrichment_db):
     assert n == 0, "no node should be written when validation fails"
 
 
-def test_enrich_one_async_links_claude_sessions(enrichment_db):
-    """enrich_one_async links co-temporal Claude sessions."""
+def test_enrich_one_async_links_agentic_sessions(enrichment_db):
+    """enrich_one_async links co-temporal agentic sessions.
+
+    Post-v18 the co-temporal session read targets `agentic_sessions` and the
+    link write targets `knowledge_node_agentic_sessions`; the frozen
+    `knowledge_node_claude_sessions` table must NOT be written.
+    """
     conn = sqlite3.connect(enrichment_db)
     conn.execute("""
-        INSERT INTO claude_sessions
-          (id, session_id, project_dir, cwd, segment_index, start_time, end_time,
+        INSERT INTO agentic_sessions
+          (id, session_id, harness, project_dir, cwd, segment_index, start_time, end_time,
            summary_text, message_count, source_file, enriched, created_at)
-        VALUES (200, 'sess-xyz', '/hippo', '/hippo', 0, 100, 2000,
+        VALUES (200, 'sess-xyz', 'claude-code', '/hippo', '/hippo', 0, 100, 2000,
                 'CI debugging session', 1, 'sess.jsonl', 0, 1000)
     """)
     conn.commit()
@@ -307,9 +336,37 @@ def test_enrich_one_async_links_claude_sessions(enrichment_db):
     )
 
     conn = sqlite3.connect(enrichment_db)
-    link = conn.execute("SELECT * FROM knowledge_node_claude_sessions").fetchone()
-    assert link is not None
+    link = conn.execute("SELECT agentic_session_id FROM knowledge_node_agentic_sessions").fetchone()
+    assert link is not None and link[0] == 200
+    # The frozen legacy link table must not be written.
+    assert conn.execute("SELECT COUNT(*) FROM knowledge_node_claude_sessions").fetchone()[0] == 0
     conn.close()
+
+
+def test_enrich_one_async_skips_probe_agentic_session(enrichment_db):
+    """A probe-tagged agentic session must NOT be linked (probe_tag IS NULL filter)."""
+    conn = sqlite3.connect(enrichment_db)
+    conn.execute("""
+        INSERT INTO agentic_sessions
+          (id, session_id, harness, project_dir, cwd, segment_index, start_time, end_time,
+           summary_text, message_count, source_file, enriched, created_at, probe_tag)
+        VALUES (300, 'sess-probe', 'claude-code', '/hippo', '/hippo', 0, 100, 2000,
+                'probe session', 1, 'sess.jsonl', 0, 1000, 'probe-v1')
+    """)
+    conn.commit()
+    conn.close()
+
+    fake_lm = MagicMock()
+    fake_lm.chat = AsyncMock(return_value=_VALID_WORKFLOW_JSON)
+
+    asyncio.run(
+        enrich_one_async(enrichment_db, run_id=1, inference=fake_lm, query_model="test-model")
+    )
+
+    conn = sqlite3.connect(enrichment_db)
+    n = conn.execute("SELECT COUNT(*) FROM knowledge_node_agentic_sessions").fetchone()[0]
+    conn.close()
+    assert n == 0, "probe-tagged agentic session must not be linked"
 
 
 def test_enrich_one_async_skips_missing_run(enrichment_db):

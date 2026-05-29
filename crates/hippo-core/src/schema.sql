@@ -550,12 +550,14 @@ CREATE INDEX IF NOT EXISTS idx_claude_session_parity_path_window
 -- INSERT/UPSERT here independently.
 --
 -- v14 shipped this table opencode-shaped: one row per session, no
--- `segment_index`. v17 rebuilt it to be **segment-capable** so claude-code,
--- codex, and cursor (which all segment their sessions) can be migrated onto
--- it in Wave 2 of the unification series (#155). Today (post-v17) only the
--- opencode poller writes here — every row has `segment_index = 0`. The
--- 'cursor' harness value is accepted by the CHECK so Wave 2 won't be blocked
--- on another rebuild, but no rows carry it yet.
+-- `segment_index`. v17 rebuilt it to be **segment-capable**; v18 (unification
+-- step 2) repointed the claude-code, codex, and cursor pollers and the brain
+-- enrichment writers onto it and backfilled all historical claude_sessions
+-- rows into it. As of v18, all four harnesses (claude-code, opencode, codex,
+-- cursor) write here directly, segmented sessions carry `segment_index >= 0`,
+-- and `harness` disambiguates origin. The legacy claude_sessions /
+-- claude_enrichment_queue / knowledge_node_claude_sessions tables are frozen
+-- (no longer written) and are dropped in a later unification step.
 CREATE TABLE IF NOT EXISTS agentic_sessions (
     id                          INTEGER PRIMARY KEY,
     session_id                  TEXT    NOT NULL,
@@ -651,4 +653,4 @@ INSERT OR IGNORE INTO source_health (source, last_event_ts, updated_at) VALUES
 -- The `claude_session_offsets` table (deprecated since T-5) is preserved
 -- to avoid breaking existing CREATE SCHEMA users.
 
-PRAGMA user_version = 17;
+PRAGMA user_version = 18;

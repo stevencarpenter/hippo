@@ -72,9 +72,12 @@ class QueueSpec:
 
 QUEUES: tuple[QueueSpec, ...] = (
     QueueSpec("shell", "enrichment_queue", "id"),
-    QueueSpec("claude", "claude_enrichment_queue", "id"),
     QueueSpec("browser", "browser_enrichment_queue", "id"),
     QueueSpec("workflow", "workflow_enrichment_queue", "run_id"),
+    # `claude_enrichment_queue` is frozen post-v18: no longer written, and its
+    # un-terminal rows were backfilled into agentic_enrichment_queue (which this
+    # reaper covers). Reaping the frozen table would only double-count locks that
+    # already moved to the agentic queue, so it is intentionally omitted.
     QueueSpec("agentic", "agentic_enrichment_queue", "id"),
 )
 

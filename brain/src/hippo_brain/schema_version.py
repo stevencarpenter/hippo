@@ -39,7 +39,7 @@ shape.
 
 from __future__ import annotations
 
-EXPECTED_SCHEMA_VERSION: int = 17
+EXPECTED_SCHEMA_VERSION: int = 18
 
 # Versions brain can read without erroring.
 #

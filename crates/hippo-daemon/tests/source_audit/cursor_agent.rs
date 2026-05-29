@@ -30,7 +30,10 @@ fn cursor_agent_transcript_lands_row_and_bumps_health() {
     let _ = open_db(&config.db_path()).unwrap();
 
     let n = hippo_daemon::cursor_session::poll_tick(&config).unwrap();
-    assert_eq!(n, 1, "Cursor transcript must produce one agentic_sessions row");
+    assert_eq!(
+        n, 1,
+        "Cursor transcript must produce one agentic_sessions row"
+    );
 
     let conn = open_db(&config.db_path()).unwrap();
     let rows: i64 = conn

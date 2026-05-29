@@ -15,6 +15,7 @@ import pytest
 
 from hippo_brain.evaluation import (
     Question,
+    _corpus_stats,
     coverage_gap_score,
     derive_sources,
     groundedness,
@@ -203,8 +204,8 @@ def mini_db():
         """
         CREATE TABLE knowledge_nodes (id INTEGER PRIMARY KEY, uuid TEXT);
         CREATE TABLE knowledge_node_events (knowledge_node_id INTEGER, event_id INTEGER);
-        CREATE TABLE knowledge_node_claude_sessions (
-            knowledge_node_id INTEGER, claude_session_id INTEGER
+        CREATE TABLE knowledge_node_agentic_sessions (
+            knowledge_node_id INTEGER, agentic_session_id INTEGER
         );
         CREATE TABLE knowledge_node_browser_events (
             knowledge_node_id INTEGER, browser_event_id INTEGER
@@ -214,7 +215,7 @@ def mini_db():
         );
         INSERT INTO knowledge_nodes VALUES (1, 'u1'), (2, 'u2'), (3, 'u3');
         INSERT INTO knowledge_node_events VALUES (1, 100), (3, 101);
-        INSERT INTO knowledge_node_claude_sessions VALUES (2, 200), (3, 201);
+        INSERT INTO knowledge_node_agentic_sessions VALUES (2, 200), (3, 201);
         """
     )
     yield conn
@@ -235,6 +236,48 @@ def test_derive_sources_empty_conn():
         assert derive_sources(empty_conn, []) == {}
     finally:
         empty_conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Agentic-sessions repoint (v17→v18 cutover): derive_sources labels an
+# agentic-session link as "claude"; _corpus_stats counts agentic_sessions
+# excluding probes.
+# ---------------------------------------------------------------------------
+
+
+def test_link_sources_labels_agentic_link_as_claude(tmp_db):
+    conn, _ = tmp_db
+    conn.execute(
+        "INSERT INTO knowledge_nodes (id, uuid, content, embed_text, created_at, updated_at) "
+        "VALUES (1, 'n-uuid', '{}', '', 1, 1)"
+    )
+    conn.execute(
+        """INSERT INTO agentic_sessions
+        (id, session_id, harness, segment_index, project_dir, cwd, summary_text,
+         message_count, token_count, start_time, end_time)
+        VALUES (5, 's', 'claude-code', 0, '/p', '/p', 's', 1, 0, 1, 2)"""
+    )
+    conn.execute(
+        "INSERT INTO knowledge_node_agentic_sessions (knowledge_node_id, agentic_session_id) VALUES (1, 5)"
+    )
+    conn.commit()
+    out = derive_sources(conn, ["n-uuid"])
+    assert "claude" in out["n-uuid"]
+
+
+def test_corpus_stats_counts_agentic_sessions_excluding_probes(tmp_db):
+    conn, _ = tmp_db
+    conn.execute(
+        """INSERT INTO agentic_sessions
+        (id, session_id, harness, segment_index, project_dir, cwd, summary_text,
+         message_count, token_count, start_time, end_time, probe_tag)
+        VALUES (1, 'real', 'codex', 0, '/p', '/p', 's', 1, 0, 1, 2, NULL),
+               (2, 'probe', 'codex', 0, '/p', '/p', 's', 1, 0, 1, 2, 'p')"""
+    )
+    conn.commit()
+    stats = _corpus_stats(conn)
+    assert stats["agentic_sessions"] == 1
+    assert "claude_sessions" not in stats
 
 
 # ---------------------------------------------------------------------------
@@ -283,17 +326,18 @@ CREATE TABLE knowledge_node_events (
     event_id INTEGER,
     PRIMARY KEY (knowledge_node_id, event_id)
 );
-CREATE TABLE claude_sessions (
+CREATE TABLE agentic_sessions (
     id INTEGER PRIMARY KEY,
     start_time INTEGER,
     cwd TEXT,
     project_dir TEXT,
-    git_branch TEXT
+    git_branch TEXT,
+    probe_tag TEXT
 );
-CREATE TABLE knowledge_node_claude_sessions (
+CREATE TABLE knowledge_node_agentic_sessions (
     knowledge_node_id INTEGER,
-    claude_session_id INTEGER,
-    PRIMARY KEY (knowledge_node_id, claude_session_id)
+    agentic_session_id INTEGER,
+    PRIMARY KEY (knowledge_node_id, agentic_session_id)
 );
 CREATE TABLE browser_events (id INTEGER PRIMARY KEY, timestamp INTEGER);
 CREATE TABLE knowledge_node_browser_events (
@@ -337,9 +381,9 @@ def _smoke_conn() -> sqlite3.Connection:
     )
     conn.execute("INSERT INTO knowledge_node_events VALUES (1, 10)")
     conn.execute(
-        "INSERT INTO claude_sessions (id, start_time, cwd, project_dir, git_branch) VALUES (20, 1100, '/p', '/p', 'main')"
+        "INSERT INTO agentic_sessions (id, start_time, cwd, project_dir, git_branch) VALUES (20, 1100, '/p', '/p', 'main')"
     )
-    conn.execute("INSERT INTO knowledge_node_claude_sessions VALUES (2, 20)")
+    conn.execute("INSERT INTO knowledge_node_agentic_sessions VALUES (2, 20)")
     conn.execute("INSERT INTO browser_events (id, timestamp) VALUES (30, 1200)")
     conn.execute("INSERT INTO knowledge_node_browser_events VALUES (3, 30)")
     conn.commit()

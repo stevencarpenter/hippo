@@ -341,7 +341,7 @@ def derive_sources(conn: sqlite3.Connection | None, uuids: Sequence[str]) -> dic
             "shell",
         ),
         (
-            "SELECT DISTINCT knowledge_node_id FROM knowledge_node_claude_sessions "
+            "SELECT DISTINCT knowledge_node_id FROM knowledge_node_agentic_sessions "
             "WHERE knowledge_node_id IN (" + id_ph + ")",
             "claude",
         ),
@@ -760,7 +760,7 @@ def _corpus_stats(conn: sqlite3.Connection) -> dict:
     for name, sql in (
         ("knowledge_nodes", "SELECT COUNT(*) FROM knowledge_nodes"),
         ("events", "SELECT COUNT(*) FROM events"),
-        ("claude_sessions", "SELECT COUNT(*) FROM claude_sessions"),
+        ("agentic_sessions", "SELECT COUNT(*) FROM agentic_sessions WHERE probe_tag IS NULL"),
     ):
         try:
             stats[name] = conn.execute(sql).fetchone()[0]

@@ -74,6 +74,38 @@ def db():
             probe_tag TEXT DEFAULT NULL,
             UNIQUE (session_id, segment_index)
         );
+        CREATE TABLE agentic_sessions (
+            id INTEGER PRIMARY KEY,
+            session_id TEXT NOT NULL,
+            harness TEXT NOT NULL DEFAULT 'opencode'
+                CHECK (harness IN ('claude-code','opencode','codex','cursor')),
+            segment_index INTEGER NOT NULL DEFAULT 0,
+            model TEXT NOT NULL DEFAULT '',
+            agent TEXT DEFAULT '',
+            project_dir TEXT NOT NULL,
+            cwd TEXT NOT NULL,
+            git_branch TEXT,
+            slug TEXT DEFAULT '',
+            title TEXT DEFAULT '',
+            parent_session_id TEXT,
+            is_subagent INTEGER NOT NULL DEFAULT 0,
+            summary_text TEXT NOT NULL,
+            tool_calls_json TEXT,
+            user_prompts_json TEXT,
+            source_file TEXT DEFAULT '',
+            snapshot_diffs_json TEXT DEFAULT 'null',
+            commit_messages_json TEXT DEFAULT '[]',
+            message_count INTEGER NOT NULL DEFAULT 0,
+            token_count INTEGER NOT NULL DEFAULT 0,
+            start_time INTEGER NOT NULL,
+            end_time INTEGER NOT NULL,
+            content_hash TEXT,
+            last_enriched_content_hash TEXT,
+            created_at INTEGER NOT NULL DEFAULT 0,
+            enriched INTEGER NOT NULL DEFAULT 0,
+            probe_tag TEXT DEFAULT NULL,
+            UNIQUE (session_id, harness, segment_index)
+        );
         CREATE TABLE browser_events (
             id INTEGER PRIMARY KEY,
             timestamp INTEGER NOT NULL,
@@ -224,10 +256,11 @@ class TestSearchEvents:
     def test_claude_events(self, db):
         now_ms = int(time.time() * 1000)
         db.execute(
-            "INSERT INTO claude_sessions "
-            "(session_id, project_dir, cwd, segment_index, start_time, end_time, "
-            "summary_text, message_count, source_file) "
-            "VALUES ('s1', '/proj', '/proj', 0, ?, ?, 'Implemented MCP server', 10, 'f.jsonl')",
+            "INSERT INTO agentic_sessions "
+            "(session_id, harness, segment_index, project_dir, cwd, "
+            " summary_text, message_count, source_file, start_time, end_time) "
+            "VALUES ('s1', 'claude-code', 0, '/proj', '/proj', "
+            "        'Implemented MCP server', 10, 'f.jsonl', ?, ?)",
             (now_ms, now_ms + 60000),
         )
         db.commit()
@@ -235,6 +268,24 @@ class TestSearchEvents:
         results = search_events_impl(db, query="MCP", source="claude", limit=10)
         assert len(results) == 1
         assert results[0]["source"] == "claude"
+
+    def test_opencode_events_included_via_claude_source(self, db):
+        """search_events(source='claude') must surface opencode agentic rows so
+        it agrees with list_projects. Regression guard for mcp_queries.py:391."""
+        now_ms = int(time.time() * 1000)
+        db.execute(
+            "INSERT INTO agentic_sessions "
+            "(session_id, harness, segment_index, project_dir, cwd, "
+            " summary_text, message_count, start_time, end_time) "
+            "VALUES ('oc1', 'opencode', 0, '/proj', '/proj', "
+            "        'Implemented opencode capture', 7, ?, ?)",
+            (now_ms, now_ms + 60000),
+        )
+        db.commit()
+        results = search_events_impl(db, query="opencode", source="claude", limit=10)
+        assert len(results) == 1
+        assert results[0]["source"] == "claude"
+        assert "opencode capture" in results[0]["summary"]
 
     def test_source_all(self, db):
         now_ms = int(time.time() * 1000)
@@ -517,10 +568,11 @@ class TestListProjects:
 
     def test_includes_claude_sessions(self, db):
         db.execute(
-            "INSERT INTO claude_sessions "
-            "(session_id, project_dir, cwd, segment_index, start_time, end_time, "
-            "summary_text, message_count, source_file) "
-            "VALUES ('s1', '/p/claude-only', '/p/claude-only', 0, 5000, 6000, 's', 1, 'f.jsonl')"
+            "INSERT INTO agentic_sessions "
+            "(session_id, harness, segment_index, project_dir, cwd, "
+            " summary_text, message_count, source_file, start_time, end_time) "
+            "VALUES ('s1', 'claude-code', 0, '/p/claude-only', '/p/claude-only', "
+            "        's', 1, 'f.jsonl', 5000, 6000)"
         )
         db.commit()
 

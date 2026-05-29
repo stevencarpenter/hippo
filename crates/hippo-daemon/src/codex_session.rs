@@ -1250,34 +1250,35 @@ mod tests {
         };
         upsert_segment(&conn, &codex_seg).unwrap();
 
-        // Insert a non-Codex row with a .claude/ source_file (must be excluded).
+        // Non-Codex row in agentic_sessions with claude-code harness
+        // (must be excluded: harness != 'codex').
         conn.execute(
-            "INSERT INTO claude_sessions
-                 (session_id, project_dir, cwd, segment_index,
-                  start_time, end_time, summary_text, tool_calls_json,
-                  user_prompts_json, message_count, source_file,
-                  is_subagent, created_at)
-             VALUES ('claude-session', 'proj', '/work', 0,
-                     1_775_634_000_000, 1_775_634_500_000, 'summary', '[]',
-                     '[]', 1,
+            "INSERT INTO agentic_sessions
+                 (session_id, harness, segment_index, project_dir, cwd,
+                  summary_text, tool_calls_json, user_prompts_json,
+                  message_count, source_file, is_subagent, start_time,
+                  end_time, created_at)
+             VALUES ('claude-session', 'claude-code', 0, 'proj', '/work',
+                     'summary', '[]', '[]', 1,
                      '/Users/me/.claude/projects/abc/session.jsonl',
-                     0, 1_775_634_000_000)",
+                     0, 1_775_634_000_000, 1_775_634_500_000, 1_775_634_000_000)",
             [],
         )
         .unwrap();
 
-        // Insert a Codex row with probe_tag set (must be excluded).
+        // Codex-harness row WITH probe_tag set in agentic_sessions
+        // (must be excluded: probe_tag IS NOT NULL despite harness = 'codex').
         conn.execute(
-            "INSERT INTO claude_sessions
-                 (session_id, project_dir, cwd, segment_index,
-                  start_time, end_time, summary_text, tool_calls_json,
-                  user_prompts_json, message_count, source_file,
-                  is_subagent, probe_tag, created_at)
-             VALUES ('codex-probe', 'proj', '/work', 0,
-                     1_775_634_000_000, 1_775_634_500_000, 'summary', '[]',
-                     '[]', 1,
+            "INSERT INTO agentic_sessions
+                 (session_id, harness, segment_index, project_dir, cwd,
+                  summary_text, tool_calls_json, user_prompts_json,
+                  message_count, source_file, is_subagent, probe_tag,
+                  start_time, end_time, created_at)
+             VALUES ('codex-probe', 'codex', 0, 'proj', '/work',
+                     'summary', '[]', '[]', 1,
                      '/Users/me/.codex/sessions/rollout-probe.jsonl',
-                     0, 'test-probe', 1_775_634_000_000)",
+                     0, 'test-probe', 1_775_634_000_000, 1_775_634_500_000,
+                     1_775_634_000_000)",
             [],
         )
         .unwrap();

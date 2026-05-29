@@ -121,8 +121,8 @@ def all_sources_db():
         CREATE TABLE knowledge_node_events (
             knowledge_node_id INTEGER, event_id INTEGER
         );
-        CREATE TABLE knowledge_node_claude_sessions (
-            knowledge_node_id INTEGER, claude_session_id INTEGER
+        CREATE TABLE knowledge_node_agentic_sessions (
+            knowledge_node_id INTEGER, agentic_session_id INTEGER
         );
         CREATE TABLE knowledge_node_browser_events (
             knowledge_node_id INTEGER, browser_event_id INTEGER
@@ -137,7 +137,7 @@ def all_sources_db():
             (4, 'workflow-only'),
             (5, 'all-four');
         INSERT INTO knowledge_node_events VALUES (1, 100), (5, 105);
-        INSERT INTO knowledge_node_claude_sessions VALUES (2, 200), (5, 205);
+        INSERT INTO knowledge_node_agentic_sessions VALUES (2, 200), (5, 205);
         INSERT INTO knowledge_node_browser_events VALUES (3, 300), (5, 305);
         INSERT INTO knowledge_node_workflow_runs VALUES (4, 400), (5, 405);
         """

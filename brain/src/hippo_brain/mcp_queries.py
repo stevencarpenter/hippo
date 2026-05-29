@@ -388,7 +388,7 @@ def _search_claude_events(
                    tool_calls_json
             FROM agentic_sessions
             WHERE probe_tag IS NULL
-              AND harness IN ('claude-code', 'codex', 'cursor')
+              AND harness IN ('claude-code', 'opencode', 'codex', 'cursor')
               AND (? IS NULL OR summary_text LIKE ?)
               AND (? IS NULL OR start_time >= ?)
               AND (? IS NULL OR cwd LIKE ?)
