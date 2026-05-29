@@ -20,6 +20,7 @@ from hippo_brain.retrieval import (
     RRF_K,
     Filters,
     SearchResult,
+    _apply_filters,
     _fetch_details,
     search,
 )
@@ -53,17 +54,18 @@ CREATE TABLE knowledge_node_events (
     event_id INTEGER NOT NULL,
     PRIMARY KEY (knowledge_node_id, event_id)
 );
-CREATE TABLE claude_sessions (
+CREATE TABLE agentic_sessions (
     id INTEGER PRIMARY KEY,
     start_time INTEGER NOT NULL,
     cwd TEXT NOT NULL,
     project_dir TEXT,
-    git_branch TEXT
+    git_branch TEXT,
+    probe_tag TEXT
 );
-CREATE TABLE knowledge_node_claude_sessions (
+CREATE TABLE knowledge_node_agentic_sessions (
     knowledge_node_id INTEGER NOT NULL,
-    claude_session_id INTEGER NOT NULL,
-    PRIMARY KEY (knowledge_node_id, claude_session_id)
+    agentic_session_id INTEGER NOT NULL,
+    PRIMARY KEY (knowledge_node_id, agentic_session_id)
 );
 CREATE TABLE browser_events (
     id INTEGER PRIMARY KEY,
@@ -208,15 +210,16 @@ def _link_claude(
     cwd: str = "/tmp",
     branch: str | None = None,
     project_dir: str | None = None,
+    probe_tag: str | None = None,
 ) -> None:
     conn.execute(
-        "INSERT INTO claude_sessions"
-        " (id, start_time, cwd, project_dir, git_branch) VALUES (?, ?, ?, ?, ?)",
-        (session_id, start_time, cwd, project_dir, branch),
+        "INSERT INTO agentic_sessions"
+        " (id, start_time, cwd, project_dir, git_branch, probe_tag) VALUES (?, ?, ?, ?, ?, ?)",
+        (session_id, start_time, cwd, project_dir, branch, probe_tag),
     )
     conn.execute(
-        "INSERT INTO knowledge_node_claude_sessions"
-        " (knowledge_node_id, claude_session_id) VALUES (?, ?)",
+        "INSERT INTO knowledge_node_agentic_sessions"
+        " (knowledge_node_id, agentic_session_id) VALUES (?, ?)",
         (node_id, session_id),
     )
 
@@ -699,3 +702,108 @@ def test_search_result_carries_entities_through_to_result(conn):
 
     assert isinstance(result, SearchResult)
     assert result.entities == {"tool": ["pytest"], "project": ["hippo"]}
+
+
+# ---------------------------------------------------------------------------
+# Agentic-session repoint (unification step 2)
+#
+# These exercise the real schema (via the `tmp_db` conftest fixture, which
+# loads schema.sql with both the agentic and frozen claude families) to prove
+# retrieval reads `agentic_sessions` / `knowledge_node_agentic_sessions`, not
+# the frozen `claude_sessions` family.
+# ---------------------------------------------------------------------------
+
+
+def test_fetch_details_fills_cwd_from_agentic_session(tmp_db):
+    conn, _ = tmp_db
+    conn.execute(
+        "INSERT INTO knowledge_nodes (id, uuid, content, embed_text, created_at, updated_at) "
+        "VALUES (1, 'u1', '{}', '', 1000, 1000)"
+    )
+    conn.execute(
+        """INSERT INTO agentic_sessions
+        (id, session_id, harness, segment_index, project_dir, cwd, git_branch,
+         summary_text, message_count, token_count, start_time, end_time)
+        VALUES (7, 'sess-7', 'claude-code', 0, '/proj', '/work/dir', 'feat/x',
+                'did stuff', 5, 0, 2000, 3000)"""
+    )
+    conn.execute(
+        "INSERT INTO knowledge_node_agentic_sessions (knowledge_node_id, agentic_session_id) "
+        "VALUES (1, 7)"
+    )
+    conn.commit()
+    details = _fetch_details(conn, [1])
+    assert details[1]["cwd"] == "/work/dir"
+    assert details[1]["git_branch"] == "feat/x"
+    assert details[1]["captured_at"] == 2000
+
+
+def test_fetch_details_skips_probe_agentic_session(tmp_db):
+    conn, _ = tmp_db
+    conn.execute(
+        "INSERT INTO knowledge_nodes (id, uuid, content, embed_text, created_at, updated_at) "
+        "VALUES (1, 'u1', '{}', '', 1000, 1000)"
+    )
+    conn.execute(
+        """INSERT INTO agentic_sessions
+        (id, session_id, harness, segment_index, project_dir, cwd, git_branch,
+         summary_text, message_count, token_count, start_time, end_time, probe_tag)
+        VALUES (7, 'sess-7', 'claude-code', 0, '/probe', '/probe/dir', 'probe',
+                's', 5, 0, 9999, 9999, 'probe-v1')"""
+    )
+    conn.execute(
+        "INSERT INTO knowledge_node_agentic_sessions (knowledge_node_id, agentic_session_id) "
+        "VALUES (1, 7)"
+    )
+    conn.commit()
+    details = _fetch_details(conn, [1])
+    assert details[1]["cwd"] == ""
+    assert details[1]["captured_at"] == 1000
+
+
+def test_source_clause_claude_matches_agentic_link(tmp_db):
+    conn, _ = tmp_db
+    conn.execute(
+        "INSERT INTO knowledge_nodes (id, uuid, content, embed_text, created_at, updated_at) "
+        "VALUES (1, 'u1', '{}', '', 1000, 1000)"
+    )
+    conn.execute(
+        "INSERT INTO knowledge_nodes (id, uuid, content, embed_text, created_at, updated_at) "
+        "VALUES (2, 'u2', '{}', '', 1000, 1000)"
+    )
+    conn.execute(
+        """INSERT INTO agentic_sessions
+        (id, session_id, harness, segment_index, project_dir, cwd, summary_text,
+         message_count, token_count, start_time, end_time)
+        VALUES (7, 's', 'codex', 0, '/p', '/p', 's', 5, 0, 2000, 3000)"""
+    )
+    conn.execute(
+        "INSERT INTO knowledge_node_agentic_sessions (knowledge_node_id, agentic_session_id) "
+        "VALUES (1, 7)"
+    )
+    conn.commit()
+    kept = _apply_filters(conn, [1, 2], Filters(source="claude"))
+    assert kept == {1}
+
+
+def test_source_clause_claude_excludes_probe_only_node(tmp_db):
+    """AP-6: a node linked ONLY to a probe agentic session must not pass
+    source="claude" (parity with the probe-filtered _apply_filters joins)."""
+    conn, _ = tmp_db
+    conn.execute(
+        "INSERT INTO knowledge_nodes (id, uuid, content, embed_text, created_at, updated_at) "
+        "VALUES (1, 'u1', '{}', '', 1000, 1000)"
+    )
+    conn.execute(
+        """INSERT INTO agentic_sessions
+        (id, session_id, harness, segment_index, project_dir, cwd, summary_text,
+         message_count, token_count, start_time, end_time, probe_tag)
+        VALUES (7, 's', 'claude-code', 0, '/probe', '/probe', 's', 5, 0, 2000, 3000, 'probe-v1')"""
+    )
+    conn.execute(
+        "INSERT INTO knowledge_node_agentic_sessions (knowledge_node_id, agentic_session_id) "
+        "VALUES (1, 7)"
+    )
+    conn.commit()
+    kept = _apply_filters(conn, [1], Filters(source="claude"))
+    assert kept == set(), "probe-only-linked node must be excluded from source=claude"

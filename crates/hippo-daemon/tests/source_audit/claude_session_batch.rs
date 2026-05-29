@@ -35,7 +35,7 @@ fn write_jsonl(dir: &std::path::Path) -> std::path::PathBuf {
 }
 
 #[tokio::test]
-async fn batch_ingest_writes_both_events_and_claude_sessions() {
+async fn batch_ingest_writes_both_events_and_agentic_sessions() {
     let config = test_config();
     let socket_path = config.socket_path();
     let db_path = config.db_path();
@@ -64,29 +64,30 @@ async fn batch_ingest_writes_both_events_and_claude_sessions() {
     // Claude sessions segment must exist (the #59 regression).
     let sessions: i64 = conn
         .query_row(
-            "SELECT COUNT(*) FROM claude_sessions WHERE session_id = ?1",
+            "SELECT COUNT(*) FROM agentic_sessions
+             WHERE session_id = ?1 AND harness = 'claude-code'",
             [FIXTURE_SESSION_ID],
             |r| r.get(0),
         )
         .unwrap();
     assert!(
         sessions >= 1,
-        "batch ingest must write ≥1 claude_sessions row, got {sessions}"
+        "batch ingest must write ≥1 agentic_sessions row, got {sessions}"
     );
 
     // Every segment must have a matching enrichment-queue entry.
     let queued: i64 = conn
         .query_row(
-            "SELECT COUNT(*) FROM claude_enrichment_queue ceq
-             JOIN claude_sessions cs ON ceq.claude_session_id = cs.id
-             WHERE cs.session_id = ?1",
+            "SELECT COUNT(*) FROM agentic_enrichment_queue q
+             JOIN agentic_sessions s ON q.session_id = s.id
+             WHERE s.session_id = ?1 AND s.harness = 'claude-code'",
             [FIXTURE_SESSION_ID],
             |r| r.get(0),
         )
         .unwrap();
     assert_eq!(
         queued, sessions,
-        "every claude_sessions row must be queued for enrichment"
+        "every agentic_sessions row must be queued for enrichment"
     );
 
     // Original tool-event flow still fires.

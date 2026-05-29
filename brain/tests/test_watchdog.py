@@ -401,12 +401,12 @@ def test_claim_claude_respects_max_claim_batch(tmp_db):
     assert len(batches) == 3
 
     processing = conn.execute(
-        "SELECT COUNT(*) FROM claude_enrichment_queue WHERE status = 'processing'"
+        "SELECT COUNT(*) FROM agentic_enrichment_queue WHERE status = 'processing'"
     ).fetchone()[0]
     assert processing == 3
 
     pending = conn.execute(
-        "SELECT COUNT(*) FROM claude_enrichment_queue WHERE status = 'pending'"
+        "SELECT COUNT(*) FROM agentic_enrichment_queue WHERE status = 'pending'"
     ).fetchone()[0]
     assert pending == 5
 

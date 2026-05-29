@@ -137,6 +137,15 @@ def _is_cursor_source_file(source_file: str | None) -> bool:
 
 
 def _source_label_for_claude_segments(segments: list[dict]) -> str:
+    harnesses = {seg.get("harness") for seg in segments if seg.get("harness")}
+    if len(harnesses) == 1:
+        harness = next(iter(harnesses))
+        return {
+            "claude-code": "claude",
+            "codex": "codex",
+            "cursor": "cursor",
+            "opencode": "opencode",
+        }.get(harness, "claude")
     if segments and all(_is_codex_source_file(seg.get("source_file")) for seg in segments):
         return "codex"
     if segments and all(_is_cursor_source_file(seg.get("source_file")) for seg in segments):
@@ -147,30 +156,29 @@ def _source_label_for_claude_segments(segments: list[dict]) -> str:
 def _collect_queue_depths(conn: sqlite3.Connection) -> list[tuple[str, str, int]]:
     queries = {
         "shell": "SELECT COUNT(*) FROM enrichment_queue WHERE status = ?",
-        "claude": f"""
+        "claude": """
             SELECT COUNT(*)
-            FROM claude_enrichment_queue q
-            JOIN claude_sessions s ON q.claude_session_id = s.id
+            FROM agentic_enrichment_queue q
+            JOIN agentic_sessions s ON q.session_id = s.id
             WHERE q.status = ?
               AND s.probe_tag IS NULL
-              AND NOT ({CODEX_SOURCE_SQL})
-              AND NOT ({CURSOR_SOURCE_SQL})
+              AND s.harness = 'claude-code'
         """,
-        "cursor": f"""
+        "cursor": """
             SELECT COUNT(*)
-            FROM claude_enrichment_queue q
-            JOIN claude_sessions s ON q.claude_session_id = s.id
+            FROM agentic_enrichment_queue q
+            JOIN agentic_sessions s ON q.session_id = s.id
             WHERE q.status = ?
               AND s.probe_tag IS NULL
-              AND ({CURSOR_SOURCE_SQL})
+              AND s.harness = 'cursor'
         """,
-        "codex": f"""
+        "codex": """
             SELECT COUNT(*)
-            FROM claude_enrichment_queue q
-            JOIN claude_sessions s ON q.claude_session_id = s.id
+            FROM agentic_enrichment_queue q
+            JOIN agentic_sessions s ON q.session_id = s.id
             WHERE q.status = ?
               AND s.probe_tag IS NULL
-              AND ({CODEX_SOURCE_SQL})
+              AND s.harness = 'codex'
         """,
         "browser": "SELECT COUNT(*) FROM browser_enrichment_queue WHERE status = ?",
         "workflow": "SELECT COUNT(*) FROM workflow_enrichment_queue WHERE status = ?",
@@ -303,10 +311,20 @@ class BrainServer:
                     "SELECT COUNT(*) FROM enrichment_queue WHERE status = 'failed'"
                 ).fetchone()[0]
                 claude_queue_depth = conn.execute(
-                    "SELECT COUNT(*) FROM claude_enrichment_queue WHERE status = 'pending'"
+                    """
+                    SELECT COUNT(*)
+                    FROM agentic_enrichment_queue q
+                    JOIN agentic_sessions s ON q.session_id = s.id
+                    WHERE q.status = 'pending' AND s.harness = 'claude-code'
+                    """
                 ).fetchone()[0]
                 claude_queue_failed = conn.execute(
-                    "SELECT COUNT(*) FROM claude_enrichment_queue WHERE status = 'failed'"
+                    """
+                    SELECT COUNT(*)
+                    FROM agentic_enrichment_queue q
+                    JOIN agentic_sessions s ON q.session_id = s.id
+                    WHERE q.status = 'failed' AND s.harness = 'claude-code'
+                    """
                 ).fetchone()[0]
                 try:
                     browser_queue_depth = conn.execute(
@@ -1383,7 +1401,7 @@ class BrainServer:
                     _add(_enrichment_failures, source=source_label)
                     err_msg = self._record_error(e)
                     self._log_enrichment_failure(
-                        "claude_enrichment_queue",
+                        "agentic_enrichment_queue",
                         f"{source_label}.chat",
                         e,
                         claim_count=len(segment_ids),

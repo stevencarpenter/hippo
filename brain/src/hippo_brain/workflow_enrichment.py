@@ -96,9 +96,9 @@ async def enrich_one_async(
                 ),
             ).fetchall()
 
-        # Co-temporal Claude sessions
+        # Co-temporal agentic sessions (claude-code / codex / cursor / opencode)
         claude_rows = conn.execute(
-            """SELECT id, session_id, summary_text FROM claude_sessions
+            """SELECT id, session_id, summary_text FROM agentic_sessions
                WHERE start_time <= ? AND end_time >= ?
                  AND probe_tag IS NULL
                LIMIT 10""",
@@ -189,10 +189,10 @@ async def enrich_one_async(
                 (node_id, s["id"]),
             )
 
-        # Link to Claude sessions
+        # Link to agentic sessions
         for c in claude_rows:
             conn.execute(
-                "INSERT OR IGNORE INTO knowledge_node_claude_sessions (knowledge_node_id, claude_session_id) VALUES (?,?)",
+                "INSERT OR IGNORE INTO knowledge_node_agentic_sessions (knowledge_node_id, agentic_session_id) VALUES (?,?)",
                 (node_id, c["id"]),
             )
 

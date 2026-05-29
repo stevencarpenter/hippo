@@ -48,15 +48,6 @@ def test_collect_queue_depths_splits_agentic_sources():
     conn.executescript(
         """
         CREATE TABLE enrichment_queue (status TEXT NOT NULL);
-        CREATE TABLE claude_sessions (
-            id INTEGER PRIMARY KEY,
-            source_file TEXT NOT NULL,
-            probe_tag TEXT
-        );
-        CREATE TABLE claude_enrichment_queue (
-            claude_session_id INTEGER NOT NULL,
-            status TEXT NOT NULL
-        );
         CREATE TABLE browser_enrichment_queue (status TEXT NOT NULL);
         CREATE TABLE workflow_enrichment_queue (status TEXT NOT NULL);
         CREATE TABLE agentic_sessions (
@@ -69,21 +60,16 @@ def test_collect_queue_depths_splits_agentic_sources():
             status TEXT NOT NULL
         );
         INSERT INTO enrichment_queue (status) VALUES ('pending');
-        INSERT INTO claude_sessions (id, source_file, probe_tag) VALUES
-            (1, '/Users/me/.claude/projects/proj/session.jsonl', NULL),
-            (2, '/Users/me/.codex/sessions/rollout-codex.jsonl', NULL),
-            (3, '/Users/me/Library/Developer/Xcode/CodingAssistant/codex/sessions/rollout-x.jsonl', NULL),
-            (4, '/Users/me/.codex/sessions/probe.jsonl', 'probe');
-        INSERT INTO claude_enrichment_queue (claude_session_id, status) VALUES
-            (1, 'pending'), (2, 'pending'), (3, 'pending'), (4, 'pending');
         INSERT INTO browser_enrichment_queue (status) VALUES ('failed');
         INSERT INTO workflow_enrichment_queue (status) VALUES ('processing');
         INSERT INTO agentic_sessions (id, harness, probe_tag) VALUES
             (1, 'opencode', NULL),
             (2, 'claude-code', NULL),
-            (3, 'opencode', 'probe');
+            (3, 'codex', NULL),
+            (4, 'codex', NULL),
+            (5, 'opencode', 'probe');
         INSERT INTO agentic_enrichment_queue (session_id, status) VALUES
-            (1, 'failed'), (2, 'pending'), (3, 'pending');
+            (1, 'failed'), (2, 'pending'), (3, 'pending'), (4, 'pending'), (5, 'pending');
         """
     )
 
@@ -126,6 +112,7 @@ def test_collect_queue_depths_tolerates_missing_table():
 
 
 def test_source_label_for_claude_segments_splits_codex_metrics():
+    assert _source_label_for_claude_segments([{"harness": "codex"}]) == "codex"
     assert (
         _source_label_for_claude_segments(
             [{"source_file": "/Users/me/.codex/sessions/rollout-abc.jsonl"}]

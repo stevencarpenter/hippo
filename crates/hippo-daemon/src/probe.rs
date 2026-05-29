@@ -193,7 +193,7 @@ async fn probe_claude_tool(config: &HippoConfig) -> Result<(bool, Option<i64>)> 
 /// Claude-session probe: assertion-based, not injection.
 ///
 /// For every `~/.claude/projects/**/*.jsonl` modified in the last 5 minutes,
-/// assert that a `claude_sessions` row exists with `source_file = <path>` and
+/// assert that an `agentic_sessions` row exists with `source_file = <path>` and
 /// `end_time >= mtime_ms - 300_000`. If no JSONL was recently active: trivially
 /// pass (no Claude session running). If JSONL exists but no matching row: fail.
 ///
@@ -263,14 +263,15 @@ fn probe_claude_session(config: &HippoConfig) -> Result<(bool, Option<i64>)> {
 
         let count: i64 = db
             .query_row(
-                "SELECT COUNT(*) FROM claude_sessions
+                "SELECT COUNT(*) FROM agentic_sessions
                  WHERE source_file = ?1
+                   AND harness = 'claude-code'
                    AND probe_tag IS NULL
                    AND end_time >= ?2",
                 rusqlite::params![path_str.as_ref(), threshold],
                 |row| row.get(0),
             )
-            .with_context(|| format!("failed to query claude_sessions for {}", path_str))?;
+            .with_context(|| format!("failed to query agentic_sessions for {}", path_str))?;
 
         if count == 0 {
             warn!("claude-session probe: no row for {}", path_str);
@@ -279,8 +280,8 @@ fn probe_claude_session(config: &HippoConfig) -> Result<(bool, Option<i64>)> {
             // Compute lag as now_ms - MAX(end_time).
             let max_end: Option<i64> = db
                 .query_row(
-                    "SELECT MAX(end_time) FROM claude_sessions
-                     WHERE source_file = ?1 AND probe_tag IS NULL",
+                    "SELECT MAX(end_time) FROM agentic_sessions
+                     WHERE source_file = ?1 AND harness = 'claude-code' AND probe_tag IS NULL",
                     rusqlite::params![path_str.as_ref()],
                     |row| row.get(0),
                 )
@@ -329,7 +330,7 @@ const CURSOR_PROBE_WINDOW_MS: i64 = 600_000;
 ///
 /// For every `~/.cursor/projects/**/agent-transcripts/**/*.jsonl` whose age
 /// (`now - mtime`) falls in `[settle_ms, CURSOR_PROBE_WINDOW_MS]`, assert a
-/// `claude_sessions` row exists with that `source_file` — *but only when the
+/// `agentic_sessions` row exists with that `source_file` — *but only when the
 /// transcript actually yields ≥1 segment*. A legitimately segment-less
 /// transcript (assistant-only, no user turn) is correctly written as zero rows
 /// by `cursor_session::poll_tick`, so asserting a row for it would be a false
@@ -341,7 +342,7 @@ const CURSOR_PROBE_WINDOW_MS: i64 = 600_000;
 /// latency), mirroring `probe_claude_session`, not the file's age.
 fn probe_cursor_session(config: &HippoConfig) -> Result<(bool, Option<i64>)> {
     // A disabled source intentionally ingests nothing (`poll_tick` early-returns),
-    // so transcripts left on disk will never have matching `claude_sessions` rows.
+    // so transcripts left on disk will never have matching `agentic_sessions` rows.
     // Asserting against them would write `probe_ok = 0` and trip watchdog I-8 as a
     // false alarm. Trivially pass instead, mirroring `poll_tick`'s disabled guard.
     if !config.cursor.enabled {
@@ -413,12 +414,15 @@ fn probe_cursor_session(config: &HippoConfig) -> Result<(bool, Option<i64>)> {
         // many in-window transcripts.
         let count: i64 = db
             .query_row(
-                "SELECT COUNT(*) FROM claude_sessions
-                 WHERE source_file = ?1 AND probe_tag IS NULL AND end_time >= ?2",
+                "SELECT COUNT(*) FROM agentic_sessions
+                 WHERE source_file = ?1
+                   AND harness = 'cursor'
+                   AND probe_tag IS NULL
+                   AND end_time >= ?2",
                 rusqlite::params![path_str.as_ref(), mtime_ms - window_ms],
                 |row| row.get(0),
             )
-            .with_context(|| format!("failed to query claude_sessions for {}", path_str))?;
+            .with_context(|| format!("failed to query agentic_sessions for {}", path_str))?;
 
         if count > 0 {
             // Assertion satisfied. Lag = now - MAX(end_time) of the matched
@@ -426,8 +430,8 @@ fn probe_cursor_session(config: &HippoConfig) -> Result<(bool, Option<i64>)> {
             // not the file's age.
             let max_end: Option<i64> = db
                 .query_row(
-                    "SELECT MAX(end_time) FROM claude_sessions
-                     WHERE source_file = ?1 AND probe_tag IS NULL",
+                    "SELECT MAX(end_time) FROM agentic_sessions
+                     WHERE source_file = ?1 AND harness = 'cursor' AND probe_tag IS NULL",
                     rusqlite::params![path_str.as_ref()],
                     |row| row.get(0),
                 )
@@ -715,7 +719,7 @@ mod tests {
     }
 
     /// Ingest `path` through the real cursor pipeline so a matching
-    /// `claude_sessions` row exists exactly as production would write it
+    /// `agentic_sessions` row exists exactly as production would write it
     /// (`source_file = path`, `end_time = file mtime`).
     fn ingest(config: &HippoConfig, path: &Path) -> usize {
         crate::cursor_session::ingest_one(config, path).unwrap()

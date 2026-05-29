@@ -164,7 +164,7 @@ What lands in `summary` and `detail` is source-specific:
 | Source | `summary` | `detail` | `cwd` / `git_branch` |
 |---|---|---|---|
 | `shell` (rows from `events`) | the command text | `"exit=<code> duration=<ms>ms"` | `cwd` and `git_branch` from the event |
-| `claude` (rows from `claude_sessions`) | `summary_text` | `"messages=<count> tools=<count>"` (tool count derived from `tool_calls_json`) | `cwd` / `git_branch` from the session |
+| `claude` (rows from `agentic_sessions` where `harness IN ('claude-code', 'opencode', 'codex', 'cursor')`) | `summary_text` | `"messages=<count> tools=<count>"` (tool count derived from `tool_calls_json`) | `cwd` / `git_branch` from the session |
 | `browser` (rows from `browser_events`) | `"<domain> — <title or url>"` | `"dwell=<ms>ms scroll=<pct>%"` | empty strings (browser events have no cwd/branch) |
 
 When `source="all"`, results are interleaved by `timestamp` desc and capped at `limit`.
@@ -223,7 +223,7 @@ Distinct projects in the corpus, ordered by most-recent activity first.
 }
 ```
 
-The list is the union of distinct `(git_repo, cwd_root)` pairs from shell `events` and `claude_sessions` (browser events have no cwd, so they're skipped). `last_seen` is `MAX(timestamp)` / `MAX(start_time)` across both sources. There is no `event_count` field today.
+The list is the union of distinct `(git_repo, cwd_root)` pairs from shell `events` and `agentic_sessions` (`project_dir`, restricted to `harness IN ('claude-code', 'codex', 'cursor', 'opencode')`; browser events have no cwd, so they're skipped). `last_seen` is `MAX(timestamp)` / `MAX(start_time)` across both sources. There is no `event_count` field today.
 
 ---
 
@@ -295,7 +295,7 @@ Lessons graduate only after 2+ occurrences (single failures stay in `lesson_pend
 
 - **Probe events are filtered out of every tool.** They have `probe_tag IS NOT NULL`. Even `search_events` won't return them — that's intentional (AP-6). If you need them for diagnostics, query `events` directly via SQL.
 - **`since` parsing is strict.** Only `^<digits><unit>$` (unit is `m`/`h`/`d`) is accepted — e.g. `"30m"`, `"24h"`, `"7d"`. Inputs with spaces (`"30 m"`), full words (`"30 minutes"`), suffix variants (`"30min"`), bare numbers, or anything else parse to 0 (no filter applied) — silently. There is no parser warning.
-- **`source="claude"` does NOT include `claude-tool` events in `search_events`.** `_search_claude_events` queries `claude_sessions` only. Claude tool-call events live in the `events` table (with `source_kind='claude-tool'`) and are returned under `source="shell"` (or `source="all"`) — `_search_shell_events` does not filter by `source_kind`. For `search_hybrid` / `search_knowledge`, `source="claude"` filters knowledge nodes whose linked events/sessions match the claude-side data.
+- **`source="claude"` covers all agentic harnesses, but does NOT include `claude-tool` events in `search_events`.** `_search_claude_events` queries `agentic_sessions` (where `harness IN ('claude-code', 'opencode', 'codex', 'cursor')`), so `source="claude"` surfaces Codex, Cursor, and opencode sessions alongside Claude Code ones. Claude tool-call events are different: they live in the `events` table (with `source_kind='claude-tool'`) and are returned under `source="shell"` (or `source="all"`) — `_search_shell_events` does not filter by `source_kind`. For `search_hybrid` / `search_knowledge`, `source="claude"` filters knowledge nodes whose linked events/sessions match the agentic-side data.
 - **Filter combinations apply AND, not OR.** `project="hippo"` + `branch="main"` returns only nodes from hippo's main branch.
 - **`ask` returns an error STRING for misconfiguration**, not an exception. Check the prefix `"Error:"`.
 

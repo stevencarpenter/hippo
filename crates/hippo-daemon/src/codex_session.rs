@@ -19,14 +19,14 @@ const TASK_GAP_MS: i64 = 5 * 60 * 1000;
 const MAX_SEGMENT_CHARS: usize = 12_000;
 
 /// A single tool call, summarized for enrichment. Serialized into
-/// `claude_sessions.tool_calls_json`.
+/// `agentic_sessions.tool_calls_json`.
 #[derive(Debug, Clone, Serialize)]
 pub struct ToolCall {
     pub name: String,
     pub summary: String,
 }
 
-/// A parsed Codex conversation segment, upserted into `claude_sessions`.
+/// A parsed Codex conversation segment, upserted into `agentic_sessions` with `harness = 'codex'`.
 #[derive(Debug, Clone)]
 pub struct CodexSegment {
     pub session_id: String,
@@ -258,7 +258,7 @@ pub(crate) fn extract_segments(
             let seg = current.get_or_insert_with(|| {
                 // If session_meta was missing or malformed, fall back to the
                 // file stem (e.g. "rollout-<id>"). This is unique per file and
-                // deterministic, so ON CONFLICT (session_id, segment_index)
+                // deterministic, so ON CONFLICT (session_id, harness, segment_index)
                 // never collides across two different rollout files that both
                 // lack session_meta.
                 let effective_session_id = if session_id.is_empty() {
@@ -363,7 +363,7 @@ pub(crate) fn extract_segments(
 }
 
 /// Build the Codex-framed enrichment digest stored in
-/// `claude_sessions.summary_text` and read by the brain's enrichment loop.
+/// `agentic_sessions.summary_text` and read by the brain's enrichment loop.
 pub(crate) fn build_summary_text(seg: &CodexSegment) -> String {
     // Count caps bound summary_text. The 5-min / 12k-char segmentation split
     // only fires on user-message lines, so a segment with one prompt followed
@@ -428,7 +428,7 @@ pub(crate) fn compute_content_hash(seg: &CodexSegment) -> String {
 
 /// Decide whether a just-upserted segment should be (re-)enqueued for
 /// enrichment. A direct port of `claude_session::decide_enqueue` — Codex
-/// segments share `claude_enrichment_queue` with Claude, so they must share
+/// segments share `agentic_enrichment_queue` with Claude, so they must share
 /// its re-enrichment gate, or a resumed rollout (grown file, bumped mtime)
 /// re-pends every already-enriched earlier segment on every poll.
 fn decide_enqueue(
@@ -456,9 +456,9 @@ fn decide_enqueue(
     true
 }
 
-/// Upsert one segment into `claude_sessions` and (re-)enqueue it for
+/// Upsert one segment into `agentic_sessions` and (re-)enqueue it for
 /// enrichment, inside a caller-supplied transaction. Idempotent via
-/// `ON CONFLICT (session_id, segment_index)`. `ingest_file` (Task 7) calls
+/// `ON CONFLICT (session_id, harness, segment_index)`. `ingest_file` (Task 7) calls
 /// this directly so a whole rollout file's segments commit atomically
 /// (spec §4.3, AP-1).
 pub fn upsert_segment_tx(tx: &rusqlite::Transaction, seg: &CodexSegment) -> Result<()> {
@@ -475,10 +475,12 @@ pub fn upsert_segment_tx(tx: &rusqlite::Transaction, seg: &CodexSegment) -> Resu
     #[allow(clippy::type_complexity)]
     let prior: Option<(i64, Option<String>, Option<String>, Option<i64>)> = tx
         .query_row(
-            "SELECT cs.id, cs.last_enriched_content_hash, ceq.status, ceq.updated_at
-             FROM claude_sessions cs
-             LEFT JOIN claude_enrichment_queue ceq ON ceq.claude_session_id = cs.id
-             WHERE cs.session_id = ?1 AND cs.segment_index = ?2",
+            "SELECT s.id, s.last_enriched_content_hash, q.status, q.updated_at
+             FROM agentic_sessions s
+             LEFT JOIN agentic_enrichment_queue q ON q.session_id = s.id
+             WHERE s.session_id = ?1
+               AND s.harness = 'codex'
+               AND s.segment_index = ?2",
             params![seg.session_id, seg.segment_index],
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
         )
@@ -489,13 +491,15 @@ pub fn upsert_segment_tx(tx: &rusqlite::Transaction, seg: &CodexSegment) -> Resu
     let prior_queue_updated_at_ms = prior.as_ref().and_then(|(_, _, _, u)| *u);
 
     tx.execute(
-        "INSERT INTO claude_sessions
-            (session_id, project_dir, cwd, git_branch, segment_index,
-             start_time, end_time, summary_text, tool_calls_json,
-             user_prompts_json, message_count, token_count, source_file,
-             is_subagent, parent_session_id, content_hash, created_at)
-         VALUES (?1, ?2, ?3, NULL, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 0, ?11, 0, NULL, ?12, ?13)
-         ON CONFLICT (session_id, segment_index) DO UPDATE SET
+        "INSERT INTO agentic_sessions
+            (session_id, harness, segment_index, model, agent, project_dir, cwd,
+             git_branch, slug, title, parent_session_id, is_subagent, summary_text,
+             tool_calls_json, user_prompts_json, source_file, snapshot_diffs_json,
+             commit_messages_json, message_count, token_count, start_time, end_time,
+             content_hash, created_at)
+         VALUES (?1, 'codex', ?2, '', '', ?3, ?4, NULL, '', '', NULL, 0, ?5, ?6, ?7, ?8,
+                 'null', '[]', ?9, 0, ?10, ?11, ?12, ?13)
+         ON CONFLICT (session_id, harness, segment_index) DO UPDATE SET
              end_time          = excluded.end_time,
              summary_text      = excluded.summary_text,
              tool_calls_json   = excluded.tool_calls_json,
@@ -506,16 +510,16 @@ pub fn upsert_segment_tx(tx: &rusqlite::Transaction, seg: &CodexSegment) -> Resu
              project_dir       = excluded.project_dir",
         params![
             seg.session_id,
+            seg.segment_index,
             seg.project_dir,
             seg.cwd,
-            seg.segment_index,
-            seg.start_time,
-            seg.end_time,
             summary_text,
             tool_calls_json,
             user_prompts_json,
-            seg.message_count,
             seg.source_file,
+            seg.message_count,
+            seg.start_time,
+            seg.end_time,
             content_hash,
             now_ms,
         ],
@@ -523,7 +527,7 @@ pub fn upsert_segment_tx(tx: &rusqlite::Transaction, seg: &CodexSegment) -> Resu
 
     // `INSERT … ON CONFLICT` keeps the rowid stable, so reuse the prior id on
     // an update; `last_insert_rowid()` is only meaningful for a fresh insert.
-    let claude_session_id: i64 = if was_insert {
+    let agentic_session_id: i64 = if was_insert {
         tx.last_insert_rowid()
     } else {
         prior.as_ref().map(|(id, _, _, _)| *id).unwrap()
@@ -544,16 +548,16 @@ pub fn upsert_segment_tx(tx: &rusqlite::Transaction, seg: &CodexSegment) -> Resu
         now_ms,
     ) {
         tx.execute(
-            "INSERT INTO claude_enrichment_queue
-                 (claude_session_id, status, retry_count, error_message, created_at, updated_at)
+            "INSERT INTO agentic_enrichment_queue
+                 (session_id, status, retry_count, error_message, enqueued_at, updated_at)
              VALUES (?1, 'pending', 0, NULL, ?2, ?2)
-             ON CONFLICT(claude_session_id) DO UPDATE SET
+             ON CONFLICT(session_id) DO UPDATE SET
                  status        = 'pending',
                  retry_count   = 0,
                  error_message = NULL,
                  updated_at    = excluded.updated_at
-             WHERE claude_enrichment_queue.status != 'processing'",
-            params![claude_session_id, now_ms],
+             WHERE agentic_enrichment_queue.status != 'processing'",
+            params![agentic_session_id, now_ms],
         )?;
     }
     Ok(())
@@ -630,9 +634,9 @@ fn read_codex_state_threads(conn: &Connection) -> Result<Vec<CodexStateThread>> 
 
 fn read_hippo_session_ids(conn: &Connection) -> Result<HashSet<String>> {
     let mut stmt = conn.prepare(
-        "SELECT DISTINCT session_id FROM claude_sessions
-         WHERE (source_file LIKE '%/.codex/%'
-                OR source_file LIKE '%/CodingAssistant/codex/%')
+        "SELECT DISTINCT session_id
+         FROM agentic_sessions
+         WHERE harness = 'codex'
            AND probe_tag IS NULL",
     )?;
     stmt.query_map([], |row| row.get::<_, String>(0))?
@@ -1117,7 +1121,7 @@ mod tests {
 
     /// Regression guard: a rollout with no `session_meta` line must produce a
     /// non-empty `session_id` equal to the file stem, not the empty string.
-    /// An empty session_id would collide in ON CONFLICT (session_id, segment_index)
+    /// An empty session_id would collide in ON CONFLICT (session_id, harness, segment_index)
     /// across any two files that both lack session_meta.
     #[test]
     fn extract_segments_falls_back_to_file_stem_when_no_session_meta() {
@@ -1246,34 +1250,35 @@ mod tests {
         };
         upsert_segment(&conn, &codex_seg).unwrap();
 
-        // Insert a non-Codex row with a .claude/ source_file (must be excluded).
+        // Non-Codex row in agentic_sessions with claude-code harness
+        // (must be excluded: harness != 'codex').
         conn.execute(
-            "INSERT INTO claude_sessions
-                 (session_id, project_dir, cwd, segment_index,
-                  start_time, end_time, summary_text, tool_calls_json,
-                  user_prompts_json, message_count, source_file,
-                  is_subagent, created_at)
-             VALUES ('claude-session', 'proj', '/work', 0,
-                     1_775_634_000_000, 1_775_634_500_000, 'summary', '[]',
-                     '[]', 1,
+            "INSERT INTO agentic_sessions
+                 (session_id, harness, segment_index, project_dir, cwd,
+                  summary_text, tool_calls_json, user_prompts_json,
+                  message_count, source_file, is_subagent, start_time,
+                  end_time, created_at)
+             VALUES ('claude-session', 'claude-code', 0, 'proj', '/work',
+                     'summary', '[]', '[]', 1,
                      '/Users/me/.claude/projects/abc/session.jsonl',
-                     0, 1_775_634_000_000)",
+                     0, 1_775_634_000_000, 1_775_634_500_000, 1_775_634_000_000)",
             [],
         )
         .unwrap();
 
-        // Insert a Codex row with probe_tag set (must be excluded).
+        // Codex-harness row WITH probe_tag set in agentic_sessions
+        // (must be excluded: probe_tag IS NOT NULL despite harness = 'codex').
         conn.execute(
-            "INSERT INTO claude_sessions
-                 (session_id, project_dir, cwd, segment_index,
-                  start_time, end_time, summary_text, tool_calls_json,
-                  user_prompts_json, message_count, source_file,
-                  is_subagent, probe_tag, created_at)
-             VALUES ('codex-probe', 'proj', '/work', 0,
-                     1_775_634_000_000, 1_775_634_500_000, 'summary', '[]',
-                     '[]', 1,
+            "INSERT INTO agentic_sessions
+                 (session_id, harness, segment_index, project_dir, cwd,
+                  summary_text, tool_calls_json, user_prompts_json,
+                  message_count, source_file, is_subagent, probe_tag,
+                  start_time, end_time, created_at)
+             VALUES ('codex-probe', 'codex', 0, 'proj', '/work',
+                     'summary', '[]', '[]', 1,
                      '/Users/me/.codex/sessions/rollout-probe.jsonl',
-                     0, 'test-probe', 1_775_634_000_000)",
+                     0, 'test-probe', 1_775_634_000_000, 1_775_634_500_000,
+                     1_775_634_000_000)",
             [],
         )
         .unwrap();

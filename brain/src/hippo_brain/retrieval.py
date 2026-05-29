@@ -325,8 +325,8 @@ def _apply_filters(
     """Return the subset of ``candidate_ids`` that satisfy ``filters``.
 
     The WHERE clause is built over a join of ``knowledge_nodes`` with the
-    shell / Claude / browser event link tables so filters can pushdown across
-    any node type.
+    shell / agentic-session / browser event link tables so filters can pushdown
+    across any node type.
     """
     if not candidate_ids:
         return set()
@@ -339,19 +339,19 @@ def _apply_filters(
 
     if filters.since_ms is not None:
         clauses.append(
-            "(kn.created_at >= ? OR e.timestamp >= ? OR cs.start_time >= ? OR be.timestamp >= ?)"
+            "(kn.created_at >= ? OR e.timestamp >= ? OR asx.start_time >= ? OR be.timestamp >= ?)"
         )
         params.extend([filters.since_ms] * 4)
 
     if filters.project:
         clauses.append(
-            "(e.cwd LIKE ? OR e.git_repo LIKE ? OR cs.cwd LIKE ? OR cs.project_dir LIKE ?)"
+            "(e.cwd LIKE ? OR e.git_repo LIKE ? OR asx.cwd LIKE ? OR asx.project_dir LIKE ?)"
         )
         pattern = f"%{filters.project}%"
         params.extend([pattern, pattern, pattern, pattern])
 
     if filters.branch:
-        clauses.append("(e.git_branch = ? OR cs.git_branch = ?)")
+        clauses.append("(e.git_branch = ? OR asx.git_branch = ?)")
         params.extend([filters.branch, filters.branch])
 
     if filters.source:
@@ -362,8 +362,8 @@ def _apply_filters(
         FROM knowledge_nodes kn
         LEFT JOIN knowledge_node_events kne ON kne.knowledge_node_id = kn.id
         LEFT JOIN events e ON e.id = kne.event_id
-        LEFT JOIN knowledge_node_claude_sessions kncs ON kncs.knowledge_node_id = kn.id
-        LEFT JOIN claude_sessions cs ON cs.id = kncs.claude_session_id
+        LEFT JOIN knowledge_node_agentic_sessions kncs ON kncs.knowledge_node_id = kn.id
+        LEFT JOIN agentic_sessions asx ON asx.id = kncs.agentic_session_id AND asx.probe_tag IS NULL
         LEFT JOIN knowledge_node_browser_events knbe ON knbe.knowledge_node_id = kn.id
         LEFT JOIN browser_events be ON be.id = knbe.browser_event_id
         WHERE {" AND ".join(clauses)}
@@ -387,8 +387,8 @@ def _apply_filters(
             JOIN entities ent ON ent.id = kne2.entity_id
             LEFT JOIN knowledge_node_events kne ON kne.knowledge_node_id = kn.id
             LEFT JOIN events e ON e.id = kne.event_id
-            LEFT JOIN knowledge_node_claude_sessions kncs ON kncs.knowledge_node_id = kn.id
-            LEFT JOIN claude_sessions cs ON cs.id = kncs.claude_session_id
+            LEFT JOIN knowledge_node_agentic_sessions kncs ON kncs.knowledge_node_id = kn.id
+            LEFT JOIN agentic_sessions asx ON asx.id = kncs.agentic_session_id AND asx.probe_tag IS NULL
             LEFT JOIN knowledge_node_browser_events knbe ON knbe.knowledge_node_id = kn.id
             LEFT JOIN browser_events be ON be.id = knbe.browser_event_id
             WHERE {" AND ".join(clauses)}
@@ -407,9 +407,13 @@ def _source_clause(source: str) -> str:
             "EXISTS (SELECT 1 FROM knowledge_node_events kne_s "
             "WHERE kne_s.knowledge_node_id = kn.id)"
         ),
+        # Join agentic_sessions and exclude probe rows (AP-6) so a node linked
+        # ONLY to a probe session is not surfaced by source="claude" — matching
+        # the probe-filtered _apply_filters joins and _fetch_details.
         "claude": (
-            "EXISTS (SELECT 1 FROM knowledge_node_claude_sessions knc_s "
-            "WHERE knc_s.knowledge_node_id = kn.id)"
+            "EXISTS (SELECT 1 FROM knowledge_node_agentic_sessions knc_s "
+            "JOIN agentic_sessions asx_s ON asx_s.id = knc_s.agentic_session_id "
+            "WHERE knc_s.knowledge_node_id = kn.id AND asx_s.probe_tag IS NULL)"
         ),
         "browser": (
             "EXISTS (SELECT 1 FROM knowledge_node_browser_events knb_s "
@@ -503,16 +507,17 @@ def _fetch_details(conn: sqlite3.Connection, node_ids: Sequence[int]) -> dict[in
         if ts and ts > d["captured_at"]:
             d["captured_at"] = ts
 
-    # Fill from claude sessions if still empty.
-    # Knowledge nodes are only created from non-probe sessions (probes skip the
-    # enrichment queue), so rows linked via knowledge_node_claude_sessions are never probes.
+    # Fill from agentic sessions if still empty.
+    # Probes are excluded via `asx.probe_tag IS NULL` (defense-in-depth vs AP-6;
+    # probes never enqueue so are normally unlinked anyway).
     cs_rows = conn.execute(  # nosemgrep: unfiltered-event-table-select
         f"""
-        SELECT kncs.knowledge_node_id, cs.start_time, cs.cwd, cs.git_branch
-        FROM knowledge_node_claude_sessions kncs
-        JOIN claude_sessions cs ON cs.id = kncs.claude_session_id
+        SELECT kncs.knowledge_node_id, asx.start_time, asx.cwd, asx.git_branch
+        FROM knowledge_node_agentic_sessions kncs
+        JOIN agentic_sessions asx ON asx.id = kncs.agentic_session_id
         WHERE kncs.knowledge_node_id IN ({placeholders})
-        ORDER BY cs.start_time DESC
+          AND asx.probe_tag IS NULL
+        ORDER BY asx.start_time DESC
         """,
         list(node_ids),
     ).fetchall()

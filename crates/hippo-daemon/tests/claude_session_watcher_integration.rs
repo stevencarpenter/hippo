@@ -27,7 +27,8 @@ fn open_test_db(dir: &TempDir) -> Connection {
 
 fn count_segments(conn: &Connection, session_id: &str) -> i64 {
     conn.query_row(
-        "SELECT COUNT(*) FROM claude_sessions WHERE session_id = ?1",
+        "SELECT COUNT(*) FROM agentic_sessions
+         WHERE session_id = ?1 AND harness = 'claude-code'",
         [session_id],
         |row| row.get::<_, i64>(0),
     )
@@ -39,8 +40,8 @@ fn has_duplicates(conn: &Connection, session_id: &str) -> bool {
         .query_row(
             "SELECT COUNT(*) FROM (
                  SELECT session_id, segment_index, COUNT(*) AS n
-                 FROM claude_sessions
-                 WHERE session_id = ?1
+                 FROM agentic_sessions
+                 WHERE session_id = ?1 AND harness = 'claude-code'
                  GROUP BY session_id, segment_index
                  HAVING n > 1
              )",

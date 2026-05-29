@@ -68,8 +68,8 @@ async fn subagent_session_lands_with_is_subagent_flag() {
     let (sessions, is_subagent, parent): (i64, i64, Option<String>) = conn
         .query_row(
             "SELECT COUNT(*), is_subagent, parent_session_id
-             FROM claude_sessions
-             WHERE session_id = ?1
+             FROM agentic_sessions
+             WHERE session_id = ?1 AND harness = 'claude-code'
              GROUP BY is_subagent, parent_session_id",
             [SUBAGENT_SESSION_ID],
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
@@ -77,7 +77,7 @@ async fn subagent_session_lands_with_is_subagent_flag() {
         .unwrap();
     assert!(
         sessions >= 1,
-        "subagent ingest must write ≥1 claude_sessions row, got {sessions}"
+        "subagent ingest must write ≥1 agentic_sessions row, got {sessions}"
     );
     assert_eq!(is_subagent, 1, "is_subagent must be 1 for a subagent JSONL");
     assert_eq!(

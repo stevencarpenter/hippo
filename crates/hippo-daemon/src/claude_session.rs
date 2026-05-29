@@ -342,7 +342,7 @@ fn process_line(
     Ok(envelopes)
 }
 
-/// A parsed conversation segment to upsert into the `claude_sessions` table.
+/// A parsed conversation segment to upsert into the `agentic_sessions` table (`harness = 'claude-code'`).
 ///
 /// Mirrors the Python `SessionSegment` in
 /// `brain/src/hippo_brain/claude_sessions.py`. Populated directly from a
@@ -379,8 +379,8 @@ pub(crate) struct ToolCallSummary {
 /// `assistant_texts` joined by "\n".  Empty string for any field that is
 /// empty/missing — never panics.
 ///
-/// This hash is stored in `claude_sessions.content_hash` on every upsert and
-/// compared against `claude_sessions.last_enriched_content_hash` (set by the
+/// This hash is stored in `agentic_sessions.content_hash` on every upsert and
+/// compared against `agentic_sessions.last_enriched_content_hash` (set by the
 /// brain on enrichment completion, T-A.5) to decide whether re-enrichment is
 /// needed (T-A.4).
 pub(crate) fn compute_segment_content_hash(seg: &SessionSegment) -> String {
@@ -914,7 +914,7 @@ fn decide_enqueue(
     true
 }
 
-/// Insert extracted segments into `claude_sessions` + enqueue them for
+/// Insert extracted segments into `agentic_sessions` + enqueue them for
 /// enrichment. Returns `(inserted, skipped)`.
 ///
 /// **Semantics (updated from INSERT OR IGNORE):**
@@ -922,7 +922,7 @@ fn decide_enqueue(
 /// - "skipped"  = row existed and content was unchanged (upsert ran but no
 ///   change; counts for logging/metrics only).
 ///
-/// The upsert uses `ON CONFLICT (session_id, segment_index) DO UPDATE` so
+/// The upsert uses `ON CONFLICT (session_id, harness, segment_index) DO UPDATE` so
 /// every watcher reparse keeps the DB in sync with the latest file content.
 /// `last_enriched_content_hash` is NOT touched here — only the brain sets it.
 fn insert_segments(conn: &Connection, segments: &[SessionSegment]) -> Result<(usize, usize)> {
@@ -964,11 +964,13 @@ fn insert_segments(conn: &Connection, segments: &[SessionSegment]) -> Result<(us
             Option<i64>,
         )> = tx
             .query_row(
-                "SELECT cs.id, cs.content_hash, cs.last_enriched_content_hash,
-                        ceq.status, ceq.updated_at
-                 FROM claude_sessions cs
-                 LEFT JOIN claude_enrichment_queue ceq ON ceq.claude_session_id = cs.id
-                 WHERE cs.session_id = ?1 AND cs.segment_index = ?2",
+                "SELECT s.id, s.content_hash, s.last_enriched_content_hash,
+                        q.status, q.updated_at
+                 FROM agentic_sessions s
+                 LEFT JOIN agentic_enrichment_queue q ON q.session_id = s.id
+                 WHERE s.session_id = ?1
+                   AND s.harness = 'claude-code'
+                   AND s.segment_index = ?2",
                 params![seg.session_id, seg.segment_index],
                 |row| {
                     Ok((
@@ -996,13 +998,15 @@ fn insert_segments(conn: &Connection, segments: &[SessionSegment]) -> Result<(us
         // `last_enriched_content_hash` is intentionally omitted — only the brain
         // writes that (T-A.5).
         tx.execute(
-            "INSERT INTO claude_sessions
-                (session_id, project_dir, cwd, git_branch, segment_index,
-                 start_time, end_time, summary_text, tool_calls_json,
-                 user_prompts_json, message_count, token_count, source_file,
-                 is_subagent, parent_session_id, content_hash, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)
-             ON CONFLICT (session_id, segment_index) DO UPDATE SET
+            "INSERT INTO agentic_sessions
+                (session_id, harness, segment_index, model, agent, project_dir, cwd,
+                 git_branch, slug, title, parent_session_id, is_subagent, summary_text,
+                 tool_calls_json, user_prompts_json, source_file, snapshot_diffs_json,
+                 commit_messages_json, message_count, token_count, start_time, end_time,
+                 content_hash, created_at)
+             VALUES (?1, 'claude-code', ?2, '', '', ?3, ?4, ?5, '', '', ?6, ?7, ?8,
+                     ?9, ?10, ?11, 'null', '[]', ?12, ?13, ?14, ?15, ?16, ?17)
+             ON CONFLICT (session_id, harness, segment_index) DO UPDATE SET
                  end_time          = excluded.end_time,
                  summary_text      = excluded.summary_text,
                  tool_calls_json   = excluded.tool_calls_json,
@@ -1012,27 +1016,27 @@ fn insert_segments(conn: &Connection, segments: &[SessionSegment]) -> Result<(us
                  content_hash      = excluded.content_hash",
             params![
                 seg.session_id,
+                seg.segment_index,
                 seg.project_dir,
                 seg.cwd,
                 seg.git_branch,
-                seg.segment_index,
-                seg.start_time,
-                seg.end_time,
+                seg.parent_session_id,
+                is_subagent_int,
                 summary_text,
                 tool_calls_json,
                 user_prompts_json,
+                seg.source_file,
                 seg.message_count,
                 seg.token_count,
-                seg.source_file,
-                is_subagent_int,
-                seg.parent_session_id,
+                seg.start_time,
+                seg.end_time,
                 content_hash,
                 now_ms,
             ],
         )?;
 
         // Retrieve the rowid (needed for enrichment queue foreign key).
-        let claude_session_id: i64 = if was_insert {
+        let agentic_session_id: i64 = if was_insert {
             tx.last_insert_rowid()
         } else {
             prior.as_ref().map(|(id, _, _, _, _)| *id).unwrap()
@@ -1081,16 +1085,16 @@ fn insert_segments(conn: &Connection, segments: &[SessionSegment]) -> Result<(us
             // - locked_at/locked_by are left untouched by the UPDATE path (they
             //   will already be NULL because the WHERE excludes 'processing').
             tx.execute(
-                "INSERT INTO claude_enrichment_queue
-                     (claude_session_id, status, retry_count, error_message, created_at, updated_at)
+                "INSERT INTO agentic_enrichment_queue
+                     (session_id, status, retry_count, error_message, enqueued_at, updated_at)
                  VALUES (?1, 'pending', 0, NULL, ?2, ?2)
-                 ON CONFLICT(claude_session_id) DO UPDATE SET
+                 ON CONFLICT(session_id) DO UPDATE SET
                      status        = 'pending',
                      retry_count   = 0,
                      error_message = NULL,
                      updated_at    = excluded.updated_at
-                 WHERE claude_enrichment_queue.status != 'processing'",
-                params![claude_session_id, now_ms],
+                 WHERE agentic_enrichment_queue.status != 'processing'",
+                params![agentic_session_id, now_ms],
             )?;
         }
 
@@ -2122,7 +2126,8 @@ mod tests {
         let (content_hash, last_enriched, message_count): (Option<String>, Option<String>, i64) =
             conn.query_row(
                 "SELECT content_hash, last_enriched_content_hash, message_count
-                 FROM claude_sessions WHERE session_id = ?1 AND segment_index = 0",
+                 FROM agentic_sessions
+                 WHERE session_id = ?1 AND harness = 'claude-code' AND segment_index = 0",
                 ["session-new-001"],
                 |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )
@@ -2149,15 +2154,15 @@ mod tests {
         // Simulate brain writing last_enriched_content_hash for the v1 content
         let v1_hash: String = conn
             .query_row(
-                "SELECT content_hash FROM claude_sessions
-                 WHERE session_id = ?1 AND segment_index = 0",
+                "SELECT content_hash FROM agentic_sessions
+                 WHERE session_id = ?1 AND harness = 'claude-code' AND segment_index = 0",
                 ["session-grow-001"],
                 |row| row.get(0),
             )
             .unwrap();
         conn.execute(
-            "UPDATE claude_sessions SET last_enriched_content_hash = ?1
-             WHERE session_id = ?2 AND segment_index = 0",
+            "UPDATE agentic_sessions SET last_enriched_content_hash = ?1
+             WHERE session_id = ?2 AND harness = 'claude-code' AND segment_index = 0",
             rusqlite::params![v1_hash, "session-grow-001"],
         )
         .unwrap();
@@ -2178,7 +2183,8 @@ mod tests {
             .query_row(
                 "SELECT content_hash, last_enriched_content_hash, message_count,
                         tool_calls_json
-                 FROM claude_sessions WHERE session_id = ?1 AND segment_index = 0",
+                 FROM agentic_sessions
+                 WHERE session_id = ?1 AND harness = 'claude-code' AND segment_index = 0",
                 ["session-grow-001"],
                 |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
             )
@@ -2219,7 +2225,8 @@ mod tests {
         // Row count must still be 1
         let count: i64 = conn
             .query_row(
-                "SELECT COUNT(*) FROM claude_sessions WHERE session_id = ?1",
+                "SELECT COUNT(*) FROM agentic_sessions
+                 WHERE session_id = ?1 AND harness = 'claude-code'",
                 ["session-idem-001"],
                 |row| row.get(0),
             )
@@ -2229,8 +2236,8 @@ mod tests {
         // Hash must be unchanged
         let stored_hash: String = conn
             .query_row(
-                "SELECT content_hash FROM claude_sessions
-                 WHERE session_id = ?1 AND segment_index = 0",
+                "SELECT content_hash FROM agentic_sessions
+                 WHERE session_id = ?1 AND harness = 'claude-code' AND segment_index = 0",
                 ["session-idem-001"],
                 |row| row.get(0),
             )
@@ -2252,28 +2259,30 @@ mod tests {
         // column didn't exist when the row was written).
         let now_ms = chrono::Utc::now().timestamp_millis();
         conn.execute(
-            "INSERT INTO claude_sessions
-                 (session_id, project_dir, cwd, git_branch, segment_index,
-                  start_time, end_time, summary_text, tool_calls_json,
-                  user_prompts_json, message_count, token_count, source_file,
-                  is_subagent, parent_session_id, content_hash, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, NULL, ?16)",
+            "INSERT INTO agentic_sessions
+                 (session_id, harness, segment_index, model, agent, project_dir, cwd,
+                  git_branch, slug, title, parent_session_id, is_subagent, summary_text,
+                  tool_calls_json, user_prompts_json, source_file, snapshot_diffs_json,
+                  commit_messages_json, message_count, token_count, start_time, end_time,
+                  content_hash, created_at)
+             VALUES (?1, 'claude-code', ?2, '', '', ?3, ?4, ?5, '', '', ?6, ?7, ?8,
+                     ?9, ?10, ?11, 'null', '[]', ?12, ?13, ?14, ?15, NULL, ?16)",
             rusqlite::params![
                 seg.session_id,
+                seg.segment_index,
                 seg.project_dir,
                 seg.cwd,
                 seg.git_branch,
-                seg.segment_index,
-                seg.start_time,
-                seg.end_time,
+                Option::<String>::None,
+                0i64,
                 build_summary_text(&seg),
                 "[]",
                 "[]",
+                seg.source_file,
                 seg.message_count,
                 seg.token_count,
-                seg.source_file,
-                0i64,
-                Option::<String>::None,
+                seg.start_time,
+                seg.end_time,
                 now_ms,
             ],
         )
@@ -2365,16 +2374,16 @@ mod tests {
         // No enrichment queue row should have been written
         let queue_count: i64 = conn
             .query_row(
-                "SELECT COUNT(*) FROM claude_enrichment_queue ceq
-                 JOIN claude_sessions cs ON ceq.claude_session_id = cs.id
-                 WHERE cs.session_id = ?1",
+                "SELECT COUNT(*) FROM agentic_enrichment_queue q
+                 JOIN agentic_sessions s ON q.session_id = s.id
+                 WHERE s.session_id = ?1 AND s.harness = 'claude-code'",
                 ["session-empty-001"],
                 |row| row.get(0),
             )
             .unwrap();
         assert_eq!(
             queue_count, 0,
-            "empty segment must not produce a claude_enrichment_queue row"
+            "empty segment must not produce an agentic_enrichment_queue row"
         );
     }
 }

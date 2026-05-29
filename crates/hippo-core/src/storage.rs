@@ -13,7 +13,7 @@ const SCHEMA: &str = include_str!("schema.sql");
 /// startup code (e.g. the brain handshake) can cross-check without
 /// re-declaring the value. Keep in sync with
 /// `brain/src/hippo_brain/schema_version.py::EXPECTED_SCHEMA_VERSION`.
-pub const EXPECTED_VERSION: i64 = 17;
+pub const EXPECTED_VERSION: i64 = 18;
 
 /// Idempotent `ALTER TABLE … ADD COLUMN`. Pre-checks `PRAGMA table_info`
 /// for the column name; if absent, runs the supplied DDL. Used by
@@ -76,6 +76,42 @@ fn enforce_no_fk_violations(conn: &Connection, context: &str) -> Result<()> {
             context,
             violations
         );
+    }
+    Ok(())
+}
+
+/// Like [`enforce_no_fk_violations`] but SCOPED to a specific set of tables via
+/// `PRAGMA foreign_key_check(<table>)`. The argument-less form scans the WHOLE
+/// database — including frozen/legacy tables whose pre-existing orphan rows are
+/// unrelated to the current migration. A backfill that only INSERTs into a known
+/// set of tables must check only those tables: otherwise a single dangling row in
+/// an untouched table (e.g. an orphaned `knowledge_node_claude_sessions` link)
+/// would abort an otherwise-clean migration and wedge the DB at the prior version.
+///
+/// `tables` entries are hardcoded literals (never user input), so interpolating
+/// them into the PRAGMA string is safe.
+fn enforce_no_fk_violations_for(conn: &Connection, context: &str, tables: &[&str]) -> Result<()> {
+    for table in tables {
+        let violations: Vec<(String, Option<i64>, String, i64)> = conn
+            .prepare(&format!("PRAGMA foreign_key_check({table})"))?
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, Option<i64>>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, i64>(3)?,
+                ))
+            })?
+            .collect::<rusqlite::Result<_>>()?;
+
+        if !violations.is_empty() {
+            anyhow::bail!(
+                "Foreign-key violations detected after {} migration (table {}): {:?}",
+                context,
+                table,
+                violations
+            );
+        }
     }
     Ok(())
 }
@@ -1168,6 +1204,211 @@ pub fn open_db(path: &Path) -> Result<Connection> {
             // schema test DBs); still advance the version so the migration
             // doesn't re-trigger on every open. Mirrors v12→v13 / v11→v12.
             conn.execute_batch("PRAGMA user_version = 17;")?;
+        }
+    }
+
+    // v17→v18: BACKFILL the frozen `claude_sessions` family into the
+    // `agentic_sessions` family. Commit 88c414b re-pointed the daemon WRITERS
+    // and the brain claim/write path onto `agentic_*`, but never moved the
+    // historical Claude/Codex/Cursor data in `claude_sessions` /
+    // `knowledge_node_claude_sessions` / `claude_enrichment_queue`. schema.sql
+    // still creates both families, so the repointed reads silently return empty
+    // for that history. This migration copies them across, idempotently.
+    //
+    // NOT a table rebuild: it DROPs nothing. The old family stays frozen until a
+    // later unification step removes it. Every statement is INSERT OR IGNORE so
+    // a re-run is a no-op.
+    //
+    //   #1 sessions: claude_sessions -> agentic_sessions. Harness derived from
+    //      source_file via CASE (claude_sessions has no harness column; opencode
+    //      never wrote there). Old `id` is DROPPED so agentic_sessions assigns
+    //      FRESH ids — the old PK space overlaps the live agentic id space.
+    //      INSERT OR IGNORE on UNIQUE(session_id, harness, segment_index) leaves
+    //      any pre-existing row (opencode, or a row re-ingested after 88c414b)
+    //      untouched — the live row is authoritative and newer.
+    //   #2 links: re-resolve agentic id by joining on the natural key
+    //      (session_id, segment_index) + the SAME harness CASE. Runs after #1.
+    //      Also JOINs knowledge_nodes so a dangling legacy link row (the old link
+    //      table has no ON DELETE CASCADE) is not copied forward into a dangling
+    //      AGENTIC link — which the scoped FK check below WOULD reject. The check
+    //      is scoped to the agentic targets, so pre-existing orphans in the frozen
+    //      legacy tables cannot abort this migration.
+    //   #3 queue: claude_enrichment_queue -> agentic_enrichment_queue. Copies
+    //      pending/processing/failed rows (excludes done/skipped) AND only when the
+    //      resolved agentic row is NOT already enriched (a.enriched = 0). Without
+    //      the enriched guard, a stale-pending legacy queue row pointing at a
+    //      live, already-enriched agentic session would re-enrich and (no node
+    //      dedup) multiply knowledge nodes. created_at -> enqueued_at.
+    //
+    // FK safety: foreign_keys OFF for the txn; a SCOPED FK check (only the agentic
+    // target tables — a whole-DB scan would trip on pre-existing orphans in the
+    // frozen legacy tables) as a QUERY before the version bump; version bump LAST.
+    if (1..18).contains(&version) {
+        // The backfill SQL touches the WHOLE legacy claude family (sessions +
+        // link table + queue) and the agentic targets. In a real DB all three
+        // legacy tables are created together in the v2 block, so checking the
+        // whole set only screens out artificial partial-schema test DBs (e.g.
+        // the v11→v12 tests seed `claude_sessions` alone). Require every table
+        // the SQL references so a partial DB falls to the version-bump-only
+        // branch instead of erroring on a missing table.
+        let legacy_family_present = table_exists(&conn, "claude_sessions")?
+            && table_exists(&conn, "knowledge_node_claude_sessions")?
+            && table_exists(&conn, "claude_enrichment_queue")?;
+        let agentic_targets_present = table_exists(&conn, "agentic_sessions")?
+            && table_exists(&conn, "knowledge_node_agentic_sessions")?
+            && table_exists(&conn, "agentic_enrichment_queue")?
+            && table_exists(&conn, "knowledge_nodes")?;
+
+        if legacy_family_present && agentic_targets_present {
+            // The harness-derivation CASE is inlined IDENTICALLY into #1 (SET
+            // harness) and #2/#3 (JOIN on harness). If they diverge, the
+            // link/queue joins silently resolve zero rows.
+            conn.execute_batch(
+                "PRAGMA foreign_keys = OFF;
+                 BEGIN;
+
+                 -- #1 sessions
+                 INSERT OR IGNORE INTO agentic_sessions
+                     (session_id, harness, segment_index, model, agent,
+                      project_dir, cwd, git_branch, slug, title,
+                      parent_session_id, is_subagent, summary_text,
+                      tool_calls_json, user_prompts_json, source_file,
+                      snapshot_diffs_json, commit_messages_json,
+                      message_count, token_count, start_time, end_time,
+                      content_hash, last_enriched_content_hash, created_at,
+                      enriched, probe_tag)
+                 SELECT
+                      c.session_id,
+                      CASE
+                        WHEN c.source_file LIKE '%/.codex/%'
+                          OR c.source_file LIKE '%/CodingAssistant/codex/%' THEN 'codex'
+                        WHEN c.source_file LIKE '%/.cursor/%' THEN 'cursor'
+                        ELSE 'claude-code'
+                      END AS harness,
+                      c.segment_index,
+                      '' AS model,
+                      '' AS agent,
+                      c.project_dir,
+                      c.cwd,
+                      c.git_branch,
+                      '' AS slug,
+                      '' AS title,
+                      c.parent_session_id,
+                      c.is_subagent,
+                      c.summary_text,
+                      c.tool_calls_json,
+                      c.user_prompts_json,
+                      c.source_file,
+                      'null' AS snapshot_diffs_json,
+                      '[]' AS commit_messages_json,
+                      c.message_count,
+                      COALESCE(c.token_count, 0) AS token_count,
+                      c.start_time,
+                      c.end_time,
+                      c.content_hash,
+                      c.last_enriched_content_hash,
+                      c.created_at,
+                      c.enriched,
+                      c.probe_tag
+                 FROM claude_sessions c;
+
+                 -- #2 knowledge-node links (re-resolve agentic id; skip dangling nodes)
+                 INSERT OR IGNORE INTO knowledge_node_agentic_sessions
+                     (knowledge_node_id, agentic_session_id)
+                 SELECT kncs.knowledge_node_id, a.id
+                 FROM knowledge_node_claude_sessions kncs
+                 JOIN claude_sessions c
+                   ON c.id = kncs.claude_session_id
+                 JOIN knowledge_nodes kn
+                   ON kn.id = kncs.knowledge_node_id
+                 JOIN agentic_sessions a
+                   ON a.session_id    = c.session_id
+                  AND a.segment_index = c.segment_index
+                  AND a.harness =
+                      CASE
+                        WHEN c.source_file LIKE '%/.codex/%'
+                          OR c.source_file LIKE '%/CodingAssistant/codex/%' THEN 'codex'
+                        WHEN c.source_file LIKE '%/.cursor/%' THEN 'cursor'
+                        ELSE 'claude-code'
+                      END;
+
+                 -- #3 enrichment queue (un-terminal AND target not already enriched)
+                 INSERT OR IGNORE INTO agentic_enrichment_queue
+                     (session_id, status, priority, retry_count, max_retries,
+                      error_message, locked_at, locked_by, enqueued_at, updated_at)
+                 SELECT
+                      a.id,
+                      -- A legacy 'processing' row was claimed by a pre-cutover brain
+                      -- worker that is now gone; its lock is stale. Demote to 'pending'
+                      -- and drop the lock so the live agentic pipeline re-claims it
+                      -- cleanly instead of waiting for the watchdog reaper to time it out.
+                      CASE WHEN ceq.status = 'processing' THEN 'pending' ELSE ceq.status END,
+                      ceq.priority,
+                      ceq.retry_count,
+                      ceq.max_retries,
+                      ceq.error_message,
+                      NULL,
+                      NULL,
+                      ceq.created_at,
+                      ceq.updated_at
+                 FROM claude_enrichment_queue ceq
+                 JOIN claude_sessions c
+                   ON c.id = ceq.claude_session_id
+                 JOIN agentic_sessions a
+                   ON a.session_id    = c.session_id
+                  AND a.segment_index = c.segment_index
+                  AND a.harness =
+                      CASE
+                        WHEN c.source_file LIKE '%/.codex/%'
+                          OR c.source_file LIKE '%/CodingAssistant/codex/%' THEN 'codex'
+                        WHEN c.source_file LIKE '%/.cursor/%' THEN 'cursor'
+                        ELSE 'claude-code'
+                      END
+                 WHERE ceq.status IN ('pending', 'processing', 'failed')
+                   AND a.enriched = 0;",
+            )?;
+
+            // FK invariants on the tables WE wrote — SCOPED, not whole-DB. A
+            // table-less `PRAGMA foreign_key_check` also scans the frozen legacy
+            // tables, whose pre-existing orphan rows are unrelated to this backfill
+            // and would wrongly abort it (wedging the DB at v17). Check only the
+            // agentic targets. MUST be a query (foreign_key_check returns rows for
+            // violations and never errors).
+            enforce_no_fk_violations_for(
+                &conn,
+                "v17→v18 claude_sessions backfill",
+                &[
+                    "agentic_sessions",
+                    "knowledge_node_agentic_sessions",
+                    "agentic_enrichment_queue",
+                ],
+            )?;
+
+            conn.execute_batch(
+                "PRAGMA user_version = 18;
+                 COMMIT;
+                 PRAGMA foreign_keys = ON;",
+            )?;
+        } else if legacy_family_present {
+            // Legacy data EXISTS to migrate, but an agentic target table is
+            // missing. In every real upgrade path the v13→v14 block created the
+            // agentic family before we reach here, so this is a corrupt/partial
+            // schema. Silently bumping to v18 would strand the historical data
+            // permanently (the version gate never re-fires, and the repointed
+            // readers no longer touch the frozen legacy tables). Fail loudly and
+            // recoverably instead — `user_version` stays at 17, so a re-open
+            // after the agentic schema is repaired re-runs this backfill.
+            anyhow::bail!(
+                "v17→v18: claude_sessions data is present but the agentic target tables \
+                 (agentic_sessions / knowledge_node_agentic_sessions / agentic_enrichment_queue / \
+                 knowledge_nodes) are incomplete; cannot backfill. Repair the agentic schema \
+                 and re-open."
+            );
+        } else {
+            // No legacy data to migrate (fresh DB, or a partial-schema test DB
+            // that seeds only a subset of tables): just advance the version so
+            // the migration doesn't re-trigger on every open.
+            conn.execute_batch("PRAGMA user_version = 18;")?;
         }
     } else if version != 0 && version != EXPECTED_VERSION {
         anyhow::bail!(
@@ -3860,12 +4101,12 @@ mod tests {
 
         let conn = open_db(&db_path).unwrap();
 
-        // 1) Schema lands at EXPECTED_VERSION (v17 after this PR).
+        // 1) Schema lands at EXPECTED_VERSION (v18 after this PR — a v16 DB
+        // climbs the full ladder through v17 to v18).
         let v: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
         assert_eq!(v, EXPECTED_VERSION, "must reach EXPECTED_VERSION");
-        assert_eq!(v, 17, "EXPECTED_VERSION must have been bumped to 17");
 
         // 2) The pre-migration opencode row is preserved with segment_index = 0
         // and all its other values intact (rowid, end_time, token_count, summary).
@@ -4005,6 +4246,552 @@ mod tests {
         assert_eq!(
             idx_count, 4,
             "all four agentic_sessions indexes must be recreated"
+        );
+    }
+
+    #[test]
+    fn test_migrate_v17_to_v18_backfills_claude_sessions_into_agentic() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("test.db");
+
+        {
+            let conn = rusqlite::Connection::open(&db_path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE knowledge_nodes (id INTEGER PRIMARY KEY);
+                 INSERT INTO knowledge_nodes (id) VALUES (1), (2), (3);
+
+                 CREATE TABLE agentic_sessions (
+                     id INTEGER PRIMARY KEY,
+                     session_id TEXT NOT NULL,
+                     harness TEXT NOT NULL DEFAULT 'opencode'
+                         CHECK (harness IN ('claude-code','opencode','codex','cursor')),
+                     segment_index INTEGER NOT NULL DEFAULT 0,
+                     model TEXT NOT NULL DEFAULT '',
+                     agent TEXT DEFAULT '',
+                     project_dir TEXT NOT NULL,
+                     cwd TEXT NOT NULL,
+                     git_branch TEXT,
+                     slug TEXT DEFAULT '',
+                     title TEXT DEFAULT '',
+                     parent_session_id TEXT,
+                     is_subagent INTEGER NOT NULL DEFAULT 0,
+                     summary_text TEXT NOT NULL,
+                     tool_calls_json TEXT,
+                     user_prompts_json TEXT,
+                     source_file TEXT DEFAULT '',
+                     snapshot_diffs_json TEXT DEFAULT 'null',
+                     commit_messages_json TEXT DEFAULT '[]',
+                     message_count INTEGER NOT NULL DEFAULT 0,
+                     token_count INTEGER NOT NULL DEFAULT 0,
+                     start_time INTEGER NOT NULL,
+                     end_time INTEGER NOT NULL,
+                     content_hash TEXT,
+                     last_enriched_content_hash TEXT,
+                     created_at INTEGER NOT NULL DEFAULT 1700000000000,
+                     enriched INTEGER NOT NULL DEFAULT 0,
+                     probe_tag TEXT,
+                     UNIQUE (session_id, harness, segment_index)
+                 );
+                 CREATE INDEX idx_agentic_sessions_harness ON agentic_sessions (harness);
+
+                 CREATE TABLE knowledge_node_agentic_sessions (
+                     knowledge_node_id INTEGER NOT NULL REFERENCES knowledge_nodes (id),
+                     agentic_session_id INTEGER NOT NULL REFERENCES agentic_sessions (id) ON DELETE CASCADE,
+                     PRIMARY KEY (knowledge_node_id, agentic_session_id)
+                 );
+
+                 CREATE TABLE agentic_enrichment_queue (
+                     id INTEGER PRIMARY KEY,
+                     session_id INTEGER NOT NULL UNIQUE REFERENCES agentic_sessions (id),
+                     status TEXT NOT NULL DEFAULT 'pending'
+                         CHECK (status IN ('pending','processing','done','failed','skipped')),
+                     priority INTEGER NOT NULL DEFAULT 5,
+                     retry_count INTEGER NOT NULL DEFAULT 0,
+                     max_retries INTEGER NOT NULL DEFAULT 5,
+                     error_message TEXT,
+                     locked_at INTEGER,
+                     locked_by TEXT,
+                     enqueued_at INTEGER NOT NULL,
+                     updated_at INTEGER NOT NULL
+                 );
+
+                 -- A claude-code session re-ingested AFTER 88c414b already lives in
+                 -- agentic_sessions ('already mirrored'). Must NOT be duplicated; the
+                 -- link/queue backfill must resolve to ITS id, and SQL#1 must keep its
+                 -- (live) summary, not the legacy one.
+                 INSERT INTO agentic_sessions
+                     (session_id, harness, segment_index, project_dir, cwd, summary_text,
+                      start_time, end_time, message_count, enriched)
+                 VALUES ('sess-cc', 'claude-code', 0, '/cc', '/cc', 'live cc summary',
+                         1700000000000, 1700000001000, 5, 0);
+
+                 CREATE TABLE claude_sessions (
+                     id INTEGER PRIMARY KEY,
+                     session_id TEXT NOT NULL,
+                     project_dir TEXT NOT NULL,
+                     cwd TEXT NOT NULL,
+                     git_branch TEXT,
+                     segment_index INTEGER NOT NULL,
+                     start_time INTEGER NOT NULL,
+                     end_time INTEGER NOT NULL,
+                     summary_text TEXT NOT NULL,
+                     tool_calls_json TEXT,
+                     user_prompts_json TEXT,
+                     message_count INTEGER NOT NULL,
+                     token_count INTEGER,
+                     source_file TEXT NOT NULL,
+                     is_subagent INTEGER NOT NULL DEFAULT 0,
+                     parent_session_id TEXT,
+                     enriched INTEGER NOT NULL DEFAULT 0,
+                     probe_tag TEXT,
+                     content_hash TEXT,
+                     last_enriched_content_hash TEXT,
+                     created_at INTEGER NOT NULL DEFAULT 1700000000000,
+                     UNIQUE (session_id, segment_index)
+                 );
+                 CREATE TABLE knowledge_node_claude_sessions (
+                     knowledge_node_id INTEGER NOT NULL REFERENCES knowledge_nodes (id),
+                     claude_session_id INTEGER NOT NULL REFERENCES claude_sessions (id),
+                     PRIMARY KEY (knowledge_node_id, claude_session_id)
+                 );
+                 CREATE TABLE claude_enrichment_queue (
+                     id INTEGER PRIMARY KEY,
+                     claude_session_id INTEGER NOT NULL UNIQUE REFERENCES claude_sessions (id),
+                     status TEXT NOT NULL DEFAULT 'pending'
+                         CHECK (status IN ('pending','processing','done','failed','skipped')),
+                     priority INTEGER NOT NULL DEFAULT 5,
+                     retry_count INTEGER NOT NULL DEFAULT 0,
+                     max_retries INTEGER NOT NULL DEFAULT 5,
+                     error_message TEXT,
+                     locked_at INTEGER,
+                     locked_by TEXT,
+                     created_at INTEGER NOT NULL DEFAULT 1700000000000,
+                     updated_at INTEGER NOT NULL DEFAULT 1700000000000
+                 );
+
+                 -- id 10 = DUP of live agentic row (IGNOREd); 11 codex; 12 cursor;
+                 -- 13 new claude-code; 14 probe.
+                 INSERT INTO claude_sessions
+                     (id, session_id, project_dir, cwd, segment_index, start_time, end_time,
+                      summary_text, message_count, token_count, source_file, probe_tag)
+                 VALUES
+                     (10, 'sess-cc', '/cc', '/cc', 0, 1700000000000, 1700000001000,
+                      'legacy cc summary', 5, 3, '/Users/x/.claude/projects/p/sess-cc.jsonl', NULL),
+                     (11, 'sess-cdx', '/cdx', '/cdx', 0, 1700000002000, 1700000003000,
+                      'codex summary', 4, NULL, '/Users/x/.codex/sessions/2026/rollout-cdx.jsonl', NULL),
+                     (12, 'sess-crs', '/crs', '/crs', 1, 1700000004000, 1700000005000,
+                      'cursor summary', 6, 9, '/Users/x/.cursor/projects/p/agent-transcripts/t.jsonl', NULL),
+                     (13, 'sess-new', '/new', '/new', 2, 1700000006000, 1700000007000,
+                      'new cc summary', 7, 1, '/Users/x/.claude/projects/p/sess-new.jsonl', NULL),
+                     (14, 'sess-probe', '/probe', '/probe', 0, 1700000008000, 1700000009000,
+                      '__hippo_probe__', 1, 0, '/Users/x/.claude/projects/p/probe.jsonl', 'probe-v1');
+
+                 -- links: node1 -> codex(11), node2 -> cursor(12), node3 -> already-mirrored claude-code(10)
+                 INSERT INTO knowledge_node_claude_sessions (knowledge_node_id, claude_session_id)
+                 VALUES (1, 11), (2, 12), (3, 10);
+
+                 -- queue: codex pending (backfill), cursor failed (backfill),
+                 -- new-cc done (TERMINAL -> skip), id10 processing (resolves to the
+                 -- live already-mirrored row; that row is enriched=0 so a.enriched=0
+                 -- holds and INSERT OR IGNORE keeps it — but the live row has NO prior
+                 -- queue row, so it IS inserted; assert it lands).
+                 -- id 10 carries a STALE lock (locked_by) from a pre-cutover worker
+                 -- that died; the backfill must demote it to 'pending' and clear it.
+                 INSERT INTO claude_enrichment_queue
+                     (claude_session_id, status, locked_at, locked_by, created_at, updated_at)
+                 VALUES
+                    (11, 'pending',    NULL,          NULL,          1700000002000, 1700000002000),
+                    (12, 'failed',     NULL,          NULL,          1700000004000, 1700000004000),
+                    (13, 'done',       NULL,          NULL,          1700000006000, 1700000006000),
+                    (10, 'processing', 1700000000500, 'dead-worker', 1700000000000, 1700000000000);
+
+                 PRAGMA user_version = 17;",
+            )
+            .unwrap();
+        }
+
+        // First open: runs the v17->v18 backfill.
+        let conn = open_db(&db_path).unwrap();
+
+        // 1) version reached EXPECTED_VERSION == 18.
+        let v: i64 = conn
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(v, EXPECTED_VERSION);
+
+        // 2) harness derivation.
+        let h_cdx: String = conn
+            .query_row(
+                "SELECT harness FROM agentic_sessions WHERE session_id='sess-cdx'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(h_cdx, "codex");
+        let h_crs: String = conn
+            .query_row(
+                "SELECT harness FROM agentic_sessions WHERE session_id='sess-crs'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(h_crs, "cursor");
+        let h_new: String = conn
+            .query_row(
+                "SELECT harness FROM agentic_sessions WHERE session_id='sess-new'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(h_new, "claude-code");
+
+        // 3) no duplicate for already-mirrored row; live summary preserved.
+        let cc_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM agentic_sessions
+                 WHERE session_id='sess-cc' AND harness='claude-code' AND segment_index=0",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(cc_count, 1, "already-mirrored row must not be duplicated");
+        let cc_summary: String = conn
+            .query_row(
+                "SELECT summary_text FROM agentic_sessions WHERE session_id='sess-cc'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            cc_summary, "live cc summary",
+            "live row preserved, legacy IGNOREd"
+        );
+
+        // 4) probe row copied with probe_tag preserved (migration is mechanical).
+        let probe_tag: Option<String> = conn
+            .query_row(
+                "SELECT probe_tag FROM agentic_sessions WHERE session_id='sess-probe'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(probe_tag.as_deref(), Some("probe-v1"));
+
+        // 5) segment_index / token_count(COALESCE) carried.
+        let (seg, tok): (i64, i64) = conn
+            .query_row(
+                "SELECT segment_index, token_count FROM agentic_sessions WHERE session_id='sess-crs'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(seg, 1);
+        assert_eq!(tok, 9);
+        let cdx_tok: i64 = conn
+            .query_row(
+                "SELECT token_count FROM agentic_sessions WHERE session_id='sess-cdx'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(cdx_tok, 0, "NULL token_count coalesces to 0");
+
+        // 6) links re-resolved to correct agentic ids.
+        let cdx_id: i64 = conn
+            .query_row(
+                "SELECT id FROM agentic_sessions WHERE session_id='sess-cdx'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let link1: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM knowledge_node_agentic_sessions
+                 WHERE knowledge_node_id=1 AND agentic_session_id=?1",
+                [cdx_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(link1, 1, "node1 -> codex agentic id");
+        let cc_id: i64 = conn
+            .query_row(
+                "SELECT id FROM agentic_sessions WHERE session_id='sess-cc'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let link3: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM knowledge_node_agentic_sessions
+                 WHERE knowledge_node_id=3 AND agentic_session_id=?1",
+                [cc_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(link3, 1, "node3 -> pre-existing agentic row");
+
+        // 7) queue: un-terminal backfilled, terminal skipped.
+        let q_pending: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM agentic_enrichment_queue q JOIN agentic_sessions s ON q.session_id=s.id
+                 WHERE s.session_id='sess-cdx' AND q.status='pending'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(q_pending, 1, "pending codex queue row backfilled");
+        let q_failed: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM agentic_enrichment_queue q JOIN agentic_sessions s ON q.session_id=s.id
+                 WHERE s.session_id='sess-crs' AND q.status='failed'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(q_failed, 1, "failed cursor queue row backfilled");
+        let q_done: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM agentic_enrichment_queue q JOIN agentic_sessions s ON q.session_id=s.id
+                 WHERE s.session_id='sess-new'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            q_done, 0,
+            "terminal (done) queue row must NOT be backfilled"
+        );
+
+        // 7b) the stale 'processing' legacy row (id 10 -> live sess-cc, enriched=0)
+        // is backfilled but DEMOTED to 'pending' with its dead-worker lock cleared,
+        // so the live agentic pipeline re-claims it instead of waiting on the reaper.
+        let (cc_status, cc_locked_by): (String, Option<String>) = conn
+            .query_row(
+                "SELECT q.status, q.locked_by FROM agentic_enrichment_queue q
+                 JOIN agentic_sessions s ON q.session_id = s.id
+                 WHERE s.session_id = 'sess-cc'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            cc_status, "pending",
+            "stale 'processing' must demote to 'pending'"
+        );
+        assert_eq!(cc_locked_by, None, "stale lock must be cleared on backfill");
+
+        // 8) zero FK violations.
+        let violations = {
+            let mut stmt = conn.prepare("PRAGMA foreign_key_check").unwrap();
+            stmt.query_map([], |_| Ok(()))
+                .unwrap()
+                .filter_map(|r| r.ok())
+                .count()
+        };
+        assert_eq!(violations, 0);
+
+        // 9) idempotency: re-open is a no-op.
+        let sess_before: i64 = conn
+            .query_row("SELECT COUNT(*) FROM agentic_sessions", [], |r| r.get(0))
+            .unwrap();
+        let link_before: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM knowledge_node_agentic_sessions",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let queue_before: i64 = conn
+            .query_row("SELECT COUNT(*) FROM agentic_enrichment_queue", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        drop(conn);
+        let conn2 = open_db(&db_path).unwrap();
+        let sess_after: i64 = conn2
+            .query_row("SELECT COUNT(*) FROM agentic_sessions", [], |r| r.get(0))
+            .unwrap();
+        let link_after: i64 = conn2
+            .query_row(
+                "SELECT COUNT(*) FROM knowledge_node_agentic_sessions",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let queue_after: i64 = conn2
+            .query_row("SELECT COUNT(*) FROM agentic_enrichment_queue", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(sess_before, sess_after);
+        assert_eq!(link_before, link_after);
+        assert_eq!(queue_before, queue_after);
+    }
+
+    /// Regression: a PRE-EXISTING dangling row in the frozen legacy
+    /// `knowledge_node_claude_sessions` table (an orphan whose `claude_session_id`
+    /// no longer resolves) must NOT abort the v17→v18 backfill. The migration's FK
+    /// check is scoped to the agentic target tables; a whole-DB
+    /// `PRAGMA foreign_key_check` would flag the legacy orphan and wedge the DB at
+    /// v17 forever. This test fails (open_db returns Err) under the un-scoped check.
+    #[test]
+    fn test_migrate_v17_to_v18_tolerates_dangling_legacy_link() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("test.db");
+
+        {
+            let conn = rusqlite::Connection::open(&db_path).unwrap();
+            // FK enforcement OFF while seeding so the dangling link below inserts —
+            // exactly how such orphans accumulate in production (delete w/o cascade).
+            conn.execute_batch(
+                "PRAGMA foreign_keys = OFF;
+                 CREATE TABLE knowledge_nodes (id INTEGER PRIMARY KEY);
+                 INSERT INTO knowledge_nodes (id) VALUES (1), (2);
+
+                 CREATE TABLE agentic_sessions (
+                     id INTEGER PRIMARY KEY,
+                     session_id TEXT NOT NULL,
+                     harness TEXT NOT NULL DEFAULT 'opencode'
+                         CHECK (harness IN ('claude-code','opencode','codex','cursor')),
+                     segment_index INTEGER NOT NULL DEFAULT 0,
+                     model TEXT NOT NULL DEFAULT '',
+                     agent TEXT DEFAULT '',
+                     project_dir TEXT NOT NULL,
+                     cwd TEXT NOT NULL,
+                     git_branch TEXT,
+                     slug TEXT DEFAULT '',
+                     title TEXT DEFAULT '',
+                     parent_session_id TEXT,
+                     is_subagent INTEGER NOT NULL DEFAULT 0,
+                     summary_text TEXT NOT NULL,
+                     tool_calls_json TEXT,
+                     user_prompts_json TEXT,
+                     source_file TEXT DEFAULT '',
+                     snapshot_diffs_json TEXT DEFAULT 'null',
+                     commit_messages_json TEXT DEFAULT '[]',
+                     message_count INTEGER NOT NULL DEFAULT 0,
+                     token_count INTEGER NOT NULL DEFAULT 0,
+                     start_time INTEGER NOT NULL,
+                     end_time INTEGER NOT NULL,
+                     content_hash TEXT,
+                     last_enriched_content_hash TEXT,
+                     created_at INTEGER NOT NULL DEFAULT 1700000000000,
+                     enriched INTEGER NOT NULL DEFAULT 0,
+                     probe_tag TEXT,
+                     UNIQUE (session_id, harness, segment_index)
+                 );
+                 CREATE TABLE knowledge_node_agentic_sessions (
+                     knowledge_node_id INTEGER NOT NULL REFERENCES knowledge_nodes (id),
+                     agentic_session_id INTEGER NOT NULL REFERENCES agentic_sessions (id) ON DELETE CASCADE,
+                     PRIMARY KEY (knowledge_node_id, agentic_session_id)
+                 );
+                 CREATE TABLE agentic_enrichment_queue (
+                     id INTEGER PRIMARY KEY,
+                     session_id INTEGER NOT NULL UNIQUE REFERENCES agentic_sessions (id),
+                     status TEXT NOT NULL DEFAULT 'pending'
+                         CHECK (status IN ('pending','processing','done','failed','skipped')),
+                     priority INTEGER NOT NULL DEFAULT 5,
+                     retry_count INTEGER NOT NULL DEFAULT 0,
+                     max_retries INTEGER NOT NULL DEFAULT 5,
+                     error_message TEXT,
+                     locked_at INTEGER,
+                     locked_by TEXT,
+                     enqueued_at INTEGER NOT NULL,
+                     updated_at INTEGER NOT NULL
+                 );
+
+                 CREATE TABLE claude_sessions (
+                     id INTEGER PRIMARY KEY,
+                     session_id TEXT NOT NULL,
+                     project_dir TEXT NOT NULL,
+                     cwd TEXT NOT NULL,
+                     git_branch TEXT,
+                     segment_index INTEGER NOT NULL,
+                     start_time INTEGER NOT NULL,
+                     end_time INTEGER NOT NULL,
+                     summary_text TEXT NOT NULL,
+                     tool_calls_json TEXT,
+                     user_prompts_json TEXT,
+                     message_count INTEGER NOT NULL,
+                     token_count INTEGER,
+                     source_file TEXT NOT NULL,
+                     is_subagent INTEGER NOT NULL DEFAULT 0,
+                     parent_session_id TEXT,
+                     enriched INTEGER NOT NULL DEFAULT 0,
+                     probe_tag TEXT,
+                     content_hash TEXT,
+                     last_enriched_content_hash TEXT,
+                     created_at INTEGER NOT NULL DEFAULT 1700000000000,
+                     UNIQUE (session_id, segment_index)
+                 );
+                 CREATE TABLE knowledge_node_claude_sessions (
+                     knowledge_node_id INTEGER NOT NULL REFERENCES knowledge_nodes (id),
+                     claude_session_id INTEGER NOT NULL REFERENCES claude_sessions (id),
+                     PRIMARY KEY (knowledge_node_id, claude_session_id)
+                 );
+                 CREATE TABLE claude_enrichment_queue (
+                     id INTEGER PRIMARY KEY,
+                     claude_session_id INTEGER NOT NULL UNIQUE REFERENCES claude_sessions (id),
+                     status TEXT NOT NULL DEFAULT 'pending'
+                         CHECK (status IN ('pending','processing','done','failed','skipped')),
+                     priority INTEGER NOT NULL DEFAULT 5,
+                     retry_count INTEGER NOT NULL DEFAULT 0,
+                     max_retries INTEGER NOT NULL DEFAULT 5,
+                     error_message TEXT,
+                     locked_at INTEGER,
+                     locked_by TEXT,
+                     created_at INTEGER NOT NULL DEFAULT 1700000000000,
+                     updated_at INTEGER NOT NULL DEFAULT 1700000000000
+                 );
+
+                 -- One CLEAN claude session + link (must still backfill).
+                 INSERT INTO claude_sessions
+                     (id, session_id, project_dir, cwd, segment_index, start_time, end_time,
+                      summary_text, message_count, source_file)
+                 VALUES (1, 'clean', '/p', '/p', 0, 1700000000000, 1700000001000,
+                         'clean summary', 3, '/Users/x/.claude/projects/p/clean.jsonl');
+                 INSERT INTO knowledge_node_claude_sessions (knowledge_node_id, claude_session_id)
+                 VALUES (1, 1);
+
+                 -- DANGLING legacy link: claude_session_id 9999 does not exist. A
+                 -- whole-DB foreign_key_check flags this; a scoped check does not.
+                 INSERT INTO knowledge_node_claude_sessions (knowledge_node_id, claude_session_id)
+                 VALUES (2, 9999);
+
+                 PRAGMA user_version = 17;",
+            )
+            .unwrap();
+        }
+
+        // Must NOT error despite the dangling legacy link row.
+        let conn = open_db(&db_path).unwrap();
+        let v: i64 = conn
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(
+            v, EXPECTED_VERSION,
+            "migration must reach v18 despite legacy orphan"
+        );
+
+        // The clean session + its link backfilled normally.
+        let clean_sessions: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM agentic_sessions WHERE session_id = 'clean' AND harness = 'claude-code'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(clean_sessions, 1, "clean claude session must backfill");
+        let clean_links: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM knowledge_node_agentic_sessions WHERE knowledge_node_id = 1",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            clean_links, 1,
+            "clean link must be re-resolved into the agentic link table"
         );
     }
 

@@ -237,7 +237,7 @@ async fn test_ingest_batch_dedup_on_reimport() {
 }
 
 /// Regression test for #58: `hippo ingest claude-session` must
-/// populate the `claude_sessions` table — not just `events`. Prior to the
+/// populate the `agentic_sessions` table — not just `events`. Prior to the
 /// fix, the batch importer only fired tool-call events through the daemon
 /// socket and never wrote the session-segment rows that enrichment depends
 /// on, so the 272-session sev1 backfill reported success while landing
@@ -247,13 +247,13 @@ async fn test_ingest_batch_dedup_on_reimport() {
 /// text, and 2 completed tool_use/tool_result pairs), ingests it with
 /// `ingest_batch`, and asserts both that:
 ///
-/// 1. ≥1 row exists in `claude_sessions` with the fixture session_id.
+/// 1. ≥1 row exists in `agentic_sessions` with the fixture session_id.
 /// 2. The existing `source_kind='claude-tool'` event flow still fires.
 ///
 /// If the segment-write half regresses, this test fails with 0 rows in
-/// `claude_sessions`.
+/// `agentic_sessions`.
 #[tokio::test]
-async fn test_ingest_batch_writes_claude_sessions_row() {
+async fn test_ingest_batch_writes_agentic_sessions_row() {
     let config = test_config();
     let socket_path = config.socket_path();
     let db_path = config.db_path();
@@ -314,17 +314,18 @@ async fn test_ingest_batch_writes_claude_sessions_row() {
     let conn = hippo_core::storage::open_db(&db_path).unwrap();
 
     // Primary assertion: the fix must write at least one row into
-    // `claude_sessions` for the fixture session_id.
+    // `agentic_sessions` for the fixture session_id.
     let segment_rows: i64 = conn
         .query_row(
-            "SELECT COUNT(*) FROM claude_sessions WHERE session_id = ?1",
+            "SELECT COUNT(*) FROM agentic_sessions
+             WHERE session_id = ?1 AND harness = 'claude-code'",
             [FIXTURE_SESSION_ID],
             |row| row.get(0),
         )
         .unwrap();
     assert!(
         segment_rows >= 1,
-        "expected ≥1 claude_sessions row for fixture session, got {}",
+        "expected ≥1 agentic_sessions row for fixture session, got {}",
         segment_rows
     );
 
@@ -332,8 +333,9 @@ async fn test_ingest_batch_writes_claude_sessions_row() {
     // a stub), so the enrichment queue actually has something to process.
     let (message_count, tool_calls_json, project_dir): (i64, String, String) = conn
         .query_row(
-            "SELECT message_count, tool_calls_json, project_dir FROM claude_sessions
-             WHERE session_id = ?1 ORDER BY segment_index ASC LIMIT 1",
+            "SELECT message_count, tool_calls_json, project_dir FROM agentic_sessions
+             WHERE session_id = ?1 AND harness = 'claude-code'
+             ORDER BY segment_index ASC LIMIT 1",
             [FIXTURE_SESSION_ID],
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )
@@ -357,16 +359,16 @@ async fn test_ingest_batch_writes_claude_sessions_row() {
     // brain will never pick it up.
     let queue_count: i64 = conn
         .query_row(
-            "SELECT COUNT(*) FROM claude_enrichment_queue ceq
-             JOIN claude_sessions cs ON ceq.claude_session_id = cs.id
-             WHERE cs.session_id = ?1",
+            "SELECT COUNT(*) FROM agentic_enrichment_queue q
+             JOIN agentic_sessions s ON q.session_id = s.id
+             WHERE s.session_id = ?1 AND s.harness = 'claude-code'",
             [FIXTURE_SESSION_ID],
             |row| row.get(0),
         )
         .unwrap();
     assert_eq!(
         queue_count, segment_rows,
-        "every claude_sessions row must have a matching enrichment queue entry"
+        "every agentic_sessions row must have a matching enrichment queue entry"
     );
 
     // Secondary assertion: we didn't break the original tool-call event
@@ -391,12 +393,12 @@ async fn test_ingest_batch_writes_claude_sessions_row() {
 }
 
 /// Re-ingesting the same session file must be idempotent — the
-/// `UNIQUE (session_id, segment_index)` constraint plus `INSERT OR IGNORE`
+/// `UNIQUE (session_id, harness, segment_index)` constraint plus `INSERT OR IGNORE`
 /// in the segment writer should leave the table unchanged on the second
 /// pass. Guards against a future refactor that swaps `INSERT OR IGNORE`
 /// for a plain `INSERT` and starts erroring (or, worse, double-writing).
 #[tokio::test]
-async fn test_ingest_batch_claude_sessions_is_idempotent() {
+async fn test_ingest_batch_agentic_sessions_is_idempotent() {
     let config = test_config();
     let socket_path = config.socket_path();
     let db_path = config.db_path();
@@ -440,7 +442,8 @@ async fn test_ingest_batch_claude_sessions_is_idempotent() {
     let conn = hippo_core::storage::open_db(&db_path).unwrap();
     let segment_rows: i64 = conn
         .query_row(
-            "SELECT COUNT(*) FROM claude_sessions WHERE session_id = ?1",
+            "SELECT COUNT(*) FROM agentic_sessions
+             WHERE session_id = ?1 AND harness = 'claude-code'",
             [FIXTURE_SESSION_ID],
             |row| row.get(0),
         )

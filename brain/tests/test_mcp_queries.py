@@ -74,6 +74,38 @@ def db():
             probe_tag TEXT DEFAULT NULL,
             UNIQUE (session_id, segment_index)
         );
+        CREATE TABLE agentic_sessions (
+            id INTEGER PRIMARY KEY,
+            session_id TEXT NOT NULL,
+            harness TEXT NOT NULL DEFAULT 'opencode'
+                CHECK (harness IN ('claude-code','opencode','codex','cursor')),
+            segment_index INTEGER NOT NULL DEFAULT 0,
+            model TEXT NOT NULL DEFAULT '',
+            agent TEXT DEFAULT '',
+            project_dir TEXT NOT NULL,
+            cwd TEXT NOT NULL,
+            git_branch TEXT,
+            slug TEXT DEFAULT '',
+            title TEXT DEFAULT '',
+            parent_session_id TEXT,
+            is_subagent INTEGER NOT NULL DEFAULT 0,
+            summary_text TEXT NOT NULL,
+            tool_calls_json TEXT,
+            user_prompts_json TEXT,
+            source_file TEXT DEFAULT '',
+            snapshot_diffs_json TEXT DEFAULT 'null',
+            commit_messages_json TEXT DEFAULT '[]',
+            message_count INTEGER NOT NULL DEFAULT 0,
+            token_count INTEGER NOT NULL DEFAULT 0,
+            start_time INTEGER NOT NULL,
+            end_time INTEGER NOT NULL,
+            content_hash TEXT,
+            last_enriched_content_hash TEXT,
+            created_at INTEGER NOT NULL DEFAULT 0,
+            enriched INTEGER NOT NULL DEFAULT 0,
+            probe_tag TEXT DEFAULT NULL,
+            UNIQUE (session_id, harness, segment_index)
+        );
         CREATE TABLE browser_events (
             id INTEGER PRIMARY KEY,
             timestamp INTEGER NOT NULL,
@@ -111,6 +143,11 @@ def db():
             knowledge_node_id INTEGER NOT NULL,
             claude_session_id INTEGER NOT NULL,
             PRIMARY KEY (knowledge_node_id, claude_session_id)
+        );
+        CREATE TABLE knowledge_node_agentic_sessions (
+            knowledge_node_id INTEGER NOT NULL,
+            agentic_session_id INTEGER NOT NULL,
+            PRIMARY KEY (knowledge_node_id, agentic_session_id)
         );
         CREATE TABLE knowledge_node_browser_events (
             knowledge_node_id INTEGER NOT NULL,
@@ -224,10 +261,11 @@ class TestSearchEvents:
     def test_claude_events(self, db):
         now_ms = int(time.time() * 1000)
         db.execute(
-            "INSERT INTO claude_sessions "
-            "(session_id, project_dir, cwd, segment_index, start_time, end_time, "
-            "summary_text, message_count, source_file) "
-            "VALUES ('s1', '/proj', '/proj', 0, ?, ?, 'Implemented MCP server', 10, 'f.jsonl')",
+            "INSERT INTO agentic_sessions "
+            "(session_id, harness, segment_index, project_dir, cwd, "
+            " summary_text, message_count, source_file, start_time, end_time) "
+            "VALUES ('s1', 'claude-code', 0, '/proj', '/proj', "
+            "        'Implemented MCP server', 10, 'f.jsonl', ?, ?)",
             (now_ms, now_ms + 60000),
         )
         db.commit()
@@ -235,6 +273,24 @@ class TestSearchEvents:
         results = search_events_impl(db, query="MCP", source="claude", limit=10)
         assert len(results) == 1
         assert results[0]["source"] == "claude"
+
+    def test_opencode_events_included_via_claude_source(self, db):
+        """search_events(source='claude') must surface opencode agentic rows so
+        it agrees with list_projects. Regression guard for mcp_queries.py:391."""
+        now_ms = int(time.time() * 1000)
+        db.execute(
+            "INSERT INTO agentic_sessions "
+            "(session_id, harness, segment_index, project_dir, cwd, "
+            " summary_text, message_count, start_time, end_time) "
+            "VALUES ('oc1', 'opencode', 0, '/proj', '/proj', "
+            "        'Implemented opencode capture', 7, ?, ?)",
+            (now_ms, now_ms + 60000),
+        )
+        db.commit()
+        results = search_events_impl(db, query="opencode", source="claude", limit=10)
+        assert len(results) == 1
+        assert results[0]["source"] == "claude"
+        assert "opencode capture" in results[0]["summary"]
 
     def test_source_all(self, db):
         now_ms = int(time.time() * 1000)
@@ -442,6 +498,80 @@ class TestKnowledgeFilters:
         results = search_knowledge_lexical(db, "match", branch="feature/x", limit=10)
         assert {r["uuid"] for r in results} == {"u-feat"}
 
+    def test_source_claude_excludes_probe_sessions(self, db):
+        """AP-6: source='claude' must never surface a knowledge node linked only
+        to a probe agentic session."""
+        k_real = _insert_kn(db, "u-real", embed_text="match")
+        k_probe = _insert_kn(db, "u-probe", embed_text="match")
+        db.execute(
+            "INSERT INTO agentic_sessions "
+            "(id, session_id, harness, segment_index, project_dir, cwd, "
+            " summary_text, message_count, source_file, start_time, end_time, probe_tag) "
+            "VALUES (1, 'real', 'claude-code', 0, '/p', '/p', 's', 1, 'f', 0, 0, NULL)"
+        )
+        db.execute(
+            "INSERT INTO agentic_sessions "
+            "(id, session_id, harness, segment_index, project_dir, cwd, "
+            " summary_text, message_count, source_file, start_time, end_time, probe_tag) "
+            "VALUES (2, 'probe', 'claude-code', 0, '/p', '/p', 's', 1, 'f', 0, 0, 'probe:canary')"
+        )
+        db.execute("INSERT INTO knowledge_node_agentic_sessions VALUES (?, 1)", (k_real,))
+        db.execute("INSERT INTO knowledge_node_agentic_sessions VALUES (?, 2)", (k_probe,))
+        db.commit()
+
+        results = search_knowledge_lexical(db, "match", source="claude", limit=10)
+        assert {r["uuid"] for r in results} == {"u-real"}
+
+    def test_project_filter_excludes_probe_agentic_sessions(self, db):
+        """AP-6: the project session-link arm must exclude probe sessions."""
+        k_real = _insert_kn(db, "u-real", embed_text="match")
+        k_probe = _insert_kn(db, "u-probe", embed_text="match")
+        db.execute(
+            "INSERT INTO agentic_sessions "
+            "(id, session_id, harness, segment_index, project_dir, cwd, "
+            " summary_text, message_count, source_file, start_time, end_time, probe_tag) "
+            "VALUES (1, 'real', 'claude-code', 0, '/projects/hippo', '/projects/hippo', "
+            "        's', 1, 'f', 0, 0, NULL)"
+        )
+        db.execute(
+            "INSERT INTO agentic_sessions "
+            "(id, session_id, harness, segment_index, project_dir, cwd, "
+            " summary_text, message_count, source_file, start_time, end_time, probe_tag) "
+            "VALUES (2, 'probe', 'claude-code', 0, '/projects/hippo', '/projects/hippo', "
+            "        's', 1, 'f', 0, 0, 'probe:canary')"
+        )
+        db.execute("INSERT INTO knowledge_node_agentic_sessions VALUES (?, 1)", (k_real,))
+        db.execute("INSERT INTO knowledge_node_agentic_sessions VALUES (?, 2)", (k_probe,))
+        db.commit()
+
+        results = search_knowledge_lexical(db, "match", project="hippo", limit=10)
+        assert {r["uuid"] for r in results} == {"u-real"}
+
+    def test_branch_filter_excludes_probe_agentic_sessions(self, db):
+        """AP-6: the branch session-link arm must exclude probe sessions."""
+        k_real = _insert_kn(db, "u-real", embed_text="match")
+        k_probe = _insert_kn(db, "u-probe", embed_text="match")
+        db.execute(
+            "INSERT INTO agentic_sessions "
+            "(id, session_id, harness, segment_index, project_dir, cwd, git_branch, "
+            " summary_text, message_count, source_file, start_time, end_time, probe_tag) "
+            "VALUES (1, 'real', 'claude-code', 0, '/p', '/p', 'feature/x', "
+            "        's', 1, 'f', 0, 0, NULL)"
+        )
+        db.execute(
+            "INSERT INTO agentic_sessions "
+            "(id, session_id, harness, segment_index, project_dir, cwd, git_branch, "
+            " summary_text, message_count, source_file, start_time, end_time, probe_tag) "
+            "VALUES (2, 'probe', 'claude-code', 0, '/p', '/p', 'feature/x', "
+            "        's', 1, 'f', 0, 0, 'probe:canary')"
+        )
+        db.execute("INSERT INTO knowledge_node_agentic_sessions VALUES (?, 1)", (k_real,))
+        db.execute("INSERT INTO knowledge_node_agentic_sessions VALUES (?, 2)", (k_probe,))
+        db.commit()
+
+        results = search_knowledge_lexical(db, "match", branch="feature/x", limit=10)
+        assert {r["uuid"] for r in results} == {"u-real"}
+
 
 class TestSearchEventsBranch:
     def test_branch_filter_shell(self, db):
@@ -517,10 +647,11 @@ class TestListProjects:
 
     def test_includes_claude_sessions(self, db):
         db.execute(
-            "INSERT INTO claude_sessions "
-            "(session_id, project_dir, cwd, segment_index, start_time, end_time, "
-            "summary_text, message_count, source_file) "
-            "VALUES ('s1', '/p/claude-only', '/p/claude-only', 0, 5000, 6000, 's', 1, 'f.jsonl')"
+            "INSERT INTO agentic_sessions "
+            "(session_id, harness, segment_index, project_dir, cwd, "
+            " summary_text, message_count, source_file, start_time, end_time) "
+            "VALUES ('s1', 'claude-code', 0, '/p/claude-only', '/p/claude-only', "
+            "        's', 1, 'f.jsonl', 5000, 6000)"
         )
         db.commit()
 

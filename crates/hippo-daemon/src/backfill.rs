@@ -279,12 +279,13 @@ mod tests {
 
         let count: i64 = conn
             .query_row(
-                "SELECT COUNT(*) FROM claude_sessions WHERE session_id = ?1",
+                "SELECT COUNT(*) FROM agentic_sessions
+                 WHERE session_id = ?1 AND harness = 'claude-code'",
                 rusqlite::params![session_id],
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(count, 0, "dry-run must not insert claude_sessions rows");
+        assert_eq!(count, 0, "dry-run must not insert agentic_sessions rows");
     }
 
     #[test]
@@ -316,7 +317,7 @@ mod tests {
     #[test]
     fn test_backfill_reparses_and_updates_segment() {
         let (dir, db_path) = setup_tmp();
-        // The session_id column in claude_sessions is derived from the file stem,
+        // The session_id column in agentic_sessions is derived from the file stem,
         // not from the JSONL contents. Use the file stem as the key for queries.
         let file_stem = "reparse-test-0000-0000-0000-000000000001";
         let content = make_session_jsonl(file_stem);
@@ -333,17 +334,18 @@ mod tests {
         );
         assert_eq!(errors, 0);
 
-        // Verify the row landed in claude_sessions (session_id = file stem).
+        // Verify the row landed in agentic_sessions (session_id = file stem).
         let count: i64 = conn
             .query_row(
-                "SELECT COUNT(*) FROM claude_sessions WHERE session_id = ?1",
+                "SELECT COUNT(*) FROM agentic_sessions
+                 WHERE session_id = ?1 AND harness = 'claude-code'",
                 rusqlite::params![file_stem],
                 |r| r.get(0),
             )
             .unwrap();
         assert!(
             count > 0,
-            "claude_sessions row must exist after first ingest"
+            "agentic_sessions row must exist after first ingest"
         );
     }
 

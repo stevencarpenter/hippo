@@ -31,15 +31,24 @@ v16→v17 rebuilds `agentic_sessions` to be segment-capable: adds
 `segment_index`, `git_branch`, `is_subagent`, `tool_calls_json`,
 `user_prompts_json`, `content_hash`, `last_enriched_content_hash`,
 widens the `harness` CHECK to include 'cursor', and swaps the unique
-constraint to `(session_id, harness, segment_index)`. Today only the
-opencode poller writes here (every row at `segment_index = 0`); Wave 2
-of the unification series migrates the other three harnesses onto this
-shape.
+constraint to `(session_id, harness, segment_index)`. At this step only
+the opencode poller wrote here (every row at `segment_index = 0`); the
+v17→v18 step migrated the other three harnesses onto this shape.
+v17→v18 repoints all agentic writers and freezes the legacy Claude
+family. The daemon writers (`claude_session.rs`, `codex_session.rs`,
+`cursor_session.rs`) and the brain claim/write path now write the
+`agentic_*` family exclusively (segmented — `segment_index` is no
+longer pinned to 0 the way opencode's rows were), and the migration
+idempotently backfills historical `claude_sessions`
+/ `knowledge_node_claude_sessions` / `claude_enrichment_queue` rows into
+the `agentic_*` tables (harness derived from `source_file`). The legacy
+`claude_*` tables are now frozen — still created by `schema.sql`, no
+longer written, dropped in a later unification step.
 """
 
 from __future__ import annotations
 
-EXPECTED_SCHEMA_VERSION: int = 17
+EXPECTED_SCHEMA_VERSION: int = 18
 
 # Versions brain can read without erroring.
 #
