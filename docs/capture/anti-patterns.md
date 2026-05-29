@@ -150,3 +150,37 @@ ON CONFLICT(session_id, segment_index) DO UPDATE SET
 **Rule of thumb.** `INSERT OR IGNORE` is correct **only** when the conflict key uniquely identifies *the entire immutable row* (e.g., `envelope_id` for a fire-and-forget event, `tool_use_id` for a per-tool event). It is wrong for *bucket* keys whose row content is derived and mutable.
 
 **Cross-reference:** [`docs/archive/capture-reliability-overhaul/11-watcher-data-loss-fix.md`](../archive/capture-reliability-overhaul/11-watcher-data-loss-fix.md) Phase 1.
+
+## AP-13: Minting a knowledge node without a per-segment replacement gate
+
+**Forbidden.** An enrichment writer that does a blind `INSERT INTO knowledge_nodes` for a source segment without first removing the prior node(s) for that same segment. Enrichment is re-run whenever a segment is re-enqueued (file growth, a reparse, a stale-lock re-pend), so append-only writes accumulate near-duplicate nodes — each with its own vector and FTS row — that pollute retrieval and bloat the DB.
+
+**Where seen:** every agentic/workflow/browser writer until 2026-05-29. The claude-session watcher re-enqueued growing segments and enrichment appended a fresh node each time; one `13cc2867` segment accreted **14 byte-identical** nodes over 121 minutes, and ~2,486 redundant nodes (≈18% of the corpus) accumulated in total. Root cause: no upsert/replacement keyed on the source segment, and (for opencode) no daemon-side content-hash re-enqueue gate at all.
+
+**Scope of the 2026-05-29 fix.** The defenses below close the class for the **agentic** writers (claude-code / codex / cursor / opencode — `node_type='observation'`). The **workflow** enricher (`workflow_enrichment.py`, `node_type='change_outcome'`) and the **browser** enricher share the same append-only pattern and are **not yet guarded** — tracked as a follow-up. The workflow writer also co-links its `change_outcome` nodes into `knowledge_node_agentic_sessions`; `replace_prior_agentic_nodes` is therefore deliberately scoped to `node_type='observation'` so it never deletes a co-linked CI-outcome node, and I-16 is likewise scoped to `'observation'` so it does not flap on the still-unguarded workflow dups. The one-shot dedup script (below) is global and *does* collapse existing workflow/browser dups; they will slowly re-accrue until the workflow/browser writers get their own replacement gate.
+
+**Why it's wrong.** "ON CONFLICT makes re-ingest idempotent" is true for the *session* row but NOT for enrichment: the enrichment pipeline mints a brand-new UUID `knowledge_nodes` row per run. Re-enqueuing a finished segment is therefore not idempotent at the pipeline level — it multiplies nodes (and vectors, and FTS rows).
+
+**Detection.** [I-16](architecture.md) watches the agentic (`observation`) class continuously. Ad-hoc (scoped to match I-16):
+
+```sql
+SELECT COUNT(*) FROM (
+  SELECT 1 FROM knowledge_node_agentic_sessions kas
+  JOIN knowledge_nodes kn ON kn.id = kas.knowledge_node_id
+  WHERE kn.node_type = 'observation'
+  GROUP BY kas.agentic_session_id, kn.content, kn.embed_text, kn.node_type
+  HAVING COUNT(*) > 1);
+```
+
+Healthy: `0`. (Drop the `node_type` filter to also surface the unguarded workflow `change_outcome` dups.)
+
+**Use instead.** Three layered defenses for the agentic writers (all landed 2026-05-29):
+1. **Daemon re-enqueue gate** — only re-enqueue a segment when its `content_hash` diverges from `last_enriched_content_hash` (`decide_enqueue`, mirrored across all four agentic pollers).
+2. **Write-time replacement** — `replace_prior_agentic_nodes(conn, segment_ids)` deletes prior `observation` nodes linked *solely* to the segment set (all `knowledge_node_*` link rows + the vec0 vector, in the same transaction) *before* the new INSERT. Scoped to `'observation'` so a co-linked workflow `change_outcome` node is never collateral.
+3. **Skip-unchanged claim guard** — drop a claimed segment whose `content_hash` already equals `last_enriched_content_hash` before the LLM call.
+
+The workflow/browser writers should get an equivalent replacement gate (keyed on their own source identity — `run_id` / `browser_event_id`) as a follow-up.
+
+**Rule of thumb.** A node delete must also delete the vec0 `knowledge_vectors` row in the same transaction — vec0 has no FK cascade, so a node-only delete silently orphans the vector into similarity search (the FTS row auto-drops via the `knowledge_nodes_fts_ad` trigger, but the vector does not).
+
+**Cross-reference:** I-16 in [`architecture.md`](architecture.md); remediation tool `brain/scripts/dedup-knowledge-nodes.py`; recipe in [`operator-runbook.md`](operator-runbook.md).

@@ -1,6 +1,7 @@
 """Parse Claude Code session logs into segments for enrichment."""
 
 import json
+import sqlite3
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -593,7 +594,7 @@ def claim_pending_claude_segments(
             SELECT id, session_id, harness, project_dir, cwd, git_branch, segment_index,
                    start_time, end_time, summary_text, tool_calls_json,
                    user_prompts_json, message_count, token_count, is_subagent,
-                   content_hash, source_file
+                   content_hash, source_file, last_enriched_content_hash
             FROM agentic_sessions
             WHERE id IN ({placeholders})
               AND harness IN ({harness_placeholders})
@@ -624,15 +625,48 @@ def claim_pending_claude_segments(
                     "is_subagent": row[14],
                     "content_hash": row[15],
                     "source_file": row[16],
+                    "last_enriched_content_hash": row[17],
                 }
             )
 
+        segments = _drop_already_enriched_claude_segments(conn, segments)
         segments = _skip_ineligible_claude_segments(conn, segments)
 
         # One segment = one knowledge node for maximum search granularity
         all_batches.extend([seg] for seg in segments)
 
     return all_batches
+
+
+def _drop_already_enriched_claude_segments(conn, segments: list[dict]) -> list[dict]:
+    """Drop segments whose content was already enriched (idempotency guard).
+
+    A segment is re-enqueued only when the daemon sees its ``content_hash``
+    diverge from ``last_enriched_content_hash`` — but a stale-lock reaper or a
+    settling sweep can re-pend a row whose content has NOT changed since it was
+    enriched. Enriching it again would mint a byte-identical duplicate node (the
+    historical root cause of KB duplication). When the claimed ``content_hash``
+    still equals ``last_enriched_content_hash``, the node already exists, so we
+    mark the queue row done (and the session enriched) and skip the LLM call.
+    """
+    kept = []
+    now_ms = int(time.time() * 1000)
+    for seg in segments:
+        ch = seg.get("content_hash")
+        leh = seg.get("last_enriched_content_hash")
+        if ch is not None and ch == leh:
+            conn.execute(
+                "UPDATE agentic_enrichment_queue "
+                "SET status = 'done', locked_at = NULL, locked_by = NULL, updated_at = ? "
+                "WHERE session_id = ?",
+                (now_ms, seg["id"]),
+            )
+            conn.execute("UPDATE agentic_sessions SET enriched = 1 WHERE id = ?", (seg["id"],))
+        else:
+            kept.append(seg)
+    if len(kept) != len(segments):
+        conn.commit()
+    return kept
 
 
 def _skip_ineligible_claude_segments(conn, segments: list[dict]) -> list[dict]:
@@ -680,6 +714,114 @@ def _skip_ineligible_claude_segments(conn, segments: list[dict]) -> list[dict]:
     return eligible
 
 
+def _knowledge_node_link_tables(conn) -> dict[str, str]:
+    """Discover ``knowledge_node_*`` link tables → their non-node keycol.
+
+    Auto-discovery (rather than a hardcoded list) keeps node replacement
+    correct if a future schema adds another ``knowledge_node_*`` table: every
+    link row for a replaced node must be removed or the ``NO ACTION`` FK on
+    ``knowledge_node_id`` makes the node delete fail. ESCAPE is needed so the
+    LIKE ``_`` is literal (otherwise it also matches ``knowledge_nodes``).
+    """
+    names = [
+        r[0]
+        for r in conn.execute(
+            r"SELECT name FROM sqlite_master WHERE type='table' "
+            r"AND name LIKE 'knowledge\_node\_%' ESCAPE '\'"
+        )
+    ]
+    tables: dict[str, str] = {}
+    for name in names:
+        cols = [r[1] for r in conn.execute(f"PRAGMA table_info({name})")]
+        if "knowledge_node_id" not in cols:
+            continue
+        others = [c for c in cols if c != "knowledge_node_id"]
+        if len(others) == 1:
+            tables[name] = others[0]
+    return tables
+
+
+def _vec_table_available(conn) -> bool:
+    """True if the vec0 ``knowledge_vectors`` virtual table is reachable."""
+    try:
+        conn.execute("SELECT knowledge_node_id FROM knowledge_vectors LIMIT 0")
+        return True
+    except sqlite3.OperationalError:
+        return False
+
+
+def replace_prior_agentic_nodes(conn, segment_ids: list[int]) -> int:
+    """Delete prior knowledge nodes linked SOLELY to ``segment_ids``.
+
+    The enrichment write path mints a fresh node every run with no dedup; when
+    the watcher re-enqueues a (grown or re-parsed) segment, the prior node is
+    left behind, accreting duplicates. Calling this immediately before the new
+    INSERT — inside the same transaction — makes re-enrichment *replace* the
+    segment's node set instead of appending to it.
+
+    Only nodes whose every link is within ``segment_ids`` are removed: a node
+    that also covers a segment we are NOT re-enriching is left untouched. For
+    each removed node, all ``knowledge_node_*`` link rows and its vec0 vector
+    are deleted (the FTS row auto-drops via the ``knowledge_nodes_fts_ad``
+    trigger). Requires sqlite-vec loaded on ``conn`` so the vector delete does
+    not leave an orphan; skips the vector delete (with no node delete) if the
+    vec0 table is unreachable, to avoid creating orphan vectors.
+
+    Scoped to ``node_type = 'observation'``: the agentic writers only ever mint
+    observation nodes (claude_sessions.py / opencode_sessions.py both hardcode
+    'observation'), so that is the only node type this replacement should touch.
+    Crucially, ``workflow_enrichment.py`` ALSO co-links its ``change_outcome``
+    (CI-outcome) nodes into ``knowledge_node_agentic_sessions`` for co-temporal
+    agentic sessions; without this filter, a change_outcome node co-linked to a
+    single agentic session would be judged "solely linked" and silently,
+    permanently deleted on that segment's next re-enrichment (it is never
+    re-minted by the agentic path). The filter makes replacement delete exactly
+    the agentic writers' own prior node and nothing else.
+
+    Must be called within an open transaction. Returns the number of nodes
+    replaced.
+    """
+    if not segment_ids:
+        return 0
+    placeholders = ",".join("?" * len(segment_ids))
+    prior = [
+        row[0]
+        for row in conn.execute(
+            f"""
+            SELECT DISTINCT kas.knowledge_node_id
+            FROM knowledge_node_agentic_sessions kas
+            JOIN knowledge_nodes kn ON kn.id = kas.knowledge_node_id
+            WHERE kas.agentic_session_id IN ({placeholders})
+              AND kn.node_type = 'observation'
+              AND kas.knowledge_node_id NOT IN (
+                  SELECT knowledge_node_id FROM knowledge_node_agentic_sessions
+                  WHERE agentic_session_id NOT IN ({placeholders})
+              )
+            """,
+            [*segment_ids, *segment_ids],
+        )
+    ]
+    if not prior:
+        return 0
+
+    vec_ok = _vec_table_available(conn)
+    if not vec_ok:
+        # Deleting nodes without clearing their vectors would orphan vec0 rows
+        # (vec0 has no FK cascade). Refuse rather than corrupt the vector store.
+        raise RuntimeError(
+            "replace_prior_agentic_nodes: vec0 knowledge_vectors not reachable; "
+            "node replacement aborted to avoid orphan vectors (load sqlite-vec "
+            "on this connection)"
+        )
+    link_tables = _knowledge_node_link_tables(conn)
+    for node_id in prior:
+        for table in link_tables:
+            conn.execute(f"DELETE FROM {table} WHERE knowledge_node_id = ?", (node_id,))
+        conn.execute("DELETE FROM knowledge_vectors WHERE knowledge_node_id = ?", (node_id,))
+        conn.execute("DELETE FROM knowledge_nodes WHERE id = ?", (node_id,))
+    return len(prior)
+
+
 def write_claude_knowledge_node(
     conn,
     result: EnrichmentResult,
@@ -725,6 +867,11 @@ def write_claude_knowledge_node(
 
     conn.execute("BEGIN")
     try:
+        # Idempotent re-enrichment: drop any prior node(s) for these segments
+        # before inserting the fresh one, so a re-enqueued (grown/re-parsed)
+        # segment replaces its node set instead of accumulating duplicates.
+        replace_prior_agentic_nodes(conn, segment_ids)
+
         cursor = conn.execute(
             """
             INSERT INTO knowledge_nodes (uuid, content, embed_text, node_type, outcome,

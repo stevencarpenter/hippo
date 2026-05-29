@@ -1214,6 +1214,12 @@ pub async fn handle_doctor(config: &HippoConfig, explain: bool) -> Result<()> {
     {
         fail_count += check_source_staleness(&conn, explain);
         fail_count += check_codex_state_coverage(config, &conn, explain);
+        // On-disk-vs-Hippo completeness for the file-based agentic sources.
+        if let Some(home) = dirs::home_dir() {
+            fail_count +=
+                check_claude_session_coverage(&conn, &home.join(".claude/projects"), explain);
+        }
+        fail_count += check_cursor_session_coverage(config, &conn, explain);
         fail_count += check_watchdog_heartbeat(&conn, explain);
         // Auto-resolved alarm count is informational — never increments fail_count.
         check_resolved_alarm_count(&conn);
@@ -2036,9 +2042,15 @@ fn check_codex_state_coverage(
     match codex_session::check_codex_coverage(db, &state_path, logs_arg, config.codex.min_idle_secs)
     {
         Ok(report) => {
-            let missing_count =
-                report.missing_hippo_threads.len() + report.missing_rollout_threads.len();
-            if missing_count == 0 {
+            // Only threads that are on disk but missing from Hippo are an
+            // actionable failure ([!!]) — re-running the poller can recover
+            // them. A thread whose rollout file was deleted from disk
+            // (`missing_rollout_threads`) is UNRECOVERABLE and is NOT a Hippo
+            // bug: the source-of-truth transcript is gone, so counting it as a
+            // failure would pin doctor at a permanent false `[!!]`. It is
+            // reported below as an informational `[--]` line instead.
+            let recoverable_missing = report.missing_hippo_threads.len();
+            if recoverable_missing == 0 {
                 println!(
                     "[OK] {}  {}/{} threads captured ({} in-flight, {} log-only diagnostics)",
                     padded,
@@ -2047,11 +2059,20 @@ fn check_codex_state_coverage(
                     report.in_flight_threads.len(),
                     report.log_only_thread_count
                 );
+                // Surface deleted-rollout threads as informational, never as a
+                // failure — they are unrecoverable by design.
+                if !report.missing_rollout_threads.is_empty() {
+                    println!(
+                        "[--] {:<29}  {} thread(s) unrecoverable (rollout file deleted from disk)",
+                        "Codex rollout (deleted)",
+                        report.missing_rollout_threads.len()
+                    );
+                }
                 return 0;
             }
 
             println!(
-                "[!!] {}  {}/{} threads captured; {} missing from Hippo, {} missing rollout files ({} in-flight)",
+                "[!!] {}  {}/{} threads captured; {} missing from Hippo, {} unrecoverable (rollout deleted) ({} in-flight)",
                 padded,
                 report.covered_threads,
                 report.total_state_threads,
@@ -2074,7 +2095,7 @@ fn check_codex_state_coverage(
                 }
                 if !report.missing_rollout_threads.is_empty() {
                     println!(
-                        "     MISSING ROLLOUT: {}",
+                        "     UNRECOVERABLE (rollout deleted, informational only): {}",
                         report
                             .missing_rollout_threads
                             .iter()
@@ -2086,6 +2107,8 @@ fn check_codex_state_coverage(
                 }
                 println!("     FIX:    run `hippo codex-poll`, then re-run `hippo doctor`");
             }
+            // Only the recoverable (on-disk-but-not-in-Hippo) gap fails; deleted
+            // rollouts never contribute to the exit code.
             1
         }
         Err(e) => {
@@ -2093,6 +2116,297 @@ fn check_codex_state_coverage(
             1
         }
     }
+}
+
+/// True iff `s` is a canonical lowercase 8-4-4-4-12 hex UUID. hippo-daemon
+/// carries no `regex` dependency (see `codex_session::extract_user_text`), so
+/// this matches `^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`
+/// by hand. Claude Code names every real session file `<uuid>.jsonl`; non-UUID
+/// stems (e.g. workflow journals) are not sessions and are excluded.
+fn is_uuid_v4_stem(s: &str) -> bool {
+    let groups = [8usize, 4, 4, 4, 12];
+    let parts: Vec<&str> = s.split('-').collect();
+    if parts.len() != groups.len() {
+        return false;
+    }
+    parts.iter().zip(groups.iter()).all(|(part, &len)| {
+        part.len() == len
+            && part
+                .bytes()
+                .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+    })
+}
+
+/// Cheap "does this Claude JSONL carry at least one conversational turn?" peek.
+/// A 0-turn empty stub (Claude Code sometimes writes a session file with only
+/// metadata / no user or assistant messages) is CORRECTLY absent from
+/// `agentic_sessions` because `extract_segments` produces no segment for it; we
+/// must classify those as expected-absent, not missing. Rather than run the
+/// full segment extractor on every file during doctor, we scan lines for a
+/// `"type":"user"` or `"type":"assistant"` marker — the same `type` field
+/// `claude_session::process_line` keys on. Reads at most `MAX_PEEK_BYTES` so a
+/// huge transcript doesn't stall doctor; a real session has a turn in its first
+/// line, so the cap never produces a false "empty".
+fn claude_jsonl_has_turn(path: &std::path::Path) -> bool {
+    use std::io::Read;
+    const MAX_PEEK_BYTES: usize = 256 * 1024;
+    let Ok(mut file) = std::fs::File::open(path) else {
+        return false;
+    };
+    let mut buf = vec![0u8; MAX_PEEK_BYTES];
+    let n = match file.read(&mut buf) {
+        Ok(n) => n,
+        Err(_) => return false,
+    };
+    let text = String::from_utf8_lossy(&buf[..n]);
+    text.contains("\"type\":\"user\"")
+        || text.contains("\"type\": \"user\"")
+        || text.contains("\"type\":\"assistant\"")
+        || text.contains("\"type\": \"assistant\"")
+}
+
+/// Doctor completeness check: on-disk Claude sessions vs `agentic_sessions`
+/// (harness = 'claude-code', probe_tag IS NULL). Mirrors
+/// `check_codex_state_coverage`'s shape. Enumerates
+/// `~/.claude/projects/**/*.jsonl`, EXCLUDING:
+///
+///   - paths under a `/subagents/` directory. These are either workflow
+///     journals (not sessions) OR real subagent transcripts (`agent-*.jsonl`,
+///     ingested as `agentic_sessions` rows with `is_subagent=1`). Subagent
+///     transcripts have non-UUID `agent-<hex>` stems, so the UUID filter below
+///     would drop them regardless; they ride with their parent session and are
+///     intentionally NOT coverage-checked here (a dedicated subagent-coverage
+///     check is a possible follow-up),
+///   - files whose stem is not a canonical UUID,
+///   - 0-turn empty stubs (correctly absent — `extract_segments` skips them).
+///
+/// Any remaining UUID-named (top-level) session not present in `agentic_sessions`
+/// is a real gap and fails `[!!]`.
+fn check_claude_session_coverage(
+    db: &rusqlite::Connection,
+    projects_dir: &std::path::Path,
+    explain: bool,
+) -> u32 {
+    let label = "Claude session coverage";
+    let padded = format!("{:<29}", label);
+
+    if !projects_dir.is_dir() {
+        println!("[--] {}  no Claude projects dir", padded);
+        return 0;
+    }
+
+    let known = match read_agentic_session_ids(db, "claude-code") {
+        Ok(set) => set,
+        Err(e) => {
+            println!("[!!] {}  coverage check failed: {e}", padded);
+            return 1;
+        }
+    };
+
+    let mut total_sessions = 0usize;
+    let mut empty_stubs = 0usize;
+    let mut missing: Vec<String> = Vec::new();
+
+    for entry in WalkDir::new(projects_dir)
+        .into_iter()
+        .filter_map(|e| e.ok())
+    {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
+            continue;
+        }
+        // Exclude everything under /subagents/: workflow journals (non-sessions)
+        // and subagent transcripts (ingested with is_subagent=1, non-UUID stems,
+        // covered via their parent — see the fn doc comment).
+        if path.components().any(|c| c.as_os_str() == "subagents") {
+            continue;
+        }
+        let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
+            continue;
+        };
+        if !is_uuid_v4_stem(stem) {
+            continue; // workflow journals and other non-session files
+        }
+        total_sessions += 1;
+        if known.contains(stem) {
+            continue;
+        }
+        // Not in Hippo: classify a 0-turn stub as expected-absent, not missing.
+        if !claude_jsonl_has_turn(path) {
+            empty_stubs += 1;
+            continue;
+        }
+        if missing.len() < 10 {
+            missing.push(stem.to_string());
+        } else {
+            missing.push(String::new()); // count-only past the display cap
+        }
+    }
+
+    let missing_count = missing.len();
+    if missing_count == 0 {
+        println!(
+            "[OK] {}  {} session(s) captured ({} empty stub(s) expected absent)",
+            padded,
+            total_sessions.saturating_sub(empty_stubs),
+            empty_stubs
+        );
+        return 0;
+    }
+
+    println!(
+        "[!!] {}  {} of {} session(s) missing from Hippo ({} empty stub(s) expected absent)",
+        padded, missing_count, total_sessions, empty_stubs
+    );
+    if explain {
+        let shown: Vec<&str> = missing
+            .iter()
+            .filter(|s| !s.is_empty())
+            .map(|s| s.as_str())
+            .collect();
+        if !shown.is_empty() {
+            println!("     MISSING HIPPO: {}", shown.join(", "));
+        }
+        println!(
+            "     CAUSE:  The claude-session watcher hasn't created a row for these session files"
+        );
+        println!(
+            "     FIX:    launchctl print gui/$(id -u)/com.hippo.claude-session-watcher; or `hippo ingest claude-session <path>`"
+        );
+        println!("     DOC:    docs/capture/operator-runbook.md");
+    }
+    // Cap the contribution to the exit code so a large backlog doesn't inflate
+    // it unboundedly, matching `check_claude_session_db`.
+    (missing_count.min(3)) as u32
+}
+
+/// Doctor completeness check: on-disk Cursor transcripts vs `agentic_sessions`
+/// (harness = 'cursor', probe_tag IS NULL). Enumerates
+/// `~/.cursor/projects/**/agent-transcripts/**/*.jsonl` and compares basenames
+/// (session_id is the file stem, per `cursor_session::PathIdentity::from_path`).
+/// NOTE: a parent session and its subagents are separate transcript files but
+/// each is its own `agentic_sessions` row, so disk-file count naturally exceeds
+/// or equals session-row count without being a gap — this check only flags a
+/// transcript whose stem has NO matching row at all.
+fn check_cursor_session_coverage(
+    config: &HippoConfig,
+    db: &rusqlite::Connection,
+    explain: bool,
+) -> u32 {
+    let label = "Cursor session coverage";
+    let padded = format!("{:<29}", label);
+
+    if !config.cursor.enabled {
+        println!("[--] {}  disabled", padded);
+        return 0;
+    }
+
+    let known = match read_agentic_session_ids(db, "cursor") {
+        Ok(set) => set,
+        Err(e) => {
+            println!("[!!] {}  coverage check failed: {e}", padded);
+            return 1;
+        }
+    };
+
+    // Skip files still inside the idle window — like the poller, an in-flight
+    // transcript is not yet expected to have a row.
+    let idle_cutoff = std::time::SystemTime::now()
+        .checked_sub(std::time::Duration::from_secs(config.cursor.min_idle_secs))
+        .unwrap_or(std::time::UNIX_EPOCH);
+
+    let mut any_root = false;
+    let mut total_transcripts = 0usize;
+    let mut in_flight = 0usize;
+    let mut missing: Vec<String> = Vec::new();
+
+    for root in &config.cursor.session_roots {
+        if !root.is_dir() {
+            continue;
+        }
+        any_root = true;
+        for entry in WalkDir::new(root).into_iter().filter_map(|e| e.ok()) {
+            let path = entry.path();
+            let is_jsonl = path.extension().map(|e| e == "jsonl").unwrap_or(false);
+            let under = path
+                .components()
+                .any(|c| c.as_os_str() == "agent-transcripts");
+            if !(is_jsonl && under) {
+                continue;
+            }
+            // Skip in-flight files (modified within the idle window).
+            if let Ok(meta) = entry.metadata()
+                && let Ok(modified) = meta.modified()
+                && modified > idle_cutoff
+            {
+                in_flight += 1;
+                continue;
+            }
+            let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
+                continue;
+            };
+            total_transcripts += 1;
+            if known.contains(stem) {
+                continue;
+            }
+            if missing.len() < 10 {
+                missing.push(stem.to_string());
+            } else {
+                missing.push(String::new());
+            }
+        }
+    }
+
+    if !any_root {
+        println!("[--] {}  no Cursor projects dir", padded);
+        return 0;
+    }
+
+    let missing_count = missing.len();
+    if missing_count == 0 {
+        println!(
+            "[OK] {}  {} transcript(s) captured ({} in-flight)",
+            padded, total_transcripts, in_flight
+        );
+        return 0;
+    }
+
+    println!(
+        "[!!] {}  {} of {} transcript(s) missing from Hippo ({} in-flight)",
+        padded, missing_count, total_transcripts, in_flight
+    );
+    if explain {
+        let shown: Vec<&str> = missing
+            .iter()
+            .filter(|s| !s.is_empty())
+            .map(|s| s.as_str())
+            .collect();
+        if !shown.is_empty() {
+            println!("     MISSING HIPPO: {}", shown.join(", "));
+        }
+        println!("     FIX:    run `hippo cursor-poll`, then re-run `hippo doctor`");
+        println!("     DOC:    docs/capture/operator-runbook.md");
+    }
+    (missing_count.min(3)) as u32
+}
+
+/// Read the set of `agentic_sessions.session_id` for a given harness, excluding
+/// synthetic probe rows. Shared by the Claude/Cursor coverage checks; mirrors
+/// `codex_session::read_hippo_session_ids` (which is harness-fixed to 'codex').
+fn read_agentic_session_ids(
+    db: &rusqlite::Connection,
+    harness: &str,
+) -> anyhow::Result<std::collections::HashSet<String>> {
+    let mut stmt = db.prepare(
+        "SELECT DISTINCT session_id
+         FROM agentic_sessions
+         WHERE harness = ?1
+           AND probe_tag IS NULL",
+    )?;
+    let set = stmt
+        .query_map(rusqlite::params![harness], |row| row.get::<_, String>(0))?
+        .collect::<std::result::Result<std::collections::HashSet<_>, _>>()?;
+    Ok(set)
 }
 
 fn format_suppressed_source_staleness_line(label: &str, human: &str, reason: &str) -> String {
@@ -3349,6 +3663,179 @@ mod tests {
     use tempfile::tempdir;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::{TcpListener, UnixListener};
+
+    #[test]
+    fn is_uuid_v4_stem_accepts_canonical_and_rejects_others() {
+        assert!(is_uuid_v4_stem("0a1b2c3d-4e5f-6071-8293-a4b5c6d7e8f9"));
+        assert!(is_uuid_v4_stem("ffffffff-ffff-ffff-ffff-ffffffffffff"));
+        // Uppercase hex is rejected — Claude Code writes lowercase stems.
+        assert!(!is_uuid_v4_stem("0A1B2C3D-4E5F-6071-8293-A4B5C6D7E8F9"));
+        // Non-UUID names (workflow journals etc.) are rejected.
+        assert!(!is_uuid_v4_stem("workflow-journal"));
+        assert!(!is_uuid_v4_stem("not-a-uuid"));
+        assert!(!is_uuid_v4_stem(""));
+        // Wrong group lengths / non-hex digits.
+        assert!(!is_uuid_v4_stem("0a1b2c3d-4e5f-6071-8293-a4b5c6d7e8f")); // 11 in last
+        assert!(!is_uuid_v4_stem("ghijklmn-4e5f-6071-8293-a4b5c6d7e8f9"));
+    }
+
+    #[test]
+    fn claude_jsonl_has_turn_detects_user_or_assistant_lines() {
+        let dir = tempdir().unwrap();
+        let with_turn = dir.path().join("a.jsonl");
+        std::fs::write(
+            &with_turn,
+            "{\"type\":\"summary\",\"x\":1}\n{\"type\":\"user\",\"message\":{}}\n",
+        )
+        .unwrap();
+        assert!(claude_jsonl_has_turn(&with_turn));
+
+        let with_spaced_turn = dir.path().join("b.jsonl");
+        std::fs::write(&with_spaced_turn, "{\"type\": \"assistant\"}\n").unwrap();
+        assert!(claude_jsonl_has_turn(&with_spaced_turn));
+
+        // 0-turn stub: only metadata, no user/assistant turn.
+        let empty_stub = dir.path().join("c.jsonl");
+        std::fs::write(
+            &empty_stub,
+            "{\"type\":\"summary\",\"summary\":\"x\"}\n{\"type\":\"file-history-snapshot\"}\n",
+        )
+        .unwrap();
+        assert!(
+            !claude_jsonl_has_turn(&empty_stub),
+            "a metadata-only stub must report no turn (expected-absent classification)"
+        );
+    }
+
+    /// Helper: open an in-memory-ish temp DB with the full schema for coverage tests.
+    fn coverage_test_db(dir: &std::path::Path) -> rusqlite::Connection {
+        hippo_core::storage::open_db(&dir.join("hippo.db")).unwrap()
+    }
+
+    fn insert_agentic_row(conn: &rusqlite::Connection, session_id: &str, harness: &str) {
+        conn.execute(
+            "INSERT INTO agentic_sessions
+                 (session_id, harness, segment_index, project_dir, cwd, summary_text,
+                  tool_calls_json, user_prompts_json, message_count, source_file,
+                  is_subagent, start_time, end_time, created_at)
+             VALUES (?1, ?2, 0, 'proj', '/work', 'summary', '[]', '[]', 1,
+                     '/x.jsonl', 0, 1, 2, 3)",
+            rusqlite::params![session_id, harness],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn check_claude_session_coverage_flags_missing_but_not_stubs_or_subagents() {
+        let dir = tempdir().unwrap();
+        let conn = coverage_test_db(dir.path());
+
+        let projects = dir.path().join("projects");
+        let proj_a = projects.join("proj-a");
+        std::fs::create_dir_all(&proj_a).unwrap();
+
+        // Captured session (UUID stem, has a turn, present in DB).
+        let captured = "11111111-1111-1111-1111-111111111111";
+        std::fs::write(
+            proj_a.join(format!("{captured}.jsonl")),
+            "{\"type\":\"user\",\"message\":{}}\n",
+        )
+        .unwrap();
+        insert_agentic_row(&conn, captured, "claude-code");
+
+        // Missing session (UUID stem, has a turn, NOT in DB) -> real gap.
+        let missing = "22222222-2222-2222-2222-222222222222";
+        std::fs::write(
+            proj_a.join(format!("{missing}.jsonl")),
+            "{\"type\":\"assistant\",\"message\":{}}\n",
+        )
+        .unwrap();
+
+        // 0-turn empty stub (UUID stem, no turn, NOT in DB) -> expected absent.
+        let stub = "33333333-3333-3333-3333-333333333333";
+        std::fs::write(
+            proj_a.join(format!("{stub}.jsonl")),
+            "{\"type\":\"summary\"}\n",
+        )
+        .unwrap();
+
+        // Non-UUID workflow journal -> excluded entirely.
+        std::fs::write(
+            proj_a.join("workflow-journal.jsonl"),
+            "{\"type\":\"user\"}\n",
+        )
+        .unwrap();
+
+        // Subagent journal under /subagents/ -> excluded.
+        let subagents = proj_a.join("subagents");
+        std::fs::create_dir_all(&subagents).unwrap();
+        let sub = "44444444-4444-4444-4444-444444444444";
+        std::fs::write(
+            subagents.join(format!("{sub}.jsonl")),
+            "{\"type\":\"user\"}\n",
+        )
+        .unwrap();
+
+        // Exactly one real gap (the `missing` session) -> fail count 1.
+        let fails = check_claude_session_coverage(&conn, &projects, false);
+        assert_eq!(
+            fails, 1,
+            "only the UUID-named, turn-bearing, uncaptured session is a gap"
+        );
+    }
+
+    #[test]
+    fn check_claude_session_coverage_clean_when_all_captured() {
+        let dir = tempdir().unwrap();
+        let conn = coverage_test_db(dir.path());
+        let projects = dir.path().join("projects");
+        std::fs::create_dir_all(&projects).unwrap();
+        let id = "55555555-5555-5555-5555-555555555555";
+        std::fs::write(
+            projects.join(format!("{id}.jsonl")),
+            "{\"type\":\"user\"}\n",
+        )
+        .unwrap();
+        insert_agentic_row(&conn, id, "claude-code");
+        assert_eq!(check_claude_session_coverage(&conn, &projects, false), 0);
+    }
+
+    #[test]
+    fn check_cursor_session_coverage_flags_missing_transcript() {
+        let dir = tempdir().unwrap();
+        let conn = coverage_test_db(dir.path());
+
+        let root = dir.path().join("cursor-projects");
+        let transcripts = root.join("slug/agent-transcripts/sess");
+        std::fs::create_dir_all(&transcripts).unwrap();
+
+        // Write a transcript whose mtime is old enough to be past the idle
+        // window (set mtime far in the past via filetime-free trick: the file
+        // is created now, so we instead rely on min_idle_secs = 0 in config).
+        let captured = "cap-1";
+        std::fs::write(transcripts.join(format!("{captured}.jsonl")), "{}\n").unwrap();
+        insert_agentic_row(&conn, captured, "cursor");
+
+        let missing = "miss-1";
+        std::fs::write(transcripts.join(format!("{missing}.jsonl")), "{}\n").unwrap();
+
+        let mut config = HippoConfig::default();
+        config.cursor.enabled = true;
+        config.cursor.session_roots = vec![root];
+        config.cursor.min_idle_secs = 0; // treat all files as settled (not in-flight)
+
+        let fails = check_cursor_session_coverage(&config, &conn, false);
+        assert_eq!(fails, 1, "the uncaptured transcript is a gap");
+    }
+
+    #[test]
+    fn check_cursor_session_coverage_disabled_is_skipped() {
+        let dir = tempdir().unwrap();
+        let conn = coverage_test_db(dir.path());
+        let mut config = HippoConfig::default();
+        config.cursor.enabled = false;
+        assert_eq!(check_cursor_session_coverage(&config, &conn, false), 0);
+    }
 
     #[test]
     fn test_expected_claude_session_hook_path_with_absolute_data_dir() {

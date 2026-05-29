@@ -2,15 +2,17 @@
 //!
 //! Short-lived process invoked every 60 s by launchd (`com.hippo.watchdog`).
 //! Asserts invariants I-1..I-13 and I-15 via `check_invariants` (against the
-//! `source_health` table), plus I-14 directly against the knowledge-node
-//! vector store — and writes rows to `capture_alarms` for any violations
-//! detected.  Rate-limited per invariant per sliding window (default 60 min).
+//! `source_health` table), plus two DB-query invariants run directly: I-14
+//! against the knowledge-node vector store (embedding orphan backlog) and I-16
+//! against the agentic knowledge-node shadow table (duplicate-node regression
+//! guard) — and writes rows to `capture_alarms` for any violations detected.
+//! Rate-limited per invariant per sliding window (default 60 min).
 //!
 //! Five-step flow (detailed spec in `docs/archive/capture-reliability-overhaul/04-watchdog.md`;
 //! the live architectural overview lives at `docs/capture/architecture.md`):
 //!   1. Upsert own heartbeat into `source_health WHERE source='watchdog'`
 //!   2. Read full `source_health` in one `SELECT *`
-//!   3. Assert I-1..I-13 + I-15 via check_invariants; I-14 via DB query
+//!   3. Assert I-1..I-13 + I-15 via check_invariants; I-14 + I-16 via DB query
 //!   4. Insert `capture_alarms` rows for violations (rate-limited)
 //!   5. Update `last_success_ts` on watchdog row; return `Ok(())`
 //!
@@ -156,8 +158,9 @@ pub fn run(config: &HippoConfig) -> Result<()> {
     let rows = read_source_health(&conn)?;
 
     // ── Step 3: Assert invariants via check_invariants (I-1..I-13, I-15) ───
-    // I-14 runs outside check_invariants: it needs a DB query against
-    // knowledge_vectors, not just the in-memory source_health rows.
+    // I-14 and I-16 run outside check_invariants: each needs a DB query (the
+    // knowledge_vectors shadow table and the agentic-node shadow table
+    // respectively), not just the in-memory source_health rows.
     let mut violations = check_invariants(&rows, now_ms);
     // I-14 needs a DB query, not just source_health rows — checked here.
     if let Some(v) = check_i14_embedding_orphans(
@@ -165,6 +168,15 @@ pub fn run(config: &HippoConfig) -> Result<()> {
         now_ms,
         config.reaper.orphan_stale_secs as i64 * 1000,
         config.reaper.alarm_threshold as i64,
+    )? {
+        violations.push(v);
+    }
+    // I-16 also needs a DB query (a GROUP BY over the agentic shadow table),
+    // not just source_health rows — checked here alongside I-14.
+    if let Some(v) = check_i16_duplicate_agentic_nodes(
+        &conn,
+        now_ms,
+        config.watchdog.dup_node_alarm_threshold as i64,
     )? {
         violations.push(v);
     }
@@ -427,9 +439,11 @@ fn is_pause_lockfile_active(path: &std::path::Path, now: std::time::SystemTime) 
 /// Evaluate I-1, I-2, I-4, I-8, I-11, I-12, I-13, I-15 against the
 /// in-memory `source_health` rows.
 ///
-/// I-14 (embedding orphan backlog) is NOT included — it requires a DB query
-/// against `knowledge_vectors_rowids` and is evaluated by the caller
-/// immediately after this function returns.
+/// I-14 (embedding orphan backlog) and I-16 (duplicate agentic nodes) are NOT
+/// included — each requires a DB query (against `knowledge_vectors_rowids` and
+/// `knowledge_node_agentic_sessions` respectively), not just the in-memory
+/// `source_health` rows, and both are evaluated by the caller immediately after
+/// this function returns.
 ///
 /// Returns one `InvariantViolation` per triggered invariant.
 /// Invariants that require filesystem access (I-2 proxy, I-9) or are
@@ -769,6 +783,78 @@ pub fn check_i14_embedding_orphans(
                 "orphan_count": orphan_count,
                 "threshold": threshold,
                 "stale_ms": stale_ms,
+            }),
+        }))
+    } else {
+        Ok(None)
+    }
+}
+
+/// I-16: Duplicate agentic knowledge nodes (regression guard).
+///
+/// Fires when the count of duplicate-node groups exceeds `threshold`. A
+/// "duplicate group" is a single `agentic_sessions` segment that carries 2+
+/// `knowledge_nodes` with identical `(content, embed_text, node_type)` — the
+/// signature of the un-deduped enrichment bug where re-enriching a segment
+/// minted a byte-identical new node instead of replacing the old one.
+///
+/// The grouping is deliberately scoped to ONE `agentic_session_id`: identical
+/// content across two *different* sessions is benign (e.g. two sessions that
+/// ran the same command), so a global content grouping would false-positive.
+/// Only intra-segment identical content is the bug.
+///
+/// Scoped further to `node_type = 'observation'`: that is the node type the
+/// agentic writers mint and that `replace_prior_agentic_nodes` guards. The
+/// workflow enricher ALSO co-links `change_outcome` nodes into this table and
+/// is NOT yet guarded by a replacement gate, so it still produces benign
+/// `change_outcome` duplicate groups — including them here would make I-16 flap
+/// on an unfixed-but-tracked follow-up (workflow-writer dedup). I-16 therefore
+/// asserts precisely the invariant that IS enforced. See AP-13.
+///
+/// Returns `Ok(None)` when the `knowledge_node_agentic_sessions` shadow table
+/// does not yet exist — a fresh install with no agentic enrichment must not
+/// alarm (mirrors I-14's tolerance of a missing `knowledge_vectors_rowids`).
+pub fn check_i16_duplicate_agentic_nodes(
+    conn: &Connection,
+    _now_ms: i64,
+    threshold: i64,
+) -> Result<Option<InvariantViolation>> {
+    let table_exists: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master
+                       WHERE type='table' AND name='knowledge_node_agentic_sessions')",
+        [],
+        |row| row.get(0),
+    )?;
+    if !table_exists {
+        return Ok(None);
+    }
+
+    let dup_group_count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM (
+            SELECT 1
+            FROM knowledge_node_agentic_sessions kas
+            JOIN knowledge_nodes kn ON kn.id = kas.knowledge_node_id
+            WHERE kn.node_type = 'observation'
+            GROUP BY kas.agentic_session_id, kn.content, kn.embed_text, kn.node_type
+            HAVING COUNT(*) > 1
+        )",
+        [],
+        |row| row.get(0),
+    )?;
+
+    if dup_group_count > threshold {
+        Ok(Some(InvariantViolation {
+            invariant_id: "I-16".to_string(),
+            source: "enrichment".to_string(),
+            // No per-row timestamp is cheaply available for the duplicate set;
+            // 0 signals "duration not tracked for this invariant" — the group
+            // count is the actionable signal, not its age.
+            since_ms: 0,
+            details: json!({
+                "duplicate_group_count": dup_group_count,
+                "threshold": threshold,
+                "note": "agentic segments carrying 2+ byte-identical knowledge nodes; \
+                         re-enrichment dedup regression",
             }),
         }))
     } else {

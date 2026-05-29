@@ -170,11 +170,35 @@ sqlite3 ~/.local/share/hippo/hippo.db "
 
 If lag exceeds the I-8 threshold (15 min for `probe_last_run_ts`), the watchdog will fire I-8 alarm. Climbing-but-under-threshold lag is informational only.
 
+### "I-16 fired / duplicate knowledge nodes detected"
+
+The watchdog found one or more `agentic_sessions` segments carrying multiple **observation** knowledge nodes with identical `(content, embed_text, node_type)` — the agentic enrichment path is (or was) appending duplicate nodes instead of replacing them (AP-13). The write-time replacement gate (`replace_prior_agentic_nodes`) keeps this at zero for the agentic writers; a sustained non-zero count means a writer bypassed the gate or a backlog of pre-fix duplicates remains. (I-16 is scoped to `observation`; the still-unguarded workflow `change_outcome` dups are a tracked follow-up and do not trip it.)
+
+Remediate with the one-shot dedup script. It collapses each identity group to the earliest node (`MIN(id)`), re-points every `knowledge_node_*` link onto the survivor (union), and deletes the losers' vectors + rows. **Run it with writers stopped and a fresh backup in place:**
+
+```bash
+# 1. stop writers so the BEGIN IMMEDIATE transaction can't race a live write
+mise run stop
+# 2. checkpoint the WAL into the main DB so the backup clone is complete
+sqlite3 ~/.local/share/hippo/hippo.db "PRAGMA wal_checkpoint(TRUNCATE);"
+# 3. instant APFS-clone backup
+cp -c ~/.local/share/hippo/hippo.db ~/.local/share/hippo/hippo.db.pre-dedup-$(date +%Y%m%d-%H%M%S).bak
+# 4. DRY RUN (default — reports groups/losers/predicted-after, changes nothing)
+uv run --project brain python brain/scripts/dedup-knowledge-nodes.py --db ~/.local/share/hippo/hippo.db
+# 5. APPLY (irreversible)
+uv run --project brain python brain/scripts/dedup-knowledge-nodes.py --db ~/.local/share/hippo/hippo.db --apply
+# 6. restart + verify
+mise run start && hippo doctor && hippo alarms list
+```
+
+The script is idempotent (a second `--apply` deletes 0) and verifies `PRAGMA foreign_key_check` is clean before committing. Post-run, `knowledge_nodes` count == `knowledge_vectors` count and the I-16 query returns 0.
+
 ## Recovery: manual operations
 
 | Operation | Command |
 |---|---|
 | Backfill a specific Claude JSONL | `hippo ingest claude-session <path>` |
+| Dedup duplicate knowledge nodes (I-16 / AP-13) | `brain/scripts/dedup-knowledge-nodes.py` (see I-16 recipe above; stop writers + back up first) |
 | Run a probe on demand | `hippo probe --source <name>` |
 | Force install (overwrite plists, native messaging manifest, shell-hook config) | `hippo daemon install --force` |
 | Stop everything (preserves data) | `mise run stop` |

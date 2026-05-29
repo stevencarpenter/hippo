@@ -465,6 +465,15 @@ pub struct WatchdogConfig {
     /// Title string used in macOS notifications.
     #[serde(default = "default_osascript_title")]
     pub osascript_title: String,
+    /// Number of duplicate agentic-node groups above which watchdog invariant
+    /// I-16 alarms. A "duplicate group" is a single agentic_sessions segment
+    /// carrying 2+ knowledge nodes with identical (content, embed_text,
+    /// node_type) — the byte-identical-duplicate-node regression signature.
+    /// Default 0: any duplicate group is a regression. Configurable so a
+    /// known-dirty corpus can be tolerated without flapping the alarm while it
+    /// is being reconciled.
+    #[serde(default = "default_dup_node_alarm_threshold")]
+    pub dup_node_alarm_threshold: u64,
 }
 
 fn default_watchdog_enabled() -> bool {
@@ -476,6 +485,9 @@ fn default_alarm_rate_limit_minutes() -> u64 {
 fn default_osascript_title() -> String {
     "Hippo Watchdog".to_string()
 }
+fn default_dup_node_alarm_threshold() -> u64 {
+    0
+}
 
 impl Default for WatchdogConfig {
     fn default() -> Self {
@@ -485,6 +497,7 @@ impl Default for WatchdogConfig {
             notify_macos: false,
             log_path: String::new(),
             osascript_title: default_osascript_title(),
+            dup_node_alarm_threshold: default_dup_node_alarm_threshold(),
         }
     }
 }
@@ -1207,6 +1220,22 @@ strip_params = ["secret", "nonce"]
         let cfg: ReaperConfig = toml::from_str("alarm_threshold = 10").unwrap();
         assert_eq!(cfg.alarm_threshold, 10);
         assert_eq!(cfg.interval_secs, 300); // unspecified key keeps default
+    }
+
+    #[test]
+    fn watchdog_config_dup_node_threshold_defaults_to_zero() {
+        let cfg: WatchdogConfig = toml::from_str("").unwrap();
+        assert_eq!(
+            cfg.dup_node_alarm_threshold, 0,
+            "any duplicate agentic-node group is a regression by default (I-16)"
+        );
+    }
+
+    #[test]
+    fn watchdog_config_parses_dup_node_threshold_override() {
+        let cfg: WatchdogConfig = toml::from_str("dup_node_alarm_threshold = 5").unwrap();
+        assert_eq!(cfg.dup_node_alarm_threshold, 5);
+        assert!(cfg.enabled); // unspecified key keeps default
     }
 
     #[test]

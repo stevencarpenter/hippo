@@ -3,15 +3,19 @@
 //! Polls `~/.local/share/opencode/opencode.db` for new/updated sessions.
 //! Writes session records into `agentic_sessions` and updates `source_health`
 //! so the watchdog can evaluate freshness invariants. Each upsert is
-//! transactional and enqueues a row in `agentic_enrichment_queue` for the
-//! brain to consume.
+//! transactional; it (re-)enqueues a row in `agentic_enrichment_queue` for the
+//! brain to consume only when the session's enrichable content has genuinely
+//! changed (the `decide_enqueue` content-hash gate shared with the codex/cursor
+//! pollers), so re-reading an unchanged finished session never mints a
+//! duplicate knowledge node.
 
 use anyhow::{Context, Result};
 use hippo_core::agentic::render_command;
 use hippo_core::config::HippoConfig;
 use hippo_core::redaction::RedactionEngine;
-use rusqlite::params;
+use rusqlite::{OptionalExtension, params};
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use tracing::{debug, error, info, warn};
@@ -421,6 +425,65 @@ fn build_summary_text(s: &OpencodeSession) -> String {
     lines.join("\n")
 }
 
+/// SHA256 (lowercase hex) of enrichment-relevant content. Same construction as
+/// `codex_session::compute_content_hash` / `cursor_session::compute_content_hash`:
+/// tool_calls_json | "|" | user_prompts_json | "|" | assistant_texts joined by
+/// "\n". opencode's `tool_calls` are already `name: summary` strings (the same
+/// material codex/cursor serialize via `ToolCall`), so serializing the
+/// `Vec<String>` to JSON yields a stable, content-sensitive digest. As with the
+/// other harnesses, `summary_text` is intentionally NOT part of the hash.
+fn compute_content_hash(s: &OpencodeSession) -> String {
+    let tool_calls_json =
+        serde_json::to_string(&s.context.tool_calls).unwrap_or_else(|_| "[]".into());
+    let user_prompts_json =
+        serde_json::to_string(&s.context.user_prompts).unwrap_or_else(|_| "[]".into());
+    let assistant_text = s.context.assistant_texts.join("\n");
+    let mut hasher = Sha256::new();
+    hasher.update(tool_calls_json.as_bytes());
+    hasher.update(b"|");
+    hasher.update(user_prompts_json.as_bytes());
+    hasher.update(b"|");
+    hasher.update(assistant_text.as_bytes());
+    hasher
+        .finalize()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
+
+/// Decide whether a just-upserted session should be (re-)enqueued for
+/// enrichment. Direct port of `codex_session::decide_enqueue` — opencode shares
+/// `agentic_enrichment_queue` with the other agentic sources, so it must share
+/// the same content-hash re-enrichment gate. Without it, any tick that
+/// re-upserts a session whose `time_updated` advanced (even with byte-identical
+/// enrichable content — e.g. a `step-finish`-only change, or the per-session
+/// watermark re-reading the same content) would re-pend a `done` row and the
+/// brain would mint a duplicate knowledge node.
+fn decide_enqueue(
+    was_insert: bool,
+    current_hash: &str,
+    prior_last_enriched_hash: Option<&str>,
+    prior_queue_status: Option<&str>,
+    prior_queue_updated_at_ms: Option<i64>,
+    now_ms: i64,
+) -> bool {
+    if was_insert {
+        return true; // new session — always needs first enrichment
+    }
+    if prior_queue_status == Some("processing") {
+        return false; // a worker holds it
+    }
+    if prior_last_enriched_hash == Some(current_hash) {
+        return false; // content unchanged since last successful enrichment
+    }
+    if let Some(updated_at) = prior_queue_updated_at_ms
+        && (now_ms - updated_at) < 300_000
+    {
+        return false; // 5-minute debounce
+    }
+    true
+}
+
 // --- Write helpers ---
 
 fn upsert_session(conn: &rusqlite::Connection, s: &OpencodeSession) -> Result<()> {
@@ -430,11 +493,34 @@ fn upsert_session(conn: &rusqlite::Connection, s: &OpencodeSession) -> Result<()
     let diff_text = s.summary_diffs.as_deref().unwrap_or("null").to_string();
     let commit_json = "[]".to_string();
     let summary_text = build_summary_text(s);
+    let content_hash = compute_content_hash(s);
 
     // AP-1: the agentic_sessions write, the queue enqueue, and the
     // source_health bump must land in the same transaction so the watchdog
     // sees them in lockstep.
     let tx = conn.unchecked_transaction()?;
+
+    // Read prior state BEFORE the upsert so the enqueue gate can compare the
+    // new content_hash against what the brain last enriched. One SELECT,
+    // mirroring `codex_session::upsert_segment_tx`. `last_enriched_content_hash`
+    // is written by the brain, never here.
+    #[allow(clippy::type_complexity)]
+    let prior: Option<(i64, Option<String>, Option<String>, Option<i64>)> = tx
+        .query_row(
+            "SELECT s.id, s.last_enriched_content_hash, q.status, q.updated_at
+             FROM agentic_sessions s
+             LEFT JOIN agentic_enrichment_queue q ON q.session_id = s.id
+             WHERE s.session_id = ?1
+               AND s.harness = 'opencode'
+               AND s.segment_index = 0",
+            params![&s.id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        )
+        .optional()?;
+    let was_insert = prior.is_none();
+    let prior_last_enriched_hash = prior.as_ref().and_then(|(_, h, _, _)| h.as_deref());
+    let prior_queue_status = prior.as_ref().and_then(|(_, _, s, _)| s.as_deref());
+    let prior_queue_updated_at_ms = prior.as_ref().and_then(|(_, _, _, u)| *u);
 
     // segment_index is hard-coded to 0: opencode sessions are not segmented
     // (one row per session), and the v17 UNIQUE constraint
@@ -443,8 +529,9 @@ fn upsert_session(conn: &rusqlite::Connection, s: &OpencodeSession) -> Result<()
         "INSERT INTO agentic_sessions
             (session_id, harness, segment_index, model, agent, project_dir, cwd, slug, title,
              parent_session_id, summary_text, source_file, snapshot_diffs_json,
-             commit_messages_json, message_count, token_count, start_time, end_time, created_at)
-         VALUES (?1, 'opencode', 0, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, '', ?10, ?11, ?12, ?13, ?14, ?15, ?16)
+             commit_messages_json, message_count, token_count, start_time, end_time,
+             content_hash, created_at)
+         VALUES (?1, 'opencode', 0, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, '', ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)
          ON CONFLICT(session_id, harness, segment_index) DO UPDATE SET
             model              = excluded.model,
             agent              = excluded.agent,
@@ -454,7 +541,8 @@ fn upsert_session(conn: &rusqlite::Connection, s: &OpencodeSession) -> Result<()
             commit_messages_json = excluded.commit_messages_json,
             message_count      = excluded.message_count,
             token_count        = excluded.token_count,
-            end_time           = excluded.end_time",
+            end_time           = excluded.end_time,
+            content_hash       = excluded.content_hash",
         params![
             &s.id,                            // ?1 session_id
             s.model.as_deref().unwrap_or(""), // ?2 model (NOT NULL)
@@ -471,41 +559,54 @@ fn upsert_session(conn: &rusqlite::Connection, s: &OpencodeSession) -> Result<()
             s.context.token_count,            // ?13 token_count
             s.time_created,                   // ?14 start_time
             s.time_updated,                   // ?15 end_time
-            now,                              // ?16 created_at
+            content_hash,                     // ?16 content_hash
+            now,                              // ?17 created_at
         ],
     )?;
 
-    // Look up the destination rowid (needed for the enrichment-queue FK).
-    // segment_index = 0 is explicit because the v17 UNIQUE is on the triple;
-    // although today only one opencode segment per session exists, pinning
-    // the lookup to (session_id, harness, segment_index) matches the INSERT.
-    let agentic_session_id: i64 = tx.query_row(
-        "SELECT id FROM agentic_sessions
-         WHERE session_id = ?1 AND harness = 'opencode' AND segment_index = 0",
-        params![&s.id],
-        |r| r.get(0),
-    )?;
+    // `INSERT … ON CONFLICT` keeps the rowid stable, so reuse the prior id on
+    // an update; the fresh-insert path needs a lookup because `?1` is the
+    // opencode session_id, not the agentic_sessions rowid.
+    let agentic_session_id: i64 = match prior.as_ref() {
+        Some((id, _, _, _)) => *id,
+        None => tx.query_row(
+            "SELECT id FROM agentic_sessions
+             WHERE session_id = ?1 AND harness = 'opencode' AND segment_index = 0",
+            params![&s.id],
+            |r| r.get(0),
+        )?,
+    };
 
-    // Enqueue (or re-pend) for the brain. The `WHERE status != 'processing'`
-    // guard only prevents clobbering a row the brain is mid-claim on — it does
-    // NOT make re-pending free: a re-pended `done` session is re-enriched into
-    // a *new* knowledge node. That is correct only because `read_new_sessions`
-    // returns a known session solely when the source's `time_updated` exceeds
-    // the `end_time` stored for it (i.e. real new content). If that predicate
-    // ever weakened to `>=`, an unchanged session would re-pend every tick and
-    // spawn unbounded duplicate nodes.
-    tx.execute(
-        "INSERT INTO agentic_enrichment_queue
-             (session_id, status, retry_count, error_message, enqueued_at, updated_at)
-         VALUES (?1, 'pending', 0, NULL, ?2, ?2)
-         ON CONFLICT(session_id) DO UPDATE SET
-             status        = 'pending',
-             retry_count   = 0,
-             error_message = NULL,
-             updated_at    = excluded.updated_at
-         WHERE agentic_enrichment_queue.status != 'processing'",
-        params![agentic_session_id, now],
-    )?;
+    // Re-pend for enrichment only on genuinely new content (decide_enqueue).
+    // The per-session watermark in `read_new_sessions` already filters out
+    // unchanged finished sessions, but this content-hash gate is the
+    // belt-and-suspenders guard the other agentic pollers carry: it closes the
+    // window where `time_updated` advances without the enrichable content
+    // changing (e.g. a `step-finish` token bump), which would otherwise re-pend
+    // a `done` session and mint a byte-identical duplicate knowledge node. The
+    // `WHERE … != 'processing'` clause below is a second guard so a concurrent
+    // worker's lock is never trampled.
+    if decide_enqueue(
+        was_insert,
+        &content_hash,
+        prior_last_enriched_hash,
+        prior_queue_status,
+        prior_queue_updated_at_ms,
+        now,
+    ) {
+        tx.execute(
+            "INSERT INTO agentic_enrichment_queue
+                 (session_id, status, retry_count, error_message, enqueued_at, updated_at)
+             VALUES (?1, 'pending', 0, NULL, ?2, ?2)
+             ON CONFLICT(session_id) DO UPDATE SET
+                 status        = 'pending',
+                 retry_count   = 0,
+                 error_message = NULL,
+                 updated_at    = excluded.updated_at
+             WHERE agentic_enrichment_queue.status != 'processing'",
+            params![agentic_session_id, now],
+        )?;
+    }
 
     // Bump source_health for a successful upsert. Resetting
     // `consecutive_failures` here is the key piece: it lets watchdog I-11
@@ -657,4 +758,104 @@ pub fn poll_tick(config: &HippoConfig) -> Result<usize> {
     info!(events_sent, errors_sent, "opencode tick: completed");
 
     Ok(events_sent)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample_session() -> OpencodeSession {
+        OpencodeSession {
+            id: "s1".into(),
+            slug: "proj".into(),
+            title: "Fix the bug".into(),
+            directory: "/work/proj".into(),
+            parent_id: None,
+            agent: Some("build".into()),
+            model: Some("qwen".into()),
+            time_created: 1_775_634_000_000,
+            time_updated: 1_775_634_500_000,
+            summary_additions: Some(1),
+            summary_deletions: Some(0),
+            summary_files: Some(1),
+            summary_diffs: None,
+            context: OpencodeContext {
+                user_prompts: vec!["fix the bug".into()],
+                assistant_texts: vec!["done".into()],
+                tool_calls: vec!["shell: cargo test".into()],
+                files_touched: vec!["src/main.rs".into()],
+                message_count: 3,
+                token_count: 42,
+            },
+        }
+    }
+
+    #[test]
+    fn content_hash_is_stable_and_changes_with_content() {
+        let a = compute_content_hash(&sample_session());
+        let b = compute_content_hash(&sample_session());
+        assert_eq!(a, b);
+        let mut changed = sample_session();
+        changed.context.user_prompts = vec!["different".into()];
+        assert_ne!(a, compute_content_hash(&changed));
+        assert_eq!(a.len(), 64); // SHA256 hex
+
+        // summary-only fields (title/model/diffs) must NOT change the hash —
+        // only enrichable content (prompts/tools/assistant) is hashed.
+        let mut summary_only = sample_session();
+        summary_only.title = "totally different title".into();
+        summary_only.model = Some("other-model".into());
+        summary_only.summary_additions = Some(999);
+        assert_eq!(
+            a,
+            compute_content_hash(&summary_only),
+            "non-content fields must not perturb the content hash"
+        );
+    }
+
+    #[test]
+    fn decide_enqueue_gates_on_content_change() {
+        let now = 2_000_000_000_000;
+        let stale = now - 600_000; // 10 min ago — past the 5-min debounce
+        // New session — always enqueued.
+        assert!(decide_enqueue(true, "h1", None, None, None, now));
+        // A worker holds the row — never trample it.
+        assert!(!decide_enqueue(
+            false,
+            "h1",
+            None,
+            Some("processing"),
+            Some(stale),
+            now
+        ));
+        // Content unchanged since last enrichment — skip.
+        assert!(!decide_enqueue(
+            false,
+            "h1",
+            Some("h1"),
+            Some("done"),
+            Some(stale),
+            now
+        ));
+        // Content changed — re-enqueue.
+        assert!(decide_enqueue(
+            false,
+            "h2",
+            Some("h1"),
+            Some("done"),
+            Some(stale),
+            now
+        ));
+        // Changed, but a re-pend already landed inside the debounce window — skip.
+        assert!(!decide_enqueue(
+            false,
+            "h2",
+            Some("h1"),
+            Some("done"),
+            Some(now - 1_000),
+            now
+        ));
+        // Content changed, no prior queue row at all — must enqueue.
+        assert!(decide_enqueue(false, "h2", Some("h1"), None, None, now));
+    }
 }
