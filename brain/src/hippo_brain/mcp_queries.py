@@ -188,6 +188,7 @@ def _build_knowledge_filter_clause(
                 f" OR EXISTS (SELECT 1 FROM {link_table} links "
                 f"  JOIN {session_table} s ON s.id = links.{link_column} "
                 "  WHERE links.knowledge_node_id = kn.id "
+                "    AND s.probe_tag IS NULL "
                 "    AND (s.cwd LIKE ? OR s.project_dir LIKE ?))"
             )
             params.extend([like, like])
@@ -205,23 +206,34 @@ def _build_knowledge_filter_clause(
             branch_clause += (
                 f" OR EXISTS (SELECT 1 FROM {link_table} links "
                 f"  JOIN {session_table} s ON s.id = links.{link_column} "
-                "  WHERE links.knowledge_node_id = kn.id AND s.git_branch = ?)"
+                "  WHERE links.knowledge_node_id = kn.id "
+                "    AND s.probe_tag IS NULL AND s.git_branch = ?)"
             )
             params.append(branch)
         branch_clause += ")"
         clauses.append(branch_clause)
 
     if source:
-        source_table = {
-            "shell": "knowledge_node_events",
-            "claude": link_table,
-            "browser": "knowledge_node_browser_events",
-            "workflow": "knowledge_node_workflow_runs",
-        }.get(source)
-        if source_table:
+        if source == "claude" and link_table and link_column and session_table:
+            # AP-6 defense-in-depth: join the session table and exclude probe
+            # rows so source="claude" cannot surface a probe-only knowledge node
+            # (parity with retrieval.py's `probe_tag IS NULL` agentic joins).
             clauses.append(
-                f"EXISTS (SELECT 1 FROM {source_table} link WHERE link.knowledge_node_id = kn.id)"
+                f"EXISTS (SELECT 1 FROM {link_table} link "
+                f"  JOIN {session_table} s ON s.id = link.{link_column} "
+                "  WHERE link.knowledge_node_id = kn.id AND s.probe_tag IS NULL)"
             )
+        else:
+            source_table = {
+                "shell": "knowledge_node_events",
+                "browser": "knowledge_node_browser_events",
+                "workflow": "knowledge_node_workflow_runs",
+            }.get(source)
+            if source_table:
+                clauses.append(
+                    f"EXISTS (SELECT 1 FROM {source_table} link "
+                    "WHERE link.knowledge_node_id = kn.id)"
+                )
 
     where = (" AND " + " AND ".join(clauses)) if clauses else ""
     return where, params

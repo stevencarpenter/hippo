@@ -498,6 +498,80 @@ class TestKnowledgeFilters:
         results = search_knowledge_lexical(db, "match", branch="feature/x", limit=10)
         assert {r["uuid"] for r in results} == {"u-feat"}
 
+    def test_source_claude_excludes_probe_sessions(self, db):
+        """AP-6: source='claude' must never surface a knowledge node linked only
+        to a probe agentic session."""
+        k_real = _insert_kn(db, "u-real", embed_text="match")
+        k_probe = _insert_kn(db, "u-probe", embed_text="match")
+        db.execute(
+            "INSERT INTO agentic_sessions "
+            "(id, session_id, harness, segment_index, project_dir, cwd, "
+            " summary_text, message_count, source_file, start_time, end_time, probe_tag) "
+            "VALUES (1, 'real', 'claude-code', 0, '/p', '/p', 's', 1, 'f', 0, 0, NULL)"
+        )
+        db.execute(
+            "INSERT INTO agentic_sessions "
+            "(id, session_id, harness, segment_index, project_dir, cwd, "
+            " summary_text, message_count, source_file, start_time, end_time, probe_tag) "
+            "VALUES (2, 'probe', 'claude-code', 0, '/p', '/p', 's', 1, 'f', 0, 0, 'probe:canary')"
+        )
+        db.execute("INSERT INTO knowledge_node_agentic_sessions VALUES (?, 1)", (k_real,))
+        db.execute("INSERT INTO knowledge_node_agentic_sessions VALUES (?, 2)", (k_probe,))
+        db.commit()
+
+        results = search_knowledge_lexical(db, "match", source="claude", limit=10)
+        assert {r["uuid"] for r in results} == {"u-real"}
+
+    def test_project_filter_excludes_probe_agentic_sessions(self, db):
+        """AP-6: the project session-link arm must exclude probe sessions."""
+        k_real = _insert_kn(db, "u-real", embed_text="match")
+        k_probe = _insert_kn(db, "u-probe", embed_text="match")
+        db.execute(
+            "INSERT INTO agentic_sessions "
+            "(id, session_id, harness, segment_index, project_dir, cwd, "
+            " summary_text, message_count, source_file, start_time, end_time, probe_tag) "
+            "VALUES (1, 'real', 'claude-code', 0, '/projects/hippo', '/projects/hippo', "
+            "        's', 1, 'f', 0, 0, NULL)"
+        )
+        db.execute(
+            "INSERT INTO agentic_sessions "
+            "(id, session_id, harness, segment_index, project_dir, cwd, "
+            " summary_text, message_count, source_file, start_time, end_time, probe_tag) "
+            "VALUES (2, 'probe', 'claude-code', 0, '/projects/hippo', '/projects/hippo', "
+            "        's', 1, 'f', 0, 0, 'probe:canary')"
+        )
+        db.execute("INSERT INTO knowledge_node_agentic_sessions VALUES (?, 1)", (k_real,))
+        db.execute("INSERT INTO knowledge_node_agentic_sessions VALUES (?, 2)", (k_probe,))
+        db.commit()
+
+        results = search_knowledge_lexical(db, "match", project="hippo", limit=10)
+        assert {r["uuid"] for r in results} == {"u-real"}
+
+    def test_branch_filter_excludes_probe_agentic_sessions(self, db):
+        """AP-6: the branch session-link arm must exclude probe sessions."""
+        k_real = _insert_kn(db, "u-real", embed_text="match")
+        k_probe = _insert_kn(db, "u-probe", embed_text="match")
+        db.execute(
+            "INSERT INTO agentic_sessions "
+            "(id, session_id, harness, segment_index, project_dir, cwd, git_branch, "
+            " summary_text, message_count, source_file, start_time, end_time, probe_tag) "
+            "VALUES (1, 'real', 'claude-code', 0, '/p', '/p', 'feature/x', "
+            "        's', 1, 'f', 0, 0, NULL)"
+        )
+        db.execute(
+            "INSERT INTO agentic_sessions "
+            "(id, session_id, harness, segment_index, project_dir, cwd, git_branch, "
+            " summary_text, message_count, source_file, start_time, end_time, probe_tag) "
+            "VALUES (2, 'probe', 'claude-code', 0, '/p', '/p', 'feature/x', "
+            "        's', 1, 'f', 0, 0, 'probe:canary')"
+        )
+        db.execute("INSERT INTO knowledge_node_agentic_sessions VALUES (?, 1)", (k_real,))
+        db.execute("INSERT INTO knowledge_node_agentic_sessions VALUES (?, 2)", (k_probe,))
+        db.commit()
+
+        results = search_knowledge_lexical(db, "match", branch="feature/x", limit=10)
+        assert {r["uuid"] for r in results} == {"u-real"}
+
 
 class TestSearchEventsBranch:
     def test_branch_filter_shell(self, db):
