@@ -176,7 +176,7 @@ pub fn run(config: &HippoConfig) -> Result<()> {
     if let Some(v) = check_i16_duplicate_agentic_nodes(
         &conn,
         now_ms,
-        config.watchdog.dup_node_alarm_threshold as i64,
+        i64::try_from(config.watchdog.dup_node_alarm_threshold).unwrap_or(i64::MAX),
     )? {
         violations.push(v);
     }

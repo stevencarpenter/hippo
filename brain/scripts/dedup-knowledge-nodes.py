@@ -111,18 +111,31 @@ def _link_tables(conn: sqlite3.Connection) -> dict[str, str]:
     return tables
 
 
-def _vec_table_available(conn: sqlite3.Connection) -> bool:
-    """True if the vec0 ``knowledge_vectors`` virtual table is queryable.
+def _vec_table_state(conn: sqlite3.Connection) -> str:
+    """Classify the vec0 ``knowledge_vectors`` table as one of:
 
-    Absent on the test fixture (schema.sql intentionally omits the vec0 table —
-    only the runtime brain loads sqlite-vec and creates it) and on any
-    connection without the extension loaded. We skip vector deletes when False.
+    * ``"available"`` — exists and is queryable (sqlite-vec loaded). Delete vectors.
+    * ``"absent"``     — no such table (test fixture / fresh install). Nothing to
+                         orphan, so skipping vector deletes is safe.
+    * ``"unreachable"``— the table EXISTS (recorded in sqlite_master) but querying
+                         it fails because the vec0 module is not loaded on this
+                         connection. Deleting nodes here would orphan their
+                         vectors (vec0 has no FK cascade), so the caller MUST abort
+                         rather than skip.
+
+    The distinction matters: "absent" is benign, "unreachable" is dangerous, and
+    a bare query-failure cannot tell them apart.
     """
+    exists = conn.execute(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='knowledge_vectors')"
+    ).fetchone()[0]
+    if not exists:
+        return "absent"
     try:
         conn.execute("SELECT knowledge_node_id FROM knowledge_vectors LIMIT 0")
-        return True
+        return "available"
     except sqlite3.OperationalError:
-        return False
+        return "unreachable"
 
 
 def _dedup_pairs(conn: sqlite3.Connection) -> list[tuple[int, int]]:
@@ -206,11 +219,20 @@ def run(conn: sqlite3.Connection, *, dry_run: bool = True) -> dict[str, int]:
         log.info("nothing to dedup")
         return stats
 
-    vec_ok = _vec_table_available(conn)
+    vec_state = _vec_table_state(conn)
+    if vec_state == "unreachable":
+        # The table exists but we can't delete from it — proceeding would orphan
+        # every loser's vector. Refuse rather than corrupt the vector store.
+        raise RuntimeError(
+            "knowledge_vectors exists but is not queryable (sqlite-vec not loaded "
+            "on this connection); aborting to avoid orphan vectors. Run via the "
+            "brain's vector_store.open_conn (the CLI entry point already does)."
+        )
+    vec_ok = vec_state == "available"
     if not vec_ok:
         log.warning(
-            "vec0 knowledge_vectors not reachable on this connection — skipping "
-            "vector deletes (orphan vectors would result in production!)"
+            "knowledge_vectors table absent (fresh install / test fixture) — "
+            "skipping vector deletes; no vectors exist to orphan"
         )
 
     deleted = 0

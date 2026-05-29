@@ -2123,7 +2123,7 @@ fn check_codex_state_coverage(
 /// this matches `^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`
 /// by hand. Claude Code names every real session file `<uuid>.jsonl`; non-UUID
 /// stems (e.g. workflow journals) are not sessions and are excluded.
-fn is_uuid_v4_stem(s: &str) -> bool {
+fn is_uuid_stem(s: &str) -> bool {
     let groups = [8usize, 4, 4, 4, 12];
     let parts: Vec<&str> = s.split('-').collect();
     if parts.len() != groups.len() {
@@ -2224,7 +2224,7 @@ fn check_claude_session_coverage(
         let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
             continue;
         };
-        if !is_uuid_v4_stem(stem) {
+        if !is_uuid_stem(stem) {
             continue; // workflow journals and other non-session files
         }
         total_sessions += 1;
@@ -3665,18 +3665,18 @@ mod tests {
     use tokio::net::{TcpListener, UnixListener};
 
     #[test]
-    fn is_uuid_v4_stem_accepts_canonical_and_rejects_others() {
-        assert!(is_uuid_v4_stem("0a1b2c3d-4e5f-6071-8293-a4b5c6d7e8f9"));
-        assert!(is_uuid_v4_stem("ffffffff-ffff-ffff-ffff-ffffffffffff"));
+    fn is_uuid_stem_accepts_canonical_and_rejects_others() {
+        assert!(is_uuid_stem("0a1b2c3d-4e5f-6071-8293-a4b5c6d7e8f9"));
+        assert!(is_uuid_stem("ffffffff-ffff-ffff-ffff-ffffffffffff"));
         // Uppercase hex is rejected — Claude Code writes lowercase stems.
-        assert!(!is_uuid_v4_stem("0A1B2C3D-4E5F-6071-8293-A4B5C6D7E8F9"));
+        assert!(!is_uuid_stem("0A1B2C3D-4E5F-6071-8293-A4B5C6D7E8F9"));
         // Non-UUID names (workflow journals etc.) are rejected.
-        assert!(!is_uuid_v4_stem("workflow-journal"));
-        assert!(!is_uuid_v4_stem("not-a-uuid"));
-        assert!(!is_uuid_v4_stem(""));
+        assert!(!is_uuid_stem("workflow-journal"));
+        assert!(!is_uuid_stem("not-a-uuid"));
+        assert!(!is_uuid_stem(""));
         // Wrong group lengths / non-hex digits.
-        assert!(!is_uuid_v4_stem("0a1b2c3d-4e5f-6071-8293-a4b5c6d7e8f")); // 11 in last
-        assert!(!is_uuid_v4_stem("ghijklmn-4e5f-6071-8293-a4b5c6d7e8f9"));
+        assert!(!is_uuid_stem("0a1b2c3d-4e5f-6071-8293-a4b5c6d7e8f")); // 11 in last
+        assert!(!is_uuid_stem("ghijklmn-4e5f-6071-8293-a4b5c6d7e8f9"));
     }
 
     #[test]

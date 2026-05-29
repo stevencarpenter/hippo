@@ -425,25 +425,38 @@ fn build_summary_text(s: &OpencodeSession) -> String {
     lines.join("\n")
 }
 
-/// SHA256 (lowercase hex) of enrichment-relevant content. Same construction as
-/// `codex_session::compute_content_hash` / `cursor_session::compute_content_hash`:
-/// tool_calls_json | "|" | user_prompts_json | "|" | assistant_texts joined by
-/// "\n". opencode's `tool_calls` are already `name: summary` strings (the same
-/// material codex/cursor serialize via `ToolCall`), so serializing the
-/// `Vec<String>` to JSON yields a stable, content-sensitive digest. As with the
-/// other harnesses, `summary_text` is intentionally NOT part of the hash.
+/// SHA256 (lowercase hex) of enrichment-relevant content. Like
+/// `codex_session::compute_content_hash` / `cursor_session::compute_content_hash`
+/// it covers tool_calls | user_prompts | assistant_texts — but opencode's
+/// enrichment prompt (`build_opencode_enrichment_prompt`) ALSO renders the diff
+/// stats, diff text, and files touched, so those must be in the hash too.
+/// Otherwise a file-only/diff-only change advances `time_updated` (and is stored)
+/// without changing the hash, and `decide_enqueue` would wrongly skip re-enriching
+/// it — a coverage miss. `summary_text` is intentionally NOT part of the hash.
 fn compute_content_hash(s: &OpencodeSession) -> String {
     let tool_calls_json =
         serde_json::to_string(&s.context.tool_calls).unwrap_or_else(|_| "[]".into());
     let user_prompts_json =
         serde_json::to_string(&s.context.user_prompts).unwrap_or_else(|_| "[]".into());
     let assistant_text = s.context.assistant_texts.join("\n");
+    let files_json =
+        serde_json::to_string(&s.context.files_touched).unwrap_or_else(|_| "[]".into());
     let mut hasher = Sha256::new();
     hasher.update(tool_calls_json.as_bytes());
     hasher.update(b"|");
     hasher.update(user_prompts_json.as_bytes());
     hasher.update(b"|");
     hasher.update(assistant_text.as_bytes());
+    hasher.update(b"|");
+    // diff stats + diff text + files touched: all rendered into the enrichment
+    // prompt, all can change without any prompt/tool/assistant change.
+    hasher.update(s.summary_additions.unwrap_or(0).to_le_bytes());
+    hasher.update(s.summary_deletions.unwrap_or(0).to_le_bytes());
+    hasher.update(s.summary_files.unwrap_or(0).to_le_bytes());
+    hasher.update(b"|");
+    hasher.update(s.summary_diffs.as_deref().unwrap_or("").as_bytes());
+    hasher.update(b"|");
+    hasher.update(files_json.as_bytes());
     hasher
         .finalize()
         .iter()
@@ -800,16 +813,33 @@ mod tests {
         assert_ne!(a, compute_content_hash(&changed));
         assert_eq!(a.len(), 64); // SHA256 hex
 
-        // summary-only fields (title/model/diffs) must NOT change the hash —
-        // only enrichable content (prompts/tools/assistant) is hashed.
-        let mut summary_only = sample_session();
-        summary_only.title = "totally different title".into();
-        summary_only.model = Some("other-model".into());
-        summary_only.summary_additions = Some(999);
+        // Pure metadata (title/model) must NOT change the hash.
+        let mut metadata_only = sample_session();
+        metadata_only.title = "totally different title".into();
+        metadata_only.model = Some("other-model".into());
         assert_eq!(
             a,
-            compute_content_hash(&summary_only),
-            "non-content fields must not perturb the content hash"
+            compute_content_hash(&metadata_only),
+            "metadata fields (title/model) must not perturb the content hash"
+        );
+
+        // Diff stats / diff text / files touched ARE enrichment content (they
+        // are rendered into build_opencode_enrichment_prompt), so a file-only or
+        // diff-only change MUST change the hash — otherwise decide_enqueue skips
+        // re-enriching a real content change.
+        let mut diff_changed = sample_session();
+        diff_changed.summary_additions = Some(999);
+        assert_ne!(
+            a,
+            compute_content_hash(&diff_changed),
+            "diff stats must perturb the content hash"
+        );
+        let mut files_changed = sample_session();
+        files_changed.context.files_touched = vec!["src/new_file.rs".into()];
+        assert_ne!(
+            a,
+            compute_content_hash(&files_changed),
+            "files touched must perturb the content hash"
         );
     }
 

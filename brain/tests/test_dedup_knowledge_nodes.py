@@ -14,6 +14,8 @@ import importlib.util
 import uuid
 from pathlib import Path
 
+import pytest
+
 SCRIPT_PATH = Path(__file__).parent.parent / "scripts" / "dedup-knowledge-nodes.py"
 
 
@@ -219,6 +221,25 @@ def test_existing_survivor_edge_deduped_by_union(tmp_db):
         (survivor,),
     ).fetchone()[0]
     assert edges == 1
+
+
+def test_apply_aborts_when_vectors_present_but_unreachable(tmp_db):
+    """If knowledge_vectors EXISTS but isn't queryable (vec0 not loaded), --apply
+    must abort rather than delete nodes and orphan their vectors. (The genuinely
+    absent case stays a benign skip, exercised by every other apply test.)"""
+    conn, _ = tmp_db
+    # Stand-in for a vec0 table whose module isn't loaded: it's recorded in
+    # sqlite_master but a SELECT of knowledge_node_id fails.
+    conn.execute("CREATE TABLE knowledge_vectors (other_col INTEGER)")
+    conn.commit()
+    _node(conn, '{"summary":"x"}', "e")
+    _node(conn, '{"summary":"x"}', "e")
+
+    with pytest.raises(RuntimeError, match="orphan vectors"):
+        dedup.run(conn, dry_run=False)
+
+    # Nothing deleted — the abort rolled back / never started the delete loop.
+    assert _count(conn, "knowledge_nodes") == 2
 
 
 def test_zero_link_duplicates_collapse(tmp_db):
