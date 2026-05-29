@@ -342,7 +342,7 @@ fn process_line(
     Ok(envelopes)
 }
 
-/// A parsed conversation segment to upsert into the `claude_sessions` table.
+/// A parsed conversation segment to upsert into the `agentic_sessions` table (`harness = 'claude-code'`).
 ///
 /// Mirrors the Python `SessionSegment` in
 /// `brain/src/hippo_brain/claude_sessions.py`. Populated directly from a
@@ -379,8 +379,8 @@ pub(crate) struct ToolCallSummary {
 /// `assistant_texts` joined by "\n".  Empty string for any field that is
 /// empty/missing — never panics.
 ///
-/// This hash is stored in `claude_sessions.content_hash` on every upsert and
-/// compared against `claude_sessions.last_enriched_content_hash` (set by the
+/// This hash is stored in `agentic_sessions.content_hash` on every upsert and
+/// compared against `agentic_sessions.last_enriched_content_hash` (set by the
 /// brain on enrichment completion, T-A.5) to decide whether re-enrichment is
 /// needed (T-A.4).
 pub(crate) fn compute_segment_content_hash(seg: &SessionSegment) -> String {
@@ -922,7 +922,7 @@ fn decide_enqueue(
 /// - "skipped"  = row existed and content was unchanged (upsert ran but no
 ///   change; counts for logging/metrics only).
 ///
-/// The upsert uses `ON CONFLICT (session_id, segment_index) DO UPDATE` so
+/// The upsert uses `ON CONFLICT (session_id, harness, segment_index) DO UPDATE` so
 /// every watcher reparse keeps the DB in sync with the latest file content.
 /// `last_enriched_content_hash` is NOT touched here — only the brain sets it.
 fn insert_segments(conn: &Connection, segments: &[SessionSegment]) -> Result<(usize, usize)> {

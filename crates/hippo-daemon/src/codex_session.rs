@@ -19,14 +19,14 @@ const TASK_GAP_MS: i64 = 5 * 60 * 1000;
 const MAX_SEGMENT_CHARS: usize = 12_000;
 
 /// A single tool call, summarized for enrichment. Serialized into
-/// `claude_sessions.tool_calls_json`.
+/// `agentic_sessions.tool_calls_json`.
 #[derive(Debug, Clone, Serialize)]
 pub struct ToolCall {
     pub name: String,
     pub summary: String,
 }
 
-/// A parsed Codex conversation segment, upserted into `claude_sessions`.
+/// A parsed Codex conversation segment, upserted into `agentic_sessions` with `harness = 'codex'`.
 #[derive(Debug, Clone)]
 pub struct CodexSegment {
     pub session_id: String,
@@ -258,7 +258,7 @@ pub(crate) fn extract_segments(
             let seg = current.get_or_insert_with(|| {
                 // If session_meta was missing or malformed, fall back to the
                 // file stem (e.g. "rollout-<id>"). This is unique per file and
-                // deterministic, so ON CONFLICT (session_id, segment_index)
+                // deterministic, so ON CONFLICT (session_id, harness, segment_index)
                 // never collides across two different rollout files that both
                 // lack session_meta.
                 let effective_session_id = if session_id.is_empty() {
@@ -363,7 +363,7 @@ pub(crate) fn extract_segments(
 }
 
 /// Build the Codex-framed enrichment digest stored in
-/// `claude_sessions.summary_text` and read by the brain's enrichment loop.
+/// `agentic_sessions.summary_text` and read by the brain's enrichment loop.
 pub(crate) fn build_summary_text(seg: &CodexSegment) -> String {
     // Count caps bound summary_text. The 5-min / 12k-char segmentation split
     // only fires on user-message lines, so a segment with one prompt followed
@@ -428,7 +428,7 @@ pub(crate) fn compute_content_hash(seg: &CodexSegment) -> String {
 
 /// Decide whether a just-upserted segment should be (re-)enqueued for
 /// enrichment. A direct port of `claude_session::decide_enqueue` — Codex
-/// segments share `claude_enrichment_queue` with Claude, so they must share
+/// segments share `agentic_enrichment_queue` with Claude, so they must share
 /// its re-enrichment gate, or a resumed rollout (grown file, bumped mtime)
 /// re-pends every already-enriched earlier segment on every poll.
 fn decide_enqueue(
@@ -1121,7 +1121,7 @@ mod tests {
 
     /// Regression guard: a rollout with no `session_meta` line must produce a
     /// non-empty `session_id` equal to the file stem, not the empty string.
-    /// An empty session_id would collide in ON CONFLICT (session_id, segment_index)
+    /// An empty session_id would collide in ON CONFLICT (session_id, harness, segment_index)
     /// across any two files that both lack session_meta.
     #[test]
     fn extract_segments_falls_back_to_file_stem_when_no_session_meta() {

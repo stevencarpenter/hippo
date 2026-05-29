@@ -1233,8 +1233,8 @@ pub fn open_db(path: &Path) -> Result<Connection> {
     //      AGENTIC link — which the scoped FK check below WOULD reject. The check
     //      is scoped to the agentic targets, so pre-existing orphans in the frozen
     //      legacy tables cannot abort this migration.
-    //   #3 queue: claude_enrichment_queue -> agentic_enrichment_queue, ONLY
-    //      un-terminal rows (pending/processing/failed) AND only when the
+    //   #3 queue: claude_enrichment_queue -> agentic_enrichment_queue. Copies
+    //      pending/processing/failed rows (excludes done/skipped) AND only when the
     //      resolved agentic row is NOT already enriched (a.enriched = 0). Without
     //      the enriched guard, a stale-pending legacy queue row pointing at a
     //      live, already-enriched agentic session would re-enrich and (no node

@@ -144,6 +144,11 @@ def db():
             claude_session_id INTEGER NOT NULL,
             PRIMARY KEY (knowledge_node_id, claude_session_id)
         );
+        CREATE TABLE knowledge_node_agentic_sessions (
+            knowledge_node_id INTEGER NOT NULL,
+            agentic_session_id INTEGER NOT NULL,
+            PRIMARY KEY (knowledge_node_id, agentic_session_id)
+        );
         CREATE TABLE knowledge_node_browser_events (
             knowledge_node_id INTEGER NOT NULL,
             browser_event_id INTEGER NOT NULL,

@@ -20,14 +20,14 @@ use walkdir::WalkDir;
 const MAX_SEGMENT_CHARS: usize = 12_000;
 
 /// A single tool call, summarized for enrichment. Serialized into
-/// `claude_sessions.tool_calls_json`.
+/// `agentic_sessions.tool_calls_json` (harness = 'cursor').
 #[derive(Debug, Clone, Serialize)]
 pub struct ToolCall {
     pub name: String,
     pub summary: String,
 }
 
-/// A parsed Cursor conversation segment, upserted into `claude_sessions`.
+/// A parsed Cursor conversation segment, upserted into `agentic_sessions` (harness = 'cursor').
 #[derive(Debug, Clone)]
 pub struct CursorSegment {
     pub session_id: String,
@@ -425,7 +425,7 @@ pub(crate) fn extract_segments(
 }
 
 /// Build the Cursor-framed enrichment digest stored in
-/// `claude_sessions.summary_text`.
+/// `agentic_sessions.summary_text` (harness = 'cursor').
 pub(crate) fn build_summary_text(seg: &CursorSegment) -> String {
     const MAX_PROMPTS: usize = 30;
     const MAX_TOOLS: usize = 60;
@@ -492,7 +492,7 @@ pub(crate) fn compute_content_hash(seg: &CursorSegment) -> String {
 
 /// Decide whether a just-upserted segment should be (re-)enqueued for
 /// enrichment. Direct port of `codex_session::decide_enqueue` — Cursor shares
-/// `claude_enrichment_queue`, so it must share the re-enrichment gate or a
+/// `agentic_enrichment_queue`, so it must share the re-enrichment gate or a
 /// re-parsed (mtime-bumped) file re-pends every already-enriched segment.
 fn decide_enqueue(
     was_insert: bool,
@@ -521,7 +521,7 @@ fn decide_enqueue(
 
 /// Upsert one segment into `agentic_sessions` and (re-)enqueue it, inside a
 /// caller-supplied transaction. Idempotent via `ON CONFLICT (session_id,
-/// segment_index)`. Unlike Codex, Cursor passes real `is_subagent` /
+/// harness, segment_index)`. Unlike Codex, Cursor passes real `is_subagent` /
 /// `parent_session_id` values.
 pub fn upsert_segment_tx(tx: &rusqlite::Transaction, seg: &CursorSegment) -> Result<()> {
     let now_ms = chrono::Utc::now().timestamp_millis();

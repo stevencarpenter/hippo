@@ -456,6 +456,21 @@ def insert_segment(conn, segment: SessionSegment) -> int | None:
     """Insert a session segment and queue it for enrichment. Returns segment id or None if duplicate."""
     from hippo_brain.redaction import redact_segment_secrets
 
+    if (
+        conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'agentic_sessions'"
+        ).fetchone()
+        is None
+    ):
+        version = conn.execute("PRAGMA user_version").fetchone()[0]
+        raise RuntimeError(
+            f"agentic_sessions table is missing (schema user_version={version}, "
+            "expected >= 18). The Rust migration ladder owns this schema; the brain "
+            "will not create it. Start the hippo daemon (e.g. `mise run start` or "
+            "`hippo daemon install`) so migrations bring the DB to v18, then re-run "
+            "this ingestion."
+        )
+
     redact_segment_secrets(segment)
 
     summary_text = build_claude_enrichment_prompt([segment])
