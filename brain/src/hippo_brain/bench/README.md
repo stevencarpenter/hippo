@@ -415,11 +415,18 @@ calling out:
 4. **Entity-sanity heuristics encode taste.** Hand-review a sample before trusting.
 5. **`reference_enrichment` is always null** (spec promised baseline capture; not
    implemented — needs hippo `knowledge_nodes` join logic).
-6. **`downstream_proxy` is gated on `embedding_fn`** being constructed. The CLI
-   flow currently doesn't construct one, so `downstream_proxy` is `{}` for
-   CLI-driven runs. Tracked in [issue #133](https://github.com/stevencarpenter/hippo/issues/133).
-7. **`eval-qa-v1.jsonl` golden_event_ids are unlabeled.** BT-29 cannot produce
-   real MRR / Hit@1 signal until labeling lands. Also tracked in #133.
+6. **Retrieval metrics require scoreable Q/A labels.** The Q/A fixture's
+   `golden_event_id`s are corpus-grounded and bound to a specific
+   `corpus_content_hash` (see `qa_template.provenance.json`). Run
+   `hippo-bench qa validate --min-scoreable 100` before publishing any
+   `downstream_proxy` MRR / Hit@1 number — if the corpus is rebuilt from a
+   different DB, the goldens stop resolving and must be re-annotated.
+7. **Trust still requires BT-29.** A single run now produces real metrics, but
+   model-ranking claims require the three-run determinism procedure in
+   [`docs/capture/bench-runbook.md`](../../../../docs/capture/bench-runbook.md).
+   N=100 corpus-grounded items distinguishes a broken model from a working one;
+   fine-grained ranking of similar models wants a larger fixture (tracked in
+   [issue #133](https://github.com/stevencarpenter/hippo/issues/133)).
 
 Use the `tier0_verdict.skipped_gates` field to surface "didn't measure this" vs.
 "failed this" in any leaderboard you publish.

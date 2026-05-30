@@ -4,6 +4,30 @@ This runbook covers the operator-driven gates that the autonomous bench loop
 deliberately doesn't run because the blast radius is too high. The current
 critical entry is **BT-29: deterministic-rerun verification.**
 
+## Required pre-BT-29 corpus/Q/A gate
+
+Before running the three BT-29 model passes, confirm the corpus is schema-current
+and the Q/A fixture is fully scoreable against it. A mislabeled or stale golden
+shifts MRR by 1/N — larger than the BT-29 budget — so this gate protects the
+trust claim at its root.
+
+```bash
+uv run --project brain hippo-bench corpus verify --corpus-version corpus-v2
+uv run --project brain hippo-bench qa validate \
+  --qa-path ~/.local/share/hippo-bench/fixtures/eval-qa-v1.jsonl \
+  --corpus-sqlite ~/.local/share/hippo-bench/fixtures/corpus-v2.sqlite \
+  --min-scoreable 100
+```
+
+Both commands must exit 0. The Q/A `golden_event_id`s are corpus-grounded and
+bound to a specific `corpus_content_hash` (recorded in
+`brain/src/hippo_brain/bench/qa_template.provenance.json`). **If you rebuild the
+corpus from a different live DB, the sampled events change and the goldens stop
+resolving** — `qa validate` will report the shortfall. Re-annotate against the
+new corpus (corpus-derived authoring, Mode B in
+[`docs/baselines/QA-ANNOTATION.md`](../baselines/QA-ANNOTATION.md)) before
+trusting any retrieval metric.
+
 ## BT-29: deterministic-rerun verification
 
 ### Why this exists
@@ -19,15 +43,16 @@ Until BT-29 fires green at least once, the trust foundation is unverified.
 
 ### Why the autonomous loop doesn't run it
 
-Each run pauses prod brain for ~30 min and consumes LM Studio exclusively.
-Three consecutive runs is ~90 min of blocked prod observability. That's
-unsafe to trigger from a multi-iteration ralph loop where a hung model can
-extend the pause indefinitely.
+Each run pauses prod brain for ~30 min and consumes the local inference server
+(oMLX) exclusively. Three consecutive runs is ~90 min of blocked prod
+observability. That's unsafe to trigger from a multi-iteration ralph loop where
+a hung model can extend the pause indefinitely.
 
 ### Procedure
 
 **Prerequisites:**
-- LM Studio is running and idle (no other consumers).
+- The local inference server (oMLX, default `http://localhost:8000/v1`) is
+  running and idle (no other consumers). Pass `--base-url` if it differs.
 - Prod brain is running and healthy (`hippo doctor` is green).
 - The frozen corpus snapshot is present at the path you'll pass to `--corpus-version`.
 - You have ~90 min where prod observability gaps are acceptable.
@@ -40,11 +65,11 @@ output path; that's what we use here so all three runs land in known
 locations the harness can compare.
 
 ```bash
-# Pick a model from your LM Studio loadout. Use the SAME model + temperature
-# across all three runs; BT-29 measures bench-verdict reproducibility at the
-# settings you actually deploy with, not at temperature=0 (which would make
-# self-consistency a vacuous signal).
-MODEL="qwen3.6-35b-a3b-ud-mlx"
+# Pick a model your inference server (oMLX) can serve. Use the SAME model +
+# temperature across all three runs; BT-29 measures bench-verdict
+# reproducibility at the settings you actually deploy with, not at
+# temperature=0 (which would make self-consistency a vacuous signal).
+MODEL="Qwen3.6-35B-A3B-UD-MLX-4bit"
 
 for i in 1 2 3; do
   uv run --project brain hippo-bench run \
@@ -83,9 +108,10 @@ for the bench to rank it reliably** — the verdict is dominated by run-to-run
 noise rather than actual ranking signal.
 
 Possible causes (ordered by likelihood):
-1. **LM Studio model quantization mismatch** — if the model unloaded and
-   reloaded between runs you may have hit a different quantization. Confirm
-   the model card stayed identical (`lms ls --json` before each run).
+1. **Model quantization mismatch** — if the inference server unloaded and
+   reloaded the model between runs you may have hit a different quantization.
+   Confirm the served model card stayed identical before each run (e.g.
+   `curl -s http://localhost:8000/v1/models`).
 2. **Corpus drift** — if `corpus.sqlite` was rebuilt mid-experiment, the
    inputs differ. Check `sha256sum` of the corpus file across runs.
 3. **Real model nondeterminism above the budget** — sampling at default
