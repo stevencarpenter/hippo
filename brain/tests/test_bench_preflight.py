@@ -28,6 +28,24 @@ def test_check_inference_reachable_fail_on_connection_refused():
     assert r.status == "fail"
 
 
+def test_check_inference_reachable_normalizes_bare_base_url():
+    # Regression: run_all_preflight passes the bare base URL (`.../v1`), which is
+    # only a namespace prefix. Spec-correct servers (oMLX) 404 on it; the check
+    # must probe `/v1/models` regardless of which form the caller passes.
+    fake_resp = MagicMock(status_code=200)
+    with patch("httpx.get", return_value=fake_resp) as mock_get:
+        r = check_inference_reachable("http://localhost:8000/v1")
+    assert r.status == "pass"
+    assert mock_get.call_args.args[0] == "http://localhost:8000/v1/models"
+
+
+def test_check_inference_reachable_does_not_double_append_models():
+    fake_resp = MagicMock(status_code=200)
+    with patch("httpx.get", return_value=fake_resp) as mock_get:
+        check_inference_reachable("http://localhost:8000/v1/models")
+    assert mock_get.call_args.args[0] == "http://localhost:8000/v1/models"
+
+
 def test_check_disk_space_pass(tmp_path):
     fake = MagicMock(free=10 * 1024**3)
     with patch("shutil.disk_usage", return_value=fake):

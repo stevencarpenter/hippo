@@ -34,13 +34,18 @@ class CheckResult:
 
 
 def check_inference_reachable(url: str) -> CheckResult:
+    # Probe the canonical OpenAI-compatible liveness route. The bare base URL
+    # (`.../v1`) is only a namespace prefix, not a route: LM Studio leniently
+    # returned 200 for it, but spec-correct servers (oMLX) return 404. Normalize
+    # to `/v1/models` so the check works regardless of which the caller passes.
+    probe_url = url if url.rstrip("/").endswith("/models") else f"{url.rstrip('/')}/models"
     try:
-        resp = httpx.get(url, timeout=5.0)
+        resp = httpx.get(probe_url, timeout=5.0)
     except httpx.HTTPError as e:
         return CheckResult(
             name="inference_reachable",
             status="fail",
-            detail=f"HTTP error contacting {url}: {e}",
+            detail=f"HTTP error contacting {probe_url}: {e}",
         )
     if resp.status_code >= 400:
         return CheckResult(
