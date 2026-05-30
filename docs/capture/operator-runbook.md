@@ -172,7 +172,7 @@ If lag exceeds the I-8 threshold (15 min for `probe_last_run_ts`), the watchdog 
 
 ### "I-16 fired / duplicate knowledge nodes detected"
 
-The watchdog found one or more `agentic_sessions` segments carrying multiple **observation** knowledge nodes with identical `(content, embed_text, node_type)` — the agentic enrichment path is (or was) appending duplicate nodes instead of replacing them (AP-13). The write-time replacement gate (`replace_prior_agentic_nodes`) keeps this at zero for the agentic writers; a sustained non-zero count means a writer bypassed the gate or a backlog of pre-fix duplicates remains. (I-16 is scoped to `observation`; the still-unguarded workflow `change_outcome` dups are a tracked follow-up and do not trip it.)
+The watchdog found one or more `agentic_sessions` segments carrying multiple knowledge nodes with identical `(content, embed_text, node_type)` — an enricher is (or was) minting duplicate nodes instead of replacing/reusing them (AP-13). The write-time guards (`replace_prior_agentic_nodes` for agentic; `find_identical_node` for workflow/browser) keep this at zero; a sustained non-zero count means a writer bypassed its guard or a backlog of pre-fix duplicates remains.
 
 Remediate with the one-shot dedup script. It collapses each identity group to the earliest node (`MIN(id)`), re-points every `knowledge_node_*` link onto the survivor (union), and deletes the losers' vectors + rows. **Run it with writers stopped and a fresh backup in place:**
 

@@ -803,13 +803,12 @@ pub fn check_i14_embedding_orphans(
 /// ran the same command), so a global content grouping would false-positive.
 /// Only intra-segment identical content is the bug.
 ///
-/// Scoped further to `node_type = 'observation'`: that is the node type the
-/// agentic writers mint and that `replace_prior_agentic_nodes` guards. The
-/// workflow enricher ALSO co-links `change_outcome` nodes into this table and
-/// is NOT yet guarded by a replacement gate, so it still produces benign
-/// `change_outcome` duplicate groups — including them here would make I-16 flap
-/// on an unfixed-but-tracked follow-up (workflow-writer dedup). I-16 therefore
-/// asserts precisely the invariant that IS enforced. See AP-13.
+/// Covers ALL node types: the agentic writers (observation) are guarded by
+/// `replace_prior_agentic_nodes`, and the workflow (change_outcome) + browser
+/// enrichers are guarded by write-time content dedup (`find_identical_node`), so
+/// no writer should produce an intra-segment duplicate of any type. (Earlier
+/// this was scoped to `observation` while the workflow writer was unguarded; that
+/// carve-out is no longer needed.) See AP-13.
 ///
 /// Returns `Ok(None)` when the `knowledge_node_agentic_sessions` shadow table
 /// does not yet exist — a fresh install with no agentic enrichment must not
@@ -834,7 +833,6 @@ pub fn check_i16_duplicate_agentic_nodes(
             SELECT 1
             FROM knowledge_node_agentic_sessions kas
             JOIN knowledge_nodes kn ON kn.id = kas.knowledge_node_id
-            WHERE kn.node_type = 'observation'
             GROUP BY kas.agentic_session_id, kn.content, kn.embed_text, kn.node_type
             HAVING COUNT(*) > 1
         )",

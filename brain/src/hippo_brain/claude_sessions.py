@@ -714,6 +714,27 @@ def _skip_ineligible_claude_segments(conn, segments: list[dict]) -> list[dict]:
     return eligible
 
 
+def find_identical_node(conn, content: str, embed_text: str, node_type: str) -> int | None:
+    """Return the id of an existing node with identical ``(content, embed_text,
+    node_type)``, or ``None``.
+
+    Used by source writers (workflow, browser) whose duplication is *cross-source*
+    — distinct runs/visits that produce byte-identical enrichment. Instead of
+    minting a fresh node (and a fresh vector + FTS row), the caller links the new
+    source key onto the existing node. The identity triple matches the dedup
+    script and I-16, so re-enrichment converges instead of accreting copies. The
+    deterministic-UUID per-run/per-segment skip handles the *same*-source case;
+    this handles the *different*-source-same-content case.
+    """
+    row = conn.execute(
+        "SELECT id FROM knowledge_nodes "
+        "WHERE node_type = ? AND content = ? AND embed_text = ? "
+        "ORDER BY id LIMIT 1",
+        (node_type, content, embed_text),
+    ).fetchone()
+    return row[0] if row else None
+
+
 def _knowledge_node_link_tables(conn) -> dict[str, str]:
     """Discover ``knowledge_node_*`` link tables → their non-node keycol.
 

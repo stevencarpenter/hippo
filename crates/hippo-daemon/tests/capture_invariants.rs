@@ -174,11 +174,11 @@ fn i16_duplicate_agentic_nodes_alarms_over_threshold() {
 }
 
 #[test]
-fn i16_ignores_change_outcome_duplicates() {
-    // change_outcome nodes are minted by the (still-unguarded) workflow enricher
-    // and co-linked into knowledge_node_agentic_sessions. I-16 is deliberately
-    // scoped to 'observation' so it does not flap on the tracked workflow-dedup
-    // follow-up (AP-13). A duplicate change_outcome group must NOT alarm.
+fn i16_covers_change_outcome_duplicates() {
+    // Now that the workflow enricher is guarded by write-time content dedup,
+    // I-16 covers ALL node types (no longer scoped to 'observation'). A duplicate
+    // change_outcome group within one segment indicates the workflow guard
+    // regressed and MUST alarm. See AP-13.
     use hippo_daemon::watchdog::check_i16_duplicate_agentic_nodes;
     let conn = rusqlite::Connection::open_in_memory().unwrap();
     create_i16_schema(&conn);
@@ -189,8 +189,8 @@ fn i16_ignores_change_outcome_duplicates() {
     assert!(
         check_i16_duplicate_agentic_nodes(&conn, 10_000_000, 0)
             .unwrap()
-            .is_none(),
-        "duplicate change_outcome groups are out of I-16 scope and must not alarm"
+            .is_some(),
+        "duplicate change_outcome groups must alarm now that workflow is guarded"
     );
 }
 

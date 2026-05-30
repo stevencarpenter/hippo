@@ -157,29 +157,32 @@ ON CONFLICT(session_id, segment_index) DO UPDATE SET
 
 **Where seen:** every agentic/workflow/browser writer until 2026-05-29. The claude-session watcher re-enqueued growing segments and enrichment appended a fresh node each time; one `13cc2867` segment accreted **14 byte-identical** nodes over 121 minutes, and ~2,486 redundant nodes (≈18% of the corpus) accumulated in total. Root cause: no upsert/replacement keyed on the source segment, and (for opencode) no daemon-side content-hash re-enqueue gate at all.
 
-**Scope of the 2026-05-29 fix.** The defenses below close the class for the **agentic** writers (claude-code / codex / cursor / opencode — `node_type='observation'`). The **workflow** enricher (`workflow_enrichment.py`, `node_type='change_outcome'`) and the **browser** enricher share the same append-only pattern and are **not yet guarded** — tracked as a follow-up. The workflow writer also co-links its `change_outcome` nodes into `knowledge_node_agentic_sessions`; `replace_prior_agentic_nodes` is therefore deliberately scoped to `node_type='observation'` so it never deletes a co-linked CI-outcome node, and I-16 is likewise scoped to `'observation'` so it does not flap on the still-unguarded workflow dups. The one-shot dedup script (below) is global and *does* collapse existing workflow/browser dups; they will slowly re-accrue until the workflow/browser writers get their own replacement gate.
+**Scope of the fix.** All node-minting enrichers are now guarded, by one of two mechanisms suited to their duplication shape:
+
+- **Agentic writers** (claude-code / codex / cursor / opencode — `node_type='observation'`): *re-enrichment* of the same source segment is the hazard, so they use **write-time replacement** (`replace_prior_agentic_nodes`) which deletes the prior node for the re-enriched segment. It is scoped to `node_type='observation'` so it never touches a co-linked workflow `change_outcome` node.
+- **Workflow** (`change_outcome`) and **browser** (`observation`) enrichers: their duplication is *cross-source* — distinct runs/visits producing byte-identical enrichment (e.g. ten CI runs all "Created a GitHub release for v0.20.4"). The workflow writer is already idempotent per `run_id` (deterministic `uuid5`), so a replacement gate wouldn't help; instead they use **write-time content dedup** (`find_identical_node`): if an identical `(content, embed_text, node_type)` node exists, link the new source key onto it and skip the insert (return `None` so the caller skips embedding).
+
+Because every writer is now guarded, **I-16 covers all node types** (no longer scoped to `'observation'`).
 
 **Why it's wrong.** "ON CONFLICT makes re-ingest idempotent" is true for the *session* row but NOT for enrichment: the enrichment pipeline mints a brand-new UUID `knowledge_nodes` row per run. Re-enqueuing a finished segment is therefore not idempotent at the pipeline level — it multiplies nodes (and vectors, and FTS rows).
 
-**Detection.** [I-16](architecture.md) watches the agentic (`observation`) class continuously. Ad-hoc (scoped to match I-16):
+**Detection.** [I-16](architecture.md) watches all node types continuously. Ad-hoc (matches I-16):
 
 ```sql
 SELECT COUNT(*) FROM (
   SELECT 1 FROM knowledge_node_agentic_sessions kas
   JOIN knowledge_nodes kn ON kn.id = kas.knowledge_node_id
-  WHERE kn.node_type = 'observation'
   GROUP BY kas.agentic_session_id, kn.content, kn.embed_text, kn.node_type
   HAVING COUNT(*) > 1);
 ```
 
-Healthy: `0`. (Drop the `node_type` filter to also surface the unguarded workflow `change_outcome` dups.)
+Healthy: `0`.
 
-**Use instead.** Three layered defenses for the agentic writers (all landed 2026-05-29):
-1. **Daemon re-enqueue gate** — only re-enqueue a segment when its `content_hash` diverges from `last_enriched_content_hash` (`decide_enqueue`, mirrored across all four agentic pollers).
-2. **Write-time replacement** — `replace_prior_agentic_nodes(conn, segment_ids)` deletes prior `observation` nodes linked *solely* to the segment set (all `knowledge_node_*` link rows + the vec0 vector, in the same transaction) *before* the new INSERT. Scoped to `'observation'` so a co-linked workflow `change_outcome` node is never collateral.
-3. **Skip-unchanged claim guard** — drop a claimed segment whose `content_hash` already equals `last_enriched_content_hash` before the LLM call.
-
-The workflow/browser writers should get an equivalent replacement gate (keyed on their own source identity — `run_id` / `browser_event_id`) as a follow-up.
+**Use instead.** Defenses by writer class:
+1. **Daemon re-enqueue gate** (agentic) — only re-enqueue a segment when its `content_hash` diverges from `last_enriched_content_hash` (`decide_enqueue`, mirrored across all four agentic pollers).
+2. **Write-time replacement** (agentic) — `replace_prior_agentic_nodes(conn, segment_ids)` deletes prior `observation` nodes linked *solely* to the segment set (all `knowledge_node_*` link rows + the vec0 vector, in the same transaction) *before* the new INSERT. Scoped to `'observation'` so a co-linked workflow `change_outcome` node is never collateral.
+3. **Skip-unchanged claim guard** (agentic) — drop a claimed segment whose `content_hash` already equals `last_enriched_content_hash` before the LLM call.
+4. **Write-time content dedup** (workflow, browser) — `find_identical_node(conn, content, embed_text, node_type)` links a new run/visit onto an existing identical node instead of minting a copy.
 
 **Rule of thumb.** A node delete must also delete the vec0 `knowledge_vectors` row in the same transaction — vec0 has no FK cascade, so a node-only delete silently orphans the vector into similarity search (the FTS row auto-drops via the `knowledge_nodes_fts_ad` trigger, but the vector does not).
 
