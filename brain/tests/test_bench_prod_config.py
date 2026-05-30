@@ -20,6 +20,10 @@ import pytest
 
 from hippo_brain.bench.prod_config import (
     DEFAULT_BRAIN_PORT,
+    DEFAULT_EMBEDDING_MODEL,
+    DEFAULT_INFERENCE_BASE_URL,
+    default_embedding_model,
+    default_inference_base_url,
     default_prod_brain_url,
     resolve_prod_brain_port,
 )
@@ -145,3 +149,99 @@ def test_empty_xdg_config_home_treated_as_unset(tmp_path: Path, monkeypatch: pyt
     monkeypatch.setenv("XDG_CONFIG_HOME", "")  # empty, must be ignored
     monkeypatch.setenv("HOME", str(home))
     assert resolve_prod_brain_port() == 4444
+
+
+# ---------------------------------------------------------------------------
+# default_inference_base_url
+# ---------------------------------------------------------------------------
+
+
+def test_inference_base_url_reads_from_config(tmp_path: Path, capsys: pytest.CaptureFixture):
+    cfg = tmp_path / "config.toml"
+    cfg.write_text('[inference]\nbase_url = "http://localhost:9999/v1"\n')
+    assert default_inference_base_url(cfg) == "http://localhost:9999/v1"
+    assert capsys.readouterr().err == ""
+
+
+def test_inference_base_url_default_when_file_missing(
+    tmp_path: Path, capsys: pytest.CaptureFixture
+):
+    missing = tmp_path / "no-such-config.toml"
+    assert default_inference_base_url(missing) == DEFAULT_INFERENCE_BASE_URL
+    # Missing config is the normal install state — must NOT warn.
+    assert capsys.readouterr().err == ""
+
+
+def test_inference_base_url_default_when_section_missing(
+    tmp_path: Path, capsys: pytest.CaptureFixture
+):
+    cfg = tmp_path / "config.toml"
+    cfg.write_text("[storage]\ndata_dir = '/tmp'\n")
+    assert default_inference_base_url(cfg) == DEFAULT_INFERENCE_BASE_URL
+    # Missing [inference] section is benign — must NOT warn.
+    assert capsys.readouterr().err == ""
+
+
+def test_inference_base_url_warns_on_malformed_toml(tmp_path: Path, capsys: pytest.CaptureFixture):
+    cfg = tmp_path / "config.toml"
+    cfg.write_text("this is not :: valid = toml\n[][\n")
+    assert default_inference_base_url(cfg) == DEFAULT_INFERENCE_BASE_URL
+    err = capsys.readouterr().err
+    assert "malformed TOML" in err
+    assert str(cfg) in err
+
+
+def test_inference_base_url_warns_on_wrong_type(tmp_path: Path, capsys: pytest.CaptureFixture):
+    cfg = tmp_path / "config.toml"
+    cfg.write_text("[inference]\nbase_url = 123\n")
+    assert default_inference_base_url(cfg) == DEFAULT_INFERENCE_BASE_URL
+    err = capsys.readouterr().err
+    assert "not a string" in err
+    assert str(cfg) in err
+
+
+# ---------------------------------------------------------------------------
+# default_embedding_model
+# ---------------------------------------------------------------------------
+
+
+def test_embedding_model_reads_from_config(tmp_path: Path, capsys: pytest.CaptureFixture):
+    cfg = tmp_path / "config.toml"
+    cfg.write_text('[models]\nembedding = "my-custom-model"\n')
+    assert default_embedding_model(cfg) == "my-custom-model"
+    assert capsys.readouterr().err == ""
+
+
+def test_embedding_model_default_when_file_missing(tmp_path: Path, capsys: pytest.CaptureFixture):
+    missing = tmp_path / "no-such-config.toml"
+    assert default_embedding_model(missing) == DEFAULT_EMBEDDING_MODEL
+    # Missing config is the normal install state — must NOT warn.
+    assert capsys.readouterr().err == ""
+
+
+def test_embedding_model_default_when_section_missing(
+    tmp_path: Path, capsys: pytest.CaptureFixture
+):
+    cfg = tmp_path / "config.toml"
+    cfg.write_text("[storage]\ndata_dir = '/tmp'\n")
+    assert default_embedding_model(cfg) == DEFAULT_EMBEDDING_MODEL
+    # Missing [models] section is benign — must NOT warn.
+    assert capsys.readouterr().err == ""
+
+
+def test_embedding_model_warns_on_malformed_toml(tmp_path: Path, capsys: pytest.CaptureFixture):
+    cfg = tmp_path / "config.toml"
+    cfg.write_text("this is not :: valid = toml\n[][\n")
+    assert default_embedding_model(cfg) == DEFAULT_EMBEDDING_MODEL
+    err = capsys.readouterr().err
+    assert "malformed TOML" in err
+    assert str(cfg) in err
+
+
+def test_embedding_model_warns_on_wrong_type(tmp_path: Path, capsys: pytest.CaptureFixture):
+    cfg = tmp_path / "config.toml"
+    cfg.write_text("[models]\nembedding = 42\n")
+    assert default_embedding_model(cfg) == DEFAULT_EMBEDDING_MODEL
+    err = capsys.readouterr().err
+    assert "not a string" in err
+    assert str(cfg) in err

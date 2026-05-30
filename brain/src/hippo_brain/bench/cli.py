@@ -33,7 +33,11 @@ from hippo_brain.bench.paths import (
     corpus_overlay_path,
     corpus_sqlite_path,
 )
-from hippo_brain.bench.prod_config import default_prod_brain_url
+from hippo_brain.bench.prod_config import (
+    default_embedding_model,
+    default_inference_base_url,
+    default_prod_brain_url,
+)
 from hippo_brain.bench.qa import export_label_worklist, validate_qa_fixture
 
 _OVERLAY_CAP = 50
@@ -293,7 +297,13 @@ def _build_parser() -> argparse.ArgumentParser:
         default="corpus-v2",
         help="Corpus snapshot identifier (string label only).",
     )
-    run.add_argument("--base-url", default="http://localhost:1234/v1")
+    run.add_argument(
+        "--base-url",
+        default=default_inference_base_url(),
+        help="Inference server base URL. Defaults to [inference].base_url from "
+        "$XDG_CONFIG_HOME/hippo/config.toml (or $HOME/.config/hippo/config.toml "
+        "if XDG_CONFIG_HOME is unset), falling back to http://localhost:8000/v1.",
+    )
     run.add_argument(
         "--brain-url",
         default=default_prod_brain_url(),
@@ -301,7 +311,13 @@ def _build_parser() -> argparse.ArgumentParser:
         "read from $XDG_CONFIG_HOME/hippo/config.toml (or $HOME/.config/hippo/config.toml "
         "if XDG_CONFIG_HOME is unset), falling back to port 9175.",
     )
-    run.add_argument("--embedding-model", default="text-embedding-nomic-embed-text-v2-moe")
+    run.add_argument(
+        "--embedding-model",
+        default=default_embedding_model(),
+        help="Embedding model identifier. Defaults to [models].embedding from "
+        "$XDG_CONFIG_HOME/hippo/config.toml (or $HOME/.config/hippo/config.toml "
+        "if XDG_CONFIG_HOME is unset), falling back to nomicai-modernbert-embed-base-8bit.",
+    )
     run.add_argument(
         "--skip-checks",
         action="store_true",
