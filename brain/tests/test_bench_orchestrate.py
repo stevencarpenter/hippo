@@ -154,3 +154,64 @@ def test_orchestrate_no_models_emits_run_end_with_reason(stub_corpus, tmp_path):
     records = [json.loads(line) for line in out.read_text().splitlines() if line]
     assert records[-1]["reason"] == "no_models"
     assert result.models_completed == []
+
+
+def test_orchestrate_passes_real_embedding_fn_to_model_runner(stub_corpus, tmp_path, monkeypatch):
+    sqlite, manifest = stub_corpus
+    out = tmp_path / "run.jsonl"
+    captured = {}
+
+    clean_result = ModelRunResult(
+        model="m1",
+        attempts=[],
+        per_event_vectors=[],
+        peak_metrics={},
+        wall_clock_sec=1,
+        cooldown_timeout=False,
+        process_ready_ms=10,
+        queue_drain_wall_clock_sec=0,
+        downstream_proxy={},
+        prod_brain_restarted_during_bench=False,
+        timeout_during_drain=False,
+        errors=[],
+    )
+
+    def fake_call_embedding(*, base_url, model, text, timeout_sec):
+        captured["embedding_call"] = {
+            "base_url": base_url,
+            "model": model,
+            "text": text,
+            "timeout_sec": timeout_sec,
+        }
+        return [0.1, 0.2, 0.3]
+
+    def fake_run_one_model(**kwargs):
+        captured["embedding_fn"] = kwargs["embedding_fn"]
+        return clean_result
+
+    monkeypatch.setattr("hippo_brain.bench.orchestrate.call_embedding", fake_call_embedding)
+
+    with (
+        patch("hippo_brain.bench.orchestrate.run_one_model", side_effect=fake_run_one_model),
+        patch("hippo_brain.bench.orchestrate.PauseRpcClient") as PauseClient,
+    ):
+        PauseClient.return_value.probe_health.return_value = None
+        orchestrate_run(
+            candidate_models=["m1"],
+            corpus_sqlite=sqlite,
+            manifest_path=manifest,
+            out_path=out,
+            inference_url="http://localhost:1234/v1",
+            embedding_model="embed-test",
+            skip_checks=True,
+            skip_prod_pause=True,
+            dry_run=False,
+        )
+
+    assert captured["embedding_fn"]("question text") == [0.1, 0.2, 0.3]
+    assert captured["embedding_call"] == {
+        "base_url": "http://localhost:1234/v1",
+        "model": "embed-test",
+        "text": "question text",
+        "timeout_sec": 120,
+    }

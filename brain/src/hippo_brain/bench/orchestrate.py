@@ -16,6 +16,7 @@ import psutil
 
 from hippo_brain.bench import __version__
 from hippo_brain.bench.coordinator import run_one_model
+from hippo_brain.bench.enrich_call import call_embedding
 from hippo_brain.bench.output import (
     ModelSummaryRecord,
     RunEndRecord,
@@ -250,15 +251,26 @@ def orchestrate_run(
         errored: list[str] = []
         models_with_prod_restart_event: list[str] = []
 
+        normalized_inference_url = (
+            inference_url if inference_url.endswith("/v1") else f"{inference_url.rstrip('/')}/v1"
+        )
+
+        def embedding_fn(text: str) -> list[float]:
+            return call_embedding(
+                base_url=normalized_inference_url,
+                model=embedding_model,
+                text=text,
+                timeout_sec=120,
+            )
+
         for model in candidate_models:
             try:
                 result = run_one_model(
                     model=model,
                     run_id=run_id,
                     corpus_sqlite=corpus_sqlite,
-                    inference_url=inference_url
-                    if inference_url.endswith("/v1")
-                    else f"{inference_url.rstrip('/')}/v1",
+                    inference_url=normalized_inference_url,
+                    embedding_fn=embedding_fn,
                     embedding_model=embedding_model,
                     drain_timeout_sec=drain_timeout_sec,
                     prod_brain_url=brain_url,
