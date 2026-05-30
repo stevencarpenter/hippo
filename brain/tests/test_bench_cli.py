@@ -260,3 +260,63 @@ def test_cli_summary_renders_run_file(tmp_path, capsys):
     out = capsys.readouterr().out
     assert "m" in out
     assert "pass" in out.lower()
+
+
+def test_cli_qa_validate_prints_report(monkeypatch, tmp_path, capsys):
+    from hippo_brain.bench import cli
+
+    qa = tmp_path / "qa.jsonl"
+    corpus = tmp_path / "corpus.sqlite"
+    qa.write_text("")
+    corpus.write_bytes(b"")
+
+    class Report:
+        passes = True
+        detail = "scoreable Q/A items: 3/3 (minimum 1)"
+
+        def to_dict(self):
+            return {"scoreable": 3, "total": 3, "passes": True}
+
+    monkeypatch.setattr(cli, "validate_qa_fixture", lambda *_a, **_k: Report())
+
+    code = cli.main(
+        [
+            "qa",
+            "validate",
+            "--qa-path",
+            str(qa),
+            "--corpus-sqlite",
+            str(corpus),
+            "--min-scoreable",
+            "1",
+        ]
+    )
+
+    assert code == 0
+    assert "scoreable Q/A items" in capsys.readouterr().out
+
+
+def test_cli_qa_export_worklist(monkeypatch, tmp_path):
+    from hippo_brain.bench import cli
+
+    qa = tmp_path / "qa.jsonl"
+    corpus = tmp_path / "corpus.sqlite"
+    out = tmp_path / "worklist.jsonl"
+    qa.write_text("")
+    corpus.write_bytes(b"")
+    monkeypatch.setattr(cli, "export_label_worklist", lambda *_a: 7)
+
+    code = cli.main(
+        [
+            "qa",
+            "export-worklist",
+            "--qa-path",
+            str(qa),
+            "--corpus-sqlite",
+            str(corpus),
+            "--out",
+            str(out),
+        ]
+    )
+
+    assert code == 0

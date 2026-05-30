@@ -16,7 +16,8 @@ from typing import Literal
 import httpx
 
 from hippo_brain.bench.corpus import verify_corpus
-from hippo_brain.bench.paths import hippo_bench_root
+from hippo_brain.bench.paths import bench_qa_path, hippo_bench_root
+from hippo_brain.bench.qa import validate_qa_fixture
 from hippo_brain.schema_version import EXPECTED_SCHEMA_VERSION
 
 Status = Literal["pass", "warn", "fail"]
@@ -216,6 +217,28 @@ def check_brain_port_free(port: int = 18923) -> CheckResult:
     return CheckResult(name="brain_port_free", status="pass", detail=f"port {port} free")
 
 
+def check_qa_scoreable(corpus_sqlite: Path, min_scoreable: int = 1) -> CheckResult:
+    qa_path = bench_qa_path()
+    if not qa_path.exists():
+        return CheckResult(
+            name="qa_scoreable",
+            status="fail",
+            detail=f"Q/A fixture missing: {qa_path}",
+        )
+    if not corpus_sqlite.exists():
+        return CheckResult(
+            name="qa_scoreable",
+            status="warn",
+            detail=f"corpus missing ({corpus_sqlite}); skipping QA scoreable check",
+        )
+    report = validate_qa_fixture(qa_path, corpus_sqlite, min_scoreable=min_scoreable)
+    return CheckResult(
+        name="qa_scoreable",
+        status="pass" if report.passes else "fail",
+        detail=report.detail,
+    )
+
+
 def run_all_preflight(
     brain_url: str,
     corpus_sqlite: Path,
@@ -223,6 +246,7 @@ def run_all_preflight(
     inference_url: str,
     skip_prod_pause: bool,
     brain_port: int = 18923,
+    min_scoreable_qa: int = 1,
 ) -> tuple[list[CheckResult], bool]:
     """Run all preflight checks. Returns (checks, aborted).
 
@@ -239,14 +263,24 @@ def run_all_preflight(
     inference_check = check_inference_reachable(inference_url)
     bench_disk = check_disk_free_bench(hippo_bench_root())
     port_check = check_brain_port_free(brain_port)
+    qa_check = check_qa_scoreable(corpus_sqlite, min_scoreable=min_scoreable_qa)
 
-    checks = [reachable, pauseable, corpus_check, inference_check, bench_disk, port_check]
+    checks = [
+        reachable,
+        pauseable,
+        corpus_check,
+        inference_check,
+        bench_disk,
+        port_check,
+        qa_check,
+    ]
 
     aborted = (
         corpus_check.status == "fail"
         or inference_check.status == "fail"
         or bench_disk.status == "fail"
         or port_check.status == "fail"
+        or qa_check.status == "fail"
         or (reachable.status == "pass" and pauseable.status == "fail" and not skip_prod_pause)
     )
 

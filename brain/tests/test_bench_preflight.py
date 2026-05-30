@@ -74,3 +74,65 @@ def test_run_all_preflight_aborts_on_corpus_missing(tmp_path):
     assert aborted is True
     corpus_check = next(c for c in checks if c.name == "corpus_present")
     assert corpus_check.status == "fail"
+
+
+def test_run_all_preflight_fails_when_qa_has_no_scoreable_items(tmp_path, monkeypatch):
+    from hippo_brain.bench import preflight
+
+    corpus = tmp_path / "corpus.sqlite"
+    manifest = tmp_path / "corpus.manifest.json"
+    qa = tmp_path / "eval-qa-v1.jsonl"
+    corpus.write_bytes(b"")
+    manifest.write_text("{}")
+    qa.write_text('{"qa_id":"q1","question":"x","golden_event_id":null}\n')
+
+    monkeypatch.setattr(
+        preflight,
+        "check_prod_brain_reachable",
+        lambda _u: preflight.CheckResult("prod_brain_reachable", "warn", "off"),
+    )
+    monkeypatch.setattr(
+        preflight,
+        "check_prod_brain_pauseable",
+        lambda _u, skip: preflight.CheckResult("prod_brain_pauseable", "warn", "off"),
+    )
+    monkeypatch.setattr(
+        preflight,
+        "check_corpus_present",
+        lambda _c, _m: preflight.CheckResult("corpus_present", "pass", "schema_version=18"),
+    )
+    monkeypatch.setattr(
+        preflight,
+        "check_inference_reachable",
+        lambda _u: preflight.CheckResult("inference_reachable", "pass", "HTTP 200"),
+    )
+    monkeypatch.setattr(
+        preflight,
+        "check_disk_free_bench",
+        lambda _p: preflight.CheckResult("disk_free_bench", "pass", "ok"),
+    )
+    monkeypatch.setattr(
+        preflight,
+        "check_brain_port_free",
+        lambda _p: preflight.CheckResult("brain_port_free", "pass", "ok"),
+    )
+    monkeypatch.setattr(preflight, "bench_qa_path", lambda: qa)
+    monkeypatch.setattr(
+        preflight,
+        "validate_qa_fixture",
+        lambda *_a, **_k: type(
+            "R", (), {"passes": False, "detail": "need at least 1 scoreable Q/A items"}
+        )(),
+    )
+
+    checks, aborted = preflight.run_all_preflight(
+        brain_url="http://127.0.0.1:9175",
+        corpus_sqlite=corpus,
+        manifest=manifest,
+        inference_url="http://localhost:1234/v1",
+        skip_prod_pause=True,
+        min_scoreable_qa=1,
+    )
+
+    assert aborted is True
+    assert any(c.name == "qa_scoreable" and c.status == "fail" for c in checks)

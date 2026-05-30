@@ -26,6 +26,7 @@ from pathlib import Path
 from hippo_brain.bench.corpus import init_corpus, verify_corpus
 from hippo_brain.bench.orchestrate import orchestrate_run
 from hippo_brain.bench.paths import (
+    bench_qa_path,
     bench_runs_dir,
     corpus_jsonl_path,
     corpus_manifest_path,
@@ -33,6 +34,7 @@ from hippo_brain.bench.paths import (
     corpus_sqlite_path,
 )
 from hippo_brain.bench.prod_config import default_prod_brain_url
+from hippo_brain.bench.qa import export_label_worklist, validate_qa_fixture
 
 _OVERLAY_CAP = 50
 
@@ -255,6 +257,28 @@ def _cmd_determinism(args: argparse.Namespace) -> int:
     return 0 if report.passes() else 1
 
 
+def _cmd_qa_validate(args: argparse.Namespace) -> int:
+    report = validate_qa_fixture(
+        Path(args.qa_path),
+        Path(args.corpus_sqlite),
+        min_scoreable=args.min_scoreable,
+    )
+    print(report.detail)
+    if args.json:
+        print(json.dumps(report.to_dict(), sort_keys=True))
+    return 0 if report.passes else 1
+
+
+def _cmd_qa_export_worklist(args: argparse.Namespace) -> int:
+    count = export_label_worklist(
+        Path(args.qa_path),
+        Path(args.corpus_sqlite),
+        Path(args.out),
+    )
+    print(f"wrote {count} unscoreable Q/A items to {args.out}")
+    return 0
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="hippo-bench",
@@ -392,6 +416,22 @@ def _build_parser() -> argparse.ArgumentParser:
         "if XDG_CONFIG_HOME is unset).",
     )
     recover.set_defaults(func=_cmd_recover)
+
+    qa = sub.add_parser("qa", help="Validate and label the bench Q/A fixture")
+    qa_sub = qa.add_subparsers(dest="qa_command", required=True)
+
+    qv = qa_sub.add_parser("validate", help="Validate Q/A golden_event_id coverage")
+    qv.add_argument("--qa-path", default=str(bench_qa_path()))
+    qv.add_argument("--corpus-sqlite", default=str(corpus_sqlite_path("corpus-v2")))
+    qv.add_argument("--min-scoreable", type=int, default=1)
+    qv.add_argument("--json", action="store_true")
+    qv.set_defaults(func=_cmd_qa_validate)
+
+    qw = qa_sub.add_parser("export-worklist", help="Export unlabeled Q/A items for annotation")
+    qw.add_argument("--qa-path", default=str(bench_qa_path()))
+    qw.add_argument("--corpus-sqlite", default=str(corpus_sqlite_path("corpus-v2")))
+    qw.add_argument("--out", required=True)
+    qw.set_defaults(func=_cmd_qa_export_worklist)
 
     return parser
 
