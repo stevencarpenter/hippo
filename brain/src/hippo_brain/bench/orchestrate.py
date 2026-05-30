@@ -15,6 +15,7 @@ from typing import TypeVar, cast
 import psutil
 
 from hippo_brain.bench import __version__
+from hippo_brain.bench.config import DEFAULT_THRESHOLDS
 from hippo_brain.bench.coordinator import run_one_model
 from hippo_brain.bench.enrich_call import call_embedding
 from hippo_brain.bench.output import (
@@ -29,6 +30,11 @@ from hippo_brain.bench.paths import (
 )
 from hippo_brain.bench.pause_rpc import PauseRpcClient
 from hippo_brain.bench.preflight import run_all_preflight
+from hippo_brain.bench.summary import (
+    aggregate_model_summary,
+    compute_verdict,
+    self_consistency_gate_values,
+)
 from hippo_brain.schema_version import EXPECTED_SCHEMA_VERSION
 
 _T = TypeVar("_T")
@@ -218,6 +224,7 @@ def orchestrate_run(
             corpus_content_hash=corpus_content_hash,
             corpus_schema_version=corpus_schema_version,
             embedding_model=embedding_model,
+            gate_thresholds=dict(DEFAULT_THRESHOLDS),
             host_baseline=host_baseline,
             prod_state_at_start=prod_state_at_start,
             inference_backend_version=_lms_version(),
@@ -302,23 +309,38 @@ def orchestrate_run(
             if result.prod_brain_restarted_during_bench:
                 models_with_prod_restart_event.append(model)
 
+            sc_mean, sc_min = self_consistency_gate_values(result.per_event_vectors)
+            gates = aggregate_model_summary(
+                result.attempts,
+                self_consistency_mean=sc_mean,
+                self_consistency_min=sc_min,
+            )
+            verdict = compute_verdict(gates, DEFAULT_THRESHOLDS)
+            if result.errors:
+                verdict["passed"] = False
+                verdict["failed_gates"].append("model_errors")
+                verdict["notes"].append("model lifecycle recorded structured errors")
+            if result.timeout_during_drain:
+                verdict["passed"] = False
+                verdict["failed_gates"].append("queue_drain_timeout")
+                verdict["notes"].append("queue did not drain before timeout")
+            if result.prod_brain_restarted_during_bench:
+                verdict["passed"] = False
+                verdict["failed_gates"].append("prod_brain_restart")
+                verdict["notes"].append("prod brain restarted during bench window")
+
             writer.write_model_summary(
                 ModelSummaryRecord(
                     run_id=run_id,
                     model={"id": model},
                     events_attempted=len(result.attempts),
                     attempts_total=len(result.attempts),
-                    gates={},
+                    gates=gates,
                     system_peak={
                         **result.peak_metrics,
                         "wall_clock_sec": result.wall_clock_sec,
                     },
-                    tier0_verdict={
-                        "passed": True,
-                        "failed_gates": [],
-                        "skipped_gates": [],
-                        "notes": [],
-                    },
+                    tier0_verdict=verdict,
                     cooldown_timeout=result.cooldown_timeout,
                     process_ready_ms=result.process_ready_ms,
                     queue_drain_wall_clock_sec=result.queue_drain_wall_clock_sec,

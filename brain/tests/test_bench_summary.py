@@ -1,5 +1,9 @@
 from hippo_brain.bench.output import AttemptRecord
-from hippo_brain.bench.summary import aggregate_model_summary, compute_verdict
+from hippo_brain.bench.summary import (
+    aggregate_model_summary,
+    compute_verdict,
+    self_consistency_gate_values,
+)
 
 
 def _attempt(
@@ -195,3 +199,20 @@ def test_verdict_none_gate_is_skipped_not_failed():
     assert v["passed"] is True
     assert v["failed_gates"] == []
     assert "self_consistency_mean" in v["skipped_gates"]
+
+
+def test_self_consistency_gate_values_skip_when_no_pairwise_scores():
+    mean, minimum = self_consistency_gate_values([])
+    assert mean is None
+    assert minimum is None
+
+
+def test_self_consistency_gate_values_return_real_scores():
+    mean, minimum = self_consistency_gate_values(
+        [
+            [[1.0, 0.0], [1.0, 0.0]],
+            [[1.0, 0.0], [0.0, 1.0]],
+        ]
+    )
+    assert mean == 0.5
+    assert minimum == 0.0

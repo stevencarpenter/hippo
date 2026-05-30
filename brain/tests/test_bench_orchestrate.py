@@ -13,6 +13,7 @@ import pytest
 
 from hippo_brain.bench.coordinator import ModelRunResult
 from hippo_brain.bench.orchestrate import orchestrate_run
+from hippo_brain.bench.output import AttemptRecord
 
 
 @pytest.fixture
@@ -215,3 +216,60 @@ def test_orchestrate_passes_real_embedding_fn_to_model_runner(stub_corpus, tmp_p
         "text": "question text",
         "timeout_sec": 120,
     }
+
+
+def test_orchestrate_writes_computed_gates_instead_of_hardcoded_pass(stub_corpus, tmp_path):
+    sqlite, manifest = stub_corpus
+    out = tmp_path / "run.jsonl"
+    bad_attempt = AttemptRecord(
+        run_id="run-x",
+        model={"id": "m1"},
+        event={"event_id": "shell-1", "source": "shell", "content_hash": "h"},
+        attempt_idx=0,
+        purpose="main",
+        timestamps={"total_ms": 100},
+        raw_output="not json",
+        parsed_output=None,
+        gates={
+            "schema_valid": False,
+            "refusal_detected": False,
+            "echo_similarity": 0.1,
+            "entity_type_sanity": {},
+        },
+        system_snapshot={},
+    )
+    fake_result = ModelRunResult(
+        model="m1",
+        attempts=[bad_attempt],
+        per_event_vectors=[],
+        peak_metrics={},
+        wall_clock_sec=1,
+        cooldown_timeout=False,
+        process_ready_ms=10,
+        queue_drain_wall_clock_sec=0,
+        downstream_proxy={"modes": {"hybrid": {"mrr": 0.4, "hit_at_1": 0.5}}},
+        prod_brain_restarted_during_bench=False,
+        timeout_during_drain=False,
+        errors=[],
+    )
+
+    with (
+        patch("hippo_brain.bench.orchestrate.run_one_model", return_value=fake_result),
+        patch("hippo_brain.bench.orchestrate.PauseRpcClient") as PauseClient,
+    ):
+        PauseClient.return_value.probe_health.return_value = None
+        orchestrate_run(
+            candidate_models=["m1"],
+            corpus_sqlite=sqlite,
+            manifest_path=manifest,
+            out_path=out,
+            skip_checks=True,
+            skip_prod_pause=True,
+            dry_run=False,
+        )
+
+    records = [json.loads(line) for line in out.read_text().splitlines() if line]
+    summary = next(r for r in records if r["record_type"] == "model_summary")
+    assert summary["gates"]["schema_validity_rate"] == 0.0
+    assert summary["tier0_verdict"]["passed"] is False
+    assert "schema_validity_rate" in summary["tier0_verdict"]["failed_gates"]
