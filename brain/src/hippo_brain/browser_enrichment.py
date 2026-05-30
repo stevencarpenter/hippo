@@ -4,6 +4,7 @@ import json
 import time
 import uuid
 
+from hippo_brain.claude_sessions import find_identical_node
 from hippo_brain.enrichment import (
     CURRENT_ENRICHMENT_VERSION,
     SHELL_ENTITY_TYPE_MAP,
@@ -306,8 +307,11 @@ def format_browser_context_for_shell_prompt(browser_events: list[dict]) -> str:
 
 def write_browser_knowledge_node(
     conn, result: EnrichmentResult, event_ids: list[int], model_name: str
-) -> int:
+) -> int | None:
     """Insert knowledge node, link to browser events, upsert entities, mark queue done.
+
+    Returns the new node id, or ``None`` when an identical node already exists and
+    these events were linked onto it instead (content dedup; caller skips embed).
 
     All inserts run inside an explicit transaction so a mid-write failure
     leaves no partial state in the database.
@@ -330,6 +334,29 @@ def write_browser_knowledge_node(
 
     conn.execute("BEGIN")
     try:
+        # Content dedup: the browser writer has no per-source idempotency, so a
+        # re-enriched event window would mint an identical node. If one already
+        # exists, link these events onto it, mark the queue/events done, and skip
+        # the insert/embed (return None so the caller skips embedding). See AP-13.
+        existing_id = find_identical_node(conn, content, result.embed_text, "observation")
+        if existing_id is not None:
+            placeholders = ",".join("?" * len(event_ids))
+            conn.executemany(
+                "INSERT OR IGNORE INTO knowledge_node_browser_events (knowledge_node_id, browser_event_id) VALUES (?, ?)",
+                [(existing_id, eid) for eid in event_ids],
+            )
+            conn.execute(
+                f"UPDATE browser_events SET enriched = 1 WHERE id IN ({placeholders})",
+                event_ids,
+            )
+            conn.execute(
+                f"UPDATE browser_enrichment_queue SET status = 'done', updated_at = ? "
+                f"WHERE browser_event_id IN ({placeholders})",
+                [now_ms, *event_ids],
+            )
+            conn.commit()
+            return None
+
         cursor = conn.execute(
             """
             INSERT INTO knowledge_nodes (uuid, content, embed_text, node_type, outcome,

@@ -1475,13 +1475,19 @@ class BrainServer:
                         conn.close()
                     _add(_nodes_created, source="browser")
                     self._record_success()
-                    logger.info(
-                        "enriched %d browser events -> node %d",
-                        len(event_ids),
-                        node_id,
-                    )
+                    if node_id is None:
+                        logger.info(
+                            "browser events (%d) linked to existing node via content dedup",
+                            len(event_ids),
+                        )
+                    else:
+                        logger.info(
+                            "enriched %d browser events -> node %d",
+                            len(event_ids),
+                            node_id,
+                        )
 
-                    if self.embedding_model:
+                    if node_id is not None and self.embedding_model:
                         node_dict = {
                             "id": node_id,
                             "session_id": 0,
