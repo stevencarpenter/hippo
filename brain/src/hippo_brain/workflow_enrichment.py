@@ -16,6 +16,7 @@ import time
 import uuid
 from pathlib import Path
 
+from hippo_brain.claude_sessions import find_identical_node
 from hippo_brain.client import InferenceClient
 from hippo_brain.enrichment import CURRENT_ENRICHMENT_VERSION, parse_enrichment_response
 from hippo_brain.lessons import ClusterKey, upsert_cluster
@@ -148,6 +149,37 @@ async def enrich_one_async(
                 "design_decisions": result.design_decisions,
             }
         )
+
+        # Content dedup: distinct runs routinely produce byte-identical outcomes
+        # (e.g. many "Created a GitHub release for vX.Y.Z" runs). Rather than mint
+        # an identical change_outcome node per run, link this run + its correlated
+        # events onto the existing node and skip the insert/embed (return None so
+        # the caller skips embedding — the existing node is already embedded). The
+        # workflow writer is already idempotent per run via uuid5, so this handles
+        # the *cross-run* identical-content case. See AP-13.
+        existing_id = find_identical_node(conn, content, result.embed_text, "change_outcome")
+        if existing_id is not None:
+            conn.execute(
+                "INSERT OR IGNORE INTO knowledge_node_workflow_runs (knowledge_node_id, run_id) VALUES (?, ?)",
+                (existing_id, run_id),
+            )
+            for s in shell_rows:
+                conn.execute(
+                    "INSERT OR IGNORE INTO knowledge_node_events (knowledge_node_id, event_id) VALUES (?, ?)",
+                    (existing_id, s["id"]),
+                )
+            for c in claude_rows:
+                conn.execute(
+                    "INSERT OR IGNORE INTO knowledge_node_agentic_sessions (knowledge_node_id, agentic_session_id) VALUES (?, ?)",
+                    (existing_id, c["id"]),
+                )
+            conn.execute("UPDATE workflow_runs SET enriched = 1 WHERE id = ?", (run_id,))
+            conn.execute(
+                "UPDATE workflow_enrichment_queue SET status='done', updated_at=? WHERE run_id=?",
+                (now, run_id),
+            )
+            conn.commit()
+            return None
 
         node_uuid = str(uuid.uuid4())
         # Write knowledge node, mirroring the claude path's columns. The `outcome`

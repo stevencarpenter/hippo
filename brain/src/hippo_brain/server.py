@@ -3,6 +3,8 @@ import datetime as _dt
 import logging
 import sqlite3
 import time
+
+import sqlite_vec  # type: ignore[import-untyped]
 from contextlib import asynccontextmanager, nullcontext, suppress
 from pathlib import Path
 
@@ -277,6 +279,20 @@ class BrainServer:
 
     def _get_conn(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.db_path)
+        # Load sqlite-vec so the enrichment write path can delete a replaced
+        # node's vector in the SAME transaction as the node row (see
+        # replace_prior_agentic_nodes). Loading the extension only registers the
+        # vec0 module; it does not create tables and is a no-op for read paths.
+        # Close the just-opened connection if the load fails so a packaging
+        # regression doesn't leak fds AND re-fault the error handlers that call
+        # _get_conn() again to mark the queue row failed.
+        try:
+            conn.enable_load_extension(True)
+            sqlite_vec.load(conn)
+            conn.enable_load_extension(False)
+        except Exception:
+            conn.close()
+            raise
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA foreign_keys=ON")
         conn.execute("PRAGMA busy_timeout=5000")
@@ -1459,13 +1475,19 @@ class BrainServer:
                         conn.close()
                     _add(_nodes_created, source="browser")
                     self._record_success()
-                    logger.info(
-                        "enriched %d browser events -> node %d",
-                        len(event_ids),
-                        node_id,
-                    )
+                    if node_id is None:
+                        logger.info(
+                            "browser events (%d) linked to existing node via content dedup",
+                            len(event_ids),
+                        )
+                    else:
+                        logger.info(
+                            "enriched %d browser events -> node %d",
+                            len(event_ids),
+                            node_id,
+                        )
 
-                    if self.embedding_model:
+                    if node_id is not None and self.embedding_model:
                         node_dict = {
                             "id": node_id,
                             "session_id": 0,
@@ -1602,6 +1624,7 @@ class BrainServer:
                             result,
                             segment_ids,
                             self.enrichment_model,
+                            content_hashes=[s.get("content_hash") for s in segments],
                         )
                     finally:
                         conn.close()

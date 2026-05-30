@@ -956,8 +956,23 @@ fn poll_tick_skips_session_being_enriched_then_retries() {
     .unwrap();
     drop(conn);
 
-    // The session grows WHILE the brain is processing it.
+    // The session grows WHILE the brain is processing it. The growth must add
+    // real enrichable content (a new user turn), not just bump `time_updated`:
+    // the content-hash re-enqueue gate (mirrored from codex/cursor) correctly
+    // refuses to re-pend a session whose enrichable content is byte-identical,
+    // so a content-free mtime bump would (rightly) not re-enqueue. This test's
+    // subject is the lost-update *race* — deferral while 'processing', retry
+    // after — which requires genuinely-new content to be meaningful.
     let oc = Connection::open(&opencode_db_path).unwrap();
+    insert_message(&oc, "m-grow", "sess", "user", 1_700_000_001_500, None);
+    insert_part(
+        &oc,
+        "p-grow",
+        "sess",
+        "m-grow",
+        r#"{"type":"text","text":"please also handle the edge case"}"#,
+        1_700_000_001_500,
+    );
     oc.execute(
         "UPDATE session SET time_updated = ?1 WHERE id = 'sess'",
         params![1_700_000_002_000_i64],
@@ -992,12 +1007,19 @@ fn poll_tick_skips_session_being_enriched_then_retries() {
     );
     drop(conn);
 
-    // Brain finishes enrichment.
+    // Brain finishes enrichment. Model production faithfully: it sets the row
+    // to 'done' and writes `last_enriched_content_hash` (the hash of the
+    // content it actually enriched). It also aged the queue `updated_at`: real
+    // enrichment + the ≥30 s poll cadence pushes the next tick well outside the
+    // content-hash gate's 5-minute debounce window, so a stale `updated_at`
+    // here mirrors that (an instantaneous test clock would otherwise sit inside
+    // the debounce and the new content would correctly wait one window).
     let conn = hippo_core::storage::open_db(&config.db_path()).unwrap();
+    let stale_updated_at = chrono::Utc::now().timestamp_millis() - 600_000; // 10 min ago
     conn.execute(
-        "UPDATE agentic_enrichment_queue SET status = 'done'
+        "UPDATE agentic_enrichment_queue SET status = 'done', updated_at = ?1
          WHERE session_id IN (SELECT id FROM agentic_sessions WHERE session_id = 'sess')",
-        [],
+        params![stale_updated_at],
     )
     .unwrap();
     drop(conn);

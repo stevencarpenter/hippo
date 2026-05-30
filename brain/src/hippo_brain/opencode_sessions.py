@@ -12,6 +12,7 @@ import time
 import uuid
 from datetime import datetime
 
+from hippo_brain.claude_sessions import replace_prior_agentic_nodes
 from hippo_brain.enrichment import (
     CURRENT_ENRICHMENT_VERSION,
     is_enrichment_eligible,
@@ -115,7 +116,8 @@ def claim_pending_opencode_segments(
             f"""
             SELECT id, session_id, harness, model, agent, slug, title,
                    start_time, end_time, summary_text, snapshot_diffs_json,
-                   commit_messages_json, message_count, token_count, cwd
+                   commit_messages_json, message_count, token_count, cwd,
+                   content_hash
             FROM agentic_sessions
             WHERE id IN ({placeholders}) AND harness = 'opencode' AND probe_tag IS NULL
             ORDER BY start_time ASC
@@ -141,6 +143,7 @@ def claim_pending_opencode_segments(
                 msg_count,
                 tok_count,
                 row_cwd,
+                content_hash,
             ) = row
             diffs = json.loads(snap_json) if snap_json and snap_json != "null" else None
             commits = json.loads(commit_json) if commit_json else []
@@ -161,6 +164,7 @@ def claim_pending_opencode_segments(
                     "commit_messages": commits,
                     "message_count": msg_count or 0,
                     "token_count": tok_count or 0,
+                    "content_hash": content_hash,
                 }
             )
 
@@ -245,8 +249,19 @@ def write_opencode_knowledge_node(
     result: EnrichmentResult,
     segment_ids: list[int],
     model_name: str,
+    content_hashes: list[str | None] | None = None,
 ) -> int:
-    """Insert knowledge node, link to opencode session(s), mark queue done."""
+    """Insert knowledge node, link to opencode session(s), mark queue done.
+
+    ``content_hashes`` (parallel to ``segment_ids``, daemon-computed) advances
+    each segment's ``last_enriched_content_hash`` so the daemon's re-enqueue
+    gate can suppress unchanged re-polls. ``None`` entries are skipped.
+    """
+    if content_hashes is not None and len(content_hashes) != len(segment_ids):
+        raise ValueError(
+            f"content_hashes length ({len(content_hashes)}) does not match "
+            f"segment_ids length ({len(segment_ids)})"
+        )
     node_uuid = str(uuid.uuid4())
     now_ms = int(time.time() * 1000)
     content = json.dumps(
@@ -265,6 +280,10 @@ def write_opencode_knowledge_node(
 
     conn.execute("BEGIN")
     try:
+        # Idempotent re-enrichment: replace any prior node(s) for these segments
+        # rather than appending a duplicate (mirrors write_claude_knowledge_node).
+        replace_prior_agentic_nodes(conn, segment_ids)
+
         cursor = conn.execute(
             """
             INSERT INTO knowledge_nodes (uuid, content, embed_text, node_type, outcome,
@@ -312,6 +331,16 @@ def write_opencode_knowledge_node(
         )
 
         upsert_entities(conn, node_id, result.entities, {}, now_ms)
+
+        # Record the enriched content version so the daemon's re-enqueue gate
+        # can suppress future unchanged re-polls. Skip NULL hashes (legacy rows).
+        if content_hashes is not None:
+            for seg_id, ch in zip(segment_ids, content_hashes, strict=True):
+                if ch is not None:
+                    conn.execute(
+                        "UPDATE agentic_sessions SET last_enriched_content_hash = ? WHERE id = ?",
+                        (ch, seg_id),
+                    )
 
         conn.commit()
         return node_id

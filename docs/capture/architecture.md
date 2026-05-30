@@ -4,7 +4,7 @@ Reference for hippo's capture-reliability stack: how events land, what the syste
 
 ## TL;DR
 
-Every capture path writes two things in the same SQLite transaction: the event row and a `source_health` row. A background watchdog reads `source_health` once a minute, asserts fifteen named invariants, and writes alarms to `capture_alarms` on violations. A separate probe job sends synthetic events through each path every five minutes and records round-trip latency. Operators see all of this through `hippo doctor` and `hippo alarms`.
+Every capture path writes two things in the same SQLite transaction: the event row and a `source_health` row. A background watchdog reads `source_health` once a minute, asserts sixteen named invariants, and writes alarms to `capture_alarms` on violations. A separate probe job sends synthetic events through each path every five minutes and records round-trip latency. Operators see all of this through `hippo doctor` and `hippo alarms`.
 
 ## The four layers
 
@@ -35,7 +35,7 @@ Every capture path writes two things in the same SQLite transaction: the event r
 
 1. **Capture path** — the per-source code that writes events. Shell hook → daemon socket. FSEvents watcher → daemon. Native messaging → daemon. Each path writes to its source's events table AND to `source_health` in the same SQLite transaction. (See [`anti-patterns.md`](anti-patterns.md) AP-1: writing health from inside the user's interactive prompt is forbidden — health writes happen in the daemon's `flush_events`, never in `shell/hippo.zsh`.)
 2. **`source_health` table** — one row per source, holds the latest "did the event land?" signal: `last_event_ts`, `consecutive_failures`, `events_last_1h`, `probe_ok`, `probe_last_run_ts`, `probe_lag_ms`. Single SQL ground truth.
-3. **Watchdog** (`com.hippo.watchdog`, every 60 s) — asserts fifteen invariants (most against `source_health`; I-14 against the knowledge-node vector store), writes `capture_alarms` rows on violations. Rate-limited per invariant (one alarm per invariant per hour). Implemented in `crates/hippo-daemon/src/watchdog.rs`.
+3. **Watchdog** (`com.hippo.watchdog`, every 60 s) — asserts sixteen invariants (most against `source_health`; I-14 against the knowledge-node vector store, I-16 against the knowledge-node/agentic-session join), writes `capture_alarms` rows on violations. Rate-limited per invariant (one alarm per invariant per hour). Implemented in `crates/hippo-daemon/src/watchdog.rs`.
 4. **Probe** (`com.hippo.probe`, every 5 minutes) — sends synthetic events through each capture path, measures end-to-end latency, records `probe_lag_ms` in `source_health`. Probe rows carry `probe_tag IS NOT NULL` and are filtered out of every user-facing query (RAG, MCP tools, `hippo events`). See `crates/hippo-daemon/src/probe.rs`. (See [`anti-patterns.md`](anti-patterns.md) AP-6: probe rows must never appear in user-facing queries.)
 
 Operator interface: [`hippo doctor`](operator-runbook.md#doctor) for a snapshot, [`hippo alarms`](operator-runbook.md#alarms) for unacknowledged violations, [`hippo probe`](operator-runbook.md#probes) to run a one-off synthetic check.
@@ -64,7 +64,7 @@ Append-only ledger of invariant violations. The watchdog writes; `hippo alarms a
 | Column | Meaning |
 |---|---|
 | `id` | PK |
-| `invariant_id` | One of `I-1` … `I-15` |
+| `invariant_id` | One of `I-1` … `I-16` |
 | `raised_at` | First detection time (epoch ms) |
 | `details_json` | Invariant-specific diagnostic context — affected source, `since_ms`, and per-invariant details |
 | `acked_at` | NULL until `hippo alarms ack <id>` |
@@ -72,7 +72,7 @@ Append-only ledger of invariant violations. The watchdog writes; `hippo alarms a
 | `resolved_at` | Set once the invariant has stayed clean for 2 consecutive ticks |
 | `clean_ticks` | Consecutive-clean tick count driving the auto-resolve loop |
 
-## Invariants (I-1..I-15)
+## Invariants (I-1..I-16)
 
 Asserted by the watchdog every 60 s. Each has a formal predicate in `crates/hippo-daemon/src/watchdog.rs`. Violations create or refresh a `capture_alarms` row; the doctor surfaces them with `[!!]` severity.
 
@@ -93,6 +93,7 @@ Asserted by the watchdog every 60 s. Each has a formal predicate in `crates/hipp
 | **I-13** Codex-session coverage | If `agentic-session-codex.consecutive_failures > 3`, the Codex rollout poller is actively broken. Proxy predicate; full freshness check lives in `hippo doctor`. | proxy | Bench pause window. | Watchdog alarm + doctor `[!!] agentic-session-codex events`. |
 | **I-14** Embedding orphan backlog | Count of `knowledge_nodes` older than `reaper.orphan_stale_secs` with no row in the `knowledge_vectors` shadow table must stay ≤ `reaper.alarm_threshold`. A sustained backlog means the embedding orphan-reaper is down or wedged. | 25 orphans (configurable) | Shadow table absent — fresh install, nothing embedded yet. | Watchdog alarm. |
 | **I-15** Cursor-session coverage | If `agentic-session-cursor.consecutive_failures > 3`, the Cursor poller is actively broken. Proxy predicate; full freshness in `hippo doctor`. | proxy | Bench pause window. | Watchdog alarm + doctor `[!!] agentic-session-cursor events`. |
+| **I-16** Agentic node dedup | No single `agentic_sessions` segment may carry more than one knowledge node (any type) with identical `(content, embed_text, node_type)`. A non-zero count means an enricher is minting duplicate nodes instead of replacing/reusing them (the historical KB-duplication class — see AP-13). Covers all node types now that every writer is guarded (agentic = write-time replacement; workflow/browser = write-time content dedup). | 0 dup-groups (configurable via `[watchdog] dup_node_alarm_threshold`) | `knowledge_node_agentic_sessions` absent — fresh install. | Watchdog alarm. Remediate with `brain/scripts/dedup-knowledge-nodes.py`. |
 
 ## Probes
 
