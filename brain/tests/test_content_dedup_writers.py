@@ -148,9 +148,11 @@ _BR_RESULT = EnrichmentResult(
 
 def _seed_browser_event(conn, eid) -> int:
     conn.execute(
-        "INSERT INTO browser_events (id, url, title, domain, timestamp, created_at) "
-        "VALUES (?, 'https://x', 't', 'x', 0, 0)",
-        (eid,),
+        "INSERT INTO browser_events "
+        "(id, url, title, domain, timestamp, dwell_ms, scroll_depth, content_hash, "
+        " envelope_id, created_at) "
+        "VALUES (?, 'https://x', 't', 'x', 0, 0, 0, ?, ?, 0)",
+        (eid, f"hash-{eid}", f"env-{eid}"),
     )
     conn.commit()
     return eid
