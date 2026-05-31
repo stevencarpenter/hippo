@@ -427,6 +427,19 @@ calling out:
    N=100 corpus-grounded items distinguishes a broken model from a working one;
    fine-grained ranking of similar models wants a larger fixture (tracked in
    [issue #133](https://github.com/stevencarpenter/hippo/issues/133)).
+8. **Inference-server health is a precondition, not a measurement.** A degraded
+   local inference server (e.g. a long-running oMLX process whose batched chat
+   engine has wedged) drops requests with `RemoteProtocolError: peer closed
+   connection` or returns `HTTP 507`. The `InferenceClient` retries transient
+   transport errors with backoff, but a *persistently* sick server will still
+   fail the run — that is an infra signal, NOT a model verdict. If a run shows
+   widespread drops or a model lands in `errored`, probe the server directly
+   (`POST /v1/chat/completions` a few times) and restart it before trusting any
+   numbers. Also **fully quiesce the prod brain** for the run window: the soft
+   `/control/pause` stops new claims but not an in-flight batch, and a
+   prod brain enriching this session's own captured activity will contend for
+   the inference server. Hard-stop it (`launchctl bootout gui/$UID/com.hippo.brain`,
+   leaving `com.hippo.daemon` up so capture keeps queueing) for a clean run.
 
 Use the `tier0_verdict.skipped_gates` field to surface "didn't measure this" vs.
 "failed this" in any leaderboard you publish.
