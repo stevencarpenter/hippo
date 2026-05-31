@@ -216,6 +216,40 @@ def test_cli_run_returns_2_when_preflight_aborts(monkeypatch, tmp_path):
     assert rc == 2
 
 
+def test_cli_run_surfaces_preflight_warnings(monkeypatch, tmp_path, capsys):
+    """A non-fatal preflight warning (e.g. QA scoring skipped) is printed in a
+    visible [WW] banner and does NOT change the exit code (run still succeeded)."""
+    from hippo_brain.bench.orchestrate import OrchestrationResult
+
+    def fake_orchestrate(**kwargs):
+        return OrchestrationResult(
+            run_id="r",
+            out_path=kwargs["out_path"],
+            models_completed=["m1"],
+            models_errored=[],
+            preflight_aborted=False,
+            preflight_warnings=["qa_scoreable: Q/A fixture missing: /x/eval-qa-v1.jsonl"],
+        )
+
+    monkeypatch.setattr("hippo_brain.bench.cli.orchestrate_run", fake_orchestrate)
+    monkeypatch.setattr("hippo_brain.bench.pause_rpc.recover_stale_pause", lambda _u: False)
+    rc = main(
+        [
+            "run",
+            "--skip-checks",
+            "--models",
+            "m1",
+            "--out",
+            str(tmp_path / "r.jsonl"),
+        ]
+    )
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "[WW]" in out
+    assert "qa_scoreable" in out
+    assert "Q/A fixture missing" in out
+
+
 def test_cli_run_requires_models():
     with pytest.raises(SystemExit) as exc:
         main(["run"])

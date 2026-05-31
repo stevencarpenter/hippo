@@ -96,6 +96,9 @@ class OmlxLifecycle:
             resp = httpx.post(url, headers=self._headers(), timeout=_HTTP_TIMEOUT_SEC)
         except httpx.HTTPError as e:
             raise ModelLifecycleError(f"POST {url} failed: {e}") from e
+        if resp.status_code == 404:
+            # Model is already not loaded — the desired end state. Treat as success.
+            return
         if resp.status_code >= 400:
             raise ModelLifecycleError(f"POST {url} returned HTTP {resp.status_code}: {resp.text}")
 

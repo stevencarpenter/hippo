@@ -127,7 +127,7 @@ hippo-bench recover [--brain-url http://127.0.0.1:9175]
 |---|---|
 | 0 | Run completed successfully (or summary printed, or determinism passed) |
 | 1 | Generic failure (e.g., `corpus verify` mismatch, determinism budget exceeded) |
-| 2 | Pre-flight aborted the run (e.g., `lms` missing, disk full, corpus stale) |
+| 2 | Pre-flight aborted the run (e.g., `lms` missing, disk full, corpus stale, or a present-but-unscoreable Q/A fixture) |
 | 3 | Run executed but every candidate model errored |
 
 ### Important flags
@@ -140,6 +140,22 @@ hippo-bench recover [--brain-url http://127.0.0.1:9175]
   loop. Use this when the prod brain is not running or you're doing a dry-run.
 - `--bump-version` (on `corpus init`): force-overwrite an existing corpus and
   tag the manifest with a new corpus_version label.
+
+### Pre-flight & Q/A scoring
+
+Pre-flight runs before any model is loaded and classifies each check as pass,
+warn, or fail. A **fail** aborts the run (exit 2); a **warn** lets the run
+proceed and is printed in a `[WW]` banner at the end of the run output so it is
+not lost in scrollback.
+
+The Q/A-scoreable check follows this split:
+
+- **Fixture missing** (`eval-qa-v1.jsonl` not yet seeded) → **warn**. The run
+  proceeds enrichment-only; retrieval/Q/A metrics are skipped. Seed the fixture
+  (`qa_seed.py`) to enable scoring.
+- **Fixture present but unscoreable** against the corpus (mislabeled or stale
+  goldens) → **fail**, aborting the run (exit 2). You asked for Q/A scoring, so a
+  fixture that can't score is a real error, not a silent skip.
 
 ---
 
@@ -316,7 +332,7 @@ jq 'select(.record_type=="model_summary") | {model:.model.id, errors:.errors}' "
 | [`enrich_call.py`](enrich_call.py) | LM Studio HTTP client; classifies errors instead of raising |
 | [`lms.py`](lms.py) | `lms` CLI wrapper (load/unload/list) |
 | [`metrics.py`](metrics.py) | Background `MetricsSampler` thread (RSS, CPU, load, memory) |
-| [`preflight.py`](preflight.py) | Pre-flight checks (prod brain reachable / pauseable, corpus, disk, brain port) |
+| [`preflight.py`](preflight.py) | Pre-flight checks (prod brain reachable / pauseable, corpus, disk, brain port, Q/A scoreable) |
 | [`corpus.py`](corpus.py) | Time-bucketed sampling, shadow SQLite snapshot, JSONL sidecar, manifest |
 | [`shadow_stack.py`](shadow_stack.py) | Process-group spawn (daemon + brain), env injection, SIGTERM/SIGKILL teardown |
 | [`downstream_proxy.py`](downstream_proxy.py) | Q/A loading, Hit@K, MRR, NDCG, ask-synthesis sampling |

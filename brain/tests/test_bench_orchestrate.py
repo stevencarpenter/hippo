@@ -14,6 +14,7 @@ import pytest
 from hippo_brain.bench.coordinator import ModelRunResult
 from hippo_brain.bench.orchestrate import orchestrate_run
 from hippo_brain.bench.output import AttemptRecord
+from hippo_brain.bench.preflight import CheckResult
 
 
 @pytest.fixture
@@ -216,6 +217,104 @@ def test_orchestrate_passes_real_embedding_fn_to_model_runner(stub_corpus, tmp_p
         "text": "question text",
         "timeout_sec": 120,
     }
+
+
+def test_orchestrate_preflight_receives_v1_normalized_url(stub_corpus, tmp_path):
+    """orchestrate_run normalizes the inference URL to include `/v1` BEFORE calling
+    run_all_preflight, so check_inference_reachable probes the correct route.
+    A bare URL like `http://localhost:1234` must be expanded to
+    `http://localhost:1234/v1` before preflight; the CLI default already includes
+    `/v1` but programmatic callers may omit it.
+    """
+    sqlite, manifest = stub_corpus
+    out = tmp_path / "run.jsonl"
+    captured_preflight_url: list[str] = []
+
+    def fake_preflight(*, brain_url, corpus_sqlite, manifest, inference_url, skip_prod_pause, **kw):
+        captured_preflight_url.append(inference_url)
+        return [], False  # no checks, not aborted
+
+    with (
+        patch("hippo_brain.bench.orchestrate.run_all_preflight", side_effect=fake_preflight),
+        patch("hippo_brain.bench.orchestrate.PauseRpcClient") as PauseClient,
+    ):
+        PauseClient.return_value.probe_health.return_value = None
+        orchestrate_run(
+            candidate_models=[],
+            corpus_sqlite=sqlite,
+            manifest_path=manifest,
+            out_path=out,
+            inference_url="http://localhost:1234",  # bare URL, no /v1
+            skip_checks=False,
+            skip_prod_pause=True,
+            dry_run=False,
+        )
+
+    assert len(captured_preflight_url) == 1
+    assert captured_preflight_url[0] == "http://localhost:1234/v1"
+
+
+def test_orchestrate_preflight_does_not_double_normalize_v1_url(stub_corpus, tmp_path):
+    """When the caller already passes `.../v1`, preflight receives it unchanged."""
+    sqlite, manifest = stub_corpus
+    out = tmp_path / "run.jsonl"
+    captured_preflight_url: list[str] = []
+
+    def fake_preflight(*, brain_url, corpus_sqlite, manifest, inference_url, skip_prod_pause, **kw):
+        captured_preflight_url.append(inference_url)
+        return [], False
+
+    with (
+        patch("hippo_brain.bench.orchestrate.run_all_preflight", side_effect=fake_preflight),
+        patch("hippo_brain.bench.orchestrate.PauseRpcClient") as PauseClient,
+    ):
+        PauseClient.return_value.probe_health.return_value = None
+        orchestrate_run(
+            candidate_models=[],
+            corpus_sqlite=sqlite,
+            manifest_path=manifest,
+            out_path=out,
+            inference_url="http://localhost:1234/v1",
+            skip_checks=False,
+            skip_prod_pause=True,
+            dry_run=False,
+        )
+
+    assert captured_preflight_url[0] == "http://localhost:1234/v1"
+
+
+def test_orchestrate_forwards_preflight_warnings(stub_corpus, tmp_path):
+    """A `warn`-status preflight check is forwarded on OrchestrationResult so the
+    CLI can surface it. The canonical case: a missing Q/A fixture warns (run is
+    NOT aborted) and QA scoring is skipped. Only `warn` checks are forwarded —
+    `pass` checks are not."""
+    sqlite, manifest = stub_corpus
+    out = tmp_path / "run.jsonl"
+
+    def fake_preflight(*, brain_url, corpus_sqlite, manifest, inference_url, skip_prod_pause, **kw):
+        return [
+            CheckResult(name="qa_scoreable", status="warn", detail="Q/A fixture missing: /x"),
+            CheckResult(name="corpus", status="pass", detail="ok"),
+        ], False
+
+    with (
+        patch("hippo_brain.bench.orchestrate.run_all_preflight", side_effect=fake_preflight),
+        patch("hippo_brain.bench.orchestrate.PauseRpcClient") as PauseClient,
+    ):
+        PauseClient.return_value.probe_health.return_value = None
+        result = orchestrate_run(
+            candidate_models=[],
+            corpus_sqlite=sqlite,
+            manifest_path=manifest,
+            out_path=out,
+            inference_url="http://localhost:1234/v1",
+            skip_checks=False,
+            skip_prod_pause=True,
+            dry_run=False,
+        )
+
+    assert result.preflight_warnings == ["qa_scoreable: Q/A fixture missing: /x"]
+    assert result.preflight_aborted is False
 
 
 def test_orchestrate_writes_computed_gates_instead_of_hardcoded_pass(stub_corpus, tmp_path):

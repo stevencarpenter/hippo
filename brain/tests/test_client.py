@@ -177,6 +177,17 @@ async def test_chat_does_not_retry_on_http_status_error(monkeypatch):
     sleep_mock.assert_not_awaited()
 
 
+def test_inference_client_rejects_max_retries_zero():
+    """max_retries=0 would produce an empty retry loop; __init__ must reject it."""
+    with pytest.raises(ValueError, match="max_retries must be >= 1"):
+        InferenceClient(base_url="http://x/v1", max_retries=0)
+
+
+def test_inference_client_rejects_negative_max_retries():
+    with pytest.raises(ValueError, match="max_retries must be >= 1"):
+        InferenceClient(base_url="http://x/v1", max_retries=-1)
+
+
 async def test_embed_retries_on_transient_then_succeeds(monkeypatch):
     post = AsyncMock(
         side_effect=[

@@ -145,6 +145,8 @@ class InferenceClient:
         max_retries: int = 3,
         backoff_base: float = 0.5,
     ):
+        if max_retries < 1:
+            raise ValueError(f"max_retries must be >= 1, got {max_retries}")
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
         # Total attempts = max_retries (e.g. up to 3 tries). backoff_base seconds
@@ -175,7 +177,11 @@ class InferenceClient:
                 if attempt < self.max_retries:
                     await _sleep(self.backoff_base * 2 ** (attempt - 1))
         # Exhausted: re-raise the last transient transport error.
-        assert last_exc is not None
+        # Defensive typed raise instead of assert so python -O can't produce
+        # a TypeError from `raise None`, and so future logic changes surface
+        # clearly rather than as a cryptic AssertionError.
+        if last_exc is None:
+            raise RuntimeError("_post_with_retry exhausted without capturing an exception")
         raise last_exc
 
     async def chat(

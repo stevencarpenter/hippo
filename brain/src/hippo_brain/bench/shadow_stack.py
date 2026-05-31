@@ -28,6 +28,20 @@ import time
 import httpx
 
 
+def _toml_basic_string(value: str) -> str:
+    """Return value as a TOML basic string including surrounding double-quotes.
+
+    Escapes per the TOML spec: backslash first, then double-quote, then
+    control characters (newline, carriage return, tab).
+    """
+    value = value.replace("\\", "\\\\")
+    value = value.replace('"', '\\"')
+    value = value.replace("\n", "\\n")
+    value = value.replace("\r", "\\r")
+    value = value.replace("\t", "\\t")
+    return f'"{value}"'
+
+
 @dataclasses.dataclass
 class ShadowStack:
     daemon_proc: subprocess.Popen
@@ -97,16 +111,17 @@ def _write_shadow_config(
     config_dir = run_tree / ".config" / "hippo"
     config_dir.mkdir(parents=True, exist_ok=True)
     config_path = config_dir / "config.toml"
-    # tomllib is read-only; emit TOML by hand. Values here are model ids and a
-    # URL (no quotes/backslashes), so a straight f-string is safe.
+    # tomllib is read-only; emit TOML by hand. String values are escaped via
+    # _toml_basic_string so paths, URLs, and model ids with special characters
+    # produce valid TOML regardless of their content.
     config_path.write_text(
-        f'[storage]\ndata_dir = "{run_tree}"\n\n'
+        f"[storage]\ndata_dir = {_toml_basic_string(str(run_tree))}\n\n"
         f"[brain]\nport = {brain_port}\n\n"
-        f'[inference]\nbase_url = "{inference_base_url}"\n\n'
+        f"[inference]\nbase_url = {_toml_basic_string(inference_base_url)}\n\n"
         f"[models]\n"
-        f'enrichment = "{enrichment_model}"\n'
-        f'embedding = "{embedding_model}"\n'
-        f'query = "{enrichment_model}"\n',
+        f"enrichment = {_toml_basic_string(enrichment_model)}\n"
+        f"embedding = {_toml_basic_string(embedding_model)}\n"
+        f"query = {_toml_basic_string(enrichment_model)}\n",
         encoding="utf-8",
     )
 

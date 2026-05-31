@@ -47,6 +47,7 @@ class OrchestrationResult:
     models_completed: list[str] = field(default_factory=list)
     models_errored: list[str] = field(default_factory=list)
     preflight_aborted: bool = False
+    preflight_warnings: list[str] = field(default_factory=list)
     prod_brain_resumed_ok: bool = True
 
 
@@ -201,16 +202,32 @@ def orchestrate_run(
                 out_path=out_path,
             )
 
+        # Normalize the inference URL to include `/v1` before passing to preflight
+        # so that check_inference_reachable probes the correct `/v1/models` route.
+        # Servers that conform to the OpenAI spec (e.g. oMLX) return 404 for
+        # bare host:port/models; the `/v1` prefix is required.
+        normalized_inference_url = (
+            inference_url if inference_url.endswith("/v1") else f"{inference_url.rstrip('/')}/v1"
+        )
+
         if not skip_checks:
             preflight_checks, aborted = run_all_preflight(
                 brain_url=brain_url,
                 corpus_sqlite=corpus_sqlite,
                 manifest=manifest_path,
-                inference_url=inference_url,
+                inference_url=normalized_inference_url,
                 skip_prod_pause=skip_prod_pause,
             )
         else:
             preflight_checks, aborted = [], False
+
+        # Collect non-fatal preflight warnings (e.g. QA scoring skipped because
+        # the fixture is absent) so the CLI can surface them in the final run
+        # output, not bury them in the manifest JSON. Any check that resolves to
+        # "warn" is forwarded — no per-check special-casing.
+        preflight_warnings = [
+            f"{c.name}: {c.detail}" for c in preflight_checks if c.status == "warn"
+        ]
 
         manifest_record = RunManifestRecord(
             run_id=run_id,
@@ -245,6 +262,7 @@ def orchestrate_run(
                 run_id=run_id,
                 out_path=out_path,
                 preflight_aborted=aborted,
+                preflight_warnings=preflight_warnings,
             )
 
         atexit.register(pause_client.resume)
@@ -257,10 +275,6 @@ def orchestrate_run(
         completed: list[str] = []
         errored: list[str] = []
         models_with_prod_restart_event: list[str] = []
-
-        normalized_inference_url = (
-            inference_url if inference_url.endswith("/v1") else f"{inference_url.rstrip('/')}/v1"
-        )
 
         def embedding_fn(text: str) -> list[float]:
             return call_embedding(
@@ -374,6 +388,7 @@ def orchestrate_run(
             out_path=out_path,
             models_completed=completed,
             models_errored=errored,
+            preflight_warnings=preflight_warnings,
             prod_brain_resumed_ok=prod_brain_resumed_ok,
         )
     finally:

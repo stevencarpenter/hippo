@@ -94,7 +94,74 @@ def test_run_all_preflight_aborts_on_corpus_missing(tmp_path):
     assert corpus_check.status == "fail"
 
 
+def _patch_all_other_checks(monkeypatch, preflight_mod):
+    """Patch all preflight checks except qa_scoreable to pass/warn so tests can isolate qa behavior."""
+    monkeypatch.setattr(
+        preflight_mod,
+        "check_prod_brain_reachable",
+        lambda _u: preflight_mod.CheckResult("prod_brain_reachable", "warn", "off"),
+    )
+    monkeypatch.setattr(
+        preflight_mod,
+        "check_prod_brain_pauseable",
+        lambda _u, skip: preflight_mod.CheckResult("prod_brain_pauseable", "warn", "off"),
+    )
+    monkeypatch.setattr(
+        preflight_mod,
+        "check_corpus_present",
+        lambda _c, _m: preflight_mod.CheckResult("corpus_present", "pass", "schema_version=18"),
+    )
+    monkeypatch.setattr(
+        preflight_mod,
+        "check_inference_reachable",
+        lambda _u: preflight_mod.CheckResult("inference_reachable", "pass", "HTTP 200"),
+    )
+    monkeypatch.setattr(
+        preflight_mod,
+        "check_disk_free_bench",
+        lambda _p: preflight_mod.CheckResult("disk_free_bench", "pass", "ok"),
+    )
+    monkeypatch.setattr(
+        preflight_mod,
+        "check_brain_port_free",
+        lambda _p: preflight_mod.CheckResult("brain_port_free", "pass", "ok"),
+    )
+
+
+def test_run_all_preflight_qa_fixture_missing_is_warn_not_aborted(tmp_path, monkeypatch):
+    """A missing QA fixture yields status='warn' and does NOT set aborted.
+
+    The run proceeds enrichment-only. A missing fixture is symmetric with a missing
+    corpus (which also warns). Only a *present-but-failing* fixture is a hard abort.
+    """
+    from hippo_brain.bench import preflight
+
+    corpus = tmp_path / "corpus.sqlite"
+    manifest = tmp_path / "corpus.manifest.json"
+    corpus.write_bytes(b"")
+    manifest.write_text("{}")
+    # qa file is intentionally NOT created
+
+    _patch_all_other_checks(monkeypatch, preflight)
+    monkeypatch.setattr(preflight, "bench_qa_path", lambda: tmp_path / "eval-qa-v1.jsonl")
+
+    checks, aborted = preflight.run_all_preflight(
+        brain_url="http://127.0.0.1:9175",
+        corpus_sqlite=corpus,
+        manifest=manifest,
+        inference_url="http://localhost:1234/v1",
+        skip_prod_pause=True,
+        min_scoreable_qa=1,
+    )
+
+    assert aborted is False
+    qa_check = next(c for c in checks if c.name == "qa_scoreable")
+    assert qa_check.status == "warn"
+    assert "skipped" in qa_check.detail.lower() or "missing" in qa_check.detail.lower()
+
+
 def test_run_all_preflight_fails_when_qa_has_no_scoreable_items(tmp_path, monkeypatch):
+    """A present QA fixture that fails validation is a hard fail and sets aborted=True."""
     from hippo_brain.bench import preflight
 
     corpus = tmp_path / "corpus.sqlite"
@@ -104,36 +171,7 @@ def test_run_all_preflight_fails_when_qa_has_no_scoreable_items(tmp_path, monkey
     manifest.write_text("{}")
     qa.write_text('{"qa_id":"q1","question":"x","golden_event_id":null}\n')
 
-    monkeypatch.setattr(
-        preflight,
-        "check_prod_brain_reachable",
-        lambda _u: preflight.CheckResult("prod_brain_reachable", "warn", "off"),
-    )
-    monkeypatch.setattr(
-        preflight,
-        "check_prod_brain_pauseable",
-        lambda _u, skip: preflight.CheckResult("prod_brain_pauseable", "warn", "off"),
-    )
-    monkeypatch.setattr(
-        preflight,
-        "check_corpus_present",
-        lambda _c, _m: preflight.CheckResult("corpus_present", "pass", "schema_version=18"),
-    )
-    monkeypatch.setattr(
-        preflight,
-        "check_inference_reachable",
-        lambda _u: preflight.CheckResult("inference_reachable", "pass", "HTTP 200"),
-    )
-    monkeypatch.setattr(
-        preflight,
-        "check_disk_free_bench",
-        lambda _p: preflight.CheckResult("disk_free_bench", "pass", "ok"),
-    )
-    monkeypatch.setattr(
-        preflight,
-        "check_brain_port_free",
-        lambda _p: preflight.CheckResult("brain_port_free", "pass", "ok"),
-    )
+    _patch_all_other_checks(monkeypatch, preflight)
     monkeypatch.setattr(preflight, "bench_qa_path", lambda: qa)
     monkeypatch.setattr(
         preflight,

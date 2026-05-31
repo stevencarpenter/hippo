@@ -236,6 +236,15 @@ def _cmd_run(args: argparse.Namespace) -> int:
         print(f"completed: {result.models_completed}")
     if result.models_errored:
         print(f"errored:   {result.models_errored}")
+    if result.preflight_warnings:
+        # Surface non-fatal preflight warnings (e.g. QA scoring skipped because
+        # the fixture is absent) as the last thing on screen so they are not
+        # lost in the run's scrollback. Mirrors `hippo doctor`'s [WW] marker.
+        print("=" * 64)
+        print(f"[WW] {len(result.preflight_warnings)} preflight warning(s) — run proceeded:")
+        for warning in result.preflight_warnings:
+            print(f"     - {warning}")
+        print("=" * 64)
     if result.preflight_aborted:
         return 2
     if result.models_errored and not result.models_completed:

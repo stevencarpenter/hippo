@@ -34,10 +34,11 @@ class CheckResult:
 
 
 def check_inference_reachable(url: str) -> CheckResult:
-    # Probe the canonical OpenAI-compatible liveness route. The bare base URL
-    # (`.../v1`) is only a namespace prefix, not a route: LM Studio leniently
-    # returned 200 for it, but spec-correct servers (oMLX) return 404. Normalize
-    # to `/v1/models` so the check works regardless of which the caller passes.
+    # Probe the OpenAI-compatible liveness route by appending `/models` to the
+    # caller-supplied base URL. The caller is responsible for passing a
+    # `/v1`-normalized base URL (e.g. `http://host:1234/v1`); this function only
+    # appends the `/models` route suffix. Do not call with a bare host:port —
+    # spec-correct servers (oMLX) return 404 for requests without the `/v1` prefix.
     probe_url = url if url.rstrip("/").endswith("/models") else f"{url.rstrip('/')}/models"
     try:
         resp = httpx.get(probe_url, timeout=5.0)
@@ -227,8 +228,8 @@ def check_qa_scoreable(corpus_sqlite: Path, min_scoreable: int = 1) -> CheckResu
     if not qa_path.exists():
         return CheckResult(
             name="qa_scoreable",
-            status="fail",
-            detail=f"Q/A fixture missing: {qa_path}",
+            status="warn",
+            detail=f"QA fixture missing ({qa_path}); QA scoring will be skipped",
         )
     if not corpus_sqlite.exists():
         return CheckResult(
@@ -261,6 +262,8 @@ def run_all_preflight(
     - disk < 2 GB under bench root
     - shadow brain port already in use (BT-07)
     - prod brain reachable AND not pauseable AND skip_prod_pause not set
+    - QA fixture is PRESENT but fails validation (bad fixture aborts; absent
+      fixture is a warn and allows enrichment-only runs)
     """
     reachable = check_prod_brain_reachable(brain_url)
     pauseable = check_prod_brain_pauseable(brain_url, skip=skip_prod_pause)

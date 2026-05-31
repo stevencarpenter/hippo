@@ -110,6 +110,25 @@ def test_load_404_raises_with_server_message(monkeypatch: pytest.MonkeyPatch) ->
         lc.prepare("nope")
 
 
+def test_unload_404_is_treated_as_success(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A 404 on unload means the model is already gone — idempotent, not an error."""
+    status = _resp(json_body={"models": [{"id": "ghost", "loaded": True}]})
+    monkeypatch.setattr(model_lifecycle.httpx, "get", MagicMock(return_value=status))
+    not_found = _resp(status_code=404, text="not found")
+    post_mock = MagicMock(side_effect=[not_found, _resp(json_body={"status": "ok"})])
+    monkeypatch.setattr(model_lifecycle.httpx, "post", post_mock)
+
+    lc = OmlxLifecycle(BASE_URL)
+    # Must not raise — unload 404 is idempotent; prepare continues to load target.
+    lc.prepare("target")
+
+    posted_urls = [c.args[0] for c in post_mock.call_args_list]
+    assert posted_urls == [
+        f"{BASE_URL}/models/ghost/unload",
+        f"{BASE_URL}/models/target/load",
+    ]
+
+
 def test_connect_error_raises_model_lifecycle_error(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         model_lifecycle.httpx,
