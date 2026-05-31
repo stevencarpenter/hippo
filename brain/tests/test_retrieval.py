@@ -56,6 +56,7 @@ CREATE TABLE knowledge_node_events (
 );
 CREATE TABLE agentic_sessions (
     id INTEGER PRIMARY KEY,
+    harness TEXT NOT NULL DEFAULT 'claude-code',
     start_time INTEGER NOT NULL,
     cwd TEXT NOT NULL,
     project_dir TEXT,
@@ -69,7 +70,13 @@ CREATE TABLE knowledge_node_agentic_sessions (
 );
 CREATE TABLE browser_events (
     id INTEGER PRIMARY KEY,
-    timestamp INTEGER NOT NULL
+    timestamp INTEGER NOT NULL,
+    probe_tag TEXT
+);
+CREATE TABLE workflow_runs (
+    id INTEGER PRIMARY KEY,
+    repo TEXT,
+    head_sha TEXT
 );
 CREATE TABLE knowledge_node_browser_events (
     knowledge_node_id INTEGER NOT NULL,
@@ -89,8 +96,8 @@ CREATE TABLE knowledge_node_entities (
 );
 CREATE TABLE knowledge_node_workflow_runs (
     knowledge_node_id INTEGER NOT NULL,
-    workflow_run_id INTEGER NOT NULL,
-    PRIMARY KEY (knowledge_node_id, workflow_run_id)
+    run_id INTEGER NOT NULL,
+    PRIMARY KEY (knowledge_node_id, run_id)
 );
 """
 
@@ -211,11 +218,13 @@ def _link_claude(
     branch: str | None = None,
     project_dir: str | None = None,
     probe_tag: str | None = None,
+    harness: str = "claude-code",
 ) -> None:
     conn.execute(
         "INSERT INTO agentic_sessions"
-        " (id, start_time, cwd, project_dir, git_branch, probe_tag) VALUES (?, ?, ?, ?, ?, ?)",
-        (session_id, start_time, cwd, project_dir, branch, probe_tag),
+        " (id, harness, start_time, cwd, project_dir, git_branch, probe_tag)"
+        " VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (session_id, harness, start_time, cwd, project_dir, branch, probe_tag),
     )
     conn.execute(
         "INSERT INTO knowledge_node_agentic_sessions"
@@ -226,9 +235,31 @@ def _link_claude(
 
 def _link_workflow(conn: sqlite3.Connection, node_id: int, run_id: int) -> None:
     conn.execute(
-        "INSERT INTO knowledge_node_workflow_runs"
-        " (knowledge_node_id, workflow_run_id) VALUES (?, ?)",
+        "INSERT OR IGNORE INTO workflow_runs (id, repo, head_sha) VALUES (?, ?, ?)",
+        (run_id, "owner/repo", "deadbeef"),
+    )
+    conn.execute(
+        "INSERT INTO knowledge_node_workflow_runs (knowledge_node_id, run_id) VALUES (?, ?)",
         (node_id, run_id),
+    )
+
+
+def _link_browser(
+    conn: sqlite3.Connection,
+    node_id: int,
+    browser_event_id: int,
+    *,
+    timestamp: int = 1_700_000_000_000,
+    probe_tag: str | None = None,
+) -> None:
+    conn.execute(
+        "INSERT INTO browser_events (id, timestamp, probe_tag) VALUES (?, ?, ?)",
+        (browser_event_id, timestamp, probe_tag),
+    )
+    conn.execute(
+        "INSERT INTO knowledge_node_browser_events"
+        " (knowledge_node_id, browser_event_id) VALUES (?, ?)",
+        (node_id, browser_event_id),
     )
 
 
@@ -576,6 +607,45 @@ def test_search_result_includes_linked_event_ids_and_metadata(conn):
         }
     ]
     assert sorted(result.linked_event_ids) == [10, 11]
+    # New field: only the shell event is source-tagged here.
+    assert result.linked_source_ids == ["shell-10", "shell-11"]
+
+
+def test_linked_source_ids_cover_all_four_sources(conn):
+    """A node linked via each junction yields one source-tagged id per source.
+
+    Also asserts the legacy ``linked_event_ids`` int field is unchanged
+    (still only the shell event id), proving the additive field is a
+    no-regression addition.
+    """
+    _insert_node(conn, 1, summary="multi-source")
+    _link_event(conn, 1, 10, timestamp=1000, cwd="/proj", branch="main")
+    _link_browser(conn, 1, 20)
+    _link_workflow(conn, 1, 30)
+    _link_claude(conn, 1, 40, harness="claude-code")
+
+    backend = FakeBackend(fts=[(1, -1.0)])
+    [result] = search(conn, "q", None, Filters(), mode="lexical", limit=5, backend=backend)
+
+    assert set(result.linked_source_ids) == {
+        "shell-10",
+        "browser-20",
+        "workflow-30",
+        "claude-40",
+    }
+    # Legacy int field unchanged: still only the shell event id.
+    assert result.linked_event_ids == [10]
+
+
+def test_linked_source_ids_excludes_probe_browser_events(conn):
+    """Probe browser events must never surface (AP-6 defense-in-depth)."""
+    _insert_node(conn, 1, summary="probe-guard")
+    _link_browser(conn, 1, 20, probe_tag="canary-x")
+
+    backend = FakeBackend(fts=[(1, -1.0)])
+    [result] = search(conn, "q", None, Filters(), mode="lexical", limit=5, backend=backend)
+
+    assert result.linked_source_ids == []
 
 
 def test_constants_match_spec():

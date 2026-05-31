@@ -50,6 +50,7 @@ class SearchResult:
     captured_at: int
     design_decisions: list[dict] = field(default_factory=list)
     linked_event_ids: list[int] = field(default_factory=list)
+    linked_source_ids: list[str] = field(default_factory=list)
     entities: dict[str, list[str]] = field(default_factory=dict)
 
 
@@ -479,6 +480,7 @@ def _fetch_details(conn: sqlite3.Connection, node_ids: Sequence[int]) -> dict[in
             "git_branch": "",
             "captured_at": created_at,
             "linked_event_ids": [],
+            "linked_source_ids": [],
             "entities": {},
         }
 
@@ -500,6 +502,7 @@ def _fetch_details(conn: sqlite3.Connection, node_ids: Sequence[int]) -> dict[in
         if d is None:
             continue
         d["linked_event_ids"].append(ev_id)
+        d["linked_source_ids"].append(f"shell-{ev_id}")
         if not d["cwd"] and cwd:
             d["cwd"] = cwd
         if not d["git_branch"] and branch:
@@ -507,24 +510,67 @@ def _fetch_details(conn: sqlite3.Connection, node_ids: Sequence[int]) -> dict[in
         if ts and ts > d["captured_at"]:
             d["captured_at"] = ts
 
+    # Attach browser source linkage. Probes never enqueue, so browser-linked
+    # nodes are normally real events; `be.probe_tag IS NULL` is defense-in-depth
+    # vs AP-6 (probes must never surface in user-facing queries).
+    br_rows = conn.execute(  # nosemgrep: unfiltered-event-table-select
+        f"""
+        SELECT knbe.knowledge_node_id, be.id
+        FROM knowledge_node_browser_events knbe
+        JOIN browser_events be ON be.id = knbe.browser_event_id
+        WHERE knbe.knowledge_node_id IN ({placeholders})
+          AND be.probe_tag IS NULL
+        ORDER BY be.id DESC
+        """,
+        list(node_ids),
+    ).fetchall()
+    for kn_id, be_id in br_rows:
+        d = details.get(kn_id)
+        if d is None:
+            continue
+        d["linked_source_ids"].append(f"browser-{be_id}")
+
+    # Attach workflow source linkage (CI runs have no probe variant).
+    wf_rows = conn.execute(
+        f"""
+        SELECT knwr.knowledge_node_id, wr.id
+        FROM knowledge_node_workflow_runs knwr
+        JOIN workflow_runs wr ON wr.id = knwr.run_id
+        WHERE knwr.knowledge_node_id IN ({placeholders})
+        ORDER BY wr.id DESC
+        """,
+        list(node_ids),
+    ).fetchall()
+    for kn_id, wr_id in wf_rows:
+        d = details.get(kn_id)
+        if d is None:
+            continue
+        d["linked_source_ids"].append(f"workflow-{wr_id}")
+
     # Fill from agentic sessions if still empty.
     # Probes are excluded via `asx.probe_tag IS NULL` (defense-in-depth vs AP-6;
     # probes never enqueue so are normally unlinked anyway).
     cs_rows = conn.execute(  # nosemgrep: unfiltered-event-table-select
         f"""
-        SELECT kncs.knowledge_node_id, asx.start_time, asx.cwd, asx.git_branch
+        SELECT kncs.knowledge_node_id, asx.id, asx.harness,
+               asx.start_time, asx.cwd, asx.git_branch
         FROM knowledge_node_agentic_sessions kncs
         JOIN agentic_sessions asx ON asx.id = kncs.agentic_session_id
         WHERE kncs.knowledge_node_id IN ({placeholders})
           AND asx.probe_tag IS NULL
-        ORDER BY asx.start_time DESC
+        ORDER BY asx.start_time DESC, asx.id DESC
         """,
         list(node_ids),
     ).fetchall()
-    for kn_id, ts, cwd, branch in cs_rows:
+    for kn_id, asx_id, harness, ts, cwd, branch in cs_rows:
         d = details.get(kn_id)
         if d is None:
             continue
+        # The bench corpus/Q/A only tags claude-code agentic sessions as
+        # `claude-`; other harnesses (codex/cursor/opencode) are tagged by
+        # their harness name so the source id stays unambiguous.
+        prefix = "claude" if harness == "claude-code" else harness
+        d["linked_source_ids"].append(f"{prefix}-{asx_id}")
         if not d["cwd"] and cwd:
             d["cwd"] = cwd
         if not d["git_branch"] and branch:
@@ -677,6 +723,7 @@ def _to_result(score: float, detail: dict | None) -> SearchResult:
             captured_at=0,
             design_decisions=[],
             linked_event_ids=[],
+            linked_source_ids=[],
             entities={},
         )
     return SearchResult(
@@ -691,6 +738,7 @@ def _to_result(score: float, detail: dict | None) -> SearchResult:
         captured_at=detail["captured_at"],
         design_decisions=list(detail.get("design_decisions") or []),
         linked_event_ids=list(detail["linked_event_ids"]),
+        linked_source_ids=sorted(detail.get("linked_source_ids") or []),
         entities=dict(detail.get("entities") or {}),
     )
 
