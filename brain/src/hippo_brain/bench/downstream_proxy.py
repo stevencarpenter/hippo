@@ -55,24 +55,34 @@ def load_qa_items(qa_path: Path, corpus_event_ids: set[str]) -> tuple[list[dict]
     return included, filtered
 
 
-def _result_event_id(result: Any) -> str | None:
-    """Best-effort extraction of an event identifier from a search result.
+def _result_source_ids(result: Any) -> set[str]:
+    """Source-tagged event ids a search result resolves to (e.g. ``shell-420``).
 
-    Tests typically pass dicts with an ``event_id`` key; production callers
-    pass :class:`hippo_brain.retrieval.SearchResult` instances which expose
-    a ``uuid``. Whichever attribute is present is stringified and returned.
+    A knowledge node is enriched from one or more SOURCE events, so a retrieval
+    hit is scored against the golden by asking whether the golden source-tagged
+    id is among the node's linked source events — NOT by comparing the golden to
+    the node's own ``uuid`` (a random node id that never equals ``shell-420``,
+    which is why every MRR/Hit@1 was 0 before this).
+
+    Production callers pass :class:`hippo_brain.retrieval.SearchResult`, which
+    exposes ``linked_source_ids: list[str]`` populated for all four sources.
+    Tests pass dicts with an ``event_id`` (single) or ``linked_source_ids``
+    (list). A bare ``uuid`` contributes nothing — it can never match a golden.
     """
+    ids: set[str] = set()
     if isinstance(result, dict):
-        for key in ("event_id", "uuid"):
-            value = result.get(key)
-            if value is not None:
-                return str(value)
-        return None
-    for attr in ("event_id", "uuid"):
-        value = getattr(result, attr, None)
-        if value is not None:
-            return str(value)
-    return None
+        single = result.get("event_id")
+        if single is not None:
+            ids.add(str(single))
+        for value in result.get("linked_source_ids", ()) or ():
+            ids.add(str(value))
+        return ids
+    for value in getattr(result, "linked_source_ids", ()) or ():
+        ids.add(str(value))
+    single = getattr(result, "event_id", None)
+    if single is not None:
+        ids.add(str(single))
+    return ids
 
 
 def score_single_retrieval(
@@ -89,7 +99,7 @@ def score_single_retrieval(
     """
     rank: int | None = None
     for i, r in enumerate(results):
-        if _result_event_id(r) == golden_event_id:
+        if golden_event_id in _result_source_ids(r):
             rank = i + 1
             break
 
