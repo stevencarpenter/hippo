@@ -1275,6 +1275,9 @@ description = "Show bench readiness: fixtures, last run + verdict, stale pause l
 run = '''
 #!/usr/bin/env bash
 set -uo pipefail
+# -e intentionally omitted: this diagnostic task runs ALL checks and reports
+# [--] for missing pieces rather than aborting on the first; the external
+# calls below are each guarded with || true accordingly.
 ROOT="${XDG_DATA_HOME:-$HOME/.local/share}/hippo-bench"
 FIXTURES="$ROOT/fixtures"
 RUNS="$ROOT/runs"
@@ -1461,6 +1464,9 @@ if [ "${BENCH_BT29_CONFIRM:-}" != "1" ]; then
     exit 1
 fi
 
+# Clear a stale pause lock from a prior crashed run (idempotent), matching bench:run.
+uv run --project brain hippo-bench recover || true
+
 ROOT="${XDG_DATA_HOME:-$HOME/.local/share}/hippo-bench"
 RUNS="$ROOT/runs"
 FIXTURES="$ROOT/fixtures"
@@ -1479,11 +1485,21 @@ DIR="$RUNS/bt29-$(date -u +%Y%m%dT%H%M%SZ)"
 mkdir -p "$DIR"
 for i in 1 2 3; do
     echo "==> BT-29 run $i/3 -> $DIR/r$i.jsonl"
+    # Capture the run's exit instead of letting set -e abort silently: a failed
+    # run (preflight abort=2, all-errored=3) gets a clear BT-29 message and the
+    # partial-results path, then propagates the real exit code.
+    set +e
     uv run --project brain hippo-bench run \
         --models "$MODEL" \
         --corpus-version "$CORPUS" \
         ${extra[@]+"${extra[@]}"} \
         --out "$DIR/r$i.jsonl"
+    rc=$?
+    set -e
+    if [ "$rc" -ne 0 ]; then
+        echo "BT-29 aborted: run $i/3 failed (exit $rc); partial results in $DIR" >&2
+        exit "$rc"
+    fi
 done
 
 echo "==> Determinism gate"
