@@ -110,11 +110,15 @@ class OmlxLifecycle:
             raise ModelLifecycleError(f"POST {url} failed: {e}") from e
         if resp.status_code == 404:
             # Surface the server's "model not found" message as a fatal error.
+            # Best-effort JSON extraction only — we ALWAYS raise below, so this
+            # never masks a failure. Catch only what parsing can raise:
+            # ValueError (malformed JSON, incl. json.JSONDecodeError) and
+            # AttributeError (body or `error` is not a dict, e.g. a bare list).
             message = resp.text
             try:
                 body = resp.json()
                 message = body.get("error", {}).get("message", message)
-            except Exception:
+            except ValueError, AttributeError:
                 pass
             raise ModelLifecycleError(f"model not found: {message}")
         if resp.status_code >= 400:

@@ -38,7 +38,7 @@ Each run's full console transcript is teed to
 
 | Task | Purpose |
 |---|---|
-| `bench:run <model-id>` | End-to-end benchmark (guided prereqs, teed transcript, gate + retrieval scorecards) |
+| `bench:run <model-id>` | End-to-end benchmark (guided prereqs, teed transcript, gate + retrieval scorecards); `BENCH_MIN_SCOREABLE=100` aborts unless the full Q/A fixture resolves |
 | `bench:status` | Readiness doctor: fixtures present, last run verdict, stale pause lock, prod-brain state |
 | `bench:corpus:init` | Sample a corpus from the live prod DB (read-only); `FORCE=1` to overwrite |
 | `bench:corpus:verify` | Verify a corpus snapshot against its manifest |
@@ -49,7 +49,8 @@ Each run's full console transcript is teed to
 | `bench:bt29 <model-id>` | 3 runs + determinism gate; requires `BENCH_BT29_CONFIRM=1` (~90 min; writes JSONL only, no teed transcript) |
 | `bench:recover` | Clear a stale pause lock from a crashed run |
 
-**Env knobs:** `BENCH_CORPUS_VERSION` (corpus-v2), `BENCH_MIN_SCOREABLE` (1),
+**Env knobs:** `BENCH_CORPUS_VERSION` (corpus-v2), `BENCH_MIN_SCOREABLE` (1; gates
+`bench:qa:validate`, `bench:run`, and `bench:bt29` — set 100 to publish),
 `BENCH_BASE_URL` / `BENCH_EMBEDDING_MODEL` (else read from prod config),
 `BENCH_DB_PATH` (corpus source DB), `BENCH_SEED` (42), `FORCE`, `BENCH_BT29_CONFIRM`.
 

@@ -1395,6 +1395,12 @@ extra=()
 [ -n "${BENCH_BASE_URL:-}" ] && extra+=(--base-url "$BENCH_BASE_URL")
 [ -n "${BENCH_EMBEDDING_MODEL:-}" ] && extra+=(--embedding-model "$BENCH_EMBEDDING_MODEL")
 
+# Publish-grade Q/A gate. Same env var as bench:qa:validate; default 1 (any
+# scoreable item) so enrichment-only and ad-hoc runs are not blocked. Set
+# BENCH_MIN_SCOREABLE=100 to abort the run unless the full fixture resolves
+# against the corpus — the gate the trust-blockers work exists to enforce.
+extra+=(--min-scoreable-qa "${BENCH_MIN_SCOREABLE:-1}")
+
 echo "==> Running bench (transcript -> $RUN_LOG)"
 # Drop -e around the pipeline so a nonzero bench exit (preflight abort=2,
 # all-models-errored=3) is captured via PIPESTATUS and the scorecards below
@@ -1480,6 +1486,12 @@ fi
 extra=()
 [ -n "${BENCH_BASE_URL:-}" ] && extra+=(--base-url "$BENCH_BASE_URL")
 [ -n "${BENCH_EMBEDDING_MODEL:-}" ] && extra+=(--embedding-model "$BENCH_EMBEDDING_MODEL")
+
+# Publish-grade Q/A gate. Same env var as bench:qa:validate; default 1 (any
+# scoreable item) so enrichment-only and ad-hoc runs are not blocked. Set
+# BENCH_MIN_SCOREABLE=100 to abort the run unless the full fixture resolves
+# against the corpus — the gate the trust-blockers work exists to enforce.
+extra+=(--min-scoreable-qa "${BENCH_MIN_SCOREABLE:-1}")
 
 DIR="$RUNS/bt29-$(date -u +%Y%m%dT%H%M%SZ)"
 mkdir -p "$DIR"

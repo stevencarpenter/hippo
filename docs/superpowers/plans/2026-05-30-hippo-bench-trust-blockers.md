@@ -437,6 +437,18 @@ def check_qa_scoreable(corpus_sqlite: Path, min_scoreable: int = 1) -> CheckResu
     )
 ```
 
+> **Implementation note (intentional deviation from this plan).** As shipped,
+> `check_qa_scoreable` returns `status="warn"` (not `"fail"`) when the Q/A fixture
+> or corpus is *absent*, so enrichment-only gate runs remain legal; only a fixture
+> that is **present but under-scoreable** aborts the run. This deliberately
+> weakens the "missing fixture is fatal" wording above in exchange for supporting
+> enrichment-only runs — see the `run_all_preflight` docstring. Separately, the
+> `min_scoreable_qa` gate is threaded end-to-end through `orchestrate_run` (param)
+> and the `run` CLI subcommand (`--min-scoreable-qa`, default 1), with `bench:run`
+> wiring it from `BENCH_MIN_SCOREABLE` — the same env var `bench:qa:validate` uses.
+> Without that plumbing the run path silently used the default of 1 and could
+> publish metrics over a single Q/A item. (Added during code review, 2026-05-31.)
+
 Update `run_all_preflight` signature:
 
 ```python

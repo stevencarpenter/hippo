@@ -230,6 +230,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
         skip_prod_pause=args.skip_prod_pause,
         dry_run=args.dry_run,
         skip_checks=args.skip_checks,
+        min_scoreable_qa=args.min_scoreable_qa,
     )
     print(f"run_id={result.run_id} out={result.out_path}")
     if result.models_completed:
@@ -347,6 +348,14 @@ def _build_parser() -> argparse.ArgumentParser:
         "--skip-prod-pause",
         action="store_true",
         help="Skip pausing the prod brain before the run.",
+    )
+    run.add_argument(
+        "--min-scoreable-qa",
+        type=int,
+        default=1,
+        help="Abort the run if the Q/A fixture is present but fewer than this many "
+        "goldens resolve against the corpus. Default 1 (any scoreable item). Set to "
+        "100 for the publish-grade gate. A missing fixture warns rather than aborts.",
     )
     run.set_defaults(func=_cmd_run)
 

@@ -122,8 +122,16 @@ def orchestrate_run(
     skip_prod_pause: bool = False,
     dry_run: bool = False,
     skip_checks: bool = False,
+    min_scoreable_qa: int = 1,
 ) -> OrchestrationResult:
-    """Top-level orchestration loop."""
+    """Top-level orchestration loop.
+
+    `min_scoreable_qa` is the publish-grade Q/A gate forwarded to preflight: the
+    run aborts if the Q/A fixture is present but fewer than this many goldens
+    resolve against the corpus. Defaults to 1 (any scoreable item), so callers
+    must opt in to the full 100-item gate. A *missing* fixture warns rather than
+    aborts regardless of this value (enrichment-only runs stay legal).
+    """
     run_id = _build_run_id()
     out_dir = out_path.parent
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -217,6 +225,7 @@ def orchestrate_run(
                 manifest=manifest_path,
                 inference_url=normalized_inference_url,
                 skip_prod_pause=skip_prod_pause,
+                min_scoreable_qa=min_scoreable_qa,
             )
         else:
             preflight_checks, aborted = [], False

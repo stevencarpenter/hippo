@@ -317,6 +317,74 @@ def test_orchestrate_forwards_preflight_warnings(stub_corpus, tmp_path):
     assert result.preflight_aborted is False
 
 
+def test_orchestrate_forwards_min_scoreable_qa_to_preflight(stub_corpus, tmp_path):
+    """The publish-grade Q/A gate must reach the run path. orchestrate_run forwards
+    its `min_scoreable_qa` to run_all_preflight; without this plumbing, the run
+    silently uses the default of 1 and can publish MRR over a single Q/A item even
+    when an operator asked for the 100-item gate."""
+    sqlite, manifest = stub_corpus
+    out = tmp_path / "run.jsonl"
+    captured: list[int] = []
+
+    def fake_preflight(
+        *, brain_url, corpus_sqlite, manifest, inference_url, skip_prod_pause, min_scoreable_qa=1
+    ):
+        captured.append(min_scoreable_qa)
+        return [], False
+
+    with (
+        patch("hippo_brain.bench.orchestrate.run_all_preflight", side_effect=fake_preflight),
+        patch("hippo_brain.bench.orchestrate.PauseRpcClient") as PauseClient,
+    ):
+        PauseClient.return_value.probe_health.return_value = None
+        orchestrate_run(
+            candidate_models=[],
+            corpus_sqlite=sqlite,
+            manifest_path=manifest,
+            out_path=out,
+            inference_url="http://localhost:1234/v1",
+            skip_checks=False,
+            skip_prod_pause=True,
+            dry_run=False,
+            min_scoreable_qa=100,
+        )
+
+    assert captured == [100]
+
+
+def test_orchestrate_min_scoreable_qa_defaults_to_one(stub_corpus, tmp_path):
+    """Default behaviour is unchanged: omitting min_scoreable_qa forwards 1, so
+    enrichment-only and ad-hoc runs are not gated on a full 100-item fixture
+    unless the operator opts in."""
+    sqlite, manifest = stub_corpus
+    out = tmp_path / "run.jsonl"
+    captured: list[int] = []
+
+    def fake_preflight(
+        *, brain_url, corpus_sqlite, manifest, inference_url, skip_prod_pause, min_scoreable_qa=1
+    ):
+        captured.append(min_scoreable_qa)
+        return [], False
+
+    with (
+        patch("hippo_brain.bench.orchestrate.run_all_preflight", side_effect=fake_preflight),
+        patch("hippo_brain.bench.orchestrate.PauseRpcClient") as PauseClient,
+    ):
+        PauseClient.return_value.probe_health.return_value = None
+        orchestrate_run(
+            candidate_models=[],
+            corpus_sqlite=sqlite,
+            manifest_path=manifest,
+            out_path=out,
+            inference_url="http://localhost:1234/v1",
+            skip_checks=False,
+            skip_prod_pause=True,
+            dry_run=False,
+        )
+
+    assert captured == [1]
+
+
 def test_orchestrate_writes_computed_gates_instead_of_hardcoded_pass(stub_corpus, tmp_path):
     sqlite, manifest = stub_corpus
     out = tmp_path / "run.jsonl"
