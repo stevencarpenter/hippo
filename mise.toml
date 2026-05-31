@@ -1212,3 +1212,41 @@ run = "uv run --project brain hippo-bench determinism ${@}"
 [tasks."bench:corpus:verify"]
 description = "Verify a bench corpus snapshot's content hashes against its manifest"
 run = "uv run --project brain hippo-bench corpus verify --corpus-version \"${BENCH_CORPUS_VERSION:-corpus-v2}\""
+
+[tasks."bench:qa:validate"]
+description = "Validate Q/A golden coverage against the corpus (BENCH_MIN_SCOREABLE, default 1)"
+run = '''
+#!/usr/bin/env bash
+set -euo pipefail
+ROOT="${XDG_DATA_HOME:-$HOME/.local/share}/hippo-bench"
+FIXTURES="$ROOT/fixtures"
+CORPUS="${BENCH_CORPUS_VERSION:-corpus-v2}"
+uv run --project brain hippo-bench qa validate \
+  --qa-path "$FIXTURES/eval-qa-v1.jsonl" \
+  --corpus-sqlite "$FIXTURES/$CORPUS.sqlite" \
+  --min-scoreable "${BENCH_MIN_SCOREABLE:-1}"
+'''
+
+[tasks."bench:corpus:init"]
+description = "Sample a fresh bench corpus from the LIVE prod DB (read-only); FORCE=1 to overwrite"
+run = '''
+#!/usr/bin/env bash
+set -euo pipefail
+CORPUS="${BENCH_CORPUS_VERSION:-corpus-v2}"
+DB="${BENCH_DB_PATH:-${XDG_DATA_HOME:-$HOME/.local/share}/hippo/hippo.db}"
+FIXTURES="${XDG_DATA_HOME:-$HOME/.local/share}/hippo-bench/fixtures"
+echo "── BENCH corpus init ─────────────────────────────────────────"
+echo "  Samples the LIVE prod DB read-only: $DB"
+echo "  Writes snapshot to $FIXTURES/$CORPUS.*"
+echo "  This is a bench operation, not normal hippo execution."
+echo "──────────────────────────────────────────────────────────────"
+if [ ! -e "$DB" ]; then
+    echo "ERROR: source DB not found: $DB" >&2
+    exit 1
+fi
+args=(--corpus-version "$CORPUS" --seed "${BENCH_SEED:-42}" --db-path "$DB")
+if [ "${FORCE:-}" = "1" ]; then
+    args+=(--bump-version "$CORPUS")
+fi
+uv run --project brain hippo-bench corpus init "${args[@]}"
+'''
