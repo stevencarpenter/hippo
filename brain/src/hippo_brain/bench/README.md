@@ -13,6 +13,46 @@ tooling can rank.
 
 ---
 
+## Running via mise (recommended)
+
+`mise` tasks wrap the CLI and automate the easy-to-forget setup. They write only
+to the separate bench data root (`~/.local/share/hippo-bench/`), never to prod.
+
+**Cold start → scored model:**
+
+```bash
+mise run bench:corpus:init       # one-time: sample a corpus from the live DB (read-only)
+mise run bench:corpus:verify     # optional: re-check the snapshot hashes
+mise run bench:qa:validate       # optional: confirm Q/A goldens resolve against the corpus
+mise run bench:run <model-id>    # seeds Q/A if needed, runs, tees a transcript, prints scorecards
+mise run bench:summary           # re-print the newest run's gate scorecard
+```
+
+`bench:run` is guided: it auto-seeds the Q/A fixture and clears any stale pause
+lock, but if the corpus snapshot is missing it stops and tells you to run
+`bench:corpus:init` (which is the only step that reads your live `hippo.db`).
+Each run's full console transcript is teed to
+`~/.local/share/hippo-bench/runs/<stem>.log` next to the results JSONL.
+
+**Tasks:**
+
+| Task | Purpose |
+|---|---|
+| `bench:run <model-id>` | End-to-end benchmark (guided prereqs, teed transcript, gate + retrieval scorecards) |
+| `bench:status` | Readiness doctor: fixtures present, last run verdict, stale pause lock, prod-brain state |
+| `bench:corpus:init` | Sample a corpus from the live prod DB (read-only); `FORCE=1` to overwrite |
+| `bench:corpus:verify` | Verify a corpus snapshot against its manifest |
+| `bench:qa:seed` | Seed `eval-qa-v1.jsonl` from the committed template (idempotent) |
+| `bench:qa:validate` | Validate Q/A golden coverage (`BENCH_MIN_SCOREABLE`, default 1; use 100 to publish) |
+| `bench:summary [<file>]` | Gate scorecard for a run JSONL (newest if omitted) |
+| `bench:determinism <files…>` | BT-29 budget comparison over existing run files |
+| `bench:bt29 <model-id>` | 3 runs + determinism gate; requires `BENCH_BT29_CONFIRM=1` (~90 min; writes JSONL only, no teed transcript) |
+| `bench:recover` | Clear a stale pause lock from a crashed run |
+
+**Env knobs:** `BENCH_CORPUS_VERSION` (corpus-v2), `BENCH_MIN_SCOREABLE` (1),
+`BENCH_BASE_URL` / `BENCH_EMBEDDING_MODEL` (else read from prod config),
+`BENCH_DB_PATH` (corpus source DB), `BENCH_SEED` (42), `FORCE`, `BENCH_BT29_CONFIRM`.
+
 ## Why this exists
 
 Hippo's enrichment pipeline calls a local LLM via LM Studio for every eligible

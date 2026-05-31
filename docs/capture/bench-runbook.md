@@ -4,6 +4,11 @@ This runbook covers the operator-driven gates that the autonomous bench loop
 deliberately doesn't run because the blast radius is too high. The current
 critical entry is **BT-29: deterministic-rerun verification.**
 
+> **mise shortcut:** the everyday flow is wrapped in `bench:*` mise tasks —
+> `mise run bench:status`, `mise run bench:run <model-id>`, etc. See
+> [the bench README](../../brain/src/hippo_brain/bench/README.md#running-via-mise-recommended).
+> This runbook remains authoritative for the operator-gated BT-29 procedure.
+
 ## Required pre-BT-29 corpus/Q/A gate
 
 Before running the three BT-29 model passes, confirm the corpus is schema-current
