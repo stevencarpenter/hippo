@@ -29,6 +29,7 @@ from hippo_brain.bench.paths import bench_qa_path, bench_run_tree
 from hippo_brain.bench.pause_rpc import PauseRpcClient
 from hippo_brain.bench.preflight import check_brain_port_free
 from hippo_brain.bench.runner import run_self_consistency_pass
+from hippo_brain.vector_store import open_conn as open_vec_conn
 from hippo_brain.bench.shadow_stack import (
     spawn_shadow_stack,
     teardown_shadow_stack,
@@ -342,7 +343,14 @@ def run_one_model(
                 if qa_path.exists():
                     included_qa, _ = load_qa_items(qa_path, event_ids)
                     if included_qa:
-                        with contextlib.closing(sqlite3.connect(str(bench_db))) as conn:
+                        # open_vec_conn loads the sqlite-vec extension; a raw
+                        # sqlite3.connect does NOT, so the hybrid retrieval's
+                        # vec0 knn_search fails with "no such module: vec0" and
+                        # the whole downstream-proxy pass is captured as an error
+                        # (downstream_proxy stays {}). The shadow brain loads
+                        # vec0 on its own connection during enrichment, but this
+                        # scoring pass opens its own connection and must too.
+                        with contextlib.closing(open_vec_conn(bench_db)) as conn:
                             downstream_proxy = run_downstream_proxy_pass(
                                 conn,
                                 included_qa,
