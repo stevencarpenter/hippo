@@ -40,8 +40,56 @@ def _spawn_kwargs(tmp_path: pathlib.Path, **overrides):
         "model_id": "qwen3.5-35b-a3b",
         "corpus_version": "corpus-v2",
         "embedding_model": "embedding-test",
+        "inference_base_url": "http://localhost:8000/v1",
         **overrides,
     }
+
+
+def test_shadow_config_writes_inference_and_models_sections(tmp_path):
+    # Regression: the shadow brain is a separate process that reads its
+    # inference endpoint from this generated config. When [inference]/[models]
+    # were omitted it fell back to the LM Studio default (:1234) and every
+    # enrichment call failed "All connection attempts failed" — the bench
+    # no-op'd with zero system load instead of benchmarking. Section MUST be
+    # [inference] (the brain hard-fails on a legacy [lmstudio] section).
+    run_tree = tmp_path / "run-tree"
+    shadow_stack._write_shadow_config(
+        run_tree,
+        18923,
+        inference_base_url="http://localhost:8000/v1",
+        enrichment_model="qwen3.6-35b",
+        embedding_model="nomic-embed",
+    )
+    text = (run_tree / ".config" / "hippo" / "config.toml").read_text()
+    assert "[inference]" in text
+    assert "[lmstudio]" not in text
+    assert 'base_url = "http://localhost:8000/v1"' in text
+    assert "[models]" in text
+    assert 'enrichment = "qwen3.6-35b"' in text
+    assert 'embedding = "nomic-embed"' in text
+    assert 'query = "qwen3.6-35b"' in text
+
+    # And it must parse as valid TOML the brain can load.
+    import tomllib
+
+    parsed = tomllib.loads(text)
+    assert parsed["inference"]["base_url"] == "http://localhost:8000/v1"
+    assert parsed["models"]["embedding"] == "nomic-embed"
+    assert parsed["brain"]["port"] == 18923
+
+
+def test_spawn_threads_inference_base_url_into_config(tmp_path, monkeypatch):
+    calls = _capture_popen_calls(monkeypatch, tmp_path)
+    run_tree = tmp_path / "run-tree"
+    with patch.dict(os.environ, {}, clear=True):
+        spawn_shadow_stack(
+            **_spawn_kwargs(
+                tmp_path, run_tree=run_tree, inference_base_url="http://localhost:8000/v1"
+            )
+        )
+    assert len(calls) == 2
+    text = (run_tree / ".config" / "hippo" / "config.toml").read_text()
+    assert 'base_url = "http://localhost:8000/v1"' in text
 
 
 def _capture_popen_calls(monkeypatch, tmp_path: pathlib.Path):

@@ -75,15 +75,38 @@ def _build_env(
     return env
 
 
-def _write_shadow_config(run_tree: pathlib.Path, brain_port: int) -> None:
-    """Write a minimal config.toml into the shadow HOME so both the daemon and
-    brain read from it.  The storage.data_dir points at run_tree so the daemon
-    opens run_tree/hippo.db — the same file the coordinator copied corpus into."""
+def _write_shadow_config(
+    run_tree: pathlib.Path,
+    brain_port: int,
+    *,
+    inference_base_url: str,
+    enrichment_model: str,
+    embedding_model: str,
+) -> None:
+    """Write a config.toml into the shadow HOME so both the daemon and brain
+    read from it.  The storage.data_dir points at run_tree so the daemon opens
+    run_tree/hippo.db — the same file the coordinator copied corpus into.
+
+    The [inference] and [models] sections are REQUIRED: the shadow brain is a
+    separate process that reads its inference endpoint from this file. Without
+    them it falls back to the built-in default (`http://localhost:1234/v1`, the
+    old LM Studio port) and every enrichment call fails with "All connection
+    attempts failed" — the bench then no-ops with zero system load instead of
+    benchmarking the model. The section MUST be named [inference] (the brain
+    hard-fails on a legacy [lmstudio] section)."""
     config_dir = run_tree / ".config" / "hippo"
     config_dir.mkdir(parents=True, exist_ok=True)
     config_path = config_dir / "config.toml"
+    # tomllib is read-only; emit TOML by hand. Values here are model ids and a
+    # URL (no quotes/backslashes), so a straight f-string is safe.
     config_path.write_text(
-        f'[storage]\ndata_dir = "{run_tree}"\n\n[brain]\nport = {brain_port}\n',
+        f'[storage]\ndata_dir = "{run_tree}"\n\n'
+        f"[brain]\nport = {brain_port}\n\n"
+        f'[inference]\nbase_url = "{inference_base_url}"\n\n'
+        f"[models]\n"
+        f'enrichment = "{enrichment_model}"\n'
+        f'embedding = "{embedding_model}"\n'
+        f'query = "{enrichment_model}"\n',
         encoding="utf-8",
     )
 
@@ -180,6 +203,7 @@ def spawn_shadow_stack(
     model_id: str,
     corpus_version: str,
     embedding_model: str,
+    inference_base_url: str,
     brain_port: int = 18923,
     otel_enabled: bool = False,
 ) -> ShadowStack:
@@ -187,7 +211,13 @@ def spawn_shadow_stack(
     logs_dir = run_tree / "logs"
     logs_dir.mkdir(parents=True, exist_ok=True)
 
-    _write_shadow_config(run_tree, brain_port)
+    _write_shadow_config(
+        run_tree,
+        brain_port,
+        inference_base_url=inference_base_url,
+        enrichment_model=model_id,
+        embedding_model=embedding_model,
+    )
 
     # Per-run tmpdir for the daemon's socket-fallback (`$TMPDIR/hippo-daemon.sock`).
     # Two constraints fight here:

@@ -273,6 +273,7 @@ def run_one_model(
             model_id=model,
             corpus_version="corpus-v2",
             embedding_model=embedding_model or "embed-model",
+            inference_base_url=inference_url,
             brain_port=18923,
             otel_enabled=False,
         )
