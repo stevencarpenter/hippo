@@ -1332,13 +1332,14 @@ else
 fi
 
 echo "Prod brain:"
-# Read [brain].port specifically — scope to the section so a `port` under
-# another table (e.g. [inference]) can't be mistaken for the brain port.
-PROD_PORT="$(awk '
-    /^[[:space:]]*\[brain\][[:space:]]*$/ {inb=1; next}
-    /^[[:space:]]*\[/ {inb=0}
-    inb && /^[[:space:]]*port[[:space:]]*=/ {gsub(/[^0-9]/, ""); print; exit}
-' "${XDG_CONFIG_HOME:-$HOME/.config}/hippo/config.toml" 2>/dev/null || true)"
+# Resolve [brain].port via the canonical Python resolver (single source of
+# truth) rather than re-parsing the TOML in awk. resolve_prod_brain_port
+# matches what the bench actually connects to: XDG-spec precedence (empty
+# XDG_CONFIG_HOME == unset), and validation of malformed TOML / non-table
+# [brain] / out-of-range ports that a regex scan silently mishandles.
+PROD_PORT="$(uv run --project brain python3 -c \
+    'from hippo_brain.bench.prod_config import resolve_prod_brain_port; print(resolve_prod_brain_port())' \
+    2>/dev/null || true)"
 PROD_PORT="${PROD_PORT:-9175}"
 if H="$(curl -sf "http://127.0.0.1:$PROD_PORT/health" 2>/dev/null)"; then
     PAUSED="$(printf '%s' "$H" | python3 -c 'import sys,json; print(json.load(sys.stdin).get("paused","?"))' 2>/dev/null || echo '?')"

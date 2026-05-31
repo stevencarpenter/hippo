@@ -6,13 +6,14 @@ the test doesn't need a live LM Studio or shadow brain.
 from __future__ import annotations
 
 import json
+import subprocess
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 
 from hippo_brain.bench.coordinator import ModelRunResult
-from hippo_brain.bench.orchestrate import orchestrate_run
+from hippo_brain.bench.orchestrate import _inference_backend_version, orchestrate_run
 from hippo_brain.bench.output import AttemptRecord
 from hippo_brain.bench.preflight import CheckResult
 
@@ -383,6 +384,36 @@ def test_orchestrate_min_scoreable_qa_defaults_to_one(stub_corpus, tmp_path):
         )
 
     assert captured == [1]
+
+
+def test_inference_backend_version_skips_lms_probe_on_omlx(monkeypatch):
+    """On the default oMLX backend, version provenance is None WITHOUT shelling
+    out to `lms` — that subprocess is a guaranteed failure on an oMLX-only box."""
+    monkeypatch.setenv("HIPPO_BENCH_MODEL_LIFECYCLE", "omlx")
+    with patch("hippo_brain.bench.orchestrate.subprocess.run") as run:
+        assert _inference_backend_version() is None
+    run.assert_not_called()
+
+
+def test_inference_backend_version_probes_lms_when_selected(monkeypatch):
+    """When the LM Studio backend is explicitly selected, the version is read
+    from `lms --version`."""
+    monkeypatch.setenv("HIPPO_BENCH_MODEL_LIFECYCLE", "lms")
+    completed = subprocess.CompletedProcess(
+        args=["lms", "--version"], returncode=0, stdout="1.2.3\n"
+    )
+    with patch("hippo_brain.bench.orchestrate.subprocess.run", return_value=completed) as run:
+        assert _inference_backend_version() == "1.2.3"
+    run.assert_called_once()
+
+
+def test_inference_backend_version_none_on_unknown_backend(monkeypatch):
+    """A misconfigured selector yields None (best-effort provenance), not a crash;
+    the bad value still fails the run loudly via get_model_lifecycle elsewhere."""
+    monkeypatch.setenv("HIPPO_BENCH_MODEL_LIFECYCLE", "bogus")
+    with patch("hippo_brain.bench.orchestrate.subprocess.run") as run:
+        assert _inference_backend_version() is None
+    run.assert_not_called()
 
 
 def test_orchestrate_writes_computed_gates_instead_of_hardcoded_pass(stub_corpus, tmp_path):

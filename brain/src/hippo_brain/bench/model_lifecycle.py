@@ -152,6 +152,25 @@ class LmsLifecycle:
         return int((time.monotonic() - start) * 1000)
 
 
+def resolve_backend_name() -> str:
+    """Return the selected inference backend name: `"omlx"` (default) or `"lms"`.
+
+    Single source of truth for backend selection from the
+    `HIPPO_BENCH_MODEL_LIFECYCLE` environment variable, shared by
+    `get_model_lifecycle` (which impl to drive) and provenance probes (which
+    backend's version to record). Raises `ModelLifecycleError` on an unknown
+    value so a typo fails loudly instead of silently defaulting.
+    """
+    backend = os.environ.get("HIPPO_BENCH_MODEL_LIFECYCLE", "").strip().lower()
+    if backend == "lms":
+        return "lms"
+    if backend in ("", "omlx"):
+        return "omlx"
+    raise ModelLifecycleError(
+        f"unknown HIPPO_BENCH_MODEL_LIFECYCLE={backend!r} (expected 'omlx' or 'lms')"
+    )
+
+
 def get_model_lifecycle(base_url: str) -> ModelLifecycle:
     """Select a `ModelLifecycle` implementation for `base_url`.
 
@@ -161,11 +180,6 @@ def get_model_lifecycle(base_url: str) -> ModelLifecycle:
     `HIPPO_BENCH_MODEL_LIFECYCLE=lms` environment variable, keeping the legacy
     backend available without coupling the default to a vendor CLI.
     """
-    backend = os.environ.get("HIPPO_BENCH_MODEL_LIFECYCLE", "").strip().lower()
-    if backend == "lms":
+    if resolve_backend_name() == "lms":
         return LmsLifecycle()
-    if backend in ("", "omlx"):
-        return OmlxLifecycle(base_url)
-    raise ModelLifecycleError(
-        f"unknown HIPPO_BENCH_MODEL_LIFECYCLE={backend!r} (expected 'omlx' or 'lms')"
-    )
+    return OmlxLifecycle(base_url)

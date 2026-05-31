@@ -18,6 +18,7 @@ from hippo_brain.bench import __version__
 from hippo_brain.bench.config import DEFAULT_THRESHOLDS
 from hippo_brain.bench.coordinator import run_one_model
 from hippo_brain.bench.enrich_call import call_embedding
+from hippo_brain.bench.model_lifecycle import ModelLifecycleError, resolve_backend_name
 from hippo_brain.bench.output import (
     ModelSummaryRecord,
     RunEndRecord,
@@ -83,7 +84,22 @@ def _cpu_brand() -> str:
     return platform.processor() or "unknown"
 
 
-def _lms_version() -> str | None:
+def _inference_backend_version() -> str | None:
+    """Best-effort inference-backend version for run provenance.
+
+    Only the LM Studio backend exposes a CLI version (`lms --version`). For the
+    default oMLX backend — and any other — return None WITHOUT spawning a
+    subprocess: shelling out to `lms` on an oMLX-only machine is a guaranteed
+    failure that costs a 5s timeout per run and yields the same None anyway.
+    Gate on the same selector `get_model_lifecycle` uses so the two never drift.
+    """
+    try:
+        if resolve_backend_name() != "lms":
+            return None
+    except ModelLifecycleError:
+        # Misconfigured backend selector — the run will fail loudly elsewhere;
+        # provenance is best-effort, so record nothing rather than crash here.
+        return None
     try:
         out = subprocess.run(
             ["lms", "--version"], capture_output=True, text=True, check=False, timeout=5
@@ -253,7 +269,7 @@ def orchestrate_run(
             gate_thresholds=dict(DEFAULT_THRESHOLDS),
             host_baseline=host_baseline,
             prod_state_at_start=prod_state_at_start,
-            inference_backend_version=_lms_version(),
+            inference_backend_version=_inference_backend_version(),
         )
         writer.write_manifest(manifest_record)
 
