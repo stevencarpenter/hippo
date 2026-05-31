@@ -70,9 +70,16 @@ def _wait_for_queue_drain(
     as "drained instantly". The previous behavior (warn once, return False)
     masked schema bumps as bench success and recorded near-zero throughput.
     """
+    # Live enrichment queues only. The agentic unification (schema v18) FROZE
+    # claude_enrichment_queue — the brain no longer claims from it, so any
+    # pending/processing rows that rode along in the corpus snapshot (copied
+    # from the prod DB) are UNDRAINABLE and would pin total_pending > 0 forever,
+    # hanging the drain until drain_timeout_sec (default 1h). Claude/Codex/etc.
+    # enrichment now flows through agentic_enrichment_queue, which the shadow
+    # brain actually drains — poll that instead.
     tables = [
         "enrichment_queue",
-        "claude_enrichment_queue",
+        "agentic_enrichment_queue",
         "browser_enrichment_queue",
         "workflow_enrichment_queue",
     ]
