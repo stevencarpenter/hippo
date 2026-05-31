@@ -133,13 +133,18 @@ def _cmd_corpus_add_adversarial(args: argparse.Namespace) -> int:
             print(f"error: source must be one of {sorted(valid_sources)}, got {source!r}")
             return 1
 
+        # The "claude" source resolves to agentic_sessions (harness='claude-code'),
+        # NOT the frozen claude_sessions table — a claude-<id> event_id is an
+        # agentic_sessions.id everywhere else (corpus builder, qa validator,
+        # retrieval linked_source_ids). Reading claude_sessions here would miss
+        # (new sessions only live in agentic_sessions) or mis-resolve a stale row.
         source_table_map = {
-            "shell": ("events", "id"),
-            "claude": ("claude_sessions", "id"),
-            "browser": ("browser_events", "id"),
-            "workflow": ("workflow_runs", "id"),
+            "shell": ("events", "id", ""),
+            "claude": ("agentic_sessions", "id", " AND harness = 'claude-code'"),
+            "browser": ("browser_events", "id", ""),
+            "workflow": ("workflow_runs", "id", ""),
         }
-        table, id_col = source_table_map[source]
+        table, id_col, extra_where = source_table_map[source]
 
         try:
             _, raw_id_str = event_id.split("-", 1)
@@ -153,7 +158,7 @@ def _cmd_corpus_add_adversarial(args: argparse.Namespace) -> int:
         prod_conn.row_factory = sqlite3.Row
         try:
             row = prod_conn.execute(
-                f"SELECT * FROM {table} WHERE {id_col} = ?", (raw_id,)
+                f"SELECT * FROM {table} WHERE {id_col} = ?{extra_where}", (raw_id,)
             ).fetchone()
         finally:
             prod_conn.close()

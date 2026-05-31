@@ -547,9 +547,10 @@ def _fetch_details(conn: sqlite3.Connection, node_ids: Sequence[int]) -> dict[in
             continue
         d["linked_source_ids"].append(f"workflow-{wr_id}")
 
-    # Fill from agentic sessions if still empty.
-    # Probes are excluded via `asx.probe_tag IS NULL` (defense-in-depth vs AP-6;
-    # probes never enqueue so are normally unlinked anyway).
+    # Attach agentic-session linkage (cwd/branch backfill only if still empty;
+    # linked_source_ids is always appended). Probes are excluded via
+    # `asx.probe_tag IS NULL` (defense-in-depth vs AP-6; probes never enqueue so
+    # are normally unlinked anyway).
     cs_rows = conn.execute(  # nosemgrep: unfiltered-event-table-select
         f"""
         SELECT kncs.knowledge_node_id, asx.id, asx.harness,

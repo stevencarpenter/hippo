@@ -320,3 +320,51 @@ def test_cli_qa_export_worklist(monkeypatch, tmp_path):
     )
 
     assert code == 0
+
+
+def test_cli_add_adversarial_claude_reads_agentic_sessions(monkeypatch, tmp_path):
+    """A claude-<id> adversarial id must resolve against agentic_sessions
+    (harness='claude-code'), NOT the frozen claude_sessions table — matching the
+    id space used by the corpus builder, qa validator, and retrieval. Regression
+    for the fifth frozen-claude_* read (cli.py corpus add-adversarial)."""
+    import sqlite3
+
+    from hippo_brain.bench import cli
+
+    # Fake $HOME so the hardcoded prod DB path resolves under tmp_path, and a
+    # separate XDG_DATA_HOME so the bench overlay lands in tmp too.
+    home = tmp_path / "home"
+    (home / ".local" / "share" / "hippo").mkdir(parents=True)
+    monkeypatch.setattr(cli.Path, "home", classmethod(lambda cls: home))
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
+
+    prod_db = home / ".local" / "share" / "hippo" / "hippo.db"
+    conn = sqlite3.connect(prod_db)
+    # agentic_sessions has the real claude row at id=7; the frozen claude_sessions
+    # has a DIFFERENT row at id=7 that must NOT be used.
+    conn.execute(
+        "CREATE TABLE agentic_sessions (id INTEGER PRIMARY KEY, harness TEXT, summary_text TEXT)"
+    )
+    conn.execute("CREATE TABLE claude_sessions (id INTEGER PRIMARY KEY, summary_text TEXT)")
+    conn.execute(
+        "INSERT INTO agentic_sessions (id, harness, summary_text) "
+        "VALUES (7, 'claude-code', 'CORRECT agentic row')"
+    )
+    conn.execute("INSERT INTO claude_sessions (id, summary_text) VALUES (7, 'WRONG frozen row')")
+    conn.commit()
+    conn.close()
+
+    code = cli.main(["corpus", "add-adversarial", "claude-7", "--reason", "test adversarial"])
+    assert code == 0
+
+    # Verify the overlay stored the agentic row content, not the frozen one.
+    from hippo_brain.bench.paths import corpus_overlay_path
+
+    overlay = sqlite3.connect(corpus_overlay_path())
+    stored = overlay.execute(
+        "SELECT redacted_content FROM adversarial_events WHERE event_id = ?", ("claude-7",)
+    ).fetchone()
+    overlay.close()
+    assert stored is not None
+    assert "CORRECT agentic row" in stored[0]
+    assert "WRONG frozen row" not in stored[0]
