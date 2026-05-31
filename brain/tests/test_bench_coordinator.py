@@ -66,9 +66,10 @@ def _patch_lifecycle(
     monkeypatch.setattr(coordinator, "teardown_shadow_stack", teardown_mock)
     monkeypatch.setattr(coordinator, "_wait_for_queue_drain", drain_mock)
 
-    # Patch the lms module to no-ops.
-    monkeypatch.setattr(coordinator.lms, "unload_all", MagicMock())
-    monkeypatch.setattr(coordinator.lms, "load", MagicMock())
+    # Patch the model lifecycle to a no-op so no real inference server is hit.
+    lifecycle_mock = MagicMock()
+    lifecycle_mock.prepare.return_value = 0
+    monkeypatch.setattr(coordinator, "get_model_lifecycle", MagicMock(return_value=lifecycle_mock))
 
     # Patch shutil.copy2 — the empty fake corpus would fail real copy.
     monkeypatch.setattr(shutil, "copy2", MagicMock())

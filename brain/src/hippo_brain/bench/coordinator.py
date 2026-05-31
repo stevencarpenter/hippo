@@ -16,7 +16,6 @@ import time
 from pathlib import Path
 from typing import Any
 
-from hippo_brain.bench import lms
 from hippo_brain.bench.corpus import CorpusEntry, load_corpus
 from hippo_brain.bench.downstream_proxy import (
     load_qa_items,
@@ -24,6 +23,7 @@ from hippo_brain.bench.downstream_proxy import (
 )
 from hippo_brain.bench.enrich_call import call_enrichment
 from hippo_brain.bench.metrics import MetricsSampler
+from hippo_brain.bench.model_lifecycle import get_model_lifecycle
 from hippo_brain.bench.output import AttemptRecord
 from hippo_brain.bench.paths import bench_qa_path, bench_run_tree
 from hippo_brain.bench.pause_rpc import PauseRpcClient
@@ -226,10 +226,11 @@ def run_one_model(
     """
     start_time = time.time()
 
-    # 1. Unload all, load target model
-    lms.unload_all()
-    time.sleep(1)
-    lms.load(model)
+    # 1. Make the target model resident on the inference server (unload others,
+    # load target). Vendor-neutral via the ModelLifecycle abstraction — oMLX
+    # over HTTP by default, LM Studio CLI when explicitly selected.
+    lifecycle = get_model_lifecycle(inference_url)
+    lifecycle.prepare(model)
 
     # 2. Create run tree and copy corpus
     run_tree = bench_run_tree(run_id, model, create=True)
@@ -279,7 +280,7 @@ def run_one_model(
         # 4. Wait for brain ready and record process_ready_ms
         process_ready_ms = int(wait_for_brain_ready(stack) * 1000)
 
-        # 5. Warmup — direct calls to LM Studio to prime the model before the timed window
+        # 5. Warmup — direct calls to the inference server to prime the model before the timed window
         try:
             all_entries = _load_corpus_entries(corpus_sqlite)
         except Exception as e:
@@ -342,7 +343,7 @@ def run_one_model(
         except Exception as e:
             _capture("downstream_proxy", e)
 
-        # 10. Self-consistency pass — 5 events × N runs via direct LM Studio calls
+        # 10. Self-consistency pass — 5 events × N runs via direct inference-server calls
         if all_entries and sc_events > 0 and sc_runs > 0:
             sc_pool = rng.sample(all_entries, min(sc_events, len(all_entries)))
             try:
