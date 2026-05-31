@@ -1443,3 +1443,49 @@ echo "Results   : $RUN_JSONL"
 echo "Transcript: $RUN_LOG"
 exit "$rc"
 '''
+
+[tasks."bench:bt29"]
+description = "BT-29 determinism: 3 runs of a model + budget gate (guarded by BENCH_BT29_CONFIRM=1)"
+run = '''
+#!/usr/bin/env bash
+set -euo pipefail
+
+MODEL="${1:-}"
+if [ -z "$MODEL" ]; then
+    echo "Usage: BENCH_BT29_CONFIRM=1 mise run bench:bt29 <model-id>" >&2
+    exit 1
+fi
+if [ "${BENCH_BT29_CONFIRM:-}" != "1" ]; then
+    echo "Refusing: BT-29 runs the model 3x (~90 min, pauses prod brain each time)." >&2
+    echo "Re-run with BENCH_BT29_CONFIRM=1 to proceed." >&2
+    exit 1
+fi
+
+ROOT="${XDG_DATA_HOME:-$HOME/.local/share}/hippo-bench"
+RUNS="$ROOT/runs"
+FIXTURES="$ROOT/fixtures"
+CORPUS="${BENCH_CORPUS_VERSION:-corpus-v2}"
+if [ ! -e "$FIXTURES/$CORPUS.sqlite" ]; then
+    echo "ERROR: corpus snapshot missing: $FIXTURES/$CORPUS.sqlite" >&2
+    echo "Create it first: mise run bench:corpus:init" >&2
+    exit 1
+fi
+
+extra=()
+[ -n "${BENCH_BASE_URL:-}" ] && extra+=(--base-url "$BENCH_BASE_URL")
+[ -n "${BENCH_EMBEDDING_MODEL:-}" ] && extra+=(--embedding-model "$BENCH_EMBEDDING_MODEL")
+
+DIR="$RUNS/bt29-$(date -u +%Y%m%dT%H%M%SZ)"
+mkdir -p "$DIR"
+for i in 1 2 3; do
+    echo "==> BT-29 run $i/3 -> $DIR/r$i.jsonl"
+    uv run --project brain hippo-bench run \
+        --models "$MODEL" \
+        --corpus-version "$CORPUS" \
+        ${extra[@]+"${extra[@]}"} \
+        --out "$DIR/r$i.jsonl"
+done
+
+echo "==> Determinism gate"
+uv run --project brain hippo-bench determinism "$DIR/r1.jsonl" "$DIR/r2.jsonl" "$DIR/r3.jsonl"
+'''
