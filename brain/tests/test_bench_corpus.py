@@ -56,13 +56,15 @@ def _insert_claude_session(
     probe_tag: str | None = None,
 ) -> None:
     sid = session_id or f"sess-{start_time}-{segment_index}"
+    # Schema-v18 agentic unification: Claude sessions live in agentic_sessions
+    # with harness='claude-code', NOT the frozen claude_sessions table.
     conn.execute(
-        "INSERT INTO claude_sessions "
-        "(session_id, project_dir, cwd, segment_index, start_time, end_time, "
-        " summary_text, tool_calls_json, user_prompts_json, message_count, "
-        " source_file, probe_tag) "
-        "VALUES (?, '/proj', '/proj', ?, ?, ?, 'summary', '[\"Bash\"]', "
-        " '[]', 8, '/log.jsonl', ?)",
+        "INSERT INTO agentic_sessions "
+        "(session_id, harness, project_dir, cwd, segment_index, start_time, "
+        " end_time, summary_text, tool_calls_json, user_prompts_json, "
+        " message_count, source_file, probe_tag) "
+        "VALUES (?, 'claude-code', '/proj', '/proj', ?, ?, ?, 'summary', "
+        " '[\"Bash\"]', '[]', 8, '/log.jsonl', ?)",
         (sid, segment_index, start_time, start_time + 1000, probe_tag),
     )
 
@@ -248,7 +250,7 @@ def test_sqlite_jsonl_equivalence(seeded_db, tmp_path):
     sqlite_ids: list[str] = []
     table_map = [
         ("events", "shell", "id"),
-        ("claude_sessions", "claude", "id"),
+        ("agentic_sessions", "claude", "id"),
         ("browser_events", "browser", "id"),
         ("workflow_runs", "workflow", "id"),
     ]
@@ -439,7 +441,7 @@ def test_enrichment_queue_seeded(seeded_db, tmp_path):
 
     pairs = [
         ("events", "enrichment_queue", "event_id"),
-        ("claude_sessions", "claude_enrichment_queue", "claude_session_id"),
+        ("agentic_sessions", "agentic_enrichment_queue", "session_id"),
         ("browser_events", "browser_enrichment_queue", "browser_event_id"),
         ("workflow_runs", "workflow_enrichment_queue", "run_id"),
     ]
@@ -458,5 +460,64 @@ def test_enrichment_queue_seeded(seeded_db, tmp_path):
                 f"SELECT COUNT(*) FROM {queue_table} q JOIN {src_table} s ON q.{fk} = s.id"
             ).fetchone()
             assert matched == src_count, f"{queue_table}.{fk} did not 1:1 match {src_table}.id"
+    finally:
+        conn.close()
+
+
+# ── 11. Claude source reconciled to agentic family (schema v18) ───────────
+
+
+def test_claude_source_lands_in_agentic_sessions(seeded_db, tmp_path):
+    """The Claude corpus source must read/write agentic_sessions (harness=
+    'claude-code'), seed agentic_enrichment_queue (with enqueued_at/updated_at
+    populated), and must NOT touch the frozen claude_* tables."""
+    _, db_path = seeded_db
+    dest_sqlite = tmp_path / "corpus-v2.sqlite"
+    dest_jsonl = tmp_path / "corpus-v2.jsonl"
+    manifest = tmp_path / "corpus-v2.manifest.json"
+
+    entries = init_corpus(
+        db_path=db_path,
+        dest_sqlite=dest_sqlite,
+        dest_jsonl=dest_jsonl,
+        manifest_path=manifest,
+        shell_min=0,
+        claude_min=6,
+        browser_min=0,
+        workflow_min=0,
+        seed=42,
+        now_ms=NOW_MS,
+    )
+
+    claude_entries = [e for e in entries if e.source == "claude"]
+    assert claude_entries, "claude source should be sampled"
+
+    conn = sqlite3.connect(f"file:{dest_sqlite}?mode=ro", uri=True)
+    try:
+        # All Claude rows landed in agentic_sessions with harness='claude-code'.
+        agentic_ids = [
+            row[0]
+            for row in conn.execute("SELECT id FROM agentic_sessions WHERE harness = 'claude-code'")
+        ]
+        assert len(agentic_ids) == len(claude_entries)
+
+        # event_id is f"claude-{agentic_sessions.id}".
+        expected_ids = {f"claude-{i}" for i in agentic_ids}
+        assert {e.event_id for e in claude_entries} == expected_ids
+
+        # The agentic enrichment queue is seeded pending with timestamps set.
+        q_rows = conn.execute(
+            "SELECT session_id, status, enqueued_at, updated_at FROM agentic_enrichment_queue"
+        ).fetchall()
+        assert len(q_rows) == len(agentic_ids)
+        for sid, status, enq, upd in q_rows:
+            assert sid in agentic_ids
+            assert status == "pending"
+            assert enq is not None and enq > 0
+            assert upd is not None and upd > 0
+
+        # The frozen claude_enrichment_queue is NOT seeded.
+        (frozen_q,) = conn.execute("SELECT COUNT(*) FROM claude_enrichment_queue").fetchone()
+        assert frozen_q == 0
     finally:
         conn.close()

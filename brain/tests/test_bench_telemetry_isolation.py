@@ -25,6 +25,7 @@ def _spawn_kwargs(tmp_path, **overrides):
         "model_id": TEST_MODEL_ID,
         "corpus_version": "corpus-v2",
         "embedding_model": "embedding-test",
+        "inference_base_url": "http://localhost:8000/v1",
         **overrides,
     }
 

@@ -16,7 +16,6 @@ import time
 from pathlib import Path
 from typing import Any
 
-from hippo_brain.bench import lms
 from hippo_brain.bench.corpus import CorpusEntry, load_corpus
 from hippo_brain.bench.downstream_proxy import (
     load_qa_items,
@@ -24,11 +23,14 @@ from hippo_brain.bench.downstream_proxy import (
 )
 from hippo_brain.bench.enrich_call import call_enrichment
 from hippo_brain.bench.metrics import MetricsSampler
+from hippo_brain.bench.model_lifecycle import get_model_lifecycle
 from hippo_brain.bench.output import AttemptRecord
 from hippo_brain.bench.paths import bench_qa_path, bench_run_tree
+from hippo_brain.bench.qa import collect_corpus_event_ids
 from hippo_brain.bench.pause_rpc import PauseRpcClient
 from hippo_brain.bench.preflight import check_brain_port_free
 from hippo_brain.bench.runner import run_self_consistency_pass
+from hippo_brain.vector_store import open_conn as open_vec_conn
 from hippo_brain.bench.shadow_stack import (
     spawn_shadow_stack,
     teardown_shadow_stack,
@@ -70,9 +72,16 @@ def _wait_for_queue_drain(
     as "drained instantly". The previous behavior (warn once, return False)
     masked schema bumps as bench success and recorded near-zero throughput.
     """
+    # Live enrichment queues only. The agentic unification (schema v18) FROZE
+    # claude_enrichment_queue — the brain no longer claims from it, so any
+    # pending/processing rows that rode along in the corpus snapshot (copied
+    # from the prod DB) are UNDRAINABLE and would pin total_pending > 0 forever,
+    # hanging the drain until drain_timeout_sec (default 1h). Claude/Codex/etc.
+    # enrichment now flows through agentic_enrichment_queue, which the shadow
+    # brain actually drains — poll that instead.
     tables = [
         "enrichment_queue",
-        "claude_enrichment_queue",
+        "agentic_enrichment_queue",
         "browser_enrichment_queue",
         "workflow_enrichment_queue",
     ]
@@ -133,40 +142,17 @@ def _wait_for_queue_drain(
 
 
 def _collect_event_ids_from_db(bench_db: Path) -> set[str]:
-    """Collect all event IDs from bench DB corpus.
+    """Collect all source-tagged event IDs present in the bench DB corpus.
 
-    Per-source tables are queried independently. Missing tables are debug-logged
-    and skipped — sparse corpora (e.g. shell-only) legitimately don't have all
-    four. Other failures (corruption, permission errors, sqlite open errors)
-    propagate so the caller's _capture pattern records them in JSONL rather
-    than masking them as an empty event_ids set.
+    Delegates to the single source of truth, ``qa.collect_corpus_event_ids``,
+    so the downstream-proxy's scoreable-Q/A gate and the ``qa validate`` CLI
+    agree on what exists — and so the Claude source resolves to
+    ``agentic_sessions`` (harness='claude-code'), NOT the frozen
+    ``claude_sessions`` table. Querying claude_sessions here silently dropped
+    all 30 Claude Q/A from scoring (scored_count 70/100) even though their
+    goldens were present in agentic_sessions.
     """
-    event_ids: set[str] = set()
-    with contextlib.closing(sqlite3.connect(str(bench_db))) as conn:
-        try:
-            shell_rows = conn.execute("SELECT id FROM events").fetchall()
-            event_ids.update(f"shell-{row[0]}" for row in shell_rows if row[0])
-        except sqlite3.OperationalError as e:
-            logger.debug("table 'events' missing in corpus, skipping: %s", e)
-
-        try:
-            claude_rows = conn.execute("SELECT id FROM claude_sessions").fetchall()
-            event_ids.update(f"claude-{row[0]}" for row in claude_rows if row[0])
-        except sqlite3.OperationalError as e:
-            logger.debug("table 'claude_sessions' missing in corpus, skipping: %s", e)
-
-        try:
-            browser_rows = conn.execute("SELECT id FROM browser_events").fetchall()
-            event_ids.update(f"browser-{row[0]}" for row in browser_rows if row[0])
-        except sqlite3.OperationalError as e:
-            logger.debug("table 'browser_events' missing in corpus, skipping: %s", e)
-
-        try:
-            workflow_rows = conn.execute("SELECT id FROM workflow_runs").fetchall()
-            event_ids.update(f"workflow-{row[0]}" for row in workflow_rows if row[0])
-        except sqlite3.OperationalError as e:
-            logger.debug("table 'workflow_runs' missing in corpus, skipping: %s", e)
-    return event_ids
+    return collect_corpus_event_ids(bench_db)
 
 
 def _load_corpus_entries(corpus_sqlite: Path) -> list[CorpusEntry]:
@@ -226,10 +212,11 @@ def run_one_model(
     """
     start_time = time.time()
 
-    # 1. Unload all, load target model
-    lms.unload_all()
-    time.sleep(1)
-    lms.load(model)
+    # 1. Make the target model resident on the inference server (unload others,
+    # load target). Vendor-neutral via the ModelLifecycle abstraction — oMLX
+    # over HTTP by default, LM Studio CLI when explicitly selected.
+    lifecycle = get_model_lifecycle(inference_url)
+    lifecycle.prepare(model)
 
     # 2. Create run tree and copy corpus
     run_tree = bench_run_tree(run_id, model, create=True)
@@ -272,6 +259,7 @@ def run_one_model(
             model_id=model,
             corpus_version="corpus-v2",
             embedding_model=embedding_model or "embed-model",
+            inference_base_url=inference_url,
             brain_port=18923,
             otel_enabled=False,
         )
@@ -279,7 +267,7 @@ def run_one_model(
         # 4. Wait for brain ready and record process_ready_ms
         process_ready_ms = int(wait_for_brain_ready(stack) * 1000)
 
-        # 5. Warmup — direct calls to LM Studio to prime the model before the timed window
+        # 5. Warmup — direct calls to the inference server to prime the model before the timed window
         try:
             all_entries = _load_corpus_entries(corpus_sqlite)
         except Exception as e:
@@ -333,7 +321,14 @@ def run_one_model(
                 if qa_path.exists():
                     included_qa, _ = load_qa_items(qa_path, event_ids)
                     if included_qa:
-                        with contextlib.closing(sqlite3.connect(str(bench_db))) as conn:
+                        # open_vec_conn loads the sqlite-vec extension; a raw
+                        # sqlite3.connect does NOT, so the hybrid retrieval's
+                        # vec0 knn_search fails with "no such module: vec0" and
+                        # the whole downstream-proxy pass is captured as an error
+                        # (downstream_proxy stays {}). The shadow brain loads
+                        # vec0 on its own connection during enrichment, but this
+                        # scoring pass opens its own connection and must too.
+                        with contextlib.closing(open_vec_conn(bench_db)) as conn:
                             downstream_proxy = run_downstream_proxy_pass(
                                 conn,
                                 included_qa,
@@ -342,7 +337,7 @@ def run_one_model(
         except Exception as e:
             _capture("downstream_proxy", e)
 
-        # 10. Self-consistency pass — 5 events × N runs via direct LM Studio calls
+        # 10. Self-consistency pass — 5 events × N runs via direct inference-server calls
         if all_entries and sc_events > 0 and sc_runs > 0:
             sc_pool = rng.sample(all_entries, min(sc_events, len(all_entries)))
             try:

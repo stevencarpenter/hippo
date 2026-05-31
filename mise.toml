@@ -1194,3 +1194,327 @@ fi
 ln -s "$SKILL_SRC" "$SKILL_DST"
 echo "Installed skill: $SKILL_DST -> $SKILL_SRC"
 """
+
+# ── Bench (model benchmark; separate data root, not normal hippo execution) ──
+
+[tasks."bench:qa:seed"]
+description = "Seed the Q/A fixture (eval-qa-v1.jsonl) from the committed template"
+run = "uv run --project brain python3 brain/src/hippo_brain/bench/qa_seed.py"
+
+[tasks."bench:recover"]
+description = "Clear a stale bench pause lockfile left by a SIGKILLed run"
+run = "uv run --project brain hippo-bench recover"
+
+[tasks."bench:determinism"]
+description = "Compare N bench run JSONL files against the BT-29 determinism budget"
+run = "uv run --project brain hippo-bench determinism ${@}"
+
+[tasks."bench:corpus:verify"]
+description = "Verify a bench corpus snapshot's content hashes against its manifest"
+run = "uv run --project brain hippo-bench corpus verify --corpus-version \"${BENCH_CORPUS_VERSION:-corpus-v2}\""
+
+[tasks."bench:qa:validate"]
+description = "Validate Q/A golden coverage against the corpus (BENCH_MIN_SCOREABLE, default 1)"
+run = '''
+#!/usr/bin/env bash
+set -euo pipefail
+ROOT="${XDG_DATA_HOME:-$HOME/.local/share}/hippo-bench"
+FIXTURES="$ROOT/fixtures"
+CORPUS="${BENCH_CORPUS_VERSION:-corpus-v2}"
+uv run --project brain hippo-bench qa validate \
+  --qa-path "$FIXTURES/eval-qa-v1.jsonl" \
+  --corpus-sqlite "$FIXTURES/$CORPUS.sqlite" \
+  --min-scoreable "${BENCH_MIN_SCOREABLE:-1}"
+'''
+
+[tasks."bench:corpus:init"]
+description = "Sample a fresh bench corpus from the LIVE prod DB (read-only); FORCE=1 to overwrite"
+run = '''
+#!/usr/bin/env bash
+set -euo pipefail
+CORPUS="${BENCH_CORPUS_VERSION:-corpus-v2}"
+DB="${BENCH_DB_PATH:-${XDG_DATA_HOME:-$HOME/.local/share}/hippo/hippo.db}"
+FIXTURES="${XDG_DATA_HOME:-$HOME/.local/share}/hippo-bench/fixtures"
+echo "── BENCH corpus init ─────────────────────────────────────────"
+echo "  Samples the LIVE prod DB read-only: $DB"
+echo "  Writes snapshot to $FIXTURES/$CORPUS.*"
+echo "  This is a bench operation, not normal hippo execution."
+echo "──────────────────────────────────────────────────────────────"
+if [ ! -e "$DB" ]; then
+    echo "ERROR: source DB not found: $DB" >&2
+    exit 1
+fi
+args=(--corpus-version "$CORPUS" --seed "${BENCH_SEED:-42}" --db-path "$DB")
+if [ "${FORCE:-}" = "1" ]; then
+    args+=(--bump-version "$CORPUS")
+fi
+uv run --project brain hippo-bench corpus init "${args[@]}"
+'''
+
+[tasks."bench:summary"]
+description = "Print the gate scorecard for a bench run JSONL (newest run if omitted)"
+run = '''
+#!/usr/bin/env bash
+set -euo pipefail
+RUNS="${XDG_DATA_HOME:-$HOME/.local/share}/hippo-bench/runs"
+FILE="${1:-}"
+if [ -z "$FILE" ]; then
+    # shellcheck disable=SC2012
+    FILE="$(ls -t "$RUNS"/run-*.jsonl 2>/dev/null | head -1 || true)"
+    if [ -z "$FILE" ]; then
+        echo "No bench runs found under $RUNS" >&2
+        exit 1
+    fi
+    echo "Newest run: $FILE"
+fi
+uv run --project brain hippo-bench summary "$FILE"
+'''
+
+[tasks."bench:status"]
+description = "Show bench readiness: fixtures, last run + verdict, stale pause lock, prod-brain state"
+run = '''
+#!/usr/bin/env bash
+set -uo pipefail
+# -e intentionally omitted: this diagnostic task runs ALL checks and reports
+# [--] for missing pieces rather than aborting on the first; the external
+# calls below are each guarded with || true accordingly.
+ROOT="${XDG_DATA_HOME:-$HOME/.local/share}/hippo-bench"
+FIXTURES="$ROOT/fixtures"
+RUNS="$ROOT/runs"
+CORPUS="${BENCH_CORPUS_VERSION:-corpus-v2}"
+
+mark() { if [ -e "$1" ]; then echo "  [ok] $2"; else echo "  [--] $2 (missing)"; fi; }
+
+echo "Bench root: $ROOT"
+if [ -d "$ROOT" ]; then echo "  [ok] root exists"; else echo "  [--] root missing (no runs yet)"; fi
+
+echo "Fixtures:"
+mark "$FIXTURES/$CORPUS.sqlite" "corpus snapshot ($CORPUS.sqlite)"
+mark "$FIXTURES/$CORPUS.manifest.json" "corpus manifest"
+mark "$FIXTURES/eval-qa-v1.jsonl" "Q/A fixture (eval-qa-v1.jsonl)"
+
+echo "Latest run:"
+# shellcheck disable=SC2012
+LATEST="$(ls -t "$RUNS"/run-*.jsonl 2>/dev/null | head -1 || true)"
+if [ -n "$LATEST" ]; then
+    echo "  $LATEST"
+    python3 - "$LATEST" <<'PY'
+import json, sys
+models, reason = {}, None
+with open(sys.argv[1]) as fh:
+    for line in fh:
+        try:
+            rec = json.loads(line)
+        except ValueError:
+            continue
+        rt = rec.get("record_type") or rec.get("type")
+        if rt == "model_summary":
+            mid = rec.get("model", {}).get("id", "?")
+            models[mid] = "pass" if rec.get("tier0_verdict", {}).get("passed") else "fail"
+        elif rt == "run_end":
+            reason = rec.get("reason")
+for mid, v in models.items():
+    print(f"    {mid}: {v}")
+if reason:
+    print(f"    reason: {reason}")
+if not models and not reason:
+    print("    (no model summaries — run incomplete?)")
+PY
+else
+    echo "  (none)"
+fi
+
+echo "Pause lock:"
+if [ -e "$ROOT/pause.lock" ]; then
+    echo "  [!!] $ROOT/pause.lock present — prod brain may still be paused. Run: mise run bench:recover"
+else
+    echo "  [ok] no stale pause lock"
+fi
+
+echo "Prod brain:"
+# Resolve [brain].port via the canonical Python resolver (single source of
+# truth) rather than re-parsing the TOML in awk. resolve_prod_brain_port
+# matches what the bench actually connects to: XDG-spec precedence (empty
+# XDG_CONFIG_HOME == unset), and validation of malformed TOML / non-table
+# [brain] / out-of-range ports that a regex scan silently mishandles.
+PROD_PORT="$(uv run --project brain python3 -c \
+    'from hippo_brain.bench.prod_config import resolve_prod_brain_port; print(resolve_prod_brain_port())' \
+    2>/dev/null || true)"
+PROD_PORT="${PROD_PORT:-9175}"
+if H="$(curl -sf "http://127.0.0.1:$PROD_PORT/health" 2>/dev/null)"; then
+    PAUSED="$(printf '%s' "$H" | python3 -c 'import sys,json; print(json.load(sys.stdin).get("paused","?"))' 2>/dev/null || echo '?')"
+    echo "  [ok] reachable on :$PROD_PORT (paused=$PAUSED)"
+else
+    echo "  [--] not reachable on :$PROD_PORT (not running, or different port)"
+fi
+'''
+
+[tasks."bench:run"]
+description = "Benchmark a model id end-to-end (guided prereqs, teed transcript, gate + retrieval scorecards)"
+run = '''
+#!/usr/bin/env bash
+set -euo pipefail
+
+MODEL="${1:-}"
+if [ -z "$MODEL" ]; then
+    echo "Usage: mise run bench:run <model-id>   (comma-separate for multiple)" >&2
+    exit 1
+fi
+
+ROOT="${XDG_DATA_HOME:-$HOME/.local/share}/hippo-bench"
+FIXTURES="$ROOT/fixtures"
+RUNS="$ROOT/runs"
+CORPUS="${BENCH_CORPUS_VERSION:-corpus-v2}"
+
+echo "── BENCH MODE ────────────────────────────────────────────────"
+echo "  Data root : $ROOT  (separate from prod ~/.local/share/hippo)"
+echo "  Prod brain: will be PAUSED for the run, then resumed"
+echo "  This is a benchmark, not normal hippo execution."
+echo "──────────────────────────────────────────────────────────────"
+
+# Safe prereqs only (idempotent; never samples the live prod DB).
+uv run --project brain hippo-bench recover || true
+if [ ! -e "$FIXTURES/eval-qa-v1.jsonl" ]; then
+    echo "==> Q/A fixture missing; seeding from template..."
+    uv run --project brain python3 brain/src/hippo_brain/bench/qa_seed.py
+fi
+
+# Guided guard: corpus init samples prod, so require it explicitly.
+if [ ! -e "$FIXTURES/$CORPUS.sqlite" ]; then
+    echo "ERROR: corpus snapshot missing: $FIXTURES/$CORPUS.sqlite" >&2
+    echo "Create it first (samples your live hippo.db read-only):" >&2
+    echo "    mise run bench:corpus:init" >&2
+    exit 1
+fi
+
+mkdir -p "$RUNS"
+STEM="run-$(date -u +%Y%m%dT%H%M%SZ)-$(hostname -s)"
+RUN_JSONL="$RUNS/$STEM.jsonl"
+RUN_LOG="$RUNS/$STEM.log"
+
+extra=()
+[ -n "${BENCH_BASE_URL:-}" ] && extra+=(--base-url "$BENCH_BASE_URL")
+[ -n "${BENCH_EMBEDDING_MODEL:-}" ] && extra+=(--embedding-model "$BENCH_EMBEDDING_MODEL")
+
+# Publish-grade Q/A gate. Same env var as bench:qa:validate; default 1 (any
+# scoreable item) so enrichment-only and ad-hoc runs are not blocked. Set
+# BENCH_MIN_SCOREABLE=100 to abort the run unless the full fixture resolves
+# against the corpus — the gate the trust-blockers work exists to enforce.
+extra+=(--min-scoreable-qa "${BENCH_MIN_SCOREABLE:-1}")
+
+echo "==> Running bench (transcript -> $RUN_LOG)"
+# Drop -e around the pipeline so a nonzero bench exit (preflight abort=2,
+# all-models-errored=3) is captured via PIPESTATUS and the scorecards below
+# still print. With -e active, set would abort the script at the pipeline,
+# skipping exactly the diagnostics a failed run needs. pipefail stays on
+# (enabled by the top-level set -euo pipefail).
+set +e
+uv run --project brain hippo-bench run \
+    --models "$MODEL" \
+    --corpus-version "$CORPUS" \
+    ${extra[@]+"${extra[@]}"} \
+    --out "$RUN_JSONL" 2>&1 | tee "$RUN_LOG"
+rc=${PIPESTATUS[0]}
+set -e
+
+echo ""
+echo "==> Gate scorecard"
+uv run --project brain hippo-bench summary "$RUN_JSONL" || true
+
+echo ""
+echo "==> Retrieval scorecard (hybrid mode)"
+python3 - "$RUN_JSONL" <<'PY'
+import json, sys
+def f3(x):
+    return f"{x:.3f}" if isinstance(x, (int, float)) else "n/a"
+any_row = False
+with open(sys.argv[1]) as fh:
+    for line in fh:
+        try:
+            rec = json.loads(line)
+        except ValueError:
+            continue
+        if (rec.get("record_type") or rec.get("type")) != "model_summary":
+            continue
+        any_row = True
+        mid = rec.get("model", {}).get("id", "?")
+        hy = ((rec.get("downstream_proxy") or {}).get("modes") or {}).get("hybrid")
+        if not hy:
+            print(f"  {mid}: (no retrieval metrics — Q/A fixture absent or unscoreable)")
+        else:
+            print(f"  {mid}: MRR={f3(hy.get('mrr'))}  Hit@1={f3(hy.get('hit_at_1'))}  "
+                  f"Hit@5={f3(hy.get('hit_at_5'))}  (n={hy.get('scored_count')})")
+if not any_row:
+    print("  (no model summaries in run)")
+PY
+
+echo ""
+echo "Results   : $RUN_JSONL"
+echo "Transcript: $RUN_LOG"
+exit "$rc"
+'''
+
+[tasks."bench:bt29"]
+description = "BT-29 determinism: 3 runs of a model + budget gate (guarded by BENCH_BT29_CONFIRM=1)"
+run = '''
+#!/usr/bin/env bash
+set -euo pipefail
+
+MODEL="${1:-}"
+if [ -z "$MODEL" ]; then
+    echo "Usage: BENCH_BT29_CONFIRM=1 mise run bench:bt29 <model-id>" >&2
+    exit 1
+fi
+if [ "${BENCH_BT29_CONFIRM:-}" != "1" ]; then
+    echo "Refusing: BT-29 runs the model 3x (~90 min, pauses prod brain each time)." >&2
+    echo "Re-run with BENCH_BT29_CONFIRM=1 to proceed." >&2
+    exit 1
+fi
+
+# Clear a stale pause lock from a prior crashed run (idempotent), matching bench:run.
+uv run --project brain hippo-bench recover || true
+
+ROOT="${XDG_DATA_HOME:-$HOME/.local/share}/hippo-bench"
+RUNS="$ROOT/runs"
+FIXTURES="$ROOT/fixtures"
+CORPUS="${BENCH_CORPUS_VERSION:-corpus-v2}"
+if [ ! -e "$FIXTURES/$CORPUS.sqlite" ]; then
+    echo "ERROR: corpus snapshot missing: $FIXTURES/$CORPUS.sqlite" >&2
+    echo "Create it first: mise run bench:corpus:init" >&2
+    exit 1
+fi
+
+extra=()
+[ -n "${BENCH_BASE_URL:-}" ] && extra+=(--base-url "$BENCH_BASE_URL")
+[ -n "${BENCH_EMBEDDING_MODEL:-}" ] && extra+=(--embedding-model "$BENCH_EMBEDDING_MODEL")
+
+# Publish-grade Q/A gate. Same env var as bench:qa:validate; default 1 (any
+# scoreable item) so enrichment-only and ad-hoc runs are not blocked. Set
+# BENCH_MIN_SCOREABLE=100 to abort the run unless the full fixture resolves
+# against the corpus — the gate the trust-blockers work exists to enforce.
+extra+=(--min-scoreable-qa "${BENCH_MIN_SCOREABLE:-1}")
+
+DIR="$RUNS/bt29-$(date -u +%Y%m%dT%H%M%SZ)"
+mkdir -p "$DIR"
+for i in 1 2 3; do
+    echo "==> BT-29 run $i/3 -> $DIR/r$i.jsonl"
+    # Capture the run's exit instead of letting set -e abort silently: a failed
+    # run (preflight abort=2, all-errored=3) gets a clear BT-29 message and the
+    # partial-results path, then propagates the real exit code.
+    set +e
+    uv run --project brain hippo-bench run \
+        --models "$MODEL" \
+        --corpus-version "$CORPUS" \
+        ${extra[@]+"${extra[@]}"} \
+        --out "$DIR/r$i.jsonl"
+    rc=$?
+    set -e
+    if [ "$rc" -ne 0 ]; then
+        echo "BT-29 aborted: run $i/3 failed (exit $rc); partial results in $DIR" >&2
+        exit "$rc"
+    fi
+done
+
+echo "==> Determinism gate"
+uv run --project brain hippo-bench determinism "$DIR/r1.jsonl" "$DIR/r2.jsonl" "$DIR/r3.jsonl"
+'''

@@ -153,13 +153,21 @@ _SOURCE_SPECS: dict[str, _SourceSpec] = {
         queue_table="enrichment_queue",
         queue_event_col="event_id",
     ),
+    # Schema-v18 agentic unification: Claude Code sessions live in
+    # agentic_sessions (harness='claude-code'), and the live brain enriches
+    # from agentic_enrichment_queue. The legacy claude_sessions /
+    # claude_enrichment_queue tables are FROZEN (still created by schema.sql,
+    # never written/claimed) so a Claude corpus built against them could never
+    # be enriched. This spec reads from and writes to the agentic family.
     "claude": _SourceSpec(
         select=(
-            "SELECT id, session_id, project_dir, cwd, git_branch, "
-            "segment_index, start_time, end_time, summary_text, "
-            "tool_calls_json, user_prompts_json, message_count, "
-            "token_count, source_file, is_subagent, parent_session_id, "
-            "probe_tag FROM claude_sessions"
+            "SELECT id, session_id, harness, segment_index, model, agent, "
+            "project_dir, cwd, git_branch, slug, title, parent_session_id, "
+            "is_subagent, summary_text, tool_calls_json, user_prompts_json, "
+            "source_file, snapshot_diffs_json, commit_messages_json, "
+            "message_count, token_count, start_time, end_time, content_hash, "
+            "last_enriched_content_hash, enriched, probe_tag "
+            "FROM agentic_sessions WHERE harness = 'claude-code'"
         ),
         ts_col="start_time",
         has_probe_tag=True,
@@ -178,28 +186,38 @@ _SOURCE_SPECS: dict[str, _SourceSpec] = {
             "tool_calls_json": row["tool_calls_json"],
         },
         id_col="id",
-        dest_table="claude_sessions",
+        dest_table="agentic_sessions",
         dest_columns=[
             "id",
             "session_id",
+            "harness",
+            "segment_index",
+            "model",
+            "agent",
             "project_dir",
             "cwd",
             "git_branch",
-            "segment_index",
-            "start_time",
-            "end_time",
+            "slug",
+            "title",
+            "parent_session_id",
+            "is_subagent",
             "summary_text",
             "tool_calls_json",
             "user_prompts_json",
+            "source_file",
+            "snapshot_diffs_json",
+            "commit_messages_json",
             "message_count",
             "token_count",
-            "source_file",
-            "is_subagent",
-            "parent_session_id",
+            "start_time",
+            "end_time",
+            "content_hash",
+            "last_enriched_content_hash",
+            "enriched",
             "probe_tag",
         ],
-        queue_table="claude_enrichment_queue",
-        queue_event_col="claude_session_id",
+        queue_table="agentic_enrichment_queue",
+        queue_event_col="session_id",
     ),
     "browser": _SourceSpec(
         select=(
@@ -394,6 +412,71 @@ CREATE TABLE IF NOT EXISTS claude_enrichment_queue (
     locked_by TEXT,
     created_at INTEGER NOT NULL DEFAULT (unixepoch('now', 'subsec') * 1000),
     updated_at INTEGER NOT NULL DEFAULT (unixepoch('now', 'subsec') * 1000)
+);
+
+-- Schema-v18 agentic family. Claude Code sessions (harness='claude-code')
+-- and all other agentic sources land here; the live brain enriches from
+-- agentic_enrichment_queue. Mirrors schema.sql; the daemon's bench-mode
+-- ensure_schema sees IF NOT EXISTS and leaves these (already created here,
+-- with the bench-relaxed queue timestamp defaults) untouched.
+CREATE TABLE IF NOT EXISTS agentic_sessions (
+    id INTEGER PRIMARY KEY,
+    session_id TEXT NOT NULL,
+    harness TEXT NOT NULL DEFAULT 'opencode'
+        CHECK (harness IN ('claude-code', 'opencode', 'codex', 'cursor')),
+    segment_index INTEGER NOT NULL DEFAULT 0,
+    model TEXT NOT NULL DEFAULT '',
+    agent TEXT DEFAULT '',
+    project_dir TEXT NOT NULL,
+    cwd TEXT NOT NULL,
+    git_branch TEXT,
+    slug TEXT DEFAULT '',
+    title TEXT DEFAULT '',
+    parent_session_id TEXT,
+    is_subagent INTEGER NOT NULL DEFAULT 0,
+    summary_text TEXT NOT NULL,
+    tool_calls_json TEXT,
+    user_prompts_json TEXT,
+    source_file TEXT DEFAULT '',
+    snapshot_diffs_json TEXT DEFAULT 'null',
+    commit_messages_json TEXT DEFAULT '[]',
+    message_count INTEGER NOT NULL DEFAULT 0,
+    token_count INTEGER NOT NULL DEFAULT 0,
+    start_time INTEGER NOT NULL,
+    end_time INTEGER NOT NULL,
+    content_hash TEXT,
+    last_enriched_content_hash TEXT,
+    created_at INTEGER NOT NULL DEFAULT (unixepoch('now', 'subsec') * 1000),
+    enriched INTEGER NOT NULL DEFAULT 0,
+    probe_tag TEXT,
+    UNIQUE (session_id, harness, segment_index)
+);
+
+CREATE TABLE IF NOT EXISTS agentic_enrichment_queue (
+    id INTEGER PRIMARY KEY,
+    session_id INTEGER NOT NULL UNIQUE REFERENCES agentic_sessions(id),
+    status TEXT NOT NULL DEFAULT 'pending'
+        CHECK (status IN ('pending','processing','done','failed','skipped')),
+    priority INTEGER NOT NULL DEFAULT 5,
+    retry_count INTEGER NOT NULL DEFAULT 0,
+    max_retries INTEGER NOT NULL DEFAULT 5,
+    error_message TEXT,
+    locked_at INTEGER,
+    locked_by TEXT,
+    -- Prod schema declares these NOT NULL with no default (the daemon sets
+    -- them explicitly on every insert). The bench's seeded INSERT only
+    -- supplies (session_id, status), so we add a default for the bench's
+    -- convenience. CREATE TABLE IF NOT EXISTS is a no-op for an existing
+    -- table, so ensure_schema in bench mode does NOT downgrade the bench's
+    -- relaxed defaults — it sees the table already exists and skips.
+    enqueued_at INTEGER NOT NULL DEFAULT (unixepoch('now', 'subsec') * 1000),
+    updated_at INTEGER NOT NULL DEFAULT (unixepoch('now', 'subsec') * 1000)
+);
+
+CREATE TABLE IF NOT EXISTS knowledge_node_agentic_sessions (
+    knowledge_node_id INTEGER NOT NULL,
+    agentic_session_id INTEGER NOT NULL REFERENCES agentic_sessions(id) ON DELETE CASCADE,
+    PRIMARY KEY (knowledge_node_id, agentic_session_id)
 );
 
 CREATE TABLE IF NOT EXISTS browser_events (

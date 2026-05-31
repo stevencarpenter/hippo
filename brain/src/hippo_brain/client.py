@@ -1,3 +1,4 @@
+import asyncio
 import hashlib
 import logging
 import math
@@ -44,6 +45,22 @@ _prompt_tokens = (
     if _meter
     else None
 )
+
+
+# Transient transport failures we retry: dropped/failed connections that a
+# single retry can plausibly survive. httpx.TransportError is the base class of
+# RemoteProtocolError, ConnectError, ConnectTimeout, ReadError, ReadTimeout,
+# WriteError, PoolTimeout, etc. — exactly the "peer closed connection without
+# sending complete message body" family oMLX produces under engine swaps.
+# HTTPStatusError is NOT a TransportError (it's a real server response surfaced
+# by _raise_with_body), and parse errors (KeyError/JSONDecodeError/ValueError)
+# are not transport errors either — both propagate immediately, no retry.
+_RETRYABLE: tuple[type[Exception], ...] = (httpx.TransportError,)
+
+
+async def _sleep(seconds: float) -> None:
+    # Indirection point so tests can monkeypatch backoff to avoid real delay.
+    await asyncio.sleep(seconds)
 
 
 def _raise_with_body(resp: httpx.Response) -> None:
@@ -121,9 +138,51 @@ class InferenceClient:
     which is the intended signal to update the call-site.
     """
 
-    def __init__(self, base_url: str = "http://localhost:1234/v1", timeout: float = 300.0):
+    def __init__(
+        self,
+        base_url: str = "http://localhost:1234/v1",
+        timeout: float = 300.0,
+        max_retries: int = 3,
+        backoff_base: float = 0.5,
+    ):
+        if max_retries < 1:
+            raise ValueError(f"max_retries must be >= 1, got {max_retries}")
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
+        # Total attempts = max_retries (e.g. up to 3 tries). backoff_base seconds
+        # scaled by 2**(attempt-1): 0.5s before retry 2, 1.0s before retry 3.
+        self.max_retries = max_retries
+        self.backoff_base = backoff_base
+
+    async def _post_with_retry(self, url, payload, parse):
+        """POST `payload` to `url`, returning `parse(resp.json())`.
+
+        Retries ONLY on transient transport errors (`_RETRYABLE`) with
+        exponential backoff. HTTPStatusError (a real server response raised by
+        `_raise_with_body`) and parse errors propagate immediately — no retry.
+        On exhaustion, the last transport exception is re-raised (never
+        swallowed): the enrichment queue's own retry_count handles cross-poll
+        failure; our job is to survive a transient blip, then surface a real
+        outage.
+        """
+        last_exc: Exception | None = None
+        for attempt in range(1, self.max_retries + 1):
+            try:
+                async with httpx.AsyncClient(timeout=self.timeout) as client:
+                    resp = await client.post(url, json=payload)
+                    _raise_with_body(resp)
+                    return parse(resp.json())
+            except _RETRYABLE as exc:
+                last_exc = exc
+                if attempt < self.max_retries:
+                    await _sleep(self.backoff_base * 2 ** (attempt - 1))
+        # Exhausted: re-raise the last transient transport error.
+        # Defensive typed raise instead of assert so python -O can't produce
+        # a TypeError from `raise None`, and so future logic changes surface
+        # clearly rather than as a cryptic AssertionError.
+        if last_exc is None:
+            raise RuntimeError("_post_with_retry exhausted without capturing an exception")
+        raise last_exc
 
     async def chat(
         self,
@@ -134,19 +193,20 @@ class InferenceClient:
     ) -> str:
         t0 = time.monotonic()
         try:
-            async with httpx.AsyncClient(timeout=self.timeout) as client:
-                resp = await client.post(
-                    f"{self.base_url}/chat/completions",
-                    json={
-                        "model": model,
-                        "messages": messages,
-                        "temperature": temperature,
-                        "max_tokens": max_tokens,
-                    },
-                )
-                _raise_with_body(resp)
-                data = resp.json()
-                result = data["choices"][0]["message"]["content"]
+            # Retry loop sits INSIDE the telemetry try/except: a successful call
+            # (even after retries) records duration/tokens and returns; only a
+            # final failure falls through to the outer except, so
+            # _inference_errors increments once per final failure, NOT per retry.
+            result = await self._post_with_retry(
+                f"{self.base_url}/chat/completions",
+                {
+                    "model": model,
+                    "messages": messages,
+                    "temperature": temperature,
+                    "max_tokens": max_tokens,
+                },
+                lambda data: data["choices"][0]["message"]["content"],
+            )
             if _request_duration:
                 _request_duration.record((time.monotonic() - t0) * 1000, {"method": "chat"})
             if _prompt_tokens:
@@ -161,14 +221,11 @@ class InferenceClient:
     async def embed(self, texts: list[str], model: str = "") -> list[list[float]]:
         t0 = time.monotonic()
         try:
-            async with httpx.AsyncClient(timeout=self.timeout) as client:
-                resp = await client.post(
-                    f"{self.base_url}/embeddings",
-                    json={"model": model, "input": texts},
-                )
-                _raise_with_body(resp)
-                data = resp.json()
-                result = _parse_embed_response(data, source=self.base_url)
+            result = await self._post_with_retry(
+                f"{self.base_url}/embeddings",
+                {"model": model, "input": texts},
+                lambda data: _parse_embed_response(data, source=self.base_url),
+            )
             if _request_duration:
                 _request_duration.record((time.monotonic() - t0) * 1000, {"method": "embed"})
             return result

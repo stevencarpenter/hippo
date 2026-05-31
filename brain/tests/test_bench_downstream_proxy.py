@@ -102,6 +102,46 @@ def test_score_not_found() -> None:
     assert score["ndcg_at_10"] == 0.0
 
 
+def test_score_matches_golden_against_linked_source_ids() -> None:
+    """Production retrieval returns knowledge nodes (random uuids), not events.
+    A node is a hit when the golden source-tagged id is among its
+    linked_source_ids — matching the node uuid against 'shell-1' could never
+    work (that was the all-zero-MRR bug). Covers both a SearchResult-like
+    object and the dict shape carrying linked_source_ids.
+    """
+
+    class _Node:
+        def __init__(self, uuid: str, linked: list[str]) -> None:
+            self.uuid = uuid
+            self.linked_source_ids = linked
+
+    # golden is a CLAUDE source id; the hit node's uuid is a random node id that
+    # must NOT be compared directly — only its linked_source_ids matters.
+    results = [
+        _Node("node-uuid-aaa", ["shell-99"]),
+        _Node("node-uuid-bbb", ["claude-42", "shell-7"]),
+        _Node("node-uuid-ccc", ["browser-3"]),
+    ]
+    score = score_single_retrieval(results, "claude-42")
+    assert score["rank"] == 2
+    assert score["hit_at_k"][3] is True
+    assert score["mrr"] == pytest.approx(0.5)
+
+    # dict shape carrying linked_source_ids (no event_id key)
+    dict_results = [
+        {"linked_source_ids": ["workflow-1"], "score": 1.0},
+        {"linked_source_ids": ["browser-2", "workflow-9"], "score": 1.0},
+    ]
+    s2 = score_single_retrieval(dict_results, "workflow-9")
+    assert s2["rank"] == 2
+
+    # a bare uuid that equals the golden string must NOT count (uuid is not a
+    # source id) — guards against regressing to uuid comparison.
+    uuid_only = [_Node("claude-42", [])]
+    s3 = score_single_retrieval(uuid_only, "claude-42")
+    assert s3["rank"] is None
+
+
 def test_ndcg_perfect() -> None:
     results = [_result("shell-target")] + [_result(f"shell-x{i}") for i in range(9)]
     score = score_single_retrieval(results, "shell-target")

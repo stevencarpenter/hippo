@@ -13,6 +13,47 @@ tooling can rank.
 
 ---
 
+## Running via mise (recommended)
+
+`mise` tasks wrap the CLI and automate the easy-to-forget setup. They write only
+to the separate bench data root (`~/.local/share/hippo-bench/`), never to prod.
+
+**Cold start → scored model:**
+
+```bash
+mise run bench:corpus:init       # one-time: sample a corpus from the live DB (read-only)
+mise run bench:corpus:verify     # optional: re-check the snapshot hashes
+mise run bench:qa:validate       # optional: confirm Q/A goldens resolve against the corpus
+mise run bench:run <model-id>    # seeds Q/A if needed, runs, tees a transcript, prints scorecards
+mise run bench:summary           # re-print the newest run's gate scorecard
+```
+
+`bench:run` is guided: it auto-seeds the Q/A fixture and clears any stale pause
+lock, but if the corpus snapshot is missing it stops and tells you to run
+`bench:corpus:init` (which is the only step that reads your live `hippo.db`).
+Each run's full console transcript is teed to
+`~/.local/share/hippo-bench/runs/<stem>.log` next to the results JSONL.
+
+**Tasks:**
+
+| Task | Purpose |
+|---|---|
+| `bench:run <model-id>` | End-to-end benchmark (guided prereqs, teed transcript, gate + retrieval scorecards); `BENCH_MIN_SCOREABLE=100` aborts unless the full Q/A fixture resolves |
+| `bench:status` | Readiness doctor: fixtures present, last run verdict, stale pause lock, prod-brain state |
+| `bench:corpus:init` | Sample a corpus from the live prod DB (read-only); `FORCE=1` to overwrite |
+| `bench:corpus:verify` | Verify a corpus snapshot against its manifest |
+| `bench:qa:seed` | Seed `eval-qa-v1.jsonl` from the committed template (idempotent) |
+| `bench:qa:validate` | Validate Q/A golden coverage (`BENCH_MIN_SCOREABLE`, default 1; use 100 to publish) |
+| `bench:summary [<file>]` | Gate scorecard for a run JSONL (newest if omitted) |
+| `bench:determinism <files…>` | BT-29 budget comparison over existing run files |
+| `bench:bt29 <model-id>` | 3 runs + determinism gate; requires `BENCH_BT29_CONFIRM=1` (~90 min; writes JSONL only, no teed transcript) |
+| `bench:recover` | Clear a stale pause lock from a crashed run |
+
+**Env knobs:** `BENCH_CORPUS_VERSION` (corpus-v2), `BENCH_MIN_SCOREABLE` (1; gates
+`bench:qa:validate`, `bench:run`, and `bench:bt29` — set 100 to publish),
+`BENCH_BASE_URL` / `BENCH_EMBEDDING_MODEL` (else read from prod config),
+`BENCH_DB_PATH` (corpus source DB), `BENCH_SEED` (42), `FORCE`, `BENCH_BT29_CONFIRM`.
+
 ## Why this exists
 
 Hippo's enrichment pipeline calls a local LLM via LM Studio for every eligible
@@ -127,7 +168,7 @@ hippo-bench recover [--brain-url http://127.0.0.1:9175]
 |---|---|
 | 0 | Run completed successfully (or summary printed, or determinism passed) |
 | 1 | Generic failure (e.g., `corpus verify` mismatch, determinism budget exceeded) |
-| 2 | Pre-flight aborted the run (e.g., `lms` missing, disk full, corpus stale) |
+| 2 | Pre-flight aborted the run (e.g., `lms` missing, disk full, corpus stale, or a present-but-unscoreable Q/A fixture) |
 | 3 | Run executed but every candidate model errored |
 
 ### Important flags
@@ -140,6 +181,22 @@ hippo-bench recover [--brain-url http://127.0.0.1:9175]
   loop. Use this when the prod brain is not running or you're doing a dry-run.
 - `--bump-version` (on `corpus init`): force-overwrite an existing corpus and
   tag the manifest with a new corpus_version label.
+
+### Pre-flight & Q/A scoring
+
+Pre-flight runs before any model is loaded and classifies each check as pass,
+warn, or fail. A **fail** aborts the run (exit 2); a **warn** lets the run
+proceed and is printed in a `[WW]` banner at the end of the run output so it is
+not lost in scrollback.
+
+The Q/A-scoreable check follows this split:
+
+- **Fixture missing** (`eval-qa-v1.jsonl` not yet seeded) → **warn**. The run
+  proceeds enrichment-only; retrieval/Q/A metrics are skipped. Seed the fixture
+  (`qa_seed.py`) to enable scoring.
+- **Fixture present but unscoreable** against the corpus (mislabeled or stale
+  goldens) → **fail**, aborting the run (exit 2). You asked for Q/A scoring, so a
+  fixture that can't score is a real error, not a silent skip.
 
 ---
 
@@ -316,7 +373,7 @@ jq 'select(.record_type=="model_summary") | {model:.model.id, errors:.errors}' "
 | [`enrich_call.py`](enrich_call.py) | LM Studio HTTP client; classifies errors instead of raising |
 | [`lms.py`](lms.py) | `lms` CLI wrapper (load/unload/list) |
 | [`metrics.py`](metrics.py) | Background `MetricsSampler` thread (RSS, CPU, load, memory) |
-| [`preflight.py`](preflight.py) | Pre-flight checks (prod brain reachable / pauseable, corpus, disk, brain port) |
+| [`preflight.py`](preflight.py) | Pre-flight checks (prod brain reachable / pauseable, corpus, disk, brain port, Q/A scoreable) |
 | [`corpus.py`](corpus.py) | Time-bucketed sampling, shadow SQLite snapshot, JSONL sidecar, manifest |
 | [`shadow_stack.py`](shadow_stack.py) | Process-group spawn (daemon + brain), env injection, SIGTERM/SIGKILL teardown |
 | [`downstream_proxy.py`](downstream_proxy.py) | Q/A loading, Hit@K, MRR, NDCG, ask-synthesis sampling |
@@ -415,11 +472,38 @@ calling out:
 4. **Entity-sanity heuristics encode taste.** Hand-review a sample before trusting.
 5. **`reference_enrichment` is always null** (spec promised baseline capture; not
    implemented — needs hippo `knowledge_nodes` join logic).
-6. **`downstream_proxy` is gated on `embedding_fn`** being constructed. The CLI
-   flow currently doesn't construct one, so `downstream_proxy` is `{}` for
-   CLI-driven runs. Tracked in [issue #133](https://github.com/stevencarpenter/hippo/issues/133).
-7. **`eval-qa-v1.jsonl` golden_event_ids are unlabeled.** BT-29 cannot produce
-   real MRR / Hit@1 signal until labeling lands. Also tracked in #133.
+6. **Retrieval metrics require scoreable Q/A labels.** The Q/A fixture's
+   `golden_event_id`s are corpus-grounded and bound to a specific
+   `corpus_content_hash` (see `qa_template.provenance.json`). Run
+   `hippo-bench qa validate --min-scoreable 100` before publishing any
+   `downstream_proxy` MRR / Hit@1 number — if the corpus is rebuilt from a
+   different DB, the goldens stop resolving and must be re-annotated. The
+   `claude-<id>` goldens resolve against `agentic_sessions`
+   (`harness='claude-code'`), not the frozen `claude_sessions` table — the
+   corpus builder, the proxy gate, retrieval's `linked_source_ids`, and the
+   validator all read the agentic family (schema v18). A real all-source smoke
+   currently scores hybrid MRR ≈ 0.4 / Hit@1 ≈ 0.35 over 100 items; pure
+   `lexical` mode scores ~0 by design (the anti-leakage rubric strips verbatim
+   tokens, so only semantic/hybrid retrieval can find the golden).
+7. **Trust still requires BT-29.** A single run now produces real metrics, but
+   model-ranking claims require the three-run determinism procedure in
+   [`docs/capture/bench-runbook.md`](../../../../docs/capture/bench-runbook.md).
+   N=100 corpus-grounded items distinguishes a broken model from a working one;
+   fine-grained ranking of similar models wants a larger fixture (tracked in
+   [issue #133](https://github.com/stevencarpenter/hippo/issues/133)).
+8. **Inference-server health is a precondition, not a measurement.** A degraded
+   local inference server (e.g. a long-running oMLX process whose batched chat
+   engine has wedged) drops requests with `RemoteProtocolError: peer closed
+   connection` or returns `HTTP 507`. The `InferenceClient` retries transient
+   transport errors with backoff, but a *persistently* sick server will still
+   fail the run — that is an infra signal, NOT a model verdict. If a run shows
+   widespread drops or a model lands in `errored`, probe the server directly
+   (`POST /v1/chat/completions` a few times) and restart it before trusting any
+   numbers. Also **fully quiesce the prod brain** for the run window: the soft
+   `/control/pause` stops new claims but not an in-flight batch, and a
+   prod brain enriching this session's own captured activity will contend for
+   the inference server. Hard-stop it (`launchctl bootout gui/$UID/com.hippo.brain`,
+   leaving `com.hippo.daemon` up so capture keeps queueing) for a clean run.
 
 Use the `tier0_verdict.skipped_gates` field to surface "didn't measure this" vs.
 "failed this" in any leaderboard you publish.

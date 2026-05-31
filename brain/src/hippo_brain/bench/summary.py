@@ -12,6 +12,7 @@ the value is None, instead of treating it as a failure.
 
 from __future__ import annotations
 
+from hippo_brain.bench.gates import self_consistency_score
 from hippo_brain.bench.output import AttemptRecord
 
 
@@ -132,3 +133,13 @@ def compute_verdict(gates: dict, thresholds: dict) -> dict:
     _check_min("entity_sanity_mean", "entity_sanity_min")
 
     return {"passed": not failed, "failed_gates": failed, "skipped_gates": skipped, "notes": []}
+
+
+def self_consistency_gate_values(
+    per_event_vectors: list[list[list[float]]],
+) -> tuple[float | None, float | None]:
+    scored_events = [vectors for vectors in per_event_vectors if len(vectors) >= 2]
+    if not scored_events:
+        return None, None
+    score = self_consistency_score(scored_events)
+    return score.mean, score.min

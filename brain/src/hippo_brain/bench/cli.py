@@ -26,13 +26,19 @@ from pathlib import Path
 from hippo_brain.bench.corpus import init_corpus, verify_corpus
 from hippo_brain.bench.orchestrate import orchestrate_run
 from hippo_brain.bench.paths import (
+    bench_qa_path,
     bench_runs_dir,
     corpus_jsonl_path,
     corpus_manifest_path,
     corpus_overlay_path,
     corpus_sqlite_path,
 )
-from hippo_brain.bench.prod_config import default_prod_brain_url
+from hippo_brain.bench.prod_config import (
+    default_embedding_model,
+    default_inference_base_url,
+    default_prod_brain_url,
+)
+from hippo_brain.bench.qa import export_label_worklist, validate_qa_fixture
 
 _OVERLAY_CAP = 50
 
@@ -127,13 +133,18 @@ def _cmd_corpus_add_adversarial(args: argparse.Namespace) -> int:
             print(f"error: source must be one of {sorted(valid_sources)}, got {source!r}")
             return 1
 
+        # The "claude" source resolves to agentic_sessions (harness='claude-code'),
+        # NOT the frozen claude_sessions table — a claude-<id> event_id is an
+        # agentic_sessions.id everywhere else (corpus builder, qa validator,
+        # retrieval linked_source_ids). Reading claude_sessions here would miss
+        # (new sessions only live in agentic_sessions) or mis-resolve a stale row.
         source_table_map = {
-            "shell": ("events", "id"),
-            "claude": ("claude_sessions", "id"),
-            "browser": ("browser_events", "id"),
-            "workflow": ("workflow_runs", "id"),
+            "shell": ("events", "id", ""),
+            "claude": ("agentic_sessions", "id", " AND harness = 'claude-code'"),
+            "browser": ("browser_events", "id", ""),
+            "workflow": ("workflow_runs", "id", ""),
         }
-        table, id_col = source_table_map[source]
+        table, id_col, extra_where = source_table_map[source]
 
         try:
             _, raw_id_str = event_id.split("-", 1)
@@ -147,7 +158,7 @@ def _cmd_corpus_add_adversarial(args: argparse.Namespace) -> int:
         prod_conn.row_factory = sqlite3.Row
         try:
             row = prod_conn.execute(
-                f"SELECT * FROM {table} WHERE {id_col} = ?", (raw_id,)
+                f"SELECT * FROM {table} WHERE {id_col} = ?{extra_where}", (raw_id,)
             ).fetchone()
         finally:
             prod_conn.close()
@@ -219,12 +230,22 @@ def _cmd_run(args: argparse.Namespace) -> int:
         skip_prod_pause=args.skip_prod_pause,
         dry_run=args.dry_run,
         skip_checks=args.skip_checks,
+        min_scoreable_qa=args.min_scoreable_qa,
     )
     print(f"run_id={result.run_id} out={result.out_path}")
     if result.models_completed:
         print(f"completed: {result.models_completed}")
     if result.models_errored:
         print(f"errored:   {result.models_errored}")
+    if result.preflight_warnings:
+        # Surface non-fatal preflight warnings (e.g. QA scoring skipped because
+        # the fixture is absent) as the last thing on screen so they are not
+        # lost in the run's scrollback. Mirrors `hippo doctor`'s [WW] marker.
+        print("=" * 64)
+        print(f"[WW] {len(result.preflight_warnings)} preflight warning(s) — run proceeded:")
+        for warning in result.preflight_warnings:
+            print(f"     - {warning}")
+        print("=" * 64)
     if result.preflight_aborted:
         return 2
     if result.models_errored and not result.models_completed:
@@ -255,6 +276,28 @@ def _cmd_determinism(args: argparse.Namespace) -> int:
     return 0 if report.passes() else 1
 
 
+def _cmd_qa_validate(args: argparse.Namespace) -> int:
+    report = validate_qa_fixture(
+        Path(args.qa_path),
+        Path(args.corpus_sqlite),
+        min_scoreable=args.min_scoreable,
+    )
+    print(report.detail)
+    if args.json:
+        print(json.dumps(report.to_dict(), sort_keys=True))
+    return 0 if report.passes else 1
+
+
+def _cmd_qa_export_worklist(args: argparse.Namespace) -> int:
+    count = export_label_worklist(
+        Path(args.qa_path),
+        Path(args.corpus_sqlite),
+        Path(args.out),
+    )
+    print(f"wrote {count} unscoreable Q/A items to {args.out}")
+    return 0
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="hippo-bench",
@@ -269,7 +312,13 @@ def _build_parser() -> argparse.ArgumentParser:
         default="corpus-v2",
         help="Corpus snapshot identifier (string label only).",
     )
-    run.add_argument("--base-url", default="http://localhost:1234/v1")
+    run.add_argument(
+        "--base-url",
+        default=default_inference_base_url(),
+        help="Inference server base URL. Defaults to [inference].base_url from "
+        "$XDG_CONFIG_HOME/hippo/config.toml (or $HOME/.config/hippo/config.toml "
+        "if XDG_CONFIG_HOME is unset), falling back to http://localhost:8000/v1.",
+    )
     run.add_argument(
         "--brain-url",
         default=default_prod_brain_url(),
@@ -277,7 +326,13 @@ def _build_parser() -> argparse.ArgumentParser:
         "read from $XDG_CONFIG_HOME/hippo/config.toml (or $HOME/.config/hippo/config.toml "
         "if XDG_CONFIG_HOME is unset), falling back to port 9175.",
     )
-    run.add_argument("--embedding-model", default="text-embedding-nomic-embed-text-v2-moe")
+    run.add_argument(
+        "--embedding-model",
+        default=default_embedding_model(),
+        help="Embedding model identifier. Defaults to [models].embedding from "
+        "$XDG_CONFIG_HOME/hippo/config.toml (or $HOME/.config/hippo/config.toml "
+        "if XDG_CONFIG_HOME is unset), falling back to nomicai-modernbert-embed-base-8bit.",
+    )
     run.add_argument(
         "--skip-checks",
         action="store_true",
@@ -293,6 +348,14 @@ def _build_parser() -> argparse.ArgumentParser:
         "--skip-prod-pause",
         action="store_true",
         help="Skip pausing the prod brain before the run.",
+    )
+    run.add_argument(
+        "--min-scoreable-qa",
+        type=int,
+        default=1,
+        help="Abort the run if the Q/A fixture is present but fewer than this many "
+        "goldens resolve against the corpus. Default 1 (any scoreable item). Set to "
+        "100 for the publish-grade gate. A missing fixture warns rather than aborts.",
     )
     run.set_defaults(func=_cmd_run)
 
@@ -392,6 +455,22 @@ def _build_parser() -> argparse.ArgumentParser:
         "if XDG_CONFIG_HOME is unset).",
     )
     recover.set_defaults(func=_cmd_recover)
+
+    qa = sub.add_parser("qa", help="Validate and label the bench Q/A fixture")
+    qa_sub = qa.add_subparsers(dest="qa_command", required=True)
+
+    qv = qa_sub.add_parser("validate", help="Validate Q/A golden_event_id coverage")
+    qv.add_argument("--qa-path", default=str(bench_qa_path()))
+    qv.add_argument("--corpus-sqlite", default=str(corpus_sqlite_path("corpus-v2")))
+    qv.add_argument("--min-scoreable", type=int, default=1)
+    qv.add_argument("--json", action="store_true")
+    qv.set_defaults(func=_cmd_qa_validate)
+
+    qw = qa_sub.add_parser("export-worklist", help="Export unlabeled Q/A items for annotation")
+    qw.add_argument("--qa-path", default=str(bench_qa_path()))
+    qw.add_argument("--corpus-sqlite", default=str(corpus_sqlite_path("corpus-v2")))
+    qw.add_argument("--out", required=True)
+    qw.set_defaults(func=_cmd_qa_export_worklist)
 
     return parser
 

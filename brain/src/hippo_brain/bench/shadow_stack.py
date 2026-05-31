@@ -28,6 +28,20 @@ import time
 import httpx
 
 
+def _toml_basic_string(value: str) -> str:
+    """Return value as a TOML basic string including surrounding double-quotes.
+
+    Escapes per the TOML spec: backslash first, then double-quote, then
+    control characters (newline, carriage return, tab).
+    """
+    value = value.replace("\\", "\\\\")
+    value = value.replace('"', '\\"')
+    value = value.replace("\n", "\\n")
+    value = value.replace("\r", "\\r")
+    value = value.replace("\t", "\\t")
+    return f'"{value}"'
+
+
 @dataclasses.dataclass
 class ShadowStack:
     daemon_proc: subprocess.Popen
@@ -75,15 +89,39 @@ def _build_env(
     return env
 
 
-def _write_shadow_config(run_tree: pathlib.Path, brain_port: int) -> None:
-    """Write a minimal config.toml into the shadow HOME so both the daemon and
-    brain read from it.  The storage.data_dir points at run_tree so the daemon
-    opens run_tree/hippo.db — the same file the coordinator copied corpus into."""
+def _write_shadow_config(
+    run_tree: pathlib.Path,
+    brain_port: int,
+    *,
+    inference_base_url: str,
+    enrichment_model: str,
+    embedding_model: str,
+) -> None:
+    """Write a config.toml into the shadow HOME so both the daemon and brain
+    read from it.  The storage.data_dir points at run_tree so the daemon opens
+    run_tree/hippo.db — the same file the coordinator copied corpus into.
+
+    The [inference] and [models] sections are REQUIRED: the shadow brain is a
+    separate process that reads its inference endpoint from this file. Without
+    them it falls back to the built-in default (`http://localhost:1234/v1`, the
+    old LM Studio port) and every enrichment call fails with "All connection
+    attempts failed" — the bench then no-ops with zero system load instead of
+    benchmarking the model. The section MUST be named [inference] (the brain
+    hard-fails on a legacy [lmstudio] section)."""
     config_dir = run_tree / ".config" / "hippo"
     config_dir.mkdir(parents=True, exist_ok=True)
     config_path = config_dir / "config.toml"
+    # tomllib is read-only; emit TOML by hand. String values are escaped via
+    # _toml_basic_string so paths, URLs, and model ids with special characters
+    # produce valid TOML regardless of their content.
     config_path.write_text(
-        f'[storage]\ndata_dir = "{run_tree}"\n\n[brain]\nport = {brain_port}\n',
+        f"[storage]\ndata_dir = {_toml_basic_string(str(run_tree))}\n\n"
+        f"[brain]\nport = {brain_port}\n\n"
+        f"[inference]\nbase_url = {_toml_basic_string(inference_base_url)}\n\n"
+        f"[models]\n"
+        f"enrichment = {_toml_basic_string(enrichment_model)}\n"
+        f"embedding = {_toml_basic_string(embedding_model)}\n"
+        f"query = {_toml_basic_string(enrichment_model)}\n",
         encoding="utf-8",
     )
 
@@ -180,6 +218,7 @@ def spawn_shadow_stack(
     model_id: str,
     corpus_version: str,
     embedding_model: str,
+    inference_base_url: str,
     brain_port: int = 18923,
     otel_enabled: bool = False,
 ) -> ShadowStack:
@@ -187,7 +226,13 @@ def spawn_shadow_stack(
     logs_dir = run_tree / "logs"
     logs_dir.mkdir(parents=True, exist_ok=True)
 
-    _write_shadow_config(run_tree, brain_port)
+    _write_shadow_config(
+        run_tree,
+        brain_port,
+        inference_base_url=inference_base_url,
+        enrichment_model=model_id,
+        embedding_model=embedding_model,
+    )
 
     # Per-run tmpdir for the daemon's socket-fallback (`$TMPDIR/hippo-daemon.sock`).
     # Two constraints fight here:

@@ -66,9 +66,10 @@ def _patch_lifecycle(
     monkeypatch.setattr(coordinator, "teardown_shadow_stack", teardown_mock)
     monkeypatch.setattr(coordinator, "_wait_for_queue_drain", drain_mock)
 
-    # Patch the lms module to no-ops.
-    monkeypatch.setattr(coordinator.lms, "unload_all", MagicMock())
-    monkeypatch.setattr(coordinator.lms, "load", MagicMock())
+    # Patch the model lifecycle to a no-op so no real inference server is hit.
+    lifecycle_mock = MagicMock()
+    lifecycle_mock.prepare.return_value = 0
+    monkeypatch.setattr(coordinator, "get_model_lifecycle", MagicMock(return_value=lifecycle_mock))
 
     # Patch shutil.copy2 — the empty fake corpus would fail real copy.
     monkeypatch.setattr(shutil, "copy2", MagicMock())
@@ -435,6 +436,45 @@ def test_drain_counts_stale_processing_rows_as_pending(tmp_path: Path) -> None:
         "stale 'processing' row must keep drain pending until timeout — otherwise "
         "a dead-brain bench could silently report success"
     )
+
+
+def test_drain_ignores_frozen_claude_queue_but_polls_agentic(tmp_path: Path) -> None:
+    """Regression: the agentic unification (schema v18) FROZE
+    claude_enrichment_queue — the brain no longer claims from it. A corpus
+    snapshot copied from the prod DB can carry stale 'pending' rows in that
+    dead table; if the drain polls it, total_pending is pinned > 0 forever and
+    the bench hangs until drain_timeout_sec. The drain MUST poll the live
+    agentic_enrichment_queue instead. This pins both halves of the contract:
+    a pending row in the frozen claude queue is ignored (drains), and a pending
+    row in the agentic queue is honored (stays pending).
+    """
+    import contextlib
+    import sqlite3
+
+    # (a) Frozen claude_enrichment_queue with a stuck row + an EMPTY live
+    # agentic queue → must DRAIN (the dead table is not polled).
+    db_a = tmp_path / "frozen_claude.db"
+    with contextlib.closing(sqlite3.connect(str(db_a))) as conn:
+        conn.execute("CREATE TABLE enrichment_queue (id INTEGER PRIMARY KEY, status TEXT)")
+        conn.execute("CREATE TABLE claude_enrichment_queue (id INTEGER PRIMARY KEY, status TEXT)")
+        conn.execute("CREATE TABLE agentic_enrichment_queue (id INTEGER PRIMARY KEY, status TEXT)")
+        conn.execute("INSERT INTO claude_enrichment_queue (status) VALUES ('pending')")
+        conn.commit()
+    assert (
+        coordinator._wait_for_queue_drain(db_a, drain_timeout_sec=2.0, poll_interval_sec=0.1)
+        is False
+    ), "a stuck row in the FROZEN claude_enrichment_queue must not hang the drain"
+
+    # (b) Live agentic_enrichment_queue with a pending row → must stay PENDING.
+    db_b = tmp_path / "live_agentic.db"
+    with contextlib.closing(sqlite3.connect(str(db_b))) as conn:
+        conn.execute("CREATE TABLE agentic_enrichment_queue (id INTEGER PRIMARY KEY, status TEXT)")
+        conn.execute("INSERT INTO agentic_enrichment_queue (status) VALUES ('pending')")
+        conn.commit()
+    assert (
+        coordinator._wait_for_queue_drain(db_b, drain_timeout_sec=0.5, poll_interval_sec=0.1)
+        is True
+    ), "a pending row in the LIVE agentic_enrichment_queue must keep the drain pending"
 
 
 def test_teardown_runs_on_baseexception_mid_lifecycle(

@@ -23,10 +23,13 @@ from unittest.mock import MagicMock, patch
 import httpx
 import pytest
 
+import tomllib
+
 from hippo_brain.bench import shadow_stack
 from hippo_brain.bench.shadow_stack import (
     ShadowStack,
     _spawn_pgrp_pair,
+    _toml_basic_string,
     spawn_shadow_stack,
     teardown_shadow_stack,
     wait_for_brain_ready,
@@ -40,8 +43,54 @@ def _spawn_kwargs(tmp_path: pathlib.Path, **overrides):
         "model_id": "qwen3.5-35b-a3b",
         "corpus_version": "corpus-v2",
         "embedding_model": "embedding-test",
+        "inference_base_url": "http://localhost:8000/v1",
         **overrides,
     }
+
+
+def test_shadow_config_writes_inference_and_models_sections(tmp_path):
+    # Regression: the shadow brain is a separate process that reads its
+    # inference endpoint from this generated config. When [inference]/[models]
+    # were omitted it fell back to the LM Studio default (:1234) and every
+    # enrichment call failed "All connection attempts failed" — the bench
+    # no-op'd with zero system load instead of benchmarking. Section MUST be
+    # [inference] (the brain hard-fails on a legacy [lmstudio] section).
+    run_tree = tmp_path / "run-tree"
+    shadow_stack._write_shadow_config(
+        run_tree,
+        18923,
+        inference_base_url="http://localhost:8000/v1",
+        enrichment_model="qwen3.6-35b",
+        embedding_model="nomic-embed",
+    )
+    text = (run_tree / ".config" / "hippo" / "config.toml").read_text()
+    assert "[inference]" in text
+    assert "[lmstudio]" not in text
+    assert 'base_url = "http://localhost:8000/v1"' in text
+    assert "[models]" in text
+    assert 'enrichment = "qwen3.6-35b"' in text
+    assert 'embedding = "nomic-embed"' in text
+    assert 'query = "qwen3.6-35b"' in text
+
+    # And it must parse as valid TOML the brain can load.
+    parsed = tomllib.loads(text)
+    assert parsed["inference"]["base_url"] == "http://localhost:8000/v1"
+    assert parsed["models"]["embedding"] == "nomic-embed"
+    assert parsed["brain"]["port"] == 18923
+
+
+def test_spawn_threads_inference_base_url_into_config(tmp_path, monkeypatch):
+    calls = _capture_popen_calls(monkeypatch, tmp_path)
+    run_tree = tmp_path / "run-tree"
+    with patch.dict(os.environ, {}, clear=True):
+        spawn_shadow_stack(
+            **_spawn_kwargs(
+                tmp_path, run_tree=run_tree, inference_base_url="http://localhost:8000/v1"
+            )
+        )
+    assert len(calls) == 2
+    text = (run_tree / ".config" / "hippo" / "config.toml").read_text()
+    assert 'base_url = "http://localhost:8000/v1"' in text
 
 
 def _capture_popen_calls(monkeypatch, tmp_path: pathlib.Path):
@@ -565,3 +614,38 @@ def test_spawn_pgrp_pair_raises_with_log_path_when_daemon_dies(tmp_path):
     assert str(daemon_log) in msg
     # Brain log must NOT have been created — we never reached the brain spawn.
     assert not brain_log.exists()
+
+
+def test_toml_basic_string_escapes_special_chars():
+    """_toml_basic_string must produce valid, parseable TOML for values that
+    contain double-quotes, backslashes, or control characters — the exact
+    characters that make a bare f-string unsafe."""
+    assert _toml_basic_string("plain") == '"plain"'
+    assert _toml_basic_string('say "hi"') == '"say \\"hi\\""'
+    assert _toml_basic_string("C:\\Users\\x") == '"C:\\\\Users\\\\x"'
+    assert _toml_basic_string("line\nnewline") == '"line\\nnewline"'
+    assert _toml_basic_string("tab\there") == '"tab\\there"'
+
+
+def test_write_shadow_config_round_trips_model_with_special_chars(tmp_path):
+    """A model id containing a double-quote must produce valid, parseable TOML.
+
+    Previously _write_shadow_config used a bare f-string, so a model id like
+    'model"evil' emitted:  enrichment = "model"evil"  which is invalid TOML
+    and causes the shadow brain to fail at config parse time — the bench then
+    records an empty/errored run instead of benchmarking the model.
+    """
+    evil_model = 'model"evil'
+    run_tree = tmp_path / "run-tree"
+    shadow_stack._write_shadow_config(
+        run_tree,
+        18923,
+        inference_base_url="http://localhost:8000/v1",
+        enrichment_model=evil_model,
+        embedding_model="nomic-embed",
+    )
+    text = (run_tree / ".config" / "hippo" / "config.toml").read_text()
+    parsed = tomllib.loads(text)
+    assert parsed["models"]["enrichment"] == evil_model
+    assert parsed["models"]["query"] == evil_model
+    assert parsed["models"]["embedding"] == "nomic-embed"

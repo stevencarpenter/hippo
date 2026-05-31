@@ -16,7 +16,8 @@ from typing import Literal
 import httpx
 
 from hippo_brain.bench.corpus import verify_corpus
-from hippo_brain.bench.paths import hippo_bench_root
+from hippo_brain.bench.paths import bench_qa_path, hippo_bench_root
+from hippo_brain.bench.qa import validate_qa_fixture
 from hippo_brain.schema_version import EXPECTED_SCHEMA_VERSION
 
 Status = Literal["pass", "warn", "fail"]
@@ -33,13 +34,19 @@ class CheckResult:
 
 
 def check_inference_reachable(url: str) -> CheckResult:
+    # Probe the OpenAI-compatible liveness route by appending `/models` to the
+    # caller-supplied base URL. The caller is responsible for passing a
+    # `/v1`-normalized base URL (e.g. `http://host:1234/v1`); this function only
+    # appends the `/models` route suffix. Do not call with a bare host:port —
+    # spec-correct servers (oMLX) return 404 for requests without the `/v1` prefix.
+    probe_url = url if url.rstrip("/").endswith("/models") else f"{url.rstrip('/')}/models"
     try:
-        resp = httpx.get(url, timeout=5.0)
+        resp = httpx.get(probe_url, timeout=5.0)
     except httpx.HTTPError as e:
         return CheckResult(
             name="inference_reachable",
             status="fail",
-            detail=f"HTTP error contacting {url}: {e}",
+            detail=f"HTTP error contacting {probe_url}: {e}",
         )
     if resp.status_code >= 400:
         return CheckResult(
@@ -216,6 +223,28 @@ def check_brain_port_free(port: int = 18923) -> CheckResult:
     return CheckResult(name="brain_port_free", status="pass", detail=f"port {port} free")
 
 
+def check_qa_scoreable(corpus_sqlite: Path, min_scoreable: int = 1) -> CheckResult:
+    qa_path = bench_qa_path()
+    if not qa_path.exists():
+        return CheckResult(
+            name="qa_scoreable",
+            status="warn",
+            detail=f"QA fixture missing ({qa_path}); QA scoring will be skipped",
+        )
+    if not corpus_sqlite.exists():
+        return CheckResult(
+            name="qa_scoreable",
+            status="warn",
+            detail=f"corpus missing ({corpus_sqlite}); skipping QA scoreable check",
+        )
+    report = validate_qa_fixture(qa_path, corpus_sqlite, min_scoreable=min_scoreable)
+    return CheckResult(
+        name="qa_scoreable",
+        status="pass" if report.passes else "fail",
+        detail=report.detail,
+    )
+
+
 def run_all_preflight(
     brain_url: str,
     corpus_sqlite: Path,
@@ -223,6 +252,7 @@ def run_all_preflight(
     inference_url: str,
     skip_prod_pause: bool,
     brain_port: int = 18923,
+    min_scoreable_qa: int = 1,
 ) -> tuple[list[CheckResult], bool]:
     """Run all preflight checks. Returns (checks, aborted).
 
@@ -232,6 +262,8 @@ def run_all_preflight(
     - disk < 2 GB under bench root
     - shadow brain port already in use (BT-07)
     - prod brain reachable AND not pauseable AND skip_prod_pause not set
+    - QA fixture is PRESENT but fails validation (bad fixture aborts; absent
+      fixture is a warn and allows enrichment-only runs)
     """
     reachable = check_prod_brain_reachable(brain_url)
     pauseable = check_prod_brain_pauseable(brain_url, skip=skip_prod_pause)
@@ -239,14 +271,24 @@ def run_all_preflight(
     inference_check = check_inference_reachable(inference_url)
     bench_disk = check_disk_free_bench(hippo_bench_root())
     port_check = check_brain_port_free(brain_port)
+    qa_check = check_qa_scoreable(corpus_sqlite, min_scoreable=min_scoreable_qa)
 
-    checks = [reachable, pauseable, corpus_check, inference_check, bench_disk, port_check]
+    checks = [
+        reachable,
+        pauseable,
+        corpus_check,
+        inference_check,
+        bench_disk,
+        port_check,
+        qa_check,
+    ]
 
     aborted = (
         corpus_check.status == "fail"
         or inference_check.status == "fail"
         or bench_disk.status == "fail"
         or port_check.status == "fail"
+        or qa_check.status == "fail"
         or (reachable.status == "pass" and pauseable.status == "fail" and not skip_prod_pause)
     )
 

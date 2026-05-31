@@ -20,6 +20,8 @@ import tomllib
 from pathlib import Path
 
 DEFAULT_BRAIN_PORT = 9175
+DEFAULT_INFERENCE_BASE_URL = "http://localhost:8000/v1"
+DEFAULT_EMBEDDING_MODEL = "nomicai-modernbert-embed-base-8bit"
 
 
 def _config_path() -> Path:
@@ -86,5 +88,94 @@ def _warn(msg: str) -> None:
     )
 
 
+def _warn_str(msg: str, label: str, default: str) -> None:
+    print(
+        f"warning: {msg}; defaulting {label} to {default!r}",
+        file=sys.stderr,
+    )
+
+
 def default_prod_brain_url(config_path: Path | None = None) -> str:
     return f"http://127.0.0.1:{resolve_prod_brain_port(config_path)}"
+
+
+def _read_toml_str(
+    config_path: Path | None,
+    section: str,
+    key: str,
+    default: str,
+    label: str,
+) -> str:
+    """Read a string value from a TOML config section.
+
+    Returns *default* silently for the normal "no config file" and
+    "missing section" cases. Warns to stderr for unreadable, malformed,
+    or wrong-type values — a silent fallback would mask misconfiguration.
+    """
+    path = config_path or _config_path()
+    if not path.exists():
+        return default
+    try:
+        with path.open("rb") as f:
+            data = tomllib.load(f)
+    except FileNotFoundError:
+        # Race with .exists() above — file disappeared.
+        return default
+    except (PermissionError, IsADirectoryError) as e:
+        _warn_str(f"cannot read {path}: {e!s}", label, default)
+        return default
+    except tomllib.TOMLDecodeError as e:
+        _warn_str(f"malformed TOML in {path}: {e!s}", label, default)
+        return default
+
+    section_data = data.get(section, {})
+    if not isinstance(section_data, dict):
+        _warn_str(
+            f"[{section}] in {path} is not a table "
+            f"(got {type(section_data).__name__}={section_data!r})",
+            label,
+            default,
+        )
+        return default
+
+    value = section_data.get(key, default)
+    if not isinstance(value, str):
+        _warn_str(
+            f"[{section}].{key} in {path} is not a string (got {type(value).__name__}={value!r})",
+            label,
+            default,
+        )
+        return default
+    return value
+
+
+def default_inference_base_url(config_path: Path | None = None) -> str:
+    """Return `[inference].base_url` from prod config.toml, or DEFAULT_INFERENCE_BASE_URL.
+
+    Returns the default silently for the normal "no config file" and
+    "missing [inference] section" cases. Warns to stderr for unreadable,
+    malformed, or non-string values.
+    """
+    return _read_toml_str(
+        config_path,
+        section="inference",
+        key="base_url",
+        default=DEFAULT_INFERENCE_BASE_URL,
+        label="inference base_url",
+    )
+
+
+def default_embedding_model(config_path: Path | None = None) -> str:
+    """Return `[models].embedding` from prod config.toml, or DEFAULT_EMBEDDING_MODEL.
+
+    Returns the default silently for the normal "no config file" and
+    "missing [models] section" cases. Warns to stderr for unreadable,
+    malformed, or non-string values.
+    """
+    return _read_toml_str(
+        config_path,
+        section="models",
+        key="embedding",
+        default=DEFAULT_EMBEDDING_MODEL,
+        label="models.embedding",
+    )

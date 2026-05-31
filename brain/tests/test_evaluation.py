@@ -328,6 +328,7 @@ CREATE TABLE knowledge_node_events (
 );
 CREATE TABLE agentic_sessions (
     id INTEGER PRIMARY KEY,
+    harness TEXT,
     start_time INTEGER,
     cwd TEXT,
     project_dir TEXT,
@@ -339,16 +340,21 @@ CREATE TABLE knowledge_node_agentic_sessions (
     agentic_session_id INTEGER,
     PRIMARY KEY (knowledge_node_id, agentic_session_id)
 );
-CREATE TABLE browser_events (id INTEGER PRIMARY KEY, timestamp INTEGER);
+CREATE TABLE browser_events (id INTEGER PRIMARY KEY, timestamp INTEGER, probe_tag TEXT);
 CREATE TABLE knowledge_node_browser_events (
     knowledge_node_id INTEGER,
     browser_event_id INTEGER,
     PRIMARY KEY (knowledge_node_id, browser_event_id)
 );
+CREATE TABLE workflow_runs (
+    id INTEGER PRIMARY KEY,
+    status TEXT,
+    created_at INTEGER
+);
 CREATE TABLE knowledge_node_workflow_runs (
     knowledge_node_id INTEGER,
-    workflow_run_id INTEGER,
-    PRIMARY KEY (knowledge_node_id, workflow_run_id)
+    run_id INTEGER,
+    PRIMARY KEY (knowledge_node_id, run_id)
 );
 CREATE TABLE entities (id INTEGER PRIMARY KEY, type TEXT, name TEXT, canonical TEXT);
 CREATE TABLE knowledge_node_entities (knowledge_node_id INTEGER, entity_id INTEGER);
