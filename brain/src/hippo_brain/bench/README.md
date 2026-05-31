@@ -420,7 +420,14 @@ calling out:
    `corpus_content_hash` (see `qa_template.provenance.json`). Run
    `hippo-bench qa validate --min-scoreable 100` before publishing any
    `downstream_proxy` MRR / Hit@1 number — if the corpus is rebuilt from a
-   different DB, the goldens stop resolving and must be re-annotated.
+   different DB, the goldens stop resolving and must be re-annotated. The
+   `claude-<id>` goldens resolve against `agentic_sessions`
+   (`harness='claude-code'`), not the frozen `claude_sessions` table — the
+   corpus builder, the proxy gate, retrieval's `linked_source_ids`, and the
+   validator all read the agentic family (schema v18). A real all-source smoke
+   currently scores hybrid MRR ≈ 0.4 / Hit@1 ≈ 0.35 over 100 items; pure
+   `lexical` mode scores ~0 by design (the anti-leakage rubric strips verbatim
+   tokens, so only semantic/hybrid retrieval can find the golden).
 7. **Trust still requires BT-29.** A single run now produces real metrics, but
    model-ranking claims require the three-run determinism procedure in
    [`docs/capture/bench-runbook.md`](../../../../docs/capture/bench-runbook.md).
