@@ -1194,3 +1194,21 @@ fi
 ln -s "$SKILL_SRC" "$SKILL_DST"
 echo "Installed skill: $SKILL_DST -> $SKILL_SRC"
 """
+
+# ── Bench (model benchmark; separate data root, not normal hippo execution) ──
+
+[tasks."bench:qa:seed"]
+description = "Seed the Q/A fixture (eval-qa-v1.jsonl) from the committed template"
+run = "uv run --project brain python3 brain/src/hippo_brain/bench/qa_seed.py"
+
+[tasks."bench:recover"]
+description = "Clear a stale bench pause lockfile left by a SIGKILLed run"
+run = "uv run --project brain hippo-bench recover"
+
+[tasks."bench:determinism"]
+description = "Compare N bench run JSONL files against the BT-29 determinism budget"
+run = "uv run --project brain hippo-bench determinism ${@}"
+
+[tasks."bench:corpus:verify"]
+description = "Verify a bench corpus snapshot's content hashes against its manifest"
+run = "uv run --project brain hippo-bench corpus verify --corpus-version \"${BENCH_CORPUS_VERSION:-corpus-v2}\""
