@@ -26,6 +26,7 @@ from hippo_brain.bench.metrics import MetricsSampler
 from hippo_brain.bench.model_lifecycle import get_model_lifecycle
 from hippo_brain.bench.output import AttemptRecord
 from hippo_brain.bench.paths import bench_qa_path, bench_run_tree
+from hippo_brain.bench.qa import collect_corpus_event_ids
 from hippo_brain.bench.pause_rpc import PauseRpcClient
 from hippo_brain.bench.preflight import check_brain_port_free
 from hippo_brain.bench.runner import run_self_consistency_pass
@@ -141,40 +142,17 @@ def _wait_for_queue_drain(
 
 
 def _collect_event_ids_from_db(bench_db: Path) -> set[str]:
-    """Collect all event IDs from bench DB corpus.
+    """Collect all source-tagged event IDs present in the bench DB corpus.
 
-    Per-source tables are queried independently. Missing tables are debug-logged
-    and skipped — sparse corpora (e.g. shell-only) legitimately don't have all
-    four. Other failures (corruption, permission errors, sqlite open errors)
-    propagate so the caller's _capture pattern records them in JSONL rather
-    than masking them as an empty event_ids set.
+    Delegates to the single source of truth, ``qa.collect_corpus_event_ids``,
+    so the downstream-proxy's scoreable-Q/A gate and the ``qa validate`` CLI
+    agree on what exists — and so the Claude source resolves to
+    ``agentic_sessions`` (harness='claude-code'), NOT the frozen
+    ``claude_sessions`` table. Querying claude_sessions here silently dropped
+    all 30 Claude Q/A from scoring (scored_count 70/100) even though their
+    goldens were present in agentic_sessions.
     """
-    event_ids: set[str] = set()
-    with contextlib.closing(sqlite3.connect(str(bench_db))) as conn:
-        try:
-            shell_rows = conn.execute("SELECT id FROM events").fetchall()
-            event_ids.update(f"shell-{row[0]}" for row in shell_rows if row[0])
-        except sqlite3.OperationalError as e:
-            logger.debug("table 'events' missing in corpus, skipping: %s", e)
-
-        try:
-            claude_rows = conn.execute("SELECT id FROM claude_sessions").fetchall()
-            event_ids.update(f"claude-{row[0]}" for row in claude_rows if row[0])
-        except sqlite3.OperationalError as e:
-            logger.debug("table 'claude_sessions' missing in corpus, skipping: %s", e)
-
-        try:
-            browser_rows = conn.execute("SELECT id FROM browser_events").fetchall()
-            event_ids.update(f"browser-{row[0]}" for row in browser_rows if row[0])
-        except sqlite3.OperationalError as e:
-            logger.debug("table 'browser_events' missing in corpus, skipping: %s", e)
-
-        try:
-            workflow_rows = conn.execute("SELECT id FROM workflow_runs").fetchall()
-            event_ids.update(f"workflow-{row[0]}" for row in workflow_rows if row[0])
-        except sqlite3.OperationalError as e:
-            logger.debug("table 'workflow_runs' missing in corpus, skipping: %s", e)
-    return event_ids
+    return collect_corpus_event_ids(bench_db)
 
 
 def _load_corpus_entries(corpus_sqlite: Path) -> list[CorpusEntry]:
