@@ -57,17 +57,24 @@ def _load_jsonl(path: Path) -> list[dict[str, Any]]:
 
 
 def collect_corpus_event_ids(corpus_sqlite: Path) -> set[str]:
+    # The "claude" source maps to agentic_sessions (harness='claude-code'), NOT
+    # the frozen legacy claude_sessions table. The agentic unification (schema
+    # v18) moved Claude sessions into the agentic family; the corpus builder
+    # writes claude rows there and golden ids are claude-{agentic_sessions.id}.
+    # Querying claude_sessions here returned ZERO claude ids, so every Claude
+    # Q/A golden was wrongly judged unscoreable. Each tuple is
+    # (prefix, table, id_col, where_clause).
     specs = [
-        ("shell", "events", "id"),
-        ("claude", "claude_sessions", "id"),
-        ("browser", "browser_events", "id"),
-        ("workflow", "workflow_runs", "id"),
+        ("shell", "events", "id", ""),
+        ("claude", "agentic_sessions", "id", " WHERE harness = 'claude-code'"),
+        ("browser", "browser_events", "id", ""),
+        ("workflow", "workflow_runs", "id", ""),
     ]
     ids: set[str] = set()
     with contextlib.closing(sqlite3.connect(f"file:{corpus_sqlite}?mode=ro", uri=True)) as conn:
-        for prefix, table, id_col in specs:
+        for prefix, table, id_col, where in specs:
             try:
-                rows = conn.execute(f"SELECT {id_col} FROM {table}").fetchall()
+                rows = conn.execute(f"SELECT {id_col} FROM {table}{where}").fetchall()
             except sqlite3.OperationalError:
                 continue
             ids.update(f"{prefix}-{row[0]}" for row in rows if row[0] is not None)

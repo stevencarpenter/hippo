@@ -1,14 +1,19 @@
 {
   "fixture": "qa_template.jsonl",
-  "version": "v2-corpus-grounded",
+  "version": "v3-agentic-unified",
   "annotated_by": "corpus-derived authoring (Mode B, docs/baselines/QA-ANNOTATION.md)",
-  "annotated_on": "2026-05-30",
+  "annotated_on": "2026-05-31",
   "corpus_version": "corpus-v2",
   "corpus_schema_version": 18,
-  "corpus_content_hash": "3e84eb8dabb4de8be9484bed718fea0fc45a7df1e1f12288cecf55c2c1b284a0",
+  "corpus_content_hash": "43d727a70336157fc84ad97d608792af3c2ecb72562ef8292f52a97b9656667f",
   "scoreable": "100/100 against the corpus_content_hash above",
-  "stratification": {"shell": 40, "claude": 30, "browser": 20, "workflow": 10},
-  "method": "Each golden_event_id was chosen by reading a specific corpus event, then authoring a plain-language question that event answers, under an anti-leakage rubric (no verbatim distinctive tokens; answerable from the enriched node, not raw text; one unique golden per question; no aggregation/superlative/temporal questions). Authored + adversarially leak-verified + repaired per source, then globally de-duplicated and validated via `hippo-bench qa validate --min-scoreable 100`.",
+  "stratification": {
+    "shell": 40,
+    "claude": 30,
+    "browser": 20,
+    "workflow": 10
+  },
+  "method": "Each golden_event_id was chosen by reading a specific corpus event, then authoring a plain-language question that event answers, under an anti-leakage rubric (no verbatim distinctive tokens; answerable from the enriched node, not raw text; one unique golden per question; no aggregation/superlative/temporal questions). Authored + adversarially leak-verified + repaired per source, then globally de-duplicated and validated via `hippo-bench qa validate --min-scoreable 100`. Claude source now reads agentic_sessions (harness=claude-code) per the schema-v18 agentic unification; goldens are claude-{agentic_sessions.id}.",
   "IMPORTANT": "golden_event_ids are bound to this exact corpus_content_hash. If corpus-v2 is rebuilt from a different live DB, the sampled events change and these goldens will no longer resolve. Re-run `hippo-bench qa validate` after any corpus rebuild; if it fails, re-annotate against the new corpus (see QA-ANNOTATION.md).",
   "follow_up": "qa-071/qa-008/qa-034 share several topical (non-identifier) tokens with their golden's title/command; acceptable under the rubric but could be paraphrased further in a future polish pass. Growing to >=150 scoreable items for fine-grained model ranking is tracked separately (trust-tracking P2-03 / issue #133)."
 }

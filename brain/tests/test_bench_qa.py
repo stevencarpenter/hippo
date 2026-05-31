@@ -10,9 +10,26 @@ def _write_corpus_db(path: Path) -> None:
     conn = sqlite3.connect(path)
     try:
         conn.execute("CREATE TABLE events (id INTEGER PRIMARY KEY, command TEXT)")
+        # claude maps to agentic_sessions (harness='claude-code'), NOT the
+        # frozen claude_sessions. A non-claude-code harness row and a populated
+        # frozen claude_sessions are added to prove the validator ignores both.
+        conn.execute(
+            "CREATE TABLE agentic_sessions "
+            "(id INTEGER PRIMARY KEY, harness TEXT, summary_text TEXT)"
+        )
         conn.execute("CREATE TABLE claude_sessions (id INTEGER PRIMARY KEY, summary_text TEXT)")
         conn.execute("INSERT INTO events (id, command) VALUES (1, 'cargo test')")
-        conn.execute("INSERT INTO claude_sessions (id, summary_text) VALUES (2, 'bench design')")
+        conn.execute(
+            "INSERT INTO agentic_sessions (id, harness, summary_text) "
+            "VALUES (2, 'claude-code', 'bench design')"
+        )
+        # a codex agentic row (must NOT be collected as a 'claude-' id) and a
+        # frozen claude_sessions row (must NOT be read at all).
+        conn.execute(
+            "INSERT INTO agentic_sessions (id, harness, summary_text) "
+            "VALUES (3, 'codex', 'codex work')"
+        )
+        conn.execute("INSERT INTO claude_sessions (id, summary_text) VALUES (99, 'frozen ignored')")
         conn.commit()
     finally:
         conn.close()
