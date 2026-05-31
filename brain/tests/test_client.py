@@ -1,7 +1,11 @@
 import math
+from unittest.mock import AsyncMock, MagicMock
+
+import httpx
 import pytest
 
-from hippo_brain.client import MockInferenceClient, _parse_embed_response
+from hippo_brain import client as client_mod
+from hippo_brain.client import InferenceClient, MockInferenceClient, _parse_embed_response
 
 
 @pytest.fixture
@@ -88,3 +92,105 @@ def test_parse_embed_response_raises_on_null_buried_mid_vector():
     }
     with pytest.raises(ValueError, match=r"None at item\[0\]\.embedding\[2\]"):
         _parse_embed_response(response, source="http://test/v1")
+
+
+# --- Retry-with-backoff tests for the HTTP boundary in chat()/embed() ---
+
+
+def _fake_chat_response():
+    """A fake httpx.Response that passes _raise_with_body and yields chat content."""
+    resp = MagicMock()
+    resp.raise_for_status = MagicMock(return_value=None)
+    resp.json = MagicMock(return_value={"choices": [{"message": {"content": "hello-from-server"}}]})
+    return resp
+
+
+def _fake_embed_response():
+    resp = MagicMock()
+    resp.raise_for_status = MagicMock(return_value=None)
+    resp.json = MagicMock(return_value={"data": [{"embedding": [0.1, 0.2, 0.3]}]})
+    return resp
+
+
+def _patch_async_client(monkeypatch, post_mock):
+    """Patch httpx.AsyncClient so its async-context client's .post is post_mock."""
+    fake_client = MagicMock()
+    fake_client.post = post_mock
+    ctx = MagicMock()
+    ctx.__aenter__ = AsyncMock(return_value=fake_client)
+    ctx.__aexit__ = AsyncMock(return_value=False)
+    monkeypatch.setattr(client_mod.httpx, "AsyncClient", MagicMock(return_value=ctx))
+    return post_mock
+
+
+async def test_chat_retries_on_transient_then_succeeds(monkeypatch):
+    post = AsyncMock(
+        side_effect=[
+            httpx.RemoteProtocolError("peer closed connection"),
+            _fake_chat_response(),
+        ]
+    )
+    _patch_async_client(monkeypatch, post)
+    sleep_mock = AsyncMock()
+    monkeypatch.setattr(client_mod, "_sleep", sleep_mock)
+
+    c = InferenceClient(base_url="http://x/v1", timeout=1.0)
+    result = await c.chat(messages=[{"role": "user", "content": "hi"}])
+
+    assert result == "hello-from-server"
+    assert post.await_count == 2
+    sleep_mock.assert_awaited_once_with(0.5)
+
+
+async def test_chat_exhausts_retries_then_raises(monkeypatch):
+    post = AsyncMock(side_effect=httpx.RemoteProtocolError("peer closed connection"))
+    _patch_async_client(monkeypatch, post)
+    sleep_mock = AsyncMock()
+    monkeypatch.setattr(client_mod, "_sleep", sleep_mock)
+
+    c = InferenceClient(base_url="http://x/v1", timeout=1.0, max_retries=3)
+    with pytest.raises(httpx.RemoteProtocolError):
+        await c.chat(messages=[{"role": "user", "content": "hi"}])
+
+    assert post.await_count == 3
+    # Sleeps before the 2nd and 3rd attempts only: exponential schedule.
+    assert [call.args[0] for call in sleep_mock.await_args_list] == [0.5, 1.0]
+
+
+async def test_chat_does_not_retry_on_http_status_error(monkeypatch):
+    def raise_500(*_a, **_k):
+        raise httpx.HTTPStatusError("500", request=MagicMock(), response=MagicMock())
+
+    resp = MagicMock()
+    resp.raise_for_status = MagicMock(side_effect=raise_500)
+    post = AsyncMock(return_value=resp)
+    _patch_async_client(monkeypatch, post)
+    sleep_mock = AsyncMock()
+    monkeypatch.setattr(client_mod, "_sleep", sleep_mock)
+
+    # _raise_with_body re-raises HTTPStatusError; must propagate without retry.
+    c = InferenceClient(base_url="http://x/v1", timeout=1.0)
+    with pytest.raises(httpx.HTTPStatusError):
+        await c.chat(messages=[{"role": "user", "content": "hi"}])
+
+    assert post.await_count == 1
+    sleep_mock.assert_not_awaited()
+
+
+async def test_embed_retries_on_transient_then_succeeds(monkeypatch):
+    post = AsyncMock(
+        side_effect=[
+            httpx.ConnectError("connection refused"),
+            _fake_embed_response(),
+        ]
+    )
+    _patch_async_client(monkeypatch, post)
+    sleep_mock = AsyncMock()
+    monkeypatch.setattr(client_mod, "_sleep", sleep_mock)
+
+    c = InferenceClient(base_url="http://x/v1", timeout=1.0)
+    result = await c.embed(["some text"])
+
+    assert result == [[0.1, 0.2, 0.3]]
+    assert post.await_count == 2
+    sleep_mock.assert_awaited_once_with(0.5)
