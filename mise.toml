@@ -1250,3 +1250,97 @@ if [ "${FORCE:-}" = "1" ]; then
 fi
 uv run --project brain hippo-bench corpus init "${args[@]}"
 '''
+
+[tasks."bench:summary"]
+description = "Print the gate scorecard for a bench run JSONL (newest run if omitted)"
+run = '''
+#!/usr/bin/env bash
+set -euo pipefail
+RUNS="${XDG_DATA_HOME:-$HOME/.local/share}/hippo-bench/runs"
+FILE="${1:-}"
+if [ -z "$FILE" ]; then
+    # shellcheck disable=SC2012
+    FILE="$(ls -t "$RUNS"/run-*.jsonl 2>/dev/null | head -1 || true)"
+    if [ -z "$FILE" ]; then
+        echo "No bench runs found under $RUNS" >&2
+        exit 1
+    fi
+    echo "Newest run: $FILE"
+fi
+uv run --project brain hippo-bench summary "$FILE"
+'''
+
+[tasks."bench:status"]
+description = "Show bench readiness: fixtures, last run + verdict, stale pause lock, prod-brain state"
+run = '''
+#!/usr/bin/env bash
+set -uo pipefail
+ROOT="${XDG_DATA_HOME:-$HOME/.local/share}/hippo-bench"
+FIXTURES="$ROOT/fixtures"
+RUNS="$ROOT/runs"
+CORPUS="${BENCH_CORPUS_VERSION:-corpus-v2}"
+
+mark() { if [ -e "$1" ]; then echo "  [ok] $2"; else echo "  [--] $2 (missing)"; fi; }
+
+echo "Bench root: $ROOT"
+if [ -d "$ROOT" ]; then echo "  [ok] root exists"; else echo "  [--] root missing (no runs yet)"; fi
+
+echo "Fixtures:"
+mark "$FIXTURES/$CORPUS.sqlite" "corpus snapshot ($CORPUS.sqlite)"
+mark "$FIXTURES/$CORPUS.manifest.json" "corpus manifest"
+mark "$FIXTURES/eval-qa-v1.jsonl" "Q/A fixture (eval-qa-v1.jsonl)"
+
+echo "Latest run:"
+# shellcheck disable=SC2012
+LATEST="$(ls -t "$RUNS"/run-*.jsonl 2>/dev/null | head -1 || true)"
+if [ -n "$LATEST" ]; then
+    echo "  $LATEST"
+    python3 - "$LATEST" <<'PY'
+import json, sys
+models, reason = {}, None
+with open(sys.argv[1]) as fh:
+    for line in fh:
+        try:
+            rec = json.loads(line)
+        except ValueError:
+            continue
+        rt = rec.get("record_type") or rec.get("type")
+        if rt == "model_summary":
+            mid = rec.get("model", {}).get("id", "?")
+            models[mid] = "pass" if rec.get("tier0_verdict", {}).get("passed") else "fail"
+        elif rt == "run_end":
+            reason = rec.get("reason")
+for mid, v in models.items():
+    print(f"    {mid}: {v}")
+if reason:
+    print(f"    reason: {reason}")
+if not models and not reason:
+    print("    (no model summaries — run incomplete?)")
+PY
+else
+    echo "  (none)"
+fi
+
+echo "Pause lock:"
+if [ -e "$ROOT/pause.lock" ]; then
+    echo "  [!!] $ROOT/pause.lock present — prod brain may still be paused. Run: mise run bench:recover"
+else
+    echo "  [ok] no stale pause lock"
+fi
+
+echo "Prod brain:"
+# Read [brain].port specifically — scope to the section so a `port` under
+# another table (e.g. [inference]) can't be mistaken for the brain port.
+PROD_PORT="$(awk '
+    /^[[:space:]]*\[brain\][[:space:]]*$/ {inb=1; next}
+    /^[[:space:]]*\[/ {inb=0}
+    inb && /^[[:space:]]*port[[:space:]]*=/ {gsub(/[^0-9]/, ""); print; exit}
+' "${XDG_CONFIG_HOME:-$HOME/.config}/hippo/config.toml" 2>/dev/null || true)"
+PROD_PORT="${PROD_PORT:-9175}"
+if H="$(curl -sf "http://127.0.0.1:$PROD_PORT/health" 2>/dev/null)"; then
+    PAUSED="$(printf '%s' "$H" | python3 -c 'import sys,json; print(json.load(sys.stdin).get("paused","?"))' 2>/dev/null || echo '?')"
+    echo "  [ok] reachable on :$PROD_PORT (paused=$PAUSED)"
+else
+    echo "  [--] not reachable on :$PROD_PORT (not running, or different port)"
+fi
+'''
