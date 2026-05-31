@@ -1344,3 +1344,102 @@ else
     echo "  [--] not reachable on :$PROD_PORT (not running, or different port)"
 fi
 '''
+
+[tasks."bench:run"]
+description = "Benchmark a model id end-to-end (guided prereqs, teed transcript, gate + retrieval scorecards)"
+run = '''
+#!/usr/bin/env bash
+set -euo pipefail
+
+MODEL="${1:-}"
+if [ -z "$MODEL" ]; then
+    echo "Usage: mise run bench:run <model-id>   (comma-separate for multiple)" >&2
+    exit 1
+fi
+
+ROOT="${XDG_DATA_HOME:-$HOME/.local/share}/hippo-bench"
+FIXTURES="$ROOT/fixtures"
+RUNS="$ROOT/runs"
+CORPUS="${BENCH_CORPUS_VERSION:-corpus-v2}"
+
+echo "── BENCH MODE ────────────────────────────────────────────────"
+echo "  Data root : $ROOT  (separate from prod ~/.local/share/hippo)"
+echo "  Prod brain: will be PAUSED for the run, then resumed"
+echo "  This is a benchmark, not normal hippo execution."
+echo "──────────────────────────────────────────────────────────────"
+
+# Safe prereqs only (idempotent; never samples the live prod DB).
+uv run --project brain hippo-bench recover || true
+if [ ! -e "$FIXTURES/eval-qa-v1.jsonl" ]; then
+    echo "==> Q/A fixture missing; seeding from template..."
+    uv run --project brain python3 brain/src/hippo_brain/bench/qa_seed.py
+fi
+
+# Guided guard: corpus init samples prod, so require it explicitly.
+if [ ! -e "$FIXTURES/$CORPUS.sqlite" ]; then
+    echo "ERROR: corpus snapshot missing: $FIXTURES/$CORPUS.sqlite" >&2
+    echo "Create it first (samples your live hippo.db read-only):" >&2
+    echo "    mise run bench:corpus:init" >&2
+    exit 1
+fi
+
+mkdir -p "$RUNS"
+STEM="run-$(date -u +%Y%m%dT%H%M%SZ)-$(hostname -s)"
+RUN_JSONL="$RUNS/$STEM.jsonl"
+RUN_LOG="$RUNS/$STEM.log"
+
+extra=()
+[ -n "${BENCH_BASE_URL:-}" ] && extra+=(--base-url "$BENCH_BASE_URL")
+[ -n "${BENCH_EMBEDDING_MODEL:-}" ] && extra+=(--embedding-model "$BENCH_EMBEDDING_MODEL")
+
+echo "==> Running bench (transcript -> $RUN_LOG)"
+# Drop -e around the pipeline so a nonzero bench exit (preflight abort=2,
+# all-models-errored=3) is captured via PIPESTATUS and the scorecards below
+# still print. With -e active, set would abort the script at the pipeline,
+# skipping exactly the diagnostics a failed run needs. pipefail stays on
+# (enabled by the top-level set -euo pipefail).
+set +e
+uv run --project brain hippo-bench run \
+    --models "$MODEL" \
+    --corpus-version "$CORPUS" \
+    ${extra[@]+"${extra[@]}"} \
+    --out "$RUN_JSONL" 2>&1 | tee "$RUN_LOG"
+rc=${PIPESTATUS[0]}
+set -e
+
+echo ""
+echo "==> Gate scorecard"
+uv run --project brain hippo-bench summary "$RUN_JSONL" || true
+
+echo ""
+echo "==> Retrieval scorecard (hybrid mode)"
+python3 - "$RUN_JSONL" <<'PY'
+import json, sys
+def f3(x):
+    return f"{x:.3f}" if isinstance(x, (int, float)) else "n/a"
+any_row = False
+with open(sys.argv[1]) as fh:
+    for line in fh:
+        try:
+            rec = json.loads(line)
+        except ValueError:
+            continue
+        if (rec.get("record_type") or rec.get("type")) != "model_summary":
+            continue
+        any_row = True
+        mid = rec.get("model", {}).get("id", "?")
+        hy = ((rec.get("downstream_proxy") or {}).get("modes") or {}).get("hybrid")
+        if not hy:
+            print(f"  {mid}: (no retrieval metrics — Q/A fixture absent or unscoreable)")
+        else:
+            print(f"  {mid}: MRR={f3(hy.get('mrr'))}  Hit@1={f3(hy.get('hit_at_1'))}  "
+                  f"Hit@5={f3(hy.get('hit_at_5'))}  (n={hy.get('scored_count')})")
+if not any_row:
+    print("  (no model summaries in run)")
+PY
+
+echo ""
+echo "Results   : $RUN_JSONL"
+echo "Transcript: $RUN_LOG"
+exit "$rc"
+'''

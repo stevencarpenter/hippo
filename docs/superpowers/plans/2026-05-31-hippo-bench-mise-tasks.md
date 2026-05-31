@@ -357,13 +357,19 @@ extra=()
 [ -n "${BENCH_EMBEDDING_MODEL:-}" ] && extra+=(--embedding-model "$BENCH_EMBEDDING_MODEL")
 
 echo "==> Running bench (transcript -> $RUN_LOG)"
-set -o pipefail
+# Drop -e around the pipeline so a nonzero bench exit (preflight abort=2,
+# all-models-errored=3) is captured via PIPESTATUS and the scorecards below
+# still print. With -e active, set would abort the script at the pipeline,
+# skipping exactly the diagnostics a failed run needs. pipefail stays on
+# (enabled by the top-level set -euo pipefail).
+set +e
 uv run --project brain hippo-bench run \
     --models "$MODEL" \
     --corpus-version "$CORPUS" \
     ${extra[@]+"${extra[@]}"} \
     --out "$RUN_JSONL" 2>&1 | tee "$RUN_LOG"
 rc=${PIPESTATUS[0]}
+set -e
 
 echo ""
 echo "==> Gate scorecard"
