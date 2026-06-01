@@ -204,6 +204,37 @@ def _cmd_recover(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_ingest(args: argparse.Namespace) -> int:
+    from hippo_brain.bench.results_store import connect, ingest_run
+
+    if args.all:
+        targets = sorted(bench_runs_dir().glob("*.jsonl"))
+    elif args.run_file is None:
+        print("error: ingest requires a run_file argument or --all")
+        return 1
+    else:
+        targets = [Path(args.run_file)]
+
+    conn = connect()
+    try:
+        total_new = 0
+        for t in targets:
+            res = ingest_run(t, conn=conn, force=args.force)
+            status = (
+                "skipped (already ingested)"
+                if res.skipped_existing
+                else f"ingested run_id={res.run_id} "
+                f"(models={res.models}, enrichment={res.enrichment_rows}, "
+                f"retrieval={res.retrieval_rows}, malformed={res.malformed_lines})"
+            )
+            print(f"{t.name}: {status}")
+            total_new += 1 if res.inserted else 0
+        print(f"done: {total_new} run(s) ingested, {len(targets)} file(s) seen")
+        return 0
+    finally:
+        conn.close()
+
+
 def _cmd_run(args: argparse.Namespace) -> int:
     # BT-06: recover from a prior crashed bench run before doing anything
     # else. If the previous bench was SIGKILL'd, prod brain is still paused;
@@ -411,6 +442,14 @@ def _build_parser() -> argparse.ArgumentParser:
     summary = sub.add_parser("summary", help="Pretty-print a run JSONL file")
     summary.add_argument("run_file")
     summary.set_defaults(func=_cmd_summary)
+
+    ingest = sub.add_parser("ingest", help="Ingest run JSONL into the bench results datastore")
+    ingest.add_argument("run_file", nargs="?", help="Path to a run JSONL (omit with --all)")
+    ingest.add_argument(
+        "--all", action="store_true", help="Ingest every *.jsonl under the runs dir"
+    )
+    ingest.add_argument("--force", action="store_true", help="Re-ingest runs already present")
+    ingest.set_defaults(func=_cmd_ingest)
 
     # BT-29 / post-review: deterministic-rerun verification. Operator runs the
     # bench 3× against the same model + frozen corpus, then compares JSONLs.
