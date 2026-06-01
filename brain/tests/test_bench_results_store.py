@@ -1,5 +1,65 @@
+import json
+
 from hippo_brain.bench.paths import bench_results_db_path
 from hippo_brain.bench.results_store import SCHEMA_VERSION, connect
+
+
+def _write_jsonl(path, records):
+    with path.open("w", encoding="utf-8") as f:
+        for r in records:
+            f.write(json.dumps(r, sort_keys=True))
+            f.write("\n")
+    return path
+
+
+def _manifest(run_id="run-1"):
+    return {
+        "record_type": "run_manifest",
+        "run_id": run_id,
+        "started_at_iso": "2026-05-31T00:00:00+00:00",
+        "host": {"node": "test-host"},
+        "preflight_checks": [],
+        "candidate_models": ["model-a"],
+        "bench_version": "0.2.0",
+        "corpus_version": "corpus-v2",
+        "corpus_content_hash": "sha256:abc",
+        "corpus_schema_version": 18,
+        "eval_qa_version": "eval-qa-v1",
+        "embedding_model": "embed-x",
+        "inference_backend_version": None,
+        "gate_thresholds": {"schema_validity_min": 0.9},
+        "host_baseline": {},
+        "prod_state_at_start": {},
+        "self_consistency_spec": {},
+        "finished_at_iso": None,
+    }
+
+
+def _run_end(run_id="run-1"):
+    return {
+        "record_type": "run_end",
+        "run_id": run_id,
+        "finished_at_iso": "2026-05-31T01:00:00+00:00",
+        "models_completed": ["model-a"],
+        "models_errored": [],
+        "reason": None,
+    }
+
+
+def test_ingest_run_writes_bench_runs(tmp_path):
+    from hippo_brain.bench.results_store import connect, ingest_run
+
+    jsonl = _write_jsonl(tmp_path / "run-1.jsonl", [_manifest(), _run_end()])
+    conn = connect(tmp_path / "bench-results.db")
+    try:
+        ingest_run(jsonl, conn=conn, now_ms=123)
+        row = conn.execute("SELECT * FROM bench_runs WHERE run_id='run-1'").fetchone()
+        assert row["corpus_content_hash"] == "sha256:abc"
+        assert row["finished_at_iso"] == "2026-05-31T01:00:00+00:00"
+        assert json.loads(row["models_completed_json"]) == ["model-a"]
+        assert row["ingested_at_ms"] == 123
+    finally:
+        conn.close()
 
 
 def test_bench_results_db_path_under_xdg(tmp_path, monkeypatch):
