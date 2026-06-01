@@ -108,10 +108,10 @@ def connect(db_path: Path | None = None) -> sqlite3.Connection:
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")
     conn.execute("PRAGMA busy_timeout=5000")
-    conn.executescript(_SCHEMA)
-    # Stamp user_version only on a *fresh* DB (version 0). Stamping
-    # unconditionally would let an older binary silently downgrade a DB written
-    # by a newer one — corrupting the version that future migrations key on.
+    # Check the on-disk schema version BEFORE applying any DDL: a DB written by a
+    # newer binary must be refused untouched. Running v1 CREATE statements against
+    # a (possibly incompatible) newer schema first could error or partially mutate
+    # it before we ever reach the refusal.
     current = conn.execute("PRAGMA user_version").fetchone()[0]
     if current > SCHEMA_VERSION:
         conn.close()
@@ -119,10 +119,13 @@ def connect(db_path: Path | None = None) -> sqlite3.Connection:
             f"bench-results.db is schema v{current}, newer than this binary "
             f"(v{SCHEMA_VERSION}); refusing to open rather than downgrade — upgrade hippo"
         )
+    conn.executescript(_SCHEMA)
+    # Stamp user_version only on a *fresh* DB (version 0) or after a future
+    # upgrade. Stamping unconditionally would let an older binary silently
+    # downgrade a newer DB — corrupting the version migrations key on. When real
+    # migrations exist they run here, version-by-version, BEFORE this stamp;
+    # today _SCHEMA's CREATE TABLE IF NOT EXISTS is the only (idempotent) step.
     if current < SCHEMA_VERSION:
-        # Fresh DB (0) or an older version. When real migrations exist they run
-        # here, version-by-version, BEFORE this stamp; today _SCHEMA's
-        # CREATE TABLE IF NOT EXISTS is the only (idempotent) step.
         conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
     conn.commit()
     return conn

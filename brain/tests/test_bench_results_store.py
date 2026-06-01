@@ -176,9 +176,9 @@ def test_connect_refuses_newer_schema(tmp_path):
 
     from hippo_brain.bench.results_store import connect
 
+    # An EMPTY DB (no tables) stamped to a future version: connect() must refuse
+    # BEFORE running any DDL, so no bench_* tables get created on the way out.
     db = tmp_path / "bench-results.db"
-    connect(db).close()  # fresh DB at SCHEMA_VERSION
-    # Simulate a future binary bumping the on-disk version.
     raw = sqlite3.connect(db)
     raw.execute(f"PRAGMA user_version={SCHEMA_VERSION + 5}")
     raw.commit()
@@ -186,9 +186,14 @@ def test_connect_refuses_newer_schema(tmp_path):
 
     with pytest.raises(RuntimeError, match="newer than this binary"):
         connect(db)
-    # The on-disk version must be untouched by the refused open.
+
     raw = sqlite3.connect(db)
+    # On-disk version untouched, and the schema check ran before any CREATE.
     assert raw.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION + 5
+    tables = {
+        r[0] for r in raw.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+    }
+    assert "bench_runs" not in tables, "DDL must not run when a newer DB is refused"
     raw.close()
 
 
