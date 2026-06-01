@@ -1357,19 +1357,15 @@ pub fn source_freshness_probes() -> Vec<SourceFreshnessProbe> {
                 hard_ms: 7 * DAY_MS,
             },
         },
-        // Exclude Codex rows (source_file under .codex/ or Xcode CodingAssistant)
-        // and Cursor rows (source_file under .cursor/) — those are counted by their
-        // own dedicated probes below. Without these filters a machine that only runs
-        // Cursor or Codex would show a false-green "claude-session: OK".
+        // Claude Code sessions live in `agentic_sessions` keyed by
+        // `harness = 'claude-code'` (post v17→v18 agentic unification). The
+        // harness column separates Codex/Cursor/opencode cleanly, so no
+        // source_file path exclusions are needed. Probe rows excluded per AP-6.
         SourceFreshnessProbe {
             name: "claude-session (main)",
-            query: "SELECT COUNT(*), MAX(end_time) FROM claude_sessions \
-                    WHERE is_subagent = 0 \
-                    AND (source_file IS NULL OR ( \
-                        source_file NOT LIKE '%/.codex/%' \
-                        AND source_file NOT LIKE '%/CodingAssistant/codex/%' \
-                        AND source_file NOT LIKE '%/.cursor/%' \
-                    ))",
+            query: "SELECT COUNT(*), MAX(end_time) FROM agentic_sessions \
+                    WHERE harness = 'claude-code' AND is_subagent = 0 \
+                    AND probe_tag IS NULL",
             thresholds: FreshnessThresholds {
                 soft_ms: 12 * HOUR_MS,
                 hard_ms: 7 * DAY_MS,
@@ -1377,13 +1373,9 @@ pub fn source_freshness_probes() -> Vec<SourceFreshnessProbe> {
         },
         SourceFreshnessProbe {
             name: "claude-session (subagent)",
-            query: "SELECT COUNT(*), MAX(end_time) FROM claude_sessions \
-                    WHERE is_subagent = 1 \
-                    AND (source_file IS NULL OR ( \
-                        source_file NOT LIKE '%/.codex/%' \
-                        AND source_file NOT LIKE '%/CodingAssistant/codex/%' \
-                        AND source_file NOT LIKE '%/.cursor/%' \
-                    ))",
+            query: "SELECT COUNT(*), MAX(end_time) FROM agentic_sessions \
+                    WHERE harness = 'claude-code' AND is_subagent = 1 \
+                    AND probe_tag IS NULL",
             thresholds: FreshnessThresholds {
                 soft_ms: 7 * DAY_MS,
                 hard_ms: 30 * DAY_MS,
@@ -1417,27 +1409,24 @@ pub fn source_freshness_probes() -> Vec<SourceFreshnessProbe> {
                 hard_ms: 30 * DAY_MS,
             },
         },
-        // Codex rows stored in `claude_sessions` (distinguished by .codex/ path in
-        // source_file). Probe rows excluded per AP-6. Thresholds mirror opencode:
-        // Codex is bursty — sessions only land when the user actively codes with it.
+        // Codex rows in `agentic_sessions` keyed by `harness = 'codex'`. Probe
+        // rows excluded per AP-6. Thresholds mirror opencode: Codex is bursty —
+        // sessions only land when the user actively codes with it.
         SourceFreshnessProbe {
             name: "agentic-session-codex",
-            query: "SELECT COUNT(*), MAX(end_time) FROM claude_sessions \
-                    WHERE (source_file LIKE '%/.codex/%' \
-                        OR source_file LIKE '%/CodingAssistant/codex/%') \
-                    AND probe_tag IS NULL",
+            query: "SELECT COUNT(*), MAX(end_time) FROM agentic_sessions \
+                    WHERE harness = 'codex' AND probe_tag IS NULL",
             thresholds: FreshnessThresholds {
                 soft_ms: 3 * DAY_MS,
                 hard_ms: 30 * DAY_MS,
             },
         },
-        // Cursor rows stored in `claude_sessions` (distinguished by .cursor/ path in
-        // source_file). Probe rows excluded per AP-6. Thresholds mirror opencode.
+        // Cursor rows in `agentic_sessions` keyed by `harness = 'cursor'`. Probe
+        // rows excluded per AP-6. Thresholds mirror opencode.
         SourceFreshnessProbe {
             name: "agentic-session-cursor",
-            query: "SELECT COUNT(*), MAX(end_time) FROM claude_sessions \
-                    WHERE source_file LIKE '%/.cursor/%' \
-                    AND probe_tag IS NULL",
+            query: "SELECT COUNT(*), MAX(end_time) FROM agentic_sessions \
+                    WHERE harness = 'cursor' AND probe_tag IS NULL",
             thresholds: FreshnessThresholds {
                 soft_ms: 3 * DAY_MS,
                 hard_ms: 30 * DAY_MS,
@@ -3073,7 +3062,7 @@ fn collect_active_jsonls(
 }
 
 /// Check 5: Recursively find active Claude session JSONL files under
-/// `projects_dir` and verify each has a matching row in `claude_sessions`.
+/// `projects_dir` and verify each has a matching real row in `agentic_sessions`.
 ///
 /// `projects_dir` is `~/.claude/projects` (injectable for tests).
 /// A session file is "active" if its mtime is < 5 minutes old.
@@ -3115,7 +3104,9 @@ pub fn check_claude_session_db(
 
         let exists = db
             .query_row(
-                "SELECT 1 FROM claude_sessions WHERE session_id = ? LIMIT 1",
+                "SELECT 1 FROM agentic_sessions \
+                 WHERE session_id = ? AND harness = 'claude-code' \
+                 AND probe_tag IS NULL LIMIT 1",
                 rusqlite::params![session_id],
                 |_| Ok(()),
             )
@@ -3205,8 +3196,8 @@ fn count_hook_invocations_in_last_1h(log_path: &std::path::Path) -> i64 {
 /// Check 6: Session-hook debug log vs DB reconciliation.
 ///
 /// Counts `"hook invoked"` entries in the last hour (capped at 10 000 log
-/// lines) and compares to `claude_sessions.created_at` rows in the same
-/// window.
+/// lines) and compares to `agentic_sessions` rows (harness = 'claude-code')
+/// created in the same window, excluding synthetic probe rows.
 ///
 /// `log_path` = `$DATA_DIR/session-hook-debug.log` (injectable for tests).
 pub fn check_session_hook_log(
@@ -3222,7 +3213,8 @@ pub fn check_session_hook_log(
     let one_hour_ago_ms = chrono::Utc::now().timestamp_millis() - 3_600_000i64;
     let db_rows: i64 = db
         .query_row(
-            "SELECT COUNT(*) FROM claude_sessions WHERE created_at >= ?",
+            "SELECT COUNT(*) FROM agentic_sessions \
+             WHERE harness = 'claude-code' AND probe_tag IS NULL AND created_at >= ?",
             rusqlite::params![one_hour_ago_ms],
             |row| row.get(0),
         )
@@ -3257,7 +3249,7 @@ pub fn check_session_hook_log(
         if explain {
             let watcher_log = data_dir.join("claude-session-watcher.log");
             println!(
-                "     CAUSE:  Hook is firing but the watcher is not producing claude_sessions rows"
+                "     CAUSE:  Hook is firing but the watcher is not producing agentic_sessions rows"
             );
             println!(
                 "     FIX:    launchctl print gui/$(id -u)/com.hippo.claude-session-watcher; tail -f {}",
@@ -4660,5 +4652,80 @@ replacement = "***"
             "version": "0.16.0",
         });
         assert_eq!(check_brain_telemetry_status(Some(&json)), 0);
+    }
+
+    // ─── Agentic-unification repoint: doctor must read agentic_sessions, ────────
+    //     not the frozen claude_sessions table (v17→v18 unification debt).
+
+    #[test]
+    fn check_claude_session_db_finds_session_in_agentic_sessions() {
+        let dir = tempdir().unwrap();
+        let conn = coverage_test_db(dir.path());
+
+        // Active JSONL whose stem is the session_id.
+        let projects = dir.path().join("projects");
+        std::fs::create_dir_all(&projects).unwrap();
+        let session_id = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+        std::fs::write(
+            projects.join(format!("{session_id}.jsonl")),
+            "{\"type\":\"user\"}\n",
+        )
+        .unwrap();
+
+        // Post-unification the session lives in agentic_sessions (harness =
+        // 'claude-code'), NOT the frozen claude_sessions table.
+        insert_agentic_row(&conn, session_id, "claude-code");
+
+        assert_eq!(
+            check_claude_session_db(&projects, dir.path(), &conn, false),
+            0,
+            "active session present in agentic_sessions must not be reported missing"
+        );
+    }
+
+    #[test]
+    fn check_session_hook_log_counts_agentic_sessions_rows() {
+        let dir = tempdir().unwrap();
+        let conn = coverage_test_db(dir.path());
+
+        // Three "hook invoked" entries within the past hour.
+        let now = chrono::Utc::now();
+        let log = dir.path().join("session-hook-debug.log");
+        std::fs::write(
+            &log,
+            format!("{} hook invoked\n", now.to_rfc3339()).repeat(3),
+        )
+        .unwrap();
+
+        // A claude-code session recorded this hour lives in agentic_sessions.
+        let now_ms = now.timestamp_millis();
+        conn.execute(
+            "INSERT INTO agentic_sessions
+                 (session_id, harness, segment_index, project_dir, cwd, summary_text,
+                  tool_calls_json, user_prompts_json, message_count, source_file,
+                  is_subagent, start_time, end_time, created_at)
+             VALUES ('s1','claude-code',0,'p','/w','sum','[]','[]',1,'/x.jsonl',0,?1,?1,?1)",
+            rusqlite::params![now_ms],
+        )
+        .unwrap();
+
+        // invocations > 0 AND db_rows > 0 → OK (0), not a false [!!] FAIL.
+        assert_eq!(
+            check_session_hook_log(&log, dir.path(), &conn, false),
+            0,
+            "hook invocations matched by agentic_sessions rows must report OK"
+        );
+    }
+
+    #[test]
+    fn source_freshness_probes_never_read_frozen_claude_sessions() {
+        for probe in source_freshness_probes() {
+            assert!(
+                !probe.query.contains("claude_sessions"),
+                "freshness probe {:?} still reads the frozen claude_sessions table; \
+                 repoint it to agentic_sessions (harness-keyed)",
+                probe.name
+            );
+        }
     }
 }
