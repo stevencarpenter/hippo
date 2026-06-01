@@ -126,6 +126,17 @@ class IngestResult:
     skipped_aborted: bool = False
 
 
+def _as_dict(v: object) -> dict:
+    """Coerce a JSONL value to a dict; a non-dict (null, list, scalar) becomes {}.
+
+    Ingest is malformed-tolerant: every consumer reaches into nested objects with
+    ``.get()``, so a partial/older record carrying ``null`` (or any non-object)
+    where a dict is expected must degrade to empty fields, not raise AttributeError
+    and abort the whole file.
+    """
+    return v if isinstance(v, dict) else {}
+
+
 def _parse_records(jsonl_path: Path) -> tuple[list[dict], int]:
     records: list[dict] = []
     malformed = 0
@@ -135,8 +146,16 @@ def _parse_records(jsonl_path: Path) -> tuple[list[dict], int]:
             if not line:
                 continue
             try:
-                records.append(json.loads(line))
+                rec = json.loads(line)
             except json.JSONDecodeError:
+                malformed += 1
+                continue
+            # A line can be valid JSON yet not an object (list/string/number).
+            # Every downstream consumer does record.get(...), so drop non-dict
+            # records as malformed rather than crashing on the first .get().
+            if isinstance(rec, dict):
+                records.append(rec)
+            else:
                 malformed += 1
     return records, malformed
 
@@ -250,8 +269,14 @@ def _ingest_models(conn: sqlite3.Connection, run_id: str, records: list[dict]) -
     for r in records:
         if r.get("record_type") != "model_summary":
             continue
-        g = r.get("gates", {})
-        verdict = r.get("tier0_verdict", {})
+        model_id = _as_dict(r.get("model")).get("id")
+        if not model_id:
+            # No model id → a NULL composite-PK row. SQLite permits multiple NULLs
+            # in a PRIMARY KEY, so INSERT OR REPLACE would NOT collapse them and a
+            # malformed summary could spawn junk rows. Skip it.
+            continue
+        g = _as_dict(r.get("gates"))
+        verdict = _as_dict(r.get("tier0_verdict"))
         # OR REPLACE (matching _ingest_enrichment / _ingest_retrieval): a run
         # with a duplicated candidate model (e.g. `--models m1,m1`) emits two
         # model_summary records for the same (run_id, model_id) PK; collapse to
@@ -265,7 +290,7 @@ def _ingest_models(conn: sqlite3.Connection, run_id: str, records: list[dict]) -
             ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (
                 run_id,
-                r.get("model", {}).get("id"),
+                model_id,
                 g.get("schema_validity_rate"),
                 g.get("refusal_rate"),
                 g.get("echo_similarity_max"),
@@ -303,8 +328,8 @@ def _ingest_enrichment(conn: sqlite3.Connection, run_id: str, records: list[dict
     for r in records:
         if r.get("record_type") != "attempt" or r.get("purpose") != "main":
             continue
-        ev = r.get("event", {})
-        g = r.get("gates", {})
+        ev = _as_dict(r.get("event"))
+        g = _as_dict(r.get("gates"))
         conn.execute(
             """INSERT OR REPLACE INTO bench_node_enrichment (
                 run_id, model_id, event_id, source, schema_valid, refusal_detected,
@@ -312,14 +337,14 @@ def _ingest_enrichment(conn: sqlite3.Connection, run_id: str, records: list[dict
             ) VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
             (
                 run_id,
-                r.get("model", {}).get("id"),
+                _as_dict(r.get("model")).get("id"),
                 ev.get("event_id"),
                 ev.get("source"),
                 1 if g.get("schema_valid") else 0,
                 1 if g.get("refusal_detected") else 0,
                 g.get("echo_similarity"),
                 _entity_sanity_mean(g.get("entity_type_sanity")),
-                r.get("timestamps", {}).get("total_ms"),
+                _as_dict(r.get("timestamps")).get("total_ms"),
                 1 if r.get("timeout") else 0,
                 # Map a missing/None parsed_output to SQL NULL, not the literal
                 # TEXT 'null' that json.dumps(None) would produce (matches the
@@ -351,9 +376,17 @@ def _ingest_retrieval(conn: sqlite3.Connection, run_id: str, records: list[dict]
     for r in records:
         if r.get("record_type") != "model_summary":
             continue
-        model_id = r.get("model", {}).get("id")
-        per_item = r.get("downstream_proxy", {}).get("per_item", [])
+        model_id = _as_dict(r.get("model")).get("id")
+        if not model_id:
+            continue  # NULL composite-PK row (see _ingest_models) — skip
+        per_item = _as_dict(r.get("downstream_proxy")).get("per_item")
+        if not isinstance(per_item, list):
+            # null / non-list per_item (older/partial/malformed run): nothing to
+            # score for this model, not a crash.
+            continue
         for item in per_item:
+            if not isinstance(item, dict):
+                continue  # skip a malformed non-dict score entry
             hk = item.get("hit_at_k", {})
             conn.execute(
                 """INSERT OR REPLACE INTO bench_node_retrieval (

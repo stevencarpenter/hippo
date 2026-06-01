@@ -1,7 +1,7 @@
 # hippo-bench Results Datastore + Dashboard — Design
 
 **Date:** 2026-05-31
-**Status:** Approved (brainstorming), pending implementation plan
+**Status:** Implemented (PR #192); enrichment layer deferred to #191
 **Author:** Steven Carpenter
 
 ## Problem

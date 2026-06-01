@@ -609,3 +609,92 @@ def test_node_detail_orders_best_score_first(tmp_path):
         assert [d["model_id"] for d in nodes["claude-7"]["retrieval"]] == ["strong", "weak"]
     finally:
         conn.close()
+
+
+def test_non_object_jsonl_line_is_malformed_not_a_crash(tmp_path):
+    """A valid-JSON line that is not an object (list/string/number) must be
+    counted malformed and skipped — every consumer does record.get(), so a
+    non-dict record would otherwise raise AttributeError and abort the file."""
+    from hippo_brain.bench.results_store import connect, ingest_run
+
+    path = tmp_path / "run-1.jsonl"
+    with path.open("w", encoding="utf-8") as f:
+        f.write(json.dumps([1, 2, 3]) + "\n")  # JSON array, not an object
+        f.write(json.dumps("a bare string") + "\n")  # JSON string
+        f.write(json.dumps(_manifest("run-1")) + "\n")
+        f.write(json.dumps(_model_summary_with_proxy("run-1")) + "\n")
+        f.write(json.dumps(_run_end("run-1")) + "\n")
+    conn = connect(tmp_path / "bench-results.db")
+    try:
+        out = ingest_run(path, conn=conn)
+        assert out.inserted
+        assert out.malformed_lines == 2  # the array + the string
+        assert out.retrieval_rows == 2  # the well-formed model_summary still ingested
+    finally:
+        conn.close()
+
+
+def test_model_summary_missing_model_id_is_skipped(tmp_path):
+    """A model_summary without model.id would write a NULL composite-PK row;
+    SQLite permits multiple NULL PKs so INSERT OR REPLACE can't dedupe them.
+    Skip the malformed summary (both the model row and its retrieval rows)."""
+    from hippo_brain.bench.results_store import connect, ingest_run
+
+    ms = _model_summary_with_proxy("run-1")
+    ms["model"] = {}  # no id
+    jsonl = _write_jsonl(tmp_path / "r.jsonl", [_manifest("run-1"), ms, _run_end("run-1")])
+    conn = connect(tmp_path / "bench-results.db")
+    try:
+        out = ingest_run(jsonl, conn=conn)
+        assert out.inserted
+        assert out.models == 0
+        assert out.retrieval_rows == 0
+        assert conn.execute("SELECT COUNT(*) FROM bench_models").fetchone()[0] == 0
+        assert conn.execute("SELECT COUNT(*) FROM bench_node_retrieval").fetchone()[0] == 0
+    finally:
+        conn.close()
+
+
+def test_malformed_per_item_is_tolerated(tmp_path):
+    """downstream_proxy.per_item that is null, a non-list, or contains non-dict
+    entries must not crash ingest; well-formed entries alongside still land."""
+    from hippo_brain.bench.results_store import connect, ingest_run
+
+    # null per_item → no retrieval rows, no crash
+    ms_null = _model_summary_with_proxy("run-null", model="m1")
+    ms_null["downstream_proxy"]["per_item"] = None
+    # mixed: one bogus non-dict entry + one valid hybrid entry
+    ms_mixed = _model_summary_with_proxy("run-mixed", model="m2")
+    ms_mixed["downstream_proxy"]["per_item"] = [
+        "not-a-dict",
+        {
+            "hit_at_k": {1: True, 10: True},
+            "rank": 1,
+            "mrr": 1.0,
+            "ndcg_at_10": 1.0,
+            "qa_id": "qa-001",
+            "golden_event_id": "claude-7",
+            "mode": "hybrid",
+        },
+    ]
+    conn = connect(tmp_path / "bench-results.db")
+    try:
+        out_null = ingest_run(
+            _write_jsonl(
+                tmp_path / "null.jsonl", [_manifest("run-null"), ms_null, _run_end("run-null")]
+            ),
+            conn=conn,
+        )
+        assert out_null.inserted
+        assert out_null.retrieval_rows == 0
+
+        out_mixed = ingest_run(
+            _write_jsonl(
+                tmp_path / "mixed.jsonl", [_manifest("run-mixed"), ms_mixed, _run_end("run-mixed")]
+            ),
+            conn=conn,
+        )
+        assert out_mixed.inserted
+        assert out_mixed.retrieval_rows == 1  # only the valid entry
+    finally:
+        conn.close()
