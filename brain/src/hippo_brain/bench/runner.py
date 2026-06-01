@@ -1,4 +1,4 @@
-"""Per-model self-consistency pass: N attempts per event with embedding."""
+"""Per-model enrichment passes: main (full corpus, once each) and self-consistency (sample, N times)."""
 
 from __future__ import annotations
 
@@ -97,6 +97,57 @@ def _compute_gates(call_result, entry: CorpusEntry) -> tuple[dict, dict | None]:
         },
         schema_result.parsed,
     )
+
+
+def run_main_enrichment_pass(
+    *,
+    base_url: str,
+    model: str,
+    entries: list[CorpusEntry],
+    timeout_sec: int,
+    metrics_snapshot: Callable[[], dict],
+    temperature: float,
+    run_id: str = "run-local",
+) -> list[AttemptRecord]:
+    """One enrichment call per corpus event, labelled purpose='main'.
+
+    Covers the full corpus — no sampling. Results feed:
+    - aggregate_model_summary (schema-validity / refusal / latency / entity-sanity rates)
+    - _ingest_enrichment in results_store (bench_node_enrichment table)
+
+    No embeddings: self-consistency cosines come from the SC pass; the main
+    pass only measures per-event correctness and gate rates.
+    """
+    model_dict = {"id": model}
+    attempts: list[AttemptRecord] = []
+    for entry in entries:
+        start_iso = _dt.datetime.now(tz=_dt.UTC).isoformat()
+        start_monotonic_ns = time.monotonic_ns()
+        cr = call_enrichment(
+            base_url=base_url,
+            model=model,
+            payload=entry.redacted_content,
+            source=entry.source,
+            timeout_sec=timeout_sec,
+            temperature=temperature,
+        )
+        gates, parsed = _compute_gates(cr, entry)
+        attempts.append(
+            _build_attempt(
+                run_id=run_id,
+                model=model_dict,
+                entry=entry,
+                attempt_idx=0,
+                purpose="main",
+                call_result=cr,
+                gates=gates,
+                parsed=parsed,
+                system_snapshot=metrics_snapshot(),
+                start_iso=start_iso,
+                start_monotonic_ns=start_monotonic_ns,
+            )
+        )
+    return attempts
 
 
 def run_self_consistency_pass(

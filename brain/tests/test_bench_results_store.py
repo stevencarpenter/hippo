@@ -801,3 +801,92 @@ def test_enrichment_attempt_missing_event_id_is_skipped(tmp_path):
         assert [r["event_id"] for r in rows] == ["shell-9"]  # bad attempt skipped
     finally:
         conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Cycle 4: per-node dashboard view shows enrichment for every corpus node
+# ---------------------------------------------------------------------------
+
+
+def test_all_node_details_shows_enrichment_for_every_corpus_node(tmp_path):
+    """Cycle 4: all_node_details returns enrichment rows for every node that has
+    a main-pass attempt — verifying the dashboard's per-node view is populated."""
+    from hippo_brain.bench.results_store import all_node_details, connect, ingest_run
+
+    # Three corpus nodes — all with main-pass attempts.
+    corpus_event_ids = ["shell-1", "shell-2", "claude-7"]
+    records = [
+        _manifest("run-1"),
+        *[_attempt(event_id=eid) for eid in corpus_event_ids],
+        _model_summary("run-1"),
+        _run_end("run-1"),
+    ]
+    jsonl = _write_jsonl(tmp_path / "r.jsonl", records)
+    conn = connect(tmp_path / "bench-results.db")
+    try:
+        result = ingest_run(jsonl, conn=conn)
+        assert result.enrichment_rows == len(corpus_event_ids), (
+            f"expected {len(corpus_event_ids)} enrichment rows, got {result.enrichment_rows}"
+        )
+
+        nodes = all_node_details(conn)
+        for eid in corpus_event_ids:
+            assert eid in nodes, f"corpus node {eid!r} missing from all_node_details"
+            enrich = nodes[eid]["enrichment"]
+            assert len(enrich) == 1, f"expected 1 enrichment row for {eid!r}, got {len(enrich)}"
+            assert enrich[0]["model_id"] == "model-a"
+    finally:
+        conn.close()
+
+
+def test_all_node_details_enrichment_coverage_equals_corpus_size(tmp_path):
+    """Cycle 4: bench_node_enrichment rows == corpus size × models that ran."""
+    from hippo_brain.bench.results_store import connect, ingest_run
+
+    corpus_size = 5
+    corpus_events = [f"shell-{i}" for i in range(corpus_size)]
+    records = [
+        _manifest("run-1"),
+        *[_attempt(event_id=eid) for eid in corpus_events],
+        _model_summary("run-1"),
+        _run_end("run-1"),
+    ]
+    jsonl = _write_jsonl(tmp_path / "r.jsonl", records)
+    conn = connect(tmp_path / "bench-results.db")
+    try:
+        result = ingest_run(jsonl, conn=conn)
+        n = conn.execute("SELECT COUNT(*) FROM bench_node_enrichment").fetchone()[0]
+        assert n == corpus_size, (
+            f"bench_node_enrichment must have {corpus_size} rows (one per corpus event), got {n}"
+        )
+        assert result.enrichment_rows == corpus_size
+    finally:
+        conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Cycle 5: idempotency — re-ingest does not duplicate enrichment rows
+# ---------------------------------------------------------------------------
+
+
+def test_reingest_does_not_duplicate_enrichment_rows(tmp_path):
+    """Cycle 5: re-ingesting the same run JSONL must not produce duplicate rows
+    in bench_node_enrichment — the (run_id, model_id, event_id) PK must hold."""
+    from hippo_brain.bench.results_store import connect, ingest_run
+
+    records = [
+        _manifest("run-1"),
+        _attempt(event_id="shell-1"),
+        _attempt(event_id="shell-2"),
+        _model_summary("run-1"),
+        _run_end("run-1"),
+    ]
+    jsonl = _write_jsonl(tmp_path / "r.jsonl", records)
+    conn = connect(tmp_path / "bench-results.db")
+    try:
+        ingest_run(jsonl, conn=conn)
+        ingest_run(jsonl, conn=conn, force=True)  # explicit force to re-ingest same run_id
+        n = conn.execute("SELECT COUNT(*) FROM bench_node_enrichment").fetchone()[0]
+        assert n == 2, f"re-ingest must not duplicate rows: expected 2 (one per event), got {n}"
+    finally:
+        conn.close()

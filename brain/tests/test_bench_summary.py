@@ -216,3 +216,20 @@ def test_self_consistency_gate_values_return_real_scores():
     )
     assert mean == 0.5
     assert minimum == 0.0
+
+
+def test_gate_scorecard_is_non_vacuous_with_main_pass_attempts():
+    """Cycle 2 (issue #191): gate aggregation returns measured rates (not 0.0 defaults)
+    when fed main-purpose attempts — i.e. the 'no main attempts' vacuous path is gone."""
+    main_attempts = [
+        _attempt(schema_valid=True, purpose="main", event_id=f"e{i}") for i in range(10)
+    ]
+    gates = aggregate_model_summary(
+        attempts=main_attempts,
+        self_consistency_mean=0.85,
+        self_consistency_min=0.80,
+    )
+    assert gates["main_attempts_count"] == 10, "must count all 10 main attempts"
+    assert gates["schema_validity_rate"] == 1.0, "all valid → rate must be 1.0, not vacuous 0.0"
+    assert gates["refusal_rate"] == 0.0
+    assert gates["self_consistency_mean"] == 0.85

@@ -334,13 +334,10 @@ def _entity_sanity_mean(per_cat: dict | None) -> float | None:
 
 
 def _ingest_enrichment(conn: sqlite3.Connection, run_id: str, records: list[dict]) -> int:
-    # DORMANT on real runs: this selects `main`-purpose attempts, but the bench
-    # pipeline does not yet emit any (the self-consistency pass labels its
-    # attempts `self_consistency`, and the shadow brain's full-corpus enrichment
-    # is discarded with the shadow stack). The ingest + schema are ready; the
-    # producer is owed by https://github.com/stevencarpenter/hippo/issues/191.
-    # Until then this is a no-op on real runs (tests exercise it with synthetic
-    # `main` attempts). Keep the `main` filter — it is the correct contract.
+    # Selects `main`-purpose attempts produced by runner.run_main_enrichment_pass —
+    # one call per corpus event, covering the full corpus. The `main` filter is the
+    # correct contract: self-consistency attempts are intentionally excluded so they
+    # don't skew per-event rates.
     n = 0
     for r in records:
         if r.get("record_type") != "attempt" or r.get("purpose") != "main":
