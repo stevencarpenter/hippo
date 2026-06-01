@@ -1,5 +1,5 @@
 [tools]
-rust = "1.95"
+idiomatic_version_file_enable_tools = ["rust"]
 
 [env]
 # Paths are resolved via XDG defaults in the Rust config module.

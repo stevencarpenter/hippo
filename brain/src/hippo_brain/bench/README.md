@@ -371,7 +371,7 @@ The per-run JSONL is an append-only **working file** — crash-safe during a run
 but local-only, unindexed, and easy to lose. The durable record of history is a
 separate SQLite datastore:
 
-```
+```text
 ~/.local/share/hippo-bench/bench-results.db    # sibling of runs/, NOT hippo.db
 ```
 

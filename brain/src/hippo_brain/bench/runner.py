@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import datetime as _dt
 import time
 from collections.abc import Callable
 
@@ -34,8 +33,7 @@ def _build_attempt(
     gates: dict,
     parsed: dict | None,
     system_snapshot: dict,
-    start_iso: str,
-    start_monotonic_ns: int,
+    start_ts_ms: int,
 ) -> AttemptRecord:
     return AttemptRecord(
         run_id=run_id,
@@ -44,8 +42,7 @@ def _build_attempt(
         attempt_idx=attempt_idx,
         purpose=purpose,
         timestamps={
-            "start_iso": start_iso,
-            "start_monotonic_ns": start_monotonic_ns,
+            "start_ts_ms": start_ts_ms,
             "ttft_ms": call_result.ttft_ms,
             "total_ms": call_result.total_ms,
         },
@@ -121,8 +118,7 @@ def run_main_enrichment_pass(
     model_dict = {"id": model}
     attempts: list[AttemptRecord] = []
     for entry in entries:
-        start_iso = _dt.datetime.now(tz=_dt.UTC).isoformat()
-        start_monotonic_ns = time.monotonic_ns()
+        start_ts_ms = int(time.time() * 1000)
         cr = call_enrichment(
             base_url=base_url,
             model=model,
@@ -143,8 +139,7 @@ def run_main_enrichment_pass(
                 gates=gates,
                 parsed=parsed,
                 system_snapshot=metrics_snapshot(),
-                start_iso=start_iso,
-                start_monotonic_ns=start_monotonic_ns,
+                start_ts_ms=start_ts_ms,
             )
         )
     return attempts
@@ -174,8 +169,7 @@ def run_self_consistency_pass(
     for entry in entries:
         event_vectors: list[list[float]] = []
         for i in range(runs_per_event):
-            start_iso = _dt.datetime.now(tz=_dt.UTC).isoformat()
-            start_monotonic_ns = time.monotonic_ns()
+            start_ts_ms = int(time.time() * 1000)
             cr = call_enrichment(
                 base_url=base_url,
                 model=model,
@@ -196,8 +190,7 @@ def run_self_consistency_pass(
                     gates=gates,
                     parsed=parsed,
                     system_snapshot=metrics_snapshot(),
-                    start_iso=start_iso,
-                    start_monotonic_ns=start_monotonic_ns,
+                    start_ts_ms=start_ts_ms,
                 )
             )
             if cr.error is None and cr.raw_output:

@@ -81,7 +81,7 @@ _TEMPLATE = """<!doctype html>
    el.replaceChildren(tbl);
  }}
  renderTable("leaderboard", data.leaderboard, ["model_id", "avg_mrr", "hit_at_1", "scored_nodes", "run_id"]);
- renderTable("history", data.history, ["started_at_iso", "run_id", "corpus_version", "finished_at_iso"]);
+ renderTable("history", data.history, ["started_at_ms", "run_id", "corpus_version", "finished_at_ms"]);
 
  // Per-node view: a <select> of every scored corpus node; on change, render
  // that node's retrieval ranking and enrichment rows across all runs.
@@ -95,7 +95,7 @@ _TEMPLATE = """<!doctype html>
  function renderNode(id) {{
    const detail = data.nodes[id] || {{retrieval: [], enrichment: []}};
    renderTable("node-retrieval", detail.retrieval,
-     ["model_id", "mrr", "rank", "hit_at_1", "run_id", "started_at_iso"]);
+     ["model_id", "mrr", "rank", "hit_at_1", "run_id", "started_at_ms"]);
    renderTable("node-enrichment", detail.enrichment,
      ["model_id", "schema_valid", "refusal_detected", "echo_similarity",
       "entity_sanity", "parsed_output_json", "run_id"]);

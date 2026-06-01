@@ -134,7 +134,7 @@ def test_ingest_run_writes_bench_runs(tmp_path):
         ingest_run(jsonl, conn=conn, now_ms=123)
         row = conn.execute("SELECT * FROM bench_runs WHERE run_id='run-1'").fetchone()
         assert row["corpus_content_hash"] == "sha256:abc"
-        assert row["finished_at_iso"] == "2026-05-31T01:00:00+00:00"
+        assert row["finished_at_ms"] == 1780189200000  # 2026-05-31T01:00:00Z
         assert json.loads(row["models_completed_json"]) == ["model-a"]
         assert row["ingested_at_ms"] == 123
     finally:
@@ -254,8 +254,8 @@ def test_partial_jsonl_no_run_end(tmp_path):
     try:
         out = ingest_run(jsonl, conn=conn)
         assert out.inserted
-        row = conn.execute("SELECT finished_at_iso FROM bench_runs").fetchone()
-        assert row["finished_at_iso"] is None  # incomplete run
+        row = conn.execute("SELECT finished_at_ms FROM bench_runs").fetchone()
+        assert row["finished_at_ms"] is None  # incomplete run
         assert conn.execute("SELECT COUNT(*) FROM bench_node_enrichment").fetchone()[0] == 1
     finally:
         conn.close()
@@ -497,7 +497,7 @@ def test_incomplete_run_reingested_when_completed(tmp_path):
         r1 = ingest_run(_write_jsonl(tmp_path / "p.jsonl", partial), conn=conn)
         assert r1.inserted
         assert (
-            conn.execute("SELECT finished_at_iso FROM bench_runs WHERE run_id='run-x'").fetchone()[
+            conn.execute("SELECT finished_at_ms FROM bench_runs WHERE run_id='run-x'").fetchone()[
                 0
             ]
             is None
@@ -506,7 +506,7 @@ def test_incomplete_run_reingested_when_completed(tmp_path):
         r2 = ingest_run(_write_jsonl(tmp_path / "c.jsonl", complete), conn=conn)  # no force
         assert r2.inserted, "an incomplete run must re-ingest when it completes, without --force"
         assert (
-            conn.execute("SELECT finished_at_iso FROM bench_runs WHERE run_id='run-x'").fetchone()[
+            conn.execute("SELECT finished_at_ms FROM bench_runs WHERE run_id='run-x'").fetchone()[
                 0
             ]
             is not None
