@@ -213,9 +213,15 @@ class InferenceClient:
                 total_chars = sum(len(m.get("content", "")) for m in messages)
                 _prompt_tokens.record(total_chars)
             return result
-        except Exception:
+        except Exception as exc:
             if _inference_errors:
-                _inference_errors.add(1, {"method": "chat"})
+                if isinstance(exc, httpx.TransportError):
+                    error_type = "transport"
+                elif isinstance(exc, httpx.HTTPStatusError):
+                    error_type = "status"
+                else:
+                    error_type = "parse"
+                _inference_errors.add(1, {"method": "chat", "error_type": error_type})
             raise
 
     async def embed(self, texts: list[str], model: str = "") -> list[list[float]]:
@@ -229,9 +235,15 @@ class InferenceClient:
             if _request_duration:
                 _request_duration.record((time.monotonic() - t0) * 1000, {"method": "embed"})
             return result
-        except Exception:
+        except Exception as exc:
             if _inference_errors:
-                _inference_errors.add(1, {"method": "embed"})
+                if isinstance(exc, httpx.TransportError):
+                    error_type = "transport"
+                elif isinstance(exc, httpx.HTTPStatusError):
+                    error_type = "status"
+                else:
+                    error_type = "parse"
+                _inference_errors.add(1, {"method": "embed", "error_type": error_type})
             raise
 
     async def list_models(self) -> list[str]:

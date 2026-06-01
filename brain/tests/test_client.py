@@ -205,3 +205,70 @@ async def test_embed_retries_on_transient_then_succeeds(monkeypatch):
     assert result == [[0.1, 0.2, 0.3]]
     assert post.await_count == 2
     sleep_mock.assert_awaited_once_with(0.5)
+
+
+# --- error_type label tests (no network) ---
+
+
+async def test_chat_error_type_transport(monkeypatch):
+    """TransportError raises -> error_type='transport'."""
+    post = AsyncMock(side_effect=httpx.RemoteProtocolError("peer closed"))
+    _patch_async_client(monkeypatch, post)
+    monkeypatch.setattr(client_mod, "_sleep", AsyncMock())
+
+    recorded: list[dict] = []
+    counter = MagicMock()
+    counter.add = MagicMock(side_effect=lambda n, attrs: recorded.append(attrs))
+    monkeypatch.setattr(client_mod, "_inference_errors", counter)
+
+    c = InferenceClient(base_url="http://x/v1", timeout=1.0, max_retries=1)
+    with pytest.raises(httpx.TransportError):
+        await c.chat(messages=[{"role": "user", "content": "hi"}])
+
+    assert len(recorded) == 1
+    assert recorded[0] == {"method": "chat", "error_type": "transport"}
+
+
+async def test_chat_error_type_status(monkeypatch):
+    """HTTPStatusError raises -> error_type='status'."""
+    resp = MagicMock()
+    resp.raise_for_status = MagicMock(
+        side_effect=httpx.HTTPStatusError("500", request=MagicMock(), response=MagicMock())
+    )
+    post = AsyncMock(return_value=resp)
+    _patch_async_client(monkeypatch, post)
+    monkeypatch.setattr(client_mod, "_sleep", AsyncMock())
+
+    recorded: list[dict] = []
+    counter = MagicMock()
+    counter.add = MagicMock(side_effect=lambda n, attrs: recorded.append(attrs))
+    monkeypatch.setattr(client_mod, "_inference_errors", counter)
+
+    c = InferenceClient(base_url="http://x/v1", timeout=1.0)
+    with pytest.raises(httpx.HTTPStatusError):
+        await c.chat(messages=[{"role": "user", "content": "hi"}])
+
+    assert len(recorded) == 1
+    assert recorded[0] == {"method": "chat", "error_type": "status"}
+
+
+async def test_embed_error_type_parse(monkeypatch):
+    """ValueError from _parse_embed_response -> error_type='parse'."""
+    resp = MagicMock()
+    resp.raise_for_status = MagicMock(return_value=None)
+    resp.json = MagicMock(return_value={"data": [{"embedding": [None, None]}]})
+    post = AsyncMock(return_value=resp)
+    _patch_async_client(monkeypatch, post)
+    monkeypatch.setattr(client_mod, "_sleep", AsyncMock())
+
+    recorded: list[dict] = []
+    counter = MagicMock()
+    counter.add = MagicMock(side_effect=lambda n, attrs: recorded.append(attrs))
+    monkeypatch.setattr(client_mod, "_inference_errors", counter)
+
+    c = InferenceClient(base_url="http://x/v1", timeout=1.0)
+    with pytest.raises(ValueError):
+        await c.embed(["text"])
+
+    assert len(recorded) == 1
+    assert recorded[0] == {"method": "embed", "error_type": "parse"}
