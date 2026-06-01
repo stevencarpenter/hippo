@@ -321,3 +321,152 @@ def test_aborted_run_not_ingested(tmp_path):
         assert conn.execute("SELECT COUNT(*) FROM bench_runs").fetchone()[0] == 0
     finally:
         conn.close()
+
+
+def test_ingest_manifest_without_run_id_returns_none_gracefully(tmp_path):
+    """B: a run_manifest lacking run_id must be handled like a missing manifest
+    (no KeyError crash) — the CLI ingest path has no try/except around it."""
+    from hippo_brain.bench.results_store import connect, ingest_run
+
+    m = _manifest()
+    del m["run_id"]
+    jsonl = _write_jsonl(tmp_path / "norunid.jsonl", [m, _run_end()])
+    conn = connect(tmp_path / "bench-results.db")
+    try:
+        res = ingest_run(jsonl, conn=conn)  # must NOT raise
+        assert res.run_id is None
+        assert res.inserted is False
+        assert conn.execute("SELECT COUNT(*) FROM bench_runs").fetchone()[0] == 0
+    finally:
+        conn.close()
+
+
+def test_ingest_models_replaces_duplicate_model_id(tmp_path):
+    """F: two model_summary records with the same model_id in one run (e.g.
+    `--models m1,m1`) must not raise IntegrityError on the (run_id, model_id) PK."""
+    from hippo_brain.bench.results_store import connect, ingest_run
+
+    records = [
+        _manifest("run-x"),
+        _model_summary("run-x", "m1"),
+        _model_summary("run-x", "m1"),
+        _run_end("run-x"),
+    ]
+    jsonl = _write_jsonl(tmp_path / "dup.jsonl", records)
+    conn = connect(tmp_path / "bench-results.db")
+    try:
+        res = ingest_run(jsonl, conn=conn)  # must NOT raise IntegrityError
+        assert res.inserted
+        assert (
+            conn.execute(
+                "SELECT COUNT(*) FROM bench_models WHERE run_id='run-x' AND model_id='m1'"
+            ).fetchone()[0]
+            == 1
+        )
+    finally:
+        conn.close()
+
+
+def test_incomplete_run_reingested_when_completed(tmp_path):
+    """G: a partial run ingested while in-flight (no run_end) must be re-ingestable
+    once it completes, WITHOUT --force — otherwise its finish + retrieval rows are
+    lost behind the skipped_existing guard."""
+    from hippo_brain.bench.results_store import connect, ingest_run
+
+    partial = [_manifest("run-x")]  # no run_end, no model_summary → incomplete
+    complete = [_manifest("run-x"), _model_summary_with_proxy("run-x"), _run_end("run-x")]
+
+    conn = connect(tmp_path / "bench-results.db")
+    try:
+        r1 = ingest_run(_write_jsonl(tmp_path / "p.jsonl", partial), conn=conn)
+        assert r1.inserted
+        assert (
+            conn.execute("SELECT finished_at_iso FROM bench_runs WHERE run_id='run-x'").fetchone()[
+                0
+            ]
+            is None
+        )
+
+        r2 = ingest_run(_write_jsonl(tmp_path / "c.jsonl", complete), conn=conn)  # no force
+        assert r2.inserted, "an incomplete run must re-ingest when it completes, without --force"
+        assert (
+            conn.execute("SELECT finished_at_iso FROM bench_runs WHERE run_id='run-x'").fetchone()[
+                0
+            ]
+            is not None
+        )
+        assert (
+            conn.execute(
+                "SELECT COUNT(*) FROM bench_node_retrieval WHERE run_id='run-x'"
+            ).fetchone()[0]
+            == 2
+        )
+    finally:
+        conn.close()
+
+
+def test_enrichment_missing_parsed_output_is_sql_null(tmp_path):
+    """E: an attempt with no parsed_output must store SQL NULL, not the 4-char
+    TEXT string 'null' that json.dumps(None) produces."""
+    from hippo_brain.bench.results_store import connect, ingest_run
+
+    attempt = {
+        "record_type": "attempt",
+        "run_id": "run-x",
+        "model": {"id": "m1"},
+        "event": {"event_id": "claude-7", "source": "claude", "content_hash": "h"},
+        "attempt_idx": 0,
+        "purpose": "main",
+        "timestamps": {"total_ms": 10},
+        "raw_output": "",
+        "parsed_output": None,
+        "gates": {
+            "schema_valid": False,
+            "refusal_detected": False,
+            "echo_similarity": 0.0,
+            "entity_type_sanity": {},
+        },
+        "system_snapshot": {},
+        "timeout": True,
+    }
+    jsonl = _write_jsonl(tmp_path / "np.jsonl", [_manifest("run-x"), attempt, _run_end("run-x")])
+    conn = connect(tmp_path / "bench-results.db")
+    try:
+        ingest_run(jsonl, conn=conn)
+        val = conn.execute(
+            "SELECT parsed_output_json FROM bench_node_enrichment WHERE event_id='claude-7'"
+        ).fetchone()[0]
+        assert val is None, "missing parsed_output must store SQL NULL, not the string 'null'"
+    finally:
+        conn.close()
+
+
+def test_all_node_details_groups_by_node(tmp_path):
+    """I: bulk per-node fetch (2 queries total) groups retrieval + enrichment by
+    node, replacing the per-node node_detail N+1 in the dashboard exporter."""
+    from hippo_brain.bench.results_store import all_node_details, connect, ingest_run
+
+    ms = _model_summary_with_proxy("run-1")  # has a hybrid per_item for claude-7
+    ms["downstream_proxy"]["per_item"].append(
+        {
+            "hit_at_k": {1: False, 10: True},
+            "rank": 4,
+            "mrr": 0.25,
+            "ndcg_at_10": 0.5,
+            "qa_id": "qa-002",
+            "golden_event_id": "shell-9",
+            "mode": "hybrid",
+        }
+    )
+    jsonl = _write_jsonl(tmp_path / "r.jsonl", [_manifest("run-1"), ms, _run_end("run-1")])
+    conn = connect(tmp_path / "bench-results.db")
+    try:
+        ingest_run(jsonl, conn=conn)
+        nodes = all_node_details(conn, mode="hybrid")
+        assert set(nodes) == {"claude-7", "shell-9"}
+        assert nodes["claude-7"]["retrieval"][0]["model_id"] == "model-a"
+        assert nodes["shell-9"]["retrieval"][0]["mrr"] == 0.25
+        # shape matches node_detail: each node has retrieval + enrichment lists
+        assert nodes["claude-7"]["enrichment"] == []
+    finally:
+        conn.close()

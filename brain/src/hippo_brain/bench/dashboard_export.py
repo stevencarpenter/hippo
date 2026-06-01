@@ -12,30 +12,20 @@ from pathlib import Path
 
 from hippo_brain.bench.paths import bench_results_db_path
 from hippo_brain.bench.results_store import (
+    all_node_details,
     connect,
     leaderboard_latest,
-    node_detail,
     run_history,
 )
 
 
 def _gather(conn: sqlite3.Connection) -> dict:
-    # Every node scored by either pipeline, for the per-node ("best model per
-    # corpus member") view. node_detail returns all historical rows per node.
-    node_ids = [
-        r[0]
-        for r in conn.execute(
-            "SELECT event_id FROM bench_node_enrichment "
-            "UNION SELECT golden_event_id FROM bench_node_retrieval "
-            "ORDER BY 1"
-        ).fetchall()
-        if r[0] is not None
-    ]
-    nodes = {eid: node_detail(conn, eid, mode="hybrid") for eid in node_ids}
+    # Per-node ("best model per corpus member") view: retrieval + enrichment for
+    # every scored node, fetched in two queries total (not an N+1 over nodes).
     return {
         "leaderboard": leaderboard_latest(conn, mode="hybrid"),
         "history": run_history(conn),
-        "nodes": nodes,
+        "nodes": all_node_details(conn, mode="hybrid"),
     }
 
 

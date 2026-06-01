@@ -205,31 +205,53 @@ def _cmd_recover(args: argparse.Namespace) -> int:
 
 
 def _cmd_ingest(args: argparse.Namespace) -> int:
+    import logging
+
     from hippo_brain.bench.results_store import connect, ingest_run
+
+    log = logging.getLogger(__name__)
 
     if args.all:
         targets = sorted(bench_runs_dir().glob("*.jsonl"))
-    elif args.run_file is None:
+    elif args.run_file:
+        targets = [Path(p) for p in args.run_file]
+    else:
         print("error: ingest requires a run_file argument or --all")
         return 1
-    else:
-        targets = [Path(args.run_file)]
 
     conn = connect()
     try:
         total_new = 0
+        errors = 0
         for t in targets:
-            res = ingest_run(t, conn=conn, force=args.force)
-            status = (
-                "skipped (already ingested)"
-                if res.skipped_existing
-                else f"ingested run_id={res.run_id} "
-                f"(models={res.models}, enrichment={res.enrichment_rows}, "
-                f"retrieval={res.retrieval_rows}, malformed={res.malformed_lines})"
-            )
+            # Per-file isolation: one bad JSONL (unreadable, non-UTF-8, bad
+            # data that slips past ingest_run's own guards) must not abort the
+            # rest of the batch. Report it and move on.
+            try:
+                res = ingest_run(t, conn=conn, force=args.force)
+            except Exception as e:  # noqa: BLE001 — isolate one bad file from the batch
+                errors += 1
+                log.exception("ingest failed for %s", t)
+                print(f"{t.name}: ERROR ({type(e).__name__}: {e})")
+                continue
+
+            if res.skipped_existing:
+                status = "skipped (already ingested)"
+            elif res.skipped_aborted:
+                status = "skipped (aborted run — no scoring rows)"
+            elif res.run_id is None:
+                status = "skipped (no run_manifest)"
+            else:
+                status = (
+                    f"ingested run_id={res.run_id} "
+                    f"(models={res.models}, enrichment={res.enrichment_rows}, "
+                    f"retrieval={res.retrieval_rows}, malformed={res.malformed_lines})"
+                )
             print(f"{t.name}: {status}")
             total_new += 1 if res.inserted else 0
-        print(f"done: {total_new} run(s) ingested, {len(targets)} file(s) seen")
+
+        suffix = f", {errors} error(s)" if errors else ""
+        print(f"done: {total_new} run(s) ingested, {len(targets)} file(s) seen{suffix}")
         return 0
     finally:
         conn.close()
@@ -452,7 +474,11 @@ def _build_parser() -> argparse.ArgumentParser:
     summary.set_defaults(func=_cmd_summary)
 
     ingest = sub.add_parser("ingest", help="Ingest run JSONL into the bench results datastore")
-    ingest.add_argument("run_file", nargs="?", help="Path to a run JSONL (omit with --all)")
+    ingest.add_argument(
+        "run_file",
+        nargs="*",
+        help="One or more run JSONL paths (a glob like run-*.jsonl works); omit with --all",
+    )
     ingest.add_argument(
         "--all", action="store_true", help="Ingest every *.jsonl under the runs dir"
     )

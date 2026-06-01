@@ -159,10 +159,23 @@ def ingest_run(
             return IngestResult(
                 run_id=None, inserted=False, skipped_existing=False, malformed_lines=malformed
             )
-        run_id = manifest["run_id"]
+        run_id = manifest.get("run_id")
+        if not run_id:
+            # A manifest present but missing run_id is bad data, not a crash —
+            # handle it like a missing manifest. The CLI ingest path does not
+            # wrap ingest_run in try/except, so a KeyError here would abort it.
+            return IngestResult(
+                run_id=None, inserted=False, skipped_existing=False, malformed_lines=malformed
+            )
 
-        existing = conn.execute("SELECT 1 FROM bench_runs WHERE run_id=?", (run_id,)).fetchone()
-        if existing and not force:
+        # Skip re-ingest only for a COMPLETE run already on file (finished_at_iso
+        # set). An incomplete run (ingested while still in-flight, finished_at_iso
+        # NULL) must remain re-ingestable so its later run_end + retrieval rows
+        # land without --force. `--force` always re-ingests.
+        existing = conn.execute(
+            "SELECT finished_at_iso FROM bench_runs WHERE run_id=?", (run_id,)
+        ).fetchone()
+        if existing is not None and existing[0] is not None and not force:
             return IngestResult(
                 run_id=run_id, inserted=False, skipped_existing=True, malformed_lines=malformed
             )
@@ -237,8 +250,12 @@ def _ingest_models(conn: sqlite3.Connection, run_id: str, records: list[dict]) -
             continue
         g = r.get("gates", {})
         verdict = r.get("tier0_verdict", {})
+        # OR REPLACE (matching _ingest_enrichment / _ingest_retrieval): a run
+        # with a duplicated candidate model (e.g. `--models m1,m1`) emits two
+        # model_summary records for the same (run_id, model_id) PK; collapse to
+        # the last rather than raising IntegrityError mid-transaction.
         conn.execute(
-            """INSERT INTO bench_models (
+            """INSERT OR REPLACE INTO bench_models (
                 run_id, model_id, schema_validity_rate, refusal_rate, echo_similarity_max,
                 latency_p50_ms, latency_p95_ms, latency_p99_ms, self_consistency_mean,
                 self_consistency_min, entity_sanity_mean, main_attempts_count,
@@ -302,7 +319,14 @@ def _ingest_enrichment(conn: sqlite3.Connection, run_id: str, records: list[dict
                 _entity_sanity_mean(g.get("entity_type_sanity")),
                 r.get("timestamps", {}).get("total_ms"),
                 1 if r.get("timeout") else 0,
-                json.dumps(r.get("parsed_output"), sort_keys=True),
+                # Map a missing/None parsed_output to SQL NULL, not the literal
+                # TEXT 'null' that json.dumps(None) would produce (matches the
+                # None→NULL behavior of every sibling column in this INSERT).
+                (
+                    json.dumps(r.get("parsed_output"), sort_keys=True)
+                    if r.get("parsed_output") is not None
+                    else None
+                ),
             ),
         )
         n += 1
@@ -404,6 +428,41 @@ def node_detail(conn: sqlite3.Connection, event_id: str, *, mode: str = "hybrid"
         "retrieval": [dict(r) for r in retrieval],
         "enrichment": [dict(r) for r in enrichment],
     }
+
+
+def all_node_details(conn: sqlite3.Connection, *, mode: str = "hybrid") -> dict[str, dict]:
+    """Per-node retrieval + enrichment for EVERY scored node, keyed by node id.
+
+    Two queries total (one retrieval, one enrichment), vs ``node_detail``'s two
+    queries *per node*. Same per-node shape as ``node_detail``; used by the
+    dashboard exporter to avoid an N+1 over the corpus.
+    """
+    nodes: dict[str, dict] = {}
+
+    def _node(event_id: str) -> dict:
+        return nodes.setdefault(event_id, {"event_id": event_id, "retrieval": [], "enrichment": []})
+
+    for r in conn.execute(
+        """SELECT nr.golden_event_id AS event_id, nr.run_id, nr.model_id, nr.mrr, nr.rank,
+                  nr.hit_at_1, r.started_at_iso
+           FROM bench_node_retrieval nr JOIN bench_runs r USING (run_id)
+           WHERE nr.mode = ? AND nr.golden_event_id IS NOT NULL
+           ORDER BY r.started_at_iso DESC""",
+        (mode,),
+    ).fetchall():
+        d = dict(r)
+        _node(d.pop("event_id"))["retrieval"].append(d)
+
+    for r in conn.execute(
+        """SELECT ne.event_id, ne.run_id, ne.model_id, ne.schema_valid, ne.refusal_detected,
+                  ne.echo_similarity, ne.entity_sanity, ne.parsed_output_json, r.started_at_iso
+           FROM bench_node_enrichment ne JOIN bench_runs r USING (run_id)
+           ORDER BY r.started_at_iso DESC""",
+    ).fetchall():
+        d = dict(r)
+        _node(d.pop("event_id"))["enrichment"].append(d)
+
+    return nodes
 
 
 def run_history(conn: sqlite3.Connection) -> list[dict]:
