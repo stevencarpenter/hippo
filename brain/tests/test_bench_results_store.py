@@ -255,3 +255,70 @@ def test_connect_creates_schema(tmp_path):
         assert conn.execute("PRAGMA foreign_keys").fetchone()[0] == 1
     finally:
         conn.close()
+
+
+def test_reingest_same_run_is_skipped(tmp_path):
+    from hippo_brain.bench.results_store import connect, ingest_run
+
+    jsonl = _write_jsonl(
+        tmp_path / "run-1.jsonl", [_manifest(), _model_summary_with_proxy(), _run_end()]
+    )
+    conn = connect(tmp_path / "bench-results.db")
+    try:
+        first = ingest_run(jsonl, conn=conn)
+        assert first.inserted and not first.skipped_existing
+        second = ingest_run(jsonl, conn=conn)
+        assert second.skipped_existing and not second.inserted
+        assert conn.execute("SELECT COUNT(*) FROM bench_node_retrieval").fetchone()[0] == 2
+    finally:
+        conn.close()
+
+
+def test_force_replaces_run(tmp_path):
+    from hippo_brain.bench.results_store import connect, ingest_run
+
+    jsonl = _write_jsonl(
+        tmp_path / "run-1.jsonl", [_manifest(), _model_summary_with_proxy(), _run_end()]
+    )
+    conn = connect(tmp_path / "bench-results.db")
+    try:
+        ingest_run(jsonl, conn=conn)
+        out = ingest_run(jsonl, conn=conn, force=True)
+        assert out.inserted
+        # cascade delete + reinsert leaves exactly one run, no duplicate child rows
+        assert conn.execute("SELECT COUNT(*) FROM bench_runs").fetchone()[0] == 1
+        assert conn.execute("SELECT COUNT(*) FROM bench_node_retrieval").fetchone()[0] == 2
+    finally:
+        conn.close()
+
+
+def test_partial_jsonl_no_run_end(tmp_path):
+    from hippo_brain.bench.results_store import connect, ingest_run
+
+    jsonl = _write_jsonl(tmp_path / "run-1.jsonl", [_manifest(), _attempt()])
+    conn = connect(tmp_path / "bench-results.db")
+    try:
+        out = ingest_run(jsonl, conn=conn)
+        assert out.inserted
+        row = conn.execute("SELECT finished_at_iso FROM bench_runs").fetchone()
+        assert row["finished_at_iso"] is None  # incomplete run
+        assert conn.execute("SELECT COUNT(*) FROM bench_node_enrichment").fetchone()[0] == 1
+    finally:
+        conn.close()
+
+
+def test_malformed_line_tolerated(tmp_path):
+    from hippo_brain.bench.results_store import connect, ingest_run
+
+    path = tmp_path / "run-1.jsonl"
+    with path.open("w", encoding="utf-8") as f:
+        f.write(json.dumps(_manifest(), sort_keys=True) + "\n")
+        f.write("{not json\n")
+        f.write(json.dumps(_run_end(), sort_keys=True) + "\n")
+    conn = connect(tmp_path / "bench-results.db")
+    try:
+        out = ingest_run(path, conn=conn)
+        assert out.inserted
+        assert out.malformed_lines == 1
+    finally:
+        conn.close()
