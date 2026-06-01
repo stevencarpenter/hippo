@@ -698,3 +698,62 @@ def test_malformed_per_item_is_tolerated(tmp_path):
         assert out_mixed.retrieval_rows == 1  # only the valid entry
     finally:
         conn.close()
+
+
+def test_retrieval_entry_missing_qa_id_or_mode_is_skipped(tmp_path):
+    """A per_item entry missing qa_id or mode would write NULL composite-PK
+    columns that can't dedupe under INSERT OR REPLACE — skip it, keep valids."""
+    from hippo_brain.bench.results_store import connect, ingest_run
+
+    ms = _model_summary_with_proxy("run-1", model="m1")
+    ms["downstream_proxy"]["per_item"] = [
+        {
+            "hit_at_k": {1: True},
+            "mrr": 1.0,
+            "golden_event_id": "claude-7",
+            "mode": "hybrid",
+        },  # no qa_id
+        {
+            "hit_at_k": {1: True},
+            "mrr": 1.0,
+            "qa_id": "qa-001",
+            "golden_event_id": "claude-7",
+        },  # no mode
+        {
+            "hit_at_k": {1: True, 10: True},
+            "rank": 1,
+            "mrr": 1.0,
+            "ndcg_at_10": 1.0,
+            "qa_id": "qa-002",
+            "golden_event_id": "shell-9",
+            "mode": "hybrid",
+        },
+    ]
+    jsonl = _write_jsonl(tmp_path / "r.jsonl", [_manifest("run-1"), ms, _run_end("run-1")])
+    conn = connect(tmp_path / "bench-results.db")
+    try:
+        out = ingest_run(jsonl, conn=conn)
+        assert out.inserted
+        assert out.retrieval_rows == 1  # only the qa-002 entry with both keys
+        rows = conn.execute("SELECT qa_id FROM bench_node_retrieval").fetchall()
+        assert [r["qa_id"] for r in rows] == ["qa-002"]
+    finally:
+        conn.close()
+
+
+def test_enrichment_attempt_missing_event_id_is_skipped(tmp_path):
+    """An attempt with no event_id would write a NULL composite-PK row
+    (run_id, model_id, event_id) that can't dedupe — skip the malformed attempt."""
+    from hippo_brain.bench.results_store import connect, ingest_run
+
+    bad = _attempt(event_id="claude-7")
+    bad["event"] = {"source": "claude"}  # event_id missing
+    good = _attempt(event_id="shell-9")
+    jsonl = _write_jsonl(tmp_path / "r.jsonl", [_manifest("run-1"), bad, good, _run_end("run-1")])
+    conn = connect(tmp_path / "bench-results.db")
+    try:
+        ingest_run(jsonl, conn=conn)
+        rows = conn.execute("SELECT event_id FROM bench_node_enrichment").fetchall()
+        assert [r["event_id"] for r in rows] == ["shell-9"]  # bad attempt skipped
+    finally:
+        conn.close()

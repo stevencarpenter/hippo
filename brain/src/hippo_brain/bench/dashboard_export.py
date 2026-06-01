@@ -46,7 +46,7 @@ _TEMPLATE = """<!doctype html>
 </head>
 <body>
 <h1>hippo-bench dashboard</h1>
-<h2>Leaderboard — latest run (hybrid retrieval)</h2>
+<h2>Leaderboard — latest scored run (hybrid retrieval)</h2>
 <div id="leaderboard"></div>
 <h2>Per-node — best model per corpus member</h2>
 <select id="node-select"></select>

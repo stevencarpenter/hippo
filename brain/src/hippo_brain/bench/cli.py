@@ -240,7 +240,9 @@ def _cmd_ingest(args: argparse.Namespace) -> int:
             elif res.skipped_aborted:
                 status = "skipped (aborted run — no scoring rows)"
             elif res.run_id is None:
-                status = "skipped (no run_manifest)"
+                # run_id is None for both a missing run_manifest AND a manifest
+                # present but lacking a run_id — keep the wording broad.
+                status = "skipped (no usable run_manifest / run_id)"
             else:
                 status = (
                     f"ingested run_id={res.run_id} "

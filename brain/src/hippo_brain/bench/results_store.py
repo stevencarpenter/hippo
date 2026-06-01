@@ -330,6 +330,13 @@ def _ingest_enrichment(conn: sqlite3.Connection, run_id: str, records: list[dict
             continue
         ev = _as_dict(r.get("event"))
         g = _as_dict(r.get("gates"))
+        model_id = _as_dict(r.get("model")).get("id")
+        event_id = ev.get("event_id")
+        if not model_id or not event_id:
+            # (run_id, model_id, event_id) is the composite PK. SQLite permits
+            # multiple NULLs in a PK, so a malformed/partial attempt missing
+            # either would write un-dedupable junk rows — skip it.
+            continue
         conn.execute(
             """INSERT OR REPLACE INTO bench_node_enrichment (
                 run_id, model_id, event_id, source, schema_valid, refusal_detected,
@@ -337,8 +344,8 @@ def _ingest_enrichment(conn: sqlite3.Connection, run_id: str, records: list[dict
             ) VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
             (
                 run_id,
-                _as_dict(r.get("model")).get("id"),
-                ev.get("event_id"),
+                model_id,
+                event_id,
                 ev.get("source"),
                 1 if g.get("schema_valid") else 0,
                 1 if g.get("refusal_detected") else 0,
@@ -387,6 +394,12 @@ def _ingest_retrieval(conn: sqlite3.Connection, run_id: str, records: list[dict]
         for item in per_item:
             if not isinstance(item, dict):
                 continue  # skip a malformed non-dict score entry
+            qa_id = item.get("qa_id")
+            mode = item.get("mode")
+            if not qa_id or not mode:
+                # (run_id, model_id, qa_id, mode) is the composite PK; a NULL
+                # qa_id/mode can't dedupe under INSERT OR REPLACE — skip.
+                continue
             hk = item.get("hit_at_k", {})
             conn.execute(
                 """INSERT OR REPLACE INTO bench_node_retrieval (
@@ -396,9 +409,9 @@ def _ingest_retrieval(conn: sqlite3.Connection, run_id: str, records: list[dict]
                 (
                     run_id,
                     model_id,
-                    item.get("qa_id"),
+                    qa_id,
                     item.get("golden_event_id"),
-                    item.get("mode"),
+                    mode,
                     item.get("rank"),
                     item.get("mrr"),
                     _hit(hk, 1),
