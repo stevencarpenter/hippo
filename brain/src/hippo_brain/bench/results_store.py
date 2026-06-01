@@ -109,7 +109,21 @@ def connect(db_path: Path | None = None) -> sqlite3.Connection:
     conn.execute("PRAGMA foreign_keys=ON")
     conn.execute("PRAGMA busy_timeout=5000")
     conn.executescript(_SCHEMA)
-    conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
+    # Stamp user_version only on a *fresh* DB (version 0). Stamping
+    # unconditionally would let an older binary silently downgrade a DB written
+    # by a newer one — corrupting the version that future migrations key on.
+    current = conn.execute("PRAGMA user_version").fetchone()[0]
+    if current > SCHEMA_VERSION:
+        conn.close()
+        raise RuntimeError(
+            f"bench-results.db is schema v{current}, newer than this binary "
+            f"(v{SCHEMA_VERSION}); refusing to open rather than downgrade — upgrade hippo"
+        )
+    if current < SCHEMA_VERSION:
+        # Fresh DB (0) or an older version. When real migrations exist they run
+        # here, version-by-version, BEFORE this stamp; today _SCHEMA's
+        # CREATE TABLE IF NOT EXISTS is the only (idempotent) step.
+        conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
     conn.commit()
     return conn
 

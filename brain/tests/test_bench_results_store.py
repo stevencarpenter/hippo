@@ -167,6 +167,45 @@ def test_connect_creates_schema(tmp_path):
         conn.close()
 
 
+def test_connect_refuses_newer_schema(tmp_path):
+    """connect() must not silently downgrade a DB written by a newer binary:
+    a user_version above SCHEMA_VERSION raises rather than restamping to v1."""
+    import sqlite3
+
+    import pytest
+
+    from hippo_brain.bench.results_store import connect
+
+    db = tmp_path / "bench-results.db"
+    connect(db).close()  # fresh DB at SCHEMA_VERSION
+    # Simulate a future binary bumping the on-disk version.
+    raw = sqlite3.connect(db)
+    raw.execute(f"PRAGMA user_version={SCHEMA_VERSION + 5}")
+    raw.commit()
+    raw.close()
+
+    with pytest.raises(RuntimeError, match="newer than this binary"):
+        connect(db)
+    # The on-disk version must be untouched by the refused open.
+    raw = sqlite3.connect(db)
+    assert raw.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION + 5
+    raw.close()
+
+
+def test_connect_reopen_preserves_version(tmp_path):
+    """Re-opening an existing same-version DB is a no-op on user_version (no
+    spurious rewrite) and stays usable."""
+    from hippo_brain.bench.results_store import connect
+
+    db = tmp_path / "bench-results.db"
+    connect(db).close()
+    conn = connect(db)
+    try:
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
+    finally:
+        conn.close()
+
+
 def test_reingest_same_run_is_skipped(tmp_path):
     from hippo_brain.bench.results_store import connect, ingest_run
 
