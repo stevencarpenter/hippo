@@ -322,3 +322,60 @@ def _ingest_retrieval(conn: sqlite3.Connection, run_id: str, records: list[dict]
             )
             n += 1
     return n
+
+
+def leaderboard_latest(conn: sqlite3.Connection, *, mode: str = "hybrid") -> list[dict]:
+    """Per-model aggregate retrieval for the single most-recent run (headline)."""
+    rows = conn.execute(
+        """
+        WITH latest AS (
+            SELECT run_id FROM bench_runs ORDER BY started_at_iso DESC LIMIT 1
+        )
+        SELECT nr.run_id, nr.model_id,
+               AVG(nr.mrr)            AS avg_mrr,
+               AVG(nr.hit_at_1)       AS hit_at_1,
+               COUNT(*)               AS scored_nodes
+        FROM bench_node_retrieval nr
+        JOIN latest ON latest.run_id = nr.run_id
+        WHERE nr.mode = ?
+        GROUP BY nr.run_id, nr.model_id
+        ORDER BY avg_mrr DESC
+        """,
+        (mode,),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def node_detail(conn: sqlite3.Connection, event_id: str, *, mode: str = "hybrid") -> dict:
+    """All historical retrieval + enrichment rows for one corpus node."""
+    retrieval = conn.execute(
+        """SELECT nr.run_id, nr.model_id, nr.mrr, nr.rank, nr.hit_at_1, r.started_at_iso
+           FROM bench_node_retrieval nr JOIN bench_runs r USING (run_id)
+           WHERE nr.golden_event_id = ? AND nr.mode = ?
+           ORDER BY r.started_at_iso DESC""",
+        (event_id, mode),
+    ).fetchall()
+    enrichment = conn.execute(
+        """SELECT ne.run_id, ne.model_id, ne.schema_valid, ne.refusal_detected,
+                  ne.echo_similarity, ne.entity_sanity, ne.parsed_output_json,
+                  r.started_at_iso
+           FROM bench_node_enrichment ne JOIN bench_runs r USING (run_id)
+           WHERE ne.event_id = ?
+           ORDER BY r.started_at_iso DESC""",
+        (event_id,),
+    ).fetchall()
+    return {
+        "event_id": event_id,
+        "retrieval": [dict(r) for r in retrieval],
+        "enrichment": [dict(r) for r in enrichment],
+    }
+
+
+def run_history(conn: sqlite3.Connection) -> list[dict]:
+    """All runs, newest first, for the history/trend view."""
+    rows = conn.execute(
+        """SELECT run_id, started_at_iso, finished_at_iso, corpus_version,
+                  corpus_content_hash, models_completed_json
+           FROM bench_runs ORDER BY started_at_iso DESC"""
+    ).fetchall()
+    return [dict(r) for r in rows]

@@ -307,6 +307,49 @@ def test_partial_jsonl_no_run_end(tmp_path):
         conn.close()
 
 
+def test_query_helpers(tmp_path):
+    from hippo_brain.bench.results_store import (
+        connect,
+        ingest_run,
+        leaderboard_latest,
+        node_detail,
+        run_history,
+    )
+
+    # run-1 (older) then run-2 (newer) — leaderboard headline must use run-2.
+    # Each run carries a main attempt on claude-7 so node_detail has enrichment rows.
+    r1 = [
+        _manifest("run-1"),
+        _model_summary_with_proxy("run-1"),
+        _attempt("run-1", event_id="claude-7"),
+        _run_end("run-1"),
+    ]
+    ms2 = _model_summary_with_proxy("run-2")
+    ms2["downstream_proxy"]["per_item"][0]["mrr"] = 0.5  # different score in newer run
+    m2 = _manifest("run-2")
+    m2["started_at_iso"] = "2026-05-31T05:00:00+00:00"
+    r2 = [m2, ms2, _attempt("run-2", event_id="claude-7"), _run_end("run-2")]
+
+    conn = connect(tmp_path / "bench-results.db")
+    try:
+        ingest_run(_write_jsonl(tmp_path / "r1.jsonl", r1), conn=conn)
+        ingest_run(_write_jsonl(tmp_path / "r2.jsonl", r2), conn=conn)
+
+        lb = leaderboard_latest(conn, mode="hybrid")
+        # headline = newest run only
+        assert lb[0]["run_id"] == "run-2"
+        assert abs(lb[0]["avg_mrr"] - 0.5) < 1e-9
+
+        detail = node_detail(conn, "claude-7", mode="hybrid")
+        assert {d["run_id"] for d in detail["retrieval"]} == {"run-1", "run-2"}
+        assert detail["enrichment"]  # enrichment rows present
+
+        hist = run_history(conn)
+        assert [h["run_id"] for h in hist] == ["run-2", "run-1"]  # newest first
+    finally:
+        conn.close()
+
+
 def test_malformed_line_tolerated(tmp_path):
     from hippo_brain.bench.results_store import connect, ingest_run
 
