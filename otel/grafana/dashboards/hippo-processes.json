@@ -38,8 +38,8 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "process_cpu_utilization_ratio{service_namespace!~\".+\"}",
-          "legendFormat": "{{service_name}}",
+          "expr": "process_cpu_utilization_ratio",
+          "legendFormat": "{{exported_job}}",
           "editorMode": "code"
         }
       ],
@@ -88,8 +88,8 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "process_memory_usage_bytes{service_namespace!~\".+\"}",
-          "legendFormat": "{{service_name}}",
+          "expr": "process_memory_usage_bytes",
+          "legendFormat": "{{exported_job}}",
           "editorMode": "code"
         }
       ],
@@ -138,8 +138,8 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "process_memory_virtual_bytes{service_namespace!~\".+\"}",
-          "legendFormat": "{{service_name}}",
+          "expr": "process_memory_virtual_bytes",
+          "legendFormat": "{{exported_job}}",
           "editorMode": "code"
         }
       ],
@@ -169,7 +169,7 @@
     },
     {
       "id": 4,
-      "title": "Threads (brain only \u2014 daemon unsupported cross-platform)",
+      "title": "Threads (brain only — daemon unsupported cross-platform)",
       "type": "timeseries",
       "gridPos": {
         "x": 12,
@@ -188,8 +188,8 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "process_threads{service_namespace!~\".+\"}",
-          "legendFormat": "{{service_name}}",
+          "expr": "process_threads",
+          "legendFormat": "{{exported_job}}",
           "editorMode": "code"
         }
       ],
@@ -238,8 +238,8 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "rate(process_cpu_time_milliseconds_total{service_namespace!~\".+\"}[5m]) / 1000",
-          "legendFormat": "{{service_name}}",
+          "expr": "rate(process_cpu_time_milliseconds_total[5m]) / 1000",
+          "legendFormat": "{{exported_job}}",
           "editorMode": "code"
         }
       ],

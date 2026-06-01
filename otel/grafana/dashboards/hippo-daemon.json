@@ -37,7 +37,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum(rate(hippo_daemon_events_ingested_total{service_namespace!~\".+\"}[5m])) by (source) * 60",
+          "expr": "sum(rate(hippo_daemon_events_ingested_total[5m])) by (source) * 60",
           "legendFormat": "{{source}}",
           "editorMode": "code"
         }
@@ -83,7 +83,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "hippo_daemon_buffer_size{service_namespace!~\".+\"}",
+          "expr": "hippo_daemon_buffer_size",
           "legendFormat": "",
           "editorMode": "code"
         }
@@ -140,7 +140,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum(rate(hippo_daemon_events_dropped_total{service_namespace!~\".+\"}[5m])) by (source) * 60",
+          "expr": "sum(rate(hippo_daemon_events_dropped_total[5m])) by (source) * 60 or vector(0)",
           "legendFormat": "{{source}}",
           "editorMode": "code"
         }
@@ -186,7 +186,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum(rate(hippo_daemon_sessions_created_total{service_namespace!~\".+\"}[1h])) * 3600",
+          "expr": "sum(rate(hippo_daemon_sessions_created_total[1h])) * 3600",
           "legendFormat": "",
           "editorMode": "code"
         }
@@ -237,7 +237,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "histogram_quantile(0.5, sum(rate(hippo_daemon_flush_duration_milliseconds_bucket{service_namespace!~\".+\"}[5m])) by (le))",
+          "expr": "histogram_quantile(0.5, sum(rate(hippo_daemon_flush_duration_milliseconds_bucket[5m])) by (le))",
           "legendFormat": "p50",
           "editorMode": "code"
         },
@@ -247,7 +247,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "histogram_quantile(0.95, sum(rate(hippo_daemon_flush_duration_milliseconds_bucket{service_namespace!~\".+\"}[5m])) by (le))",
+          "expr": "histogram_quantile(0.95, sum(rate(hippo_daemon_flush_duration_milliseconds_bucket[5m])) by (le))",
           "legendFormat": "p95",
           "editorMode": "code"
         }
@@ -293,7 +293,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "histogram_quantile(0.5, sum(rate(hippo_daemon_flush_batch_size_bucket{service_namespace!~\".+\"}[5m])) by (le))",
+          "expr": "histogram_quantile(0.5, sum(rate(hippo_daemon_flush_batch_size_bucket[5m])) by (le))",
           "legendFormat": "p50",
           "editorMode": "code"
         },
@@ -303,7 +303,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "histogram_quantile(0.95, sum(rate(hippo_daemon_flush_batch_size_bucket{service_namespace!~\".+\"}[5m])) by (le))",
+          "expr": "histogram_quantile(0.95, sum(rate(hippo_daemon_flush_batch_size_bucket[5m])) by (le))",
           "legendFormat": "p95",
           "editorMode": "code"
         }
@@ -349,7 +349,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "hippo_daemon_db_size_bytes{service_namespace!~\".+\"}",
+          "expr": "hippo_daemon_db_size_bytes",
           "legendFormat": "",
           "editorMode": "code"
         }
@@ -395,7 +395,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum(rate(hippo_daemon_redactions_total{service_namespace!~\".+\"}[5m])) * 60",
+          "expr": "sum(rate(hippo_daemon_redactions_total[5m])) * 60",
           "legendFormat": "",
           "editorMode": "code"
         }
@@ -441,7 +441,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "histogram_quantile(0.95, sum(rate(hippo_daemon_request_duration_milliseconds_bucket{service_namespace!~\".+\"}[5m])) by (le, type))",
+          "expr": "histogram_quantile(0.95, sum(rate(hippo_daemon_request_duration_milliseconds_bucket[5m])) by (le, type))",
           "legendFormat": "{{type}} p95",
           "editorMode": "code"
         }
@@ -468,8 +468,8 @@
     },
     {
       "id": 10,
-      "title": "Fallback Writes",
-      "type": "stat",
+      "title": "Fallback Recovered / s",
+      "type": "timeseries",
       "gridPos": {
         "x": 8,
         "y": 16,
@@ -487,38 +487,29 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum(hippo_daemon_fallback_writes_total{service_namespace!~\".+\"}) or vector(0)",
-          "legendFormat": "",
+          "expr": "rate(hippo_daemon_fallback_recovered_total[5m])",
+          "legendFormat": "recovered/s",
           "editorMode": "code"
         }
       ],
       "fieldConfig": {
         "defaults": {
           "unit": "short",
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              },
-              {
-                "color": "red",
-                "value": 1
-              }
-            ]
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "lineWidth": 1
           }
         }
       },
       "options": {
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ]
+        "tooltip": {
+          "mode": "multi"
         },
-        "orientation": "auto",
-        "textMode": "auto",
-        "colorMode": "background"
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
       }
     },
     {
@@ -542,7 +533,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "hippo_daemon_fallback_pending{service_namespace!~\".+\"} or vector(0)",
+          "expr": "hippo_daemon_fallback_pending or vector(0)",
           "legendFormat": "",
           "editorMode": "code"
         }
@@ -613,6 +604,368 @@
         "enableLogDetails": true,
         "dedupStrategy": "none",
         "sortOrder": "Descending"
+      }
+    },
+    {
+      "id": 13,
+      "title": "Source Health: Consecutive Failures",
+      "type": "timeseries",
+      "gridPos": {
+        "x": 0,
+        "y": 24,
+        "w": 8,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "hippo_daemon_source_health_consecutive_failures",
+          "legendFormat": "{{source}}",
+          "editorMode": "code"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "lineWidth": 1
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 1
+              },
+              {
+                "color": "red",
+                "value": 3
+              }
+            ]
+          }
+        }
+      },
+      "options": {
+        "tooltip": {
+          "mode": "multi"
+        },
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      }
+    },
+    {
+      "id": 15,
+      "title": "Watcher Segments / min",
+      "type": "timeseries",
+      "gridPos": {
+        "x": 8,
+        "y": 24,
+        "w": 8,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "rate(hippo_watcher_segments_ingested_total[5m]) * 60",
+          "legendFormat": "{{source}}",
+          "editorMode": "code"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "lineWidth": 1
+          }
+        }
+      },
+      "options": {
+        "tooltip": {
+          "mode": "multi"
+        },
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      }
+    },
+    {
+      "id": 16,
+      "title": "Watcher Process Duration",
+      "type": "timeseries",
+      "gridPos": {
+        "x": 16,
+        "y": 24,
+        "w": 8,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "histogram_quantile(0.5, sum(rate(hippo_watcher_process_duration_milliseconds_bucket[5m])) by (le))",
+          "legendFormat": "p50",
+          "editorMode": "code"
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "histogram_quantile(0.95, sum(rate(hippo_watcher_process_duration_milliseconds_bucket[5m])) by (le))",
+          "legendFormat": "p95",
+          "editorMode": "code"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "lineWidth": 1
+          }
+        }
+      },
+      "options": {
+        "tooltip": {
+          "mode": "multi"
+        },
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      }
+    },
+    {
+      "id": 17,
+      "title": "Requests / min",
+      "type": "timeseries",
+      "gridPos": {
+        "x": 0,
+        "y": 32,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum by (type) (rate(hippo_daemon_requests_total[5m])) * 60",
+          "legendFormat": "{{type}}",
+          "editorMode": "code"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "lineWidth": 1
+          }
+        }
+      },
+      "options": {
+        "tooltip": {
+          "mode": "multi"
+        },
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      }
+    },
+    {
+      "id": 18,
+      "title": "Flush Events / min",
+      "type": "timeseries",
+      "gridPos": {
+        "x": 12,
+        "y": 32,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum by (source) (rate(hippo_daemon_flush_events_total[5m])) * 60",
+          "legendFormat": "{{source}}",
+          "editorMode": "code"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "lineWidth": 1
+          }
+        }
+      },
+      "options": {
+        "tooltip": {
+          "mode": "multi"
+        },
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      }
+    },
+    {
+      "id": 19,
+      "title": "DB Busy Retries / min",
+      "type": "timeseries",
+      "gridPos": {
+        "x": 0,
+        "y": 40,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum by (op) (rate(hippo_daemon_db_busy_count_total[5m])) * 60",
+          "legendFormat": "{{op}}",
+          "editorMode": "code"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "lineWidth": 1
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
+            ]
+          }
+        }
+      },
+      "options": {
+        "tooltip": {
+          "mode": "multi"
+        },
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      }
+    },
+    {
+      "id": 20,
+      "title": "Watcher Events Dropped / min",
+      "type": "timeseries",
+      "gridPos": {
+        "x": 12,
+        "y": 40,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum(rate(hippo_watcher_events_dropped_total[5m])) * 60 or vector(0)",
+          "legendFormat": "dropped/min",
+          "editorMode": "code"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "lineWidth": 1
+          }
+        }
+      },
+      "options": {
+        "tooltip": {
+          "mode": "multi"
+        },
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
       }
     }
   ]

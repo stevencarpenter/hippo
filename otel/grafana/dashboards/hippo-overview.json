@@ -19,7 +19,7 @@
     {
       "id": 100,
       "title": "Stack Health Grade",
-      "description": "Deterministic 0\u2013100 score: 100 = no active capture alarms; subtracts 10 per unresolved+unacked capture_alarms row. Green \u2265 90, yellow 70\u201389, red < 70. Refreshes every 10s from the daemon's hippo.daemon.health.grade observable gauge.",
+      "description": "Deterministic 0–100 score: 100 = no active capture alarms; subtracts 10 per unresolved+unacked capture_alarms row. Green ≥ 90, yellow 70–89, red < 70. Refreshes every 10s from the daemon's hippo.daemon.health.grade observable gauge.",
       "type": "stat",
       "gridPos": {
         "x": 0,
@@ -38,7 +38,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "hippo_daemon_health_grade{service_namespace!~\".+\"}",
+          "expr": "hippo_daemon_health_grade",
           "legendFormat": "grade",
           "editorMode": "code"
         },
@@ -48,7 +48,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "hippo_daemon_health_active_alarms{service_namespace!~\".+\"}",
+          "expr": "hippo_daemon_health_active_alarms",
           "legendFormat": "active alarms",
           "editorMode": "code"
         }
@@ -150,7 +150,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum(rate(hippo_daemon_events_ingested_total{service_namespace!~\".+\"}[5m])) * 60",
+          "expr": "sum(rate(hippo_daemon_events_ingested_total[5m])) * 60",
           "legendFormat": "",
           "editorMode": "code"
         }
@@ -201,7 +201,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum(hippo_daemon_events_dropped_total{service_namespace!~\".+\"}) or vector(0)",
+          "expr": "sum(hippo_daemon_events_dropped_total) or vector(0)",
           "legendFormat": "",
           "editorMode": "code"
         }
@@ -256,7 +256,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum(hippo_brain_enrichment_queue_depth{service_namespace!~\".+\",status=\"pending\"}) or vector(0)",
+          "expr": "sum(hippo_brain_enrichment_queue_depth{status=\"pending\"}) or vector(0)",
           "legendFormat": "",
           "editorMode": "code"
         }
@@ -315,7 +315,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum(rate(hippo_brain_enrichment_nodes_created_total{service_namespace!~\".+\"}[1h])) * 3600",
+          "expr": "sum(rate(hippo_brain_enrichment_nodes_created_total[1h])) * 3600",
           "legendFormat": "",
           "editorMode": "code"
         }
@@ -366,7 +366,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum(rate(hippo_daemon_events_ingested_total{service_namespace!~\".+\"}[5m])) * 60",
+          "expr": "sum(rate(hippo_daemon_events_ingested_total[5m])) * 60",
           "legendFormat": "ingested/min",
           "editorMode": "code"
         },
@@ -376,7 +376,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum(rate(hippo_brain_enrichment_events_claimed_total{service_namespace!~\".+\"}[5m])) * 60",
+          "expr": "sum(rate(hippo_brain_enrichment_events_claimed_total[5m])) * 60",
           "legendFormat": "enriched/min",
           "editorMode": "code"
         }
@@ -422,7 +422,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum(rate(hippo_brain_inference_errors_total{service_namespace!~\".+\"}[5m])) * 60",
+          "expr": "sum(rate(hippo_brain_inference_errors_total[5m])) * 60",
           "legendFormat": "Inference",
           "editorMode": "code"
         },
@@ -432,7 +432,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum(rate(hippo_brain_enrichment_failures_total{service_namespace!~\".+\"}[5m])) * 60",
+          "expr": "sum(rate(hippo_brain_enrichment_failures_total[5m])) * 60",
           "legendFormat": "enrichment",
           "editorMode": "code"
         },
@@ -442,7 +442,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum(rate(hippo_daemon_events_dropped_total{service_namespace!~\".+\"}[5m])) * 60",
+          "expr": "sum(rate(hippo_daemon_events_dropped_total[5m])) * 60 or vector(0)",
           "legendFormat": "dropped",
           "editorMode": "code"
         }
@@ -488,7 +488,7 @@
             "type": "loki",
             "uid": "loki"
           },
-          "expr": "{service_name=~\"hippo.*\",service_namespace!~\".+\"} |~ \"(?i)error|failed|panic\"",
+          "expr": "{service_name=~\"hippo.*\"} |~ \"(?i)error|failed|panic\"",
           "queryType": "range"
         }
       ],
@@ -528,7 +528,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "hippo_daemon_source_health_lag_milliseconds{service_namespace!~\".+\"} / 1000",
+          "expr": "hippo_daemon_source_health_lag_milliseconds / 1000",
           "legendFormat": "{{source}}",
           "editorMode": "code"
         }
@@ -594,8 +594,317 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum by (source) (rate(hippo_watchdog_invariant_violation_total{service_namespace!~\".+\"}[5m])) * 60",
+          "expr": "sum by (source) (rate(hippo_watchdog_invariant_violation_total[5m])) * 60",
           "legendFormat": "{{source}}",
+          "editorMode": "code"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "lineWidth": 1,
+            "showPoints": "never"
+          }
+        }
+      },
+      "options": {
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        },
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      }
+    },
+    {
+      "id": 200,
+      "title": "Probe Status",
+      "type": "row",
+      "gridPos": {
+        "x": 0,
+        "y": 24,
+        "w": 24,
+        "h": 1
+      },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "id": 201,
+      "title": "Probe OK by Source",
+      "description": "Current probe liveness per capture source. 1 = last probe round-trip succeeded; 0 = probe failed. Red cells surface sources where the synthetic canary is not completing the round-trip.",
+      "type": "stat",
+      "gridPos": {
+        "x": 0,
+        "y": 25,
+        "w": 8,
+        "h": 6
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "hippo_daemon_source_health_probe_ok",
+          "legendFormat": "{{source}}",
+          "editorMode": "code"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0,
+          "max": 1,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 1
+              }
+            ]
+          },
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "0": {
+                  "text": "FAIL",
+                  "color": "red",
+                  "index": 0
+                },
+                "1": {
+                  "text": "OK",
+                  "color": "green",
+                  "index": 1
+                }
+              }
+            }
+          ]
+        }
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "orientation": "horizontal",
+        "textMode": "value_and_name",
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center"
+      }
+    },
+    {
+      "id": 202,
+      "title": "Probe Lag p95 by Source",
+      "description": "95th-percentile probe round-trip latency per source over a 5-minute window. Rising latency without probe failures indicates a slow but live capture path.",
+      "type": "timeseries",
+      "gridPos": {
+        "x": 8,
+        "y": 25,
+        "w": 8,
+        "h": 6
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "histogram_quantile(0.95, sum(rate(hippo_probe_lag_milliseconds_bucket[5m])) by (le, source))",
+          "legendFormat": "{{source}}",
+          "editorMode": "code"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "lineWidth": 1,
+            "showPoints": "never"
+          }
+        }
+      },
+      "options": {
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        },
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      }
+    },
+    {
+      "id": 203,
+      "title": "Probe Runs / hr by Source",
+      "description": "Hourly probe execution count per source split by outcome (ok=true/false). Gaps indicate the probe launchd job is not running.",
+      "type": "timeseries",
+      "gridPos": {
+        "x": 16,
+        "y": 25,
+        "w": 8,
+        "h": 6
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum by (source, ok) (increase(hippo_probe_run_total[1h]))",
+          "legendFormat": "{{source}}/{{ok}}",
+          "editorMode": "code"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "lineWidth": 1,
+            "showPoints": "never"
+          }
+        }
+      },
+      "options": {
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        },
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      }
+    },
+    {
+      "id": 210,
+      "title": "Watchdog Alarms",
+      "type": "row",
+      "gridPos": {
+        "x": 0,
+        "y": 31,
+        "w": 24,
+        "h": 1
+      },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "id": 211,
+      "title": "Alarms Fired / hr by Invariant",
+      "description": "Hourly alarm firings from the watchdog, broken down by invariant_id (I-1..I-16). Persistent firings on the same invariant indicate a capture path has been broken for multiple watchdog cycles.",
+      "type": "timeseries",
+      "gridPos": {
+        "x": 0,
+        "y": 32,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum by (invariant_id) (increase(hippo_watchdog_alarms_fired_total[1h]))",
+          "legendFormat": "{{invariant_id}}",
+          "editorMode": "code"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "lineWidth": 1,
+            "showPoints": "never"
+          }
+        }
+      },
+      "options": {
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        },
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      }
+    },
+    {
+      "id": 212,
+      "title": "Alarm Auto-Resolve vs Manual Reset (flap detection)",
+      "description": "Auto-resolved alarms (watchdog cleared the violation itself) vs manually reset alarms (operator acked). Spiky auto-resolve + reset counts on the same invariant indicate a flapping capture source.",
+      "type": "timeseries",
+      "gridPos": {
+        "x": 12,
+        "y": 32,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "increase(hippo_watchdog_alarms_auto_resolved_total[5m])",
+          "legendFormat": "auto-resolved",
+          "editorMode": "code"
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "increase(hippo_watchdog_alarms_reset_total[5m])",
+          "legendFormat": "manually reset",
           "editorMode": "code"
         }
       ],
