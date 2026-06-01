@@ -63,13 +63,15 @@ mod doctor {
             file.set_times(times).expect("set_times");
         }
 
-        /// Insert a `claude_sessions` row for the given session_id.
+        /// Insert an `agentic_sessions` row (harness='claude-code') for the
+        /// given session_id — the post-unification home for Claude Code sessions
+        /// that doctor's checks 5/6 reconcile against.
         fn insert_session_row(conn: &rusqlite::Connection, session_id: &str) {
             conn.execute(
-                "INSERT OR IGNORE INTO claude_sessions \
-                 (session_id, project_dir, cwd, segment_index, start_time, end_time, \
+                "INSERT OR IGNORE INTO agentic_sessions \
+                 (session_id, harness, segment_index, project_dir, cwd, start_time, end_time, \
                   summary_text, message_count, source_file, is_subagent, created_at) \
-                 VALUES (?, '', '/', 0, unixepoch('now')*1000, unixepoch('now')*1000, \
+                 VALUES (?, 'claude-code', 0, '', '/', unixepoch('now')*1000, unixepoch('now')*1000, \
                          '', 0, '', 0, unixepoch('now')*1000)",
                 rusqlite::params![session_id],
             )
@@ -189,7 +191,7 @@ mod doctor {
             fs::write(&jsonl, "{}\n").unwrap();
             // File is fresh (just written) — mtime < 5min by default.
 
-            // Do NOT insert any row into claude_sessions — session is "missing".
+            // Do NOT insert any row into agentic_sessions — session is "missing".
             let fail =
                 check_claude_session_db(&tmp.path().join("projects"), tmp.path(), &conn, false);
             assert_eq!(fail, 1, "active session absent from DB must yield fail=1");
@@ -266,7 +268,7 @@ mod doctor {
         fn check_5_subagent_jsonl_detected_recursively() {
             // Regression test for the P1 bug: subagent transcripts at
             // `<proj>/<parent-uuid>/subagents/<id>.jsonl` must be found by the
-            // recursive walk and reconciled against claude_sessions.
+            // recursive walk and reconciled against agentic_sessions.
             let tmp = tempdir().unwrap();
             let conn = open_test_db(tmp.path());
 
@@ -330,7 +332,7 @@ mod doctor {
             // 3 recent hook invocations, none older than 1h.
             write_hook_log(&log, &[10, 60, 120]);
 
-            // No claude_sessions rows → 0 DB rows in last 1h.
+            // No agentic_sessions rows → 0 DB rows in last 1h.
             let fail = check_session_hook_log(&log, tmp.path(), &conn, false);
             assert_eq!(fail, 1, "≥3 invocations with 0 DB rows must fail");
         }

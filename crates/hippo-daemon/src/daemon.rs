@@ -584,10 +584,10 @@ async fn recompute_rolling_counts(state: Arc<DaemonState>) {
                         "SELECT COUNT(*) FROM events WHERE source_kind='claude-tool' AND timestamp>(unixepoch('now')-86400)*1000",
                     )?,
                     session_1h: read(
-                        "SELECT COUNT(*) FROM claude_sessions WHERE start_time>(unixepoch('now')-3600)*1000",
+                        "SELECT COUNT(*) FROM agentic_sessions WHERE harness='claude-code' AND start_time>(unixepoch('now')-3600)*1000",
                     )?,
                     session_24h: read(
-                        "SELECT COUNT(*) FROM claude_sessions WHERE start_time>(unixepoch('now')-86400)*1000",
+                        "SELECT COUNT(*) FROM agentic_sessions WHERE harness='claude-code' AND start_time>(unixepoch('now')-86400)*1000",
                     )?,
                     browser_1h: read(
                         "SELECT COUNT(*) FROM browser_events WHERE timestamp>(unixepoch('now')-3600)*1000",
