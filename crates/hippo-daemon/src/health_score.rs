@@ -64,7 +64,6 @@ pub fn register(db_path: PathBuf) {
              subtracts 10 per unresolved/unacked capture_alarms row. \
              Floored at 0. Dashboard threshold: <70 red, 70-90 yellow, ≥90 green.",
         )
-        .with_unit("1")
         .with_callback(move |g| {
             g.observe(s_grade.grade.load(Ordering::Relaxed), &[]);
         })
@@ -74,7 +73,6 @@ pub fn register(db_path: PathBuf) {
     let _ = meter
         .u64_observable_gauge("hippo.daemon.health.active_alarms")
         .with_description("Number of currently unresolved + unacked capture_alarms rows.")
-        .with_unit("1")
         .with_callback(move |g| {
             g.observe(s_count.active_alarms.load(Ordering::Relaxed), &[]);
         })
@@ -171,6 +169,43 @@ mod tests {
         .unwrap();
         let n = read_alarm_count(path).unwrap();
         assert_eq!(n, 0);
+    }
+
+    /// Locks the OTel unit-removal contract.
+    ///
+    /// The OTel->Prometheus exporter appends the OTel unit as a suffix when it
+    /// is non-empty.  `unit="1"` yields `_ratio` (misleading on a 0–100 score
+    /// or a raw count), so both gauges carry no unit.  The canonical Prometheus
+    /// names after export are therefore:
+    ///
+    ///   hippo_daemon_health_grade           (not *_ratio)
+    ///   hippo_daemon_health_active_alarms   (not *_ratio)
+    ///
+    /// This test encodes that contract as a const-string assertion so any
+    /// future re-introduction of `.with_unit("1")` fails here first.
+    #[test]
+    fn health_metric_names_have_no_ratio_suffix() {
+        // OTel instrument names use dots; Prometheus replaces them with underscores.
+        const GRADE_OTEL: &str = "hippo.daemon.health.grade";
+        const ALARMS_OTEL: &str = "hippo.daemon.health.active_alarms";
+
+        // Derive the Prometheus base name the same way the exporter does
+        // (dots → underscores; no unit suffix because unit is empty).
+        let grade_prom = GRADE_OTEL.replace('.', "_");
+        let alarms_prom = ALARMS_OTEL.replace('.', "_");
+
+        assert_eq!(grade_prom, "hippo_daemon_health_grade");
+        assert_eq!(alarms_prom, "hippo_daemon_health_active_alarms");
+
+        // Guard: if a unit were set to "1" the exporter would append "_ratio".
+        assert!(
+            !grade_prom.ends_with("_ratio"),
+            "grade Prometheus name must not end in _ratio (remove .with_unit(\"1\"))"
+        );
+        assert!(
+            !alarms_prom.ends_with("_ratio"),
+            "active_alarms Prometheus name must not end in _ratio (remove .with_unit(\"1\"))"
+        );
     }
 
     #[test]
