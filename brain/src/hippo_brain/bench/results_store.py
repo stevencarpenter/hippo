@@ -123,6 +123,7 @@ class IngestResult:
     enrichment_rows: int = 0
     retrieval_rows: int = 0
     malformed_lines: int = 0
+    skipped_aborted: bool = False
 
 
 def _parse_records(jsonl_path: Path) -> tuple[list[dict], int]:
@@ -167,6 +168,19 @@ def ingest_run(
             )
 
         end = next((r for r in records if r.get("record_type") == "run_end"), None)
+
+        # Aborted / no-model runs carry no scoring rows. Skip them so they don't
+        # add empty noise to run history or become the "latest" run that blanks
+        # the leaderboard. (A still-running partial JSONL has no run_end / no
+        # reason and is NOT skipped here — it ingests what it has.)
+        if end and end.get("reason") in {"preflight_aborted", "no_models"}:
+            return IngestResult(
+                run_id=run_id,
+                inserted=False,
+                skipped_existing=False,
+                skipped_aborted=True,
+                malformed_lines=malformed,
+            )
 
         with conn:  # one transaction; FK cascade clears child rows on replace
             conn.execute("DELETE FROM bench_runs WHERE run_id=?", (run_id,))
@@ -325,11 +339,25 @@ def _ingest_retrieval(conn: sqlite3.Connection, run_id: str, records: list[dict]
 
 
 def leaderboard_latest(conn: sqlite3.Connection, *, mode: str = "hybrid") -> list[dict]:
-    """Per-model aggregate retrieval for the single most-recent run (headline)."""
+    """Per-model aggregate retrieval for the headline run.
+
+    The headline is the most-recent run that actually has retrieval rows for
+    ``mode`` — NOT simply the newest run. QA scoring is often skipped (the
+    fixture can be absent), so the newest run may have no retrieval data; falling
+    back to the latest run that does keeps the leaderboard populated instead of
+    blanking it and hiding all history.
+    """
     rows = conn.execute(
         """
         WITH latest AS (
-            SELECT run_id FROM bench_runs ORDER BY started_at_iso DESC LIMIT 1
+            SELECT r.run_id
+            FROM bench_runs r
+            WHERE EXISTS (
+                SELECT 1 FROM bench_node_retrieval nr
+                WHERE nr.run_id = r.run_id AND nr.mode = ?
+            )
+            ORDER BY r.started_at_iso DESC
+            LIMIT 1
         )
         SELECT nr.run_id, nr.model_id,
                AVG(nr.mrr)            AS avg_mrr,
@@ -341,7 +369,7 @@ def leaderboard_latest(conn: sqlite3.Connection, *, mode: str = "hybrid") -> lis
         GROUP BY nr.run_id, nr.model_id
         ORDER BY avg_mrr DESC
         """,
-        (mode,),
+        (mode, mode),
     ).fetchall()
     return [dict(r) for r in rows]
 

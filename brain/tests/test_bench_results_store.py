@@ -275,3 +275,49 @@ def test_malformed_line_tolerated(tmp_path):
         assert out.malformed_lines == 1
     finally:
         conn.close()
+
+
+def test_leaderboard_uses_latest_run_with_retrieval(tmp_path):
+    """I1: when the newest run has no retrieval rows for the mode, the
+    leaderboard falls back to the latest run that DOES — not a blank table."""
+    from hippo_brain.bench.results_store import connect, ingest_run, leaderboard_latest
+
+    older = [_manifest("run-old"), _model_summary_with_proxy("run-old"), _run_end("run-old")]
+    # Newer run: later timestamp, plain model_summary (empty downstream_proxy) →
+    # produces NO retrieval rows for any mode.
+    m_new = _manifest("run-new")
+    m_new["started_at_iso"] = "2026-05-31T09:00:00+00:00"
+    newer = [m_new, _model_summary("run-new"), _run_end("run-new")]
+
+    conn = connect(tmp_path / "bench-results.db")
+    try:
+        ingest_run(_write_jsonl(tmp_path / "old.jsonl", older), conn=conn)
+        ingest_run(_write_jsonl(tmp_path / "new.jsonl", newer), conn=conn)
+        lb = leaderboard_latest(conn, mode="hybrid")
+        assert lb, "leaderboard must not blank when an older run has retrieval data"
+        assert lb[0]["run_id"] == "run-old"
+    finally:
+        conn.close()
+
+
+def test_aborted_run_not_ingested(tmp_path):
+    """I2: a preflight-aborted run (run_end carries a reason) writes no rows."""
+    from hippo_brain.bench.results_store import connect, ingest_run
+
+    aborted_end = {
+        "record_type": "run_end",
+        "run_id": "run-abort",
+        "finished_at_iso": "2026-05-31T00:05:00+00:00",
+        "models_completed": [],
+        "models_errored": [],
+        "reason": "preflight_aborted",
+    }
+    jsonl = _write_jsonl(tmp_path / "abort.jsonl", [_manifest("run-abort"), aborted_end])
+    conn = connect(tmp_path / "bench-results.db")
+    try:
+        res = ingest_run(jsonl, conn=conn)
+        assert res.skipped_aborted is True
+        assert res.inserted is False
+        assert conn.execute("SELECT COUNT(*) FROM bench_runs").fetchone()[0] == 0
+    finally:
+        conn.close()
