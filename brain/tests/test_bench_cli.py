@@ -438,6 +438,18 @@ def test_cli_ingest_no_target_errors(capsys):
     assert "run_file" in err or "--all" in err
 
 
+def test_cli_export_dashboard(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
+    from hippo_brain.bench import cli
+    from hippo_brain.bench.results_store import connect
+
+    connect().close()  # create an empty datastore
+    out = tmp_path / "dash.html"
+    assert cli.main(["export-dashboard", "--out", str(out)]) == 0
+    assert out.exists()
+    assert "hippo-bench dashboard" in out.read_text(encoding="utf-8")
+
+
 def test_cli_add_adversarial_claude_reads_agentic_sessions(monkeypatch, tmp_path):
     """A claude-<id> adversarial id must resolve against agentic_sessions
     (harness='claude-code'), NOT the frozen claude_sessions table — matching the

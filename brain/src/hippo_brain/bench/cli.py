@@ -235,6 +235,14 @@ def _cmd_ingest(args: argparse.Namespace) -> int:
         conn.close()
 
 
+def _cmd_export_dashboard(args: argparse.Namespace) -> int:
+    from hippo_brain.bench.dashboard_export import export_dashboard
+
+    out = export_dashboard(Path(args.out) if args.out else None)
+    print(f"wrote dashboard: {out}")
+    return 0
+
+
 def _cmd_run(args: argparse.Namespace) -> int:
     # BT-06: recover from a prior crashed bench run before doing anything
     # else. If the previous bench was SIGKILL'd, prod brain is still paused;
@@ -450,6 +458,12 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     ingest.add_argument("--force", action="store_true", help="Re-ingest runs already present")
     ingest.set_defaults(func=_cmd_ingest)
+
+    export = sub.add_parser(
+        "export-dashboard", help="Render the results datastore to one HTML file"
+    )
+    export.add_argument("--out", help="Output HTML path (default: <hippo-bench>/dashboard.html)")
+    export.set_defaults(func=_cmd_export_dashboard)
 
     # BT-29 / post-review: deterministic-rerun verification. Operator runs the
     # bench 3× against the same model + frozen corpus, then compares JSONLs.
