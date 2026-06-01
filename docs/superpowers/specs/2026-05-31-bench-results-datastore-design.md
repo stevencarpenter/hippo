@@ -39,7 +39,10 @@ corpus"*, visualized in a separate, all-local dashboard with a leaderboard.
 - **Not** recovering the already-lost historical runs (the leftover scratch dirs
   contain no JSONL — nothing to recover). Existing scratch dirs are left alone.
 - **Not** multi-host / sync. This is a single-host deployment.
-- **Not** changing the JSONL run format or the `summary`/`determinism` consumers.
+- **Not** changing the JSONL run format in a breaking way, nor touching the
+  `summary`/`determinism` consumers. (One *additive*, non-breaking field is added:
+  each `downstream_proxy.per_item` score now also carries its `golden_event_id`,
+  so retrieval rows can be keyed to a corpus node. Existing consumers ignore it.)
 
 ## Key Design Decision: the two per-node signals
 

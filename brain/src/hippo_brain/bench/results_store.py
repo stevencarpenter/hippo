@@ -335,7 +335,13 @@ def _ingest_enrichment(conn: sqlite3.Connection, run_id: str, records: list[dict
     return n
 
 
-def _hit(hit_at_k: dict, k: int) -> int:
+def _hit(hit_at_k: object, k: int) -> int:
+    # Ingest is malformed-tolerant: a record whose hit_at_k is missing, null, or
+    # any non-dict value counts as "no hit" rather than aborting the whole file.
+    # (`item.get("hit_at_k", {})` does NOT guard this — an explicit `"hit_at_k":
+    # null` yields None, since .get only substitutes the default for an ABSENT key.)
+    if not isinstance(hit_at_k, dict):
+        return 0
     v = hit_at_k.get(k, hit_at_k.get(str(k), False))
     return 1 if v else 0
 
@@ -409,11 +415,15 @@ def leaderboard_latest(conn: sqlite3.Connection, *, mode: str = "hybrid") -> lis
 
 def node_detail(conn: sqlite3.Connection, event_id: str, *, mode: str = "hybrid") -> dict:
     """All historical retrieval + enrichment rows for one corpus node."""
+    # "Best model per corpus member": order by score so the strongest model/run
+    # surfaces first, not merely the newest. All runs are kept (not deduped to
+    # latest-per-model) so a regression — a model that scored worse in a later
+    # run — stays visible instead of being hidden behind "current".
     retrieval = conn.execute(
         """SELECT nr.run_id, nr.model_id, nr.mrr, nr.rank, nr.hit_at_1, r.started_at_iso
            FROM bench_node_retrieval nr JOIN bench_runs r USING (run_id)
            WHERE nr.golden_event_id = ? AND nr.mode = ?
-           ORDER BY r.started_at_iso DESC""",
+           ORDER BY nr.mrr DESC, nr.hit_at_1 DESC, r.started_at_iso DESC""",
         (event_id, mode),
     ).fetchall()
     enrichment = conn.execute(
@@ -444,12 +454,15 @@ def all_node_details(conn: sqlite3.Connection, *, mode: str = "hybrid") -> dict[
     def _node(event_id: str) -> dict:
         return nodes.setdefault(event_id, {"event_id": event_id, "retrieval": [], "enrichment": []})
 
+    # Best-score-first within each node (see node_detail): surfaces the strongest
+    # model/run per corpus member rather than just the newest, while keeping all
+    # runs so regressions stay visible.
     for r in conn.execute(
         """SELECT nr.golden_event_id AS event_id, nr.run_id, nr.model_id, nr.mrr, nr.rank,
                   nr.hit_at_1, r.started_at_iso
            FROM bench_node_retrieval nr JOIN bench_runs r USING (run_id)
            WHERE nr.mode = ? AND nr.golden_event_id IS NOT NULL
-           ORDER BY r.started_at_iso DESC""",
+           ORDER BY nr.mrr DESC, nr.hit_at_1 DESC, r.started_at_iso DESC""",
         (mode,),
     ).fetchall():
         d = dict(r)

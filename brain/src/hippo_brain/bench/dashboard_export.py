@@ -50,7 +50,7 @@ _TEMPLATE = """<!doctype html>
 <div id="leaderboard"></div>
 <h2>Per-node — best model per corpus member</h2>
 <select id="node-select"></select>
-<h3>Retrieval (all runs, hybrid)</h3>
+<h3>Retrieval (all runs, best score first)</h3>
 <div id="node-retrieval"></div>
 <h3>Enrichment (all runs)</h3>
 <div id="node-enrichment"></div>

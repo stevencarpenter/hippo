@@ -542,3 +542,70 @@ def test_all_node_details_groups_by_node(tmp_path):
         assert nodes["claude-7"]["enrichment"] == []
     finally:
         conn.close()
+
+
+def test_ingest_tolerates_null_hit_at_k(tmp_path):
+    """Ingest is malformed-tolerant: a per_item with an explicit null hit_at_k
+    (key present, value null) must score as "no hit", not raise AttributeError
+    and abort the file. `item.get("hit_at_k", {})` returns None here — the {}
+    default only applies to an ABSENT key — so _hit must guard non-dicts."""
+    from hippo_brain.bench.results_store import connect, ingest_run
+
+    ms = _model_summary_with_proxy("run-1")
+    ms["downstream_proxy"]["per_item"] = [
+        {
+            "hit_at_k": None,  # explicit null, not absent
+            "rank": None,
+            "mrr": 0.0,
+            "ndcg_at_10": 0.0,
+            "qa_id": "qa-001",
+            "golden_event_id": "claude-7",
+            "mode": "hybrid",
+        }
+    ]
+    jsonl = _write_jsonl(tmp_path / "r.jsonl", [_manifest("run-1"), ms, _run_end("run-1")])
+    conn = connect(tmp_path / "bench-results.db")
+    try:
+        out = ingest_run(jsonl, conn=conn)
+        assert out.inserted
+        assert out.retrieval_rows == 1
+        row = conn.execute(
+            "SELECT hit_at_1, hit_at_10 FROM bench_node_retrieval WHERE qa_id='qa-001'"
+        ).fetchone()
+        assert (row["hit_at_1"], row["hit_at_10"]) == (0, 0)
+    finally:
+        conn.close()
+
+
+def test_node_detail_orders_best_score_first(tmp_path):
+    """Per-node view is "best model per corpus member": a stronger model in an
+    OLDER run must sort above a weaker model in a NEWER run — score, not recency,
+    leads. All runs are kept so the regression stays visible."""
+    from hippo_brain.bench.results_store import all_node_details, connect, ingest_run, node_detail
+
+    # run-old: strong score (mrr 1.0). run-new: later timestamp, weaker (mrr 0.2).
+    old = [
+        _manifest("run-old"),
+        _model_summary_with_proxy("run-old", model="strong"),
+        _run_end("run-old"),
+    ]
+    ms_new = _model_summary_with_proxy("run-new", model="weak")
+    ms_new["downstream_proxy"]["per_item"][0]["mrr"] = 0.2
+    m_new = _manifest("run-new")
+    m_new["started_at_iso"] = "2026-05-31T09:00:00+00:00"
+    new = [m_new, ms_new, _run_end("run-new")]
+
+    conn = connect(tmp_path / "bench-results.db")
+    try:
+        ingest_run(_write_jsonl(tmp_path / "old.jsonl", old), conn=conn)
+        ingest_run(_write_jsonl(tmp_path / "new.jsonl", new), conn=conn)
+
+        detail = node_detail(conn, "claude-7", mode="hybrid")
+        assert [d["model_id"] for d in detail["retrieval"]] == ["strong", "weak"]
+        # both runs retained — regression not hidden behind "latest"
+        assert {d["run_id"] for d in detail["retrieval"]} == {"run-old", "run-new"}
+
+        nodes = all_node_details(conn, mode="hybrid")
+        assert [d["model_id"] for d in nodes["claude-7"]["retrieval"]] == ["strong", "weak"]
+    finally:
+        conn.close()

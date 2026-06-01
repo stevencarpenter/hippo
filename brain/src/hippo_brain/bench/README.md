@@ -415,8 +415,10 @@ hippo-bench export-dashboard            # → ~/.local/share/hippo-bench/dashboa
 hippo-bench export-dashboard --out /tmp/bench.html
 ```
 
-The leaderboard headline uses the **single most-recent run**; all prior runs stay
-in the datastore for the per-node and history views.
+The leaderboard headline uses the **most-recent run that has retrieval rows for
+the selected mode** — usually the newest run, but it falls back to the latest run
+that was actually QA-scored when a newer run skipped scoring (so the headline never
+blanks). All prior runs stay in the datastore for the per-node and history views.
 
 ---
 
