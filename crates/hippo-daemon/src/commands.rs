@@ -3062,7 +3062,7 @@ fn collect_active_jsonls(
 }
 
 /// Check 5: Recursively find active Claude session JSONL files under
-/// `projects_dir` and verify each has a matching row in `claude_sessions`.
+/// `projects_dir` and verify each has a matching real row in `agentic_sessions`.
 ///
 /// `projects_dir` is `~/.claude/projects` (injectable for tests).
 /// A session file is "active" if its mtime is < 5 minutes old.
@@ -3105,7 +3105,8 @@ pub fn check_claude_session_db(
         let exists = db
             .query_row(
                 "SELECT 1 FROM agentic_sessions \
-                 WHERE session_id = ? AND harness = 'claude-code' LIMIT 1",
+                 WHERE session_id = ? AND harness = 'claude-code' \
+                 AND probe_tag IS NULL LIMIT 1",
                 rusqlite::params![session_id],
                 |_| Ok(()),
             )
@@ -3196,7 +3197,7 @@ fn count_hook_invocations_in_last_1h(log_path: &std::path::Path) -> i64 {
 ///
 /// Counts `"hook invoked"` entries in the last hour (capped at 10 000 log
 /// lines) and compares to `agentic_sessions` rows (harness = 'claude-code')
-/// created in the same window.
+/// created in the same window, excluding synthetic probe rows.
 ///
 /// `log_path` = `$DATA_DIR/session-hook-debug.log` (injectable for tests).
 pub fn check_session_hook_log(
@@ -3213,7 +3214,7 @@ pub fn check_session_hook_log(
     let db_rows: i64 = db
         .query_row(
             "SELECT COUNT(*) FROM agentic_sessions \
-             WHERE harness = 'claude-code' AND created_at >= ?",
+             WHERE harness = 'claude-code' AND probe_tag IS NULL AND created_at >= ?",
             rusqlite::params![one_hour_ago_ms],
             |row| row.get(0),
         )

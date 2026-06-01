@@ -78,6 +78,20 @@ mod doctor {
             .unwrap();
         }
 
+        /// Insert a synthetic probe `agentic_sessions` row. Probe rows exercise
+        /// AP-6: diagnostics must not treat them as real user sessions.
+        fn insert_probe_session_row(conn: &rusqlite::Connection, session_id: &str) {
+            conn.execute(
+                "INSERT OR IGNORE INTO agentic_sessions \
+                 (session_id, harness, segment_index, project_dir, cwd, start_time, end_time, \
+                  summary_text, message_count, source_file, is_subagent, created_at, probe_tag) \
+                 VALUES (?, 'claude-code', 0, '', '/', unixepoch('now')*1000, unixepoch('now')*1000, \
+                         '', 0, '', 0, unixepoch('now')*1000, 'probe-test')",
+                rusqlite::params![session_id],
+            )
+            .unwrap();
+        }
+
         // ── Check 2: NM manifest ───────────────────────────────────────────
 
         #[test]
@@ -213,6 +227,27 @@ mod doctor {
             let fail =
                 check_claude_session_db(&tmp.path().join("projects"), tmp.path(), &conn, false);
             assert_eq!(fail, 0, "active session in DB must pass");
+        }
+
+        #[test]
+        fn check_5_probe_session_row_does_not_satisfy_active_jsonl() {
+            let tmp = tempdir().unwrap();
+            let conn = open_test_db(tmp.path());
+
+            let projects = tmp.path().join("projects/abc");
+            fs::create_dir_all(&projects).unwrap();
+            let session_id = "probe-only-session";
+            let jsonl = projects.join(format!("{session_id}.jsonl"));
+            fs::write(&jsonl, "{}\n").unwrap();
+
+            insert_probe_session_row(&conn, session_id);
+
+            let fail =
+                check_claude_session_db(&tmp.path().join("projects"), tmp.path(), &conn, false);
+            assert_eq!(
+                fail, 1,
+                "synthetic probe rows must not satisfy active JSONL reconciliation"
+            );
         }
 
         #[test]
@@ -375,6 +410,23 @@ mod doctor {
 
             let fail = check_session_hook_log(&log, tmp.path(), &conn, false);
             assert_eq!(fail, 0, "invocations + DB rows → [OK]");
+        }
+
+        #[test]
+        fn check_6_probe_session_rows_do_not_satisfy_hook_reconciliation() {
+            let tmp = tempdir().unwrap();
+            let conn = open_test_db(tmp.path());
+
+            let log = tmp.path().join("session-hook-debug.log");
+            write_hook_log(&log, &[10, 60, 120]);
+
+            insert_probe_session_row(&conn, "probe-only-hook-row");
+
+            let fail = check_session_hook_log(&log, tmp.path(), &conn, false);
+            assert_eq!(
+                fail, 1,
+                "synthetic probe rows must not make hook reconciliation look healthy"
+            );
         }
 
         #[test]
