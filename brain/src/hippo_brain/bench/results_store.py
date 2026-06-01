@@ -246,8 +246,40 @@ def _ingest_models(conn: sqlite3.Connection, run_id: str, records: list[dict]) -
     return n
 
 
-def _ingest_enrichment(conn, run_id, records):  # noqa: ANN001
-    pass
+def _entity_sanity_mean(per_cat: dict | None) -> float | None:
+    if not isinstance(per_cat, dict) or not per_cat:
+        return None
+    return sum(per_cat.values()) / len(per_cat)
+
+
+def _ingest_enrichment(conn: sqlite3.Connection, run_id: str, records: list[dict]) -> int:
+    n = 0
+    for r in records:
+        if r.get("record_type") != "attempt" or r.get("purpose") != "main":
+            continue
+        ev = r.get("event", {})
+        g = r.get("gates", {})
+        conn.execute(
+            """INSERT OR REPLACE INTO bench_node_enrichment (
+                run_id, model_id, event_id, source, schema_valid, refusal_detected,
+                echo_similarity, entity_sanity, latency_ms, timeout, parsed_output_json
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                run_id,
+                r.get("model", {}).get("id"),
+                ev.get("event_id"),
+                ev.get("source"),
+                1 if g.get("schema_valid") else 0,
+                1 if g.get("refusal_detected") else 0,
+                g.get("echo_similarity"),
+                _entity_sanity_mean(g.get("entity_type_sanity")),
+                r.get("timestamps", {}).get("total_ms"),
+                1 if r.get("timeout") else 0,
+                json.dumps(r.get("parsed_output"), sort_keys=True),
+            ),
+        )
+        n += 1
+    return n
 
 
 def _ingest_retrieval(conn, run_id, records):  # noqa: ANN001

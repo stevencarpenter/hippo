@@ -72,6 +72,79 @@ def _model_summary(run_id="run-1", model="model-a"):
     }
 
 
+def _attempt(
+    run_id="run-1",
+    model="model-a",
+    event_id="claude-7",
+    purpose="main",
+    entity_rates=None,
+    parsed=None,
+):
+    return {
+        "record_type": "attempt",
+        "run_id": run_id,
+        "model": {"id": model},
+        "event": {"event_id": event_id, "source": event_id.split("-")[0], "content_hash": "h"},
+        "attempt_idx": 0,
+        "purpose": purpose,
+        "timestamps": {"total_ms": 150},
+        "raw_output": "{}",
+        "parsed_output": parsed if parsed is not None else {"summary": "s"},
+        "gates": {
+            "schema_valid": True,
+            "refusal_detected": False,
+            "echo_similarity": 0.2,
+            "entity_type_sanity": entity_rates
+            if entity_rates is not None
+            else {"tool": 1.0, "file": 0.5},
+        },
+        "system_snapshot": {},
+        "timeout": False,
+    }
+
+
+def test_ingest_enrichment_main_only(tmp_path):
+    from hippo_brain.bench.results_store import connect, ingest_run
+
+    records = [
+        _manifest(),
+        _attempt(event_id="claude-7"),
+        _attempt(event_id="shell-9", purpose="self_consistency"),  # excluded
+        _run_end(),
+    ]
+    jsonl = _write_jsonl(tmp_path / "run-1.jsonl", records)
+    conn = connect(tmp_path / "bench-results.db")
+    try:
+        ingest_run(jsonl, conn=conn)
+        rows = conn.execute("SELECT * FROM bench_node_enrichment WHERE run_id='run-1'").fetchall()
+        assert len(rows) == 1  # self_consistency attempt excluded
+        row = rows[0]
+        assert row["event_id"] == "claude-7"
+        assert row["source"] == "claude"
+        assert row["schema_valid"] == 1
+        assert abs(row["entity_sanity"] - 0.75) < 1e-9  # mean(1.0, 0.5)
+        assert row["latency_ms"] == 150
+        assert json.loads(row["parsed_output_json"]) == {"summary": "s"}
+    finally:
+        conn.close()
+
+
+def test_ingest_enrichment_empty_entity_rates_is_null(tmp_path):
+    from hippo_brain.bench.results_store import connect, ingest_run
+
+    jsonl = _write_jsonl(
+        tmp_path / "run-1.jsonl",
+        [_manifest(), _attempt(entity_rates={}), _run_end()],
+    )
+    conn = connect(tmp_path / "bench-results.db")
+    try:
+        ingest_run(jsonl, conn=conn)
+        row = conn.execute("SELECT entity_sanity FROM bench_node_enrichment").fetchone()
+        assert row["entity_sanity"] is None
+    finally:
+        conn.close()
+
+
 def test_ingest_models(tmp_path):
     from hippo_brain.bench.results_store import connect, ingest_run
 
