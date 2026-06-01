@@ -561,6 +561,36 @@ struct RollingCounts {
     browser_24h: i64,
 }
 
+fn read_rolling_counts(db: &rusqlite::Connection) -> rusqlite::Result<RollingCounts> {
+    let read = |sql: &str| -> rusqlite::Result<i64> { db.query_row(sql, [], |r| r.get(0)) };
+    Ok(RollingCounts {
+        shell_1h: read(
+            "SELECT COUNT(*) FROM events WHERE source_kind='shell' AND timestamp>(unixepoch('now')-3600)*1000",
+        )?,
+        shell_24h: read(
+            "SELECT COUNT(*) FROM events WHERE source_kind='shell' AND timestamp>(unixepoch('now')-86400)*1000",
+        )?,
+        tool_1h: read(
+            "SELECT COUNT(*) FROM events WHERE source_kind='claude-tool' AND timestamp>(unixepoch('now')-3600)*1000",
+        )?,
+        tool_24h: read(
+            "SELECT COUNT(*) FROM events WHERE source_kind='claude-tool' AND timestamp>(unixepoch('now')-86400)*1000",
+        )?,
+        session_1h: read(
+            "SELECT COUNT(*) FROM agentic_sessions WHERE harness='claude-code' AND probe_tag IS NULL AND start_time>(unixepoch('now')-3600)*1000",
+        )?,
+        session_24h: read(
+            "SELECT COUNT(*) FROM agentic_sessions WHERE harness='claude-code' AND probe_tag IS NULL AND start_time>(unixepoch('now')-86400)*1000",
+        )?,
+        browser_1h: read(
+            "SELECT COUNT(*) FROM browser_events WHERE timestamp>(unixepoch('now')-3600)*1000",
+        )?,
+        browser_24h: read(
+            "SELECT COUNT(*) FROM browser_events WHERE timestamp>(unixepoch('now')-86400)*1000",
+        )?,
+    })
+}
+
 async fn recompute_rolling_counts(state: Arc<DaemonState>) {
     let mut interval = tokio::time::interval(Duration::from_secs(300));
     interval.tick().await; // discard first immediate tick so we start ~5 min after daemon start
@@ -568,35 +598,7 @@ async fn recompute_rolling_counts(state: Arc<DaemonState>) {
         interval.tick().await;
         let counts = {
             let db = state.read_db.lock().await;
-            let read = |sql: &str| -> rusqlite::Result<i64> { db.query_row(sql, [], |r| r.get(0)) };
-            let result: rusqlite::Result<RollingCounts> = (|| {
-                Ok(RollingCounts {
-                    shell_1h: read(
-                        "SELECT COUNT(*) FROM events WHERE source_kind='shell' AND timestamp>(unixepoch('now')-3600)*1000",
-                    )?,
-                    shell_24h: read(
-                        "SELECT COUNT(*) FROM events WHERE source_kind='shell' AND timestamp>(unixepoch('now')-86400)*1000",
-                    )?,
-                    tool_1h: read(
-                        "SELECT COUNT(*) FROM events WHERE source_kind='claude-tool' AND timestamp>(unixepoch('now')-3600)*1000",
-                    )?,
-                    tool_24h: read(
-                        "SELECT COUNT(*) FROM events WHERE source_kind='claude-tool' AND timestamp>(unixepoch('now')-86400)*1000",
-                    )?,
-                    session_1h: read(
-                        "SELECT COUNT(*) FROM claude_sessions WHERE start_time>(unixepoch('now')-3600)*1000",
-                    )?,
-                    session_24h: read(
-                        "SELECT COUNT(*) FROM claude_sessions WHERE start_time>(unixepoch('now')-86400)*1000",
-                    )?,
-                    browser_1h: read(
-                        "SELECT COUNT(*) FROM browser_events WHERE timestamp>(unixepoch('now')-3600)*1000",
-                    )?,
-                    browser_24h: read(
-                        "SELECT COUNT(*) FROM browser_events WHERE timestamp>(unixepoch('now')-86400)*1000",
-                    )?,
-                })
-            })();
+            let result = read_rolling_counts(&db);
             match result {
                 Ok(v) => v,
                 Err(e) => {
@@ -1095,6 +1097,37 @@ mod tests {
             DaemonResponse::Status(status) => status,
             other => panic!("expected status response, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn test_rolling_counts_ignore_probe_agentic_sessions() {
+        let config = test_config();
+        let db = storage::open_db(&config.db_path()).unwrap();
+        let now_ms = chrono::Utc::now().timestamp_millis();
+
+        db.execute(
+            "INSERT INTO agentic_sessions
+                 (session_id, harness, segment_index, project_dir, cwd, summary_text,
+                  tool_calls_json, user_prompts_json, message_count, source_file,
+                  is_subagent, start_time, end_time, created_at, probe_tag)
+             VALUES ('real-session','claude-code',0,'p','/w','sum','[]','[]',1,'/real.jsonl',0,?1,?1,?1,NULL)",
+            rusqlite::params![now_ms],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO agentic_sessions
+                 (session_id, harness, segment_index, project_dir, cwd, summary_text,
+                  tool_calls_json, user_prompts_json, message_count, source_file,
+                  is_subagent, start_time, end_time, created_at, probe_tag)
+             VALUES ('probe-session','claude-code',0,'p','/w','sum','[]','[]',1,'/probe.jsonl',0,?1,?1,?1,'probe-test')",
+            rusqlite::params![now_ms],
+        )
+        .unwrap();
+
+        let counts = read_rolling_counts(&db).unwrap();
+
+        assert_eq!(counts.session_1h, 1, "1h count must exclude probe rows");
+        assert_eq!(counts.session_24h, 1, "24h count must exclude probe rows");
     }
 
     #[tokio::test]
