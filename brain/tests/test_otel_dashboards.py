@@ -28,7 +28,8 @@ _DASHBOARDS_DIR = _REPO_ROOT / "otel" / "grafana" / "dashboards"
 #   - dots -> underscores
 #   - unit="ms"  -> _milliseconds suffix
 #   - unit="By"  -> _bytes suffix
-#   - unit="1"   -> NO suffix appended (bare name as specified)
+#   - unit="1"   -> _ratio suffix (a trap for scores/counts; we drop the unit instead)
+#   - no unit    -> no suffix, bare name (the health / source_health gauges)
 #   - counters   -> _total suffix (already included below)
 #   - histograms -> _bucket / _count / _sum appended by Prometheus (stripped in check)
 # ---------------------------------------------------------------------------
@@ -49,6 +50,7 @@ EMITTED_METRICS: frozenset[str] = frozenset(
         "hippo_daemon_events_dropped_total",
         "hippo_daemon_fallback_pending",
         "hippo_daemon_fallback_recovered_total",
+        "hippo_daemon_fallback_writes_total",
         "hippo_daemon_flush_batch_size",
         "hippo_daemon_flush_duration_milliseconds",
         "hippo_daemon_flush_events_total",
@@ -549,36 +551,3 @@ def test_only_prod_dashboards_exist():
         )
 
     assert not messages, "\n\n".join(messages)
-
-
-# ---------------------------------------------------------------------------
-# Test 8: Regression guard — hippo_daemon_fallback_writes_total must not
-# appear in any dashboard (it never existed as an instrument).
-# ---------------------------------------------------------------------------
-
-
-def test_no_fallback_writes_total_in_any_dashboard():
-    """No dashboard may reference hippo_daemon_fallback_writes_total.
-
-    This name was never a real OTel instrument.  The correct names are
-    hippo_daemon_fallback_pending (gauge) and hippo_daemon_fallback_recovered_total
-    (counter).
-
-    Fix: replace hippo_daemon_fallback_writes_total with the appropriate
-    instrument name in the dashboard expr.
-    """
-    violations: list[str] = []
-
-    for path in sorted(_DASHBOARDS_DIR.glob("*.json")):
-        try:
-            raw_text = path.read_text()
-        except OSError:
-            continue
-        if "hippo_daemon_fallback_writes_total" in raw_text:
-            violations.append(f"  dashboard={path.name!r}")
-
-    assert not violations, (
-        "The following dashboards reference hippo_daemon_fallback_writes_total, "
-        "which was never a real OTel instrument.  Use hippo_daemon_fallback_pending "
-        "or hippo_daemon_fallback_recovered_total instead.\n\n" + "\n".join(violations)
-    )

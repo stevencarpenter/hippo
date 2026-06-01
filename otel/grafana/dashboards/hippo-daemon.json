@@ -691,7 +691,7 @@
             "uid": "prometheus"
           },
           "expr": "rate(hippo_watcher_segments_ingested_total[5m]) * 60",
-          "legendFormat": "{{source}}",
+          "legendFormat": "segments / min",
           "editorMode": "code"
         }
       ],

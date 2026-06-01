@@ -653,6 +653,8 @@ class TestMcpTelemetryInstrumentsInitialize:
         Hermetic: uses a dummy endpoint (no network) and monkeypatches
         HIPPO_OTEL_ENABLED so the env is restored after the test.
         """
+        import logging
+
         import hippo_brain.mcp as mcp_module
         from hippo_brain.telemetry import init_telemetry
         from hippo_brain.mcp import _init_telemetry_instruments
@@ -663,6 +665,11 @@ class TestMcpTelemetryInstrumentsInitialize:
         orig_calls = mcp_module._tool_calls
         orig_errors = mcp_module._tool_errors
         orig_duration = mcp_module._tool_duration
+        # init_telemetry() installs a LoggingHandler on the root logger that
+        # shutdown() does not remove; capture the handler list so the finally
+        # block can restore it and keep this test hermetic.
+        root_logger = logging.getLogger()
+        orig_handlers = root_logger.handlers[:]
 
         shutdown = None
         try:
@@ -689,3 +696,5 @@ class TestMcpTelemetryInstrumentsInitialize:
             mcp_module._tool_duration = orig_duration
             if shutdown:
                 shutdown()
+            # Remove the root-logger handler init_telemetry() installed.
+            root_logger.handlers[:] = orig_handlers

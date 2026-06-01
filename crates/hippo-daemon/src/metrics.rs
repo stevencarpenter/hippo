@@ -236,7 +236,8 @@ mod tests {
     /// | counter (no unit)       | `_total` appended        |
     /// | unit = "ms"             | `_milliseconds` appended |
     /// | unit = "By"             | `_bytes` appended        |
-    /// | unit = "1" or no unit   | no suffix (unit dropped) |
+    /// | unit = "1"              | `_ratio` appended        |
+    /// | no unit (unit dropped)  | no suffix                |
     ///
     /// These assertions serve as living documentation so the expected
     /// Prometheus names are greppable and any rename shows up as a test
