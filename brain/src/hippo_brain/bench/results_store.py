@@ -5,8 +5,9 @@ queryable tables keyed on run_id, so historical runs survive JSONL cleanup
 and per-(model, corpus-node) scoring is referenceable across all runs.
 
 Separate SQLite file from the application DB (hippo.db); its own
-PRAGMA user_version. Idempotent on run_id — a run's JSONL is immutable
-after run_end, so re-ingest is a no-op unless force=True.
+PRAGMA user_version. Idempotent on completed run_id rows — a run's JSONL is
+immutable after run_end, so re-ingest is a no-op unless force=True. Incomplete
+runs remain re-ingestable so a later run_end can complete them.
 """
 
 from __future__ import annotations
@@ -106,8 +107,22 @@ def _iso_to_ms(iso: str | None) -> int | None:
         return None
     try:
         return int(_dt.datetime.fromisoformat(iso).timestamp() * 1000)
-    except (ValueError, TypeError):
+    except ValueError, TypeError:
         return None
+
+
+def _epoch_ms(value: object) -> int | None:
+    """Return an integer epoch-ms value, rejecting bools despite int subclassing."""
+    if isinstance(value, int) and not isinstance(value, bool):
+        return value
+    return None
+
+
+def _record_timestamp_ms(record: dict, ms_key: str, iso_key: str) -> int | None:
+    ms = _epoch_ms(record.get(ms_key))
+    if ms is not None:
+        return ms
+    return _iso_to_ms(record.get(iso_key))
 
 
 def _migrate_v1_to_v2(conn: sqlite3.Connection) -> None:
@@ -118,6 +133,7 @@ def _migrate_v1_to_v2(conn: sqlite3.Connection) -> None:
     that DROP TABLE bench_runs does NOT cascade-delete the children.
     """
     conn.execute("PRAGMA foreign_keys=OFF")
+    conn.create_function("hippo_iso_to_ms", 1, _iso_to_ms)
     try:
         with conn:
             conn.execute("""
@@ -148,7 +164,11 @@ def _migrate_v1_to_v2(conn: sqlite3.Connection) -> None:
                      eval_qa_version, embedding_model, inference_backend_version,
                      gate_thresholds_json, candidate_models_json, models_completed_json,
                      models_errored_json, reason, ingested_at_ms)
-                SELECT run_id, NULL, NULL, host_json, bench_version,
+                SELECT run_id,
+                       hippo_iso_to_ms(started_at_iso),
+                       hippo_iso_to_ms(finished_at_iso),
+                       host_json,
+                       bench_version,
                        corpus_version, corpus_content_hash, corpus_schema_version,
                        eval_qa_version, embedding_model, inference_backend_version,
                        gate_thresholds_json, candidate_models_json, models_completed_json,
@@ -296,6 +316,11 @@ def ingest_run(
             )
 
         with conn:  # one transaction; FK cascade clears child rows on replace
+            end_record = end or {}
+            finished_at_ms = _record_timestamp_ms(end_record, "finished_at_ms", "finished_at_iso")
+            if finished_at_ms is None:
+                finished_at_ms = _record_timestamp_ms(manifest, "finished_at_ms", "finished_at_iso")
+
             conn.execute("DELETE FROM bench_runs WHERE run_id=?", (run_id,))
             conn.execute(
                 """INSERT INTO bench_runs (
@@ -307,8 +332,8 @@ def ingest_run(
                 ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
                     run_id,
-                    _iso_to_ms(manifest.get("started_at_iso")),
-                    _iso_to_ms((end or {}).get("finished_at_iso") or manifest.get("finished_at_iso")),
+                    _record_timestamp_ms(manifest, "started_at_ms", "started_at_iso"),
+                    finished_at_ms,
                     json.dumps(manifest.get("host", {}), sort_keys=True),
                     manifest.get("bench_version"),
                     manifest.get("corpus_version"),

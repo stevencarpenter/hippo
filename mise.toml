@@ -1,9 +1,12 @@
-[tools]
+[settings]
 idiomatic_version_file_enable_tools = ["rust"]
 
+[tools]
+lefthook = "latest"
+
 [env]
-# Paths are resolved via XDG defaults in the Rust config module.
-# Set XDG_DATA_HOME or XDG_CONFIG_HOME to override.
+RUST_BACKTRACE = "1"
+CARGO_TERM_COLOR = "always"
 
 # ── Build ────────────────────────────────────────────────────────────
 

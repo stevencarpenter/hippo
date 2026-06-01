@@ -211,6 +211,80 @@ def test_connect_reopen_preserves_version(tmp_path):
         conn.close()
 
 
+def test_connect_migrates_v1_run_timestamps_to_epoch_ms(tmp_path):
+    import sqlite3
+
+    from hippo_brain.bench.results_store import connect
+
+    db = tmp_path / "bench-results.db"
+    raw = sqlite3.connect(db)
+    raw.execute("""
+        CREATE TABLE bench_runs (
+            run_id                    TEXT PRIMARY KEY,
+            started_at_iso            TEXT,
+            finished_at_iso           TEXT,
+            host_json                 TEXT,
+            bench_version             TEXT,
+            corpus_version            TEXT,
+            corpus_content_hash       TEXT,
+            corpus_schema_version     INTEGER,
+            eval_qa_version           TEXT,
+            embedding_model           TEXT,
+            inference_backend_version TEXT,
+            gate_thresholds_json      TEXT,
+            candidate_models_json     TEXT,
+            models_completed_json     TEXT,
+            models_errored_json       TEXT,
+            reason                    TEXT,
+            ingested_at_ms            INTEGER
+        )
+    """)
+    raw.execute(
+        """
+        INSERT INTO bench_runs (
+            run_id, started_at_iso, finished_at_iso, host_json, bench_version,
+            corpus_version, corpus_content_hash, corpus_schema_version,
+            eval_qa_version, embedding_model, inference_backend_version,
+            gate_thresholds_json, candidate_models_json, models_completed_json,
+            models_errored_json, reason, ingested_at_ms
+        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        """,
+        (
+            "legacy-run",
+            "2026-05-31T00:00:00+00:00",
+            "2026-05-31T01:00:00+00:00",
+            "{}",
+            "0.2.0",
+            "corpus-v2",
+            "sha256:abc",
+            18,
+            "eval-qa-v1",
+            "embed-x",
+            None,
+            "{}",
+            "[]",
+            "[]",
+            "[]",
+            None,
+            123,
+        ),
+    )
+    raw.execute("PRAGMA user_version=1")
+    raw.commit()
+    raw.close()
+
+    conn = connect(db)
+    try:
+        row = conn.execute(
+            "SELECT started_at_ms, finished_at_ms FROM bench_runs WHERE run_id='legacy-run'"
+        ).fetchone()
+        assert row["started_at_ms"] == 1780185600000
+        assert row["finished_at_ms"] == 1780189200000
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
+    finally:
+        conn.close()
+
+
 def test_reingest_same_run_is_skipped(tmp_path):
     from hippo_brain.bench.results_store import connect, ingest_run
 
@@ -281,7 +355,7 @@ def test_query_helpers(tmp_path):
     ms2 = _model_summary_with_proxy("run-2")
     ms2["downstream_proxy"]["per_item"][0]["mrr"] = 0.5  # different score in newer run
     m2 = _manifest("run-2")
-    m2["started_at_iso"] = "2026-05-31T05:00:00+00:00"
+    m2["started_at_ms"] = 1780203600000
     r2 = [m2, ms2, _attempt("run-2", event_id="claude-7"), _run_end("run-2")]
 
     conn = connect(tmp_path / "bench-results.db")
@@ -330,7 +404,7 @@ def test_leaderboard_uses_latest_run_with_retrieval(tmp_path):
     # Newer run: later timestamp, plain model_summary (empty downstream_proxy) →
     # produces NO retrieval rows for any mode.
     m_new = _manifest("run-new")
-    m_new["started_at_iso"] = "2026-05-31T09:00:00+00:00"
+    m_new["started_at_ms"] = 1780218000000
     newer = [m_new, _model_summary("run-new"), _run_end("run-new")]
 
     conn = connect(tmp_path / "bench-results.db")
@@ -351,7 +425,7 @@ def test_aborted_run_not_ingested(tmp_path):
     aborted_end = {
         "record_type": "run_end",
         "run_id": "run-abort",
-        "finished_at_iso": "2026-05-31T00:05:00+00:00",
+        "finished_at_ms": 1780185900000,
         "models_completed": [],
         "models_errored": [],
         "reason": "preflight_aborted",
@@ -375,7 +449,7 @@ def test_incomplete_run_removed_when_later_aborted(tmp_path):
     aborted_end = {
         "record_type": "run_end",
         "run_id": "run-abort",
-        "finished_at_iso": "2026-05-31T00:05:00+00:00",
+        "finished_at_ms": 1780185900000,
         "models_completed": [],
         "models_errored": [],
         "reason": "preflight_aborted",
@@ -413,7 +487,7 @@ def test_incomplete_run_removed_when_later_no_models(tmp_path):
     no_models_end = {
         "record_type": "run_end",
         "run_id": "run-empty",
-        "finished_at_iso": "2026-05-31T00:05:00+00:00",
+        "finished_at_ms": 1780185900000,
         "models_completed": [],
         "models_errored": [],
         "reason": "no_models",
@@ -497,18 +571,14 @@ def test_incomplete_run_reingested_when_completed(tmp_path):
         r1 = ingest_run(_write_jsonl(tmp_path / "p.jsonl", partial), conn=conn)
         assert r1.inserted
         assert (
-            conn.execute("SELECT finished_at_ms FROM bench_runs WHERE run_id='run-x'").fetchone()[
-                0
-            ]
+            conn.execute("SELECT finished_at_ms FROM bench_runs WHERE run_id='run-x'").fetchone()[0]
             is None
         )
 
         r2 = ingest_run(_write_jsonl(tmp_path / "c.jsonl", complete), conn=conn)  # no force
         assert r2.inserted, "an incomplete run must re-ingest when it completes, without --force"
         assert (
-            conn.execute("SELECT finished_at_ms FROM bench_runs WHERE run_id='run-x'").fetchone()[
-                0
-            ]
+            conn.execute("SELECT finished_at_ms FROM bench_runs WHERE run_id='run-x'").fetchone()[0]
             is not None
         )
         assert (
@@ -636,7 +706,7 @@ def test_node_detail_orders_best_score_first(tmp_path):
     ms_new = _model_summary_with_proxy("run-new", model="weak")
     ms_new["downstream_proxy"]["per_item"][0]["mrr"] = 0.2
     m_new = _manifest("run-new")
-    m_new["started_at_iso"] = "2026-05-31T09:00:00+00:00"
+    m_new["started_at_ms"] = 1780218000000
     new = [m_new, ms_new, _run_end("run-new")]
 
     conn = connect(tmp_path / "bench-results.db")

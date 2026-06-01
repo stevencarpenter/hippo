@@ -106,7 +106,7 @@ Location: `~/.local/share/hippo-bench/bench-results.db` (resolved via
 ```sql
 CREATE TABLE bench_runs (
     run_id                  TEXT PRIMARY KEY,
-    started_at_ms           INTEGER,        -- epoch-ms; converted from JSONL ISO string on ingest
+    started_at_ms           INTEGER,        -- epoch-ms; legacy JSONL ISO converted on ingest
     finished_at_ms          INTEGER,        -- NULL ⇒ incomplete/crashed run
     host_json               TEXT,
     bench_version           TEXT,
@@ -214,7 +214,9 @@ SELECT model_id, mrr, hit_at_1 FROM latest WHERE rn = 1 ORDER BY mrr DESC;
    `bench_node_retrieval` rows (`hit_at_1`/`hit_at_10` extracted from each
    item's `hit_at_k` dict; `golden_event_id` from the producer change below);
    `run_end` → fill `finished_at_ms`, `models_completed/errored`, `reason`.
-2. **Idempotency**: if `run_id` already present and not `force`, no-op. With
+2. **Idempotency**: if `run_id` already present with `finished_at_ms IS NOT
+   NULL` and not `force`, no-op. Existing incomplete runs (`finished_at_ms IS
+   NULL`) are re-ingested so a later `run_end` can complete the run. With
    `force` (or first ingest), run a single transaction: `DELETE FROM bench_runs
    WHERE run_id=?` (cascades), then insert all rows. A run's JSONL is immutable
    after `run_end`, so this is safe and makes whole-DB rebuild deterministic.
