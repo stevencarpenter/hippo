@@ -406,7 +406,7 @@ Expected: FAIL with `ImportError: cannot import name 'ingest_run'`.
 
 - [ ] **Step 3: Implement the parse loop + bench_runs upsert**
 
-Add to `results_store.py` (imports at top: `import json`, `from dataclasses import dataclass`):
+Add to `results_store.py` (imports at top: `import json`, `import time`, `from dataclasses import dataclass`):
 
 ```python
 @dataclass
@@ -443,6 +443,7 @@ def ingest_run(
     now_ms: int = 0,
 ) -> IngestResult:
     """Parse one run's JSONL into the datastore. Idempotent on run_id."""
+    now_ms = now_ms or int(time.time() * 1000)  # populate ingested_at_ms for real ingests
     owns_conn = conn is None
     conn = conn or connect()
     try:
