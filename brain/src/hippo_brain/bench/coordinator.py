@@ -1,6 +1,6 @@
 """Per-model lifecycle:
 unload → load → copy corpus → spawn shadow stack → warmup → timed drain →
-downstream-proxy pass → self-consistency pass → teardown → cooldown.
+downstream-proxy pass → main enrichment pass → self-consistency pass → teardown → cooldown.
 """
 
 from __future__ import annotations
@@ -29,7 +29,7 @@ from hippo_brain.bench.paths import bench_qa_path, bench_run_tree
 from hippo_brain.bench.qa import collect_corpus_event_ids
 from hippo_brain.bench.pause_rpc import PauseRpcClient
 from hippo_brain.bench.preflight import check_brain_port_free
-from hippo_brain.bench.runner import run_self_consistency_pass
+from hippo_brain.bench.runner import run_main_enrichment_pass, run_self_consistency_pass
 from hippo_brain.vector_store import open_conn as open_vec_conn
 from hippo_brain.bench.shadow_stack import (
     spawn_shadow_stack,
@@ -337,7 +337,23 @@ def run_one_model(
         except Exception as e:
             _capture("downstream_proxy", e)
 
-        # 10. Self-consistency pass — 5 events × N runs via direct inference-server calls
+        # 10. Main enrichment pass — one call per corpus event, purpose='main'
+        if all_entries:
+            try:
+                main_attempts = run_main_enrichment_pass(
+                    base_url=inference_url,
+                    model=model,
+                    entries=all_entries,
+                    timeout_sec=timeout_sec,
+                    metrics_snapshot=_metrics_snapshot_fn(sampler),
+                    temperature=temperature,
+                    run_id=run_id,
+                )
+                attempts.extend(main_attempts)
+            except Exception as e:
+                _capture("main_enrichment", e)
+
+        # 12. Self-consistency pass — 5 events × N runs via direct inference-server calls
         if all_entries and sc_events > 0 and sc_runs > 0:
             sc_pool = rng.sample(all_entries, min(sc_events, len(all_entries)))
             try:
@@ -358,7 +374,7 @@ def run_one_model(
                 _capture("self_consistency", e)
 
     finally:
-        # 11. Teardown — runs even if any step above raised so we never leak
+        # 13. Teardown — runs even if any step above raised so we never leak
         # shadow processes or leave the metrics sampler running.
         if sampler is not None:
             try:
@@ -373,7 +389,7 @@ def run_one_model(
                     "BT-03: teardown_shadow_stack failed — manual cleanup may be required"
                 )
 
-    # 12. Cooldown
+    # 14. Cooldown
     cooldown_start = time.time()
     cooldown_timeout = False
     while time.time() - cooldown_start < cooldown_max_sec:

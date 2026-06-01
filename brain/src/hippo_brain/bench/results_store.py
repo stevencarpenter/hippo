@@ -5,12 +5,14 @@ queryable tables keyed on run_id, so historical runs survive JSONL cleanup
 and per-(model, corpus-node) scoring is referenceable across all runs.
 
 Separate SQLite file from the application DB (hippo.db); its own
-PRAGMA user_version. Idempotent on run_id — a run's JSONL is immutable
-after run_end, so re-ingest is a no-op unless force=True.
+PRAGMA user_version. Idempotent on completed run_id rows — a run's JSONL is
+immutable after run_end, so re-ingest is a no-op unless force=True. Incomplete
+runs remain re-ingestable so a later run_end can complete them.
 """
 
 from __future__ import annotations
 
+import datetime as _dt
 import json
 import sqlite3
 import time
@@ -19,13 +21,13 @@ from pathlib import Path
 
 from hippo_brain.bench.paths import bench_results_db_path
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS bench_runs (
     run_id                    TEXT PRIMARY KEY,
-    started_at_iso            TEXT,
-    finished_at_iso           TEXT,
+    started_at_ms             INTEGER,
+    finished_at_ms            INTEGER,
     host_json                 TEXT,
     bench_version             TEXT,
     corpus_version            TEXT,
@@ -95,8 +97,88 @@ CREATE TABLE IF NOT EXISTS bench_node_retrieval (
 
 CREATE INDEX IF NOT EXISTS idx_retrieval_node ON bench_node_retrieval(golden_event_id, mode);
 CREATE INDEX IF NOT EXISTS idx_enrichment_node ON bench_node_enrichment(event_id);
-CREATE INDEX IF NOT EXISTS idx_runs_started ON bench_runs(started_at_iso);
+CREATE INDEX IF NOT EXISTS idx_runs_started ON bench_runs(started_at_ms);
 """
+
+
+def _iso_to_ms(iso: str | None) -> int | None:
+    """Convert an ISO 8601 string (from the JSONL wire format) to epoch-ms."""
+    if not iso:
+        return None
+    try:
+        return int(_dt.datetime.fromisoformat(iso).timestamp() * 1000)
+    except ValueError, TypeError:
+        return None
+
+
+def _epoch_ms(value: object) -> int | None:
+    """Return an integer epoch-ms value, rejecting bools despite int subclassing."""
+    if isinstance(value, int) and not isinstance(value, bool):
+        return value
+    return None
+
+
+def _record_timestamp_ms(record: dict, ms_key: str, iso_key: str) -> int | None:
+    ms = _epoch_ms(record.get(ms_key))
+    if ms is not None:
+        return ms
+    return _iso_to_ms(record.get(iso_key))
+
+
+def _migrate_v1_to_v2(conn: sqlite3.Connection) -> None:
+    """Rebuild bench_runs: ISO-text timestamps → INTEGER epoch-ms columns.
+
+    Child tables (bench_models, bench_node_enrichment, bench_node_retrieval) are
+    preserved. Foreign-key enforcement is suspended for the parent-table swap so
+    that DROP TABLE bench_runs does NOT cascade-delete the children.
+    """
+    conn.execute("PRAGMA foreign_keys=OFF")
+    conn.create_function("hippo_iso_to_ms", 1, _iso_to_ms)
+    try:
+        with conn:
+            conn.execute("""
+                CREATE TABLE bench_runs_v2 (
+                    run_id                    TEXT PRIMARY KEY,
+                    started_at_ms             INTEGER,
+                    finished_at_ms            INTEGER,
+                    host_json                 TEXT,
+                    bench_version             TEXT,
+                    corpus_version            TEXT,
+                    corpus_content_hash       TEXT,
+                    corpus_schema_version     INTEGER,
+                    eval_qa_version           TEXT,
+                    embedding_model           TEXT,
+                    inference_backend_version TEXT,
+                    gate_thresholds_json      TEXT,
+                    candidate_models_json     TEXT,
+                    models_completed_json     TEXT,
+                    models_errored_json       TEXT,
+                    reason                    TEXT,
+                    ingested_at_ms            INTEGER
+                )
+            """)
+            conn.execute("""
+                INSERT OR IGNORE INTO bench_runs_v2
+                    (run_id, started_at_ms, finished_at_ms, host_json, bench_version,
+                     corpus_version, corpus_content_hash, corpus_schema_version,
+                     eval_qa_version, embedding_model, inference_backend_version,
+                     gate_thresholds_json, candidate_models_json, models_completed_json,
+                     models_errored_json, reason, ingested_at_ms)
+                SELECT run_id,
+                       hippo_iso_to_ms(started_at_iso),
+                       hippo_iso_to_ms(finished_at_iso),
+                       host_json,
+                       bench_version,
+                       corpus_version, corpus_content_hash, corpus_schema_version,
+                       eval_qa_version, embedding_model, inference_backend_version,
+                       gate_thresholds_json, candidate_models_json, models_completed_json,
+                       models_errored_json, reason, ingested_at_ms
+                FROM bench_runs
+            """)
+            conn.execute("DROP TABLE bench_runs")
+            conn.execute("ALTER TABLE bench_runs_v2 RENAME TO bench_runs")
+    finally:
+        conn.execute("PRAGMA foreign_keys=ON")
 
 
 def connect(db_path: Path | None = None) -> sqlite3.Connection:
@@ -119,12 +201,12 @@ def connect(db_path: Path | None = None) -> sqlite3.Connection:
             f"bench-results.db is schema v{current}, newer than this binary "
             f"(v{SCHEMA_VERSION}); refusing to open rather than downgrade — upgrade hippo"
         )
+    if current == 1:
+        _migrate_v1_to_v2(conn)
     conn.executescript(_SCHEMA)
-    # Stamp user_version only on a *fresh* DB (version 0) or after a future
-    # upgrade. Stamping unconditionally would let an older binary silently
-    # downgrade a newer DB — corrupting the version migrations key on. When real
-    # migrations exist they run here, version-by-version, BEFORE this stamp;
-    # today _SCHEMA's CREATE TABLE IF NOT EXISTS is the only (idempotent) step.
+    # Stamp user_version only on a *fresh* DB (version 0) or after a migration.
+    # Stamping unconditionally would let an older binary silently downgrade a
+    # newer DB — corrupting the version migrations key on.
     if current < SCHEMA_VERSION:
         conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
     conn.commit()
@@ -204,12 +286,12 @@ def ingest_run(
                 run_id=None, inserted=False, skipped_existing=False, malformed_lines=malformed
             )
 
-        # Skip re-ingest only for a COMPLETE run already on file (finished_at_iso
-        # set). An incomplete run (ingested while still in-flight, finished_at_iso
+        # Skip re-ingest only for a COMPLETE run already on file (finished_at_ms
+        # set). An incomplete run (ingested while still in-flight, finished_at_ms
         # NULL) must remain re-ingestable so its later run_end + retrieval rows
         # land without --force. `--force` always re-ingests.
         existing = conn.execute(
-            "SELECT finished_at_iso FROM bench_runs WHERE run_id=?", (run_id,)
+            "SELECT finished_at_ms FROM bench_runs WHERE run_id=?", (run_id,)
         ).fetchone()
         if existing is not None and existing[0] is not None and not force:
             return IngestResult(
@@ -234,10 +316,15 @@ def ingest_run(
             )
 
         with conn:  # one transaction; FK cascade clears child rows on replace
+            end_record = end or {}
+            finished_at_ms = _record_timestamp_ms(end_record, "finished_at_ms", "finished_at_iso")
+            if finished_at_ms is None:
+                finished_at_ms = _record_timestamp_ms(manifest, "finished_at_ms", "finished_at_iso")
+
             conn.execute("DELETE FROM bench_runs WHERE run_id=?", (run_id,))
             conn.execute(
                 """INSERT INTO bench_runs (
-                    run_id, started_at_iso, finished_at_iso, host_json, bench_version,
+                    run_id, started_at_ms, finished_at_ms, host_json, bench_version,
                     corpus_version, corpus_content_hash, corpus_schema_version,
                     eval_qa_version, embedding_model, inference_backend_version,
                     gate_thresholds_json, candidate_models_json, models_completed_json,
@@ -245,8 +332,8 @@ def ingest_run(
                 ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
                     run_id,
-                    manifest.get("started_at_iso"),
-                    (end or {}).get("finished_at_iso") or manifest.get("finished_at_iso"),
+                    _record_timestamp_ms(manifest, "started_at_ms", "started_at_iso"),
+                    finished_at_ms,
                     json.dumps(manifest.get("host", {}), sort_keys=True),
                     manifest.get("bench_version"),
                     manifest.get("corpus_version"),
@@ -330,17 +417,17 @@ def _ingest_models(conn: sqlite3.Connection, run_id: str, records: list[dict]) -
 def _entity_sanity_mean(per_cat: dict | None) -> float | None:
     if not isinstance(per_cat, dict) or not per_cat:
         return None
-    return sum(per_cat.values()) / len(per_cat)
+    vals = [v for v in per_cat.values() if isinstance(v, (int, float)) and not isinstance(v, bool)]
+    if not vals:
+        return None
+    return sum(vals) / len(vals)
 
 
 def _ingest_enrichment(conn: sqlite3.Connection, run_id: str, records: list[dict]) -> int:
-    # DORMANT on real runs: this selects `main`-purpose attempts, but the bench
-    # pipeline does not yet emit any (the self-consistency pass labels its
-    # attempts `self_consistency`, and the shadow brain's full-corpus enrichment
-    # is discarded with the shadow stack). The ingest + schema are ready; the
-    # producer is owed by https://github.com/stevencarpenter/hippo/issues/191.
-    # Until then this is a no-op on real runs (tests exercise it with synthetic
-    # `main` attempts). Keep the `main` filter — it is the correct contract.
+    # Selects `main`-purpose attempts produced by runner.run_main_enrichment_pass —
+    # one call per corpus event, covering the full corpus. The `main` filter is the
+    # correct contract: self-consistency attempts are intentionally excluded so they
+    # don't skew per-event rates.
     n = 0
     for r in records:
         if r.get("record_type") != "attempt" or r.get("purpose") != "main":
@@ -458,7 +545,7 @@ def leaderboard_latest(conn: sqlite3.Connection, *, mode: str = "hybrid") -> lis
                 SELECT 1 FROM bench_node_retrieval nr
                 WHERE nr.run_id = r.run_id AND nr.mode = ?
             )
-            ORDER BY r.started_at_iso DESC
+            ORDER BY r.started_at_ms DESC
             LIMIT 1
         )
         SELECT nr.run_id, nr.model_id,
@@ -483,19 +570,19 @@ def node_detail(conn: sqlite3.Connection, event_id: str, *, mode: str = "hybrid"
     # latest-per-model) so a regression — a model that scored worse in a later
     # run — stays visible instead of being hidden behind "current".
     retrieval = conn.execute(
-        """SELECT nr.run_id, nr.model_id, nr.mrr, nr.rank, nr.hit_at_1, r.started_at_iso
+        """SELECT nr.run_id, nr.model_id, nr.mrr, nr.rank, nr.hit_at_1, r.started_at_ms
            FROM bench_node_retrieval nr JOIN bench_runs r USING (run_id)
            WHERE nr.golden_event_id = ? AND nr.mode = ?
-           ORDER BY nr.mrr DESC, nr.hit_at_1 DESC, r.started_at_iso DESC""",
+           ORDER BY nr.mrr DESC, nr.hit_at_1 DESC, r.started_at_ms DESC""",
         (event_id, mode),
     ).fetchall()
     enrichment = conn.execute(
         """SELECT ne.run_id, ne.model_id, ne.schema_valid, ne.refusal_detected,
                   ne.echo_similarity, ne.entity_sanity, ne.parsed_output_json,
-                  r.started_at_iso
+                  r.started_at_ms
            FROM bench_node_enrichment ne JOIN bench_runs r USING (run_id)
            WHERE ne.event_id = ?
-           ORDER BY r.started_at_iso DESC""",
+           ORDER BY r.started_at_ms DESC""",
         (event_id,),
     ).fetchall()
     return {
@@ -522,10 +609,10 @@ def all_node_details(conn: sqlite3.Connection, *, mode: str = "hybrid") -> dict[
     # runs so regressions stay visible.
     for r in conn.execute(
         """SELECT nr.golden_event_id AS event_id, nr.run_id, nr.model_id, nr.mrr, nr.rank,
-                  nr.hit_at_1, r.started_at_iso
+                  nr.hit_at_1, r.started_at_ms
            FROM bench_node_retrieval nr JOIN bench_runs r USING (run_id)
            WHERE nr.mode = ? AND nr.golden_event_id IS NOT NULL
-           ORDER BY nr.mrr DESC, nr.hit_at_1 DESC, r.started_at_iso DESC""",
+           ORDER BY nr.mrr DESC, nr.hit_at_1 DESC, r.started_at_ms DESC""",
         (mode,),
     ).fetchall():
         d = dict(r)
@@ -533,9 +620,9 @@ def all_node_details(conn: sqlite3.Connection, *, mode: str = "hybrid") -> dict[
 
     for r in conn.execute(
         """SELECT ne.event_id, ne.run_id, ne.model_id, ne.schema_valid, ne.refusal_detected,
-                  ne.echo_similarity, ne.entity_sanity, ne.parsed_output_json, r.started_at_iso
+                  ne.echo_similarity, ne.entity_sanity, ne.parsed_output_json, r.started_at_ms
            FROM bench_node_enrichment ne JOIN bench_runs r USING (run_id)
-           ORDER BY r.started_at_iso DESC""",
+           ORDER BY r.started_at_ms DESC""",
     ).fetchall():
         d = dict(r)
         _node(d.pop("event_id"))["enrichment"].append(d)
@@ -546,8 +633,8 @@ def all_node_details(conn: sqlite3.Connection, *, mode: str = "hybrid") -> dict[
 def run_history(conn: sqlite3.Connection) -> list[dict]:
     """All runs, newest first, for the history/trend view."""
     rows = conn.execute(
-        """SELECT run_id, started_at_iso, finished_at_iso, corpus_version,
+        """SELECT run_id, started_at_ms, finished_at_ms, corpus_version,
                   corpus_content_hash, models_completed_json
-           FROM bench_runs ORDER BY started_at_iso DESC"""
+           FROM bench_runs ORDER BY started_at_ms DESC"""
     ).fetchall()
     return [dict(r) for r in rows]

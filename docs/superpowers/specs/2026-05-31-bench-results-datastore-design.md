@@ -1,7 +1,7 @@
 # hippo-bench Results Datastore + Dashboard — Design
 
 **Date:** 2026-05-31
-**Status:** Implemented (PR #192); enrichment layer deferred to #191
+**Status:** Implemented (PR #192 retrieval + datastore; full-corpus enrichment implemented in PR #193, closes #191)
 **Author:** Steven Carpenter
 
 ## Problem
@@ -64,7 +64,7 @@ are labeled; no schema change needed.
 
 ## Architecture
 
-```
+```text
 orchestrate_run ──(writes JSONL as today)──▶ run-{ts}-{host}.jsonl  (disposable working file)
        │
        └─(at run_end, reads it back)──▶ results_store.ingest_run()
@@ -106,8 +106,8 @@ Location: `~/.local/share/hippo-bench/bench-results.db` (resolved via
 ```sql
 CREATE TABLE bench_runs (
     run_id                  TEXT PRIMARY KEY,
-    started_at_iso          TEXT,
-    finished_at_iso         TEXT,           -- NULL ⇒ incomplete/crashed run
+    started_at_ms           INTEGER,        -- epoch-ms; legacy JSONL ISO converted on ingest
+    finished_at_ms          INTEGER,        -- NULL ⇒ incomplete/crashed run
     host_json               TEXT,
     bench_version           TEXT,
     corpus_version          TEXT,
@@ -181,7 +181,7 @@ CREATE TABLE bench_node_retrieval (
 
 Indexes: `bench_node_retrieval(golden_event_id, mode)` and
 `bench_node_enrichment(event_id)` for the per-node leaderboard;
-`bench_runs(started_at_iso)` for "latest run" and history ordering.
+`bench_runs(started_at_ms)` for "latest run" and history ordering.
 
 ### Headline leaderboard query (latest run, history retained)
 
@@ -194,7 +194,7 @@ WITH latest AS (
   SELECT model_id, golden_event_id, mrr, hit_at_1,
          ROW_NUMBER() OVER (
            PARTITION BY model_id, golden_event_id, mode
-           ORDER BY r.started_at_iso DESC
+           ORDER BY r.started_at_ms DESC
          ) AS rn
   FROM bench_node_retrieval nr
   JOIN bench_runs r USING (run_id)
@@ -213,13 +213,15 @@ SELECT model_id, mrr, hit_at_1 FROM latest WHERE rn = 1 ORDER BY mrr DESC;
    `model_summary.downstream_proxy.per_item` flat list →
    `bench_node_retrieval` rows (`hit_at_1`/`hit_at_10` extracted from each
    item's `hit_at_k` dict; `golden_event_id` from the producer change below);
-   `run_end` → fill `finished_at_iso`, `models_completed/errored`, `reason`.
-2. **Idempotency**: if `run_id` already present and not `force`, no-op. With
+   `run_end` → fill `finished_at_ms`, `models_completed/errored`, `reason`.
+2. **Idempotency**: if `run_id` already present with `finished_at_ms IS NOT
+   NULL` and not `force`, no-op. Existing incomplete runs (`finished_at_ms IS
+   NULL`) are re-ingested so a later `run_end` can complete the run. With
    `force` (or first ingest), run a single transaction: `DELETE FROM bench_runs
    WHERE run_id=?` (cascades), then insert all rows. A run's JSONL is immutable
    after `run_end`, so this is safe and makes whole-DB rebuild deterministic.
 3. **Partial/crashed JSONL** (no `run_end`): ingest what is present;
-   `finished_at_iso` stays NULL and the run is rendered as "incomplete".
+   `finished_at_ms` stays NULL and the run is rendered as "incomplete".
 4. **Malformed lines**: skip + count + log a warning; never abort the whole
    ingest over one bad line.
 
@@ -281,22 +283,15 @@ sample run file):
 - Foreign keys with `ON DELETE CASCADE` so `--force` re-ingest cleanly replaces a
   run's full row set in one transaction.
 
-## Implementation Note: enrichment layer deferred
+## Implementation Note: enrichment layer
 
-During implementation, the final review found that the bench pipeline does **not**
-emit `attempt` records with `purpose = 'main'` over the full corpus — every
-attempt is `purpose = 'self_consistency'`, and the self-consistency pass samples
-only a few nodes, while the shadow brain's full-corpus enrichment is discarded
-with the shadow stack. The `bench_node_enrichment` table and its ingest are
-therefore **dormant on real runs** (correct, tested against synthetic `main`
-attempts, but empty on real data). The retrieval layer — the agreed headline — is
-unaffected and ships fully working.
-
-Restoring full-corpus per-node enrichment (and, by the same root cause, the
-currently-vacuous per-model gate scorecard) is tracked in
-[#191](https://github.com/stevencarpenter/hippo/issues/191) and is the immediate
-follow-up. The schema and ingest here are intentionally left in place so that work
-is purely additive (emit the records; the datastore already consumes them).
+Full-corpus per-node enrichment (`purpose = 'main'` attempts covering every corpus
+event) was implemented in [PR #193](https://github.com/stevencarpenter/hippo/pull/193),
+which closes [#191](https://github.com/stevencarpenter/hippo/issues/191). The
+`bench_node_enrichment` table and its ingest are now fully populated on real runs.
+The schema shipped here (PR #192) required no changes — PR #193 was purely a
+producer-side addition (emit the main-pass attempt records; the datastore already
+consumed them).
 
 ## Open Questions / Future
 

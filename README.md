@@ -88,7 +88,7 @@ so no terminal session has to stay open.
 | Dependency | Required | Notes |
 |------------|----------|-------|
 | macOS Apple Silicon (arm64) | Yes for binaries | Intel needs to build from source. Uses launchd for service management. |
-| [Rust](https://rustup.rs/) | Yes | Edition 2024 (1.85+). No `rust-toolchain.toml` is shipped; CI runs against the latest stable. |
+| [Rust](https://rustup.rs/) | Yes | Edition 2024 via the shipped `rust-toolchain.toml` (`1.95`). `mise.toml` enables Rust idiomatic version-file management. |
 | [Python](https://www.python.org/) | Yes | 3.14+ |
 | [uv](https://docs.astral.sh/uv/) | Yes | Python package manager |
 | [oMLX](https://omlx.ai) or [LM Studio](https://lmstudio.ai/) | Yes | Local OpenAI-compatible LLM server. Default config targets oMLX on `:8000` and the `Qwen3.6-35B-A3B-UD-MLX-4bit` chat model + `nomicai-modernbert-embed-base-8bit` embeddings (768d MLX). Plan on 32 GB+ unified memory for the default chat model; smaller models work with smaller machines — adjust the `[models]` section. LM Studio users: change `[inference].base_url` to `http://localhost:1234/v1` and use LM Studio's model IDs (e.g. `qwen3.6-35b-a3b-ud-mlx`, `text-embedding-nomic-embed-text-v2-moe`). |

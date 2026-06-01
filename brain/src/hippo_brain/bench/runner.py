@@ -1,8 +1,7 @@
-"""Per-model self-consistency pass: N attempts per event with embedding."""
+"""Per-model enrichment passes: main (full corpus, once each) and self-consistency (sample, N times)."""
 
 from __future__ import annotations
 
-import datetime as _dt
 import time
 from collections.abc import Callable
 
@@ -34,8 +33,7 @@ def _build_attempt(
     gates: dict,
     parsed: dict | None,
     system_snapshot: dict,
-    start_iso: str,
-    start_monotonic_ns: int,
+    start_ts_ms: int,
 ) -> AttemptRecord:
     return AttemptRecord(
         run_id=run_id,
@@ -44,8 +42,7 @@ def _build_attempt(
         attempt_idx=attempt_idx,
         purpose=purpose,
         timestamps={
-            "start_iso": start_iso,
-            "start_monotonic_ns": start_monotonic_ns,
+            "start_ts_ms": start_ts_ms,
             "ttft_ms": call_result.ttft_ms,
             "total_ms": call_result.total_ms,
         },
@@ -99,6 +96,55 @@ def _compute_gates(call_result, entry: CorpusEntry) -> tuple[dict, dict | None]:
     )
 
 
+def run_main_enrichment_pass(
+    *,
+    base_url: str,
+    model: str,
+    entries: list[CorpusEntry],
+    timeout_sec: int,
+    metrics_snapshot: Callable[[], dict],
+    temperature: float,
+    run_id: str = "run-local",
+) -> list[AttemptRecord]:
+    """One enrichment call per corpus event, labelled purpose='main'.
+
+    Covers the full corpus — no sampling. Results feed:
+    - aggregate_model_summary (schema-validity / refusal / latency / entity-sanity rates)
+    - _ingest_enrichment in results_store (bench_node_enrichment table)
+
+    No embeddings: self-consistency cosines come from the SC pass; the main
+    pass only measures per-event correctness and gate rates.
+    """
+    model_dict = {"id": model}
+    attempts: list[AttemptRecord] = []
+    for entry in entries:
+        start_ts_ms = int(time.time() * 1000)
+        cr = call_enrichment(
+            base_url=base_url,
+            model=model,
+            payload=entry.redacted_content,
+            source=entry.source,
+            timeout_sec=timeout_sec,
+            temperature=temperature,
+        )
+        gates, parsed = _compute_gates(cr, entry)
+        attempts.append(
+            _build_attempt(
+                run_id=run_id,
+                model=model_dict,
+                entry=entry,
+                attempt_idx=0,
+                purpose="main",
+                call_result=cr,
+                gates=gates,
+                parsed=parsed,
+                system_snapshot=metrics_snapshot(),
+                start_ts_ms=start_ts_ms,
+            )
+        )
+    return attempts
+
+
 def run_self_consistency_pass(
     *,
     base_url: str,
@@ -123,8 +169,7 @@ def run_self_consistency_pass(
     for entry in entries:
         event_vectors: list[list[float]] = []
         for i in range(runs_per_event):
-            start_iso = _dt.datetime.now(tz=_dt.UTC).isoformat()
-            start_monotonic_ns = time.monotonic_ns()
+            start_ts_ms = int(time.time() * 1000)
             cr = call_enrichment(
                 base_url=base_url,
                 model=model,
@@ -145,8 +190,7 @@ def run_self_consistency_pass(
                     gates=gates,
                     parsed=parsed,
                     system_snapshot=metrics_snapshot(),
-                    start_iso=start_iso,
-                    start_monotonic_ns=start_monotonic_ns,
+                    start_ts_ms=start_ts_ms,
                 )
             )
             if cr.error is None and cr.raw_output:

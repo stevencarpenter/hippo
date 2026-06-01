@@ -373,7 +373,7 @@ def test_cli_ingest_single_and_all(tmp_path, monkeypatch, capsys):
                 {
                     "record_type": "run_manifest",
                     "run_id": "run-x",
-                    "started_at_iso": "2026-05-31T00:00:00+00:00",
+                    "started_at_ms": 1780185600000,
                     "host": {},
                     "candidate_models": [],
                     "corpus_content_hash": "h",
@@ -387,7 +387,7 @@ def test_cli_ingest_single_and_all(tmp_path, monkeypatch, capsys):
                 {
                     "record_type": "run_end",
                     "run_id": "run-x",
-                    "finished_at_iso": "2026-05-31T01:00:00+00:00",
+                    "finished_at_ms": 1780189200000,
                     "models_completed": [],
                     "models_errored": [],
                 },
@@ -506,7 +506,7 @@ def _write_run_jsonl(path, run_id, *, reason=None, with_manifest=True):
             {
                 "record_type": "run_manifest",
                 "run_id": run_id,
-                "started_at_iso": "2026-05-31T00:00:00+00:00",
+                "started_at_ms": 1780185600000,
                 "host": {},
                 "candidate_models": [],
                 "corpus_content_hash": "h",
@@ -515,7 +515,7 @@ def _write_run_jsonl(path, run_id, *, reason=None, with_manifest=True):
     end = {
         "record_type": "run_end",
         "run_id": run_id,
-        "finished_at_iso": "2026-05-31T01:00:00+00:00",
+        "finished_at_ms": 1780189200000,
         "models_completed": [],
         "models_errored": [],
     }

@@ -134,7 +134,7 @@ def test_ingest_run_writes_bench_runs(tmp_path):
         ingest_run(jsonl, conn=conn, now_ms=123)
         row = conn.execute("SELECT * FROM bench_runs WHERE run_id='run-1'").fetchone()
         assert row["corpus_content_hash"] == "sha256:abc"
-        assert row["finished_at_iso"] == "2026-05-31T01:00:00+00:00"
+        assert row["finished_at_ms"] == 1780189200000  # 2026-05-31T01:00:00Z
         assert json.loads(row["models_completed_json"]) == ["model-a"]
         assert row["ingested_at_ms"] == 123
     finally:
@@ -211,6 +211,80 @@ def test_connect_reopen_preserves_version(tmp_path):
         conn.close()
 
 
+def test_connect_migrates_v1_run_timestamps_to_epoch_ms(tmp_path):
+    import sqlite3
+
+    from hippo_brain.bench.results_store import connect
+
+    db = tmp_path / "bench-results.db"
+    raw = sqlite3.connect(db)
+    raw.execute("""
+        CREATE TABLE bench_runs (
+            run_id                    TEXT PRIMARY KEY,
+            started_at_iso            TEXT,
+            finished_at_iso           TEXT,
+            host_json                 TEXT,
+            bench_version             TEXT,
+            corpus_version            TEXT,
+            corpus_content_hash       TEXT,
+            corpus_schema_version     INTEGER,
+            eval_qa_version           TEXT,
+            embedding_model           TEXT,
+            inference_backend_version TEXT,
+            gate_thresholds_json      TEXT,
+            candidate_models_json     TEXT,
+            models_completed_json     TEXT,
+            models_errored_json       TEXT,
+            reason                    TEXT,
+            ingested_at_ms            INTEGER
+        )
+    """)
+    raw.execute(
+        """
+        INSERT INTO bench_runs (
+            run_id, started_at_iso, finished_at_iso, host_json, bench_version,
+            corpus_version, corpus_content_hash, corpus_schema_version,
+            eval_qa_version, embedding_model, inference_backend_version,
+            gate_thresholds_json, candidate_models_json, models_completed_json,
+            models_errored_json, reason, ingested_at_ms
+        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        """,
+        (
+            "legacy-run",
+            "2026-05-31T00:00:00+00:00",
+            "2026-05-31T01:00:00+00:00",
+            "{}",
+            "0.2.0",
+            "corpus-v2",
+            "sha256:abc",
+            18,
+            "eval-qa-v1",
+            "embed-x",
+            None,
+            "{}",
+            "[]",
+            "[]",
+            "[]",
+            None,
+            123,
+        ),
+    )
+    raw.execute("PRAGMA user_version=1")
+    raw.commit()
+    raw.close()
+
+    conn = connect(db)
+    try:
+        row = conn.execute(
+            "SELECT started_at_ms, finished_at_ms FROM bench_runs WHERE run_id='legacy-run'"
+        ).fetchone()
+        assert row["started_at_ms"] == 1780185600000
+        assert row["finished_at_ms"] == 1780189200000
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
+    finally:
+        conn.close()
+
+
 def test_reingest_same_run_is_skipped(tmp_path):
     from hippo_brain.bench.results_store import connect, ingest_run
 
@@ -254,8 +328,8 @@ def test_partial_jsonl_no_run_end(tmp_path):
     try:
         out = ingest_run(jsonl, conn=conn)
         assert out.inserted
-        row = conn.execute("SELECT finished_at_iso FROM bench_runs").fetchone()
-        assert row["finished_at_iso"] is None  # incomplete run
+        row = conn.execute("SELECT finished_at_ms FROM bench_runs").fetchone()
+        assert row["finished_at_ms"] is None  # incomplete run
         assert conn.execute("SELECT COUNT(*) FROM bench_node_enrichment").fetchone()[0] == 1
     finally:
         conn.close()
@@ -281,7 +355,7 @@ def test_query_helpers(tmp_path):
     ms2 = _model_summary_with_proxy("run-2")
     ms2["downstream_proxy"]["per_item"][0]["mrr"] = 0.5  # different score in newer run
     m2 = _manifest("run-2")
-    m2["started_at_iso"] = "2026-05-31T05:00:00+00:00"
+    m2["started_at_ms"] = 1780203600000
     r2 = [m2, ms2, _attempt("run-2", event_id="claude-7"), _run_end("run-2")]
 
     conn = connect(tmp_path / "bench-results.db")
@@ -330,7 +404,7 @@ def test_leaderboard_uses_latest_run_with_retrieval(tmp_path):
     # Newer run: later timestamp, plain model_summary (empty downstream_proxy) →
     # produces NO retrieval rows for any mode.
     m_new = _manifest("run-new")
-    m_new["started_at_iso"] = "2026-05-31T09:00:00+00:00"
+    m_new["started_at_ms"] = 1780218000000
     newer = [m_new, _model_summary("run-new"), _run_end("run-new")]
 
     conn = connect(tmp_path / "bench-results.db")
@@ -351,7 +425,7 @@ def test_aborted_run_not_ingested(tmp_path):
     aborted_end = {
         "record_type": "run_end",
         "run_id": "run-abort",
-        "finished_at_iso": "2026-05-31T00:05:00+00:00",
+        "finished_at_ms": 1780185900000,
         "models_completed": [],
         "models_errored": [],
         "reason": "preflight_aborted",
@@ -375,7 +449,7 @@ def test_incomplete_run_removed_when_later_aborted(tmp_path):
     aborted_end = {
         "record_type": "run_end",
         "run_id": "run-abort",
-        "finished_at_iso": "2026-05-31T00:05:00+00:00",
+        "finished_at_ms": 1780185900000,
         "models_completed": [],
         "models_errored": [],
         "reason": "preflight_aborted",
@@ -413,7 +487,7 @@ def test_incomplete_run_removed_when_later_no_models(tmp_path):
     no_models_end = {
         "record_type": "run_end",
         "run_id": "run-empty",
-        "finished_at_iso": "2026-05-31T00:05:00+00:00",
+        "finished_at_ms": 1780185900000,
         "models_completed": [],
         "models_errored": [],
         "reason": "no_models",
@@ -497,18 +571,14 @@ def test_incomplete_run_reingested_when_completed(tmp_path):
         r1 = ingest_run(_write_jsonl(tmp_path / "p.jsonl", partial), conn=conn)
         assert r1.inserted
         assert (
-            conn.execute("SELECT finished_at_iso FROM bench_runs WHERE run_id='run-x'").fetchone()[
-                0
-            ]
+            conn.execute("SELECT finished_at_ms FROM bench_runs WHERE run_id='run-x'").fetchone()[0]
             is None
         )
 
         r2 = ingest_run(_write_jsonl(tmp_path / "c.jsonl", complete), conn=conn)  # no force
         assert r2.inserted, "an incomplete run must re-ingest when it completes, without --force"
         assert (
-            conn.execute("SELECT finished_at_iso FROM bench_runs WHERE run_id='run-x'").fetchone()[
-                0
-            ]
+            conn.execute("SELECT finished_at_ms FROM bench_runs WHERE run_id='run-x'").fetchone()[0]
             is not None
         )
         assert (
@@ -636,7 +706,7 @@ def test_node_detail_orders_best_score_first(tmp_path):
     ms_new = _model_summary_with_proxy("run-new", model="weak")
     ms_new["downstream_proxy"]["per_item"][0]["mrr"] = 0.2
     m_new = _manifest("run-new")
-    m_new["started_at_iso"] = "2026-05-31T09:00:00+00:00"
+    m_new["started_at_ms"] = 1780218000000
     new = [m_new, ms_new, _run_end("run-new")]
 
     conn = connect(tmp_path / "bench-results.db")
@@ -799,5 +869,94 @@ def test_enrichment_attempt_missing_event_id_is_skipped(tmp_path):
         ingest_run(jsonl, conn=conn)
         rows = conn.execute("SELECT event_id FROM bench_node_enrichment").fetchall()
         assert [r["event_id"] for r in rows] == ["shell-9"]  # bad attempt skipped
+    finally:
+        conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Cycle 4: per-node dashboard view shows enrichment for every corpus node
+# ---------------------------------------------------------------------------
+
+
+def test_all_node_details_shows_enrichment_for_every_corpus_node(tmp_path):
+    """Cycle 4: all_node_details returns enrichment rows for every node that has
+    a main-pass attempt — verifying the dashboard's per-node view is populated."""
+    from hippo_brain.bench.results_store import all_node_details, connect, ingest_run
+
+    # Three corpus nodes — all with main-pass attempts.
+    corpus_event_ids = ["shell-1", "shell-2", "claude-7"]
+    records = [
+        _manifest("run-1"),
+        *[_attempt(event_id=eid) for eid in corpus_event_ids],
+        _model_summary("run-1"),
+        _run_end("run-1"),
+    ]
+    jsonl = _write_jsonl(tmp_path / "r.jsonl", records)
+    conn = connect(tmp_path / "bench-results.db")
+    try:
+        result = ingest_run(jsonl, conn=conn)
+        assert result.enrichment_rows == len(corpus_event_ids), (
+            f"expected {len(corpus_event_ids)} enrichment rows, got {result.enrichment_rows}"
+        )
+
+        nodes = all_node_details(conn)
+        for eid in corpus_event_ids:
+            assert eid in nodes, f"corpus node {eid!r} missing from all_node_details"
+            enrich = nodes[eid]["enrichment"]
+            assert len(enrich) == 1, f"expected 1 enrichment row for {eid!r}, got {len(enrich)}"
+            assert enrich[0]["model_id"] == "model-a"
+    finally:
+        conn.close()
+
+
+def test_all_node_details_enrichment_coverage_equals_corpus_size(tmp_path):
+    """Cycle 4: bench_node_enrichment rows == corpus size × models that ran."""
+    from hippo_brain.bench.results_store import connect, ingest_run
+
+    corpus_size = 5
+    corpus_events = [f"shell-{i}" for i in range(corpus_size)]
+    records = [
+        _manifest("run-1"),
+        *[_attempt(event_id=eid) for eid in corpus_events],
+        _model_summary("run-1"),
+        _run_end("run-1"),
+    ]
+    jsonl = _write_jsonl(tmp_path / "r.jsonl", records)
+    conn = connect(tmp_path / "bench-results.db")
+    try:
+        result = ingest_run(jsonl, conn=conn)
+        n = conn.execute("SELECT COUNT(*) FROM bench_node_enrichment").fetchone()[0]
+        assert n == corpus_size, (
+            f"bench_node_enrichment must have {corpus_size} rows (one per corpus event), got {n}"
+        )
+        assert result.enrichment_rows == corpus_size
+    finally:
+        conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Cycle 5: idempotency — re-ingest does not duplicate enrichment rows
+# ---------------------------------------------------------------------------
+
+
+def test_reingest_does_not_duplicate_enrichment_rows(tmp_path):
+    """Cycle 5: re-ingesting the same run JSONL must not produce duplicate rows
+    in bench_node_enrichment — the (run_id, model_id, event_id) PK must hold."""
+    from hippo_brain.bench.results_store import connect, ingest_run
+
+    records = [
+        _manifest("run-1"),
+        _attempt(event_id="shell-1"),
+        _attempt(event_id="shell-2"),
+        _model_summary("run-1"),
+        _run_end("run-1"),
+    ]
+    jsonl = _write_jsonl(tmp_path / "r.jsonl", records)
+    conn = connect(tmp_path / "bench-results.db")
+    try:
+        ingest_run(jsonl, conn=conn)
+        ingest_run(jsonl, conn=conn, force=True)  # explicit force to re-ingest same run_id
+        n = conn.execute("SELECT COUNT(*) FROM bench_node_enrichment").fetchone()[0]
+        assert n == 2, f"re-ingest must not duplicate rows: expected 2 (one per event), got {n}"
     finally:
         conn.close()

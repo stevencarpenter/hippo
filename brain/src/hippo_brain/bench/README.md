@@ -371,7 +371,7 @@ The per-run JSONL is an append-only **working file** — crash-safe during a run
 but local-only, unindexed, and easy to lose. The durable record of history is a
 separate SQLite datastore:
 
-```
+```text
 ~/.local/share/hippo-bench/bench-results.db    # sibling of runs/, NOT hippo.db
 ```
 
@@ -386,7 +386,7 @@ Four tables, keyed on `run_id` (children cascade-delete on `--force` re-ingest):
 |---|---|---|
 | `bench_runs` | one per run | manifest + run_end: corpus version/hash, thresholds, models, timestamps |
 | `bench_models` | per (run, model) | aggregate gate rates, latency percentiles, verdict |
-| `bench_node_enrichment` | per (run, model, corpus node) | enrichment gates + `parsed_output_json` — per-node health layer (**dormant**, see below) |
+| `bench_node_enrichment` | per (run, model, corpus node) | enrichment gates + `parsed_output_json` — per-node health layer (full-corpus coverage) |
 | `bench_node_retrieval` | per (run, model, QA item, mode) | rank, MRR, Hit@1/10, NDCG — **the headline**, QA-labeled subset only |
 
 **Two scoring signals, two roles.** Retrieval quality (MRR/Hit@1, from
@@ -394,13 +394,21 @@ Four tables, keyed on `run_id` (children cascade-delete on `--force` re-ingest):
 a model's enrichment makes a node findable, the outcome hippo exists for. Its
 coverage grows automatically as more `eval-qa` items are labeled.
 
-> **`bench_node_enrichment` is dormant on real runs.** The ingest + schema are in
-> place, but the bench pipeline does not yet emit per-node enrichment records over
-> the full corpus (the self-consistency pass samples only a few nodes, and the
-> shadow brain's full-corpus enrichment is discarded with the shadow stack). Until
-> that lands, this table stays empty on real runs and the dashboard's per-node
-> enrichment view shows "(no data)". Tracked in
-> [#191](https://github.com/stevencarpenter/hippo/issues/191) — picked up next.
+Enrichment quality (`bench_node_enrichment`) is the **per-node health layer** —
+one direct enrichment call per corpus event, per model (`purpose = "main"`). It
+captures schema-validity, refusal, echo-similarity, entity-sanity, latency, and
+parsed output for every corpus member, so the dashboard's per-node view shows
+"best model per corpus node" across the full corpus (not just the QA-labeled
+subset). These records also back the per-model gate scorecard: schema-validity
+rate, refusal rate, and latency percentiles are computed exclusively from
+`main`-purpose attempts. Inference cost of the main pass is the measurement itself —
+one call per event is required to know how the model actually handles each input.
+
+> **Inference cost at corpus scale:** the main pass calls the inference server once
+> per corpus event per model. With a 100-event corpus and p95 latency of 15s, a
+> single-model run takes ~25 min of inference time (overlapping with other steps).
+> At 5s p95, it's ~8 min. This is intentional: the cost is the measurement. Use
+> `mise run bench:corpus:init --corpus-buckets 9` to control corpus size.
 
 ```bash
 # Backfill any surviving run JSONLs (one file, or every *.jsonl under runs/)
@@ -439,7 +447,7 @@ blanks). All prior runs stay in the datastore for the per-node and history views
 | [`shadow_stack.py`](shadow_stack.py) | Process-group spawn (daemon + brain), env injection, SIGTERM/SIGKILL teardown |
 | [`downstream_proxy.py`](downstream_proxy.py) | Q/A loading, Hit@K, MRR, NDCG, ask-synthesis sampling |
 | [`coordinator.py`](coordinator.py) | Per-model lifecycle (shadow stack, queue drain, downstream proxy) |
-| [`runner.py`](runner.py) | Self-consistency pass; per-attempt gate composition |
+| [`runner.py`](runner.py) | Main enrichment pass (full corpus, `purpose='main'`); self-consistency pass (sample, N runs); shared per-attempt gate composition |
 | [`output.py`](output.py) | JSONL record dataclasses + append-only writer |
 | [`results_store.py`](results_store.py) | Durable `bench-results.db`: schema, idempotent `ingest_run`, leaderboard/node/history queries |
 | [`dashboard_export.py`](dashboard_export.py) | Renders the datastore to one self-contained HTML file (leaderboard + per-node + history) |
@@ -466,16 +474,16 @@ blanks). All prior runs stay in the datastore for the per-node and history views
   (prod brain,                               ▼
    corpus, lms,                       coordinator.run_one_model
    disk, port)                               │
-                            ┌─────────┬──────┼──────┬─────────────────────┐
-                            ▼         ▼      ▼      ▼                     ▼
-                       lms.unload  metrics  shadow_stack.spawn    runner.run_self_consistency
-                       lms.load    Sampler  → daemon + brain      enrich_call.call_enrichment
-                                            → wait_for_brain_ready enrich_call.call_embedding
+                            ┌─────────┬──────┼──────┬───────────────────────────────────────────┐
+                            ▼         ▼      ▼      ▼                                           ▼
+                       lms.unload  metrics  shadow_stack.spawn    runner.run_main_enrichment_pass (all events, once)
+                       lms.load    Sampler  → daemon + brain      runner.run_self_consistency_pass (sample, N runs)
+                                            → wait_for_brain_ready enrich_call.call_enrichment
                                             → drain queue                  │
                                             → downstream_proxy             ▼
                                               .run_downstream       gates.check_*  → AttemptRecord
-                                              _proxy_pass                   │
-                                            → teardown                      ▼
+                                              _proxy_pass             (purpose='main' or 'self_consistency')
+                                            → teardown                      │
                                                   │              system_snapshot
                                                   ▼                         │
                                           ModelRunResult ◄──────────────────┘

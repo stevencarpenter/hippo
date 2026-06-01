@@ -223,8 +223,8 @@ SCHEMA_VERSION = 1
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS bench_runs (
     run_id                    TEXT PRIMARY KEY,
-    started_at_iso            TEXT,
-    finished_at_iso           TEXT,
+    started_at_ms            INTEGER,
+    finished_at_ms           INTEGER,
     host_json                 TEXT,
     bench_version             TEXT,
     corpus_version            TEXT,
@@ -294,7 +294,7 @@ CREATE TABLE IF NOT EXISTS bench_node_retrieval (
 
 CREATE INDEX IF NOT EXISTS idx_retrieval_node ON bench_node_retrieval(golden_event_id, mode);
 CREATE INDEX IF NOT EXISTS idx_enrichment_node ON bench_node_enrichment(event_id);
-CREATE INDEX IF NOT EXISTS idx_runs_started ON bench_runs(started_at_iso);
+CREATE INDEX IF NOT EXISTS idx_runs_started ON bench_runs(started_at_ms);
 """
 
 
@@ -353,7 +353,7 @@ def _manifest(run_id="run-1"):
     return {
         "record_type": "run_manifest",
         "run_id": run_id,
-        "started_at_iso": "2026-05-31T00:00:00+00:00",
+        "started_at_ms": 1780185600000,
         "host": {"node": "test-host"},
         "preflight_checks": [],
         "candidate_models": ["model-a"],
@@ -368,7 +368,7 @@ def _manifest(run_id="run-1"):
         "host_baseline": {},
         "prod_state_at_start": {},
         "self_consistency_spec": {},
-        "finished_at_iso": None,
+        "finished_at_ms": None,
     }
 
 
@@ -376,7 +376,7 @@ def _run_end(run_id="run-1"):
     return {
         "record_type": "run_end",
         "run_id": run_id,
-        "finished_at_iso": "2026-05-31T01:00:00+00:00",
+        "finished_at_ms": 1780189200000,
         "models_completed": ["model-a"],
         "models_errored": [],
         "reason": None,
@@ -392,7 +392,7 @@ def test_ingest_run_writes_bench_runs(tmp_path):
         ingest_run(jsonl, conn=conn, now_ms=123)
         row = conn.execute("SELECT * FROM bench_runs WHERE run_id='run-1'").fetchone()
         assert row["corpus_content_hash"] == "sha256:abc"
-        assert row["finished_at_iso"] == "2026-05-31T01:00:00+00:00"
+        assert row["finished_at_ms"] == 1780189200000
         assert json.loads(row["models_completed_json"]) == ["model-a"]
         assert row["ingested_at_ms"] == 123
     finally:
@@ -467,7 +467,7 @@ def ingest_run(
             conn.execute("DELETE FROM bench_runs WHERE run_id=?", (run_id,))
             conn.execute(
                 """INSERT INTO bench_runs (
-                    run_id, started_at_iso, finished_at_iso, host_json, bench_version,
+                    run_id, started_at_ms, finished_at_ms, host_json, bench_version,
                     corpus_version, corpus_content_hash, corpus_schema_version,
                     eval_qa_version, embedding_model, inference_backend_version,
                     gate_thresholds_json, candidate_models_json, models_completed_json,
@@ -475,8 +475,8 @@ def ingest_run(
                 ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
                     run_id,
-                    manifest.get("started_at_iso"),
-                    (end or {}).get("finished_at_iso") or manifest.get("finished_at_iso"),
+                    manifest.get("started_at_ms"),
+                    (end or {}).get("finished_at_ms") or manifest.get("finished_at_ms"),
                     json.dumps(manifest.get("host", {}), sort_keys=True),
                     manifest.get("bench_version"),
                     manifest.get("corpus_version"),
@@ -987,8 +987,8 @@ def test_partial_jsonl_no_run_end(tmp_path):
     try:
         out = ingest_run(jsonl, conn=conn)
         assert out.inserted
-        row = conn.execute("SELECT finished_at_iso FROM bench_runs").fetchone()
-        assert row["finished_at_iso"] is None  # incomplete run
+        row = conn.execute("SELECT finished_at_ms FROM bench_runs").fetchone()
+        assert row["finished_at_ms"] is None  # incomplete run
         assert conn.execute("SELECT COUNT(*) FROM bench_node_enrichment").fetchone()[0] == 1
     finally:
         conn.close()
@@ -1048,7 +1048,7 @@ def test_query_helpers(tmp_path):
     ms2 = _model_summary_with_proxy("run-2")
     ms2["downstream_proxy"]["per_item"][0]["mrr"] = 0.5  # different score in newer run
     m2 = _manifest("run-2")
-    m2["started_at_iso"] = "2026-05-31T05:00:00+00:00"
+    m2["started_at_ms"] = 1780203600000
     r2 = [m2, ms2, _run_end("run-2")]
 
     conn = connect(tmp_path / "bench-results.db")
@@ -1086,7 +1086,7 @@ def leaderboard_latest(conn: sqlite3.Connection, *, mode: str = "hybrid") -> lis
     rows = conn.execute(
         """
         WITH latest AS (
-            SELECT run_id FROM bench_runs ORDER BY started_at_iso DESC LIMIT 1
+            SELECT run_id FROM bench_runs ORDER BY started_at_ms DESC LIMIT 1
         )
         SELECT nr.run_id, nr.model_id,
                AVG(nr.mrr)            AS avg_mrr,
@@ -1106,19 +1106,19 @@ def leaderboard_latest(conn: sqlite3.Connection, *, mode: str = "hybrid") -> lis
 def node_detail(conn: sqlite3.Connection, event_id: str, *, mode: str = "hybrid") -> dict:
     """All historical retrieval + enrichment rows for one corpus node."""
     retrieval = conn.execute(
-        """SELECT nr.run_id, nr.model_id, nr.mrr, nr.rank, nr.hit_at_1, r.started_at_iso
+        """SELECT nr.run_id, nr.model_id, nr.mrr, nr.rank, nr.hit_at_1, r.started_at_ms
            FROM bench_node_retrieval nr JOIN bench_runs r USING (run_id)
            WHERE nr.golden_event_id = ? AND nr.mode = ?
-           ORDER BY r.started_at_iso DESC""",
+           ORDER BY r.started_at_ms DESC""",
         (event_id, mode),
     ).fetchall()
     enrichment = conn.execute(
         """SELECT ne.run_id, ne.model_id, ne.schema_valid, ne.refusal_detected,
                   ne.echo_similarity, ne.entity_sanity, ne.parsed_output_json,
-                  r.started_at_iso
+                  r.started_at_ms
            FROM bench_node_enrichment ne JOIN bench_runs r USING (run_id)
            WHERE ne.event_id = ?
-           ORDER BY r.started_at_iso DESC""",
+           ORDER BY r.started_at_ms DESC""",
         (event_id,),
     ).fetchall()
     return {
@@ -1131,9 +1131,9 @@ def node_detail(conn: sqlite3.Connection, event_id: str, *, mode: str = "hybrid"
 def run_history(conn: sqlite3.Connection) -> list[dict]:
     """All runs, newest first, for the history/trend view."""
     rows = conn.execute(
-        """SELECT run_id, started_at_iso, finished_at_iso, corpus_version,
+        """SELECT run_id, started_at_ms, finished_at_ms, corpus_version,
                   corpus_content_hash, models_completed_json
-           FROM bench_runs ORDER BY started_at_iso DESC"""
+           FROM bench_runs ORDER BY started_at_ms DESC"""
     ).fetchall()
     return [dict(r) for r in rows]
 ```
@@ -1176,12 +1176,12 @@ def test_cli_ingest_single_and_all(tmp_path, monkeypatch, capsys):
     with jsonl.open("w") as f:
         f.write(json.dumps({
             "record_type": "run_manifest", "run_id": "run-x",
-            "started_at_iso": "2026-05-31T00:00:00+00:00", "host": {},
+            "started_at_ms": 1780185600000, "host": {},
             "candidate_models": [], "corpus_content_hash": "h",
         }, sort_keys=True) + "\n")
         f.write(json.dumps({
             "record_type": "run_end", "run_id": "run-x",
-            "finished_at_iso": "2026-05-31T01:00:00+00:00",
+            "finished_at_ms": 1780189200000,
             "models_completed": [], "models_errored": [],
         }, sort_keys=True) + "\n")
 
@@ -1539,7 +1539,7 @@ _TEMPLATE = """<!doctype html>
    el.replaceChildren(tbl);
  }}
  renderTable("leaderboard", data.leaderboard, ["model_id", "avg_mrr", "hit_at_1", "scored_nodes", "run_id"]);
- renderTable("history", data.history, ["started_at_iso", "run_id", "corpus_version", "finished_at_iso"]);
+ renderTable("history", data.history, ["started_at_ms", "run_id", "corpus_version", "finished_at_ms"]);
 
  // Per-node view: a <select> of every scored corpus node; on change, render
  // that node's retrieval ranking and enrichment rows across all runs.
@@ -1553,7 +1553,7 @@ _TEMPLATE = """<!doctype html>
  function renderNode(id) {{
    const detail = data.nodes[id] || {{retrieval: [], enrichment: []}};
    renderTable("node-retrieval", detail.retrieval,
-     ["model_id", "mrr", "rank", "hit_at_1", "run_id", "started_at_iso"]);
+     ["model_id", "mrr", "rank", "hit_at_1", "run_id", "started_at_ms"]);
    renderTable("node-enrichment", detail.enrichment,
      ["model_id", "schema_valid", "refusal_detected", "echo_similarity",
       "entity_sanity", "parsed_output_json", "run_id"]);

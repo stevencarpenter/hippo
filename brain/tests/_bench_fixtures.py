@@ -21,7 +21,7 @@ def _manifest(run_id="run-1"):
     return {
         "record_type": "run_manifest",
         "run_id": run_id,
-        "started_at_iso": "2026-05-31T00:00:00+00:00",
+        "started_at_ms": 1780185600000,
         "host": {"node": "test-host"},
         "preflight_checks": [],
         "candidate_models": ["model-a"],
@@ -36,7 +36,7 @@ def _manifest(run_id="run-1"):
         "host_baseline": {},
         "prod_state_at_start": {},
         "self_consistency_spec": {},
-        "finished_at_iso": None,
+        "finished_at_ms": None,
     }
 
 
@@ -44,7 +44,7 @@ def _run_end(run_id="run-1"):
     return {
         "record_type": "run_end",
         "run_id": run_id,
-        "finished_at_iso": "2026-05-31T01:00:00+00:00",
+        "finished_at_ms": 1780189200000,
         "models_completed": ["model-a"],
         "models_errored": [],
         "reason": None,

@@ -1,0 +1,5 @@
+[toolchain]
+profile = "default"
+channel = "1.95"
+components = ["clippy", "rustfmt", "cargo"]
+targets = ["aarch64-apple-darwin"]
