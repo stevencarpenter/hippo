@@ -55,3 +55,8 @@ def bench_run_tree(run_id: str, model_id: str, create: bool = False) -> Path:
     if create:
         p.mkdir(parents=True, exist_ok=True)
     return p
+
+
+def bench_results_db_path() -> Path:
+    """Durable, all-local bench results datastore. Separate file from hippo.db."""
+    return hippo_bench_root() / "bench-results.db"
