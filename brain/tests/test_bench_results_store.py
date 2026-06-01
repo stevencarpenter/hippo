@@ -46,6 +46,50 @@ def _run_end(run_id="run-1"):
     }
 
 
+def _model_summary(run_id="run-1", model="model-a"):
+    return {
+        "record_type": "model_summary",
+        "run_id": run_id,
+        "model": {"id": model},
+        "events_attempted": 2,
+        "attempts_total": 2,
+        "gates": {
+            "schema_validity_rate": 1.0,
+            "refusal_rate": 0.0,
+            "echo_similarity_max": 0.1,
+            "latency_p50_ms": 100,
+            "latency_p95_ms": 200,
+            "latency_p99_ms": 300,
+            "self_consistency_mean": None,
+            "self_consistency_min": None,
+            "entity_sanity_mean": 0.9,
+            "main_attempts_count": 2,
+        },
+        "system_peak": {},
+        "tier0_verdict": {"passed": True, "failed_gates": [], "skipped_gates": [], "notes": []},
+        "downstream_proxy": {},
+        "errors": [],
+    }
+
+
+def test_ingest_models(tmp_path):
+    from hippo_brain.bench.results_store import connect, ingest_run
+
+    jsonl = _write_jsonl(tmp_path / "run-1.jsonl", [_manifest(), _model_summary(), _run_end()])
+    conn = connect(tmp_path / "bench-results.db")
+    try:
+        ingest_run(jsonl, conn=conn)
+        row = conn.execute(
+            "SELECT * FROM bench_models WHERE run_id='run-1' AND model_id='model-a'"
+        ).fetchone()
+        assert row["schema_validity_rate"] == 1.0
+        assert row["latency_p95_ms"] == 200
+        assert row["verdict_passed"] == 1
+        assert row["self_consistency_mean"] is None
+    finally:
+        conn.close()
+
+
 def test_ingest_run_writes_bench_runs(tmp_path):
     from hippo_brain.bench.results_store import connect, ingest_run
 

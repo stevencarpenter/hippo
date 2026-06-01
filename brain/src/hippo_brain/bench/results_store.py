@@ -210,8 +210,40 @@ def ingest_run(
             conn.close()
 
 
-def _ingest_models(conn, run_id, records):  # noqa: ANN001
-    pass
+def _ingest_models(conn: sqlite3.Connection, run_id: str, records: list[dict]) -> int:
+    n = 0
+    for r in records:
+        if r.get("record_type") != "model_summary":
+            continue
+        g = r.get("gates", {})
+        verdict = r.get("tier0_verdict", {})
+        conn.execute(
+            """INSERT INTO bench_models (
+                run_id, model_id, schema_validity_rate, refusal_rate, echo_similarity_max,
+                latency_p50_ms, latency_p95_ms, latency_p99_ms, self_consistency_mean,
+                self_consistency_min, entity_sanity_mean, main_attempts_count,
+                verdict_passed, failed_gates_json, errors_json
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                run_id,
+                r.get("model", {}).get("id"),
+                g.get("schema_validity_rate"),
+                g.get("refusal_rate"),
+                g.get("echo_similarity_max"),
+                g.get("latency_p50_ms"),
+                g.get("latency_p95_ms"),
+                g.get("latency_p99_ms"),
+                g.get("self_consistency_mean"),
+                g.get("self_consistency_min"),
+                g.get("entity_sanity_mean"),
+                g.get("main_attempts_count"),
+                1 if verdict.get("passed") else 0,
+                json.dumps(verdict.get("failed_gates", []), sort_keys=True),
+                json.dumps(r.get("errors", []), sort_keys=True),
+            ),
+        )
+        n += 1
+    return n
 
 
 def _ingest_enrichment(conn, run_id, records):  # noqa: ANN001
