@@ -252,7 +252,7 @@ def _cmd_ingest(args: argparse.Namespace) -> int:
 
         suffix = f", {errors} error(s)" if errors else ""
         print(f"done: {total_new} run(s) ingested, {len(targets)} file(s) seen{suffix}")
-        return 0
+        return 0 if args.all or errors == 0 else 1
     finally:
         conn.close()
 

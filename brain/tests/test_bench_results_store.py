@@ -323,6 +323,78 @@ def test_aborted_run_not_ingested(tmp_path):
         conn.close()
 
 
+def test_incomplete_run_removed_when_later_aborted(tmp_path):
+    """An in-flight run can be ingested before run_end exists; if the final JSONL
+    later says preflight_aborted, that stale partial row must be removed."""
+    from hippo_brain.bench.results_store import connect, ingest_run
+
+    aborted_end = {
+        "record_type": "run_end",
+        "run_id": "run-abort",
+        "finished_at_iso": "2026-05-31T00:05:00+00:00",
+        "models_completed": [],
+        "models_errored": [],
+        "reason": "preflight_aborted",
+    }
+    conn = connect(tmp_path / "bench-results.db")
+    try:
+        first = ingest_run(
+            _write_jsonl(
+                tmp_path / "partial.jsonl", [_manifest("run-abort"), _attempt("run-abort")]
+            ),
+            conn=conn,
+        )
+        assert first.inserted
+        assert conn.execute("SELECT COUNT(*) FROM bench_runs").fetchone()[0] == 1
+        assert conn.execute("SELECT COUNT(*) FROM bench_node_enrichment").fetchone()[0] == 1
+
+        second = ingest_run(
+            _write_jsonl(tmp_path / "aborted.jsonl", [_manifest("run-abort"), aborted_end]),
+            conn=conn,
+        )
+
+        assert second.skipped_aborted is True
+        assert second.inserted is False
+        assert conn.execute("SELECT COUNT(*) FROM bench_runs").fetchone()[0] == 0
+        assert conn.execute("SELECT COUNT(*) FROM bench_node_enrichment").fetchone()[0] == 0
+    finally:
+        conn.close()
+
+
+def test_incomplete_run_removed_when_later_no_models(tmp_path):
+    """A completed run with no model rows is intentionally skipped and should
+    clear a previously ingested partial row for the same run_id."""
+    from hippo_brain.bench.results_store import connect, ingest_run
+
+    no_models_end = {
+        "record_type": "run_end",
+        "run_id": "run-empty",
+        "finished_at_iso": "2026-05-31T00:05:00+00:00",
+        "models_completed": [],
+        "models_errored": [],
+        "reason": "no_models",
+    }
+    conn = connect(tmp_path / "bench-results.db")
+    try:
+        ingest_run(
+            _write_jsonl(
+                tmp_path / "partial.jsonl", [_manifest("run-empty"), _attempt("run-empty")]
+            ),
+            conn=conn,
+        )
+
+        second = ingest_run(
+            _write_jsonl(tmp_path / "no-models.jsonl", [_manifest("run-empty"), no_models_end]),
+            conn=conn,
+        )
+
+        assert second.skipped_aborted is True
+        assert conn.execute("SELECT COUNT(*) FROM bench_runs").fetchone()[0] == 0
+        assert conn.execute("SELECT COUNT(*) FROM bench_node_enrichment").fetchone()[0] == 0
+    finally:
+        conn.close()
+
+
 def test_ingest_manifest_without_run_id_returns_none_gracefully(tmp_path):
     """B: a run_manifest lacking run_id must be handled like a missing manifest
     (no KeyError crash) — the CLI ingest path has no try/except around it."""

@@ -187,6 +187,8 @@ def ingest_run(
         # the leaderboard. (A still-running partial JSONL has no run_end / no
         # reason and is NOT skipped here — it ingests what it has.)
         if end and end.get("reason") in {"preflight_aborted", "no_models"}:
+            with conn:
+                conn.execute("DELETE FROM bench_runs WHERE run_id=?", (run_id,))
             return IngestResult(
                 run_id=run_id,
                 inserted=False,

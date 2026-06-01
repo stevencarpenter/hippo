@@ -572,6 +572,19 @@ def test_cli_ingest_all_continues_past_bad_file(tmp_path, monkeypatch, capsys):
         conn.close()
 
 
+def test_cli_ingest_explicit_bad_file_returns_nonzero(tmp_path, monkeypatch, capsys):
+    """A direct ingest target is scriptable operator input; failures must not be
+    reported as shell success the way best-effort --all backfills are."""
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
+    from hippo_brain.bench import cli
+
+    missing = tmp_path / "missing.jsonl"
+    assert cli.main(["ingest", str(missing)]) == 1
+    out = capsys.readouterr().out
+    assert "ERROR" in out
+    assert "done:" in out
+
+
 def test_cli_ingest_aborted_run_not_labeled_ingested(tmp_path, monkeypatch, capsys):
     """C: an aborted run (skipped_aborted) must not print as 'ingested'."""
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
