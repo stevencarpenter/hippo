@@ -386,15 +386,21 @@ Four tables, keyed on `run_id` (children cascade-delete on `--force` re-ingest):
 |---|---|---|
 | `bench_runs` | one per run | manifest + run_end: corpus version/hash, thresholds, models, timestamps |
 | `bench_models` | per (run, model) | aggregate gate rates, latency percentiles, verdict |
-| `bench_node_enrichment` | per (run, model, corpus node) | enrichment gates + `parsed_output_json` — **full coverage** of every node |
+| `bench_node_enrichment` | per (run, model, corpus node) | enrichment gates + `parsed_output_json` — per-node health layer (**dormant**, see below) |
 | `bench_node_retrieval` | per (run, model, QA item, mode) | rank, MRR, Hit@1/10, NDCG — **the headline**, QA-labeled subset only |
 
 **Two scoring signals, two roles.** Retrieval quality (MRR/Hit@1, from
 `downstream_proxy.per_item`) is the **headline leaderboard** — it measures whether
 a model's enrichment makes a node findable, the outcome hippo exists for. Its
-coverage grows automatically as more `eval-qa` items are labeled. Enrichment gates
-are the **full-coverage health layer** — they cover every node but mostly act as a
-floor rather than a discriminator.
+coverage grows automatically as more `eval-qa` items are labeled.
+
+> **`bench_node_enrichment` is dormant on real runs.** The ingest + schema are in
+> place, but the bench pipeline does not yet emit per-node enrichment records over
+> the full corpus (the self-consistency pass samples only a few nodes, and the
+> shadow brain's full-corpus enrichment is discarded with the shadow stack). Until
+> that lands, this table stays empty on real runs and the dashboard's per-node
+> enrichment view shows "(no data)". Tracked in
+> [#191](https://github.com/stevencarpenter/hippo/issues/191) — picked up next.
 
 ```bash
 # Backfill any surviving run JSONLs (one file, or every *.jsonl under runs/)

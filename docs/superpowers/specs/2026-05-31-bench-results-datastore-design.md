@@ -278,6 +278,23 @@ sample run file):
 - Foreign keys with `ON DELETE CASCADE` so `--force` re-ingest cleanly replaces a
   run's full row set in one transaction.
 
+## Implementation Note: enrichment layer deferred
+
+During implementation, the final review found that the bench pipeline does **not**
+emit `attempt` records with `purpose = 'main'` over the full corpus — every
+attempt is `purpose = 'self_consistency'`, and the self-consistency pass samples
+only a few nodes, while the shadow brain's full-corpus enrichment is discarded
+with the shadow stack. The `bench_node_enrichment` table and its ingest are
+therefore **dormant on real runs** (correct, tested against synthetic `main`
+attempts, but empty on real data). The retrieval layer — the agreed headline — is
+unaffected and ships fully working.
+
+Restoring full-corpus per-node enrichment (and, by the same root cause, the
+currently-vacuous per-model gate scorecard) is tracked in
+[#191](https://github.com/stevencarpenter/hippo/issues/191) and is the immediate
+follow-up. The schema and ingest here are intentionally left in place so that work
+is purely additive (emit the records; the datastore already consumes them).
+
 ## Open Questions / Future
 
 - Store **raw** (un-parsed) enrichment output too? Deferred — `parsed_output_json`
