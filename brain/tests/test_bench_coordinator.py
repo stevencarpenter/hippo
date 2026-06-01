@@ -41,6 +41,7 @@ def _patch_lifecycle(
     drain_raises: BaseException | None = None,
     sc_raises: BaseException | None = None,
     proxy_raises: BaseException | None = None,
+    main_raises: BaseException | None = None,
 ) -> dict[str, MagicMock]:
     """Stub every I/O dependency. Returns a dict of MagicMocks keyed by name
     so the test can assert call counts."""
@@ -87,7 +88,7 @@ def _patch_lifecycle(
     pause_client_mock.probe_health.return_value = {"paused": False}
     monkeypatch.setattr(coordinator, "PauseRpcClient", MagicMock(return_value=pause_client_mock))
 
-    # Patch downstream proxy + SC pass for the optional-error variants.
+    # Patch downstream proxy, SC pass, and main enrichment pass for the optional-error variants.
     if proxy_raises is not None:
         monkeypatch.setattr(
             coordinator,
@@ -100,6 +101,14 @@ def _patch_lifecycle(
             "run_self_consistency_pass",
             MagicMock(side_effect=sc_raises),
         )
+    # Always stub run_main_enrichment_pass — it makes real inference calls when the corpus
+    # is non-empty, and most tests just want isolation. Tests that care about the main
+    # pass explicitly override this with their own mock after calling _patch_lifecycle.
+    main_mock = MagicMock(
+        return_value=[],
+        side_effect=main_raises if main_raises is not None else None,
+    )
+    monkeypatch.setattr(coordinator, "run_main_enrichment_pass", main_mock)
 
     return {
         "spawn": spawn_mock,
@@ -107,6 +116,7 @@ def _patch_lifecycle(
         "teardown": teardown_mock,
         "drain": drain_mock,
         "sampler": sampler_mock,
+        "main": main_mock,
     }
 
 
@@ -218,9 +228,9 @@ def test_smoke_run_one_model_full_lifecycle(
     """BT-12: end-to-end smoke through every step.
 
     Patches every I/O boundary, runs through unload→load→spawn→drain→
-    downstream-proxy→SC→teardown→cooldown, and asserts:
+    downstream-proxy→main-enrichment→SC→teardown→cooldown, and asserts:
     - downstream_proxy is populated (not silently {})
-    - SC attempts list is populated
+    - main-pass and SC attempts are both plumbed into result.attempts
     - errors list is empty (clean path)
     - teardown was called exactly once
     """
@@ -250,12 +260,19 @@ def test_smoke_run_one_model_full_lifecycle(
         "run_downstream_proxy_pass",
         MagicMock(return_value={"hit_at_1": 0.4, "mrr": 0.35, "ndcg_at_10": 0.42}),
     )
-    # Provide a non-empty corpus so SC pass actually runs.
+    # Provide a non-empty corpus so main and SC passes actually run.
     fake_entry = MagicMock(redacted_content="hello", source="shell")
     monkeypatch.setattr(
         coordinator,
         "_load_corpus_entries",
         MagicMock(return_value=[fake_entry, fake_entry, fake_entry]),
+    )
+    main_attempt = MagicMock()
+    main_attempt.purpose = "main"
+    monkeypatch.setattr(
+        coordinator,
+        "run_main_enrichment_pass",
+        MagicMock(return_value=[main_attempt, main_attempt, main_attempt]),
     )
     sc_attempt = MagicMock()
     sc_attempt.to_dict.return_value = {"k": "v"}
@@ -282,7 +299,7 @@ def test_smoke_run_one_model_full_lifecycle(
         "mrr": 0.35,
         "ndcg_at_10": 0.42,
     }, "downstream_proxy must be populated, not silently empty"
-    assert len(result.attempts) == 2, "SC attempts plumbed into result"
+    assert len(result.attempts) == 5, "3 main + 2 SC attempts plumbed into result"
     assert result.errors == [], "no errors on clean path"
 
 
@@ -544,3 +561,82 @@ def test_load_corpus_failure_captured_as_structured_error(
     assert load_error["type"] == "ValueError"
     # Bench continued past the failure — it's a captured-error, not a crash.
     assert result.model == "test-model"
+
+
+def test_main_enrichment_pass_called_with_full_corpus(
+    monkeypatch: pytest.MonkeyPatch, fake_corpus: Path
+) -> None:
+    """Cycle 2 RED: coordinator invokes run_main_enrichment_pass over ALL corpus entries."""
+    from hippo_brain.bench.corpus import CorpusEntry
+    from hippo_brain.bench.output import AttemptRecord
+
+    entries = [
+        CorpusEntry(event_id=f"shell-{i}", source="shell", redacted_content=f"cmd {i}")
+        for i in range(4)
+    ]
+    main_attempts = [
+        AttemptRecord(
+            run_id="test-run",
+            model={"id": "test-model"},
+            event={"event_id": e.event_id, "source": e.source, "content_hash": ""},
+            attempt_idx=0,
+            purpose="main",
+            timestamps={},
+            raw_output="",
+            parsed_output=None,
+            gates={"schema_valid": True},
+            system_snapshot={},
+        )
+        for e in entries
+    ]
+
+    main_pass_mock = MagicMock(return_value=main_attempts)
+    mocks = _patch_lifecycle(monkeypatch)
+    monkeypatch.setattr(coordinator, "_load_corpus_entries", MagicMock(return_value=entries))
+    monkeypatch.setattr(coordinator, "run_main_enrichment_pass", main_pass_mock)
+
+    result = coordinator.run_one_model(
+        model="test-model",
+        run_id="test-run",
+        corpus_sqlite=fake_corpus,
+        warmup_calls=0,
+        sc_events=0,
+        cooldown_max_sec=0,
+    )
+
+    main_pass_mock.assert_called_once()
+    call_kwargs = main_pass_mock.call_args.kwargs
+    assert call_kwargs["entries"] == entries, "main pass must receive the full corpus, not a sample"
+    assert call_kwargs["model"] == "test-model"
+    assert call_kwargs["run_id"] == "test-run"
+    main_in_result = [a for a in result.attempts if a.purpose == "main"]
+    assert len(main_in_result) == len(entries), (
+        "all main-pass attempts must appear in ModelRunResult.attempts"
+    )
+    assert mocks["teardown"].call_count == 1
+
+
+def test_main_enrichment_pass_failure_captured_as_structured_error(
+    monkeypatch: pytest.MonkeyPatch, fake_corpus: Path
+) -> None:
+    """Cycle 2 RED: a crash in run_main_enrichment_pass is captured, not propagated."""
+    from hippo_brain.bench.corpus import CorpusEntry
+
+    entries = [CorpusEntry(event_id="e1", source="shell", redacted_content="ls")]
+    mocks = _patch_lifecycle(monkeypatch, main_raises=RuntimeError("synthetic: main pass boom"))
+    monkeypatch.setattr(coordinator, "_load_corpus_entries", MagicMock(return_value=entries))
+
+    result = coordinator.run_one_model(
+        model="test-model",
+        run_id="test-run",
+        corpus_sqlite=fake_corpus,
+        warmup_calls=0,
+        sc_events=0,
+        cooldown_max_sec=0,
+    )
+
+    assert mocks["teardown"].call_count == 1, "teardown still runs on captured main-pass failure"
+    main_error = next((e for e in result.errors if e["step"] == "main_enrichment"), None)
+    assert main_error is not None, f"expected main_enrichment error, got: {result.errors}"
+    assert "synthetic" in main_error["error"]
+    assert main_error["type"] == "RuntimeError"
