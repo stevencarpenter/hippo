@@ -156,6 +156,7 @@ def run_downstream_proxy_pass(
             results = search(conn, query, query_vec, mode=mode, limit=k)
             score = score_single_retrieval(results, item["golden_event_id"])
             score["qa_id"] = item.get("qa_id")
+            score["golden_event_id"] = item["golden_event_id"]
             score["mode"] = mode
             scored.append(score)
             per_item_scores.append(score)

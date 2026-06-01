@@ -242,3 +242,24 @@ def test_ask_synthesis_sample_deterministic() -> None:
 
     assert seen_first == seen_second
     assert len(seen_first) == 7
+
+
+def test_per_item_carries_golden_event_id():
+    from hippo_brain.bench.downstream_proxy import run_downstream_proxy_pass
+
+    qa_items = [{"qa_id": "qa-001", "question": "q?", "golden_event_id": "claude-7"}]
+
+    def fake_search(conn, query, vec, *, mode, limit):
+        # Return a single result whose source id matches the golden.
+        return [{"event_id": "claude-7"}]
+
+    out = run_downstream_proxy_pass(
+        conn=None,
+        qa_items=qa_items,
+        embedding_fn=lambda q: [0.0, 1.0],
+        modes=("hybrid",),
+        search_fn=fake_search,
+    )
+    assert out["per_item"][0]["golden_event_id"] == "claude-7"
+    assert out["per_item"][0]["qa_id"] == "qa-001"
+    assert out["per_item"][0]["mode"] == "hybrid"
