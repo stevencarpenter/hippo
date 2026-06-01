@@ -198,12 +198,18 @@ def ingest_run(
                     now_ms,
                 ),
             )
-            _ingest_models(conn, run_id, records)
-            _ingest_enrichment(conn, run_id, records)
-            _ingest_retrieval(conn, run_id, records)
+            n_models = _ingest_models(conn, run_id, records)
+            n_enrich = _ingest_enrichment(conn, run_id, records)
+            n_retr = _ingest_retrieval(conn, run_id, records)
 
         return IngestResult(
-            run_id=run_id, inserted=True, skipped_existing=False, malformed_lines=malformed
+            run_id=run_id,
+            inserted=True,
+            skipped_existing=False,
+            models=n_models,
+            enrichment_rows=n_enrich,
+            retrieval_rows=n_retr,
+            malformed_lines=malformed,
         )
     finally:
         if owns_conn:
@@ -282,5 +288,37 @@ def _ingest_enrichment(conn: sqlite3.Connection, run_id: str, records: list[dict
     return n
 
 
-def _ingest_retrieval(conn, run_id, records):  # noqa: ANN001
-    pass
+def _hit(hit_at_k: dict, k: int) -> int:
+    v = hit_at_k.get(k, hit_at_k.get(str(k), False))
+    return 1 if v else 0
+
+
+def _ingest_retrieval(conn: sqlite3.Connection, run_id: str, records: list[dict]) -> int:
+    n = 0
+    for r in records:
+        if r.get("record_type") != "model_summary":
+            continue
+        model_id = r.get("model", {}).get("id")
+        per_item = r.get("downstream_proxy", {}).get("per_item", [])
+        for item in per_item:
+            hk = item.get("hit_at_k", {})
+            conn.execute(
+                """INSERT OR REPLACE INTO bench_node_retrieval (
+                    run_id, model_id, qa_id, golden_event_id, mode, rank, mrr,
+                    hit_at_1, hit_at_10, ndcg_at_10
+                ) VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    run_id,
+                    model_id,
+                    item.get("qa_id"),
+                    item.get("golden_event_id"),
+                    item.get("mode"),
+                    item.get("rank"),
+                    item.get("mrr"),
+                    _hit(hk, 1),
+                    _hit(hk, 10),
+                    item.get("ndcg_at_10"),
+                ),
+            )
+            n += 1
+    return n

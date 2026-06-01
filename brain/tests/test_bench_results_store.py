@@ -103,6 +103,58 @@ def _attempt(
     }
 
 
+def _model_summary_with_proxy(run_id="run-1", model="model-a"):
+    ms = _model_summary(run_id, model)
+    ms["downstream_proxy"] = {
+        "modes": {"hybrid": {"mrr": 1.0, "hit_at_1": 1.0}},
+        "qa_count": 1,
+        "k": 10,
+        "per_item": [
+            {
+                "hit_at_k": {1: True, 3: True, 5: True, 10: True},
+                "rank": 1,
+                "mrr": 1.0,
+                "ndcg_at_10": 1.0,
+                "qa_id": "qa-001",
+                "golden_event_id": "claude-7",
+                "mode": "hybrid",
+            },
+            {
+                "hit_at_k": {1: False, 3: False, 5: False, 10: False},
+                "rank": None,
+                "mrr": 0.0,
+                "ndcg_at_10": 0.0,
+                "qa_id": "qa-001",
+                "golden_event_id": "claude-7",
+                "mode": "lexical",
+            },
+        ],
+    }
+    return ms
+
+
+def test_ingest_retrieval(tmp_path):
+    from hippo_brain.bench.results_store import connect, ingest_run
+
+    jsonl = _write_jsonl(
+        tmp_path / "run-1.jsonl", [_manifest(), _model_summary_with_proxy(), _run_end()]
+    )
+    conn = connect(tmp_path / "bench-results.db")
+    try:
+        ingest_run(jsonl, conn=conn)
+        hybrid = conn.execute("SELECT * FROM bench_node_retrieval WHERE mode='hybrid'").fetchone()
+        assert hybrid["golden_event_id"] == "claude-7"
+        assert hybrid["qa_id"] == "qa-001"
+        assert hybrid["rank"] == 1
+        assert hybrid["hit_at_1"] == 1
+        assert hybrid["hit_at_10"] == 1
+        lexical = conn.execute("SELECT * FROM bench_node_retrieval WHERE mode='lexical'").fetchone()
+        assert lexical["rank"] is None
+        assert lexical["hit_at_1"] == 0
+    finally:
+        conn.close()
+
+
 def test_ingest_enrichment_main_only(tmp_path):
     from hippo_brain.bench.results_store import connect, ingest_run
 
