@@ -204,6 +204,69 @@ def _cmd_recover(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_ingest(args: argparse.Namespace) -> int:
+    import logging
+
+    from hippo_brain.bench.results_store import connect, ingest_run
+
+    log = logging.getLogger(__name__)
+
+    if args.all:
+        targets = sorted(bench_runs_dir().glob("*.jsonl"))
+    elif args.run_file:
+        targets = [Path(p) for p in args.run_file]
+    else:
+        print("error: ingest requires a run_file argument or --all")
+        return 1
+
+    conn = connect()
+    try:
+        total_new = 0
+        errors = 0
+        for t in targets:
+            # Per-file isolation: one bad JSONL (unreadable, non-UTF-8, bad
+            # data that slips past ingest_run's own guards) must not abort the
+            # rest of the batch. Report it and move on.
+            try:
+                res = ingest_run(t, conn=conn, force=args.force)
+            except Exception as e:  # noqa: BLE001 — isolate one bad file from the batch
+                errors += 1
+                log.exception("ingest failed for %s", t)
+                print(f"{t.name}: ERROR ({type(e).__name__}: {e})")
+                continue
+
+            if res.skipped_existing:
+                status = "skipped (already ingested)"
+            elif res.skipped_aborted:
+                status = "skipped (aborted run — no scoring rows)"
+            elif res.run_id is None:
+                # run_id is None for both a missing run_manifest AND a manifest
+                # present but lacking a run_id — keep the wording broad.
+                status = "skipped (no usable run_manifest / run_id)"
+            else:
+                status = (
+                    f"ingested run_id={res.run_id} "
+                    f"(models={res.models}, enrichment={res.enrichment_rows}, "
+                    f"retrieval={res.retrieval_rows}, malformed={res.malformed_lines})"
+                )
+            print(f"{t.name}: {status}")
+            total_new += 1 if res.inserted else 0
+
+        suffix = f", {errors} error(s)" if errors else ""
+        print(f"done: {total_new} run(s) ingested, {len(targets)} file(s) seen{suffix}")
+        return 0 if args.all or errors == 0 else 1
+    finally:
+        conn.close()
+
+
+def _cmd_export_dashboard(args: argparse.Namespace) -> int:
+    from hippo_brain.bench.dashboard_export import export_dashboard
+
+    out = export_dashboard(Path(args.out) if args.out else None)
+    print(f"wrote dashboard: {out}")
+    return 0
+
+
 def _cmd_run(args: argparse.Namespace) -> int:
     # BT-06: recover from a prior crashed bench run before doing anything
     # else. If the previous bench was SIGKILL'd, prod brain is still paused;
@@ -411,6 +474,24 @@ def _build_parser() -> argparse.ArgumentParser:
     summary = sub.add_parser("summary", help="Pretty-print a run JSONL file")
     summary.add_argument("run_file")
     summary.set_defaults(func=_cmd_summary)
+
+    ingest = sub.add_parser("ingest", help="Ingest run JSONL into the bench results datastore")
+    ingest.add_argument(
+        "run_file",
+        nargs="*",
+        help="One or more run JSONL paths (a glob like run-*.jsonl works); omit with --all",
+    )
+    ingest.add_argument(
+        "--all", action="store_true", help="Ingest every *.jsonl under the runs dir"
+    )
+    ingest.add_argument("--force", action="store_true", help="Re-ingest runs already present")
+    ingest.set_defaults(func=_cmd_ingest)
+
+    export = sub.add_parser(
+        "export-dashboard", help="Render the results datastore to one HTML file"
+    )
+    export.add_argument("--out", help="Output HTML path (default: <hippo-bench>/dashboard.html)")
+    export.set_defaults(func=_cmd_export_dashboard)
 
     # BT-29 / post-review: deterministic-rerun verification. Operator runs the
     # bench 3× against the same model + frozen corpus, then compares JSONLs.

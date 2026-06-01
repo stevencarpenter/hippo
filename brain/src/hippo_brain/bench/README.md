@@ -159,6 +159,10 @@ hippo-bench determinism <run-file> <run-file> [...] [--mrr-budget 0.02]
                                                     [--hit-at-1-budget 0.02]
                                                     [--mode hybrid]
 
+hippo-bench ingest <run-file> | --all [--force]
+
+hippo-bench export-dashboard [--out path]
+
 hippo-bench recover [--brain-url http://127.0.0.1:9175]
 ```
 
@@ -361,6 +365,63 @@ jq 'select(.record_type=="model_summary") | {model:.model.id, errors:.errors}' "
 
 ---
 
+## Results datastore
+
+The per-run JSONL is an append-only **working file** — crash-safe during a run,
+but local-only, unindexed, and easy to lose. The durable record of history is a
+separate SQLite datastore:
+
+```
+~/.local/share/hippo-bench/bench-results.db    # sibling of runs/, NOT hippo.db
+```
+
+It is **auto-ingested at run-end** (`orchestrate._safe_ingest` → `results_store.ingest_run`),
+wrapped so a datastore failure never fails the bench run — the JSONL stays as the
+fallback. Ingest is idempotent on `run_id` (a run's JSONL is immutable after
+`run_end`), so re-ingest is a no-op unless `--force`.
+
+Four tables, keyed on `run_id` (children cascade-delete on `--force` re-ingest):
+
+| Table | Grain | Captures |
+|---|---|---|
+| `bench_runs` | one per run | manifest + run_end: corpus version/hash, thresholds, models, timestamps |
+| `bench_models` | per (run, model) | aggregate gate rates, latency percentiles, verdict |
+| `bench_node_enrichment` | per (run, model, corpus node) | enrichment gates + `parsed_output_json` — per-node health layer (**dormant**, see below) |
+| `bench_node_retrieval` | per (run, model, QA item, mode) | rank, MRR, Hit@1/10, NDCG — **the headline**, QA-labeled subset only |
+
+**Two scoring signals, two roles.** Retrieval quality (MRR/Hit@1, from
+`downstream_proxy.per_item`) is the **headline leaderboard** — it measures whether
+a model's enrichment makes a node findable, the outcome hippo exists for. Its
+coverage grows automatically as more `eval-qa` items are labeled.
+
+> **`bench_node_enrichment` is dormant on real runs.** The ingest + schema are in
+> place, but the bench pipeline does not yet emit per-node enrichment records over
+> the full corpus (the self-consistency pass samples only a few nodes, and the
+> shadow brain's full-corpus enrichment is discarded with the shadow stack). Until
+> that lands, this table stays empty on real runs and the dashboard's per-node
+> enrichment view shows "(no data)". Tracked in
+> [#191](https://github.com/stevencarpenter/hippo/issues/191) — picked up next.
+
+```bash
+# Backfill any surviving run JSONLs (one file, or every *.jsonl under runs/)
+hippo-bench ingest ~/.local/share/hippo-bench/runs/run-*.jsonl
+hippo-bench ingest --all [--force]
+
+# Render the datastore to one self-contained HTML file (no server, no network):
+# leaderboard (latest run, hybrid) + per-node "best model per corpus member" +
+# run history. Cell values (incl. stored LLM output) render via textContent, so
+# they cannot inject markup.
+hippo-bench export-dashboard            # → ~/.local/share/hippo-bench/dashboard.html
+hippo-bench export-dashboard --out /tmp/bench.html
+```
+
+The leaderboard headline uses the **most-recent run that has retrieval rows for
+the selected mode** — usually the newest run, but it falls back to the latest run
+that was actually QA-scored when a newer run skipped scoring (so the headline never
+blanks). All prior runs stay in the datastore for the per-node and history views.
+
+---
+
 ## Module map
 
 | Module | Responsibility |
@@ -380,6 +441,8 @@ jq 'select(.record_type=="model_summary") | {model:.model.id, errors:.errors}' "
 | [`coordinator.py`](coordinator.py) | Per-model lifecycle (shadow stack, queue drain, downstream proxy) |
 | [`runner.py`](runner.py) | Self-consistency pass; per-attempt gate composition |
 | [`output.py`](output.py) | JSONL record dataclasses + append-only writer |
+| [`results_store.py`](results_store.py) | Durable `bench-results.db`: schema, idempotent `ingest_run`, leaderboard/node/history queries |
+| [`dashboard_export.py`](dashboard_export.py) | Renders the datastore to one self-contained HTML file (leaderboard + per-node + history) |
 | [`summary.py`](summary.py) | Aggregate per-model gates from attempts; derive verdict |
 | [`pretty.py`](pretty.py) | Text-table renderer for `hippo-bench summary` |
 | [`orchestrate.py`](orchestrate.py) | Top-level: preflight + pause/resume + per-model loop + JSONL writes |

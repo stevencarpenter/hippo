@@ -416,6 +416,37 @@ def test_inference_backend_version_none_on_unknown_backend(monkeypatch):
     run.assert_not_called()
 
 
+def test_safe_ingest_skips_dry_run(tmp_path, monkeypatch):
+    import hippo_brain.bench.orchestrate as orch
+
+    called = []
+    monkeypatch.setattr(orch, "ingest_run", lambda p: called.append(p), raising=False)
+    orch._safe_ingest(tmp_path / "run.jsonl", dry_run=True)
+    assert called == []  # dry runs are not ingested
+
+
+def test_safe_ingest_calls_ingest_for_real_run(tmp_path, monkeypatch):
+    import hippo_brain.bench.orchestrate as orch
+
+    called = []
+    monkeypatch.setattr(orch, "ingest_run", lambda p: called.append(p), raising=False)
+    out = tmp_path / "run.jsonl"
+    orch._safe_ingest(out, dry_run=False)
+    assert called == [out]
+
+
+def test_safe_ingest_swallows_errors(tmp_path, monkeypatch):
+    import hippo_brain.bench.orchestrate as orch
+
+    def boom(_p):
+        raise RuntimeError("datastore exploded")
+
+    monkeypatch.setattr(orch, "ingest_run", boom, raising=False)
+    # Must not raise even though ingest blows up — a reporting concern never
+    # fails the run (AP-1).
+    orch._safe_ingest(tmp_path / "run.jsonl", dry_run=False)
+
+
 def test_orchestrate_writes_computed_gates_instead_of_hardcoded_pass(stub_corpus, tmp_path):
     sqlite, manifest = stub_corpus
     out = tmp_path / "run.jsonl"

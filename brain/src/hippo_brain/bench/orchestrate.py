@@ -5,6 +5,7 @@ from __future__ import annotations
 import atexit
 import datetime as _dt
 import json
+import logging
 import os
 import platform
 import subprocess
@@ -31,6 +32,7 @@ from hippo_brain.bench.paths import (
 )
 from hippo_brain.bench.pause_rpc import PauseRpcClient
 from hippo_brain.bench.preflight import run_all_preflight
+from hippo_brain.bench.results_store import ingest_run
 from hippo_brain.bench.summary import (
     aggregate_model_summary,
     compute_verdict,
@@ -39,6 +41,8 @@ from hippo_brain.bench.summary import (
 from hippo_brain.schema_version import EXPECTED_SCHEMA_VERSION
 
 _T = TypeVar("_T")
+
+_log = logging.getLogger(__name__)
 
 
 @dataclass
@@ -122,6 +126,20 @@ def _read_manifest_field(manifest_path: Path, key: str, default: _T) -> _T:
     if value is None:
         return default
     return cast(_T, value)
+
+
+def _safe_ingest(out_path: Path, *, dry_run: bool) -> None:
+    """Ingest the just-written JSONL into the results datastore.
+
+    A reporting concern must never fail the run (AP-1): the JSONL remains the
+    fallback if this raises. Dry runs are not ingested.
+    """
+    if dry_run:
+        return
+    try:
+        ingest_run(out_path)
+    except Exception:  # noqa: BLE001 — never fail the run over reporting
+        _log.exception("results_store ingest failed for %s", out_path)
 
 
 def orchestrate_run(
@@ -418,3 +436,4 @@ def orchestrate_run(
         )
     finally:
         writer.close()
+        _safe_ingest(out_path, dry_run=dry_run)

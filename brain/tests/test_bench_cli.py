@@ -356,6 +356,100 @@ def test_cli_qa_export_worklist(monkeypatch, tmp_path):
     assert code == 0
 
 
+def test_cli_ingest_single_and_all(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
+    from hippo_brain.bench import cli
+    from hippo_brain.bench.paths import bench_runs_dir
+    from hippo_brain.bench.results_store import connect
+
+    # build a minimal valid run JSONL inside the runs dir
+    runs = bench_runs_dir(create=True)
+    jsonl = runs / "run-x.jsonl"
+    import json
+
+    with jsonl.open("w") as f:
+        f.write(
+            json.dumps(
+                {
+                    "record_type": "run_manifest",
+                    "run_id": "run-x",
+                    "started_at_iso": "2026-05-31T00:00:00+00:00",
+                    "host": {},
+                    "candidate_models": [],
+                    "corpus_content_hash": "h",
+                },
+                sort_keys=True,
+            )
+            + "\n"
+        )
+        f.write(
+            json.dumps(
+                {
+                    "record_type": "run_end",
+                    "run_id": "run-x",
+                    "finished_at_iso": "2026-05-31T01:00:00+00:00",
+                    "models_completed": [],
+                    "models_errored": [],
+                },
+                sort_keys=True,
+            )
+            + "\n"
+        )
+
+    assert cli.main(["ingest", str(jsonl)]) == 0
+    capsys.readouterr()  # drop first-ingest output
+
+    conn = connect()
+    try:
+        first_ingested_at = conn.execute(
+            "SELECT ingested_at_ms FROM bench_runs WHERE run_id='run-x'"
+        ).fetchone()[0]
+    finally:
+        conn.close()
+
+    # --all is idempotent: run-x already present → skipped, still exit 0.
+    assert cli.main(["ingest", "--all"]) == 0
+    # Verify the skip branch was actually taken — not a silent re-ingest. Because
+    # ingest_run is idempotent via DELETE-then-INSERT, COUNT(*) alone can't tell
+    # a skip from a force re-ingest, so assert the printed status and that the
+    # original ingested_at_ms is untouched (a re-ingest would overwrite it).
+    out = capsys.readouterr().out
+    assert "skipped (already ingested)" in out
+
+    conn = connect()
+    try:
+        assert conn.execute("SELECT COUNT(*) FROM bench_runs").fetchone()[0] == 1
+        second_ingested_at = conn.execute(
+            "SELECT ingested_at_ms FROM bench_runs WHERE run_id='run-x'"
+        ).fetchone()[0]
+        assert second_ingested_at == first_ingested_at
+    finally:
+        conn.close()
+
+
+def test_cli_ingest_no_target_errors(capsys):
+    """`ingest` with neither a run_file nor --all must fail cleanly with an
+    error message and exit 1 — not raise an uncaught TypeError stack trace."""
+    from hippo_brain.bench import cli
+
+    assert cli.main(["ingest"]) == 1
+    err = capsys.readouterr().out
+    assert "error:" in err
+    assert "run_file" in err or "--all" in err
+
+
+def test_cli_export_dashboard(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
+    from hippo_brain.bench import cli
+    from hippo_brain.bench.results_store import connect
+
+    connect().close()  # create an empty datastore
+    out = tmp_path / "dash.html"
+    assert cli.main(["export-dashboard", "--out", str(out)]) == 0
+    assert out.exists()
+    assert "hippo-bench dashboard" in out.read_text(encoding="utf-8")
+
+
 def test_cli_add_adversarial_claude_reads_agentic_sessions(monkeypatch, tmp_path):
     """A claude-<id> adversarial id must resolve against agentic_sessions
     (harness='claude-code'), NOT the frozen claude_sessions table — matching the
@@ -402,3 +496,102 @@ def test_cli_add_adversarial_claude_reads_agentic_sessions(monkeypatch, tmp_path
     assert stored is not None
     assert "CORRECT agentic row" in stored[0]
     assert "WRONG frozen row" not in stored[0]
+
+
+def _write_run_jsonl(path, run_id, *, reason=None, with_manifest=True):
+    """Minimal complete (or aborted) run JSONL for ingest CLI tests."""
+    recs = []
+    if with_manifest:
+        recs.append(
+            {
+                "record_type": "run_manifest",
+                "run_id": run_id,
+                "started_at_iso": "2026-05-31T00:00:00+00:00",
+                "host": {},
+                "candidate_models": [],
+                "corpus_content_hash": "h",
+            }
+        )
+    end = {
+        "record_type": "run_end",
+        "run_id": run_id,
+        "finished_at_iso": "2026-05-31T01:00:00+00:00",
+        "models_completed": [],
+        "models_errored": [],
+    }
+    if reason:
+        end["reason"] = reason
+    recs.append(end)
+    with path.open("w") as f:
+        for r in recs:
+            f.write(json.dumps(r, sort_keys=True) + "\n")
+    return path
+
+
+def test_cli_ingest_multiple_file_args(tmp_path, monkeypatch):
+    """D: the README backfill `hippo-bench ingest run-*.jsonl` expands to several
+    paths; the subparser must accept >1 positional and ingest them all."""
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
+    from hippo_brain.bench import cli
+    from hippo_brain.bench.results_store import connect
+
+    a = _write_run_jsonl(tmp_path / "run-a.jsonl", "run-a")
+    b = _write_run_jsonl(tmp_path / "run-b.jsonl", "run-b")
+    assert cli.main(["ingest", str(a), str(b)]) == 0
+    conn = connect()
+    try:
+        assert conn.execute("SELECT COUNT(*) FROM bench_runs").fetchone()[0] == 2
+    finally:
+        conn.close()
+
+
+def test_cli_ingest_all_continues_past_bad_file(tmp_path, monkeypatch, capsys):
+    """A: one file that makes ingest_run raise must not abort the whole --all
+    batch; the good file is still ingested and the command exits 0."""
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
+    from hippo_brain.bench import cli
+    from hippo_brain.bench.paths import bench_runs_dir
+    from hippo_brain.bench.results_store import connect
+
+    runs = bench_runs_dir(create=True)
+    _write_run_jsonl(runs / "run-good.jsonl", "run-good")
+    # 'run-bad' sorts before 'run-good'; non-UTF-8 bytes raise UnicodeDecodeError
+    # inside ingest_run (which only catches JSONDecodeError).
+    (runs / "run-bad.jsonl").write_bytes(b"\xff\xfe not utf8\n")
+
+    assert cli.main(["ingest", "--all"]) == 0
+    out = capsys.readouterr().out
+    assert "run-good" in out
+    conn = connect()
+    try:
+        assert (
+            conn.execute("SELECT COUNT(*) FROM bench_runs WHERE run_id='run-good'").fetchone()[0]
+            == 1
+        )
+    finally:
+        conn.close()
+
+
+def test_cli_ingest_explicit_bad_file_returns_nonzero(tmp_path, monkeypatch, capsys):
+    """A direct ingest target is scriptable operator input; failures must not be
+    reported as shell success the way best-effort --all backfills are."""
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
+    from hippo_brain.bench import cli
+
+    missing = tmp_path / "missing.jsonl"
+    assert cli.main(["ingest", str(missing)]) == 1
+    out = capsys.readouterr().out
+    assert "ERROR" in out
+    assert "done:" in out
+
+
+def test_cli_ingest_aborted_run_not_labeled_ingested(tmp_path, monkeypatch, capsys):
+    """C: an aborted run (skipped_aborted) must not print as 'ingested'."""
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
+    from hippo_brain.bench import cli
+
+    p = _write_run_jsonl(tmp_path / "run-abort.jsonl", "run-abort", reason="preflight_aborted")
+    assert cli.main(["ingest", str(p)]) == 0
+    out = capsys.readouterr().out
+    assert "ingested run_id=run-abort" not in out
+    assert "skipped" in out.lower()
