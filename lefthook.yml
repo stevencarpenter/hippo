@@ -3,4 +3,4 @@ pre-commit:
     - name: check-formatting
       run: cargo fmt --all -- --check
     - name: check-linting
-      run: cargo clippy --all --allow-dirty -- -D warnings
+      run: cargo clippy --all-targets -- -D warnings
