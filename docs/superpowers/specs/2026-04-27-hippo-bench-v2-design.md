@@ -243,7 +243,7 @@ These are span attrs (not resource) because they vary per call. Cardinality cont
 
 ### Grafana (not implemented — superseded)
 
-The three bench Grafana dashboards (`bench-run-overview.json`, `bench-model-drilldown.json`, `bench-model-comparison.json`) described here were never wired and have been removed. Bench results are now surfaced via the self-contained HTML dashboard produced by `hippo-bench dashboard-export` (backed by the SQLite results datastore). The `{service_namespace="hippo-bench"}` OTel isolation remains in place for future use, but the bench Grafana folder does not exist.
+The three bench Grafana dashboards (`bench-run-overview.json`, `bench-model-drilldown.json`, `bench-model-comparison.json`) described here were never wired and have been removed. Bench results are now surfaced via the self-contained HTML dashboard produced by `hippo-bench export-dashboard` (backed by the SQLite results datastore). The `{service_namespace="hippo-bench"}` OTel isolation remains in place for future use, but the bench Grafana folder does not exist.
 
 ### Prod dashboards
 

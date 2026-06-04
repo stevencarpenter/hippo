@@ -205,4 +205,4 @@ Dashboard PromQL queries must use the suffixed Prometheus name. `brain/tests/tes
 
 ### Bench results
 
-Bench results are surfaced via the self-contained HTML dashboard produced by `hippo-bench dashboard-export` (backed by the SQLite results datastore). There are no Grafana bench dashboards — the planned `bench-run-overview`, `bench-model-drilldown`, and `bench-model-comparison` dashboards were never wired and have been removed. Use `hippo-bench dashboard-export` to view leaderboard, per-run, and per-model results.
+Bench results are surfaced via the self-contained HTML dashboard produced by `hippo-bench export-dashboard` (backed by the SQLite results datastore). There are no Grafana bench dashboards — the planned `bench-run-overview`, `bench-model-drilldown`, and `bench-model-comparison` dashboards were never wired and have been removed. Use `hippo-bench export-dashboard` to view leaderboard, per-run, and per-model results.
