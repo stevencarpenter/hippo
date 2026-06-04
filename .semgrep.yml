@@ -37,13 +37,17 @@ rules:
       See 08-anti-patterns.md AP-11 for the full rationale.
     languages: [rust]
     severity: WARNING
-    # Rustc's lexer is tolerant of unusual spacing; pattern-either covers
-    # the common shapes without requiring a full type analysis.
-    pattern-either:
-      - pattern: ".filter_map(|$X| $X.ok())"
-      - pattern: ".filter_map(Result::ok)"
-      - pattern: ".filter_map(|$X| $X.ok())"
-      - pattern: ".flatten()" # only hits on Result/Option chains inside these paths
+    # Patterns need a receiver metavariable ($ITER.method) — semgrep's Rust
+    # parser rejects a bare leading-dot method call as it is not a valid
+    # expression. pattern-not-inside skips `mod tests` blocks (hippo's
+    # unit-test convention), which the `*/tests/*` path exclude cannot reach —
+    # it only matches tests/ dirs, not inline test modules.
+    patterns:
+      - pattern-either:
+          - pattern: $ITER.filter_map(|$X| $X.ok())
+          - pattern: $ITER.filter_map(Result::ok)
+          - pattern: $ITER.flatten() # only meaningful on Result/Option chains here
+      - pattern-not-inside: "mod tests { ... }"
     paths:
       include:
         - crates/hippo-core/src/storage.rs
@@ -68,7 +72,13 @@ rules:
       a metric, and writes to fallback.
     languages: [rust]
     severity: WARNING
-    pattern: ".unwrap()"
+    # $X.unwrap() (not bare `.unwrap()`, which the Rust parser rejects).
+    # pattern-not-inside skips `mod tests` blocks (hippo's unit-test
+    # convention) — the `*/tests/*` path exclude only matches tests/ dirs,
+    # not inline test modules.
+    patterns:
+      - pattern: $X.unwrap()
+      - pattern-not-inside: "mod tests { ... }"
     paths:
       include:
         - crates/hippo-daemon/src/daemon.rs
