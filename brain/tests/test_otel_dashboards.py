@@ -175,8 +175,24 @@ def _extract_metric_names(expr: str) -> list[str]:
     semantic-convention instruments emitted by the daemon and brain (the
     hippo-processes.json dashboard queries the latter). Returns raw names as
     they appear (may include _bucket/_count/_sum).
+
+    Label-matcher blocks ({...}) and grouping/matching clauses
+    (by/without/on/ignoring/group_left/group_right (...)) are stripped first so
+    a label KEY that shares the prefix — e.g. {process_command=~"..."} — is not
+    mistaken for a metric name; metric names never appear inside those
+    constructs. The negative lookbehind keeps a match from starting inside a
+    longer identifier or a recording-rule name (ns:hippo_x). We deliberately do
+    NOT add a trailing "(?!=)" guard: that would drop a real metric used in a
+    comparison such as `hippo_x == 5`, which is a worse failure (an unguarded
+    metric) than the label-key false positive it would prevent.
     """
-    return re.findall(r"(?:hippo|process)_[a-z0-9_]+", expr)
+    cleaned = re.sub(r"\{[^{}]*\}", " ", expr)
+    cleaned = re.sub(
+        r"\b(?:by|without|on|ignoring|group_left|group_right)\s*\([^()]*\)",
+        " ",
+        cleaned,
+    )
+    return re.findall(r"(?<![A-Za-z0-9_:])(?:hippo|process)_[a-z0-9_]+", cleaned)
 
 
 def _normalize_metric_name(raw: str) -> str:
@@ -717,7 +733,12 @@ def _rust_emitter_names(source: str) -> set[str]:
     builder_re = re.compile(r"\.(" + "|".join(_RUST_BUILDERS) + r')\s*\(\s*"([^"]+)"')
     for m in builder_re.finditer(source):
         build_idx = source.find(".build()", m.end())
-        window = source[m.end() : build_idx if build_idx != -1 else len(source)]
+        if build_idx == -1:
+            # No terminating .build() — a half-written or dead chain, not a real
+            # emitter. Skip it rather than scavenge a unit from the rest of the
+            # file and fabricate a name.
+            continue
+        window = source[m.end() : build_idx]
         unit_m = re.search(r'\.with_unit\(\s*"([^"]+)"', window)
         names.add(_prometheus_name(m.group(2), m.group(1), unit_m.group(1) if unit_m else ""))
     return names
@@ -771,3 +792,46 @@ def test_emitted_metrics_are_source_backed():
         + "\n".join(f"  {name}" for name in sorted(derived)[:10])
         + "\n  ..."
     )
+
+
+# ---------------------------------------------------------------------------
+# Test 9: _extract_metric_names must pull out metric names only, never label
+# keys. PromQL label keys can share the hippo_/process_ prefix (e.g. a
+# {process_command=~"..."} selector); treating them as metrics would make
+# Test 1 / Test 4 fail on otherwise-valid dashboards.
+# ---------------------------------------------------------------------------
+
+
+def test_label_keys_are_not_extracted_as_metrics():
+    """Label KEYS that share a metric prefix must not be picked up as metrics,
+    and a real metric in a comparison must still be picked up.
+    """
+    # Label key inside a {...} selector -> only the metric is extracted.
+    assert _extract_metric_names('hippo_daemon_requests_total{process_command=~"x"}') == [
+        "hippo_daemon_requests_total"
+    ]
+    # Label key inside a by(...) grouping clause -> only the metric is extracted.
+    assert _extract_metric_names(
+        "sum by (process_command) (rate(hippo_daemon_requests_total[5m]))"
+    ) == ["hippo_daemon_requests_total"]
+    # A real metric used in a comparison must NOT be dropped (guard against an
+    # over-eager negative-lookahead on '=' that would skip `metric == n`).
+    assert "hippo_daemon_health_grade" in _extract_metric_names("hippo_daemon_health_grade == 5")
+
+
+# ---------------------------------------------------------------------------
+# Test 10: the Rust parser must only count builder chains that actually reach
+# .build(); a half-written chain would otherwise scavenge a unit from later in
+# the file and fabricate a name, weakening test_emitted_metrics_are_source_backed.
+# ---------------------------------------------------------------------------
+
+
+def test_rust_parser_skips_builders_without_build():
+    """A complete builder chain is counted; an incomplete one (no .build()) is
+    not, so dead/half-written chains cannot satisfy the source-backed guarantee.
+    """
+    complete = '.u64_counter("hippo.test.complete").with_unit("ms").build()'
+    assert "hippo_test_complete_milliseconds_total" in _rust_emitter_names(complete)
+
+    incomplete = '.u64_counter("hippo.test.incomplete")  // never reaches build'
+    assert _rust_emitter_names(incomplete) == set()
