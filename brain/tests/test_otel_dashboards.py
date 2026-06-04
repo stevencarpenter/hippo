@@ -6,6 +6,16 @@ because an instrument was renamed, removed, or never created. A failure here
 tells the developer exactly which dashboard and metric drifted, and which file
 to look at for the authoritative name.
 
+The guarantee is enforced in two layers that chain together:
+  * Test 1 / Test 4 check that every metric a dashboard references is in the
+    EMITTED_METRICS allow-list (Test 4 derives the MCP names from mcp.py).
+  * Test 8 checks that every EMITTED_METRICS entry is actually produced by a
+    real OTel instrument in the Rust daemon or Python brain source.
+Together: dashboard ref -> allow-list -> real emitter. The allow-list is a
+human-readable inventory, but it is no longer trusted on faith — Test 8 holds
+it accountable to the source, so a renamed/removed/misspelled instrument fails
+here instead of silently rendering an empty Grafana panel.
+
 Run as part of the normal pytest suite; no external services required.
 """
 
@@ -22,8 +32,11 @@ _DASHBOARDS_DIR = _REPO_ROOT / "otel" / "grafana" / "dashboards"
 # ---------------------------------------------------------------------------
 # Canonical EMITTED metric names for production dashboards.
 #
-# Update this set when adding or removing OTel instruments.  The set is the
-# single source of truth for what the dashboard layer is allowed to reference.
+# Update this set when adding or removing OTel instruments. This is the
+# allow-list the dashboard layer may reference; it is NOT trusted on its own —
+# test_emitted_metrics_are_source_backed (Test 8) verifies every entry here is
+# produced by a real instrument in the Rust/Python source, so this list cannot
+# silently drift away from the instrumentation.
 # Naming rules (OTel -> Prometheus exporter):
 #   - dots -> underscores
 #   - unit="ms"  -> _milliseconds suffix
@@ -94,6 +107,18 @@ EMITTED_METRICS: frozenset[str] = frozenset(
         "hippo_brain_mcp_tool_calls_total",
         "hippo_brain_mcp_tool_errors_total",
         "hippo_brain_mcp_tool_duration_milliseconds",
+        # --- process (OTel semantic-convention; emitted by BOTH the Rust
+        #     daemon (process_metrics.rs) and the Python brain (telemetry.py),
+        #     queried by hippo-processes.json). These are NOT hippo_-prefixed.
+        #     process_cpu_utilization_ratio legitimately carries _ratio: it is a
+        #     genuine 0..N CPU fraction from the upstream semconv, not a score —
+        #     the unit="1" trap the comment above warns about applies to *our*
+        #     scores/counts, not this standardized instrument. ---
+        "process_cpu_utilization_ratio",
+        "process_memory_usage_bytes",
+        "process_memory_virtual_bytes",
+        "process_threads",
+        "process_cpu_time_milliseconds_total",
     ]
 )
 
@@ -143,12 +168,15 @@ def _iter_panels(dashboard: dict):
             yield nested
 
 
-def _extract_hippo_metrics(expr: str) -> list[str]:
-    """Extract all hippo_* metric name tokens from a PromQL expression.
+def _extract_metric_names(expr: str) -> list[str]:
+    """Extract all metric name tokens from a PromQL expression.
 
-    Returns raw names as they appear (may include _bucket/_count/_sum).
+    Matches both the hippo_* instruments and the process_* OTel
+    semantic-convention instruments emitted by the daemon and brain (the
+    hippo-processes.json dashboard queries the latter). Returns raw names as
+    they appear (may include _bucket/_count/_sum).
     """
-    return re.findall(r"hippo_[a-z0-9_]+", expr)
+    return re.findall(r"(?:hippo|process)_[a-z0-9_]+", expr)
 
 
 def _normalize_metric_name(raw: str) -> str:
@@ -202,7 +230,7 @@ def test_all_referenced_metrics_are_allowed():
 
     for filename, dashboard in _load_prod_dashboards():
         for panel_id, ref_id, expr in _collect_all_exprs(dashboard):
-            for raw_name in _extract_hippo_metrics(expr):
+            for raw_name in _extract_metric_names(expr):
                 normalized = _normalize_metric_name(raw_name)
                 if normalized not in EMITTED_METRICS:
                     violations.append(
@@ -405,7 +433,7 @@ def test_enrichment_dashboard_mcp_names_match_instruments():
     violations: list[str] = []
 
     for panel_id, ref_id, expr in _collect_all_exprs(dashboard):
-        for raw_name in _extract_hippo_metrics(expr):
+        for raw_name in _extract_metric_names(expr):
             if "mcp" not in raw_name:
                 continue
             normalized = _normalize_metric_name(raw_name)
@@ -551,3 +579,195 @@ def test_only_prod_dashboards_exist():
         )
 
     assert not messages, "\n\n".join(messages)
+
+
+# ---------------------------------------------------------------------------
+# Test 8: Every name in the EMITTED_METRICS allow-list must be produced by a
+# real OTel instrument in the source.
+#
+# Test 1 proves dashboard refs are a subset of EMITTED_METRICS; this test
+# proves EMITTED_METRICS is a subset of what the instrumentation actually
+# emits.  Together they chain into: dashboard ref -> allow-list -> real
+# emitter, so the hand-maintained allow-list can no longer drift away from the
+# source unnoticed (a misspelled or removed instrument now fails here instead
+# of silently rendering an empty panel).
+# ---------------------------------------------------------------------------
+
+
+# OTel unit -> Prometheus suffix, mirroring the exporter (see the EMITTED_METRICS
+# header). unit="1" -> _ratio is included so the parser reproduces the exporter
+# faithfully (e.g. the process_cpu_utilization_ratio semconv gauge); the codebase
+# avoids unit="1" on its OWN scores/counts, which Tests 5/6 enforce.
+_UNIT_TO_SUFFIX: dict[str, str] = {
+    "ms": "_milliseconds",
+    "s": "_seconds",
+    "By": "_bytes",
+    "1": "_ratio",
+}
+
+# Python OTel API instrument factories (meter.create_*).
+_PY_FACTORIES = (
+    "create_counter",
+    "create_up_down_counter",
+    "create_observable_counter",
+    "create_observable_up_down_counter",
+    "create_observable_gauge",
+    "create_gauge",
+    "create_histogram",
+)
+
+# Rust OTel SDK instrument builder methods (meter.<numtype>_<kind>(...)).
+_RUST_BUILDERS = (
+    "u64_counter",
+    "i64_counter",
+    "f64_counter",
+    "u64_observable_counter",
+    "i64_observable_counter",
+    "f64_observable_counter",
+    "u64_up_down_counter",
+    "i64_up_down_counter",
+    "f64_up_down_counter",
+    "u64_observable_up_down_counter",
+    "i64_observable_up_down_counter",
+    "f64_observable_up_down_counter",
+    "u64_gauge",
+    "i64_gauge",
+    "f64_gauge",
+    "u64_observable_gauge",
+    "i64_observable_gauge",
+    "f64_observable_gauge",
+    "u64_histogram",
+    "i64_histogram",
+    "f64_histogram",
+)
+
+
+def _prometheus_name(otel_name: str, kind: str, unit: str) -> str:
+    """Translate an OTel instrument (dotted name, kind, unit) into the
+    Prometheus name the exporter produces: dots -> underscores, append the unit
+    suffix, then append _total for MONOTONIC counters only (counter /
+    observable_counter, but NOT the up_down variants, gauges, or histograms).
+    """
+    name = otel_name.replace(".", "_") + _UNIT_TO_SUFFIX.get(unit, "")
+    is_monotonic_counter = "counter" in kind and "up_down" not in kind
+    if is_monotonic_counter:
+        name += "_total"
+    return name
+
+
+def _balanced_call_args(source: str, open_paren_idx: int) -> str:
+    """Return the text inside the parens of a call whose '(' is at
+    open_paren_idx, honoring string literals so a ')' inside a description
+    string (e.g. "(1.0 = one full CPU)") does not terminate the slice early.
+    """
+    depth = 0
+    in_str: str | None = None
+    i = open_paren_idx
+    while i < len(source):
+        ch = source[i]
+        if in_str is not None:
+            if ch == "\\":
+                i += 2
+                continue
+            if ch == in_str:
+                in_str = None
+        elif ch in ("'", '"'):
+            in_str = ch
+        elif ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+            if depth == 0:
+                return source[open_paren_idx + 1 : i]
+        i += 1
+    return source[open_paren_idx + 1 :]
+
+
+def _python_emitter_names(source: str) -> set[str]:
+    """Derive Prometheus names from every meter.create_* call in Python source.
+
+    Name and unit live in the SAME call, so we slice the balanced call args
+    (string-aware) and read the first string literal (the name) plus any
+    unit= keyword.
+    """
+    names: set[str] = set()
+    factory_re = re.compile(r"\.(" + "|".join(_PY_FACTORIES) + r")\s*\(")
+    for m in factory_re.finditer(source):
+        args = _balanced_call_args(source, m.end() - 1)
+        name_m = re.search(r"""["']([^"']+)["']""", args)
+        if not name_m:
+            continue
+        # Anchor the unit lookup to a kwarg boundary (after "(" or a ","). The
+        # name is always the first positional arg, so a real unit= kwarg is
+        # always comma-preceded; this ignores a "unit=" that happens to appear
+        # inside a description string (which would be space/word-preceded).
+        unit_m = re.search(r"""[(,]\s*unit\s*=\s*["']([^"']*)["']""", args)
+        names.add(_prometheus_name(name_m.group(1), m.group(1), unit_m.group(1) if unit_m else ""))
+    return names
+
+
+def _rust_emitter_names(source: str) -> set[str]:
+    """Derive Prometheus names from every OTel builder chain in Rust source.
+
+    The name lives in the builder method call; the unit lives in a separate
+    chained .with_unit("...") that terminates at .build(). We window from the
+    builder method to its .build() to scope the unit lookup to that chain.
+    """
+    names: set[str] = set()
+    builder_re = re.compile(r"\.(" + "|".join(_RUST_BUILDERS) + r')\s*\(\s*"([^"]+)"')
+    for m in builder_re.finditer(source):
+        build_idx = source.find(".build()", m.end())
+        window = source[m.end() : build_idx if build_idx != -1 else len(source)]
+        unit_m = re.search(r'\.with_unit\(\s*"([^"]+)"', window)
+        names.add(_prometheus_name(m.group(2), m.group(1), unit_m.group(1) if unit_m else ""))
+    return names
+
+
+def _derive_emitted_metric_names() -> frozenset[str]:
+    """Parse every OTel instrument-creation site in the Python brain
+    (brain/src/**/*.py) and the Rust daemon (crates/*/src/**/*.rs) and return
+    the set of Prometheus metric names the exporter will produce.
+
+    This is the source of truth that EMITTED_METRICS is checked against. The
+    glob auto-discovers new emitter files; over-inclusion (parsing a file that
+    has no instruments) is harmless because the only assertions are subset
+    checks against this set.
+    """
+    names: set[str] = set()
+    for path in sorted((_REPO_ROOT / "brain" / "src").rglob("*.py")):
+        names |= _python_emitter_names(path.read_text())
+    for path in sorted((_REPO_ROOT / "crates").glob("*/src/**/*.rs")):
+        names |= _rust_emitter_names(path.read_text())
+    return frozenset(names)
+
+
+def test_emitted_metrics_are_source_backed():
+    """Every entry in EMITTED_METRICS must be produced by a real OTel
+    instrument created in the Rust daemon or Python brain source.
+
+    A failure here means the allow-list names a metric that no instrument
+    emits — a stale entry, a typo, or an instrument that was renamed/removed
+    without updating this list.  Because Test 1 only checks dashboard refs
+    against this list, an un-backed entry would let a dead dashboard query slip
+    through; this test closes that gap by making the list accountable to source.
+
+    Fix: correct the allow-list name to match the instrument, or (if the
+    instrument really was removed) drop the entry and the dashboard panel.
+    """
+    derived = _derive_emitted_metric_names()
+    assert derived, (
+        "_derive_emitted_metric_names() found no instruments — its parser is "
+        "broken (regexes no longer match the source). Investigate before "
+        "trusting this guardrail."
+    )
+
+    not_backed = sorted(EMITTED_METRICS - derived)
+    assert not not_backed, (
+        "The following EMITTED_METRICS entries are NOT produced by any OTel "
+        "instrument in the source (Rust daemon or Python brain):\n"
+        + "\n".join(f"  {name}" for name in not_backed)
+        + "\n\nEither the allow-list name is wrong/stale, or the instrument was "
+        "renamed/removed. Source-derived names sample:\n"
+        + "\n".join(f"  {name}" for name in sorted(derived)[:10])
+        + "\n  ..."
+    )
