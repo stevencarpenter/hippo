@@ -57,11 +57,14 @@ Configure in your MCP config (e.g., `~/.claude/settings.json`):
     "hippo": {
       "type": "stdio",
       "command": "uv",
-      "args": ["run", "--project", "/path/to/hippo/brain", "hippo-mcp"]
+      "args": ["run", "--project", "/path/to/hippo/brain", "hippo-mcp"],
+      "env": {"HIPPO_OTEL_ENABLED": "1"}
     }
   }
 }
 ```
+
+The MCP server is a separate process from the brain daemon; OTel instrumentation (`hippo_brain_mcp_*` metrics) is only active when `HIPPO_OTEL_ENABLED=1` is set in the spawn environment. Without this env block the MCP process emits no telemetry even if the brain daemon has OTel enabled.
 
 The `ask` tool performs RAG: embeds the question, retrieves relevant knowledge nodes from SQLite via sqlite-vec (vec0) + FTS5 hybrid search,
 synthesizes an answer via a local LLM (`models.query` in config.toml), and returns the answer with
@@ -182,3 +185,24 @@ Capture-reliability stack (the result of the P0–P3 overhaul shipped through v0
 - Python: 3.14+, ruff for lint+format, uv for package management
 - All timestamps: Unix epoch milliseconds (i64/INTEGER)
 - SQLite: WAL mode, PRAGMA foreign_keys=ON, PRAGMA busy_timeout=5000 on every connection
+
+## Observability / OTel
+
+### Metric naming (OTel → Prometheus)
+
+The OTel → Prometheus exporter appends a unit suffix to every instrument name:
+
+| OTel unit | Prometheus suffix appended |
+|---|---|
+| `ms` | `_milliseconds` |
+| `By` | `_bytes` |
+| counter (any unit) | `_total` |
+| `1` | `_ratio` ← avoid this |
+
+**Do not use `unit="1"` for scores or raw counts.** Unit `"1"` produces a misleading `_ratio` suffix on the Prometheus side (e.g., a 0–100 health score or an alarm count would become `hippo_daemon_health_grade_ratio`, not `hippo_daemon_health_grade`). Use an explicit descriptive unit or omit the unit entirely.
+
+Dashboard PromQL queries must use the suffixed Prometheus name. `brain/tests/test_otel_dashboards.py` enforces dashboard ↔ emitter name agreement — add new metrics there when adding new instruments.
+
+### Bench results
+
+Bench results are surfaced via the self-contained HTML dashboard produced by `hippo-bench export-dashboard` (backed by the SQLite results datastore). There are no Grafana bench dashboards — the planned `bench-run-overview`, `bench-model-drilldown`, and `bench-model-comparison` dashboards were never wired and have been removed. Use `hippo-bench export-dashboard` to view leaderboard, per-run, and per-model results.

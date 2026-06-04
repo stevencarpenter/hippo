@@ -833,7 +833,8 @@ pub async fn run_with_mode(config: HippoConfig, bench_mode: bool) -> Result<()> 
             .with_callback(move |gauge| {
                 let queues: &[(&str, &str)] = &[
                     ("shell", "enrichment_queue"),
-                    ("claude", "claude_enrichment_queue"),
+                    // claude_enrichment_queue was frozen by the agentic-unification migration (v17→v18); read agentic_enrichment_queue instead.
+                    ("agentic", "agentic_enrichment_queue"),
                     ("browser", "browser_enrichment_queue"),
                     ("workflow", "workflow_enrichment_queue"),
                 ];

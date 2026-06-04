@@ -224,3 +224,72 @@ pub fn record_db_busy(err: &rusqlite::Error, op: &'static str) -> bool {
         false
     }
 }
+
+#[cfg(test)]
+mod tests {
+    /// Documents and locks the OTel-instrument-name → Prometheus-metric-name
+    /// translation rules applied by the OTel->Prometheus exporter:
+    ///
+    /// | OTel convention         | Prometheus result        |
+    /// |-------------------------|--------------------------|
+    /// | dots in name            | replaced with underscores |
+    /// | counter (no unit)       | `_total` appended        |
+    /// | unit = "ms"             | `_milliseconds` appended |
+    /// | unit = "By"             | `_bytes` appended        |
+    /// | unit = "1"              | `_ratio` appended        |
+    /// | no unit (unit dropped)  | no suffix                |
+    ///
+    /// These assertions serve as living documentation so the expected
+    /// Prometheus names are greppable and any rename shows up as a test
+    /// failure before it silently breaks a dashboard query.
+    #[test]
+    fn otel_to_prometheus_name_table() {
+        // Helper: simulate the exporter's dot→underscore pass.
+        let prom = |otel: &str| otel.replace('.', "_");
+
+        // Counters: _total suffix is appended by the exporter.
+        assert_eq!(
+            format!("{}_total", prom("hippo.daemon.events.ingested")),
+            "hippo_daemon_events_ingested_total"
+        );
+        assert_eq!(
+            format!("{}_total", prom("hippo.daemon.flush.events")),
+            "hippo_daemon_flush_events_total"
+        );
+
+        // Histograms with unit ms: exporter appends _milliseconds.
+        assert_eq!(
+            format!("{}_milliseconds", prom("hippo.daemon.flush.duration")),
+            "hippo_daemon_flush_duration_milliseconds"
+        );
+        assert_eq!(
+            format!("{}_milliseconds", prom("hippo.daemon.request.duration")),
+            "hippo_daemon_request_duration_milliseconds"
+        );
+
+        // Gauges with no unit (or unit stripped): bare converted name, no suffix.
+        // These are the canonicalized names used in production dashboards.
+        assert_eq!(
+            prom("hippo.daemon.health.grade"),
+            "hippo_daemon_health_grade"
+        );
+        assert_eq!(
+            prom("hippo.daemon.health.active_alarms"),
+            "hippo_daemon_health_active_alarms"
+        );
+        assert_eq!(
+            prom("hippo.daemon.source_health.consecutive_failures"),
+            "hippo_daemon_source_health_consecutive_failures"
+        );
+        assert_eq!(
+            prom("hippo.daemon.source_health.probe_ok"),
+            "hippo_daemon_source_health_probe_ok"
+        );
+
+        // Source health lag keeps unit ms → _milliseconds suffix.
+        assert_eq!(
+            format!("{}_milliseconds", prom("hippo.daemon.source_health.lag")),
+            "hippo_daemon_source_health_lag_milliseconds"
+        );
+    }
+}

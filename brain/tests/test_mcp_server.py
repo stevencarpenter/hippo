@@ -638,3 +638,63 @@ class TestAskFilterWiring:
         assert filters.since_ms is not None
         expected_floor = before - 3600 * 1000
         assert expected_floor - 5000 <= filters.since_ms <= after
+
+
+# ---------------------------------------------------------------------------
+# Telemetry instrument initialization
+# ---------------------------------------------------------------------------
+
+
+class TestMcpTelemetryInstrumentsInitialize:
+    def test_instruments_initialize(self, monkeypatch):
+        """After init_telemetry + _init_telemetry_instruments, the three MCP
+        instruments are real SDK objects, not None.
+
+        Hermetic: uses a dummy endpoint (no network) and monkeypatches
+        HIPPO_OTEL_ENABLED so the env is restored after the test.
+        """
+        import logging
+
+        import hippo_brain.mcp as mcp_module
+        from hippo_brain.telemetry import init_telemetry
+        from hippo_brain.mcp import _init_telemetry_instruments
+
+        monkeypatch.setenv("HIPPO_OTEL_ENABLED", "1")
+
+        # Save originals so the fixture teardown can restore them.
+        orig_calls = mcp_module._tool_calls
+        orig_errors = mcp_module._tool_errors
+        orig_duration = mcp_module._tool_duration
+        # init_telemetry() installs a LoggingHandler on the root logger that
+        # shutdown() does not remove; capture the handler list so the finally
+        # block can restore it and keep this test hermetic.
+        root_logger = logging.getLogger()
+        orig_handlers = root_logger.handlers[:]
+
+        shutdown = None
+        try:
+            # Dummy endpoint — no collector running; that's fine because we only
+            # need the SDK providers wired up, not actual export.
+            shutdown = init_telemetry("hippo-mcp-test", endpoint="http://127.0.0.1:19999")
+            _init_telemetry_instruments()
+
+            assert mcp_module._tool_calls is not None, "_tool_calls should be a real instrument"
+            assert mcp_module._tool_errors is not None, "_tool_errors should be a real instrument"
+            assert mcp_module._tool_duration is not None, (
+                "_tool_duration should be a real instrument"
+            )
+
+            # Verify the objects expose the expected counter/histogram interface.
+            assert hasattr(mcp_module._tool_calls, "add")
+            assert hasattr(mcp_module._tool_errors, "add")
+            assert hasattr(mcp_module._tool_duration, "record")
+        finally:
+            # Restore module-level globals and shut down the real providers so
+            # they don't leak into subsequent tests.
+            mcp_module._tool_calls = orig_calls
+            mcp_module._tool_errors = orig_errors
+            mcp_module._tool_duration = orig_duration
+            if shutdown:
+                shutdown()
+            # Remove the root-logger handler init_telemetry() installed.
+            root_logger.handlers[:] = orig_handlers

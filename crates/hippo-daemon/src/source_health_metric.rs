@@ -149,7 +149,6 @@ pub fn register(db_path: PathBuf) {
     let _ = meter
         .u64_observable_gauge("hippo.daemon.source_health.consecutive_failures")
         .with_description("Per-source consecutive_failures counter from source_health.")
-        .with_unit("1")
         .with_callback(move |g| {
             let now_ms = chrono::Utc::now().timestamp_millis();
             for row in read_rows(&dbp, now_ms) {
@@ -168,7 +167,6 @@ pub fn register(db_path: PathBuf) {
             "Per-source last probe verdict (0 = fail, 1 = ok). \
              Sources without probe coverage emit nothing.",
         )
-        .with_unit("1")
         .with_callback(move |g| {
             let now_ms = chrono::Utc::now().timestamp_millis();
             for row in read_rows(&dbp, now_ms) {

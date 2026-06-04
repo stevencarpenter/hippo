@@ -36,25 +36,35 @@ from hippo_brain.telemetry import get_tracer as _get_tracer
 
 logger = setup_logging("hippo-mcp")
 
-_meter = get_meter()
+# Instruments are None at import time; _init_telemetry_instruments() must be
+# called from main() after init_telemetry() wires up the real MeterProvider.
+# Keeping defaults as None avoids side-effects at import time and ensures
+# instruments are created against the live SDK provider, not the NoOp default.
+_tool_calls = None
+_tool_errors = None
+_tool_duration = None
 
-_tool_calls = (
-    _meter.create_counter("hippo.brain.mcp.tool_calls", description="MCP tool invocations")
-    if _meter
-    else None
-)
-_tool_errors = (
-    _meter.create_counter("hippo.brain.mcp.tool_errors", description="MCP tool failures")
-    if _meter
-    else None
-)
-_tool_duration = (
-    _meter.create_histogram(
+
+def _init_telemetry_instruments() -> None:
+    """Create MCP metric instruments against the live MeterProvider.
+
+    Must be called from main() after init_telemetry() has replaced the global
+    MeterProvider. Mutates the three module-level globals so all tool handlers
+    pick up real instruments transparently.
+    """
+    global _tool_calls, _tool_errors, _tool_duration
+    meter = get_meter()
+    if meter is None:
+        return
+    _tool_calls = meter.create_counter(
+        "hippo.brain.mcp.tool_calls", description="MCP tool invocations"
+    )
+    _tool_errors = meter.create_counter(
+        "hippo.brain.mcp.tool_errors", description="MCP tool failures"
+    )
+    _tool_duration = meter.create_histogram(
         "hippo.brain.mcp.tool_duration", description="MCP tool latency", unit="ms"
     )
-    if _meter
-    else None
-)
 
 
 def _load_config() -> dict:
@@ -819,6 +829,9 @@ def main() -> None:
     """Entry point for the hippo-mcp script."""
     import argparse
 
+    from hippo_brain import _load_runtime_settings
+    from hippo_brain.telemetry import init_telemetry
+
     parser = argparse.ArgumentParser(
         prog="hippo-mcp",
         description=(
@@ -838,8 +851,21 @@ def main() -> None:
     # value has no fields and is intentionally discarded.
     parser.parse_args()
 
+    # Mirror the brain serve path: read the telemetry endpoint from config,
+    # apply the :4317->:4318 local-stack transform, then wire up OTel before
+    # creating any instruments. Instruments must come after init_telemetry()
+    # so they bind to the real MeterProvider rather than the NoOp default.
+    settings = _load_runtime_settings()
+    otel_endpoint = settings.get("telemetry_endpoint", "").replace(":4317", ":4318")
+    otel_shutdown = init_telemetry("hippo-mcp", endpoint=otel_endpoint)
+    _init_telemetry_instruments()
+
     _init_state()
-    mcp.run(transport="stdio")
+    try:
+        mcp.run(transport="stdio")
+    finally:
+        if otel_shutdown:
+            otel_shutdown()
 
 
 if __name__ == "__main__":

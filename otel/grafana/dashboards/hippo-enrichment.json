@@ -20,7 +20,7 @@
     {
       "id": 1,
       "title": "Queue Depth by Source & Status",
-      "description": "Auto-aggregated by source label. Any new source the brain emits appears here automatically \u2014 no dashboard edit required.",
+      "description": "Auto-aggregated by source label. Any new source the brain emits appears here automatically — no dashboard edit required.",
       "type": "timeseries",
       "gridPos": {
         "x": 0,
@@ -39,8 +39,8 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum by (source, status) (hippo_brain_enrichment_queue_depth{service_namespace!~\".+\"})",
-          "legendFormat": "{{source}} \u00b7 {{status}}",
+          "expr": "sum by (source, status) (hippo_brain_enrichment_queue_depth)",
+          "legendFormat": "{{source}} · {{status}}",
           "editorMode": "code"
         }
       ],
@@ -85,7 +85,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum(hippo_brain_enrichment_queue_depth{service_namespace!~\".+\",status=\"failed\"}) or vector(0)",
+          "expr": "sum(hippo_brain_enrichment_queue_depth{status=\"failed\"}) or vector(0)",
           "legendFormat": "",
           "editorMode": "code"
         }
@@ -141,7 +141,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum by (source) (rate(hippo_brain_enrichment_events_claimed_total{service_namespace!~\".+\"}[5m])) * 60",
+          "expr": "sum by (source) (rate(hippo_brain_enrichment_events_claimed_total[5m])) * 60",
           "legendFormat": "{{source}}",
           "editorMode": "code"
         }
@@ -191,7 +191,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "histogram_quantile(0.5, sum(rate(hippo_brain_inference_request_duration_milliseconds_bucket{service_namespace!~\".+\",method=\"chat\"}[5m])) by (le))",
+          "expr": "histogram_quantile(0.5, sum(rate(hippo_brain_inference_request_duration_milliseconds_bucket{method=\"chat\"}[5m])) by (le))",
           "legendFormat": "p50",
           "editorMode": "code"
         },
@@ -201,7 +201,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "histogram_quantile(0.95, sum(rate(hippo_brain_inference_request_duration_milliseconds_bucket{service_namespace!~\".+\",method=\"chat\"}[5m])) by (le))",
+          "expr": "histogram_quantile(0.95, sum(rate(hippo_brain_inference_request_duration_milliseconds_bucket{method=\"chat\"}[5m])) by (le))",
           "legendFormat": "p95",
           "editorMode": "code"
         },
@@ -211,7 +211,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "histogram_quantile(0.99, sum(rate(hippo_brain_inference_request_duration_milliseconds_bucket{service_namespace!~\".+\",method=\"chat\"}[5m])) by (le))",
+          "expr": "histogram_quantile(0.99, sum(rate(hippo_brain_inference_request_duration_milliseconds_bucket{method=\"chat\"}[5m])) by (le))",
           "legendFormat": "p99",
           "editorMode": "code"
         }
@@ -257,8 +257,8 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum(rate(hippo_brain_inference_errors_total{service_namespace!~\".+\"}[5m])) by (method) * 60",
-          "legendFormat": "{{method}}",
+          "expr": "sum(rate(hippo_brain_inference_errors_total[5m])) by (method, error_type) * 60",
+          "legendFormat": "{{method}} - {{error_type}}",
           "editorMode": "code"
         }
       ],
@@ -303,7 +303,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "histogram_quantile(0.5, sum(rate(hippo_brain_inference_prompt_tokens_bucket{service_namespace!~\".+\"}[5m])) by (le))",
+          "expr": "histogram_quantile(0.5, sum(rate(hippo_brain_inference_prompt_tokens_bucket[5m])) by (le))",
           "legendFormat": "p50",
           "editorMode": "code"
         },
@@ -313,7 +313,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "histogram_quantile(0.95, sum(rate(hippo_brain_inference_prompt_tokens_bucket{service_namespace!~\".+\"}[5m])) by (le))",
+          "expr": "histogram_quantile(0.95, sum(rate(hippo_brain_inference_prompt_tokens_bucket[5m])) by (le))",
           "legendFormat": "p95",
           "editorMode": "code"
         }
@@ -359,7 +359,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "histogram_quantile(0.5, sum(rate(hippo_brain_embedding_duration_milliseconds_bucket{service_namespace!~\".+\"}[5m])) by (le))",
+          "expr": "histogram_quantile(0.5, sum(rate(hippo_brain_embedding_duration_milliseconds_bucket[5m])) by (le))",
           "legendFormat": "p50",
           "editorMode": "code"
         },
@@ -369,7 +369,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "histogram_quantile(0.95, sum(rate(hippo_brain_embedding_duration_milliseconds_bucket{service_namespace!~\".+\"}[5m])) by (le))",
+          "expr": "histogram_quantile(0.95, sum(rate(hippo_brain_embedding_duration_milliseconds_bucket[5m])) by (le))",
           "legendFormat": "p95",
           "editorMode": "code"
         }
@@ -415,7 +415,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum(hippo_brain_embedding_failures_total{service_namespace!~\".+\"}) or vector(0)",
+          "expr": "sum(hippo_brain_embedding_failures_total) or vector(0)",
           "legendFormat": "total",
           "editorMode": "code"
         },
@@ -425,7 +425,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum(rate(hippo_brain_embedding_failures_total{service_namespace!~\".+\"}[5m])) * 60",
+          "expr": "sum(rate(hippo_brain_embedding_failures_total[5m])) * 60",
           "legendFormat": "rate / min",
           "editorMode": "code"
         }
@@ -491,6 +491,7 @@
     {
       "id": 9,
       "title": "RAG Latency by Stage",
+      "description": "Populated only when 'hippo ask' or the MCP ask tool is invoked — interactive, low-frequency. An empty panel is expected, not broken.",
       "type": "timeseries",
       "gridPos": {
         "x": 12,
@@ -509,7 +510,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "histogram_quantile(0.5, sum(rate(hippo_brain_rag_duration_milliseconds_bucket{service_namespace!~\".+\"}[5m])) by (le, stage))",
+          "expr": "histogram_quantile(0.5, sum(rate(hippo_brain_rag_duration_milliseconds_bucket[5m])) by (le, stage))",
           "legendFormat": "{{stage}} p50",
           "editorMode": "code"
         }
@@ -537,6 +538,7 @@
     {
       "id": 10,
       "title": "RAG Retrieval Hits",
+      "description": "Populated only when 'hippo ask' or the MCP ask tool is invoked — interactive, low-frequency. An empty panel is expected, not broken.",
       "type": "timeseries",
       "gridPos": {
         "x": 18,
@@ -555,7 +557,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "histogram_quantile(0.5, sum(rate(hippo_brain_rag_retrieval_hits_bucket{service_namespace!~\".+\"}[5m])) by (le))",
+          "expr": "histogram_quantile(0.5, sum(rate(hippo_brain_rag_retrieval_hits_bucket[5m])) by (le))",
           "legendFormat": "p50",
           "editorMode": "code"
         },
@@ -565,7 +567,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "histogram_quantile(0.95, sum(rate(hippo_brain_rag_retrieval_hits_bucket{service_namespace!~\".+\"}[5m])) by (le))",
+          "expr": "histogram_quantile(0.95, sum(rate(hippo_brain_rag_retrieval_hits_bucket[5m])) by (le))",
           "legendFormat": "p95",
           "editorMode": "code"
         }
@@ -611,7 +613,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "histogram_quantile(0.95, sum(rate(hippo_brain_mcp_tool_duration_milliseconds_bucket{service_namespace!~\".+\"}[5m])) by (le, tool))",
+          "expr": "histogram_quantile(0.95, sum(rate(hippo_brain_mcp_tool_duration_milliseconds_bucket[5m])) by (le, tool))",
           "legendFormat": "{{tool}} p95",
           "editorMode": "code"
         }
@@ -657,7 +659,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum(rate(hippo_brain_mcp_tool_calls_total{service_namespace!~\".+\"}[5m])) by (tool) * 60",
+          "expr": "sum(rate(hippo_brain_mcp_tool_calls_total[5m])) by (tool) * 60",
           "legendFormat": "{{tool}}",
           "editorMode": "code"
         }
@@ -722,6 +724,245 @@
           "show": false
         },
         "showHeader": true
+      }
+    },
+    {
+      "id": 14,
+      "title": "Nodes Created / min",
+      "type": "timeseries",
+      "gridPos": {
+        "x": 0,
+        "y": 32,
+        "w": 8,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum by (source) (rate(hippo_brain_enrichment_nodes_created_total[5m])) * 60",
+          "legendFormat": "{{source}}",
+          "editorMode": "code"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "lineWidth": 1
+          }
+        }
+      },
+      "options": {
+        "tooltip": {
+          "mode": "multi"
+        },
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      }
+    },
+    {
+      "id": 15,
+      "title": "Enrichment Loop Duration p95",
+      "type": "timeseries",
+      "gridPos": {
+        "x": 8,
+        "y": 32,
+        "w": 8,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "histogram_quantile(0.95, sum(rate(hippo_brain_enrichment_loop_duration_milliseconds_bucket[5m])) by (le))",
+          "legendFormat": "p95",
+          "editorMode": "code"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "lineWidth": 1
+          }
+        }
+      },
+      "options": {
+        "tooltip": {
+          "mode": "multi"
+        },
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      }
+    },
+    {
+      "id": 16,
+      "title": "Reaped Stale Locks / min",
+      "type": "timeseries",
+      "gridPos": {
+        "x": 16,
+        "y": 32,
+        "w": 8,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum(rate(hippo_brain_enrichment_reaped_total[5m])) * 60",
+          "legendFormat": "reaped/min",
+          "editorMode": "code"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "lineWidth": 1
+          }
+        }
+      },
+      "options": {
+        "tooltip": {
+          "mode": "multi"
+        },
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      }
+    },
+    {
+      "id": 17,
+      "title": "Preflight Skips / min",
+      "type": "timeseries",
+      "gridPos": {
+        "x": 0,
+        "y": 40,
+        "w": 8,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum(rate(hippo_brain_enrichment_preflight_skipped_total[5m])) * 60",
+          "legendFormat": "skipped/min",
+          "editorMode": "code"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "lineWidth": 1
+          }
+        }
+      },
+      "options": {
+        "tooltip": {
+          "mode": "multi"
+        },
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      }
+    },
+    {
+      "id": 18,
+      "title": "RAG Degraded (total)",
+      "type": "stat",
+      "gridPos": {
+        "x": 8,
+        "y": 40,
+        "w": 4,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum(hippo_brain_rag_degraded_total) or vector(0)",
+          "legendFormat": "",
+          "editorMode": "code"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
+            ]
+          }
+        }
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "orientation": "auto",
+        "textMode": "auto",
+        "colorMode": "background"
       }
     }
   ]

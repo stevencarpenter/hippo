@@ -1223,14 +1223,14 @@ class BrainServer:
         """Emit a structured failure log so wedges are greppable in minutes.
 
         Includes queue_name, claim_count, claim_age_ms, exception_type,
-        lm_studio_model, stage — the fields the R-22 spec calls for.
+        enrichment_model, stage — the fields the R-22 spec calls for.
         """
         exc_type = type(e).__name__
         msg_fields = {
             "queue_name": queue_name,
             "stage": stage,
             "exception_type": exc_type,
-            "lm_studio_model": self.enrichment_model,
+            "enrichment_model": self.enrichment_model,
             **fields,
         }
         logger.error(

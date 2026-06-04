@@ -241,17 +241,13 @@ These are span attrs (not resource) because they vary per call. Cardinality cont
 
 **No change to `otel/otelcol-config.yml`.** No transform processor, no relabel rule, no tenant header. Separation is query-side.
 
-### Grafana
+### Grafana (not implemented — superseded)
 
-New folder `Hippo Bench` with three new dashboards:
+The three bench Grafana dashboards (`bench-run-overview.json`, `bench-model-drilldown.json`, `bench-model-comparison.json`) described here were never wired and have been removed. Bench results are now surfaced via the self-contained HTML dashboard produced by `hippo-bench export-dashboard` (backed by the SQLite results datastore). The `{service_namespace="hippo-bench"}` OTel isolation remains in place for future use, but the bench Grafana folder does not exist.
 
-1. **`bench-run-overview.json`** — per-`bench.run_id` view: candidate models side-by-side, p50/p95 latency, schema validity, downstream-proxy precision@K, system peaks. Filtered `{service_namespace="hippo-bench", bench_run_id="$run_id"}`.
-2. **`bench-model-drilldown.json`** — per-`bench.model_id` deep dive: per-event latency distribution, system metrics over time, traces. Filtered `{service_namespace="hippo-bench", bench_model_id="$model_id"}`.
-3. **`bench-model-comparison.json`** — multi-model side-by-side panels for choosing the winner across runs.
+### Prod dashboards
 
-### Prod dashboards must be updated
-
-Existing dashboards under `otel/grafana/dashboards/` typically don't filter on `service_namespace`. During a bench run, bench data would commingle into prod views unless explicitly excluded. **Add `{service_namespace=""}` filter to every existing prod dashboard panel** as part of the bench-v2 work — not a follow-up. This is a load-bearing constraint of the design (the user's "EVERY LAST METRIC, LOG, TRACE separate"). Dashboard files affected: TBD by implementation phase grep, expected ~3-5 files.
+The `{service_namespace!~".+"}` filter originally planned to exclude bench data from prod dashboard panels was removed when the bench Grafana dashboards were dropped. Prod dashboards query bare metric names with no namespace filter.
 
 ### Deferred (telemetry roadmap)
 

@@ -31,7 +31,7 @@ failure-mode legs that made that possible.
    SELECT, so one bad batch can't claim (and then hold) an entire backlog.
 
 Structured failure logs include `queue_name`, `stage`, `exception_type`,
-`lm_studio_model`, `claim_count`, and `claim_age_ms` — the fields a human or
+`enrichment_model`, `claim_count`, and `claim_age_ms` — the fields a human or
 alert rule needs to diagnose a wedge without tailing the full log.
 
 ## Config knobs
