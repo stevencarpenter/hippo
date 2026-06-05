@@ -20,7 +20,7 @@ import tomllib
 from pathlib import Path
 
 DEFAULT_BRAIN_PORT = 9175
-DEFAULT_INFERENCE_BASE_URL = "http://localhost:8000/v1"
+DEFAULT_INFERENCE_BASE_URL = "http://127.0.0.1:42069/v1"
 DEFAULT_EMBEDDING_MODEL = "nomicai-modernbert-embed-base-8bit"
 
 

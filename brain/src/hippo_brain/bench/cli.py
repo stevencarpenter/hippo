@@ -380,7 +380,7 @@ def _build_parser() -> argparse.ArgumentParser:
         default=default_inference_base_url(),
         help="Inference server base URL. Defaults to [inference].base_url from "
         "$XDG_CONFIG_HOME/hippo/config.toml (or $HOME/.config/hippo/config.toml "
-        "if XDG_CONFIG_HOME is unset), falling back to http://localhost:8000/v1.",
+        "if XDG_CONFIG_HOME is unset), falling back to http://127.0.0.1:42069/v1.",
     )
     run.add_argument(
         "--brain-url",

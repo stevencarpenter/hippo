@@ -43,7 +43,7 @@ pub struct InferenceConfig {
 }
 
 fn default_inference_base_url() -> String {
-    "http://localhost:1234/v1".to_string()
+    "http://127.0.0.1:42069/v1".to_string()
 }
 
 impl Default for InferenceConfig {
@@ -885,7 +885,7 @@ mod tests {
     #[test]
     fn test_default_config() {
         let config = HippoConfig::default();
-        assert_eq!(config.inference.base_url, "http://localhost:1234/v1");
+        assert_eq!(config.inference.base_url, "http://127.0.0.1:42069/v1");
         assert_eq!(config.daemon.flush_interval_ms, 100);
         assert_eq!(config.daemon.flush_batch_size, 50);
         assert_eq!(config.brain.port, 9175);
@@ -915,7 +915,7 @@ port = 8080
     #[test]
     fn test_missing_config_returns_default() {
         let config = HippoConfig::load(Path::new("/nonexistent/path/config.toml")).unwrap();
-        assert_eq!(config.inference.base_url, "http://localhost:1234/v1");
+        assert_eq!(config.inference.base_url, "http://127.0.0.1:42069/v1");
     }
 
     #[test]
