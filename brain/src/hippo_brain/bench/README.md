@@ -138,7 +138,7 @@ active window and reported as peaks per model.
 ```
 hippo-bench run --models m1,m2,...
                 [--corpus-version corpus-v2]
-                [--base-url http://localhost:1234/v1]
+                [--base-url http://127.0.0.1:42069/v1]
                 [--brain-url http://127.0.0.1:9175]
                 [--embedding-model text-embedding-nomic-embed-text-v2-moe]
                 [--skip-checks] [--dry-run] [--skip-prod-pause]

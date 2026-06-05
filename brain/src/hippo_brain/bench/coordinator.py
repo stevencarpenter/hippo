@@ -191,7 +191,7 @@ def run_one_model(
     run_id: str,
     corpus_sqlite: Path,
     embedding_fn=None,
-    inference_url: str = "http://localhost:1234/v1",
+    inference_url: str = "http://127.0.0.1:42069/v1",
     embedding_model: str = "",
     drain_timeout_sec: float = 3600.0,
     warmup_calls: int = 3,

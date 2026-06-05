@@ -142,7 +142,7 @@ class TestLoadConfig:
         monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
         config = _load_config()
         assert "hippo.db" in config["db_path"]
-        assert config["inference_base_url"] == "http://localhost:1234/v1"
+        assert config["inference_base_url"] == "http://127.0.0.1:42069/v1"
         assert config["embedding_model"] == ""
         # data_dir should derive from home
         assert config["data_dir"] == str(tmp_path / ".local" / "share" / "hippo")

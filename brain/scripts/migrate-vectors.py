@@ -50,7 +50,7 @@ def _default_config_path() -> Path:
 def _load_models(config_path: Path) -> tuple[str, str, str]:
     """Return (base_url, embed_model, command_model) from config.toml."""
     if not config_path.exists():
-        return ("http://localhost:1234/v1", "", "")
+        return ("http://127.0.0.1:42069/v1", "", "")
     with config_path.open("rb") as f:
         cfg = tomllib.load(f)
     models = cfg.get("models", {})
@@ -59,7 +59,7 @@ def _load_models(config_path: Path) -> tuple[str, str, str]:
         raise RuntimeError(
             "config.toml uses the deprecated [lmstudio] section. Rename it to [inference]."
         )
-    base_url = cfg.get("inference", {}).get("base_url", "http://localhost:1234/v1")
+    base_url = cfg.get("inference", {}).get("base_url", "http://127.0.0.1:42069/v1")
     return (
         base_url,
         models.get("embedding", ""),

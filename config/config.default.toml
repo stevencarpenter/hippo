@@ -1,10 +1,10 @@
 # OpenAI-compatible inference backend. Section was renamed from [lmstudio]
 # to [inference] so the same key works for oMLX (the current default,
-# port 8000), LM Studio (port 1234, the historical default), ollama
+# port 42069), LM Studio (port 1234, the historical default), ollama
 # (port 11434), vLLM, and any other backend that speaks
 # /v1/chat/completions + /v1/embeddings.
 [inference]
-base_url = "http://localhost:8000/v1"
+base_url = "http://127.0.0.1:42069/v1"
 timeout_secs = 300
 
 [models]

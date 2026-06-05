@@ -395,7 +395,7 @@ async def main_async(args: argparse.Namespace) -> int:
         )
         return 1
 
-    base_url = settings.get("inference_base_url", "http://localhost:1234/v1")
+    base_url = settings.get("inference_base_url", "http://127.0.0.1:42069/v1")
     timeout = float(settings.get("inference_timeout_secs", 300.0))
 
     # vector_store.open_conn loads the sqlite-vec extension (vec0) and

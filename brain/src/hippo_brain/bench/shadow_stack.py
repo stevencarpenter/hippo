@@ -103,8 +103,8 @@ def _write_shadow_config(
 
     The [inference] and [models] sections are REQUIRED: the shadow brain is a
     separate process that reads its inference endpoint from this file. Without
-    them it falls back to the built-in default (`http://localhost:1234/v1`, the
-    old LM Studio port) and every enrichment call fails with "All connection
+    them it falls back to the built-in default (`http://127.0.0.1:42069/v1`, the
+    oMLX local port) and every enrichment call fails with "All connection
     attempts failed" — the bench then no-ops with zero system load instead of
     benchmarking the model. The section MUST be named [inference] (the brain
     hard-fails on a legacy [lmstudio] section)."""

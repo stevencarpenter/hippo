@@ -140,7 +140,7 @@ class InferenceClient:
 
     def __init__(
         self,
-        base_url: str = "http://localhost:1234/v1",
+        base_url: str = "http://127.0.0.1:42069/v1",
         timeout: float = 300.0,
         max_retries: int = 3,
         backoff_base: float = 0.5,

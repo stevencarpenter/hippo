@@ -76,7 +76,7 @@ def _load_config() -> dict:
     defaults = {
         "db_path": str(Path.home() / ".local" / "share" / "hippo" / "hippo.db"),
         "data_dir": str(Path.home() / ".local" / "share" / "hippo"),
-        "inference_base_url": "http://localhost:1234/v1",
+        "inference_base_url": "http://127.0.0.1:42069/v1",
         "embedding_model": "",
         "query_model": "",
     }
@@ -108,7 +108,7 @@ def _load_config() -> dict:
     return {
         "db_path": str(data_dir / "hippo.db"),
         "data_dir": str(data_dir),
-        "inference_base_url": inference.get("base_url", "http://localhost:1234/v1"),
+        "inference_base_url": inference.get("base_url", "http://127.0.0.1:42069/v1"),
         "embedding_model": models.get("embedding", ""),
         "query_model": models.get("query", "") or models.get("enrichment", ""),
     }

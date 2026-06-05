@@ -211,7 +211,7 @@ class BrainServer:
         self,
         db_path: str = "",
         data_dir: str = "",
-        inference_base_url: str = "http://localhost:1234/v1",
+        inference_base_url: str = "http://127.0.0.1:42069/v1",
         inference_timeout_secs: float = 300.0,
         enrichment_model: str = "",
         embedding_model: str = "",
@@ -1815,7 +1815,7 @@ class BrainServer:
 def create_app(
     db_path: str = "",
     data_dir: str = "",
-    inference_base_url: str = "http://localhost:1234/v1",
+    inference_base_url: str = "http://127.0.0.1:42069/v1",
     inference_timeout_secs: float = 300.0,
     enrichment_model: str = "",
     embedding_model: str = "",

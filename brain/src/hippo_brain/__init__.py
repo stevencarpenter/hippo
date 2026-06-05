@@ -14,7 +14,7 @@ def _default_settings() -> dict:
     return {
         "db_path": str(data_dir / "hippo.db"),
         "data_dir": str(data_dir),
-        "inference_base_url": "http://localhost:1234/v1",
+        "inference_base_url": "http://127.0.0.1:42069/v1",
         "inference_timeout_secs": 300.0,
         "enrichment_model": "",
         "embedding_model": "",
@@ -69,7 +69,7 @@ def _load_runtime_settings() -> dict:
     return {
         "db_path": str(data_dir / "hippo.db"),
         "data_dir": str(data_dir),
-        "inference_base_url": inference.get("base_url", "http://localhost:1234/v1"),
+        "inference_base_url": inference.get("base_url", "http://127.0.0.1:42069/v1"),
         "inference_timeout_secs": _coerce_float(inference.get("timeout_secs"), 300.0),
         "enrichment_model": models.get("enrichment", ""),
         "embedding_model": models.get("embedding", ""),
