@@ -2157,6 +2157,10 @@ fn is_uuid_stem(s: &str) -> bool {
 /// messages (e.g. a /command that never got a response) produces zero segments
 /// and will never appear in `agentic_sessions`. Checking for an assistant turn
 /// keeps doctor's definition consistent with the ingestor's.
+///
+/// Only the first `MAX_PEEK_BYTES` are read to avoid stalling doctor on a huge
+/// transcript. This is safe in practice: the first assistant turn always appears
+/// within a few KB of the start of any real session.
 fn claude_jsonl_has_turn(path: &std::path::Path) -> bool {
     use std::io::Read;
     const MAX_PEEK_BYTES: usize = 256 * 1024;
