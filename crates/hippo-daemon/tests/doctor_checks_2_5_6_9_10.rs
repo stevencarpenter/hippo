@@ -291,6 +291,25 @@ mod doctor {
         }
 
         #[test]
+        fn check_5_journal_with_unrelated_workflows_and_subagents_is_active() {
+            let tmp = tempdir().unwrap();
+            let conn = open_test_db(tmp.path());
+
+            let unrelated_dir = tmp
+                .path()
+                .join("projects/encoded-proj/workflows/scratch/subagents/not-a-workflow");
+            fs::create_dir_all(&unrelated_dir).unwrap();
+            fs::write(unrelated_dir.join("journal.jsonl"), "{}\n").unwrap();
+
+            let fail =
+                check_claude_session_db(&tmp.path().join("projects"), tmp.path(), &conn, false);
+            assert_eq!(
+                fail, 1,
+                "journal.jsonl is active unless it is under subagents/.../workflows"
+            );
+        }
+
+        #[test]
         fn check_5_missing_sessions_capped_at_3() {
             let tmp = tempdir().unwrap();
             let conn = open_test_db(tmp.path());
