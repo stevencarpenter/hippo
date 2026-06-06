@@ -268,6 +268,29 @@ mod doctor {
         }
 
         #[test]
+        fn check_5_workflow_journal_is_not_an_active_session() {
+            let tmp = tempdir().unwrap();
+            let conn = open_test_db(tmp.path());
+
+            let workflow_dir = tmp
+                .path()
+                .join("projects/encoded-proj/parent-uuid/subagents/workflows/wf_abc");
+            fs::create_dir_all(&workflow_dir).unwrap();
+            fs::write(
+                workflow_dir.join("journal.jsonl"),
+                "{\"type\":\"started\",\"agentId\":\"agent-a123\"}\n",
+            )
+            .unwrap();
+
+            let fail =
+                check_claude_session_db(&tmp.path().join("projects"), tmp.path(), &conn, false);
+            assert_eq!(
+                fail, 0,
+                "workflow journal JSONL files are orchestration metadata, not sessions"
+            );
+        }
+
+        #[test]
         fn check_5_missing_sessions_capped_at_3() {
             let tmp = tempdir().unwrap();
             let conn = open_test_db(tmp.path());

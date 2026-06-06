@@ -3074,6 +3074,7 @@ fn collect_active_jsonls(
         if path.is_dir() {
             collect_active_jsonls(&path, cutoff, result);
         } else if path.extension().and_then(|e| e.to_str()) == Some("jsonl")
+            && !is_workflow_journal(&path)
             && let Ok(meta) = std::fs::metadata(&path)
             && let Ok(modified) = meta.modified()
             && modified > cutoff
@@ -3081,6 +3082,12 @@ fn collect_active_jsonls(
             result.push(path);
         }
     }
+}
+
+fn is_workflow_journal(path: &std::path::Path) -> bool {
+    path.file_name().and_then(|n| n.to_str()) == Some("journal.jsonl")
+        && path.components().any(|c| c.as_os_str() == "subagents")
+        && path.components().any(|c| c.as_os_str() == "workflows")
 }
 
 /// Check 5: Recursively find active Claude session JSONL files under
