@@ -80,6 +80,10 @@ The capture-reliability stack (P0–P3, shipped 2026-04-24 → 2026-04-26) is do
 | Config | `~/.config/hippo/config.toml`   | User configuration                                                   |
 | Logs   | `~/.local/share/hippo/*.log`    | Daemon, brain, watcher, watchdog, and probe logs (7-day rotation via tracing-appender) |
 
+## Code Exploration
+
+When codegraph MCP tools are available (`mcp__codegraph__*`), use `codegraph_explore` first for "how does X work / trace X" questions over Rust source — typically 2–5 calls vs. 30+ for grep+read. Fall back to `rg`/`Read` for non-indexed artifacts: `.plist`, YAML, Python, shell scripts.
+
 ## Style
 
 - Rust: edition 2024, clippy clean, anyhow for errors

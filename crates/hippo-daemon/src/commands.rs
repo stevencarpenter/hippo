@@ -155,11 +155,35 @@ async fn print_brain_health_details(
                     let queue_depth = json
                         .get("queue_depth")
                         .and_then(|v| v.as_u64())
-                        .unwrap_or_default();
+                        .unwrap_or_default()
+                        + json
+                            .get("claude_queue_depth")
+                            .and_then(|v| v.as_u64())
+                            .unwrap_or_default()
+                        + json
+                            .get("browser_queue_depth")
+                            .and_then(|v| v.as_u64())
+                            .unwrap_or_default()
+                        + json
+                            .get("workflow_queue_depth")
+                            .and_then(|v| v.as_u64())
+                            .unwrap_or_default();
                     let queue_failed = json
                         .get("queue_failed")
                         .and_then(|v| v.as_u64())
-                        .unwrap_or_default();
+                        .unwrap_or_default()
+                        + json
+                            .get("claude_queue_failed")
+                            .and_then(|v| v.as_u64())
+                            .unwrap_or_default()
+                        + json
+                            .get("browser_queue_failed")
+                            .and_then(|v| v.as_u64())
+                            .unwrap_or_default()
+                        + json
+                            .get("workflow_queue_failed")
+                            .and_then(|v| v.as_u64())
+                            .unwrap_or_default();
                     let enrichment_running = json
                         .get("enrichment_running")
                         .and_then(|v| v.as_bool())
@@ -201,9 +225,10 @@ async fn print_brain_health_details(
                         );
                     }
 
+                    let queue_tag = if queue_failed > 0 { "[WW]" } else { "[OK]" };
                     println!(
-                        "[OK] Brain queue depth: {} pending, {} failed",
-                        queue_depth, queue_failed
+                        "{} Brain queue depth: {} pending, {} failed",
+                        queue_tag, queue_depth, queue_failed
                     );
                     if inference_reachable {
                         println!("[OK] Brain inference backend: reachable");
@@ -2127,15 +2152,11 @@ fn is_uuid_stem(s: &str) -> bool {
 }
 
 /// Cheap "does this Claude JSONL carry at least one conversational turn?" peek.
-/// A 0-turn empty stub (Claude Code sometimes writes a session file with only
-/// metadata / no user or assistant messages) is CORRECTLY absent from
-/// `agentic_sessions` because `extract_segments` produces no segment for it; we
-/// must classify those as expected-absent, not missing. Rather than run the
-/// full segment extractor on every file during doctor, we scan lines for a
-/// `"type":"user"` or `"type":"assistant"` marker — the same `type` field
-/// `claude_session::process_line` keys on. Reads at most `MAX_PEEK_BYTES` so a
-/// huge transcript doesn't stall doctor; a real session has a turn in its first
-/// line, so the cap never produces a false "empty".
+/// A session file is an "expected-absent" stub if it has no assistant turn.
+/// `extract_segments` segments on assistant turns, so a file with only user
+/// messages (e.g. a /command that never got a response) produces zero segments
+/// and will never appear in `agentic_sessions`. Checking for an assistant turn
+/// keeps doctor's definition consistent with the ingestor's.
 fn claude_jsonl_has_turn(path: &std::path::Path) -> bool {
     use std::io::Read;
     const MAX_PEEK_BYTES: usize = 256 * 1024;
@@ -2148,10 +2169,7 @@ fn claude_jsonl_has_turn(path: &std::path::Path) -> bool {
         Err(_) => return false,
     };
     let text = String::from_utf8_lossy(&buf[..n]);
-    text.contains("\"type\":\"user\"")
-        || text.contains("\"type\": \"user\"")
-        || text.contains("\"type\":\"assistant\"")
-        || text.contains("\"type\": \"assistant\"")
+    text.contains("\"type\":\"assistant\"") || text.contains("\"type\": \"assistant\"")
 }
 
 /// Doctor completeness check: on-disk Claude sessions vs `agentic_sessions`
@@ -3672,22 +3690,37 @@ mod tests {
     }
 
     #[test]
-    fn claude_jsonl_has_turn_detects_user_or_assistant_lines() {
+    fn claude_jsonl_has_turn_requires_assistant_line() {
         let dir = tempdir().unwrap();
-        let with_turn = dir.path().join("a.jsonl");
+
+        // Only a user turn (no assistant response) — expected-absent, same as a stub.
+        let user_only = dir.path().join("a.jsonl");
         std::fs::write(
-            &with_turn,
+            &user_only,
             "{\"type\":\"summary\",\"x\":1}\n{\"type\":\"user\",\"message\":{}}\n",
         )
         .unwrap();
-        assert!(claude_jsonl_has_turn(&with_turn));
+        assert!(
+            !claude_jsonl_has_turn(&user_only),
+            "user-only file must be classified as expected-absent (no assistant turn)"
+        );
 
-        let with_spaced_turn = dir.path().join("b.jsonl");
-        std::fs::write(&with_spaced_turn, "{\"type\": \"assistant\"}\n").unwrap();
-        assert!(claude_jsonl_has_turn(&with_spaced_turn));
+        // Assistant turn present (compact key).
+        let with_assistant = dir.path().join("b.jsonl");
+        std::fs::write(
+            &with_assistant,
+            "{\"type\":\"user\"}\n{\"type\":\"assistant\"}\n",
+        )
+        .unwrap();
+        assert!(claude_jsonl_has_turn(&with_assistant));
 
-        // 0-turn stub: only metadata, no user/assistant turn.
-        let empty_stub = dir.path().join("c.jsonl");
+        // Assistant turn present (spaced key variant).
+        let with_spaced_assistant = dir.path().join("c.jsonl");
+        std::fs::write(&with_spaced_assistant, "{\"type\": \"assistant\"}\n").unwrap();
+        assert!(claude_jsonl_has_turn(&with_spaced_assistant));
+
+        // 0-turn metadata-only stub.
+        let empty_stub = dir.path().join("d.jsonl");
         std::fs::write(
             &empty_stub,
             "{\"type\":\"summary\",\"summary\":\"x\"}\n{\"type\":\"file-history-snapshot\"}\n",
@@ -3695,7 +3728,7 @@ mod tests {
         .unwrap();
         assert!(
             !claude_jsonl_has_turn(&empty_stub),
-            "a metadata-only stub must report no turn (expected-absent classification)"
+            "metadata-only stub must report no turn"
         );
     }
 
