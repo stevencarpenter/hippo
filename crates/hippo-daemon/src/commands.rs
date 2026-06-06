@@ -3074,6 +3074,7 @@ fn collect_active_jsonls(
         if path.is_dir() {
             collect_active_jsonls(&path, cutoff, result);
         } else if path.extension().and_then(|e| e.to_str()) == Some("jsonl")
+            && !is_workflow_journal(&path)
             && let Ok(meta) = std::fs::metadata(&path)
             && let Ok(modified) = meta.modified()
             && modified > cutoff
@@ -3081,6 +3082,29 @@ fn collect_active_jsonls(
             result.push(path);
         }
     }
+}
+
+/// Returns true for Claude workflow orchestration journals, not session files.
+///
+/// These are `journal.jsonl` metadata files under a `subagents/.../workflows`
+/// path, so check 5 excludes them from active-session reconciliation.
+fn is_workflow_journal(path: &std::path::Path) -> bool {
+    if path.file_name() != Some(std::ffi::OsStr::new("journal.jsonl")) {
+        return false;
+    }
+
+    let mut saw_subagents = false;
+    for component in path.components() {
+        let name = component.as_os_str();
+        if saw_subagents && name == "workflows" {
+            return true;
+        }
+        if name == "subagents" {
+            saw_subagents = true;
+        }
+    }
+
+    false
 }
 
 /// Check 5: Recursively find active Claude session JSONL files under
