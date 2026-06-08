@@ -1795,8 +1795,11 @@ fn check_source_staleness(db: &rusqlite::Connection, explain: bool) -> u32 {
     // Load the runtime config once for both poller-backed idle probes below
     // (codex + opencode). A single parse avoids two TOML reads per doctor run
     // and the tiny TOCTOU window if the file changed between them. On a load
-    // error each closure degrades exactly as it did with its own load: codex
-    // reports `(false, false)`, opencode reports `false` — i.e. no suppression.
+    // error each closure fails *open for alerting*: it returns the values that
+    // reach `None` in `source_staleness_suppression_reason` (codex/cursor →
+    // `(true, true, false)`, opencode → `true`), so a broken config file never
+    // silently hides a real ingestion failure behind a misleading "no sessions
+    // found" / "idle" reason. This mirrors the `*_enabled` fallback below.
     let doctor_config = hippo_core::config::HippoConfig::load_default();
 
     // Inspect the Codex rollout files under the configured session roots.
@@ -1810,7 +1813,10 @@ fn check_source_staleness(db: &rusqlite::Connection, explain: bool) -> u32 {
     //     genuine ingestion failure, so it is NOT suppressed.
     let codex_session_state = || -> (bool, bool, bool) {
         let Ok(cfg) = doctor_config.as_ref() else {
-            return (false, false, false);
+            // Config unreadable: fail open for alerting. `(exist, recent, !in_flight)`
+            // all skip their suppression arms, so a stale row still alarms rather
+            // than being hidden behind "no Codex sessions found".
+            return (true, true, false);
         };
         let now = std::time::SystemTime::now();
         let recent_cutoff = now
@@ -1865,7 +1871,8 @@ fn check_source_staleness(db: &rusqlite::Connection, explain: bool) -> u32 {
     //     a genuine ingestion failure, so it is NOT suppressed.
     let cursor_session_state = || -> (bool, bool, bool) {
         let Ok(cfg) = doctor_config.as_ref() else {
-            return (false, false, false);
+            // Config unreadable: fail open for alerting (mirrors codex above).
+            return (true, true, false);
         };
         let now = std::time::SystemTime::now();
         let recent_cutoff = now
@@ -1912,7 +1919,10 @@ fn check_source_staleness(db: &rusqlite::Connection, explain: bool) -> u32 {
     // "user just isn't using opencode right now," not "the poller is broken."
     let opencode_db_recent = || -> bool {
         let Ok(cfg) = doctor_config.as_ref() else {
-            return false;
+            // Config unreadable: fail open for alerting. `true` skips the
+            // "opencode DB idle" suppression arm so a stale row still alarms
+            // rather than being hidden behind a misleading "idle" reason.
+            return true;
         };
         let Ok(meta) = std::fs::metadata(&cfg.opencode.db_path) else {
             return false;
