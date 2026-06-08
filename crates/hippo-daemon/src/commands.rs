@@ -1813,8 +1813,10 @@ fn check_source_staleness(db: &rusqlite::Connection, explain: bool) -> u32 {
     //     genuine ingestion failure, so it is NOT suppressed.
     let codex_session_state = || -> (bool, bool, bool) {
         let Ok(cfg) = doctor_config.as_ref() else {
-            // Config unreadable: fail open for alerting. `(exist, recent, !in_flight)`
-            // all skip their suppression arms, so a stale row still alarms rather
+            // Config unreadable: fail open for alerting. `(exist=true,
+            // recent=true, in_flight=false)` skips every suppression arm
+            // (the `false` is load-bearing — `in_flight=true` would match the
+            // "settling" arm and suppress), so a stale row still alarms rather
             // than being hidden behind "no Codex sessions found".
             return (true, true, false);
         };
