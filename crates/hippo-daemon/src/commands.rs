@@ -1718,6 +1718,26 @@ where
     fail
 }
 
+/// Fail-open-for-alerting fallback returned by the codex/cursor session-state
+/// probes when doctor cannot read its config (`HippoConfig::load_default()`
+/// errored — corrupt/unreadable/deprecated config; a *missing* file yields
+/// `Ok(default)` and never reaches here). These exact values must skip every
+/// suppression arm in `source_staleness_suppression_reason` so a genuinely
+/// stale `source_health` row still alarms instead of being hidden behind a
+/// misleading "no sessions found" reason.
+///
+/// `(exist=true, recent=true, in_flight=false)` — the `in_flight=false` is
+/// load-bearing: `true` would match the "(settling)" arm and *suppress*. A
+/// flip back to any falsy tuple silently re-introduces the silent-hide bug,
+/// which `test_session_state_config_error_fallback_alarms` guards against.
+const SESSION_STATE_CONFIG_ERROR_FALLBACK: (bool, bool, bool) = (true, true, false);
+
+/// Fail-open-for-alerting fallback returned by `opencode_db_recent` on the same
+/// config-load failure: `true` skips the "opencode DB idle" suppression arm so
+/// a stale opencode row still alarms. Guarded by
+/// `test_opencode_db_recent_config_error_fallback_alarms`.
+const OPENCODE_DB_RECENT_CONFIG_ERROR_FALLBACK: bool = true;
+
 /// Check 1: Per-source staleness via the `source_health` table (requires P0.1 migration).
 ///
 /// Returns the number of failing (hard-threshold) checks.
@@ -1795,8 +1815,11 @@ fn check_source_staleness(db: &rusqlite::Connection, explain: bool) -> u32 {
     // Load the runtime config once for both poller-backed idle probes below
     // (codex + opencode). A single parse avoids two TOML reads per doctor run
     // and the tiny TOCTOU window if the file changed between them. On a load
-    // error each closure degrades exactly as it did with its own load: codex
-    // reports `(false, false)`, opencode reports `false` — i.e. no suppression.
+    // error each closure fails *open for alerting*: it returns the values that
+    // reach `None` in `source_staleness_suppression_reason` (codex/cursor →
+    // `(true, true, false)`, opencode → `true`), so a broken config file never
+    // silently hides a real ingestion failure behind a misleading "no sessions
+    // found" / "idle" reason. This mirrors the `*_enabled` fallback below.
     let doctor_config = hippo_core::config::HippoConfig::load_default();
 
     // Inspect the Codex rollout files under the configured session roots.
@@ -1808,14 +1831,30 @@ fn check_source_staleness(db: &rusqlite::Connection, explain: bool) -> u32 {
     //     mtime). False (with files present) ⇒ "user just isn't using Codex
     //     right now" — suppress.  True with a stale `source_health` row ⇒ a
     //     genuine ingestion failure, so it is NOT suppressed.
-    let codex_session_state = || -> (bool, bool) {
+    let codex_session_state = || -> (bool, bool, bool) {
+        // Config unreadable: fail open for alerting (see the const's docs).
         let Ok(cfg) = doctor_config.as_ref() else {
-            return (false, false);
+            return SESSION_STATE_CONFIG_ERROR_FALLBACK;
         };
-        let idle_cutoff = std::time::SystemTime::now()
+        // Disabled source: skip the recursive WalkDir entirely. The
+        // `!codex_enabled` suppression arm (checked first) classifies this row
+        // as "source disabled" regardless of the tuple, so the walk would be
+        // wasted I/O.
+        if !cfg.codex.enabled {
+            return (false, false, false);
+        }
+        let now = std::time::SystemTime::now();
+        let recent_cutoff = now
             .checked_sub(std::time::Duration::from_secs(IDLE_WINDOW_SECS))
             .unwrap_or(std::time::UNIX_EPOCH);
+        // In-flight = modified within the poller's settle gate, so `poll_tick`
+        // is still skipping it and `source_health` can't have advanced yet.
+        let in_flight_cutoff = now
+            .checked_sub(std::time::Duration::from_secs(cfg.codex.min_idle_secs))
+            .unwrap_or(std::time::UNIX_EPOCH);
         let mut any_exist = false;
+        let mut any_recent = false;
+        let mut any_in_flight = false;
         for root in &cfg.codex.session_roots {
             // Skip roots that don't exist, mirroring `codex_session::poll_tick`.
             if !root.is_dir() {
@@ -1833,15 +1872,17 @@ fn check_source_staleness(db: &rusqlite::Connection, explain: bool) -> u32 {
                 any_exist = true;
                 if let Ok(meta) = entry.metadata()
                     && let Ok(modified) = meta.modified()
-                    && modified > idle_cutoff
                 {
-                    // A recent file settles both facts — stop walking.
-                    return (true, true);
+                    any_recent |= modified > recent_cutoff;
+                    any_in_flight |= modified > in_flight_cutoff;
+                }
+                // Both freshness facts settled — stop walking.
+                if any_recent && any_in_flight {
+                    return (true, true, true);
                 }
             }
         }
-        // Walk exhausted with no recent file: `any_recent` is necessarily false.
-        (any_exist, false)
+        (any_exist, any_recent, any_in_flight)
     };
 
     // Inspect the Cursor agent-transcript files under the configured session
@@ -1853,14 +1894,27 @@ fn check_source_staleness(db: &rusqlite::Connection, explain: bool) -> u32 {
     //     its DB mtime). False (with files present) ⇒ "user just isn't using
     //     Cursor right now" — suppress.  True with a stale `source_health` row ⇒
     //     a genuine ingestion failure, so it is NOT suppressed.
-    let cursor_session_state = || -> (bool, bool) {
+    let cursor_session_state = || -> (bool, bool, bool) {
+        // Config unreadable: fail open for alerting (mirrors codex above).
         let Ok(cfg) = doctor_config.as_ref() else {
-            return (false, false);
+            return SESSION_STATE_CONFIG_ERROR_FALLBACK;
         };
-        let idle_cutoff = std::time::SystemTime::now()
+        // Disabled source: skip the WalkDir; `!cursor_enabled` classifies the
+        // row (mirrors codex above).
+        if !cfg.cursor.enabled {
+            return (false, false, false);
+        }
+        let now = std::time::SystemTime::now();
+        let recent_cutoff = now
             .checked_sub(std::time::Duration::from_secs(IDLE_WINDOW_SECS))
             .unwrap_or(std::time::UNIX_EPOCH);
+        // In-flight = modified within the poller's settle gate (mirrors codex).
+        let in_flight_cutoff = now
+            .checked_sub(std::time::Duration::from_secs(cfg.cursor.min_idle_secs))
+            .unwrap_or(std::time::UNIX_EPOCH);
         let mut any_exist = false;
+        let mut any_recent = false;
+        let mut any_in_flight = false;
         for root in &cfg.cursor.session_roots {
             if !root.is_dir() {
                 continue;
@@ -1877,22 +1931,26 @@ fn check_source_staleness(db: &rusqlite::Connection, explain: bool) -> u32 {
                 any_exist = true;
                 if let Ok(meta) = entry.metadata()
                     && let Ok(modified) = meta.modified()
-                    && modified > idle_cutoff
                 {
-                    // A recent file settles both facts — stop walking.
-                    return (true, true);
+                    any_recent |= modified > recent_cutoff;
+                    any_in_flight |= modified > in_flight_cutoff;
+                }
+                // Both freshness facts settled — stop walking.
+                if any_recent && any_in_flight {
+                    return (true, true, true);
                 }
             }
         }
-        (any_exist, false)
+        (any_exist, any_recent, any_in_flight)
     };
 
     // Check whether the opencode DB itself looks active — the file exists
     // and has been modified within IDLE_WINDOW_SECS. Stale opencode means
     // "user just isn't using opencode right now," not "the poller is broken."
     let opencode_db_recent = || -> bool {
+        // Config unreadable: fail open for alerting (see the const's docs).
         let Ok(cfg) = doctor_config.as_ref() else {
-            return false;
+            return OPENCODE_DB_RECENT_CONFIG_ERROR_FALLBACK;
         };
         let Ok(meta) = std::fs::metadata(&cfg.opencode.db_path) else {
             return false;
@@ -1944,8 +2002,10 @@ fn check_source_staleness(db: &rusqlite::Connection, explain: bool) -> u32 {
     };
 
     let mut fail_count: u32 = 0;
-    let (codex_sessions_do_exist, codex_sessions_are_recent) = codex_session_state();
-    let (cursor_sessions_do_exist, cursor_sessions_are_recent) = cursor_session_state();
+    let (codex_sessions_do_exist, codex_sessions_are_recent, codex_session_is_in_flight) =
+        codex_session_state();
+    let (cursor_sessions_do_exist, cursor_sessions_are_recent, cursor_session_is_in_flight) =
+        cursor_session_state();
     // Extract enabled flags from config; fall back to `true` (no suppression) on
     // a config-load error so a broken config file doesn't silently hide real failures.
     let (opencode_enabled, codex_enabled, cursor_enabled) = doctor_config
@@ -1960,9 +2020,11 @@ fn check_source_staleness(db: &rusqlite::Connection, explain: bool) -> u32 {
         opencode_enabled,
         codex_sessions_exist: codex_sessions_do_exist,
         codex_sessions_recent: codex_sessions_are_recent,
+        codex_session_in_flight: codex_session_is_in_flight,
         codex_enabled,
         cursor_sessions_exist: cursor_sessions_do_exist,
         cursor_sessions_recent: cursor_sessions_are_recent,
+        cursor_session_in_flight: cursor_session_is_in_flight,
         cursor_enabled,
     };
 
@@ -2453,6 +2515,12 @@ struct SuppressionSignals {
     codex_sessions_exist: bool,
     /// At least one Codex `rollout-*.jsonl` file changed within 10 minutes.
     codex_sessions_recent: bool,
+    /// The newest Codex `rollout-*.jsonl` was modified within `[codex]
+    /// min_idle_secs` — i.e. it is still being written, so the poller is
+    /// *correctly* skipping it (it waits for the file to settle before reading,
+    /// to avoid a partial parse). A stale `source_health` row in this state is
+    /// expected, not a capture failure.
+    codex_session_in_flight: bool,
     /// `[codex] enabled` from config — false means the source is intentionally
     /// disabled and staleness alarms must not fire regardless of file activity.
     codex_enabled: bool,
@@ -2460,6 +2528,10 @@ struct SuppressionSignals {
     cursor_sessions_exist: bool,
     /// At least one Cursor agent-transcript `.jsonl` changed within 10 minutes.
     cursor_sessions_recent: bool,
+    /// The newest Cursor agent-transcript `.jsonl` was modified within `[cursor]
+    /// min_idle_secs` — i.e. it is still being written, so the poller is
+    /// *correctly* skipping it (mirrors `codex_session_in_flight`).
+    cursor_session_in_flight: bool,
     /// `[cursor] enabled` from config — false means the source is intentionally
     /// disabled and staleness alarms must not fire regardless of file activity.
     cursor_enabled: bool,
@@ -2509,10 +2581,21 @@ fn source_staleness_suppression_reason(
         // matched here — that combination is a genuine ingestion failure and
         // must still alarm.
         "agentic-session-codex" if !signals.codex_sessions_exist => Some("no Codex sessions found"),
+        // A rollout still being written is in-flight: the poller skips files
+        // modified within `min_idle_secs` to avoid a partial read, so a stale
+        // `source_health` row is expected until the file settles. Checked before
+        // the idle arm so an active session is never mislabelled "idle" and
+        // never reaches the Fail arm. Self-clears once the file stops growing.
+        "agentic-session-codex" if signals.codex_session_in_flight => {
+            Some("Codex session in-flight (settling)")
+        }
         "agentic-session-codex" if !signals.codex_sessions_recent => Some("Codex sessions idle"),
         "agentic-session-cursor" if !signals.cursor_enabled => Some("source disabled"),
         "agentic-session-cursor" if !signals.cursor_sessions_exist => {
             Some("no Cursor sessions found")
+        }
+        "agentic-session-cursor" if signals.cursor_session_in_flight => {
+            Some("Cursor session in-flight (settling)")
         }
         "agentic-session-cursor" if !signals.cursor_sessions_recent => Some("Cursor sessions idle"),
         _ => None,
@@ -4440,9 +4523,14 @@ replacement = "***"
             opencode_enabled: true,
             codex_sessions_exist,
             codex_sessions_recent,
+            // Default `false`: existing tests cover idle / not-installed /
+            // fresh-but-stale suppression, not the in-flight case. The dedicated
+            // in-flight tests set this explicitly via struct update syntax.
+            codex_session_in_flight: false,
             codex_enabled: true,
             cursor_sessions_exist,
             cursor_sessions_recent,
+            cursor_session_in_flight: false,
             cursor_enabled: true,
         }
     }
@@ -4519,6 +4607,26 @@ replacement = "***"
     }
 
     #[test]
+    fn test_codex_staleness_suppressed_when_session_in_flight() {
+        // The fresh rollout file is still being written (modified within
+        // `min_idle_secs`), so the poller is *correctly* skipping it to avoid a
+        // partial read. `source_health` is therefore stale through no fault of
+        // the poller — the file simply hasn't settled. This must NOT alarm even
+        // though files are fresh and the row is past fail_secs.
+        let sig = SuppressionSignals {
+            codex_sessions_exist: true,
+            codex_sessions_recent: true,
+            codex_session_in_flight: true,
+            ..signals(false, false, false, false, false)
+        };
+        assert_eq!(
+            classify_source_staleness("agentic-session-codex", 2 * 3600, sig),
+            SourceStalenessStatus::Suppressed("Codex session in-flight (settling)"),
+            "an in-flight (still-being-written) Codex session must suppress, not alarm"
+        );
+    }
+
+    #[test]
     fn test_codex_staleness_warns_when_files_fresh_but_health_briefly_stale() {
         // warn_secs = 300 for agentic-session-codex; 600s is past warn but
         // under fail (3600). Fresh files → not suppressed → WARN.
@@ -4588,6 +4696,42 @@ replacement = "***"
         );
     }
 
+    #[test]
+    fn test_cursor_staleness_suppressed_when_session_in_flight() {
+        // Symmetric with codex: an actively-written Cursor transcript is skipped
+        // by the poller's `min_idle_secs` settle gate, so a stale `source_health`
+        // row is expected — suppress, don't alarm.
+        let sig = SuppressionSignals {
+            cursor_sessions_exist: true,
+            cursor_sessions_recent: true,
+            cursor_session_in_flight: true,
+            ..signals(false, false, false, false, false)
+        };
+        assert_eq!(
+            classify_source_staleness("agentic-session-cursor", 2 * 3600, sig),
+            SourceStalenessStatus::Suppressed("Cursor session in-flight (settling)"),
+            "an in-flight (still-being-written) Cursor session must suppress, not alarm"
+        );
+    }
+
+    #[test]
+    fn test_in_flight_takes_precedence_over_disabled_is_false() {
+        // Ordering guard: a *disabled* source must still win over in-flight, so
+        // that `enabled = false` is always honoured even mid-session.
+        let sig = SuppressionSignals {
+            codex_enabled: false,
+            codex_sessions_exist: true,
+            codex_sessions_recent: true,
+            codex_session_in_flight: true,
+            ..signals(false, false, false, false, false)
+        };
+        assert_eq!(
+            classify_source_staleness("agentic-session-codex", 2 * 3600, sig),
+            SourceStalenessStatus::Suppressed("source disabled"),
+            "disabled must take precedence over in-flight"
+        );
+    }
+
     /// Same class fix — disabled Codex must suppress regardless of file activity.
     #[test]
     fn test_codex_disabled_suppresses_staleness() {
@@ -4616,6 +4760,59 @@ replacement = "***"
             classify_source_staleness("agentic-session-opencode", 2 * 3600, sig),
             SourceStalenessStatus::Suppressed("source disabled"),
             "opencode with enabled=false must be suppressed regardless of DB mtime"
+        );
+    }
+
+    /// Regression guard for the fail-open-for-alerting fallback. When doctor
+    /// cannot read its config the codex/cursor probes return
+    /// `SESSION_STATE_CONFIG_ERROR_FALLBACK`; with a stale `source_health` row
+    /// past `fail_secs` that MUST still alarm, never be hidden behind "no
+    /// sessions found". Building the signals straight from the const means a
+    /// future flip back to a falsy tuple (re-introducing the silent-hide bug)
+    /// breaks this test rather than slipping through review.
+    #[test]
+    fn test_session_state_config_error_fallback_alarms() {
+        let (exist, recent, in_flight) = SESSION_STATE_CONFIG_ERROR_FALLBACK;
+
+        let codex_sig = SuppressionSignals {
+            codex_sessions_exist: exist,
+            codex_sessions_recent: recent,
+            codex_session_in_flight: in_flight,
+            ..signals(false, false, false, false, false)
+        };
+        assert_eq!(
+            classify_source_staleness("agentic-session-codex", 2 * 3600, codex_sig),
+            SourceStalenessStatus::Fail,
+            "config-load failure must not hide a stale Codex source_health row"
+        );
+
+        let cursor_sig = SuppressionSignals {
+            cursor_sessions_exist: exist,
+            cursor_sessions_recent: recent,
+            cursor_session_in_flight: in_flight,
+            ..signals(false, false, false, false, false)
+        };
+        assert_eq!(
+            classify_source_staleness("agentic-session-cursor", 2 * 3600, cursor_sig),
+            SourceStalenessStatus::Fail,
+            "config-load failure must not hide a stale Cursor source_health row"
+        );
+    }
+
+    /// Sibling guard for `opencode_db_recent`'s config-error fallback: `true`
+    /// must keep a stale opencode row alarming rather than suppressing it as
+    /// "idle". Flipping `OPENCODE_DB_RECENT_CONFIG_ERROR_FALLBACK` to `false`
+    /// breaks this test.
+    #[test]
+    fn test_opencode_db_recent_config_error_fallback_alarms() {
+        let sig = SuppressionSignals {
+            opencode_db_recent: OPENCODE_DB_RECENT_CONFIG_ERROR_FALLBACK,
+            ..signals(false, false, false, false, false)
+        };
+        assert_eq!(
+            classify_source_staleness("agentic-session-opencode", 2 * 3600, sig),
+            SourceStalenessStatus::Fail,
+            "config-load failure must not hide a stale opencode source_health row"
         );
     }
 
