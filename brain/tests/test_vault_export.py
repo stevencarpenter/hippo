@@ -152,3 +152,19 @@ def test_render_entity_page_caps_hub_members_with_explicit_note():
     )
     md = render_entity_page(row)
     assert "showing 3 of 5699" in md  # no silent truncation
+
+
+def test_shard_for_uses_created_month():
+    from hippo_brain.vault_render import shard_for
+
+    assert shard_for(1781530200000) == "2026-06"
+
+
+def test_render_root_index_links_to_sub_indexes_not_all_nodes():
+    from hippo_brain.vault_render import render_root_index
+
+    md = render_root_index(projects=["hippo", "whistlepost"], months=["2026-06", "2026-05"])
+    assert "[[indexes/project-hippo|hippo]]" in md
+    assert "[[indexes/month-2026-06|2026-06]]" in md
+    # the root index must NOT enumerate individual nodes (unbounded growth guard)
+    assert "knowledge/" not in md

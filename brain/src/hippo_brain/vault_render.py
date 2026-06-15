@@ -206,3 +206,23 @@ def render_entity_page(entity: EntityRow) -> str:
     if entity.total_members > len(entity.members):
         lines.append(f"\n_(showing {len(entity.members)} of {entity.total_members} nodes)_")
     return "\n".join(lines).rstrip() + "\n"
+
+
+def shard_for(created_ms: int) -> str:
+    """knowledge/ sub-folder for a node, derived from immutable created_at month."""
+    return datetime.fromtimestamp(created_ms / 1000, tz=timezone.utc).strftime("%Y-%m")
+
+
+def render_root_index(projects: list[str], months: list[str]) -> str:
+    lines = [GENERATED_BANNER, "# hippo knowledge vault\n", "## Projects\n"]
+    lines += [f"- [[indexes/project-{slugify(p)}|{p}]]" for p in projects]
+    lines.append("\n## Months\n")
+    lines += [f"- [[indexes/month-{m}|{m}]]" for m in months]
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def render_sub_index(title: str, members: list[tuple[str, str]]) -> str:
+    """A per-project or per-month MOC listing node links (bounded by caller)."""
+    lines = [GENERATED_BANNER, f"# {title}\n"]
+    lines += [f"- [[{key}|{headline}]]" for key, headline in members]
+    return "\n".join(lines).rstrip() + "\n"
