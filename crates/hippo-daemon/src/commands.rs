@@ -1284,6 +1284,9 @@ pub async fn handle_doctor(config: &HippoConfig, explain: bool) -> Result<()> {
         println!("[--] {:<29}  no home dir", "native-msg manifest");
     }
 
+    // Check vault export health
+    println!("{}", vault_doctor_check(config));
+
     if fail_count > 0 {
         std::process::exit(fail_count as i32);
     }
@@ -1304,6 +1307,26 @@ pub fn resolve_vault_out(config: &HippoConfig, flag: Option<String>) -> String {
         .join("vault")
         .to_string_lossy()
         .to_string()
+}
+
+pub fn vault_doctor_check(config: &HippoConfig) -> String {
+    if !config.vault.enabled {
+        return "[--] vault export: disabled".to_string();
+    }
+    let out = resolve_vault_out(config, None);
+    let meta = std::path::Path::new(&out).join("_vault_meta.json");
+    if !meta.exists() {
+        return format!(
+            "[WW] vault export: enabled but no vault at {out} (run `hippo export vault`)"
+        );
+    }
+    match std::fs::metadata(&meta).and_then(|m| m.modified()) {
+        Ok(modified) => {
+            let age = modified.elapsed().map(|d| d.as_secs() / 60).unwrap_or(0);
+            format!("[OK] vault export: last synced {age}m ago at {out}")
+        }
+        Err(e) => format!("[!!] vault export: cannot stat {}: {e}", meta.display()),
+    }
 }
 
 pub async fn handle_export_vault(
@@ -5061,5 +5084,28 @@ replacement = "***"
         // data_dir fallback
         config.vault.out = None;
         assert_eq!(resolve_vault_out(&config, None), "/data/vault");
+    }
+
+    #[test]
+    fn vault_doctor_check_skips_when_disabled() {
+        let config = HippoConfig::default(); // vault.enabled = false
+        let line = vault_doctor_check(&config);
+        assert!(line.contains("[--]")); // skipped severity
+        assert!(line.to_lowercase().contains("vault"));
+    }
+
+    #[test]
+    fn vault_doctor_check_warns_when_enabled_but_missing() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let mut config = HippoConfig::default();
+        config.vault.enabled = true;
+        config.vault.out = Some(
+            dir.path()
+                .join("does-not-exist")
+                .to_string_lossy()
+                .to_string(),
+        );
+        let line = vault_doctor_check(&config);
+        assert!(line.contains("[WW]") || line.contains("[!!]"));
     }
 }
