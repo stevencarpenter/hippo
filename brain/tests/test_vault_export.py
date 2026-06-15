@@ -284,3 +284,39 @@ def test_check_format_version_flags_drift(tmp_path):
     meta["vault_format_version"] = 999
     (tmp_path / "_vault_meta.json").write_text(_json.dumps(meta))
     assert check_format_version(tmp_path) is False  # drift detected
+
+
+def test_export_vault_end_to_end_redacts_and_reconciles(tmp_db, tmp_path):
+    from hippo_brain.vault_export import export_vault
+
+    conn, _db_path = tmp_db
+    conn.execute(
+        "INSERT INTO knowledge_nodes (id, uuid, content, embed_text, node_type, outcome, created_at, updated_at) "
+        'VALUES (1,\'u1\',\'{"summary":"used api_key=sk1234567890abcdefghijk to call api","intent":"debug"}\',\'tok\','
+        "'observation','success',1781530200000,1781530200000)"
+    )
+    conn.execute(
+        "INSERT INTO agentic_sessions (id, session_id, harness, segment_index, project_dir, cwd, summary_text, start_time, end_time) "
+        "VALUES (10,'sess','codex',0,'/p','/c','s',0,0)"
+    )
+    conn.execute("INSERT INTO knowledge_node_agentic_sessions VALUES (1,10)")
+    conn.commit()
+
+    out = tmp_path / "vault"
+    summary = export_vault(
+        conn,
+        str(out),
+        hippo_version="0.0.0",
+        related_top_k=8,
+        hub_degree_cap=200,
+        hub_node_list_cap=200,
+        shard_by="month",
+    )
+
+    note = out / "knowledge" / "2026-06" / "codex-sess-0.md"
+    assert note.exists()
+    text = note.read_text()
+    assert "sk1234567890abcdefghijk" not in text  # export-time redaction applied
+    assert (out / "_vault_meta.json").exists()
+    assert (out / ".gitignore").exists()
+    assert summary["nodes"] == 1
