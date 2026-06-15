@@ -29,6 +29,8 @@ pub struct HippoConfig {
     #[serde(default)]
     pub cursor: CursorConfig,
     #[serde(default)]
+    pub vault: VaultConfig,
+    #[serde(default)]
     pub reaper: ReaperConfig,
 }
 
@@ -687,6 +689,65 @@ impl Default for CursorConfig {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VaultConfig {
+    /// Enable Obsidian vault export. When false, `hippo export vault` errors
+    /// out and the vault-sync LaunchAgent is a no-op.
+    #[serde(default = "default_vault_enabled")]
+    pub enabled: bool,
+    /// Output directory. None => `<data_dir>/vault`.
+    #[serde(default)]
+    pub out: Option<String>,
+    /// launchd StartInterval for com.hippo.vault-sync, in seconds.
+    #[serde(default = "default_vault_poll_interval_secs")]
+    pub poll_interval_secs: u64,
+    /// Max node->node related edges per note.
+    #[serde(default = "default_vault_related_top_k")]
+    pub related_top_k: u32,
+    /// Entities linking more than this many nodes are excluded from related[].
+    #[serde(default = "default_vault_hub_degree_cap")]
+    pub hub_degree_cap: u32,
+    /// Max member nodes listed on an entity page.
+    #[serde(default = "default_vault_hub_node_list_cap")]
+    pub hub_node_list_cap: u32,
+    /// knowledge/ sharding scheme: "month" or "all".
+    #[serde(default = "default_vault_shard_by")]
+    pub shard_by: String,
+}
+
+fn default_vault_enabled() -> bool {
+    false
+}
+fn default_vault_poll_interval_secs() -> u64 {
+    300
+}
+fn default_vault_related_top_k() -> u32 {
+    8
+}
+fn default_vault_hub_degree_cap() -> u32 {
+    200
+}
+fn default_vault_hub_node_list_cap() -> u32 {
+    200
+}
+fn default_vault_shard_by() -> String {
+    "month".to_string()
+}
+
+impl Default for VaultConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_vault_enabled(),
+            out: None,
+            poll_interval_secs: default_vault_poll_interval_secs(),
+            related_top_k: default_vault_related_top_k(),
+            hub_degree_cap: default_vault_hub_degree_cap(),
+            hub_node_list_cap: default_vault_hub_node_list_cap(),
+            shard_by: default_vault_shard_by(),
+        }
+    }
+}
+
 impl HippoConfig {
     pub fn load(path: &Path) -> Result<Self> {
         // nosemgrep
@@ -1301,5 +1362,33 @@ strip_params = ["secret", "nonce"]
         let toml = "";
         let cfg: HippoConfig = toml::from_str(toml).unwrap();
         assert!(cfg.cursor.enabled);
+    }
+
+    #[test]
+    fn vault_config_defaults() {
+        let c = HippoConfig::default();
+        assert!(!c.vault.enabled);
+        assert_eq!(c.vault.poll_interval_secs, 300);
+        assert_eq!(c.vault.related_top_k, 8);
+        assert_eq!(c.vault.hub_degree_cap, 200);
+        assert_eq!(c.vault.hub_node_list_cap, 200);
+        assert_eq!(c.vault.shard_by, "month");
+    }
+
+    #[test]
+    fn vault_config_parses_from_toml() {
+        let toml = r#"
+[vault]
+enabled = true
+out = "/tmp/myvault"
+poll_interval_secs = 600
+related_top_k = 12
+"#;
+        let c: HippoConfig = toml::from_str(toml).unwrap();
+        assert!(c.vault.enabled);
+        assert_eq!(c.vault.out.as_deref(), Some("/tmp/myvault"));
+        assert_eq!(c.vault.poll_interval_secs, 600);
+        assert_eq!(c.vault.related_top_k, 12);
+        assert_eq!(c.vault.hub_degree_cap, 200); // default preserved
     }
 }

@@ -269,3 +269,17 @@ interval_secs = 300       # brain reaper loop cadence
 batch_size = 50           # orphans re-embedded per tick
 orphan_stale_secs = 900   # min node age before it counts as an orphan
 alarm_threshold = 25      # orphan count above which I-14 alarms
+
+# ─── Obsidian vault export ────────────────────────────────────────────
+# When enabled, `hippo export vault` writes a one-way markdown projection of
+# the knowledge base, and a com.hippo.vault-sync LaunchAgent refreshes it on
+# the poll interval. The vault is regenerated each run; edits made in it are
+# discarded. Default location is <data_dir>/vault.
+[vault]
+enabled = false
+# out = "~/.local/share/hippo/vault"
+# poll_interval_secs = 300   # changing this requires `hippo daemon install --force`
+# related_top_k = 8
+# hub_degree_cap = 200       # entities above this are excluded from related[]
+# hub_node_list_cap = 200    # max nodes listed on an entity page
+# shard_by = "month"
