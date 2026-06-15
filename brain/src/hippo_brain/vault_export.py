@@ -5,7 +5,9 @@ Orchestrates query -> render -> full reconcile over a single read snapshot.
 
 from __future__ import annotations
 
+import os
 import sqlite3
+from pathlib import Path
 
 VAULT_FORMAT_VERSION = 1
 
@@ -31,3 +33,35 @@ def fetch_exportable_node_ids(conn: sqlite3.Connection) -> list[int]:
         """
     ).fetchall()
     return [r[0] for r in rows]
+
+
+def _atomic_write(path: Path, content: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(content, encoding="utf-8")
+    os.replace(tmp, path)  # atomic on POSIX
+
+
+def reconcile_files(root: Path, desired: dict, managed_subdirs: list[str]) -> dict:
+    """Write changed files, skip unchanged, delete orphans within managed subdirs."""
+    written = unchanged = deleted = 0
+    desired = {Path(p): c for p, c in desired.items()}
+
+    for path, content in desired.items():
+        if path.exists() and path.read_text(encoding="utf-8") == content:
+            unchanged += 1
+            continue
+        _atomic_write(path, content)
+        written += 1
+
+    desired_paths = set(desired)
+    for sub in managed_subdirs:
+        base = root / sub
+        if not base.exists():
+            continue
+        for existing in base.rglob("*.md"):
+            if existing not in desired_paths:
+                existing.unlink()
+                deleted += 1
+
+    return {"written": written, "unchanged": unchanged, "deleted": deleted}

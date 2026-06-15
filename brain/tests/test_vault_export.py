@@ -214,3 +214,37 @@ def test_fetch_exportable_excludes_probe_only_nodes(tmp_db):
     conn.commit()
     ids = fetch_exportable_node_ids(conn)
     assert ids == [1]  # node 2 is sourced only by a probe-tagged session
+
+
+def test_reconcile_writes_changed_skips_unchanged_and_gcs_orphans(tmp_path):
+    from hippo_brain.vault_export import reconcile_files
+
+    root = tmp_path / "vault"
+    (root / "knowledge").mkdir(parents=True)
+    stale = root / "knowledge" / "old.md"
+    stale.write_text("stale\n")
+    keep = root / "knowledge" / "keep.md"
+    keep.write_text("v1\n")
+
+    desired = {
+        root / "knowledge" / "keep.md": "v1\n",  # unchanged
+        root / "knowledge" / "new.md": "fresh\n",  # new
+    }
+    mtime_before = keep.stat().st_mtime_ns
+    summary = reconcile_files(root, desired, managed_subdirs=["knowledge"])
+
+    assert (root / "knowledge" / "new.md").read_text() == "fresh\n"
+    assert not stale.exists()  # orphan GC'd
+    assert keep.stat().st_mtime_ns == mtime_before  # unchanged not rewritten
+    assert summary["written"] == 1 and summary["deleted"] == 1 and summary["unchanged"] == 1
+
+
+def test_reconcile_gc_scoped_to_managed_subdirs_only(tmp_path):
+    from hippo_brain.vault_export import reconcile_files
+
+    root = tmp_path / "vault"
+    (root / "knowledge").mkdir(parents=True)
+    foreign = root / "user-note.md"  # outside managed subdirs
+    foreign.write_text("mine\n")
+    reconcile_files(root, {}, managed_subdirs=["knowledge"])
+    assert foreign.exists()  # never touched
