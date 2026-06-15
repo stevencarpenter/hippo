@@ -154,6 +154,7 @@ hippo events --since 2h                 # Recent shell events
 hippo ask "how did I fix that build error"  # RAG query (synthesized answer)
 hippo query --raw "cargo build"         # Raw lexical search (no brain needed)
 hippo entities                          # Known projects, tools, files, env vars
+hippo export vault --out ~/.local/share/hippo/vault  # Project knowledge base into Obsidian vault (see docs/vault-export.md)
 hippo export-training --since 30d --out ./export  # Export training data
 hippo redact test "password=hunter2"    # Test redaction patterns
 ```
