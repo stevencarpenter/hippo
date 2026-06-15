@@ -168,3 +168,33 @@ def test_render_root_index_links_to_sub_indexes_not_all_nodes():
     assert "[[indexes/month-2026-06|2026-06]]" in md
     # the root index must NOT enumerate individual nodes (unbounded growth guard)
     assert "knowledge/" not in md
+
+
+def test_compute_related_excludes_hub_entities_and_bounds_topk():
+    from hippo_brain.vault_edges import compute_related
+
+    # node 1 shares hub entity 'git'(deg 9999) with everyone, and rare entity
+    # 'storage.rs'(deg 2) with node 2 only. Only the rare link should survive.
+    node_entities = {
+        1: {"git", "storage.rs"},
+        2: {"git", "storage.rs"},
+        3: {"git"},
+    }
+    entity_degree = {"git": 9999, "storage.rs": 2}
+    related = compute_related(node_entities, entity_degree, hub_degree_cap=200, top_k=8)
+    assert related[1] == [2]  # node 3 shares only the excluded hub -> no edge
+    assert related[3] == []
+
+
+def test_compute_related_respects_top_k_ordering_by_rarity_weight():
+    from hippo_brain.vault_edges import compute_related
+
+    node_entities = {
+        1: {"a", "b", "c"},
+        2: {"a"},  # shares rarest
+        3: {"b"},
+        4: {"c"},
+    }
+    entity_degree = {"a": 2, "b": 3, "c": 4}
+    related = compute_related(node_entities, entity_degree, hub_degree_cap=200, top_k=2)
+    assert related[1] == [2, 3]  # top-2 by inverse-degree weight: a > b > c
