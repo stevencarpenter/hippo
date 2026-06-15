@@ -198,3 +198,19 @@ def test_compute_related_respects_top_k_ordering_by_rarity_weight():
     entity_degree = {"a": 2, "b": 3, "c": 4}
     related = compute_related(node_entities, entity_degree, hub_degree_cap=200, top_k=2)
     assert related[1] == [2, 3]  # top-2 by inverse-degree weight: a > b > c
+
+
+def test_fetch_exportable_excludes_probe_only_nodes(tmp_db):
+    from hippo_brain.vault_export import fetch_exportable_node_ids
+
+    conn, _db_path = tmp_db
+    conn.execute(
+        "INSERT INTO knowledge_nodes (id, uuid, content, embed_text) VALUES (1,'real','{}','x'),(2,'probe','{}','y')"
+    )
+    conn.execute(
+        "INSERT INTO agentic_sessions (id, session_id, harness, segment_index, project_dir, cwd, summary_text, start_time, end_time, probe_tag) VALUES (10,'s','codex',0,'/p','/c','sum',0,0,NULL),(11,'sp','codex',1,'/p','/c','sum',0,0,'PROBE')"
+    )
+    conn.execute("INSERT INTO knowledge_node_agentic_sessions VALUES (1,10),(2,11)")
+    conn.commit()
+    ids = fetch_exportable_node_ids(conn)
+    assert ids == [1]  # node 2 is sourced only by a probe-tagged session
