@@ -116,3 +116,39 @@ def test_render_node_note_full_outcome_vocab_passthrough():
     ):
         md = render_node_note(_node(outcome=oc))
         assert yaml.safe_load(md.split("---\n")[1])["outcome"] == oc
+
+
+def test_render_entity_page_lists_members_and_omits_last_seen():
+    from hippo_brain.vault_render import EntityRow, render_entity_page
+
+    row = EntityRow(
+        entity_type="project",
+        canonical="hippo",
+        first_seen_ms=1704067200000,
+        members=[("claude-code-aaa-0", "Fixed FTS"), ("evt-12", "ran cargo test")],
+        total_members=2,
+        cap=200,
+    )
+    md = render_entity_page(row)
+    fm = yaml.safe_load(md.split("---\n")[1])
+    assert fm["type"] == "entity"
+    assert fm["entity_type"] == "project"
+    assert "last_seen" not in fm  # churn-free: last_seen deliberately omitted
+    assert "[[claude-code-aaa-0|Fixed FTS]]" in md
+    assert "showing" not in md.lower()  # no truncation note when under cap
+
+
+def test_render_entity_page_caps_hub_members_with_explicit_note():
+    from hippo_brain.vault_render import EntityRow, render_entity_page
+
+    members = [(f"evt-{i}", f"node {i}") for i in range(3)]
+    row = EntityRow(
+        entity_type="tool",
+        canonical="git",
+        first_seen_ms=0,
+        members=members,
+        total_members=5699,
+        cap=3,
+    )
+    md = render_entity_page(row)
+    assert "showing 3 of 5699" in md  # no silent truncation

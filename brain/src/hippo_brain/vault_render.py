@@ -177,3 +177,32 @@ def render_node_note(node: NodeRow) -> str:
         lines.append("")
 
     return "\n".join(lines).rstrip() + "\n"
+
+
+@dataclass
+class EntityRow:
+    entity_type: str
+    canonical: str
+    first_seen_ms: int
+    members: list[tuple[str, str]]  # (node_source_key, headline) — already capped by caller
+    total_members: int
+    cap: int
+
+
+def render_entity_page(entity: EntityRow) -> str:
+    fm = {
+        "type": "entity",
+        "entity_type": entity.entity_type,
+        "canonical": entity.canonical,
+        "first_seen": _iso(entity.first_seen_ms),
+        "aliases": [f"{entity.entity_type}: {entity.canonical}"],
+    }
+    # NOTE: last_seen is intentionally omitted — it is rewritten on every
+    # (re-)enrichment and would churn this file's content/mtime every sync.
+    lines = [GENERATED_BANNER, _emit_frontmatter(fm), f"# {entity.canonical}\n"]
+    lines.append(f"**Type:** {entity.entity_type}\n")
+    lines.append("## Nodes\n")
+    lines += [f"- [[{key}|{headline}]]" for key, headline in entity.members]
+    if entity.total_members > len(entity.members):
+        lines.append(f"\n_(showing {len(entity.members)} of {entity.total_members} nodes)_")
+    return "\n".join(lines).rstrip() + "\n"
