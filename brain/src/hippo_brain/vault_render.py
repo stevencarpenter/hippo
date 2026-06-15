@@ -111,7 +111,7 @@ def render_node_note(node: NodeRow) -> str:
         content = json.loads(node.content_json)
         if not isinstance(content, dict):
             raise ValueError
-    except (ValueError, TypeError):
+    except ValueError, TypeError:
         content = {}
 
     summary = content.get("summary") or node.embed_text or "(no content)"

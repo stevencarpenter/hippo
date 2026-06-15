@@ -205,7 +205,7 @@ def export_vault(
         try:
             c = _json.loads(node_meta[nid]["row"][1])
             return (c.get("summary") or node_meta[nid]["row"][2] or "")[:80]
-        except (ValueError, TypeError):
+        except ValueError, TypeError:
             return node_meta[nid]["row"][2] or ""
 
     slug_of: dict[int, str] = {}
