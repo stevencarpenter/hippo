@@ -75,6 +75,11 @@ pub enum Commands {
         #[arg(long)]
         since: Option<String>,
     },
+    /// Export the knowledge base to files
+    Export {
+        #[command(subcommand)]
+        action: ExportAction,
+    },
     /// Configuration management
     Config {
         #[command(subcommand)]
@@ -173,6 +178,19 @@ pub enum AlarmsAction {
     /// `ack_note='auto-resolved'` on every row where the watchdog cleared
     /// the underlying invariant but the user hasn't ack'd yet.
     Prune,
+}
+
+#[derive(clap::Subcommand)]
+pub enum ExportAction {
+    /// Export an Obsidian-compatible markdown vault
+    Vault {
+        /// Output directory (overrides [vault] out)
+        #[arg(long)]
+        out: Option<String>,
+        /// Force a full reconcile into a clean directory
+        #[arg(long)]
+        full: bool,
+    },
 }
 
 #[derive(Subcommand)]

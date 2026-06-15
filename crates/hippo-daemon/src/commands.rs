@@ -1291,6 +1291,67 @@ pub async fn handle_doctor(config: &HippoConfig, explain: bool) -> Result<()> {
     Ok(())
 }
 
+pub fn resolve_vault_out(config: &HippoConfig, flag: Option<String>) -> String {
+    if let Some(f) = flag {
+        return f;
+    }
+    if let Some(c) = &config.vault.out {
+        return c.clone();
+    }
+    config
+        .storage
+        .data_dir
+        .join("vault")
+        .to_string_lossy()
+        .to_string()
+}
+
+pub async fn handle_export_vault(
+    config: &HippoConfig,
+    out: Option<String>,
+    _full: bool,
+) -> anyhow::Result<()> {
+    if !config.vault.enabled {
+        anyhow::bail!("vault export disabled (set vault.enabled = true in config)");
+    }
+    let out_dir = resolve_vault_out(config, out);
+    let url = format!("http://localhost:{}/vault/export", config.brain.port);
+    let client = reqwest::Client::new();
+    let resp = client
+        .post(&url)
+        .json(&serde_json::json!({
+            "out": out_dir,
+            "related_top_k": config.vault.related_top_k,
+            "hub_degree_cap": config.vault.hub_degree_cap,
+            "hub_node_list_cap": config.vault.hub_node_list_cap,
+            "shard_by": config.vault.shard_by,
+        }))
+        .timeout(std::time::Duration::from_secs(600))
+        .send()
+        .await?;
+    let status = resp.status();
+    if status.is_success() {
+        let body: serde_json::Value = resp.json().await?;
+        println!(
+            "Vault exported to {out_dir}: {} nodes, {} written, {} unchanged, {} deleted",
+            body.get("nodes").and_then(|v| v.as_i64()).unwrap_or(0),
+            body.get("written").and_then(|v| v.as_i64()).unwrap_or(0),
+            body.get("unchanged").and_then(|v| v.as_i64()).unwrap_or(0),
+            body.get("deleted").and_then(|v| v.as_i64()).unwrap_or(0),
+        );
+        Ok(())
+    } else {
+        let body: serde_json::Value = resp.json().await.unwrap_or_default();
+        anyhow::bail!(
+            "vault export failed ({}): {}",
+            status,
+            body.get("error")
+                .and_then(|e| e.as_str())
+                .unwrap_or("unknown error")
+        );
+    }
+}
+
 /// Per-source capture-freshness doctor check.
 ///
 /// Emits one line per source, color-coded by how long since the freshest
@@ -4985,5 +5046,20 @@ replacement = "***"
                 probe.name
             );
         }
+    }
+
+    #[test]
+    fn resolve_vault_out_prefers_flag_then_config_then_data_dir() {
+        use std::path::PathBuf;
+        let mut config = HippoConfig::default();
+        config.storage.data_dir = PathBuf::from("/data");
+        // flag wins
+        assert_eq!(resolve_vault_out(&config, Some("/flag".into())), "/flag");
+        // config next
+        config.vault.out = Some("/cfg".into());
+        assert_eq!(resolve_vault_out(&config, None), "/cfg");
+        // data_dir fallback
+        config.vault.out = None;
+        assert_eq!(resolve_vault_out(&config, None), "/data/vault");
     }
 }

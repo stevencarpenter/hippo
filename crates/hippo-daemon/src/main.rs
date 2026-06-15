@@ -9,8 +9,8 @@ use hippo_daemon::{
 use anyhow::{Context, Result};
 use clap::Parser;
 use cli::{
-    AlarmsAction, BrainAction, Cli, Commands, ConfigAction, DaemonAction, IngestSource,
-    RedactAction, SendEventSource, WatchdogAction,
+    AlarmsAction, BrainAction, Cli, Commands, ConfigAction, DaemonAction, ExportAction,
+    IngestSource, RedactAction, SendEventSource, WatchdogAction,
 };
 use hippo_core::config::HippoConfig;
 use hippo_daemon::probe;
@@ -951,6 +951,11 @@ async fn main() -> Result<()> {
                 "Training export is not yet implemented. Use: uv run --project brain hippo-brain export"
             );
         }
+        Commands::Export { action } => match action {
+            ExportAction::Vault { out, full } => {
+                commands::handle_export_vault(&config, out, full).await?;
+            }
+        },
         Commands::Config { action } => match action {
             ConfigAction::Edit => {
                 let editor = std::env::var("EDITOR").unwrap_or_else(|_| "vi".to_string());
