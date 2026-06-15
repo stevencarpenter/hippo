@@ -192,7 +192,7 @@ def _node(**kw):
         uuid="8f3a", source_key="claude-code-aaa-0", node_type="observation",
         outcome="success", content_json='{"summary":"Fixed FTS trigger backfill in storage.rs. It works now.","intent":"debugging","key_decisions":["Chose porter tokenizer"],"problems_encountered":["FTS rows missing"],"design_decisions":[{"considered":"vec0 only","chosen":"FTS5 | hybrid","reason":"recall\\nmatters"}]}',
         embed_text="storage.rs knowledge_fts porter", tags=["hippo", "rust"],
-        created_ms=1718446200000, updated_ms=1718446302000,
+        created_ms=1781530200000, updated_ms=1781530302000,
         entities=[("project", "hippo", "entities/project/hippo"),
                   ("file", "storage.rs", "entities/file/crates-hippo-core-src-storage-rs")],
         related=[("claude-code-bbb-1", "FTS trigger backfill")],
@@ -497,7 +497,7 @@ from hippo_brain.vault_render import render_root_index, shard_for
 
 
 def test_shard_for_uses_created_month():
-    assert shard_for(1718446200000) == "2026-06"
+    assert shard_for(1781530200000) == "2026-06"
 
 
 def test_render_root_index_links_to_sub_indexes_not_all_nodes():
@@ -1000,7 +1000,7 @@ def test_export_vault_end_to_end_redacts_and_reconciles(tmp_db, tmp_path):
     conn.execute(
         "INSERT INTO knowledge_nodes (id, uuid, content, embed_text, node_type, outcome, created_at, updated_at) "
         "VALUES (1,'u1','{\"summary\":\"used token sk-ABC123DEF456GHI789JKL to call api\",\"intent\":\"debug\"}','tok',"
-        "'observation','success',1718446200000,1718446200000)"
+        "'observation','success',1781530200000,1781530200000)"
     )
     conn.execute(
         "INSERT INTO agentic_sessions (id, session_id, harness, segment_index, project_dir, cwd, summary_text, start_time, end_time) "
