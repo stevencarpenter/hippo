@@ -358,6 +358,8 @@ async fn main() -> Result<()> {
                     include_str!("../../../launchd/com.hippo.cursor-session.plist");
                 let opencode_poll_template =
                     include_str!("../../../launchd/com.hippo.opencode-poll.plist");
+                let vault_sync_template =
+                    include_str!("../../../launchd/com.hippo.vault-sync.plist");
 
                 install::install_plist("com.hippo.daemon", daemon_template, &vars, force)?;
                 install::install_plist("com.hippo.brain", brain_template, &vars, force)?;
@@ -424,6 +426,20 @@ async fn main() -> Result<()> {
                     install::remove_plist("com.hippo.opencode-poll")?;
                     false
                 };
+
+                // Vault export sync plist — only written when vault export is enabled.
+                // When disabled, also remove any stale plist on disk.
+                if config.vault.enabled {
+                    install::install_plist(
+                        "com.hippo.vault-sync",
+                        vault_sync_template,
+                        &vars,
+                        force,
+                    )?;
+                } else {
+                    println!("  (vault export disabled; skipping vault-sync plist)");
+                    install::remove_plist("com.hippo.vault-sync")?;
+                }
 
                 // GitHub Actions poller plist — only written when github source is enabled.
                 let gh_poll_installed = if config.github.enabled {
