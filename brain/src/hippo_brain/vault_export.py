@@ -15,6 +15,7 @@ from hippo_brain import redaction
 from hippo_brain.vault_edges import compute_related
 from hippo_brain.vault_render import (
     EntityRow,
+    GENERATED_BANNER,
     NodeRow,
     entity_slug,
     node_source_key,
@@ -60,8 +61,15 @@ def _atomic_write(path: Path, content: str) -> None:
     os.replace(tmp, path)  # atomic on POSIX
 
 
+def _is_generated_markdown(path: Path) -> bool:
+    try:
+        return path.read_text(encoding="utf-8").startswith(GENERATED_BANNER)
+    except OSError:
+        return False
+
+
 def reconcile_files(root: Path, desired: dict, managed_subdirs: list[str]) -> dict:
-    """Write changed files, skip unchanged, delete orphans within managed subdirs."""
+    """Write changed files, skip unchanged, delete generated orphans within managed subdirs."""
     written = unchanged = deleted = 0
     desired = {Path(p): c for p, c in desired.items()}
 
@@ -79,6 +87,8 @@ def reconcile_files(root: Path, desired: dict, managed_subdirs: list[str]) -> di
             continue
         for existing in base.rglob("*.md"):
             if existing not in desired_paths:
+                if not _is_generated_markdown(existing):
+                    continue
                 existing.unlink()
                 deleted += 1
 
@@ -86,13 +96,26 @@ def reconcile_files(root: Path, desired: dict, managed_subdirs: list[str]) -> di
 
 
 def assert_safe_target(root: Path) -> None:
-    """Refuse to write into a directory that is a foreign Obsidian vault."""
+    """Refuse to write into a non-empty directory Hippo does not own."""
     root = Path(root)
-    if (root / ".obsidian").exists() and not (root / _META_NAME).exists():
+    meta = root / _META_NAME
+    if not root.exists():
+        return
+    if not root.is_dir():
+        raise RuntimeError(f"{root} exists and is not a directory. Refusing to write.")
+    if meta.exists():
+        return
+    if not any(root.iterdir()):
+        return
+    if (root / ".obsidian").exists():
         raise RuntimeError(
             f"{root} looks like a foreign Obsidian vault (.obsidian present, no hippo "
             f"{_META_NAME}). Refusing to write. Use a dedicated hippo vault dir."
         )
+    raise RuntimeError(
+        f"{root} is not an empty Hippo-owned vault (missing {_META_NAME}). "
+        "Refusing to write. Use a dedicated empty directory or an existing Hippo vault."
+    )
 
 
 def write_vault_meta(root: Path, hippo_version: str, schema_version: int, config_hash: str) -> None:
@@ -154,6 +177,18 @@ def _load_node_links(conn: sqlite3.Connection, node_id: int) -> dict:
     return links
 
 
+def _unique_node_slugs(node_ids: list[int], base_slug_by_id: dict[int, str]) -> dict[int, str]:
+    groups: dict[str, list[int]] = {}
+    for nid in node_ids:
+        groups.setdefault(slugify(base_slug_by_id[nid]), []).append(nid)
+
+    slug_of: dict[int, str] = {}
+    for base, ids in groups.items():
+        for idx, nid in enumerate(sorted(ids), start=1):
+            slug_of[nid] = base if idx == 1 else f"{base}-{idx}"
+    return slug_of
+
+
 def export_vault(
     conn: sqlite3.Connection,
     out_dir: str,
@@ -162,132 +197,152 @@ def export_vault(
     hub_degree_cap: int,
     hub_node_list_cap: int,
     shard_by: str,
+    full: bool = False,
 ) -> dict:
     root = Path(out_dir).expanduser()
-    if not check_format_version(root):
+    assert_safe_target(root)
+    if not full and not check_format_version(root):
         raise RuntimeError(
             f"{root} was written by a different vault_format_version; run a full export "
             "into a clean directory."
         )
-    assert_safe_target(root)
 
-    node_ids = fetch_exportable_node_ids(conn)
+    started_transaction = False
+    if not conn.in_transaction:
+        conn.execute("BEGIN")
+        started_transaction = True
+    try:
+        node_ids = fetch_exportable_node_ids(conn)
 
-    # Pull node rows + per-node entity sets (typed, from the JOIN — authoritative).
-    node_meta: dict[int, dict] = {}
-    node_entity_sets: dict[int, set] = {}
-    for nid in node_ids:
-        r = conn.execute(
-            "SELECT uuid, content, embed_text, node_type, outcome, tags, created_at, updated_at "
-            "FROM knowledge_nodes WHERE id = ?",
-            (nid,),
-        ).fetchone()
-        ents = conn.execute(
-            "SELECT e.id, e.type, e.name, e.canonical FROM knowledge_node_entities kne "
-            "JOIN entities e ON e.id = kne.entity_id WHERE kne.knowledge_node_id = ?",
-            (nid,),
-        ).fetchall()
-        node_meta[nid] = {"row": r, "links": _load_node_links(conn, nid), "ents": ents}
-        node_entity_sets[nid] = {e[0] for e in ents}  # entity ids
+        # Pull node rows + per-node entity sets (typed, from the JOIN — authoritative).
+        node_meta: dict[int, dict] = {}
+        node_entity_sets: dict[int, set] = {}
+        for nid in node_ids:
+            r = conn.execute(
+                "SELECT uuid, content, embed_text, node_type, outcome, tags, created_at, updated_at "
+                "FROM knowledge_nodes WHERE id = ?",
+                (nid,),
+            ).fetchone()
+            ents = conn.execute(
+                "SELECT e.id, e.type, e.name, e.canonical FROM knowledge_node_entities kne "
+                "JOIN entities e ON e.id = kne.entity_id WHERE kne.knowledge_node_id = ?",
+                (nid,),
+            ).fetchall()
+            node_meta[nid] = {"row": r, "links": _load_node_links(conn, nid), "ents": ents}
+            node_entity_sets[nid] = {e[0] for e in ents}  # entity ids
 
-    # Entity degrees over the exported node set only.
-    entity_degree: dict = {}
-    for ents in node_entity_sets.values():
-        for eid in ents:
-            entity_degree[eid] = entity_degree.get(eid, 0) + 1
+        # Entity degrees over the exported node set only.
+        entity_degree: dict = {}
+        for ents in node_entity_sets.values():
+            for eid in ents:
+                entity_degree[eid] = entity_degree.get(eid, 0) + 1
 
-    related_ids = compute_related(node_entity_sets, entity_degree, hub_degree_cap, related_top_k)
-
-    # Stable source-key slug per node id (needed to render related/entity links).
-    import json as _json
-
-    def _headline_of(nid: int) -> str:
-        try:
-            c = _json.loads(node_meta[nid]["row"][1])
-            return (c.get("summary") or node_meta[nid]["row"][2] or "")[:80]
-        except ValueError, TypeError:
-            return node_meta[nid]["row"][2] or ""
-
-    slug_of: dict[int, str] = {}
-    for nid in node_ids:
-        row = node_meta[nid]["row"]
-        slug_of[nid] = node_source_key(node_meta[nid]["links"], node_type=row[3], uuid=row[0])
-
-    desired: dict[Path, str] = {}
-    projects: dict[str, list[tuple[str, str]]] = {}  # project name -> node (slug, headline)
-    months: dict[str, list[tuple[str, str]]] = {}  # month shard -> node (slug, headline)
-    entity_members: dict[int, list[tuple[str, str]]] = {}
-
-    for nid in node_ids:
-        uuid, content_json, embed_text, node_type, outcome, tags_json, created, updated = node_meta[
-            nid
-        ]["row"]
-        ents = node_meta[nid]["ents"]
-        entity_links = []
-        for eid, etype, ename, ecanon in ents:
-            target = f"entities/{etype}/{entity_slug(etype, ename, ecanon, eid)}"
-            entity_links.append((etype, ename, target))
-            entity_members.setdefault(eid, []).append((slug_of[nid], _headline_of(nid)))
-            if etype == "project":
-                projects.setdefault(ecanon or ename, []).append((slug_of[nid], _headline_of(nid)))
-        related = [(slug_of[t], _headline_of(t)) for t in related_ids.get(nid, [])]
-        try:
-            tags = _json.loads(tags_json) if tags_json else []
-        except ValueError, TypeError:
-            tags = []
-        node = NodeRow(
-            uuid=uuid,
-            source_key=slug_of[nid],
-            node_type=node_type,
-            outcome=outcome,
-            content_json=content_json,
-            embed_text=embed_text,
-            tags=[slugify(str(t)) for t in tags],
-            created_ms=created,
-            updated_ms=updated,
-            entities=entity_links,
-            related=related,
-            sources=[f"{k}: {v}" for k, v in node_meta[nid]["links"].items()],
+        related_ids = compute_related(
+            node_entity_sets, entity_degree, hub_degree_cap, related_top_k
         )
-        md = redaction.redact(render_node_note(node))  # export-time redaction pass
-        shard = shard_for(created) if shard_by == "month" else "all"
-        months.setdefault(shard, []).append((slug_of[nid], _headline_of(nid)))
-        desired[root / "knowledge" / shard / f"{slug_of[nid]}.md"] = md
 
-    # Entity pages (capped member lists).
-    for eid, etype, ecanon, ename, first_seen in conn.execute(
-        "SELECT id, type, canonical, name, first_seen FROM entities"
-    ).fetchall():
-        members = entity_members.get(eid)
-        if not members:
-            continue
-        capped = members[:hub_node_list_cap]
-        page = render_entity_page(
-            EntityRow(
-                entity_type=etype,
-                canonical=ecanon or ename,
-                first_seen_ms=first_seen,
-                members=capped,
-                total_members=len(members),
-                cap=hub_node_list_cap,
+        # Stable, globally unique source-key slug per node id.
+        import json as _json
+
+        def _headline_of(nid: int) -> str:
+            try:
+                c = _json.loads(node_meta[nid]["row"][1])
+                return (c.get("summary") or node_meta[nid]["row"][2] or "")[:80]
+            except ValueError, TypeError:
+                return node_meta[nid]["row"][2] or ""
+
+        base_slug_by_id: dict[int, str] = {}
+        for nid in node_ids:
+            row = node_meta[nid]["row"]
+            base_slug_by_id[nid] = node_source_key(
+                node_meta[nid]["links"], node_type=row[3], uuid=row[0]
             )
+        slug_of = _unique_node_slugs(node_ids, base_slug_by_id)
+
+        desired: dict[Path, str] = {}
+        projects: dict[str, list[tuple[str, str]]] = {}  # project name -> node (slug, headline)
+        months: dict[str, list[tuple[str, str]]] = {}  # month shard -> node (slug, headline)
+        entity_members: dict[int, list[tuple[str, str]]] = {}
+
+        for nid in node_ids:
+            uuid, content_json, embed_text, node_type, outcome, tags_json, created, updated = (
+                node_meta[nid]["row"]
+            )
+            ents = node_meta[nid]["ents"]
+            entity_links = []
+            for eid, etype, ename, ecanon in ents:
+                target = f"entities/{etype}/{entity_slug(etype, ename, ecanon, eid)}"
+                entity_links.append((etype, ename, target))
+                entity_members.setdefault(eid, []).append((slug_of[nid], _headline_of(nid)))
+                if etype == "project":
+                    projects.setdefault(ecanon or ename, []).append(
+                        (slug_of[nid], _headline_of(nid))
+                    )
+            related = [(slug_of[t], _headline_of(t)) for t in related_ids.get(nid, [])]
+            try:
+                tags = _json.loads(tags_json) if tags_json else []
+            except ValueError, TypeError:
+                tags = []
+            node = NodeRow(
+                uuid=uuid,
+                source_key=slug_of[nid],
+                node_type=node_type,
+                outcome=outcome,
+                content_json=content_json,
+                embed_text=embed_text,
+                tags=[slugify(str(t)) for t in tags],
+                created_ms=created,
+                updated_ms=updated,
+                entities=entity_links,
+                related=related,
+                sources=[f"{k}: {v}" for k, v in node_meta[nid]["links"].items()],
+            )
+            md = redaction.redact(render_node_note(node))  # export-time redaction pass
+            shard = shard_for(created) if shard_by == "month" else "all"
+            months.setdefault(shard, []).append((slug_of[nid], _headline_of(nid)))
+            desired[root / "knowledge" / shard / f"{slug_of[nid]}.md"] = md
+
+        # Entity pages (capped member lists).
+        for eid, etype, ecanon, ename, first_seen in conn.execute(
+            "SELECT id, type, canonical, name, first_seen FROM entities"
+        ).fetchall():
+            members = entity_members.get(eid)
+            if not members:
+                continue
+            capped = members[:hub_node_list_cap]
+            page = render_entity_page(
+                EntityRow(
+                    entity_type=etype,
+                    canonical=ecanon or ename,
+                    first_seen_ms=first_seen,
+                    members=capped,
+                    total_members=len(members),
+                    cap=hub_node_list_cap,
+                )
+            )
+            slug = entity_slug(etype, ename, ecanon, eid)
+            desired[root / "entities" / etype / f"{slug}.md"] = redaction.redact(page)
+
+        # Index notes: a small root MOC + one sub-index per project and per month.
+        desired[root / "_index.md"] = render_root_index(
+            sorted(projects), sorted(months, reverse=True)
         )
-        slug = entity_slug(etype, ename, ecanon, eid)
-        desired[root / "entities" / etype / f"{slug}.md"] = redaction.redact(page)
+        for proj, members in projects.items():
+            desired[root / "indexes" / f"project-{slugify(proj)}.md"] = render_sub_index(
+                proj, members
+            )
+        for month, members in months.items():
+            desired[root / "indexes" / f"month-{month}.md"] = render_sub_index(month, members)
 
-    # Index notes: a small root MOC + one sub-index per project and per month.
-    desired[root / "_index.md"] = render_root_index(sorted(projects), sorted(months, reverse=True))
-    for proj, members in projects.items():
-        desired[root / "indexes" / f"project-{slugify(proj)}.md"] = render_sub_index(proj, members)
-    for month, members in months.items():
-        desired[root / "indexes" / f"month-{month}.md"] = render_sub_index(month, members)
+        schema_version = conn.execute("PRAGMA user_version").fetchone()[0]
+    finally:
+        if started_transaction:
+            conn.execute("ROLLBACK")
 
+    recon = reconcile_files(root, desired, managed_subdirs=["knowledge", "entities", "indexes"])
     write_gitignore(root)
-    schema_version = conn.execute("PRAGMA user_version").fetchone()[0]
     config_hash = hashlib.sha256(
         f"{related_top_k}-{hub_degree_cap}-{hub_node_list_cap}-{shard_by}".encode()
     ).hexdigest()[:12]
     write_vault_meta(root, hippo_version, schema_version, config_hash)
-
-    recon = reconcile_files(root, desired, managed_subdirs=["knowledge", "entities", "indexes"])
     return {"nodes": len(node_ids), **recon}

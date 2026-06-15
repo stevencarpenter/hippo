@@ -124,8 +124,8 @@ The doctor reports a single vault line:
 - `[--]` when vault export is disabled
 - `[WW]` when enabled but no vault exists yet at the configured `out` (run `hippo export vault`)
 - `[OK]` with the time since the last sync (derived from the `_vault_meta.json` mtime)
-- `[!!]` if the metadata file cannot be read
+- `[!!]` if the metadata file cannot be read, parsed, or matches a different vault format
 
 ## Design Rationale
 
-For background on design decisions (stable source-key filenames, rarity-weighted related edges, full reconcile vs. watermark-incremental, YAML frontmatter format), see the full design spec at [`docs/superpowers/specs/2026-06-15-obsidian-vault-export-design.md`](../superpowers/specs/2026-06-15-obsidian-vault-export-design.md).
+For background on design decisions (stable source-key filenames, rarity-weighted related edges, full reconcile vs. watermark-incremental, YAML frontmatter format), see the full design spec at [`docs/superpowers/specs/2026-06-15-obsidian-vault-export-design.md`](superpowers/specs/2026-06-15-obsidian-vault-export-design.md).

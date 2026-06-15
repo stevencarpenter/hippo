@@ -13,6 +13,7 @@ dependencies = [
   "opentelemetry-exporter-otlp-proto-http>=1.33",
   "opentelemetry-instrumentation-logging>=0.54b1",
   "psutil>=6",
+  "pyyaml>=6.0.3",
 ]
 
 [dependency-groups]

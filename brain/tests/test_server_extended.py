@@ -685,19 +685,30 @@ def test_vault_export_endpoint_invokes_export(tmp_path, monkeypatch, tmp_db):
     captured = {}
 
     def fake_export(
-        conn, out_dir, hippo_version, related_top_k, hub_degree_cap, hub_node_list_cap, shard_by
+        conn,
+        out_dir,
+        hippo_version,
+        related_top_k,
+        hub_degree_cap,
+        hub_node_list_cap,
+        shard_by,
+        full,
     ):
-        captured.update(out_dir=out_dir, top_k=related_top_k, cap=hub_degree_cap)
+        captured.update(out_dir=out_dir, top_k=related_top_k, cap=hub_degree_cap, full=full)
         return {"nodes": 3, "written": 3, "unchanged": 0, "deleted": 1}
 
     monkeypatch.setattr("hippo_brain.server.export_vault", fake_export)
     _, db_path = tmp_db
     app = create_app(db_path=str(db_path))
     with TestClient(app) as client:
-        resp = client.post("/vault/export", json={"out": str(tmp_path / "v"), "related_top_k": 5})
+        resp = client.post(
+            "/vault/export",
+            json={"out": str(tmp_path / "v"), "related_top_k": 5, "full": True},
+        )
     assert resp.status_code == 200
     assert resp.json()["nodes"] == 3
     assert captured["out_dir"].endswith("/v") and captured["top_k"] == 5
+    assert captured["full"] is True
 
 
 def test_vault_export_requires_out(tmp_db):

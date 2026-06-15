@@ -16,6 +16,7 @@ use crate::codex_session;
 use crate::framing::{read_frame, write_frame};
 
 const REQUEST_TIMEOUT_MS: u64 = 5_000;
+const VAULT_FORMAT_VERSION: i64 = 1;
 
 /// 10-minute idle window shared by the opencode and Codex `hippo doctor`
 /// idle probes: a poller-backed source whose backing files have not changed
@@ -1320,6 +1321,41 @@ pub fn vault_doctor_check(config: &HippoConfig) -> String {
             "[WW] vault export: enabled but no vault at {out} (run `hippo export vault`)"
         );
     }
+    let meta_text = match std::fs::read_to_string(&meta) {
+        Ok(text) => text,
+        Err(e) => {
+            return format!(
+                "[!!] vault export: cannot read metadata {}: {e}",
+                meta.display()
+            );
+        }
+    };
+    let meta_json: serde_json::Value = match serde_json::from_str(&meta_text) {
+        Ok(value) => value,
+        Err(e) => {
+            return format!(
+                "[!!] vault export: corrupt metadata {}: {e}",
+                meta.display()
+            );
+        }
+    };
+    match meta_json
+        .get("vault_format_version")
+        .and_then(|v| v.as_i64())
+    {
+        Some(VAULT_FORMAT_VERSION) => {}
+        Some(found) => {
+            return format!(
+                "[!!] vault export: format version {found} at {out}; expected {VAULT_FORMAT_VERSION} (run `hippo export vault --full`)"
+            );
+        }
+        None => {
+            return format!(
+                "[!!] vault export: metadata {} missing vault_format_version",
+                meta.display()
+            );
+        }
+    }
     match std::fs::metadata(&meta).and_then(|m| m.modified()) {
         Ok(modified) => {
             let age = modified.elapsed().map(|d| d.as_secs() / 60).unwrap_or(0);
@@ -1332,7 +1368,7 @@ pub fn vault_doctor_check(config: &HippoConfig) -> String {
 pub async fn handle_export_vault(
     config: &HippoConfig,
     out: Option<String>,
-    _full: bool,
+    full: bool,
 ) -> anyhow::Result<()> {
     if !config.vault.enabled {
         anyhow::bail!("vault export disabled (set vault.enabled = true in config)");
@@ -1348,6 +1384,7 @@ pub async fn handle_export_vault(
             "hub_degree_cap": config.vault.hub_degree_cap,
             "hub_node_list_cap": config.vault.hub_node_list_cap,
             "shard_by": config.vault.shard_by,
+            "full": full,
         }))
         .timeout(std::time::Duration::from_secs(600))
         .send()
@@ -4378,6 +4415,40 @@ replacement = "***"
         server.await.unwrap();
     }
 
+    #[tokio::test]
+    async fn test_export_vault_forwards_full_flag_to_brain() {
+        let temp = tempdir().unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut buf = [0u8; 4096];
+            let n = stream.read(&mut buf).await.unwrap();
+            let request = String::from_utf8_lossy(&buf[..n]).to_string();
+            assert!(
+                request.contains(r#""full":true"#),
+                "vault export request did not forward full=true: {request}"
+            );
+            let body = r#"{"nodes":0,"written":0,"unchanged":0,"deleted":0}"#;
+            let response = format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        });
+
+        let mut config = HippoConfig::default();
+        config.storage.data_dir = temp.path().join("data");
+        config.vault.enabled = true;
+        config.vault.out = Some(temp.path().join("vault").to_string_lossy().to_string());
+        config.brain.port = addr.port();
+
+        handle_export_vault(&config, None, true).await.unwrap();
+        server.await.unwrap();
+    }
+
     #[test]
     fn test_hook_expected_path_derived_from_data_dir() {
         let mut config = HippoConfig::default();
@@ -5107,5 +5178,41 @@ replacement = "***"
         );
         let line = vault_doctor_check(&config);
         assert!(line.contains("[WW]") || line.contains("[!!]"));
+    }
+
+    #[test]
+    fn vault_doctor_check_fails_on_corrupt_metadata() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let out = dir.path().join("vault");
+        std::fs::create_dir_all(&out).unwrap();
+        std::fs::write(out.join("_vault_meta.json"), "not-json").unwrap();
+        let mut config = HippoConfig::default();
+        config.vault.enabled = true;
+        config.vault.out = Some(out.to_string_lossy().to_string());
+
+        let line = vault_doctor_check(&config);
+
+        assert!(line.contains("[!!]"));
+        assert!(line.contains("metadata"));
+    }
+
+    #[test]
+    fn vault_doctor_check_fails_on_format_drift() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let out = dir.path().join("vault");
+        std::fs::create_dir_all(&out).unwrap();
+        std::fs::write(
+            out.join("_vault_meta.json"),
+            r#"{"vault_format_version":999,"hippo_version":"old"}"#,
+        )
+        .unwrap();
+        let mut config = HippoConfig::default();
+        config.vault.enabled = true;
+        config.vault.out = Some(out.to_string_lossy().to_string());
+
+        let line = vault_doctor_check(&config);
+
+        assert!(line.contains("[!!]"));
+        assert!(line.contains("format"));
     }
 }

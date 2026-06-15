@@ -929,6 +929,7 @@ class BrainServer:
                 hub_degree_cap=int(body.get("hub_degree_cap", 200)),
                 hub_node_list_cap=int(body.get("hub_node_list_cap", 200)),
                 shard_by=str(body.get("shard_by", "month")),
+                full=bool(body.get("full", False)),
             )
             return JSONResponse(summary)
         except (RuntimeError, ValueError) as e:
