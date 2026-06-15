@@ -248,3 +248,39 @@ def test_reconcile_gc_scoped_to_managed_subdirs_only(tmp_path):
     foreign.write_text("mine\n")
     reconcile_files(root, {}, managed_subdirs=["knowledge"])
     assert foreign.exists()  # never touched
+
+
+def test_assert_safe_target_rejects_foreign_obsidian_vault(tmp_path):
+    import pytest
+
+    from hippo_brain.vault_export import assert_safe_target
+
+    (tmp_path / ".obsidian").mkdir()
+    with pytest.raises(RuntimeError, match="foreign Obsidian vault"):
+        assert_safe_target(tmp_path)
+
+
+def test_assert_safe_target_allows_empty_or_hippo_owned(tmp_path):
+    from hippo_brain.vault_export import assert_safe_target, write_vault_meta
+
+    assert_safe_target(tmp_path)  # empty: ok
+    write_vault_meta(tmp_path, hippo_version="0.28.7", schema_version=18, config_hash="abc")
+    assert_safe_target(tmp_path)  # has our meta: ok
+
+
+def test_check_format_version_flags_drift(tmp_path):
+    import json as _json
+
+    from hippo_brain.vault_export import (
+        VAULT_FORMAT_VERSION,
+        check_format_version,
+        write_vault_meta,
+    )
+
+    write_vault_meta(tmp_path, hippo_version="0.28.7", schema_version=18, config_hash="abc")
+    meta = _json.loads((tmp_path / "_vault_meta.json").read_text())
+    assert meta["vault_format_version"] == VAULT_FORMAT_VERSION
+    assert check_format_version(tmp_path) is True  # matches
+    meta["vault_format_version"] = 999
+    (tmp_path / "_vault_meta.json").write_text(_json.dumps(meta))
+    assert check_format_version(tmp_path) is False  # drift detected

@@ -5,11 +5,13 @@ Orchestrates query -> render -> full reconcile over a single read snapshot.
 
 from __future__ import annotations
 
+import json
 import os
 import sqlite3
 from pathlib import Path
 
 VAULT_FORMAT_VERSION = 1
+_META_NAME = "_vault_meta.json"
 
 
 def fetch_exportable_node_ids(conn: sqlite3.Connection) -> list[int]:
@@ -65,3 +67,46 @@ def reconcile_files(root: Path, desired: dict, managed_subdirs: list[str]) -> di
                 deleted += 1
 
     return {"written": written, "unchanged": unchanged, "deleted": deleted}
+
+
+def assert_safe_target(root: Path) -> None:
+    """Refuse to write into a directory that is a foreign Obsidian vault."""
+    root = Path(root)
+    if (root / ".obsidian").exists() and not (root / _META_NAME).exists():
+        raise RuntimeError(
+            f"{root} looks like a foreign Obsidian vault (.obsidian present, no hippo "
+            f"{_META_NAME}). Refusing to write. Use a dedicated hippo vault dir."
+        )
+
+
+def write_vault_meta(root: Path, hippo_version: str, schema_version: int, config_hash: str) -> None:
+    Path(root).mkdir(parents=True, exist_ok=True)
+    (Path(root) / _META_NAME).write_text(
+        json.dumps(
+            {
+                "vault_format_version": VAULT_FORMAT_VERSION,
+                "hippo_version": hippo_version,
+                "schema_version": schema_version,
+                "config_hash": config_hash,
+            },
+            indent=2,
+        )
+    )
+
+
+def write_gitignore(root: Path) -> None:
+    gi = Path(root) / ".gitignore"
+    if not gi.exists():
+        gi.write_text("# hippo vault is a regenerated projection; do not commit\n*\n")
+
+
+def check_format_version(root: Path) -> bool:
+    """True if the on-disk vault matches our format version (or is fresh)."""
+    meta_path = Path(root) / _META_NAME
+    if not meta_path.exists():
+        return True
+    try:
+        meta = json.loads(meta_path.read_text())
+    except ValueError, OSError:
+        return False
+    return meta.get("vault_format_version") == VAULT_FORMAT_VERSION
