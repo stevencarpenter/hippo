@@ -16,6 +16,8 @@ from starlette.routing import Route
 from hippo_brain.client import InferenceClient
 from hippo_brain.schema_version import EXPECTED_SCHEMA_VERSION, ACCEPTED_READ_VERSIONS
 from hippo_brain.version import get_version
+from hippo_brain.vault_export import export_vault
+from hippo_brain._version import __version__ as _hippo_version
 from hippo_brain.embeddings import (
     embed_knowledge_node,
     get_or_create_table,
@@ -911,6 +913,28 @@ class BrainServer:
         self._paused_at_iso = None
         self._resume_event.set()
         return JSONResponse({"resumed_at": _dt.datetime.now(tz=_dt.UTC).isoformat()})
+
+    async def vault_export(self, request: Request) -> JSONResponse:
+        body = await request.json()
+        out = body.get("out")
+        if not out:
+            return JSONResponse({"error": "out is required"}, status_code=400)
+        conn = self._get_conn()
+        try:
+            summary = export_vault(
+                conn,
+                out_dir=out,
+                hippo_version=_hippo_version,
+                related_top_k=int(body.get("related_top_k", 8)),
+                hub_degree_cap=int(body.get("hub_degree_cap", 200)),
+                hub_node_list_cap=int(body.get("hub_node_list_cap", 200)),
+                shard_by=str(body.get("shard_by", "month")),
+            )
+            return JSONResponse(summary)
+        except (RuntimeError, ValueError) as e:
+            return JSONResponse({"error": str(e)}, status_code=400)
+        finally:
+            conn.close()
 
     def _resolve_model_from_preflight(self, loaded: list[str]) -> bool:
         """Sync model selection from preflight's already-fetched model list."""
@@ -1809,6 +1833,7 @@ class BrainServer:
             Route("/ask", self.ask, methods=["POST"]),
             Route("/control/pause", self.control_pause, methods=["POST"]),
             Route("/control/resume", self.control_resume, methods=["POST"]),
+            Route("/vault/export", self.vault_export, methods=["POST"]),
         ]
 
 

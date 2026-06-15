@@ -675,3 +675,38 @@ async def test_embed_reaper_tick_propagates_non_missing_table_errors(tmp_db):
 
     with pytest.raises(sqlite3.OperationalError, match="database is locked"):
         await server._embed_reaper_tick()
+
+
+def test_vault_export_endpoint_invokes_export(tmp_path, monkeypatch, tmp_db):
+    from starlette.testclient import TestClient
+
+    from hippo_brain.server import create_app
+
+    captured = {}
+
+    def fake_export(
+        conn, out_dir, hippo_version, related_top_k, hub_degree_cap, hub_node_list_cap, shard_by
+    ):
+        captured.update(out_dir=out_dir, top_k=related_top_k, cap=hub_degree_cap)
+        return {"nodes": 3, "written": 3, "unchanged": 0, "deleted": 1}
+
+    monkeypatch.setattr("hippo_brain.server.export_vault", fake_export)
+    _, db_path = tmp_db
+    app = create_app(db_path=str(db_path))
+    with TestClient(app) as client:
+        resp = client.post("/vault/export", json={"out": str(tmp_path / "v"), "related_top_k": 5})
+    assert resp.status_code == 200
+    assert resp.json()["nodes"] == 3
+    assert captured["out_dir"].endswith("/v") and captured["top_k"] == 5
+
+
+def test_vault_export_requires_out(tmp_db):
+    from starlette.testclient import TestClient
+
+    from hippo_brain.server import create_app
+
+    _, db_path = tmp_db
+    app = create_app(db_path=str(db_path))
+    with TestClient(app) as client:
+        resp = client.post("/vault/export", json={})
+    assert resp.status_code == 400
