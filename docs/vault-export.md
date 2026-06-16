@@ -45,7 +45,7 @@ All keys live in the `[vault]` section of `~/.config/hippo/config.toml`:
 | `poll_interval_secs` | `300` | Sync cadence for the `com.hippo.vault-sync` launchd service (seconds). Requires `hippo daemon install --force` to change. |
 | `related_top_k` | `8` | Maximum number of "related" node links per knowledge node (rarity-weighted, hub-excluded; see below). |
 | `hub_degree_cap` | `200` | Entity degree threshold for hub exclusion. Entities linked to more than this many nodes (e.g., `tool:git` → 5,699 nodes) are excluded from the related-edge scoring, preventing generic hubs from dominating the graph. |
-| `hub_node_list_cap` | `200` | Maximum nodes listed on an entity page. Mega-hub entities show a truncation note: "showing N of M nodes". |
+| `hub_node_list_cap` | `200` | Maximum nodes listed on an entity page or per-project/per-month MOC. Over-cap pages show a truncation note: "showing N of M nodes". |
 | `shard_by` | `"month"` | Knowledge base sharding scheme. `"month"` shards by node `created_at` month (e.g., `knowledge/2026-06/`); `"all"` uses a flat `knowledge/` directory. Month sharding avoids Obsidian's documented degradation threshold for single folders with 10k+ files. |
 
 ## Vault Layout
@@ -99,14 +99,14 @@ Related links are computed from **rarity-weighted shared entities**. Generic hub
 ### Index notes (MOCs)
 
 - **`_index.md`**: root index listing all projects and months
-- **Per-project indexes** (`indexes/project-*.md`): list all nodes tagged with that project
-- **Per-month indexes** (`indexes/month-YYYY-MM.md`): list all nodes created in that month
+- **Per-project indexes** (`indexes/project-*.md`): list nodes tagged with that project (up to `hub_node_list_cap`, with a "showing N of M" truncation note)
+- **Per-month indexes** (`indexes/month-YYYY-MM.md`): list nodes created in that month (up to `hub_node_list_cap`, with a "showing N of M" truncation note)
 
 ## Trust Boundary & Safety
 
 The vault is plaintext on disk, outside the database boundary. Several safeguards apply:
 
-- **Foreign vault guard:** Export refuses to run if the target directory contains a `.obsidian/` folder without hippo metadata, preventing accidental clobbering of user Obsidian vaults.
+- **Foreign vault guard:** Export refuses to run if the target directory contains a `.obsidian/` folder without hippo metadata, preventing accidental clobbering of user Obsidian vaults. It also refuses a non-empty directory that lacks hippo's `_vault_meta.json` (not Hippo-owned). Pass `--full` to reset such a directory — e.g. to recover one left half-written by an interrupted export. `--full` never overrides the foreign-`.obsidian` guard.
 - **`.gitignore`:** A `.gitignore` file is written to the vault root, configured to ignore the entire tree by default, so the plaintext knowledge base doesn't silently land in a committed git repo.
 - **Export-time redaction:** All rendered markdown is passed through hippo's redaction patterns (a defense-in-depth pass), redacting secrets and environment variable values.
 - **Probe filtering:** Knowledge nodes sourced only by synthetic probe events are excluded from export (AP-6 guarantee).

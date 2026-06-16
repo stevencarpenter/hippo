@@ -933,7 +933,13 @@ class BrainServer:
             )
             return JSONResponse(summary)
         except (RuntimeError, ValueError) as e:
+            # Expected, user-actionable rejections (safe-target rails, bad args).
             return JSONResponse({"error": str(e)}, status_code=400)
+        except Exception as e:
+            # Unexpected (OSError/sqlite3.Error/etc.) — surface the real message
+            # instead of an opaque bodyless 500 "unknown error".
+            logger.exception("vault export failed")
+            return JSONResponse({"error": f"{type(e).__name__}: {e}"}, status_code=500)
         finally:
             conn.close()
 

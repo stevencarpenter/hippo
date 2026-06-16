@@ -707,7 +707,7 @@ pub struct VaultConfig {
     /// Entities linking more than this many nodes are excluded from related[].
     #[serde(default = "default_vault_hub_degree_cap")]
     pub hub_degree_cap: u32,
-    /// Max member nodes listed on an entity page.
+    /// Max member nodes listed on an entity page or per-project/per-month MOC.
     #[serde(default = "default_vault_hub_node_list_cap")]
     pub hub_node_list_cap: u32,
     /// knowledge/ sharding scheme: "month" or "all".

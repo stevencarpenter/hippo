@@ -183,6 +183,27 @@ def test_health_ok_when_embed_models_match(tmp_db):
         assert data["embed_model_drift"] is None
 
 
+def test_vault_export_surfaces_unexpected_error_message(tmp_db, tmp_path, monkeypatch):
+    """An unexpected exception (e.g. OSError from a bad path) must come back as
+    a response carrying the real message, not an opaque 500 with no body.
+
+    Regression target: the endpoint used to catch only (RuntimeError, ValueError),
+    so an ENAMETOOLONG mid-export escaped as a bodyless 500 "unknown error".
+    """
+    _, db_path = tmp_db
+    server = _make_server(str(db_path))
+
+    def boom(*_args, **_kwargs):
+        raise OSError("[Errno 63] File name too long: '/x'")
+
+    monkeypatch.setattr("hippo_brain.server.export_vault", boom)
+    app = Starlette(routes=server.get_routes())
+    client = TestClient(app, raise_server_exceptions=False)
+    resp = client.post("/vault/export", json={"out": str(tmp_path / "v")})
+    assert resp.status_code == 500
+    assert "File name too long" in resp.json()["error"]
+
+
 # ---- /query limit validation ----
 
 

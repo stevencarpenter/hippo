@@ -281,5 +281,5 @@ enabled = false
 # poll_interval_secs = 300   # changing this requires `hippo daemon install --force`
 # related_top_k = 8
 # hub_degree_cap = 200       # entities above this are excluded from related[]
-# hub_node_list_cap = 200    # max nodes listed on an entity page
+# hub_node_list_cap = 200    # max nodes listed on an entity page or per-project/per-month MOC
 # shard_by = "month"

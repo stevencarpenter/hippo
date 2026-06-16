@@ -7,6 +7,7 @@ key, never the node uuid (re-enrichment re-mints uuids — see the design spec).
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from dataclasses import dataclass, field
@@ -20,10 +21,21 @@ _SOURCE_PRIORITY = ("agentic", "workflow", "browser", "shell", "lesson")
 _SLUG_STRIP = re.compile(r"[^a-z0-9]+")
 
 
-def slugify(text: str) -> str:
-    """Lowercase, replace any run of non-alphanumerics with '-', trim dashes."""
-    s = _SLUG_STRIP.sub("-", text.strip().lower()).strip("-")
-    return s or "unnamed"
+def slugify(text: str, maxlen: int = 200) -> str:
+    """Lowercase, replace any run of non-alphanumerics with '-', trim dashes.
+
+    Caps the result at ``maxlen`` chars so it stays a valid filename component
+    (the OS limit is 255 bytes; the atomic writer also appends ".md.tmp").
+    Real "concept" entities can be raw error blobs thousands of chars long, so
+    over-long slugs are truncated and disambiguated with an 8-char hash of the
+    full slug — deterministic across runs and collision-free for distinct names.
+    """
+    s = _SLUG_STRIP.sub("-", text.strip().lower()).strip("-") or "unnamed"
+    if len(s) > maxlen:
+        digest = hashlib.sha1(s.encode("utf-8")).hexdigest()[:8]
+        keep = maxlen - 9  # room for the "-" separator + 8-char hash
+        s = s[:keep].rstrip("-") + "-" + digest
+    return s
 
 
 def entity_slug(entity_type: str, name: str, canonical: str | None, entity_id: int) -> str:
@@ -221,8 +233,17 @@ def render_root_index(projects: list[str], months: list[str]) -> str:
     return "\n".join(lines).rstrip() + "\n"
 
 
-def render_sub_index(title: str, members: list[tuple[str, str]]) -> str:
-    """A per-project or per-month MOC listing node links (bounded by caller)."""
+def render_sub_index(
+    title: str, members: list[tuple[str, str]], total_members: int | None = None
+) -> str:
+    """A per-project or per-month MOC listing node links (bounded by caller).
+
+    ``members`` is the already-capped slice; ``total_members`` is the true count
+    before capping, used to emit a "showing N of M" note so truncation is never
+    silent (mirrors render_entity_page).
+    """
     lines = [GENERATED_BANNER, f"# {title}\n"]
     lines += [f"- [[{key}|{headline}]]" for key, headline in members]
+    if total_members is not None and total_members > len(members):
+        lines.append(f"\n_(showing {len(members)} of {total_members} nodes)_")
     return "\n".join(lines).rstrip() + "\n"

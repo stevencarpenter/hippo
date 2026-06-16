@@ -17,6 +17,29 @@ def test_slugify_strips_obsidian_reserved_chars():
     assert slugify("") == "unnamed"
 
 
+def test_slugify_caps_length_for_filesystem_safety():
+    # Real "concept" entities can be raw error blobs thousands of chars long.
+    # The slug must stay within the 255-byte filename limit (with room for the
+    # ".md.tmp" the atomic writer appends), deterministically, and must not
+    # collapse two distinct long inputs onto the same filename.
+    long_a = "exporter " * 400  # ~3200 chars
+    long_b = "exporter " * 399 + "different"  # shares a long prefix with long_a
+    sa = slugify(long_a)
+    sb = slugify(long_b)
+    assert len(sa) <= 200, f"slug too long: {len(sa)}"
+    assert sa == slugify(long_a), "slug must be deterministic"
+    assert sa != sb, "distinct long inputs must not collide"
+
+
+def test_entity_slug_caps_pathologically_long_canonical():
+    # The bug that crashed a full export: a 3137-char concept canonical produced
+    # a filename past the OS NAME_MAX limit (errno 63). Entity slugs flow through
+    # slugify, so the cap must protect this path too.
+    huge = "error: failed to build: " + ("module-" * 500)
+    slug = entity_slug("concept", huge, huge, 13816)
+    assert len(slug) <= 200
+
+
 def test_entity_slug_prefers_canonical_falls_back_to_name_then_id():
     assert entity_slug("project", "hippo", "hippo", 42) == "hippo"
     # NULL/empty canonical -> use name
@@ -168,6 +191,18 @@ def test_render_root_index_links_to_sub_indexes_not_all_nodes():
     assert "[[indexes/month-2026-06|2026-06]]" in md
     # the root index must NOT enumerate individual nodes (unbounded growth guard)
     assert "knowledge/" not in md
+
+
+def test_render_sub_index_caps_members_with_note():
+    from hippo_brain.vault_render import render_sub_index
+
+    members = [(f"evt-{i}", f"n{i}") for i in range(3)]
+    # over cap: caller passes the capped slice + the true total -> truncation note
+    md = render_sub_index("2026-05", members, total_members=6610)
+    assert "showing 3 of 6610" in md
+    # under/at cap: no note (matches entity-page behavior)
+    md2 = render_sub_index("hippo", members, total_members=3)
+    assert "showing" not in md2.lower()
 
 
 def test_compute_related_excludes_hub_entities_and_bounds_topk():
@@ -413,6 +448,132 @@ def test_export_vault_assigns_unique_basenames_for_duplicate_source_keys(tmp_db,
     assert not (out / "knowledge" / "2026-07" / "codex-sess-0.md").exists()
 
 
+def test_export_vault_node_dedup_survives_suffix_coincidence(tmp_db, tmp_path):
+    from hippo_brain.vault_export import export_vault
+
+    conn, _db_path = tmp_db
+    # All three nodes land in the same month shard, so their slugs share one
+    # namespace. Nodes 1 & 2 both key to "codex-sess-0"; node 3's NATURAL key is
+    # literally "codex-sess-0-2". A within-group -N suffix would re-collide.
+    conn.execute(
+        "INSERT INTO knowledge_nodes (id, uuid, content, embed_text, node_type, created_at, updated_at) VALUES "
+        "(1,'u1','{}','a','observation',1781530200000,1781530200000),"
+        "(2,'u2','{}','b','observation',1781530200000,1781530200000),"
+        "(3,'u3','{}','c','observation',1781530200000,1781530200000)"
+    )
+    conn.execute(
+        "INSERT INTO agentic_sessions (id, session_id, harness, segment_index, project_dir, cwd, summary_text, start_time, end_time) VALUES "
+        "(10,'sess','codex',0,'/p','/c','s',0,0),(12,'sess-0','codex',2,'/p','/c','s',0,0)"
+    )
+    # nodes 1 & 2 both link session 10 -> both base "codex-sess-0"; node 3 -> "codex-sess-0-2"
+    conn.execute("INSERT INTO knowledge_node_agentic_sessions VALUES (1,10),(2,10),(3,12)")
+    conn.commit()
+
+    out = tmp_path / "vault"
+    export_vault(
+        conn,
+        str(out),
+        hippo_version="0.0.0",
+        related_top_k=8,
+        hub_degree_cap=200,
+        hub_node_list_cap=200,
+        shard_by="month",
+    )
+
+    notes = sorted(p.name for p in (out / "knowledge" / "2026-06").glob("*.md"))
+    assert len(notes) == 3, f"expected 3 distinct node notes, got {notes}"
+
+
+def test_export_vault_assigns_unique_entity_pages_for_colliding_slugs(tmp_db, tmp_path):
+    import re
+
+    from hippo_brain.vault_export import export_vault
+
+    conn, _db_path = tmp_db
+    conn.execute(
+        "INSERT INTO knowledge_nodes (id, uuid, content, embed_text, node_type, created_at, updated_at) VALUES "
+        "(1,'u1','{\"summary\":\"a\"}','a','observation',1781530200000,1781530200000),"
+        "(2,'u2','{\"summary\":\"b\"}','b','observation',1781530200000,1781530200000)"
+    )
+    conn.execute(
+        "INSERT INTO agentic_sessions (id, session_id, harness, segment_index, project_dir, cwd, summary_text, start_time, end_time) VALUES "
+        "(10,'s1','codex',0,'/p','/c','s',0,0),(11,'s2','codex',1,'/p','/c','s',0,0)"
+    )
+    conn.execute("INSERT INTO knowledge_node_agentic_sessions VALUES (1,10),(2,11)")
+    # Two DISTINCT entities (UNIQUE(type,canonical) holds) whose canonicals
+    # slugify to the same "git" — the real-corpus collision shape.
+    conn.execute(
+        "INSERT INTO entities (id, type, name, canonical, first_seen) VALUES "
+        "(100,'concept','git','git',0),(101,'concept','GIT','Git',0)"
+    )
+    conn.execute(
+        "INSERT INTO knowledge_node_entities (knowledge_node_id, entity_id) VALUES (1,100),(2,101)"
+    )
+    conn.commit()
+
+    out = tmp_path / "vault"
+    export_vault(
+        conn,
+        str(out),
+        hippo_version="0.0.0",
+        related_top_k=8,
+        hub_degree_cap=200,
+        hub_node_list_cap=200,
+        shard_by="month",
+    )
+
+    # Both distinct entities get their own page — no silent merge/overwrite.
+    pages = sorted(p.name for p in (out / "entities" / "concept").glob("*.md"))
+    assert pages == ["git-2.md", "git.md"]
+    # And each node's wikilink target points at a distinct entity page.
+    notes = (out / "knowledge" / "2026-06" / "codex-s1-0.md").read_text() + (
+        out / "knowledge" / "2026-06" / "codex-s2-1.md"
+    ).read_text()
+    assert set(re.findall(r"entities/concept/(git(?:-2)?)\|", notes)) == {"git", "git-2"}
+
+
+def test_export_vault_entity_dedup_survives_suffix_coincidence(tmp_db, tmp_path):
+    from hippo_brain.vault_export import export_vault
+
+    conn, _db_path = tmp_db
+    conn.execute(
+        "INSERT INTO knowledge_nodes (id, uuid, content, embed_text, node_type, created_at, updated_at) VALUES "
+        "(1,'u1','{}','a','observation',1781530200000,1781530200000),"
+        "(2,'u2','{}','b','observation',1781530200000,1781530200000),"
+        "(3,'u3','{}','c','observation',1781530200000,1781530200000)"
+    )
+    conn.execute(
+        "INSERT INTO agentic_sessions (id, session_id, harness, segment_index, project_dir, cwd, summary_text, start_time, end_time) VALUES "
+        "(10,'s1','codex',0,'/p','/c','s',0,0),(11,'s2','codex',1,'/p','/c','s',0,0),(12,'s3','codex',2,'/p','/c','s',0,0)"
+    )
+    conn.execute("INSERT INTO knowledge_node_agentic_sessions VALUES (1,10),(2,11),(3,12)")
+    # entities 100/101 collide on base "foo" (-> foo, foo-2); entity 102's NATURAL
+    # slug is literally "foo-2". A within-group -N suffix would re-collide foo-2;
+    # global dedup must give all three distinct pages.
+    conn.execute(
+        "INSERT INTO entities (id, type, name, canonical, first_seen) VALUES "
+        "(100,'file','foo','foo',0),(101,'file','FOO','Foo',0),(102,'file','foo-2','foo-2',0)"
+    )
+    conn.execute(
+        "INSERT INTO knowledge_node_entities (knowledge_node_id, entity_id) VALUES (1,100),(2,101),(3,102)"
+    )
+    conn.commit()
+
+    out = tmp_path / "vault"
+    export_vault(
+        conn,
+        str(out),
+        hippo_version="0.0.0",
+        related_top_k=8,
+        hub_degree_cap=200,
+        hub_node_list_cap=200,
+        shard_by="month",
+    )
+
+    pages = sorted(p.name for p in (out / "entities" / "file").glob("*.md"))
+    assert len(pages) == 3, f"expected 3 distinct pages, got {pages}"
+
+
 def test_export_vault_writes_metadata_only_after_successful_reconcile(
     tmp_db, tmp_path, monkeypatch
 ):
@@ -491,3 +652,82 @@ def test_export_vault_full_allows_clean_reexport_after_format_drift(tmp_db, tmp_
 
     assert not old_generated.exists()
     assert _json.loads((out / "_vault_meta.json").read_text())["vault_format_version"] == 1
+
+
+def test_export_vault_full_recovers_bricked_partial_dir(tmp_db, tmp_path):
+    import pytest
+
+    from hippo_brain.vault_export import export_vault
+    from hippo_brain.vault_render import GENERATED_BANNER
+
+    conn, _db_path = tmp_db
+    conn.execute(
+        "INSERT INTO knowledge_nodes (id, uuid, content, embed_text, node_type, created_at, updated_at) "
+        "VALUES (1,'u1','{}','tok','observation',1781530200000,1781530200000)"
+    )
+    conn.execute(
+        "INSERT INTO agentic_sessions (id, session_id, harness, segment_index, project_dir, cwd, summary_text, start_time, end_time) "
+        "VALUES (10,'sess','codex',0,'/p','/c','s',0,0)"
+    )
+    conn.execute("INSERT INTO knowledge_node_agentic_sessions VALUES (1,10)")
+    conn.commit()
+
+    out = tmp_path / "vault"
+    # Simulate a crashed partial export: generated files present, NO _vault_meta.json.
+    leftover = out / "knowledge" / "2026-06" / "leftover.md"
+    leftover.parent.mkdir(parents=True)
+    leftover.write_text(f"{GENERATED_BANNER}\npartial\n")
+
+    # A normal run refuses — the dir is non-empty and not Hippo-owned (no meta).
+    with pytest.raises(RuntimeError, match="not an empty Hippo-owned vault"):
+        export_vault(
+            conn,
+            str(out),
+            hippo_version="0.0.0",
+            related_top_k=8,
+            hub_degree_cap=200,
+            hub_node_list_cap=200,
+            shard_by="month",
+        )
+
+    # --full recovers it: writes meta, GCs the stale generated leftover.
+    summary = export_vault(
+        conn,
+        str(out),
+        hippo_version="0.0.0",
+        related_top_k=8,
+        hub_degree_cap=200,
+        hub_node_list_cap=200,
+        shard_by="month",
+        full=True,
+    )
+    assert (out / "_vault_meta.json").exists()
+    assert not leftover.exists()  # orphan GC cleaned the partial
+    assert summary["nodes"] == 1
+
+
+def test_export_vault_full_still_refuses_foreign_obsidian_vault(tmp_db, tmp_path):
+    import pytest
+
+    from hippo_brain.vault_export import export_vault
+
+    conn, _db_path = tmp_db
+    conn.commit()
+
+    out = tmp_path / "vault"
+    (out / ".obsidian").mkdir(parents=True)
+    (out / "note.md").write_text("a human's note\n")
+
+    # Even with --full, never clobber someone else's Obsidian vault.
+    with pytest.raises(RuntimeError, match="foreign Obsidian vault"):
+        export_vault(
+            conn,
+            str(out),
+            hippo_version="0.0.0",
+            related_top_k=8,
+            hub_degree_cap=200,
+            hub_node_list_cap=200,
+            shard_by="month",
+            full=True,
+        )
+    assert (out / "note.md").exists()  # untouched

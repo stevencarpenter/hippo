@@ -95,8 +95,14 @@ def reconcile_files(root: Path, desired: dict, managed_subdirs: list[str]) -> di
     return {"written": written, "unchanged": unchanged, "deleted": deleted}
 
 
-def assert_safe_target(root: Path) -> None:
-    """Refuse to write into a non-empty directory Hippo does not own."""
+def assert_safe_target(root: Path, *, full: bool = False) -> None:
+    """Refuse to write into a non-empty directory Hippo does not own.
+
+    ``full=True`` is the operator's explicit reset/recovery escape hatch: it
+    permits writing into a non-empty, non-meta directory (e.g. a vault left
+    half-written by a crashed export). It NEVER relaxes the foreign-Obsidian
+    guard — we don't clobber someone else's vault even on --full.
+    """
     root = Path(root)
     meta = root / _META_NAME
     if not root.exists():
@@ -112,9 +118,12 @@ def assert_safe_target(root: Path) -> None:
             f"{root} looks like a foreign Obsidian vault (.obsidian present, no hippo "
             f"{_META_NAME}). Refusing to write. Use a dedicated hippo vault dir."
         )
+    if full:
+        return  # explicit reset of a non-meta, non-foreign dir (crash recovery)
     raise RuntimeError(
         f"{root} is not an empty Hippo-owned vault (missing {_META_NAME}). "
-        "Refusing to write. Use a dedicated empty directory or an existing Hippo vault."
+        "Refusing to write. Use a dedicated empty directory or an existing Hippo vault, "
+        "or pass --full to reset this directory."
     )
 
 
@@ -178,14 +187,58 @@ def _load_node_links(conn: sqlite3.Connection, node_id: int) -> dict:
 
 
 def _unique_node_slugs(node_ids: list[int], base_slug_by_id: dict[int, str]) -> dict[int, str]:
-    groups: dict[str, list[int]] = {}
-    for nid in node_ids:
-        groups.setdefault(slugify(base_slug_by_id[nid]), []).append(nid)
+    """Globally-unique slug per node id.
 
+    Node notes are linked by bare ``[[slug]]`` wikilinks, which Obsidian resolves
+    by basename across the whole vault — so slugs must be unique globally (not
+    just per shard). Disambiguation appends -2/-3 deduped against a global taken
+    set so a disambiguated "x-2" can't re-collide with another node whose natural
+    slug is literally "x-2". Deterministic: processed sorted by (base, id).
+    """
+    base_of = {nid: slugify(base_slug_by_id[nid]) for nid in node_ids}
+
+    taken: set[str] = set()
     slug_of: dict[int, str] = {}
-    for base, ids in groups.items():
-        for idx, nid in enumerate(sorted(ids), start=1):
-            slug_of[nid] = base if idx == 1 else f"{base}-{idx}"
+    for nid in sorted(node_ids, key=lambda n: (base_of[n], n)):
+        base = base_of[nid]
+        candidate, k = base, 1
+        while candidate in taken:
+            k += 1
+            candidate = f"{base}-{k}"
+        taken.add(candidate)
+        slug_of[nid] = candidate
+    return slug_of
+
+
+def _unique_entity_slugs(entity_info: dict[int, tuple[str, str, str | None]]) -> dict[int, str]:
+    """Stable, per-(type) unique slug for each entity id.
+
+    Entity canonicals can slugify identically even though (type, canonical) is
+    unique in the DB (e.g. "git" vs "Git", or "foo bar" vs "foo-bar"), so
+    distinct entities must not silently overwrite one another's page — and its
+    member list. Disambiguation appends -2/-3, deduped against a *global*
+    per-type taken set (not just within the colliding group) so a disambiguated
+    "foo-2" can't re-collide with another entity whose natural slug is "foo-2".
+
+    Deterministic: entities are processed sorted by (base_slug, id), so the same
+    DB always yields the same assignment.
+    """
+    base_of: dict[int, tuple[str, str]] = {
+        eid: (etype, entity_slug(etype, ename, ecanon, eid))
+        for eid, (etype, ename, ecanon) in entity_info.items()
+    }
+
+    taken: dict[str, set[str]] = {}
+    slug_of: dict[int, str] = {}
+    for eid in sorted(entity_info, key=lambda e: (base_of[e][1], e)):
+        etype, base = base_of[eid]
+        seen = taken.setdefault(etype, set())
+        candidate, k = base, 1
+        while candidate in seen:
+            k += 1
+            candidate = f"{base}-{k}"
+        seen.add(candidate)
+        slug_of[eid] = candidate
     return slug_of
 
 
@@ -200,7 +253,7 @@ def export_vault(
     full: bool = False,
 ) -> dict:
     root = Path(out_dir).expanduser()
-    assert_safe_target(root)
+    assert_safe_target(root, full=full)
     if not full and not check_format_version(root):
         raise RuntimeError(
             f"{root} was written by a different vault_format_version; run a full export "
@@ -259,6 +312,15 @@ def export_vault(
             )
         slug_of = _unique_node_slugs(node_ids, base_slug_by_id)
 
+        # Stable, per-type-unique slug for every entity referenced by an
+        # exported node. Computed once so the node-note link targets and the
+        # entity-page filenames agree (and colliding slugs don't merge pages).
+        entity_info: dict[int, tuple[str, str, str | None]] = {}
+        for nid in node_ids:
+            for eid, etype, ename, ecanon in node_meta[nid]["ents"]:
+                entity_info[eid] = (etype, ename, ecanon)
+        entity_slug_of = _unique_entity_slugs(entity_info)
+
         desired: dict[Path, str] = {}
         projects: dict[str, list[tuple[str, str]]] = {}  # project name -> node (slug, headline)
         months: dict[str, list[tuple[str, str]]] = {}  # month shard -> node (slug, headline)
@@ -271,7 +333,7 @@ def export_vault(
             ents = node_meta[nid]["ents"]
             entity_links = []
             for eid, etype, ename, ecanon in ents:
-                target = f"entities/{etype}/{entity_slug(etype, ename, ecanon, eid)}"
+                target = f"entities/{etype}/{entity_slug_of[eid]}"
                 entity_links.append((etype, ename, target))
                 entity_members.setdefault(eid, []).append((slug_of[nid], _headline_of(nid)))
                 if etype == "project":
@@ -320,7 +382,7 @@ def export_vault(
                     cap=hub_node_list_cap,
                 )
             )
-            slug = entity_slug(etype, ename, ecanon, eid)
+            slug = entity_slug_of[eid]
             desired[root / "entities" / etype / f"{slug}.md"] = redaction.redact(page)
 
         # Index notes: a small root MOC + one sub-index per project and per month.
@@ -329,10 +391,12 @@ def export_vault(
         )
         for proj, members in projects.items():
             desired[root / "indexes" / f"project-{slugify(proj)}.md"] = render_sub_index(
-                proj, members
+                proj, members[:hub_node_list_cap], total_members=len(members)
             )
         for month, members in months.items():
-            desired[root / "indexes" / f"month-{month}.md"] = render_sub_index(month, members)
+            desired[root / "indexes" / f"month-{month}.md"] = render_sub_index(
+                month, members[:hub_node_list_cap], total_members=len(members)
+            )
 
         schema_version = conn.execute("PRAGMA user_version").fetchone()[0]
     finally:
