@@ -24,11 +24,16 @@ _SLUG_STRIP = re.compile(r"[^a-z0-9]+")
 def slugify(text: str, maxlen: int = 200) -> str:
     """Lowercase, replace any run of non-alphanumerics with '-', trim dashes.
 
-    Caps the result at ``maxlen`` chars so it stays a valid filename component
-    (the OS limit is 255 bytes; the atomic writer also appends ".md.tmp").
-    Real "concept" entities can be raw error blobs thousands of chars long, so
+    Caps the *base* at ``maxlen`` chars so it stays a valid filename component
+    (the OS limit is 255 bytes; the atomic writer also appends ".md.tmp"). Real
+    "concept" entities can be raw error blobs thousands of chars long, so
     over-long slugs are truncated and disambiguated with an 8-char hash of the
     full slug — deterministic across runs and collision-free for distinct names.
+
+    Note: collision dedup in vault_export may append a short "-N" suffix to this
+    base, so the final filename can be a few chars over ``maxlen`` — still far
+    under the 255-byte budget (output is ASCII, so chars == bytes), with the
+    default ``maxlen`` of 200 leaving ample headroom for the suffix + ".md.tmp".
     """
     s = _SLUG_STRIP.sub("-", text.strip().lower()).strip("-") or "unnamed"
     if len(s) > maxlen:

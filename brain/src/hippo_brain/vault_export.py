@@ -186,20 +186,44 @@ def _load_node_links(conn: sqlite3.Connection, node_id: int) -> dict:
     return links
 
 
-def _unique_node_slugs(node_ids: list[int], base_slug_by_id: dict[int, str]) -> dict[int, str]:
+def _node_link_signature(links: dict) -> str:
+    """Stable per-node identity derived from its source links.
+
+    A node's rowid and uuid are both re-minted on re-enrichment (the agentic
+    write path DELETEs the prior node and INSERTs a fresh one), but its source
+    links — agentic (harness, session_id, segment), workflow run_id, browser/
+    shell event ids — are re-attached to the same sources. Using this signature
+    (not the volatile rowid) to break slug-collision ties means re-enriching one
+    node never reshuffles the slug of a colliding sibling, so the vault doesn't
+    churn. Collisions are reachable in practice: replace_prior_agentic_nodes only
+    deletes nodes linked *solely* to the re-enriched segments, so a narrower
+    re-enrichment can leave two observation nodes sharing a min source key.
+    """
+    parts = [f"{kind}:{item!r}" for kind in sorted(links) for item in links[kind]]
+    return "|".join(sorted(parts))
+
+
+def _unique_node_slugs(
+    node_ids: list[int],
+    base_slug_by_id: dict[int, str],
+    tiebreak_by_id: dict[int, str],
+) -> dict[int, str]:
     """Globally-unique slug per node id.
 
     Node notes are linked by bare ``[[slug]]`` wikilinks, which Obsidian resolves
     by basename across the whole vault — so slugs must be unique globally (not
     just per shard). Disambiguation appends -2/-3 deduped against a global taken
     set so a disambiguated "x-2" can't re-collide with another node whose natural
-    slug is literally "x-2". Deterministic: processed sorted by (base, id).
+    slug is literally "x-2". Within a colliding group the bare slug is awarded by
+    stable source signature (``tiebreak_by_id``), not rowid, so re-enrichment —
+    which re-mints rowids — does not churn unchanged siblings. ``id`` is only the
+    final fallback for genuinely indistinguishable (duplicate-link) nodes.
     """
     base_of = {nid: slugify(base_slug_by_id[nid]) for nid in node_ids}
 
     taken: set[str] = set()
     slug_of: dict[int, str] = {}
-    for nid in sorted(node_ids, key=lambda n: (base_of[n], n)):
+    for nid in sorted(node_ids, key=lambda n: (base_of[n], tiebreak_by_id[n], n)):
         base = base_of[nid]
         candidate, k = base, 1
         while candidate in taken:
@@ -305,12 +329,14 @@ def export_vault(
                 return node_meta[nid]["row"][2] or ""
 
         base_slug_by_id: dict[int, str] = {}
+        node_tiebreak_by_id: dict[int, str] = {}
         for nid in node_ids:
             row = node_meta[nid]["row"]
             base_slug_by_id[nid] = node_source_key(
                 node_meta[nid]["links"], node_type=row[3], uuid=row[0]
             )
-        slug_of = _unique_node_slugs(node_ids, base_slug_by_id)
+            node_tiebreak_by_id[nid] = _node_link_signature(node_meta[nid]["links"])
+        slug_of = _unique_node_slugs(node_ids, base_slug_by_id, node_tiebreak_by_id)
 
         # Stable, per-type-unique slug for every entity referenced by an
         # exported node. Computed once so the node-note link targets and the

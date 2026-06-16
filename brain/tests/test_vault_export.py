@@ -484,6 +484,62 @@ def test_export_vault_node_dedup_survives_suffix_coincidence(tmp_db, tmp_path):
     assert len(notes) == 3, f"expected 3 distinct node notes, got {notes}"
 
 
+def test_node_slug_assignment_stable_when_colliding_sibling_reenriched(tmp_db, tmp_path):
+    # Node A covers segment s0; node B covers s0+s1. Both min-key to (sess,0) ->
+    # same base "codex-sess-0" (the collision a narrower re-enrichment leaves
+    # behind). Re-enrichment DELETEs+re-INSERTs a node with a higher rowid; the
+    # slug each node keeps must depend on its stable source links, not the rowid,
+    # or B's note churns (renames + every inbound wikilink repoints).
+    from hippo_brain.vault_export import export_vault
+
+    conn, _db_path = tmp_db
+    conn.execute(
+        "INSERT INTO knowledge_nodes (id, uuid, content, embed_text, node_type, created_at, updated_at) VALUES "
+        "(1,'a-orig','{}','a','observation',1781530200000,1781530200000),"
+        "(2,'b-uuid','{}','b','observation',1781530200000,1781530200000)"
+    )
+    conn.execute(
+        "INSERT INTO agentic_sessions (id, session_id, harness, segment_index, project_dir, cwd, summary_text, start_time, end_time) VALUES "
+        "(10,'sess','codex',0,'/p','/c','s',0,0),(11,'sess','codex',1,'/p','/c','s',0,0)"
+    )
+    # A -> [s0]; B -> [s0, s1]
+    conn.execute("INSERT INTO knowledge_node_agentic_sessions VALUES (1,10),(2,10),(2,11)")
+    conn.commit()
+
+    def b_note_name(out):
+        for p in (out / "knowledge").rglob("*.md"):
+            if "uuid: b-uuid" in p.read_text():
+                return p.name
+        raise AssertionError("B note not found")
+
+    kw = dict(
+        hippo_version="0.0.0",
+        related_top_k=8,
+        hub_degree_cap=200,
+        hub_node_list_cap=200,
+        shard_by="month",
+    )
+    out1 = tmp_path / "v1"
+    export_vault(conn, str(out1), **kw)
+    before = b_note_name(out1)
+
+    # Re-enrich A: delete node 1, re-insert the same source link with a higher rowid.
+    conn.execute("DELETE FROM knowledge_node_agentic_sessions WHERE knowledge_node_id = 1")
+    conn.execute("DELETE FROM knowledge_nodes WHERE id = 1")
+    conn.execute(
+        "INSERT INTO knowledge_nodes (id, uuid, content, embed_text, node_type, created_at, updated_at) "
+        "VALUES (99,'a-reenriched','{}','a','observation',1781530200000,1781530200000)"
+    )
+    conn.execute("INSERT INTO knowledge_node_agentic_sessions VALUES (99,10)")
+    conn.commit()
+
+    out2 = tmp_path / "v2"
+    export_vault(conn, str(out2), **kw)
+    after = b_note_name(out2)
+
+    assert before == after, f"B's note churned across A's re-enrichment: {before} -> {after}"
+
+
 def test_export_vault_assigns_unique_entity_pages_for_colliding_slugs(tmp_db, tmp_path):
     import re
 
