@@ -1295,12 +1295,28 @@ pub async fn handle_doctor(config: &HippoConfig, explain: bool) -> Result<()> {
     Ok(())
 }
 
+/// Expand a leading `~` / `~/` to the user's home directory.
+///
+/// The brain resolves `out` with `Path.expanduser()`, so the Rust side must
+/// match — otherwise `vault_doctor_check` stats a literal "~" path and falsely
+/// reports the vault missing even though the export wrote it correctly.
+fn expand_tilde(path: &str) -> String {
+    let home = || dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
+    if path == "~" {
+        return home().to_string_lossy().to_string();
+    }
+    if let Some(rest) = path.strip_prefix("~/") {
+        return home().join(rest).to_string_lossy().to_string();
+    }
+    path.to_string()
+}
+
 pub fn resolve_vault_out(config: &HippoConfig, flag: Option<String>) -> String {
     if let Some(f) = flag {
-        return f;
+        return expand_tilde(&f);
     }
     if let Some(c) = &config.vault.out {
-        return c.clone();
+        return expand_tilde(c);
     }
     config
         .storage
@@ -5155,6 +5171,30 @@ replacement = "***"
         // data_dir fallback
         config.vault.out = None;
         assert_eq!(resolve_vault_out(&config, None), "/data/vault");
+    }
+
+    #[test]
+    fn resolve_vault_out_expands_leading_tilde() {
+        let mut config = HippoConfig::default();
+        let home = dirs::home_dir().unwrap();
+        // A config value with ~ must expand to an absolute path (matching the
+        // brain's Path.expanduser()), or `hippo doctor` checks a literal "~"
+        // directory and falsely reports the vault missing.
+        config.vault.out = Some("~/.local/share/hippo/vault".into());
+        assert_eq!(
+            resolve_vault_out(&config, None),
+            home.join(".local/share/hippo/vault")
+                .to_string_lossy()
+                .to_string()
+        );
+        // ...and via the flag too.
+        assert_eq!(
+            resolve_vault_out(&config, Some("~/v".into())),
+            home.join("v").to_string_lossy().to_string()
+        );
+        // Absolute (non-tilde) paths pass through unchanged.
+        config.vault.out = Some("/abs/vault".into());
+        assert_eq!(resolve_vault_out(&config, None), "/abs/vault");
     }
 
     #[test]
