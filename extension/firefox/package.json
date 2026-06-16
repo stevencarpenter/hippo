@@ -10,8 +10,8 @@
     "package": "node build.mjs && npx web-ext build --overwrite-dest --ignore-files src/ build.mjs tsconfig.json package.json package-lock.json README.md"
   },
   "devDependencies": {
-    "esbuild": "^0.25",
+    "esbuild": "^0.28",
     "typescript": "^5.8",
-    "web-ext": "^10.3.0"
+    "web-ext": "^10.4.0"
   }
 }
