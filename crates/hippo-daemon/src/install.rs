@@ -26,6 +26,10 @@ pub fn render_plist(template: &str, vars: &PlistVars) -> String {
             "__CURSOR_POLL_INTERVAL_SECS__",
             &vars.cursor_poll_interval_secs.to_string(),
         )
+        .replace(
+            "__VAULT_POLL_INTERVAL_SECS__",
+            &vars.vault_poll_interval_secs.to_string(),
+        )
 }
 
 pub struct PlistVars {
@@ -41,6 +45,7 @@ pub struct PlistVars {
     pub opencode_poll_interval_secs: u64,
     pub codex_poll_interval_secs: u64,
     pub cursor_poll_interval_secs: u64,
+    pub vault_poll_interval_secs: u64,
 }
 
 /// Auto-detect system paths for plist variable substitution.
@@ -71,6 +76,10 @@ pub fn detect_vars(brain_dir: &Path) -> Result<PlistVars> {
         .as_ref()
         .map(|c| c.cursor.poll_interval_secs)
         .unwrap_or(60);
+    let vault_poll_interval_secs = cfg
+        .as_ref()
+        .map(|c| c.vault.poll_interval_secs)
+        .unwrap_or(300);
 
     let scripts_dir = brain_dir.join("scripts");
 
@@ -98,6 +107,7 @@ pub fn detect_vars(brain_dir: &Path) -> Result<PlistVars> {
         opencode_poll_interval_secs,
         codex_poll_interval_secs,
         cursor_poll_interval_secs,
+        vault_poll_interval_secs,
     })
 }
 
@@ -752,6 +762,7 @@ mod tests {
             opencode_poll_interval_secs: 30,
             codex_poll_interval_secs: 60,
             cursor_poll_interval_secs: 60,
+            vault_poll_interval_secs: 300,
         };
 
         let result = render_plist(template, &vars);
@@ -774,6 +785,29 @@ mod tests {
     }
 
     #[test]
+    fn render_plist_substitutes_vault_interval() {
+        let vars = PlistVars {
+            hippo_bin: PathBuf::from("/usr/local/bin/hippo"),
+            uv_bin: PathBuf::from("/usr/local/bin/uv"),
+            brain_dir: PathBuf::from("/Users/me/projects/hippo/brain"),
+            scripts_dir: PathBuf::from("/Users/me/projects/hippo/scripts"),
+            home: PathBuf::from("/Users/me"),
+            path: "/usr/local/bin:/usr/bin:/bin".to_string(),
+            data_dir: PathBuf::from("/Users/me/.local/share/hippo"),
+            otel_enabled: "0".to_string(),
+            otel_endpoint: "http://localhost:4318".to_string(),
+            opencode_poll_interval_secs: 30,
+            codex_poll_interval_secs: 60,
+            cursor_poll_interval_secs: 60,
+            vault_poll_interval_secs: 300,
+        };
+        let tmpl = "<integer>__VAULT_POLL_INTERVAL_SECS__</integer>";
+        let out = render_plist(tmpl, &vars);
+        assert!(!out.contains("__VAULT_POLL_INTERVAL_SECS__"));
+        assert!(out.contains("<integer>300</integer>"));
+    }
+
+    #[test]
     fn omlx_launchagent_template_renders_with_existing_vars() {
         let template = include_str!("../../../launchd/com.hippo.omlx.plist");
         let vars = PlistVars {
@@ -789,6 +823,7 @@ mod tests {
             opencode_poll_interval_secs: 30,
             codex_poll_interval_secs: 60,
             cursor_poll_interval_secs: 60,
+            vault_poll_interval_secs: 300,
         };
 
         let rendered = render_plist(template, &vars);

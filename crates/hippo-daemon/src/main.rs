@@ -9,8 +9,8 @@ use hippo_daemon::{
 use anyhow::{Context, Result};
 use clap::Parser;
 use cli::{
-    AlarmsAction, BrainAction, Cli, Commands, ConfigAction, DaemonAction, IngestSource,
-    RedactAction, SendEventSource, WatchdogAction,
+    AlarmsAction, BrainAction, Cli, Commands, ConfigAction, DaemonAction, ExportAction,
+    IngestSource, RedactAction, SendEventSource, WatchdogAction,
 };
 use hippo_core::config::HippoConfig;
 use hippo_daemon::probe;
@@ -251,6 +251,7 @@ async fn main() -> Result<()> {
                     install::service_is_loaded("com.hippo.codex-session");
                 let cursor_session_was_loaded =
                     install::service_is_loaded("com.hippo.cursor-session");
+                let vault_sync_was_loaded = install::service_is_loaded("com.hippo.vault-sync");
                 let stack_was_active = daemon_was_loaded
                     || brain_was_loaded
                     || watchdog_was_loaded
@@ -259,7 +260,8 @@ async fn main() -> Result<()> {
                     || gh_poll_was_loaded
                     || opencode_poll_was_loaded
                     || codex_session_was_loaded
-                    || cursor_session_was_loaded;
+                    || cursor_session_was_loaded
+                    || vault_sync_was_loaded;
 
                 if brain_was_loaded {
                     print!("  Draining brain (waiting for in-flight requests)");
@@ -329,6 +331,13 @@ async fn main() -> Result<()> {
                     );
                     println!("  Stopped cursor-session");
                 }
+                if vault_sync_was_loaded {
+                    install::service_bootout(
+                        &domain,
+                        &launch_agents.join("com.hippo.vault-sync.plist"),
+                    );
+                    println!("  Stopped vault-sync");
+                }
                 // Always boot out the renamed legacy job on every reinstall so
                 // a stale com.hippo.xcode-codex-ingest plist cannot be
                 // re-bootstrapped by anything iterating LaunchAgents.
@@ -358,6 +367,8 @@ async fn main() -> Result<()> {
                     include_str!("../../../launchd/com.hippo.cursor-session.plist");
                 let opencode_poll_template =
                     include_str!("../../../launchd/com.hippo.opencode-poll.plist");
+                let vault_sync_template =
+                    include_str!("../../../launchd/com.hippo.vault-sync.plist");
 
                 install::install_plist("com.hippo.daemon", daemon_template, &vars, force)?;
                 install::install_plist("com.hippo.brain", brain_template, &vars, force)?;
@@ -422,6 +433,22 @@ async fn main() -> Result<()> {
                 } else {
                     println!("  (opencode source disabled; skipping opencode-poll plist)");
                     install::remove_plist("com.hippo.opencode-poll")?;
+                    false
+                };
+
+                // Vault export sync plist — only written when vault export is enabled.
+                // When disabled, also remove any stale plist on disk.
+                let vault_sync_installed = if config.vault.enabled {
+                    install::install_plist(
+                        "com.hippo.vault-sync",
+                        vault_sync_template,
+                        &vars,
+                        force,
+                    )?;
+                    true
+                } else {
+                    println!("  (vault export disabled; skipping vault-sync plist)");
+                    install::remove_plist("com.hippo.vault-sync")?;
                     false
                 };
 
@@ -515,6 +542,11 @@ async fn main() -> Result<()> {
                     cursor_session_was_loaded,
                     stack_was_active,
                 );
+                let vault_sync_started = install::should_start_optional_poll_agent(
+                    vault_sync_installed,
+                    vault_sync_was_loaded,
+                    stack_was_active,
+                );
 
                 // Reload core services that were already running, and ensure
                 // installed support agents are loaded for an active stack.
@@ -522,10 +554,10 @@ async fn main() -> Result<()> {
                 // Core services (daemon, brain) stay strict: if either fails to
                 // start, the install should abort loudly. All other support
                 // agents — watchdog, probe, claude-session-watcher, gh-poll,
-                // opencode-poll, codex-session — are auto-promoted onto an active stack, so a
-                // transient launchctl failure on any one of them is downgraded
-                // to a warning rather than aborting the whole install. This
-                // mirrors the graceful pattern used by
+                // opencode-poll, codex-session, vault-sync — are auto-promoted
+                // onto an active stack, so a transient launchctl failure on any
+                // one of them is downgraded to a warning rather than aborting
+                // the whole install. This mirrors the graceful pattern used by
                 // `configure_claude_session_hook` above.
                 if stack_was_active {
                     println!();
@@ -568,6 +600,11 @@ async fn main() -> Result<()> {
                             "com.hippo.cursor-session.plist",
                             cursor_session_started,
                         ),
+                        (
+                            "vault-sync",
+                            "com.hippo.vault-sync.plist",
+                            vault_sync_started,
+                        ),
                     ];
                     for (label, plist, gated) in support_agents {
                         if !gated {
@@ -587,7 +624,8 @@ async fn main() -> Result<()> {
                     || (gh_poll_installed && !gh_poll_started)
                     || (opencode_poll_installed && !opencode_poll_started)
                     || (codex_session_installed && !codex_session_started)
-                    || (cursor_session_installed && !cursor_session_started);
+                    || (cursor_session_installed && !cursor_session_started)
+                    || (vault_sync_installed && !vault_sync_started);
                 if needs_manual_start {
                     println!();
                     println!("Load with:");
@@ -630,6 +668,11 @@ async fn main() -> Result<()> {
                     if cursor_session_installed && !cursor_session_started {
                         println!(
                             "  launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.hippo.cursor-session.plist"
+                        );
+                    }
+                    if vault_sync_installed && !vault_sync_started {
+                        println!(
+                            "  launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.hippo.vault-sync.plist"
                         );
                     }
                 }
@@ -951,6 +994,11 @@ async fn main() -> Result<()> {
                 "Training export is not yet implemented. Use: uv run --project brain hippo-brain export"
             );
         }
+        Commands::Export { action } => match action {
+            ExportAction::Vault { out, full } => {
+                commands::handle_export_vault(&config, out, full).await?;
+            }
+        },
         Commands::Config { action } => match action {
             ConfigAction::Edit => {
                 let editor = std::env::var("EDITOR").unwrap_or_else(|_| "vi".to_string());

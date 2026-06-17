@@ -167,6 +167,24 @@ hippo doctor        # shows the agentic-session-cursor line
 
 **Spec:** `docs/superpowers/specs/2026-05-25-cursor-ingestion-design.md`
 
+### Obsidian Vault Export
+
+Export is handled by the brain HTTP endpoint `POST /vault/export` (in `brain/src/hippo_brain/server.py`), which orchestrates the full vault reconcile. The Rust CLI `hippo export vault [--out DIR]` and launchd `com.hippo.vault-sync` both POST this endpoint. Core modules: `brain/src/hippo_brain/vault_render.py` (slug derivation, markdown rendering), `brain/src/hippo_brain/vault_edges.py` (rarity-weighted bounded related edges), `brain/src/hippo_brain/vault_export.py` (query layer, probe filtering, atomic write-changed + orphan GC reconcile, safety rails).
+
+**Filenames:** Knowledge node markdown files derive from a stable **source-key slug** (deterministic across re-enrichment), never the volatile `uuid`. Slugs prioritize agentic sessions → workflow → browser → shell → lesson; agentic sources pick the minimum `(session_id, segment_index)` pair; `change_outcome` nodes append `-co` to avoid collisions.
+
+**Sync model:** Full reconcile on each run (one-shot or on interval). Over a single read snapshot, compute desired node set (probe-filtered), render markdown, write changed, delete orphans in managed subdirs, write `_vault_meta.json`. No watermark-incremental; bounded `related[]` (rarity-weighted, hub-excluded, top-K) + entity pages make full reconcile fast at ~13.5k nodes.
+
+**Config:** `[vault]` section in `~/.config/hippo/config.toml` (enabled, out, poll_interval_secs, related_top_k, hub_degree_cap, hub_node_list_cap, shard_by). The interval/paths are templated into the launchd plist at install time, so changing `poll_interval_secs` or `out` requires `hippo daemon install --force`.
+
+**Verify:**
+```bash
+hippo export vault --out ~/.local/share/hippo/vault    # one-shot export
+hippo doctor                                           # vault health check
+```
+
+**Spec:** `docs/superpowers/specs/2026-06-15-obsidian-vault-export-design.md`
+
 ### Capture Reliability (v0.16+)
 
 Capture-reliability stack (the result of the P0–P3 overhaul shipped through v0.16). Reference docs live in [`docs/capture/`](docs/capture/architecture.md); historical design records are in [`docs/archive/capture-reliability-overhaul/`](docs/archive/capture-reliability-overhaul/). Key pieces:

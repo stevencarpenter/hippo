@@ -183,6 +183,27 @@ def test_health_ok_when_embed_models_match(tmp_db):
         assert data["embed_model_drift"] is None
 
 
+def test_vault_export_surfaces_unexpected_error_message(tmp_db, tmp_path, monkeypatch):
+    """An unexpected exception (e.g. OSError from a bad path) must come back as
+    a response carrying the real message, not an opaque 500 with no body.
+
+    Regression target: the endpoint used to catch only (RuntimeError, ValueError),
+    so an ENAMETOOLONG mid-export escaped as a bodyless 500 "unknown error".
+    """
+    _, db_path = tmp_db
+    server = _make_server(str(db_path))
+
+    def boom(*_args, **_kwargs):
+        raise OSError("[Errno 63] File name too long: '/x'")
+
+    monkeypatch.setattr("hippo_brain.server.export_vault", boom)
+    app = Starlette(routes=server.get_routes())
+    client = TestClient(app, raise_server_exceptions=False)
+    resp = client.post("/vault/export", json={"out": str(tmp_path / "v")})
+    assert resp.status_code == 500
+    assert "File name too long" in resp.json()["error"]
+
+
 # ---- /query limit validation ----
 
 
@@ -675,3 +696,49 @@ async def test_embed_reaper_tick_propagates_non_missing_table_errors(tmp_db):
 
     with pytest.raises(sqlite3.OperationalError, match="database is locked"):
         await server._embed_reaper_tick()
+
+
+def test_vault_export_endpoint_invokes_export(tmp_path, monkeypatch, tmp_db):
+    from starlette.testclient import TestClient
+
+    from hippo_brain.server import create_app
+
+    captured = {}
+
+    def fake_export(
+        conn,
+        out_dir,
+        hippo_version,
+        related_top_k,
+        hub_degree_cap,
+        hub_node_list_cap,
+        shard_by,
+        full,
+    ):
+        captured.update(out_dir=out_dir, top_k=related_top_k, cap=hub_degree_cap, full=full)
+        return {"nodes": 3, "written": 3, "unchanged": 0, "deleted": 1}
+
+    monkeypatch.setattr("hippo_brain.server.export_vault", fake_export)
+    _, db_path = tmp_db
+    app = create_app(db_path=str(db_path))
+    with TestClient(app) as client:
+        resp = client.post(
+            "/vault/export",
+            json={"out": str(tmp_path / "v"), "related_top_k": 5, "full": True},
+        )
+    assert resp.status_code == 200
+    assert resp.json()["nodes"] == 3
+    assert captured["out_dir"].endswith("/v") and captured["top_k"] == 5
+    assert captured["full"] is True
+
+
+def test_vault_export_requires_out(tmp_db):
+    from starlette.testclient import TestClient
+
+    from hippo_brain.server import create_app
+
+    _, db_path = tmp_db
+    app = create_app(db_path=str(db_path))
+    with TestClient(app) as client:
+        resp = client.post("/vault/export", json={})
+    assert resp.status_code == 400
