@@ -30,7 +30,6 @@ fn probes_cover_every_source_from_the_audit_matrix() {
         names,
         vec![
             "shell",
-            "claude-tool",
             "claude-session (main)",
             "claude-session (subagent)",
             "browser",
@@ -184,10 +183,6 @@ fn freshness_verdicts_reflect_real_table_state() {
     assert!(
         joined.contains("[OK] Source freshness browser"),
         "browser should be OK after insert, got:\n{joined}"
-    );
-    assert!(
-        joined.contains("[--] Source freshness claude-tool"),
-        "claude-tool should still be [--], got:\n{joined}"
     );
     assert!(
         joined.contains("[--] Source freshness workflow"),
