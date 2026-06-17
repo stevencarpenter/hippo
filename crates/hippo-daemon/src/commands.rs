@@ -1374,14 +1374,6 @@ pub fn source_freshness_probes() -> Vec<SourceFreshnessProbe> {
                 hard_ms: 7 * DAY_MS,
             },
         },
-        SourceFreshnessProbe {
-            name: "claude-tool",
-            query: "SELECT COUNT(*), MAX(timestamp) FROM events WHERE source_kind = 'claude-tool'",
-            thresholds: FreshnessThresholds {
-                soft_ms: 24 * HOUR_MS,
-                hard_ms: 7 * DAY_MS,
-            },
-        },
         // Claude Code sessions live in `agentic_sessions` keyed by
         // `harness = 'claude-code'` (post v17→v18 agentic unification). The
         // harness column separates Codex/Cursor/opencode cleanly, so no
