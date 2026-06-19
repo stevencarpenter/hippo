@@ -388,6 +388,108 @@ run = "cargo run --bin hippo -- daemon run"
 description = "Run the brain enrichment server"
 run = "uv run --project brain hippo-brain serve"
 
+[tasks."brain:api"]
+description = "Call the structured brain API CLI: mise run brain:api -- <operation> [args]"
+run = '''
+#!/usr/bin/env bash
+set -euo pipefail
+if [ "$#" -eq 0 ]; then
+    uv run --project brain hippo-brain-api --help
+    exit 2
+fi
+uv run --project brain hippo-brain-api "$@"
+'''
+
+[tasks."brain:api:health"]
+description = "GET /health from the brain API"
+run = "uv run --project brain hippo-brain-api health"
+
+[tasks."brain:api:sessions"]
+description = "GET /sessions from the brain API; forwards optional CLI args"
+run = '''
+#!/usr/bin/env bash
+set -euo pipefail
+uv run --project brain hippo-brain-api sessions "$@"
+'''
+
+[tasks."brain:api:events"]
+description = "GET /events from the brain API; forwards optional CLI args"
+run = '''
+#!/usr/bin/env bash
+set -euo pipefail
+uv run --project brain hippo-brain-api events "$@"
+'''
+
+[tasks."brain:api:knowledge"]
+description = "GET /knowledge from the brain API; forwards optional CLI args"
+run = '''
+#!/usr/bin/env bash
+set -euo pipefail
+uv run --project brain hippo-brain-api knowledge "$@"
+'''
+
+[tasks."brain:api:knowledge-get"]
+description = "GET /knowledge/{id}; usage: mise run brain:api:knowledge-get -- <id>"
+run = '''
+#!/usr/bin/env bash
+set -euo pipefail
+if [ "$#" -lt 1 ]; then
+    echo "Usage: mise run brain:api:knowledge-get -- <id>" >&2
+    exit 2
+fi
+uv run --project brain hippo-brain-api knowledge-get "$@"
+'''
+
+[tasks."brain:api:query"]
+description = "POST /query; usage: mise run brain:api:query -- <text> [--mode semantic|lexical] [--limit N]"
+run = '''
+#!/usr/bin/env bash
+set -euo pipefail
+if [ "$#" -lt 1 ]; then
+    echo "Usage: mise run brain:api:query -- <text> [--mode semantic|lexical] [--limit N]" >&2
+    exit 2
+fi
+uv run --project brain hippo-brain-api query "$@"
+'''
+
+[tasks."brain:api:ask"]
+description = "POST /ask; usage: mise run brain:api:ask -- <question> [--limit N]"
+run = '''
+#!/usr/bin/env bash
+set -euo pipefail
+if [ "$#" -lt 1 ]; then
+    echo "Usage: mise run brain:api:ask -- <question> [--limit N]" >&2
+    exit 2
+fi
+uv run --project brain hippo-brain-api ask "$@"
+'''
+
+[tasks."brain:api:pause"]
+description = "POST /control/pause to pause enrichment while ingestion continues"
+run = "uv run --project brain hippo-brain-api pause"
+
+[tasks."brain:api:resume"]
+description = "POST /control/resume to resume enrichment"
+run = "uv run --project brain hippo-brain-api resume"
+
+[tasks."brain:api:openapi"]
+description = "Print the built-in OpenAPI contract without requiring a running brain"
+run = "uv run --project brain hippo-brain-api openapi --offline"
+
+[tasks."brain:api:openapi:live"]
+description = "GET /openapi.json from the running brain API"
+run = "uv run --project brain hippo-brain-api openapi"
+
+[tasks."brain:api:openapi:write"]
+description = "Write the OpenAPI contract to OUT (default: brain/openapi.json)"
+run = '''
+#!/usr/bin/env bash
+set -euo pipefail
+OUT="${OUT:-brain/openapi.json}"
+uv run --project brain hippo-brain-api openapi --offline > "$OUT"
+echo "Wrote $OUT"
+'''
+
 [tasks.status]
 description = "Show daemon status"
 run = "cargo run --bin hippo -- status"

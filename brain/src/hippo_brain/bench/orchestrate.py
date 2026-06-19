@@ -62,13 +62,18 @@ def _build_run_id() -> str:
 
 
 def _host_info() -> dict:
-    vm = psutil.virtual_memory()
+    total_mem_gb = None
+    try:
+        vm = psutil.virtual_memory()
+        total_mem_gb = round(vm.total / (1024**3), 1)
+    except Exception as exc:
+        _log.warning("failed to collect host memory info: %s", exc)
     return {
         "hostname": platform.node(),
         "os": f"{platform.system().lower()} {platform.release()}",
         "arch": platform.machine(),
         "cpu_brand": _cpu_brand(),
-        "total_mem_gb": round(vm.total / (1024**3), 1),
+        "total_mem_gb": total_mem_gb,
     }
 
 

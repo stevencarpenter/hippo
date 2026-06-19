@@ -13,7 +13,7 @@ from unittest.mock import patch
 import pytest
 
 from hippo_brain.bench.coordinator import ModelRunResult
-from hippo_brain.bench.orchestrate import _inference_backend_version, orchestrate_run
+from hippo_brain.bench.orchestrate import _host_info, _inference_backend_version, orchestrate_run
 from hippo_brain.bench.output import AttemptRecord
 from hippo_brain.bench.preflight import CheckResult
 
@@ -27,6 +27,21 @@ def stub_corpus(tmp_path: Path) -> tuple[Path, Path]:
     manifest = tmp_path / "corpus.manifest.json"
     manifest.write_text(json.dumps({"corpus_content_hash": "sha256:test", "schema_version": 0}))
     return sqlite, manifest
+
+
+def test_host_info_survives_virtual_memory_failure(monkeypatch: pytest.MonkeyPatch):
+    """psutil can fail on macOS host_statistics64; run provenance must not
+    abort an otherwise valid benchmark run when memory size is unavailable."""
+
+    def raise_virtual_memory():
+        raise RuntimeError("host_statistics64(HOST_VM_INFO64) syscall failed")
+
+    monkeypatch.setattr("hippo_brain.bench.orchestrate.psutil.virtual_memory", raise_virtual_memory)
+
+    info = _host_info()
+
+    assert info["hostname"]
+    assert info["total_mem_gb"] is None
 
 
 def test_dry_run_writes_manifest_then_run_end(stub_corpus, tmp_path):

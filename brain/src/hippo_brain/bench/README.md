@@ -215,6 +215,17 @@ window.
 - **Resume is best-effort** — registered via `atexit` so it fires even on crash
 - **Override** — `--skip-prod-pause` bypasses pause/resume entirely
 
+The same control surface is available outside the bench harness:
+
+```bash
+mise run brain:api:pause
+mise run brain:api:health
+mise run brain:api:resume
+```
+
+This is a soft pause. Ingestion continues and queue depth can grow, but the
+running prod brain may still hold a model connection for health/query traffic.
+
 If the prod brain restarts during a bench run (e.g., due to launchd keepalive),
 the `model_summary` record will include `"prod_brain_restarted_during_bench": true`.
 
@@ -570,11 +581,12 @@ calling out:
    fail the run — that is an infra signal, NOT a model verdict. If a run shows
    widespread drops or a model lands in `errored`, probe the server directly
    (`POST /v1/chat/completions` a few times) and restart it before trusting any
-   numbers. Also **fully quiesce the prod brain** for the run window: the soft
-   `/control/pause` stops new claims but not an in-flight batch, and a
-   prod brain enriching this session's own captured activity will contend for
-   the inference server. Hard-stop it (`launchctl bootout gui/$UID/com.hippo.brain`,
-   leaving `com.hippo.daemon` up so capture keeps queueing) for a clean run.
+   numbers. Also **fully quiesce the prod brain** for the run window when you
+   need to unload a local model: the soft `/control/pause` stops new claims but
+   not an in-flight batch, and a running prod brain can still contend for the
+   inference server. Hard-stop it (`launchctl bootout gui/$UID/com.hippo.brain`,
+   leaving `com.hippo.daemon` and ingest agents up so capture keeps queueing)
+   for a clean run.
 
 Use the `tier0_verdict.skipped_gates` field to surface "didn't measure this" vs.
 "failed this" in any leaderboard you publish.
