@@ -62,11 +62,15 @@ def _build_run_id() -> str:
 
 
 def _host_info() -> dict:
+    """Best-effort host provenance for a bench run. ``total_mem_gb`` falls back
+    to ``None`` (the run continues) when psutil cannot read system memory —
+    macOS ``host_statistics64`` has been observed to raise ``RuntimeError``.
+    The remaining provenance fields are always populated."""
     total_mem_gb = None
     try:
         vm = psutil.virtual_memory()
         total_mem_gb = round(vm.total / (1024**3), 1)
-    except Exception as exc:
+    except (psutil.Error, OSError, RuntimeError) as exc:
         _log.warning("failed to collect host memory info: %s", exc)
     return {
         "hostname": platform.node(),

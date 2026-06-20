@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 
+from starlette.applications import Starlette
 from starlette.testclient import TestClient
 
 from hippo_brain.openapi import build_openapi_spec
@@ -76,7 +77,6 @@ def test_pause_response_schema_documents_quiescence_fields():
 def test_openapi_json_route_serves_same_contract(tmp_db):
     _, db_path = tmp_db
     server = BrainServer(db_path=str(db_path))
-    from starlette.applications import Starlette
 
     client = TestClient(Starlette(routes=server.get_routes()))
 
@@ -112,3 +112,19 @@ def test_openapi_spec_covers_every_server_route(tmp_db):
         assert methods == spec_paths[path], (
             f"Method mismatch for {path}: server={methods}, spec={spec_paths[path]}"
         )
+
+
+def test_knowledge_list_uses_summary_schema_without_heavy_fields():
+    """The /knowledge list response must not promise fields the list handler
+    never returns. ``list_knowledge`` emits a 7-field projection; only
+    ``get_knowledge`` (/knowledge/{id}) hydrates embed_text/related_entities/
+    related_events. The list items therefore reference the lighter summary
+    schema, while the by-id endpoint keeps the full KnowledgeNode."""
+    schemas = build_openapi_spec()["components"]["schemas"]
+
+    list_item_ref = schemas["KnowledgeListResponse"]["properties"]["nodes"]["items"]["$ref"]
+    assert list_item_ref.endswith("/KnowledgeNodeSummary")
+
+    heavy = {"embed_text", "related_entities", "related_events"}
+    assert heavy.isdisjoint(schemas["KnowledgeNodeSummary"]["properties"])
+    assert heavy.issubset(schemas["KnowledgeNode"]["properties"])

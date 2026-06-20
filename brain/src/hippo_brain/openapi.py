@@ -314,13 +314,32 @@ def build_openapi_spec() -> dict:
                     },
                     "additionalProperties": True,
                 },
+                "KnowledgeNodeSummary": {
+                    "type": "object",
+                    "description": (
+                        "Knowledge node as returned by the list endpoint: a subset "
+                        "of KnowledgeNode. The list query does not hydrate "
+                        "embed_text/related_entities/related_events — only the "
+                        "/knowledge/{id} endpoint returns those."
+                    ),
+                    "properties": {
+                        "id": {"type": "integer"},
+                        "uuid": {"type": "string"},
+                        "content": {"type": "string"},
+                        "node_type": {"type": ["string", "null"]},
+                        "outcome": {"type": ["string", "null"]},
+                        "tags": {"type": "array", "items": {"type": "string"}},
+                        "created_at": {"type": "integer"},
+                    },
+                    "additionalProperties": True,
+                },
                 "KnowledgeListResponse": {
                     "type": "object",
                     "required": ["nodes", "total"],
                     "properties": {
                         "nodes": {
                             "type": "array",
-                            "items": {"$ref": "#/components/schemas/KnowledgeNode"},
+                            "items": {"$ref": "#/components/schemas/KnowledgeNodeSummary"},
                         },
                         "total": {"type": "integer"},
                     },

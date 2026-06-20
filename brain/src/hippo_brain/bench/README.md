@@ -584,7 +584,7 @@ calling out:
    numbers. Also **fully quiesce the prod brain** for the run window when you
    need to unload a local model: the soft `/control/pause` stops new claims but
    not an in-flight batch, and a running prod brain can still contend for the
-   inference server. Hard-stop it (`launchctl bootout gui/$UID/com.hippo.brain`,
+   inference server. Hard-stop it (`launchctl bootout "gui/$(id -u)" ~/Library/LaunchAgents/com.hippo.brain.plist`,
    leaving `com.hippo.daemon` and ingest agents up so capture keeps queueing)
    for a clean run.
 

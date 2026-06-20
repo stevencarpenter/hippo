@@ -42,6 +42,10 @@ def test_host_info_survives_virtual_memory_failure(monkeypatch: pytest.MonkeyPat
 
     assert info["hostname"]
     assert info["total_mem_gb"] is None
+    # The memory failure must not suppress the other provenance fields.
+    assert info["os"]
+    assert info["arch"]
+    assert "cpu_brand" in info
 
 
 def test_dry_run_writes_manifest_then_run_end(stub_corpus, tmp_path):
