@@ -14,6 +14,7 @@ from starlette.responses import JSONResponse
 from starlette.routing import Route
 
 from hippo_brain.client import InferenceClient
+from hippo_brain.openapi import build_openapi_spec
 from hippo_brain.schema_version import EXPECTED_SCHEMA_VERSION, ACCEPTED_READ_VERSIONS
 from hippo_brain.version import get_version
 from hippo_brain.embeddings import (
@@ -912,6 +913,10 @@ class BrainServer:
         self._resume_event.set()
         return JSONResponse({"resumed_at": _dt.datetime.now(tz=_dt.UTC).isoformat()})
 
+    async def openapi_json(self, request: Request) -> JSONResponse:
+        """Serve the explicit OpenAPI contract for the Starlette brain API."""
+        return JSONResponse(build_openapi_spec())
+
     def _resolve_model_from_preflight(self, loaded: list[str]) -> bool:
         """Sync model selection from preflight's already-fetched model list."""
         return self._pick_enrichment_model(loaded)
@@ -1809,6 +1814,7 @@ class BrainServer:
             Route("/ask", self.ask, methods=["POST"]),
             Route("/control/pause", self.control_pause, methods=["POST"]),
             Route("/control/resume", self.control_resume, methods=["POST"]),
+            Route("/openapi.json", self.openapi_json, methods=["GET"]),
         ]
 
 

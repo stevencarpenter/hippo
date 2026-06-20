@@ -169,6 +169,25 @@ hippo probe --source claude-session     # Run a synthetic probe for one source
 hippo ingest claude-session <path>      # Manual one-shot import of a JSONL (recovery)
 ```
 
+Brain API and enrichment control:
+
+```bash
+mise run brain:api:health               # Brain health, queue depths, pause state
+mise run brain:api:pause                # Pause enrichment; ingestion keeps queueing
+mise run brain:api:resume               # Resume enrichment
+mise run brain:api:query -- "cargo build"
+mise run brain:api:ask -- "how did I fix that build error?"
+mise run brain:api:openapi              # Print OpenAPI contract without a server
+mise run brain:api:openapi:live         # Fetch /openapi.json from the running brain
+mise run brain:api:openapi:write        # Write OUT, default brain/openapi.json
+```
+
+`brain:api:pause` is a soft pause: `hippo-brain` stays up for health, query, and
+resume calls but stops claiming new enrichment work. The daemon and ingest
+agents continue writing events and queue rows. To fully unload a local chat model
+for a benchmark, stop only `com.hippo.brain` and leave `com.hippo.daemon` plus
+the ingest agents running.
+
 Capture-reliability operator runbook (recipes for "I ran a command but it's not in `hippo events`", "doctor shows red", "schema mismatch", etc.): [`docs/capture/operator-runbook.md`](docs/capture/operator-runbook.md).
 
 ## Troubleshooting
@@ -181,7 +200,7 @@ Common first-day failures, in rough order of frequency:
 | `hippo ask` returns "I don't have enough information" | Brain hasn't enriched yet, or the configured chat model isn't loaded. | `hippo doctor` to confirm. Open omlx (or LM Studio) and load the model in `[models].enrichment`. |
 | `hippo doctor` says inference server isn't reachable | omlx/LM Studio isn't running, or it's serving on a non-default port. | Start the server. For oMLX, run `mise run install:omlx`; for LM Studio, start it manually. Check the API base URL in `~/.config/hippo/config.toml` (`[inference].base_url`). The legacy `[lmstudio]` section is rejected with a migration error — rename it to `[inference]`. |
 | Daemon won't start; `hippo doctor` says schema mismatch | Daemon and brain have different `EXPECTED_SCHEMA_VERSION` constants — happens after partial upgrades. | `mise run install --clean` brings everything to the same version. |
-| Brain queue backs up | Configured chat model unloaded or swapped for one not in `[models].enrichment`. | Load the configured model. The reaper handles transient locks; persistent backlog is operator-visible. See [`docs/brain-watchdog.md`](docs/brain-watchdog.md). |
+| Brain queue backs up | Configured chat model unloaded, enrichment is paused, `com.hippo.brain` is stopped, or the loaded model is not in `[models].enrichment`. | Check `mise run brain:api:health` if brain is running. Use `mise run brain:api:resume` to clear a soft pause, or load the configured model/start brain when you want the queue to drain. The reaper handles transient locks; persistent backlog is operator-visible. See [`docs/brain-watchdog.md`](docs/brain-watchdog.md). |
 | Firefox extension shows no recent visits | Native messaging manifest missing, or extension not loaded. | `hippo daemon install --force` rewrites the manifest. Reload the extension in `about:debugging`. See [`extension/firefox/README.md`](extension/firefox/README.md). |
 
 For anything not in this table, run `hippo doctor --explain` and follow the DOC link in each failure block. The full operator runbook lives at [`docs/capture/operator-runbook.md`](docs/capture/operator-runbook.md).
@@ -310,6 +329,18 @@ mise run restart            # Stop + start
 mise run nuke               # SIGKILL everything (preserves data)
 mise run install:omlx       # Optional: install + start Hippo's oMLX LaunchAgent
 ```
+
+To keep ingestion running while enrichment is fully stopped, do not use
+`mise run stop`; it unloads the capture side too. Boot out only the brain agent:
+
+```bash
+launchctl bootout "gui/$(id -u)" ~/Library/LaunchAgents/com.hippo.brain.plist
+```
+
+If the daemon is not already loaded, bootstrap
+`~/Library/LaunchAgents/com.hippo.daemon.plist` separately. Then verify with
+`mise run status`: daemon should be reachable, queue depth should be nonzero or
+growing, and brain should be unreachable until restarted.
 
 ### Contributing
 
