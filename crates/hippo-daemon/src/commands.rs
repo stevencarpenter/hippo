@@ -1724,11 +1724,11 @@ where
 /// which `test_session_state_config_error_fallback_alarms` guards against.
 const SESSION_STATE_CONFIG_ERROR_FALLBACK: (bool, bool, bool) = (true, true, false);
 
-/// Fail-open-for-alerting fallback returned by `opencode_db_recent` on the same
-/// config-load failure: `true` skips the "opencode DB idle" suppression arm so
-/// a stale opencode row still alarms. Guarded by
-/// `test_opencode_db_recent_config_error_fallback_alarms`.
-const OPENCODE_DB_RECENT_CONFIG_ERROR_FALLBACK: bool = true;
+/// Fail-open-for-alerting fallback for `opencode_session_state` on config-load
+/// failure or DB-open error: `(true, true)` skips all idle-suppression arms so a
+/// stale opencode row still alarms. Guarded by
+/// `test_opencode_session_state_config_error_fallback_alarms`.
+const OPENCODE_SESSION_STATE_CONFIG_ERROR_FALLBACK: (bool, bool) = (true, true);
 
 /// Check 1: Per-source staleness via the `source_health` table (requires P0.1 migration).
 ///
@@ -1815,14 +1815,14 @@ fn check_source_staleness(db: &rusqlite::Connection, explain: bool) -> u32 {
     let doctor_config = hippo_core::config::HippoConfig::load_default();
 
     // Inspect the Codex rollout files under the configured session roots.
-    // Two facts drive doctor suppression, mirroring opencode's DB checks:
+    // Two facts drive doctor suppression, mirroring opencode's session-table checks:
     //   - `any_exist`: at least one `rollout-*.jsonl` file is present.
     //     False ⇒ "user has never run Codex" — suppress rather than alarm.
     //   - `any_recent`: at least one `rollout-*.jsonl` was modified within the
-    //     IDLE_WINDOW_SECS window (the same window opencode uses for its DB
-    //     mtime). False (with files present) ⇒ "user just isn't using Codex
-    //     right now" — suppress.  True with a stale `source_health` row ⇒ a
-    //     genuine ingestion failure, so it is NOT suppressed.
+    //     IDLE_WINDOW_SECS window (the same 10-minute idle window opencode uses
+    //     for its `MAX(time_updated)` query). False (with files present) ⇒ "user
+    //     just isn't using Codex right now" — suppress.  True with a stale
+    //     `source_health` row ⇒ a genuine ingestion failure, so it is NOT suppressed.
     let codex_session_state = || -> (bool, bool, bool) {
         // Config unreadable: fail open for alerting (see the const's docs).
         let Ok(cfg) = doctor_config.as_ref() else {
@@ -1878,14 +1878,15 @@ fn check_source_staleness(db: &rusqlite::Connection, explain: bool) -> u32 {
     };
 
     // Inspect the Cursor agent-transcript files under the configured session
-    // roots. Two facts drive doctor suppression, mirroring opencode's DB checks:
+    // roots. Two facts drive doctor suppression, mirroring opencode's session-table checks:
     //   - `any_exist`: at least one `agent-transcripts/*.jsonl` file is present.
     //     False ⇒ "user has never run Cursor" — suppress rather than alarm.
     //   - `any_recent`: at least one `agent-transcripts/*.jsonl` was modified
-    //     within the IDLE_WINDOW_SECS window (the same window opencode uses for
-    //     its DB mtime). False (with files present) ⇒ "user just isn't using
-    //     Cursor right now" — suppress.  True with a stale `source_health` row ⇒
-    //     a genuine ingestion failure, so it is NOT suppressed.
+    //     within the IDLE_WINDOW_SECS window (the same 10-minute idle window
+    //     opencode uses for its `MAX(time_updated)` query). False (with files
+    //     present) ⇒ "user just isn't using Cursor right now" — suppress.  True
+    //     with a stale `source_health` row ⇒ a genuine ingestion failure, so it
+    //     is NOT suppressed.
     let cursor_session_state = || -> (bool, bool, bool) {
         // Config unreadable: fail open for alerting (mirrors codex above).
         let Ok(cfg) = doctor_config.as_ref() else {
@@ -1936,21 +1937,63 @@ fn check_source_staleness(db: &rusqlite::Connection, explain: bool) -> u32 {
         (any_exist, any_recent, any_in_flight)
     };
 
-    // Check whether the opencode DB itself looks active — the file exists
-    // and has been modified within IDLE_WINDOW_SECS. Stale opencode means
-    // "user just isn't using opencode right now," not "the poller is broken."
-    let opencode_db_recent = || -> bool {
+    // Check the opencode `session` table for recent activity.
+    //   - `any_exist`:  at least one session row exists in the DB.
+    //     False ⇒ "user has never run opencode" — suppress rather than alarm.
+    //   - `any_recent`: any session has `time_updated` within IDLE_WINDOW_SECS.
+    //     False (with rows present) ⇒ "user just isn't using opencode right now"
+    //     — suppress.  True with a stale `source_health` row ⇒ a genuine
+    //     ingestion failure, so it is NOT suppressed.
+    //
+    // Checking the DB file mtime is NOT a reliable proxy for session activity:
+    // opencode continuously writes account state, event sequences, credentials,
+    // and workspace state to the same DB, so the file mtime is always "recent"
+    // even when no coding sessions have run for hours.
+    let opencode_session_state = || -> (bool, bool) {
         // Config unreadable: fail open for alerting (see the const's docs).
         let Ok(cfg) = doctor_config.as_ref() else {
-            return OPENCODE_DB_RECENT_CONFIG_ERROR_FALLBACK;
+            return OPENCODE_SESSION_STATE_CONFIG_ERROR_FALLBACK;
         };
-        let Ok(meta) = std::fs::metadata(&cfg.opencode.db_path) else {
-            return false;
+        // Disabled source: skip the DB query; `!opencode_enabled` classifies
+        // the row as "source disabled" regardless of session state.
+        if !cfg.opencode.enabled {
+            return (false, false);
+        }
+        let db_path = &cfg.opencode.db_path;
+        // DB absent ⇒ opencode has never been used on this machine. Returns
+        // (false, false) which the suppression logic classifies as "no opencode
+        // sessions found" — same outcome as a DB with zero rows.
+        if !db_path.exists() {
+            return (false, false);
+        }
+        let conn = match rusqlite::Connection::open_with_flags(
+            db_path,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        ) {
+            Ok(c) => c,
+            Err(_) => return OPENCODE_SESSION_STATE_CONFIG_ERROR_FALLBACK,
         };
-        let idle_cutoff = std::time::SystemTime::now()
-            .checked_sub(std::time::Duration::from_secs(IDLE_WINDOW_SECS))
-            .unwrap_or(std::time::UNIX_EPOCH);
-        meta.modified().map(|m| m > idle_cutoff).unwrap_or(false)
+        let idle_cutoff_ms = {
+            let now_ms = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis() as i64;
+            now_ms - (IDLE_WINDOW_SECS as i64 * 1000)
+        };
+        // Single query: row count + most-recent time_updated.
+        match conn.query_row(
+            "SELECT COUNT(*), MAX(time_updated) FROM session",
+            [],
+            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, Option<i64>>(1)?)),
+        ) {
+            Ok((count, max_ts)) => {
+                let any_exist = count > 0;
+                let any_recent = max_ts.map(|ts| ts > idle_cutoff_ms).unwrap_or(false);
+                (any_exist, any_recent)
+            }
+            // DB unreadable or table missing: fail open (same as config error).
+            Err(_) => OPENCODE_SESSION_STATE_CONFIG_ERROR_FALLBACK,
+        }
     };
 
     // Check if there's a recent claude JSONL with mtime < 5 minutes (for claude-session suppression).
@@ -1994,6 +2037,7 @@ fn check_source_staleness(db: &rusqlite::Connection, explain: bool) -> u32 {
     };
 
     let mut fail_count: u32 = 0;
+    let (opencode_sessions_do_exist, opencode_sessions_are_recent) = opencode_session_state();
     let (codex_sessions_do_exist, codex_sessions_are_recent, codex_session_is_in_flight) =
         codex_session_state();
     let (cursor_sessions_do_exist, cursor_sessions_are_recent, cursor_session_is_in_flight) =
@@ -2008,7 +2052,8 @@ fn check_source_staleness(db: &rusqlite::Connection, explain: bool) -> u32 {
         probe_ok: None, // per-row; filled in inside the loop
         firefox_running: firefox_running(),
         recent_claude_session: recent_claude_session(),
-        opencode_db_recent: opencode_db_recent(),
+        opencode_sessions_exist: opencode_sessions_do_exist,
+        opencode_sessions_recent: opencode_sessions_are_recent,
         opencode_enabled,
         codex_sessions_exist: codex_sessions_do_exist,
         codex_sessions_recent: codex_sessions_are_recent,
@@ -2498,10 +2543,12 @@ struct SuppressionSignals {
     firefox_running: bool,
     /// A Claude session JSONL was modified within the last 5 minutes.
     recent_claude_session: bool,
-    /// The opencode DB file was modified within the last 10 minutes.
-    opencode_db_recent: bool,
+    /// At least one opencode session row exists in the opencode DB.
+    opencode_sessions_exist: bool,
+    /// Any opencode session has `time_updated` within the last 10 minutes.
+    opencode_sessions_recent: bool,
     /// `[opencode] enabled` from config — false means the source is intentionally
-    /// disabled and staleness alarms must not fire regardless of file activity.
+    /// disabled and staleness alarms must not fire regardless of session activity.
     opencode_enabled: bool,
     /// At least one Codex `rollout-*.jsonl` file exists under the roots.
     codex_sessions_exist: bool,
@@ -2564,7 +2611,16 @@ fn source_staleness_suppression_reason(
         // even if transcript files exist on disk, the poller is halted so a stale
         // `source_health` row is expected — not a capture failure.
         "agentic-session-opencode" if !signals.opencode_enabled => Some("source disabled"),
-        "agentic-session-opencode" if !signals.opencode_db_recent => Some("opencode DB idle"),
+        // Never-installed: no sessions in the DB at all.
+        "agentic-session-opencode" if !signals.opencode_sessions_exist => {
+            Some("no opencode sessions found")
+        }
+        // Sessions exist but none updated recently: user just isn't running
+        // opencode right now. A recent session with a stale source_health row
+        // is intentionally NOT matched — that is a genuine ingestion failure.
+        "agentic-session-opencode" if !signals.opencode_sessions_recent => {
+            Some("opencode sessions idle")
+        }
         "agentic-session-codex" if !signals.codex_enabled => Some("source disabled"),
         // Codex has two distinct idle cases. Never-installed (no rollout files
         // at all) is checked first. Otherwise, files exist but none changed
@@ -4481,7 +4537,7 @@ replacement = "***"
         let line = format_suppressed_source_staleness_line(
             "agentic-session-opencode events",
             "10h ago",
-            "opencode DB idle",
+            "opencode sessions idle",
         );
 
         assert!(
@@ -4508,7 +4564,10 @@ replacement = "***"
             probe_ok: None,
             firefox_running: false,
             recent_claude_session,
-            opencode_db_recent: false,
+            // Default to "never used opencode" so existing tests that don't
+            // care about opencode keep their meaning.
+            opencode_sessions_exist: false,
+            opencode_sessions_recent: false,
             // Default all enabled flags to `true` so existing tests keep their
             // meaning — they test idle/not-installed suppression, not disabled-source
             // suppression.
@@ -4740,18 +4799,67 @@ replacement = "***"
         );
     }
 
-    /// Same class fix — disabled opencode must suppress regardless of DB mtime.
+    /// Disabled opencode must suppress regardless of session activity.
     #[test]
     fn test_opencode_disabled_suppresses_staleness() {
         let sig = SuppressionSignals {
             opencode_enabled: false,
-            opencode_db_recent: true, // DB looks active — would alarm if check absent
+            // Sessions look active — would alarm if the `enabled` check were absent.
+            opencode_sessions_exist: true,
+            opencode_sessions_recent: true,
             ..signals(false, false, false, false, false)
         };
         assert_eq!(
             classify_source_staleness("agentic-session-opencode", 2 * 3600, sig),
             SourceStalenessStatus::Suppressed("source disabled"),
-            "opencode with enabled=false must be suppressed regardless of DB mtime"
+            "opencode with enabled=false must be suppressed regardless of session activity"
+        );
+    }
+
+    /// Never-installed opencode (no session rows at all, or DB absent) must suppress.
+    /// The `db_path.exists() == false` early-return and the `count == 0` SQL path
+    /// both produce `(false, false)` — same suppression outcome, tested here.
+    #[test]
+    fn test_opencode_staleness_suppressed_when_no_sessions_exist() {
+        let sig = SuppressionSignals {
+            opencode_sessions_exist: false,
+            opencode_sessions_recent: false,
+            ..signals(false, false, false, false, false)
+        };
+        assert_eq!(
+            classify_source_staleness("agentic-session-opencode", 2 * 3600, sig),
+            SourceStalenessStatus::Suppressed("no opencode sessions found"),
+            "machines without any opencode sessions (or no DB at all) should not alarm"
+        );
+    }
+
+    /// Sessions exist but none updated recently → user is idle → suppress.
+    #[test]
+    fn test_opencode_staleness_suppressed_when_sessions_exist_but_idle() {
+        let sig = SuppressionSignals {
+            opencode_sessions_exist: true,
+            opencode_sessions_recent: false,
+            ..signals(false, false, false, false, false)
+        };
+        assert_eq!(
+            classify_source_staleness("agentic-session-opencode", 2 * 3600, sig),
+            SourceStalenessStatus::Suppressed("opencode sessions idle"),
+            "previously-used but idle opencode should be suppressed, not alarmed"
+        );
+    }
+
+    /// Sessions are recent yet source_health is stale — genuine ingestion failure, must alarm.
+    #[test]
+    fn test_opencode_staleness_alarms_when_sessions_fresh_but_health_stale() {
+        let sig = SuppressionSignals {
+            opencode_sessions_exist: true,
+            opencode_sessions_recent: true,
+            ..signals(false, false, false, false, false)
+        };
+        assert_eq!(
+            classify_source_staleness("agentic-session-opencode", 2 * 3600, sig),
+            SourceStalenessStatus::Fail,
+            "recent opencode sessions with a stale source_health row must alarm"
         );
     }
 
@@ -4791,14 +4899,16 @@ replacement = "***"
         );
     }
 
-    /// Sibling guard for `opencode_db_recent`'s config-error fallback: `true`
-    /// must keep a stale opencode row alarming rather than suppressing it as
-    /// "idle". Flipping `OPENCODE_DB_RECENT_CONFIG_ERROR_FALLBACK` to `false`
-    /// breaks this test.
+    /// Regression guard for opencode's config-error / DB-open-error fallback:
+    /// `OPENCODE_SESSION_STATE_CONFIG_ERROR_FALLBACK` must keep a stale opencode
+    /// row alarming rather than suppressing it as "idle". Flipping either element
+    /// of the tuple to `false` breaks this test.
     #[test]
-    fn test_opencode_db_recent_config_error_fallback_alarms() {
+    fn test_opencode_session_state_config_error_fallback_alarms() {
+        let (exist, recent) = OPENCODE_SESSION_STATE_CONFIG_ERROR_FALLBACK;
         let sig = SuppressionSignals {
-            opencode_db_recent: OPENCODE_DB_RECENT_CONFIG_ERROR_FALLBACK,
+            opencode_sessions_exist: exist,
+            opencode_sessions_recent: recent,
             ..signals(false, false, false, false, false)
         };
         assert_eq!(
