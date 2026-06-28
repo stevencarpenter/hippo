@@ -44,11 +44,13 @@ idempotently backfills historical `claude_sessions`
 the `agentic_*` tables (harness derived from `source_file`). The legacy
 `claude_*` tables are now frozen — still created by `schema.sql`, no
 longer written, dropped in a later unification step.
+v18→v19 adds the read-only Claude auto-memory document, revision,
+chunk, enrichment queue, category, link, and knowledge-node link tables.
 """
 
 from __future__ import annotations
 
-EXPECTED_SCHEMA_VERSION: int = 18
+EXPECTED_SCHEMA_VERSION: int = 19
 
 # Versions brain can read without erroring.
 #

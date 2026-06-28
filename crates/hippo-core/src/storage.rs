@@ -13,7 +13,117 @@ const SCHEMA: &str = include_str!("schema.sql");
 /// startup code (e.g. the brain handshake) can cross-check without
 /// re-declaring the value. Keep in sync with
 /// `brain/src/hippo_brain/schema_version.py::EXPECTED_SCHEMA_VERSION`.
-pub const EXPECTED_VERSION: i64 = 18;
+pub const EXPECTED_VERSION: i64 = 19;
+
+const AUTO_MEMORY_SCHEMA: &str = r#"
+CREATE TABLE IF NOT EXISTS memory_documents (
+    id                    INTEGER PRIMARY KEY,
+    uuid                  TEXT NOT NULL UNIQUE,
+    source_kind           TEXT NOT NULL DEFAULT 'claude-auto-memory'
+                              CHECK (source_kind = 'claude-auto-memory'),
+    repository            TEXT NOT NULL,
+    logical_path          TEXT NOT NULL,
+    source_path           TEXT NOT NULL,
+    current_revision_id   INTEGER REFERENCES memory_revisions(id) ON DELETE SET NULL,
+    active_revision_id    INTEGER REFERENCES memory_revisions(id) ON DELETE SET NULL,
+    state                 TEXT NOT NULL DEFAULT 'active'
+                              CHECK (state IN ('active', 'tombstoned', 'unavailable')),
+    projection_status     TEXT NOT NULL DEFAULT 'pending'
+                              CHECK (projection_status IN ('pending', 'processing', 'ready', 'failed', 'stale')),
+    last_error            TEXT,
+    observed_at           INTEGER NOT NULL,
+    tombstoned_at         INTEGER,
+    created_at            INTEGER NOT NULL,
+    updated_at            INTEGER NOT NULL,
+    UNIQUE (source_kind, repository, logical_path)
+) STRICT;
+
+CREATE TABLE IF NOT EXISTS memory_revisions (
+    id                    INTEGER PRIMARY KEY,
+    document_id           INTEGER NOT NULL REFERENCES memory_documents(id) ON DELETE CASCADE,
+    revision_number       INTEGER NOT NULL,
+    content_hash          TEXT NOT NULL,
+    source_hash           TEXT NOT NULL,
+    redacted_content      TEXT,
+    source_mtime_ms       INTEGER NOT NULL,
+    source_size           INTEGER NOT NULL,
+    change_kind           TEXT NOT NULL DEFAULT 'create'
+                              CHECK (change_kind IN ('create', 'update', 'rename', 'delete')),
+    summary               TEXT,
+    diff_text             TEXT,
+    chunker_name          TEXT NOT NULL,
+    chunker_version       INTEGER NOT NULL DEFAULT 1,
+    chunker_config_json   TEXT NOT NULL DEFAULT '{}',
+    enrichment_model      TEXT,
+    enrichment_version    INTEGER NOT NULL DEFAULT 1,
+    enriched_at           INTEGER,
+    created_at            INTEGER NOT NULL,
+    UNIQUE (document_id, revision_number)
+) STRICT;
+
+CREATE INDEX IF NOT EXISTS idx_memory_revisions_document_created
+    ON memory_revisions(document_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_memory_revisions_hash
+    ON memory_revisions(document_id, content_hash);
+
+CREATE TABLE IF NOT EXISTS memory_chunks (
+    id                    INTEGER PRIMARY KEY,
+    revision_id           INTEGER NOT NULL REFERENCES memory_revisions(id) ON DELETE CASCADE,
+    ordinal               INTEGER NOT NULL,
+    heading_path          TEXT NOT NULL DEFAULT '',
+    start_offset          INTEGER NOT NULL DEFAULT 0,
+    end_offset            INTEGER NOT NULL DEFAULT 0,
+    content               TEXT NOT NULL,
+    content_hash          TEXT NOT NULL,
+    token_count           INTEGER NOT NULL DEFAULT 0,
+    created_at            INTEGER NOT NULL,
+    UNIQUE (revision_id, ordinal)
+) STRICT;
+
+CREATE TABLE IF NOT EXISTS memory_enrichment_queue (
+    id                    INTEGER PRIMARY KEY,
+    revision_id           INTEGER NOT NULL UNIQUE REFERENCES memory_revisions(id) ON DELETE CASCADE,
+    status                TEXT NOT NULL DEFAULT 'pending'
+                              CHECK (status IN ('pending', 'processing', 'done', 'failed', 'skipped')),
+    priority              INTEGER NOT NULL DEFAULT 5,
+    retry_count           INTEGER NOT NULL DEFAULT 0,
+    max_retries           INTEGER NOT NULL DEFAULT 5,
+    error_message         TEXT,
+    locked_at             INTEGER,
+    locked_by             TEXT,
+    enqueued_at           INTEGER NOT NULL,
+    updated_at            INTEGER NOT NULL
+) STRICT;
+
+CREATE INDEX IF NOT EXISTS idx_memory_queue_pending
+    ON memory_enrichment_queue(status, priority, enqueued_at)
+    WHERE status = 'pending';
+
+CREATE TABLE IF NOT EXISTS knowledge_node_memory_chunks (
+    knowledge_node_id     INTEGER NOT NULL REFERENCES knowledge_nodes(id) ON DELETE CASCADE,
+    memory_chunk_id       INTEGER NOT NULL REFERENCES memory_chunks(id) ON DELETE CASCADE,
+    PRIMARY KEY (knowledge_node_id, memory_chunk_id)
+) STRICT;
+
+CREATE TABLE IF NOT EXISTS memory_categories (
+    document_id           INTEGER NOT NULL REFERENCES memory_documents(id) ON DELETE CASCADE,
+    category              TEXT NOT NULL,
+    provenance            TEXT NOT NULL CHECK (provenance IN ('filename', 'model')),
+    confidence            REAL NOT NULL DEFAULT 1.0 CHECK (confidence >= 0.0 AND confidence <= 1.0),
+    model                 TEXT,
+    updated_at            INTEGER NOT NULL,
+    PRIMARY KEY (document_id, category, provenance)
+) STRICT;
+
+CREATE TABLE IF NOT EXISTS memory_links (
+    source_document_id    INTEGER NOT NULL REFERENCES memory_documents(id) ON DELETE CASCADE,
+    target_logical_path   TEXT NOT NULL,
+    target_document_id    INTEGER REFERENCES memory_documents(id) ON DELETE SET NULL,
+    link_text             TEXT NOT NULL DEFAULT '',
+    created_at            INTEGER NOT NULL,
+    PRIMARY KEY (source_document_id, target_logical_path)
+) STRICT;
+"#;
 
 /// Idempotent `ALTER TABLE … ADD COLUMN`. Pre-checks `PRAGMA table_info`
 /// for the column name; if absent, runs the supplied DDL. Used by
@@ -1410,6 +1520,22 @@ pub fn open_db(path: &Path) -> Result<Connection> {
             // the migration doesn't re-trigger on every open.
             conn.execute_batch("PRAGMA user_version = 18;")?;
         }
+    }
+
+    // v18→v19: add the durable, read-only Claude auto-memory source model.
+    // This migration is additive so it is safe for every supported historical
+    // version after the preceding migration blocks have repaired their own
+    // schema families. The DDL is idempotent to make crash recovery harmless.
+    if (1..19).contains(&version) {
+        conn.execute_batch(AUTO_MEMORY_SCHEMA)?;
+        if table_exists(&conn, "source_health")? {
+            conn.execute_batch(
+                "INSERT OR IGNORE INTO source_health
+                    (source, last_event_ts, updated_at)
+                 VALUES ('claude-auto-memory', NULL, unixepoch('now') * 1000);",
+            )?;
+        }
+        conn.execute_batch("PRAGMA user_version = 19;")?;
     } else if version != 0 && version != EXPECTED_VERSION {
         anyhow::bail!(
             "DB schema version mismatch: expected {}, found {}. \
@@ -1443,7 +1569,8 @@ pub fn open_db(path: &Path) -> Result<Connection> {
                 ('agentic-session-opencode', NULL, unixepoch('now') * 1000),
                 ('agentic-session-codex',    NULL, unixepoch('now') * 1000),
                 ('agentic-session-cursor',   NULL, unixepoch('now') * 1000),
-                ('brain-preflight',          NULL, unixepoch('now') * 1000);",
+                ('brain-preflight',          NULL, unixepoch('now') * 1000),
+                ('claude-auto-memory',       NULL, unixepoch('now') * 1000);",
         );
     }
     Ok(conn)
@@ -3814,6 +3941,76 @@ mod tests {
                 col_names
             );
         }
+    }
+
+    #[test]
+    fn test_fresh_db_has_auto_memory_schema() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("auto-memory-fresh.db");
+        let conn = open_db(&db).unwrap();
+
+        for table in [
+            "memory_documents",
+            "memory_revisions",
+            "memory_chunks",
+            "memory_enrichment_queue",
+            "knowledge_node_memory_chunks",
+        ] {
+            let exists: bool = conn
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1)",
+                    [table],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert!(exists, "fresh DB missing {table}");
+        }
+
+        let source_seeded: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM source_health WHERE source='claude-auto-memory')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(
+            source_seeded,
+            "fresh DB must seed claude-auto-memory health"
+        );
+    }
+
+    #[test]
+    fn test_migrate_v18_to_v19_adds_auto_memory_schema_without_touching_data() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("auto-memory-v18.db");
+        let conn = Connection::open(&db).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE sentinel (id INTEGER PRIMARY KEY, value TEXT NOT NULL);
+             INSERT INTO sentinel(value) VALUES ('preserved');
+             PRAGMA user_version = 18;",
+        )
+        .unwrap();
+        drop(conn);
+
+        let conn = open_db(&db).unwrap();
+        let version: i64 = conn
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, EXPECTED_VERSION);
+        assert_eq!(
+            conn.query_row("SELECT value FROM sentinel", [], |row| row
+                .get::<_, String>(0))
+                .unwrap(),
+            "preserved"
+        );
+        let queue_exists: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='memory_enrichment_queue')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(queue_exists);
     }
 
     /// REGRESSION (BT-29 schema gap, 2026-05-04): the bench's corpus init
