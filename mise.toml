@@ -1302,6 +1302,10 @@ echo "Installed skill: $SKILL_DST -> $SKILL_SRC"
 
 # ── Bench (model benchmark; separate data root, not normal hippo execution) ──
 
+[tasks."bench:auto-memory-spike"]
+description = "Regenerate the synthetic Claude auto-memory chunking comparison report"
+run = "uv run --project brain python -m hippo_brain.bench.auto_memory_spike --fixture brain/src/hippo_brain/_fixtures/auto_memory_spike --output docs/research/2026-06-27-auto-memory-spike-results.md"
+
 [tasks."bench:qa:seed"]
 description = "Seed the Q/A fixture (eval-qa-v1.jsonl) from the committed template"
 run = "uv run --project brain python3 brain/src/hippo_brain/bench/qa_seed.py"
