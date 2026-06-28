@@ -3,6 +3,7 @@ import datetime as _dt
 import logging
 import sqlite3
 import time
+from typing import Any
 
 import sqlite_vec  # type: ignore[import-untyped]
 from contextlib import asynccontextmanager, nullcontext, suppress
@@ -200,6 +201,9 @@ def _collect_queue_depths(conn: sqlite3.Connection) -> list[tuple[str, str, int]
               AND s.harness = 'opencode'
               AND s.probe_tag IS NULL
         """,
+        "claude-auto-memory": """
+            SELECT COUNT(*) FROM memory_enrichment_queue WHERE status = ?
+        """,
     }
     depths: list[tuple[str, str, int]] = []
     for source, sql in queries.items():
@@ -326,6 +330,8 @@ class BrainServer:
         browser_queue_failed = 0
         workflow_queue_depth = 0
         workflow_queue_failed = 0
+        memory_queue_depth = 0
+        memory_queue_failed = 0
         db_reachable = True
         try:
             conn = self._get_conn()
@@ -372,6 +378,16 @@ class BrainServer:
                 except Exception:
                     workflow_queue_depth = 0
                     workflow_queue_failed = 0
+                try:
+                    memory_queue_depth = conn.execute(
+                        "SELECT COUNT(*) FROM memory_enrichment_queue WHERE status = 'pending'"
+                    ).fetchone()[0]
+                    memory_queue_failed = conn.execute(
+                        "SELECT COUNT(*) FROM memory_enrichment_queue WHERE status = 'failed'"
+                    ).fetchone()[0]
+                except Exception:
+                    memory_queue_depth = 0
+                    memory_queue_failed = 0
             finally:
                 conn.close()
         except Exception:
@@ -409,6 +425,8 @@ class BrainServer:
                 "browser_queue_failed": browser_queue_failed,
                 "workflow_queue_depth": workflow_queue_depth,
                 "workflow_queue_failed": workflow_queue_failed,
+                "memory_queue_depth": memory_queue_depth,
+                "memory_queue_failed": memory_queue_failed,
                 "enrichment_model": self.enrichment_model,
                 "enrichment_model_preferred": self._preferred_model,
                 "query_inflight": self._query_inflight,
@@ -1637,6 +1655,7 @@ class BrainServer:
         """Enrich claimed Claude auto-memory revisions through the normal local backend."""
         if not claims:
             return
+        embed_tasks: list[asyncio.Task[Any]] = []
         for claim in claims:
             revision_id = claim["revision_id"]
             batch_start_ms = int(time.time() * 1000)
@@ -1678,7 +1697,11 @@ class BrainServer:
                         "summary": result.summary,
                         "enrichment_model": self.enrichment_model,
                     }
-                    await self._embed_node(node_id, node_dict, "claude-auto-memory")
+                    embed_tasks.append(
+                        asyncio.create_task(
+                            self._embed_node(node_id, node_dict, "claude-auto-memory")
+                        )
+                    )
             except Exception as e:
                 _add(_enrichment_failures, source="claude-auto-memory")
                 err_msg = self._record_error(e)
@@ -1694,6 +1717,8 @@ class BrainServer:
                     mark_memory_enrichment_failed(retry_conn, revision_id, err_msg)
                 finally:
                     retry_conn.close()
+        if embed_tasks:
+            await asyncio.gather(*embed_tasks, return_exceptions=True)
 
     async def _enrich_opencode_batches(self, batches):
         """Process opencode session segment batches via the agentic queue."""

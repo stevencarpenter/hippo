@@ -372,7 +372,13 @@ def write_memory_knowledge_node(
     *,
     now_ms: int | None = None,
 ) -> int:
-    """Publish a memory projection and mark its queue item done in one transaction."""
+    """Publish a memory projection and mark its queue item done in one transaction.
+
+    Idempotent: if a knowledge node already exists for this revision (e.g. after a
+    previous successful enrichment whose embedding step failed), it reuses the existing
+    node. When superseding an older revision, the old knowledge node is cleaned up
+    atomically within the same transaction.
+    """
     completed_at = now_ms if now_ms is not None else int(time.time() * 1000)
     revision = conn.execute(
         "SELECT r.document_id, r.content_hash, d.uuid, d.repository, d.logical_path, "
@@ -410,7 +416,7 @@ def write_memory_knowledge_node(
     conn.execute("BEGIN IMMEDIATE")
     try:
         cursor = conn.execute(
-            "INSERT INTO knowledge_nodes "
+            "INSERT OR IGNORE INTO knowledge_nodes "
             "(uuid, content, embed_text, node_type, outcome, tags, enrichment_model, "
             "enrichment_version, created_at, updated_at) "
             "VALUES (?, ?, ?, 'observation', ?, ?, ?, 1, ?, ?)",
@@ -425,12 +431,41 @@ def write_memory_knowledge_node(
                 completed_at,
             ),
         )
-        node_id = int(cursor.lastrowid)
+        if cursor.lastrowid:
+            node_id = int(cursor.lastrowid)
+        else:
+            node_id = conn.execute(
+                "SELECT id FROM knowledge_nodes WHERE uuid = ?", (node_uuid,)
+            ).fetchone()[0]
+        conn.execute(
+            "DELETE FROM knowledge_node_memory_chunks WHERE knowledge_node_id = ?",
+            (node_id,),
+        )
         conn.execute(
             "INSERT INTO knowledge_node_memory_chunks (knowledge_node_id, memory_chunk_id) "
             "SELECT ?, id FROM memory_chunks WHERE revision_id = ?",
             (node_id, revision_id),
         )
+        old_active = conn.execute(
+            "SELECT active_revision_id FROM memory_documents WHERE id = ?",
+            (document_id,),
+        ).fetchone()[0]
+        if old_active is not None and old_active != revision_id:
+            old_node_id = conn.execute(
+                "SELECT knmc.knowledge_node_id FROM knowledge_node_memory_chunks knmc "
+                "JOIN memory_chunks mc ON mc.id = knmc.memory_chunk_id "
+                "WHERE mc.revision_id = ? LIMIT 1",
+                (old_active,),
+            ).fetchone()
+            if old_node_id is not None:
+                conn.execute(
+                    "DELETE FROM knowledge_node_memory_chunks WHERE knowledge_node_id = ?",
+                    (old_node_id[0],),
+                )
+                conn.execute(
+                    "DELETE FROM knowledge_nodes WHERE id = ?",
+                    (old_node_id[0],),
+                )
         conn.execute(
             "UPDATE memory_revisions SET summary = ?, enrichment_model = ?, enriched_at = ? "
             "WHERE id = ?",
