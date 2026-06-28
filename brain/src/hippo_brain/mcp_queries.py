@@ -192,6 +192,17 @@ def _build_knowledge_filter_clause(
                 "    AND (s.cwd LIKE ? OR s.project_dir LIKE ?))"
             )
             params.extend([like, like])
+        if _table_exists(conn, "knowledge_node_memory_chunks"):
+            project_clause += (
+                " OR EXISTS (SELECT 1 FROM knowledge_node_memory_chunks knmc "
+                "  JOIN memory_chunks mc ON mc.id = knmc.memory_chunk_id "
+                "  JOIN memory_revisions mr ON mr.id = mc.revision_id "
+                "  JOIN memory_documents md ON md.id = mr.document_id "
+                "  WHERE knmc.knowledge_node_id = kn.id "
+                "    AND md.active_revision_id = mr.id "
+                "    AND (md.repository LIKE ? OR md.source_path LIKE ?))"
+            )
+            params.extend([like, like])
         project_clause += ")"
         clauses.append(project_clause)
 
@@ -222,6 +233,15 @@ def _build_knowledge_filter_clause(
                 f"EXISTS (SELECT 1 FROM {link_table} link "
                 f"  JOIN {session_table} s ON s.id = link.{link_column} "
                 "  WHERE link.knowledge_node_id = kn.id AND s.probe_tag IS NULL)"
+            )
+        elif source == "claude-auto-memory" and _table_exists(conn, "knowledge_node_memory_chunks"):
+            clauses.append(
+                "EXISTS (SELECT 1 FROM knowledge_node_memory_chunks knmc "
+                "JOIN memory_chunks mc ON mc.id = knmc.memory_chunk_id "
+                "JOIN memory_revisions mr ON mr.id = mc.revision_id "
+                "JOIN memory_documents md ON md.id = mr.document_id "
+                "WHERE knmc.knowledge_node_id = kn.id "
+                "AND md.active_revision_id = mr.id AND md.state = 'active')"
             )
         else:
             source_table = {
@@ -282,6 +302,7 @@ def search_knowledge_lexical(
     for row in rows:
         node_id, uuid, content_str, embed_text, outcome, tags_str, created_at = row
         content = _safe_json_loads(content_str, {})
+        source_meta = content.get("source", {}) if isinstance(content, dict) else {}
         tags = _safe_json_loads(tags_str, []) if tags_str else []
         event_ids, claude_ids, browser_ids = _knowledge_node_links(conn, node_id)
 
@@ -297,6 +318,11 @@ def search_knowledge_lexical(
                 "cwd": "",
                 "git_branch": "",
                 "captured_at": created_at,
+                "source": source_meta.get("kind", ""),
+                "source_path": source_meta.get("source_path", ""),
+                "repository": source_meta.get("repository", ""),
+                "logical_path": source_meta.get("logical_path", ""),
+                "content_hash": source_meta.get("content_hash", ""),
                 "linked_event_ids": event_ids,
                 "linked_claude_session_ids": claude_ids,
                 "linked_browser_event_ids": browser_ids,

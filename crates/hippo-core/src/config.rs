@@ -29,7 +29,28 @@ pub struct HippoConfig {
     #[serde(default)]
     pub cursor: CursorConfig,
     #[serde(default)]
+    pub auto_memory: AutoMemoryConfig,
+    #[serde(default)]
     pub reaper: ReaperConfig,
+}
+
+/// Explicit read-only Claude Code auto-memory sources. Fleet discovery is a
+/// later layer; this list is the deterministic single-file operator contract.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct AutoMemoryConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub sources: Vec<AutoMemorySourceConfig>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AutoMemorySourceConfig {
+    pub path: PathBuf,
+    #[serde(default)]
+    pub repository: Option<String>,
+    #[serde(default)]
+    pub logical_path: Option<String>,
 }
 
 /// OpenAI-compatible inference backend (LM Studio, oMLX, ollama, vLLM, etc.).
@@ -1301,5 +1322,38 @@ strip_params = ["secret", "nonce"]
         let toml = "";
         let cfg: HippoConfig = toml::from_str(toml).unwrap();
         assert!(cfg.cursor.enabled);
+    }
+
+    #[test]
+    fn auto_memory_config_defaults_disabled_and_parses_explicit_sources() {
+        let default_cfg: HippoConfig = toml::from_str("").unwrap();
+        assert!(!default_cfg.auto_memory.enabled);
+        assert!(default_cfg.auto_memory.sources.is_empty());
+
+        let cfg: HippoConfig = toml::from_str(
+            r#"
+            [auto_memory]
+            enabled = true
+            [[auto_memory.sources]]
+            path = "/tmp/hippo-memory/MEMORY.md"
+            repository = "sjcarpenter/hippo"
+            logical_path = "MEMORY.md"
+            "#,
+        )
+        .unwrap();
+        assert!(cfg.auto_memory.enabled);
+        assert_eq!(cfg.auto_memory.sources.len(), 1);
+        assert_eq!(
+            cfg.auto_memory.sources[0].path,
+            PathBuf::from("/tmp/hippo-memory/MEMORY.md")
+        );
+        assert_eq!(
+            cfg.auto_memory.sources[0].repository.as_deref(),
+            Some("sjcarpenter/hippo")
+        );
+        assert_eq!(
+            cfg.auto_memory.sources[0].logical_path.as_deref(),
+            Some("MEMORY.md")
+        );
     }
 }

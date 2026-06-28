@@ -84,6 +84,7 @@ def test_main_serve_dispatches(monkeypatch):
         embed_reaper_interval_secs=300,
         embed_reaper_batch_size=50,
         embed_orphan_stale_secs=900,
+        auto_memory_sources=[],
     )
     mock_uvicorn.run.assert_called_once_with("fake-app", host="127.0.0.1", port=9175)
 
@@ -138,6 +139,7 @@ def test_main_serve_uses_config_runtime_settings(monkeypatch):
         embed_reaper_interval_secs=120,
         embed_reaper_batch_size=25,
         embed_orphan_stale_secs=600,
+        auto_memory_sources=[],
     )
     mock_uvicorn.run.assert_called_once_with("fake-app", host="127.0.0.1", port=9444)
 

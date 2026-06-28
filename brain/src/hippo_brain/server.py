@@ -48,6 +48,13 @@ from hippo_brain.claude_sessions import (
     mark_claude_queue_failed,
     write_claude_knowledge_node,
 )
+from hippo_brain.auto_memory import (
+    build_memory_enrichment_prompt,
+    claim_pending_memories,
+    ingest_memory_file,
+    mark_memory_enrichment_failed,
+    write_memory_knowledge_node,
+)
 from hippo_brain.opencode_sessions import (
     OPENCODE_ENRICHMENT_PROMPT,
     build_opencode_enrichment_prompt,
@@ -226,6 +233,7 @@ class BrainServer:
         embed_reaper_interval_secs: int = 300,
         embed_reaper_batch_size: int = 50,
         embed_orphan_stale_secs: int = 900,
+        auto_memory_sources: list[dict] | None = None,
     ):
         if not db_path:
             db_path = str(Path.home() / ".local" / "share" / "hippo" / "hippo.db")
@@ -247,6 +255,7 @@ class BrainServer:
         self.embed_reaper_interval_secs = embed_reaper_interval_secs
         self.embed_reaper_batch_size = embed_reaper_batch_size
         self.embed_orphan_stale_secs = embed_orphan_stale_secs
+        self.auto_memory_sources = auto_memory_sources or []
         self.enrichment_running = False
         self._paused: bool = False
         self._paused_at_iso: str | None = None
@@ -1062,6 +1071,26 @@ class BrainServer:
 
                     self._enrichment_active = True
                     try:
+                        if self.auto_memory_sources:
+                            ingest_conn = self._get_conn()
+                            try:
+                                for source in self.auto_memory_sources:
+                                    try:
+                                        ingest_memory_file(
+                                            ingest_conn,
+                                            source["path"],
+                                            repository=source["repository"],
+                                            logical_path=source.get("logical_path"),
+                                        )
+                                    except Exception as e:
+                                        logger.error(
+                                            "auto-memory ingest failed for %s: %s",
+                                            source.get("path", "<missing>"),
+                                            e,
+                                            exc_info=True,
+                                        )
+                            finally:
+                                ingest_conn.close()
                         decision = await preflight_inference(
                             self.client, self._preferred_model or None, allow_fallback=True
                         )
@@ -1135,6 +1164,15 @@ class BrainServer:
                                 # browser/workflow claim paths above.
                                 logger.warning("opencode claim error: %s", e, exc_info=True)
                                 opencode_batches = []
+                            try:
+                                memory_claims = claim_pending_memories(
+                                    conn,
+                                    worker_id=worker_id,
+                                    limit=self.max_claim_batch,
+                                )
+                            except Exception as e:
+                                logger.warning("auto-memory claim error: %s", e, exc_info=True)
+                                memory_claims = []
 
                             if (
                                 not shell_chunks
@@ -1142,6 +1180,7 @@ class BrainServer:
                                 and not browser_batches
                                 and not workflow_run_ids
                                 and not opencode_batches
+                                and not memory_claims
                             ):
                                 continue
 
@@ -1155,6 +1194,7 @@ class BrainServer:
                                 self._enrich_browser_batches(browser_batches),
                                 self._enrich_workflow_runs(workflow_run_ids),
                                 self._enrich_opencode_batches(opencode_batches),
+                                self._enrich_memory_claims(memory_claims),
                             )
                             _hist(_loop_duration, (time.monotonic() - t0) * 1000)
                         finally:
@@ -1593,6 +1633,68 @@ class BrainServer:
         if embed_tasks:
             await asyncio.gather(*embed_tasks, return_exceptions=True)
 
+    async def _enrich_memory_claims(self, claims):
+        """Enrich claimed Claude auto-memory revisions through the normal local backend."""
+        if not claims:
+            return
+        for claim in claims:
+            revision_id = claim["revision_id"]
+            batch_start_ms = int(time.time() * 1000)
+            try:
+                result = await self._call_llm_with_retries(
+                    CLAUDE_SYSTEM_PROMPT,
+                    build_memory_enrichment_prompt(claim),
+                    "claude-auto-memory",
+                )
+                conn = self._get_conn()
+                try:
+                    node_id = write_memory_knowledge_node(
+                        conn,
+                        result,
+                        revision_id,
+                        self.enrichment_model,
+                    )
+                finally:
+                    conn.close()
+                _add(_nodes_created, source="claude-auto-memory")
+                self._record_success()
+                logger.info("enriched auto-memory revision %d -> node %d", revision_id, node_id)
+
+                if self.embedding_model:
+                    node_dict = {
+                        "id": node_id,
+                        "session_id": 0,
+                        "captured_at": claim["captured_at"],
+                        "commands_raw": "",
+                        "cwd": claim["source_path"],
+                        "git_branch": "",
+                        "git_repo": claim["repository"],
+                        "outcome": result.outcome,
+                        "tags": result.tags,
+                        "key_decisions": result.key_decisions,
+                        "problems_encountered": result.problems_encountered,
+                        "entities": result.entities if isinstance(result.entities, dict) else {},
+                        "embed_text": result.embed_text,
+                        "summary": result.summary,
+                        "enrichment_model": self.enrichment_model,
+                    }
+                    await self._embed_node(node_id, node_dict, "claude-auto-memory")
+            except Exception as e:
+                _add(_enrichment_failures, source="claude-auto-memory")
+                err_msg = self._record_error(e)
+                self._log_enrichment_failure(
+                    "memory_enrichment_queue",
+                    "claude-auto-memory.chat",
+                    e,
+                    claim_count=1,
+                    claim_age_ms=int(time.time() * 1000) - batch_start_ms,
+                )
+                retry_conn = self._get_conn()
+                try:
+                    mark_memory_enrichment_failed(retry_conn, revision_id, err_msg)
+                finally:
+                    retry_conn.close()
+
     async def _enrich_opencode_batches(self, batches):
         """Process opencode session segment batches via the agentic queue."""
         if not batches:
@@ -1835,6 +1937,7 @@ def create_app(
     embed_reaper_interval_secs: int = 300,
     embed_reaper_batch_size: int = 50,
     embed_orphan_stale_secs: int = 900,
+    auto_memory_sources: list[dict] | None = None,
 ) -> Starlette:
     server = BrainServer(
         db_path=db_path,
@@ -1853,6 +1956,7 @@ def create_app(
         embed_reaper_interval_secs=embed_reaper_interval_secs,
         embed_reaper_batch_size=embed_reaper_batch_size,
         embed_orphan_stale_secs=embed_orphan_stale_secs,
+        auto_memory_sources=auto_memory_sources,
     )
 
     if _meter:

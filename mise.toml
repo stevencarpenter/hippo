@@ -388,6 +388,10 @@ run = "cargo run --bin hippo -- daemon run"
 description = "Run the brain enrichment server"
 run = "uv run --project brain hippo-brain serve"
 
+[tasks."ingest:auto-memory"]
+description = "Ingest one explicit Claude Code auto-memory Markdown file"
+run = "uv run --project brain hippo-auto-memory"
+
 [tasks."brain:api"]
 description = "Call the structured brain API CLI: mise run brain:api -- <operation> [args]"
 run = '''
