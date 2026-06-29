@@ -32,6 +32,7 @@ hippo-bench = "hippo_brain.bench.cli:main"
 hippo-brain-api = "hippo_brain.api_cli:main"
 hippo-brain-openapi = "hippo_brain.openapi:main"
 hippo-auto-memory = "hippo_brain.auto_memory:main"
+hippo-auto-memory-poll = "hippo_brain.auto_memory:poll_main"
 
 [build-system]
 requires = ["hatchling"]

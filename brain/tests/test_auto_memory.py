@@ -21,71 +21,10 @@ from hippo_brain.client import MockInferenceClient
 from hippo_brain.server import BrainServer
 
 
-SCHEMA = """
-CREATE TABLE memory_documents (
-    id INTEGER PRIMARY KEY, uuid TEXT NOT NULL UNIQUE,
-    source_kind TEXT NOT NULL, repository TEXT NOT NULL, logical_path TEXT NOT NULL,
-    source_path TEXT NOT NULL, current_revision_id INTEGER, active_revision_id INTEGER,
-    state TEXT NOT NULL, projection_status TEXT NOT NULL, last_error TEXT,
-    observed_at INTEGER NOT NULL, tombstoned_at INTEGER,
-    created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
-    UNIQUE(source_kind, repository, logical_path)
-);
-CREATE TABLE memory_revisions (
-    id INTEGER PRIMARY KEY, document_id INTEGER NOT NULL, revision_number INTEGER NOT NULL,
-    content_hash TEXT NOT NULL, source_hash TEXT NOT NULL, redacted_content TEXT,
-    source_mtime_ms INTEGER NOT NULL, source_size INTEGER NOT NULL,
-    change_kind TEXT NOT NULL, summary TEXT, diff_text TEXT, chunker_name TEXT NOT NULL,
-    chunker_version INTEGER NOT NULL, chunker_config_json TEXT NOT NULL,
-    enrichment_model TEXT, enrichment_version INTEGER NOT NULL,
-    enriched_at INTEGER, created_at INTEGER NOT NULL,
-    UNIQUE(document_id, revision_number)
-);
-CREATE TABLE memory_chunks (
-    id INTEGER PRIMARY KEY, revision_id INTEGER NOT NULL, ordinal INTEGER NOT NULL,
-    heading_path TEXT NOT NULL, start_offset INTEGER NOT NULL, end_offset INTEGER NOT NULL,
-    content TEXT NOT NULL, content_hash TEXT NOT NULL, token_count INTEGER NOT NULL,
-    created_at INTEGER NOT NULL, UNIQUE(revision_id, ordinal)
-);
-CREATE TABLE memory_enrichment_queue (
-    id INTEGER PRIMARY KEY, revision_id INTEGER NOT NULL UNIQUE, status TEXT NOT NULL,
-    priority INTEGER NOT NULL, retry_count INTEGER NOT NULL, max_retries INTEGER NOT NULL,
-    error_message TEXT, locked_at INTEGER, locked_by TEXT,
-    enqueued_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
-);
-CREATE TABLE source_health (
-    source TEXT PRIMARY KEY, last_event_ts INTEGER, last_success_ts INTEGER,
-    last_error TEXT, consecutive_failures INTEGER NOT NULL DEFAULT 0,
-    updated_at INTEGER NOT NULL
-);
-INSERT INTO source_health(source, updated_at) VALUES ('claude-auto-memory', 0);
-CREATE TABLE knowledge_nodes (
-    id INTEGER PRIMARY KEY, uuid TEXT NOT NULL UNIQUE, content TEXT NOT NULL,
-    embed_text TEXT NOT NULL, node_type TEXT NOT NULL, outcome TEXT, tags TEXT,
-    enrichment_model TEXT, enrichment_version INTEGER NOT NULL,
-    created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
-);
-CREATE TABLE knowledge_node_memory_chunks (
-    knowledge_node_id INTEGER NOT NULL, memory_chunk_id INTEGER NOT NULL,
-    PRIMARY KEY(knowledge_node_id, memory_chunk_id)
-);
-CREATE TABLE knowledge_node_events (knowledge_node_id INTEGER, event_id INTEGER);
-CREATE TABLE events (id INTEGER PRIMARY KEY, cwd TEXT, git_repo TEXT, git_branch TEXT);
-CREATE TABLE knowledge_node_browser_events (
-    knowledge_node_id INTEGER, browser_event_id INTEGER
-);
-"""
-
-
 @pytest.fixture
-def conn() -> sqlite3.Connection:
-    db = sqlite3.connect(":memory:")
-    db.execute("PRAGMA foreign_keys=ON")
-    db.executescript(SCHEMA)
-    try:
-        yield db
-    finally:
-        db.close()
+def conn(tmp_db):
+    connection, _path = tmp_db
+    yield connection
 
 
 def test_ingest_redacts_before_persist_and_chunks_markdown(
@@ -176,10 +115,10 @@ def test_claim_and_complete_enrichment_publishes_provenance_atomically(
     claims = claim_pending_memories(conn, worker_id="test-worker", limit=10, now_ms=2000)
 
     assert len(claims) == 1
-    assert claims[0]["revision_id"] == ingested.revision_id
-    assert claims[0]["repository"] == "hippo"
-    assert claims[0]["source_path"] == str(source.resolve())
-    assert claims[0]["chunks"][0]["heading_path"] == "Database"
+    assert claims[0].revision_id == ingested.revision_id
+    assert claims[0].repository == "hippo"
+    assert claims[0].source_path == str(source.resolve())
+    assert claims[0].chunks[0]["heading_path"] == "Database"
     assert (
         conn.execute(
             "SELECT status FROM memory_enrichment_queue WHERE revision_id = ?",
@@ -239,14 +178,9 @@ def test_claim_and_complete_enrichment_publishes_provenance_atomically(
 
 
 def test_operator_command_ingests_synthetic_repository_and_rerun_is_noop(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    tmp_db, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    db_path = tmp_path / "hippo.db"
-    db = sqlite3.connect(db_path)
-    db.executescript(SCHEMA)
-    db.execute("PRAGMA user_version = 19")
-    db.commit()
-    db.close()
+    _conn, db_path = tmp_db
     source = tmp_path / "repo" / "MEMORY.md"
     source.parent.mkdir()
     source.write_text("# Build\n\nRun `mise run test`.\n")
@@ -277,17 +211,14 @@ def test_operator_command_ingests_synthetic_repository_and_rerun_is_noop(
 
 
 async def test_brain_completes_memory_through_local_chat_and_sqlite_vec(
+    tmp_db,
     tmp_path: Path,
 ) -> None:
-    db_path = tmp_path / "hippo.db"
-    conn = sqlite3.connect(db_path)
-    conn.executescript(SCHEMA)
-    conn.execute("PRAGMA user_version = 19")
+    conn, db_path = tmp_db
     source = tmp_path / "MEMORY.md"
     source.write_text("# SQLite\n\nUse WAL.\n")
     ingest_memory_file(conn, source, repository="synthetic/hippo", now_ms=1000)
     claims = claim_pending_memories(conn, worker_id="test", now_ms=2000)
-    conn.close()
 
     server = BrainServer(
         db_path=str(db_path),
@@ -298,19 +229,19 @@ async def test_brain_completes_memory_through_local_chat_and_sqlite_vec(
     server.client = MockInferenceClient()
     try:
         await server._enrich_memory_claims(claims)
-        conn = sqlite3.connect(db_path)
+        verify = sqlite3.connect(db_path)
         try:
             assert (
-                conn.execute("SELECT status FROM memory_enrichment_queue").fetchone()[0] == "done"
+                verify.execute("SELECT status FROM memory_enrichment_queue").fetchone()[0] == "done"
             )
-            assert conn.execute("SELECT COUNT(*) FROM knowledge_nodes").fetchone()[0] == 1
+            assert verify.execute("SELECT COUNT(*) FROM knowledge_nodes").fetchone()[0] == 1
             assert server._vector_db is not None
             assert (
                 server._vector_db.execute("SELECT COUNT(*) FROM knowledge_vectors").fetchone()[0]
                 == 1
             )
         finally:
-            conn.close()
+            verify.close()
     finally:
         if server._vector_db is not None:
             server._vector_db.close()

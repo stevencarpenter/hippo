@@ -2,8 +2,8 @@ mod cli;
 mod install;
 
 use hippo_daemon::{
-    backfill, claude_session, codex_session, commands, cursor_session, daemon, gh_api, gh_poll,
-    opencode_session, watch_claude_sessions,
+    auto_memory_poll, backfill, claude_session, codex_session, commands, cursor_session, daemon,
+    gh_api, gh_poll, opencode_session, watch_claude_sessions,
 };
 
 use anyhow::{Context, Result};
@@ -251,6 +251,7 @@ async fn main() -> Result<()> {
                     install::service_is_loaded("com.hippo.codex-session");
                 let cursor_session_was_loaded =
                     install::service_is_loaded("com.hippo.cursor-session");
+                let auto_memory_was_loaded = install::service_is_loaded("com.hippo.auto-memory");
                 let stack_was_active = daemon_was_loaded
                     || brain_was_loaded
                     || watchdog_was_loaded
@@ -259,7 +260,8 @@ async fn main() -> Result<()> {
                     || gh_poll_was_loaded
                     || opencode_poll_was_loaded
                     || codex_session_was_loaded
-                    || cursor_session_was_loaded;
+                    || cursor_session_was_loaded
+                    || auto_memory_was_loaded;
 
                 if brain_was_loaded {
                     print!("  Draining brain (waiting for in-flight requests)");
@@ -329,6 +331,13 @@ async fn main() -> Result<()> {
                     );
                     println!("  Stopped cursor-session");
                 }
+                if auto_memory_was_loaded {
+                    install::service_bootout(
+                        &domain,
+                        &launch_agents.join("com.hippo.auto-memory.plist"),
+                    );
+                    println!("  Stopped auto-memory");
+                }
                 // Always boot out the renamed legacy job on every reinstall so
                 // a stale com.hippo.xcode-codex-ingest plist cannot be
                 // re-bootstrapped by anything iterating LaunchAgents.
@@ -356,6 +365,8 @@ async fn main() -> Result<()> {
                     include_str!("../../../launchd/com.hippo.codex-session.plist");
                 let cursor_session_template =
                     include_str!("../../../launchd/com.hippo.cursor-session.plist");
+                let auto_memory_template =
+                    include_str!("../../../launchd/com.hippo.auto-memory.plist");
                 let opencode_poll_template =
                     include_str!("../../../launchd/com.hippo.opencode-poll.plist");
 
@@ -404,6 +415,20 @@ async fn main() -> Result<()> {
                 } else {
                     println!("  (cursor source disabled; skipping cursor-session plist)");
                     install::remove_plist("com.hippo.cursor-session")?;
+                    false
+                };
+
+                let auto_memory_installed = if config.auto_memory.enabled {
+                    install::install_plist(
+                        "com.hippo.auto-memory",
+                        auto_memory_template,
+                        &vars,
+                        force,
+                    )?;
+                    true
+                } else {
+                    println!("  (auto-memory source disabled; skipping auto-memory plist)");
+                    install::remove_plist("com.hippo.auto-memory")?;
                     false
                 };
 
@@ -515,6 +540,11 @@ async fn main() -> Result<()> {
                     cursor_session_was_loaded,
                     stack_was_active,
                 );
+                let auto_memory_started = install::should_start_optional_poll_agent(
+                    auto_memory_installed,
+                    auto_memory_was_loaded,
+                    stack_was_active,
+                );
 
                 // Reload core services that were already running, and ensure
                 // installed support agents are loaded for an active stack.
@@ -568,6 +598,11 @@ async fn main() -> Result<()> {
                             "com.hippo.cursor-session.plist",
                             cursor_session_started,
                         ),
+                        (
+                            "auto-memory",
+                            "com.hippo.auto-memory.plist",
+                            auto_memory_started,
+                        ),
                     ];
                     for (label, plist, gated) in support_agents {
                         if !gated {
@@ -587,7 +622,8 @@ async fn main() -> Result<()> {
                     || (gh_poll_installed && !gh_poll_started)
                     || (opencode_poll_installed && !opencode_poll_started)
                     || (codex_session_installed && !codex_session_started)
-                    || (cursor_session_installed && !cursor_session_started);
+                    || (cursor_session_installed && !cursor_session_started)
+                    || (auto_memory_installed && !auto_memory_started);
                 if needs_manual_start {
                     println!();
                     println!("Load with:");
@@ -630,6 +666,11 @@ async fn main() -> Result<()> {
                     if cursor_session_installed && !cursor_session_started {
                         println!(
                             "  launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.hippo.cursor-session.plist"
+                        );
+                    }
+                    if auto_memory_installed && !auto_memory_started {
+                        println!(
+                            "  launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.hippo.auto-memory.plist"
                         );
                     }
                 }
@@ -1188,6 +1229,13 @@ async fn main() -> Result<()> {
             Ok(n) => tracing::info!(ingested = n, "cursor poll: completed"),
             Err(e) => {
                 eprintln!("Error running cursor poll: {e:#}");
+                std::process::exit(1);
+            }
+        },
+        Commands::AutoMemoryPoll => match auto_memory_poll::poll_tick(&config) {
+            Ok(n) => tracing::info!(changed = n, "auto-memory poll: completed"),
+            Err(e) => {
+                eprintln!("Error running auto-memory poll: {e:#}");
                 std::process::exit(1);
             }
         },

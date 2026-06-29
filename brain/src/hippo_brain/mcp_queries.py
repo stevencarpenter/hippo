@@ -11,6 +11,7 @@ import time
 from datetime import datetime, timezone
 
 from hippo_brain.models import CIAnnotation, CIJob, CIStatus, Lesson
+from hippo_brain.source_filters import knowledge_source_exists_clause, table_exists
 
 
 MAX_LIMIT = 100
@@ -192,7 +193,7 @@ def _build_knowledge_filter_clause(
                 "    AND (s.cwd LIKE ? OR s.project_dir LIKE ?))"
             )
             params.extend([like, like])
-        if _table_exists(conn, "knowledge_node_memory_chunks"):
+        if table_exists(conn, "knowledge_node_memory_chunks"):
             project_clause += (
                 " OR EXISTS (SELECT 1 FROM knowledge_node_memory_chunks knmc "
                 "  JOIN memory_chunks mc ON mc.id = knmc.memory_chunk_id "
@@ -225,35 +226,15 @@ def _build_knowledge_filter_clause(
         clauses.append(branch_clause)
 
     if source:
-        if source == "claude" and link_table and link_column and session_table:
-            # AP-6 defense-in-depth: join the session table and exclude probe
-            # rows so source="claude" cannot surface a probe-only knowledge node
-            # (parity with retrieval.py's `probe_tag IS NULL` agentic joins).
-            clauses.append(
-                f"EXISTS (SELECT 1 FROM {link_table} link "
-                f"  JOIN {session_table} s ON s.id = link.{link_column} "
-                "  WHERE link.knowledge_node_id = kn.id AND s.probe_tag IS NULL)"
-            )
-        elif source == "claude-auto-memory" and _table_exists(conn, "knowledge_node_memory_chunks"):
-            clauses.append(
-                "EXISTS (SELECT 1 FROM knowledge_node_memory_chunks knmc "
-                "JOIN memory_chunks mc ON mc.id = knmc.memory_chunk_id "
-                "JOIN memory_revisions mr ON mr.id = mc.revision_id "
-                "JOIN memory_documents md ON md.id = mr.document_id "
-                "WHERE knmc.knowledge_node_id = kn.id "
-                "AND md.active_revision_id = mr.id AND md.state = 'active')"
-            )
-        else:
-            source_table = {
-                "shell": "knowledge_node_events",
-                "browser": "knowledge_node_browser_events",
-                "workflow": "knowledge_node_workflow_runs",
-            }.get(source)
-            if source_table:
-                clauses.append(
-                    f"EXISTS (SELECT 1 FROM {source_table} link "
-                    "WHERE link.knowledge_node_id = kn.id)"
-                )
+        source_clause = knowledge_source_exists_clause(
+            source,
+            conn,
+            claude_link_table=link_table,
+            claude_link_column=link_column,
+            claude_session_table=session_table,
+        )
+        if source_clause:
+            clauses.append(source_clause)
 
     where = (" AND " + " AND ".join(clauses)) if clauses else ""
     return where, params

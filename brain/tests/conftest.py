@@ -5,12 +5,20 @@ from pathlib import Path
 import pytest
 
 SCHEMA_PATH = Path(__file__).parent.parent.parent / "crates" / "hippo-core" / "src" / "schema.sql"
+AUTO_MEMORY_SCHEMA_PATH = (
+    Path(__file__).parent.parent.parent
+    / "crates"
+    / "hippo-core"
+    / "src"
+    / "schema"
+    / "auto_memory.sql"
+)
 
 
 @pytest.fixture
 def tmp_db():
     """Create a temporary SQLite database with the hippo schema."""
-    schema = SCHEMA_PATH.read_text()
+    schema = SCHEMA_PATH.read_text() + "\n" + AUTO_MEMORY_SCHEMA_PATH.read_text()
     tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
     tmp.close()
     db_path = Path(tmp.name)

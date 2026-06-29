@@ -18,6 +18,7 @@ from dataclasses import dataclass, field
 from typing import Protocol, Sequence
 
 from hippo_brain.enrichment import IDENTIFIER_ENTITY_TYPES
+from hippo_brain.source_filters import knowledge_source_exists_clause
 
 
 RRF_K = 60
@@ -356,7 +357,10 @@ def _apply_filters(
         params.extend([filters.branch, filters.branch])
 
     if filters.source:
-        clauses.append(_source_clause(filters.source))
+        source_clause = knowledge_source_exists_clause(filters.source, conn)
+        if source_clause is None:
+            raise ValueError(f"unknown source filter: {filters.source!r}")
+        clauses.append(source_clause)
 
     sql = f"""
         SELECT DISTINCT kn.id
@@ -402,30 +406,8 @@ def _apply_filters(
     return {row[0] for row in rows}
 
 
-def _source_clause(source: str) -> str:
-    mapping = {
-        "shell": (
-            "EXISTS (SELECT 1 FROM knowledge_node_events kne_s "
-            "WHERE kne_s.knowledge_node_id = kn.id)"
-        ),
-        # Join agentic_sessions and exclude probe rows (AP-6) so a node linked
-        # ONLY to a probe session is not surfaced by source="claude" — matching
-        # the probe-filtered _apply_filters joins and _fetch_details.
-        "claude": (
-            "EXISTS (SELECT 1 FROM knowledge_node_agentic_sessions knc_s "
-            "JOIN agentic_sessions asx_s ON asx_s.id = knc_s.agentic_session_id "
-            "WHERE knc_s.knowledge_node_id = kn.id AND asx_s.probe_tag IS NULL)"
-        ),
-        "browser": (
-            "EXISTS (SELECT 1 FROM knowledge_node_browser_events knb_s "
-            "WHERE knb_s.knowledge_node_id = kn.id)"
-        ),
-        "workflow": (
-            "EXISTS (SELECT 1 FROM knowledge_node_workflow_runs knwr_s "
-            "WHERE knwr_s.knowledge_node_id = kn.id)"
-        ),
-    }
-    clause = mapping.get(source)
+def _source_clause(source: str, conn: sqlite3.Connection | None = None) -> str:
+    clause = knowledge_source_exists_clause(source, conn)
     if clause is None:
         raise ValueError(f"unknown source filter: {source!r}")
     return clause

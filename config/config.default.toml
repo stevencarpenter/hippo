@@ -249,6 +249,7 @@ enabled = true
 # its privacy boundaries are configured.
 [auto_memory]
 enabled = false
+# poll_interval_secs = 60  # com.hippo.auto-memory LaunchAgent cadence
 
 # [[auto_memory.sources]]
 # path = "/absolute/path/to/.claude/memory/MEMORY.md"

@@ -14,8 +14,8 @@ import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
 
-_WORD_RE = re.compile(r"[A-Za-z0-9_]+")
-_HEADING_RE = re.compile(r"^(#{1,6})\s+(.+?)\s*$")
+from hippo_brain.markdown_chunking import markdown_heading_chunks
+
 _STOP_WORDS = {
     "a",
     "an",
@@ -31,6 +31,9 @@ _STOP_WORDS = {
     "where",
     "which",
 }
+
+
+_WORD_RE = re.compile(r"[A-Za-z0-9_]+")
 
 
 @dataclass(frozen=True)
@@ -50,27 +53,11 @@ def whole_file(path: str, text: str) -> list[Chunk]:
 
 
 def markdown_headings(path: str, text: str) -> list[Chunk]:
-    """Split at Markdown headings while carrying the heading into each chunk."""
+    """Split at Markdown headings using the production chunker."""
     chunks: list[Chunk] = []
-    heading = ""
-    body: list[str] = []
-
-    def flush() -> None:
-        nonlocal body
-        content = "\n".join(body).strip()
-        if content:
-            rendered = f"{heading}\n\n{content}".strip()
-            chunks.append(Chunk(path, len(chunks), heading, rendered))
-        body = []
-
-    for line in text.splitlines():
-        match = _HEADING_RE.match(line)
-        if match:
-            flush()
-            heading = match.group(2)
-        else:
-            body.append(line)
-    flush()
+    for chunk in markdown_heading_chunks(text):
+        heading = chunk.heading_path.split(" > ")[-1] if chunk.heading_path else ""
+        chunks.append(Chunk(path, chunk.ordinal, heading, chunk.content))
     return chunks or whole_file(path, text)
 
 

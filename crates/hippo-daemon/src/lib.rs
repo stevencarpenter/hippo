@@ -1,3 +1,4 @@
+pub mod auto_memory_poll;
 pub mod backfill;
 pub mod claude_session;
 pub mod codex_session;

@@ -31,7 +31,6 @@ def _default_settings() -> dict:
         "embed_reaper_interval_secs": 300,
         "embed_reaper_batch_size": 50,
         "embed_orphan_stale_secs": 900,
-        "auto_memory_sources": [],
     }
 
 
@@ -66,19 +65,6 @@ def _load_runtime_settings() -> dict:
     telemetry = config.get("telemetry", {})
     browser = config.get("browser", {})
     reaper = config.get("reaper", {})
-    auto_memory = config.get("auto_memory", {})
-    auto_memory_sources = []
-    if auto_memory.get("enabled", False):
-        for source in auto_memory.get("sources", []):
-            if not isinstance(source, dict):
-                continue
-            auto_memory_sources.append(
-                {
-                    "path": str(Path(source.get("path", "")).expanduser()),
-                    "repository": source.get("repository"),
-                    "logical_path": source.get("logical_path"),
-                }
-            )
 
     return {
         "db_path": str(data_dir / "hippo.db"),
@@ -102,7 +88,6 @@ def _load_runtime_settings() -> dict:
         "embed_reaper_interval_secs": reaper.get("interval_secs", 300),
         "embed_reaper_batch_size": reaper.get("batch_size", 50),
         "embed_orphan_stale_secs": reaper.get("orphan_stale_secs", 900),
-        "auto_memory_sources": auto_memory_sources,
     }
 
 
@@ -161,7 +146,6 @@ def main() -> None:
             embed_reaper_interval_secs=settings["embed_reaper_interval_secs"],
             embed_reaper_batch_size=settings["embed_reaper_batch_size"],
             embed_orphan_stale_secs=settings["embed_orphan_stale_secs"],
-            auto_memory_sources=settings.get("auto_memory_sources", []),
         )
         try:
             uvicorn.run(app, host="127.0.0.1", port=settings["port"])

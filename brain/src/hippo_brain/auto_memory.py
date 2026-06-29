@@ -5,16 +5,17 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
-import re
 import sqlite3
 import subprocess
 import time
+import tomllib
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
+from hippo_brain.markdown_chunking import MarkdownChunk, markdown_heading_chunks
 from hippo_brain.models import EnrichmentResult
 from hippo_brain.redaction import redact
 
@@ -22,7 +23,23 @@ SOURCE_KIND = "claude-auto-memory"
 CHUNKER_NAME = "markdown-headings"
 CHUNKER_VERSION = 1
 _IDENTITY_NAMESPACE = uuid.UUID("0fc25921-9c30-4c16-85da-b489ea81f087")
-_HEADING = re.compile(r"^(#{1,6})\s+(.+?)\s*$", re.MULTILINE)
+
+MEMORY_ENRICHMENT_SYSTEM_PROMPT = """\
+You enrich Claude Code auto-memory Markdown into structured knowledge for a local \
+personal knowledge base.
+
+The input is already redacted. Produce a JSON object with:
+- summary: one concise sentence of what this memory documents
+- intent: why this memory exists or what problem it addresses
+- outcome: one of success, failure, partial, unknown
+- entities: object with keys projects, tools, files, services, errors (each a list of strings)
+- tags: short topical tags
+- key_decisions: list of notable decisions or conventions captured
+- problems_encountered: list of problems or pitfalls documented
+- design_decisions: list of objects with decision, rationale, alternatives (may be empty)
+- embed_text: a dense paragraph optimized for semantic search (include repository context)
+
+Output ONLY valid JSON, no markdown fences or explanation."""
 
 
 @dataclass(frozen=True)
@@ -36,12 +53,17 @@ class IngestResult:
 
 
 @dataclass(frozen=True)
-class _Chunk:
-    ordinal: int
-    heading_path: str
-    start_offset: int
-    end_offset: int
-    content: str
+class MemoryClaim:
+    revision_id: int
+    document_id: int
+    revision_number: int
+    content_hash: str
+    captured_at: int
+    document_uuid: str
+    repository: str
+    logical_path: str
+    source_path: str
+    chunks: tuple[dict[str, Any], ...]
 
 
 def _sha256(text: str) -> str:
@@ -88,34 +110,8 @@ def derive_repository_identity(source_path: Path | str, explicit: str | None = N
         return f"local:{directory}"
 
 
-def _chunks(markdown: str) -> list[_Chunk]:
-    """Split Markdown at headings while retaining deterministic heading paths."""
-    matches = list(_HEADING.finditer(markdown))
-    if not matches:
-        content = markdown.strip()
-        return [_Chunk(0, "", 0, len(markdown), content)] if content else []
-
-    chunks: list[_Chunk] = []
-    headings: list[str] = []
-    for ordinal, match in enumerate(matches):
-        level = len(match.group(1))
-        title = match.group(2).strip()
-        headings = headings[: level - 1]
-        headings.append(title)
-        start = match.start()
-        end = matches[ordinal + 1].start() if ordinal + 1 < len(matches) else len(markdown)
-        content = markdown[start:end].strip()
-        if content:
-            chunks.append(
-                _Chunk(
-                    ordinal=len(chunks),
-                    heading_path=" > ".join(headings),
-                    start_offset=start,
-                    end_offset=end,
-                    content=content,
-                )
-            )
-    return chunks
+def _chunks(markdown: str) -> list[MarkdownChunk]:
+    return markdown_heading_chunks(markdown)
 
 
 def ingest_memory_file(
@@ -137,6 +133,7 @@ def ingest_memory_file(
     repository_identity = derive_repository_identity(path, repository)
 
     source = path.read_text(encoding="utf-8")
+    source_hash = _sha256(source)
     redacted = redact(source)
     content_hash = _sha256(redacted)
     stat = path.stat()
@@ -214,7 +211,7 @@ def ingest_memory_file(
                 document_id,
                 revision_number,
                 content_hash,
-                content_hash,
+                source_hash,
                 redacted,
                 int(stat.st_mtime * 1000),
                 stat.st_size,
@@ -258,7 +255,8 @@ def ingest_memory_file(
             (revision_id, observed_at, document_id),
         )
         conn.execute(
-            "UPDATE source_health SET last_event_ts = ?, last_success_ts = ?, last_error = NULL, "
+            "UPDATE source_health SET last_event_ts = ?, last_success_ts = ?, "
+            "last_error_msg = NULL, last_error_ts = NULL, "
             "consecutive_failures = 0, updated_at = ? WHERE source = ?",
             (observed_at, observed_at, observed_at, SOURCE_KIND),
         )
@@ -279,7 +277,7 @@ def claim_pending_memories(
     worker_id: str,
     limit: int = 10,
     now_ms: int | None = None,
-) -> list[dict[str, Any]]:
+) -> list[MemoryClaim]:
     """Atomically claim pending memory revisions and load their redacted chunks."""
     if limit < 1:
         raise ValueError("limit must be >= 1")
@@ -312,7 +310,7 @@ def claim_pending_memories(
         conn.rollback()
         raise
 
-    claims: list[dict[str, Any]] = []
+    claims: list[MemoryClaim] = []
     for revision_id in revision_ids:
         row = conn.execute(
             "SELECT r.id, r.document_id, r.revision_number, r.content_hash, r.created_at, "
@@ -323,7 +321,7 @@ def claim_pending_memories(
         ).fetchone()
         if row is None:
             continue
-        chunks = [
+        chunks = tuple(
             {
                 "id": int(chunk[0]),
                 "ordinal": int(chunk[1]),
@@ -336,31 +334,31 @@ def claim_pending_memories(
                 "FROM memory_chunks WHERE revision_id = ? ORDER BY ordinal",
                 (revision_id,),
             ).fetchall()
-        ]
+        )
         claims.append(
-            {
-                "revision_id": int(row[0]),
-                "document_id": int(row[1]),
-                "revision_number": int(row[2]),
-                "content_hash": row[3],
-                "captured_at": int(row[4]),
-                "document_uuid": row[5],
-                "repository": row[6],
-                "logical_path": row[7],
-                "source_path": row[8],
-                "chunks": chunks,
-            }
+            MemoryClaim(
+                revision_id=int(row[0]),
+                document_id=int(row[1]),
+                revision_number=int(row[2]),
+                content_hash=row[3],
+                captured_at=int(row[4]),
+                document_uuid=row[5],
+                repository=row[6],
+                logical_path=row[7],
+                source_path=row[8],
+                chunks=chunks,
+            )
         )
     return claims
 
 
-def build_memory_enrichment_prompt(claim: dict[str, Any]) -> str:
+def build_memory_enrichment_prompt(claim: MemoryClaim) -> str:
     """Render one claimed, already-redacted memory revision for enrichment."""
     header = (
-        f"Claude Code auto-memory\nRepository: {claim['repository']}\n"
-        f"Path: {claim['logical_path']}\nContent hash: {claim['content_hash']}"
+        f"Claude Code auto-memory\nRepository: {claim.repository}\n"
+        f"Path: {claim.logical_path}\nContent hash: {claim.content_hash}"
     )
-    body = "\n\n---\n\n".join(chunk["content"] for chunk in claim["chunks"])
+    body = "\n\n---\n\n".join(chunk["content"] for chunk in claim.chunks)
     return f"{header}\n\n{body}"
 
 
@@ -513,6 +511,85 @@ def mark_memory_enrichment_failed(
         )
 
 
+def _open_db(db_path: Path) -> sqlite3.Connection:
+    conn = sqlite3.connect(db_path)
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA foreign_keys=ON")
+    conn.execute("PRAGMA busy_timeout=5000")
+    return conn
+
+
+def poll_sources(
+    conn: sqlite3.Connection,
+    sources: list[dict[str, Any]],
+) -> int:
+    """Ingest every configured auto-memory source. Returns count of changed revisions."""
+    changed = 0
+    for source in sources:
+        path = source.get("path")
+        if not path:
+            continue
+        result = ingest_memory_file(
+            conn,
+            path,
+            repository=source.get("repository"),
+            logical_path=source.get("logical_path"),
+        )
+        if result.changed:
+            changed += 1
+    return changed
+
+
+def poll_from_config(config_path: Path | None = None) -> int:
+    """Load config and poll all enabled auto-memory sources."""
+    path = config_path or Path.home() / ".config" / "hippo" / "config.toml"
+    if not path.is_file():
+        return 0
+    with path.open("rb") as handle:
+        config = tomllib.load(handle)
+    auto_memory = config.get("auto_memory", {})
+    if not auto_memory.get("enabled", False):
+        return 0
+    sources: list[dict[str, Any]] = []
+    for source in auto_memory.get("sources", []):
+        if not isinstance(source, dict):
+            continue
+        sources.append(
+            {
+                "path": str(Path(source.get("path", "")).expanduser()),
+                "repository": source.get("repository"),
+                "logical_path": source.get("logical_path"),
+            }
+        )
+    if not sources:
+        return 0
+    storage = config.get("storage", {})
+    data_dir = Path(
+        storage.get("data_dir", Path.home() / ".local" / "share" / "hippo")
+    ).expanduser()
+    db_path = data_dir / "hippo.db"
+    conn = _open_db(db_path)
+    try:
+        return poll_sources(conn, sources)
+    finally:
+        conn.close()
+
+
+def poll_main(argv: list[str] | None = None) -> int:
+    """Poll all enabled auto-memory sources from config (launchd / hippo auto-memory-poll)."""
+    parser = argparse.ArgumentParser(description="Poll configured Claude auto-memory sources.")
+    parser.add_argument(
+        "--config",
+        type=Path,
+        default=None,
+        help="Hippo config.toml (defaults to ~/.config/hippo/config.toml)",
+    )
+    args = parser.parse_args(argv)
+    changed = poll_from_config(args.config)
+    print(json.dumps({"changed": changed}, sort_keys=True))
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     """Ingest one explicitly configured Claude auto-memory file."""
     parser = argparse.ArgumentParser(description=__doc__)
@@ -533,11 +610,8 @@ def main(argv: list[str] | None = None) -> int:
         help="Hippo SQLite database",
     )
     args = parser.parse_args(argv)
-    conn = sqlite3.connect(args.db)
+    conn = _open_db(args.db)
     try:
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("PRAGMA foreign_keys=ON")
-        conn.execute("PRAGMA busy_timeout=5000")
         version = int(conn.execute("PRAGMA user_version").fetchone()[0])
         if version != 19:
             parser.error(f"database schema version must be 19, found {version}")

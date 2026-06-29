@@ -901,7 +901,8 @@ for label in \
   com.hippo.opencode-poll \
   com.hippo.xcode-claude-ingest \
   com.hippo.codex-session \
-  com.hippo.cursor-session
+  com.hippo.cursor-session \
+  com.hippo.auto-memory
 do
   plist="$HOME/Library/LaunchAgents/${label}.plist"
   name="${label#com.hippo.}"
@@ -930,7 +931,8 @@ for label in \
   com.hippo.opencode-poll \
   com.hippo.xcode-claude-ingest \
   com.hippo.codex-session \
-  com.hippo.cursor-session
+  com.hippo.cursor-session \
+  com.hippo.auto-memory
 do
   plist="$HOME/Library/LaunchAgents/${label}.plist"
   name="${label#com.hippo.}"

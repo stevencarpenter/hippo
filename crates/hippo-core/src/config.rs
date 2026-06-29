@@ -40,8 +40,14 @@ pub struct HippoConfig {
 pub struct AutoMemoryConfig {
     #[serde(default)]
     pub enabled: bool,
+    #[serde(default = "default_auto_memory_poll_interval_secs")]
+    pub poll_interval_secs: u64,
     #[serde(default)]
     pub sources: Vec<AutoMemorySourceConfig>,
+}
+
+fn default_auto_memory_poll_interval_secs() -> u64 {
+    60
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
