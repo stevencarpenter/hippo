@@ -127,7 +127,7 @@ Ingestion is handled by `crates/hippo-daemon/src/watch_claude_sessions.rs`, a lo
 
 **Hook install:** `hippo daemon install` writes the hook entry into `~/.claude/settings.json`. `hippo doctor` verifies the hook path matches the repo.
 
-**Schema (agentic unification):** All agentic sources (Claude Code, Codex, Cursor, opencode) now write the `agentic_sessions` / `agentic_enrichment_queue` / `knowledge_node_agentic_sessions` family, keyed by a `harness` column and a `(session_id, harness, segment_index)` conflict target. The v17→v18 migration idempotently backfilled all historical `claude_sessions` / `knowledge_node_claude_sessions` / `claude_enrichment_queue` rows into the agentic family (harness derived from `source_file`). The legacy `claude_*` tables are now frozen — still created by `schema.sql`, no longer written, dropped in a later unification step. `EXPECTED_VERSION` / `EXPECTED_SCHEMA_VERSION` are 18.
+**Schema (agentic unification):** All agentic sources (Claude Code, Codex, Cursor, opencode) now write the `agentic_sessions` / `agentic_enrichment_queue` / `knowledge_node_agentic_sessions` family, keyed by a `harness` column and a `(session_id, harness, segment_index)` conflict target. The v17→v18 migration idempotently backfilled all historical `claude_sessions` / `knowledge_node_claude_sessions` / `claude_enrichment_queue` rows into the agentic family (harness derived from `source_file`). The legacy `claude_*` tables are now frozen — still created by `schema.sql`, no longer written, dropped in a later unification step. v19 adds the read-only Claude auto-memory source tables. `EXPECTED_VERSION` / `EXPECTED_SCHEMA_VERSION` are 19.
 
 ### Codex Session Ingestion
 

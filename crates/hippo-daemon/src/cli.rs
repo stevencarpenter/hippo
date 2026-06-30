@@ -137,6 +137,8 @@ pub enum Commands {
     CodexPoll,
     /// Poll Cursor Agent CLI transcript files and ingest new sessions.
     CursorPoll,
+    /// Poll configured Claude auto-memory Markdown sources for ingest.
+    AutoMemoryPoll,
     /// Run the daemon in the foreground (alias for `daemon run`).
     ///
     /// BT-09: shipped so `hippo serve` no longer fails with "unrecognized

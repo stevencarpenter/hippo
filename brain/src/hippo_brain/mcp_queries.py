@@ -11,6 +11,11 @@ import time
 from datetime import datetime, timezone
 
 from hippo_brain.models import CIAnnotation, CIJob, CIStatus, Lesson
+from hippo_brain.source_filters import (
+    knowledge_memory_project_clause,
+    knowledge_source_exists_clause,
+    table_exists as _table_exists,
+)
 
 
 MAX_LIMIT = 100
@@ -29,14 +34,6 @@ def _safe_json_loads(value, default):
         return json.loads(value)
     except ValueError:
         return default
-
-
-def _table_exists(conn: sqlite3.Connection, table_name: str) -> bool:
-    row = conn.execute(
-        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
-        (table_name,),
-    ).fetchone()
-    return row is not None
 
 
 def _agentic_link_target(
@@ -192,6 +189,10 @@ def _build_knowledge_filter_clause(
                 "    AND (s.cwd LIKE ? OR s.project_dir LIKE ?))"
             )
             params.extend([like, like])
+        memory_project = knowledge_memory_project_clause(conn)
+        if memory_project is not None:
+            project_clause += f" OR {memory_project}"
+            params.extend([like, like])
         project_clause += ")"
         clauses.append(project_clause)
 
@@ -214,26 +215,20 @@ def _build_knowledge_filter_clause(
         clauses.append(branch_clause)
 
     if source:
-        if source == "claude" and link_table and link_column and session_table:
-            # AP-6 defense-in-depth: join the session table and exclude probe
-            # rows so source="claude" cannot surface a probe-only knowledge node
-            # (parity with retrieval.py's `probe_tag IS NULL` agentic joins).
-            clauses.append(
-                f"EXISTS (SELECT 1 FROM {link_table} link "
-                f"  JOIN {session_table} s ON s.id = link.{link_column} "
-                "  WHERE link.knowledge_node_id = kn.id AND s.probe_tag IS NULL)"
-            )
-        else:
-            source_table = {
-                "shell": "knowledge_node_events",
-                "browser": "knowledge_node_browser_events",
-                "workflow": "knowledge_node_workflow_runs",
-            }.get(source)
-            if source_table:
-                clauses.append(
-                    f"EXISTS (SELECT 1 FROM {source_table} link "
-                    "WHERE link.knowledge_node_id = kn.id)"
-                )
+        source_clause = knowledge_source_exists_clause(
+            source,
+            conn,
+            claude_link_table=link_table,
+            claude_link_column=link_column,
+            claude_session_table=session_table,
+        )
+        if source_clause is None:
+            # Mirror retrieval._apply_filters: an unrecognized (or unavailable)
+            # source must fail loudly. Silently dropping the clause would widen the
+            # result set to every knowledge node — a silent data-scope violation
+            # rather than the empty/error result the caller expects.
+            raise ValueError(f"unknown source filter: {source!r}")
+        clauses.append(source_clause)
 
     where = (" AND " + " AND ".join(clauses)) if clauses else ""
     return where, params
@@ -282,6 +277,7 @@ def search_knowledge_lexical(
     for row in rows:
         node_id, uuid, content_str, embed_text, outcome, tags_str, created_at = row
         content = _safe_json_loads(content_str, {})
+        source_meta = content.get("source", {}) if isinstance(content, dict) else {}
         tags = _safe_json_loads(tags_str, []) if tags_str else []
         event_ids, claude_ids, browser_ids = _knowledge_node_links(conn, node_id)
 
@@ -297,6 +293,11 @@ def search_knowledge_lexical(
                 "cwd": "",
                 "git_branch": "",
                 "captured_at": created_at,
+                "source": source_meta.get("kind", ""),
+                "source_path": source_meta.get("source_path", ""),
+                "repository": source_meta.get("repository", ""),
+                "logical_path": source_meta.get("logical_path", ""),
+                "content_hash": source_meta.get("content_hash", ""),
                 "linked_event_ids": event_ids,
                 "linked_claude_session_ids": claude_ids,
                 "linked_browser_event_ids": browser_ids,

@@ -18,6 +18,10 @@ from dataclasses import dataclass, field
 from typing import Protocol, Sequence
 
 from hippo_brain.enrichment import IDENTIFIER_ENTITY_TYPES
+from hippo_brain.source_filters import (
+    knowledge_memory_project_clause,
+    knowledge_source_exists_clause,
+)
 
 
 RRF_K = 60
@@ -345,18 +349,32 @@ def _apply_filters(
         params.extend([filters.since_ms] * 4)
 
     if filters.project:
-        clauses.append(
-            "(e.cwd LIKE ? OR e.git_repo LIKE ? OR asx.cwd LIKE ? OR asx.project_dir LIKE ?)"
-        )
         pattern = f"%{filters.project}%"
+        project_terms = [
+            "e.cwd LIKE ?",
+            "e.git_repo LIKE ?",
+            "asx.cwd LIKE ?",
+            "asx.project_dir LIKE ?",
+        ]
         params.extend([pattern, pattern, pattern, pattern])
+        # Auto-memory nodes link only via knowledge_node_memory_chunks (no event /
+        # session row), so reach memory_documents.repository via the shared clause —
+        # otherwise project-scoped RAG silently drops them (parity with MCP search).
+        memory_project = knowledge_memory_project_clause(conn)
+        if memory_project is not None:
+            project_terms.append(memory_project)
+            params.extend([pattern, pattern])
+        clauses.append("(" + " OR ".join(project_terms) + ")")
 
     if filters.branch:
         clauses.append("(e.git_branch = ? OR asx.git_branch = ?)")
         params.extend([filters.branch, filters.branch])
 
     if filters.source:
-        clauses.append(_source_clause(filters.source))
+        source_clause = knowledge_source_exists_clause(filters.source, conn)
+        if source_clause is None:
+            raise ValueError(f"unknown source filter: {filters.source!r}")
+        clauses.append(source_clause)
 
     sql = f"""
         SELECT DISTINCT kn.id
@@ -400,35 +418,6 @@ def _apply_filters(
     # `params` as bound parameters.
     rows = conn.execute(sql, params).fetchall()  # nosemgrep
     return {row[0] for row in rows}
-
-
-def _source_clause(source: str) -> str:
-    mapping = {
-        "shell": (
-            "EXISTS (SELECT 1 FROM knowledge_node_events kne_s "
-            "WHERE kne_s.knowledge_node_id = kn.id)"
-        ),
-        # Join agentic_sessions and exclude probe rows (AP-6) so a node linked
-        # ONLY to a probe session is not surfaced by source="claude" — matching
-        # the probe-filtered _apply_filters joins and _fetch_details.
-        "claude": (
-            "EXISTS (SELECT 1 FROM knowledge_node_agentic_sessions knc_s "
-            "JOIN agentic_sessions asx_s ON asx_s.id = knc_s.agentic_session_id "
-            "WHERE knc_s.knowledge_node_id = kn.id AND asx_s.probe_tag IS NULL)"
-        ),
-        "browser": (
-            "EXISTS (SELECT 1 FROM knowledge_node_browser_events knb_s "
-            "WHERE knb_s.knowledge_node_id = kn.id)"
-        ),
-        "workflow": (
-            "EXISTS (SELECT 1 FROM knowledge_node_workflow_runs knwr_s "
-            "WHERE knwr_s.knowledge_node_id = kn.id)"
-        ),
-    }
-    clause = mapping.get(source)
-    if clause is None:
-        raise ValueError(f"unknown source filter: {source!r}")
-    return clause
 
 
 def _is_empty_filter(f: Filters) -> bool:

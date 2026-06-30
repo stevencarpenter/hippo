@@ -3,6 +3,7 @@ import datetime as _dt
 import logging
 import sqlite3
 import time
+from typing import Any
 
 import sqlite_vec  # type: ignore[import-untyped]
 from contextlib import asynccontextmanager, nullcontext, suppress
@@ -18,6 +19,7 @@ from hippo_brain.openapi import build_openapi_spec
 from hippo_brain.schema_version import EXPECTED_SCHEMA_VERSION, ACCEPTED_READ_VERSIONS
 from hippo_brain.version import get_version
 from hippo_brain.embeddings import (
+    embed_dict_from_result,
     embed_knowledge_node,
     get_or_create_table,
     open_vector_db,
@@ -28,7 +30,6 @@ from hippo_brain.rag import ask as rag_ask
 from hippo_brain.enrichment import (
     SYSTEM_PROMPT,
     build_enrichment_prompt,
-    claim_pending_events_by_session,
     mark_queue_failed,
     parse_enrichment_response,
     write_knowledge_node,
@@ -36,7 +37,6 @@ from hippo_brain.enrichment import (
 from hippo_brain.browser_enrichment import (
     BROWSER_SYSTEM_PROMPT,
     build_browser_enrichment_prompt,
-    claim_pending_browser_events,
     format_browser_context_for_shell_prompt,
     get_correlated_browser_events,
     mark_browser_queue_failed,
@@ -44,19 +44,23 @@ from hippo_brain.browser_enrichment import (
 )
 from hippo_brain.claude_sessions import (
     CLAUDE_SYSTEM_PROMPT,
-    claim_pending_claude_segments,
     mark_claude_queue_failed,
     write_claude_knowledge_node,
 )
+from hippo_brain.auto_memory import (
+    MEMORY_ENRICHMENT_SYSTEM_PROMPT,
+    build_memory_enrichment_prompt,
+    mark_memory_enrichment_failed,
+    write_memory_knowledge_node,
+)
+from hippo_brain.enrichment_sources import claim_all_sources, enrich_all_sources
 from hippo_brain.opencode_sessions import (
     OPENCODE_ENRICHMENT_PROMPT,
     build_opencode_enrichment_prompt,
-    claim_pending_opencode_segments,
     mark_opencode_queue_failed,
     write_opencode_knowledge_node,
 )
 from hippo_brain.workflow_enrichment import (
-    claim_pending_workflow_runs,
     enrich_one_async,
     mark_workflow_queue_failed,
 )
@@ -193,6 +197,9 @@ def _collect_queue_depths(conn: sqlite3.Connection) -> list[tuple[str, str, int]
               AND s.harness = 'opencode'
               AND s.probe_tag IS NULL
         """,
+        "claude-auto-memory": """
+            SELECT COUNT(*) FROM memory_enrichment_queue WHERE status = ?
+        """,
     }
     depths: list[tuple[str, str, int]] = []
     for source, sql in queries.items():
@@ -317,6 +324,8 @@ class BrainServer:
         browser_queue_failed = 0
         workflow_queue_depth = 0
         workflow_queue_failed = 0
+        memory_queue_depth = 0
+        memory_queue_failed = 0
         db_reachable = True
         try:
             conn = self._get_conn()
@@ -363,6 +372,16 @@ class BrainServer:
                 except Exception:
                     workflow_queue_depth = 0
                     workflow_queue_failed = 0
+                try:
+                    memory_queue_depth = conn.execute(
+                        "SELECT COUNT(*) FROM memory_enrichment_queue WHERE status = 'pending'"
+                    ).fetchone()[0]
+                    memory_queue_failed = conn.execute(
+                        "SELECT COUNT(*) FROM memory_enrichment_queue WHERE status = 'failed'"
+                    ).fetchone()[0]
+                except Exception:
+                    memory_queue_depth = 0
+                    memory_queue_failed = 0
             finally:
                 conn.close()
         except Exception:
@@ -400,6 +419,8 @@ class BrainServer:
                 "browser_queue_failed": browser_queue_failed,
                 "workflow_queue_depth": workflow_queue_depth,
                 "workflow_queue_failed": workflow_queue_failed,
+                "memory_queue_depth": memory_queue_depth,
+                "memory_queue_failed": memory_queue_failed,
                 "enrichment_model": self.enrichment_model,
                 "enrichment_model_preferred": self._preferred_model,
                 "query_inflight": self._query_inflight,
@@ -1021,7 +1042,6 @@ class BrainServer:
         overlap with the next LLM call.
         """
         self.enrichment_running = True
-        worker_id = "brain-enrichment"
         try:
             while True:
                 try:
@@ -1080,82 +1100,12 @@ class BrainServer:
 
                         conn = self._get_conn()
                         try:
-                            # Claim all work upfront (sequential — avoids SQLite write contention)
-                            shell_chunks = claim_pending_events_by_session(
-                                conn,
-                                self.enrichment_batch_size,
-                                worker_id,
-                                self.session_stale_secs,
-                                max_claim_batch=self.max_claim_batch,
-                                stale_lock_timeout_ms=self.lock_timeout_ms,
-                            )
-                            try:
-                                claude_batches = claim_pending_claude_segments(
-                                    conn,
-                                    worker_id,
-                                    max_claim_batch=self.max_claim_batch,
-                                    stale_lock_timeout_ms=self.lock_timeout_ms,
-                                )
-                            except Exception as e:
-                                logger.debug("no claude segments to process: %s", e)
-                                claude_batches = []
-                            try:
-                                browser_batches = claim_pending_browser_events(
-                                    conn,
-                                    worker_id,
-                                    stale_secs=60,
-                                    max_claim_batch=self.max_claim_batch,
-                                    stale_lock_timeout_ms=self.lock_timeout_ms,
-                                    long_dwell_bypass_ms=self.long_dwell_bypass_ms,
-                                )
-                            except Exception as e:
-                                logger.warning("browser claim error: %s", e, exc_info=True)
-                                browser_batches = []
-                            try:
-                                workflow_run_ids = claim_pending_workflow_runs(
-                                    conn,
-                                    worker_id,
-                                    stale_lock_timeout_ms=self.lock_timeout_ms,
-                                    max_claim_batch=self.max_claim_batch,
-                                )
-                            except Exception as e:
-                                logger.warning("workflow claim error: %s", e, exc_info=True)
-                                workflow_run_ids = []
-                            try:
-                                opencode_batches = claim_pending_opencode_segments(
-                                    conn,
-                                    worker_id,
-                                    max_claim_batch=self.max_claim_batch,
-                                    stale_lock_timeout_ms=self.lock_timeout_ms,
-                                )
-                            except Exception as e:
-                                # AP-11: a real exception here (SQL error,
-                                # schema mismatch) is a structural failure and
-                                # must not be downgraded to debug. Mirrors the
-                                # browser/workflow claim paths above.
-                                logger.warning("opencode claim error: %s", e, exc_info=True)
-                                opencode_batches = []
-
-                            if (
-                                not shell_chunks
-                                and not claude_batches
-                                and not browser_batches
-                                and not workflow_run_ids
-                                and not opencode_batches
-                            ):
+                            claims = claim_all_sources(conn, self)
+                            if not any(claims.values()):
                                 continue
 
-                            # Process all sources concurrently — each method uses its own
-                            # DB connection for writes so they don't block each other.
-                            # Shell receives the claim conn for read-only browser correlation.
                             t0 = time.monotonic()
-                            await asyncio.gather(
-                                self._enrich_shell_batches(shell_chunks, conn),
-                                self._enrich_claude_batches(claude_batches),
-                                self._enrich_browser_batches(browser_batches),
-                                self._enrich_workflow_runs(workflow_run_ids),
-                                self._enrich_opencode_batches(opencode_batches),
-                            )
+                            await enrich_all_sources(self, claims, conn)
                             _hist(_loop_duration, (time.monotonic() - t0) * 1000)
                         finally:
                             conn.close()
@@ -1590,6 +1540,82 @@ class BrainServer:
                     finally:
                         retry_conn.close()
 
+        if embed_tasks:
+            await asyncio.gather(*embed_tasks, return_exceptions=True)
+
+    async def _enrich_memory_claims(self, claims):
+        """Enrich claimed Claude auto-memory revisions through the normal local backend."""
+        if not claims:
+            return
+        embed_tasks: list[asyncio.Task[Any]] = []
+        for claim in claims:
+            revision_id = claim.revision_id
+            tracer = _get_tracer()
+            span = (
+                tracer.start_as_current_span(
+                    "enrichment.claude-auto-memory",
+                    attributes={
+                        "hippo.revision_id": revision_id,
+                        "hippo.model": self.enrichment_model,
+                    },
+                )
+                if tracer
+                else nullcontext()
+            )
+            batch_start_ms = int(time.time() * 1000)
+            with span:
+                try:
+                    result = await self._call_llm_with_retries(
+                        MEMORY_ENRICHMENT_SYSTEM_PROMPT,
+                        build_memory_enrichment_prompt(claim),
+                        "claude-auto-memory",
+                    )
+                    conn = self._get_conn()
+                    try:
+                        node_id = write_memory_knowledge_node(
+                            conn,
+                            result,
+                            revision_id,
+                            self.enrichment_model,
+                        )
+                    finally:
+                        conn.close()
+                    self._record_success()
+                    if node_id is None:
+                        logger.info(
+                            "auto-memory revision %d superseded before enrichment finished; "
+                            "stale result discarded",
+                            revision_id,
+                        )
+                        continue
+                    _add(_nodes_created, source="claude-auto-memory")
+                    logger.info("enriched auto-memory revision %d -> node %d", revision_id, node_id)
+
+                    if self.embedding_model:
+                        embed_tasks.append(
+                            asyncio.create_task(
+                                self._embed_node(
+                                    node_id,
+                                    embed_dict_from_result(node_id, result.embed_text),
+                                    "claude-auto-memory",
+                                )
+                            )
+                        )
+                except Exception as e:
+                    _add(_enrichment_failures, source="claude-auto-memory")
+                    err_msg = self._record_error(e)
+                    self._log_enrichment_failure(
+                        "memory_enrichment_queue",
+                        "claude-auto-memory.chat",
+                        e,
+                        claim_count=1,
+                        claim_age_ms=int(time.time() * 1000) - batch_start_ms,
+                    )
+                    retry_conn = self._get_conn()
+                    try:
+                        mark_memory_enrichment_failed(retry_conn, revision_id, err_msg)
+                    finally:
+                        retry_conn.close()
         if embed_tasks:
             await asyncio.gather(*embed_tasks, return_exceptions=True)
 

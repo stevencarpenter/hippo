@@ -7,13 +7,20 @@ use std::path::Path;
 
 use crate::events::{BrowserEvent, ShellEvent};
 
-const SCHEMA: &str = include_str!("schema.sql");
+const SCHEMA: &str = concat!(
+    include_str!("schema.sql"),
+    "\n",
+    include_str!("schema/auto_memory.sql")
+);
 
 /// Schema version the daemon expects a healthy DB to be at. Exposed so
 /// startup code (e.g. the brain handshake) can cross-check without
 /// re-declaring the value. Keep in sync with
 /// `brain/src/hippo_brain/schema_version.py::EXPECTED_SCHEMA_VERSION`.
-pub const EXPECTED_VERSION: i64 = 18;
+pub const EXPECTED_VERSION: i64 = 19;
+
+/// Idempotent v18→v19 auto-memory DDL (same file as fresh-install assembly).
+const AUTO_MEMORY_SCHEMA: &str = include_str!("schema/auto_memory.sql");
 
 /// Idempotent `ALTER TABLE … ADD COLUMN`. Pre-checks `PRAGMA table_info`
 /// for the column name; if absent, runs the supplied DDL. Used by
@@ -1410,6 +1417,22 @@ pub fn open_db(path: &Path) -> Result<Connection> {
             // the migration doesn't re-trigger on every open.
             conn.execute_batch("PRAGMA user_version = 18;")?;
         }
+    }
+
+    // v18→v19: add the durable, read-only Claude auto-memory source model.
+    // This migration is additive so it is safe for every supported historical
+    // version after the preceding migration blocks have repaired their own
+    // schema families. The DDL is idempotent to make crash recovery harmless.
+    if (1..19).contains(&version) {
+        conn.execute_batch(AUTO_MEMORY_SCHEMA)?;
+        if table_exists(&conn, "source_health")? {
+            conn.execute_batch(
+                "INSERT OR IGNORE INTO source_health
+                    (source, last_event_ts, updated_at)
+                 VALUES ('claude-auto-memory', NULL, unixepoch('now') * 1000);",
+            )?;
+        }
+        conn.execute_batch("PRAGMA user_version = 19;")?;
     } else if version != 0 && version != EXPECTED_VERSION {
         anyhow::bail!(
             "DB schema version mismatch: expected {}, found {}. \
@@ -1443,7 +1466,8 @@ pub fn open_db(path: &Path) -> Result<Connection> {
                 ('agentic-session-opencode', NULL, unixepoch('now') * 1000),
                 ('agentic-session-codex',    NULL, unixepoch('now') * 1000),
                 ('agentic-session-cursor',   NULL, unixepoch('now') * 1000),
-                ('brain-preflight',          NULL, unixepoch('now') * 1000);",
+                ('brain-preflight',          NULL, unixepoch('now') * 1000),
+                ('claude-auto-memory',       NULL, unixepoch('now') * 1000);",
         );
     }
     Ok(conn)
@@ -3814,6 +3838,76 @@ mod tests {
                 col_names
             );
         }
+    }
+
+    #[test]
+    fn test_fresh_db_has_auto_memory_schema() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("auto-memory-fresh.db");
+        let conn = open_db(&db).unwrap();
+
+        for table in [
+            "memory_documents",
+            "memory_revisions",
+            "memory_chunks",
+            "memory_enrichment_queue",
+            "knowledge_node_memory_chunks",
+        ] {
+            let exists: bool = conn
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1)",
+                    [table],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert!(exists, "fresh DB missing {table}");
+        }
+
+        let source_seeded: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM source_health WHERE source='claude-auto-memory')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(
+            source_seeded,
+            "fresh DB must seed claude-auto-memory health"
+        );
+    }
+
+    #[test]
+    fn test_migrate_v18_to_v19_adds_auto_memory_schema_without_touching_data() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("auto-memory-v18.db");
+        let conn = Connection::open(&db).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE sentinel (id INTEGER PRIMARY KEY, value TEXT NOT NULL);
+             INSERT INTO sentinel(value) VALUES ('preserved');
+             PRAGMA user_version = 18;",
+        )
+        .unwrap();
+        drop(conn);
+
+        let conn = open_db(&db).unwrap();
+        let version: i64 = conn
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, EXPECTED_VERSION);
+        assert_eq!(
+            conn.query_row("SELECT value FROM sentinel", [], |row| row
+                .get::<_, String>(0))
+                .unwrap(),
+            "preserved"
+        );
+        let queue_exists: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='memory_enrichment_queue')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(queue_exists);
     }
 
     /// REGRESSION (BT-29 schema gap, 2026-05-04): the bench's corpus init

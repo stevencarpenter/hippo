@@ -636,6 +636,9 @@ CREATE TABLE IF NOT EXISTS agentic_cursor (
     updated_at           INTEGER NOT NULL
 );
 
+-- Claude Code auto-memory tables live in schema/auto_memory.sql (concatenated at
+-- install/migrate time in storage.rs). Seed capture-health for the memory source.
+
 -- Seed source_health rows for agentic sources.
 -- `agentic-session-claude` uses MAX(start_time) from backend;
 -- `agentic-session-opencode`, `agentic-session-codex`, and
@@ -648,9 +651,10 @@ INSERT OR IGNORE INTO source_health (source, last_event_ts, updated_at) VALUES
     -- brain-preflight: the brain's enrichment loop writes here every cycle
     -- with the inference-backend reachability result. Watchdog I-12 reads
     -- consecutive_failures to alarm when preflight has been stuck failing.
-    ('brain-preflight',          NULL, unixepoch('now') * 1000);
+    ('brain-preflight',          NULL, unixepoch('now') * 1000),
+    ('claude-auto-memory',       NULL, unixepoch('now') * 1000);
 
 -- The `claude_session_offsets` table (deprecated since T-5) is preserved
 -- to avoid breaking existing CREATE SCHEMA users.
 
-PRAGMA user_version = 18;
+PRAGMA user_version = 19;

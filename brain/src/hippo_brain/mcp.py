@@ -199,7 +199,8 @@ async def search_knowledge(
         project: Substring match on cwd or git_repo of linked events/sessions.
         since: Window like "24h", "7d", "30m". Empty means no time filter.
         source: Restrict to nodes linked to a specific source: "shell",
-                "claude", "browser", or "workflow". Empty means all sources.
+                "claude", "browser", "workflow", or "claude-auto-memory".
+                Empty means all sources; an unrecognized source raises.
         branch: Exact match on git_branch of linked events/sessions.
     """
     limit = _clamp_limit(limit)

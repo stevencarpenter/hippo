@@ -87,6 +87,20 @@ def ensure_vec_table(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
+def vec_table_available(conn: sqlite3.Connection) -> bool:
+    """True if the vec0 ``knowledge_vectors`` virtual table is reachable on ``conn``.
+
+    A connection without sqlite-vec loaded cannot see the vec0 virtual table at
+    all, so write paths must check this before issuing a vector DELETE — skipping
+    it (rather than erroring) keeps vec-less callers (e.g. unit fixtures) working.
+    """
+    try:
+        conn.execute("SELECT knowledge_node_id FROM knowledge_vectors LIMIT 0")
+        return True
+    except sqlite3.OperationalError:
+        return False
+
+
 def get_stored_embed_model(conn: sqlite3.Connection) -> str | None:
     """Return the embedding model recorded in ``embed_model_meta``, or None."""
     row = conn.execute(_SQL_GET_STORED_EMBED_MODEL).fetchone()

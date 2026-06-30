@@ -244,6 +244,18 @@ enabled = true
 # poll_interval_secs = 60
 # session_roots = []  # leave commented out; Rust default supplies ~/.cursor/projects
 
+# Claude Code auto-memory files are external, strictly read-only inputs.
+# Start with explicit sources; fleet discovery can be enabled separately when
+# its privacy boundaries are configured.
+[auto_memory]
+enabled = false
+# poll_interval_secs = 60  # com.hippo.auto-memory LaunchAgent cadence
+
+# [[auto_memory.sources]]
+# path = "/absolute/path/to/.claude/memory/MEMORY.md"
+# repository = "owner/repository"
+# logical_path = "MEMORY.md"
+
 [telemetry]
 # OpenTelemetry observability: traces, metrics, and logs to Grafana/Tempo/Loki/Prometheus.
 #

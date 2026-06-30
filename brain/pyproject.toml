@@ -1,6 +1,6 @@
 [project]
 name = "hippo-brain"
-version = "0.29.1"
+version = "0.30.0"
 requires-python = ">=3.14"
 dependencies = [
   "httpx>=0.28",
@@ -31,6 +31,8 @@ hippo-eval = "hippo_brain.evaluation:main"
 hippo-bench = "hippo_brain.bench.cli:main"
 hippo-brain-api = "hippo_brain.api_cli:main"
 hippo-brain-openapi = "hippo_brain.openapi:main"
+hippo-auto-memory = "hippo_brain.auto_memory:main"
+hippo-auto-memory-poll = "hippo_brain.auto_memory:poll_main"
 
 [build-system]
 requires = ["hatchling"]

@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "documents": [
+    {"path": "MEMORY.md", "features": ["index", "links", "list"]},
+    {"path": "project_architecture.md", "features": ["headings", "long"]},
+    {"path": "debugging.md", "features": ["headings", "code"]},
+    {"path": "workflow.md", "features": ["headings", "list"]},
+    {"path": "feedback_candor.md", "features": ["short"]},
+    {"path": "duplicate_feedback.md", "features": ["duplicate-content"]}
+  ],
+  "queries": [
+    {"id": "q-architecture", "query": "which process owns vector embeddings", "expected_path": "project_architecture.md"},
+    {"id": "q-busy", "query": "how should SQLITE_BUSY be retried", "expected_path": "debugging.md"},
+    {"id": "q-release", "query": "what command runs the release verification", "expected_path": "workflow.md"},
+    {"id": "q-candor", "query": "how should weak technical assumptions be handled", "expected_path": "feedback_candor.md"},
+    {"id": "q-index", "query": "where are detailed debugging notes linked", "expected_path": "MEMORY.md"}
+  ]
+}

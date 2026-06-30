@@ -29,7 +29,34 @@ pub struct HippoConfig {
     #[serde(default)]
     pub cursor: CursorConfig,
     #[serde(default)]
+    pub auto_memory: AutoMemoryConfig,
+    #[serde(default)]
     pub reaper: ReaperConfig,
+}
+
+/// Explicit read-only Claude Code auto-memory sources. Fleet discovery is a
+/// later layer; this list is the deterministic single-file operator contract.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct AutoMemoryConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_auto_memory_poll_interval_secs")]
+    pub poll_interval_secs: u64,
+    #[serde(default)]
+    pub sources: Vec<AutoMemorySourceConfig>,
+}
+
+fn default_auto_memory_poll_interval_secs() -> u64 {
+    60
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AutoMemorySourceConfig {
+    pub path: PathBuf,
+    #[serde(default)]
+    pub repository: Option<String>,
+    #[serde(default)]
+    pub logical_path: Option<String>,
 }
 
 /// OpenAI-compatible inference backend (LM Studio, oMLX, ollama, vLLM, etc.).
@@ -172,6 +199,20 @@ fn default_data_dir() -> PathBuf {
         .or_else(|| dirs::home_dir().map(|h| h.join(".local/share")))
         .unwrap_or_else(|| PathBuf::from(".local/share"));
     base.join("hippo")
+}
+
+/// Canonical install location for the Python brain package, mirroring the
+/// `hippo daemon install` default. The single source of truth for where the
+/// `uv --project <brain>` calls (install, serve, auto-memory poll) point.
+///
+/// Deliberately home-based and NOT derived from `data_dir`: the installer always
+/// places the brain under `~/.local/share/hippo-brain`, so deriving it from a
+/// (potentially `XDG_DATA_HOME`-overridden) `data_dir` would point callers at a
+/// directory the installer never created.
+pub fn default_brain_dir() -> PathBuf {
+    dirs::home_dir()
+        .map(|h| h.join(".local/share/hippo-brain"))
+        .unwrap_or_else(|| PathBuf::from(".local/share/hippo-brain"))
 }
 
 /// XDG-based config directory. Same rationale as default_data_dir.
@@ -883,6 +924,28 @@ mod tests {
     use super::*;
 
     #[test]
+    fn default_brain_dir_is_canonical_install_location() {
+        // The brain dir must resolve to the install location (`~/.local/share/
+        // hippo-brain`), NOT a sibling of `data_dir`. Otherwise an XDG_DATA_HOME
+        // override that relocates data_dir would point the auto-memory poller at a
+        // brain that was never installed there.
+        let dir = default_brain_dir();
+        assert!(
+            dir.ends_with("hippo-brain"),
+            "expected brain dir to end with hippo-brain, got {}",
+            dir.display()
+        );
+        assert!(
+            dir.to_string_lossy().contains(".local/share/hippo-brain"),
+            "expected canonical install location, got {}",
+            dir.display()
+        );
+        if let Some(home) = dirs::home_dir() {
+            assert_eq!(dir, home.join(".local/share/hippo-brain"));
+        }
+    }
+
+    #[test]
     fn test_default_config() {
         let config = HippoConfig::default();
         assert_eq!(config.inference.base_url, "http://127.0.0.1:42069/v1");
@@ -1301,5 +1364,38 @@ strip_params = ["secret", "nonce"]
         let toml = "";
         let cfg: HippoConfig = toml::from_str(toml).unwrap();
         assert!(cfg.cursor.enabled);
+    }
+
+    #[test]
+    fn auto_memory_config_defaults_disabled_and_parses_explicit_sources() {
+        let default_cfg: HippoConfig = toml::from_str("").unwrap();
+        assert!(!default_cfg.auto_memory.enabled);
+        assert!(default_cfg.auto_memory.sources.is_empty());
+
+        let cfg: HippoConfig = toml::from_str(
+            r#"
+            [auto_memory]
+            enabled = true
+            [[auto_memory.sources]]
+            path = "/tmp/hippo-memory/MEMORY.md"
+            repository = "sjcarpenter/hippo"
+            logical_path = "MEMORY.md"
+            "#,
+        )
+        .unwrap();
+        assert!(cfg.auto_memory.enabled);
+        assert_eq!(cfg.auto_memory.sources.len(), 1);
+        assert_eq!(
+            cfg.auto_memory.sources[0].path,
+            PathBuf::from("/tmp/hippo-memory/MEMORY.md")
+        );
+        assert_eq!(
+            cfg.auto_memory.sources[0].repository.as_deref(),
+            Some("sjcarpenter/hippo")
+        );
+        assert_eq!(
+            cfg.auto_memory.sources[0].logical_path.as_deref(),
+            Some("MEMORY.md")
+        );
     }
 }
