@@ -215,12 +215,7 @@ async fn main() -> Result<()> {
                 force,
                 brain_dir: brain_dir_arg,
             } => {
-                let brain_dir = brain_dir_arg.unwrap_or_else(|| {
-                    // Default to ~/.local/share/hippo-brain
-                    dirs::home_dir()
-                        .expect("cannot determine home directory")
-                        .join(".local/share/hippo-brain")
-                });
+                let brain_dir = brain_dir_arg.unwrap_or_else(hippo_core::config::default_brain_dir);
 
                 let vars = install::detect_vars(&brain_dir)?;
 
@@ -679,10 +674,8 @@ async fn main() -> Result<()> {
                 // The omlx plist only references __HOME__/__PATH__/__DATA_DIR__,
                 // all of which PlistVars already provides. brain_dir is unused
                 // by the template but required to materialise PlistVars; the
-                // default is fine.
-                let brain_dir = dirs::home_dir()
-                    .context("cannot determine home directory")?
-                    .join(".local/share/hippo-brain");
+                // shared canonical resolver is fine.
+                let brain_dir = hippo_core::config::default_brain_dir();
                 let vars = install::detect_vars(&brain_dir)?;
                 let template = include_str!("../../../launchd/com.hippo.omlx.plist");
                 install::install_plist("com.hippo.omlx", template, &vars, force)?;

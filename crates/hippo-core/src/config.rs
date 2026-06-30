@@ -201,6 +201,20 @@ fn default_data_dir() -> PathBuf {
     base.join("hippo")
 }
 
+/// Canonical install location for the Python brain package, mirroring the
+/// `hippo daemon install` default. The single source of truth for where the
+/// `uv --project <brain>` calls (install, serve, auto-memory poll) point.
+///
+/// Deliberately home-based and NOT derived from `data_dir`: the installer always
+/// places the brain under `~/.local/share/hippo-brain`, so deriving it from a
+/// (potentially `XDG_DATA_HOME`-overridden) `data_dir` would point callers at a
+/// directory the installer never created.
+pub fn default_brain_dir() -> PathBuf {
+    dirs::home_dir()
+        .map(|h| h.join(".local/share/hippo-brain"))
+        .unwrap_or_else(|| PathBuf::from(".local/share/hippo-brain"))
+}
+
 /// XDG-based config directory. Same rationale as default_data_dir.
 fn default_config_dir() -> PathBuf {
     let base = std::env::var_os("XDG_CONFIG_HOME")
@@ -908,6 +922,28 @@ pub const ENV_ALLOWLIST: &[&str] = &[
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn default_brain_dir_is_canonical_install_location() {
+        // The brain dir must resolve to the install location (`~/.local/share/
+        // hippo-brain`), NOT a sibling of `data_dir`. Otherwise an XDG_DATA_HOME
+        // override that relocates data_dir would point the auto-memory poller at a
+        // brain that was never installed there.
+        let dir = default_brain_dir();
+        assert!(
+            dir.ends_with("hippo-brain"),
+            "expected brain dir to end with hippo-brain, got {}",
+            dir.display()
+        );
+        assert!(
+            dir.to_string_lossy().contains(".local/share/hippo-brain"),
+            "expected canonical install location, got {}",
+            dir.display()
+        );
+        if let Some(home) = dirs::home_dir() {
+            assert_eq!(dir, home.join(".local/share/hippo-brain"));
+        }
+    }
 
     #[test]
     fn test_default_config() {

@@ -11,7 +11,10 @@ import time
 from datetime import datetime, timezone
 
 from hippo_brain.models import CIAnnotation, CIJob, CIStatus, Lesson
-from hippo_brain.source_filters import knowledge_source_exists_clause, table_exists
+from hippo_brain.source_filters import (
+    knowledge_memory_project_clause,
+    knowledge_source_exists_clause,
+)
 
 
 MAX_LIMIT = 100
@@ -193,16 +196,9 @@ def _build_knowledge_filter_clause(
                 "    AND (s.cwd LIKE ? OR s.project_dir LIKE ?))"
             )
             params.extend([like, like])
-        if table_exists(conn, "knowledge_node_memory_chunks"):
-            project_clause += (
-                " OR EXISTS (SELECT 1 FROM knowledge_node_memory_chunks knmc "
-                "  JOIN memory_chunks mc ON mc.id = knmc.memory_chunk_id "
-                "  JOIN memory_revisions mr ON mr.id = mc.revision_id "
-                "  JOIN memory_documents md ON md.id = mr.document_id "
-                "  WHERE knmc.knowledge_node_id = kn.id "
-                "    AND md.active_revision_id = mr.id "
-                "    AND (md.repository LIKE ? OR md.source_path LIKE ?))"
-            )
+        memory_project = knowledge_memory_project_clause(conn)
+        if memory_project is not None:
+            project_clause += f" OR {memory_project}"
             params.extend([like, like])
         project_clause += ")"
         clauses.append(project_clause)

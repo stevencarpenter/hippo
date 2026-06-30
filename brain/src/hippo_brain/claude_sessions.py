@@ -1,7 +1,6 @@
 """Parse Claude Code session logs into segments for enrichment."""
 
 import json
-import sqlite3
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -16,6 +15,7 @@ from hippo_brain.enrichment import (
 )
 from hippo_brain.entity_resolver import strip_worktree_prefix
 from hippo_brain.models import EnrichmentResult
+from hippo_brain.vector_store import vec_table_available
 from hippo_brain.watchdog import DEFAULT_LOCK_TIMEOUT_MS
 
 STALE_LOCK_TIMEOUT_MS = DEFAULT_LOCK_TIMEOUT_MS
@@ -762,15 +762,6 @@ def _knowledge_node_link_tables(conn) -> dict[str, str]:
     return tables
 
 
-def _vec_table_available(conn) -> bool:
-    """True if the vec0 ``knowledge_vectors`` virtual table is reachable."""
-    try:
-        conn.execute("SELECT knowledge_node_id FROM knowledge_vectors LIMIT 0")
-        return True
-    except sqlite3.OperationalError:
-        return False
-
-
 def replace_prior_agentic_nodes(conn, segment_ids: list[int]) -> int:
     """Delete prior knowledge nodes linked SOLELY to ``segment_ids``.
 
@@ -825,7 +816,7 @@ def replace_prior_agentic_nodes(conn, segment_ids: list[int]) -> int:
     if not prior:
         return 0
 
-    vec_ok = _vec_table_available(conn)
+    vec_ok = vec_table_available(conn)
     if not vec_ok:
         # Deleting nodes without clearing their vectors would orphan vec0 rows
         # (vec0 has no FK cascade). Refuse rather than corrupt the vector store.

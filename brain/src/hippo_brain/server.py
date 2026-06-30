@@ -1567,8 +1567,15 @@ class BrainServer:
                     )
                 finally:
                     conn.close()
-                _add(_nodes_created, source="claude-auto-memory")
                 self._record_success()
+                if node_id is None:
+                    logger.info(
+                        "auto-memory revision %d superseded before enrichment finished; "
+                        "stale result discarded",
+                        revision_id,
+                    )
+                    continue
+                _add(_nodes_created, source="claude-auto-memory")
                 logger.info("enriched auto-memory revision %d -> node %d", revision_id, node_id)
 
                 if self.embedding_model:

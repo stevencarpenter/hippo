@@ -18,6 +18,8 @@ from urllib.parse import urlsplit
 from hippo_brain.markdown_chunking import MarkdownChunk, markdown_heading_chunks
 from hippo_brain.models import EnrichmentResult
 from hippo_brain.redaction import redact
+from hippo_brain.schema_version import EXPECTED_SCHEMA_VERSION
+from hippo_brain.vector_store import vec_table_available
 
 SOURCE_KIND = "claude-auto-memory"
 CHUNKER_NAME = "markdown-headings"
@@ -130,15 +132,41 @@ def ingest_memory_file(
     path = Path(source_path).expanduser()
     if not path.is_file():
         raise ValueError(f"auto-memory source must be an explicit regular file: {path}")
+
+    stat = path.stat()
+    resolved = str(path.resolve())
+    identity_path = logical_path or path.name
+
+    # Fast path: a poll fires every 60s, but memory files rarely change. When the
+    # on-disk mtime(ms)+size still match the document's current revision, the
+    # content is unchanged, so skip the Git identity derivation (two subprocesses),
+    # the full read, the regex redact, and the double hash entirely. mtime+size is
+    # the same cheap proxy the codex/cursor pollers use; logical_path is resolved
+    # without Git so this lookup stays cheap. Any real edit changes mtime or size
+    # and falls through to the authoritative content-hash path below.
+    unchanged = conn.execute(
+        "SELECT d.id, d.uuid, r.id, r.revision_number "
+        "FROM memory_documents d JOIN memory_revisions r ON r.id = d.current_revision_id "
+        "WHERE d.source_kind = ? AND d.source_path = ? AND d.logical_path = ? "
+        "AND d.state = 'active' AND r.source_mtime_ms = ? AND r.source_size = ?",
+        (SOURCE_KIND, resolved, identity_path, int(stat.st_mtime * 1000), stat.st_size),
+    ).fetchone()
+    if unchanged is not None:
+        doc_id, doc_uuid, rev_id, rev_num = unchanged
+        chunk_count = conn.execute(
+            "SELECT COUNT(*) FROM memory_chunks WHERE revision_id = ?", (rev_id,)
+        ).fetchone()[0]
+        return IngestResult(
+            int(doc_id), doc_uuid, int(rev_id), int(rev_num), False, int(chunk_count)
+        )
+
     repository_identity = derive_repository_identity(path, repository)
 
     source = path.read_text(encoding="utf-8")
     source_hash = _sha256(source)
     redacted = redact(source)
     content_hash = _sha256(redacted)
-    stat = path.stat()
     observed_at = now_ms if now_ms is not None else int(time.time() * 1000)
-    identity_path = logical_path or path.name
     document_uuid = str(
         uuid.uuid5(_IDENTITY_NAMESPACE, f"{SOURCE_KIND}\0{repository_identity}\0{identity_path}")
     )
@@ -160,7 +188,7 @@ def ingest_memory_file(
                     SOURCE_KIND,
                     repository_identity,
                     identity_path,
-                    str(path.resolve()),
+                    resolved,
                     observed_at,
                     observed_at,
                     observed_at,
@@ -173,7 +201,7 @@ def ingest_memory_file(
             conn.execute(
                 "UPDATE memory_documents SET source_path = ?, state = 'active', "
                 "observed_at = ?, updated_at = ?, tombstoned_at = NULL WHERE id = ?",
-                (str(path.resolve()), observed_at, observed_at, document_id),
+                (resolved, observed_at, observed_at, document_id),
             )
 
         if current_revision_id is not None:
@@ -277,28 +305,45 @@ def claim_pending_memories(
     worker_id: str,
     limit: int = 10,
     now_ms: int | None = None,
+    stale_lock_timeout_ms: int | None = None,
 ) -> list[MemoryClaim]:
-    """Atomically claim pending memory revisions and load their redacted chunks."""
+    """Atomically claim pending memory revisions and load their redacted chunks.
+
+    When ``stale_lock_timeout_ms`` is set, revisions stuck in ``processing`` with
+    a ``locked_at`` older than the timeout are reclaimed too — recovering locks
+    orphaned by a crashed worker (the sibling agentic/shell claims do the same).
+    """
     if limit < 1:
         raise ValueError("limit must be >= 1")
     claimed_at = now_ms if now_ms is not None else int(time.time() * 1000)
+    # `claimable` is a fixed predicate (no user input); the same fragment gates
+    # both the SELECT and the UPDATE so a row can never be selected but not locked.
+    if stale_lock_timeout_ms is not None:
+        stale_before = claimed_at - stale_lock_timeout_ms
+        claimable = (
+            "(status = 'pending' OR (status = 'processing' AND COALESCE(locked_at, 0) <= ?))"
+        )
+        claimable_params: tuple[int, ...] = (stale_before,)
+    else:
+        claimable = "status = 'pending'"
+        claimable_params = ()
     conn.execute("BEGIN IMMEDIATE")
     try:
         revision_ids = [
             int(row[0])
             for row in conn.execute(
-                "SELECT revision_id FROM memory_enrichment_queue "
-                "WHERE status = 'pending' ORDER BY priority, enqueued_at LIMIT ?",
-                (limit,),
+                f"SELECT revision_id FROM memory_enrichment_queue "  # noqa: S608
+                f"WHERE {claimable} ORDER BY priority, enqueued_at LIMIT ?",
+                (*claimable_params, limit),
             ).fetchall()
         ]
         if revision_ids:
             placeholders = ",".join("?" for _ in revision_ids)
             conn.execute(
-                f"UPDATE memory_enrichment_queue SET status = 'processing', locked_at = ?, "
+                f"UPDATE memory_enrichment_queue SET status = 'processing', locked_at = ?, "  # noqa: S608
                 f"locked_by = ?, updated_at = ? WHERE revision_id IN ({placeholders}) "
-                "AND status = 'pending'",
-                (claimed_at, worker_id, claimed_at, *revision_ids),
+                f"AND {claimable}",
+                (claimed_at, worker_id, claimed_at, *revision_ids, *claimable_params),
             )
             conn.execute(
                 f"UPDATE memory_documents SET projection_status = 'processing', updated_at = ? "
@@ -369,13 +414,18 @@ def write_memory_knowledge_node(
     model_name: str,
     *,
     now_ms: int | None = None,
-) -> int:
+) -> int | None:
     """Publish a memory projection and mark its queue item done in one transaction.
 
     Idempotent: if a knowledge node already exists for this revision (e.g. after a
     previous successful enrichment whose embedding step failed), it reuses the existing
     node. When superseding an older revision, the old knowledge node is cleaned up
     atomically within the same transaction.
+
+    Returns the published knowledge-node id, or ``None`` when the revision was
+    superseded by a newer one before its enrichment finished. A stale result is
+    discarded rather than promoted: publishing it would delete the current node
+    and revert the projection to outdated content.
     """
     completed_at = now_ms if now_ms is not None else int(time.time() * 1000)
     revision = conn.execute(
@@ -413,6 +463,30 @@ def write_memory_knowledge_node(
     )
     conn.execute("BEGIN IMMEDIATE")
     try:
+        current_revision_id = conn.execute(
+            "SELECT current_revision_id FROM memory_documents WHERE id = ?",
+            (document_id,),
+        ).fetchone()[0]
+        if current_revision_id is not None and current_revision_id != revision_id:
+            # The document advanced to a newer revision before this enrichment
+            # finished. Promoting now would delete the current node and revert the
+            # projection to stale content, so discard the stale result: record that
+            # the revision was enriched (history) and retire its queue row without
+            # minting or promoting a node. Checked inside BEGIN IMMEDIATE so a
+            # concurrent ingest cannot move current_revision_id between here and
+            # the promote below.
+            conn.execute(
+                "UPDATE memory_revisions SET summary = ?, enrichment_model = ?, "
+                "enriched_at = ? WHERE id = ?",
+                (result.summary, model_name, completed_at, revision_id),
+            )
+            conn.execute(
+                "UPDATE memory_enrichment_queue SET status = 'done', locked_at = NULL, "
+                "locked_by = NULL, error_message = NULL, updated_at = ? WHERE revision_id = ?",
+                (completed_at, revision_id),
+            )
+            conn.commit()
+            return None
         cursor = conn.execute(
             "INSERT OR IGNORE INTO knowledge_nodes "
             "(uuid, content, embed_text, node_type, outcome, tags, enrichment_model, "
@@ -456,8 +530,23 @@ def write_memory_knowledge_node(
                 (old_active,),
             ).fetchone()
             if old_node_id is not None:
+                # vec0 has no FK cascade and the embed reaper only heals
+                # nodes-missing-vectors, so deleting the superseded node without its
+                # vector would orphan the vector forever. Refuse rather than orphan
+                # (mirrors claude_sessions.replace_prior_agentic_nodes); the prod
+                # enrichment conn always loads sqlite-vec via _get_conn.
+                if not vec_table_available(conn):
+                    raise RuntimeError(
+                        "write_memory_knowledge_node: vec0 knowledge_vectors not reachable; "
+                        "refusing to delete the superseded node to avoid an orphan vector "
+                        "(load sqlite-vec on this connection)"
+                    )
                 conn.execute(
                     "DELETE FROM knowledge_node_memory_chunks WHERE knowledge_node_id = ?",
+                    (old_node_id[0],),
+                )
+                conn.execute(
+                    "DELETE FROM knowledge_vectors WHERE knowledge_node_id = ?",
                     (old_node_id[0],),
                 )
                 conn.execute(
@@ -519,6 +608,10 @@ def _open_db(db_path: Path) -> sqlite3.Connection:
     return conn
 
 
+def _schema_version(conn: sqlite3.Connection) -> int:
+    return int(conn.execute("PRAGMA user_version").fetchone()[0])
+
+
 def poll_sources(
     conn: sqlite3.Connection,
     sources: list[dict[str, Any]],
@@ -570,6 +663,13 @@ def poll_from_config(config_path: Path | None = None) -> int:
     db_path = data_dir / "hippo.db"
     conn = _open_db(db_path)
     try:
+        version = _schema_version(conn)
+        if version != EXPECTED_SCHEMA_VERSION:
+            raise RuntimeError(
+                f"auto-memory poll requires schema version {EXPECTED_SCHEMA_VERSION}, "
+                f"found {version}; the daemon migrates hippo.db on startup. "
+                "Run `hippo doctor` to check daemon/brain version alignment."
+            )
         return poll_sources(conn, sources)
     finally:
         conn.close()
@@ -612,9 +712,11 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     conn = _open_db(args.db)
     try:
-        version = int(conn.execute("PRAGMA user_version").fetchone()[0])
-        if version != 19:
-            parser.error(f"database schema version must be 19, found {version}")
+        version = _schema_version(conn)
+        if version != EXPECTED_SCHEMA_VERSION:
+            parser.error(
+                f"database schema version must be {EXPECTED_SCHEMA_VERSION}, found {version}"
+            )
         result = ingest_memory_file(
             conn,
             args.file,

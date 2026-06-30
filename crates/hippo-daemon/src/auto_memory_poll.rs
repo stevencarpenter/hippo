@@ -2,14 +2,9 @@
 //! ingest to the Python brain package (`hippo-auto-memory-poll`).
 
 use anyhow::{Context, Result};
-use hippo_core::config::HippoConfig;
-use std::path::PathBuf;
+use hippo_core::config::{HippoConfig, default_brain_dir};
 use std::process::Command;
 use tracing::{debug, info};
-
-fn brain_project_dir(config: &HippoConfig) -> PathBuf {
-    config.storage.data_dir.with_file_name("hippo-brain")
-}
 
 /// One poll cycle: ingest every configured auto-memory source via Python.
 pub fn poll_tick(config: &HippoConfig) -> Result<usize> {
@@ -22,7 +17,9 @@ pub fn poll_tick(config: &HippoConfig) -> Result<usize> {
         return Ok(0);
     }
 
-    let brain_dir = brain_project_dir(config);
+    // Resolve the brain via the shared canonical resolver so this matches the
+    // install/serve location even under an XDG_DATA_HOME override.
+    let brain_dir = default_brain_dir();
     let config_path = config.storage.config_dir.join("config.toml");
     let output = Command::new("uv")
         .args([

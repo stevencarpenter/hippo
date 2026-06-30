@@ -831,6 +831,35 @@ def test_fetch_details_skips_probe_agentic_session(tmp_db):
     assert details[1]["captured_at"] == 1000
 
 
+def test_project_filter_includes_auto_memory_nodes(tmp_db, tmp_path):
+    """A project-scoped filter must keep auto-memory nodes (matched by repository).
+
+    Auto-memory nodes link only via knowledge_node_memory_chunks, so the project
+    clause must reach memory_documents.repository — otherwise RAG/`hippo ask`
+    silently drops memory nodes that MCP search returns.
+    """
+    from hippo_brain.auto_memory import ingest_memory_file, write_memory_knowledge_node
+    from hippo_brain.models import EnrichmentResult
+
+    conn, _ = tmp_db
+    source = tmp_path / "MEMORY.md"
+    source.write_text("# Build\n\nUse cargo.\n")
+    ingested = ingest_memory_file(conn, source, repository="hippo", now_ms=1000)
+    result = EnrichmentResult(
+        summary="Cargo build.",
+        intent="document",
+        outcome="success",
+        tags=["build"],
+        embed_text="cargo build hippo",
+    )
+    node_id = write_memory_knowledge_node(
+        conn, result, ingested.revision_id, "mock-model", now_ms=2000
+    )
+
+    assert _apply_filters(conn, [node_id], Filters(project="hippo")) == {node_id}
+    assert _apply_filters(conn, [node_id], Filters(project="not-a-match")) == set()
+
+
 def test_source_clause_claude_matches_agentic_link(tmp_db):
     conn, _ = tmp_db
     conn.execute(

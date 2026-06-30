@@ -29,6 +29,12 @@ class EnrichmentSource:
     name: str
     claim: ClaimFn
     enrich: EnrichFn
+    # When True, a claim failure propagates to the enrichment loop (records
+    # last_error + backs off) instead of being swallowed. Set for the primary
+    # shell source so a structural failure (SQL error, schema drift) surfaces
+    # rather than silently stopping shell enrichment with health still green
+    # (AP-11). Other sources deliberately swallow-and-continue.
+    propagate_claim_errors: bool = False
 
 
 def _claim_shell(conn: sqlite3.Connection, server: BrainServer) -> list[Any]:
@@ -85,13 +91,17 @@ def _claim_memory(conn: sqlite3.Connection, server: BrainServer) -> list[Any]:
         conn,
         worker_id="brain-enrichment",
         limit=server.max_claim_batch,
+        stale_lock_timeout_ms=server.lock_timeout_ms,
     )
 
 
 def build_enrichment_sources() -> tuple[EnrichmentSource, ...]:
     return (
         EnrichmentSource(
-            "shell", _claim_shell, lambda s, c, conn: s._enrich_shell_batches(c, conn)
+            "shell",
+            _claim_shell,
+            lambda s, c, conn: s._enrich_shell_batches(c, conn),
+            propagate_claim_errors=True,
         ),
         EnrichmentSource("claude", _claim_claude, lambda s, c, _conn: s._enrich_claude_batches(c)),
         EnrichmentSource(
@@ -117,6 +127,11 @@ def claim_all_sources(conn: sqlite3.Connection, server: BrainServer) -> dict[str
         try:
             claims[source.name] = source.claim(conn, server)
         except Exception as e:
+            if source.propagate_claim_errors:
+                # AP-11: surface structural claim failures for this source so the
+                # enrichment loop records last_error and backs off instead of
+                # silently enriching nothing while health reports green.
+                raise
             if source.name == "claude":
                 logger.debug("no claude segments to process: %s", e)
             else:

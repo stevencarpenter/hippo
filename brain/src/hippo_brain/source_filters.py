@@ -36,12 +36,36 @@ _SOURCE_EXISTS: dict[str, str] = {
 }
 
 
+_MEMORY_PROJECT_EXISTS = (
+    "EXISTS (SELECT 1 FROM knowledge_node_memory_chunks knmc "
+    "JOIN memory_chunks mc ON mc.id = knmc.memory_chunk_id "
+    "JOIN memory_revisions mr ON mr.id = mc.revision_id "
+    "JOIN memory_documents md ON md.id = mr.document_id "
+    "WHERE knmc.knowledge_node_id = kn.id "
+    "AND md.active_revision_id = mr.id AND md.state = 'active' "
+    "AND (md.repository LIKE ? OR md.source_path LIKE ?))"
+)
+
+
 def table_exists(conn: sqlite3.Connection, table: str) -> bool:
     row = conn.execute(
         "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?)",
         (table,),
     ).fetchone()
     return bool(row and row[0])
+
+
+def knowledge_memory_project_clause(conn: sqlite3.Connection | None = None) -> str | None:
+    """EXISTS fragment matching auto-memory nodes by project (repository/source_path).
+
+    Binds two ``?`` params: the project LIKE pattern for ``repository`` then for
+    ``source_path``. Returns None when the memory tables are absent (older schema)
+    so callers can skip it. Shared by retrieval and the MCP query builder so the
+    project-by-memory predicate is defined in exactly one place.
+    """
+    if conn is not None and not table_exists(conn, "knowledge_node_memory_chunks"):
+        return None
+    return _MEMORY_PROJECT_EXISTS
 
 
 def knowledge_source_exists_clause(

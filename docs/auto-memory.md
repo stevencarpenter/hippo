@@ -33,17 +33,17 @@ The command prints JSON containing the stable document UUID, revision, chunk cou
 
 ## Query
 
-Use the existing `search_knowledge` MCP tool with lexical mode while applying filters:
+Auto-memory is an always-on source: like shell, Claude, and browser activity, its enriched nodes participate in the default knowledge base, so `hippo ask` and `search_knowledge` surface them without any special flag. Pass `source="claude-auto-memory"` only to *scope* results to memory:
 
 ```text
 search_knowledge(query="busy timeout", mode="lexical", source="claude-auto-memory", project="owner/repository")
 ```
 
-Results include `source`, `source_path`, `repository`, `logical_path`, `content_hash`, and capture time. Only the active, successfully enriched revision is returned by the auto-memory source filter.
+Results include `source`, `source_path`, `repository`, `logical_path`, `content_hash`, and capture time. Only the active revision is ever queryable: superseding a revision replaces its knowledge node (and vector), and a revision superseded before its enrichment finishes is discarded rather than published, so stale memory content never appears in answers.
 
 ## Storage and rollback
 
-Schema v19 adds only additive tables: `memory_documents`, `memory_revisions`, `memory_chunks`, `memory_enrichment_queue`, `knowledge_node_memory_chunks`, `memory_categories`, and `memory_links`. Existing source and knowledge tables are unchanged.
+Schema v19 adds only additive tables: `memory_documents`, `memory_revisions`, `memory_chunks`, `memory_enrichment_queue`, and `knowledge_node_memory_chunks`. Existing source and knowledge tables are unchanged.
 
 To stop ingestion, set `auto_memory.enabled = false` and restart the brain. Existing memory knowledge remains queryable. For a full feature rollback, stop Hippo, back up `hippo.db`, delete knowledge nodes linked through `knowledge_node_memory_chunks`, then delete `memory_documents` rows; foreign-key cascades remove revisions, chunks, and queue rows. Do not reduce `PRAGMA user_version` or drop v19 tables while a v19 binary is installed.
 
