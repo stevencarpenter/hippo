@@ -14,6 +14,7 @@ from hippo_brain.models import CIAnnotation, CIJob, CIStatus, Lesson
 from hippo_brain.source_filters import (
     knowledge_memory_project_clause,
     knowledge_source_exists_clause,
+    table_exists as _table_exists,
 )
 
 
@@ -33,14 +34,6 @@ def _safe_json_loads(value, default):
         return json.loads(value)
     except ValueError:
         return default
-
-
-def _table_exists(conn: sqlite3.Connection, table_name: str) -> bool:
-    row = conn.execute(
-        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
-        (table_name,),
-    ).fetchone()
-    return row is not None
 
 
 def _agentic_link_target(
@@ -229,8 +222,13 @@ def _build_knowledge_filter_clause(
             claude_link_column=link_column,
             claude_session_table=session_table,
         )
-        if source_clause:
-            clauses.append(source_clause)
+        if source_clause is None:
+            # Mirror retrieval._apply_filters: an unrecognized (or unavailable)
+            # source must fail loudly. Silently dropping the clause would widen the
+            # result set to every knowledge node — a silent data-scope violation
+            # rather than the empty/error result the caller expects.
+            raise ValueError(f"unknown source filter: {source!r}")
+        clauses.append(source_clause)
 
     where = (" AND " + " AND ".join(clauses)) if clauses else ""
     return where, params

@@ -121,9 +121,16 @@ def build_enrichment_sources() -> tuple[EnrichmentSource, ...]:
     )
 
 
+# Single canonical registry: built once at import. claim_all_sources and
+# enrich_all_sources iterate the SAME tuple, so the claims dict keys (source.name)
+# can never desync from the enrich loop's source list, and the per-tick poll loop
+# does not rebuild six frozen dataclasses on every iteration.
+ENRICHMENT_SOURCES: tuple[EnrichmentSource, ...] = build_enrichment_sources()
+
+
 def claim_all_sources(conn: sqlite3.Connection, server: BrainServer) -> dict[str, list[Any]]:
     claims: dict[str, list[Any]] = {}
-    for source in build_enrichment_sources():
+    for source in ENRICHMENT_SOURCES:
         try:
             claims[source.name] = source.claim(conn, server)
         except Exception as e:
@@ -148,8 +155,5 @@ async def enrich_all_sources(
     import asyncio
 
     await asyncio.gather(
-        *(
-            source.enrich(server, claims.get(source.name, []), conn)
-            for source in build_enrichment_sources()
-        )
+        *(source.enrich(server, claims.get(source.name, []), conn) for source in ENRICHMENT_SOURCES)
     )

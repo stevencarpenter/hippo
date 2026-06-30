@@ -144,12 +144,30 @@ def ingest_memory_file(
     # the same cheap proxy the codex/cursor pollers use; logical_path is resolved
     # without Git so this lookup stays cheap. Any real edit changes mtime or size
     # and falls through to the authoritative content-hash path below.
+    #
+    # The authoritative document identity is (source_kind, repository, logical_path),
+    # but the fast path keys on source_path to avoid the Git derivation. When an
+    # explicit repository is configured we additionally scope by it — cheaply, no
+    # Git — so two sources sharing one path but declaring different repositories
+    # don't alias onto the first document and silently suppress the second. When
+    # the repository is auto-derived (None), the same path yields the same identity,
+    # so the path-keyed match is already unambiguous.
+    explicit_repo = repository.strip() if repository and repository.strip() else None
     unchanged = conn.execute(
         "SELECT d.id, d.uuid, r.id, r.revision_number "
         "FROM memory_documents d JOIN memory_revisions r ON r.id = d.current_revision_id "
         "WHERE d.source_kind = ? AND d.source_path = ? AND d.logical_path = ? "
+        "AND (? IS NULL OR d.repository = ?) "
         "AND d.state = 'active' AND r.source_mtime_ms = ? AND r.source_size = ?",
-        (SOURCE_KIND, resolved, identity_path, int(stat.st_mtime * 1000), stat.st_size),
+        (
+            SOURCE_KIND,
+            resolved,
+            identity_path,
+            explicit_repo,
+            explicit_repo,
+            int(stat.st_mtime * 1000),
+            stat.st_size,
+        ),
     ).fetchone()
     if unchanged is not None:
         doc_id, doc_uuid, rev_id, rev_num = unchanged
@@ -487,7 +505,7 @@ def write_memory_knowledge_node(
             )
             conn.commit()
             return None
-        cursor = conn.execute(
+        conn.execute(
             "INSERT OR IGNORE INTO knowledge_nodes "
             "(uuid, content, embed_text, node_type, outcome, tags, enrichment_model, "
             "enrichment_version, created_at, updated_at) "
@@ -503,12 +521,15 @@ def write_memory_knowledge_node(
                 completed_at,
             ),
         )
-        if cursor.lastrowid:
-            node_id = int(cursor.lastrowid)
-        else:
-            node_id = conn.execute(
-                "SELECT id FROM knowledge_nodes WHERE uuid = ?", (node_uuid,)
-            ).fetchone()[0]
+        # Resolve the node id by its deterministic uuid, never via cursor.lastrowid:
+        # after an INSERT OR IGNORE that was *ignored* (the idempotent re-run), SQLite
+        # leaves last_insert_rowid() pointing at the previous successful insert on this
+        # connection, so lastrowid would be a stale (cross-table) rowid rather than 0.
+        # The truthiness check would then skip the fallback SELECT and return the wrong
+        # id. A uuid lookup is correct whether the row was just inserted or already existed.
+        node_id = conn.execute(
+            "SELECT id FROM knowledge_nodes WHERE uuid = ?", (node_uuid,)
+        ).fetchone()[0]
         conn.execute(
             "DELETE FROM knowledge_node_memory_chunks WHERE knowledge_node_id = ?",
             (node_id,),

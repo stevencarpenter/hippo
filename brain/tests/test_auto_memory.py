@@ -632,6 +632,45 @@ def test_idempotent_write_same_revision_reuses_node(
     )
 
 
+def test_idempotent_rewrite_resolves_node_by_uuid_not_stale_lastrowid(
+    conn: sqlite3.Connection, tmp_path: Path
+) -> None:
+    """An ignored INSERT OR IGNORE must resolve the node id by uuid, not lastrowid.
+
+    After an INSERT OR IGNORE that is *ignored*, SQLite leaves last_insert_rowid()
+    pointing at the previous successful insert on the connection — a stale,
+    cross-table rowid. We force that rowid away from the target node by writing a
+    second document's node first (advancing the connection's last rowid), then
+    re-write the first revision. Resolving via cursor.lastrowid would return the
+    second node's link rowid; resolving via uuid returns the correct node.
+    """
+    result = EnrichmentResult(
+        summary="x",
+        intent="document",
+        outcome="success",
+        tags=["x"],
+        embed_text="x",
+    )
+
+    src_a = tmp_path / "A.md"
+    src_a.write_text("# A\n\nAlpha.\n")
+    ing_a = ingest_memory_file(conn, src_a, repository="hippo", now_ms=1000)
+    node_a = write_memory_knowledge_node(conn, result, ing_a.revision_id, "mock-model", now_ms=2000)
+
+    # A second document + node advances the connection's last_insert_rowid past node_a,
+    # so a stale-lastrowid read would no longer coincidentally equal node_a's id.
+    src_b = tmp_path / "B.md"
+    src_b.write_text("# B\n\nBeta.\n")
+    ing_b = ingest_memory_file(conn, src_b, repository="hippo", now_ms=3000)
+    node_b = write_memory_knowledge_node(conn, result, ing_b.revision_id, "mock-model", now_ms=4000)
+    assert node_b != node_a
+
+    # Idempotent re-write of revision A: the INSERT OR IGNORE is ignored, so the id
+    # must come from the uuid lookup, not the (now-advanced) lastrowid.
+    again = write_memory_knowledge_node(conn, result, ing_a.revision_id, "mock-model", now_ms=5000)
+    assert again == node_a
+
+
 def test_enrichment_failure_keeps_old_projection_while_retry_pending(
     conn: sqlite3.Connection, tmp_path: Path
 ) -> None:

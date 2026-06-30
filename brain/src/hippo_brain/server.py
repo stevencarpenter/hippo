@@ -1550,59 +1550,72 @@ class BrainServer:
         embed_tasks: list[asyncio.Task[Any]] = []
         for claim in claims:
             revision_id = claim.revision_id
-            batch_start_ms = int(time.time() * 1000)
-            try:
-                result = await self._call_llm_with_retries(
-                    MEMORY_ENRICHMENT_SYSTEM_PROMPT,
-                    build_memory_enrichment_prompt(claim),
-                    "claude-auto-memory",
+            tracer = _get_tracer()
+            span = (
+                tracer.start_as_current_span(
+                    "enrichment.claude-auto-memory",
+                    attributes={
+                        "hippo.revision_id": revision_id,
+                        "hippo.model": self.enrichment_model,
+                    },
                 )
-                conn = self._get_conn()
+                if tracer
+                else nullcontext()
+            )
+            batch_start_ms = int(time.time() * 1000)
+            with span:
                 try:
-                    node_id = write_memory_knowledge_node(
-                        conn,
-                        result,
-                        revision_id,
-                        self.enrichment_model,
+                    result = await self._call_llm_with_retries(
+                        MEMORY_ENRICHMENT_SYSTEM_PROMPT,
+                        build_memory_enrichment_prompt(claim),
+                        "claude-auto-memory",
                     )
-                finally:
-                    conn.close()
-                self._record_success()
-                if node_id is None:
-                    logger.info(
-                        "auto-memory revision %d superseded before enrichment finished; "
-                        "stale result discarded",
-                        revision_id,
-                    )
-                    continue
-                _add(_nodes_created, source="claude-auto-memory")
-                logger.info("enriched auto-memory revision %d -> node %d", revision_id, node_id)
+                    conn = self._get_conn()
+                    try:
+                        node_id = write_memory_knowledge_node(
+                            conn,
+                            result,
+                            revision_id,
+                            self.enrichment_model,
+                        )
+                    finally:
+                        conn.close()
+                    self._record_success()
+                    if node_id is None:
+                        logger.info(
+                            "auto-memory revision %d superseded before enrichment finished; "
+                            "stale result discarded",
+                            revision_id,
+                        )
+                        continue
+                    _add(_nodes_created, source="claude-auto-memory")
+                    logger.info("enriched auto-memory revision %d -> node %d", revision_id, node_id)
 
-                if self.embedding_model:
-                    embed_tasks.append(
-                        asyncio.create_task(
-                            self._embed_node(
-                                node_id,
-                                embed_dict_from_result(node_id, result.embed_text),
-                                "claude-auto-memory",
+                    if self.embedding_model:
+                        embed_tasks.append(
+                            asyncio.create_task(
+                                self._embed_node(
+                                    node_id,
+                                    embed_dict_from_result(node_id, result.embed_text),
+                                    "claude-auto-memory",
+                                )
                             )
                         )
+                except Exception as e:
+                    _add(_enrichment_failures, source="claude-auto-memory")
+                    err_msg = self._record_error(e)
+                    self._log_enrichment_failure(
+                        "memory_enrichment_queue",
+                        "claude-auto-memory.chat",
+                        e,
+                        claim_count=1,
+                        claim_age_ms=int(time.time() * 1000) - batch_start_ms,
                     )
-            except Exception as e:
-                _add(_enrichment_failures, source="claude-auto-memory")
-                err_msg = self._record_error(e)
-                self._log_enrichment_failure(
-                    "memory_enrichment_queue",
-                    "claude-auto-memory.chat",
-                    e,
-                    claim_count=1,
-                    claim_age_ms=int(time.time() * 1000) - batch_start_ms,
-                )
-                retry_conn = self._get_conn()
-                try:
-                    mark_memory_enrichment_failed(retry_conn, revision_id, err_msg)
-                finally:
-                    retry_conn.close()
+                    retry_conn = self._get_conn()
+                    try:
+                        mark_memory_enrichment_failed(retry_conn, revision_id, err_msg)
+                    finally:
+                        retry_conn.close()
         if embed_tasks:
             await asyncio.gather(*embed_tasks, return_exceptions=True)
 
