@@ -980,10 +980,18 @@ async fn main() -> Result<()> {
                 _ => eprintln!("Unexpected response"),
             }
         }
-        Commands::ExportTraining { out: _, since: _ } => {
-            anyhow::bail!(
-                "Training export is not yet implemented. Use: uv run --project brain hippo-brain export"
-            );
+        Commands::ExportTraining { out, since } => {
+            let mut cmd = std::process::Command::new("uv");
+            cmd.args(["run", "--project", "brain", "hippo-brain", "export"])
+                .arg("--out")
+                .arg(&out);
+            if let Some(s) = &since {
+                cmd.arg("--since").arg(s);
+            }
+            let status = cmd.status()?;
+            if !status.success() {
+                anyhow::bail!("hippo-brain export failed (exit {status})");
+            }
         }
         Commands::Config { action } => match action {
             ConfigAction::Edit => {

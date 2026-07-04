@@ -415,14 +415,32 @@ def claim_pending_memories(
     return claims
 
 
+def render_memory_enrichment_input(
+    repository: str, logical_path: str, content_hash: str, chunk_texts: list[str]
+) -> str:
+    """Render the enrichment user message for a memory revision.
+
+    Single source of truth for the input format: the live enrichment loop
+    (via build_memory_enrichment_prompt) and the training exporter
+    (training.py) both go through here so exported examples match what the
+    model saw at enrichment time.
+    """
+    header = (
+        f"Claude Code auto-memory\nRepository: {repository}\n"
+        f"Path: {logical_path}\nContent hash: {content_hash}"
+    )
+    body = "\n\n---\n\n".join(chunk_texts)
+    return f"{header}\n\n{body}"
+
+
 def build_memory_enrichment_prompt(claim: MemoryClaim) -> str:
     """Render one claimed, already-redacted memory revision for enrichment."""
-    header = (
-        f"Claude Code auto-memory\nRepository: {claim.repository}\n"
-        f"Path: {claim.logical_path}\nContent hash: {claim.content_hash}"
+    return render_memory_enrichment_input(
+        claim.repository,
+        claim.logical_path,
+        claim.content_hash,
+        [chunk["content"] for chunk in claim.chunks],
     )
-    body = "\n\n---\n\n".join(chunk["content"] for chunk in claim.chunks)
-    return f"{header}\n\n{body}"
 
 
 def write_memory_knowledge_node(
