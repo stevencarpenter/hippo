@@ -138,6 +138,7 @@ def _cmd_enrich(args: object) -> None:
 
 def _cmd_export(args: object) -> None:
     import sqlite3
+    import sys
 
     from hippo_brain.mcp_queries import parse_since
     from hippo_brain.training import export_training_data
@@ -150,15 +151,21 @@ def _cmd_export(args: object) -> None:
         since_ms = parse_since(args.since)
         if since_ms == 0:
             print(f"Invalid --since value: {args.since!r} (expected e.g. 30d, 7d, 24h)")
-            return
+            sys.exit(1)
 
-    conn = sqlite3.connect(db_path)
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA busy_timeout=5000")
+    # sqlite errors (missing/locked/corrupt DB) get a clean message; anything
+    # else is a bug and should keep its full traceback rather than be masked.
     try:
-        stats = export_training_data(conn, args.out, since_ms=since_ms)
-    finally:
-        conn.close()
+        conn = sqlite3.connect(db_path)
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA busy_timeout=5000")
+        try:
+            stats = export_training_data(conn, args.out, since_ms=since_ms)
+        finally:
+            conn.close()
+    except sqlite3.Error as exc:
+        print(f"Export failed reading {db_path}: {exc}")
+        sys.exit(1)
 
     print(f"Exported {stats['total']} examples to {args.out}/")
     print(f"  train: {stats['train']}")

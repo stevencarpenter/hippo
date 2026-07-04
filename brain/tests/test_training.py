@@ -3,7 +3,12 @@ import tempfile
 import time
 from pathlib import Path
 
-from hippo_brain.training import export_training_data
+from hippo_brain.training import (
+    BROWSER_SYSTEM_PROMPT,
+    CLAUDE_SYSTEM_PROMPT,
+    SHELL_SYSTEM_PROMPT,
+    export_training_data,
+)
 
 
 def _seed_db(conn):
@@ -82,9 +87,8 @@ def test_export_training_data(tmp_db):
                 assert messages[1]["role"] == "user"
                 assert messages[2]["role"] == "assistant"
 
-                # System prompt should be the shell enrichment prompt
-                assert "developer activity analyst" in messages[0]["content"]
-                assert "shell command events" in messages[0]["content"]
+                # System prompt should be exactly the live shell enrichment prompt
+                assert messages[0]["content"] == SHELL_SYSTEM_PROMPT
 
                 # User message should contain command text
                 assert "command-" in messages[1]["content"]
@@ -159,8 +163,7 @@ def test_export_agentic_session(tmp_db):
         train_path = Path(tmpdir) / "train.jsonl"
         data = json.loads(train_path.read_text().strip())
         messages = data["messages"]
-        assert "developer activity analyst" in messages[0]["content"]
-        assert "Claude Code" in messages[0]["content"]
+        assert messages[0]["content"] == CLAUDE_SYSTEM_PROMPT
         assert "Fixed a bug" in messages[1]["content"]
         assistant = json.loads(messages[2]["content"])
         assert "Fixed authentication bug" in assistant["summary"]
@@ -211,7 +214,7 @@ def test_export_browser_node(tmp_db):
         train_path = Path(tmpdir) / "train.jsonl"
         data = json.loads(train_path.read_text().strip())
         messages = data["messages"]
-        assert "developer activity analyst" in messages[0]["content"]
+        assert messages[0]["content"] == BROWSER_SYSTEM_PROMPT
         assert "docs.rs" in messages[1]["content"]
         assistant = json.loads(messages[2]["content"])
         assert "Tokio" in assistant["summary"]

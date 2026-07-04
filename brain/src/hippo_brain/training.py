@@ -23,7 +23,8 @@ from hippo_brain.claude_sessions import CLAUDE_SYSTEM_PROMPT
 from hippo_brain.browser_enrichment import BROWSER_SYSTEM_PROMPT
 from hippo_brain.workflow_enrichment import WORKFLOW_SYSTEM_PROMPT
 from hippo_brain.auto_memory import (
-    MEMORY_ENRICHMENT_SYSTEM_PROMPT,
+    MEMORY_ENRICHMENT_SYSTEM_PROMPT as MEMORY_SYSTEM_PROMPT,
+    render_memory_enrichment_input,
 )
 
 
@@ -162,6 +163,11 @@ def export_training_data(
 
     Returns stats dict with total, train, valid, test counts and per-source
     breakdown.
+
+    ``min_events`` applies to the multi-event sources (shell, agentic,
+    browser).  Workflow and auto-memory nodes are single-input by
+    construction (one run / one revision per node), so they are exported
+    regardless of ``min_events`` rather than vanishing when it is > 1.
     """
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -301,6 +307,11 @@ def export_training_data(
         source_counts["browser"] = source_counts.get("browser", 0) + 1
 
     # ── 4. Workflow (CI) enrichment nodes ──────────────────────────────
+    # No outcome filter here, deliberately: for workflow nodes the outcome
+    # column holds the raw GitHub conclusion (success/failure/cancelled/…),
+    # not the LLM's success/partial vocab (see workflow_enrichment.py), and
+    # enriched *failed* runs — root cause + fix summaries — are exactly the
+    # training signal we want to keep.
     workflow_sql = """
         SELECT kn.id, kn.content
         FROM knowledge_nodes kn
@@ -356,25 +367,27 @@ def export_training_data(
         mem_params.append(since_ms)
 
     for node_id, content in conn.execute(memory_sql, mem_params).fetchall():
-        rev_row = conn.execute(
-            """SELECT mr.redacted_content
-               FROM memory_revisions mr
-               JOIN memory_chunks mc ON mc.revision_id = mr.id
+        chunk_rows = conn.execute(
+            """SELECT d.repository, d.logical_path, mr.content_hash, mc.content
+               FROM memory_chunks mc
+               JOIN memory_revisions mr ON mr.id = mc.revision_id
+               JOIN memory_documents d ON d.id = mr.document_id
                JOIN knowledge_node_memory_chunks knmc ON knmc.memory_chunk_id = mc.id
                WHERE knmc.knowledge_node_id = ?
-               LIMIT 1""",
+               ORDER BY mc.ordinal ASC""",
             (node_id,),
-        ).fetchone()
-        if rev_row is None:
-            continue
-        revision_text = rev_row[0] or ""
-        if not revision_text.strip():
+        ).fetchall()
+        chunk_texts = [row[3] for row in chunk_rows if (row[3] or "").strip()]
+        if not chunk_texts:
             continue
         try:
             parsed = json.loads(content)
         except json.JSONDecodeError, TypeError:
             continue
-        user_msg = revision_text
+        repository, logical_path, content_hash = chunk_rows[0][:3]
+        user_msg = render_memory_enrichment_input(
+            repository, logical_path, content_hash, chunk_texts
+        )
         assistant_msg = json.dumps(parsed, ensure_ascii=False)
         examples.append(
             {
@@ -411,6 +424,3 @@ def export_training_data(
         "test": len(test),
         "sources": source_counts,
     }
-
-
-MEMORY_SYSTEM_PROMPT = MEMORY_ENRICHMENT_SYSTEM_PROMPT
