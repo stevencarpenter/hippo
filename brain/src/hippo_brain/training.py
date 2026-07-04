@@ -413,9 +413,4 @@ def export_training_data(
     }
 
 
-# Truncate the auto-memory system prompt to the system-role instruction
-# only (the enrichment loop appends document chunks as the user message).
-_MEM_LINES = MEMORY_ENRICHMENT_SYSTEM_PROMPT.strip().split("\n")
-# The auto-memory system prompt ends with the output schema description;
-# we use the full prompt since the enrichment pipeline sends it as-is.
 MEMORY_SYSTEM_PROMPT = MEMORY_ENRICHMENT_SYSTEM_PROMPT
