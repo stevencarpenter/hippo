@@ -91,6 +91,85 @@ def _load_runtime_settings() -> dict:
     }
 
 
+def _cmd_serve(args: object) -> None:
+    import uvicorn
+
+    from hippo_brain.server import create_app
+    from hippo_brain.telemetry import init_telemetry
+
+    settings = _load_runtime_settings()
+
+    # Brain uses HTTP OTLP (port 4318); config.toml stores the daemon's gRPC
+    # endpoint (4317) as the single [telemetry] endpoint key. This replace
+    # is a local-stack convenience — if you run a remote collector with a
+    # non-standard port, set OTEL_EXPORTER_OTLP_ENDPOINT=http://host:PORT
+    # in the brain LaunchAgent env to bypass this substitution.
+    otel_endpoint = settings.get("telemetry_endpoint", "").replace(":4317", ":4318")
+    _otel_shutdown = init_telemetry("hippo-brain", endpoint=otel_endpoint)
+
+    app = create_app(
+        db_path=settings["db_path"],
+        data_dir=settings["data_dir"],
+        inference_base_url=settings["inference_base_url"],
+        inference_timeout_secs=settings["inference_timeout_secs"],
+        enrichment_model=settings["enrichment_model"],
+        embedding_model=settings["embedding_model"],
+        query_model=settings["query_model"],
+        poll_interval_secs=settings["poll_interval_secs"],
+        enrichment_batch_size=settings["max_events_per_chunk"],
+        session_stale_secs=settings["session_stale_secs"],
+        max_claim_batch=settings["max_claim_batch"],
+        lock_timeout_ms=int(settings["lock_timeout_secs"]) * 1000,
+        long_dwell_bypass_ms=settings["long_dwell_bypass_ms"],
+        embed_reaper_interval_secs=settings["embed_reaper_interval_secs"],
+        embed_reaper_batch_size=settings["embed_reaper_batch_size"],
+        embed_orphan_stale_secs=settings["embed_orphan_stale_secs"],
+    )
+    try:
+        uvicorn.run(app, host="127.0.0.1", port=settings["port"])
+    finally:
+        if _otel_shutdown:
+            _otel_shutdown()
+
+
+def _cmd_enrich(args: object) -> None:
+    print("Enrichment worker not yet implemented as standalone command.")
+
+
+def _cmd_export(args: object) -> None:
+    import sqlite3
+
+    from hippo_brain.mcp_queries import parse_since
+    from hippo_brain.training import export_training_data
+
+    settings = _load_runtime_settings()
+    db_path = settings["db_path"]
+
+    since_ms = None
+    if getattr(args, "since", None):
+        since_ms = parse_since(args.since)
+        if since_ms == 0:
+            print(f"Invalid --since value: {args.since!r} (expected e.g. 30d, 7d, 24h)")
+            return
+
+    conn = sqlite3.connect(db_path)
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA busy_timeout=5000")
+    try:
+        stats = export_training_data(conn, args.out, since_ms=since_ms)
+    finally:
+        conn.close()
+
+    print(f"Exported {stats['total']} examples to {args.out}/")
+    print(f"  train: {stats['train']}")
+    print(f"  valid: {stats['valid']}")
+    print(f"  test:  {stats['test']}")
+    if stats.get("sources"):
+        print("  sources:")
+        for src, count in sorted(stats["sources"].items()):
+            print(f"    {src}: {count}")
+
+
 def main() -> None:
     import argparse
 
@@ -101,56 +180,25 @@ def main() -> None:
             "~/.config/hippo/config.toml and serves an HTTP API on 127.0.0.1."
         ),
     )
-    parser.add_argument(
-        "command",
-        choices=("serve", "enrich"),
-        help=(
-            "serve: run the HTTP enrichment+query server (default under the "
-            "LaunchAgent). enrich: run a one-shot enrichment pass "
-            "(not yet implemented as a standalone command)."
-        ),
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    serve_p = sub.add_parser("serve", help="run the HTTP enrichment+query server")
+    serve_p.set_defaults(func=_cmd_serve)
+
+    enrich_p = sub.add_parser("enrich", help="run a one-shot enrichment pass")
+    enrich_p.set_defaults(func=_cmd_enrich)
+
+    export_p = sub.add_parser("export", help="export training data as JSONL for fine-tuning")
+    export_p.add_argument(
+        "--out",
+        default=".",
+        help="output directory (default: current directory)",
     )
+    export_p.add_argument(
+        "--since",
+        help="export nodes created since duration (e.g. 30d, 7d, 24h)",
+    )
+    export_p.set_defaults(func=_cmd_export)
+
     args = parser.parse_args()
-    command = args.command
-
-    if command == "serve":
-        import uvicorn
-
-        from hippo_brain.server import create_app
-        from hippo_brain.telemetry import init_telemetry
-
-        settings = _load_runtime_settings()
-
-        # Brain uses HTTP OTLP (port 4318); config.toml stores the daemon's gRPC
-        # endpoint (4317) as the single [telemetry] endpoint key. This replace
-        # is a local-stack convenience — if you run a remote collector with a
-        # non-standard port, set OTEL_EXPORTER_OTLP_ENDPOINT=http://host:PORT
-        # in the brain LaunchAgent env to bypass this substitution.
-        otel_endpoint = settings.get("telemetry_endpoint", "").replace(":4317", ":4318")
-        _otel_shutdown = init_telemetry("hippo-brain", endpoint=otel_endpoint)
-
-        app = create_app(
-            db_path=settings["db_path"],
-            data_dir=settings["data_dir"],
-            inference_base_url=settings["inference_base_url"],
-            inference_timeout_secs=settings["inference_timeout_secs"],
-            enrichment_model=settings["enrichment_model"],
-            embedding_model=settings["embedding_model"],
-            query_model=settings["query_model"],
-            poll_interval_secs=settings["poll_interval_secs"],
-            enrichment_batch_size=settings["max_events_per_chunk"],
-            session_stale_secs=settings["session_stale_secs"],
-            max_claim_batch=settings["max_claim_batch"],
-            lock_timeout_ms=int(settings["lock_timeout_secs"]) * 1000,
-            long_dwell_bypass_ms=settings["long_dwell_bypass_ms"],
-            embed_reaper_interval_secs=settings["embed_reaper_interval_secs"],
-            embed_reaper_batch_size=settings["embed_reaper_batch_size"],
-            embed_orphan_stale_secs=settings["embed_orphan_stale_secs"],
-        )
-        try:
-            uvicorn.run(app, host="127.0.0.1", port=settings["port"])
-        finally:
-            if _otel_shutdown:
-                _otel_shutdown()
-    elif command == "enrich":
-        print("Enrichment worker not yet implemented as standalone command.")
+    args.func(args)
