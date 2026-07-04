@@ -150,21 +150,26 @@ def _cmd_export(args: object) -> None:
     if getattr(args, "since", None):
         since_ms = parse_since(args.since)
         if since_ms == 0:
-            print(f"Invalid --since value: {args.since!r} (expected e.g. 30d, 7d, 24h)")
+            print(
+                f"Invalid --since value: {args.since!r} (expected e.g. 30d, 7d, 24h)",
+                file=sys.stderr,
+            )
             sys.exit(1)
 
-    # sqlite errors (missing/locked/corrupt DB) get a clean message; anything
-    # else is a bug and should keep its full traceback rather than be masked.
+    # Read-only URI: a plain connect() would silently create an empty DB (and
+    # WAL sidecars) on a missing/typo'd path, then fail with a misleading
+    # "no such table" error. mode=ro turns that into "unable to open database
+    # file" caught below. sqlite errors (missing/locked/corrupt DB) get a
+    # clean message; anything else is a bug and keeps its full traceback.
     try:
-        conn = sqlite3.connect(db_path)
-        conn.execute("PRAGMA journal_mode=WAL")
+        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
         conn.execute("PRAGMA busy_timeout=5000")
         try:
             stats = export_training_data(conn, args.out, since_ms=since_ms)
         finally:
             conn.close()
     except sqlite3.Error as exc:
-        print(f"Export failed reading {db_path}: {exc}")
+        print(f"Export failed reading {db_path}: {exc}", file=sys.stderr)
         sys.exit(1)
 
     print(f"Exported {stats['total']} examples to {args.out}/")

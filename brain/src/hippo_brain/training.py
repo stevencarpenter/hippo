@@ -374,7 +374,7 @@ def export_training_data(
                JOIN memory_documents d ON d.id = mr.document_id
                JOIN knowledge_node_memory_chunks knmc ON knmc.memory_chunk_id = mc.id
                WHERE knmc.knowledge_node_id = ?
-               ORDER BY mc.ordinal ASC""",
+               ORDER BY mc.revision_id ASC, mc.ordinal ASC""",
             (node_id,),
         ).fetchall()
         chunk_texts = [row[3] for row in chunk_rows if (row[3] or "").strip()]
