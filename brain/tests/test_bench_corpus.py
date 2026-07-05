@@ -379,6 +379,7 @@ def test_overwrite_protection(seeded_db, tmp_path):
     init_corpus(**common_kwargs)
     with pytest.raises(FileExistsError):
         init_corpus(**common_kwargs)
+    init_corpus(**common_kwargs, force=True)
 
 
 # ── 9. Probe-tag exclusion ────────────────────────────────────────────────

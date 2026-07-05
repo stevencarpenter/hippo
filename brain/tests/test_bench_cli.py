@@ -40,6 +40,7 @@ def test_cli_corpus_help_lists_v2_args(capsys):
     assert "--corpus-buckets" in out
     assert "--shell-min" in out
     assert "--bump-version" in out
+    assert "--force" in out
 
 
 def test_cli_determinism_help_lists_mode_and_budgets(capsys):
