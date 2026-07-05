@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Sequence
 
+from hippo_brain.conflict_detection import analyze_conflicts, apply_conflict_confidence_caps
 from hippo_brain.mcp_queries import MAX_LIMIT, parse_since
 from hippo_brain.retrieval import Filters, SearchResult, search
 from hippo_brain.retrieval_eligibility import include_excluded_from_env
@@ -173,16 +174,27 @@ def run_agent_query(
     include_decisions = req.mode == "decisions"
     hits = [_compact_hit(r, include_decisions=include_decisions) for r in results]
 
+    conflict_report = analyze_conflicts(hits)
+    apply_conflict_confidence_caps(hits, conflict_report)
+
     all_packets: list[dict[str, Any]] = []
     for hit in hits:
         all_packets.extend(hit.get("evidence") or [])
 
+    answer = _compose_answer(req.mode, hits)
+    if conflict_report.get("summary"):
+        answer = _truncate(
+            f"{answer}\n\nConflict/staleness: {conflict_report['summary']}",
+            MAX_ANSWER_CHARS,
+        )
+
     return {
         "mode": req.mode,
         "query": req.query,
-        "answer": _compose_answer(req.mode, hits),
+        "answer": answer,
         "hits": hits,
         "freshness": aggregate_freshness_from_packets(all_packets),
+        "conflicts": conflict_report,
         "limit": limit,
         "truncated": truncated,
     }
