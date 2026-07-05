@@ -925,7 +925,10 @@ fn decide_enqueue(
 /// The upsert uses `ON CONFLICT (session_id, harness, segment_index) DO UPDATE` so
 /// every watcher reparse keeps the DB in sync with the latest file content.
 /// `last_enriched_content_hash` is NOT touched here — only the brain sets it.
-fn insert_segments(conn: &Connection, segments: &[SessionSegment]) -> Result<(usize, usize)> {
+fn insert_segments(
+    conn: &Connection,
+    segments: &[SessionSegment],
+) -> rusqlite::Result<(usize, usize)> {
     let mut inserted = 0usize;
     let mut skipped = 0usize;
     let now_ms = Utc::now().timestamp_millis();
@@ -1129,6 +1132,25 @@ fn insert_segments(conn: &Connection, segments: &[SessionSegment]) -> Result<(us
     Ok((inserted, skipped))
 }
 
+/// Insert segments with a single SQLITE_BUSY retry. Shared by the FS watcher
+/// (`ingest_session_file`) and batch CLI (`write_session_segments`).
+fn try_insert_segments(conn: &Connection, segments: &[SessionSegment]) -> (usize, usize, usize) {
+    match crate::with_busy_retry("claude_session_insert", || insert_segments(conn, segments)) {
+        Ok((inserted, skipped)) => (inserted, skipped, 0),
+        Err(e) => {
+            if crate::is_sqlite_busy(&e) {
+                error!(
+                    %e,
+                    "failed to insert session segments after SQLITE_BUSY retry"
+                );
+            } else {
+                error!(%e, "failed to insert session segments");
+            }
+            (0, 0, 1)
+        }
+    }
+}
+
 /// Extract segments from a JSONL session file and insert them into the given
 /// connection. Used by the FS watcher (per-event invocation in a `spawn_blocking`
 /// task with its own connection). Returns `(inserted, skipped, errors)`.
@@ -1148,13 +1170,7 @@ pub fn ingest_session_file(conn: &Connection, path: &Path) -> (usize, usize, usi
         return (0, 0, 0);
     }
 
-    match insert_segments(conn, &segments) {
-        Ok((inserted, skipped)) => (inserted, skipped, 0),
-        Err(e) => {
-            error!(%e, "failed to insert session segments");
-            (0, 0, 1)
-        }
-    }
+    try_insert_segments(conn, &segments)
 }
 
 fn write_session_segments(db_path: &Path, path: &Path) -> (usize, usize, usize) {
@@ -1181,13 +1197,7 @@ fn write_session_segments(db_path: &Path, path: &Path) -> (usize, usize, usize) 
         }
     };
 
-    match insert_segments(&conn, &segments) {
-        Ok((inserted, skipped)) => (inserted, skipped, 0),
-        Err(e) => {
-            error!(%e, "failed to insert claude_sessions segments");
-            (0, 0, 1)
-        }
-    }
+    try_insert_segments(&conn, &segments)
 }
 
 /// Run the importer in batch mode: read all lines, send all events, exit.
@@ -2385,5 +2395,81 @@ mod tests {
             queue_count, 0,
             "empty segment must not produce an agentic_enrichment_queue row"
         );
+    }
+
+    // ─── SNUG-110: SQLITE_BUSY retry ─────────────────────────────────────────
+
+    fn write_single_exchange_jsonl(path: &Path, session_id: &str) {
+        use crate::watch_claude_sessions::make_test_jsonl_line;
+        let content = format!(
+            "{}\n{}\n{}\n",
+            make_test_jsonl_line(session_id, 0, "system", "init"),
+            make_test_jsonl_line(session_id, 1, "user", "hello"),
+            make_test_jsonl_line(session_id, 2, "assistant", "hi"),
+        );
+        std::fs::write(path, content).unwrap();
+    }
+
+    #[test]
+    fn test_ingest_session_file_retries_transient_busy() {
+        use std::sync::{Arc, Barrier};
+        use std::time::Duration;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let db_path = tmp.path().join("test.db");
+        let session_id = "busy-retry-session-001";
+        let jsonl_path = tmp.path().join(format!("{session_id}.jsonl"));
+        write_single_exchange_jsonl(&jsonl_path, session_id);
+
+        let barrier = Arc::new(Barrier::new(2));
+        let db_path_lock = db_path.clone();
+        let barrier_holder = barrier.clone();
+
+        let holder = std::thread::spawn(move || {
+            let conn = hippo_core::storage::open_db(&db_path_lock).unwrap();
+            conn.execute_batch("BEGIN IMMEDIATE").unwrap();
+            barrier_holder.wait();
+            std::thread::sleep(Duration::from_millis(50));
+            conn.execute_batch("COMMIT").unwrap();
+        });
+
+        barrier.wait();
+        let conn = hippo_core::storage::open_db(&db_path).unwrap();
+        conn.busy_timeout(Duration::from_millis(0)).unwrap();
+        let (inserted, _skipped, errors) = ingest_session_file(&conn, &jsonl_path);
+        holder.join().unwrap();
+
+        assert_eq!(errors, 0);
+        assert!(inserted > 0);
+    }
+
+    #[test]
+    fn test_try_insert_segments_retries_transient_busy() {
+        use std::sync::{Arc, Barrier};
+        use std::time::Duration;
+
+        let conn = open_test_db();
+        let db_path = std::path::PathBuf::from(conn.path().unwrap());
+        let seg = make_test_segment("busy-shared-session-001", 0);
+
+        let barrier = Arc::new(Barrier::new(2));
+        let db_path_lock = db_path.clone();
+        let barrier_holder = barrier.clone();
+
+        let holder = std::thread::spawn(move || {
+            let locker = hippo_core::storage::open_db(&db_path_lock).unwrap();
+            locker.execute_batch("BEGIN IMMEDIATE").unwrap();
+            barrier_holder.wait();
+            std::thread::sleep(Duration::from_millis(50));
+            locker.execute_batch("COMMIT").unwrap();
+        });
+
+        barrier.wait();
+        conn.busy_timeout(Duration::from_millis(0)).unwrap();
+        let (inserted, _skipped, errors) = try_insert_segments(&conn, std::slice::from_ref(&seg));
+        holder.join().unwrap();
+
+        assert_eq!(errors, 0);
+        assert_eq!(inserted, 1);
     }
 }
