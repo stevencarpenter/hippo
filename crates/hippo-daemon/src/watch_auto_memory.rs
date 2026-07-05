@@ -46,6 +46,41 @@ fn configured_source_paths(config: &HippoConfig) -> Vec<PathBuf> {
         .collect()
 }
 
+fn discovery_active(config: &HippoConfig) -> bool {
+    config.auto_memory.discovery.produces_sources()
+}
+
+fn fleet_fsevents_enabled(config: &HippoConfig) -> bool {
+    config.auto_memory.discovery.watches_claude_projects_fleet()
+}
+
+fn is_memory_markdown(path: &Path) -> bool {
+    path.extension().is_some_and(|ext| ext == "md")
+        && path
+            .parent()
+            .and_then(|parent| parent.file_name())
+            .is_some_and(|name| name == "memory")
+}
+
+fn event_targets_memory_files(
+    event: &Event,
+    sources: &[PathBuf],
+    fleet_discovery: bool,
+) -> Vec<PathBuf> {
+    let mut hits = Vec::new();
+    for path in event.paths.iter() {
+        let resolved = path.canonicalize().unwrap_or_else(|_| path.clone());
+        if sources.iter().any(|source| source == &resolved) {
+            hits.push(resolved);
+            continue;
+        }
+        if fleet_discovery && is_memory_markdown(&resolved) {
+            hits.push(resolved);
+        }
+    }
+    hits
+}
+
 fn spawn_reconcile_file(config: &HippoConfig, path: &Path) -> Result<()> {
     let brain_dir = default_brain_dir();
     let config_path = config.storage.config_dir.join("config.toml");
@@ -114,29 +149,21 @@ fn spawn_reconcile_all(config: &HippoConfig) -> Result<usize> {
     Ok(changed)
 }
 
-fn event_targets_known_source(event: &Event, sources: &[PathBuf]) -> Vec<PathBuf> {
-    let mut hits = Vec::new();
-    for path in event.paths.iter() {
-        let resolved = path.canonicalize().unwrap_or_else(|_| path.clone());
-        if sources.iter().any(|source| source == &resolved) {
-            hits.push(resolved);
-        }
-    }
-    hits
-}
-
 /// Entry point — runs until SIGTERM/ctrl-c.
 pub async fn run(config: &HippoConfig) -> Result<()> {
     if !config.auto_memory.enabled {
         warn!("auto-memory watcher: disabled by config");
         return Ok(());
     }
-    if config.auto_memory.sources.is_empty() {
-        warn!("auto-memory watcher: enabled but no sources configured");
+    if config.auto_memory.sources.is_empty() && !discovery_active(config) {
+        warn!(
+            "auto-memory watcher: enabled but no sources configured and fleet discovery disabled"
+        );
         return Ok(());
     }
 
     let sources = configured_source_paths(config);
+    let fleet_discovery = fleet_fsevents_enabled(config);
     let debounce = Duration::from_millis(config.auto_memory.debounce_ms);
     let fallback = Duration::from_secs(config.auto_memory.reconcile_fallback_secs);
 
@@ -151,12 +178,21 @@ pub async fn run(config: &HippoConfig) -> Result<()> {
         }
     }
 
-    let watch_dirs: Vec<PathBuf> = sources
+    let mut watch_dirs: Vec<(PathBuf, RecursiveMode)> = sources
         .iter()
-        .filter_map(|path| path.parent().map(Path::to_path_buf))
-        .collect::<std::collections::BTreeSet<_>>()
-        .into_iter()
+        .filter_map(|path| {
+            path.parent()
+                .map(|parent| (parent.to_path_buf(), RecursiveMode::NonRecursive))
+        })
         .collect();
+    if fleet_discovery && let Some(home) = dirs::home_dir() {
+        let projects = home.join(".claude/projects");
+        if projects.is_dir() {
+            watch_dirs.push((projects, RecursiveMode::Recursive));
+        }
+    }
+    let mut unique_dirs = std::collections::BTreeSet::new();
+    watch_dirs.retain(|(dir, _)| unique_dirs.insert(dir.clone()));
 
     let (tx, mut rx) = mpsc::channel::<Event>(256);
     let mut watcher = RecommendedWatcher::new(
@@ -169,13 +205,11 @@ pub async fn run(config: &HippoConfig) -> Result<()> {
     )
     .context("auto-memory watcher: failed to create FSEvents watcher")?;
 
-    for dir in &watch_dirs {
+    for (dir, mode) in &watch_dirs {
         if dir.exists() {
-            watcher
-                .watch(dir, RecursiveMode::NonRecursive)
-                .with_context(|| {
-                    format!("auto-memory watcher: failed to watch {}", dir.display())
-                })?;
+            watcher.watch(dir, *mode).with_context(|| {
+                format!("auto-memory watcher: failed to watch {}", dir.display())
+            })?;
         } else {
             warn!(dir = %dir.display(), "auto-memory watcher: parent directory missing");
         }
@@ -183,6 +217,8 @@ pub async fn run(config: &HippoConfig) -> Result<()> {
 
     info!(
         sources = sources.len(),
+        fleet_discovery,
+        watch_dirs = watch_dirs.len(),
         "auto-memory watcher: listening for FSEvents"
     );
 
@@ -201,7 +237,7 @@ pub async fn run(config: &HippoConfig) -> Result<()> {
                 if matches!(event.kind, EventKind::Access(_)) {
                     continue;
                 }
-                for path in event_targets_known_source(&event, &sources) {
+                for path in event_targets_memory_files(&event, &sources, fleet_discovery) {
                     pending.insert(path, Instant::now());
                 }
             }
@@ -241,7 +277,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn event_targets_known_source_matches_resolved_paths() {
+    fn event_targets_memory_files_matches_configured_sources() {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("MEMORY.md");
         std::fs::write(&file, "# test\n").unwrap();
@@ -253,7 +289,7 @@ mod tests {
             paths: vec![resolved.clone()],
             attrs: notify::event::EventAttributes::default(),
         };
-        let hits = event_targets_known_source(&event, std::slice::from_ref(&resolved));
+        let hits = event_targets_memory_files(&event, std::slice::from_ref(&resolved), false);
         assert_eq!(hits, vec![resolved]);
     }
 }

@@ -16,6 +16,13 @@ from hippo_brain.auto_memory_constants import (
     DEFAULT_STABLE_TIMEOUT_MS,
     SOURCE_KIND,
 )
+from hippo_brain.auto_memory_discovery import (
+    build_discovery_inventory,
+    discover_memory_roots,
+    discovery_config_from_dict,
+    memory_roots_to_file_sources,
+    merge_configured_sources,
+)
 from hippo_brain.auto_memory_ingest import ingest_memory_file
 from hippo_brain.auto_memory_lifecycle import (
     RevisionRetention,
@@ -202,6 +209,7 @@ def reconcile_sources(
     reconcile: ReconcileConfig | None = None,
     now_ms: int | None = None,
     require_stable: bool = True,
+    auto_memory: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Reconcile every configured source; returns summary JSON for operators."""
     retention_policy = retention or RevisionRetention()
@@ -212,14 +220,29 @@ def reconcile_sources(
     for source in sources:
         if not source.get("path"):
             continue
-        item = reconcile_source(
-            conn,
-            source,
-            retention=retention_policy,
-            reconcile=reconcile_policy,
-            now_ms=observed_at,
-            require_stable=require_stable,
-        )
+        try:
+            item = reconcile_source(
+                conn,
+                source,
+                retention=retention_policy,
+                reconcile=reconcile_policy,
+                now_ms=observed_at,
+                require_stable=require_stable,
+            )
+        except (OSError, ValueError, sqlite3.Error) as exc:
+            results.append(
+                {
+                    "path": str(Path(source["path"]).expanduser().resolve()),
+                    "outcome": "error",
+                    "changed": False,
+                    "revision_id": None,
+                    "projection_status": None,
+                    "pending_enrichment": 0,
+                    "failed_enrichment": 0,
+                    "error": str(exc),
+                }
+            )
+            continue
         if item.changed:
             changed += 1
         results.append(
@@ -239,25 +262,71 @@ def reconcile_sources(
             entry["outcome"] = document_absence_outcome(conn, entry["path"])
     pending_total = sum(r["pending_enrichment"] for r in results)
     failed_total = sum(r["failed_enrichment"] for r in results)
-    return {
+    summary: dict[str, Any] = {
         "changed": changed,
         "pending_enrichment": pending_total,
         "failed_enrichment": failed_total,
         "sources": results,
     }
+    discovery = discovery_config_from_dict(auto_memory or {})
+    if auto_memory is not None and discovery.enabled:
+        roots = discover_memory_roots(discovery)
+        summary["inventory"] = build_discovery_inventory(
+            roots,
+            file_sources=sources,
+            conn=conn,
+            now_ms=observed_at,
+        ).to_dict()
+    return summary
+
+
+def _explicit_sources_from_config(auto_memory: dict[str, Any]) -> list[dict[str, Any]]:
+    explicit: list[dict[str, Any]] = []
+    for source in auto_memory.get("sources", []):
+        if not isinstance(source, dict):
+            continue
+        path = source.get("path", "")
+        if not path:
+            continue
+        explicit.append(
+            {
+                "path": str(Path(path).expanduser()),
+                "repository": source.get("repository"),
+                "logical_path": source.get("logical_path"),
+                "origin": "explicit",
+            }
+        )
+    return explicit
 
 
 def load_sources_from_config(config: dict[str, Any]) -> list[dict[str, Any]]:
     auto_memory = config.get("auto_memory", {})
-    sources: list[dict[str, Any]] = []
-    for source in auto_memory.get("sources", []):
-        if not isinstance(source, dict):
-            continue
-        sources.append(
-            {
-                "path": str(Path(source.get("path", "")).expanduser()),
-                "repository": source.get("repository"),
-                "logical_path": source.get("logical_path"),
-            }
-        )
-    return sources
+    explicit = _explicit_sources_from_config(auto_memory)
+    discovery = discovery_config_from_dict(auto_memory)
+    if not auto_memory.get("enabled", False) or not discovery.enabled:
+        return explicit
+    roots = discover_memory_roots(discovery)
+    discovered = memory_roots_to_file_sources(roots)
+    return merge_configured_sources(explicit, discovered)
+
+
+def inventory_from_config(
+    config: dict[str, Any],
+    *,
+    conn: sqlite3.Connection | None = None,
+    now_ms: int | None = None,
+) -> dict[str, Any]:
+    """Return a dry-run fleet inventory without ingesting."""
+    auto_memory = config.get("auto_memory", {})
+    discovery = discovery_config_from_dict(auto_memory)
+    roots = discover_memory_roots(discovery)
+    explicit = _explicit_sources_from_config(auto_memory)
+    discovered = memory_roots_to_file_sources(roots)
+    merged = merge_configured_sources(explicit, discovered)
+    inventory = build_discovery_inventory(
+        roots,
+        file_sources=merged,
+        conn=conn,
+        now_ms=now_ms,
+    )
+    return inventory.to_dict()

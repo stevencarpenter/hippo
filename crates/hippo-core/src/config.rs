@@ -37,6 +37,42 @@ pub struct HippoConfig {
 /// Explicit read-only Claude Code auto-memory sources. Fleet discovery is a
 /// later layer; this list is the deterministic single-file operator contract.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AutoMemoryDiscoveryConfig {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default = "default_true")]
+    pub claude_projects: bool,
+    #[serde(default = "default_true")]
+    pub read_claude_settings: bool,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+impl Default for AutoMemoryDiscoveryConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            claude_projects: true,
+            read_claude_settings: true,
+        }
+    }
+}
+
+impl AutoMemoryDiscoveryConfig {
+    /// Whether Python discovery can produce ingest sources (matches `discover_memory_roots`).
+    pub fn produces_sources(&self) -> bool {
+        self.enabled && (self.claude_projects || self.read_claude_settings)
+    }
+
+    /// Whether the daemon should attach FSEvents to `~/.claude/projects` (default layout only).
+    pub fn watches_claude_projects_fleet(&self) -> bool {
+        self.enabled && self.claude_projects
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AutoMemoryConfig {
     #[serde(default)]
     pub enabled: bool,
@@ -48,6 +84,8 @@ pub struct AutoMemoryConfig {
     /// In-process periodic full reconcile while the watcher is running.
     #[serde(default = "default_auto_memory_reconcile_fallback_secs")]
     pub reconcile_fallback_secs: u64,
+    #[serde(default)]
+    pub discovery: AutoMemoryDiscoveryConfig,
     #[serde(default)]
     pub sources: Vec<AutoMemorySourceConfig>,
 }
@@ -71,6 +109,7 @@ impl Default for AutoMemoryConfig {
             poll_interval_secs: default_auto_memory_poll_interval_secs(),
             debounce_ms: default_auto_memory_debounce_ms(),
             reconcile_fallback_secs: default_auto_memory_reconcile_fallback_secs(),
+            discovery: AutoMemoryDiscoveryConfig::default(),
             sources: Vec::new(),
         }
     }
@@ -1425,5 +1464,28 @@ strip_params = ["secret", "nonce"]
         );
         assert_eq!(default_cfg.auto_memory.debounce_ms, 500);
         assert_eq!(default_cfg.auto_memory.reconcile_fallback_secs, 60);
+    }
+
+    #[test]
+    fn auto_memory_discovery_gate_matches_python_policy() {
+        let default_cfg = AutoMemoryDiscoveryConfig::default();
+        assert!(default_cfg.produces_sources());
+        assert!(default_cfg.watches_claude_projects_fleet());
+
+        let settings_only = AutoMemoryDiscoveryConfig {
+            enabled: true,
+            claude_projects: false,
+            read_claude_settings: true,
+        };
+        assert!(settings_only.produces_sources());
+        assert!(!settings_only.watches_claude_projects_fleet());
+
+        let disabled = AutoMemoryDiscoveryConfig {
+            enabled: false,
+            claude_projects: true,
+            read_claude_settings: true,
+        };
+        assert!(!disabled.produces_sources());
+        assert!(!disabled.watches_claude_projects_fleet());
     }
 }
