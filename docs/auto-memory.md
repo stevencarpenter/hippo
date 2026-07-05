@@ -39,7 +39,32 @@ Auto-memory is an always-on source: like shell, Claude, and browser activity, it
 search_knowledge(query="busy timeout", mode="lexical", source="claude-auto-memory", project="owner/repository")
 ```
 
-Results include `source`, `source_path`, `repository`, `logical_path`, `content_hash`, and capture time. Only the active revision is ever queryable: superseding a revision replaces its knowledge node (and vector), and a revision superseded before its enrichment finishes is discarded rather than published, so stale memory content never appears in answers.
+For a dedicated read-only memory contract (current projected chunks, explicit history, provenance without local paths by default), use:
+
+| Surface | Current memory | Revision history |
+|---------|----------------|------------------|
+| MCP | `query_memory(...)` | `query_memory_history(...)` |
+| HTTP | `POST /memory/query` | `POST /memory/history` |
+| CLI | `hippo-memory-query "term" --repository owner/repo` | `hippo-memory-query --history --repository owner/repo --logical-path MEMORY.md` |
+
+**Claude Code / Codex / opencode (MCP):**
+
+```json
+{"tool": "query_memory", "arguments": {"query": "auth design", "repository": "owner/repo", "category": "project", "limit": 10}}
+```
+
+**Human CLI:**
+
+```sh
+uv run --project brain hippo-memory-query "busy timeout" --repository owner/repository --limit 5
+uv run --project brain hippo-memory-query --history --repository owner/repository --logical-path MEMORY.md
+```
+
+Filters: `repository`, `category`, `logical_path`, `document_uuid`, `since` (e.g. `7d`). Default results include only active, successfully projected chunks (`projection_status` ready/stale). Use `include_non_queryable=true` to list pending/failed/unavailable status stubs. Use `include_source_path=true` only for local diagnostics.
+
+Results include `repository`, `logical_path`, `document_uuid`, `chunk_id`, `content_hash`, `source_mtime_ms`, `enriched_at`, `evidence_excerpt`, `memory_categories`, and `memory_links`. Absolute `source_path` is omitted unless explicitly requested.
+
+Results from `search_knowledge` include `source`, `source_path`, `repository`, `logical_path`, `content_hash`, and capture time. Only the active revision is ever queryable: superseding a revision replaces its knowledge node (and vector), and a revision superseded before its enrichment finishes is discarded rather than published, so stale memory content never appears in answers.
 
 ## Revision history
 
