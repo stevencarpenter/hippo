@@ -741,7 +741,7 @@ pub async fn run_with_mode(config: HippoConfig, bench_mode: bool) -> Result<()> 
     // (CREATE … IF NOT EXISTS throughout) so it's safe to apply against a
     // partially-populated bench DB. Production runs do not enter this branch.
     if bench_mode {
-        storage::ensure_schema(&write_conn)?;
+        storage::init_bench_schema(&write_conn)?;
     }
 
     // Recover fallback files
