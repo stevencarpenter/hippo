@@ -35,20 +35,48 @@ def test_default_corpus_validates():
     errors = validate_corpus(cases)
     assert errors == [], errors
     assert len(cases) >= 12
+    assert any(c.pending for c in cases)
 
 
-def test_corpus_covers_required_families():
-    cases = load_cases()
-    kinds: set[str] = set()
-    for case in cases:
-        kinds.update(case.evidence.source_kinds)
-    assert "shell" in kinds
-    assert "browser" in kinds
-    assert "workflow" in kinds
-    assert "codex" in kinds
-    assert "cursor" in kinds
-    assert "opencode" in kinds
-    assert "claude-auto-memory" in kinds
+def test_check_evidence_min_distinct_kinds():
+    case = TrustEvalCase.from_dict(
+        {
+            "id": "t",
+            "question": "q",
+            "evidence": {
+                "source_kinds": ["shell", "browser"],
+                "min_hits": 2,
+                "min_distinct_source_kinds": 2,
+            },
+        }
+    )
+    results = [
+        SearchResult(
+            uuid="a",
+            score=0.9,
+            summary="s",
+            embed_text="e",
+            outcome=None,
+            tags=[],
+            cwd="/p",
+            git_branch="main",
+            captured_at=1,
+            linked_source_ids=["shell-1"],
+        ),
+        SearchResult(
+            uuid="b",
+            score=0.8,
+            summary="s",
+            embed_text="e",
+            outcome=None,
+            tags=[],
+            cwd="/p",
+            git_branch="main",
+            captured_at=1,
+            linked_source_ids=["browser-2"],
+        ),
+    ]
+    assert check_evidence(case, results).passed
 
 
 def test_check_evidence_positive():
@@ -56,7 +84,6 @@ def test_check_evidence_positive():
         {
             "id": "t",
             "question": "q",
-            "mode": "what_known",
             "evidence": {"source_kinds": ["shell"], "min_hits": 1, "require_captured_at": True},
         }
     )

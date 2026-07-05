@@ -6,6 +6,25 @@ import sqlite3
 
 CLAUDE_AUTO_MEMORY_SOURCE = "claude-auto-memory"
 
+# Logical source families keyed by linked_source_ids prefix (see retrieval._fetch_details).
+_AGENTIC_LINK_PREFIXES = ("claude-", "codex-", "cursor-", "opencode-")
+
+
+def source_kind_from_linked_id(link: str) -> str | None:
+    """Map a ``SearchResult.linked_source_ids`` entry to a logical source family."""
+    if link.startswith("shell-"):
+        return "shell"
+    if link.startswith("browser-"):
+        return "browser"
+    if link.startswith("workflow-"):
+        return "workflow"
+    if link.startswith("memory-"):
+        return CLAUDE_AUTO_MEMORY_SOURCE
+    for prefix in _AGENTIC_LINK_PREFIXES:
+        if link.startswith(prefix):
+            return prefix.removesuffix("-")
+    return None
+
 _MEMORY_SOURCE_EXISTS = (
     "EXISTS (SELECT 1 FROM knowledge_node_memory_chunks knmc "
     "JOIN memory_chunks mc ON mc.id = knmc.memory_chunk_id "

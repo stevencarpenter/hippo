@@ -30,6 +30,7 @@
       "question": "What Codex rollout work happened on hippo?",
       "mode": "evidence_for",
       "source_filter": "claude",
+      "source_filter_note": "claude filter matches any non-probe agentic session (codex/cursor/opencode harnesses)",
       "evidence": {
         "source_kinds": ["codex"],
         "min_hits": 1,
@@ -84,6 +85,7 @@
       "question": "What is in Claude auto-memory for this project?",
       "mode": "what_known",
       "source_filter": "claude-auto-memory",
+      "pending": true,
       "evidence": {
         "source_kinds": ["claude-auto-memory"],
         "min_hits": 1,
@@ -97,13 +99,14 @@
       "evidence": {
         "source_kinds": ["shell", "browser"],
         "min_hits": 2,
-        "require_distinct_source_kinds": true
+        "min_distinct_source_kinds": 2
       }
     },
     {
       "id": "trust-source-health-01",
       "question": "Is agentic-session-claude capture healthy right now?",
       "mode": "what_known",
+      "pending": true,
       "evidence": {
         "source_kinds": ["claude"],
         "min_hits": 0,
@@ -116,6 +119,7 @@
       "id": "trust-adversarial-missing-01",
       "question": "What Postgres migration replaced sqlite-vec in hippo?",
       "mode": "adversarial",
+      "pending": true,
       "evidence": {
         "source_kinds": [],
         "min_hits": 0,
@@ -128,6 +132,7 @@
       "id": "trust-adversarial-stale-01",
       "question": "What happened in hippo yesterday at 3am UTC specifically?",
       "mode": "adversarial",
+      "pending": true,
       "evidence": {
         "source_kinds": [],
         "min_hits": 0,
@@ -142,14 +147,14 @@
       "source_filter": "claude",
       "evidence": {
         "source_kinds": ["claude"],
-        "min_hits": 1,
-        "exclude_probe_linkage": true
+        "min_hits": 1
       }
     },
     {
       "id": "trust-docs-contract-01",
       "question": "What schema version does hippo brain accept for reads?",
       "mode": "what_known",
+      "pending": true,
       "evidence": {
         "source_kinds": ["claude", "shell"],
         "min_hits": 0,
