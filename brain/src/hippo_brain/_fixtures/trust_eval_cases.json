@@ -1,0 +1,161 @@
+{
+  "description": "Agent-trust regression corpus (SNUG-118). Each case records expected evidence shape — source kind, link identity, timestamps — not prose answers tied to a live user DB. Run offline via `hippo-trust-eval --validate` or `pytest brain/tests/test_trust_eval.py`.",
+  "schema_version": 1,
+  "adding_cases": "Append a case with unique id, set evidence.source_kinds to the logical families you expect in linked_source_ids, and add a matching row to the synthetic seeder in brain/tests/test_trust_eval.py when the case needs an end-to-end retrieval check.",
+  "cases": [
+    {
+      "id": "trust-shell-01",
+      "question": "What shell commands were run in the hippo repo recently?",
+      "mode": "what_known",
+      "source_filter": "shell",
+      "evidence": {
+        "source_kinds": ["shell"],
+        "min_hits": 1,
+        "require_captured_at": true
+      }
+    },
+    {
+      "id": "trust-claude-01",
+      "question": "What did we decide about the Claude session hook?",
+      "mode": "prior_decisions",
+      "source_filter": "claude",
+      "evidence": {
+        "source_kinds": ["claude"],
+        "min_hits": 1,
+        "require_captured_at": true
+      }
+    },
+    {
+      "id": "trust-codex-01",
+      "question": "What Codex rollout work happened on hippo?",
+      "mode": "evidence_for",
+      "source_filter": "claude",
+      "evidence": {
+        "source_kinds": ["codex"],
+        "min_hits": 1,
+        "require_captured_at": true
+      }
+    },
+    {
+      "id": "trust-cursor-01",
+      "question": "What Cursor agent sessions touched capture reliability?",
+      "mode": "evidence_for",
+      "source_filter": "claude",
+      "evidence": {
+        "source_kinds": ["cursor"],
+        "min_hits": 1,
+        "require_captured_at": true
+      }
+    },
+    {
+      "id": "trust-opencode-01",
+      "question": "What opencode sessions were ingested?",
+      "mode": "evidence_for",
+      "source_filter": "claude",
+      "evidence": {
+        "source_kinds": ["opencode"],
+        "min_hits": 1,
+        "require_captured_at": true
+      }
+    },
+    {
+      "id": "trust-browser-01",
+      "question": "What browser activity was captured on allowlisted domains?",
+      "mode": "what_known",
+      "source_filter": "browser",
+      "evidence": {
+        "source_kinds": ["browser"],
+        "min_hits": 1,
+        "require_captured_at": true
+      }
+    },
+    {
+      "id": "trust-workflow-01",
+      "question": "Which GitHub workflow runs failed recently?",
+      "mode": "recent_changes",
+      "source_filter": "workflow",
+      "evidence": {
+        "source_kinds": ["workflow"],
+        "min_hits": 1
+      }
+    },
+    {
+      "id": "trust-memory-01",
+      "question": "What is in Claude auto-memory for this project?",
+      "mode": "what_known",
+      "source_filter": "claude-auto-memory",
+      "evidence": {
+        "source_kinds": ["claude-auto-memory"],
+        "min_hits": 1,
+        "require_captured_at": true
+      }
+    },
+    {
+      "id": "trust-mixed-01",
+      "question": "How do shell events and browser visits relate to the same project?",
+      "mode": "evidence_for",
+      "evidence": {
+        "source_kinds": ["shell", "browser"],
+        "min_hits": 2,
+        "require_distinct_source_kinds": true
+      }
+    },
+    {
+      "id": "trust-source-health-01",
+      "question": "Is agentic-session-claude capture healthy right now?",
+      "mode": "what_known",
+      "evidence": {
+        "source_kinds": ["claude"],
+        "min_hits": 0,
+        "max_hits": 0,
+        "expect_coverage_gap": true,
+        "gap_reason_contains": ["source_health", "doctor", "capture"]
+      }
+    },
+    {
+      "id": "trust-adversarial-missing-01",
+      "question": "What Postgres migration replaced sqlite-vec in hippo?",
+      "mode": "adversarial",
+      "evidence": {
+        "source_kinds": [],
+        "min_hits": 0,
+        "max_hits": 0,
+        "expect_coverage_gap": true,
+        "gap_reason_contains": ["no evidence", "not", "sqlite-vec"]
+      }
+    },
+    {
+      "id": "trust-adversarial-stale-01",
+      "question": "What happened in hippo yesterday at 3am UTC specifically?",
+      "mode": "adversarial",
+      "evidence": {
+        "source_kinds": [],
+        "min_hits": 0,
+        "expect_coverage_gap": true,
+        "gap_reason_contains": ["stale", "missing", "insufficient", "gap"]
+      }
+    },
+    {
+      "id": "trust-probe-exclude-01",
+      "question": "Show real claude session work on hippo (not probes).",
+      "mode": "evidence_for",
+      "source_filter": "claude",
+      "evidence": {
+        "source_kinds": ["claude"],
+        "min_hits": 1,
+        "exclude_probe_linkage": true
+      }
+    },
+    {
+      "id": "trust-docs-contract-01",
+      "question": "What schema version does hippo brain accept for reads?",
+      "mode": "what_known",
+      "evidence": {
+        "source_kinds": ["claude", "shell"],
+        "min_hits": 0,
+        "expect_coverage_gap": true,
+        "gap_reason_contains": ["schema", "version", "config", "doctor"]
+      }
+    }
+  ]
+}
