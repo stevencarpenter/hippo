@@ -12,6 +12,7 @@ use tokio::net::UnixStream;
 use uuid::Uuid;
 use walkdir::WalkDir;
 
+use crate::browser_health::{self, BROWSER_EVENT_WARN_SECS, BrowserExtensionConnectivity};
 use crate::codex_session;
 use crate::framing::{read_frame, write_frame};
 
@@ -1740,13 +1741,87 @@ const SESSION_STATE_CONFIG_ERROR_FALLBACK: (bool, bool, bool) = (true, true, fal
 /// `test_opencode_session_state_config_error_fallback_alarms`.
 const OPENCODE_SESSION_STATE_CONFIG_ERROR_FALLBACK: (bool, bool) = (true, true);
 
+fn print_browser_staleness_explain(
+    event_age_secs: i64,
+    heartbeat_age_secs: Option<i64>,
+    probe_ok: Option<i64>,
+    firefox_running: bool,
+) {
+    let connectivity = browser_health::browser_extension_connectivity(
+        firefox_running,
+        heartbeat_age_secs,
+        event_age_secs,
+    );
+    let state = browser_health::browser_capture_state_label(connectivity, event_age_secs, probe_ok);
+    println!("     STATE:  {state}");
+
+    match connectivity {
+        BrowserExtensionConnectivity::FirefoxNotRunning => {
+            println!(
+                "     CAUSE:  Firefox is not running — browser capture is expected to be idle"
+            );
+            println!(
+                "     FIX:    Launch Firefox when you want browsing captured; re-run `hippo doctor`"
+            );
+        }
+        BrowserExtensionConnectivity::NeverConnected => {
+            println!(
+                "     CAUSE:  Firefox is running but the extension has never heartbeated the daemon"
+            );
+            println!(
+                "     FIX:    Load the extension (about:debugging → Load Temporary Add-on → extension/firefox/manifest.json); \
+                 verify NM manifest via `hippo daemon install --force`"
+            );
+        }
+        BrowserExtensionConnectivity::Disconnected => {
+            println!(
+                "     CAUSE:  Extension heartbeat is stale — native messaging or the daemon socket may be wedged"
+            );
+            println!(
+                "     FIX:    Restart Firefox; run `hippo probe --source browser`; tail -f ~/.local/share/hippo/daemon.stderr.log"
+            );
+        }
+        BrowserExtensionConnectivity::Connected => {
+            if probe_ok == Some(0) {
+                println!(
+                    "     CAUSE:  Extension is connected but the synthetic probe round-trip is failing \
+                     (user events may still trickle in sporadically)"
+                );
+                println!(
+                    "     FIX:    `hippo probe --source browser`; check extension Browser Console and daemon logs"
+                );
+            } else if probe_ok == Some(1) && event_age_secs > BROWSER_EVENT_WARN_SECS {
+                println!(
+                    "     CAUSE:  Extension and synthetic probe are healthy; no user browsing on allowlisted domains recently"
+                );
+                println!(
+                    "     FIX:    Visit an allowlisted domain with ≥3s dwell, or ignore if you are not browsing"
+                );
+            } else {
+                println!(
+                    "     CAUSE:  No browser events have updated source_health within the ~15 minute cadence"
+                );
+                println!(
+                    "     FIX:    Visit an allowlisted domain with ≥3s dwell; run `hippo probe --source browser`"
+                );
+            }
+        }
+    }
+
+    println!(
+        "     NOTE:   Source freshness browser uses 48h/14d thresholds on browser_events; \
+         this line uses the tighter source_health cadence."
+    );
+    println!("     DOC:    docs/capture/operator-runbook.md");
+}
+
 /// Check 1: Per-source staleness via the `source_health` table (requires P0.1 migration).
 ///
 /// Returns the number of failing (hard-threshold) checks.
 fn check_source_staleness(db: &rusqlite::Connection, explain: bool) -> u32 {
     // Query source_health — if the table doesn't exist yet, print a soft notice and bail.
     let rows_result = db.prepare(
-        "SELECT source, last_event_ts, last_error_msg, consecutive_failures, events_last_1h, probe_ok \
+        "SELECT source, last_event_ts, last_heartbeat_ts, last_error_msg, consecutive_failures, events_last_1h, probe_ok \
          FROM source_health \
          WHERE source IN ('shell', 'browser', 'agentic-session-claude', 'claude-tool', 'agentic-session-opencode', 'agentic-session-codex', 'agentic-session-cursor') \
          ORDER BY source",
@@ -1770,6 +1845,7 @@ fn check_source_staleness(db: &rusqlite::Connection, explain: bool) -> u32 {
     struct SourceRow {
         source: String,
         last_event_ts: Option<i64>,
+        last_heartbeat_ts: Option<i64>,
         probe_ok: Option<i64>,
     }
 
@@ -1777,8 +1853,9 @@ fn check_source_staleness(db: &rusqlite::Connection, explain: bool) -> u32 {
         Ok(SourceRow {
             source: row.get(0)?,
             last_event_ts: row.get(1)?,
-            // columns 2, 3, 4 are last_error_msg, consecutive_failures, events_last_1h — not used
-            probe_ok: row.get(5)?,
+            last_heartbeat_ts: row.get(2)?,
+            // columns 3, 4 are last_error_msg, consecutive_failures — not used here
+            probe_ok: row.get(6)?,
         })
     }) {
         Ok(m) => m,
@@ -1801,18 +1878,7 @@ fn check_source_staleness(db: &rusqlite::Connection, explain: bool) -> u32 {
         .as_millis() as i64;
 
     // Check Firefox running (for browser suppression).
-    // macOS Firefox (incl. Developer Edition) exposes the main process as `firefox`;
-    // `firefox-bin` is Linux-only. Match either to keep the check portable.
-    // `-q` suppresses pgrep's PID output so it doesn't leak into doctor output.
-    let firefox_running = || -> bool {
-        ["firefox", "firefox-bin"].iter().any(|name| {
-            std::process::Command::new("pgrep")
-                .args(["-qx", name])
-                .status()
-                .map(|s| s.success())
-                .unwrap_or(false)
-        })
-    };
+    let firefox_running = browser_health::firefox_running;
 
     // Load the runtime config once for both poller-backed idle probes below
     // (codex + opencode). A single parse avoids two TOML reads per doctor run
@@ -2103,17 +2169,37 @@ fn check_source_staleness(db: &rusqlite::Connection, explain: bool) -> u32 {
 
         let age_secs = (now_ms - last_ts) / 1000;
         let human = format_age_secs(age_secs);
+        let heartbeat_age_secs = row.last_heartbeat_ts.map(|ts| (now_ms - ts) / 1000);
 
         let signals = SuppressionSignals {
             probe_ok: row.probe_ok,
             ..suppression_env
         };
+        let browser_state = (source == "browser").then(|| {
+            browser_health::browser_capture_state_label(
+                browser_health::browser_extension_connectivity(
+                    suppression_env.firefox_running,
+                    heartbeat_age_secs,
+                    age_secs,
+                ),
+                age_secs,
+                row.probe_ok,
+            )
+        });
         match classify_source_staleness(source, age_secs, signals) {
             SourceStalenessStatus::Ok => {
-                println!("[OK] {}  {}", padded, human);
+                if let Some(state) = browser_state {
+                    println!("[OK] {}  {} ({})", padded, human, state);
+                } else {
+                    println!("[OK] {}  {}", padded, human);
+                }
             }
             SourceStalenessStatus::Warn => {
-                println!("[WW] {}  {} (WARN)", padded, human);
+                if let Some(state) = browser_state {
+                    println!("[WW] {}  {} (WARN) — {}", padded, human, state);
+                } else {
+                    println!("[WW] {}  {} (WARN)", padded, human);
+                }
             }
             SourceStalenessStatus::Suppressed(reason) => {
                 println!(
@@ -2122,14 +2208,27 @@ fn check_source_staleness(db: &rusqlite::Connection, explain: bool) -> u32 {
                 );
             }
             SourceStalenessStatus::Fail => {
-                println!("[!!] {}  {} (FAIL)", padded, human);
+                if let Some(state) = browser_state {
+                    println!("[!!] {}  {} (FAIL) — {}", padded, human, state);
+                } else {
+                    println!("[!!] {}  {} (FAIL)", padded, human);
+                }
                 fail_count += 1;
                 if explain {
-                    println!("     CAUSE:  No events have landed in SQLite for this source");
-                    println!(
-                        "     FIX:    Check source is running: hippo doctor (re-run); tail -f ~/.local/share/hippo/daemon.stderr.log"
-                    );
-                    println!("     DOC:    docs/capture/architecture.md");
+                    if source == "browser" {
+                        print_browser_staleness_explain(
+                            age_secs,
+                            heartbeat_age_secs,
+                            row.probe_ok,
+                            suppression_env.firefox_running,
+                        );
+                    } else {
+                        println!("     CAUSE:  No events have landed in SQLite for this source");
+                        println!(
+                            "     FIX:    Check source is running: hippo doctor (re-run); tail -f ~/.local/share/hippo/daemon.stderr.log"
+                        );
+                        println!("     DOC:    docs/capture/architecture.md");
+                    }
                 }
             }
         }
@@ -5241,5 +5340,46 @@ replacement = "***"
                 probe.name
             );
         }
+    }
+
+    #[test]
+    fn browser_connectivity_detects_fresh_heartbeat() {
+        assert_eq!(
+            browser_health::browser_extension_connectivity(true, Some(30), 24 * 60),
+            BrowserExtensionConnectivity::Connected
+        );
+    }
+
+    #[test]
+    fn browser_connectivity_detects_stale_heartbeat() {
+        assert_eq!(
+            browser_health::browser_extension_connectivity(true, Some(600), 24 * 60),
+            BrowserExtensionConnectivity::Disconnected
+        );
+    }
+
+    #[test]
+    fn browser_capture_state_distinguishes_probe_failure() {
+        let state = browser_health::browser_capture_state_label(
+            BrowserExtensionConnectivity::Connected,
+            24 * 60,
+            Some(0),
+        );
+        assert!(
+            state.contains("probe failing"),
+            "expected probe-failure label, got: {state}"
+        );
+    }
+
+    #[test]
+    fn browser_capture_state_labels_idle_firefox() {
+        assert_eq!(
+            browser_health::browser_capture_state_label(
+                BrowserExtensionConnectivity::FirefoxNotRunning,
+                24 * 60,
+                None,
+            ),
+            "Firefox not running"
+        );
     }
 }

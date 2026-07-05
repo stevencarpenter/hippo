@@ -1,5 +1,6 @@
 pub mod auto_memory_poll;
 pub mod backfill;
+pub mod browser_health;
 pub mod claude_session;
 pub mod codex_session;
 pub mod commands;
