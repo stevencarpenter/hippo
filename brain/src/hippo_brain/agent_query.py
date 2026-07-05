@@ -148,6 +148,12 @@ def run_agent_query(
             "answer": "limit must be greater than 0",
             "hits": [],
             "freshness": {},
+            "conflicts": {
+                "staleness": None,
+                "conflicts": [],
+                "has_unresolved_conflicts": False,
+                "summary": "",
+            },
             "limit": 0,
             "truncated": False,
         }

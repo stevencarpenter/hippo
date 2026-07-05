@@ -30,7 +30,7 @@ Each hit carries a `confidence` object:
 - **No evidence → `insufficient`.** Hits without inspectable evidence packets are never rated high confidence, regardless of retrieval score.
 - **Stale/failing capture → capped.** `stale`, `failing`, `expected_absent`, or `unknown` freshness on cited sources prevents `high` and often yields `low`.
 - **Single weak packet → capped at medium.** One evidence packet needs very strong match + health to reach `high`.
-- **No conflict detection yet.** This module does not detect contradictory newer evidence (see SNUG-127); do not treat `high` as contradiction-free.
+- **Conflict caps (SNUG-127).** `conflict_detection.analyze_conflicts` surfaces outcome disagreements, decision contradictions, and stale-only evidence; `apply_conflict_confidence_caps` lowers per-hit confidence when conflicts are unresolved. Do not treat `high` as contradiction-free until conflicts are reviewed.
 - **Enrichment health excluded.** Queue depth and LLM enrichment status are intentionally omitted — capture health only.
 
 ## Surfaces

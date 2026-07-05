@@ -6,7 +6,6 @@ older or contradictory knowledge as current fact.
 
 from __future__ import annotations
 
-import time
 from typing import Any, Sequence
 
 _STALE_STATUSES = frozenset({"stale", "suppressed_idle", "expected_absent", "unknown", "failing"})
