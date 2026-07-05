@@ -25,6 +25,7 @@ def source_kind_from_linked_id(link: str) -> str | None:
             return prefix.removesuffix("-")
     return None
 
+
 _MEMORY_SOURCE_EXISTS = (
     "EXISTS (SELECT 1 FROM knowledge_node_memory_chunks knmc "
     "JOIN memory_chunks mc ON mc.id = knmc.memory_chunk_id "

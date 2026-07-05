@@ -160,9 +160,7 @@ def validate_corpus(cases: Sequence[TrustEvalCase]) -> list[str]:
     if missing:
         errors.append(f"missing active source family coverage: {sorted(missing)}")
 
-    has_negative_doc = any(
-        c.evidence.expect_coverage_gap or c.mode == "adversarial" for c in cases
-    )
+    has_negative_doc = any(c.evidence.expect_coverage_gap or c.mode == "adversarial" for c in cases)
     if not has_negative_doc:
         errors.append("corpus must document at least one negative/gap case (pending ok)")
 
