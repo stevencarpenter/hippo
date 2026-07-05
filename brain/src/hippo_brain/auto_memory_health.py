@@ -41,10 +41,22 @@ def _queue_counts(conn: sqlite3.Connection) -> tuple[int, int]:
     if not table_exists(conn, "memory_enrichment_queue"):
         return 0, 0
     pending = conn.execute(
-        "SELECT COUNT(*) FROM memory_enrichment_queue WHERE status = 'pending'"
+        """
+        SELECT COUNT(*) FROM memory_enrichment_queue meq
+        JOIN memory_revisions mr ON mr.id = meq.revision_id
+        JOIN memory_documents md ON md.id = mr.document_id
+        WHERE meq.status = 'pending' AND md.repository != ?
+        """,
+        (PROBE_REPOSITORY,),
     ).fetchone()[0]
     failed = conn.execute(
-        "SELECT COUNT(*) FROM memory_enrichment_queue WHERE status = 'failed'"
+        """
+        SELECT COUNT(*) FROM memory_enrichment_queue meq
+        JOIN memory_revisions mr ON mr.id = meq.revision_id
+        JOIN memory_documents md ON md.id = mr.document_id
+        WHERE meq.status = 'failed' AND md.repository != ?
+        """,
+        (PROBE_REPOSITORY,),
     ).fetchone()[0]
     return int(pending or 0), int(failed or 0)
 

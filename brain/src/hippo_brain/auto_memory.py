@@ -28,6 +28,7 @@ from hippo_brain.auto_memory_ingest import (
     derive_repository_identity,
     ingest_memory_file,
 )
+from hippo_brain.auto_memory_health import replay_failed_enrichments
 from hippo_brain.auto_memory_reconcile import (
     ReconcileConfig,
     document_absence_outcome,
@@ -661,8 +662,6 @@ def main(argv: list[str] | None = None) -> int:
 
 def replay_main(argv: list[str] | None = None) -> int:
     """Reset failed auto-memory enrichment rows to pending (operator replay)."""
-    from hippo_brain.auto_memory_health import replay_failed_enrichments
-
     parser = argparse.ArgumentParser(description="Replay failed Claude auto-memory enrichments.")
     parser.add_argument(
         "--db",

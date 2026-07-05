@@ -3069,8 +3069,14 @@ fn check_auto_memory_health(config: &HippoConfig, db: &rusqlite::Connection, exp
     let (pending, failed): (i64, i64) = db
         .query_row(
             "SELECT
-                (SELECT COUNT(*) FROM memory_enrichment_queue WHERE status = 'pending'),
-                (SELECT COUNT(*) FROM memory_enrichment_queue WHERE status = 'failed')",
+                (SELECT COUNT(*) FROM memory_enrichment_queue meq
+                 JOIN memory_revisions mr ON mr.id = meq.revision_id
+                 JOIN memory_documents md ON md.id = mr.document_id
+                 WHERE meq.status = 'pending' AND md.repository != 'hippo/__hippo_probe__'),
+                (SELECT COUNT(*) FROM memory_enrichment_queue meq
+                 JOIN memory_revisions mr ON mr.id = meq.revision_id
+                 JOIN memory_documents md ON md.id = mr.document_id
+                 WHERE meq.status = 'failed' AND md.repository != 'hippo/__hippo_probe__')",
             [],
             |row| Ok((row.get(0)?, row.get(1)?)),
         )

@@ -51,6 +51,30 @@ def test_probe_fixture_ingests_and_excludes_from_memory_query(
     assert rows == 1
 
 
+def test_probe_does_not_bump_ingest_health_or_enqueue(
+    conn: sqlite3.Connection, tmp_path: Path
+) -> None:
+    before = conn.execute(
+        "SELECT last_event_ts, consecutive_failures FROM source_health WHERE source = 'claude-auto-memory'"
+    ).fetchone()
+    fixture_root = probe_fixture_dir(tmp_path)
+    run_probe(conn, fixture_root=fixture_root)
+    after = conn.execute(
+        "SELECT last_event_ts, consecutive_failures FROM source_health WHERE source = 'claude-auto-memory'"
+    ).fetchone()
+    assert after == before
+    probe_queue = conn.execute(
+        """
+        SELECT COUNT(*) FROM memory_enrichment_queue meq
+        JOIN memory_revisions mr ON mr.id = meq.revision_id
+        JOIN memory_documents md ON md.id = mr.document_id
+        WHERE md.repository = ?
+        """,
+        (PROBE_REPOSITORY,),
+    ).fetchone()[0]
+    assert probe_queue == 0
+
+
 def test_probe_rows_excluded_from_lexical_search(conn: sqlite3.Connection, tmp_path: Path) -> None:
     fixture_root = probe_fixture_dir(tmp_path)
     run_probe(conn, fixture_root=fixture_root)

@@ -183,11 +183,13 @@ pub fn run(config: &HippoConfig) -> Result<()> {
     )? {
         violations.push(v);
     }
-    if let Some(v) = check_i19_stale_memory_projection(&conn, now_ms)? {
-        violations.push(v);
-    }
-    if let Some(v) = check_i20_orphaned_memory_chunk_links(&conn, now_ms)? {
-        violations.push(v);
+    if !bench_pause_window_active() {
+        if let Some(v) = check_i19_stale_memory_projection(&conn, now_ms)? {
+            violations.push(v);
+        }
+        if let Some(v) = check_i20_orphaned_memory_chunk_links(&conn, now_ms)? {
+            violations.push(v);
+        }
     }
 
     // ── Step 4: Insert capture_alarms rows for violations ─────────────────
