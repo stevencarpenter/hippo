@@ -46,13 +46,14 @@ the `agentic_*` tables (harness derived from `source_file`). The legacy
 longer written, dropped in a later unification step.
 v18→v19 adds the read-only Claude auto-memory tables: document,
 revision, chunk, enrichment queue, and knowledge-node link.
+v19→v20 adds auto-memory category provenance and MEMORY.md index links.
 """
 
 from __future__ import annotations
 
 import sqlite3
 
-EXPECTED_SCHEMA_VERSION: int = 19
+EXPECTED_SCHEMA_VERSION: int = 20
 
 # Versions brain can read without erroring.
 #

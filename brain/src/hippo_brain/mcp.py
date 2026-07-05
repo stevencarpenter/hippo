@@ -189,6 +189,7 @@ async def search_knowledge(
     since: str = "",
     source: str = "",
     branch: str = "",
+    category: str = "",
     include_excluded: bool = False,
 ) -> list[dict]:
     """Search the Hippo knowledge base for enriched knowledge nodes.
@@ -204,6 +205,7 @@ async def search_knowledge(
                 "claude", "browser", "workflow", or "claude-auto-memory".
                 Empty means all sources; an unrecognized source raises.
         branch: Exact match on git_branch of linked events/sessions.
+        category: Auto-memory category filter (feedback, project, reference, user, index).
         include_excluded: Operator mode — include probe/diagnostic rows (default false).
     """
     include_excluded = include_excluded or include_excluded_from_env()
@@ -212,7 +214,7 @@ async def search_knowledge(
     t0 = time.monotonic()
     logger.info(
         "search_knowledge called: query=%r mode=%s limit=%d project=%r since=%r "
-        "source=%r branch=%r",
+        "source=%r branch=%r category=%r",
         query,
         mode,
         limit,
@@ -220,6 +222,7 @@ async def search_knowledge(
         since,
         source,
         branch,
+        category,
     )
 
     tracer = _get_tracer()
@@ -243,6 +246,7 @@ async def search_knowledge(
                         since=since,
                         source=source,
                         branch=branch,
+                        category=category,
                         include_excluded=include_excluded,
                     )
                     elapsed = time.monotonic() - t0
@@ -267,6 +271,7 @@ async def search_knowledge(
                     since=since,
                     source=source,
                     branch=branch,
+                    category=category,
                     include_excluded=include_excluded,
                 )
             finally:
@@ -618,6 +623,7 @@ async def _retrieve_filtered(
     since: str,
     source: str,
     branch: str,
+    category: str = "",
     entity: str = "",
     include_excluded: bool = False,
 ) -> list[dict]:
@@ -636,6 +642,7 @@ async def _retrieve_filtered(
         source=source or None,
         branch=branch or None,
         entity=entity or None,
+        memory_category=category or None,
         include_excluded=include_excluded or include_excluded_from_env(),
     )
 
@@ -662,6 +669,7 @@ async def _retrieve_filtered(
                 since=since,
                 source=source,
                 branch=branch,
+                category=category,
                 include_excluded=filters.include_excluded,
             )
     finally:

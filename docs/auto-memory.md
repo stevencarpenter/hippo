@@ -60,6 +60,24 @@ Retention defaults (override in `[auto_memory]`):
 
 Renames are detected when exactly one prior document shares the same redacted hash, the old path is gone, and the new path is ingested. Deleted files move to `unavailable` on the first missing poll, then `tombstoned` after confirmation; tombstoned documents drop out of retrieval but keep bounded history.
 
+## Categories and links
+
+Claude's four-category filename convention is detected deterministically when present:
+
+| Signal | Examples |
+|--------|----------|
+| `index` | `MEMORY.md` |
+| `user` | `user.md`, `user_role.md` |
+| `feedback` | `feedback_testing.md` |
+| `project` | `project_auth.md` |
+| `reference` | `reference_api.md` |
+
+Files without a recognized prefix (for example `debugging.md`) remain uncategorized until the enrichment model adds optional `memory_categories` in its JSON output. Filename-derived categories are kept across content updates; model-derived categories are replaced on each successful enrichment.
+
+`MEMORY.md` index Markdown links are reconciled to other files in the same memory directory. Unresolved, external, ambiguous, and circular links are stored with their resolution status but never invented.
+
+Filter retrieval with `memory_category` (RAG `Filters.memory_category` or `search_knowledge(..., category="feedback")`). Results include `memory_categories` and `memory_links` provenance when the knowledge node projects an auto-memory document.
+
 ## Continuous reconciliation
 
 When `auto_memory.enabled = true`, `hippo daemon install` writes two LaunchAgents:

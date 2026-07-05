@@ -24,6 +24,7 @@ from hippo_brain.auto_memory_lifecycle import (
     prune_document_revisions,
     try_resolve_rename,
 )
+from hippo_brain.auto_memory_categories import reconcile_document_taxonomy
 from hippo_brain.markdown_chunking import MarkdownChunk, markdown_heading_chunks
 from hippo_brain.redaction import redact
 
@@ -86,6 +87,31 @@ def _chunks(markdown: str) -> list[MarkdownChunk]:
     return markdown_heading_chunks(markdown)
 
 
+def _apply_taxonomy(
+    conn: sqlite3.Connection,
+    *,
+    document_id: int,
+    revision_id: int,
+    repository: str,
+    logical_path: str,
+    path: Path,
+    redacted: str | None,
+    changed: bool,
+    now_ms: int,
+) -> None:
+    reconcile_document_taxonomy(
+        conn,
+        document_id=document_id,
+        revision_id=revision_id,
+        repository=repository,
+        logical_path=logical_path,
+        source_path=path,
+        redacted_content=redacted or "",
+        now_ms=now_ms,
+        content_changed=changed,
+    )
+
+
 def ingest_memory_file(
     conn: sqlite3.Connection,
     source_path: Path | str,
@@ -125,7 +151,7 @@ def ingest_memory_file(
     # so the path-keyed match is already unambiguous.
     explicit_repo = repository.strip() if repository and repository.strip() else None
     unchanged = conn.execute(
-        "SELECT d.id, d.uuid, r.id, r.revision_number, r.source_hash "
+        "SELECT d.id, d.uuid, r.id, r.revision_number, r.source_hash, d.repository "
         "FROM memory_documents d JOIN memory_revisions r ON r.id = d.current_revision_id "
         "WHERE d.source_kind = ? AND d.source_path = ? AND d.logical_path = ? "
         "AND (? IS NULL OR d.repository = ?) "
@@ -141,12 +167,24 @@ def ingest_memory_file(
         ),
     ).fetchone()
     if unchanged is not None:
-        doc_id, doc_uuid, rev_id, rev_num, stored_source_hash = unchanged
+        doc_id, doc_uuid, rev_id, rev_num, stored_source_hash, stored_repository = unchanged
         source_text = path.read_text(encoding="utf-8")
         if _sha256(source_text) == stored_source_hash:
             chunk_count = conn.execute(
                 "SELECT COUNT(*) FROM memory_chunks WHERE revision_id = ?", (rev_id,)
             ).fetchone()[0]
+            _apply_taxonomy(
+                conn,
+                document_id=int(doc_id),
+                revision_id=int(rev_id),
+                repository=stored_repository,
+                logical_path=identity_path,
+                path=path,
+                redacted=None,
+                changed=False,
+                now_ms=now_ms if now_ms is not None else int(time.time() * 1000),
+            )
+            conn.commit()
             return IngestResult(
                 int(doc_id), doc_uuid, int(rev_id), int(rev_num), False, int(chunk_count)
             )
@@ -185,6 +223,18 @@ def ingest_memory_file(
             prune_document_revisions(
                 conn, renamed_document_id, retention_policy, now_ms=observed_at
             )
+            _apply_taxonomy(
+                conn,
+                document_id=renamed_document_id,
+                revision_id=revision_id,
+                repository=repository_identity,
+                logical_path=identity_path,
+                path=path,
+                redacted=None,
+                changed=False,
+                now_ms=observed_at,
+            )
+            conn.commit()
             return IngestResult(
                 renamed_document_id,
                 doc_uuid,
@@ -237,6 +287,17 @@ def ingest_memory_file(
                 chunk_count = conn.execute(
                     "SELECT COUNT(*) FROM memory_chunks WHERE revision_id = ?", (current[0],)
                 ).fetchone()[0]
+                _apply_taxonomy(
+                    conn,
+                    document_id=document_id,
+                    revision_id=int(current[0]),
+                    repository=repository_identity,
+                    logical_path=identity_path,
+                    path=path,
+                    redacted=current[3],
+                    changed=False,
+                    now_ms=observed_at,
+                )
                 return IngestResult(
                     document_id,
                     document_uuid,
@@ -328,8 +389,20 @@ def ingest_memory_file(
                 old_redacted=previous_redacted,
                 new_redacted=redacted,
             )
+        _apply_taxonomy(
+            conn,
+            document_id=document_id,
+            revision_id=revision_id,
+            repository=repository_identity,
+            logical_path=identity_path,
+            path=path,
+            redacted=redacted,
+            changed=True,
+            now_ms=observed_at,
+        )
 
     prune_document_revisions(conn, document_id, retention_policy, now_ms=observed_at)
+    conn.commit()
 
     return IngestResult(
         document_id,
