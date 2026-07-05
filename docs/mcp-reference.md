@@ -105,9 +105,23 @@ When any filter is applied, the implementation forces lexical mode (filter pushd
   "captured_at": 1730000000000,
   "linked_event_ids": [12345, 12346],
   "linked_claude_session_ids": [501, 502],
-  "linked_browser_event_ids": [9001]
+  "linked_browser_event_ids": [9001],
+  "evidence": [
+    {
+      "ref": "shell-12345",
+      "source_kind": "shell",
+      "table": "events",
+      "row_id": 12345,
+      "timestamp_ms": 1730000000000,
+      "excerpt": "cargo build --release",
+      "rank": 0,
+      "retrieval_score": 0.87
+    }
+  ]
 }
 ```
+
+`search_hybrid` and semantic `search_knowledge` (via `_retrieve_filtered`) include an `evidence` array on each hit — inspectable citations per [`source-trust-contracts.md`](capture/source-trust-contracts.md). Operator debug: `hippo-evidence-inspect shell-12345`.
 
 The `linked_*_ids` arrays are empty when a node has no links to that source (e.g., a browser-only node returns `[]` for `linked_event_ids`).
 

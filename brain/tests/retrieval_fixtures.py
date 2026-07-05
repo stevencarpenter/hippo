@@ -18,6 +18,8 @@ CREATE TABLE knowledge_nodes (
 CREATE TABLE events (
     id INTEGER PRIMARY KEY,
     timestamp INTEGER NOT NULL,
+    command TEXT,
+    source_kind TEXT DEFAULT 'shell',
     cwd TEXT NOT NULL,
     git_repo TEXT,
     git_branch TEXT,
@@ -51,10 +53,14 @@ CREATE TABLE knowledge_node_agentic_sessions (
 CREATE TABLE browser_events (
     id INTEGER PRIMARY KEY,
     timestamp INTEGER NOT NULL,
+    title TEXT,
+    url TEXT,
+    domain TEXT,
     probe_tag TEXT
 );
 CREATE TABLE workflow_runs (
     id INTEGER PRIMARY KEY,
+    name TEXT,
     repo TEXT,
     head_sha TEXT,
     status TEXT NOT NULL DEFAULT 'completed',

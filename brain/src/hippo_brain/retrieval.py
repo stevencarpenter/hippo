@@ -18,6 +18,13 @@ from dataclasses import dataclass, field, replace
 from typing import Protocol, Sequence
 
 from hippo_brain.enrichment import IDENTIFIER_ENTITY_TYPES
+from hippo_brain.evidence_packets import (
+    attach_retrieval_scores,
+    make_agentic_packet,
+    make_browser_packet,
+    make_shell_packet,
+    make_workflow_packet,
+)
 from hippo_brain.retrieval_eligibility import (
     agentic_session_eligible_sql,
     browser_event_eligible_sql,
@@ -36,6 +43,11 @@ RRF_K = 60
 CANDIDATE_POOL = 3000
 MMR_LAMBDA = 0.7
 MAX_COSINE_DISTANCE = 2.0
+
+
+def _column_exists(conn: sqlite3.Connection, table: str, column: str) -> bool:
+    rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
+    return any(row[1] == column for row in rows)
 
 
 @dataclass
@@ -64,6 +76,7 @@ class SearchResult:
     design_decisions: list[dict] = field(default_factory=list)
     linked_event_ids: list[int] = field(default_factory=list)
     linked_source_ids: list[str] = field(default_factory=list)
+    evidence: list[dict] = field(default_factory=list)
     entities: dict[str, list[str]] = field(default_factory=dict)
 
 
@@ -501,15 +514,16 @@ def _fetch_details(
             "captured_at": created_at,
             "linked_event_ids": [],
             "linked_source_ids": [],
+            "evidence_packets": [],
             "entities": {},
         }
 
     # Attach shell event metadata (cwd/branch/captured_at prefer event data).
-    # Knowledge nodes are only created from non-probe events (probes skip the
-    # enrichment queue), so rows linked via knowledge_node_events are never probes.
+    shell_extra = [col for col in ("command", "source_kind") if _column_exists(conn, "events", col)]
+    shell_cols = ["e.id", "e.timestamp", "e.cwd", "e.git_branch", *[f"e.{c}" for c in shell_extra]]
     ev_rows = conn.execute(  # nosemgrep: unfiltered-event-table-select
         f"""
-        SELECT kne.knowledge_node_id, e.id, e.timestamp, e.cwd, e.git_branch
+        SELECT kne.knowledge_node_id, {", ".join(shell_cols)}
         FROM knowledge_node_events kne
         JOIN events e ON e.id = kne.event_id
         WHERE kne.knowledge_node_id IN ({placeholders})
@@ -518,12 +532,26 @@ def _fetch_details(
         """,
         list(node_ids),
     ).fetchall()
-    for kn_id, ev_id, ts, cwd, branch in ev_rows:
+    for row in ev_rows:
+        kn_id = row[0]
+        ev_id = row[1]
+        ts = row[2]
+        cwd = row[3]
+        branch = row[4]
+        extras = dict(zip(shell_extra, row[5:], strict=False))
         d = details.get(kn_id)
         if d is None:
             continue
         d["linked_event_ids"].append(ev_id)
         d["linked_source_ids"].append(f"shell-{ev_id}")
+        d["evidence_packets"].append(
+            make_shell_packet(
+                event_id=ev_id,
+                timestamp_ms=ts or 0,
+                command=extras.get("command"),
+                source_kind=extras.get("source_kind"),
+            )
+        )
         if not d["cwd"] and cwd:
             d["cwd"] = cwd
         if not d["git_branch"] and branch:
@@ -534,9 +562,15 @@ def _fetch_details(
     # Attach browser source linkage. Probes never enqueue, so browser-linked
     # nodes are normally real events; `be.probe_tag IS NULL` is defense-in-depth
     # vs AP-6 (probes must never surface in user-facing queries).
+    browser_extra = [
+        col
+        for col in ("timestamp", "title", "url", "domain")
+        if _column_exists(conn, "browser_events", col)
+    ]
+    br_cols = ["be.id", *[f"be.{c}" for c in browser_extra]]
     br_rows = conn.execute(  # nosemgrep: unfiltered-event-table-select
         f"""
-        SELECT knbe.knowledge_node_id, be.id
+        SELECT knbe.knowledge_node_id, {", ".join(br_cols)}
         FROM knowledge_node_browser_events knbe
         JOIN browser_events be ON be.id = knbe.browser_event_id
         WHERE knbe.knowledge_node_id IN ({placeholders})
@@ -545,16 +579,34 @@ def _fetch_details(
         """,
         list(node_ids),
     ).fetchall()
-    for kn_id, be_id in br_rows:
+    for row in br_rows:
+        kn_id = row[0]
+        be_id = row[1]
+        fields = dict(zip(browser_extra, row[2:], strict=False))
         d = details.get(kn_id)
         if d is None:
             continue
         d["linked_source_ids"].append(f"browser-{be_id}")
+        d["evidence_packets"].append(
+            make_browser_packet(
+                event_id=be_id,
+                timestamp_ms=fields.get("timestamp") or 0,
+                title=fields.get("title"),
+                url=fields.get("url"),
+                domain=fields.get("domain"),
+            )
+        )
 
     # Attach workflow source linkage (CI runs have no probe variant).
+    workflow_extra = [
+        col
+        for col in ("started_at", "name", "repo", "conclusion")
+        if _column_exists(conn, "workflow_runs", col)
+    ]
+    wf_cols = ["wr.id", *[f"wr.{c}" for c in workflow_extra]]
     wf_rows = conn.execute(
         f"""
-        SELECT knwr.knowledge_node_id, wr.id
+        SELECT knwr.knowledge_node_id, {", ".join(wf_cols)}
         FROM knowledge_node_workflow_runs knwr
         JOIN workflow_runs wr ON wr.id = knwr.run_id
         WHERE knwr.knowledge_node_id IN ({placeholders})
@@ -563,20 +615,44 @@ def _fetch_details(
         """,
         list(node_ids),
     ).fetchall()
-    for kn_id, wr_id in wf_rows:
+    for row in wf_rows:
+        kn_id = row[0]
+        wr_id = row[1]
+        fields = dict(zip(workflow_extra, row[2:], strict=False))
         d = details.get(kn_id)
         if d is None:
             continue
         d["linked_source_ids"].append(f"workflow-{wr_id}")
+        d["evidence_packets"].append(
+            make_workflow_packet(
+                run_id=wr_id,
+                timestamp_ms=fields.get("started_at") or 0,
+                name=fields.get("name"),
+                repo=fields.get("repo"),
+                conclusion=fields.get("conclusion"),
+            )
+        )
 
     # Attach agentic-session linkage (cwd/branch backfill only if still empty;
     # linked_source_ids is always appended). Probes are excluded via
     # `asx.probe_tag IS NULL` (defense-in-depth vs AP-6; probes never enqueue so
     # are normally unlinked anyway).
+    optional_agentic = [
+        col
+        for col in ("session_id", "segment_index", "summary_text", "source_file", "end_time")
+        if _column_exists(conn, "agentic_sessions", col)
+    ]
+    cs_cols = [
+        "asx.id",
+        "asx.harness",
+        "asx.start_time",
+        "asx.cwd",
+        "asx.git_branch",
+        *[f"asx.{col}" for col in optional_agentic],
+    ]
     cs_rows = conn.execute(  # nosemgrep: unfiltered-event-table-select
         f"""
-        SELECT kncs.knowledge_node_id, asx.id, asx.harness,
-               asx.start_time, asx.cwd, asx.git_branch
+        SELECT kncs.knowledge_node_id, {", ".join(cs_cols)}
         FROM knowledge_node_agentic_sessions kncs
         JOIN agentic_sessions asx ON asx.id = kncs.agentic_session_id
         WHERE kncs.knowledge_node_id IN ({placeholders})
@@ -585,21 +661,43 @@ def _fetch_details(
         """,
         list(node_ids),
     ).fetchall()
-    for kn_id, asx_id, harness, ts, cwd, branch in cs_rows:
+    for row in cs_rows:
+        kn_id = row[0]
+        asx_id = row[1]
+        harness = row[2]
+        start_time = row[3]
+        cwd = row[4]
+        branch = row[5]
+        fields = dict(zip(optional_agentic, row[6:], strict=False))
+        session_id = fields.get("session_id", "")
+        segment_index = fields.get("segment_index", 0)
+        summary_text = fields.get("summary_text")
+        source_file = fields.get("source_file")
+        end_time = fields.get("end_time", start_time)
         d = details.get(kn_id)
         if d is None:
             continue
-        # The bench corpus/Q/A only tags claude-code agentic sessions as
-        # `claude-`; other harnesses (codex/cursor/opencode) are tagged by
-        # their harness name so the source id stays unambiguous.
         prefix = "claude" if harness == "claude-code" else harness
-        d["linked_source_ids"].append(f"{prefix}-{asx_id}")
+        ref = f"{prefix}-{asx_id}"
+        d["linked_source_ids"].append(ref)
+        d["evidence_packets"].append(
+            make_agentic_packet(
+                row_id=asx_id,
+                harness=harness,
+                session_id=str(session_id) if session_id is not None else "",
+                segment_index=int(segment_index or 0),
+                timestamp_ms=end_time or start_time or 0,
+                summary_text=str(summary_text) if summary_text is not None else None,
+                source_path=str(source_file) if source_file is not None else None,
+                ref=ref,
+            )
+        )
         if not d["cwd"] and cwd:
             d["cwd"] = cwd
         if not d["git_branch"] and branch:
             d["git_branch"] = branch
-        if ts and ts > d["captured_at"]:
-            d["captured_at"] = ts
+        if start_time and start_time > d["captured_at"]:
+            d["captured_at"] = start_time
 
     # Hydrate type-bucketed entity names so the RAG renderer can surface them
     # as a structural `Entities:` line above the truncatable `Detail:` block.
@@ -747,8 +845,10 @@ def _to_result(score: float, detail: dict | None) -> SearchResult:
             design_decisions=[],
             linked_event_ids=[],
             linked_source_ids=[],
+            evidence=[],
             entities={},
         )
+    packets = attach_retrieval_scores(list(detail.get("evidence_packets") or []), score)
     return SearchResult(
         uuid=detail["uuid"],
         score=round(max(0.0, min(1.0, score)), 4),
@@ -762,6 +862,7 @@ def _to_result(score: float, detail: dict | None) -> SearchResult:
         design_decisions=list(detail.get("design_decisions") or []),
         linked_event_ids=list(detail["linked_event_ids"]),
         linked_source_ids=sorted(detail.get("linked_source_ids") or []),
+        evidence=packets,
         entities=dict(detail.get("entities") or {}),
     )
 
