@@ -6,18 +6,19 @@ Parent issue: [SNUG-115](https://linear.app/snugmarina/issue/SNUG-115).
 
 **Phase A (v22)** renamed watcher resume state to `agentic_session_offsets` only — no drops.
 
-## Current state (schema v22 after Phase A)
+## Current state (schema v23 — Phase B shipped)
 
-| Table | Status | Action in Phase B (v23) |
-|-------|--------|---------------|
-| `agentic_sessions` | **Live** — all harness writers | Keep |
-| `agentic_enrichment_queue` | **Live** | Keep |
-| `knowledge_node_agentic_sessions` | **Live** | Keep |
-| `claude_sessions` | **Frozen** — no writers since unification | Drop after backfill verified |
-| `claude_enrichment_queue` | **Frozen** | Drop |
-| `knowledge_node_claude_sessions` | **Frozen** | Drop |
-| `claude_session_parity` | **Frozen** — tmux tailer residue | Drop |
-| `claude_session_offsets` | **Live on v21** — FS watcher resume state | **Renamed to `agentic_session_offsets` in v22 (Phase A)** |
+| Table | Status |
+|-------|--------|
+| `agentic_sessions` | **Live** — all harness writers |
+| `agentic_enrichment_queue` | **Live** |
+| `knowledge_node_agentic_sessions` | **Live** |
+| `agentic_session_offsets` | **Live** — watcher resume state (v22) |
+| `claude_sessions` | **Dropped** in v23 |
+| `claude_enrichment_queue` | **Dropped** in v23 |
+| `knowledge_node_claude_sessions` | **Dropped** in v23 |
+| `claude_session_parity` | **Dropped** in v23 |
+| `claude_session_offsets` | **Dropped** in v23 (data copied to `agentic_session_offsets` in v22) |
 
 The v17→v18 migration already copied historical rows into `agentic_sessions` / `agentic_enrichment_queue` / `knowledge_node_agentic_sessions` with `harness` derived from `source_file`. Phase B (v23) is schema cleanup + reference purge, not another data migration.
 
@@ -51,21 +52,12 @@ Phase A checklist (complete):
 3. ~~Switch watcher + backfill to new table name~~
 4. Legacy `claude_session_offsets` kept frozen until Phase B drop
 
-## Phase B — drop legacy `claude_*` tables (destructive, not started)
+## Phase B — drop legacy `claude_*` tables (**shipped in v23**)
 
-Only after Phase A is merged and deployed:
-
-1. Bump `EXPECTED_VERSION` / `EXPECTED_SCHEMA_VERSION` to **23** (Rust + Python together).
-2. Migration SQL (sketch):
-   ```sql
-   DROP TABLE IF EXISTS knowledge_node_claude_sessions;
-   DROP TABLE IF EXISTS claude_enrichment_queue;
-   DROP TABLE IF EXISTS claude_sessions;
-   DROP TABLE IF EXISTS claude_session_parity;
-   DROP TABLE IF EXISTS claude_session_offsets;
-   ```
-3. Remove `CREATE TABLE` blocks for dropped tables from `crates/hippo-core/src/schema.sql`.
-4. Purge references (see grep audit below).
+1. ~~Bump `EXPECTED_VERSION` / `EXPECTED_SCHEMA_VERSION` to **23**~~
+2. ~~Migration SQL drops legacy tables~~
+3. ~~Remove `CREATE TABLE` blocks from `schema.sql`~~
+4. ~~Purge runtime references~~
 5. Full test pass: `mise run test`
 
 ## Grep audit checklist

@@ -479,14 +479,31 @@ def _load_shell_events_for_node(conn: sqlite3.Connection, node_id: int) -> list[
 
 
 def _load_claude_sessions_for_node(conn: sqlite3.Connection, node_id: int) -> list[dict]:
-    rows = conn.execute(
-        "SELECT cs.id, cs.message_count, cs.tool_calls_json "
-        "FROM knowledge_node_claude_sessions kncs "
-        "JOIN claude_sessions cs ON cs.id = kncs.claude_session_id "
-        "WHERE kncs.knowledge_node_id = ?",
-        (node_id,),
-    ).fetchall()
-    return [dict(row) for row in rows]
+    tables = {
+        row[0]
+        for row in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table'"
+        ).fetchall()
+    }
+    if "knowledge_node_agentic_sessions" in tables:
+        rows = conn.execute(
+            "SELECT a.id, a.message_count, a.tool_calls_json "
+            "FROM knowledge_node_agentic_sessions knas "
+            "JOIN agentic_sessions a ON a.id = knas.agentic_session_id "
+            "WHERE knas.knowledge_node_id = ?",
+            (node_id,),
+        ).fetchall()
+        return [dict(row) for row in rows]
+    if "knowledge_node_claude_sessions" in tables:
+        rows = conn.execute(
+            "SELECT cs.id, cs.message_count, cs.tool_calls_json "
+            "FROM knowledge_node_claude_sessions kncs "
+            "JOIN claude_sessions cs ON cs.id = kncs.claude_session_id "
+            "WHERE kncs.knowledge_node_id = ?",
+            (node_id,),
+        ).fetchall()
+        return [dict(row) for row in rows]
+    return []
 
 
 def _load_browser_events_for_node(conn: sqlite3.Connection, node_id: int) -> list[dict]:
@@ -577,13 +594,26 @@ def phase_noise_cleanup(
         )
 
     with conn:
+        tables = {
+            row[0]
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            ).fetchall()
+        }
         for nid in noise_ids:
             # Delete join-table rows first (schema has no ON DELETE CASCADE).
             conn.execute("DELETE FROM knowledge_node_events WHERE knowledge_node_id = ?", (nid,))
             conn.execute("DELETE FROM knowledge_node_entities WHERE knowledge_node_id = ?", (nid,))
-            conn.execute(
-                "DELETE FROM knowledge_node_claude_sessions WHERE knowledge_node_id = ?", (nid,)
-            )
+            if "knowledge_node_agentic_sessions" in tables:
+                conn.execute(
+                    "DELETE FROM knowledge_node_agentic_sessions WHERE knowledge_node_id = ?",
+                    (nid,),
+                )
+            if "knowledge_node_claude_sessions" in tables:
+                conn.execute(
+                    "DELETE FROM knowledge_node_claude_sessions WHERE knowledge_node_id = ?",
+                    (nid,),
+                )
             conn.execute(
                 "DELETE FROM knowledge_node_browser_events WHERE knowledge_node_id = ?", (nid,)
             )

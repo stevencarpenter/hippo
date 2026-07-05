@@ -112,18 +112,19 @@ def _seed_claude_node(conn, node_id: int, version: int = 1, created_at: int = 1_
     )
     conn.execute(
         """
-        INSERT INTO claude_sessions (session_id, project_dir, cwd, segment_index,
-                                     start_time, end_time, summary_text,
-                                     tool_calls_json, user_prompts_json,
-                                     message_count, source_file, is_subagent)
-        VALUES ('sess-x', '/project', '/project', 0, ?, ?,
-                'fake summary text', '[]', '[]', 5, '/sess.jsonl', 0)
+        INSERT INTO agentic_sessions (
+            session_id, harness, segment_index, model, agent,
+            project_dir, cwd, summary_text, tool_calls_json, user_prompts_json,
+            message_count, source_file, start_time, end_time, is_subagent
+        )
+        VALUES ('sess-x', 'claude-code', 0, '', '', '/project', '/project',
+                'fake summary text', '[]', '[]', 5, '/sess.jsonl', ?, ?, 0)
         """,
         (created_at, created_at + 1000),
     )
     seg_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
     conn.execute(
-        "INSERT INTO knowledge_node_claude_sessions (knowledge_node_id, claude_session_id) "
+        "INSERT INTO knowledge_node_agentic_sessions (knowledge_node_id, agentic_session_id) "
         "VALUES (?, ?)",
         (node_id, seg_id),
     )

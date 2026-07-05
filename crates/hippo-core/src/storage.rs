@@ -19,7 +19,7 @@ const SCHEMA: &str = concat!(
 /// startup code (e.g. the brain handshake) can cross-check without
 /// re-declaring the value. Keep in sync with
 /// `brain/src/hippo_brain/schema_version.py::EXPECTED_SCHEMA_VERSION`.
-pub const EXPECTED_VERSION: i64 = 22;
+pub const EXPECTED_VERSION: i64 = 23;
 
 /// Idempotent v18→v19 auto-memory DDL (same file as fresh-install assembly).
 const AUTO_MEMORY_SCHEMA: &str = include_str!("schema/auto_memory.sql");
@@ -1479,6 +1479,21 @@ pub fn open_db(path: &Path) -> Result<Connection> {
             )?;
         }
         conn.execute_batch("PRAGMA user_version = 22;")?;
+    }
+
+    // v22→v23: drop frozen legacy `claude_*` tables (SNUG-115 Phase B).
+    // v17→v18 already backfilled rows into the agentic family; no data migration here.
+    if (1..23).contains(&version) {
+        conn.execute_batch(
+            "PRAGMA foreign_keys = OFF;
+             DROP TABLE IF EXISTS knowledge_node_claude_sessions;
+             DROP TABLE IF EXISTS claude_enrichment_queue;
+             DROP TABLE IF EXISTS claude_sessions;
+             DROP TABLE IF EXISTS claude_session_parity;
+             DROP TABLE IF EXISTS claude_session_offsets;
+             PRAGMA foreign_keys = ON;
+             PRAGMA user_version = 23;",
+        )?;
     } else if version != 0 && version != EXPECTED_VERSION {
         anyhow::bail!(
             "DB schema version mismatch: expected {}, found {}. \
@@ -2951,28 +2966,27 @@ mod tests {
             .unwrap();
         assert_eq!(v, EXPECTED_VERSION);
 
-        // Pre-existing row is preserved.
-        let count: i64 = conn
-            .query_row("SELECT COUNT(*) FROM claude_sessions", [], |r| r.get(0))
-            .unwrap();
-        assert_eq!(count, 1);
-
-        // Both new columns exist and are NULL on the migrated row.
-        let (content_hash, last_enriched): (Option<String>, Option<String>) = conn
+        // Partial test DB (claude_sessions only): v17→v18 skips backfill and v23
+        // drops the legacy table. Column migration is verified on agentic_sessions
+        // in `test_migrate_v11_to_v12_recovers_from_partial_success`.
+        let legacy_exists: bool = conn
             .query_row(
-                "SELECT content_hash, last_enriched_content_hash FROM claude_sessions",
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='claude_sessions')",
                 [],
-                |r| Ok((r.get(0)?, r.get(1)?)),
+                |r| r.get(0),
             )
             .unwrap();
-        assert!(
-            content_hash.is_none(),
-            "content_hash must be NULL on legacy row"
-        );
-        assert!(
-            last_enriched.is_none(),
-            "last_enriched_content_hash must be NULL on legacy row"
-        );
+        assert!(!legacy_exists);
+
+        let cols: Vec<String> = conn
+            .prepare("SELECT name FROM pragma_table_info('agentic_sessions')")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+        assert!(cols.contains(&"content_hash".to_string()));
+        assert!(cols.contains(&"last_enriched_content_hash".to_string()));
     }
 
     /// A previous v11→v12 attempt may have crashed after adding `content_hash`
@@ -3026,9 +3040,10 @@ mod tests {
             .unwrap();
         assert_eq!(v, EXPECTED_VERSION);
 
-        // Both columns must now exist.
+        // Both columns must now exist on the live agentic table (legacy
+        // claude_sessions is dropped in v23).
         let cols: Vec<String> = conn
-            .prepare("SELECT name FROM pragma_table_info('claude_sessions')")
+            .prepare("SELECT name FROM pragma_table_info('agentic_sessions')")
             .unwrap()
             .query_map([], |r| r.get(0))
             .unwrap()
@@ -3036,6 +3051,15 @@ mod tests {
             .unwrap();
         assert!(cols.contains(&"content_hash".to_string()));
         assert!(cols.contains(&"last_enriched_content_hash".to_string()));
+
+        let legacy_exists: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='claude_sessions')",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(!legacy_exists);
     }
 
     /// v12→v13 migration: extend the entities.type CHECK list with
@@ -4055,7 +4079,54 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap();
-        assert!(legacy_exists, "legacy table kept frozen until Phase B");
+        assert!(
+            !legacy_exists,
+            "legacy claude_session_offsets dropped in v23"
+        );
+    }
+
+    #[test]
+    fn test_migrate_v22_to_v23_drops_legacy_claude_tables() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("legacy-v22.db");
+        let conn = Connection::open(&db).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE claude_sessions (id INTEGER PRIMARY KEY, session_id TEXT NOT NULL);
+             CREATE TABLE claude_enrichment_queue (id INTEGER PRIMARY KEY, claude_session_id INTEGER NOT NULL);
+             CREATE TABLE knowledge_node_claude_sessions (
+                knowledge_node_id INTEGER NOT NULL,
+                claude_session_id INTEGER NOT NULL,
+                PRIMARY KEY (knowledge_node_id, claude_session_id)
+             );
+             CREATE TABLE claude_session_parity (id INTEGER PRIMARY KEY);
+             CREATE TABLE claude_session_offsets (path TEXT PRIMARY KEY);
+             PRAGMA user_version = 22;",
+        )
+        .unwrap();
+        drop(conn);
+
+        let conn = open_db(&db).unwrap();
+        let version: i64 = conn
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, EXPECTED_VERSION);
+
+        for table in [
+            "claude_sessions",
+            "claude_enrichment_queue",
+            "knowledge_node_claude_sessions",
+            "claude_session_parity",
+            "claude_session_offsets",
+        ] {
+            let exists: bool = conn
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1)",
+                    [table],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert!(!exists, "v23 should drop legacy table {table}");
+        }
     }
 
     #[test]
@@ -4117,6 +4188,25 @@ mod tests {
             .unwrap();
         assert!(agentic);
         assert!(!legacy);
+
+        for table in [
+            "claude_sessions",
+            "claude_enrichment_queue",
+            "knowledge_node_claude_sessions",
+            "claude_session_parity",
+        ] {
+            let exists: bool = conn
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1)",
+                    [table],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert!(
+                !exists,
+                "fresh install must not create legacy table {table}"
+            );
+        }
         drop(conn);
     }
 
@@ -4223,7 +4313,7 @@ mod tests {
             "knowledge_nodes",
             "entities",
             "knowledge_node_events",
-            "knowledge_node_claude_sessions",
+            "knowledge_node_agentic_sessions",
             "knowledge_node_workflow_runs",
             "workflow_annotations",
             "lessons",
