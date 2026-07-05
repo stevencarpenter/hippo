@@ -25,6 +25,8 @@ mise run restart
 open http://localhost:3030
 ```
 
+Dashboard inventory, provisioned alert rules, and on-call pointers: [`docs/observability.md`](../docs/observability.md).
+
 Hippo persists OTEL data on the host under `~/.local/share/hippo/otel/`, so restarting or recreating
 the Docker Compose stack does not wipe Grafana, Prometheus, Loki, or Tempo state.
 

@@ -274,7 +274,7 @@ Hippo captures shell commands (including stdout/stderr), Claude Code session tra
 
 **MCP access is broad.** Adding hippo to Claude Code's MCP config grants the model read access to your shell history, Claude transcripts, and browser history — including via prompt injection through code or documents you ask Claude to read.
 
-**Telemetry is off by default.** The OTel stack (`otel/`) is optional, points at `localhost:4317`, and only emits when `[telemetry] enabled = true`. See [`otel/README.md`](otel/README.md).
+**Telemetry is off by default.** The OTel stack (`otel/`) is optional, points at `localhost:4317`, and only emits when `[telemetry] enabled = true`. See [`otel/README.md`](otel/README.md) for setup and [`docs/observability.md`](docs/observability.md) for dashboards and alert rules.
 
 **Network exposure.** The brain HTTP server binds `127.0.0.1:9175`. The daemon's Unix socket lives at `~/.local/share/hippo/daemon.sock`.
 
