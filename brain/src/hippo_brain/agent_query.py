@@ -83,6 +83,7 @@ def _compact_hit(result: SearchResult, *, include_decisions: bool) -> dict[str, 
         "git_branch": result.git_branch,
         "outcome": result.outcome,
         "evidence": list(result.evidence),
+        "confidence": dict(result.confidence) if result.confidence else {},
     }
     if include_decisions and result.design_decisions:
         hit["design_decisions"] = list(result.design_decisions)
