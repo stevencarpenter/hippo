@@ -170,7 +170,9 @@ def test_probe_tagged_session_excluded(conn: sqlite3.Connection) -> None:
     assert {r.uuid for r in results} == {"clean"}
 
 
-def test_include_excluded_from_env(monkeypatch: pytest.MonkeyPatch, conn: sqlite3.Connection) -> None:
+def test_include_excluded_from_env(
+    monkeypatch: pytest.MonkeyPatch, conn: sqlite3.Connection
+) -> None:
     monkeypatch.setenv("HIPPO_RETRIEVAL_INCLUDE_EXCLUDED", "1")
     _insert_node(conn, 1)
     journal = "/p/parent/subagents/workflows/wf/journal.jsonl"
