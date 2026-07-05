@@ -15,23 +15,18 @@ from tests.retrieval_fixtures import FakeBackend, TRUST_EVAL_SCHEMA
 _NOW = int(time.time() * 1000)
 _SETTLED_END = _NOW - IN_FLIGHT_SETTLE_MS - 60_000
 
-_SOURCE_HEALTH_DDL = """
-CREATE TABLE source_health (
-    source TEXT PRIMARY KEY,
-    last_event_ts INTEGER,
-    consecutive_failures INTEGER DEFAULT 0,
-    probe_ok INTEGER
-);
-INSERT INTO source_health (source, last_event_ts, consecutive_failures, probe_ok)
-VALUES ('shell', ?, 0, 1);
-"""
+_SOURCE_HEALTH_ROW = (
+    "INSERT INTO source_health "
+    "(source, last_event_ts, consecutive_failures, events_last_24h, probe_ok, updated_at) "
+    "VALUES ('shell', ?, 0, 3, 1, ?)"
+)
 
 
 @pytest.fixture
 def conn() -> sqlite3.Connection:
     c = sqlite3.connect(":memory:")
-    c.executescript(TRUST_EVAL_SCHEMA + _SOURCE_HEALTH_DDL)
-    c.execute("UPDATE source_health SET last_event_ts = ?", (_SETTLED_END,))
+    c.executescript(TRUST_EVAL_SCHEMA)
+    c.execute(_SOURCE_HEALTH_ROW, (_SETTLED_END, _NOW))
     c.commit()
     return c
 
@@ -102,7 +97,9 @@ def test_known_mode_includes_evidence_and_freshness(conn: sqlite3.Connection) ->
     assert out["hits"][0]["evidence"]
     assert out["hits"][0]["evidence"][0]["ref"] == "shell-10"
     assert "shell" in out["freshness"]
-    assert out["freshness"]["shell"]["present"] is True
+    assert out["freshness"]["shell"]["status"] == "fresh"
+    assert out["freshness"]["shell"]["capture_health"]["probe_ok"] == 1
+    assert out["hits"][0]["evidence"][0]["freshness"]["status"] == "fresh"
 
 
 def test_source_filter_shell_excludes_agentic(conn: sqlite3.Connection) -> None:
@@ -179,4 +176,5 @@ def test_freshness_marks_stale_source(conn: sqlite3.Connection) -> None:
     req = AgentQueryRequest(query="cargo", mode="known", limit=5)
     out = run_agent_query(conn, req, [0.1] * 8, backend=backend)
 
+    assert out["freshness"]["shell"]["status"] == "stale"
     assert out["freshness"]["shell"]["stale"] is True

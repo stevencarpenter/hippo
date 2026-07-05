@@ -136,3 +136,97 @@ def test_inspect_evidence_rejects_probe_without_operator_mode(conn: sqlite3.Conn
 
     payload = inspect_evidence(conn, "shell-50", include_excluded=True)
     assert payload["row"]["probe_tag"] == "tag"
+
+
+def test_browser_knowledge_includes_evidence_packet(conn: sqlite3.Connection) -> None:
+    _insert_node(conn, 4, uuid="browser-node")
+    conn.execute(
+        "INSERT INTO browser_events (id, timestamp, title, url, domain) "
+        "VALUES (40, ?, 'SQLite WAL', 'https://sqlite.org/wal', 'sqlite.org')",
+        (_SETTLED_END,),
+    )
+    conn.execute(
+        "INSERT INTO knowledge_node_browser_events (knowledge_node_id, browser_event_id) "
+        "VALUES (4, 40)"
+    )
+    conn.execute(
+        "INSERT INTO source_health "
+        "(source, last_event_ts, consecutive_failures, events_last_24h, updated_at) "
+        "VALUES ('browser', ?, 0, 1, ?)",
+        (_SETTLED_END, _NOW),
+    )
+    conn.commit()
+
+    backend = FakeBackend(knn=[(4, 0.9)], fts=[(4, 0.9)])
+    results = search(conn, "sqlite", [0.1] * 8, Filters(), mode="hybrid", limit=5, backend=backend)
+    pkt = results[0].evidence[0]
+    assert pkt["ref"] == "browser-40"
+    assert pkt["source_kind"] == "browser"
+    assert pkt["freshness"]["source"] == "browser"
+
+
+def test_workflow_knowledge_includes_evidence_packet(conn: sqlite3.Connection) -> None:
+    _insert_node(conn, 5, uuid="workflow-node")
+    conn.execute(
+        "INSERT INTO workflow_runs (id, name, repo, conclusion, started_at) "
+        "VALUES (50, 'CI', 'stevencarpenter/hippo', 'success', ?)",
+        (_SETTLED_END,),
+    )
+    conn.execute(
+        "INSERT INTO knowledge_node_workflow_runs (knowledge_node_id, run_id) VALUES (5, 50)"
+    )
+    conn.execute(
+        "INSERT INTO source_health "
+        "(source, last_event_ts, consecutive_failures, events_last_24h, updated_at) "
+        "VALUES ('workflow', ?, 0, 1, ?)",
+        (_SETTLED_END, _NOW),
+    )
+    conn.commit()
+
+    backend = FakeBackend(knn=[(5, 0.85)], fts=[(5, 0.88)])
+    results = search(conn, "CI", [0.1] * 8, Filters(), mode="hybrid", limit=5, backend=backend)
+    pkt = results[0].evidence[0]
+    assert pkt["ref"] == "workflow-50"
+    assert pkt["source_kind"] == "workflow"
+    assert "hippo" in pkt["excerpt"]
+    assert pkt["freshness"]["source"] == "workflow"
+
+
+def test_memory_knowledge_includes_evidence_packet(conn: sqlite3.Connection) -> None:
+    _insert_node(conn, 6, uuid="memory-node")
+    conn.execute(
+        "INSERT INTO memory_documents (id, uuid, repository, source_path, state, updated_at) "
+        "VALUES (1, 'doc-1', 'hippo', 'MEMORY.md', 'active', ?)",
+        (_SETTLED_END,),
+    )
+    conn.execute(
+        "INSERT INTO memory_revisions (id, document_id, revision_number, created_at) "
+        "VALUES (10, 1, 1, ?)",
+        (_SETTLED_END,),
+    )
+    conn.execute("UPDATE memory_documents SET active_revision_id = 10 WHERE id = 1")
+    conn.execute(
+        "INSERT INTO memory_chunks (id, revision_id, ordinal, heading_path, content, created_at) "
+        "VALUES (100, 10, 0, 'Vector store', 'sqlite-vec consolidation notes', ?)",
+        (_SETTLED_END,),
+    )
+    conn.execute(
+        "INSERT INTO knowledge_node_memory_chunks (knowledge_node_id, memory_chunk_id) "
+        "VALUES (6, 100)"
+    )
+    conn.execute(
+        "INSERT INTO source_health "
+        "(source, last_event_ts, consecutive_failures, events_last_24h, updated_at) "
+        "VALUES ('claude-auto-memory', ?, 0, 1, ?)",
+        (_SETTLED_END, _NOW),
+    )
+    conn.commit()
+
+    backend = FakeBackend(knn=[(6, 0.87)], fts=[(6, 0.9)])
+    results = search(
+        conn, "sqlite-vec", [0.1] * 8, Filters(), mode="hybrid", limit=5, backend=backend
+    )
+    pkt = results[0].evidence[0]
+    assert pkt["ref"] == "memory-100"
+    assert pkt["source_kind"] == "claude-auto-memory"
+    assert "Vector store" in pkt["excerpt"]

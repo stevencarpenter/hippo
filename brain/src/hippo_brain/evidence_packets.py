@@ -161,6 +161,29 @@ def make_workflow_packet(
     ).to_dict()
 
 
+def make_memory_packet(
+    *,
+    chunk_id: int,
+    timestamp_ms: int,
+    heading: str | None,
+    content: str | None,
+    repository: str | None,
+    source_path: str | None,
+) -> dict[str, Any]:
+    excerpt = heading or (content or "")[:200] or source_path or ""
+    if repository and heading:
+        excerpt = f"{repository} — {heading}"
+    return EvidencePacket(
+        ref=f"memory-{chunk_id}",
+        source_kind="claude-auto-memory",
+        table="memory_chunks",
+        row_id=chunk_id,
+        timestamp_ms=timestamp_ms,
+        excerpt=_truncate(excerpt),
+        source_path=source_path or None,
+    ).to_dict()
+
+
 def _row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
     return {key: row[key] for key in row.keys()}
 

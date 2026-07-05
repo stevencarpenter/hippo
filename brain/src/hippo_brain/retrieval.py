@@ -22,6 +22,7 @@ from hippo_brain.evidence_packets import (
     attach_retrieval_scores,
     make_agentic_packet,
     make_browser_packet,
+    make_memory_packet,
     make_shell_packet,
     make_workflow_packet,
 )
@@ -33,6 +34,7 @@ from hippo_brain.retrieval_eligibility import (
     shell_event_eligible_sql,
     workflow_run_eligible_sql,
 )
+from hippo_brain.source_freshness import attach_freshness_to_results
 from hippo_brain.source_filters import (
     knowledge_memory_project_clause,
     knowledge_source_exists_clause,
@@ -212,14 +214,18 @@ def search(
     backend = backend or _default_backend()
 
     if mode == "semantic":
-        return _semantic(conn, query_vec, filters, limit, backend)
-    if mode == "lexical":
-        return _lexical(conn, query, filters, limit, backend)
-    if mode == "recent":
-        return _recent(conn, query, filters, limit, backend)
-    if mode == "hybrid":
-        return _hybrid(conn, query, query_vec, filters, limit, backend)
-    raise ValueError(f"unknown retrieval mode: {mode!r}")
+        results = _semantic(conn, query_vec, filters, limit, backend)
+    elif mode == "lexical":
+        results = _lexical(conn, query, filters, limit, backend)
+    elif mode == "recent":
+        results = _recent(conn, query, filters, limit, backend)
+    elif mode == "hybrid":
+        results = _hybrid(conn, query, query_vec, filters, limit, backend)
+    else:
+        raise ValueError(f"unknown retrieval mode: {mode!r}")
+
+    attach_freshness_to_results(conn, results)
+    return results
 
 
 # ---------------------------------------------------------------------------
@@ -698,6 +704,48 @@ def _fetch_details(
             d["git_branch"] = branch
         if start_time and start_time > d["captured_at"]:
             d["captured_at"] = start_time
+
+    if _column_exists(conn, "memory_chunks", "id"):
+        mem_rows = conn.execute(
+            f"""
+            SELECT knmc.knowledge_node_id, mc.id, mc.heading_path, mc.content,
+                   mr.created_at, md.repository, md.source_path
+            FROM knowledge_node_memory_chunks knmc
+            JOIN memory_chunks mc ON mc.id = knmc.memory_chunk_id
+            JOIN memory_revisions mr ON mr.id = mc.revision_id
+            JOIN memory_documents md ON md.id = mr.document_id
+            WHERE knmc.knowledge_node_id IN ({placeholders})
+              AND md.state = 'active'
+              AND md.active_revision_id = mr.id
+            ORDER BY mr.created_at DESC
+            """,
+            list(node_ids),
+        ).fetchall()
+        for row in mem_rows:
+            kn_id = row[0]
+            chunk_id = row[1]
+            heading = row[2]
+            content = row[3]
+            created_at = row[4]
+            repository = row[5]
+            source_path = row[6]
+            d = details.get(kn_id)
+            if d is None:
+                continue
+            ref = f"memory-{chunk_id}"
+            d["linked_source_ids"].append(ref)
+            d["evidence_packets"].append(
+                make_memory_packet(
+                    chunk_id=chunk_id,
+                    timestamp_ms=created_at or 0,
+                    heading=heading,
+                    content=content,
+                    repository=repository,
+                    source_path=source_path,
+                )
+            )
+            if created_at and created_at > d["captured_at"]:
+                d["captured_at"] = created_at
 
     # Hydrate type-bucketed entity names so the RAG renderer can surface them
     # as a structural `Entities:` line above the truncatable `Detail:` block.

@@ -11,7 +11,6 @@ import argparse
 import json
 import sqlite3
 import sys
-import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Sequence
@@ -19,7 +18,8 @@ from typing import Any, Sequence
 from hippo_brain.mcp_queries import MAX_LIMIT, parse_since
 from hippo_brain.retrieval import Filters, SearchResult, search
 from hippo_brain.retrieval_eligibility import include_excluded_from_env
-from hippo_brain.source_filters import CLAUDE_AUTO_MEMORY_SOURCE, table_exists
+from hippo_brain.source_freshness import aggregate_freshness_from_packets
+from hippo_brain.source_filters import CLAUDE_AUTO_MEMORY_SOURCE
 
 AGENT_QUERY_MODES = frozenset({"known", "evidence", "recent", "decisions"})
 AGENT_QUERY_SOURCES = frozenset(
@@ -30,21 +30,6 @@ DEFAULT_LIMIT = 10
 MAX_ANSWER_CHARS = 2000
 MAX_SUMMARY_CHARS = 400
 DECISIONS_CANDIDATE_MULTIPLIER = 3
-
-# Map evidence ``source_kind`` to ``source_health.source`` keys.
-_SOURCE_KIND_HEALTH: dict[str, str] = {
-    "shell": "shell",
-    "claude-tool": "claude-tool",
-    "claude": "agentic-session-claude",
-    "codex": "agentic-session-codex",
-    "cursor": "agentic-session-cursor",
-    "opencode": "agentic-session-opencode",
-    "browser": "browser",
-    "workflow": "workflow",
-    CLAUDE_AUTO_MEMORY_SOURCE: "claude-auto-memory",
-}
-
-_STALE_MS = 24 * 3600 * 1000
 
 
 @dataclass(frozen=True)
@@ -140,50 +125,6 @@ def _compose_answer(mode: str, hits: list[dict[str, Any]]) -> str:
     return _compose_known_answer(hits)
 
 
-def freshness_for_hits(
-    conn: sqlite3.Connection,
-    hits: Sequence[dict[str, Any]],
-    *,
-    now_ms: int | None = None,
-) -> dict[str, dict[str, Any]]:
-    """Lightweight capture-health hints for sources cited in evidence packets."""
-    if not table_exists(conn, "source_health"):
-        return {}
-
-    now_ms = now_ms or int(time.time() * 1000)
-    health_keys: set[str] = set()
-    for hit in hits:
-        for pkt in hit.get("evidence") or []:
-            kind = pkt.get("source_kind")
-            if isinstance(kind, str):
-                mapped = _SOURCE_KIND_HEALTH.get(kind)
-                if mapped:
-                    health_keys.add(mapped)
-
-    freshness: dict[str, dict[str, Any]] = {}
-    for key in sorted(health_keys):
-        row = conn.execute(
-            "SELECT last_event_ts, consecutive_failures, probe_ok "
-            "FROM source_health WHERE source = ?",
-            (key,),
-        ).fetchone()
-        if row is None:
-            freshness[key] = {"source": key, "present": False}
-            continue
-        last_event_ts, consecutive_failures, probe_ok = row
-        age_ms = (now_ms - last_event_ts) if last_event_ts else None
-        freshness[key] = {
-            "source": key,
-            "present": True,
-            "last_event_ts": last_event_ts,
-            "age_ms": age_ms,
-            "stale": bool(age_ms is not None and age_ms > _STALE_MS),
-            "consecutive_failures": consecutive_failures or 0,
-            "probe_ok": probe_ok,
-        }
-    return freshness
-
-
 def run_agent_query(
     conn: sqlite3.Connection,
     req: AgentQueryRequest,
@@ -231,12 +172,16 @@ def run_agent_query(
     include_decisions = req.mode == "decisions"
     hits = [_compact_hit(r, include_decisions=include_decisions) for r in results]
 
+    all_packets: list[dict[str, Any]] = []
+    for hit in hits:
+        all_packets.extend(hit.get("evidence") or [])
+
     return {
         "mode": req.mode,
         "query": req.query,
         "answer": _compose_answer(req.mode, hits),
         "hits": hits,
-        "freshness": freshness_for_hits(conn, hits),
+        "freshness": aggregate_freshness_from_packets(all_packets),
         "limit": limit,
         "truncated": truncated,
     }
