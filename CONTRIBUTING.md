@@ -178,6 +178,7 @@ Maintainer-only. Contributors don't bump versions in their PRs — the release P
 - [`docs/lifecycle.md`](docs/lifecycle.md) — end-to-end event trace
 - [`docs/schema.md`](docs/schema.md) — schema changelog and migration playbook
 - [`docs/mcp-reference.md`](docs/mcp-reference.md) — MCP tool reference
+- [`docs/observability.md`](docs/observability.md) — OTel stack, dashboards, and alerts
 - [`docs/redaction.md`](docs/redaction.md) — redaction reference
 - [`docs/capture/`](docs/capture/) — capture-reliability stack docs
 - [`docs/release.md`](docs/release.md) — release process
