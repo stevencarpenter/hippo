@@ -218,6 +218,45 @@ def test_query_limit_is_applied(tmp_db):
     assert len(data["events"]) == 1
 
 
+def test_agent_query_happy_path(tmp_db):
+    """POST /agent/query returns bounded answer + hits + freshness."""
+    conn, db_path = tmp_db
+    _seed_knowledge_nodes(conn)
+    app = _make_app(str(db_path))
+    client = TestClient(app)
+
+    resp = client.post("/agent/query", json={"query": "cargo", "mode": "known", "limit": 5})
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["mode"] == "known"
+    assert data["query"] == "cargo"
+    assert "answer" in data
+    assert "hits" in data
+    assert "freshness" in data
+    assert data["limit"] == 5
+    assert data["truncated"] is False
+
+
+def test_agent_query_invalid_mode_returns_400(tmp_db):
+    _, db_path = tmp_db
+    app = _make_app(str(db_path))
+    client = TestClient(app)
+
+    resp = client.post("/agent/query", json={"query": "cargo", "mode": "bogus"})
+    assert resp.status_code == 400
+    assert "unknown mode" in resp.json()["error"]
+
+
+def test_agent_query_missing_query_returns_400(tmp_db):
+    _, db_path = tmp_db
+    app = _make_app(str(db_path))
+    client = TestClient(app)
+
+    resp = client.post("/agent/query", json={"mode": "known"})
+    assert resp.status_code == 400
+    assert resp.json()["error"] == "query is required"
+
+
 def test_query_empty_text_returns_400(tmp_db):
     conn, db_path = tmp_db
     app = _make_app(str(db_path))
@@ -355,7 +394,7 @@ def test_brain_server_get_routes(tmp_db):
     _, db_path = tmp_db
     server = _make_server(str(db_path))
     routes = server.get_routes()
-    assert len(routes) == 10
+    assert len(routes) == 11
     paths = [r.path for r in routes]
     assert "/health" in paths
     assert "/sessions" in paths
@@ -363,6 +402,7 @@ def test_brain_server_get_routes(tmp_db):
     assert "/knowledge" in paths
     assert "/query" in paths
     assert "/ask" in paths
+    assert "/agent/query" in paths
     assert "/control/pause" in paths
     assert "/control/resume" in paths
     assert "/openapi.json" in paths
@@ -945,7 +985,7 @@ def test_knowledge_list_routes_included(tmp_db):
     paths = [r.path for r in routes]
     assert "/knowledge" in paths
     assert "/knowledge/{id:int}" in paths
-    assert len(routes) == 10
+    assert len(routes) == 11
 
 
 # ---- /knowledge/{id} ----
@@ -1132,7 +1172,7 @@ def test_events_list_routes_included(tmp_db):
     routes = server.get_routes()
     paths = [r.path for r in routes]
     assert "/events" in paths
-    assert len(routes) == 10
+    assert len(routes) == 11
 
 
 # ---- /sessions ----
@@ -1253,7 +1293,7 @@ def test_sessions_list_routes_included(tmp_db):
     routes = server.get_routes()
     paths = [r.path for r in routes]
     assert "/sessions" in paths
-    assert len(routes) == 10
+    assert len(routes) == 11
 
 
 # ---- _record_preflight_to_source_health ----

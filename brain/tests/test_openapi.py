@@ -38,6 +38,7 @@ def test_openapi_spec_lists_all_brain_routes():
         "/knowledge/{id}",
         "/query",
         "/ask",
+        "/agent/query",
         "/control/pause",
         "/control/resume",
         "/openapi.json",
@@ -51,6 +52,7 @@ def test_openapi_spec_lists_all_brain_routes():
     assert paths["/knowledge/{id}"]["get"]["operationId"] == "getKnowledge"
     assert paths["/query"]["post"]["operationId"] == "queryKnowledge"
     assert paths["/ask"]["post"]["operationId"] == "askQuestion"
+    assert paths["/agent/query"]["post"]["operationId"] == "agentQuery"
     assert paths["/control/pause"]["post"]["operationId"] == "pauseEnrichment"
     assert paths["/control/resume"]["post"]["operationId"] == "resumeEnrichment"
     assert paths["/openapi.json"]["get"]["operationId"] == "getOpenApiSpec"
