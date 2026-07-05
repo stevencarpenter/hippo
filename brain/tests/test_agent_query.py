@@ -99,6 +99,7 @@ def test_known_mode_includes_evidence_and_freshness(conn: sqlite3.Connection) ->
     assert "shell" in out["freshness"]
     assert out["freshness"]["shell"]["status"] == "fresh"
     assert out["freshness"]["shell"]["capture_health"]["probe_ok"] == 1
+    assert out["hits"][0]["evidence"][0]["freshness"]["status"] == "fresh"
 
 
 def test_source_filter_shell_excludes_agentic(conn: sqlite3.Connection) -> None:

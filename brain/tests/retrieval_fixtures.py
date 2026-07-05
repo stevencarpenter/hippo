@@ -111,6 +111,34 @@ CREATE TABLE capture_alarms (
     acked_at INTEGER,
     details_json TEXT
 );
+CREATE TABLE memory_documents (
+    id INTEGER PRIMARY KEY,
+    uuid TEXT NOT NULL,
+    repository TEXT NOT NULL,
+    source_path TEXT NOT NULL,
+    active_revision_id INTEGER,
+    state TEXT NOT NULL DEFAULT 'active',
+    updated_at INTEGER NOT NULL
+);
+CREATE TABLE memory_revisions (
+    id INTEGER PRIMARY KEY,
+    document_id INTEGER NOT NULL,
+    revision_number INTEGER NOT NULL DEFAULT 1,
+    created_at INTEGER NOT NULL
+);
+CREATE TABLE memory_chunks (
+    id INTEGER PRIMARY KEY,
+    revision_id INTEGER NOT NULL,
+    ordinal INTEGER NOT NULL DEFAULT 0,
+    heading_path TEXT NOT NULL DEFAULT '',
+    content TEXT NOT NULL,
+    created_at INTEGER NOT NULL
+);
+CREATE TABLE knowledge_node_memory_chunks (
+    knowledge_node_id INTEGER NOT NULL,
+    memory_chunk_id INTEGER NOT NULL,
+    PRIMARY KEY (knowledge_node_id, memory_chunk_id)
+);
 """
 
 

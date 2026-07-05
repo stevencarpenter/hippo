@@ -18,7 +18,7 @@ from typing import Any, Sequence
 from hippo_brain.mcp_queries import MAX_LIMIT, parse_since
 from hippo_brain.retrieval import Filters, SearchResult, search
 from hippo_brain.retrieval_eligibility import include_excluded_from_env
-from hippo_brain.source_freshness import freshness_for_evidence_packets
+from hippo_brain.source_freshness import aggregate_freshness_from_packets
 from hippo_brain.source_filters import CLAUDE_AUTO_MEMORY_SOURCE
 
 AGENT_QUERY_MODES = frozenset({"known", "evidence", "recent", "decisions"})
@@ -181,7 +181,7 @@ def run_agent_query(
         "query": req.query,
         "answer": _compose_answer(req.mode, hits),
         "hits": hits,
-        "freshness": freshness_for_evidence_packets(conn, all_packets),
+        "freshness": aggregate_freshness_from_packets(all_packets),
         "limit": limit,
         "truncated": truncated,
     }

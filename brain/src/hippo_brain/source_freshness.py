@@ -152,7 +152,7 @@ def _load_health_row(conn: sqlite3.Connection, source_key: str) -> dict[str, Any
     return dict(zip(keys, row, strict=True))
 
 
-def _active_alarms_for_source(conn: sqlite3.Connection, source_key: str) -> list[dict[str, Any]]:
+def _load_active_alarms(conn: sqlite3.Connection) -> list[dict[str, Any]]:
     if not table_exists(conn, "capture_alarms"):
         return []
     rows = conn.execute(
@@ -164,21 +164,29 @@ def _active_alarms_for_source(conn: sqlite3.Connection, source_key: str) -> list
         LIMIT 20
         """
     ).fetchall()
-    alarms: list[dict[str, Any]] = []
-    for invariant_id, raised_at, details_json in rows:
-        mapped = _INVARIANT_SOURCES.get(str(invariant_id))
+    return [
+        {"invariant_id": invariant_id, "raised_at": raised_at, "details": details_json}
+        for invariant_id, raised_at, details_json in rows
+    ]
+
+
+def _alarms_for_source(
+    all_alarms: Sequence[dict[str, Any]], source_key: str
+) -> list[dict[str, Any]]:
+    matched: list[dict[str, Any]] = []
+    for alarm in all_alarms:
+        invariant_id = str(alarm.get("invariant_id", ""))
+        mapped = _INVARIANT_SOURCES.get(invariant_id)
         if mapped is not None and mapped != source_key:
             continue
-        if mapped is None and source_key not in str(details_json or ""):
+        if mapped is None and source_key not in str(alarm.get("details") or ""):
             continue
-        alarms.append(
-            {
-                "invariant_id": invariant_id,
-                "raised_at": raised_at,
-                "details": details_json,
-            }
-        )
-    return alarms
+        matched.append(alarm)
+    return matched
+
+
+def _active_alarms_for_source(conn: sqlite3.Connection, source_key: str) -> list[dict[str, Any]]:
+    return _alarms_for_source(_load_active_alarms(conn), source_key)
 
 
 def classify_capture_status(
@@ -241,12 +249,17 @@ def build_freshness_snapshot(
     source_key: str,
     *,
     now_ms: int | None = None,
+    active_alarms: Sequence[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Build a capture-freshness dict for one ``source_health`` key."""
     now_ms = now_ms or int(time.time() * 1000)
     health = _load_health_row(conn, source_key)
     coverage = _load_coverage(conn, source_key)
-    alarms = _active_alarms_for_source(conn, source_key)
+    alarms = (
+        _alarms_for_source(active_alarms, source_key)
+        if active_alarms is not None
+        else _active_alarms_for_source(conn, source_key)
+    )
     status = classify_capture_status(
         source_key=source_key,
         health=health,
@@ -299,7 +312,11 @@ def freshness_for_source_keys(
     if not table_exists(conn, "source_health"):
         return {}
     unique = sorted({k for k in source_keys if k})
-    return {key: build_freshness_snapshot(conn, key, now_ms=now_ms) for key in unique}
+    active_alarms = _load_active_alarms(conn)
+    return {
+        key: build_freshness_snapshot(conn, key, now_ms=now_ms, active_alarms=active_alarms)
+        for key in unique
+    }
 
 
 def freshness_for_evidence_packets(
@@ -345,7 +362,24 @@ def attach_freshness_to_results(
     now_ms: int | None = None,
 ) -> None:
     """Attach inline freshness to every evidence packet on retrieval results."""
+    all_packets: list[dict[str, Any]] = []
     for result in results:
         packets = getattr(result, "evidence", None)
         if packets:
-            attach_freshness_to_packets(conn, list(packets), now_ms=now_ms)
+            all_packets.extend(packets)
+    attach_freshness_to_packets(conn, all_packets, now_ms=now_ms)
+
+
+def aggregate_freshness_from_packets(
+    packets: Sequence[dict[str, Any]],
+) -> dict[str, dict[str, Any]]:
+    """Build a source-keyed freshness map from inline packet metadata."""
+    out: dict[str, dict[str, Any]] = {}
+    for pkt in packets:
+        fresh = pkt.get("freshness")
+        if not isinstance(fresh, dict):
+            continue
+        key = fresh.get("source")
+        if isinstance(key, str) and key:
+            out[key] = fresh
+    return out

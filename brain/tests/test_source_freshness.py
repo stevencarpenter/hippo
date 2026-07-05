@@ -93,7 +93,25 @@ def test_expected_absent_known_gap(conn: sqlite3.Connection) -> None:
     assert snap["coverage"]["row_count"] == 0
 
 
-def test_failing_from_active_alarm(conn: sqlite3.Connection) -> None:
+def test_failing_snapshot_from_active_alarm(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        "INSERT INTO capture_alarms (id, invariant_id, raised_at, details_json) "
+        "VALUES (1, 'I-1', ?, '{\"source\":\"shell\"}')",
+        (_NOW,),
+    )
+    conn.execute(
+        "INSERT INTO events (id, timestamp, command, cwd, source_kind) "
+        "VALUES (1, ?, 'cargo test', '/p', 'shell')",
+        (_SETTLED,),
+    )
+    conn.commit()
+
+    snap = build_freshness_snapshot(conn, "shell", now_ms=_NOW)
+    assert snap["status"] == "failing"
+    assert snap["active_alarms"]
+
+
+def test_classify_failing_from_alarm(conn: sqlite3.Connection) -> None:
     conn.execute(
         "INSERT INTO capture_alarms (id, invariant_id, raised_at, details_json) "
         "VALUES (1, 'I-1', ?, '{\"source\":\"shell\"}')",

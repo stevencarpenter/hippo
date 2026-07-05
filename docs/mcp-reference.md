@@ -10,7 +10,6 @@ For setup (adding hippo to your MCP config), see the [README's MCP Server sectio
 
 | You want… | Reach for | Why |
 |---|---|---|
-docs/mcp-reference.md
 | A synthesized prose answer with cited sources | `ask` | Performs retrieval + LLM synthesis end-to-end. Slow (~1-3 s) but most useful for "what was I working on?" / "how did I fix that?" / "why did we choose X?" |
 | A compact answer plus evidence packets in one call | `agent_query` | Modes: `known`, `evidence`, `recent`, `decisions`. Returns bounded answer, hits with `evidence` (each packet includes inline `freshness`), and aggregated `freshness` by source. |
 | A list of relevant knowledge nodes (no synthesis) | `search_knowledge` or `search_hybrid` | Retrieval only. Fastest path. Use `search_hybrid` when you want score-fused vec0 + FTS5 results; `search_knowledge` for the simpler "semantic with lexical fallback" path. Each hit's `evidence` packets include inline capture `freshness` (SNUG-125). |

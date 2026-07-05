@@ -189,3 +189,42 @@ def test_workflow_knowledge_includes_evidence_packet(conn: sqlite3.Connection) -
     assert pkt["ref"] == "workflow-50"
     assert pkt["source_kind"] == "workflow"
     assert "hippo" in pkt["excerpt"]
+    assert pkt["freshness"]["source"] == "workflow"
+
+
+def test_memory_knowledge_includes_evidence_packet(conn: sqlite3.Connection) -> None:
+    _insert_node(conn, 6, uuid="memory-node")
+    conn.execute(
+        "INSERT INTO memory_documents (id, uuid, repository, source_path, state, updated_at) "
+        "VALUES (1, 'doc-1', 'hippo', 'MEMORY.md', 'active', ?)",
+        (_SETTLED_END,),
+    )
+    conn.execute(
+        "INSERT INTO memory_revisions (id, document_id, revision_number, created_at) "
+        "VALUES (10, 1, 1, ?)",
+        (_SETTLED_END,),
+    )
+    conn.execute("UPDATE memory_documents SET active_revision_id = 10 WHERE id = 1")
+    conn.execute(
+        "INSERT INTO memory_chunks (id, revision_id, ordinal, heading_path, content, created_at) "
+        "VALUES (100, 10, 0, 'Vector store', 'sqlite-vec consolidation notes', ?)",
+        (_SETTLED_END,),
+    )
+    conn.execute(
+        "INSERT INTO knowledge_node_memory_chunks (knowledge_node_id, memory_chunk_id) "
+        "VALUES (6, 100)"
+    )
+    conn.execute(
+        "INSERT INTO source_health "
+        "(source, last_event_ts, consecutive_failures, events_last_24h, updated_at) "
+        "VALUES ('claude-auto-memory', ?, 0, 1, ?)",
+        (_SETTLED_END, _NOW),
+    )
+    conn.commit()
+
+    backend = FakeBackend(knn=[(6, 0.87)], fts=[(6, 0.9)])
+    results = search(conn, "sqlite-vec", [0.1] * 8, Filters(), mode="hybrid", limit=5, backend=backend)
+    pkt = results[0].evidence[0]
+    assert pkt["ref"] == "memory-100"
+    assert pkt["source_kind"] == "claude-auto-memory"
+    assert "Vector store" in pkt["excerpt"]
