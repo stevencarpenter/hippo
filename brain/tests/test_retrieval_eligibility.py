@@ -156,3 +156,28 @@ def test_include_excluded_operator_mode(conn: sqlite3.Connection) -> None:
     )
     assert len(results) == 1
     assert results[0].uuid == "n"
+
+
+def test_probe_tagged_session_excluded(conn: sqlite3.Connection) -> None:
+    _insert_node(conn, 1)
+    _insert_node(conn, 2, uuid="clean")
+    _link_agentic(conn, 1, 60, probe_tag="canary")
+    _link_agentic(conn, 2, 61)
+    conn.commit()
+
+    backend = FakeBackend(knn=[(1, 0.95), (2, 0.9)], fts=[(2, 0.92), (1, 0.7)])
+    results = search(conn, "work", [0.1] * 8, Filters(), mode="semantic", limit=5, backend=backend)
+    assert {r.uuid for r in results} == {"clean"}
+
+
+def test_include_excluded_from_env(monkeypatch: pytest.MonkeyPatch, conn: sqlite3.Connection) -> None:
+    monkeypatch.setenv("HIPPO_RETRIEVAL_INCLUDE_EXCLUDED", "1")
+    _insert_node(conn, 1)
+    journal = "/p/parent/subagents/workflows/wf/journal.jsonl"
+    _link_agentic(conn, 1, 70, source_file=journal)
+    conn.commit()
+
+    backend = FakeBackend(knn=[(1, 0.95)], fts=[(1, 0.9)])
+    results = search(conn, "work", [0.1] * 8, Filters(), mode="hybrid", limit=5, backend=backend)
+    assert len(results) == 1
+    assert results[0].uuid == "n"

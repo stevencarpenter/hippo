@@ -16,7 +16,6 @@ from hippo_brain.embeddings import (
     _pad_or_truncate,
     get_or_create_table,
     open_vector_db,
-    search_similar,
 )
 from hippo_brain.mcp_logging import setup_logging
 from hippo_brain.mcp_queries import (
@@ -28,7 +27,6 @@ from hippo_brain.mcp_queries import (
     list_projects_impl,
     search_events_impl,
     search_knowledge_lexical,
-    shape_semantic_results,
 )
 from hippo_brain.rag import ask as rag_ask, format_rag_response
 from hippo_brain.retrieval_eligibility import include_excluded_from_env
@@ -234,23 +232,18 @@ async def search_knowledge(
     )
     with span_ctx:
         try:
-            if (
-                mode == "semantic"
-                and _state.inference_client
-                and _state.vector_table
-                and not (project or since or source or branch)
-            ):
+            if mode == "semantic" and _state.inference_client:
                 try:
-                    vecs = await _state.inference_client.embed(
-                        [query], model=_state.embedding_model
+                    results = await _retrieve_filtered(
+                        query=query,
+                        mode="semantic",
+                        limit=limit,
+                        project=project,
+                        since=since,
+                        source=source,
+                        branch=branch,
+                        include_excluded=include_excluded,
                     )
-                    query_vec = _pad_or_truncate(vecs[0], EMBED_DIM)
-                    hits = search_similar(_state.vector_table, query_vec, limit=limit)
-                    conn = _get_conn()
-                    try:
-                        results = shape_semantic_results(hits, conn=conn)
-                    finally:
-                        conn.close()
                     elapsed = time.monotonic() - t0
                     _hist(_tool_duration, elapsed * 1000, tool="search_knowledge")
                     logger.info(
@@ -262,7 +255,7 @@ async def search_knowledge(
                 except Exception:
                     logger.exception("Semantic search failed, falling back to lexical")
 
-            # Lexical search (explicit mode or fallback, or when filters are applied)
+            # Lexical search (explicit mode or fallback)
             conn = _get_conn()
             try:
                 results = search_knowledge_lexical(

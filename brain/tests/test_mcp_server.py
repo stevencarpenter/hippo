@@ -352,7 +352,8 @@ class TestSearchKnowledgeTool:
         results = asyncio.run(search_knowledge("cargo", mode="semantic", limit=10))
         assert len(results) == 1  # Fell back to lexical successfully
 
-    def test_semantic_search_pads_query_vector_to_embed_dim(self, knowledge_db, monkeypatch):
+    def test_semantic_search_routes_through_retrieve_filtered(self, knowledge_db, monkeypatch):
+        """Semantic mode must use _retrieve_filtered so eligibility policy applies."""
         conn, db_path = knowledge_db
         _state.db_path = str(db_path)
         _state.embedding_model = "test-model"
@@ -362,26 +363,35 @@ class TestSearchKnowledgeTool:
         mock_client.embed.return_value = [[0.25] * 384]
         _state.inference_client = mock_client
 
-        def fake_search_similar(table, query_vec, limit=10):
-            assert table is _state.vector_table
-            assert len(query_vec) == EMBED_DIM
+        captured: dict = {}
+
+        async def fake_retrieve_filtered(**kwargs):
+            captured.update(kwargs)
             return [
                 {
-                    "_distance": 0.1,
+                    "uuid": "u1",
+                    "score": 0.9,
                     "summary": "semantic result",
+                    "intent": "",
                     "outcome": "success",
-                    "tags": "[]",
+                    "tags": [],
                     "embed_text": "semantic result",
                     "cwd": "/projects/hippo",
                     "git_branch": "main",
+                    "captured_at": 0,
+                    "linked_event_ids": [],
+                    "linked_claude_session_ids": [],
+                    "linked_browser_event_ids": [],
                 }
             ]
 
-        monkeypatch.setattr("hippo_brain.mcp.search_similar", fake_search_similar)
+        monkeypatch.setattr("hippo_brain.mcp._retrieve_filtered", fake_retrieve_filtered)
 
         results = asyncio.run(search_knowledge("cargo", mode="semantic", limit=10))
+        assert captured["mode"] == "semantic"
+        assert captured["include_excluded"] is False
         assert len(results) == 1
-        assert results[0]["score"] == 0.9
+        assert results[0]["uuid"] == "u1"
 
     def test_empty_query_returns_all(self, knowledge_db):
         conn, db_path = knowledge_db
