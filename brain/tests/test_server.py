@@ -218,6 +218,45 @@ def test_query_limit_is_applied(tmp_db):
     assert len(data["events"]) == 1
 
 
+def test_agent_query_happy_path(tmp_db):
+    """POST /agent/query returns bounded answer + hits + freshness."""
+    conn, db_path = tmp_db
+    _seed_knowledge_nodes(conn)
+    app = _make_app(str(db_path))
+    client = TestClient(app)
+
+    resp = client.post("/agent/query", json={"query": "cargo", "mode": "known", "limit": 5})
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["mode"] == "known"
+    assert data["query"] == "cargo"
+    assert "answer" in data
+    assert "hits" in data
+    assert "freshness" in data
+    assert data["limit"] == 5
+    assert data["truncated"] is False
+
+
+def test_agent_query_invalid_mode_returns_400(tmp_db):
+    _, db_path = tmp_db
+    app = _make_app(str(db_path))
+    client = TestClient(app)
+
+    resp = client.post("/agent/query", json={"query": "cargo", "mode": "bogus"})
+    assert resp.status_code == 400
+    assert "unknown mode" in resp.json()["error"]
+
+
+def test_agent_query_missing_query_returns_400(tmp_db):
+    _, db_path = tmp_db
+    app = _make_app(str(db_path))
+    client = TestClient(app)
+
+    resp = client.post("/agent/query", json={"mode": "known"})
+    assert resp.status_code == 400
+    assert resp.json()["error"] == "query is required"
+
+
 def test_query_empty_text_returns_400(tmp_db):
     conn, db_path = tmp_db
     app = _make_app(str(db_path))

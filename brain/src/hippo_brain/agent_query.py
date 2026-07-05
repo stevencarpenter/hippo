@@ -19,7 +19,7 @@ from typing import Any, Sequence
 from hippo_brain.mcp_queries import MAX_LIMIT, parse_since
 from hippo_brain.retrieval import Filters, SearchResult, search
 from hippo_brain.retrieval_eligibility import include_excluded_from_env
-from hippo_brain.source_filters import CLAUDE_AUTO_MEMORY_SOURCE
+from hippo_brain.source_filters import CLAUDE_AUTO_MEMORY_SOURCE, table_exists
 
 AGENT_QUERY_MODES = frozenset({"known", "evidence", "recent", "decisions"})
 AGENT_QUERY_SOURCES = frozenset(
@@ -133,19 +133,11 @@ def _compose_answer(mode: str, hits: list[dict[str, Any]]) -> str:
         return _compose_evidence_answer(hits)
     if mode == "decisions":
         return _compose_decisions_answer(hits)
-    if mode == "recent":
-        if not hits:
+    if not hits:
+        if mode == "recent":
             return "No recent knowledge matched this topic."
-        return _compose_known_answer(hits)
+        return "No matching knowledge found."
     return _compose_known_answer(hits)
-
-
-def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
-    row = conn.execute(
-        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?)",
-        (table,),
-    ).fetchone()
-    return bool(row and row[0])
 
 
 def freshness_for_hits(
@@ -155,7 +147,7 @@ def freshness_for_hits(
     now_ms: int | None = None,
 ) -> dict[str, dict[str, Any]]:
     """Lightweight capture-health hints for sources cited in evidence packets."""
-    if not _table_exists(conn, "source_health"):
+    if not table_exists(conn, "source_health"):
         return {}
 
     now_ms = now_ms or int(time.time() * 1000)

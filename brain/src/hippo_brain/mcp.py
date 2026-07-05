@@ -822,7 +822,7 @@ async def agent_query(
 
     Modes:
     - ``known``: what Hippo knows about the topic (default)
-    - ``evidence``: retrieval focused on inspectable evidence packets
+    - ``evidence``: answer summarizes evidence packet counts; hits carry full packets
     - ``recent``: recent knowledge around the topic
     - ``decisions``: nodes with documented design decisions
 
@@ -860,7 +860,11 @@ async def agent_query(
 
     conn = _open_retrieval_conn()
     try:
-        result = run_agent_query(conn, req, query_vec)
+        try:
+            result = run_agent_query(conn, req, query_vec)
+        except ValueError as exc:
+            _add(_tool_errors, tool="agent_query")
+            return {"error": str(exc)}
     finally:
         conn.close()
 

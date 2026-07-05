@@ -170,6 +170,27 @@ def build_openapi_spec() -> dict:
                     },
                 }
             },
+            "/agent/query": {
+                "post": {
+                    "operationId": "agentQuery",
+                    "summary": (
+                        "Compact agent query: bounded answer, evidence packets, "
+                        "and source-health freshness hints."
+                    ),
+                    "requestBody": {
+                        "required": True,
+                        "content": {
+                            "application/json": {
+                                "schema": {"$ref": "#/components/schemas/AgentQueryRequest"}
+                            }
+                        },
+                    },
+                    "responses": {
+                        "200": _json_response("#/components/schemas/AgentQueryResponse"),
+                        "400": _error_response("Invalid request body."),
+                    },
+                }
+            },
             "/control/pause": {
                 "post": {
                     "operationId": "pauseEnrichment",
@@ -364,6 +385,62 @@ def build_openapi_spec() -> dict:
                     },
                 },
                 "AskResponse": {"type": "object", "additionalProperties": True},
+                "AgentQueryRequest": {
+                    "type": "object",
+                    "required": ["query"],
+                    "properties": {
+                        "query": {"type": "string"},
+                        "mode": {
+                            "type": "string",
+                            "enum": ["known", "evidence", "recent", "decisions"],
+                            "default": "known",
+                        },
+                        "source": {
+                            "type": "string",
+                            "enum": [
+                                "",
+                                "shell",
+                                "claude",
+                                "browser",
+                                "workflow",
+                                "claude-auto-memory",
+                            ],
+                        },
+                        "since": {"type": "string"},
+                        "project": {"type": "string"},
+                        "branch": {"type": "string"},
+                        "limit": {"type": "integer", "minimum": 1},
+                        "include_excluded": {"type": "boolean"},
+                    },
+                },
+                "AgentQueryResponse": {
+                    "type": "object",
+                    "required": [
+                        "mode",
+                        "query",
+                        "answer",
+                        "hits",
+                        "freshness",
+                        "limit",
+                        "truncated",
+                    ],
+                    "properties": {
+                        "mode": {"type": "string"},
+                        "query": {"type": "string"},
+                        "answer": {"type": "string"},
+                        "hits": {
+                            "type": "array",
+                            "items": {"type": "object", "additionalProperties": True},
+                        },
+                        "freshness": {
+                            "type": "object",
+                            "additionalProperties": {"type": "object", "additionalProperties": True},
+                        },
+                        "limit": {"type": "integer"},
+                        "truncated": {"type": "boolean"},
+                    },
+                    "additionalProperties": True,
+                },
                 "PauseResponse": {
                     "type": "object",
                     "required": [

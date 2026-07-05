@@ -19,6 +19,7 @@ from hippo_brain.mcp import (
     _load_config,
     _open_retrieval_conn,
     _state,
+    agent_query,
     ask,
     get_entities,
     mcp,
@@ -56,6 +57,18 @@ class TestToolRegistration:
 
     def test_exactly_ten_tools(self):
         assert len(mcp._tool_manager._tools) == 10
+
+
+class TestAgentQueryTool:
+    def test_invalid_mode_returns_structured_error(self, knowledge_db):
+        conn, db_path = knowledge_db
+        _state.db_path = str(db_path)
+        _state.vector_table = None
+        _state.inference_client = None
+
+        result = asyncio.run(agent_query("cargo", mode="bogus"))
+        assert "error" in result
+        assert "unknown mode" in result["error"]
 
 
 def _stamp_readable_schema_version(db_path: str) -> None:

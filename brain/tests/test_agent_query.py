@@ -150,3 +150,33 @@ def test_evidence_mode_answer_describes_packets(conn: sqlite3.Connection) -> Non
 
     assert "evidence packet" in out["answer"].lower()
     assert out["hits"][0]["evidence"][0]["source_kind"] == "claude"
+
+
+def test_recent_mode_uses_recent_retrieval(conn: sqlite3.Connection, monkeypatch) -> None:
+    _insert_shell_node(conn)
+    conn.commit()
+
+    captured: list[str] = []
+
+    def _spy_search(*_args, mode: str = "hybrid", **_kwargs):
+        captured.append(mode)
+        return []
+
+    monkeypatch.setattr("hippo_brain.agent_query.search", _spy_search)
+    req = AgentQueryRequest(query="cargo", mode="recent", limit=5)
+    run_agent_query(conn, req, [0.1] * 8, backend=FakeBackend())
+
+    assert captured == ["recent"]
+
+
+def test_freshness_marks_stale_source(conn: sqlite3.Connection) -> None:
+    _insert_shell_node(conn)
+    stale_ts = int(time.time() * 1000) - (25 * 3600 * 1000)
+    conn.execute("UPDATE source_health SET last_event_ts = ?", (stale_ts,))
+    conn.commit()
+
+    backend = FakeBackend(knn=[(1, 0.9)], fts=[(1, 0.95)])
+    req = AgentQueryRequest(query="cargo", mode="known", limit=5)
+    out = run_agent_query(conn, req, [0.1] * 8, backend=backend)
+
+    assert out["freshness"]["shell"]["stale"] is True
