@@ -249,7 +249,9 @@ enabled = true
 # its privacy boundaries are configured.
 [auto_memory]
 enabled = false
-# poll_interval_secs = 60  # com.hippo.auto-memory LaunchAgent cadence
+# max_revision_count: keep at most this many revisions per document (default 20)
+# max_revision_age_days: drop older revision metadata after this many days (default 90)
+# absence_confirm_polls: missing-file polls before tombstone (default 2)
 
 # [[auto_memory.sources]]
 # path = "/absolute/path/to/.claude/memory/MEMORY.md"

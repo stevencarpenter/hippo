@@ -523,11 +523,12 @@ def test_supersede_deletes_old_node_vector(tmp_db, tmp_path: Path) -> None:
 def test_unchanged_file_skips_read_redact_and_git_identity(
     conn: sqlite3.Connection, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A poll of an unchanged file must short-circuit before the expensive work.
+    """A poll of an unchanged file must short-circuit before redact and Git identity.
 
-    The current revision stores mtime+size; when both still match the file on
-    disk, ingest must skip Git identity derivation, the full read, and the regex
-    redact — proven here by sabotaging those and requiring they are never called.
+    The current revision stores mtime+size+source_hash; when all still match the file
+    on disk, ingest reads once for a source-hash check but skips Git derivation and
+    regex redaction — proven here by sabotaging those and requiring they are never
+    called.
     """
     import hippo_brain.auto_memory as am
 
