@@ -97,7 +97,9 @@
       "tables": ["memory_documents", "memory_revisions", "memory_chunks", "knowledge_node_memory_chunks"],
       "identity_fields": ["memory_documents.id", "linked_source_ids:memory-<chunk_id>"],
       "timestamp_fields": ["memory_revisions.created_at", "memory_documents.updated_at"],
-      "eligibility": "memory_documents.state = active AND active_revision_id match"
+      "eligibility": "memory_documents.state = active AND active_revision_id match",
+      "safe_citation_fields": ["repository", "source_path", "heading", "content"],
+      "citation_example": "Claude auto-memory chunk from ~/.claude/projects/.../memory/MEMORY.md (repo: hippo): heading 'Capture reliability'."
     },
     {
       "id": "source_health",

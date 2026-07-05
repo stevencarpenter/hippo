@@ -27,6 +27,7 @@ _REQUIRED_FAMILIES = frozenset(
         "opencode",
         "browser",
         "workflow",
+        "claude-auto-memory",
         "source_health",
         "watchdog-probe",
     }
@@ -38,6 +39,7 @@ _REQUIRED_MD_HEADINGS = (
     "## Agentic sessions",
     "## Browser visits",
     "## GitHub CI",
+    "## Claude auto-memory",
     "## `source_health`",
     "## Watchdog and probe metadata",
 )
@@ -70,7 +72,7 @@ def test_contracts_json_entries_have_core_fields(contracts_data: dict) -> None:
     for family in contracts_data["families"]:
         assert "id" in family
         assert "tables" in family and family["tables"]
-        assert "identity_fields" in family or family["id"] in ("watchdog-probe",)
+        assert "identity_fields" in family
 
 
 def test_contracts_md_exists_and_has_sections(contracts_md: str) -> None:

@@ -163,6 +163,10 @@ Retrieval applies eligibility from [`retrieval_eligibility.py`](../../brain/src/
 | **Safe to cite** | `repository`, `source_path`, chunk `heading`, `content` excerpt, active revision only (`state = 'active'`) |
 | **Do not cite** | Superseded revisions (`active_revision_id` mismatch) |
 
+**Safe citation example**
+
+> Claude auto-memory chunk from `~/.claude/projects/.../memory/MEMORY.md` (repo: hippo): heading "Capture reliability".
+
 ---
 
 ## `source_health` (capture freshness metadata)
