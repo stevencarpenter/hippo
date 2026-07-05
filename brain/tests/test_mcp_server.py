@@ -51,8 +51,11 @@ class TestToolRegistration:
     def test_list_projects_registered(self):
         assert "list_projects" in mcp._tool_manager._tools
 
-    def test_exactly_nine_tools(self):
-        assert len(mcp._tool_manager._tools) == 9
+    def test_agent_query_registered(self):
+        assert "agent_query" in mcp._tool_manager._tools
+
+    def test_exactly_ten_tools(self):
+        assert len(mcp._tool_manager._tools) == 10
 
 
 def _stamp_readable_schema_version(db_path: str) -> None:

@@ -15,6 +15,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.routing import Route
 
+from hippo_brain.agent_query import AgentQueryRequest, run_agent_query
 from hippo_brain.client import InferenceClient
 from hippo_brain.openapi import build_openapi_spec
 from hippo_brain.schema_version import (
@@ -902,6 +903,58 @@ class BrainServer:
 
         status = 200 if "answer" in result else 502
         return JSONResponse(result, status_code=status)
+
+    async def agent_query(self, request: Request) -> JSONResponse:
+        """Compact agent query: bounded answer + evidence packets + freshness."""
+        body = await request.json()
+        query = body.get("query", "")
+        if not query:
+            return JSONResponse({"error": "query is required"}, status_code=400)
+
+        mode = body.get("mode", "known")
+        limit = body.get("limit", 10)
+        try:
+            limit = int(limit)
+        except (TypeError, ValueError):  # fmt: skip
+            return JSONResponse({"error": "limit must be an integer"}, status_code=400)
+        if limit <= 0:
+            return JSONResponse({"error": "limit must be greater than 0"}, status_code=400)
+        if limit > MAX_QUERY_LIMIT:
+            return JSONResponse(
+                {"error": f"limit must be <= {MAX_QUERY_LIMIT}"},
+                status_code=400,
+            )
+
+        req = AgentQueryRequest(
+            query=query,
+            mode=mode,
+            source=body.get("source", ""),
+            since=body.get("since", ""),
+            project=body.get("project", ""),
+            branch=body.get("branch", ""),
+            limit=limit,
+            include_excluded=bool(body.get("include_excluded", False)),
+        )
+
+        query_vec = None
+        if self.embedding_model and query:
+            try:
+                from hippo_brain.embeddings import EMBED_DIM, _pad_or_truncate
+
+                vecs = await self.client.embed([query], model=self.embedding_model)
+                query_vec = _pad_or_truncate(vecs[0], EMBED_DIM)
+            except Exception as exc:
+                logger.warning("agent_query embed failed: %s", exc)
+
+        conn = self._get_conn()
+        try:
+            result = run_agent_query(conn, req, query_vec)
+        except ValueError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
+        finally:
+            conn.close()
+
+        return JSONResponse(result)
 
     async def control_pause(self, request: Request) -> JSONResponse:
         """Pause the enrichment loop. Idempotent.
@@ -1838,6 +1891,7 @@ class BrainServer:
             Route("/knowledge/{id:int}", self.get_knowledge, methods=["GET"]),
             Route("/query", self.query, methods=["POST"]),
             Route("/ask", self.ask, methods=["POST"]),
+            Route("/agent/query", self.agent_query, methods=["POST"]),
             Route("/control/pause", self.control_pause, methods=["POST"]),
             Route("/control/resume", self.control_resume, methods=["POST"]),
             Route("/openapi.json", self.openapi_json, methods=["GET"]),

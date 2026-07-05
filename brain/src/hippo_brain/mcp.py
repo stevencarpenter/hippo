@@ -10,6 +10,7 @@ from pathlib import Path
 
 from mcp.server.fastmcp import FastMCP
 
+from hippo_brain.agent_query import AgentQueryRequest, run_agent_query
 from hippo_brain.client import InferenceClient
 from hippo_brain.embeddings import (
     EMBED_DIM,
@@ -804,6 +805,69 @@ async def get_context(
         _add(_tool_errors, tool="get_context")
         logger.exception("get_context failed")
         raise
+
+
+@mcp.tool()
+async def agent_query(
+    query: str,
+    mode: str = "known",
+    limit: int = 10,
+    project: str = "",
+    since: str = "",
+    source: str = "",
+    branch: str = "",
+    include_excluded: bool = False,
+) -> dict:
+    """Compact agent query — concise answer plus evidence packets.
+
+    Modes:
+    - ``known``: what Hippo knows about the topic (default)
+    - ``evidence``: retrieval focused on inspectable evidence packets
+    - ``recent``: recent knowledge around the topic
+    - ``decisions``: nodes with documented design decisions
+
+    Returns a bounded dict: answer, hits (with evidence), freshness hints.
+    """
+    limit = _clamp_limit(limit)
+    _add(_tool_calls, tool="agent_query")
+    t0 = time.monotonic()
+    logger.info(
+        "agent_query called: query=%r mode=%s limit=%d source=%r",
+        query,
+        mode,
+        limit,
+        source,
+    )
+
+    req = AgentQueryRequest(
+        query=query,
+        mode=mode,
+        source=source,
+        since=since,
+        project=project,
+        branch=branch,
+        limit=limit,
+        include_excluded=include_excluded or include_excluded_from_env(),
+    )
+
+    query_vec = None
+    if _state.inference_client and query:
+        try:
+            vecs = await _state.inference_client.embed([query], model=_state.embedding_model)
+            query_vec = _pad_or_truncate(vecs[0], EMBED_DIM)
+        except Exception:
+            logger.exception("query embedding failed in agent_query")
+
+    conn = _open_retrieval_conn()
+    try:
+        result = run_agent_query(conn, req, query_vec)
+    finally:
+        conn.close()
+
+    elapsed = time.monotonic() - t0
+    _hist(_tool_duration, elapsed * 1000, tool="agent_query")
+    logger.info("agent_query completed in %.3fs", elapsed)
+    return result
 
 
 @mcp.tool()
