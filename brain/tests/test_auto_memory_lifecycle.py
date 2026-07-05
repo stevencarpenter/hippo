@@ -69,9 +69,7 @@ def test_history_query_returns_revision_metadata(conn: sqlite3.Connection, tmp_p
     source.write_text("# Alpha\n\ntwo\n")
     ingest_memory_file(conn, source, repository="hippo", now_ms=2000)
 
-    history = query_memory_history(
-        conn, repository="hippo", logical_path="MEMORY.md", limit=10
-    )
+    history = query_memory_history(conn, repository="hippo", logical_path="MEMORY.md", limit=10)
     assert len(history) == 2
     assert history[0]["revision_number"] == 2
     assert history[0]["change_kind"] == "update"
@@ -139,10 +137,7 @@ def test_missing_source_becomes_unavailable_then_tombstoned(
     ).fetchone()[0]
     assert state == "unavailable"
     assert (
-        search_knowledge_lexical(
-            conn, "gone", source="claude-auto-memory", project="hippo"
-        )
-        == []
+        search_knowledge_lexical(conn, "gone", source="claude-auto-memory", project="hippo") == []
     )
 
     reconcile_configured_sources(conn, sources, retention=retention, now_ms=3000)
@@ -150,9 +145,7 @@ def test_missing_source_becomes_unavailable_then_tombstoned(
         "SELECT state FROM memory_documents WHERE id = ?", (ingested.document_id,)
     ).fetchone()[0]
     assert state == "tombstoned"
-    history = query_memory_history(
-        conn, repository="hippo", logical_path="MEMORY.md", limit=5
-    )
+    history = query_memory_history(conn, repository="hippo", logical_path="MEMORY.md", limit=5)
     assert history[0]["change_kind"] == "delete"
 
 
@@ -167,16 +160,12 @@ def test_revision_pruning_respects_count(conn: sqlite3.Connection, tmp_path: Pat
 
     count = conn.execute(
         "SELECT COUNT(*) FROM memory_revisions WHERE document_id = ?",
-        (
-            conn.execute("SELECT id FROM memory_documents").fetchone()[0],
-        ),
+        (conn.execute("SELECT id FROM memory_documents").fetchone()[0],),
     ).fetchone()[0]
     assert count == 2
 
 
-def test_full_lifecycle_add_update_history_rename_delete(
-    tmp_db, tmp_path: Path
-) -> None:
+def test_full_lifecycle_add_update_history_rename_delete(tmp_db, tmp_path: Path) -> None:
     from hippo_brain import vector_store
 
     _seeded, db_path = tmp_db
@@ -211,8 +200,5 @@ def test_full_lifecycle_add_update_history_rename_delete(
         == "tombstoned"
     )
     assert (
-        search_knowledge_lexical(
-            conn, "start", source="claude-auto-memory", project="hippo"
-        )
-        == []
+        search_knowledge_lexical(conn, "start", source="claude-auto-memory", project="hippo") == []
     )

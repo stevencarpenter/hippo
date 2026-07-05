@@ -132,9 +132,7 @@ def revision_retention_from_config(auto_memory: dict[str, Any]) -> RevisionReten
     """Parse revision retention settings from a config ``[auto_memory]`` table."""
     max_count = int(auto_memory.get("max_revision_count", DEFAULT_MAX_REVISION_COUNT))
     max_age_days = int(auto_memory.get("max_revision_age_days", DEFAULT_MAX_REVISION_AGE_DAYS))
-    absence_polls = int(
-        auto_memory.get("absence_confirm_polls", DEFAULT_ABSENCE_CONFIRM_POLLS)
-    )
+    absence_polls = int(auto_memory.get("absence_confirm_polls", DEFAULT_ABSENCE_CONFIRM_POLLS))
     return RevisionRetention(
         max_count=max(max_count, 1),
         max_age_ms=max(max_age_days, 1) * 86_400_000,
@@ -253,7 +251,10 @@ def prune_document_revisions(
     ).fetchone()
     if row is None:
         return 0
-    protected = {int(row[0]) if row[0] is not None else None, int(row[1]) if row[1] is not None else None}
+    protected = {
+        int(row[0]) if row[0] is not None else None,
+        int(row[1]) if row[1] is not None else None,
+    }
     protected.discard(None)
     revisions = conn.execute(
         "SELECT id, revision_number, created_at FROM memory_revisions "
@@ -417,9 +418,7 @@ def reconcile_missing_source(
     absence_confirm_polls: int,
 ) -> bool:
     """Advance absence handling; tombstone after configured confirmation polls."""
-    row = conn.execute(
-        "SELECT state FROM memory_documents WHERE id = ?", (document_id,)
-    ).fetchone()
+    row = conn.execute("SELECT state FROM memory_documents WHERE id = ?", (document_id,)).fetchone()
     if row is None:
         return False
     state = row[0]
@@ -452,9 +451,7 @@ def reconcile_configured_sources(
     observed_at = now_ms if now_ms is not None else int(time.time() * 1000)
     tombstoned = 0
     configured_paths = {
-        str(Path(source["path"]).expanduser().resolve())
-        for source in sources
-        if source.get("path")
+        str(Path(source["path"]).expanduser().resolve()) for source in sources if source.get("path")
     }
     for source_path in sorted(configured_paths):
         if Path(source_path).is_file():
@@ -470,9 +467,7 @@ def reconcile_configured_sources(
                 now_ms=observed_at,
                 absence_confirm_polls=retention.absence_confirm_polls,
             ):
-                prune_document_revisions(
-                    conn, int(document_id), retention, now_ms=observed_at
-                )
+                prune_document_revisions(conn, int(document_id), retention, now_ms=observed_at)
                 tombstoned += 1
     return tombstoned
 
@@ -1090,9 +1085,7 @@ def poll_sources(
         )
         if result.changed:
             changed += 1
-    reconcile_configured_sources(
-        conn, sources, retention=retention_policy
-    )
+    reconcile_configured_sources(conn, sources, retention=retention_policy)
     return changed
 
 
