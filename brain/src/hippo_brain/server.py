@@ -54,6 +54,7 @@ from hippo_brain.browser_enrichment import (
     mark_browser_queue_failed,
     write_browser_knowledge_node,
 )
+from hippo_brain.capture_alarm_lessons import sync_capture_alarms_to_lessons
 from hippo_brain.claude_sessions import (
     CLAUDE_SYSTEM_PROMPT,
     mark_claude_queue_failed,
@@ -1205,6 +1206,15 @@ class BrainServer:
                             self._query_inflight,
                         )
                         await asyncio.sleep(0.1)
+
+                    # F-15: graduate new capture_alarms into lessons (best-effort).
+                    try:
+                        sync_capture_alarms_to_lessons(self.db_path)
+                    except Exception:
+                        logger.warning(
+                            "capture alarm lesson sync failed",
+                            exc_info=True,
+                        )
 
                     self._enrichment_active = True
                     try:

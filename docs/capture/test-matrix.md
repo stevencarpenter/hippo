@@ -42,7 +42,7 @@ a one-line change rather than "remember to write the test later".
 | F-12 | Synthetic probe round-trip > 15 min | invariant I-8 | rust integration | `crates/hippo-daemon/tests/capture_invariants.rs::i8_probe_round_trip` | blocked-on-P2.2 (synthetic probes) | I-8 |
 | F-13 | Watchdog heartbeat stale > 180 s | invariant I-7 | rust integration | `crates/hippo-daemon/tests/capture_invariants.rs::i7_watchdog_heartbeat` | blocked-on-P1.1 (watchdog process) | I-7 |
 | F-14 | `source_health` stops updating when brain is down | invariant I-10 (decoupling) | rust integration (kill-brain canary) | `crates/hippo-daemon/tests/capture_invariants.rs::i10_decoupled_from_brain` | blocked-on-P0.2 (`source_health` writes on every capture path) | I-10 |
-| F-15 | Hippo's own CI / sev1 failures never graduate into `lessons` | #53 | brain unit (xfail) | `brain/tests/test_lessons_graduation_hippo.py` | new (this PR) — `@pytest.mark.xfail(reason="tracked in #53")`; fails-closed on fix | — |
+| F-15 | Hippo's own capture alarms graduate into `lessons` | #53 | brain unit | `brain/tests/test_lessons_graduation_hippo.py`, `brain/tests/test_capture_alarm_lessons.py` | `capture_alarm_lessons.sync_capture_alarms_to_lessons` (brain enrichment loop) | — |
 | F-16 | Schema version drift between daemon and brain | v0.13.0 handshake incident | rust integration | `crates/hippo-daemon/tests/schema_handshake.rs` (existing) + negative case added | existing + new (this PR) | — |
 | F-17 | Silent error swallowing via `.filter_map(Result::ok)` in capture paths | AP-11 in anti-patterns.md; observed at `crates/hippo-core/src/storage.rs:805` | static analysis (semgrep) + regression test for the rule itself | `.semgrep.yml` + `tests/semgrep/silent_swallow_fixture.rs` | new (this PR) — rule file + fixture; wiring into CI (adding `.semgrep.yml` to the security workflow) is **follow-up** because `security.yml` is currently path-scoped to `shell/` only | AP-11 |
 | F-18 | tmux `base-index != 0` causes "index N in use" | #48 (1330113, pre-fix path) | shell integration | (was `tests/shell/test-claude-session-hook.sh`) | retired in T-8 | I-2 |
@@ -135,7 +135,7 @@ These are the failure modes that **cannot** be tested against `main` today:
 - **F-6 NM manifest validation** — `hippo doctor` never reads the NM manifest. The doctor check would need ~20 lines in `commands.rs` (read JSON, resolve `path`, assert executable, assert `allowed_extensions` contains `hippo-browser@local`). Test skeleton exists; remove `#[ignore]` once the source check lands.
 - **F-8 Fallback age in doctor** — `storage::list_fallback_files` returns paths sorted by name; doctor only prints a count. An age check requires either (a) reading each file's mtime in doctor, or (b) a new `storage::list_stale_fallback_files(dir, cutoff_ms)` helper. Test skeleton exists; source change tracked by follow-up issue.
 - **F-10..F-14** — All require `source_health` table and the watchdog/probe subsystems from architecture.md. Skeletons live in `crates/hippo-daemon/tests/capture_invariants.rs`.
-- **F-15** — `#53` is about the plumbing from "hippo CI failure" → `upsert_cluster`; the `lessons.py` logic itself has solid unit coverage (`brain/tests/test_lessons.py`). Our xfail test asserts the **end-to-end** pipeline. It will stay xfail until the plumbing ships.
+- **F-15** — `#53` / SNUG-98: `capture_alarm_lessons.sync_capture_alarms_to_lessons` watches new `capture_alarms` rows and calls `upsert_cluster`. CI workflow failures still graduate via `workflow_enrichment.py`.
 
 ## Running the tests
 
