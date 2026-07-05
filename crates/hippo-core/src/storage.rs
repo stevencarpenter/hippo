@@ -4103,6 +4103,27 @@ mod tests {
             .unwrap();
         assert_eq!(event_count, 1, "ensure_schema must not touch existing rows");
 
+        for index in [
+            "idx_events_envelope_id",
+            "idx_events_timestamp",
+            "idx_events_session",
+            "idx_events_source_kind",
+            "idx_entities_type_name",
+        ] {
+            let exists: bool = conn
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='index' AND name=?1)",
+                    [index],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert!(
+                exists,
+                "ensure_schema should have created index '{}'",
+                index
+            );
+        }
+
         // Idempotent: second application is a no-op.
         ensure_schema(&conn).unwrap();
         let event_count_after: i64 = conn
