@@ -532,12 +532,8 @@ def reconcile_file_main(argv: list[str] | None = None) -> int:
             now_ms=observed_at,
         )
         if result.outcome == "missing":
-            reconcile_configured_sources(
-                conn, [source], retention=retention, now_ms=observed_at
-            )
-            result = replace(
-                result, outcome=document_absence_outcome(conn, result.path)
-            )
+            reconcile_configured_sources(conn, [source], retention=retention, now_ms=observed_at)
+            result = replace(result, outcome=document_absence_outcome(conn, result.path))
     finally:
         conn.close()
     print(

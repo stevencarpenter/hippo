@@ -32,9 +32,7 @@ def revision_retention_from_config(auto_memory: dict[str, Any]) -> RevisionReten
     """Parse revision retention settings from a config ``[auto_memory]`` table."""
     max_count = int(auto_memory.get("max_revision_count", DEFAULT_MAX_REVISION_COUNT))
     max_age_days = int(auto_memory.get("max_revision_age_days", DEFAULT_MAX_REVISION_AGE_DAYS))
-    absence_polls = int(
-        auto_memory.get("absence_confirm_polls", DEFAULT_ABSENCE_CONFIRM_POLLS)
-    )
+    absence_polls = int(auto_memory.get("absence_confirm_polls", DEFAULT_ABSENCE_CONFIRM_POLLS))
     return RevisionRetention(
         max_count=max(max_count, 1),
         max_age_ms=max(max_age_days, 1) * 86_400_000,

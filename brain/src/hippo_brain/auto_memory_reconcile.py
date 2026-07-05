@@ -49,9 +49,7 @@ def reconcile_config_from_dict(auto_memory: dict[str, Any]) -> ReconcileConfig:
     return ReconcileConfig(
         debounce_ms=max(int(auto_memory.get("debounce_ms", DEFAULT_DEBOUNCE_MS)), 0),
         stable_idle_ms=max(int(auto_memory.get("stable_idle_ms", DEFAULT_STABLE_IDLE_MS)), 1),
-        stable_sample_ms=max(
-            int(auto_memory.get("stable_sample_ms", DEFAULT_STABLE_SAMPLE_MS)), 1
-        ),
+        stable_sample_ms=max(int(auto_memory.get("stable_sample_ms", DEFAULT_STABLE_SAMPLE_MS)), 1),
         stable_timeout_ms=max(
             int(auto_memory.get("stable_timeout_ms", DEFAULT_STABLE_TIMEOUT_MS)), 1
         ),
@@ -109,8 +107,7 @@ def _document_queue_counts(conn: sqlite3.Connection, document_id: int) -> tuple[
         (revision_id,),
     ).fetchone()[0]
     failed = conn.execute(
-        "SELECT COUNT(*) FROM memory_enrichment_queue "
-        "WHERE revision_id = ? AND status = 'failed'",
+        "SELECT COUNT(*) FROM memory_enrichment_queue WHERE revision_id = ? AND status = 'failed'",
         (revision_id,),
     ).fetchone()[0]
     return int(pending), int(failed)
@@ -161,9 +158,7 @@ def reconcile_source(
             failed_enrichment=0,
         )
 
-    if require_stable and not wait_for_stable_file(
-        path, reconcile, clock_ms=clock_ms, sleep=sleep
-    ):
+    if require_stable and not wait_for_stable_file(path, reconcile, clock_ms=clock_ms, sleep=sleep):
         return ReconcileResult(
             path=resolved,
             outcome="unstable",
@@ -238,9 +233,7 @@ def reconcile_sources(
                 "failed_enrichment": item.failed_enrichment,
             }
         )
-    reconcile_configured_sources(
-        conn, sources, retention=retention_policy, now_ms=observed_at
-    )
+    reconcile_configured_sources(conn, sources, retention=retention_policy, now_ms=observed_at)
     for entry in results:
         if entry["outcome"] == "missing":
             entry["outcome"] = document_absence_outcome(conn, entry["path"])

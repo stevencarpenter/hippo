@@ -339,4 +339,3 @@ def ingest_memory_file(
         True,
         len(chunks),
     )
-
