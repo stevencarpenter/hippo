@@ -2,6 +2,8 @@
 
 Full reference for hippo's MCP server. Every tool that `hippo-mcp` exposes, with arguments, return shapes, examples, and selection guidance. The MCP server source is `brain/src/hippo_brain/mcp.py`; this doc is what to read instead.
 
+**Before citing evidence:** read [`docs/capture/source-trust-contracts.md`](capture/source-trust-contracts.md) for per-source identity, timestamp, freshness, and safe-citation semantics. Eligibility filters (what retrieval excludes by default) are in [`docs/capture/retrieval-eligibility.md`](capture/retrieval-eligibility.md).
+
 For setup (adding hippo to your MCP config), see the [README's MCP Server section](../README.md#mcp-server). For the trust-boundary discussion (what granting MCP access actually exposes), see the [README's Privacy and Security section](../README.md#privacy-and-security).
 
 ## Tool selection guide
@@ -301,6 +303,8 @@ Lessons graduate only after 2+ occurrences (single failures stay in `lesson_pend
 
 ## See also
 
+- [Source trust contracts](capture/source-trust-contracts.md) — per-source semantics for agents (SNUG-122)
+- [Retrieval eligibility](capture/retrieval-eligibility.md) — default noise-control policy (SNUG-121)
 - [README MCP Server section](../README.md#mcp-server) — setup
 - [`docs/lifecycle.md`](lifecycle.md) — what writes to the tables these tools query
 - [`docs/schema.md`](schema.md) — the SQLite tables behind each return shape
