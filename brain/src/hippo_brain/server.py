@@ -16,7 +16,11 @@ from starlette.routing import Route
 
 from hippo_brain.client import InferenceClient
 from hippo_brain.openapi import build_openapi_spec
-from hippo_brain.schema_version import EXPECTED_SCHEMA_VERSION, ACCEPTED_READ_VERSIONS
+from hippo_brain.schema_version import (
+    ACCEPTED_READ_VERSIONS,
+    EXPECTED_SCHEMA_VERSION,
+    require_accepted_schema,
+)
 from hippo_brain.version import get_version
 from hippo_brain.embeddings import (
     embed_dict_from_result,
@@ -304,13 +308,7 @@ class BrainServer:
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA foreign_keys=ON")
         conn.execute("PRAGMA busy_timeout=5000")
-        version = conn.execute("PRAGMA user_version").fetchone()[0]
-        if version not in ACCEPTED_READ_VERSIONS:
-            conn.close()
-            raise RuntimeError(
-                f"DB schema version mismatch: expected {EXPECTED_SCHEMA_VERSION}, found {version}. "
-                "Please run migrations or delete the database."
-            )
+        require_accepted_schema(conn)
         return conn
 
     async def health(self, request: Request) -> JSONResponse:

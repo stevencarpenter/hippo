@@ -50,6 +50,8 @@ revision, chunk, enrichment queue, and knowledge-node link.
 
 from __future__ import annotations
 
+import sqlite3
+
 EXPECTED_SCHEMA_VERSION: int = 19
 
 # Versions brain can read without erroring.
@@ -65,3 +67,14 @@ EXPECTED_SCHEMA_VERSION: int = 19
 # deployment the daemon always migrates the DB to EXPECTED_SCHEMA_VERSION
 # before brain attaches.
 ACCEPTED_READ_VERSIONS: frozenset[int] = frozenset({EXPECTED_SCHEMA_VERSION})
+
+
+def require_accepted_schema(conn: sqlite3.Connection) -> None:
+    """Reject connections to DBs the brain cannot read safely."""
+    version = conn.execute("PRAGMA user_version").fetchone()[0]
+    if version not in ACCEPTED_READ_VERSIONS:
+        conn.close()
+        raise RuntimeError(
+            f"DB schema version mismatch: expected {EXPECTED_SCHEMA_VERSION}, found {version}. "
+            "Please run migrations or delete the database."
+        )

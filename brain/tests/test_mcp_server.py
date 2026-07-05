@@ -17,6 +17,7 @@ from hippo_brain.embeddings import EMBED_DIM
 from hippo_brain.mcp import (
     _get_conn,
     _load_config,
+    _open_retrieval_conn,
     _state,
     ask,
     get_entities,
@@ -25,6 +26,7 @@ from hippo_brain.mcp import (
     search_knowledge,
 )
 from hippo_brain.retrieval import SearchResult
+from hippo_brain.schema_version import EXPECTED_SCHEMA_VERSION
 
 
 class TestToolRegistration:
@@ -53,12 +55,19 @@ class TestToolRegistration:
         assert len(mcp._tool_manager._tools) == 9
 
 
+def _stamp_readable_schema_version(db_path: str) -> None:
+    conn = sqlite3.connect(db_path)
+    conn.execute(f"PRAGMA user_version = {EXPECTED_SCHEMA_VERSION}")
+    conn.close()
+
+
 class TestGetConn:
     def test_returns_working_connection(self):
         with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
             db_path = f.name
 
         try:
+            _stamp_readable_schema_version(db_path)
             conn = _get_conn(db_path=db_path)
             assert isinstance(conn, sqlite3.Connection)
             # Verify we can execute a query
@@ -73,6 +82,7 @@ class TestGetConn:
             db_path = f.name
 
         try:
+            _stamp_readable_schema_version(db_path)
             conn = _get_conn(db_path=db_path)
             mode = conn.execute("PRAGMA journal_mode").fetchone()[0]
             assert mode == "wal"
@@ -81,6 +91,29 @@ class TestGetConn:
             Path(db_path).unlink(missing_ok=True)
             Path(db_path + "-wal").unlink(missing_ok=True)
             Path(db_path + "-shm").unlink(missing_ok=True)
+
+    def test_rejects_wrong_schema_version(self, tmp_path):
+        db_path = tmp_path / "stale.db"
+        conn = sqlite3.connect(str(db_path))
+        conn.execute("PRAGMA user_version = 11")
+        conn.close()
+
+        with pytest.raises(RuntimeError, match="schema version mismatch"):
+            _get_conn(db_path=str(db_path))
+
+    def test_open_retrieval_conn_rejects_wrong_schema_version(self, tmp_path):
+        db_path = tmp_path / "stale.db"
+        conn = sqlite3.connect(str(db_path))
+        conn.execute("PRAGMA user_version = 11")
+        conn.close()
+
+        previous_db_path = _state.db_path
+        _state.db_path = str(db_path)
+        try:
+            with pytest.raises(RuntimeError, match="schema version mismatch"):
+                _open_retrieval_conn()
+        finally:
+            _state.db_path = previous_db_path
 
 
 class TestMCPStdioProtocol:

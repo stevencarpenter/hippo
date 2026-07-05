@@ -32,6 +32,7 @@ from hippo_brain.mcp_queries import (
     shape_semantic_results,
 )
 from hippo_brain.rag import ask as rag_ask, format_rag_response
+from hippo_brain.schema_version import require_accepted_schema
 from hippo_brain.telemetry import get_tracer as _get_tracer
 
 logger = setup_logging("hippo-mcp")
@@ -140,6 +141,7 @@ def _get_conn(db_path: str = "") -> sqlite3.Connection:
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")
     conn.execute("PRAGMA busy_timeout=5000")
+    require_accepted_schema(conn)
     return conn
 
 
@@ -670,10 +672,13 @@ def _open_retrieval_conn() -> sqlite3.Connection:
     try:
         from hippo_brain.vector_store import open_conn
 
-        return open_conn(_state.db_path)
-    except Exception:
+        conn = open_conn(_state.db_path)
+    except ImportError:
         # vector_store may be missing in older deploys; fall back to plain conn
         return _get_conn()
+    # Gate outside the try so a schema mismatch cannot be masked by fallback.
+    require_accepted_schema(conn)
+    return conn
 
 
 @mcp.tool()
