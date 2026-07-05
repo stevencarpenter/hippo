@@ -88,6 +88,29 @@ CREATE TABLE knowledge_node_workflow_runs (
     run_id INTEGER NOT NULL,
     PRIMARY KEY (knowledge_node_id, run_id)
 );
+CREATE TABLE source_health (
+    source TEXT PRIMARY KEY,
+    last_event_ts INTEGER,
+    last_success_ts INTEGER,
+    last_error_ts INTEGER,
+    last_error_msg TEXT,
+    consecutive_failures INTEGER NOT NULL DEFAULT 0,
+    events_last_1h INTEGER NOT NULL DEFAULT 0,
+    events_last_24h INTEGER NOT NULL DEFAULT 0,
+    probe_ok INTEGER,
+    probe_lag_ms INTEGER,
+    probe_last_run_ts INTEGER,
+    last_heartbeat_ts INTEGER,
+    updated_at INTEGER NOT NULL
+);
+CREATE TABLE capture_alarms (
+    id INTEGER PRIMARY KEY,
+    invariant_id TEXT NOT NULL,
+    raised_at INTEGER NOT NULL,
+    resolved_at INTEGER,
+    acked_at INTEGER,
+    details_json TEXT
+);
 """
 
 
