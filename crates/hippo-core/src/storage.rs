@@ -10,17 +10,22 @@ use crate::events::{BrowserEvent, ShellEvent};
 const SCHEMA: &str = concat!(
     include_str!("schema.sql"),
     "\n",
-    include_str!("schema/auto_memory.sql")
+    include_str!("schema/auto_memory.sql"),
+    "\n",
+    include_str!("schema/auto_memory_taxonomy.sql")
 );
 
 /// Schema version the daemon expects a healthy DB to be at. Exposed so
 /// startup code (e.g. the brain handshake) can cross-check without
 /// re-declaring the value. Keep in sync with
 /// `brain/src/hippo_brain/schema_version.py::EXPECTED_SCHEMA_VERSION`.
-pub const EXPECTED_VERSION: i64 = 19;
+pub const EXPECTED_VERSION: i64 = 20;
 
 /// Idempotent v18→v19 auto-memory DDL (same file as fresh-install assembly).
 const AUTO_MEMORY_SCHEMA: &str = include_str!("schema/auto_memory.sql");
+
+/// Idempotent v19→v20 auto-memory taxonomy DDL.
+const AUTO_MEMORY_TAXONOMY_SCHEMA: &str = include_str!("schema/auto_memory_taxonomy.sql");
 
 /// Idempotent `ALTER TABLE … ADD COLUMN`. Pre-checks `PRAGMA table_info`
 /// for the column name; if absent, runs the supplied DDL. Used by
@@ -1433,6 +1438,12 @@ pub fn open_db(path: &Path) -> Result<Connection> {
             )?;
         }
         conn.execute_batch("PRAGMA user_version = 19;")?;
+    }
+
+    // v19→v20: auto-memory category and index-link tables.
+    if (1..20).contains(&version) {
+        conn.execute_batch(AUTO_MEMORY_TAXONOMY_SCHEMA)?;
+        conn.execute_batch("PRAGMA user_version = 20;")?;
     } else if version != 0 && version != EXPECTED_VERSION {
         anyhow::bail!(
             "DB schema version mismatch: expected {}, found {}. \
@@ -3908,6 +3919,48 @@ mod tests {
             )
             .unwrap();
         assert!(queue_exists);
+    }
+
+    #[test]
+    fn test_migrate_v19_to_v20_adds_auto_memory_taxonomy_without_touching_data() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("auto-memory-v19.db");
+        let conn = Connection::open(&db).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE sentinel (id INTEGER PRIMARY KEY, value TEXT NOT NULL);
+             INSERT INTO sentinel(value) VALUES ('preserved');
+             PRAGMA user_version = 19;",
+        )
+        .unwrap();
+        drop(conn);
+
+        let conn = open_db(&db).unwrap();
+        let version: i64 = conn
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, EXPECTED_VERSION);
+        assert_eq!(
+            conn.query_row("SELECT value FROM sentinel", [], |row| row
+                .get::<_, String>(0))
+                .unwrap(),
+            "preserved"
+        );
+        let categories_exists: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='memory_document_categories')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(categories_exists);
+        let links_exists: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='memory_document_links')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(links_exists);
     }
 
     /// REGRESSION (BT-29 schema gap, 2026-05-04): the bench's corpus init

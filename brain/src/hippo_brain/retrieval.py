@@ -37,6 +37,7 @@ from hippo_brain.retrieval_eligibility import (
 from hippo_brain.confidence_scoring import attach_confidence_to_results
 from hippo_brain.source_freshness import attach_freshness_to_results
 from hippo_brain.source_filters import (
+    knowledge_memory_category_clause,
     knowledge_memory_project_clause,
     knowledge_source_exists_clause,
 )
@@ -60,6 +61,7 @@ class Filters:
     project: str | None = None
     since_ms: int | None = None
     source: str | None = None  # "shell" | "claude" | "browser" | "workflow"
+    memory_category: str | None = None
     branch: str | None = None
     entity: str | None = None
     include_excluded: bool = False
@@ -422,6 +424,13 @@ def _apply_filters(
             raise ValueError(f"unknown source filter: {filters.source!r}")
         clauses.append(source_clause)
 
+    if filters.memory_category:
+        category_clause = knowledge_memory_category_clause(conn)
+        if category_clause is None:
+            raise ValueError("memory category filter requires schema v20+")
+        clauses.append(category_clause)
+        params.append(filters.memory_category)
+
     sql = f"""
         SELECT DISTINCT kn.id
         FROM knowledge_nodes kn
@@ -473,6 +482,7 @@ def _is_empty_filter(f: Filters) -> bool:
         f.project is None
         and f.since_ms is None
         and f.source is None
+        and f.memory_category is None
         and f.branch is None
         and f.entity is None
     )

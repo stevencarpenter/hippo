@@ -53,6 +53,17 @@ _MEMORY_PROJECT_EXISTS = (
     "AND (md.repository LIKE ? OR md.source_path LIKE ?))"
 )
 
+_MEMORY_CATEGORY_EXISTS = (
+    "EXISTS (SELECT 1 FROM knowledge_node_memory_chunks knmc "
+    "JOIN memory_chunks mc ON mc.id = knmc.memory_chunk_id "
+    "JOIN memory_revisions mr ON mr.id = mc.revision_id "
+    "JOIN memory_documents md ON md.id = mr.document_id "
+    "JOIN memory_document_categories mdc ON mdc.document_id = md.id "
+    "WHERE knmc.knowledge_node_id = kn.id "
+    "AND md.active_revision_id = mr.id AND md.state = 'active' "
+    "AND mdc.category = ?)"
+)
+
 
 def table_exists(conn: sqlite3.Connection, table: str) -> bool:
     row = conn.execute(
@@ -73,6 +84,13 @@ def knowledge_memory_project_clause(conn: sqlite3.Connection | None = None) -> s
     if conn is not None and not table_exists(conn, "knowledge_node_memory_chunks"):
         return None
     return _MEMORY_PROJECT_EXISTS
+
+
+def knowledge_memory_category_clause(conn: sqlite3.Connection | None = None) -> str | None:
+    """EXISTS fragment matching auto-memory nodes by document category."""
+    if conn is not None and not table_exists(conn, "memory_document_categories"):
+        return None
+    return _MEMORY_CATEGORY_EXISTS
 
 
 def knowledge_source_exists_clause(

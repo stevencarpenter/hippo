@@ -10,12 +10,17 @@ import sqlite3
 import time
 from datetime import datetime, timezone
 
+from hippo_brain.auto_memory_categories import (
+    list_document_categories,
+    list_document_links,
+)
 from hippo_brain.models import CIAnnotation, CIJob, CIStatus, Lesson
 from hippo_brain.retrieval_eligibility import (
     agentic_session_eligible_sql,
     knowledge_node_eligible_exists_sql,
 )
 from hippo_brain.source_filters import (
+    knowledge_memory_category_clause,
     knowledge_memory_project_clause,
     knowledge_source_exists_clause,
     table_exists as _table_exists,
@@ -155,12 +160,44 @@ def parse_since(since: str) -> int:
     return now_ms - (value * unit_ms)
 
 
+def _memory_provenance(
+    conn: sqlite3.Connection, node_id: int
+) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
+    row = conn.execute(
+        "SELECT md.id FROM knowledge_node_memory_chunks knmc "
+        "JOIN memory_chunks mc ON mc.id = knmc.memory_chunk_id "
+        "JOIN memory_revisions mr ON mr.id = mc.revision_id "
+        "JOIN memory_documents md ON md.id = mr.document_id "
+        "WHERE knmc.knowledge_node_id = ? AND md.active_revision_id = mr.id "
+        "AND md.state = 'active' LIMIT 1",
+        (node_id,),
+    ).fetchone()
+    if row is None:
+        return [], []
+    document_id = int(row[0])
+    categories = [
+        {
+            "category": item.category,
+            "source": item.source,
+            "confidence": item.confidence,
+            "model": item.model,
+            "enrichment_version": item.enrichment_version,
+            "created_at": item.created_at,
+            "updated_at": item.updated_at,
+        }
+        for item in list_document_categories(conn, document_id)
+    ]
+    links = list_document_links(conn, document_id)
+    return categories, links
+
+
 def _build_knowledge_filter_clause(
     conn: sqlite3.Connection,
     project: str,
     since_ms: int,
     source: str,
     branch: str,
+    category: str = "",
     *,
     include_excluded: bool = False,
 ) -> tuple[str, list]:
@@ -244,6 +281,13 @@ def _build_knowledge_filter_clause(
             raise ValueError(f"unknown source filter: {source!r}")
         clauses.append(source_clause)
 
+    if category:
+        category_clause = knowledge_memory_category_clause(conn)
+        if category_clause is None:
+            raise ValueError("memory category filter requires schema v20+")
+        clauses.append(category_clause)
+        params.append(category)
+
     where = (" AND " + " AND ".join(clauses)) if clauses else ""
     return where, params
 
@@ -256,6 +300,7 @@ def search_knowledge_lexical(
     since: str = "",
     source: str = "",
     branch: str = "",
+    category: str = "",
     *,
     include_excluded: bool = False,
 ) -> list[dict]:
@@ -267,6 +312,7 @@ def search_knowledge_lexical(
         since_ms=since_ms,
         source=source,
         branch=branch,
+        category=category,
         include_excluded=include_excluded,
     )
 
@@ -301,6 +347,7 @@ def search_knowledge_lexical(
         source_meta = content.get("source", {}) if isinstance(content, dict) else {}
         tags = _safe_json_loads(tags_str, []) if tags_str else []
         event_ids, claude_ids, browser_ids = _knowledge_node_links(conn, node_id)
+        memory_categories, memory_links = _memory_provenance(conn, node_id)
 
         results.append(
             {
@@ -319,6 +366,8 @@ def search_knowledge_lexical(
                 "repository": source_meta.get("repository", ""),
                 "logical_path": source_meta.get("logical_path", ""),
                 "content_hash": source_meta.get("content_hash", ""),
+                "memory_categories": memory_categories,
+                "memory_links": memory_links,
                 "linked_event_ids": event_ids,
                 "linked_claude_session_ids": claude_ids,
                 "linked_browser_event_ids": browser_ids,

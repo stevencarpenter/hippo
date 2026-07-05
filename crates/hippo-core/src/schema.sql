@@ -657,4 +657,4 @@ INSERT OR IGNORE INTO source_health (source, last_event_ts, updated_at) VALUES
 -- The `claude_session_offsets` table (deprecated since T-5) is preserved
 -- to avoid breaking existing CREATE SCHEMA users.
 
-PRAGMA user_version = 19;
+PRAGMA user_version = 20;

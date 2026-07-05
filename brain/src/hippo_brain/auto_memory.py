@@ -16,6 +16,7 @@ from hippo_brain.auto_memory_constants import (
     SOURCE_KIND,
     _IDENTITY_NAMESPACE,
 )
+from hippo_brain.auto_memory_categories import replace_model_categories
 from hippo_brain.auto_memory_lifecycle import (
     RevisionRetention,
     query_memory_history,
@@ -56,6 +57,7 @@ The input is already redacted. Produce a JSON object with:
 - outcome: one of success, failure, partial, unknown
 - entities: object with keys projects, tools, files, services, errors (each a list of strings)
 - tags: short topical tags
+- memory_categories: zero or more of user, feedback, project, reference inferred from content (never index)
 - key_decisions: list of notable decisions or conventions captured
 - problems_encountered: list of problems or pitfalls documented
 - design_decisions: list of objects with decision, rationale, alternatives (may be empty)
@@ -367,6 +369,13 @@ def write_memory_knowledge_node(
             "UPDATE memory_documents SET active_revision_id = ?, projection_status = 'ready', "
             "last_error = NULL, updated_at = ? WHERE id = ?",
             (revision_id, completed_at, document_id),
+        )
+        replace_model_categories(
+            conn,
+            document_id,
+            result.memory_categories,
+            model_name=model_name,
+            now_ms=completed_at,
         )
         conn.commit()
     except Exception:

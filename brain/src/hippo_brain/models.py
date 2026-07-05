@@ -19,6 +19,7 @@ class EnrichmentResult:
         }
     )
     tags: list = field(default_factory=list)
+    memory_categories: list = field(default_factory=list)
     embed_text: str = ""
     key_decisions: list = field(default_factory=list)
     problems_encountered: list = field(default_factory=list)
@@ -231,12 +232,18 @@ def validate_enrichment_data(data: dict) -> EnrichmentResult:
         raw_tags = []
     tags = [t for t in raw_tags if isinstance(t, str)]
 
+    raw_memory_categories = data.get("memory_categories", [])
+    if not isinstance(raw_memory_categories, list):
+        raw_memory_categories = []
+    memory_categories = [c for c in raw_memory_categories if isinstance(c, str)]
+
     return EnrichmentResult(
         summary=data["summary"],
         intent=data["intent"],
         outcome=outcome,
         entities=entities,
         tags=tags,
+        memory_categories=memory_categories,
         embed_text=data["embed_text"],
         key_decisions=key_decisions,
         problems_encountered=problems_encountered,
