@@ -198,7 +198,7 @@ def _build_knowledge_filter_clause(
                 f" OR EXISTS (SELECT 1 FROM {link_table} links "
                 f"  JOIN {session_table} s ON s.id = links.{link_column} "
                 "  WHERE links.knowledge_node_id = kn.id "
-                f"    AND {agentic_session_eligible_sql('s')} "
+                f"    AND {agentic_session_eligible_sql('s', include_excluded=include_excluded)} "
                 "    AND (s.cwd LIKE ? OR s.project_dir LIKE ?))"
             )
             params.extend([like, like])
@@ -221,7 +221,7 @@ def _build_knowledge_filter_clause(
                 f" OR EXISTS (SELECT 1 FROM {link_table} links "
                 f"  JOIN {session_table} s ON s.id = links.{link_column} "
                 "  WHERE links.knowledge_node_id = kn.id "
-                f"    AND {agentic_session_eligible_sql('s')} AND s.git_branch = ?)"
+                f"    AND {agentic_session_eligible_sql('s', include_excluded=include_excluded)} AND s.git_branch = ?)"
             )
             params.append(branch)
         branch_clause += ")"
@@ -234,6 +234,7 @@ def _build_knowledge_filter_clause(
             claude_link_table=link_table,
             claude_link_column=link_column,
             claude_session_table=session_table,
+            include_excluded=include_excluded,
         )
         if source_clause is None:
             # Mirror retrieval._apply_filters: an unrecognized (or unavailable)

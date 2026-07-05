@@ -4,12 +4,6 @@ from __future__ import annotations
 
 import sqlite3
 
-from hippo_brain.retrieval_eligibility import (
-    agentic_session_eligible_sql,
-    probe_tag_sql,
-    workflow_run_eligible_sql,
-)
-
 CLAUDE_AUTO_MEMORY_SOURCE = "claude-auto-memory"
 
 # Logical source families keyed by linked_source_ids prefix (see retrieval._fetch_details).
@@ -44,21 +38,6 @@ _MEMORY_SOURCE_EXISTS = (
 _SOURCE_EXISTS: dict[str, str] = {
     "shell": (
         "EXISTS (SELECT 1 FROM knowledge_node_events kne_s WHERE kne_s.knowledge_node_id = kn.id)"
-    ),
-    "claude": (
-        "EXISTS (SELECT 1 FROM knowledge_node_agentic_sessions knc_s "
-        "JOIN agentic_sessions asx_s ON asx_s.id = knc_s.agentic_session_id "
-        f"WHERE knc_s.knowledge_node_id = kn.id AND {agentic_session_eligible_sql('asx_s')})"
-    ),
-    "browser": (
-        "EXISTS (SELECT 1 FROM knowledge_node_browser_events knb_s "
-        "JOIN browser_events be_s ON be_s.id = knb_s.browser_event_id "
-        f"WHERE knb_s.knowledge_node_id = kn.id AND {probe_tag_sql('be_s.probe_tag')})"
-    ),
-    "workflow": (
-        "EXISTS (SELECT 1 FROM knowledge_node_workflow_runs knwr_s "
-        "JOIN workflow_runs wr_s ON wr_s.id = knwr_s.run_id "
-        f"WHERE knwr_s.knowledge_node_id = kn.id AND {workflow_run_eligible_sql('wr_s')})"
     ),
     CLAUDE_AUTO_MEMORY_SOURCE: _MEMORY_SOURCE_EXISTS,
 }
@@ -103,14 +82,42 @@ def knowledge_source_exists_clause(
     claude_link_table: str | None = None,
     claude_link_column: str | None = None,
     claude_session_table: str | None = None,
+    include_excluded: bool = False,
 ) -> str | None:
     """Return an EXISTS clause for ``source``, or None when unsupported."""
+    from hippo_brain.retrieval_eligibility import (
+        agentic_session_eligible_sql,
+        probe_tag_sql,
+        workflow_run_eligible_sql,
+    )
+
     if source == "claude" and claude_link_table and claude_link_column and claude_session_table:
         return (
             f"EXISTS (SELECT 1 FROM {claude_link_table} link "
             f"  JOIN {claude_session_table} s ON s.id = link.{claude_link_column} "
             f"  WHERE link.knowledge_node_id = kn.id "
-            f"AND {agentic_session_eligible_sql('s')})"
+            f"AND {agentic_session_eligible_sql('s', include_excluded=include_excluded)})"
+        )
+    if source == "claude":
+        return (
+            "EXISTS (SELECT 1 FROM knowledge_node_agentic_sessions knc_s "
+            "JOIN agentic_sessions asx_s ON asx_s.id = knc_s.agentic_session_id "
+            f"WHERE knc_s.knowledge_node_id = kn.id "
+            f"AND {agentic_session_eligible_sql('asx_s', include_excluded=include_excluded)})"
+        )
+    if source == "browser":
+        return (
+            "EXISTS (SELECT 1 FROM knowledge_node_browser_events knb_s "
+            "JOIN browser_events be_s ON be_s.id = knb_s.browser_event_id "
+            f"WHERE knb_s.knowledge_node_id = kn.id "
+            f"AND {probe_tag_sql('be_s.probe_tag', include_excluded=include_excluded)})"
+        )
+    if source == "workflow":
+        return (
+            "EXISTS (SELECT 1 FROM knowledge_node_workflow_runs knwr_s "
+            "JOIN workflow_runs wr_s ON wr_s.id = knwr_s.run_id "
+            f"WHERE knwr_s.knowledge_node_id = kn.id "
+            f"AND {workflow_run_eligible_sql('wr_s', include_excluded=include_excluded)})"
         )
     if source == CLAUDE_AUTO_MEMORY_SOURCE:
         if conn is not None and not table_exists(conn, "knowledge_node_memory_chunks"):

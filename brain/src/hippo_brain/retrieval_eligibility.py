@@ -14,27 +14,12 @@ import os
 import sqlite3
 import time
 
+from hippo_brain.source_filters import _MEMORY_SOURCE_EXISTS, table_exists as _table_exists
+
 # Align with capture probe / poller settle windows (see probe_agentic.rs).
 IN_FLIGHT_SETTLE_MS = 90_000
 
 _ENV_INCLUDE_EXCLUDED = "HIPPO_RETRIEVAL_INCLUDE_EXCLUDED"
-
-_MEMORY_SOURCE_EXISTS = (
-    "EXISTS (SELECT 1 FROM knowledge_node_memory_chunks knmc "
-    "JOIN memory_chunks mc ON mc.id = knmc.memory_chunk_id "
-    "JOIN memory_revisions mr ON mr.id = mc.revision_id "
-    "JOIN memory_documents md ON md.id = mr.document_id "
-    "WHERE knmc.knowledge_node_id = kn.id "
-    "AND md.active_revision_id = mr.id AND md.state = 'active')"
-)
-
-
-def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
-    row = conn.execute(
-        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?)",
-        (table,),
-    ).fetchone()
-    return bool(row and row[0])
 
 
 def include_excluded_from_env() -> bool:

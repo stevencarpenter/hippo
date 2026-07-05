@@ -14,13 +14,14 @@ from __future__ import annotations
 import json
 import math
 import sqlite3
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Protocol, Sequence
 
 from hippo_brain.enrichment import IDENTIFIER_ENTITY_TYPES
 from hippo_brain.retrieval_eligibility import (
     agentic_session_eligible_sql,
     browser_event_eligible_sql,
+    include_excluded_from_env,
     knowledge_node_eligible_exists_sql,
     shell_event_eligible_sql,
     workflow_run_eligible_sql,
@@ -193,6 +194,8 @@ def search(
     if limit <= 0:
         return []
     filters = filters or Filters()
+    if include_excluded_from_env():
+        filters = replace(filters, include_excluded=True)
     backend = backend or _default_backend()
 
     if mode == "semantic":
@@ -225,7 +228,9 @@ def _semantic(
         return []
     allowed = _apply_filters(conn, [nid for nid, _ in raw], filters)
     ordered = [(nid, dist) for nid, dist in raw if nid in allowed]
-    details = _fetch_details(conn, [nid for nid, _ in ordered])
+    details = _fetch_details(
+        conn, [nid for nid, _ in ordered], include_excluded=filters.include_excluded
+    )
     vecs = _get_vectors(conn, [nid for nid, _ in ordered])
     scored = [(nid, _cosine_to_score(dist)) for nid, dist in ordered]
     picked = _mmr(scored, vecs, limit)
@@ -246,7 +251,7 @@ def _lexical(
         return []
     allowed = _apply_filters(conn, [nid for nid, _ in raw], filters)
     ordered = [nid for nid, _ in raw if nid in allowed][:limit]
-    details = _fetch_details(conn, ordered)
+    details = _fetch_details(conn, ordered, include_excluded=filters.include_excluded)
     # Score = positional (1.0 for top, linearly down to ~0).
     n = max(len(ordered), 1)
     results: list[SearchResult] = []
@@ -275,7 +280,7 @@ def _recent(
     if not candidate_ids:
         candidate_ids = _all_recent_ids(conn, CANDIDATE_POOL)
     allowed = _apply_filters(conn, candidate_ids, filters)
-    details = _fetch_details(conn, list(allowed))
+    details = _fetch_details(conn, list(allowed), include_excluded=filters.include_excluded)
     ordered = sorted(
         (d for d in details.values()),
         key=lambda d: d["captured_at"],
@@ -321,7 +326,9 @@ def _hybrid(
 
     vecs = _get_vectors(conn, [nid for nid, _ in scored])
     picked = _mmr(scored, vecs, limit)
-    details = _fetch_details(conn, [nid for nid, _ in picked])
+    details = _fetch_details(
+        conn, [nid for nid, _ in picked], include_excluded=filters.include_excluded
+    )
     return [_to_result(score, details.get(nid)) for nid, score in picked if nid in details]
 
 
@@ -351,7 +358,9 @@ def _apply_filters(
     params: list[object] = list(candidate_ids)
 
     if not filters.include_excluded:
-        elig_sql, elig_params = knowledge_node_eligible_exists_sql(conn, "kn.id")
+        elig_sql, elig_params = knowledge_node_eligible_exists_sql(
+            conn, "kn.id", include_excluded=False
+        )
         clauses.append(elig_sql)
         params.extend(elig_params)
 
@@ -384,7 +393,9 @@ def _apply_filters(
         params.extend([filters.branch, filters.branch])
 
     if filters.source:
-        source_clause = knowledge_source_exists_clause(filters.source, conn)
+        source_clause = knowledge_source_exists_clause(
+            filters.source, conn, include_excluded=filters.include_excluded
+        )
         if source_clause is None:
             raise ValueError(f"unknown source filter: {filters.source!r}")
         clauses.append(source_clause)
@@ -396,7 +407,7 @@ def _apply_filters(
         LEFT JOIN events e ON e.id = kne.event_id
         LEFT JOIN knowledge_node_agentic_sessions kncs ON kncs.knowledge_node_id = kn.id
         LEFT JOIN agentic_sessions asx ON asx.id = kncs.agentic_session_id
-            AND {agentic_session_eligible_sql("asx")}
+            AND {agentic_session_eligible_sql("asx", include_excluded=filters.include_excluded)}
         LEFT JOIN knowledge_node_browser_events knbe ON knbe.knowledge_node_id = kn.id
         LEFT JOIN browser_events be ON be.id = knbe.browser_event_id
         WHERE {" AND ".join(clauses)}
@@ -422,7 +433,7 @@ def _apply_filters(
             LEFT JOIN events e ON e.id = kne.event_id
             LEFT JOIN knowledge_node_agentic_sessions kncs ON kncs.knowledge_node_id = kn.id
             LEFT JOIN agentic_sessions asx ON asx.id = kncs.agentic_session_id
-            AND {agentic_session_eligible_sql("asx")}
+            AND {agentic_session_eligible_sql("asx", include_excluded=filters.include_excluded)}
             LEFT JOIN knowledge_node_browser_events knbe ON knbe.knowledge_node_id = kn.id
             LEFT JOIN browser_events be ON be.id = knbe.browser_event_id
             WHERE {" AND ".join(clauses)}
@@ -450,7 +461,12 @@ def _is_empty_filter(f: Filters) -> bool:
 # ---------------------------------------------------------------------------
 
 
-def _fetch_details(conn: sqlite3.Connection, node_ids: Sequence[int]) -> dict[int, dict]:
+def _fetch_details(
+    conn: sqlite3.Connection,
+    node_ids: Sequence[int],
+    *,
+    include_excluded: bool = False,
+) -> dict[int, dict]:
     """Fetch the canonical SearchResult fields for each node id."""
     if not node_ids:
         return {}
@@ -497,7 +513,7 @@ def _fetch_details(conn: sqlite3.Connection, node_ids: Sequence[int]) -> dict[in
         FROM knowledge_node_events kne
         JOIN events e ON e.id = kne.event_id
         WHERE kne.knowledge_node_id IN ({placeholders})
-          AND {shell_event_eligible_sql("e")}
+          AND {shell_event_eligible_sql("e", include_excluded=include_excluded)}
         ORDER BY e.timestamp DESC
         """,
         list(node_ids),
@@ -524,7 +540,7 @@ def _fetch_details(conn: sqlite3.Connection, node_ids: Sequence[int]) -> dict[in
         FROM knowledge_node_browser_events knbe
         JOIN browser_events be ON be.id = knbe.browser_event_id
         WHERE knbe.knowledge_node_id IN ({placeholders})
-          AND {browser_event_eligible_sql("be")}
+          AND {browser_event_eligible_sql("be", include_excluded=include_excluded)}
         ORDER BY be.id DESC
         """,
         list(node_ids),
@@ -542,7 +558,7 @@ def _fetch_details(conn: sqlite3.Connection, node_ids: Sequence[int]) -> dict[in
         FROM knowledge_node_workflow_runs knwr
         JOIN workflow_runs wr ON wr.id = knwr.run_id
         WHERE knwr.knowledge_node_id IN ({placeholders})
-          AND {workflow_run_eligible_sql("wr")}
+          AND {workflow_run_eligible_sql("wr", include_excluded=include_excluded)}
         ORDER BY wr.id DESC
         """,
         list(node_ids),
@@ -564,7 +580,7 @@ def _fetch_details(conn: sqlite3.Connection, node_ids: Sequence[int]) -> dict[in
         FROM knowledge_node_agentic_sessions kncs
         JOIN agentic_sessions asx ON asx.id = kncs.agentic_session_id
         WHERE kncs.knowledge_node_id IN ({placeholders})
-          AND {agentic_session_eligible_sql("asx")}
+          AND {agentic_session_eligible_sql("asx", include_excluded=include_excluded)}
         ORDER BY asx.start_time DESC, asx.id DESC
         """,
         list(node_ids),
