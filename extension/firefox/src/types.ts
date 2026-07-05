@@ -13,6 +13,8 @@ export interface HippoHeartbeat {
   extension_version: string;
   enabled_state: boolean;
   sent_at_ms: number;
+  /** Most recent native-messaging failure, forwarded to source_health on heartbeat. */
+  last_error_msg?: string;
 }
 
 /** Message sent from content script to background on page departure. */

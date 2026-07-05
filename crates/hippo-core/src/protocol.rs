@@ -35,6 +35,10 @@ pub enum DaemonRequest {
     UpdateSourceHealthHeartbeat {
         source: String,
         ts: i64,
+        /// Latest extension-side native-messaging error, if any. `None` clears
+        /// a previously recorded error on the `source_health` row.
+        #[serde(default)]
+        last_error_msg: Option<String>,
     },
     Shutdown,
 }
