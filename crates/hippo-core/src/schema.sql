@@ -512,8 +512,8 @@ CREATE INDEX IF NOT EXISTS idx_capture_alarms_invariant_active
     ON capture_alarms (invariant_id, acked_at)
     WHERE acked_at IS NULL AND resolved_at IS NULL;
 
--- Watcher offset tracking: resume-after-restart for the FS watcher (T-5).
-CREATE TABLE IF NOT EXISTS claude_session_offsets (
+-- Watcher offset tracking: resume-after-restart for agentic FS watchers (T-5).
+CREATE TABLE IF NOT EXISTS agentic_session_offsets (
     path              TEXT    PRIMARY KEY,
     session_id        TEXT,
     byte_offset       INTEGER NOT NULL DEFAULT 0,
@@ -655,7 +655,7 @@ INSERT OR IGNORE INTO source_health (source, last_event_ts, updated_at) VALUES
     ('claude-auto-memory',       NULL, unixepoch('now') * 1000),
     ('auto-memory-watcher',      NULL, unixepoch('now') * 1000);
 
--- The `claude_session_offsets` table (deprecated since T-5) is preserved
--- to avoid breaking existing CREATE SCHEMA users.
+-- `claude_session_offsets` may remain on DBs upgraded from v21 (frozen, not
+-- written); fresh installs use `agentic_session_offsets` only.
 
-PRAGMA user_version = 21;
+PRAGMA user_version = 22;

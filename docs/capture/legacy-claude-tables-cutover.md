@@ -1,12 +1,14 @@
 # Legacy `claude_*` Table Cutover Runbook (SNUG-115)
 
-Operator-facing checklist for the destructive v22 migration that drops frozen legacy agentic tables after the v17→v18 backfill to `agentic_sessions`. **Do not run the migration until this runbook's grep audit is clean and a HITL backup exists.**
+Operator-facing checklist for the destructive **Phase B (v23)** migration that drops frozen legacy agentic tables after the v17→v18 backfill to `agentic_sessions`. **Do not run Phase B until this runbook's grep audit is clean and a HITL backup exists.**
 
 Parent issue: [SNUG-115](https://linear.app/snugmarina/issue/SNUG-115).
 
-## Current state (schema v21)
+**Phase A (v22)** renamed watcher resume state to `agentic_session_offsets` only — no drops.
 
-| Table | Status | Action in v22 |
+## Current state (schema v22 after Phase A)
+
+| Table | Status | Action in Phase B (v23) |
 |-------|--------|---------------|
 | `agentic_sessions` | **Live** — all harness writers | Keep |
 | `agentic_enrichment_queue` | **Live** | Keep |
@@ -15,17 +17,17 @@ Parent issue: [SNUG-115](https://linear.app/snugmarina/issue/SNUG-115).
 | `claude_enrichment_queue` | **Frozen** | Drop |
 | `knowledge_node_claude_sessions` | **Frozen** | Drop |
 | `claude_session_parity` | **Frozen** — tmux tailer residue | Drop |
-| `claude_session_offsets` | **Live** — FS watcher resume state | **Rename first** (see below) |
+| `claude_session_offsets` | **Live on v21** — FS watcher resume state | **Renamed to `agentic_session_offsets` in v22 (Phase A)** |
 
-The v17→v18 migration already copied historical rows into `agentic_sessions` / `agentic_enrichment_queue` / `knowledge_node_agentic_sessions` with `harness` derived from `source_file`. v22 is schema cleanup + reference purge, not another data migration.
+The v17→v18 migration already copied historical rows into `agentic_sessions` / `agentic_enrichment_queue` / `knowledge_node_agentic_sessions` with `harness` derived from `source_file`. Phase B (v23) is schema cleanup + reference purge, not another data migration.
 
 ## HITL prerequisites (mandatory)
 
-1. **Stop writers briefly** (optional but safer): `mise run stop`
-2. **Backup the database**:
+1. **Stop writers** (recommended for Phase A deploy): `mise run stop` — prevents an old watcher binary writing `claude_session_offsets` while the new binary reads `agentic_session_offsets` during rolling deploy.
+2. **Backup the database** (Phase B):
    ```bash
-   cp ~/.local/share/hippo/hippo.db ~/.local/share/hippo/hippo.db.pre-v22.$(date +%Y%m%d%H%M)
-   sqlite3 ~/.local/share/hippo/hippo.db ".backup ~/.local/share/hippo/hippo.db.pre-v22-backup"
+   cp ~/.local/share/hippo/hippo.db ~/.local/share/hippo/hippo.db.pre-v23.$(date +%Y%m%d%H%M)
+   sqlite3 ~/.local/share/hippo/hippo.db ".backup ~/.local/share/hippo/hippo.db.pre-v23-backup"
    ```
 3. **Verify backfill completeness** (row counts should be stable; agentic ≥ legacy):
    ```bash
@@ -38,29 +40,29 @@ The v17→v18 migration already copied historical rows into `agentic_sessions` /
    ```
 4. **Record schema version**: `sqlite3 ~/.local/share/hippo/hippo.db 'PRAGMA user_version;'`
 
-## Phase A — rename `claude_session_offsets` (safe prep, no drop)
+## Phase A — rename `claude_session_offsets` (**shipped in v22**)
 
-The Claude FS watcher (`watch_claude_sessions.rs`) and backfill CLI still read/write `claude_session_offsets`. **Do not drop this table in v22 without renaming code + schema first.**
+The Claude FS watcher (`watch_claude_sessions.rs`) and backfill CLI now read/write `agentic_session_offsets`. Legacy `claude_session_offsets` remains on DBs upgraded from v21 (frozen, not written).
 
-Recommended prep PR (before v22):
+Phase A checklist (complete):
 
-1. Add `agentic_session_offsets` table (same columns as `claude_session_offsets`).
-2. v21→v22a migration: `INSERT INTO agentic_session_offsets SELECT * FROM claude_session_offsets`.
-3. Switch `watch_claude_sessions.rs` and `backfill.rs` to the new table name.
-4. Keep `claude_session_offsets` as a read-only alias or drop only after one release with the rename shipped.
+1. ~~Add `agentic_session_offsets` table~~
+2. ~~v21→v22 migration: copy rows from `claude_session_offsets`~~
+3. ~~Switch watcher + backfill to new table name~~
+4. Legacy `claude_session_offsets` kept frozen until Phase B drop
 
-## Phase B — v22 migration (destructive)
+## Phase B — drop legacy `claude_*` tables (destructive, not started)
 
 Only after Phase A is merged and deployed:
 
-1. Bump `EXPECTED_VERSION` / `EXPECTED_SCHEMA_VERSION` to **22** (Rust + Python together).
+1. Bump `EXPECTED_VERSION` / `EXPECTED_SCHEMA_VERSION` to **23** (Rust + Python together).
 2. Migration SQL (sketch):
    ```sql
    DROP TABLE IF EXISTS knowledge_node_claude_sessions;
    DROP TABLE IF EXISTS claude_enrichment_queue;
    DROP TABLE IF EXISTS claude_sessions;
    DROP TABLE IF EXISTS claude_session_parity;
-   -- claude_session_offsets: drop only after Phase A rename is live
+   DROP TABLE IF EXISTS claude_session_offsets;
    ```
 3. Remove `CREATE TABLE` blocks for dropped tables from `crates/hippo-core/src/schema.sql`.
 4. Purge references (see grep audit below).
@@ -84,7 +86,7 @@ rg -n 'claude_enrichment_queue|knowledge_node_claude_sessions|claude_session_par
   --glob '!.understand-anything/**' \
   crates/ brain/ scripts/
 
-# Offsets table — after Phase A rename, only historical mentions should remain
+# Offsets table — runtime code should use agentic_session_offsets (v22+)
 rg -n 'claude_session_offsets' crates/ brain/ docs/capture/
 
 # Frozen bench corpus DDL (expected until bench fixture bump)
@@ -121,7 +123,7 @@ Expected: no `claude_sessions` / `claude_enrichment_queue` / `knowledge_node_cla
 ## Rollback
 
 1. `mise run stop`
-2. Restore backup: `cp ~/.local/share/hippo/hippo.db.pre-v22.* ~/.local/share/hippo/hippo.db`
+2. Restore backup: `cp ~/.local/share/hippo/hippo.db.pre-v23.* ~/.local/share/hippo/hippo.db`
 3. Deploy previous hippo binary/brain build (schema v21)
 4. `mise run start && hippo doctor`
 

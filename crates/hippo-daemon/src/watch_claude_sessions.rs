@@ -45,7 +45,7 @@ const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(30);
 const BACKOFF_DURATION: Duration = Duration::from_secs(60);
 const PER_FILE_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// Per-file tracking state (in memory; persisted to `claude_session_offsets`).
+/// Per-file tracking state (in memory; persisted to `agentic_session_offsets`).
 #[derive(Default)]
 struct FileState {
     byte_offset: u64,
@@ -56,11 +56,11 @@ struct FileState {
     cooldown_until: Option<Instant>,
 }
 
-/// Load all saved offsets from `claude_session_offsets` into memory.
+/// Load all saved offsets from `agentic_session_offsets` into memory.
 fn load_offsets(conn: &Connection) -> Result<HashMap<PathBuf, FileState>> {
     let mut stmt = conn.prepare(
         "SELECT path, byte_offset, inode, device, size_at_last_read
-         FROM claude_session_offsets",
+         FROM agentic_session_offsets",
     )?;
     let rows = stmt.query_map([], |row| {
         Ok((
@@ -89,12 +89,12 @@ fn load_offsets(conn: &Connection) -> Result<HashMap<PathBuf, FileState>> {
     Ok(map)
 }
 
-/// Persist a file's offset to `claude_session_offsets`.
+/// Persist a file's offset to `agentic_session_offsets`.
 fn save_offset(conn: &Connection, path: &Path, state: &FileState) -> Result<()> {
     let now_ms = Utc::now().timestamp_millis();
     let session_id = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
     conn.execute(
-        "INSERT INTO claude_session_offsets
+        "INSERT INTO agentic_session_offsets
              (path, session_id, byte_offset, inode, device, size_at_last_read, updated_at)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
          ON CONFLICT(path) DO UPDATE SET
