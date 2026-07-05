@@ -474,8 +474,11 @@ pub fn check_invariants(rows: &[SourceHealthRow], now_ms: i64) -> Vec<InvariantV
 
     // I-4: Browser round-trip (stale events while extension heartbeat is fresh)
     // BT-16: suppressed during bench pause window.
-    if !bench_paused && let Some(v) = check_i4_browser_roundtrip(&by_source, now_ms) {
-        violations.push(v);
+    if !bench_paused {
+        let firefox_running = crate::browser_health::firefox_running();
+        if let Some(v) = check_i4_browser_roundtrip(&by_source, now_ms, firefox_running) {
+            violations.push(v);
+        }
     }
 
     // I-5: Drop visibility — architectural / OTel counter; no source_health proxy.
@@ -600,16 +603,18 @@ pub fn check_i2_claude_session_proxy(
 pub fn check_i4_browser_roundtrip(
     by_source: &std::collections::HashMap<&str, &SourceHealthRow>,
     now_ms: i64,
+    firefox_running: bool,
 ) -> Option<InvariantViolation> {
     let row = by_source.get("browser")?;
+
+    if !firefox_running {
+        return None;
+    }
 
     // Skip if the source has never delivered an event.
     let last_event = row.last_event_ts?;
 
     let heartbeat = row.last_heartbeat_ts?;
-    if !crate::browser_health::firefox_running() {
-        return None;
-    }
     if !crate::browser_health::browser_heartbeat_fresh(heartbeat, now_ms) {
         return None;
     }
@@ -1603,7 +1608,7 @@ mod tests {
             ..blank_row("browser")
         };
         let rows = vec![row];
-        let result = check_i4_browser_roundtrip(&by_source(&rows), NOW);
+        let result = check_i4_browser_roundtrip(&by_source(&rows), NOW, true);
         assert!(result.is_some());
         let v = result.unwrap();
         assert_eq!(v.invariant_id, "I-4");
@@ -1620,7 +1625,7 @@ mod tests {
         };
         let rows = vec![row];
         assert!(
-            check_i4_browser_roundtrip(&by_source(&rows), NOW).is_none(),
+            check_i4_browser_roundtrip(&by_source(&rows), NOW, true).is_none(),
             "browser liveness should tolerate the normal 5 minute probe cadence"
         );
     }
@@ -1633,7 +1638,7 @@ mod tests {
             ..blank_row("browser")
         };
         let rows = vec![row];
-        assert!(check_i4_browser_roundtrip(&by_source(&rows), NOW).is_none());
+        assert!(check_i4_browser_roundtrip(&by_source(&rows), NOW, true).is_none());
     }
 
     #[test]
@@ -1645,7 +1650,7 @@ mod tests {
         };
         let rows = vec![row];
         assert!(
-            check_i4_browser_roundtrip(&by_source(&rows), NOW).is_none(),
+            check_i4_browser_roundtrip(&by_source(&rows), NOW, true).is_none(),
             "stale heartbeat means extension is not connected — I-4 must not fire"
         );
     }
