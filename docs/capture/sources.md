@@ -48,7 +48,9 @@ The watcher's resume state lives in `claude_session_offsets` per file. Content-h
 
 The Firefox extension is a TypeScript build (`extension/firefox/`); the daemon-side adapter is `native_messaging.rs`. The extension only captures from allow-listed domains (`[browser.allowlist]` in `config.toml`). Page content is extracted via Mozilla Readability on page departure — full readable article text plus URL, title, dwell time, and scroll depth. URL query parameters listed in `[browser.url_redaction]` are stripped before storage.
 
-The native messaging manifest at `~/Library/Application Support/Mozilla/NativeMessagingHosts/hippo-native-messaging.json` is installed by `hippo daemon install --force`.
+**Permanent install (survives Firefox restarts):** `mise run install:ext` builds the extension, packages it as an unsigned `.xpi`, and side-loads it into the Firefox Developer Edition profile at `~/Library/Application Support/Firefox/Profiles/*.dev-edition-default/extensions/hippo-browser@local.xpi`. Requires `xpinstall.signatures.required = false` in `about:config` (Dev Edition only). `mise run install` invokes this automatically. `hippo doctor` verifies the `.xpi` is present when a Dev Edition profile exists. Use `about:debugging → Load Temporary Add-on` only for active extension development — those loads are cleared on restart.
+
+The native messaging manifest at `~/Library/Application Support/Mozilla/NativeMessagingHosts/hippo_daemon.json` is installed by `hippo daemon install --force`.
 
 ### Workflow runs (GitHub Actions)
 

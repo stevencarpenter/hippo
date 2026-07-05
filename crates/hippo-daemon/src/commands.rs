@@ -1216,8 +1216,8 @@ pub async fn handle_doctor(config: &HippoConfig, explain: bool) -> Result<()> {
     // Check Claude session hook
     check_claude_session_hook(config);
 
-    // Check Firefox extension build + Native Messaging manifest
-    check_firefox_extension();
+    // Check Firefox extension build + Native Messaging manifest + permanent install
+    fail_count += check_firefox_extension();
 
     // Per-source capture-freshness audit (one line per raw data source
     // hippo is supposed to collect). Uses day-level thresholds — complements
@@ -1776,8 +1776,11 @@ fn print_browser_staleness_explain(
                 "     CAUSE:  Firefox is running but the extension has never heartbeated the daemon"
             );
             println!(
-                "     FIX:    Load the extension (about:debugging → Load Temporary Add-on → extension/firefox/manifest.json); \
+                "     FIX:    Install the extension permanently (`mise run install:ext`; survives restarts); \
                  verify NM manifest via `hippo daemon install --force`"
+            );
+            println!(
+                "     DEV:    about:debugging → Load Temporary Add-on is for active extension development only"
             );
         }
         BrowserExtensionConnectivity::Disconnected => {
@@ -1785,8 +1788,10 @@ fn print_browser_staleness_explain(
                 "     CAUSE:  Extension heartbeat is stale — native messaging or the daemon socket may be wedged"
             );
             println!(
-                "     FIX:    Restart Firefox; run `hippo probe --source browser`; tail -f ~/.local/share/hippo/daemon.stderr.log"
+                "     FIX:    Restart Firefox; run `hippo probe --source browser`; \
+                 if the extension was loaded via about:debugging, run `mise run install:ext` for a permanent install"
             );
+            println!("     LOGS:   tail -f ~/.local/share/hippo/daemon.stderr.log");
         }
         BrowserExtensionConnectivity::Connected => {
             if probe_ok == Some(0) {
@@ -4001,14 +4006,17 @@ fn expected_claude_session_hook_path(data_dir: &std::path::Path) -> Option<PathB
         .map(|brain_dir| brain_dir.join("shell/claude-session-hook.sh"))
 }
 
-/// Check that the Firefox extension's compiled dist/ bundle exists and the
-/// Native Messaging manifest is installed.
+/// Check that the Firefox extension's compiled dist/ bundle exists, the
+/// Native Messaging manifest is installed, and the extension is side-loaded
+/// into the Firefox Developer Edition profile (survives restarts).
 ///
 /// The extension's `manifest.json` references `dist/background.js` and
 /// `dist/content.js`, but `dist/` is gitignored — it must be produced by
 /// `mise run build:ext:dist`. If dist/ is missing the extension loads cleanly
 /// as a temporary add-on in Firefox but captures nothing (silent no-op).
-fn check_firefox_extension() {
+fn check_firefox_extension() -> u32 {
+    let mut fail_count = 0_u32;
+
     // Native Messaging manifest — the bridge between Firefox and hippo-daemon.
     let nm_manifest = dirs::home_dir().map(|h| {
         h.join("Library/Application Support/Mozilla/NativeMessagingHosts/hippo_daemon.json")
@@ -4021,9 +4029,12 @@ fn check_firefox_extension() {
                 path.display()
             );
             println!("     Fix: hippo daemon install --force");
+            fail_count += 1;
         }
         None => println!("[--] Firefox Native Messaging check skipped (no home dir)"),
     }
+
+    fail_count += check_firefox_extension_permanent_install();
 
     // Extension dist/ files. We locate the repo via the canonical path of the
     // currently running binary — typically `<repo>/target/release/hippo`, with
@@ -4031,19 +4042,55 @@ fn check_firefox_extension() {
     // layout, skip rather than false-alarm.
     let Some(repo_root) = repo_root_from_current_exe() else {
         println!("[--] Firefox extension dist/ check skipped (could not locate repo root)");
-        return;
+        return fail_count;
     };
-    check_firefox_extension_dist_at(&repo_root.join("extension/firefox"));
+    fail_count += check_firefox_extension_dist_at(&repo_root.join("extension/firefox"));
+    fail_count
 }
 
-fn check_firefox_extension_dist_at(ext_dir: &std::path::Path) {
+/// Verify `mise run install:ext` has side-loaded the unsigned .xpi into the
+/// Firefox Developer Edition profile.
+fn check_firefox_extension_permanent_install() -> u32 {
+    let Some(home) = dirs::home_dir() else {
+        println!("[--] Firefox extension install  skipped (no home dir)");
+        return 0;
+    };
+    let Some(profile) = browser_health::firefox_dev_edition_profile_dir(&home) else {
+        println!("[--] Firefox extension install  no Dev Edition profile");
+        return 0;
+    };
+    let xpi = browser_health::firefox_extension_xpi_path(&profile);
+    if browser_health::firefox_extension_xpi_installed(&profile) {
+        let prefs = profile.join("prefs.js");
+        if prefs.is_file() && !browser_health::firefox_unsigned_install_allowed(&prefs) {
+            println!(
+                "[WW] Firefox extension installed but xpinstall.signatures.required is not false"
+            );
+            println!("     Firefox may delete the unsigned .xpi on restart.");
+            println!("     Fix: about:config → xpinstall.signatures.required = false");
+        } else {
+            println!(
+                "[OK] Firefox extension installed permanently ({})",
+                xpi.display()
+            );
+        }
+        0
+    } else {
+        println!("[!!] Firefox extension not permanently installed");
+        println!("     Temporary about:debugging loads do not survive Firefox restarts.");
+        println!("     Fix: mise run install:ext");
+        1
+    }
+}
+
+fn check_firefox_extension_dist_at(ext_dir: &std::path::Path) -> u32 {
     if !ext_dir.exists() {
         // Not fatal: release installs won't have the repo extension dir.
         println!(
             "[--] Firefox extension dir not found at {}",
             ext_dir.display()
         );
-        return;
+        return 0;
     }
     let required = ["dist/background.js", "dist/content.js"];
     let missing: Vec<&str> = required
@@ -4056,6 +4103,7 @@ fn check_firefox_extension_dist_at(ext_dir: &std::path::Path) {
             "[OK] Firefox extension dist/ built ({})",
             ext_dir.join("dist").display()
         );
+        0
     } else {
         println!(
             "[!!] Firefox extension dist/ missing: {}",
@@ -4063,6 +4111,7 @@ fn check_firefox_extension_dist_at(ext_dir: &std::path::Path) {
         );
         println!("     The extension loads but captures nothing when dist/ is absent.");
         println!("     Fix: mise run build:ext:dist");
+        1
     }
 }
 
@@ -4364,7 +4413,10 @@ mod tests {
     fn test_check_firefox_extension_dist_at_handles_missing_ext_dir() {
         // Nonexistent path must not panic — release installs won't have it.
         let tmp = tempdir().unwrap();
-        check_firefox_extension_dist_at(&tmp.path().join("does-not-exist"));
+        assert_eq!(
+            check_firefox_extension_dist_at(&tmp.path().join("does-not-exist")),
+            0
+        );
     }
 
     #[tokio::test]
