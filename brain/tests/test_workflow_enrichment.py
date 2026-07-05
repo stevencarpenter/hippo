@@ -24,8 +24,7 @@ def enrichment_db(tmp_path: Path) -> str:
     conn = sqlite3.connect(db)
     conn.executescript(fixture.read_text())
 
-    # Need the full events + claude_sessions tables.
-    # The fixture may not have events/claude_sessions — add them if missing:
+    # Need events + agentic_sessions for co-temporal linking tests.
     conn.executescript("""
         CREATE TABLE IF NOT EXISTS events (
             id INTEGER PRIMARY KEY,
@@ -68,26 +67,6 @@ def enrichment_db(tmp_path: Path) -> str:
             knowledge_node_id INTEGER NOT NULL,
             event_id INTEGER NOT NULL,
             PRIMARY KEY (knowledge_node_id, event_id)
-        );
-        CREATE TABLE IF NOT EXISTS claude_sessions (
-            id INTEGER PRIMARY KEY,
-            session_id TEXT NOT NULL,
-            project_dir TEXT NOT NULL DEFAULT '',
-            cwd TEXT NOT NULL DEFAULT '',
-            segment_index INTEGER NOT NULL DEFAULT 0,
-            start_time INTEGER NOT NULL,
-            end_time INTEGER NOT NULL,
-            summary_text TEXT NOT NULL DEFAULT '',
-            message_count INTEGER NOT NULL DEFAULT 0,
-            source_file TEXT NOT NULL DEFAULT '',
-            enriched INTEGER NOT NULL DEFAULT 0,
-            created_at INTEGER NOT NULL DEFAULT 0,
-            probe_tag TEXT DEFAULT NULL
-        );
-        CREATE TABLE IF NOT EXISTS knowledge_node_claude_sessions (
-            knowledge_node_id INTEGER NOT NULL,
-            claude_session_id INTEGER NOT NULL,
-            PRIMARY KEY (knowledge_node_id, claude_session_id)
         );
         CREATE TABLE IF NOT EXISTS agentic_sessions (
             id INTEGER PRIMARY KEY,
@@ -313,9 +292,7 @@ def test_enrich_one_async_rejects_invalid_field(enrichment_db):
 def test_enrich_one_async_links_agentic_sessions(enrichment_db):
     """enrich_one_async links co-temporal agentic sessions.
 
-    Post-v18 the co-temporal session read targets `agentic_sessions` and the
-    link write targets `knowledge_node_agentic_sessions`; the frozen
-    `knowledge_node_claude_sessions` table must NOT be written.
+    Post-v23 enrichment links co-temporal rows via `knowledge_node_agentic_sessions`.
     """
     conn = sqlite3.connect(enrichment_db)
     conn.execute("""
@@ -338,8 +315,6 @@ def test_enrich_one_async_links_agentic_sessions(enrichment_db):
     conn = sqlite3.connect(enrichment_db)
     link = conn.execute("SELECT agentic_session_id FROM knowledge_node_agentic_sessions").fetchone()
     assert link is not None and link[0] == 200
-    # The frozen legacy link table must not be written.
-    assert conn.execute("SELECT COUNT(*) FROM knowledge_node_claude_sessions").fetchone()[0] == 0
     conn.close()
 
 

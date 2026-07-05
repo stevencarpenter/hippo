@@ -203,8 +203,8 @@ CREATE TABLE knowledge_nodes (
     created_at INTEGER NOT NULL
 );
 CREATE TABLE knowledge_node_events (knowledge_node_id INTEGER, event_id INTEGER);
-CREATE TABLE knowledge_node_claude_sessions (
-    knowledge_node_id INTEGER, claude_session_id INTEGER
+CREATE TABLE knowledge_node_agentic_sessions (
+    knowledge_node_id INTEGER, agentic_session_id INTEGER
 );
 CREATE TABLE knowledge_node_browser_events (
     knowledge_node_id INTEGER, browser_event_id INTEGER
