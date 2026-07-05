@@ -47,12 +47,6 @@ def resolve_limit(limit: int, *, default: int = 20) -> int:
     return min(limit, MAX_LIMIT)
 
 
-def clamp_limit(limit: int) -> int:
-    if limit <= 0:
-        return 0
-    return min(limit, MAX_LIMIT)
-
-
 def _truncate(text: str, max_len: int = MAX_EXCERPT_CHARS) -> str:
     if len(text) <= max_len:
         return text
