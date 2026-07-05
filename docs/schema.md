@@ -46,6 +46,7 @@ The Rust migration runner at `storage.rs::open_db` walks every version from the 
 | **v19** | Add read-only Claude Code auto-memory ingestion. | Adds document identity, immutable revisions, deterministic chunks, enrichment queue, and knowledge-node links. Seeds `source_health.source = 'claude-auto-memory'`. The migration is additive and idempotent; no existing rows are rewritten. | The brain and daemon require v19. Disable `[auto_memory]` to stop ingestion without removing stored projections. |
 | **v20** | Auto-memory taxonomy tables. | `memory_categories`, `memory_index_links`, and related taxonomy DDL via `AUTO_MEMORY_TAXONOMY_SCHEMA`. | Category/index metadata for auto-memory retrieval; additive only. |
 | **v21** | Auto-memory watcher source_health identity. | Seeds `source_health.source = 'auto-memory-watcher'` via `INSERT OR IGNORE`. | Watcher liveness for the auto-memory ingest path joins the capture-health family. |
+| **v22** | Watcher resume-state rename (SNUG-115 Phase A). | Creates `agentic_session_offsets` (same columns as legacy `claude_session_offsets`) and `INSERT OR IGNORE` copies existing rows. **Does not drop** legacy tables. | Claude FS watcher and backfill CLI read/write `agentic_session_offsets`. Legacy `claude_session_offsets` remains frozen on upgraded DBs until Phase B. |
 
 ## Reading the live schema
 
@@ -71,7 +72,8 @@ sqlite3 ~/.local/share/hippo/hippo.db "PRAGMA user_version;"
 | `sessions` | One row per zsh session (start time, hostname, shell, user). | Daemon at session start |
 | `agentic_sessions` | **Live session store** for all four harnesses. One row per `(session_id, harness, segment_index)`; `harness` ∈ {`claude-code`, `codex`, `cursor`, `opencode`}. Holds segment-derived summary, tool calls / user prompts JSON, message count, content hashes. | `claude_session.rs::insert_segments`, `codex_session.rs::upsert_segment_tx`, `cursor_session.rs::upsert_segment_tx`, `claude_sessions.py` write path |
 | `claude_sessions` | **FROZEN (legacy).** One row per `(session_id, segment_index)`. Backfilled into `agentic_sessions` at v18 (harness derived from `source_file`); still created by `schema.sql`, no longer written, dropped in v22 per [`capture/legacy-claude-tables-cutover.md`](capture/legacy-claude-tables-cutover.md). | (no live writer — frozen at v18) |
-| `claude_session_offsets` | Per-file FS-watcher resume state (byte_offset, inode, device). | `watch_claude_sessions.rs::process_file` |
+| `agentic_session_offsets` | Per-file FS-watcher resume state (byte_offset, inode, device). | `watch_claude_sessions.rs::process_file` |
+| `claude_session_offsets` | **FROZEN (legacy).** Pre-v22 name for watcher resume state; copied to `agentic_session_offsets` at v22. Still present on upgraded DBs until Phase B drop. | (no live writer — frozen at v22) |
 | `browser_events` | Firefox-extension visits with Readability-extracted main text, dwell, scroll depth. | `storage.rs::insert_browser_event` |
 | `workflow_runs` / `_jobs` / `_annotations` / `_log_excerpts` | GitHub Actions ingest. | `gh_poll.rs::run_once` |
 | `sha_watchlist` | Per-(repo, sha) follow flag for in-flight CI runs. Drives the gh-poller's "wait for this SHA's runs to settle" loop. | `gh_poll.rs` |

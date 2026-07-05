@@ -42,7 +42,7 @@ Two distinct sources write to `claude_sessions`:
 1. The **FS watcher** (`com.hippo.claude-session-watcher`, KeepAlive=true) is the canonical real-time path. FSEvents on `~/.claude/projects/**/*.jsonl` triggers `extract_segments`; segments are upserted via `(session_id, segment_index)` ON CONFLICT. The legacy per-session tmux tailer was deleted in T-8 (PR #89); the `SessionStart` hook is now a no-op debug log.
 2. **Manual recovery** via `hippo ingest claude-session <path>` does a one-shot batch import. Useful when the watcher is wedged or for backfilling a single file.
 
-The watcher's resume state lives in `claude_session_offsets` per file. Content-hash dedup gates re-enrichment: a segment whose content hasn't changed since last enrichment is not re-enqueued. (See [`anti-patterns.md`](anti-patterns.md) AP-12 for the historical bug class that motivated content-hash dedup.)
+The watcher's resume state lives in `agentic_session_offsets` per file. Content-hash dedup gates re-enrichment: a segment whose content hasn't changed since last enrichment is not re-enqueued. (See [`anti-patterns.md`](anti-patterns.md) AP-12 for the historical bug class that motivated content-hash dedup.)
 
 ### Browser
 

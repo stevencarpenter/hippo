@@ -47,13 +47,14 @@ longer written, dropped in a later unification step.
 v18→v19 adds the read-only Claude auto-memory tables: document,
 revision, chunk, enrichment queue, and knowledge-node link.
 v19→v20 adds auto-memory category provenance and MEMORY.md index links.
+v21→v22 renames watcher resume state to `agentic_session_offsets` (SNUG-115 Phase A).
 """
 
 from __future__ import annotations
 
 import sqlite3
 
-EXPECTED_SCHEMA_VERSION: int = 21
+EXPECTED_SCHEMA_VERSION: int = 22
 
 # Versions brain can read without erroring.
 #

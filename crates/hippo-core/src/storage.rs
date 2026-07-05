@@ -19,7 +19,7 @@ const SCHEMA: &str = concat!(
 /// startup code (e.g. the brain handshake) can cross-check without
 /// re-declaring the value. Keep in sync with
 /// `brain/src/hippo_brain/schema_version.py::EXPECTED_SCHEMA_VERSION`.
-pub const EXPECTED_VERSION: i64 = 21;
+pub const EXPECTED_VERSION: i64 = 22;
 
 /// Idempotent v18→v19 auto-memory DDL (same file as fresh-install assembly).
 const AUTO_MEMORY_SCHEMA: &str = include_str!("schema/auto_memory.sql");
@@ -1455,6 +1455,30 @@ pub fn open_db(path: &Path) -> Result<Connection> {
             )?;
         }
         conn.execute_batch("PRAGMA user_version = 21;")?;
+    }
+
+    // v21→v22: rename watcher resume state to harness-neutral table (SNUG-115 Phase A).
+    if (1..22).contains(&version) {
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS agentic_session_offsets (
+                path              TEXT    PRIMARY KEY,
+                session_id        TEXT,
+                byte_offset       INTEGER NOT NULL DEFAULT 0,
+                inode             INTEGER,
+                device            INTEGER,
+                size_at_last_read INTEGER NOT NULL DEFAULT 0,
+                updated_at        INTEGER NOT NULL
+             ) STRICT;",
+        )?;
+        if table_exists(&conn, "claude_session_offsets")? {
+            conn.execute_batch(
+                "INSERT OR IGNORE INTO agentic_session_offsets
+                    (path, session_id, byte_offset, inode, device, size_at_last_read, updated_at)
+                 SELECT path, session_id, byte_offset, inode, device, size_at_last_read, updated_at
+                 FROM claude_session_offsets;",
+            )?;
+        }
+        conn.execute_batch("PRAGMA user_version = 22;")?;
     } else if version != 0 && version != EXPECTED_VERSION {
         anyhow::bail!(
             "DB schema version mismatch: expected {}, found {}. \
@@ -3974,6 +3998,64 @@ mod tests {
             )
             .unwrap();
         assert!(links_exists);
+    }
+
+    #[test]
+    fn test_migrate_v21_to_v22_copies_claude_session_offsets_to_agentic() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("offsets-v21.db");
+        let conn = Connection::open(&db).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE claude_session_offsets (
+                path              TEXT    PRIMARY KEY,
+                session_id        TEXT,
+                byte_offset       INTEGER NOT NULL DEFAULT 0,
+                inode             INTEGER,
+                device            INTEGER,
+                size_at_last_read INTEGER NOT NULL DEFAULT 0,
+                updated_at        INTEGER NOT NULL
+             ) STRICT;
+             INSERT INTO claude_session_offsets
+                (path, session_id, byte_offset, inode, device, size_at_last_read, updated_at)
+             VALUES ('/tmp/sess.jsonl', 'sess-1', 512, 42, 7, 512, 1000);
+             PRAGMA user_version = 21;",
+        )
+        .unwrap();
+        drop(conn);
+
+        let conn = open_db(&db).unwrap();
+        let version: i64 = conn
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, EXPECTED_VERSION);
+
+        let agentic_exists: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='agentic_session_offsets')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(agentic_exists);
+
+        let (size, session_id): (i64, String) = conn
+            .query_row(
+                "SELECT size_at_last_read, session_id FROM agentic_session_offsets WHERE path = ?1",
+                ["/tmp/sess.jsonl"],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(size, 512);
+        assert_eq!(session_id, "sess-1");
+
+        let legacy_exists: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='claude_session_offsets')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(legacy_exists, "legacy table kept frozen until Phase B");
     }
 
     /// REGRESSION (BT-29 schema gap, 2026-05-04): the bench's corpus init

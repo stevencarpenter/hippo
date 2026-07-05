@@ -88,7 +88,7 @@ macOS FSEvents notifies com.hippo.claude-session-watcher (LaunchAgent)
        |
        v
 crates/hippo-daemon/src/watch_claude_sessions.rs::process_file
-       |  -- reads from claude_session_offsets per file (resume state)
+       |  -- reads from agentic_session_offsets per file (resume state)
        |  -- re-runs extract_segments on every growth event (idempotent)
        v
 crates/hippo-daemon/src/claude_session.rs::extract_segments
