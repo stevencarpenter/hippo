@@ -53,10 +53,6 @@ def _agentic_link_target(
         conn, "agentic_sessions"
     ):
         return "knowledge_node_agentic_sessions", "agentic_session_id", "agentic_sessions"
-    if _table_exists(conn, "knowledge_node_claude_sessions") and _table_exists(
-        conn, "claude_sessions"
-    ):
-        return "knowledge_node_claude_sessions", "claude_session_id", "claude_sessions"
     return None, None, None
 
 
@@ -468,61 +464,35 @@ def _search_claude_events(
     since_val = since_ms if since_ms else None
     project_pat = f"%{project}%" if project else None
     branch_val = branch or None
-    if _table_exists(conn, "agentic_sessions"):
-        rows = conn.execute(
-            """
-            SELECT id, start_time, summary_text, cwd, git_branch, message_count,
-                   tool_calls_json
-            FROM agentic_sessions
-            WHERE probe_tag IS NULL
-              AND harness IN ('claude-code', 'opencode', 'codex', 'cursor')
-              AND (? IS NULL OR summary_text LIKE ?)
-              AND (? IS NULL OR start_time >= ?)
-              AND (? IS NULL OR cwd LIKE ?)
-              AND (? IS NULL OR git_branch = ?)
-            ORDER BY start_time DESC
-            LIMIT ?
-            """,
-            (
-                query_pat,
-                query_pat,
-                since_val,
-                since_val,
-                project_pat,
-                project_pat,
-                branch_val,
-                branch_val,
-                limit,
-            ),
-        ).fetchall()
-    elif _table_exists(conn, "claude_sessions"):
-        rows = conn.execute(
-            """
-            SELECT id, start_time, summary_text, cwd, git_branch, message_count,
-                   tool_calls_json
-            FROM claude_sessions
-            WHERE probe_tag IS NULL
-              AND (? IS NULL OR summary_text LIKE ?)
-              AND (? IS NULL OR start_time >= ?)
-              AND (? IS NULL OR cwd LIKE ?)
-              AND (? IS NULL OR git_branch = ?)
-            ORDER BY start_time DESC
-            LIMIT ?
-            """,
-            (
-                query_pat,
-                query_pat,
-                since_val,
-                since_val,
-                project_pat,
-                project_pat,
-                branch_val,
-                branch_val,
-                limit,
-            ),
-        ).fetchall()
-    else:
+    if not _table_exists(conn, "agentic_sessions"):
         return []
+
+    rows = conn.execute(
+        """
+        SELECT id, start_time, summary_text, cwd, git_branch, message_count,
+               tool_calls_json
+        FROM agentic_sessions
+        WHERE probe_tag IS NULL
+          AND harness IN ('claude-code', 'opencode', 'codex', 'cursor')
+          AND (? IS NULL OR summary_text LIKE ?)
+          AND (? IS NULL OR start_time >= ?)
+          AND (? IS NULL OR cwd LIKE ?)
+          AND (? IS NULL OR git_branch = ?)
+        ORDER BY start_time DESC
+        LIMIT ?
+        """,
+        (
+            query_pat,
+            query_pat,
+            since_val,
+            since_val,
+            project_pat,
+            project_pat,
+            branch_val,
+            branch_val,
+            limit,
+        ),
+    ).fetchall()
 
     results = []
     for row in rows:
@@ -663,15 +633,6 @@ def list_projects_impl(conn: sqlite3.Connection, limit: int = 100) -> list[dict]
             WHERE project_dir IS NOT NULL AND project_dir != ''
               AND probe_tag IS NULL
               AND harness IN ('claude-code', 'codex', 'cursor', 'opencode')
-            GROUP BY project_dir
-        """
-    elif _table_exists(conn, "claude_sessions"):
-        session_project_sql = """
-            SELECT NULL AS git_repo, project_dir AS cwd_root,
-                   MAX(start_time) AS last_seen
-            FROM claude_sessions
-            WHERE project_dir IS NOT NULL AND project_dir != ''
-              AND probe_tag IS NULL
             GROUP BY project_dir
         """
     else:
