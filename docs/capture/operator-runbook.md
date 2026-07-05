@@ -109,6 +109,35 @@ Pick the first `[!!]` failure. The CAUSE/FIX/DOC block will tell you which file 
 - `[!!] watchdog heartbeat: 4m ago (FAIL)` → I-7 violation. Watchdog crashed or its launchd job is missing. Check `launchctl list | grep hippo`. If `com.hippo.watchdog` is missing, run `hippo daemon install --force`.
 - `[!!] fallback files: 5 files > 24h (recovery broken)` → I-9 violation. Daemon is up but old fallback files under `~/.local/share/hippo/fallback/` aren't being drained. Check the daemon's launchd logs (`~/.local/share/hippo/daemon.stderr.log` and the rolling `daemon.YYYY-MM-DD.log` files written by the tracing appender) for write errors.
 
+### "Browser capture is idle or doctor shows browser [!!]"
+
+Firefox Developer Edition is the supported browser. Capture requires both the extension and the native-messaging host.
+
+```bash
+# Snapshot + remediation (browser lines show extension connectivity + last_error)
+hippo doctor --explain
+
+# One-shot synthetic round-trip
+hippo probe --source browser
+```
+
+**Permanent extension install (survives restarts):**
+
+1. One-time in Firefox Dev Edition: `about:config` → `xpinstall.signatures.required` = `false`
+2. From the hippo repo: `mise run install:ext` (also runs as part of `mise run install`)
+3. Restart Firefox if it was running during install
+4. Verify: `hippo doctor` should show `[OK] Firefox extension installed permanently`
+
+`about:debugging → Load Temporary Add-on` is for active extension development only — those loads are cleared when Firefox restarts and will fail I-4 / doctor browser checks after a restart until you run `mise run install:ext` again.
+
+**Native messaging host:**
+
+```bash
+hippo daemon install --force   # writes ~/Library/Application Support/Mozilla/NativeMessagingHosts/hippo_daemon.json
+```
+
+See [`extension/firefox/README.md`](../../extension/firefox/README.md) and the Browser section in [`sources.md`](sources.md).
+
 ### "Brain queue is backing up"
 
 Capture and enrichment are decoupled (I-10). A backed-up brain queue is an enrichment problem, not a capture problem; events are still landing.
