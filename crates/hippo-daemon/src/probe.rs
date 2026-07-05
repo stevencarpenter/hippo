@@ -22,6 +22,7 @@ const POLL_INTERVAL_MS: u64 = 200;
 /// Run one or all probes, then write results to `source_health`.
 ///
 /// `source` is one of `"shell"`, `"claude-tool"`, `"agentic-session-claude"`,
+/// `"agentic-session-opencode"`, `"agentic-session-codex"`,
 /// `"agentic-session-cursor"`, `"browser"`, or `None` to run all in sequence.
 pub async fn run(config: &HippoConfig, source: Option<&str>) -> Result<()> {
     let run_all = source.is_none();
@@ -98,6 +99,42 @@ pub async fn run(config: &HippoConfig, source: Option<&str>) -> Result<()> {
         }
     }
 
+    if run_all || source == Some("agentic-session-opencode") {
+        match probe_opencode_session(config) {
+            Ok((ok, lag)) => {
+                println!(
+                    "[probe] agentic-session-opencode: {} (lag={}ms)",
+                    if ok { "OK" } else { "FAIL" },
+                    lag.map(|l| l.to_string()).as_deref().unwrap_or("N/A")
+                );
+                write_probe_result(config, "agentic-session-opencode", ok, lag)?;
+            }
+            Err(e) => {
+                warn!("agentic-session-opencode probe error: {e:#}");
+                println!("[probe] agentic-session-opencode: ERROR — {e:#}");
+                write_probe_result(config, "agentic-session-opencode", false, None)?;
+            }
+        }
+    }
+
+    if run_all || source == Some("agentic-session-codex") {
+        match probe_codex_session(config) {
+            Ok((ok, lag)) => {
+                println!(
+                    "[probe] agentic-session-codex: {} (lag={}ms)",
+                    if ok { "OK" } else { "FAIL" },
+                    lag.map(|l| l.to_string()).as_deref().unwrap_or("N/A")
+                );
+                write_probe_result(config, "agentic-session-codex", ok, lag)?;
+            }
+            Err(e) => {
+                warn!("agentic-session-codex probe error: {e:#}");
+                println!("[probe] agentic-session-codex: ERROR — {e:#}");
+                write_probe_result(config, "agentic-session-codex", false, None)?;
+            }
+        }
+    }
+
     if run_all || source == Some("browser") {
         match probe_browser(config).await {
             Ok((ok, lag)) => {
@@ -122,12 +159,14 @@ pub async fn run(config: &HippoConfig, source: Option<&str>) -> Result<()> {
             "shell"
                 | "claude-tool"
                 | "agentic-session-claude"
+                | "agentic-session-opencode"
+                | "agentic-session-codex"
                 | "browser"
                 | "agentic-session-cursor"
         )
     {
         anyhow::bail!(
-            "unknown probe source '{}'; valid: shell, claude-tool, agentic-session-claude, browser, agentic-session-cursor",
+            "unknown probe source '{}'; valid: shell, claude-tool, agentic-session-claude, agentic-session-opencode, agentic-session-codex, browser, agentic-session-cursor",
             s
         );
     }
@@ -481,6 +520,227 @@ fn probe_cursor_session(config: &HippoConfig) -> Result<(bool, Option<i64>)> {
         }
         // Segment-bearing transcript with no row: genuine FAIL.
         warn!("cursor-session probe: no row for {}", path_str);
+        all_ok = false;
+    }
+    Ok((all_ok, latest_lag))
+}
+
+/// Settle floor for Codex rollout probe eligibility, in ms. Mirrors cursor.
+const CODEX_PROBE_SETTLE_MS: i64 = 90_000;
+
+/// Outer edge of the Codex rollout probe eligibility window, in ms.
+const CODEX_PROBE_WINDOW_MS: i64 = 600_000;
+
+/// Codex-session probe: assertion-based, mirrors `probe_cursor_session`.
+///
+/// For every `[codex] session_roots/**/rollout-*.jsonl` whose age falls in
+/// `[settle_ms, CODEX_PROBE_WINDOW_MS]`, assert a matching `agentic_sessions`
+/// row exists with `harness = 'codex'` — but only when `extract_segments`
+/// yields ≥1 segment (zero-segment rollouts correctly have no row).
+fn probe_codex_session(config: &HippoConfig) -> Result<(bool, Option<i64>)> {
+    if !config.codex.enabled {
+        info!("codex-session probe: codex ingestion disabled — trivial pass");
+        return Ok((true, None));
+    }
+    let now_ms = chrono::Utc::now().timestamp_millis();
+    let window_ms: i64 = CODEX_PROBE_WINDOW_MS;
+    let settle_ms: i64 = CODEX_PROBE_SETTLE_MS.min(window_ms / 2);
+
+    let mut recent: Vec<(std::path::PathBuf, i64)> = Vec::new();
+    for root in &config.codex.session_roots {
+        if !root.is_dir() {
+            continue;
+        }
+        for entry in walkdir::WalkDir::new(root)
+            .into_iter()
+            .filter_map(|e| e.ok())
+        {
+            let path = entry.path();
+            let is_rollout = path.extension().map(|e| e == "jsonl").unwrap_or(false)
+                && path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .map(|n| n.starts_with("rollout-"))
+                    .unwrap_or(false);
+            if !is_rollout {
+                continue;
+            }
+            let Some(mtime_ms) = entry.metadata().ok().and_then(|m| {
+                m.modified().ok().and_then(|t| {
+                    t.duration_since(std::time::UNIX_EPOCH)
+                        .ok()
+                        .map(|d| d.as_millis() as i64)
+                })
+            }) else {
+                continue;
+            };
+            let age = now_ms - mtime_ms;
+            if age >= settle_ms && age <= window_ms {
+                recent.push((path.to_path_buf(), mtime_ms));
+            }
+        }
+    }
+
+    if recent.is_empty() {
+        info!("codex-session probe: no settled recent rollouts — trivial pass");
+        return Ok((true, None));
+    }
+
+    let db =
+        storage::open_db(&config.db_path()).context("cannot open DB for codex-session probe")?;
+    let mut redaction: Option<RedactionEngine> = None;
+    let mut all_ok = true;
+    let mut latest_lag: Option<i64> = None;
+    for (path, _mtime_ms) in &recent {
+        let path_str = path.to_string_lossy();
+        let count: i64 = db
+            .query_row(
+                "SELECT COUNT(*) FROM agentic_sessions
+                 WHERE source_file = ?1
+                   AND harness = 'codex'
+                   AND probe_tag IS NULL",
+                rusqlite::params![path_str.as_ref()],
+                |row| row.get(0),
+            )
+            .with_context(|| format!("failed to query agentic_sessions for {}", path_str))?;
+
+        if count > 0 {
+            let max_end: Option<i64> = db
+                .query_row(
+                    "SELECT MAX(end_time) FROM agentic_sessions
+                     WHERE source_file = ?1 AND harness = 'codex' AND probe_tag IS NULL",
+                    rusqlite::params![path_str.as_ref()],
+                    |row| row.get(0),
+                )
+                .with_context(|| {
+                    format!(
+                        "codex-session probe: failed to query MAX(end_time) for {}",
+                        path_str
+                    )
+                })?;
+            if let Some(end) = max_end {
+                let lag = now_ms - end;
+                latest_lag = Some(latest_lag.map_or(lag, |p: i64| p.max(lag)));
+            }
+            continue;
+        }
+
+        let engine = match redaction.as_ref() {
+            Some(r) => r,
+            None => {
+                redaction = Some(crate::load_redaction_engine(config));
+                redaction.as_ref().expect("just set above")
+            }
+        };
+        let segment_count = match crate::codex_session::extract_segments(path, engine) {
+            Ok(segs) => segs.len(),
+            Err(e) => {
+                warn!(
+                    "codex-session probe: cannot parse {} ({e:#}) — skipping",
+                    path_str
+                );
+                continue;
+            }
+        };
+        if segment_count == 0 {
+            info!(
+                "codex-session probe: {} yields no segments — no row expected, skipping",
+                path_str
+            );
+            continue;
+        }
+        warn!("codex-session probe: no row for {}", path_str);
+        all_ok = false;
+    }
+    Ok((all_ok, latest_lag))
+}
+
+/// Settle floor / window for opencode session probe eligibility, in ms.
+const OPENCODE_PROBE_SETTLE_MS: i64 = 90_000;
+const OPENCODE_PROBE_WINDOW_MS: i64 = 600_000;
+
+/// Opencode-session probe: for every opencode `session` row whose
+/// `time_updated` falls in the eligibility window, assert a matching
+/// `agentic_sessions` row exists with `harness = 'opencode'`.
+fn probe_opencode_session(config: &HippoConfig) -> Result<(bool, Option<i64>)> {
+    if !config.opencode.enabled {
+        info!("opencode-session probe: opencode ingestion disabled — trivial pass");
+        return Ok((true, None));
+    }
+    let db_path = &config.opencode.db_path;
+    if !db_path.exists() {
+        info!("opencode-session probe: opencode DB absent — trivial pass");
+        return Ok((true, None));
+    }
+
+    let now_ms = chrono::Utc::now().timestamp_millis();
+    let window_ms: i64 = OPENCODE_PROBE_WINDOW_MS;
+    let settle_ms: i64 = OPENCODE_PROBE_SETTLE_MS.min(window_ms / 2);
+    let min_updated = now_ms - window_ms;
+    let max_updated = now_ms - settle_ms;
+
+    let oc_conn = crate::opencode_session::open_opencode_db(db_path)
+        .with_context(|| format!("cannot open opencode DB at {}", db_path.display()))?;
+
+    let mut recent: Vec<(String, i64)> = Vec::new();
+    {
+        let mut stmt = oc_conn.prepare(
+            "SELECT id, time_updated FROM session
+             WHERE time_updated >= ?1 AND time_updated <= ?2
+             ORDER BY time_updated ASC",
+        )?;
+        let rows = stmt.query_map(rusqlite::params![min_updated, max_updated], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+        })?;
+        for row in rows {
+            recent.push(row?);
+        }
+    }
+
+    if recent.is_empty() {
+        info!("opencode-session probe: no settled recent sessions — trivial pass");
+        return Ok((true, None));
+    }
+
+    let db =
+        storage::open_db(&config.db_path()).context("cannot open DB for opencode-session probe")?;
+    let mut all_ok = true;
+    let mut latest_lag: Option<i64> = None;
+    for (session_id, time_updated) in &recent {
+        let count: i64 = db
+            .query_row(
+                "SELECT COUNT(*) FROM agentic_sessions
+                 WHERE session_id = ?1
+                   AND harness = 'opencode'
+                   AND probe_tag IS NULL
+                   AND end_time >= ?2",
+                rusqlite::params![session_id, time_updated - window_ms],
+                |row| row.get(0),
+            )
+            .with_context(|| {
+                format!("failed to query agentic_sessions for opencode session {session_id}")
+            })?;
+
+        if count > 0 {
+            let max_end: Option<i64> = db
+                .query_row(
+                    "SELECT MAX(end_time) FROM agentic_sessions
+                     WHERE session_id = ?1 AND harness = 'opencode' AND probe_tag IS NULL",
+                    rusqlite::params![session_id],
+                    |row| row.get(0),
+                )
+                .with_context(|| {
+                    format!(
+                        "opencode-session probe: failed to query MAX(end_time) for {session_id}"
+                    )
+                })?;
+            if let Some(end) = max_end {
+                let lag = now_ms - end;
+                latest_lag = Some(latest_lag.map_or(lag, |p: i64| p.max(lag)));
+            }
+            continue;
+        }
+        warn!("opencode-session probe: no row for session {session_id}");
         all_ok = false;
     }
     Ok((all_ok, latest_lag))
@@ -912,5 +1172,200 @@ mod tests {
             (30_000..120_000).contains(&lag),
             "lag ({lag}ms) should be ~60s (now - end_time)"
         );
+    }
+
+    fn codex_test_config(tmp: &Path, root: &Path) -> HippoConfig {
+        let mut config = crate::codex_session::test_config(tmp, &[root.to_path_buf()]);
+        config.codex.min_idle_secs = 0;
+        config
+    }
+
+    fn write_rollout(root: &Path, name: &str, body: &str, age: Duration) -> PathBuf {
+        std::fs::create_dir_all(root).unwrap();
+        let path = root.join(format!("{name}.jsonl"));
+        std::fs::write(&path, body).unwrap();
+        let mtime = SystemTime::now() - age;
+        filetime::set_file_mtime(&path, filetime::FileTime::from_system_time(mtime)).unwrap();
+        path
+    }
+
+    fn codex_fixture_body() -> String {
+        std::fs::read_to_string(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/codex/rollout-cli.jsonl"),
+        )
+        .unwrap()
+    }
+
+    fn ingest_codex(config: &HippoConfig) -> usize {
+        crate::codex_session::poll_tick(config).unwrap()
+    }
+
+    #[test]
+    fn codex_probe_trivial_pass_when_no_rollouts() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config = codex_test_config(tmp.path(), &tmp.path().join("empty"));
+        let (ok, lag) = super::probe_codex_session(&config).unwrap();
+        assert!(ok);
+        assert_eq!(lag, None);
+    }
+
+    #[test]
+    fn codex_probe_happy_path_in_window_with_row() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("roots");
+        let config = codex_test_config(tmp.path(), &root);
+        write_rollout(
+            &root,
+            "rollout-happy",
+            &codex_fixture_body(),
+            Duration::from_secs(180),
+        );
+        assert!(ingest_codex(&config) >= 1, "expected codex ingest");
+
+        let (ok, lag) = super::probe_codex_session(&config).unwrap();
+        assert!(ok);
+        assert!(lag.is_some());
+    }
+
+    #[test]
+    fn codex_probe_fails_when_expected_row_missing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("roots");
+        let config = codex_test_config(tmp.path(), &root);
+        write_rollout(
+            &root,
+            "rollout-missing",
+            &codex_fixture_body(),
+            Duration::from_secs(180),
+        );
+
+        let (ok, _) = super::probe_codex_session(&config).unwrap();
+        assert!(!ok);
+    }
+
+    #[test]
+    fn codex_probe_trivial_pass_when_disabled() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("roots");
+        let mut config = codex_test_config(tmp.path(), &root);
+        config.codex.enabled = false;
+        write_rollout(
+            &root,
+            "rollout-off",
+            &codex_fixture_body(),
+            Duration::from_secs(180),
+        );
+
+        let (ok, lag) = super::probe_codex_session(&config).unwrap();
+        assert!(ok);
+        assert_eq!(lag, None);
+    }
+
+    fn opencode_test_config(tmp: &Path, oc_db: &Path) -> HippoConfig {
+        let data = tmp.join("data");
+        std::fs::create_dir_all(&data).unwrap();
+        let mut config = HippoConfig::default();
+        config.storage.data_dir = data;
+        config.opencode.db_path = oc_db.to_path_buf();
+        config
+    }
+
+    fn init_opencode_db(path: &Path) -> rusqlite::Connection {
+        let conn = rusqlite::Connection::open(path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE session (
+                id TEXT PRIMARY KEY,
+                slug TEXT NOT NULL DEFAULT '',
+                title TEXT NOT NULL DEFAULT '',
+                directory TEXT NOT NULL,
+                parent_id TEXT,
+                agent TEXT,
+                model TEXT,
+                time_created INTEGER NOT NULL,
+                time_updated INTEGER NOT NULL,
+                summary_additions INTEGER,
+                summary_deletions INTEGER,
+                summary_files INTEGER,
+                summary_diffs TEXT
+            );",
+        )
+        .unwrap();
+        conn
+    }
+
+    fn insert_opencode_session(conn: &rusqlite::Connection, id: &str, time_updated: i64) {
+        conn.execute(
+            "INSERT INTO session
+               (id, slug, title, directory, time_created, time_updated)
+             VALUES (?1, 'slug', 'title', '/work/proj', ?2, ?2)",
+            rusqlite::params![id, time_updated],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn opencode_probe_trivial_pass_when_no_sessions() {
+        let tmp = tempfile::tempdir().unwrap();
+        let oc_db = tmp.path().join("opencode.db");
+        init_opencode_db(&oc_db);
+        let config = opencode_test_config(tmp.path(), &oc_db);
+        let (ok, lag) = super::probe_opencode_session(&config).unwrap();
+        assert!(ok);
+        assert_eq!(lag, None);
+    }
+
+    #[test]
+    fn opencode_probe_happy_path_in_window_with_row() {
+        let tmp = tempfile::tempdir().unwrap();
+        let oc_db = tmp.path().join("opencode.db");
+        let oc_conn = init_opencode_db(&oc_db);
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        let time_updated = now_ms - 180_000;
+        insert_opencode_session(&oc_conn, "sess-happy", time_updated);
+        drop(oc_conn);
+
+        let config = opencode_test_config(tmp.path(), &oc_db);
+        assert_eq!(
+            crate::opencode_session::poll_tick(&config).unwrap(),
+            1,
+            "expected one ingested opencode session"
+        );
+
+        let (ok, lag) = super::probe_opencode_session(&config).unwrap();
+        assert!(ok);
+        assert!(lag.is_some());
+    }
+
+    #[test]
+    fn opencode_probe_fails_when_expected_row_missing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let oc_db = tmp.path().join("opencode.db");
+        let oc_conn = init_opencode_db(&oc_db);
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        insert_opencode_session(&oc_conn, "sess-missing", now_ms - 180_000);
+        drop(oc_conn);
+
+        let config = opencode_test_config(tmp.path(), &oc_db);
+        let (ok, _) = super::probe_opencode_session(&config).unwrap();
+        assert!(!ok);
+    }
+
+    #[test]
+    fn opencode_probe_trivial_pass_when_disabled() {
+        let tmp = tempfile::tempdir().unwrap();
+        let oc_db = tmp.path().join("opencode.db");
+        let oc_conn = init_opencode_db(&oc_db);
+        insert_opencode_session(
+            &oc_conn,
+            "sess-off",
+            chrono::Utc::now().timestamp_millis() - 180_000,
+        );
+        drop(oc_conn);
+
+        let mut config = opencode_test_config(tmp.path(), &oc_db);
+        config.opencode.enabled = false;
+        let (ok, lag) = super::probe_opencode_session(&config).unwrap();
+        assert!(ok);
+        assert_eq!(lag, None);
     }
 }

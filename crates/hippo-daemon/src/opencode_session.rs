@@ -664,7 +664,7 @@ fn record_upsert_error(conn: &rusqlite::Connection, err: &anyhow::Error) {
 
 // --- Entry point ---
 
-fn open_opencode_db(db_path: &Path) -> Result<rusqlite::Connection> {
+pub(crate) fn open_opencode_db(db_path: &Path) -> Result<rusqlite::Connection> {
     // Read-only open of opencode's own DB. Do NOT set journal_mode here —
     // the WAL pragma requires write access to the DB header and would fail
     // with SQLITE_READONLY. opencode manages its own journaling; we are only
