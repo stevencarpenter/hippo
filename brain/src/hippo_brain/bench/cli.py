@@ -45,7 +45,7 @@ _OVERLAY_CAP = 50
 
 def _cmd_corpus_init(args: argparse.Namespace) -> int:
     corpus_version = args.bump_version if args.bump_version else args.corpus_version
-    force = bool(args.bump_version)
+    force = bool(args.force or args.bump_version)
     dest_sqlite = corpus_sqlite_path(corpus_version)
     dest_jsonl = corpus_jsonl_path(corpus_version)
     manifest = corpus_manifest_path(corpus_version)
@@ -67,8 +67,17 @@ def _cmd_corpus_init(args: argparse.Namespace) -> int:
         )
     except FileExistsError as e:
         print(f"error: {e}")
-        print("Use --bump-version to overwrite.")
+        print(
+            "Existing corpus artifacts (if any):\n"
+            f"  sqlite:   {dest_sqlite}\n"
+            f"  jsonl:    {dest_jsonl}\n"
+            f"  manifest: {manifest}\n"
+            "Use --force to overwrite at the same version, or --bump-version VERSION "
+            "to create a new corpus version."
+        )
         return 1
+    if args.bump_version:
+        print(f"corpus version: {corpus_version}")
     print(f"wrote {len(entries)} entries")
     print(f"sqlite: {dest_sqlite}")
     print(f"jsonl:  {dest_jsonl}")
@@ -447,6 +456,11 @@ def _build_parser() -> argparse.ArgumentParser:
         default=None,
         metavar="VERSION",
         help="Override corpus version string and force-overwrite existing corpus.",
+    )
+    ci.add_argument(
+        "--force",
+        action="store_true",
+        help="Overwrite existing corpus artifacts at the same version.",
     )
     ci.set_defaults(func=_cmd_corpus_init)
 

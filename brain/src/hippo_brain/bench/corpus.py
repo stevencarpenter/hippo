@@ -925,6 +925,8 @@ def init_corpus(
         raise FileExistsError(f"dest_sqlite already exists: {dest_sqlite}")
     if dest_jsonl.exists() and not force:
         raise FileExistsError(f"dest_jsonl already exists: {dest_jsonl}")
+    if manifest_path.exists() and not force:
+        raise FileExistsError(f"manifest already exists: {manifest_path}")
 
     cleanup_paths = [dest_sqlite, dest_jsonl, manifest_path]
     sampled_at = _dt.datetime.now(tz=_dt.UTC).isoformat()
