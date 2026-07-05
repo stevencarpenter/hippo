@@ -218,3 +218,42 @@ async fn source_health_heartbeat_persists_and_clears_extension_error() {
     let _ = hippo_daemon::commands::send_request(&socket_path, &DaemonRequest::Shutdown).await;
     let _ = daemon_handle.await;
 }
+
+#[tokio::test]
+async fn source_health_heartbeat_truncates_long_extension_error() {
+    let config = test_config();
+    let socket_path = config.socket_path();
+    let db_path = config.db_path();
+
+    let run_config = config.clone();
+    let daemon_handle = tokio::spawn(async move { hippo_daemon::daemon::run(run_config).await });
+    wait_for_daemon(&socket_path).await;
+
+    let long_err = "e".repeat(600);
+    let resp = hippo_daemon::commands::send_request(
+        &socket_path,
+        &DaemonRequest::UpdateSourceHealthHeartbeat {
+            source: "browser".to_string(),
+            ts: chrono::Utc::now().timestamp_millis(),
+            last_error_msg: Some(long_err.clone()),
+        },
+    )
+    .await
+    .unwrap();
+    assert!(matches!(resp, DaemonResponse::Ack));
+
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    let conn = hippo_core::storage::open_db(&db_path).unwrap();
+    let saved: String = conn
+        .query_row(
+            "SELECT last_error_msg FROM source_health WHERE source = 'browser'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(saved.len(), 512);
+
+    let _ = hippo_daemon::commands::send_request(&socket_path, &DaemonRequest::Shutdown).await;
+    let _ = daemon_handle.await;
+}

@@ -1757,6 +1757,9 @@ fn print_browser_staleness_explain(
     println!("     STATE:  {state}");
     if let Some(msg) = last_error_msg.filter(|m| !m.is_empty()) {
         println!("     EXT:    {msg}");
+        println!(
+            "     NOTE:   last_error_msg is last-writer-wins (extension heartbeat or daemon ingest)"
+        );
     }
 
     match connectivity {
@@ -2208,7 +2211,7 @@ fn check_source_staleness(db: &rusqlite::Connection, explain: bool) -> u32 {
                 if let Some(state) = browser_state {
                     if let Some(err) = browser_ext_error {
                         println!(
-                            "[WW] {}  {} (WARN) — {} — ext: {}",
+                            "[WW] {}  {} (WARN) — {} — last_error: {}",
                             padded, human, state, err
                         );
                     } else {
@@ -2228,7 +2231,7 @@ fn check_source_staleness(db: &rusqlite::Connection, explain: bool) -> u32 {
                 if let Some(state) = browser_state {
                     if let Some(err) = browser_ext_error {
                         println!(
-                            "[!!] {}  {} (FAIL) — {} — ext: {}",
+                            "[!!] {}  {} (FAIL) — {} — last_error: {}",
                             padded, human, state, err
                         );
                     } else {

@@ -57,6 +57,12 @@ describe("buildHeartbeatPayload", () => {
     expect(keys).toEqual(["enabled_state", "extension_version", "sent_at_ms", "type"].sort());
   });
 
+  test("truncates long error messages to 512 characters", () => {
+    const long = "x".repeat(600);
+    const p = buildHeartbeatPayload("0.2.0", true, long);
+    expect(p.last_error_msg?.length).toBe(512);
+  });
+
   test("each call produces a fresh timestamp", async () => {
     const p1 = buildHeartbeatPayload("0.2.0", true);
     // Small sleep to guarantee the clock advances at least 1ms.
