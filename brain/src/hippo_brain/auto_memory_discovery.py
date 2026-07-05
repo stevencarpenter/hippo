@@ -125,7 +125,7 @@ def decode_claude_project_slug(slug: str) -> str | None:
 def _read_settings_json(path: Path) -> dict[str, Any] | None:
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+    except OSError, json.JSONDecodeError, UnicodeDecodeError:
         return None
     return payload if isinstance(payload, dict) else None
 
@@ -224,9 +224,7 @@ def discover_settings_memory_roots(home: Path) -> list[MemoryRoot]:
                 settings_path = project_dir / name
                 if not settings_path.is_file():
                     continue
-                custom = _auto_memory_directory_from_settings(
-                    settings_path, base_dir=project_dir
-                )
+                custom = _auto_memory_directory_from_settings(settings_path, base_dir=project_dir)
                 if custom is None:
                     continue
                 roots.append(
