@@ -434,7 +434,10 @@ def build_openapi_spec() -> dict:
                         },
                         "freshness": {
                             "type": "object",
-                            "additionalProperties": {"type": "object", "additionalProperties": True},
+                            "additionalProperties": {
+                                "type": "object",
+                                "additionalProperties": True,
+                            },
                         },
                         "limit": {"type": "integer"},
                         "truncated": {"type": "boolean"},
