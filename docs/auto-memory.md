@@ -60,6 +60,22 @@ Retention defaults (override in `[auto_memory]`):
 
 Renames are detected when exactly one prior document shares the same redacted hash, the old path is gone, and the new path is ingested. Deleted files move to `unavailable` on the first missing poll, then `tombstoned` after confirmation; tombstoned documents drop out of retrieval but keep bounded history.
 
+## Continuous reconciliation
+
+When `auto_memory.enabled = true`, `hippo daemon install` writes two LaunchAgents:
+
+- `com.hippo.auto-memory-watcher` (KeepAlive) — FSEvents on each configured source's parent directory, debounced per file, then `hippo-auto-memory-reconcile` with stable-read gating before ingest.
+- `com.hippo.auto-memory` (StartInterval) — periodic full reconcile fallback (`hippo-auto-memory-poll`).
+
+Tuning knobs in `[auto_memory]`:
+
+- `debounce_ms` — Rust watcher quiet period before spawning per-file reconcile (default 500).
+- `reconcile_fallback_secs` — in-watcher full reconcile cadence (default 60).
+- `stable_idle_ms` / `stable_sample_ms` / `stable_timeout_ms` — Python stable-read gate (mtime+size unchanged) before reading a file mid-write.
+- `poll_interval_secs` — launchd interval for the periodic fallback poller (default 60).
+
+During enrichment failure or pending retries, the last-known-good projection stays queryable (`projection_status = stale`). Poll/reconcile JSON reports `pending_enrichment` and `failed_enrichment` per source.
+
 ## Storage and rollback
 
 Schema v19 adds only additive tables: `memory_documents`, `memory_revisions`, `memory_chunks`, `memory_enrichment_queue`, and `knowledge_node_memory_chunks`. Existing source and knowledge tables are unchanged.

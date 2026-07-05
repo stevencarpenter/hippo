@@ -36,18 +36,44 @@ pub struct HippoConfig {
 
 /// Explicit read-only Claude Code auto-memory sources. Fleet discovery is a
 /// later layer; this list is the deterministic single-file operator contract.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AutoMemoryConfig {
     #[serde(default)]
     pub enabled: bool,
     #[serde(default = "default_auto_memory_poll_interval_secs")]
     pub poll_interval_secs: u64,
+    /// FSEvents debounce before spawning per-file reconcile (Python stable-read follows).
+    #[serde(default = "default_auto_memory_debounce_ms")]
+    pub debounce_ms: u64,
+    /// In-process periodic full reconcile while the watcher is running.
+    #[serde(default = "default_auto_memory_reconcile_fallback_secs")]
+    pub reconcile_fallback_secs: u64,
     #[serde(default)]
     pub sources: Vec<AutoMemorySourceConfig>,
 }
 
 fn default_auto_memory_poll_interval_secs() -> u64 {
     60
+}
+
+fn default_auto_memory_debounce_ms() -> u64 {
+    500
+}
+
+fn default_auto_memory_reconcile_fallback_secs() -> u64 {
+    60
+}
+
+impl Default for AutoMemoryConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            poll_interval_secs: default_auto_memory_poll_interval_secs(),
+            debounce_ms: default_auto_memory_debounce_ms(),
+            reconcile_fallback_secs: default_auto_memory_reconcile_fallback_secs(),
+            sources: Vec::new(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1397,5 +1423,7 @@ strip_params = ["secret", "nonce"]
             cfg.auto_memory.sources[0].logical_path.as_deref(),
             Some("MEMORY.md")
         );
+        assert_eq!(default_cfg.auto_memory.debounce_ms, 500);
+        assert_eq!(default_cfg.auto_memory.reconcile_fallback_secs, 60);
     }
 }
