@@ -97,7 +97,9 @@ def test_probe_rows_excluded_from_lexical_search(conn: sqlite3.Connection, tmp_p
     )
     conn.commit()
     assert search_knowledge_lexical(conn, "Synthetic", source="claude-auto-memory") == []
-    assert search_knowledge_lexical(conn, "Synthetic auto-memory", source="claude-auto-memory") == []
+    assert (
+        search_knowledge_lexical(conn, "Synthetic auto-memory", source="claude-auto-memory") == []
+    )
 
 
 def test_health_snapshot_separates_watcher_queue_and_projection(

@@ -121,7 +121,9 @@ def _health_row(conn: sqlite3.Connection, source: str) -> dict[str, Any] | None:
     return dict(zip(keys, row, strict=True))
 
 
-def snapshot_health(conn: sqlite3.Connection, *, now_ms: int | None = None) -> AutoMemoryHealthSnapshot:
+def snapshot_health(
+    conn: sqlite3.Connection, *, now_ms: int | None = None
+) -> AutoMemoryHealthSnapshot:
     """Read auto-memory health dimensions from SQLite (no brain HTTP)."""
     now_ms = now_ms or int(time.time() * 1000)
     watcher = _health_row(conn, WATCHER_SOURCE) or {}

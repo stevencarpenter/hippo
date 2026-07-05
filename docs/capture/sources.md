@@ -20,6 +20,7 @@ For the rules every contributor must follow when adding a new source, see [`anti
 | 10 | **Probe events** | `com.hippo.probe` LaunchAgent → `crates/hippo-daemon/src/probe.rs` → per-source synthetic-event path | `events` / `browser_events` / `claude_sessions` with `probe_tag IS NOT NULL` | I-8 | (drives the others' probes) | healthy |
 | 11 | **Watchdog heartbeat** | `com.hippo.watchdog` → `crates/hippo-daemon/src/watchdog.rs` → `source_health WHERE source='watchdog'` UPDATE every cycle | `source_health` only | I-7 | n/a | healthy |
 | 12 | **Opencode sessions** | `com.hippo.opencode-poll` LaunchAgent (every `[opencode] poll_interval_secs`) → `hippo opencode-poll` → `opencode_session.rs::poll_tick` reads opencode's own SQLite → upserts `agentic_sessions` + enqueues `agentic_enrichment_queue` | `agentic_sessions` (harness='opencode'), `agentic_enrichment_queue`, `knowledge_node_agentic_sessions` | I-11 | Yes (assertion-only: opencode `session.time_updated` in window → matching `agentic_sessions` row) | new in v14 |
+| 13 | **Claude auto-memory** | `com.hippo.auto-memory-watcher` + `com.hippo.auto-memory` → `hippo-auto-memory-reconcile` / `hippo-auto-memory-poll` (Python) | `memory_documents`, `memory_revisions`, `memory_enrichment_queue`, `knowledge_node_memory_chunks` | I-17–I-20 | Yes (`hippo probe claude-auto-memory`; fixture `hippo/__hippo_probe__` excluded from retrieval) | healthy — SNUG-138 |
 
 ## Per-source notes
 
