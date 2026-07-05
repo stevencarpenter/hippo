@@ -164,6 +164,8 @@ def parse_since(since: str) -> int:
 def _memory_provenance(
     conn: sqlite3.Connection, node_id: int
 ) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
+    if not _table_exists(conn, "knowledge_node_memory_chunks"):
+        return [], []
     row = conn.execute(
         "SELECT md.id FROM knowledge_node_memory_chunks knmc "
         "JOIN memory_chunks mc ON mc.id = knmc.memory_chunk_id "
