@@ -1106,13 +1106,13 @@ echo "==> Stopping brain..."
 pkill -f 'hippo-brain' 2>/dev/null && sleep 1 || true
 
 echo "==> Resetting Claude knowledge nodes..."
-sqlite3 "$DB" "DELETE FROM knowledge_node_entities WHERE knowledge_node_id IN (SELECT knowledge_node_id FROM knowledge_node_claude_sessions)"
-sqlite3 "$DB" "DELETE FROM knowledge_node_claude_sessions"
+sqlite3 "$DB" "DELETE FROM knowledge_node_entities WHERE knowledge_node_id IN (SELECT knowledge_node_id FROM knowledge_node_agentic_sessions WHERE agentic_session_id IN (SELECT id FROM agentic_sessions WHERE harness = 'claude-code'))"
+sqlite3 "$DB" "DELETE FROM knowledge_node_agentic_sessions WHERE agentic_session_id IN (SELECT id FROM agentic_sessions WHERE harness = 'claude-code')"
 sqlite3 "$DB" "DELETE FROM knowledge_nodes WHERE id NOT IN (SELECT knowledge_node_id FROM knowledge_node_events)"
-sqlite3 "$DB" "UPDATE claude_sessions SET enriched = 0"
-sqlite3 "$DB" "UPDATE claude_enrichment_queue SET status = 'pending', retry_count = 0, error_message = NULL, locked_at = NULL, locked_by = NULL"
+sqlite3 "$DB" "UPDATE agentic_sessions SET enriched = 0 WHERE harness = 'claude-code'"
+sqlite3 "$DB" "UPDATE agentic_enrichment_queue SET status = 'pending', retry_count = 0, error_message = NULL, locked_at = NULL, locked_by = NULL WHERE session_id IN (SELECT id FROM agentic_sessions WHERE harness = 'claude-code')"
 
-PENDING=$(sqlite3 "$DB" "SELECT COUNT(*) FROM claude_enrichment_queue WHERE status = 'pending'")
+PENDING=$(sqlite3 "$DB" "SELECT COUNT(*) FROM agentic_enrichment_queue WHERE status = 'pending' AND session_id IN (SELECT id FROM agentic_sessions WHERE harness = 'claude-code')")
 echo "  Queued $PENDING segments for 1:1 re-enrichment"
 echo ""
 

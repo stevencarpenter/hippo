@@ -396,63 +396,6 @@ def _eligibility_source_for_harness(harness: str | None) -> str:
     return harness
 
 
-def ensure_claude_tables(conn) -> None:
-    """Ensure Claude session tables exist (Python-side migration for v2 → v3)."""
-    version = conn.execute("PRAGMA user_version").fetchone()[0]
-    if version >= 3:
-        return
-
-    conn.executescript(
-        """
-        CREATE TABLE IF NOT EXISTS claude_sessions (
-            id INTEGER PRIMARY KEY,
-            session_id TEXT NOT NULL,
-            project_dir TEXT NOT NULL,
-            cwd TEXT NOT NULL,
-            git_branch TEXT,
-            segment_index INTEGER NOT NULL,
-            start_time INTEGER NOT NULL,
-            end_time INTEGER NOT NULL,
-            summary_text TEXT NOT NULL,
-            tool_calls_json TEXT,
-            user_prompts_json TEXT,
-            message_count INTEGER NOT NULL,
-            token_count INTEGER,
-            source_file TEXT NOT NULL,
-            is_subagent INTEGER NOT NULL DEFAULT 0,
-            parent_session_id TEXT,
-            enriched INTEGER NOT NULL DEFAULT 0,
-            created_at INTEGER NOT NULL DEFAULT (unixepoch('now', 'subsec') * 1000),
-            UNIQUE (session_id, segment_index)
-        );
-        CREATE TABLE IF NOT EXISTS knowledge_node_claude_sessions (
-            knowledge_node_id INTEGER NOT NULL REFERENCES knowledge_nodes (id),
-            claude_session_id INTEGER NOT NULL REFERENCES claude_sessions (id),
-            PRIMARY KEY (knowledge_node_id, claude_session_id)
-        );
-        CREATE TABLE IF NOT EXISTS claude_enrichment_queue (
-            id INTEGER PRIMARY KEY,
-            claude_session_id INTEGER NOT NULL UNIQUE REFERENCES claude_sessions (id),
-            status TEXT NOT NULL DEFAULT 'pending'
-                CHECK (status IN ('pending', 'processing', 'done', 'failed', 'skipped')),
-            priority INTEGER NOT NULL DEFAULT 5,
-            retry_count INTEGER NOT NULL DEFAULT 0,
-            max_retries INTEGER NOT NULL DEFAULT 5,
-            error_message TEXT,
-            locked_at INTEGER,
-            locked_by TEXT,
-            created_at INTEGER NOT NULL DEFAULT (unixepoch('now', 'subsec') * 1000),
-            updated_at INTEGER NOT NULL DEFAULT (unixepoch('now', 'subsec') * 1000)
-        );
-        CREATE INDEX IF NOT EXISTS idx_claude_sessions_cwd ON claude_sessions (cwd);
-        CREATE INDEX IF NOT EXISTS idx_claude_sessions_session ON claude_sessions (session_id);
-        CREATE INDEX IF NOT EXISTS idx_claude_queue_pending ON claude_enrichment_queue (status, priority)
-            WHERE status = 'pending';
-        PRAGMA user_version = 3;
-        """
-    )
-
-
 def insert_segment(conn, segment: SessionSegment) -> int | None:
     """Insert a session segment and queue it for enrichment. Returns segment id or None if duplicate."""
     from hippo_brain.redaction import redact_segment_secrets

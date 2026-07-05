@@ -371,25 +371,25 @@ def phase_schema_forward(
 # Hardcoded per-table SQL — table names are literals, never user input.
 _SQL_COUNT_STALE: dict[str, str] = {
     "enrichment_queue": "SELECT COUNT(*) FROM enrichment_queue WHERE status = 'processing' AND COALESCE(locked_at, 0) <= ?",  # noqa: E501
-    "claude_enrichment_queue": "SELECT COUNT(*) FROM claude_enrichment_queue WHERE status = 'processing' AND COALESCE(locked_at, 0) <= ?",  # noqa: E501
+    "agentic_enrichment_queue": "SELECT COUNT(*) FROM agentic_enrichment_queue WHERE status = 'processing' AND COALESCE(locked_at, 0) <= ?",  # noqa: E501
     "browser_enrichment_queue": "SELECT COUNT(*) FROM browser_enrichment_queue WHERE status = 'processing' AND COALESCE(locked_at, 0) <= ?",  # noqa: E501
     "workflow_enrichment_queue": "SELECT COUNT(*) FROM workflow_enrichment_queue WHERE status = 'processing' AND COALESCE(locked_at, 0) <= ?",  # noqa: E501
 }
 _SQL_COUNT_FAILED_ELIGIBLE: dict[str, str] = {
     "enrichment_queue": "SELECT COUNT(*) FROM enrichment_queue WHERE status = 'failed' AND retry_count < max_retries AND COALESCE(updated_at, 0) > ?",  # noqa: E501
-    "claude_enrichment_queue": "SELECT COUNT(*) FROM claude_enrichment_queue WHERE status = 'failed' AND retry_count < max_retries AND COALESCE(updated_at, 0) > ?",  # noqa: E501
+    "agentic_enrichment_queue": "SELECT COUNT(*) FROM agentic_enrichment_queue WHERE status = 'failed' AND retry_count < max_retries AND COALESCE(updated_at, 0) > ?",  # noqa: E501
     "browser_enrichment_queue": "SELECT COUNT(*) FROM browser_enrichment_queue WHERE status = 'failed' AND retry_count < max_retries AND COALESCE(updated_at, 0) > ?",  # noqa: E501
     "workflow_enrichment_queue": "SELECT COUNT(*) FROM workflow_enrichment_queue WHERE status = 'failed' AND retry_count < max_retries AND COALESCE(updated_at, 0) > ?",  # noqa: E501
 }
 _SQL_RESET_FAILED: dict[str, str] = {
     "enrichment_queue": "UPDATE enrichment_queue SET status = 'pending', error_message = 'reset by v5→v6 migration', locked_at = NULL, locked_by = NULL, updated_at = ? WHERE status = 'failed' AND retry_count < max_retries AND COALESCE(updated_at, 0) > ?",  # noqa: E501
-    "claude_enrichment_queue": "UPDATE claude_enrichment_queue SET status = 'pending', error_message = 'reset by v5→v6 migration', locked_at = NULL, locked_by = NULL, updated_at = ? WHERE status = 'failed' AND retry_count < max_retries AND COALESCE(updated_at, 0) > ?",  # noqa: E501
+    "agentic_enrichment_queue": "UPDATE agentic_enrichment_queue SET status = 'pending', error_message = 'reset by v5→v6 migration', locked_at = NULL, locked_by = NULL, updated_at = ? WHERE status = 'failed' AND retry_count < max_retries AND COALESCE(updated_at, 0) > ?",  # noqa: E501
     "browser_enrichment_queue": "UPDATE browser_enrichment_queue SET status = 'pending', error_message = 'reset by v5→v6 migration', locked_at = NULL, locked_by = NULL, updated_at = ? WHERE status = 'failed' AND retry_count < max_retries AND COALESCE(updated_at, 0) > ?",  # noqa: E501
     "workflow_enrichment_queue": "UPDATE workflow_enrichment_queue SET status = 'pending', error_message = 'reset by v5→v6 migration', locked_at = NULL, locked_by = NULL, updated_at = ? WHERE status = 'failed' AND retry_count < max_retries AND COALESCE(updated_at, 0) > ?",  # noqa: E501
 }
 _SQL_GIVEUP: dict[str, str] = {
     "enrichment_queue": "UPDATE enrichment_queue SET giveup = 1 WHERE status = 'failed' AND COALESCE(updated_at, 0) <= ?",  # noqa: E501
-    "claude_enrichment_queue": "UPDATE claude_enrichment_queue SET giveup = 1 WHERE status = 'failed' AND COALESCE(updated_at, 0) <= ?",  # noqa: E501
+    "agentic_enrichment_queue": "UPDATE agentic_enrichment_queue SET giveup = 1 WHERE status = 'failed' AND COALESCE(updated_at, 0) <= ?",  # noqa: E501
     "browser_enrichment_queue": "UPDATE browser_enrichment_queue SET giveup = 1 WHERE status = 'failed' AND COALESCE(updated_at, 0) <= ?",  # noqa: E501
     "workflow_enrichment_queue": "UPDATE workflow_enrichment_queue SET giveup = 1 WHERE status = 'failed' AND COALESCE(updated_at, 0) <= ?",  # noqa: E501
 }
@@ -479,14 +479,31 @@ def _load_shell_events_for_node(conn: sqlite3.Connection, node_id: int) -> list[
 
 
 def _load_claude_sessions_for_node(conn: sqlite3.Connection, node_id: int) -> list[dict]:
-    rows = conn.execute(
-        "SELECT cs.id, cs.message_count, cs.tool_calls_json "
-        "FROM knowledge_node_claude_sessions kncs "
-        "JOIN claude_sessions cs ON cs.id = kncs.claude_session_id "
-        "WHERE kncs.knowledge_node_id = ?",
-        (node_id,),
-    ).fetchall()
-    return [dict(row) for row in rows]
+    tables = {
+        row[0]
+        for row in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table'"
+        ).fetchall()
+    }
+    if "knowledge_node_agentic_sessions" in tables:
+        rows = conn.execute(
+            "SELECT a.id, a.message_count, a.tool_calls_json "
+            "FROM knowledge_node_agentic_sessions knas "
+            "JOIN agentic_sessions a ON a.id = knas.agentic_session_id "
+            "WHERE knas.knowledge_node_id = ?",
+            (node_id,),
+        ).fetchall()
+        return [dict(row) for row in rows]
+    if "knowledge_node_claude_sessions" in tables:
+        rows = conn.execute(
+            "SELECT cs.id, cs.message_count, cs.tool_calls_json "
+            "FROM knowledge_node_claude_sessions kncs "
+            "JOIN claude_sessions cs ON cs.id = kncs.claude_session_id "
+            "WHERE kncs.knowledge_node_id = ?",
+            (node_id,),
+        ).fetchall()
+        return [dict(row) for row in rows]
+    return []
 
 
 def _load_browser_events_for_node(conn: sqlite3.Connection, node_id: int) -> list[dict]:
@@ -577,13 +594,26 @@ def phase_noise_cleanup(
         )
 
     with conn:
+        tables = {
+            row[0]
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            ).fetchall()
+        }
         for nid in noise_ids:
             # Delete join-table rows first (schema has no ON DELETE CASCADE).
             conn.execute("DELETE FROM knowledge_node_events WHERE knowledge_node_id = ?", (nid,))
             conn.execute("DELETE FROM knowledge_node_entities WHERE knowledge_node_id = ?", (nid,))
-            conn.execute(
-                "DELETE FROM knowledge_node_claude_sessions WHERE knowledge_node_id = ?", (nid,)
-            )
+            if "knowledge_node_agentic_sessions" in tables:
+                conn.execute(
+                    "DELETE FROM knowledge_node_agentic_sessions WHERE knowledge_node_id = ?",
+                    (nid,),
+                )
+            if "knowledge_node_claude_sessions" in tables:
+                conn.execute(
+                    "DELETE FROM knowledge_node_claude_sessions WHERE knowledge_node_id = ?",
+                    (nid,),
+                )
             conn.execute(
                 "DELETE FROM knowledge_node_browser_events WHERE knowledge_node_id = ?", (nid,)
             )
