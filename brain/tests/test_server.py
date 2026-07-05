@@ -257,6 +257,81 @@ def test_agent_query_missing_query_returns_400(tmp_db):
     assert resp.json()["error"] == "query is required"
 
 
+def _seed_memory_document(conn, tmp_path):
+    from hippo_brain.auto_memory import ingest_memory_file, write_memory_knowledge_node
+    from hippo_brain.models import EnrichmentResult
+
+    path = tmp_path / "MEMORY.md"
+    path.write_text("# HTTP\n\nmemory contract test\n")
+    ingested = ingest_memory_file(conn, path, repository="hippo", now_ms=1000)
+    result = EnrichmentResult(
+        summary="memory contract test",
+        intent="memory",
+        outcome="success",
+        tags=["memory"],
+        embed_text="memory contract test",
+    )
+    write_memory_knowledge_node(conn, result, ingested.revision_id, "mock-model", now_ms=1000)
+    return ingested
+
+
+def test_memory_query_happy_path(tmp_db, tmp_path):
+    conn, db_path = tmp_db
+    _seed_memory_document(conn, tmp_path)
+    app = _make_app(str(db_path))
+    client = TestClient(app)
+
+    resp = client.post(
+        "/memory/query",
+        json={"query": "contract", "repository": "hippo", "limit": 5},
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["view"] == "current"
+    assert data["results"]
+    assert "source_path" not in data["results"][0]
+
+
+def test_memory_query_invalid_limit_returns_400(tmp_db):
+    _, db_path = tmp_db
+    app = _make_app(str(db_path))
+    client = TestClient(app)
+
+    resp = client.post("/memory/query", json={"limit": 0})
+    assert resp.status_code == 400
+    assert "limit must be greater than 0" in resp.json()["error"]
+
+
+def test_memory_history_requires_identity(tmp_db):
+    _, db_path = tmp_db
+    app = _make_app(str(db_path))
+    client = TestClient(app)
+
+    resp = client.post("/memory/history", json={})
+    assert resp.status_code == 400
+    assert "document_uuid or repository+logical_path is required" in resp.json()["error"]
+
+
+def test_memory_history_matches_cli_shape(tmp_db, tmp_path):
+    conn, db_path = tmp_db
+    _seed_memory_document(conn, tmp_path)
+    app = _make_app(str(db_path))
+    client = TestClient(app)
+
+    resp = client.post(
+        "/memory/history",
+        json={
+            "repository": "hippo",
+            "logical_path": "MEMORY.md",
+            "limit": 10,
+        },
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["view"] == "history"
+    assert data["results"][0]["revision_number"] == 1
+
+
 def test_query_empty_text_returns_400(tmp_db):
     conn, db_path = tmp_db
     app = _make_app(str(db_path))

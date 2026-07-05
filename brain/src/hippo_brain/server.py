@@ -19,6 +19,7 @@ from hippo_brain.agent_query import AgentQueryRequest, run_agent_query
 from hippo_brain.memory_query import (
     MemoryQueryRequest,
     query_memory_current,
+    resolve_limit,
     run_memory_history_query,
 )
 from hippo_brain.client import InferenceClient
@@ -967,17 +968,10 @@ class BrainServer:
         limit = body.get("limit", 20)
         offset = body.get("offset", 0)
         try:
-            limit = int(limit)
+            limit = resolve_limit(int(limit), default=20)
             offset = int(offset)
-        except TypeError, ValueError:
-            return JSONResponse({"error": "limit and offset must be integers"}, status_code=400)
-        if limit <= 0:
-            return JSONResponse({"error": "limit must be greater than 0"}, status_code=400)
-        if limit > MAX_QUERY_LIMIT:
-            return JSONResponse(
-                {"error": f"limit must be <= {MAX_QUERY_LIMIT}"},
-                status_code=400,
-            )
+        except (TypeError, ValueError) as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
         if offset < 0:
             return JSONResponse({"error": "offset must be >= 0"}, status_code=400)
 
@@ -1015,16 +1009,9 @@ class BrainServer:
             )
         limit = body.get("limit", 50)
         try:
-            limit = int(limit)
-        except TypeError, ValueError:
-            return JSONResponse({"error": "limit must be an integer"}, status_code=400)
-        if limit <= 0:
-            return JSONResponse({"error": "limit must be greater than 0"}, status_code=400)
-        if limit > MAX_QUERY_LIMIT:
-            return JSONResponse(
-                {"error": f"limit must be <= {MAX_QUERY_LIMIT}"},
-                status_code=400,
-            )
+            limit = resolve_limit(int(limit), default=50)
+        except (TypeError, ValueError) as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
 
         conn = self._get_conn()
         try:

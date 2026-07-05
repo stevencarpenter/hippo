@@ -41,6 +41,12 @@ class MemoryQueryRequest:
     include_source_path: bool = False
 
 
+def resolve_limit(limit: int, *, default: int = 20) -> int:
+    if limit <= 0:
+        raise ValueError("limit must be greater than 0")
+    return min(limit, MAX_LIMIT)
+
+
 def clamp_limit(limit: int) -> int:
     if limit <= 0:
         return 0
@@ -190,16 +196,8 @@ def query_memory_current(
             "truncated": False,
         }
 
-    limit = clamp_limit(req.limit)
+    limit = resolve_limit(req.limit, default=20)
     offset = max(req.offset, 0)
-    if limit == 0:
-        return {
-            "view": "current",
-            "results": [],
-            "limit": 0,
-            "offset": offset,
-            "truncated": False,
-        }
 
     where_sql, params = _build_current_filters(req)
 
@@ -225,7 +223,7 @@ def query_memory_current(
         _shape_chunk_row(conn, row, include_source_path=req.include_source_path) for row in rows
     ]
 
-    if req.include_non_queryable:
+    if req.include_non_queryable and not results:
         status_where, status_params = _build_status_filters(req)
         status_sql = (
             "SELECT d.id AS document_id, d.uuid AS document_uuid, d.repository, "
@@ -235,14 +233,22 @@ def query_memory_current(
             f"WHERE {status_where} "
             "AND (d.state != 'active' OR d.projection_status NOT IN ('ready', 'stale') "
             "OR d.active_revision_id IS NULL) "
-            "ORDER BY d.updated_at DESC LIMIT ?"
+            "ORDER BY d.updated_at DESC LIMIT ? OFFSET ?"
         )
-        status_rows = conn.execute(status_sql, (*status_params, limit)).fetchall()
-        seen_docs = {item["document_uuid"] for item in results}
-        for row in status_rows:
-            if row["document_uuid"] in seen_docs:
-                continue
-            results.append(_shape_status_row(row, include_source_path=req.include_source_path))
+        status_rows = conn.execute(status_sql, (*status_params, limit + 1, offset)).fetchall()
+        truncated = len(status_rows) > limit
+        status_rows = status_rows[:limit]
+        results = [
+            _shape_status_row(row, include_source_path=req.include_source_path)
+            for row in status_rows
+        ]
+        return {
+            "view": "current",
+            "results": results,
+            "limit": limit,
+            "offset": offset,
+            "truncated": truncated,
+        }
 
     return {
         "view": "current",
@@ -289,7 +295,7 @@ def run_memory_history_query(
     include_source_path: bool = False,
 ) -> dict[str, Any]:
     """Explicit bounded revision history (never mixed into current results)."""
-    limit = clamp_limit(limit) or 50
+    limit = resolve_limit(limit, default=50)
     conn.row_factory = sqlite3.Row
     history = query_memory_history(
         conn,

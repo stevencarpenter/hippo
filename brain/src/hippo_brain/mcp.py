@@ -14,6 +14,7 @@ from hippo_brain.agent_query import AgentQueryRequest, run_agent_query
 from hippo_brain.memory_query import (
     MemoryQueryRequest,
     query_memory_current,
+    resolve_limit,
     run_memory_history_query,
 )
 from hippo_brain.client import InferenceClient
@@ -909,7 +910,7 @@ async def query_memory(
     explicit prior revisions. Local ``source_path`` is omitted unless
     ``include_source_path=true`` (diagnostics only).
     """
-    limit = _clamp_limit(limit)
+    limit = resolve_limit(limit)
     _add(_tool_calls, tool="query_memory")
     t0 = time.monotonic()
     req = MemoryQueryRequest(
@@ -952,7 +953,7 @@ async def query_memory_history(
     Requires ``document_uuid`` or both ``repository`` and ``logical_path``.
     History never mixes into ``query_memory`` current results.
     """
-    limit = _clamp_limit(limit) or 50
+    limit = resolve_limit(limit, default=50)
     _add(_tool_calls, tool="query_memory_history")
     t0 = time.monotonic()
     if not document_uuid and not (repository and logical_path):
