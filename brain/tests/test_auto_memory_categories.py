@@ -194,3 +194,29 @@ def test_self_link_in_index_is_marked_circular(conn: sqlite3.Connection, tmp_pat
     links = list_document_links(conn, int(index_id))
     assert len(links) == 1
     assert links[0]["resolution"] == "circular"
+
+
+def test_missing_index_links_backfill_on_unchanged_poll(
+    conn: sqlite3.Connection, tmp_path: Path
+) -> None:
+    index = tmp_path / "MEMORY.md"
+    index.write_text("- [Debug](debugging.md)\n")
+    (tmp_path / "debugging.md").write_text("# Debug\n\nnotes\n")
+    first = ingest_memory_file(conn, index, repository="hippo", now_ms=1000)
+    ingest_memory_file(conn, tmp_path / "debugging.md", repository="hippo", now_ms=1000)
+    index_id = int(first.document_id)
+    assert len(list_document_links(conn, index_id)) == 1
+
+    conn.execute("DELETE FROM memory_document_links WHERE source_document_id = ?", (index_id,))
+    conn.commit()
+
+    second = ingest_memory_file(conn, index, repository="hippo", now_ms=2000)
+    assert second.changed is False
+    links = list_document_links(conn, index_id)
+    assert len(links) == 1
+    assert links[0]["resolution"] == "resolved"
+
+
+def test_unknown_memory_category_filter_raises(conn: sqlite3.Connection) -> None:
+    with pytest.raises(ValueError, match="unknown memory category filter"):
+        search_knowledge_lexical(conn, "test", category="not-a-category")

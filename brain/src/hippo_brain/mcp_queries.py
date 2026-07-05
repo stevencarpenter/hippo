@@ -13,6 +13,7 @@ from datetime import datetime, timezone
 from hippo_brain.auto_memory_categories import (
     list_document_categories,
     list_document_links,
+    validate_memory_category_filter,
 )
 from hippo_brain.models import CIAnnotation, CIJob, CIStatus, Lesson
 from hippo_brain.retrieval_eligibility import (
@@ -282,6 +283,7 @@ def _build_knowledge_filter_clause(
         clauses.append(source_clause)
 
     if category:
+        validate_memory_category_filter(category)
         category_clause = knowledge_memory_category_clause(conn)
         if category_clause is None:
             raise ValueError("memory category filter requires schema v20+")

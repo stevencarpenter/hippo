@@ -50,6 +50,12 @@ def category_from_filename(logical_path: str) -> str | None:
     return None
 
 
+def validate_memory_category_filter(category: str) -> None:
+    """Reject unknown memory category filters (mirrors source filter validation)."""
+    if category not in KNOWN_CATEGORIES:
+        raise ValueError(f"unknown memory category filter: {category!r}")
+
+
 def extract_markdown_links(markdown: str) -> list[MarkdownLink]:
     """Extract inline Markdown links from redacted content."""
     links: list[MarkdownLink] = []
@@ -310,7 +316,24 @@ def reconcile_document_taxonomy(
 ) -> None:
     """Refresh filename categories and index links after ingest."""
     upsert_filename_category(conn, document_id, logical_path, now_ms=now_ms)
-    if content_changed:
+    missing_index_links = False
+    if logical_path == INDEX_LOGICAL_PATH:
+        missing_index_links = (
+            conn.execute(
+                "SELECT COUNT(*) FROM memory_document_links WHERE source_document_id = ?",
+                (document_id,),
+            ).fetchone()[0]
+            == 0
+        )
+    should_reconcile_links = content_changed or missing_index_links
+    if should_reconcile_links:
+        body = redacted_content
+        if not body:
+            row = conn.execute(
+                "SELECT redacted_content FROM memory_revisions WHERE id = ?",
+                (revision_id,),
+            ).fetchone()
+            body = row[0] if row is not None and row[0] else ""
         reconcile_index_links(
             conn,
             document_id=document_id,
@@ -318,9 +341,10 @@ def reconcile_document_taxonomy(
             logical_path=logical_path,
             repository=repository,
             source_path=source_path,
-            redacted_content=redacted_content,
+            redacted_content=body,
             now_ms=now_ms,
         )
+    if content_changed or missing_index_links:
         retry_unresolved_links(
             conn,
             repository=repository,

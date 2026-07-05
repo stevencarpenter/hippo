@@ -26,6 +26,7 @@ from hippo_brain.evidence_packets import (
     make_shell_packet,
     make_workflow_packet,
 )
+from hippo_brain.auto_memory_categories import validate_memory_category_filter
 from hippo_brain.retrieval_eligibility import (
     agentic_session_eligible_sql,
     browser_event_eligible_sql,
@@ -425,6 +426,7 @@ def _apply_filters(
         clauses.append(source_clause)
 
     if filters.memory_category:
+        validate_memory_category_filter(filters.memory_category)
         category_clause = knowledge_memory_category_clause(conn)
         if category_clause is None:
             raise ValueError("memory category filter requires schema v20+")
