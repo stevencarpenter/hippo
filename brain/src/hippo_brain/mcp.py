@@ -11,6 +11,11 @@ from pathlib import Path
 from mcp.server.fastmcp import FastMCP
 
 from hippo_brain.agent_query import AgentQueryRequest, run_agent_query
+from hippo_brain.memory_query import (
+    MemoryQueryRequest,
+    query_memory_current,
+    run_memory_history_query,
+)
 from hippo_brain.client import InferenceClient
 from hippo_brain.embeddings import (
     EMBED_DIM,
@@ -174,6 +179,8 @@ mcp = FastMCP(
         "Hippo is a local knowledge base capturing shell activity, Claude sessions, "
         "and browser history. Use ask to get synthesized answers about past activity. "
         "Use search_knowledge for raw semantic or lexical search over knowledge nodes. "
+        "Use query_memory for current Claude auto-memory documents and "
+        "query_memory_history for explicit revision history. "
         "Use search_events for raw event history. "
         "Use get_entities to explore the knowledge graph."
     ),
@@ -880,6 +887,101 @@ async def agent_query(
     elapsed = time.monotonic() - t0
     _hist(_tool_duration, elapsed * 1000, tool="agent_query")
     logger.info("agent_query completed in %.3fs", elapsed)
+    return result
+
+
+@mcp.tool()
+async def query_memory(
+    query: str = "",
+    repository: str = "",
+    category: str = "",
+    logical_path: str = "",
+    document_uuid: str = "",
+    since: str = "",
+    limit: int = 20,
+    offset: int = 0,
+    include_non_queryable: bool = False,
+    include_source_path: bool = False,
+) -> dict:
+    """Query current Claude auto-memory documents (projected chunks only by default).
+
+    Returns bounded provenance-rich chunks. Use ``query_memory_history`` for
+    explicit prior revisions. Local ``source_path`` is omitted unless
+    ``include_source_path=true`` (diagnostics only).
+    """
+    limit = _clamp_limit(limit)
+    _add(_tool_calls, tool="query_memory")
+    t0 = time.monotonic()
+    req = MemoryQueryRequest(
+        query=query,
+        repository=repository,
+        category=category,
+        logical_path=logical_path,
+        document_uuid=document_uuid,
+        since=since,
+        limit=limit,
+        offset=offset,
+        include_non_queryable=include_non_queryable,
+        include_source_path=include_source_path,
+    )
+    conn = _open_retrieval_conn()
+    try:
+        try:
+            result = query_memory_current(conn, req)
+        except ValueError as exc:
+            _add(_tool_errors, tool="query_memory")
+            return {"error": str(exc)}
+    finally:
+        conn.close()
+    elapsed = time.monotonic() - t0
+    _hist(_tool_duration, elapsed * 1000, tool="query_memory")
+    logger.info("query_memory completed: %d results in %.3fs", len(result["results"]), elapsed)
+    return result
+
+
+@mcp.tool()
+async def query_memory_history(
+    repository: str = "",
+    logical_path: str = "",
+    document_uuid: str = "",
+    limit: int = 50,
+    include_source_path: bool = False,
+) -> dict:
+    """Return bounded revision history for one auto-memory document.
+
+    Requires ``document_uuid`` or both ``repository`` and ``logical_path``.
+    History never mixes into ``query_memory`` current results.
+    """
+    limit = _clamp_limit(limit) or 50
+    _add(_tool_calls, tool="query_memory_history")
+    t0 = time.monotonic()
+    if not document_uuid and not (repository and logical_path):
+        return {
+            "error": "document_uuid or repository+logical_path is required for history",
+        }
+    conn = _open_retrieval_conn()
+    try:
+        try:
+            result = run_memory_history_query(
+                conn,
+                repository=repository,
+                logical_path=logical_path,
+                document_uuid=document_uuid,
+                limit=limit,
+                include_source_path=include_source_path,
+            )
+        except ValueError as exc:
+            _add(_tool_errors, tool="query_memory_history")
+            return {"error": str(exc)}
+    finally:
+        conn.close()
+    elapsed = time.monotonic() - t0
+    _hist(_tool_duration, elapsed * 1000, tool="query_memory_history")
+    logger.info(
+        "query_memory_history completed: %d revisions in %.3fs",
+        len(result["results"]),
+        elapsed,
+    )
     return result
 
 

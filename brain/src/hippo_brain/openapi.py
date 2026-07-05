@@ -191,6 +191,42 @@ def build_openapi_spec() -> dict:
                     },
                 }
             },
+            "/memory/query": {
+                "post": {
+                    "operationId": "memoryQuery",
+                    "summary": "Query current projected Claude auto-memory chunks.",
+                    "requestBody": {
+                        "required": True,
+                        "content": {
+                            "application/json": {
+                                "schema": {"$ref": "#/components/schemas/MemoryQueryRequest"}
+                            }
+                        },
+                    },
+                    "responses": {
+                        "200": _json_response("#/components/schemas/MemoryQueryResponse"),
+                        "400": _error_response("Invalid request body."),
+                    },
+                }
+            },
+            "/memory/history": {
+                "post": {
+                    "operationId": "memoryHistory",
+                    "summary": "Bounded revision history for one auto-memory document.",
+                    "requestBody": {
+                        "required": True,
+                        "content": {
+                            "application/json": {
+                                "schema": {"$ref": "#/components/schemas/MemoryHistoryRequest"}
+                            }
+                        },
+                    },
+                    "responses": {
+                        "200": _json_response("#/components/schemas/MemoryQueryResponse"),
+                        "400": _error_response("Invalid request body."),
+                    },
+                }
+            },
             "/control/pause": {
                 "post": {
                     "operationId": "pauseEnrichment",
@@ -440,6 +476,49 @@ def build_openapi_spec() -> dict:
                             },
                         },
                         "limit": {"type": "integer"},
+                        "truncated": {"type": "boolean"},
+                    },
+                    "additionalProperties": True,
+                },
+                "MemoryQueryRequest": {
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": "string"},
+                        "repository": {"type": "string"},
+                        "category": {
+                            "type": "string",
+                            "enum": ["feedback", "project", "reference", "user", "index"],
+                        },
+                        "logical_path": {"type": "string"},
+                        "document_uuid": {"type": "string"},
+                        "since": {"type": "string"},
+                        "limit": {"type": "integer", "minimum": 1},
+                        "offset": {"type": "integer", "minimum": 0},
+                        "include_non_queryable": {"type": "boolean"},
+                        "include_source_path": {"type": "boolean"},
+                    },
+                },
+                "MemoryHistoryRequest": {
+                    "type": "object",
+                    "properties": {
+                        "repository": {"type": "string"},
+                        "logical_path": {"type": "string"},
+                        "document_uuid": {"type": "string"},
+                        "limit": {"type": "integer", "minimum": 1},
+                        "include_source_path": {"type": "boolean"},
+                    },
+                },
+                "MemoryQueryResponse": {
+                    "type": "object",
+                    "required": ["view", "results", "limit", "offset", "truncated"],
+                    "properties": {
+                        "view": {"type": "string", "enum": ["current", "history"]},
+                        "results": {
+                            "type": "array",
+                            "items": {"type": "object", "additionalProperties": True},
+                        },
+                        "limit": {"type": "integer"},
+                        "offset": {"type": "integer"},
                         "truncated": {"type": "boolean"},
                     },
                     "additionalProperties": True,

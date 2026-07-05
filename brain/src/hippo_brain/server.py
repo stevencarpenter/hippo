@@ -16,6 +16,11 @@ from starlette.responses import JSONResponse
 from starlette.routing import Route
 
 from hippo_brain.agent_query import AgentQueryRequest, run_agent_query
+from hippo_brain.memory_query import (
+    MemoryQueryRequest,
+    query_memory_current,
+    run_memory_history_query,
+)
 from hippo_brain.client import InferenceClient
 from hippo_brain.openapi import build_openapi_spec
 from hippo_brain.schema_version import (
@@ -956,6 +961,87 @@ class BrainServer:
 
         return JSONResponse(result)
 
+    async def memory_query(self, request: Request) -> JSONResponse:
+        """Query current projected Claude auto-memory documents."""
+        body = await request.json()
+        limit = body.get("limit", 20)
+        offset = body.get("offset", 0)
+        try:
+            limit = int(limit)
+            offset = int(offset)
+        except TypeError, ValueError:
+            return JSONResponse({"error": "limit and offset must be integers"}, status_code=400)
+        if limit <= 0:
+            return JSONResponse({"error": "limit must be greater than 0"}, status_code=400)
+        if limit > MAX_QUERY_LIMIT:
+            return JSONResponse(
+                {"error": f"limit must be <= {MAX_QUERY_LIMIT}"},
+                status_code=400,
+            )
+        if offset < 0:
+            return JSONResponse({"error": "offset must be >= 0"}, status_code=400)
+
+        req = MemoryQueryRequest(
+            query=body.get("query", ""),
+            repository=body.get("repository", ""),
+            category=body.get("category", ""),
+            logical_path=body.get("logical_path", ""),
+            document_uuid=body.get("document_uuid", ""),
+            since=body.get("since", ""),
+            limit=limit,
+            offset=offset,
+            include_non_queryable=bool(body.get("include_non_queryable", False)),
+            include_source_path=bool(body.get("include_source_path", False)),
+        )
+        conn = self._get_conn()
+        try:
+            result = query_memory_current(conn, req)
+        except ValueError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
+        finally:
+            conn.close()
+        return JSONResponse(result)
+
+    async def memory_history(self, request: Request) -> JSONResponse:
+        """Explicit bounded revision history for one auto-memory document."""
+        body = await request.json()
+        repository = body.get("repository", "")
+        logical_path = body.get("logical_path", "")
+        document_uuid = body.get("document_uuid", "")
+        if not document_uuid and not (repository and logical_path):
+            return JSONResponse(
+                {"error": "document_uuid or repository+logical_path is required"},
+                status_code=400,
+            )
+        limit = body.get("limit", 50)
+        try:
+            limit = int(limit)
+        except TypeError, ValueError:
+            return JSONResponse({"error": "limit must be an integer"}, status_code=400)
+        if limit <= 0:
+            return JSONResponse({"error": "limit must be greater than 0"}, status_code=400)
+        if limit > MAX_QUERY_LIMIT:
+            return JSONResponse(
+                {"error": f"limit must be <= {MAX_QUERY_LIMIT}"},
+                status_code=400,
+            )
+
+        conn = self._get_conn()
+        try:
+            result = run_memory_history_query(
+                conn,
+                repository=repository,
+                logical_path=logical_path,
+                document_uuid=document_uuid,
+                limit=limit,
+                include_source_path=bool(body.get("include_source_path", False)),
+            )
+        except ValueError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
+        finally:
+            conn.close()
+        return JSONResponse(result)
+
     async def control_pause(self, request: Request) -> JSONResponse:
         """Pause the enrichment loop. Idempotent.
 
@@ -1892,6 +1978,8 @@ class BrainServer:
             Route("/query", self.query, methods=["POST"]),
             Route("/ask", self.ask, methods=["POST"]),
             Route("/agent/query", self.agent_query, methods=["POST"]),
+            Route("/memory/query", self.memory_query, methods=["POST"]),
+            Route("/memory/history", self.memory_history, methods=["POST"]),
             Route("/control/pause", self.control_pause, methods=["POST"]),
             Route("/control/resume", self.control_resume, methods=["POST"]),
             Route("/openapi.json", self.openapi_json, methods=["GET"]),
