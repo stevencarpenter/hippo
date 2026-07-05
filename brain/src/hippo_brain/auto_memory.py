@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import difflib
 import hashlib
 import json
 import sqlite3
@@ -25,6 +26,10 @@ SOURCE_KIND = "claude-auto-memory"
 CHUNKER_NAME = "markdown-headings"
 CHUNKER_VERSION = 1
 _IDENTITY_NAMESPACE = uuid.UUID("0fc25921-9c30-4c16-85da-b489ea81f087")
+DEFAULT_MAX_REVISION_COUNT = 20
+DEFAULT_MAX_REVISION_AGE_DAYS = 90
+DEFAULT_ABSENCE_CONFIRM_POLLS = 2
+_MAX_DIFF_CHARS = 16_384
 
 MEMORY_ENRICHMENT_SYSTEM_PROMPT = """\
 You enrich Claude Code auto-memory Markdown into structured knowledge for a local \
@@ -52,6 +57,13 @@ class IngestResult:
     revision_number: int
     changed: bool
     chunk_count: int
+
+
+@dataclass(frozen=True)
+class RevisionRetention:
+    max_count: int = DEFAULT_MAX_REVISION_COUNT
+    max_age_ms: int = DEFAULT_MAX_REVISION_AGE_DAYS * 86_400_000
+    absence_confirm_polls: int = DEFAULT_ABSENCE_CONFIRM_POLLS
 
 
 @dataclass(frozen=True)
@@ -116,6 +128,350 @@ def _chunks(markdown: str) -> list[MarkdownChunk]:
     return markdown_heading_chunks(markdown)
 
 
+def revision_retention_from_config(auto_memory: dict[str, Any]) -> RevisionRetention:
+    """Parse revision retention settings from a config ``[auto_memory]`` table."""
+    max_count = int(auto_memory.get("max_revision_count", DEFAULT_MAX_REVISION_COUNT))
+    max_age_days = int(auto_memory.get("max_revision_age_days", DEFAULT_MAX_REVISION_AGE_DAYS))
+    absence_polls = int(auto_memory.get("absence_confirm_polls", DEFAULT_ABSENCE_CONFIRM_POLLS))
+    return RevisionRetention(
+        max_count=max(max_count, 1),
+        max_age_ms=max(max_age_days, 1) * 86_400_000,
+        absence_confirm_polls=max(absence_polls, 1),
+    )
+
+
+def _summarize_diff(old_redacted: str, new_redacted: str) -> tuple[str, str]:
+    """Build a bounded summary and unified diff from redacted content only."""
+    old_lines = old_redacted.splitlines(keepends=True)
+    new_lines = new_redacted.splitlines(keepends=True)
+    diff_lines = list(
+        difflib.unified_diff(
+            old_lines,
+            new_lines,
+            fromfile="previous",
+            tofile="current",
+            lineterm="",
+        )
+    )
+    diff_text = "".join(diff_lines)
+    if len(diff_text) > _MAX_DIFF_CHARS:
+        diff_text = diff_text[:_MAX_DIFF_CHARS] + "\n… (diff truncated)\n"
+    added = sum(1 for line in diff_lines if line.startswith("+") and not line.startswith("+++"))
+    removed = sum(1 for line in diff_lines if line.startswith("-") and not line.startswith("---"))
+    summary = f"{added} line(s) added, {removed} line(s) removed"
+    return summary, diff_text
+
+
+def _finalize_superseded_revision(
+    conn: sqlite3.Connection,
+    revision_id: int,
+    *,
+    old_redacted: str,
+    new_redacted: str,
+) -> None:
+    """Move superseded revision content into bounded summary/diff metadata."""
+    summary, diff_text = _summarize_diff(old_redacted, new_redacted)
+    conn.execute(
+        "UPDATE memory_revisions SET summary = ?, diff_text = ?, redacted_content = NULL "
+        "WHERE id = ?",
+        (summary, diff_text, revision_id),
+    )
+
+
+def _try_resolve_rename(
+    conn: sqlite3.Connection,
+    *,
+    repository: str,
+    logical_path: str,
+    content_hash: str,
+    source_path: str,
+    observed_at: int,
+) -> int | None:
+    """Return an existing document id when an unambiguous rename is detected."""
+    rows = conn.execute(
+        "SELECT d.id, d.logical_path, d.source_path "
+        "FROM memory_documents d "
+        "JOIN memory_revisions r ON r.id = d.current_revision_id "
+        "WHERE d.repository = ? AND d.logical_path != ? AND r.content_hash = ? "
+        "AND d.state IN ('active', 'unavailable')",
+        (repository, logical_path, content_hash),
+    ).fetchall()
+    if len(rows) != 1:
+        return None
+    document_id, old_logical_path, old_source_path = int(rows[0][0]), rows[0][1], rows[0][2]
+    if Path(old_source_path).is_file():
+        return None
+    with conn:
+        conn.execute(
+            "UPDATE memory_documents SET logical_path = ?, source_path = ?, state = 'active', "
+            "observed_at = ?, updated_at = ?, tombstoned_at = NULL WHERE id = ?",
+            (logical_path, source_path, observed_at, observed_at, document_id),
+        )
+        revision_number = int(
+            conn.execute(
+                "SELECT COALESCE(MAX(revision_number), 0) + 1 FROM memory_revisions "
+                "WHERE document_id = ?",
+                (document_id,),
+            ).fetchone()[0]
+        )
+        conn.execute(
+            "INSERT INTO memory_revisions "
+            "(document_id, revision_number, content_hash, source_hash, redacted_content, "
+            " source_mtime_ms, source_size, change_kind, summary, chunker_name, "
+            " chunker_version, chunker_config_json, enrichment_version, created_at) "
+            "VALUES (?, ?, ?, ?, NULL, ?, ?, 'rename', ?, ?, ?, ?, 1, ?)",
+            (
+                document_id,
+                revision_number,
+                content_hash,
+                content_hash,
+                observed_at,
+                0,
+                f"Renamed from {old_logical_path!r} to {logical_path!r}",
+                CHUNKER_NAME,
+                CHUNKER_VERSION,
+                json.dumps({"boundary": "heading", "retain_heading": True}, sort_keys=True),
+                observed_at,
+            ),
+        )
+    return document_id
+
+
+def prune_document_revisions(
+    conn: sqlite3.Connection,
+    document_id: int,
+    retention: RevisionRetention,
+    *,
+    now_ms: int,
+) -> int:
+    """Delete bounded historical revisions without touching current/active rows."""
+    row = conn.execute(
+        "SELECT current_revision_id, active_revision_id FROM memory_documents WHERE id = ?",
+        (document_id,),
+    ).fetchone()
+    if row is None:
+        return 0
+    protected = {
+        int(row[0]) if row[0] is not None else None,
+        int(row[1]) if row[1] is not None else None,
+    }
+    protected.discard(None)
+    revisions = conn.execute(
+        "SELECT id, revision_number, created_at FROM memory_revisions "
+        "WHERE document_id = ? ORDER BY revision_number ASC",
+        (document_id,),
+    ).fetchall()
+    cutoff = now_ms - retention.max_age_ms
+    deletable: list[int] = []
+    for rev_id, _revision_number, created_at in revisions:
+        if rev_id in protected:
+            continue
+        if created_at < cutoff:
+            deletable.append(int(rev_id))
+    surviving = [
+        int(rev_id)
+        for rev_id, _revision_number, _created_at in revisions
+        if int(rev_id) not in deletable and int(rev_id) not in protected
+    ]
+    while len(revisions) - len(deletable) > retention.max_count and surviving:
+        deletable.append(surviving.pop(0))
+    if not deletable:
+        return 0
+    with conn:
+        conn.executemany(
+            "DELETE FROM memory_revisions WHERE id = ?",
+            [(rev_id,) for rev_id in deletable],
+        )
+    return len(deletable)
+
+
+def query_memory_history(
+    conn: sqlite3.Connection,
+    *,
+    repository: str | None = None,
+    logical_path: str | None = None,
+    document_uuid: str | None = None,
+    limit: int = 50,
+) -> list[dict[str, Any]]:
+    """Return bounded revision metadata for explicit history queries."""
+    if limit < 1:
+        raise ValueError("limit must be at least 1")
+    if not document_uuid and not (repository and logical_path):
+        raise ValueError("document_uuid or repository+logical_path is required")
+    clauses: list[str] = []
+    params: list[Any] = []
+    if document_uuid:
+        clauses.append("d.uuid = ?")
+        params.append(document_uuid)
+    if repository:
+        clauses.append("d.repository = ?")
+        params.append(repository)
+    if logical_path:
+        clauses.append("d.logical_path = ?")
+        params.append(logical_path)
+    where = " AND ".join(clauses)
+    rows = conn.execute(
+        f"SELECT d.uuid, d.repository, d.logical_path, d.source_path, d.state, "
+        f"r.revision_number, r.content_hash, r.change_kind, r.summary, r.diff_text, "
+        f"r.source_mtime_ms, r.created_at, r.enriched_at "
+        f"FROM memory_revisions r "
+        f"JOIN memory_documents d ON d.id = r.document_id "
+        f"WHERE {where} "
+        f"ORDER BY r.revision_number DESC LIMIT ?",
+        (*params, limit),
+    ).fetchall()
+    return [
+        {
+            "document_uuid": row[0],
+            "repository": row[1],
+            "logical_path": row[2],
+            "source_path": row[3],
+            "document_state": row[4],
+            "revision_number": row[5],
+            "content_hash": row[6],
+            "change_kind": row[7],
+            "summary": row[8],
+            "diff_text": row[9],
+            "source_mtime_ms": row[10],
+            "created_at": row[11],
+            "enriched_at": row[12],
+        }
+        for row in rows
+    ]
+
+
+def _delete_projection_for_revision(conn: sqlite3.Connection, revision_id: int) -> None:
+    old_node_id = conn.execute(
+        "SELECT knmc.knowledge_node_id FROM knowledge_node_memory_chunks knmc "
+        "JOIN memory_chunks mc ON mc.id = knmc.memory_chunk_id "
+        "WHERE mc.revision_id = ? LIMIT 1",
+        (revision_id,),
+    ).fetchone()
+    if old_node_id is None:
+        return
+    node_id = int(old_node_id[0])
+    if vec_table_available(conn):
+        conn.execute("DELETE FROM knowledge_vectors WHERE knowledge_node_id = ?", (node_id,))
+    conn.execute("DELETE FROM knowledge_node_memory_chunks WHERE knowledge_node_id = ?", (node_id,))
+    conn.execute("DELETE FROM knowledge_nodes WHERE id = ?", (node_id,))
+
+
+def tombstone_document(
+    conn: sqlite3.Connection,
+    document_id: int,
+    *,
+    now_ms: int,
+) -> None:
+    """Tombstone a confirmed-missing document while retaining bounded history."""
+    row = conn.execute(
+        "SELECT active_revision_id, current_revision_id, repository, logical_path, state "
+        "FROM memory_documents WHERE id = ?",
+        (document_id,),
+    ).fetchone()
+    if row is None or row[4] == "tombstoned":
+        return
+    active_revision_id, current_revision_id, repository, logical_path, _state = row
+    with conn:
+        if active_revision_id is not None:
+            _delete_projection_for_revision(conn, int(active_revision_id))
+        revision_number = int(
+            conn.execute(
+                "SELECT COALESCE(MAX(revision_number), 0) + 1 FROM memory_revisions "
+                "WHERE document_id = ?",
+                (document_id,),
+            ).fetchone()[0]
+        )
+        cursor = conn.execute(
+            "INSERT INTO memory_revisions "
+            "(document_id, revision_number, content_hash, source_hash, redacted_content, "
+            " source_mtime_ms, source_size, change_kind, summary, chunker_name, "
+            " chunker_version, chunker_config_json, enrichment_version, created_at) "
+            "VALUES (?, ?, ?, ?, NULL, ?, ?, 'delete', ?, ?, ?, ?, 1, ?)",
+            (
+                document_id,
+                revision_number,
+                "",
+                "",
+                now_ms,
+                0,
+                f"Document {logical_path!r} removed from {repository!r}",
+                CHUNKER_NAME,
+                CHUNKER_VERSION,
+                json.dumps({"boundary": "heading", "retain_heading": True}, sort_keys=True),
+                now_ms,
+            ),
+        )
+        delete_revision_id = int(cursor.lastrowid)
+        conn.execute(
+            "UPDATE memory_documents SET state = 'tombstoned', tombstoned_at = ?, "
+            "active_revision_id = NULL, projection_status = 'stale', observed_at = ?, "
+            "updated_at = ?, current_revision_id = ? WHERE id = ?",
+            (now_ms, now_ms, now_ms, delete_revision_id, document_id),
+        )
+
+
+def reconcile_missing_source(
+    conn: sqlite3.Connection,
+    document_id: int,
+    *,
+    now_ms: int,
+    absence_confirm_polls: int,
+) -> bool:
+    """Advance absence handling; tombstone after configured confirmation polls."""
+    row = conn.execute("SELECT state FROM memory_documents WHERE id = ?", (document_id,)).fetchone()
+    if row is None:
+        return False
+    state = row[0]
+    if state == "tombstoned":
+        return True
+    if state == "active":
+        conn.execute(
+            "UPDATE memory_documents SET state = 'unavailable', observed_at = ?, updated_at = ? "
+            "WHERE id = ?",
+            (now_ms, now_ms, document_id),
+        )
+        if absence_confirm_polls <= 1:
+            tombstone_document(conn, document_id, now_ms=now_ms)
+            return True
+        return False
+    if state == "unavailable":
+        tombstone_document(conn, document_id, now_ms=now_ms)
+        return True
+    return False
+
+
+def reconcile_configured_sources(
+    conn: sqlite3.Connection,
+    sources: list[dict[str, Any]],
+    *,
+    retention: RevisionRetention,
+    now_ms: int | None = None,
+) -> int:
+    """Mark configured-but-missing files unavailable, then tombstone after confirmation."""
+    observed_at = now_ms if now_ms is not None else int(time.time() * 1000)
+    tombstoned = 0
+    configured_paths = {
+        str(Path(source["path"]).expanduser().resolve()) for source in sources if source.get("path")
+    }
+    for source_path in sorted(configured_paths):
+        if Path(source_path).is_file():
+            continue
+        rows = conn.execute(
+            "SELECT id FROM memory_documents WHERE source_path = ? AND state != 'tombstoned'",
+            (source_path,),
+        ).fetchall()
+        for (document_id,) in rows:
+            if reconcile_missing_source(
+                conn,
+                int(document_id),
+                now_ms=observed_at,
+                absence_confirm_polls=retention.absence_confirm_polls,
+            ):
+                prune_document_revisions(conn, int(document_id), retention, now_ms=observed_at)
+                tombstoned += 1
+    return tombstoned
+
+
 def ingest_memory_file(
     conn: sqlite3.Connection,
     source_path: Path | str,
@@ -123,6 +479,7 @@ def ingest_memory_file(
     repository: str | None = None,
     logical_path: str | None = None,
     now_ms: int | None = None,
+    retention: RevisionRetention | None = None,
 ) -> IngestResult:
     """Read, redact, version, chunk, and enqueue one explicit memory file.
 
@@ -154,7 +511,7 @@ def ingest_memory_file(
     # so the path-keyed match is already unambiguous.
     explicit_repo = repository.strip() if repository and repository.strip() else None
     unchanged = conn.execute(
-        "SELECT d.id, d.uuid, r.id, r.revision_number "
+        "SELECT d.id, d.uuid, r.id, r.revision_number, r.source_hash "
         "FROM memory_documents d JOIN memory_revisions r ON r.id = d.current_revision_id "
         "WHERE d.source_kind = ? AND d.source_path = ? AND d.logical_path = ? "
         "AND (? IS NULL OR d.repository = ?) "
@@ -170,13 +527,15 @@ def ingest_memory_file(
         ),
     ).fetchone()
     if unchanged is not None:
-        doc_id, doc_uuid, rev_id, rev_num = unchanged
-        chunk_count = conn.execute(
-            "SELECT COUNT(*) FROM memory_chunks WHERE revision_id = ?", (rev_id,)
-        ).fetchone()[0]
-        return IngestResult(
-            int(doc_id), doc_uuid, int(rev_id), int(rev_num), False, int(chunk_count)
-        )
+        doc_id, doc_uuid, rev_id, rev_num, stored_source_hash = unchanged
+        source_text = path.read_text(encoding="utf-8")
+        if _sha256(source_text) == stored_source_hash:
+            chunk_count = conn.execute(
+                "SELECT COUNT(*) FROM memory_chunks WHERE revision_id = ?", (rev_id,)
+            ).fetchone()[0]
+            return IngestResult(
+                int(doc_id), doc_uuid, int(rev_id), int(rev_num), False, int(chunk_count)
+            )
 
     repository_identity = derive_repository_identity(path, repository)
 
@@ -188,6 +547,38 @@ def ingest_memory_file(
     document_uuid = str(
         uuid.uuid5(_IDENTITY_NAMESPACE, f"{SOURCE_KIND}\0{repository_identity}\0{identity_path}")
     )
+    retention_policy = retention or RevisionRetention()
+
+    renamed_document_id = _try_resolve_rename(
+        conn,
+        repository=repository_identity,
+        logical_path=identity_path,
+        content_hash=content_hash,
+        source_path=resolved,
+        observed_at=observed_at,
+    )
+    if renamed_document_id is not None:
+        row = conn.execute(
+            "SELECT d.uuid, d.current_revision_id, r.revision_number FROM memory_documents d "
+            "JOIN memory_revisions r ON r.id = d.current_revision_id WHERE d.id = ?",
+            (renamed_document_id,),
+        ).fetchone()
+        if row is not None:
+            doc_uuid, revision_id, revision_number = row[0], int(row[1]), int(row[2])
+            chunk_count = conn.execute(
+                "SELECT COUNT(*) FROM memory_chunks WHERE revision_id = ?", (revision_id,)
+            ).fetchone()[0]
+            prune_document_revisions(
+                conn, renamed_document_id, retention_policy, now_ms=observed_at
+            )
+            return IngestResult(
+                renamed_document_id,
+                doc_uuid,
+                revision_id,
+                revision_number,
+                False,
+                int(chunk_count),
+            )
 
     with conn:
         row = conn.execute(
@@ -224,7 +615,8 @@ def ingest_memory_file(
 
         if current_revision_id is not None:
             current = conn.execute(
-                "SELECT id, revision_number, content_hash FROM memory_revisions WHERE id = ?",
+                "SELECT id, revision_number, content_hash, redacted_content FROM memory_revisions "
+                "WHERE id = ?",
                 (current_revision_id,),
             ).fetchone()
             if current is not None and current[2] == content_hash:
@@ -239,6 +631,15 @@ def ingest_memory_file(
                     False,
                     int(chunk_count),
                 )
+
+        previous_redacted: str | None = None
+        if current_revision_id is not None:
+            previous = conn.execute(
+                "SELECT redacted_content FROM memory_revisions WHERE id = ?",
+                (current_revision_id,),
+            ).fetchone()
+            if previous is not None and previous[0]:
+                previous_redacted = previous[0]
 
         revision_number = int(
             conn.execute(
@@ -306,6 +707,15 @@ def ingest_memory_file(
             "consecutive_failures = 0, updated_at = ? WHERE source = ?",
             (observed_at, observed_at, observed_at, SOURCE_KIND),
         )
+        if previous_redacted is not None and current_revision_id is not None:
+            _finalize_superseded_revision(
+                conn,
+                int(current_revision_id),
+                old_redacted=previous_redacted,
+                new_redacted=redacted,
+            )
+
+    prune_document_revisions(conn, document_id, retention_policy, now_ms=observed_at)
 
     return IngestResult(
         document_id,
@@ -654,21 +1064,28 @@ def _schema_version(conn: sqlite3.Connection) -> int:
 def poll_sources(
     conn: sqlite3.Connection,
     sources: list[dict[str, Any]],
+    *,
+    retention: RevisionRetention | None = None,
 ) -> int:
     """Ingest every configured auto-memory source. Returns count of changed revisions."""
+    retention_policy = retention or RevisionRetention()
     changed = 0
     for source in sources:
         path = source.get("path")
         if not path:
+            continue
+        if not Path(path).is_file():
             continue
         result = ingest_memory_file(
             conn,
             path,
             repository=source.get("repository"),
             logical_path=source.get("logical_path"),
+            retention=retention_policy,
         )
         if result.changed:
             changed += 1
+    reconcile_configured_sources(conn, sources, retention=retention_policy)
     return changed
 
 
@@ -709,7 +1126,11 @@ def poll_from_config(config_path: Path | None = None) -> int:
                 f"found {version}; the daemon migrates hippo.db on startup. "
                 "Run `hippo doctor` to check daemon/brain version alignment."
             )
-        return poll_sources(conn, sources)
+        return poll_sources(
+            conn,
+            sources,
+            retention=revision_retention_from_config(auto_memory),
+        )
     finally:
         conn.close()
 
@@ -732,7 +1153,7 @@ def poll_main(argv: list[str] | None = None) -> int:
 def main(argv: list[str] | None = None) -> int:
     """Ingest one explicitly configured Claude auto-memory file."""
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--file", type=Path, required=True, help="Memory Markdown file")
+    parser.add_argument("--file", type=Path, help="Memory Markdown file")
     parser.add_argument(
         "--repository",
         help="Stable repository identity; defaults to sanitized Git origin or local path",
@@ -748,6 +1169,11 @@ def main(argv: list[str] | None = None) -> int:
         default=Path.home() / ".local" / "share" / "hippo" / "hippo.db",
         help="Hippo SQLite database",
     )
+    parser.add_argument(
+        "--history",
+        action="store_true",
+        help="Print bounded revision history instead of ingesting",
+    )
     args = parser.parse_args(argv)
     conn = _open_db(args.db)
     try:
@@ -756,6 +1182,19 @@ def main(argv: list[str] | None = None) -> int:
             parser.error(
                 f"database schema version must be {EXPECTED_SCHEMA_VERSION}, found {version}"
             )
+        if args.history:
+            if not args.repository or not args.logical_path:
+                parser.error("--history requires --repository and --logical-path")
+            history = query_memory_history(
+                conn,
+                repository=args.repository,
+                logical_path=args.logical_path,
+                limit=50,
+            )
+            print(json.dumps(history, sort_keys=True))
+            return 0
+        if args.file is None:
+            parser.error("--file is required unless --history is set")
         result = ingest_memory_file(
             conn,
             args.file,

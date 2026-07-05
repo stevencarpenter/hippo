@@ -41,6 +41,25 @@ search_knowledge(query="busy timeout", mode="lexical", source="claude-auto-memor
 
 Results include `source`, `source_path`, `repository`, `logical_path`, `content_hash`, and capture time. Only the active revision is ever queryable: superseding a revision replaces its knowledge node (and vector), and a revision superseded before its enrichment finishes is discarded rather than published, so stale memory content never appears in answers.
 
+## Revision history
+
+Each content update stores bounded summary/diff metadata on superseded revisions and clears their redacted bodies. Historical revisions never appear in normal `search_knowledge` results; use explicit history instead:
+
+```sh
+mise run ingest:auto-memory -- \
+  --history \
+  --repository owner/repository \
+  --logical-path MEMORY.md
+```
+
+Retention defaults (override in `[auto_memory]`):
+
+- `max_revision_count = 20`
+- `max_revision_age_days = 90`
+- `absence_confirm_polls = 2` (configured file missing on consecutive polls before tombstone)
+
+Renames are detected when exactly one prior document shares the same redacted hash, the old path is gone, and the new path is ingested. Deleted files move to `unavailable` on the first missing poll, then `tombstoned` after confirmation; tombstoned documents drop out of retrieval but keep bounded history.
+
 ## Storage and rollback
 
 Schema v19 adds only additive tables: `memory_documents`, `memory_revisions`, `memory_chunks`, `memory_enrichment_queue`, and `knowledge_node_memory_chunks`. Existing source and knowledge tables are unchanged.
