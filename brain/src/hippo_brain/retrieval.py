@@ -18,6 +18,13 @@ from dataclasses import dataclass, field
 from typing import Protocol, Sequence
 
 from hippo_brain.enrichment import IDENTIFIER_ENTITY_TYPES
+from hippo_brain.retrieval_eligibility import (
+    agentic_session_eligible_sql,
+    browser_event_eligible_sql,
+    knowledge_node_eligible_exists_sql,
+    shell_event_eligible_sql,
+    workflow_run_eligible_sql,
+)
 from hippo_brain.source_filters import (
     knowledge_memory_project_clause,
     knowledge_source_exists_clause,
@@ -39,6 +46,7 @@ class Filters:
     source: str | None = None  # "shell" | "claude" | "browser" | "workflow"
     branch: str | None = None
     entity: str | None = None
+    include_excluded: bool = False
 
 
 @dataclass
@@ -335,12 +343,17 @@ def _apply_filters(
     """
     if not candidate_ids:
         return set()
-    if _is_empty_filter(filters):
+    if _is_empty_filter(filters) and filters.include_excluded:
         return set(candidate_ids)
 
     placeholders = ",".join("?" for _ in candidate_ids)
     clauses: list[str] = [f"kn.id IN ({placeholders})"]
     params: list[object] = list(candidate_ids)
+
+    if not filters.include_excluded:
+        elig_sql, elig_params = knowledge_node_eligible_exists_sql(conn, "kn.id")
+        clauses.append(elig_sql)
+        params.extend(elig_params)
 
     if filters.since_ms is not None:
         clauses.append(
@@ -382,7 +395,8 @@ def _apply_filters(
         LEFT JOIN knowledge_node_events kne ON kne.knowledge_node_id = kn.id
         LEFT JOIN events e ON e.id = kne.event_id
         LEFT JOIN knowledge_node_agentic_sessions kncs ON kncs.knowledge_node_id = kn.id
-        LEFT JOIN agentic_sessions asx ON asx.id = kncs.agentic_session_id AND asx.probe_tag IS NULL
+        LEFT JOIN agentic_sessions asx ON asx.id = kncs.agentic_session_id
+            AND {agentic_session_eligible_sql("asx")}
         LEFT JOIN knowledge_node_browser_events knbe ON knbe.knowledge_node_id = kn.id
         LEFT JOIN browser_events be ON be.id = knbe.browser_event_id
         WHERE {" AND ".join(clauses)}
@@ -407,7 +421,8 @@ def _apply_filters(
             LEFT JOIN knowledge_node_events kne ON kne.knowledge_node_id = kn.id
             LEFT JOIN events e ON e.id = kne.event_id
             LEFT JOIN knowledge_node_agentic_sessions kncs ON kncs.knowledge_node_id = kn.id
-            LEFT JOIN agentic_sessions asx ON asx.id = kncs.agentic_session_id AND asx.probe_tag IS NULL
+            LEFT JOIN agentic_sessions asx ON asx.id = kncs.agentic_session_id
+            AND {agentic_session_eligible_sql("asx")}
             LEFT JOIN knowledge_node_browser_events knbe ON knbe.knowledge_node_id = kn.id
             LEFT JOIN browser_events be ON be.id = knbe.browser_event_id
             WHERE {" AND ".join(clauses)}
@@ -482,6 +497,7 @@ def _fetch_details(conn: sqlite3.Connection, node_ids: Sequence[int]) -> dict[in
         FROM knowledge_node_events kne
         JOIN events e ON e.id = kne.event_id
         WHERE kne.knowledge_node_id IN ({placeholders})
+          AND {shell_event_eligible_sql("e")}
         ORDER BY e.timestamp DESC
         """,
         list(node_ids),
@@ -508,7 +524,7 @@ def _fetch_details(conn: sqlite3.Connection, node_ids: Sequence[int]) -> dict[in
         FROM knowledge_node_browser_events knbe
         JOIN browser_events be ON be.id = knbe.browser_event_id
         WHERE knbe.knowledge_node_id IN ({placeholders})
-          AND be.probe_tag IS NULL
+          AND {browser_event_eligible_sql("be")}
         ORDER BY be.id DESC
         """,
         list(node_ids),
@@ -526,6 +542,7 @@ def _fetch_details(conn: sqlite3.Connection, node_ids: Sequence[int]) -> dict[in
         FROM knowledge_node_workflow_runs knwr
         JOIN workflow_runs wr ON wr.id = knwr.run_id
         WHERE knwr.knowledge_node_id IN ({placeholders})
+          AND {workflow_run_eligible_sql("wr")}
         ORDER BY wr.id DESC
         """,
         list(node_ids),
@@ -547,7 +564,7 @@ def _fetch_details(conn: sqlite3.Connection, node_ids: Sequence[int]) -> dict[in
         FROM knowledge_node_agentic_sessions kncs
         JOIN agentic_sessions asx ON asx.id = kncs.agentic_session_id
         WHERE kncs.knowledge_node_id IN ({placeholders})
-          AND asx.probe_tag IS NULL
+          AND {agentic_session_eligible_sql("asx")}
         ORDER BY asx.start_time DESC, asx.id DESC
         """,
         list(node_ids),

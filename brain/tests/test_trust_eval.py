@@ -156,9 +156,9 @@ def _link_agentic(
     probe_tag: str | None = None,
 ) -> None:
     conn.execute(
-        "INSERT INTO agentic_sessions (id, harness, start_time, cwd, probe_tag) "
-        "VALUES (?, ?, ?, '/hippo', ?)",
-        (session_id, harness, 1_700_000_000_000, probe_tag),
+        "INSERT INTO agentic_sessions (id, harness, start_time, end_time, cwd, probe_tag) "
+        "VALUES (?, ?, ?, ?, '/hippo', ?)",
+        (session_id, harness, 1_700_000_000_000, 1_700_000_060_000, probe_tag),
     )
     conn.execute(
         "INSERT INTO knowledge_node_agentic_sessions (knowledge_node_id, agentic_session_id) "

@@ -19,7 +19,6 @@ from hippo_brain.embeddings import (
     search_similar,
 )
 from hippo_brain.mcp_logging import setup_logging
-from hippo_brain.telemetry import add as _add, get_meter, hist as _hist
 from hippo_brain.mcp_queries import (
     MAX_LIMIT,
     format_context_block,
@@ -32,8 +31,9 @@ from hippo_brain.mcp_queries import (
     shape_semantic_results,
 )
 from hippo_brain.rag import ask as rag_ask, format_rag_response
+from hippo_brain.retrieval_eligibility import include_excluded_from_env
 from hippo_brain.schema_version import require_accepted_schema
-from hippo_brain.telemetry import get_tracer as _get_tracer
+from hippo_brain.telemetry import add as _add, get_meter, get_tracer as _get_tracer, hist as _hist
 
 logger = setup_logging("hippo-mcp")
 
@@ -190,6 +190,7 @@ async def search_knowledge(
     since: str = "",
     source: str = "",
     branch: str = "",
+    include_excluded: bool = False,
 ) -> list[dict]:
     """Search the Hippo knowledge base for enriched knowledge nodes.
 
@@ -204,7 +205,9 @@ async def search_knowledge(
                 "claude", "browser", "workflow", or "claude-auto-memory".
                 Empty means all sources; an unrecognized source raises.
         branch: Exact match on git_branch of linked events/sessions.
+        include_excluded: Operator mode — include probe/diagnostic rows (default false).
     """
+    include_excluded = include_excluded or include_excluded_from_env()
     limit = _clamp_limit(limit)
     _add(_tool_calls, tool="search_knowledge")
     t0 = time.monotonic()
@@ -270,6 +273,7 @@ async def search_knowledge(
                     since=since,
                     source=source,
                     branch=branch,
+                    include_excluded=include_excluded,
                 )
             finally:
                 conn.close()
@@ -297,6 +301,7 @@ async def ask(
     since: str = "",
     source: str = "",
     branch: str = "",
+    include_excluded: bool = False,
 ) -> str:
     """Ask a question and get a synthesized answer from your knowledge base.
 
@@ -315,7 +320,9 @@ async def ask(
         source: Restrict to nodes linked to "shell", "claude", "browser",
                 or "workflow". Empty means all sources.
         branch: Exact match on git_branch of linked events/sessions.
+        include_excluded: Operator mode — include probe/diagnostic rows (default false).
     """
+    include_excluded = include_excluded or include_excluded_from_env()
     limit = _clamp_limit(limit)
     _add(_tool_calls, tool="ask")
     t0 = time.monotonic()
@@ -349,6 +356,7 @@ async def ask(
             since=since_ms,
             source=source or None,
             branch=branch or None,
+            include_excluded=include_excluded,
             conn=conn,
         )
     except Exception:
@@ -614,6 +622,7 @@ async def _retrieve_filtered(
     source: str,
     branch: str,
     entity: str = "",
+    include_excluded: bool = False,
 ) -> list[dict]:
     """Run a filtered retrieval, returning SearchResult-shaped dicts.
 
@@ -630,6 +639,7 @@ async def _retrieve_filtered(
         source=source or None,
         branch=branch or None,
         entity=entity or None,
+        include_excluded=include_excluded or include_excluded_from_env(),
     )
 
     query_vec = None
@@ -655,6 +665,7 @@ async def _retrieve_filtered(
                 since=since,
                 source=source,
                 branch=branch,
+                include_excluded=filters.include_excluded,
             )
     finally:
         conn.close()

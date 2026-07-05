@@ -471,17 +471,19 @@ def _resolve_filters(
     source: str | None,
     branch: str | None,
     entity: str | None,
+    include_excluded: bool | None = None,
 ) -> Filters | None:
     """Merge explicit ``filters`` with flat kwargs. Returns ``None`` if no filter is set."""
     if filters is not None:
         return filters
-    if any(v is not None for v in (project, since, source, branch, entity)):
+    if any(v is not None for v in (project, since, source, branch, entity, include_excluded)):
         return Filters(
             project=project,
             since_ms=since,
             source=source,
             branch=branch,
             entity=entity,
+            include_excluded=bool(include_excluded),
         )
     return None
 
@@ -504,6 +506,7 @@ async def ask(
     entity: str | None = None,
     mode: str = "hybrid",
     conn=None,
+    include_excluded: bool = False,
 ) -> dict:
     """Run the full RAG pipeline: preflight → embed → retrieve → synthesize.
 
@@ -603,6 +606,7 @@ async def ask(
         source=source,
         branch=branch,
         entity=entity,
+        include_excluded=include_excluded,
     )
     retrieval_conn = conn if conn is not None else vector_table
     use_retrieval_search = isinstance(retrieval_conn, sqlite3.Connection)
