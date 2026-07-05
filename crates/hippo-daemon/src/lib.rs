@@ -17,6 +17,7 @@ pub mod native_messaging;
 pub mod opencode_session;
 pub mod probe;
 mod probe_agentic;
+mod probe_auto_memory;
 #[cfg(feature = "otel")]
 pub mod process_metrics;
 pub mod schema_handshake;

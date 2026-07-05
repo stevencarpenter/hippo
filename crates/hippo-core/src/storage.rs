@@ -19,7 +19,7 @@ const SCHEMA: &str = concat!(
 /// startup code (e.g. the brain handshake) can cross-check without
 /// re-declaring the value. Keep in sync with
 /// `brain/src/hippo_brain/schema_version.py::EXPECTED_SCHEMA_VERSION`.
-pub const EXPECTED_VERSION: i64 = 20;
+pub const EXPECTED_VERSION: i64 = 21;
 
 /// Idempotent v18→v19 auto-memory DDL (same file as fresh-install assembly).
 const AUTO_MEMORY_SCHEMA: &str = include_str!("schema/auto_memory.sql");
@@ -1444,6 +1444,17 @@ pub fn open_db(path: &Path) -> Result<Connection> {
     if (1..20).contains(&version) {
         conn.execute_batch(AUTO_MEMORY_TAXONOMY_SCHEMA)?;
         conn.execute_batch("PRAGMA user_version = 20;")?;
+    }
+
+    // v20→v21: auto-memory watcher source_health identity.
+    if (1..21).contains(&version) {
+        if table_exists(&conn, "source_health")? {
+            conn.execute_batch(
+                "INSERT OR IGNORE INTO source_health (source, last_event_ts, updated_at)
+                 VALUES ('auto-memory-watcher', NULL, unixepoch('now') * 1000);",
+            )?;
+        }
+        conn.execute_batch("PRAGMA user_version = 21;")?;
     } else if version != 0 && version != EXPECTED_VERSION {
         anyhow::bail!(
             "DB schema version mismatch: expected {}, found {}. \
@@ -1478,7 +1489,8 @@ pub fn open_db(path: &Path) -> Result<Connection> {
                 ('agentic-session-codex',    NULL, unixepoch('now') * 1000),
                 ('agentic-session-cursor',   NULL, unixepoch('now') * 1000),
                 ('brain-preflight',          NULL, unixepoch('now') * 1000),
-                ('claude-auto-memory',       NULL, unixepoch('now') * 1000);",
+                ('claude-auto-memory',       NULL, unixepoch('now') * 1000),
+                ('auto-memory-watcher',      NULL, unixepoch('now') * 1000);",
         );
     }
     Ok(conn)

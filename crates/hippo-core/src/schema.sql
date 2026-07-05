@@ -652,9 +652,10 @@ INSERT OR IGNORE INTO source_health (source, last_event_ts, updated_at) VALUES
     -- with the inference-backend reachability result. Watchdog I-12 reads
     -- consecutive_failures to alarm when preflight has been stuck failing.
     ('brain-preflight',          NULL, unixepoch('now') * 1000),
-    ('claude-auto-memory',       NULL, unixepoch('now') * 1000);
+    ('claude-auto-memory',       NULL, unixepoch('now') * 1000),
+    ('auto-memory-watcher',      NULL, unixepoch('now') * 1000);
 
 -- The `claude_session_offsets` table (deprecated since T-5) is preserved
 -- to avoid breaking existing CREATE SCHEMA users.
 
-PRAGMA user_version = 20;
+PRAGMA user_version = 21;

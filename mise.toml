@@ -392,6 +392,10 @@ run = "uv run --project brain hippo-brain serve"
 description = "Ingest one explicit Claude Code auto-memory Markdown file"
 run = "uv run --project brain hippo-auto-memory"
 
+[tasks."acceptance:auto-memory"]
+description = "Offline auto-memory reliability acceptance (SNUG-138)"
+run = "uv run --project brain pytest brain/tests/test_auto_memory_reliability.py brain/tests/test_auto_memory_lifecycle.py::test_full_lifecycle_add_update_history_rename_delete -q"
+
 [tasks."brain:api"]
 description = "Call the structured brain API CLI: mise run brain:api -- <operation> [args]"
 run = '''

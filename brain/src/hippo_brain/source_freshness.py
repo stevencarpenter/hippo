@@ -81,7 +81,8 @@ _COVERAGE_SQL: dict[str, str] = {
         "WHERE harness = 'cursor' AND probe_tag IS NULL"
     ),
     "claude-auto-memory": (
-        "SELECT COUNT(*), MAX(md.updated_at) FROM memory_documents md WHERE md.state = 'active'"
+        "SELECT COUNT(*), MAX(md.updated_at) FROM memory_documents md "
+        "WHERE md.state = 'active' AND md.repository != 'hippo/__hippo_probe__'"
     ),
 }
 

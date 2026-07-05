@@ -24,6 +24,11 @@ from hippo_brain.auto_memory_discovery import (
     merge_configured_sources,
 )
 from hippo_brain.auto_memory_ingest import ingest_memory_file
+from hippo_brain.auto_memory_health import (
+    bump_watcher_heartbeat,
+    record_reconcile_failure,
+    snapshot_health,
+)
 from hippo_brain.auto_memory_lifecycle import (
     RevisionRetention,
     reconcile_configured_sources,
@@ -230,9 +235,11 @@ def reconcile_sources(
                 require_stable=require_stable,
             )
         except (OSError, ValueError, sqlite3.Error) as exc:
+            path = str(Path(source["path"]).expanduser().resolve())
+            record_reconcile_failure(conn, str(exc), now_ms=observed_at)
             results.append(
                 {
-                    "path": str(Path(source["path"]).expanduser().resolve()),
+                    "path": path,
                     "outcome": "error",
                     "changed": False,
                     "revision_id": None,
@@ -277,6 +284,9 @@ def reconcile_sources(
             conn=conn,
             now_ms=observed_at,
         ).to_dict()
+    bump_watcher_heartbeat(conn, now_ms=observed_at)
+    summary["health"] = snapshot_health(conn, now_ms=observed_at).to_dict()
+    conn.commit()
     return summary
 
 

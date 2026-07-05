@@ -37,6 +37,9 @@ const PROBE_INTERVAL_MS: i64 = 300_000;
 const LIVENESS_GRACE_MS: i64 = 120_000;
 const SHELL_LIVENESS_STALE_MS: i64 = PROBE_INTERVAL_MS + LIVENESS_GRACE_MS;
 const BROWSER_ROUNDTRIP_STALE_MS: i64 = PROBE_INTERVAL_MS + LIVENESS_GRACE_MS;
+const AUTO_MEMORY_WATCHER_STALE_MS: i64 = 15 * 60 * 1000;
+const AUTO_MEMORY_PROJECTION_STALE_MS: i64 = 30 * 60 * 1000;
+const AUTO_MEMORY_PROBE_REPOSITORY: &str = "hippo/__hippo_probe__";
 
 // DDL used by the pre-migration safety path only.  The authoritative definition
 // lives in `schema.sql` and `storage.rs`; this is a fallback for the case where
@@ -178,6 +181,12 @@ pub fn run(config: &HippoConfig) -> Result<()> {
         now_ms,
         i64::try_from(config.watchdog.dup_node_alarm_threshold).unwrap_or(i64::MAX),
     )? {
+        violations.push(v);
+    }
+    if let Some(v) = check_i19_stale_memory_projection(&conn, now_ms)? {
+        violations.push(v);
+    }
+    if let Some(v) = check_i20_orphaned_memory_chunk_links(&conn, now_ms)? {
         violations.push(v);
     }
 
@@ -503,6 +512,16 @@ pub fn check_invariants(rows: &[SourceHealthRow], now_ms: i64) -> Vec<InvariantV
         violations.push(v);
     }
 
+    // I-17: Auto-memory watcher heartbeat stale while ingest is active.
+    if !bench_paused && let Some(v) = check_i17_auto_memory_watcher(&by_source, now_ms) {
+        violations.push(v);
+    }
+
+    // I-18: Auto-memory reconcile/ingest repeated failures.
+    if !bench_paused && let Some(v) = check_i18_auto_memory_ingest_proxy(&by_source, now_ms) {
+        violations.push(v);
+    }
+
     violations
 }
 
@@ -638,6 +657,133 @@ pub fn check_i12_brain_preflight_stuck(
         });
     }
     None
+}
+
+/// I-17: Auto-memory watcher heartbeat stale while ingest has been active.
+pub fn check_i17_auto_memory_watcher(
+    by_source: &std::collections::HashMap<&str, &SourceHealthRow>,
+    now_ms: i64,
+) -> Option<InvariantViolation> {
+    let ingest = by_source.get("claude-auto-memory")?;
+    let watcher = by_source.get("auto-memory-watcher")?;
+    let ingest_ts = ingest.last_event_ts?;
+    if now_ms - ingest_ts > AUTO_MEMORY_WATCHER_STALE_MS * 4 {
+        return None;
+    }
+    let heartbeat = watcher.last_heartbeat_ts.or(watcher.last_success_ts)?;
+    let age_ms = now_ms - heartbeat;
+    if age_ms > AUTO_MEMORY_WATCHER_STALE_MS {
+        Some(InvariantViolation {
+            invariant_id: "I-17".to_string(),
+            source: "auto-memory-watcher".to_string(),
+            since_ms: age_ms,
+            details: json!({
+                "last_heartbeat_ts": watcher.last_heartbeat_ts,
+                "ingest_last_event_ts": ingest.last_event_ts,
+                "note": "FSEvents watcher or periodic reconcile may be stalled",
+            }),
+        })
+    } else {
+        None
+    }
+}
+
+/// I-18: Auto-memory reconcile/ingest repeated failures.
+pub fn check_i18_auto_memory_ingest_proxy(
+    by_source: &std::collections::HashMap<&str, &SourceHealthRow>,
+    now_ms: i64,
+) -> Option<InvariantViolation> {
+    let row = by_source.get("claude-auto-memory")?;
+    if row.consecutive_failures <= 3 {
+        return None;
+    }
+    let since = row.last_error_ts.or(row.last_event_ts).unwrap_or(now_ms);
+    Some(InvariantViolation {
+        invariant_id: "I-18".to_string(),
+        source: "claude-auto-memory".to_string(),
+        since_ms: now_ms - since,
+        details: json!({
+            "consecutive_failures": row.consecutive_failures,
+            "last_error_msg": row.last_error_msg.clone(),
+        }),
+    })
+}
+
+/// I-19: Stale searchable projection after source mutation.
+pub fn check_i19_stale_memory_projection(
+    conn: &Connection,
+    now_ms: i64,
+) -> Result<Option<InvariantViolation>> {
+    let table_exists: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='memory_documents')",
+        [],
+        |row| row.get(0),
+    )?;
+    if !table_exists {
+        return Ok(None);
+    }
+    let cutoff = now_ms - AUTO_MEMORY_PROJECTION_STALE_MS;
+    let count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM memory_documents
+         WHERE state = 'active'
+           AND projection_status = 'pending'
+           AND repository != ?1
+           AND updated_at < ?2",
+        rusqlite::params![AUTO_MEMORY_PROBE_REPOSITORY, cutoff],
+        |row| row.get(0),
+    )?;
+    if count == 0 {
+        return Ok(None);
+    }
+    Ok(Some(InvariantViolation {
+        invariant_id: "I-19".to_string(),
+        source: "claude-auto-memory".to_string(),
+        since_ms: AUTO_MEMORY_PROJECTION_STALE_MS,
+        details: json!({
+            "stale_projection_count": count,
+            "note": "active documents still pending enrichment projection",
+        }),
+    }))
+}
+
+/// I-20: Orphaned active memory chunk links (no knowledge node).
+pub fn check_i20_orphaned_memory_chunk_links(
+    conn: &Connection,
+    now_ms: i64,
+) -> Result<Option<InvariantViolation>> {
+    let table_exists: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master
+                       WHERE type='table' AND name='knowledge_node_memory_chunks')",
+        [],
+        |row| row.get(0),
+    )?;
+    if !table_exists {
+        return Ok(None);
+    }
+    let count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM memory_chunks mc
+         LEFT JOIN knowledge_node_memory_chunks knmc ON knmc.memory_chunk_id = mc.id
+         JOIN memory_revisions mr ON mr.id = mc.revision_id
+         JOIN memory_documents md ON md.id = mr.document_id
+         WHERE md.active_revision_id = mr.id
+           AND md.state = 'active'
+           AND md.repository != ?1
+           AND knmc.knowledge_node_id IS NULL",
+        rusqlite::params![AUTO_MEMORY_PROBE_REPOSITORY],
+        |row| row.get(0),
+    )?;
+    if count == 0 {
+        return Ok(None);
+    }
+    Ok(Some(InvariantViolation {
+        invariant_id: "I-20".to_string(),
+        source: "claude-auto-memory".to_string(),
+        since_ms: 0,
+        details: json!({
+            "orphan_chunk_links": count,
+            "checked_at_ms": now_ms,
+        }),
+    }))
 }
 
 /// I-11: Opencode-session coverage proxy.

@@ -129,6 +129,28 @@ Tuning knobs in `[auto_memory]`:
 
 During enrichment failure or pending retries, the last-known-good projection stays queryable (`projection_status = stale`). Poll/reconcile JSON reports `pending_enrichment` and `failed_enrichment` per source.
 
+## Reliability and operations (SNUG-138)
+
+Source health is split across SQLite identities (no brain HTTP required for doctor):
+
+| Identity | Signal |
+|----------|--------|
+| `auto-memory-watcher` | FSEvents / periodic reconcile heartbeat (`last_heartbeat_ts`) |
+| `claude-auto-memory` | Ingest success, reconcile failures (`consecutive_failures`) |
+| `memory_enrichment_queue` | Pending vs failed enrichment depth (doctor SQL) |
+| Active projections | `projection_status` lag after mutation (watchdog I-19) |
+
+Synthetic probe (`hippo probe claude-auto-memory` or launchd `com.hippo.probe`) writes only under `$DATA_DIR/probe-auto-memory/` with repository `hippo/__hippo_probe__`. Probe rows are excluded from `query_memory`, `search_knowledge`, and RAG.
+
+Operator commands:
+
+- `hippo-auto-memory-poll` / `hippo-auto-memory-reconcile` — bounded reconcile with health summary JSON
+- `hippo-auto-memory-replay` — reset failed queue rows to pending (probe repository excluded)
+- `hippo doctor` — watcher, ingest, queue, and projection lines
+- `mise run acceptance:auto-memory` — offline acceptance against a temp database
+
+Watchdog invariants: I-17 (watcher stale), I-18 (repeated reconcile failure), I-19 (stale projection), I-20 (orphaned chunk links).
+
 ## Storage and rollback
 
 Schema v19 adds only additive tables: `memory_documents`, `memory_revisions`, `memory_chunks`, `memory_enrichment_queue`, and `knowledge_node_memory_chunks`. Existing source and knowledge tables are unchanged.

@@ -5,6 +5,10 @@ from __future__ import annotations
 import uuid
 
 SOURCE_KIND = "claude-auto-memory"
+WATCHER_SOURCE = "auto-memory-watcher"
+# Synthetic probe fixture identity — excluded from all user-facing retrieval (AP-6).
+PROBE_REPOSITORY = "hippo/__hippo_probe__"
+PROBE_LOGICAL_PATH = "synthetic/probe-memory.md"
 CHUNKER_NAME = "markdown-headings"
 CHUNKER_VERSION = 1
 _IDENTITY_NAMESPACE = uuid.UUID("0fc25921-9c30-4c16-85da-b489ea81f087")

@@ -657,3 +657,27 @@ def main(argv: list[str] | None = None) -> int:
         conn.close()
     print(json.dumps(result.__dict__, sort_keys=True))
     return 0
+
+
+def replay_main(argv: list[str] | None = None) -> int:
+    """Reset failed auto-memory enrichment rows to pending (operator replay)."""
+    from hippo_brain.auto_memory_health import replay_failed_enrichments
+
+    parser = argparse.ArgumentParser(description="Replay failed Claude auto-memory enrichments.")
+    parser.add_argument(
+        "--db",
+        type=Path,
+        default=Path.home() / ".local" / "share" / "hippo" / "hippo.db",
+    )
+    parser.add_argument("--limit", type=int, default=50)
+    args = parser.parse_args(argv)
+    conn = _open_db(args.db)
+    try:
+        if _schema_version(conn) != EXPECTED_SCHEMA_VERSION:
+            parser.error(f"database schema version must be {EXPECTED_SCHEMA_VERSION}")
+        replayed = replay_failed_enrichments(conn, limit=args.limit)
+        conn.commit()
+    finally:
+        conn.close()
+    print(json.dumps({"replayed": replayed}, sort_keys=True))
+    return 0

@@ -1245,6 +1245,7 @@ pub async fn handle_doctor(config: &HippoConfig, explain: bool) -> Result<()> {
                 check_claude_session_coverage(&conn, &home.join(".claude/projects"), explain);
         }
         fail_count += check_cursor_session_coverage(config, &conn, explain);
+        fail_count += check_auto_memory_health(config, &conn, explain);
         fail_count += check_watchdog_heartbeat(&conn, explain);
         // Auto-resolved alarm count is informational — never increments fail_count.
         check_resolved_alarm_count(&conn);
@@ -1446,6 +1447,15 @@ pub fn source_freshness_probes() -> Vec<SourceFreshnessProbe> {
                     WHERE harness = 'cursor' AND probe_tag IS NULL",
             thresholds: FreshnessThresholds {
                 soft_ms: 3 * DAY_MS,
+                hard_ms: 30 * DAY_MS,
+            },
+        },
+        SourceFreshnessProbe {
+            name: "claude-auto-memory",
+            query: "SELECT COUNT(*), MAX(updated_at) FROM memory_documents \
+                    WHERE state = 'active' AND repository != 'hippo/__hippo_probe__'",
+            thresholds: FreshnessThresholds {
+                soft_ms: 7 * DAY_MS,
                 hard_ms: 30 * DAY_MS,
             },
         },
@@ -2962,6 +2972,144 @@ fn watchdog_heartbeat_status(age_secs: i64) -> WatchdogHeartbeatStatus {
     } else {
         WatchdogHeartbeatStatus::Fail
     }
+}
+
+/// Auto-memory reliability doctor check (SNUG-138) — SQLite only, no brain HTTP.
+fn check_auto_memory_health(config: &HippoConfig, db: &rusqlite::Connection, explain: bool) -> u32 {
+    if !config.auto_memory.enabled {
+        println!("[--] {:<29}  source disabled", "auto-memory health");
+        return 0;
+    }
+
+    let table_exists: bool = db
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='memory_documents')",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap_or(false);
+    if !table_exists {
+        println!("[--] {:<29}  schema not migrated", "auto-memory health");
+        return 0;
+    }
+
+    let now_ms = chrono::Utc::now().timestamp_millis();
+    let mut fail_count = 0u32;
+
+    let watcher_age: Option<i64> = db
+        .query_row(
+            "SELECT last_heartbeat_ts FROM source_health WHERE source = 'auto-memory-watcher'",
+            [],
+            |row| row.get(0),
+        )
+        .ok()
+        .flatten();
+    match watcher_age {
+        None => println!(
+            "[WW] {:<29}  watcher never heartbeated",
+            "auto-memory watcher"
+        ),
+        Some(ts) => {
+            let age_ms = (now_ms - ts).max(0);
+            if age_ms > 15 * 60 * 1000 {
+                println!(
+                    "[!!] {:<29}  heartbeat stale ({} ago)",
+                    "auto-memory watcher",
+                    format_duration_ms(age_ms)
+                );
+                if explain {
+                    println!("     CAUSE: FSEvents watcher or periodic reconcile may be down.");
+                    println!(
+                        "     FIX: launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.hippo.auto-memory-watcher.plist"
+                    );
+                }
+                fail_count += 1;
+            } else {
+                println!(
+                    "[OK] {:<29}  heartbeat {}",
+                    "auto-memory watcher",
+                    format_duration_ms(age_ms)
+                );
+            }
+        }
+    }
+
+    let ingest_row: Option<(Option<i64>, i64, Option<String>)> = db
+        .query_row(
+            "SELECT last_event_ts, consecutive_failures, last_error_msg
+             FROM source_health WHERE source = 'claude-auto-memory'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .ok();
+    match ingest_row {
+        None => println!("[WW] {:<29}  no ingest health row", "auto-memory ingest"),
+        Some((last_event, consecutive, err)) => {
+            if consecutive > 3 {
+                println!(
+                    "[!!] {:<29}  {} consecutive failures",
+                    "auto-memory ingest", consecutive
+                );
+                if explain {
+                    if let Some(msg) = err {
+                        println!("     CAUSE: {msg}");
+                    }
+                    println!("     FIX: hippo-auto-memory-poll; inspect auto-memory.log");
+                }
+                fail_count += 1;
+            } else if let Some(ts) = last_event {
+                let age = format_duration_ms((now_ms - ts).max(0));
+                println!("[OK] {:<29}  last ingest {}", "auto-memory ingest", age);
+            } else {
+                println!("[--] {:<29}  no ingest events yet", "auto-memory ingest");
+            }
+        }
+    }
+
+    let (pending, failed): (i64, i64) = db
+        .query_row(
+            "SELECT
+                (SELECT COUNT(*) FROM memory_enrichment_queue WHERE status = 'pending'),
+                (SELECT COUNT(*) FROM memory_enrichment_queue WHERE status = 'failed')",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap_or((0, 0));
+    if failed > 0 {
+        println!(
+            "[!!] {:<29}  pending={pending} failed={failed}",
+            "auto-memory enrichment"
+        );
+        if explain {
+            println!("     FIX: hippo-auto-memory-replay --limit 50");
+        }
+        fail_count += 1;
+    } else if pending > 0 {
+        println!("[WW] {:<29}  pending={pending}", "auto-memory enrichment");
+    } else {
+        println!("[OK] {:<29}  queue empty", "auto-memory enrichment");
+    }
+
+    let stale_projections: i64 = db
+        .query_row(
+            "SELECT COUNT(*) FROM memory_documents
+             WHERE state = 'active' AND projection_status = 'pending'
+               AND repository != 'hippo/__hippo_probe__'
+               AND updated_at < ?1",
+            rusqlite::params![now_ms - 30 * 60 * 1000],
+            |row| row.get(0),
+        )
+        .unwrap_or(0);
+    if stale_projections > 0 {
+        println!(
+            "[WW] {:<29}  {stale_projections} stale pending projection(s)",
+            "auto-memory projection"
+        );
+    } else {
+        println!("[OK] {:<29}  projections fresh", "auto-memory projection");
+    }
+
+    fail_count
 }
 
 /// Check 8: Watchdog heartbeat — verify the watchdog row in source_health is fresh.

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import sqlite3
 
+from hippo_brain.auto_memory_constants import PROBE_REPOSITORY
+
 CLAUDE_AUTO_MEMORY_SOURCE = "claude-auto-memory"
 
 # Logical source families keyed by linked_source_ids prefix (see retrieval._fetch_details).
@@ -26,13 +28,16 @@ def source_kind_from_linked_id(link: str) -> str | None:
     return None
 
 
+_MEMORY_PROBE_EXCLUDE = f"AND md.repository != '{PROBE_REPOSITORY}'"
+
 _MEMORY_SOURCE_EXISTS = (
     "EXISTS (SELECT 1 FROM knowledge_node_memory_chunks knmc "
     "JOIN memory_chunks mc ON mc.id = knmc.memory_chunk_id "
     "JOIN memory_revisions mr ON mr.id = mc.revision_id "
     "JOIN memory_documents md ON md.id = mr.document_id "
     "WHERE knmc.knowledge_node_id = kn.id "
-    "AND md.active_revision_id = mr.id AND md.state = 'active')"
+    "AND md.active_revision_id = mr.id AND md.state = 'active' "
+    f"{_MEMORY_PROBE_EXCLUDE})"
 )
 
 _SOURCE_EXISTS: dict[str, str] = {
@@ -50,6 +55,7 @@ _MEMORY_PROJECT_EXISTS = (
     "JOIN memory_documents md ON md.id = mr.document_id "
     "WHERE knmc.knowledge_node_id = kn.id "
     "AND md.active_revision_id = mr.id AND md.state = 'active' "
+    f"{_MEMORY_PROBE_EXCLUDE} "
     "AND (md.repository LIKE ? OR md.source_path LIKE ?))"
 )
 
@@ -61,6 +67,7 @@ _MEMORY_CATEGORY_EXISTS = (
     "JOIN memory_document_categories mdc ON mdc.document_id = md.id "
     "WHERE knmc.knowledge_node_id = kn.id "
     "AND md.active_revision_id = mr.id AND md.state = 'active' "
+    f"{_MEMORY_PROBE_EXCLUDE} "
     "AND mdc.category = ?)"
 )
 
