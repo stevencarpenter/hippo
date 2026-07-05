@@ -11,6 +11,10 @@ import time
 from datetime import datetime, timezone
 
 from hippo_brain.models import CIAnnotation, CIJob, CIStatus, Lesson
+from hippo_brain.retrieval_eligibility import (
+    agentic_session_eligible_sql,
+    knowledge_node_eligible_exists_sql,
+)
 from hippo_brain.source_filters import (
     knowledge_memory_project_clause,
     knowledge_source_exists_clause,
@@ -157,6 +161,8 @@ def _build_knowledge_filter_clause(
     since_ms: int,
     source: str,
     branch: str,
+    *,
+    include_excluded: bool = False,
 ) -> tuple[str, list]:
     """Compose a WHERE-fragment + params for knowledge_nodes filter columns.
 
@@ -166,6 +172,13 @@ def _build_knowledge_filter_clause(
     clauses: list[str] = []
     params: list = []
     link_table, link_column, session_table = _agentic_link_target(conn)
+
+    if not include_excluded:
+        elig_sql, elig_params = knowledge_node_eligible_exists_sql(
+            conn, "kn.id", include_excluded=False
+        )
+        clauses.append(elig_sql)
+        params.extend(elig_params)
 
     if since_ms:
         clauses.append("kn.created_at >= ?")
@@ -185,7 +198,7 @@ def _build_knowledge_filter_clause(
                 f" OR EXISTS (SELECT 1 FROM {link_table} links "
                 f"  JOIN {session_table} s ON s.id = links.{link_column} "
                 "  WHERE links.knowledge_node_id = kn.id "
-                "    AND s.probe_tag IS NULL "
+                f"    AND {agentic_session_eligible_sql('s', include_excluded=include_excluded)} "
                 "    AND (s.cwd LIKE ? OR s.project_dir LIKE ?))"
             )
             params.extend([like, like])
@@ -208,7 +221,7 @@ def _build_knowledge_filter_clause(
                 f" OR EXISTS (SELECT 1 FROM {link_table} links "
                 f"  JOIN {session_table} s ON s.id = links.{link_column} "
                 "  WHERE links.knowledge_node_id = kn.id "
-                "    AND s.probe_tag IS NULL AND s.git_branch = ?)"
+                f"    AND {agentic_session_eligible_sql('s', include_excluded=include_excluded)} AND s.git_branch = ?)"
             )
             params.append(branch)
         branch_clause += ")"
@@ -221,6 +234,7 @@ def _build_knowledge_filter_clause(
             claude_link_table=link_table,
             claude_link_column=link_column,
             claude_session_table=session_table,
+            include_excluded=include_excluded,
         )
         if source_clause is None:
             # Mirror retrieval._apply_filters: an unrecognized (or unavailable)
@@ -242,11 +256,18 @@ def search_knowledge_lexical(
     since: str = "",
     source: str = "",
     branch: str = "",
+    *,
+    include_excluded: bool = False,
 ) -> list[dict]:
     """Lexical (LIKE) search over knowledge_nodes with optional filter pushdown."""
     since_ms = parse_since(since)
     where_extra, extra_params = _build_knowledge_filter_clause(
-        conn, project=project, since_ms=since_ms, source=source, branch=branch
+        conn,
+        project=project,
+        since_ms=since_ms,
+        source=source,
+        branch=branch,
+        include_excluded=include_excluded,
     )
 
     if query:

@@ -20,7 +20,8 @@ CREATE TABLE events (
     timestamp INTEGER NOT NULL,
     cwd TEXT NOT NULL,
     git_repo TEXT,
-    git_branch TEXT
+    git_branch TEXT,
+    probe_tag TEXT
 );
 CREATE TABLE knowledge_node_events (
     knowledge_node_id INTEGER NOT NULL,
@@ -29,11 +30,17 @@ CREATE TABLE knowledge_node_events (
 );
 CREATE TABLE agentic_sessions (
     id INTEGER PRIMARY KEY,
+    session_id TEXT NOT NULL DEFAULT '',
     harness TEXT NOT NULL DEFAULT 'claude-code',
+    segment_index INTEGER NOT NULL DEFAULT 0,
     start_time INTEGER NOT NULL,
+    end_time INTEGER NOT NULL,
     cwd TEXT NOT NULL,
     project_dir TEXT,
     git_branch TEXT,
+    summary_text TEXT NOT NULL DEFAULT 'session work',
+    message_count INTEGER NOT NULL DEFAULT 5,
+    source_file TEXT NOT NULL DEFAULT '/proj/session.jsonl',
     probe_tag TEXT
 );
 CREATE TABLE knowledge_node_agentic_sessions (
@@ -49,7 +56,10 @@ CREATE TABLE browser_events (
 CREATE TABLE workflow_runs (
     id INTEGER PRIMARY KEY,
     repo TEXT,
-    head_sha TEXT
+    head_sha TEXT,
+    status TEXT NOT NULL DEFAULT 'completed',
+    conclusion TEXT DEFAULT 'success',
+    started_at INTEGER
 );
 CREATE TABLE knowledge_node_browser_events (
     knowledge_node_id INTEGER NOT NULL,
