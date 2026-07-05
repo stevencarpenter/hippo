@@ -31,8 +31,9 @@ The v17→v18 migration already copied historical rows into `agentic_sessions` /
    ```bash
    sqlite3 ~/.local/share/hippo/hippo.db "
      SELECT 'claude_sessions' AS t, COUNT(*) FROM claude_sessions
-     UNION ALL SELECT 'agentic_sessions', COUNT(*) FROM agentic_sessions
-     WHERE harness IN ('claude-code','codex','cursor','opencode');
+     UNION ALL
+     SELECT 'agentic_sessions', COUNT(*) FROM agentic_sessions
+       WHERE harness IN ('claude-code','codex','cursor','opencode');
    "
    ```
 4. **Record schema version**: `sqlite3 ~/.local/share/hippo/hippo.db 'PRAGMA user_version;'`

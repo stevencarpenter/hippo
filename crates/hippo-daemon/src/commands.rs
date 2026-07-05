@@ -4073,9 +4073,8 @@ fn check_firefox_extension_permanent_install(explain: bool) -> u32 {
                 "     FIX:    mise run install:ext (one-time: about:config → xpinstall.signatures.required = false)"
             );
             println!(
-                "     DEV:    about:debugging → Load Temporary Add-on is for active extension development only"
+                "     DOC:    about:debugging → Load Temporary Add-on is for active extension development only; see docs/capture/operator-runbook.md"
             );
-            println!("     DOC:    docs/capture/operator-runbook.md (Browser capture is idle…)");
         }
         1
     }
