@@ -12,9 +12,7 @@ pub fn poll_tick(config: &HippoConfig) -> Result<usize> {
         debug!("auto-memory poll disabled by config");
         return Ok(0);
     }
-    if config.auto_memory.sources.is_empty()
-        && !(config.auto_memory.discovery.enabled && config.auto_memory.discovery.claude_projects)
-    {
+    if config.auto_memory.sources.is_empty() && !config.auto_memory.discovery.produces_sources() {
         debug!("auto-memory enabled but no sources configured and fleet discovery disabled");
         return Ok(0);
     }

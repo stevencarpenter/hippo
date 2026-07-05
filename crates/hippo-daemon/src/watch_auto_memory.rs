@@ -46,10 +46,12 @@ fn configured_source_paths(config: &HippoConfig) -> Vec<PathBuf> {
         .collect()
 }
 
-fn discovery_watches_claude_projects(config: &HippoConfig) -> bool {
-    config.auto_memory.enabled
-        && config.auto_memory.discovery.enabled
-        && config.auto_memory.discovery.claude_projects
+fn discovery_active(config: &HippoConfig) -> bool {
+    config.auto_memory.discovery.produces_sources()
+}
+
+fn fleet_fsevents_enabled(config: &HippoConfig) -> bool {
+    config.auto_memory.discovery.watches_claude_projects_fleet()
 }
 
 fn is_memory_markdown(path: &Path) -> bool {
@@ -153,7 +155,7 @@ pub async fn run(config: &HippoConfig) -> Result<()> {
         warn!("auto-memory watcher: disabled by config");
         return Ok(());
     }
-    if config.auto_memory.sources.is_empty() && !discovery_watches_claude_projects(config) {
+    if config.auto_memory.sources.is_empty() && !discovery_active(config) {
         warn!(
             "auto-memory watcher: enabled but no sources configured and fleet discovery disabled"
         );
@@ -161,7 +163,7 @@ pub async fn run(config: &HippoConfig) -> Result<()> {
     }
 
     let sources = configured_source_paths(config);
-    let fleet_discovery = discovery_watches_claude_projects(config);
+    let fleet_discovery = fleet_fsevents_enabled(config);
     let debounce = Duration::from_millis(config.auto_memory.debounce_ms);
     let fallback = Duration::from_secs(config.auto_memory.reconcile_fallback_secs);
 
