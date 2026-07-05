@@ -33,4 +33,4 @@ Operator mode disables the eligibility gate so capture-health investigations can
 3. Extend `knowledge_node_eligible_exists_sql` with an `EXISTS` branch.
 4. Add a regression test in `brain/tests/test_retrieval_eligibility.py`.
 
-See also AP-6 in [`anti-patterns.md`](anti-patterns.md).
+See also AP-6 in [`anti-patterns.md`](anti-patterns.md). Agent-facing per-source semantics: [`source-trust-contracts.md`](source-trust-contracts.md).

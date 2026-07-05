@@ -1,0 +1,121 @@
+{
+  "schema_version": 1,
+  "doc": "docs/capture/source-trust-contracts.md",
+  "families": [
+    {
+      "id": "shell",
+      "tables": ["events", "sessions", "knowledge_node_events", "knowledge_nodes"],
+      "identity_fields": ["events.id", "linked_source_ids:shell-<id>"],
+      "timestamp_fields": ["events.timestamp", "events.duration_ms"],
+      "probe_filter": "events.probe_tag IS NULL",
+      "source_health_key": "shell",
+      "freshness_invariant": "I-1",
+      "safe_citation_fields": ["command", "cwd", "git_repo", "git_branch", "exit_code", "duration_ms", "timestamp"],
+      "citation_example": "Shell event shell-18442: cargo test -p hippo-core in /Users/me/projects/hippo on main exited 0 after 12.4s."
+    },
+    {
+      "id": "claude-tool",
+      "tables": ["events", "knowledge_node_events"],
+      "identity_fields": ["events.id", "events.tool_name", "linked_source_ids:shell-<id>"],
+      "timestamp_fields": ["events.timestamp"],
+      "probe_filter": "events.probe_tag IS NULL",
+      "source_health_key": "claude-tool",
+      "notes": "MCP search_events source=claude does not include claude-tool rows; use source=all or shell."
+    },
+    {
+      "id": "claude",
+      "harness": "claude-code",
+      "tables": ["agentic_sessions", "knowledge_node_agentic_sessions"],
+      "identity_fields": ["session_id", "harness", "segment_index", "linked_source_ids:claude-<id>"],
+      "timestamp_fields": ["start_time", "end_time"],
+      "probe_filter": "agentic_sessions.probe_tag IS NULL",
+      "in_flight": "end_time within 90s settle window; workflow journal.jsonl paths excluded",
+      "source_health_key": "agentic-session-claude",
+      "freshness_invariant": "I-2",
+      "safe_citation_fields": ["session_id", "harness", "segment_index", "summary_text", "cwd", "git_branch", "source_file"],
+      "citation_example": "Claude segment claude-1204 (session_id=sess-abc, segment 0): fixed retrieval filter in hippo, ended 2026-07-05T10:00:00Z."
+    },
+    {
+      "id": "codex",
+      "harness": "codex",
+      "tables": ["agentic_sessions", "knowledge_node_agentic_sessions"],
+      "identity_fields": ["session_id", "harness", "segment_index", "linked_source_ids:codex-<id>"],
+      "timestamp_fields": ["start_time", "end_time"],
+      "probe_filter": "agentic_sessions.probe_tag IS NULL",
+      "in_flight": "end_time within 90s settle window",
+      "source_health_key": "agentic-session-codex",
+      "freshness_invariant": "I-13",
+      "safe_citation_fields": ["session_id", "summary_text", "source_file", "start_time", "end_time"],
+      "citation_example": "Codex segment codex-5021 (rollout-7f3a, segment 2): dependency bump work in hippo, ended 2026-07-04T18:22:00Z."
+    },
+    {
+      "id": "cursor",
+      "harness": "cursor",
+      "tables": ["agentic_sessions", "knowledge_node_agentic_sessions"],
+      "identity_fields": ["session_id", "harness", "segment_index", "linked_source_ids:cursor-<id>"],
+      "timestamp_fields": ["start_time", "end_time"],
+      "probe_filter": "agentic_sessions.probe_tag IS NULL",
+      "in_flight": "end_time within 90s settle window; file mtime used when JSONL lacks per-line times",
+      "source_health_key": "agentic-session-cursor",
+      "freshness_invariant": "I-15",
+      "safe_citation_fields": ["session_id", "summary_text", "is_subagent", "parent_session_id", "source_file"]
+    },
+    {
+      "id": "opencode",
+      "harness": "opencode",
+      "tables": ["agentic_sessions", "knowledge_node_agentic_sessions"],
+      "identity_fields": ["session_id", "harness", "segment_index", "linked_source_ids:opencode-<id>"],
+      "timestamp_fields": ["start_time", "end_time"],
+      "probe_filter": "agentic_sessions.probe_tag IS NULL",
+      "source_health_key": "agentic-session-opencode",
+      "freshness_invariant": "I-11",
+      "expected_absent": "sessions with fewer than 3 messages and no diffs/commits"
+    },
+    {
+      "id": "browser",
+      "tables": ["browser_events", "knowledge_node_browser_events"],
+      "identity_fields": ["browser_events.id", "linked_source_ids:browser-<id>"],
+      "timestamp_fields": ["timestamp", "dwell_ms"],
+      "probe_filter": "browser_events.probe_tag IS NULL",
+      "source_health_key": "browser",
+      "freshness_invariant": "I-4",
+      "safe_citation_fields": ["domain", "title", "url", "dwell_ms", "timestamp"],
+      "citation_example": "Browser event browser-3301: read SQLite WAL mode on sqlite.org for 4m 12s."
+    },
+    {
+      "id": "workflow",
+      "tables": ["workflow_runs", "workflow_jobs", "knowledge_node_workflow_runs"],
+      "identity_fields": ["workflow_runs.id", "run_id", "linked_source_ids:workflow-<id>"],
+      "timestamp_fields": ["started_at", "completed_at"],
+      "in_flight": "status in_progress without conclusion excluded from retrieval",
+      "source_health_key": "workflow",
+      "safe_citation_fields": ["repo", "head_sha", "head_branch", "name", "conclusion", "html_url"],
+      "citation_example": "Workflow run workflow-88 on stevencarpenter/hippo @ abc1234 (main): CI success."
+    },
+    {
+      "id": "claude-auto-memory",
+      "tables": ["memory_documents", "memory_revisions", "memory_chunks", "knowledge_node_memory_chunks"],
+      "identity_fields": ["memory_documents.id", "linked_source_ids:memory-<chunk_id>"],
+      "timestamp_fields": ["memory_revisions.created_at", "memory_documents.updated_at"],
+      "eligibility": "memory_documents.state = active AND active_revision_id match"
+    },
+    {
+      "id": "source_health",
+      "tables": ["source_health"],
+      "identity_fields": ["source"],
+      "timestamp_fields": ["last_event_ts", "updated_at", "probe_last_run_ts"],
+      "notes": "Operational telemetry only; not user-activity evidence",
+      "safe_citation_fields": ["source", "last_event_ts", "consecutive_failures", "probe_ok", "probe_lag_ms"],
+      "citation_example": "source_health agentic-session-cursor: last_event_ts 45m ago, probe_ok=1."
+    },
+    {
+      "id": "watchdog-probe",
+      "tables": ["source_health", "capture_alarms", "events.probe_tag", "browser_events.probe_tag", "agentic_sessions.probe_tag"],
+      "identity_fields": ["capture_alarms.id", "invariant_id"],
+      "timestamp_fields": ["capture_alarms.raised_at", "probe_last_run_ts"],
+      "source_health_key": "watchdog",
+      "freshness_invariant": "I-7",
+      "notes": "Probe rows carry probe_tag UUID; excluded from user-facing retrieval (AP-6)"
+    }
+  ]
+}

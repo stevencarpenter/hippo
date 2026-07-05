@@ -6,6 +6,7 @@ agent evidence queries. Operators may pass ``include_excluded=True`` on
 :class:`~hippo_brain.retrieval.Filters` or set ``HIPPO_RETRIEVAL_INCLUDE_EXCLUDED=1``.
 
 Per-source policy table: ``docs/capture/retrieval-eligibility.md``.
+Agent-facing source semantics: ``docs/capture/source-trust-contracts.md``.
 """
 
 from __future__ import annotations
