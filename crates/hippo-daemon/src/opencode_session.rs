@@ -664,6 +664,24 @@ fn record_upsert_error(conn: &rusqlite::Connection, err: &anyhow::Error) {
 
 // --- Entry point ---
 
+/// Sessions whose `time_updated` falls in `[min_updated, max_updated]`.
+pub(crate) fn sessions_in_probe_window(
+    db_path: &Path,
+    min_updated: i64,
+    max_updated: i64,
+) -> Result<Vec<(String, i64)>> {
+    let conn = open_opencode_db(db_path)?;
+    let mut stmt = conn.prepare(
+        "SELECT id, time_updated FROM session
+         WHERE time_updated >= ?1 AND time_updated <= ?2
+         ORDER BY time_updated ASC",
+    )?;
+    let rows = stmt.query_map(rusqlite::params![min_updated, max_updated], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+    })?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+}
+
 fn open_opencode_db(db_path: &Path) -> Result<rusqlite::Connection> {
     // Read-only open of opencode's own DB. Do NOT set journal_mode here —
     // the WAL pragma requires write access to the DB header and would fail
