@@ -203,7 +203,11 @@ pub async fn handle_request(state: &Arc<DaemonState>, request: DaemonRequest) ->
                 Err(e) => DaemonResponse::Error(e.to_string()),
             }
         }
-        DaemonRequest::UpdateSourceHealthHeartbeat { source, ts } => {
+        DaemonRequest::UpdateSourceHealthHeartbeat {
+            source,
+            ts,
+            last_error_msg,
+        } => {
             // Restrict to the known enum-like set of sources that are valid in
             // source_health. Arbitrary strings would create junk rows and corrupt
             // watchdog/doctor queries.
@@ -222,14 +226,19 @@ pub async fn handle_request(state: &Arc<DaemonState>, request: DaemonRequest) ->
                 ));
             }
             let now_ms = chrono::Utc::now().timestamp_millis();
+            let truncated_error =
+                last_error_msg.map(|msg| msg.chars().take(512).collect::<String>());
             let db = state.write_db.lock().await;
             match db.execute(
-                "INSERT INTO source_health(source, last_heartbeat_ts, updated_at) \
-                 VALUES(?3, ?1, ?2) \
+                "INSERT INTO source_health(source, last_heartbeat_ts, last_error_msg, last_error_ts, updated_at) \
+                 VALUES(?1, ?2, ?3, CASE WHEN ?3 IS NOT NULL THEN ?4 ELSE NULL END, ?4) \
                  ON CONFLICT(source) DO UPDATE \
                  SET last_heartbeat_ts = excluded.last_heartbeat_ts, \
+                     last_error_msg = excluded.last_error_msg, \
+                     last_error_ts = CASE WHEN excluded.last_error_msg IS NOT NULL \
+                         THEN excluded.updated_at ELSE NULL END, \
                      updated_at = excluded.updated_at",
-                rusqlite::params![ts, now_ms, source],
+                rusqlite::params![source, ts, truncated_error, now_ms],
             ) {
                 Ok(_) => {
                     tracing::debug!(source = %source, ts, "source_health heartbeat upserted");

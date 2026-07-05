@@ -35,6 +35,7 @@ async fn source_health_heartbeat_updated_on_nm_request() {
         &DaemonRequest::UpdateSourceHealthHeartbeat {
             source: "browser".to_string(),
             ts,
+            last_error_msg: None,
         },
     )
     .await
@@ -88,6 +89,7 @@ async fn source_health_heartbeat_second_call_overwrites_first() {
             &DaemonRequest::UpdateSourceHealthHeartbeat {
                 source: "browser".to_string(),
                 ts,
+                last_error_msg: None,
             },
         )
         .await
@@ -134,6 +136,7 @@ async fn source_health_heartbeat_responds_within_500ms() {
         &DaemonRequest::UpdateSourceHealthHeartbeat {
             source: "browser".to_string(),
             ts,
+            last_error_msg: None,
         },
     )
     .await
@@ -145,6 +148,72 @@ async fn source_health_heartbeat_responds_within_500ms() {
         elapsed < std::time::Duration::from_millis(500),
         "heartbeat round-trip took {elapsed:?} (> 500ms)"
     );
+
+    let _ = hippo_daemon::commands::send_request(&socket_path, &DaemonRequest::Shutdown).await;
+    let _ = daemon_handle.await;
+}
+
+/// Extension-reported NM errors land in `source_health.last_error_msg` and clear
+/// on a subsequent heartbeat with `last_error_msg: None`.
+#[tokio::test]
+async fn source_health_heartbeat_persists_and_clears_extension_error() {
+    let config = test_config();
+    let socket_path = config.socket_path();
+    let db_path = config.db_path();
+
+    let run_config = config.clone();
+    let daemon_handle = tokio::spawn(async move { hippo_daemon::daemon::run(run_config).await });
+    wait_for_daemon(&socket_path).await;
+
+    let ts = chrono::Utc::now().timestamp_millis();
+    let err = "Error: Native host not found";
+
+    let resp = hippo_daemon::commands::send_request(
+        &socket_path,
+        &DaemonRequest::UpdateSourceHealthHeartbeat {
+            source: "browser".to_string(),
+            ts,
+            last_error_msg: Some(err.to_string()),
+        },
+    )
+    .await
+    .expect("send_request failed");
+    assert!(matches!(resp, DaemonResponse::Ack));
+
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    let conn = hippo_core::storage::open_db(&db_path).unwrap();
+    let saved_err: Option<String> = conn
+        .query_row(
+            "SELECT last_error_msg FROM source_health WHERE source = 'browser'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(saved_err.as_deref(), Some(err));
+
+    let clear = hippo_daemon::commands::send_request(
+        &socket_path,
+        &DaemonRequest::UpdateSourceHealthHeartbeat {
+            source: "browser".to_string(),
+            ts: ts + 1,
+            last_error_msg: None,
+        },
+    )
+    .await
+    .unwrap();
+    assert!(matches!(clear, DaemonResponse::Ack));
+
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    let cleared: Option<String> = conn
+        .query_row(
+            "SELECT last_error_msg FROM source_health WHERE source = 'browser'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(cleared.is_none(), "error should clear on healthy heartbeat");
 
     let _ = hippo_daemon::commands::send_request(&socket_path, &DaemonRequest::Shutdown).await;
     let _ = daemon_handle.await;

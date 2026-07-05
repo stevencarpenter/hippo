@@ -41,7 +41,17 @@ describe("buildHeartbeatPayload", () => {
     expect(p.sent_at_ms).toBeLessThanOrEqual(after);
   });
 
-  test("payload has exactly the four required fields", () => {
+  test("payload includes last_error_msg when supplied", () => {
+    const p = buildHeartbeatPayload("0.2.0", true, "Native host disconnected");
+    expect(p.last_error_msg).toBe("Native host disconnected");
+  });
+
+  test("payload omits last_error_msg when healthy", () => {
+    const p = buildHeartbeatPayload("0.2.0", true, null);
+    expect(p.last_error_msg).toBeUndefined();
+  });
+
+  test("payload has the required heartbeat fields", () => {
     const p = buildHeartbeatPayload("0.2.0", true);
     const keys = Object.keys(p).sort();
     expect(keys).toEqual(["enabled_state", "extension_version", "sent_at_ms", "type"].sort());

@@ -49,6 +49,9 @@ pub struct ExtensionHeartbeat {
     pub extension_version: String,
     pub enabled_state: bool,
     pub sent_at_ms: i64,
+    /// Most recent native-messaging failure from the extension, if any.
+    #[serde(default)]
+    pub last_error_msg: Option<String>,
 }
 
 /// Discriminated union for all messages the extension can send via Native Messaging.
@@ -222,6 +225,7 @@ pub async fn run(config: &HippoConfig) -> Result<()> {
                     &hippo_core::protocol::DaemonRequest::UpdateSourceHealthHeartbeat {
                         source: "browser".to_string(),
                         ts: hb.sent_at_ms,
+                        last_error_msg: hb.last_error_msg,
                     },
                     1000, // 1-second timeout; heartbeat is best-effort
                 )
@@ -473,7 +477,8 @@ mod tests {
             "type": "heartbeat",
             "extension_version": "0.2.0",
             "enabled_state": true,
-            "sent_at_ms": 1711900000000
+            "sent_at_ms": 1711900000000,
+            "last_error_msg": "Error: no such native application"
         }"#;
         let msg: NmMessage = serde_json::from_str(json).unwrap();
         match msg {
@@ -481,6 +486,10 @@ mod tests {
                 assert_eq!(hb.extension_version, "0.2.0");
                 assert!(hb.enabled_state);
                 assert_eq!(hb.sent_at_ms, 1711900000000);
+                assert_eq!(
+                    hb.last_error_msg.as_deref(),
+                    Some("Error: no such native application")
+                );
             }
             _ => panic!("expected Heartbeat variant"),
         }

@@ -1746,6 +1746,7 @@ fn print_browser_staleness_explain(
     heartbeat_age_secs: Option<i64>,
     probe_ok: Option<i64>,
     firefox_running: bool,
+    last_error_msg: Option<&str>,
 ) {
     let connectivity = browser_health::browser_extension_connectivity(
         firefox_running,
@@ -1754,6 +1755,9 @@ fn print_browser_staleness_explain(
     );
     let state = browser_health::browser_capture_state_label(connectivity, event_age_secs, probe_ok);
     println!("     STATE:  {state}");
+    if let Some(msg) = last_error_msg.filter(|m| !m.is_empty()) {
+        println!("     EXT:    {msg}");
+    }
 
     match connectivity {
         BrowserExtensionConnectivity::FirefoxNotRunning => {
@@ -1846,6 +1850,7 @@ fn check_source_staleness(db: &rusqlite::Connection, explain: bool) -> u32 {
         source: String,
         last_event_ts: Option<i64>,
         last_heartbeat_ts: Option<i64>,
+        last_error_msg: Option<String>,
         probe_ok: Option<i64>,
     }
 
@@ -1854,7 +1859,8 @@ fn check_source_staleness(db: &rusqlite::Connection, explain: bool) -> u32 {
             source: row.get(0)?,
             last_event_ts: row.get(1)?,
             last_heartbeat_ts: row.get(2)?,
-            // columns 3, 4 are last_error_msg, consecutive_failures — not used here
+            last_error_msg: row.get(3)?,
+            // column 4 is consecutive_failures — not used here
             probe_ok: row.get(6)?,
         })
     }) {
@@ -2175,6 +2181,10 @@ fn check_source_staleness(db: &rusqlite::Connection, explain: bool) -> u32 {
             probe_ok: row.probe_ok,
             ..suppression_env
         };
+        let browser_ext_error = (source == "browser")
+            .then_some(row.last_error_msg.as_deref())
+            .flatten()
+            .filter(|m| !m.is_empty());
         let browser_state = (source == "browser").then(|| {
             browser_health::browser_capture_state_label(
                 browser_health::browser_extension_connectivity(
@@ -2196,7 +2206,14 @@ fn check_source_staleness(db: &rusqlite::Connection, explain: bool) -> u32 {
             }
             SourceStalenessStatus::Warn => {
                 if let Some(state) = browser_state {
-                    println!("[WW] {}  {} (WARN) — {}", padded, human, state);
+                    if let Some(err) = browser_ext_error {
+                        println!(
+                            "[WW] {}  {} (WARN) — {} — ext: {}",
+                            padded, human, state, err
+                        );
+                    } else {
+                        println!("[WW] {}  {} (WARN) — {}", padded, human, state);
+                    }
                 } else {
                     println!("[WW] {}  {} (WARN)", padded, human);
                 }
@@ -2209,7 +2226,14 @@ fn check_source_staleness(db: &rusqlite::Connection, explain: bool) -> u32 {
             }
             SourceStalenessStatus::Fail => {
                 if let Some(state) = browser_state {
-                    println!("[!!] {}  {} (FAIL) — {}", padded, human, state);
+                    if let Some(err) = browser_ext_error {
+                        println!(
+                            "[!!] {}  {} (FAIL) — {} — ext: {}",
+                            padded, human, state, err
+                        );
+                    } else {
+                        println!("[!!] {}  {} (FAIL) — {}", padded, human, state);
+                    }
                 } else {
                     println!("[!!] {}  {} (FAIL)", padded, human);
                 }
@@ -2221,6 +2245,7 @@ fn check_source_staleness(db: &rusqlite::Connection, explain: bool) -> u32 {
                             heartbeat_age_secs,
                             row.probe_ok,
                             suppression_env.firefox_running,
+                            row.last_error_msg.as_deref(),
                         );
                     } else {
                         println!("     CAUSE:  No events have landed in SQLite for this source");
