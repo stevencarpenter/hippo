@@ -125,6 +125,27 @@ def test_reconcile_summary_reports_pending_and_failed(
     assert summary["sources"][0]["pending_enrichment"] >= 1
 
 
+def test_reconcile_sources_respects_absence_confirm_polls(
+    conn: sqlite3.Connection, tmp_path: Path
+) -> None:
+    source = tmp_path / "MEMORY.md"
+    source.write_text("# Gone soon\n\nbody\n")
+    ingest_memory_file(conn, source, repository="hippo", now_ms=1000)
+    source.unlink()
+    configured = [{"path": str(source), "repository": "hippo", "logical_path": "MEMORY.md"}]
+    retention = RevisionRetention(absence_confirm_polls=2)
+
+    first = reconcile_sources(
+        conn, configured, retention=retention, require_stable=False, now_ms=2000
+    )
+    assert first["sources"][0]["outcome"] == "unavailable"
+
+    second = reconcile_sources(
+        conn, configured, retention=retention, require_stable=False, now_ms=3000
+    )
+    assert second["sources"][0]["outcome"] == "tombstoned"
+
+
 def test_reconcile_changed_content_increments_summary(
     conn: sqlite3.Connection, tmp_path: Path
 ) -> None:

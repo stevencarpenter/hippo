@@ -14,7 +14,9 @@ from hippo_brain.auto_memory_constants import (
     DEFAULT_STABLE_IDLE_MS,
     DEFAULT_STABLE_SAMPLE_MS,
     DEFAULT_STABLE_TIMEOUT_MS,
+    SOURCE_KIND,
 )
+from hippo_brain.auto_memory_ingest import ingest_memory_file
 from hippo_brain.auto_memory_lifecycle import (
     RevisionRetention,
     reconcile_configured_sources,
@@ -114,6 +116,21 @@ def _document_queue_counts(conn: sqlite3.Connection, document_id: int) -> tuple[
     return int(pending), int(failed)
 
 
+def document_absence_outcome(conn: sqlite3.Connection, source_path: str) -> str:
+    row = conn.execute(
+        "SELECT state FROM memory_documents WHERE source_kind = ? AND source_path = ?",
+        (SOURCE_KIND, source_path),
+    ).fetchone()
+    if row is None:
+        return "missing"
+    state = row[0]
+    if state == "tombstoned":
+        return "tombstoned"
+    if state == "unavailable":
+        return "unavailable"
+    return "missing"
+
+
 def reconcile_source(
     conn: sqlite3.Connection,
     source: dict[str, Any],
@@ -126,8 +143,6 @@ def reconcile_source(
     sleep: SleepFn | None = None,
 ) -> ReconcileResult:
     """Reconcile one configured source with optional stable-read gating."""
-    from hippo_brain.auto_memory import ingest_memory_file
-
     path_value = source.get("path")
     if not path_value:
         raise ValueError("auto-memory source requires path")
@@ -136,13 +151,9 @@ def reconcile_source(
     observed_at = now_ms if now_ms is not None else int(time.time() * 1000)
 
     if not path.is_file():
-        tombstoned = reconcile_configured_sources(
-            conn, [source], retention=retention, now_ms=observed_at
-        )
-        outcome = "tombstoned" if tombstoned else "missing"
         return ReconcileResult(
             path=resolved,
-            outcome=outcome,
+            outcome="missing",
             changed=False,
             revision_id=None,
             projection_status=None,
@@ -230,6 +241,9 @@ def reconcile_sources(
     reconcile_configured_sources(
         conn, sources, retention=retention_policy, now_ms=observed_at
     )
+    for entry in results:
+        if entry["outcome"] == "missing":
+            entry["outcome"] = document_absence_outcome(conn, entry["path"])
     pending_total = sum(r["pending_enrichment"] for r in results)
     failed_total = sum(r["failed_enrichment"] for r in results)
     return {
