@@ -476,14 +476,14 @@ def _resolve_filters(
     """Merge explicit ``filters`` with flat kwargs. Returns ``None`` if no filter is set."""
     if filters is not None:
         return filters
-    if any(v is not None for v in (project, since, source, branch, entity, include_excluded)):
+    if any(v is not None for v in (project, since, source, branch, entity)) or include_excluded:
         return Filters(
             project=project,
             since_ms=since,
             source=source,
             branch=branch,
             entity=entity,
-            include_excluded=bool(include_excluded),
+            include_excluded=include_excluded,
         )
     return None
 

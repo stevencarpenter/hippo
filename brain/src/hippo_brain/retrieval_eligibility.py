@@ -84,8 +84,22 @@ def workflow_run_eligible_sql(alias: str = "wr", *, include_excluded: bool = Fal
     return f"({alias}.conclusion IS NOT NULL OR lower({alias}.status) = 'completed')"
 
 
-def shell_event_eligible_sql(alias: str = "e", *, include_excluded: bool = False) -> str:
-    return probe_tag_sql(f"{alias}.probe_tag", include_excluded=include_excluded)
+def _column_exists(conn: sqlite3.Connection, table: str, column: str) -> bool:
+    rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
+    return any(row[1] == column for row in rows)
+
+
+def shell_event_eligible_sql(
+    alias: str = "e",
+    *,
+    include_excluded: bool = False,
+    conn: sqlite3.Connection | None = None,
+) -> str:
+    if include_excluded:
+        return "1=1"
+    if conn is not None and not _column_exists(conn, table="events", column="probe_tag"):
+        return "1=1"
+    return probe_tag_sql(f"{alias}.probe_tag")
 
 
 def browser_event_eligible_sql(alias: str = "be", *, include_excluded: bool = False) -> str:
@@ -111,7 +125,7 @@ def knowledge_node_eligible_exists_sql(
             "EXISTS (SELECT 1 FROM knowledge_node_events kne "
             "JOIN events e ON e.id = kne.event_id "
             f"WHERE kne.knowledge_node_id = {kn_id_ref} "
-            f"AND {shell_event_eligible_sql('e')})"
+            f"AND {shell_event_eligible_sql('e', include_excluded=include_excluded, conn=conn)})"
         ),
         (
             "EXISTS (SELECT 1 FROM knowledge_node_browser_events knbe "

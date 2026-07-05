@@ -513,7 +513,7 @@ def _fetch_details(
         FROM knowledge_node_events kne
         JOIN events e ON e.id = kne.event_id
         WHERE kne.knowledge_node_id IN ({placeholders})
-          AND {shell_event_eligible_sql("e", include_excluded=include_excluded)}
+          AND {shell_event_eligible_sql("e", include_excluded=include_excluded, conn=conn)}
         ORDER BY e.timestamp DESC
         """,
         list(node_ids),
