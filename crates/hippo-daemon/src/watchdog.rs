@@ -594,8 +594,9 @@ pub fn check_i2_claude_session_proxy(
 
 /// I-4: Browser round-trip.
 /// Fires when `browser.last_event_ts` is older than the probe cadence plus
-/// launchd/SQLite jitter grace **and**
-/// `browser.probe_ok = 1` (Firefox running + extension heartbeat fresh).
+/// launchd/SQLite jitter grace **and** `browser.last_heartbeat_ts` is fresh
+/// (< [`LIVENESS_GRACE_MS`]) — i.e. the extension is connected but the event
+/// round-trip (user visits or synthetic probe) has stalled.
 pub fn check_i4_browser_roundtrip(
     by_source: &std::collections::HashMap<&str, &SourceHealthRow>,
     now_ms: i64,
@@ -605,8 +606,8 @@ pub fn check_i4_browser_roundtrip(
     // Skip if the source has never delivered an event.
     let last_event = row.last_event_ts?;
 
-    // probe_ok = 1 encodes (Firefox running) AND (heartbeat fresh < 2 min).
-    if row.probe_ok != Some(1) {
+    let heartbeat = row.last_heartbeat_ts?;
+    if now_ms - heartbeat > LIVENESS_GRACE_MS {
         return None;
     }
 
@@ -1625,7 +1626,7 @@ mod tests {
     fn watchdog_i4_suppressed_when_fresh() {
         let row = SourceHealthRow {
             last_event_ts: Some(NOW - 60_000), // 1 min < 2 min threshold
-            probe_ok: Some(1),
+            last_heartbeat_ts: Some(NOW - 60_000),
             ..blank_row("browser")
         };
         let rows = vec![row];
@@ -1633,14 +1634,17 @@ mod tests {
     }
 
     #[test]
-    fn watchdog_i4_suppressed_when_probe_not_active() {
+    fn watchdog_i4_suppressed_when_heartbeat_stale() {
         let row = SourceHealthRow {
-            last_event_ts: Some(NOW - 300_000),
-            probe_ok: Some(0), // extension not active / Firefox not running
+            last_event_ts: Some(NOW - 480_000),
+            last_heartbeat_ts: Some(NOW - 300_000), // extension disconnected
             ..blank_row("browser")
         };
         let rows = vec![row];
-        assert!(check_i4_browser_roundtrip(&by_source(&rows), NOW).is_none());
+        assert!(
+            check_i4_browser_roundtrip(&by_source(&rows), NOW).is_none(),
+            "stale heartbeat means extension is not connected — I-4 must not fire"
+        );
     }
 
     // ── I-8 ────────────────────────────────────────────────────────────────
