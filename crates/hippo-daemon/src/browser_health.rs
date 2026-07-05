@@ -134,7 +134,11 @@ fn resolve_firefox_profile_path(firefox_root: &Path, entry: &FirefoxProfileEntry
     }
 }
 
-/// Resolve the Firefox Developer Edition profile directory (mirrors `mise run install:ext`).
+/// Resolve the Firefox Developer Edition profile directory.
+///
+/// Strategy mirrors `mise.toml` `[tasks."install:ext"]` (Python configparser
+/// block): prefer `Name=dev-edition-default`, then any profile whose `Path`
+/// contains `dev-edition`.
 pub fn firefox_dev_edition_profile_dir(home: &Path) -> Option<PathBuf> {
     let firefox_root = home.join("Library/Application Support/Firefox");
     let profiles_ini = firefox_root.join("profiles.ini");
@@ -143,10 +147,7 @@ pub fn firefox_dev_edition_profile_dir(home: &Path) -> Option<PathBuf> {
 
     for entry in &profiles {
         if entry.name.as_deref() == Some("dev-edition-default") {
-            let resolved = resolve_firefox_profile_path(&firefox_root, entry);
-            if resolved.is_dir() {
-                return Some(resolved);
-            }
+            return Some(resolve_firefox_profile_path(&firefox_root, entry));
         }
     }
     for entry in &profiles {
@@ -155,10 +156,7 @@ pub fn firefox_dev_edition_profile_dir(home: &Path) -> Option<PathBuf> {
             .as_deref()
             .is_some_and(|path| path.contains("dev-edition"))
         {
-            let resolved = resolve_firefox_profile_path(&firefox_root, entry);
-            if resolved.is_dir() {
-                return Some(resolved);
-            }
+            return Some(resolve_firefox_profile_path(&firefox_root, entry));
         }
     }
     None
@@ -173,13 +171,19 @@ pub fn firefox_extension_xpi_installed(profile_dir: &Path) -> bool {
 }
 
 /// True when `prefs.js` allows unsigned extension side-loads (required for local .xpi).
+///
+/// Matches the grep in `mise.toml` `[tasks."install:ext"]`:
+/// `^user_pref\("xpinstall\.signatures\.required",[[:space:]]*false\)`
 pub fn firefox_unsigned_install_allowed(prefs_js: &Path) -> bool {
     let Ok(content) = std::fs::read_to_string(prefs_js) else {
         return false;
     };
     content.lines().any(|line| {
         let line = line.trim();
-        line.starts_with("user_pref(\"xpinstall.signatures.required\"") && line.contains("false")
+        let Some(rest) = line.strip_prefix("user_pref(\"xpinstall.signatures.required\",") else {
+            return false;
+        };
+        rest.trim().starts_with("false)")
     })
 }
 
@@ -263,6 +267,12 @@ Path=Profiles/xyz789.dev-edition-default
         )
         .unwrap();
         assert!(!firefox_unsigned_install_allowed(&prefs));
+        std::fs::write(
+            &prefs,
+            r#"// user_pref("xpinstall.signatures.required", false);"#,
+        )
+        .unwrap();
+        assert!(!firefox_unsigned_install_allowed(&prefs));
     }
 
     #[test]
@@ -294,5 +304,28 @@ Path={profile_rel}
         .unwrap();
         let resolved = firefox_dev_edition_profile_dir(home).unwrap();
         assert_eq!(resolved, firefox_root.join(profile_rel));
+    }
+
+    #[test]
+    fn dev_edition_profile_dir_returns_configured_path_when_dir_missing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path();
+        let firefox_root = home.join("Library/Application Support/Firefox");
+        let profile_rel = "Profiles/missing.dev-edition-default";
+        std::fs::create_dir_all(&firefox_root).unwrap();
+        std::fs::write(
+            firefox_root.join("profiles.ini"),
+            format!(
+                r#"[Profile0]
+Name=dev-edition-default
+IsRelative=1
+Path={profile_rel}
+"#
+            ),
+        )
+        .unwrap();
+        let resolved = firefox_dev_edition_profile_dir(home).unwrap();
+        assert_eq!(resolved, firefox_root.join(profile_rel));
+        assert!(!resolved.is_dir());
     }
 }

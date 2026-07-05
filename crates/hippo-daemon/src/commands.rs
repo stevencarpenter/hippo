@@ -4006,35 +4006,14 @@ fn expected_claude_session_hook_path(data_dir: &std::path::Path) -> Option<PathB
         .map(|brain_dir| brain_dir.join("shell/claude-session-hook.sh"))
 }
 
-/// Check that the Firefox extension's compiled dist/ bundle exists, the
-/// Native Messaging manifest is installed, and the extension is side-loaded
-/// into the Firefox Developer Edition profile (survives restarts).
+/// Check that the Firefox extension's compiled dist/ bundle exists and the
+/// extension is side-loaded into the Firefox Developer Edition profile
+/// (survives restarts).
 ///
-/// The extension's `manifest.json` references `dist/background.js` and
-/// `dist/content.js`, but `dist/` is gitignored — it must be produced by
-/// `mise run build:ext:dist`. If dist/ is missing the extension loads cleanly
-/// as a temporary add-on in Firefox but captures nothing (silent no-op).
+/// Native Messaging manifest is checked separately by `check_nm_manifest`.
+/// Profile resolution mirrors `mise.toml` `[tasks."install:ext"]` (lines ~113–146).
 fn check_firefox_extension() -> u32 {
-    let mut fail_count = 0_u32;
-
-    // Native Messaging manifest — the bridge between Firefox and hippo-daemon.
-    let nm_manifest = dirs::home_dir().map(|h| {
-        h.join("Library/Application Support/Mozilla/NativeMessagingHosts/hippo_daemon.json")
-    });
-    match nm_manifest {
-        Some(path) if path.exists() => println!("[OK] Firefox Native Messaging manifest installed"),
-        Some(path) => {
-            println!(
-                "[!!] Firefox Native Messaging manifest missing: {}",
-                path.display()
-            );
-            println!("     Fix: hippo daemon install --force");
-            fail_count += 1;
-        }
-        None => println!("[--] Firefox Native Messaging check skipped (no home dir)"),
-    }
-
-    fail_count += check_firefox_extension_permanent_install();
+    let mut fail_count = check_firefox_extension_permanent_install();
 
     // Extension dist/ files. We locate the repo via the canonical path of the
     // currently running binary — typically `<repo>/target/release/hippo`, with
@@ -4052,11 +4031,18 @@ fn check_firefox_extension() -> u32 {
 /// Firefox Developer Edition profile.
 fn check_firefox_extension_permanent_install() -> u32 {
     let Some(home) = dirs::home_dir() else {
-        println!("[--] Firefox extension install  skipped (no home dir)");
+        println!("[--] Firefox extension install   skipped (no home dir)");
         return 0;
     };
     let Some(profile) = browser_health::firefox_dev_edition_profile_dir(&home) else {
-        println!("[--] Firefox extension install  no Dev Edition profile");
+        println!("[--] Firefox extension install   no Dev Edition profile");
+        return 0;
+    };
+    if !profile.is_dir() {
+        println!(
+            "[--] Firefox extension install   Dev Edition profile dir missing ({})",
+            profile.display()
+        );
         return 0;
     };
     let xpi = browser_health::firefox_extension_xpi_path(&profile);
@@ -4388,7 +4374,7 @@ mod tests {
             .collect();
         assert_eq!(missing, vec!["dist/background.js", "dist/content.js"]);
 
-        check_firefox_extension_dist_at(&ext);
+        assert_eq!(check_firefox_extension_dist_at(&ext), 1);
     }
 
     #[test]
@@ -4406,7 +4392,7 @@ mod tests {
             .collect();
         assert!(missing.is_empty());
 
-        check_firefox_extension_dist_at(&ext);
+        assert_eq!(check_firefox_extension_dist_at(&ext), 0);
     }
 
     #[test]
