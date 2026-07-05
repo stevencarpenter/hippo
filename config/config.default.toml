@@ -249,6 +249,12 @@ enabled = true
 # its privacy boundaries are configured.
 [auto_memory]
 enabled = false
+# poll_interval_secs = 60          # periodic fallback reconcile (launchd com.hippo.auto-memory)
+# debounce_ms = 500                  # FSEvents debounce before per-file reconcile
+# reconcile_fallback_secs = 60       # in-watcher full reconcile cadence
+# stable_idle_ms = 250               # mtime+size unchanged window before read (Python)
+# stable_sample_ms = 50              # poll interval while waiting for stable file
+# stable_timeout_ms = 5000           # give up stable-read and skip this reconcile tick
 # max_revision_count: keep at most this many revisions per document (default 20)
 # max_revision_age_days: drop older revision metadata after this many days (default 90)
 # absence_confirm_polls: missing-file polls before tombstone (default 2)

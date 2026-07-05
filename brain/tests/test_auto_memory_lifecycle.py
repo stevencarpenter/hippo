@@ -6,11 +6,13 @@ from pathlib import Path
 import pytest
 
 from hippo_brain.auto_memory import (
-    RevisionRetention,
     ingest_memory_file,
     query_memory_history,
-    reconcile_configured_sources,
     write_memory_knowledge_node,
+)
+from hippo_brain.auto_memory_lifecycle import (
+    RevisionRetention,
+    reconcile_configured_sources,
 )
 from hippo_brain.models import EnrichmentResult
 from hippo_brain.mcp_queries import search_knowledge_lexical

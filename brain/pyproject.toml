@@ -36,6 +36,7 @@ hippo-brain-api = "hippo_brain.api_cli:main"
 hippo-brain-openapi = "hippo_brain.openapi:main"
 hippo-auto-memory = "hippo_brain.auto_memory:main"
 hippo-auto-memory-poll = "hippo_brain.auto_memory:poll_main"
+hippo-auto-memory-reconcile = "hippo_brain.auto_memory:reconcile_file_main"
 
 [build-system]
 requires = ["hatchling"]

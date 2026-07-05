@@ -24,6 +24,7 @@ pub mod schema_handshake;
 pub mod source_health_metric;
 #[cfg(feature = "otel")]
 pub mod telemetry;
+pub mod watch_auto_memory;
 pub mod watch_claude_sessions;
 pub mod watchdog;
 

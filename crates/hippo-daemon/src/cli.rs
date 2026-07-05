@@ -139,6 +139,8 @@ pub enum Commands {
     CursorPoll,
     /// Poll configured Claude auto-memory Markdown sources for ingest.
     AutoMemoryPoll,
+    /// Watch configured Claude auto-memory sources via FSEvents (KeepAlive service).
+    AutoMemoryWatch,
     /// Run the daemon in the foreground (alias for `daemon run`).
     ///
     /// BT-09: shipped so `hippo serve` no longer fails with "unrecognized
