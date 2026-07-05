@@ -111,9 +111,7 @@ def test_history_is_explicit_and_separate(conn: sqlite3.Connection, tmp_path: Pa
     assert len(current["results"]) >= 1
     assert "alpha" in current["results"][0]["evidence_excerpt"]
 
-    history = run_memory_history_query(
-        conn, repository="hippo", logical_path="MEMORY.md", limit=10
-    )
+    history = run_memory_history_query(conn, repository="hippo", logical_path="MEMORY.md", limit=10)
     assert history["view"] == "history"
     assert len(history["results"]) == 2
     assert history["results"][0]["revision_number"] == 2
