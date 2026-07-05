@@ -1137,15 +1137,15 @@ fn insert_segments(
 fn try_insert_segments(conn: &Connection, segments: &[SessionSegment]) -> (usize, usize, usize) {
     match crate::with_busy_retry("claude_session_insert", || insert_segments(conn, segments)) {
         Ok((inserted, skipped)) => (inserted, skipped, 0),
-        Err(e) if crate::is_sqlite_busy(&e) => {
-            error!(
-                %e,
-                "failed to insert session segments after SQLITE_BUSY retry"
-            );
-            (0, 0, 1)
-        }
         Err(e) => {
-            error!(%e, "failed to insert session segments");
+            if crate::is_sqlite_busy(&e) {
+                error!(
+                    %e,
+                    "failed to insert session segments after SQLITE_BUSY retry"
+                );
+            } else {
+                error!(%e, "failed to insert session segments");
+            }
             (0, 0, 1)
         }
     }
