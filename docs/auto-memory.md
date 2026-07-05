@@ -78,6 +78,15 @@ Files without a recognized prefix (for example `debugging.md`) remain uncategori
 
 Filter retrieval with `memory_category` (RAG `Filters.memory_category` or `search_knowledge(..., category="feedback")`). Results include `memory_categories` and `memory_links` provenance when the knowledge node projects an auto-memory document.
 
+## Fleet discovery
+
+When `[auto_memory]` is enabled and `[auto_memory.discovery] enabled = true` (default), Hippo discovers every local Claude Code memory directory under `~/.claude/projects/<slug>/memory/` plus trusted `autoMemoryDirectory` overrides read from Claude user/project settings (read-only; Hippo never writes Claude config).
+
+- Explicit `[[auto_memory.sources]]` entries are merged with discovered files; explicit paths win on conflict.
+- Worktrees that share one memory directory are deduplicated by resolved path.
+- Dry-run inventory: `uv run --project brain hippo-auto-memory-inventory`
+- Include/exclude glob patterns: `[auto_memory.discovery] include_patterns` / `exclude_patterns`
+
 ## Continuous reconciliation
 
 When `auto_memory.enabled = true`, `hippo daemon install` writes two LaunchAgents:

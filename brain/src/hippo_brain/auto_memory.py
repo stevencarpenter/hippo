@@ -31,6 +31,7 @@ from hippo_brain.auto_memory_ingest import (
 from hippo_brain.auto_memory_reconcile import (
     ReconcileConfig,
     document_absence_outcome,
+    inventory_from_config,
     reconcile_config_from_dict,
     reconcile_source,
     reconcile_sources,
@@ -476,6 +477,7 @@ def reconcile_from_config(
             retention=revision_retention_from_config(auto_memory),
             reconcile=reconcile_config_from_dict(auto_memory),
             require_stable=require_stable,
+            auto_memory=auto_memory,
         )
     finally:
         conn.close()
@@ -498,6 +500,28 @@ def poll_main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     summary = reconcile_from_config(args.config, require_stable=True)
     print(json.dumps(summary, sort_keys=True))
+    return 0
+
+
+def inventory_main(argv: list[str] | None = None) -> int:
+    """Dry-run fleet inventory of discovered Claude auto-memory directories."""
+    parser = argparse.ArgumentParser(
+        description="List discovered Claude auto-memory directories and files."
+    )
+    parser.add_argument(
+        "--config",
+        type=Path,
+        default=None,
+        help="Hippo config.toml (defaults to ~/.config/hippo/config.toml)",
+    )
+    args = parser.parse_args(argv)
+    config_path = args.config or Path.home() / ".config" / "hippo" / "config.toml"
+    if not config_path.is_file():
+        print(json.dumps({"roots": [], "file_sources": 0}, sort_keys=True))
+        return 0
+    with config_path.open("rb") as handle:
+        config = tomllib.load(handle)
+    print(json.dumps(inventory_from_config(config), sort_keys=True))
     return 0
 
 

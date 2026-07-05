@@ -259,6 +259,16 @@ enabled = false
 # max_revision_age_days: drop older revision metadata after this many days (default 90)
 # absence_confirm_polls: missing-file polls before tombstone (default 2)
 
+# Fleet discovery (SNUG-135): when enabled, ingest every local Claude Code
+# auto-memory directory under ~/.claude/projects/*/memory/ plus trusted
+# autoMemoryDirectory overrides from Claude settings (read-only).
+# [auto_memory.discovery]
+# enabled = true
+# claude_projects = true
+# read_claude_settings = true
+# include_patterns = ["*hippo*"]
+# exclude_patterns = ["*-archived-*"]
+
 # [[auto_memory.sources]]
 # path = "/absolute/path/to/.claude/memory/MEMORY.md"
 # repository = "owner/repository"
