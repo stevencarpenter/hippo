@@ -223,7 +223,9 @@ def test_memory_knowledge_includes_evidence_packet(conn: sqlite3.Connection) -> 
     conn.commit()
 
     backend = FakeBackend(knn=[(6, 0.87)], fts=[(6, 0.9)])
-    results = search(conn, "sqlite-vec", [0.1] * 8, Filters(), mode="hybrid", limit=5, backend=backend)
+    results = search(
+        conn, "sqlite-vec", [0.1] * 8, Filters(), mode="hybrid", limit=5, backend=backend
+    )
     pkt = results[0].evidence[0]
     assert pkt["ref"] == "memory-100"
     assert pkt["source_kind"] == "claude-auto-memory"
