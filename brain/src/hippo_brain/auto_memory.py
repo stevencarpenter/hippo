@@ -36,7 +36,6 @@ from hippo_brain.auto_memory_reconcile import (
     load_sources_from_config,
 )
 from hippo_brain.models import EnrichmentResult
-from hippo_brain.redaction import redact
 from hippo_brain.schema_version import EXPECTED_SCHEMA_VERSION
 from hippo_brain.vector_store import vec_table_available
 

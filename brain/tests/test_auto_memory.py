@@ -530,7 +530,7 @@ def test_unchanged_file_skips_read_redact_and_git_identity(
     regex redaction — proven here by sabotaging those and requiring they are never
     called.
     """
-    import hippo_brain.auto_memory as am
+    import hippo_brain.auto_memory_ingest as ingest
 
     source = tmp_path / "MEMORY.md"
     source.write_text("# A\n\nOriginal content.\n")
@@ -540,8 +540,8 @@ def test_unchanged_file_skips_read_redact_and_git_identity(
     def _should_not_run(*_args: object, **_kwargs: object):
         raise AssertionError("expensive re-ingest work must be skipped for an unchanged file")
 
-    monkeypatch.setattr(am, "derive_repository_identity", _should_not_run)
-    monkeypatch.setattr(am, "redact", _should_not_run)
+    monkeypatch.setattr(ingest, "derive_repository_identity", _should_not_run)
+    monkeypatch.setattr(ingest, "redact", _should_not_run)
 
     second = ingest_memory_file(conn, source, repository="hippo", now_ms=2000)
 
