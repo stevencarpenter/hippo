@@ -371,25 +371,25 @@ def phase_schema_forward(
 # Hardcoded per-table SQL — table names are literals, never user input.
 _SQL_COUNT_STALE: dict[str, str] = {
     "enrichment_queue": "SELECT COUNT(*) FROM enrichment_queue WHERE status = 'processing' AND COALESCE(locked_at, 0) <= ?",  # noqa: E501
-    "claude_enrichment_queue": "SELECT COUNT(*) FROM claude_enrichment_queue WHERE status = 'processing' AND COALESCE(locked_at, 0) <= ?",  # noqa: E501
+    "agentic_enrichment_queue": "SELECT COUNT(*) FROM agentic_enrichment_queue WHERE status = 'processing' AND COALESCE(locked_at, 0) <= ?",  # noqa: E501
     "browser_enrichment_queue": "SELECT COUNT(*) FROM browser_enrichment_queue WHERE status = 'processing' AND COALESCE(locked_at, 0) <= ?",  # noqa: E501
     "workflow_enrichment_queue": "SELECT COUNT(*) FROM workflow_enrichment_queue WHERE status = 'processing' AND COALESCE(locked_at, 0) <= ?",  # noqa: E501
 }
 _SQL_COUNT_FAILED_ELIGIBLE: dict[str, str] = {
     "enrichment_queue": "SELECT COUNT(*) FROM enrichment_queue WHERE status = 'failed' AND retry_count < max_retries AND COALESCE(updated_at, 0) > ?",  # noqa: E501
-    "claude_enrichment_queue": "SELECT COUNT(*) FROM claude_enrichment_queue WHERE status = 'failed' AND retry_count < max_retries AND COALESCE(updated_at, 0) > ?",  # noqa: E501
+    "agentic_enrichment_queue": "SELECT COUNT(*) FROM agentic_enrichment_queue WHERE status = 'failed' AND retry_count < max_retries AND COALESCE(updated_at, 0) > ?",  # noqa: E501
     "browser_enrichment_queue": "SELECT COUNT(*) FROM browser_enrichment_queue WHERE status = 'failed' AND retry_count < max_retries AND COALESCE(updated_at, 0) > ?",  # noqa: E501
     "workflow_enrichment_queue": "SELECT COUNT(*) FROM workflow_enrichment_queue WHERE status = 'failed' AND retry_count < max_retries AND COALESCE(updated_at, 0) > ?",  # noqa: E501
 }
 _SQL_RESET_FAILED: dict[str, str] = {
     "enrichment_queue": "UPDATE enrichment_queue SET status = 'pending', error_message = 'reset by v5→v6 migration', locked_at = NULL, locked_by = NULL, updated_at = ? WHERE status = 'failed' AND retry_count < max_retries AND COALESCE(updated_at, 0) > ?",  # noqa: E501
-    "claude_enrichment_queue": "UPDATE claude_enrichment_queue SET status = 'pending', error_message = 'reset by v5→v6 migration', locked_at = NULL, locked_by = NULL, updated_at = ? WHERE status = 'failed' AND retry_count < max_retries AND COALESCE(updated_at, 0) > ?",  # noqa: E501
+    "agentic_enrichment_queue": "UPDATE agentic_enrichment_queue SET status = 'pending', error_message = 'reset by v5→v6 migration', locked_at = NULL, locked_by = NULL, updated_at = ? WHERE status = 'failed' AND retry_count < max_retries AND COALESCE(updated_at, 0) > ?",  # noqa: E501
     "browser_enrichment_queue": "UPDATE browser_enrichment_queue SET status = 'pending', error_message = 'reset by v5→v6 migration', locked_at = NULL, locked_by = NULL, updated_at = ? WHERE status = 'failed' AND retry_count < max_retries AND COALESCE(updated_at, 0) > ?",  # noqa: E501
     "workflow_enrichment_queue": "UPDATE workflow_enrichment_queue SET status = 'pending', error_message = 'reset by v5→v6 migration', locked_at = NULL, locked_by = NULL, updated_at = ? WHERE status = 'failed' AND retry_count < max_retries AND COALESCE(updated_at, 0) > ?",  # noqa: E501
 }
 _SQL_GIVEUP: dict[str, str] = {
     "enrichment_queue": "UPDATE enrichment_queue SET giveup = 1 WHERE status = 'failed' AND COALESCE(updated_at, 0) <= ?",  # noqa: E501
-    "claude_enrichment_queue": "UPDATE claude_enrichment_queue SET giveup = 1 WHERE status = 'failed' AND COALESCE(updated_at, 0) <= ?",  # noqa: E501
+    "agentic_enrichment_queue": "UPDATE agentic_enrichment_queue SET giveup = 1 WHERE status = 'failed' AND COALESCE(updated_at, 0) <= ?",  # noqa: E501
     "browser_enrichment_queue": "UPDATE browser_enrichment_queue SET giveup = 1 WHERE status = 'failed' AND COALESCE(updated_at, 0) <= ?",  # noqa: E501
     "workflow_enrichment_queue": "UPDATE workflow_enrichment_queue SET giveup = 1 WHERE status = 'failed' AND COALESCE(updated_at, 0) <= ?",  # noqa: E501
 }

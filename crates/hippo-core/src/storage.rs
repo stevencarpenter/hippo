@@ -1482,8 +1482,30 @@ pub fn open_db(path: &Path) -> Result<Connection> {
     }
 
     // v22→v23: drop frozen legacy `claude_*` tables (SNUG-115 Phase B).
-    // v17→v18 already backfilled rows into the agentic family; no data migration here.
+    // v17→v18 already backfilled rows into the agentic family; refuse to drop
+    // when the full legacy family is present but agentic row counts lag behind.
     if (1..23).contains(&version) {
+        if table_exists(&conn, "claude_sessions")? {
+            let legacy_count: i64 =
+                conn.query_row("SELECT COUNT(*) FROM claude_sessions", [], |row| row.get(0))?;
+            let full_legacy_family = table_exists(&conn, "knowledge_node_claude_sessions")?
+                && table_exists(&conn, "claude_enrichment_queue")?;
+            if legacy_count > 0 && full_legacy_family && table_exists(&conn, "agentic_sessions")? {
+                let agentic_count: i64 = conn.query_row(
+                    "SELECT COUNT(*) FROM agentic_sessions
+                     WHERE harness IN ('claude-code', 'codex', 'cursor', 'opencode')",
+                    [],
+                    |row| row.get(0),
+                )?;
+                if agentic_count < legacy_count {
+                    anyhow::bail!(
+                        "v22→v23: refusing to drop legacy claude_sessions ({legacy_count} rows) \
+                         because agentic_sessions has only {agentic_count} harness rows. \
+                         Verify v17→v18 backfill and restore from backup before retrying."
+                    );
+                }
+            }
+        }
         conn.execute_batch(
             "PRAGMA foreign_keys = OFF;
              DROP TABLE IF EXISTS knowledge_node_claude_sessions;

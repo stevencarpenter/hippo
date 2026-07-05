@@ -13,7 +13,6 @@ from hippo_brain.claude_sessions import (
     CLAUDE_SYSTEM_PROMPT,
     build_claude_enrichment_prompt,
     claim_pending_claude_segments,
-    ensure_claude_tables,
     extract_segments,
     insert_segment,
     iter_session_files,
@@ -102,7 +101,6 @@ def main():
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA foreign_keys=ON")
         conn.execute("PRAGMA busy_timeout=5000")
-        ensure_claude_tables(conn)
     else:
         conn = None
 
@@ -155,7 +153,11 @@ def main():
         check_conn = sqlite3.connect(str(db_path))
         try:
             pending = check_conn.execute(
-                "SELECT COUNT(*) FROM claude_enrichment_queue WHERE status = 'pending'"
+                """
+                SELECT COUNT(*) FROM agentic_enrichment_queue q
+                JOIN agentic_sessions s ON s.id = q.session_id
+                WHERE q.status = 'pending' AND s.harness = 'claude-code'
+                """
             ).fetchone()[0]
         finally:
             check_conn.close()

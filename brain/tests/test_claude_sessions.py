@@ -13,7 +13,6 @@ from hippo_brain.claude_sessions import (
     _skip_ineligible_claude_segments,
     build_claude_enrichment_prompt,
     claim_pending_claude_segments,
-    ensure_claude_tables,
     extract_segments,
     insert_segment,
     iter_session_files,
@@ -525,55 +524,6 @@ class TestInsertAndClaim:
         assert row[0] == "pending"  # still pending, retry_count < max_retries
         assert row[1] == 1
         assert row[2] == "test error"
-
-
-class TestEnsureClaudeTables:
-    def test_migrates_v2_to_v3(self):
-        """ensure_claude_tables upgrades a v2 database."""
-        tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
-        tmp.close()
-        db_path = Path(tmp.name)
-
-        conn = sqlite3.connect(str(db_path))
-        conn.execute("PRAGMA user_version = 2")
-        # Minimal v2 schema
-        conn.execute(
-            "CREATE TABLE knowledge_nodes (id INTEGER PRIMARY KEY, uuid TEXT, content TEXT, embed_text TEXT)"
-        )
-        conn.commit()
-
-        ensure_claude_tables(conn)
-
-        version = conn.execute("PRAGMA user_version").fetchone()[0]
-        assert version == 3
-
-        # Verify tables exist
-        tables = {
-            row[0]
-            for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
-        }
-        assert "claude_sessions" in tables
-        assert "knowledge_node_claude_sessions" in tables
-        assert "claude_enrichment_queue" in tables
-
-        conn.close()
-        db_path.unlink(missing_ok=True)
-
-    def test_no_op_on_v3(self):
-        tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
-        tmp.close()
-        db_path = Path(tmp.name)
-
-        conn = sqlite3.connect(str(db_path))
-        conn.execute("PRAGMA user_version = 3")
-        conn.commit()
-
-        ensure_claude_tables(conn)  # should not raise
-        version = conn.execute("PRAGMA user_version").fetchone()[0]
-        assert version == 3
-
-        conn.close()
-        db_path.unlink(missing_ok=True)
 
 
 class TestClaudeEligibilityFilter:
