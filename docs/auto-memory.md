@@ -86,6 +86,7 @@ When `[auto_memory]` is enabled and `[auto_memory.discovery] enabled = true` (de
 - Worktrees that share one memory directory are deduplicated by resolved path.
 - Dry-run inventory: `uv run --project brain hippo-auto-memory-inventory`
 - Include/exclude glob patterns: `[auto_memory.discovery] include_patterns` / `exclude_patterns`
+- FSEvents under `~/.claude/projects` triggers reconcile only for files that pass the same Python discovery policy (excluded projects are skipped with `outcome: skipped`). Custom `autoMemoryDirectory` paths outside the default layout are picked up on periodic poll, not live FSEvents.
 
 ## Continuous reconciliation
 

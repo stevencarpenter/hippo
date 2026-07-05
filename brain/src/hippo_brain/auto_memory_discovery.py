@@ -224,7 +224,9 @@ def discover_settings_memory_roots(home: Path) -> list[MemoryRoot]:
                 settings_path = project_dir / name
                 if not settings_path.is_file():
                     continue
-                custom = _auto_memory_directory_from_settings(settings_path)
+                custom = _auto_memory_directory_from_settings(
+                    settings_path, base_dir=project_dir
+                )
                 if custom is None:
                     continue
                 roots.append(

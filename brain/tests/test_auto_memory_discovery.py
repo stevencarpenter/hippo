@@ -17,7 +17,11 @@ from hippo_brain.auto_memory_discovery import (
     memory_roots_to_file_sources,
     merge_configured_sources,
 )
-from hippo_brain.auto_memory_reconcile import inventory_from_config, load_sources_from_config
+from hippo_brain.auto_memory_reconcile import (
+    inventory_from_config,
+    load_sources_from_config,
+    reconcile_sources,
+)
 
 
 @pytest.fixture
@@ -127,6 +131,54 @@ def test_load_sources_from_config_merges_explicit_and_discovered(
     paths = {source["path"] for source in sources}
     assert str(explicit_file.resolve()) in paths
     assert str((discovered / "MEMORY.md").resolve()) in paths
+
+
+def test_explicit_source_wins_over_discovered_path_collision(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    home = tmp_path / "home"
+    memory = home / ".claude/projects/-repo-a/memory"
+    memory.mkdir(parents=True)
+    shared = memory / "MEMORY.md"
+    shared.write_text("# Discovered\n")
+    monkeypatch.setenv("HOME", str(home))
+
+    config = {
+        "auto_memory": {
+            "enabled": True,
+            "sources": [
+                {
+                    "path": str(shared),
+                    "repository": "example/explicit",
+                    "logical_path": "MEMORY.md",
+                }
+            ],
+            "discovery": {"enabled": True},
+        }
+    }
+    sources = load_sources_from_config(config)
+    match = next(s for s in sources if s["path"] == str(shared.resolve()))
+    assert match["repository"] == "example/explicit"
+    assert match["origin"] == "explicit"
+
+
+def test_reconcile_sources_isolates_errors_between_files(
+    conn: sqlite3.Connection, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    good = tmp_path / "good.md"
+    bad = tmp_path / "missing.md"
+    good.write_text("# Good\n")
+    summary = reconcile_sources(
+        conn,
+        [
+            {"path": str(bad), "repository": "example/bad", "logical_path": "missing.md"},
+            {"path": str(good), "repository": "example/good", "logical_path": "good.md"},
+        ],
+        require_stable=False,
+    )
+    outcomes = {entry["path"]: entry["outcome"] for entry in summary["sources"]}
+    assert outcomes[str(bad.resolve())] in {"missing", "error"}
+    assert outcomes[str(good.resolve())] in {"changed", "unchanged"}
 
 
 def test_inventory_dry_run_reports_roots_without_ingest(tmp_path: Path, monkeypatch) -> None:

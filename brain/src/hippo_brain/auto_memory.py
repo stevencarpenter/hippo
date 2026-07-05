@@ -544,8 +544,24 @@ def reconcile_file_main(argv: list[str] | None = None) -> int:
     resolved = str(args.file.expanduser().resolve())
     source = next(
         (s for s in sources if str(Path(s["path"]).expanduser().resolve()) == resolved),
-        {"path": resolved, "repository": None, "logical_path": args.file.name},
+        None,
     )
+    if source is None:
+        print(
+            json.dumps(
+                {
+                    "path": resolved,
+                    "outcome": "skipped",
+                    "changed": False,
+                    "revision_id": None,
+                    "projection_status": None,
+                    "pending_enrichment": 0,
+                    "failed_enrichment": 0,
+                },
+                sort_keys=True,
+            )
+        )
+        return 0
     storage = config.get("storage", {})
     data_dir = Path(
         storage.get("data_dir", Path.home() / ".local" / "share" / "hippo")
