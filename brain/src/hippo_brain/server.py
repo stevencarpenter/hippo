@@ -1,6 +1,7 @@
 import asyncio
 import datetime as _dt
 import logging
+import os
 import sqlite3
 import time
 from typing import Any
@@ -401,6 +402,7 @@ class BrainServer:
         return JSONResponse(
             {
                 "status": status,
+                "pid": os.getpid(),
                 "version": get_version(),
                 "expected_schema_version": EXPECTED_SCHEMA_VERSION,
                 "accepted_read_versions": sorted(ACCEPTED_READ_VERSIONS),

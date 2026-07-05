@@ -4,8 +4,18 @@ from hippo_brain.bench.preflight import (
     CheckResult,
     check_disk_space,
     check_inference_reachable,
+    check_prod_brain_reachable,
     run_all_preflight,
 )
+
+
+def test_check_prod_brain_reachable_includes_pid():
+    fake_resp = MagicMock(status_code=200)
+    fake_resp.json.return_value = {"pid": 9876}
+    with patch("httpx.get", return_value=fake_resp):
+        r = check_prod_brain_reachable("http://localhost:9175")
+    assert r.status == "pass"
+    assert r.detail == "pid=9876"
 
 
 def test_check_result_is_dict_serializable():

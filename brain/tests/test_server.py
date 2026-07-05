@@ -74,7 +74,8 @@ def _seed_knowledge_nodes(conn):
 # ---- /health ----
 
 
-def test_health_endpoint(tmp_db):
+def test_health_endpoint(tmp_db, monkeypatch):
+    monkeypatch.setattr("hippo_brain.server.os.getpid", lambda: 4242)
     conn, db_path = tmp_db
     app = _make_app(str(db_path))
     client = TestClient(app)
@@ -83,6 +84,7 @@ def test_health_endpoint(tmp_db):
     assert resp.status_code == 200
     data = resp.json()
     assert data["status"] == "ok"
+    assert data["pid"] == 4242
     assert "version" in data
     assert data["version"] == get_version()
     assert "inference_reachable" in data

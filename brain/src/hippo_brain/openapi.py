@@ -214,6 +214,7 @@ def build_openapi_spec() -> dict:
                     ],
                     "properties": {
                         "status": {"type": "string"},
+                        "pid": {"type": "integer"},
                         "version": {"type": "string"},
                         "expected_schema_version": {"type": "integer"},
                         "accepted_read_versions": {
