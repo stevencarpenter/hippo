@@ -1216,8 +1216,8 @@ pub async fn handle_doctor(config: &HippoConfig, explain: bool) -> Result<()> {
     // Check Claude session hook
     check_claude_session_hook(config);
 
-    // Check Firefox extension build + Native Messaging manifest + permanent install
-    fail_count += check_firefox_extension();
+    // Check Firefox extension build + permanent install + dist/
+    fail_count += check_firefox_extension(explain);
 
     // Per-source capture-freshness audit (one line per raw data source
     // hippo is supposed to collect). Uses day-level thresholds — complements
@@ -4012,8 +4012,8 @@ fn expected_claude_session_hook_path(data_dir: &std::path::Path) -> Option<PathB
 ///
 /// Native Messaging manifest is checked separately by `check_nm_manifest`.
 /// Profile resolution mirrors `mise.toml` `[tasks."install:ext"]` (lines ~113–146).
-fn check_firefox_extension() -> u32 {
-    let mut fail_count = check_firefox_extension_permanent_install();
+fn check_firefox_extension(explain: bool) -> u32 {
+    let mut fail_count = check_firefox_extension_permanent_install(explain);
 
     // Extension dist/ files. We locate the repo via the canonical path of the
     // currently running binary — typically `<repo>/target/release/hippo`, with
@@ -4023,13 +4023,13 @@ fn check_firefox_extension() -> u32 {
         println!("[--] Firefox extension dist/ check skipped (could not locate repo root)");
         return fail_count;
     };
-    fail_count += check_firefox_extension_dist_at(&repo_root.join("extension/firefox"));
+    fail_count += check_firefox_extension_dist_at(&repo_root.join("extension/firefox"), explain);
     fail_count
 }
 
 /// Verify `mise run install:ext` has side-loaded the unsigned .xpi into the
 /// Firefox Developer Edition profile.
-fn check_firefox_extension_permanent_install() -> u32 {
+fn check_firefox_extension_permanent_install(explain: bool) -> u32 {
     let Some(home) = dirs::home_dir() else {
         println!("[--] Firefox extension install   skipped (no home dir)");
         return 0;
@@ -4065,11 +4065,23 @@ fn check_firefox_extension_permanent_install() -> u32 {
         println!("[!!] Firefox extension not permanently installed");
         println!("     Temporary about:debugging loads do not survive Firefox restarts.");
         println!("     Fix: mise run install:ext");
+        if explain {
+            println!(
+                "     CAUSE:  No hippo-browser@local.xpi in the Firefox Dev Edition profile extensions/ dir"
+            );
+            println!(
+                "     FIX:    mise run install:ext (one-time: about:config → xpinstall.signatures.required = false)"
+            );
+            println!(
+                "     DEV:    about:debugging → Load Temporary Add-on is for active extension development only"
+            );
+            println!("     DOC:    docs/capture/operator-runbook.md (Browser capture is idle…)");
+        }
         1
     }
 }
 
-fn check_firefox_extension_dist_at(ext_dir: &std::path::Path) -> u32 {
+fn check_firefox_extension_dist_at(ext_dir: &std::path::Path, explain: bool) -> u32 {
     if !ext_dir.exists() {
         // Not fatal: release installs won't have the repo extension dir.
         println!(
@@ -4097,6 +4109,11 @@ fn check_firefox_extension_dist_at(ext_dir: &std::path::Path) -> u32 {
         );
         println!("     The extension loads but captures nothing when dist/ is absent.");
         println!("     Fix: mise run build:ext:dist");
+        if explain {
+            println!("     CAUSE:  extension/firefox/dist/ is gitignored and was not built");
+            println!("     FIX:    mise run build:ext:dist");
+            println!("     DOC:    extension/firefox/README.md");
+        }
         1
     }
 }
@@ -4374,7 +4391,7 @@ mod tests {
             .collect();
         assert_eq!(missing, vec!["dist/background.js", "dist/content.js"]);
 
-        assert_eq!(check_firefox_extension_dist_at(&ext), 1);
+        assert_eq!(check_firefox_extension_dist_at(&ext, false), 1);
     }
 
     #[test]
@@ -4392,7 +4409,7 @@ mod tests {
             .collect();
         assert!(missing.is_empty());
 
-        assert_eq!(check_firefox_extension_dist_at(&ext), 0);
+        assert_eq!(check_firefox_extension_dist_at(&ext, false), 0);
     }
 
     #[test]
@@ -4400,7 +4417,7 @@ mod tests {
         // Nonexistent path must not panic — release installs won't have it.
         let tmp = tempdir().unwrap();
         assert_eq!(
-            check_firefox_extension_dist_at(&tmp.path().join("does-not-exist")),
+            check_firefox_extension_dist_at(&tmp.path().join("does-not-exist"), false),
             0
         );
     }
