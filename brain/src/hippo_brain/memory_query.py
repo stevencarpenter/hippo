@@ -18,7 +18,7 @@ from hippo_brain.auto_memory_categories import (
     list_document_links,
     validate_memory_category_filter,
 )
-from hippo_brain.auto_memory_constants import SOURCE_KIND
+from hippo_brain.auto_memory_constants import PROBE_REPOSITORY, SOURCE_KIND
 from hippo_brain.auto_memory_lifecycle import query_memory_history
 from hippo_brain.mcp_queries import MAX_LIMIT, parse_since
 from hippo_brain.source_filters import table_exists
@@ -144,6 +144,9 @@ def _build_current_filters(req: MemoryQueryRequest) -> tuple[str, list[Any]]:
     if req.repository:
         clauses.append("d.repository = ?")
         params.append(req.repository)
+    else:
+        clauses.append("d.repository != ?")
+        params.append(PROBE_REPOSITORY)
     if req.logical_path:
         clauses.append("d.logical_path = ?")
         params.append(req.logical_path)
@@ -259,6 +262,9 @@ def _build_status_filters(req: MemoryQueryRequest) -> tuple[str, list[Any]]:
     if req.repository:
         clauses.append("d.repository = ?")
         params.append(req.repository)
+    else:
+        clauses.append("d.repository != ?")
+        params.append(PROBE_REPOSITORY)
     if req.logical_path:
         clauses.append("d.logical_path = ?")
         params.append(req.logical_path)

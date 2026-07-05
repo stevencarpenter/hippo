@@ -37,6 +37,7 @@ fn probes_cover_every_source_from_the_audit_matrix() {
             "agentic-session-opencode",
             "agentic-session-codex",
             "agentic-session-cursor",
+            "claude-auto-memory",
         ],
         "probe list must stay in sync with docs/capture/sources.md"
     );

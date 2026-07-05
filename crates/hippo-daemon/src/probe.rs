@@ -26,6 +26,7 @@ const VALID_PROBE_SOURCES: &[&str] = &[
     "agentic-session-opencode",
     "agentic-session-codex",
     "browser",
+    "claude-auto-memory",
 ];
 
 type SyncProbeFn = fn(&HippoConfig) -> Result<(bool, Option<i64>)>;
@@ -147,6 +148,16 @@ pub async fn run(config: &HippoConfig, source: Option<&str>) -> Result<()> {
                 write_probe_result(config, "browser", false, None)?;
             }
         }
+    }
+
+    if run_all || source == Some("claude-auto-memory") {
+        run_sync_probe(
+            config,
+            run_all,
+            source,
+            "claude-auto-memory",
+            crate::probe_auto_memory::probe_auto_memory,
+        )?;
     }
 
     if let Some(s) = source

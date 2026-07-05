@@ -38,6 +38,8 @@ hippo-auto-memory = "hippo_brain.auto_memory:main"
 hippo-auto-memory-poll = "hippo_brain.auto_memory:poll_main"
 hippo-auto-memory-reconcile = "hippo_brain.auto_memory:reconcile_file_main"
 hippo-auto-memory-inventory = "hippo_brain.auto_memory:inventory_main"
+hippo-auto-memory-replay = "hippo_brain.auto_memory:replay_main"
+hippo-auto-memory-probe = "hippo_brain.auto_memory_probe:main"
 hippo-memory-query = "hippo_brain.memory_query:main"
 
 [build-system]

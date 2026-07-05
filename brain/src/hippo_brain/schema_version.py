@@ -53,7 +53,7 @@ from __future__ import annotations
 
 import sqlite3
 
-EXPECTED_SCHEMA_VERSION: int = 20
+EXPECTED_SCHEMA_VERSION: int = 21
 
 # Versions brain can read without erroring.
 #

@@ -15,6 +15,7 @@ from urllib.parse import urlsplit
 from hippo_brain.auto_memory_constants import (
     CHUNKER_NAME,
     CHUNKER_VERSION,
+    PROBE_REPOSITORY,
     SOURCE_KIND,
     _IDENTITY_NAMESPACE,
 )
@@ -365,23 +366,29 @@ def ingest_memory_file(
                 for chunk in chunks
             ],
         )
+        is_probe = repository_identity == PROBE_REPOSITORY
+        if not is_probe:
+            conn.execute(
+                "INSERT INTO memory_enrichment_queue "
+                "(revision_id, status, priority, retry_count, max_retries, enqueued_at, updated_at) "
+                "VALUES (?, 'pending', 5, 0, 5, ?, ?)",
+                (revision_id, observed_at, observed_at),
+            )
+            projection_status = "pending"
+        else:
+            projection_status = "ready"
         conn.execute(
-            "INSERT INTO memory_enrichment_queue "
-            "(revision_id, status, priority, retry_count, max_retries, enqueued_at, updated_at) "
-            "VALUES (?, 'pending', 5, 0, 5, ?, ?)",
-            (revision_id, observed_at, observed_at),
-        )
-        conn.execute(
-            "UPDATE memory_documents SET current_revision_id = ?, projection_status = 'pending', "
+            "UPDATE memory_documents SET current_revision_id = ?, projection_status = ?, "
             "last_error = NULL, updated_at = ? WHERE id = ?",
-            (revision_id, observed_at, document_id),
+            (revision_id, projection_status, observed_at, document_id),
         )
-        conn.execute(
-            "UPDATE source_health SET last_event_ts = ?, last_success_ts = ?, "
-            "last_error_msg = NULL, last_error_ts = NULL, "
-            "consecutive_failures = 0, updated_at = ? WHERE source = ?",
-            (observed_at, observed_at, observed_at, SOURCE_KIND),
-        )
+        if not is_probe:
+            conn.execute(
+                "UPDATE source_health SET last_event_ts = ?, last_success_ts = ?, "
+                "last_error_msg = NULL, last_error_ts = NULL, "
+                "consecutive_failures = 0, updated_at = ? WHERE source = ?",
+                (observed_at, observed_at, observed_at, SOURCE_KIND),
+            )
         if previous_redacted is not None and current_revision_id is not None:
             finalize_superseded_revision(
                 conn,
