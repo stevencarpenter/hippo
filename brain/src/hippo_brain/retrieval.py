@@ -34,6 +34,7 @@ from hippo_brain.retrieval_eligibility import (
     shell_event_eligible_sql,
     workflow_run_eligible_sql,
 )
+from hippo_brain.confidence_scoring import attach_confidence_to_results
 from hippo_brain.source_freshness import attach_freshness_to_results
 from hippo_brain.source_filters import (
     knowledge_memory_project_clause,
@@ -80,6 +81,7 @@ class SearchResult:
     linked_source_ids: list[str] = field(default_factory=list)
     evidence: list[dict] = field(default_factory=list)
     entities: dict[str, list[str]] = field(default_factory=dict)
+    confidence: dict = field(default_factory=dict)
 
 
 class _Backend(Protocol):
@@ -225,6 +227,7 @@ def search(
         raise ValueError(f"unknown retrieval mode: {mode!r}")
 
     attach_freshness_to_results(conn, results)
+    attach_confidence_to_results(results)
     return results
 
 
@@ -895,6 +898,7 @@ def _to_result(score: float, detail: dict | None) -> SearchResult:
             linked_source_ids=[],
             evidence=[],
             entities={},
+            confidence={},
         )
     packets = attach_retrieval_scores(list(detail.get("evidence_packets") or []), score)
     return SearchResult(

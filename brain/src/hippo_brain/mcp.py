@@ -605,6 +605,7 @@ def _result_to_dict(result) -> dict:
         "linked_event_ids": list(result.linked_event_ids),
         "linked_source_ids": list(result.linked_source_ids),
         "evidence": list(result.evidence),
+        "confidence": dict(result.confidence) if result.confidence else {},
     }
 
 

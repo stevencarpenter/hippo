@@ -174,6 +174,7 @@ def _shape_rag_sources(
                 "uuid": hit.get("uuid", ""),
                 "linked_event_ids": list(hit.get("linked_event_ids", []) or []),
                 "evidence": list(hit.get("evidence", []) or []),
+                "confidence": dict(hit.get("confidence", {}) or {}),
             }
         )
     return sources[:limit]
@@ -463,6 +464,7 @@ def _result_to_hit(r: SearchResult) -> dict:
         "linked_source_ids": list(r.linked_source_ids),
         "evidence": list(r.evidence),
         "entities": dict(r.entities),
+        "confidence": dict(r.confidence) if r.confidence else {},
     }
 
 
