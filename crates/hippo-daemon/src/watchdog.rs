@@ -472,7 +472,7 @@ pub fn check_invariants(rows: &[SourceHealthRow], now_ms: i64) -> Vec<InvariantV
     // I-3: Claude-tool concurrency — structured log only per spec; no alarm row.
     // Omitted from T-1; activated in future when probe data is available.
 
-    // I-4: Browser round-trip (>2 min stale while probe says active)
+    // I-4: Browser round-trip (stale events while extension heartbeat is fresh)
     // BT-16: suppressed during bench pause window.
     if !bench_paused && let Some(v) = check_i4_browser_roundtrip(&by_source, now_ms) {
         violations.push(v);
@@ -595,8 +595,8 @@ pub fn check_i2_claude_session_proxy(
 /// I-4: Browser round-trip.
 /// Fires when `browser.last_event_ts` is older than the probe cadence plus
 /// launchd/SQLite jitter grace **and** `browser.last_heartbeat_ts` is fresh
-/// (< [`LIVENESS_GRACE_MS`]) — i.e. the extension is connected but the event
-/// round-trip (user visits or synthetic probe) has stalled.
+/// (within the 5-minute heartbeat cadence plus grace) — i.e. the extension is
+/// connected but the event round-trip (user visits or synthetic probe) has stalled.
 pub fn check_i4_browser_roundtrip(
     by_source: &std::collections::HashMap<&str, &SourceHealthRow>,
     now_ms: i64,
@@ -607,7 +607,10 @@ pub fn check_i4_browser_roundtrip(
     let last_event = row.last_event_ts?;
 
     let heartbeat = row.last_heartbeat_ts?;
-    if now_ms - heartbeat > LIVENESS_GRACE_MS {
+    if !crate::browser_health::firefox_running() {
+        return None;
+    }
+    if !crate::browser_health::browser_heartbeat_fresh(heartbeat, now_ms) {
         return None;
     }
 
@@ -1592,7 +1595,7 @@ mod tests {
     // ── I-4 ────────────────────────────────────────────────────────────────
 
     #[test]
-    fn watchdog_i4_fires_when_stale_and_probe_active() {
+    fn watchdog_i4_fires_when_stale_and_heartbeat_fresh() {
         let row = SourceHealthRow {
             last_event_ts: Some(NOW - 480_000), // beyond 5 min cadence + grace
             probe_ok: Some(1),
@@ -1637,7 +1640,7 @@ mod tests {
     fn watchdog_i4_suppressed_when_heartbeat_stale() {
         let row = SourceHealthRow {
             last_event_ts: Some(NOW - 480_000),
-            last_heartbeat_ts: Some(NOW - 300_000), // extension disconnected
+            last_heartbeat_ts: Some(NOW - 500_000), // beyond 7 min cadence window
             ..blank_row("browser")
         };
         let rows = vec![row];
