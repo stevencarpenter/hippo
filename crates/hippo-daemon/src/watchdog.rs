@@ -215,42 +215,24 @@ pub fn run(config: &HippoConfig) -> Result<()> {
         })
         .to_string();
 
-        // Insert the alarm row, with a single retry on SQLITE_BUSY before
-        // giving up.  busy_timeout=5000 handles the common case; this retry
-        // covers the rare window where a second BUSY fires after the first
-        // timeout expires.  On persistent failure we log and continue so
-        // the remaining invariants are still evaluated.
-        let insert_result = conn.execute(
-            "INSERT INTO capture_alarms (invariant_id, raised_at, details_json)
-             VALUES (?1, ?2, ?3)",
-            rusqlite::params![&v.invariant_id, now_ms, &details_json],
-        );
+        let insert_result = crate::with_busy_retry("watchdog_alarm_insert", || {
+            conn.execute(
+                "INSERT INTO capture_alarms (invariant_id, raised_at, details_json)
+                 VALUES (?1, ?2, ?3)",
+                rusqlite::params![&v.invariant_id, now_ms, &details_json],
+            )
+            .map(|_| ())
+        });
         if let Err(e) = insert_result {
             if crate::is_sqlite_busy(&e) {
-                // BT-15: track contention for bench's "is this model causing
-                // write pressure?" diagnostic. Increment via the shared helper
-                // so post-review I-3 keeps every busy-count site's labelling
-                // consistent.
-                #[cfg(feature = "otel")]
-                {
-                    crate::metrics::record_db_busy(&e, "watchdog_alarm_insert");
-                }
-                std::thread::sleep(std::time::Duration::from_millis(100));
-                if let Err(retry_err) = conn.execute(
-                    "INSERT INTO capture_alarms (invariant_id, raised_at, details_json)
-                     VALUES (?1, ?2, ?3)",
-                    rusqlite::params![&v.invariant_id, now_ms, &details_json],
-                ) {
-                    error!(
-                        invariant = %v.invariant_id,
-                        error = %retry_err,
-                        "watchdog: alarm insert failed after SQLITE_BUSY retry; skipping"
-                    );
-                    continue;
-                }
-            } else {
-                return Err(e.into());
+                error!(
+                    invariant = %v.invariant_id,
+                    error = %e,
+                    "watchdog: alarm insert failed after SQLITE_BUSY retry; skipping"
+                );
+                continue;
             }
+            return Err(e.into());
         }
 
         error!(

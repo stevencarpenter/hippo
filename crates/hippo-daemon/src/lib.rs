@@ -30,6 +30,7 @@ pub mod watchdog;
 use hippo_core::config::ENV_ALLOWLIST;
 use hippo_core::events::ShellEvent;
 use hippo_core::redaction::{RedactionEngine, RedactionResult};
+use tracing::warn;
 
 pub fn detect_shell_kind() -> hippo_core::events::ShellKind {
     std::env::var("SHELL")
@@ -80,6 +81,28 @@ pub(crate) fn is_sqlite_busy(err: &rusqlite::Error) -> bool {
     )
 }
 
+/// Run `f` once; on SQLITE_BUSY record the metric, log a warning, sleep 100ms,
+/// and retry exactly once. Models the watchdog alarm-insert path so every
+/// writer shares one definition of single-retry-on-BUSY.
+pub(crate) fn with_busy_retry<T, F>(op: &'static str, mut f: F) -> Result<T, rusqlite::Error>
+where
+    F: FnMut() -> Result<T, rusqlite::Error>,
+{
+    match f() {
+        Ok(v) => Ok(v),
+        Err(e) if is_sqlite_busy(&e) => {
+            #[cfg(feature = "otel")]
+            {
+                crate::metrics::record_db_busy(&e, op);
+            }
+            warn!(op, "transient SQLite lock contention; retrying once");
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            f()
+        }
+        Err(e) => Err(e),
+    }
+}
+
 /// Redact a shell event: scrub the command, filter env to allowlist, redact env values.
 /// Returns the redacted event plus the per-rule hit breakdown from the command
 /// redaction pass, so callers can emit per-rule observability (see #52). The
@@ -104,4 +127,79 @@ pub fn redact_shell_event(
         ..event.clone()
     });
     (redacted, hits)
+}
+
+#[cfg(test)]
+mod busy_retry_tests {
+    use super::*;
+    use rusqlite::ffi;
+
+    pub(crate) fn sqlite_busy_error() -> rusqlite::Error {
+        rusqlite::Error::SqliteFailure(
+            ffi::Error {
+                code: rusqlite::ErrorCode::DatabaseBusy,
+                extended_code: ffi::SQLITE_BUSY,
+            },
+            Some("database is locked".into()),
+        )
+    }
+
+    #[test]
+    fn with_busy_retry_succeeds_on_second_attempt() {
+        let mut attempts = 0;
+        let result = with_busy_retry("test_op", || {
+            attempts += 1;
+            if attempts == 1 {
+                Err(sqlite_busy_error())
+            } else {
+                Ok(42)
+            }
+        });
+        assert_eq!(result.unwrap(), 42);
+        assert_eq!(attempts, 2);
+    }
+
+    #[test]
+    fn with_busy_retry_returns_persistent_busy() {
+        let mut attempts = 0;
+        let result: rusqlite::Result<i32> = with_busy_retry("test_op", || {
+            attempts += 1;
+            Err(sqlite_busy_error())
+        });
+        assert!(is_sqlite_busy(&result.unwrap_err()));
+        assert_eq!(attempts, 2);
+    }
+
+    fn non_busy_sqlite_error() -> rusqlite::Error {
+        rusqlite::Error::SqliteFailure(
+            ffi::Error {
+                code: rusqlite::ErrorCode::ConstraintViolation,
+                extended_code: ffi::SQLITE_CONSTRAINT,
+            },
+            Some("constraint".into()),
+        )
+    }
+
+    #[test]
+    fn with_busy_retry_does_not_retry_other_errors() {
+        let mut attempts = 0;
+        let result: rusqlite::Result<i32> = with_busy_retry("test_op", || {
+            attempts += 1;
+            Err(non_busy_sqlite_error())
+        });
+        assert!(result.is_err());
+        assert_eq!(attempts, 1);
+    }
+
+    #[test]
+    fn record_db_busy_claude_session_insert() {
+        assert!(crate::metrics::record_db_busy(
+            &sqlite_busy_error(),
+            "claude_session_insert"
+        ));
+        assert!(!crate::metrics::record_db_busy(
+            &non_busy_sqlite_error(),
+            "claude_session_insert"
+        ));
+    }
 }
