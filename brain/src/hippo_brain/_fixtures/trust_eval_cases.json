@@ -1,5 +1,5 @@
 {
-  "description": "Agent-trust regression corpus (SNUG-118). Each case records expected evidence shape — source kind, link identity, timestamps — not prose answers tied to a live user DB. Run offline via `hippo-trust-eval --validate` or `pytest brain/tests/test_trust_eval.py`.",
+  "description": "Agent-trust regression corpus (SNUG-118). Each case records expected evidence shape — source kind, link identity, timestamps — not prose answers tied to a live user DB. Run offline via `hippo-trust-eval` or `pytest brain/tests/test_trust_eval.py`.",
   "schema_version": 1,
   "adding_cases": "Append a case with unique id, set evidence.source_kinds to the logical families you expect in linked_source_ids, and add a matching row to the synthetic seeder in brain/tests/test_trust_eval.py when the case needs an end-to-end retrieval check.",
   "cases": [

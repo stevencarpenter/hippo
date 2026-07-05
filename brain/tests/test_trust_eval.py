@@ -18,14 +18,13 @@ from hippo_brain.trust_eval import (
     validate_corpus,
 )
 
-# Reuse retrieval test schema shape.
-from tests.test_retrieval import SCHEMA, FakeBackend
+from tests.retrieval_fixtures import TRUST_EVAL_SCHEMA, FakeBackend
 
 
 @pytest.fixture
 def conn() -> sqlite3.Connection:
     c = sqlite3.connect(":memory:")
-    c.executescript(SCHEMA)
+    c.executescript(TRUST_EVAL_SCHEMA)
     c.commit()
     return c
 
@@ -230,7 +229,8 @@ def test_probe_sessions_excluded_from_claude_filter(conn: sqlite3.Connection) ->
     case = next(c for c in load_cases() if c.id == "trust-probe-exclude-01")
     backend = FakeBackend(knn=[(1, 0.9), (2, 0.85)], fts=[(2, 0.95), (1, 0.5)])
     results = run_case_search(conn, case, _Vec().v, backend=backend, limit=5)
-    # Source filter should exclude probe-linked node when hydration respects probe_tag.
+    assert len(results) == 1
+    assert results[0].uuid == "real"
     kinds = kinds_in_results(results)
     assert "claude" in kinds
     check = check_evidence(case, results)

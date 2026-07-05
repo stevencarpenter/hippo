@@ -34,7 +34,7 @@ from hippo_brain.source_filters import source_kind_from_linked_id
 
 _DEFAULT_CASES = Path(__file__).parent / "_fixtures" / "trust_eval_cases.json"
 _EXPECTED_SCHEMA_VERSION = 1
-_MIN_ACTIVE_CASES = 12
+_MIN_CORPUS_CASES = 12
 
 # Enforced on non-pending cases only (claude-auto-memory pending until retrieval
 # hydrates memory linked_source_ids).
@@ -134,13 +134,11 @@ def load_cases(path: Path | str | None = None) -> list[TrustEvalCase]:
 def validate_corpus(cases: Sequence[TrustEvalCase]) -> list[str]:
     """Return human-readable validation errors; empty list means corpus is well-formed."""
     errors: list[str] = []
-    active = [c for c in cases if not c.pending]
-    if len(cases) < _MIN_ACTIVE_CASES:
-        errors.append(f"expected at least {_MIN_ACTIVE_CASES} cases, found {len(cases)}")
+    if len(cases) < _MIN_CORPUS_CASES:
+        errors.append(f"expected at least {_MIN_CORPUS_CASES} cases, found {len(cases)}")
 
     seen: set[str] = set()
     covered: set[str] = set()
-    has_negative_doc = False
 
     for case in cases:
         if case.id in seen:
@@ -153,8 +151,6 @@ def validate_corpus(cases: Sequence[TrustEvalCase]) -> list[str]:
             errors.append(f"{case.id}: max_hits < min_hits")
 
         if case.pending:
-            if case.evidence.expect_coverage_gap or case.mode == "adversarial":
-                has_negative_doc = True
             continue
 
         for kind in case.evidence.source_kinds:
@@ -164,13 +160,10 @@ def validate_corpus(cases: Sequence[TrustEvalCase]) -> list[str]:
     if missing:
         errors.append(f"missing active source family coverage: {sorted(missing)}")
 
-    pending_negative = any(
-        c.pending and (c.evidence.expect_coverage_gap or c.mode == "adversarial") for c in cases
+    has_negative_doc = any(
+        c.evidence.expect_coverage_gap or c.mode == "adversarial" for c in cases
     )
-    active_negative = any(
-        (not c.pending) and c.evidence.expect_coverage_gap for c in active
-    )
-    if not (has_negative_doc or pending_negative or active_negative):
+    if not has_negative_doc:
         errors.append("corpus must document at least one negative/gap case (pending ok)")
 
     return errors
