@@ -821,7 +821,26 @@ fn extract_segments(
         segments.push(last);
     }
 
-    Ok(segments)
+    Ok(collapse_adjacent_identical_segments(segments))
+}
+
+/// Drop a trailing segment when it is byte-for-byte identical to its predecessor.
+///
+/// Watcher re-parses occasionally produced adjacent `segment_index` values with
+/// identical enrichment content (SNUG-101). Collapsing here keeps ingest idempotent
+/// without touching rows already in SQLite.
+fn collapse_adjacent_identical_segments(mut segments: Vec<SessionSegment>) -> Vec<SessionSegment> {
+    while segments.len() >= 2 {
+        let n = segments.len();
+        if compute_segment_content_hash(&segments[n - 2])
+            == compute_segment_content_hash(&segments[n - 1])
+        {
+            segments.pop();
+        } else {
+            break;
+        }
+    }
+    segments
 }
 
 /// Build the human-readable `summary_text` column shipped to enrichment.
@@ -2121,6 +2140,27 @@ mod tests {
             is_subagent: false,
             parent_session_id: None,
         }
+    }
+
+    #[test]
+    fn test_collapse_adjacent_identical_trailing_segment() {
+        let first = make_test_segment("session-dup-001", 0);
+        let mut duplicate = first.clone();
+        duplicate.segment_index = 1;
+        let collapsed = collapse_adjacent_identical_segments(vec![first, duplicate]);
+        assert_eq!(collapsed.len(), 1);
+        assert_eq!(collapsed[0].segment_index, 0);
+    }
+
+    #[test]
+    fn test_collapse_adjacent_identical_keeps_distinct_segments() {
+        let mut second = make_test_segment("session-dup-002", 1);
+        second.user_prompts.push("follow-up".to_string());
+        let collapsed = collapse_adjacent_identical_segments(vec![
+            make_test_segment("session-dup-002", 0),
+            second,
+        ]);
+        assert_eq!(collapsed.len(), 2);
     }
 
     #[test]
