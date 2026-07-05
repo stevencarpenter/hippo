@@ -1,8 +1,10 @@
 # Legacy `claude_*` Table Cutover Runbook (SNUG-115)
 
-Operator-facing checklist for the destructive v22 migration that drops frozen legacy agentic tables after the v17→v18 backfill to `agentic_sessions`. **Do not run the migration until this runbook's grep audit is clean and a HITL backup exists.**
+Operator-facing checklist for the destructive **Phase B (v23)** migration that drops frozen legacy agentic tables after the v17→v18 backfill to `agentic_sessions`. **Do not run Phase B until this runbook's grep audit is clean and a HITL backup exists.**
 
 Parent issue: [SNUG-115](https://linear.app/snugmarina/issue/SNUG-115).
+
+**Phase A (v22)** renamed watcher resume state to `agentic_session_offsets` only — no drops.
 
 ## Current state (schema v22 after Phase A)
 
@@ -17,15 +19,15 @@ Parent issue: [SNUG-115](https://linear.app/snugmarina/issue/SNUG-115).
 | `claude_session_parity` | **Frozen** — tmux tailer residue | Drop |
 | `claude_session_offsets` | **Live on v21** — FS watcher resume state | **Renamed to `agentic_session_offsets` in v22 (Phase A)** |
 
-The v17→v18 migration already copied historical rows into `agentic_sessions` / `agentic_enrichment_queue` / `knowledge_node_agentic_sessions` with `harness` derived from `source_file`. v22 is schema cleanup + reference purge, not another data migration.
+The v17→v18 migration already copied historical rows into `agentic_sessions` / `agentic_enrichment_queue` / `knowledge_node_agentic_sessions` with `harness` derived from `source_file`. Phase B (v23) is schema cleanup + reference purge, not another data migration.
 
 ## HITL prerequisites (mandatory)
 
-1. **Stop writers briefly** (optional but safer): `mise run stop`
-2. **Backup the database**:
+1. **Stop writers** (recommended for Phase A deploy): `mise run stop` — prevents an old watcher binary writing `claude_session_offsets` while the new binary reads `agentic_session_offsets` during rolling deploy.
+2. **Backup the database** (Phase B):
    ```bash
-   cp ~/.local/share/hippo/hippo.db ~/.local/share/hippo/hippo.db.pre-v22.$(date +%Y%m%d%H%M)
-   sqlite3 ~/.local/share/hippo/hippo.db ".backup ~/.local/share/hippo/hippo.db.pre-v22-backup"
+   cp ~/.local/share/hippo/hippo.db ~/.local/share/hippo/hippo.db.pre-v23.$(date +%Y%m%d%H%M)
+   sqlite3 ~/.local/share/hippo/hippo.db ".backup ~/.local/share/hippo/hippo.db.pre-v23-backup"
    ```
 3. **Verify backfill completeness** (row counts should be stable; agentic ≥ legacy):
    ```bash
@@ -121,7 +123,7 @@ Expected: no `claude_sessions` / `claude_enrichment_queue` / `knowledge_node_cla
 ## Rollback
 
 1. `mise run stop`
-2. Restore backup: `cp ~/.local/share/hippo/hippo.db.pre-v22.* ~/.local/share/hippo/hippo.db`
+2. Restore backup: `cp ~/.local/share/hippo/hippo.db.pre-v23.* ~/.local/share/hippo/hippo.db`
 3. Deploy previous hippo binary/brain build (schema v21)
 4. `mise run start && hippo doctor`
 

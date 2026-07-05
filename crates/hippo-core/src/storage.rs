@@ -4058,6 +4058,68 @@ mod tests {
         assert!(legacy_exists, "legacy table kept frozen until Phase B");
     }
 
+    #[test]
+    fn test_migrate_v21_to_v22_is_idempotent_on_reopen() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("offsets-v21-reopen.db");
+        let conn = Connection::open(&db).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE claude_session_offsets (
+                path TEXT PRIMARY KEY,
+                session_id TEXT,
+                byte_offset INTEGER NOT NULL DEFAULT 0,
+                inode INTEGER,
+                device INTEGER,
+                size_at_last_read INTEGER NOT NULL DEFAULT 0,
+                updated_at INTEGER NOT NULL
+             ) STRICT;
+             INSERT INTO claude_session_offsets
+                (path, session_id, byte_offset, inode, device, size_at_last_read, updated_at)
+             VALUES ('/tmp/a.jsonl', 'a', 1, 1, 1, 1, 1);
+             PRAGMA user_version = 21;",
+        )
+        .unwrap();
+        drop(conn);
+
+        let conn = open_db(&db).unwrap();
+        drop(conn);
+        let conn = open_db(&db).unwrap();
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM agentic_session_offsets", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(count, 1);
+        let version: i64 = conn
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, EXPECTED_VERSION);
+    }
+
+    #[test]
+    fn test_fresh_install_has_agentic_session_offsets_not_legacy() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("fresh.db");
+        let conn = open_db(&db).unwrap();
+        let agentic: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='agentic_session_offsets')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let legacy: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='claude_session_offsets')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(agentic);
+        assert!(!legacy);
+        drop(conn);
+    }
+
     /// REGRESSION (BT-29 schema gap, 2026-05-04): the bench's corpus init
     /// writes a column-compatible subset of input tables (sessions, events,
     /// env_snapshots, …) and stamps `PRAGMA user_version = EXPECTED_VERSION`.
