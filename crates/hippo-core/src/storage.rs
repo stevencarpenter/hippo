@@ -1496,9 +1496,7 @@ pub fn open_db(path: &Path) -> Result<Connection> {
     Ok(conn)
 }
 
-/// Idempotently apply the full `schema.sql` to an already-open connection.
-/// Every statement uses `CREATE … IF NOT EXISTS`, so this is a no-op for
-/// objects that already exist.
+/// Idempotently apply the full `schema.sql` for bench-mode daemon startup.
 ///
 /// `open_db` only applies `SCHEMA` when `user_version == 0` (fresh DB),
 /// trusting that any DB with `user_version > 0` is the product of the
@@ -1509,11 +1507,14 @@ pub fn open_db(path: &Path) -> Result<Connection> {
 /// knowledge_node_*, workflow_annotations, lessons, …) when writing
 /// enrichment results, but the bench DB only has the input tables.
 ///
-/// This function lets bench-mode fill the gap without touching prod's
-/// migration semantics. Operator runs should never call it — they go
-/// through `open_db` whose v=0 / migration paths are what guarantees
-/// schema integrity in production.
-pub fn ensure_schema(conn: &Connection) -> Result<()> {
+/// Bench-mode daemon startup calls this to fill the gap without touching
+/// prod's migration semantics. Operator runs must use `open_db` instead.
+pub fn init_bench_schema(conn: &Connection) -> Result<()> {
+    ensure_schema(conn)
+}
+
+/// Internal implementation shared with unit tests in this module.
+fn ensure_schema(conn: &Connection) -> Result<()> {
     conn.execute_batch(SCHEMA)?;
     Ok(())
 }
