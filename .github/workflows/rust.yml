@@ -53,7 +53,12 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        # macOS runs on merges to main (event=push) but not on every PR — macOS
+        # runners bill at ~10x Linux, and PR CI fires on every agent-loop push.
+        # Cross-platform coverage is preserved at merge; release.yml still builds
+        # macOS on tags. Set to include macOS on PRs too if you want it required
+        # pre-merge (revert to `[ubuntu-latest, macos-latest]`).
+        os: ${{ github.event_name == 'push' && fromJSON('["ubuntu-latest", "macos-latest"]') || fromJSON('["ubuntu-latest"]') }}
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v6
