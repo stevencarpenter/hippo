@@ -957,7 +957,9 @@ pub fn poll_tick(config: &HippoConfig) -> Result<usize> {
             }
             let key = cursor_key(&meta);
             let cursor = read_cursor(&conn, &key);
-            let identity_drift = rollout_path_session_id(path)
+            let path_session_id = rollout_path_session_id(path);
+            let identity_drift = path_session_id
+                .as_deref()
                 .is_some_and(|expected| !cursor.last_id.is_empty() && cursor.last_id != expected);
             if mtime_ms <= cursor.last_seen_updated_at && !identity_drift {
                 continue; // unchanged since last successful parse
@@ -981,6 +983,24 @@ pub fn poll_tick(config: &HippoConfig) -> Result<usize> {
                     // re-parsed every tick.
                     if count > 0 {
                         bump_health_ok(&conn, mtime_ms);
+                    }
+                    // Tripwire: a drift-triggered reprocess is expected to converge —
+                    // the freshly parsed session_id should equal the filename UUID.
+                    // Verified 0/400 real rollouts violate this today; a hit means
+                    // Codex started naming a rollout after something other than its own
+                    // thread id, so the cursor would drift and re-ingest every tick.
+                    // Surface it once instead of burning CPU silently forever.
+                    if identity_drift
+                        && let Some(expected) = path_session_id.as_deref()
+                        && !session_id.is_empty()
+                        && session_id != expected
+                    {
+                        warn!(
+                            path = %path.display(),
+                            session_id = %session_id,
+                            filename_uuid = %expected,
+                            "codex: rollout identity did not converge after reprocess; cursor will keep drifting"
+                        );
                     }
                     if let Err(e) = write_cursor(&conn, &key, mtime_ms, &session_id) {
                         warn!("codex cursor write failed for {}: {e:#}", path.display());
