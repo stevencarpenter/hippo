@@ -12,17 +12,18 @@
 //! ever regresses, browser capture silently loses every event that arrived
 //! during a restart window.
 //!
-//! This test file covers one concrete slice of that contract — fallback
-//! files written during a down-daemon window are drained successfully when
-//! the daemon comes back up. End-to-end NM-across-restart (spawning a real
-//! `hippo native-messaging-host` subprocess, bouncing the daemon
-//! mid-write) is `#[ignore]` because it requires harness plumbing that
-//! does not exist on `main` today.
+//! This test file covers both the fallback drain in isolation and the full
+//! Native Messaging stdio path across a real daemon restart.
 //!
 //! Tracking: docs/capture/test-matrix.md row F-7.
 
 use std::collections::HashMap;
 use std::fs;
+use std::io::{Read, Write};
+use std::process::{Child, ChildStdin, Command, Stdio};
+use std::sync::mpsc::{self, Receiver};
+use std::thread;
+use std::time::{Duration, Instant};
 
 use chrono::{TimeZone, Utc};
 use hippo_core::config::HippoConfig;
@@ -57,6 +58,114 @@ fn make_browser_envelope(url: &str, ts_ms: i64) -> EventEnvelope {
             content_hash: None,
         })),
         probe_tag: None,
+    }
+}
+
+struct ChildGuard(Child);
+
+impl ChildGuard {
+    fn stop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+impl Drop for ChildGuard {
+    fn drop(&mut self) {
+        self.stop();
+    }
+}
+
+fn hippo_command(temp: &TempDir) -> Command {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_hippo"));
+    command
+        .env("XDG_DATA_HOME", temp.path().join("xdg-data"))
+        .env("XDG_CONFIG_HOME", temp.path().join("xdg-config"))
+        .env("RUST_LOG", "warn");
+    command
+}
+
+fn process_config(temp: &TempDir) -> HippoConfig {
+    let mut config = HippoConfig::default();
+    config.storage.data_dir = temp.path().join("xdg-data/hippo");
+    config.storage.config_dir = temp.path().join("xdg-config/hippo");
+    config
+}
+
+fn spawn_daemon(temp: &TempDir) -> ChildGuard {
+    let mut command = hippo_command(temp);
+    let child = command
+        .args(["daemon", "run"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn daemon");
+    ChildGuard(child)
+}
+
+fn spawn_native_host(temp: &TempDir) -> (ChildGuard, ChildStdin, Receiver<serde_json::Value>) {
+    let mut command = hippo_command(temp);
+    let mut child = command
+        .arg("native-messaging-host")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn native messaging host");
+    let stdin = child.stdin.take().expect("native host stdin");
+    let mut stdout = child.stdout.take().expect("native host stdout");
+    let (tx, rx) = mpsc::channel();
+    thread::spawn(move || {
+        loop {
+            let mut len_buf = [0u8; 4];
+            if stdout.read_exact(&mut len_buf).is_err() {
+                break;
+            }
+            let len = u32::from_ne_bytes(len_buf) as usize;
+            let mut payload = vec![0u8; len];
+            if stdout.read_exact(&mut payload).is_err() {
+                break;
+            }
+            let Ok(response) = serde_json::from_slice(&payload) else {
+                break;
+            };
+            if tx.send(response).is_err() {
+                break;
+            }
+        }
+    });
+    (ChildGuard(child), stdin, rx)
+}
+
+fn send_visit(stdin: &mut ChildStdin, url: &str, timestamp: i64) {
+    let payload = serde_json::to_vec(&serde_json::json!({
+        "url": url,
+        "title": "restart integration",
+        "domain": "docs.rs",
+        "dwell_ms": 1_000,
+        "scroll_depth": 0.5,
+        "extracted_text": null,
+        "search_query": null,
+        "referrer": null,
+        "timestamp": timestamp
+    }))
+    .unwrap();
+    stdin
+        .write_all(&(payload.len() as u32).to_ne_bytes())
+        .unwrap();
+    stdin.write_all(&payload).unwrap();
+    stdin.flush().unwrap();
+}
+
+fn wait_until(timeout: Duration, mut condition: impl FnMut() -> bool) {
+    let deadline = Instant::now() + timeout;
+    while !condition() {
+        assert!(
+            Instant::now() < deadline,
+            "condition timed out after {timeout:?}"
+        );
+        thread::sleep(Duration::from_millis(25));
     }
 }
 
@@ -169,22 +278,98 @@ fn fallback_file_is_renamed_done_after_successful_drain() {
     );
 }
 
+/// Generous upper bound for every readiness gate in the restart test. These
+/// are ceilings, not sleeps — a healthy machine satisfies each condition in
+/// milliseconds and never waits this long. Sizing it well above real latency
+/// keeps the test from flaking when a loaded CI runner is slow to spawn a
+/// subprocess, bind a socket, or flush a batch.
+const READY: Duration = Duration::from_secs(30);
+
 #[test]
-#[ignore = "blocked on test harness — needs a NM-stdio stream driver that can \
-            survive a mid-stream daemon restart. When P0 (source_health writes) \
-            or P2 (synthetic probes) land, wire this up through a real \
-            `hippo native-messaging-host` subprocess rather than calling \
-            write_fallback_jsonl directly."]
 fn nm_stdio_across_daemon_restart_loses_no_events() {
-    // Intended shape:
-    //   1. Spawn `hippo native-messaging-host` as a subprocess piped to
-    //      stdin/stdout.
-    //   2. Start an in-process daemon bound to a temp socket.
-    //   3. Write a BrowserVisit to the NM subprocess stdin; assert it
-    //      lands in browser_events via the socket path.
-    //   4. Kill + respawn the daemon.
-    //   5. Write a second BrowserVisit; assert it lands — whether via
-    //      restored socket or via fallback drain on next flush.
-    //   6. Assert NO events were silently swallowed (count == writes).
-    unimplemented!("remove #[ignore] once an NM-stdio test harness exists");
+    let temp = tempfile::tempdir().unwrap();
+    let config = process_config(&temp);
+    let mut daemon = spawn_daemon(&temp);
+    wait_until(READY, || config.socket_path().exists());
+
+    let (mut native_host, mut stdin, responses) = spawn_native_host(&temp);
+    let first_url = "https://docs.rs/hippo-restart-first";
+    send_visit(&mut stdin, first_url, 1_700_000_000_000);
+    let response = responses
+        .recv_timeout(READY)
+        .expect("native host response while daemon is up");
+    assert_eq!(response["status"], "ok");
+
+    wait_until(READY, || {
+        let Ok(conn) = storage::open_db(&config.db_path()) else {
+            return false;
+        };
+        conn.query_row(
+            "SELECT COUNT(*) FROM browser_events WHERE url = ?1",
+            [first_url],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap_or(0)
+            == 1
+    });
+
+    daemon.stop();
+    // SIGKILL leaves the Unix socket file on disk. Remove it before the second
+    // visit so (a) the NM host gets a clean connection refusal and falls back,
+    // and (b) the post-restart `socket_path().exists()` gate waits for the NEW
+    // daemon to bind rather than passing instantly on the stale file. The
+    // daemon is already stopped, so there is no race with a live listener.
+    let _ = std::fs::remove_file(config.socket_path());
+    let second_url = "https://docs.rs/hippo-restart-fallback";
+    send_visit(&mut stdin, second_url, 1_700_000_000_001);
+    let response = responses
+        .recv_timeout(READY)
+        .expect("native host response while daemon is down");
+    assert_eq!(
+        response["status"], "ok",
+        "durably queued fallback must be acknowledged"
+    );
+    wait_until(READY, || {
+        storage::list_fallback_files(&config.fallback_dir()).is_ok_and(|files| files.len() == 1)
+    });
+
+    let mut restarted_daemon = spawn_daemon(&temp);
+    wait_until(READY, || config.socket_path().exists());
+    wait_until(READY, || {
+        let Ok(conn) = storage::open_db(&config.db_path()) else {
+            return false;
+        };
+        conn.query_row("SELECT COUNT(*) FROM browser_events", [], |row| {
+            row.get::<_, i64>(0)
+        })
+        .unwrap_or(0)
+            == 2
+    });
+
+    let third_url = "https://docs.rs/hippo-restart-after";
+    send_visit(&mut stdin, third_url, 1_700_000_000_002);
+    let response = responses
+        .recv_timeout(READY)
+        .expect("native host response after daemon restart");
+    assert_eq!(response["status"], "ok");
+    wait_until(READY, || {
+        let Ok(conn) = storage::open_db(&config.db_path()) else {
+            return false;
+        };
+        conn.query_row("SELECT COUNT(*) FROM browser_events", [], |row| {
+            row.get::<_, i64>(0)
+        })
+        .unwrap_or(0)
+            == 3
+    });
+
+    assert!(
+        storage::list_fallback_files(&config.fallback_dir())
+            .unwrap()
+            .is_empty(),
+        "restart must drain the queued fallback file"
+    );
+
+    restarted_daemon.stop();
+    native_host.stop();
 }

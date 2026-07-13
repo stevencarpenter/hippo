@@ -3,11 +3,16 @@
 use anyhow::{Context, Result};
 use hippo_core::config::{HippoConfig, default_brain_dir};
 use hippo_core::storage;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use tracing::info;
 
 const PROBE_REPOSITORY: &str = "hippo/__hippo_probe__";
 const PROBE_LOGICAL_PATH: &str = "synthetic/probe-memory.md";
+
+fn probe_program(brain_dir: &Path) -> PathBuf {
+    brain_dir.join(".venv/bin/hippo-auto-memory-probe")
+}
 
 /// Run the auto-memory probe via the Python brain package and poll SQLite.
 pub fn probe_auto_memory(config: &HippoConfig) -> Result<(bool, Option<i64>)> {
@@ -15,20 +20,20 @@ pub fn probe_auto_memory(config: &HippoConfig) -> Result<(bool, Option<i64>)> {
     let brain_dir = default_brain_dir();
     let db_path = config.db_path();
     let data_dir = config.storage.data_dir.clone();
+    let program = probe_program(&brain_dir);
 
-    let output = Command::new("uv")
+    // Execute the installed console script directly. launchd intentionally has
+    // a minimal PATH, so routing this through Homebrew's `uv` makes a healthy
+    // installed brain fail solely because `/opt/homebrew/bin` is absent.
+    let output = Command::new(&program)
         .args([
-            "run",
-            "--project",
-            &brain_dir.to_string_lossy(),
-            "hippo-auto-memory-probe",
             "--db",
             &db_path.to_string_lossy(),
             "--data-dir",
             &data_dir.to_string_lossy(),
         ])
         .output()
-        .context("failed to spawn hippo-auto-memory-probe")?;
+        .with_context(|| format!("failed to spawn {}", program.display()))?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -63,4 +68,18 @@ pub fn probe_auto_memory(config: &HippoConfig) -> Result<(bool, Option<i64>)> {
     let elapsed = chrono::Utc::now().timestamp_millis() - probe_start_ms;
     let lag_ms = lag.or(Some(elapsed.max(0)));
     Ok((true, lag_ms))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn probe_uses_installed_brain_entrypoint() {
+        let root = Path::new("/tmp/hippo-brain");
+        assert_eq!(
+            probe_program(root),
+            root.join(".venv/bin/hippo-auto-memory-probe")
+        );
+    }
 }

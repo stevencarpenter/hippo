@@ -29,7 +29,7 @@
 <key>EnvironmentVariables</key>
 <dict>
 <key>PATH</key>
-<string>/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+<string>__PATH__</string>
 </dict>
 </dict>
 </plist>

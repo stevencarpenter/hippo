@@ -824,6 +824,70 @@ fn extract_segments(
     Ok(collapse_adjacent_identical_segments(segments))
 }
 
+/// Verify that the current semantic contents of a Claude transcript are
+/// represented exactly in `agentic_sessions`.
+///
+/// File modification time is deliberately not part of this comparison.
+/// Claude may rewrite transcript metadata (for example titles or permission
+/// state) long after the final timestamped conversation entry, so treating
+/// mtime as conversation time creates false probe failures. Comparing the
+/// extracted segment hashes still detects an append or rewrite that the
+/// watcher has not ingested.
+pub(crate) fn session_file_matches_db(
+    conn: &Connection,
+    path: &Path,
+) -> Result<(bool, Option<i64>)> {
+    let redaction = RedactionEngine::builtin();
+    let session_file = SessionFile::from_path(path);
+    let segments = extract_segments(&session_file, &redaction)?;
+
+    let mut stmt = conn.prepare(
+        "SELECT segment_index, content_hash
+         FROM agentic_sessions
+         WHERE source_file = ?1
+           AND harness = 'claude-code'
+           AND probe_tag IS NULL",
+    )?;
+    let stored = stmt
+        .query_map([path.to_string_lossy().as_ref()], |row| {
+            Ok((row.get::<_, i64>(0)?, row.get::<_, Option<String>>(1)?))
+        })?
+        .collect::<rusqlite::Result<HashMap<_, _>>>()?;
+
+    let matches = stored.len() == segments.len()
+        && segments.iter().all(|segment| {
+            stored
+                .get(&segment.segment_index)
+                .and_then(Option::as_deref)
+                .is_some_and(|hash| hash == compute_segment_content_hash(segment))
+        });
+    let latest_end = segments.iter().map(|segment| segment.end_time).max();
+
+    Ok((matches, latest_end))
+}
+
+/// Return the newest timestamp carried by an extractable semantic segment.
+///
+/// Callers use this instead of filesystem mtime when deciding whether a
+/// Claude transcript is active. Claude may retouch completed files for
+/// metadata-only changes hours after the conversation ended.
+pub(crate) fn session_file_latest_event_ms(path: &Path) -> Result<Option<i64>> {
+    // Redaction is skipped deliberately. `doctor` calls this for every
+    // recently-touched transcript (against a sub-2s budget), and the only value
+    // read back is `end_time` — a parsed timestamp. Segment boundaries key off
+    // `current_chars`, which `extract_segments` accumulates from the RAW text
+    // length before redaction runs, so a no-op engine yields byte-identical
+    // timestamps while skipping the per-line regex pass. Unlike
+    // `session_file_matches_db`, no redacted text is hashed or stored here, so
+    // there is no secret-exposure surface.
+    let redaction = RedactionEngine::disabled();
+    let session_file = SessionFile::from_path(path);
+    Ok(extract_segments(&session_file, &redaction)?
+        .iter()
+        .map(|segment| segment.end_time)
+        .max())
+}
+
 /// Drop a trailing segment when it is byte-for-byte identical to its predecessor.
 ///
 /// Watcher re-parses occasionally produced adjacent `segment_index` values with
@@ -1339,6 +1403,56 @@ mod tests {
         assert_eq!(
             format_tool_command("Bash", &input),
             "cargo test -p hippo-core"
+        );
+    }
+
+    /// `session_file_latest_event_ms` uses the no-op redaction engine for speed.
+    /// Lock in that this yields the SAME `end_time` the builtin (secret-redacting)
+    /// engine produces — even when the transcript contains a secret that builtin
+    /// actually rewrites — so the doctor/probe timestamp cannot silently diverge.
+    #[test]
+    fn latest_event_ms_matches_builtin_extraction_end_time() {
+        use crate::watch_claude_sessions::make_test_jsonl_line;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let session_id = "equiv-session";
+        let path = tmp.path().join(format!("{session_id}.jsonl"));
+        // Include an AWS key so builtin redaction genuinely rewrites the text;
+        // `ts_offset_secs` 0/5/9 make the newest event deterministic.
+        let content = [
+            make_test_jsonl_line(session_id, 0, "user", "start AKIAIOSFODNN7EXAMPLE"),
+            make_test_jsonl_line(session_id, 5, "assistant", "working AKIAIOSFODNN7EXAMPLE"),
+            make_test_jsonl_line(session_id, 9, "user", "done"),
+        ]
+        .join("\n");
+        std::fs::write(&path, content).unwrap();
+
+        // Builtin path (what the probe's session_file_matches_db uses).
+        let builtin_segments =
+            extract_segments(&SessionFile::from_path(&path), &RedactionEngine::builtin()).unwrap();
+        let builtin_end = builtin_segments.iter().map(|s| s.end_time).max();
+
+        // The no-op path under review.
+        let disabled_end = session_file_latest_event_ms(&path).unwrap();
+
+        assert_eq!(
+            disabled_end, builtin_end,
+            "disabled-redaction end_time must equal builtin-redaction end_time"
+        );
+        assert_eq!(
+            disabled_end,
+            Some((1_700_000_000 + 9) * 1000),
+            "newest event is the last user prompt"
+        );
+        // Sanity: redaction really does differ between the two engines, so the
+        // equivalence above is a real invariant and not a trivial no-secret case.
+        assert!(
+            builtin_segments.iter().any(|s| s
+                .user_prompts
+                .iter()
+                .chain(&s.assistant_texts)
+                .any(|t| t.contains("[REDACTED]"))),
+            "builtin must have redacted the AWS key"
         );
     }
 

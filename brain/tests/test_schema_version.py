@@ -26,5 +26,8 @@ def test_require_accepted_schema_rejects_stale_version(tmp_path):
     conn.close()
 
     conn = sqlite3.connect(str(db_path))
-    with pytest.raises(RuntimeError, match="schema version mismatch"):
-        require_accepted_schema(conn)
+    try:
+        with pytest.raises(RuntimeError, match="schema version mismatch"):
+            require_accepted_schema(conn)
+    finally:
+        conn.close()

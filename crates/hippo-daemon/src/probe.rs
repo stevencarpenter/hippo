@@ -11,7 +11,7 @@ use hippo_core::config::HippoConfig;
 use hippo_core::storage;
 use rusqlite::OptionalExtension;
 use std::time::Instant;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 use uuid::Uuid;
 
 /// Maximum time to wait for a probe row to appear in SQLite.
@@ -30,6 +30,10 @@ const VALID_PROBE_SOURCES: &[&str] = &[
 ];
 
 type SyncProbeFn = fn(&HippoConfig) -> Result<(bool, Option<i64>)>;
+
+fn should_run_auto_memory_probe(config: &HippoConfig, run_all: bool, source: Option<&str>) -> bool {
+    source == Some("claude-auto-memory") || (run_all && config.auto_memory.enabled)
+}
 
 fn run_sync_probe(
     config: &HippoConfig,
@@ -150,7 +154,10 @@ pub async fn run(config: &HippoConfig, source: Option<&str>) -> Result<()> {
         }
     }
 
-    if run_all || source == Some("claude-auto-memory") {
+    // The scheduled all-source probe must not alarm on an intentionally
+    // disabled optional source. An explicit source request remains available
+    // as an operator diagnostic even while ingestion is disabled.
+    if should_run_auto_memory_probe(config, run_all, source) {
         run_sync_probe(
             config,
             run_all,
@@ -158,6 +165,8 @@ pub async fn run(config: &HippoConfig, source: Option<&str>) -> Result<()> {
             "claude-auto-memory",
             crate::probe_auto_memory::probe_auto_memory,
         )?;
+    } else if run_all {
+        debug!("claude-auto-memory probe skipped: source disabled");
     }
 
     if let Some(s) = source
@@ -230,22 +239,27 @@ async fn probe_claude_tool(config: &HippoConfig) -> Result<(bool, Option<i64>)> 
 /// Claude-session probe: assertion-based, not injection.
 ///
 /// For every `~/.claude/projects/**/*.jsonl` modified in the last 5 minutes,
-/// assert that an `agentic_sessions` row exists with `source_file = <path>` and
-/// `end_time >= mtime_ms - 300_000`. If no JSONL was recently active: trivially
-/// pass (no Claude session running). If JSONL exists but no matching row: fail.
+/// assert that the transcript's current segment fingerprints are represented
+/// exactly in `agentic_sessions`. If no JSONL was recently active: trivially
+/// pass (no Claude session running). If a recent JSONL has semantic changes the
+/// watcher has not captured: fail.
 ///
 /// Recursive walk covers main sessions and subagent sessions at any depth:
 /// ~/.claude/projects/<project>/<session>.jsonl
 /// ~/.claude/projects/<project>/<parent>/subagents/<id>.jsonl
 fn probe_claude_session(config: &HippoConfig) -> Result<(bool, Option<i64>)> {
-    let now_ms = chrono::Utc::now().timestamp_millis();
-    let window_ms: i64 = 5 * 60 * 1000; // 5 minutes
-    let stale_threshold_ms: i64 = 5 * 60 * 1000; // 5-minute tolerance
-
-    // Find JSONL files modified within the last 5 minutes.
     let projects_dir = dirs::home_dir()
         .context("cannot determine home dir")?
         .join(".claude/projects");
+    probe_claude_session_in_dir(config, &projects_dir, chrono::Utc::now().timestamp_millis())
+}
+
+fn probe_claude_session_in_dir(
+    config: &HippoConfig,
+    projects_dir: &std::path::Path,
+    now_ms: i64,
+) -> Result<(bool, Option<i64>)> {
+    let window_ms: i64 = 5 * 60 * 1000;
 
     if !projects_dir.exists() {
         info!("claude-session probe: ~/.claude/projects not found — trivial pass");
@@ -253,7 +267,7 @@ fn probe_claude_session(config: &HippoConfig) -> Result<(bool, Option<i64>)> {
     }
 
     let mut recent_jsonl: Vec<(std::path::PathBuf, i64)> = Vec::new();
-    let mut dirs_to_scan = vec![projects_dir];
+    let mut dirs_to_scan = vec![projects_dir.to_path_buf()];
 
     // Recursive walk to catch main sessions and subagent sessions at any depth.
     while let Some(dir) = dirs_to_scan.pop() {
@@ -295,47 +309,31 @@ fn probe_claude_session(config: &HippoConfig) -> Result<(bool, Option<i64>)> {
     let mut latest_lag: Option<i64> = None;
 
     for (jsonl_path, mtime_ms) in &recent_jsonl {
-        let path_str = jsonl_path.to_string_lossy();
-        let threshold = mtime_ms - stale_threshold_ms;
-
-        let count: i64 = db
-            .query_row(
-                "SELECT COUNT(*) FROM agentic_sessions
-                 WHERE source_file = ?1
-                   AND harness = 'claude-code'
-                   AND probe_tag IS NULL
-                   AND end_time >= ?2",
-                rusqlite::params![path_str.as_ref(), threshold],
-                |row| row.get(0),
-            )
-            .with_context(|| format!("failed to query agentic_sessions for {}", path_str))?;
-
-        if count == 0 {
-            warn!("claude-session probe: no row for {}", path_str);
-            all_ok = false;
-        } else {
-            // Compute lag as now_ms - MAX(end_time).
-            let max_end: Option<i64> = db
-                .query_row(
-                    "SELECT MAX(end_time) FROM agentic_sessions
-                     WHERE source_file = ?1 AND harness = 'claude-code' AND probe_tag IS NULL",
-                    rusqlite::params![path_str.as_ref()],
-                    |row| row.get(0),
+        let (matches, latest_end) = crate::claude_session::session_file_matches_db(&db, jsonl_path)
+            .with_context(|| {
+                format!(
+                    "failed to compare Claude transcript coverage for {}",
+                    jsonl_path.display()
                 )
-                .with_context(|| {
-                    format!(
-                        "claude-session probe: failed to query MAX(end_time) for {}",
-                        path_str
-                    )
-                })?;
+            })?;
 
-            if let Some(end) = max_end {
-                let lag = now_ms - end;
-                latest_lag = Some(match latest_lag {
-                    Some(prev) => prev.max(lag),
-                    None => lag,
-                });
-            }
+        if !matches {
+            warn!(
+                "claude-session probe: transcript contents not represented for {}",
+                jsonl_path.display()
+            );
+            all_ok = false;
+            continue;
+        }
+
+        // Only report a latency when the transcript contains a semantic event
+        // near its mtime. Metadata-only touches can be hours newer than the
+        // final event and do not define a meaningful capture lag.
+        if let Some(end) = latest_end
+            && mtime_ms.saturating_sub(end).abs() <= window_ms
+        {
+            let lag = now_ms.saturating_sub(end).max(0);
+            latest_lag = Some(latest_lag.map_or(lag, |prev| prev.max(lag)));
         }
     }
 
@@ -523,4 +521,157 @@ fn write_probe_result(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+    use tempfile::TempDir;
+
+    #[test]
+    fn scheduled_probe_skips_disabled_auto_memory() {
+        let config = HippoConfig::default();
+        assert!(!config.auto_memory.enabled);
+        assert!(!should_run_auto_memory_probe(&config, true, None));
+    }
+
+    #[test]
+    fn explicit_auto_memory_probe_remains_available_when_disabled() {
+        let config = HippoConfig::default();
+        assert!(should_run_auto_memory_probe(
+            &config,
+            false,
+            Some("claude-auto-memory")
+        ));
+    }
+
+    fn claude_probe_fixture() -> (TempDir, HippoConfig, std::path::PathBuf) {
+        let temp = tempfile::tempdir().unwrap();
+        let projects_dir = temp.path().join("claude-projects");
+        let project_dir = projects_dir.join("-tmp-test");
+        std::fs::create_dir_all(&project_dir).unwrap();
+
+        let mut config = HippoConfig::default();
+        config.storage.data_dir = temp.path().join("hippo-data");
+        std::fs::create_dir_all(&config.storage.data_dir).unwrap();
+
+        (temp, config, project_dir)
+    }
+
+    #[test]
+    fn claude_probe_ignores_metadata_only_mtime_changes() {
+        let (_temp, config, project_dir) = claude_probe_fixture();
+        let path = project_dir.join("session-touch.jsonl");
+        let mut file = std::fs::File::create(&path).unwrap();
+        writeln!(
+            file,
+            "{}",
+            crate::watch_claude_sessions::make_test_jsonl_line(
+                "session-touch",
+                1,
+                "user",
+                "old prompt"
+            )
+        )
+        .unwrap();
+        writeln!(
+            file,
+            "{}",
+            crate::watch_claude_sessions::make_test_jsonl_line(
+                "session-touch",
+                2,
+                "assistant",
+                "old reply"
+            )
+        )
+        .unwrap();
+        drop(file);
+
+        let db = storage::open_db(&config.db_path()).unwrap();
+        assert_eq!(
+            crate::claude_session::ingest_session_file(&db, &path),
+            (1, 0, 0)
+        );
+        drop(db);
+
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        let (ok, lag) =
+            probe_claude_session_in_dir(&config, project_dir.parent().unwrap(), now_ms).unwrap();
+        assert!(ok, "an mtime-only touch must not fail transcript coverage");
+        assert_eq!(lag, None, "an old semantic event has no useful probe lag");
+    }
+
+    #[test]
+    fn claude_probe_detects_uningested_semantic_changes() {
+        let (_temp, config, project_dir) = claude_probe_fixture();
+        let path = project_dir.join("session-drift.jsonl");
+        let mut file = std::fs::File::create(&path).unwrap();
+        writeln!(
+            file,
+            "{}",
+            crate::watch_claude_sessions::make_test_jsonl_line(
+                "session-drift",
+                1,
+                "user",
+                "first prompt"
+            )
+        )
+        .unwrap();
+        writeln!(
+            file,
+            "{}",
+            crate::watch_claude_sessions::make_test_jsonl_line(
+                "session-drift",
+                2,
+                "assistant",
+                "first reply"
+            )
+        )
+        .unwrap();
+        drop(file);
+
+        let db = storage::open_db(&config.db_path()).unwrap();
+        assert_eq!(
+            crate::claude_session::ingest_session_file(&db, &path),
+            (1, 0, 0)
+        );
+
+        let mut file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap();
+        writeln!(
+            file,
+            "{}",
+            crate::watch_claude_sessions::make_test_jsonl_line(
+                "session-drift",
+                3,
+                "user",
+                "missed append"
+            )
+        )
+        .unwrap();
+        drop(file);
+        drop(db);
+
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        let (ok, _) =
+            probe_claude_session_in_dir(&config, project_dir.parent().unwrap(), now_ms).unwrap();
+        assert!(!ok, "an uningested semantic append must fail coverage");
+
+        let db = storage::open_db(&config.db_path()).unwrap();
+        assert_eq!(
+            crate::claude_session::ingest_session_file(&db, &path),
+            (1, 0, 0)
+        );
+        drop(db);
+        let (ok, _) = probe_claude_session_in_dir(
+            &config,
+            project_dir.parent().unwrap(),
+            chrono::Utc::now().timestamp_millis(),
+        )
+        .unwrap();
+        assert!(ok, "ingesting the append must restore coverage");
+    }
 }

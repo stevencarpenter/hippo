@@ -1071,14 +1071,19 @@ echo "  mise run start"
 """
 
 [tasks."re-enrich:failed"]
-description = "Redrive failed enrichment queue items (shell, Claude, browser, workflow, agentic) back to pending"
+description = "Redrive failed enrichment queue items (shell, browser, workflow, unified agentic) back to pending"
 run = """
 #!/usr/bin/env bash
 set -euo pipefail
 
-DB=~/.local/share/hippo/hippo.db
+DB="${HIPPO_DB:-$HOME/.local/share/hippo/hippo.db}"
 
-for TABLE in enrichment_queue claude_enrichment_queue browser_enrichment_queue workflow_enrichment_queue agentic_enrichment_queue; do
+for TABLE in enrichment_queue browser_enrichment_queue workflow_enrichment_queue agentic_enrichment_queue; do
+    TABLE_EXISTS=$(sqlite3 "$DB" "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = '$TABLE')")
+    if [[ "$TABLE_EXISTS" != "1" ]]; then
+        echo "  $TABLE: skipped (table absent)"
+        continue
+    fi
     BEFORE=$(sqlite3 "$DB" "SELECT COUNT(*) FROM $TABLE WHERE status = 'failed'")
     sqlite3 "$DB" "UPDATE $TABLE SET status = 'pending', retry_count = 0, error_message = NULL, locked_at = NULL, locked_by = NULL WHERE status = 'failed'"
     echo "  $TABLE: requeued $BEFORE failed item(s)"

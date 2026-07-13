@@ -50,31 +50,31 @@ def test_invalid_token_windows_are_rejected():
 
 
 def test_mutation_semantics_are_atomic_and_path_preserving():
-    index = ScratchIndex()
-    index.replace("a.md", "h1", whole_file("a.md", "alpha current"))
-    index.replace("b.md", "h1", whole_file("b.md", "alpha current"))
-    assert index.search("alpha") == ["a.md", "b.md"]
+    with ScratchIndex() as index:
+        index.replace("a.md", "h1", whole_file("a.md", "alpha current"))
+        index.replace("b.md", "h1", whole_file("b.md", "alpha current"))
+        assert index.search("alpha") == ["a.md", "b.md"]
 
-    with pytest.raises(RuntimeError):
-        index.replace("a.md", "h2", whole_file("a.md", "broken replacement"), fail=True)
-    assert index.search("alpha") == ["a.md", "b.md"]
-    assert index.search("broken replacement") == []
+        with pytest.raises(RuntimeError):
+            index.replace("a.md", "h2", whole_file("a.md", "broken replacement"), fail=True)
+        assert index.search("alpha") == ["a.md", "b.md"]
+        assert index.search("broken replacement") == []
 
-    index.replace("a.md", "h3", whole_file("a.md", "gamma replacement"))
-    assert index.search("alpha") == ["b.md"]
-    assert index.search("gamma") == ["a.md"]
+        index.replace("a.md", "h3", whole_file("a.md", "gamma replacement"))
+        assert index.search("alpha") == ["b.md"]
+        assert index.search("gamma") == ["a.md"]
 
-    index.rename("a.md", "renamed.md")
-    assert index.search("gamma") == ["renamed.md"]
-    index.delete("renamed.md")
-    assert index.search("gamma") == []
+        index.rename("a.md", "renamed.md")
+        assert index.search("gamma") == ["renamed.md"]
+        index.delete("renamed.md")
+        assert index.search("gamma") == []
 
 
 def test_deferred_document_is_not_searchable():
-    index = ScratchIndex()
-    index.defer("pending.md", "hash")
-    assert index.search("pending") == []
-    assert index.conn.execute("SELECT indexed FROM documents").fetchone() == (0,)
+    with ScratchIndex() as index:
+        index.defer("pending.md", "hash")
+        assert index.search("pending") == []
+        assert index.conn.execute("SELECT indexed FROM documents").fetchone() == (0,)
 
 
 def test_all_strategies_score_the_same_queries():

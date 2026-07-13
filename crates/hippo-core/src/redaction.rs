@@ -45,6 +45,20 @@ impl RedactionEngine {
         Self::new(&RedactConfig::builtin()).expect("builtin patterns must compile")
     }
 
+    /// A no-op engine that performs no substitutions.
+    ///
+    /// Use ONLY where the redacted *text* is irrelevant and the raw content is
+    /// never persisted or emitted — e.g. a timestamp/segmentation scan that
+    /// reads a transcript purely to find its newest event. It offers no secret
+    /// protection, so it must never sit on a storage or query path.
+    pub fn disabled() -> Self {
+        Self {
+            regex_set: RegexSet::empty(),
+            patterns: Vec::new(),
+            names: Vec::new(),
+        }
+    }
+
     pub fn redact(&self, input: &str) -> RedactionResult {
         let mut text = input.to_string();
         let mut total = 0u32;
@@ -184,6 +198,37 @@ replacement = "***"
         assert!(!result.text.contains("AKIAIOSFODNN7EXAMPLE"));
         assert!(!result.text.contains("supersecretvalue123"));
         assert!(result.count >= 2);
+    }
+
+    #[test]
+    fn test_disabled_engine_performs_no_substitution() {
+        // Contract lock: `disabled()` is a deliberate no-op. It must return
+        // input byte-for-byte with zero hits and no panic on its empty pattern
+        // vecs — the same string the builtin engine WOULD redact. If this ever
+        // starts mutating, a caller that chose `disabled()` for a non-storage
+        // scan (e.g. session_file_latest_event_ms) is silently changed.
+        let engine = RedactionEngine::disabled();
+        let secret = "export AWS_KEY=AKIAIOSFODNN7EXAMPLE token=supersecretvalue123";
+        let result = engine.redact(secret);
+        assert_eq!(result.text, secret, "disabled() must not alter input");
+        assert_eq!(result.count, 0);
+        assert!(result.hits.is_empty());
+        assert!(
+            engine.test_string(secret).is_empty(),
+            "disabled() matches no patterns"
+        );
+        // Guard against a no-op that is accidentally a no-op only for clean
+        // input: prove the SAME string is genuinely redacted by builtin.
+        assert!(RedactionEngine::builtin().redact(secret).count >= 1);
+    }
+
+    #[test]
+    fn test_disabled_engine_handles_empty_input() {
+        // Empty input exercises the empty-RegexSet match path with nothing to
+        // iterate — must not panic and must round-trip.
+        let result = RedactionEngine::disabled().redact("");
+        assert_eq!(result.text, "");
+        assert_eq!(result.count, 0);
     }
 
     // -----------------------------------------------------------------------

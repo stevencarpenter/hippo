@@ -250,7 +250,11 @@ class BrainServer:
         if not db_path:
             db_path = str(Path.home() / ".local" / "share" / "hippo" / "hippo.db")
         if not data_dir:
-            data_dir = str(Path.home() / ".local" / "share" / "hippo")
+            # Keep the vector store colocated with an explicitly supplied DB.
+            # Tests, benchmarks, and alternate deployments commonly override
+            # db_path without also repeating its parent as data_dir; falling
+            # back to $HOME here opened the live production vector DB instead.
+            data_dir = str(Path(db_path).expanduser().parent)
         self.db_path = db_path
         self.data_dir = data_dir
         self.client = InferenceClient(base_url=inference_base_url, timeout=inference_timeout_secs)
@@ -293,6 +297,10 @@ class BrainServer:
                 self._vector_table = get_or_create_table(self._vector_db)
                 logger.info("vector store initialized: %s", self._vector_table)
             except Exception as e:
+                if self._vector_db is not None:
+                    self._vector_db.close()
+                    self._vector_db = None
+                self._vector_table = None
                 logger.error("failed to initialize vector store: %s", e)
         self.last_success_at_ms: int | None = None
         self.last_error: str | None = None
@@ -1965,6 +1973,14 @@ class BrainServer:
         self._reaper_task = None
         self._embed_reaper_task = None
 
+    def close(self) -> None:
+        """Release the long-lived vector-store connection owned by this server."""
+        vector_db = self._vector_db
+        self._vector_db = None
+        self._vector_table = None
+        if vector_db is not None:
+            vector_db.close()
+
     def get_routes(self) -> list[Route]:
         return [
             Route("/health", self.health, methods=["GET"]),
@@ -2049,6 +2065,7 @@ def create_app(
             yield
         finally:
             await server.stop_enrichment()
+            server.close()
 
     app = Starlette(
         routes=server.get_routes(),

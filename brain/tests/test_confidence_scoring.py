@@ -76,7 +76,7 @@ def test_high_multi_source_fresh_evidence() -> None:
 
 
 @pytest.fixture
-def conn() -> sqlite3.Connection:
+def conn():
     c = sqlite3.connect(":memory:")
     c.executescript(TRUST_EVAL_SCHEMA)
     c.execute(
@@ -86,7 +86,10 @@ def conn() -> sqlite3.Connection:
         (_SETTLED, _NOW),
     )
     c.commit()
-    return c
+    try:
+        yield c
+    finally:
+        c.close()
 
 
 def test_search_attaches_confidence(conn: sqlite3.Connection) -> None:

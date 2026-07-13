@@ -116,6 +116,15 @@ class ScratchIndex:
             """
         )
 
+    def close(self) -> None:
+        self.conn.close()
+
+    def __enter__(self) -> ScratchIndex:
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback) -> None:
+        self.close()
+
     def replace(
         self, path: str, content_hash: str, chunks: list[Chunk], *, fail: bool = False
     ) -> None:
@@ -204,23 +213,23 @@ def evaluate(fixture_dir: Path) -> dict:
     manifest, documents = load_fixture(fixture_dir)
     report: dict[str, dict] = {}
     for name, strategy in STRATEGIES.items():
-        index = ScratchIndex()
-        chunk_count = 0
-        for path, text in documents.items():
-            chunks = strategy(path, text)
-            chunk_count += len(chunks)
-            index.replace(path, f"initial:{path}", chunks)
-        query_rows = []
-        for item in manifest["queries"]:
-            results = index.search(item["query"])
-            query_rows.append(
-                {
-                    "id": item["id"],
-                    "expected": item["expected_path"],
-                    "top": results[0] if results else None,
-                    "rr": reciprocal_rank(results, item["expected_path"]),
-                }
-            )
+        with ScratchIndex() as index:
+            chunk_count = 0
+            for path, text in documents.items():
+                chunks = strategy(path, text)
+                chunk_count += len(chunks)
+                index.replace(path, f"initial:{path}", chunks)
+            query_rows = []
+            for item in manifest["queries"]:
+                results = index.search(item["query"])
+                query_rows.append(
+                    {
+                        "id": item["id"],
+                        "expected": item["expected_path"],
+                        "top": results[0] if results else None,
+                        "rr": reciprocal_rank(results, item["expected_path"]),
+                    }
+                )
         report[name] = {
             "chunks": chunk_count,
             "hit_at_1": sum(r["top"] == r["expected"] for r in query_rows) / len(query_rows),
