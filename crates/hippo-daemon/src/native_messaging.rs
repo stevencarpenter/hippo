@@ -355,9 +355,13 @@ pub async fn run(config: &HippoConfig) -> Result<()> {
                 send_response("ok", None);
             }
             Err(send_error) => {
-                // Native Messaging has no client-side retry. Persist the already-redacted
-                // envelope locally so a daemon restart can recover it instead of silently
+                // Native Messaging has no client-side retry. Persist the envelope
+                // locally so a daemon restart can recover it instead of silently
                 // losing every browser visit that lands during the outage window.
+                // This is the same envelope shape the daemon's own socket and
+                // fallback paths store: URL/referrer tracking params are stripped
+                // above, matching how the daemon persists a browser event (browser
+                // text is not run through RedactionEngine on any browser path).
                 match hippo_core::storage::write_fallback_jsonl(&config.fallback_dir(), &envelope) {
                     Ok(()) => {
                         warn!(
