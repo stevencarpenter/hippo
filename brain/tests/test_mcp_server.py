@@ -182,8 +182,18 @@ class TestMCPStdioProtocol:
             assert "result" in response
             assert "serverInfo" in response["result"]
         finally:
+            if proc.stdin is not None:
+                proc.stdin.close()
             proc.terminate()
-            proc.wait(timeout=5)
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait(timeout=5)
+            if proc.stdout is not None:
+                proc.stdout.close()
+            if proc.stderr is not None:
+                proc.stderr.close()
 
 
 # ---------------------------------------------------------------------------

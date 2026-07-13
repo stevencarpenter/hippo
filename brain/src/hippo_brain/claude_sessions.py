@@ -391,7 +391,11 @@ def build_claude_enrichment_prompt(segments: list[SessionSegment]) -> str:
 
 
 def _eligibility_source_for_harness(harness: str | None) -> str:
-    if harness in {None, "", "claude-code", "codex", "cursor"}:
+    # `not harness` covers both None and "" and lets the type checker narrow
+    # `harness` to a non-empty `str` on the fall-through, so the final return
+    # matches the declared `-> str` (a set-membership test on `{None, ...}`
+    # does not narrow).
+    if not harness or harness in {"claude-code", "codex", "cursor"}:
         return "claude"
     return harness
 
@@ -581,6 +585,23 @@ def claim_pending_claude_segments(
     return all_batches
 
 
+def _agentic_segment_has_node(conn, agentic_session_id: int) -> bool:
+    """True when a knowledge-node link already projects this agentic segment.
+
+    A ``last_enriched_content_hash`` watermark alone is not proof the node was
+    ever written (legacy/partial rows can carry the watermark with no surviving
+    link), so the drop guard requires the link to actually exist.
+    """
+    return (
+        conn.execute(
+            "SELECT EXISTS(SELECT 1 FROM knowledge_node_agentic_sessions "
+            "WHERE agentic_session_id = ?)",
+            (agentic_session_id,),
+        ).fetchone()[0]
+        == 1
+    )
+
+
 def _drop_already_enriched_claude_segments(conn, segments: list[dict]) -> list[dict]:
     """Drop segments whose content was already enriched (idempotency guard).
 
@@ -597,7 +618,13 @@ def _drop_already_enriched_claude_segments(conn, segments: list[dict]) -> list[d
     for seg in segments:
         ch = seg.get("content_hash")
         leh = seg.get("last_enriched_content_hash")
-        if ch is not None and ch == leh:
+        # A matching watermark is a necessary precondition for dropping, and it
+        # is the uncommon case (the daemon normally re-enqueues only on a hash
+        # change). Let ``and`` short-circuit so the per-segment node-existence
+        # SELECT runs only for those candidates instead of once per segment —
+        # the changed-hash majority never pays for a query whose result it
+        # would discard.
+        if ch is not None and ch == leh and _agentic_segment_has_node(conn, seg["id"]):
             conn.execute(
                 "UPDATE agentic_enrichment_queue "
                 "SET status = 'done', locked_at = NULL, locked_by = NULL, updated_at = ? "

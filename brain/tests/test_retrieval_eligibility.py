@@ -17,11 +17,14 @@ _SETTLED_END = _NOW - IN_FLIGHT_SETTLE_MS - 60_000
 
 
 @pytest.fixture
-def conn() -> sqlite3.Connection:
+def conn():
     c = sqlite3.connect(":memory:")
     c.executescript(TRUST_EVAL_SCHEMA)
     c.commit()
-    return c
+    try:
+        yield c
+    finally:
+        c.close()
 
 
 def _insert_node(conn: sqlite3.Connection, node_id: int, *, uuid: str = "n") -> None:

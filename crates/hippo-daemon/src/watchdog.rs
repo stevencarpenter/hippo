@@ -165,6 +165,7 @@ pub fn run(config: &HippoConfig) -> Result<()> {
     // knowledge_vectors shadow table and the agentic-node shadow table
     // respectively), not just the in-memory source_health rows.
     let mut violations = check_invariants(&rows, now_ms);
+    suppress_disabled_auto_memory_violations(&mut violations, config.auto_memory.enabled);
     // I-14 needs a DB query, not just source_health rows — checked here.
     if let Some(v) = check_i14_embedding_orphans(
         &conn,
@@ -183,7 +184,7 @@ pub fn run(config: &HippoConfig) -> Result<()> {
     )? {
         violations.push(v);
     }
-    if !bench_pause_window_active() {
+    if config.auto_memory.enabled && !bench_pause_window_active() {
         if let Some(v) = check_i19_stale_memory_projection(&conn, now_ms)? {
             violations.push(v);
         }
@@ -315,6 +316,18 @@ pub fn run(config: &HippoConfig) -> Result<()> {
     crate::metrics::WATCHDOG_RUN.add(1, &[]);
 
     Ok(())
+}
+
+fn suppress_disabled_auto_memory_violations(
+    violations: &mut Vec<InvariantViolation>,
+    auto_memory_enabled: bool,
+) {
+    if auto_memory_enabled {
+        return;
+    }
+    violations.retain(|violation| {
+        violation.source != "claude-auto-memory" && violation.source != "auto-memory-watcher"
+    });
 }
 
 /// Returns `(active, resolved_unacked)` from `capture_alarms`. Errors are
@@ -2148,6 +2161,28 @@ mod tests {
         let result = check_i15_cursor_coverage_proxy(&by_source(&rows), NOW).unwrap();
         assert_eq!(result.invariant_id, "I-15");
         assert_eq!(result.since_ms, 45_000);
+    }
+
+    #[test]
+    fn disabled_auto_memory_suppresses_probe_violations() {
+        let rows = vec![SourceHealthRow {
+            probe_ok: Some(0),
+            probe_last_run_ts: Some(NOW - 30_000),
+            ..blank_row("claude-auto-memory")
+        }];
+        let mut violations = check_invariants(&rows, NOW);
+        assert!(
+            violations
+                .iter()
+                .any(|v| v.invariant_id == "I-8" && v.source == "claude-auto-memory")
+        );
+
+        suppress_disabled_auto_memory_violations(&mut violations, false);
+        assert!(violations.is_empty());
+
+        let mut enabled = check_invariants(&rows, NOW);
+        suppress_disabled_auto_memory_violations(&mut enabled, true);
+        assert_eq!(enabled.len(), 1);
     }
 
     /// check_invariants must return an empty Vec when no violations exist.

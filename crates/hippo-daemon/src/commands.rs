@@ -14,6 +14,7 @@ use walkdir::WalkDir;
 
 use crate::browser_health::{self, BROWSER_EVENT_WARN_SECS, BrowserExtensionConnectivity};
 use crate::codex_session;
+use crate::cursor_session;
 use crate::framing::{read_frame, write_frame};
 
 const REQUEST_TIMEOUT_MS: u64 = 5_000;
@@ -2086,7 +2087,9 @@ fn check_source_staleness(db: &rusqlite::Connection, explain: bool) -> u32 {
         }
     };
 
-    // Check if there's a recent claude JSONL with mtime < 5 minutes (for claude-session suppression).
+    // Check for a Claude transcript with a semantic event in the last five
+    // minutes. Filesystem mtime alone is not activity: Claude can retouch a
+    // completed transcript for metadata-only updates hours later.
     let recent_claude_session = || -> bool {
         let projects_dir = match dirs::home_dir() {
             Some(h) => h.join(".claude/projects"),
@@ -2095,35 +2098,15 @@ fn check_source_staleness(db: &rusqlite::Connection, explain: bool) -> u32 {
         let five_min_ago = std::time::SystemTime::now()
             .checked_sub(std::time::Duration::from_secs(300))
             .unwrap_or(std::time::UNIX_EPOCH);
-        let Ok(entries) = std::fs::read_dir(&projects_dir) else {
-            return false;
-        };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.extension().and_then(|e| e.to_str()) == Some("jsonl")
-                && let Ok(meta) = std::fs::metadata(&path)
-                && let Ok(modified) = meta.modified()
-                && modified > five_min_ago
-            {
-                return true;
-            }
-            // Also recurse one level (projects/*/session.jsonl layout).
-            if path.is_dir()
-                && let Ok(sub) = std::fs::read_dir(&path)
-            {
-                for sub_entry in sub.flatten() {
-                    let sub_path = sub_entry.path();
-                    if sub_path.extension().and_then(|e| e.to_str()) == Some("jsonl")
-                        && let Ok(meta) = std::fs::metadata(&sub_path)
-                        && let Ok(modified) = meta.modified()
-                        && modified > five_min_ago
-                    {
-                        return true;
-                    }
-                }
-            }
-        }
-        false
+        let cutoff_ms = five_min_ago
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as i64;
+        let mut candidates = Vec::new();
+        collect_active_jsonls(&projects_dir, five_min_ago, &mut candidates);
+        candidates
+            .iter()
+            .any(|path| claude_jsonl_has_recent_semantic_activity(path, cutoff_ms, db))
     };
 
     let mut fail_count: u32 = 0;
@@ -2307,10 +2290,11 @@ fn check_codex_state_coverage(
             let recoverable_missing = report.missing_hippo_threads.len();
             if recoverable_missing == 0 {
                 println!(
-                    "[OK] {}  {}/{} threads captured ({} in-flight, {} log-only diagnostics)",
+                    "[OK] {}  {}/{} threads accounted for ({} zero-segment expected absent, {} in-flight, {} log-only diagnostics)",
                     padded,
                     report.covered_threads,
                     report.total_state_threads,
+                    report.zero_segment_threads.len(),
                     report.in_flight_threads.len(),
                     report.log_only_thread_count
                 );
@@ -2327,12 +2311,13 @@ fn check_codex_state_coverage(
             }
 
             println!(
-                "[!!] {}  {}/{} threads captured; {} missing from Hippo, {} unrecoverable (rollout deleted) ({} in-flight)",
+                "[!!] {}  {}/{} threads accounted for; {} missing from Hippo, {} unrecoverable (rollout deleted) ({} zero-segment expected absent, {} in-flight)",
                 padded,
                 report.covered_threads,
                 report.total_state_threads,
                 report.missing_hippo_threads.len(),
                 report.missing_rollout_threads.len(),
+                report.zero_segment_threads.len(),
                 report.in_flight_threads.len()
             );
             if explain {
@@ -2569,6 +2554,7 @@ fn check_cursor_session_coverage(
 
     let mut any_root = false;
     let mut total_transcripts = 0usize;
+    let mut zero_segment = 0usize;
     let mut in_flight = 0usize;
     let mut missing: Vec<String> = Vec::new();
 
@@ -2601,6 +2587,10 @@ fn check_cursor_session_coverage(
             if known.contains(stem) {
                 continue;
             }
+            if cursor_session::processed_without_segments(db, path) {
+                zero_segment += 1;
+                continue;
+            }
             if missing.len() < 10 {
                 missing.push(stem.to_string());
             } else {
@@ -2617,15 +2607,15 @@ fn check_cursor_session_coverage(
     let missing_count = missing.len();
     if missing_count == 0 {
         println!(
-            "[OK] {}  {} transcript(s) captured ({} in-flight)",
-            padded, total_transcripts, in_flight
+            "[OK] {}  {} transcript(s) accounted for ({} zero-segment expected absent, {} in-flight)",
+            padded, total_transcripts, zero_segment, in_flight
         );
         return 0;
     }
 
     println!(
-        "[!!] {}  {} of {} transcript(s) missing from Hippo ({} in-flight)",
-        padded, missing_count, total_transcripts, in_flight
+        "[!!] {}  {} of {} transcript(s) missing from Hippo ({} zero-segment expected absent, {} in-flight)",
+        padded, missing_count, total_transcripts, zero_segment, in_flight
     );
     if explain {
         let shown: Vec<&str> = missing
@@ -3501,6 +3491,40 @@ fn collect_active_jsonls(
     }
 }
 
+/// Determine whether a recently touched Claude transcript contains recent
+/// semantic activity.
+///
+/// Parsing the transcript is authoritative. If it has no extractable segment,
+/// fall back to the stored row timestamp for compatibility with older/minimal
+/// transcript shapes. An unreadable file or a file with no DB row fails open
+/// for alerting so doctor never suppresses a genuine capture gap.
+fn claude_jsonl_has_recent_semantic_activity(
+    path: &std::path::Path,
+    cutoff_ms: i64,
+    db: &rusqlite::Connection,
+) -> bool {
+    match crate::claude_session::session_file_latest_event_ms(path) {
+        Ok(Some(latest)) => latest > cutoff_ms,
+        Err(_) => true,
+        Ok(None) => {
+            let Some(session_id) = path.file_stem().and_then(|s| s.to_str()) else {
+                return true;
+            };
+            let stored_latest = db
+                .query_row(
+                    "SELECT MAX(end_time) FROM agentic_sessions
+                     WHERE session_id = ?1
+                       AND harness = 'claude-code'
+                       AND probe_tag IS NULL",
+                    [session_id],
+                    |row| row.get::<_, Option<i64>>(0),
+                )
+                .unwrap_or(None);
+            stored_latest.is_none_or(|latest| latest > cutoff_ms)
+        }
+    }
+}
+
 /// Returns true for Claude workflow orchestration journals, not session files.
 ///
 /// These are `journal.jsonl` metadata files under a `subagents/.../workflows`
@@ -3528,7 +3552,9 @@ fn is_workflow_journal(path: &std::path::Path) -> bool {
 /// `projects_dir` and verify each has a matching real row in `agentic_sessions`.
 ///
 /// `projects_dir` is `~/.claude/projects` (injectable for tests).
-/// A session file is "active" if its mtime is < 5 minutes old.
+/// A session file is "active" if its mtime and newest semantic event are both
+/// < 5 minutes old. Requiring semantic recency avoids treating metadata-only
+/// transcript touches as live conversations.
 /// Recursion handles subagent transcripts at `<proj>/<parent>/subagents/*.jsonl`.
 /// Returns fail_count capped at 3.
 pub fn check_claude_session_db(
@@ -3551,6 +3577,11 @@ pub fn check_claude_session_db(
     // Collect active JSONL paths (mtime within last 5 minutes) recursively.
     let mut active: Vec<std::path::PathBuf> = Vec::new();
     collect_active_jsonls(projects_dir, five_min_ago, &mut active);
+    let cutoff_ms = five_min_ago
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as i64;
+    active.retain(|path| claude_jsonl_has_recent_semantic_activity(path, cutoff_ms, db));
 
     if active.is_empty() {
         println!("[--] {:<29}  no active sessions", LABEL);
@@ -4342,6 +4373,26 @@ mod tests {
 
         let fails = check_cursor_session_coverage(&config, &conn, false);
         assert_eq!(fails, 1, "the uncaptured transcript is a gap");
+    }
+
+    #[test]
+    fn check_cursor_session_coverage_accepts_processed_zero_segment_transcript() {
+        let dir = tempdir().unwrap();
+        let conn = coverage_test_db(dir.path());
+        let root = dir.path().join("cursor-projects");
+        let transcripts = root.join("slug/agent-transcripts/parent/subagents");
+        std::fs::create_dir_all(&transcripts).unwrap();
+        let empty = transcripts.join("empty-child.jsonl");
+        std::fs::write(&empty, "").unwrap();
+
+        let mut config = HippoConfig::default();
+        config.storage.data_dir = dir.path().to_path_buf();
+        config.cursor.enabled = true;
+        config.cursor.session_roots = vec![root];
+        config.cursor.min_idle_secs = 0;
+
+        assert_eq!(cursor_session::ingest_one(&config, &empty).unwrap(), 0);
+        assert_eq!(check_cursor_session_coverage(&config, &conn, false), 0);
     }
 
     #[test]
@@ -5375,6 +5426,31 @@ replacement = "***"
             check_claude_session_db(&projects, dir.path(), &conn, false),
             0,
             "active session present in agentic_sessions must not be reported missing"
+        );
+    }
+
+    #[test]
+    fn metadata_only_claude_touch_is_not_semantic_activity() {
+        let dir = tempdir().unwrap();
+        let conn = coverage_test_db(dir.path());
+        let path = dir.path().join("metadata-touch.jsonl");
+        std::fs::write(
+            &path,
+            concat!(
+                "{\"type\":\"user\",\"timestamp\":\"2023-11-14T22:13:21Z\",",
+                "\"sessionId\":\"metadata-touch\",\"message\":{\"role\":\"user\",",
+                "\"content\":[{\"type\":\"text\",\"text\":\"old prompt\"}]}}\n"
+            ),
+        )
+        .unwrap();
+
+        assert!(
+            !claude_jsonl_has_recent_semantic_activity(
+                &path,
+                chrono::Utc::now().timestamp_millis() - 300_000,
+                &conn,
+            ),
+            "a fresh mtime must not make an old transcript semantically active"
         );
     }
 

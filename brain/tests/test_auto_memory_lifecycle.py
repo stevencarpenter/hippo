@@ -167,11 +167,14 @@ def test_revision_pruning_respects_count(conn: sqlite3.Connection, tmp_path: Pat
     assert count == 2
 
 
-def test_full_lifecycle_add_update_history_rename_delete(tmp_db, tmp_path: Path) -> None:
+def test_full_lifecycle_add_update_history_rename_delete(
+    tmp_db, tmp_path: Path, request: pytest.FixtureRequest
+) -> None:
     from hippo_brain import vector_store
 
     _seeded, db_path = tmp_db
     conn = vector_store.open_conn(db_path)
+    request.addfinalizer(conn.close)
     path = tmp_path / "MEMORY.md"
     path.write_text("# Start\n\nv1\n")
     first = ingest_memory_file(conn, path, repository="hippo", now_ms=1000)

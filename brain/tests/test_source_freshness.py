@@ -22,7 +22,7 @@ _SETTLED = _NOW - IN_FLIGHT_SETTLE_MS - 60_000
 
 
 @pytest.fixture
-def conn() -> sqlite3.Connection:
+def conn():
     c = sqlite3.connect(":memory:")
     c.executescript(TRUST_EVAL_SCHEMA)
     c.execute(
@@ -32,7 +32,10 @@ def conn() -> sqlite3.Connection:
         (_SETTLED, _NOW),
     )
     c.commit()
-    return c
+    try:
+        yield c
+    finally:
+        c.close()
 
 
 def test_fresh_shell_source(conn: sqlite3.Connection) -> None:

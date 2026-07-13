@@ -11,6 +11,8 @@ fn upsert_writes_agentic_session_and_enqueues() {
 
     let seg = hippo_daemon::codex_session::CodexSegment {
         session_id: "codex-1".into(),
+        parent_session_id: None,
+        is_subagent: false,
         project_dir: "proj".into(),
         cwd: "/work/proj".into(),
         segment_index: 0,
@@ -81,6 +83,8 @@ fn upsert_refreshes_cwd_and_project_dir_on_conflict() {
 
     let mut seg = hippo_daemon::codex_session::CodexSegment {
         session_id: "cwd-test".into(),
+        parent_session_id: None,
+        is_subagent: false,
         project_dir: "old-proj".into(),
         cwd: "/old/path".into(),
         segment_index: 0,
@@ -255,6 +259,78 @@ fn poll_tick_zero_segment_file_advances_cursor_without_health_bump() {
         n2, 0,
         "cursor must advance so the empty file is not re-parsed"
     );
+
+    let state_path = tmp.path().join("state_5.sqlite");
+    let state = init_codex_state_db(&state_path);
+    insert_state_thread(&state, "emptyseg", &f);
+    drop(state);
+    let report =
+        hippo_daemon::codex_session::check_codex_coverage(&conn, &state_path, None, 60).unwrap();
+    assert_eq!(report.covered_threads, 1);
+    assert_eq!(report.zero_segment_threads, vec!["emptyseg"]);
+    assert!(report.missing_hippo_threads.is_empty());
+}
+
+#[test]
+fn poll_tick_repairs_parent_id_cursor_and_backfills_subagent() {
+    use std::os::unix::fs::MetadataExt;
+
+    let tmp = TempDir::new().unwrap();
+    let roots = tmp.path().join("sessions");
+    std::fs::create_dir_all(&roots).unwrap();
+    let child = "019f4b15-1013-71c3-bf5d-b8c90271d65f";
+    let parent = "019f4b11-bbd5-7121-ae30-ccc501c8b512";
+    let path = roots.join(format!("rollout-2026-07-10T02-11-39-{child}.jsonl"));
+    let lines = [
+        format!(r#"{{"timestamp":"2026-07-10T08:11:39.531Z","type":"session_meta","payload":{{"id":"{child}","cwd":"/proj"}}}}"#),
+        format!(r#"{{"timestamp":"2026-07-10T08:11:39.531Z","type":"session_meta","payload":{{"id":"{parent}","cwd":"/proj"}}}}"#),
+        r#"{"timestamp":"2026-07-10T08:11:40.000Z","type":"event_msg","payload":{"type":"user_message","message":"subagent task"}}"#.to_string(),
+    ];
+    std::fs::write(&path, lines.join("\n")).unwrap();
+    let old = std::time::SystemTime::now() - std::time::Duration::from_secs(3600);
+    filetime::set_file_mtime(&path, filetime::FileTime::from_system_time(old)).unwrap();
+
+    let data_dir = tmp.path().join("data");
+    std::fs::create_dir_all(&data_dir).unwrap();
+    let config = hippo_daemon::codex_session::test_config(&data_dir, std::slice::from_ref(&roots));
+    let conn = open_db(&config.db_path()).unwrap();
+    let meta = std::fs::metadata(&path).unwrap();
+    let mtime_ms = meta
+        .modified()
+        .unwrap()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as i64;
+    let source_key = format!("codex-{}", meta.ino());
+    conn.execute(
+        "INSERT INTO agentic_cursor (source_key, last_seen_updated_at, last_id, updated_at)
+         VALUES (?1, ?2, ?3, ?2)",
+        params![source_key, mtime_ms, parent],
+    )
+    .unwrap();
+    drop(conn);
+
+    assert_eq!(hippo_daemon::codex_session::poll_tick(&config).unwrap(), 1);
+    let conn = open_db(&config.db_path()).unwrap();
+    let (stored_parent, is_subagent): (Option<String>, i64) = conn
+        .query_row(
+            "SELECT parent_session_id, is_subagent FROM agentic_sessions
+             WHERE harness='codex' AND session_id=?1",
+            params![child],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(stored_parent.as_deref(), Some(parent));
+    assert_eq!(is_subagent, 1);
+
+    let last_id: String = conn
+        .query_row(
+            "SELECT last_id FROM agentic_cursor WHERE source_key=?1",
+            params![source_key],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(last_id, child);
 }
 
 #[test]
@@ -307,6 +383,8 @@ fn codex_state_coverage_reports_covered_missing_in_flight_and_log_only_threads()
     let hippo_conn = open_db(&hippo_db_path).unwrap();
     let seg = hippo_daemon::codex_session::CodexSegment {
         session_id: "covered".into(),
+        parent_session_id: None,
+        is_subagent: false,
         project_dir: "proj".into(),
         cwd: "/proj".into(),
         segment_index: 0,
@@ -331,6 +409,7 @@ fn codex_state_coverage_reports_covered_missing_in_flight_and_log_only_threads()
 
     assert_eq!(report.total_state_threads, 4);
     assert_eq!(report.covered_threads, 1);
+    assert!(report.zero_segment_threads.is_empty());
     assert_eq!(report.in_flight_threads, vec!["fresh"]);
     assert_eq!(report.missing_rollout_threads, vec!["missing-file"]);
     assert_eq!(report.missing_hippo_threads, vec!["missing-hippo"]);

@@ -22,11 +22,14 @@ from tests.retrieval_fixtures import TRUST_EVAL_SCHEMA, FakeBackend
 
 
 @pytest.fixture
-def conn() -> sqlite3.Connection:
+def conn():
     c = sqlite3.connect(":memory:")
     c.executescript(TRUST_EVAL_SCHEMA)
     c.commit()
-    return c
+    try:
+        yield c
+    finally:
+        c.close()
 
 
 def test_default_corpus_validates():

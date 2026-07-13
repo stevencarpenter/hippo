@@ -23,12 +23,15 @@ _SOURCE_HEALTH_ROW = (
 
 
 @pytest.fixture
-def conn() -> sqlite3.Connection:
+def conn():
     c = sqlite3.connect(":memory:")
     c.executescript(TRUST_EVAL_SCHEMA)
     c.execute(_SOURCE_HEALTH_ROW, (_SETTLED_END, _NOW))
     c.commit()
-    return c
+    try:
+        yield c
+    finally:
+        c.close()
 
 
 def _insert_shell_node(conn: sqlite3.Connection, node_id: int = 1) -> None:

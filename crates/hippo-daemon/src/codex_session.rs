@@ -11,6 +11,7 @@ use sha2::{Digest, Sha256};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use tracing::{debug, error, info, warn};
+use uuid::Uuid;
 use walkdir::WalkDir;
 
 /// 5-minute gap between user prompts marks a task boundary.
@@ -30,6 +31,8 @@ pub struct ToolCall {
 #[derive(Debug, Clone)]
 pub struct CodexSegment {
     pub session_id: String,
+    pub parent_session_id: Option<String>,
+    pub is_subagent: bool,
     pub project_dir: String,
     pub cwd: String,
     pub segment_index: i64,
@@ -40,6 +43,75 @@ pub struct CodexSegment {
     pub tool_calls: Vec<ToolCall>,
     pub message_count: i64,
     pub source_file: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RolloutIdentity {
+    session_id: String,
+    parent_session_id: Option<String>,
+}
+
+impl RolloutIdentity {
+    fn is_subagent(&self) -> bool {
+        self.parent_session_id.is_some()
+    }
+}
+
+/// Resolve a stable per-file identity before segmenting the rollout.
+///
+/// Codex agent-team subagent files contain two `session_meta` records: the
+/// subagent thread id first and the parent thread id second. Treating the last
+/// metadata id as the session id collapses every child onto its parent and
+/// makes segment zero overwrite sibling/parent data. The first distinct id is
+/// the file's own thread; a second distinct id is its parent.
+fn rollout_identity(path: &Path, entries: &[serde_json::Value]) -> RolloutIdentity {
+    let mut ids = Vec::new();
+    for obj in entries {
+        if obj.get("type").and_then(|v| v.as_str()) != Some("session_meta") {
+            continue;
+        }
+        let Some(id) = obj
+            .get("payload")
+            .and_then(|v| v.get("id"))
+            .and_then(|v| v.as_str())
+            .filter(|id| !id.is_empty())
+        else {
+            continue;
+        };
+        if !ids.iter().any(|known| known == id) {
+            ids.push(id.to_string());
+        }
+    }
+
+    let session_id = ids.first().cloned().unwrap_or_else(|| {
+        // Derive the fallback id the SAME way `rollout_path_session_id` does
+        // (the canonical filename UUID), because `poll_tick` compares the two
+        // to detect cursor identity drift. Using the full file stem here would
+        // never equal that suffix-only extraction, so a canonically-named file
+        // that lacks a valid `session_meta` id would look permanently drifted
+        // and be re-ingested on every poll tick. Non-canonical filenames yield
+        // `None`, and there the drift check is also `None` (never fires), so the
+        // full-stem fallback stays consistent for fixtures.
+        rollout_path_session_id(path).unwrap_or_else(|| {
+            path.file_stem()
+                .map(|s| s.to_string_lossy().into_owned())
+                .unwrap_or_else(|| "codex-unknown".into())
+        })
+    });
+    let parent_session_id = ids.into_iter().skip(1).find(|id| id != &session_id);
+    RolloutIdentity {
+        session_id,
+        parent_session_id,
+    }
+}
+
+/// UUID suffix encoded in canonical `rollout-...-<uuid>.jsonl` filenames.
+/// Used only to detect cursors written by the pre-subagent parser; fixtures
+/// with synthetic filenames continue to rely on their `session_meta` ids.
+fn rollout_path_session_id(path: &Path) -> Option<String> {
+    let stem = path.file_stem()?.to_str()?;
+    let candidate = stem.get(stem.len().checked_sub(36)?..)?;
+    Uuid::parse_str(candidate).ok().map(|id| id.to_string())
 }
 
 /// Parse an ISO-8601 timestamp to epoch milliseconds; 0 on any failure.
@@ -157,35 +229,34 @@ pub(crate) fn extract_segments(
         .with_context(|| format!("read codex rollout {}", path.display()))?;
     let source_file = path.to_string_lossy().to_string();
 
-    let mut segments: Vec<CodexSegment> = Vec::new();
-    let mut current: Option<CodexSegment> = None;
-    let mut current_chars: usize = 0;
-    let mut last_user_ms: i64 = 0;
-    let mut session_id = String::new();
-    let mut session_cwd = String::new();
-
+    let mut entries = Vec::new();
     for (line_idx, line) in raw.lines().enumerate() {
         let line = line.trim();
         if line.is_empty() {
             continue;
         }
-        let obj: serde_json::Value = match serde_json::from_str(line) {
-            Ok(v) => v,
+        match serde_json::from_str(line) {
+            Ok(value) => entries.push(value),
             Err(e) => {
-                // The `min_idle_secs` settle gate means the file is complete at
-                // ingest time, so a parse error indicates real corruption. Warn
-                // (naming file:line) instead of silently dropping content —
-                // AP-11. Continue rather than `return Err`: one corrupt line
-                // should not permanently wedge an otherwise-valid rollout by
-                // blocking cursor advance.
+                // The settle gate means the file is complete at ingest time.
+                // Preserve the valid remainder while making corruption visible.
                 warn!(
                     "codex: skipping unparseable JSON at {}:{} ({e})",
                     path.display(),
                     line_idx + 1
                 );
-                continue;
             }
-        };
+        }
+    }
+    let identity = rollout_identity(path, &entries);
+
+    let mut segments: Vec<CodexSegment> = Vec::new();
+    let mut current: Option<CodexSegment> = None;
+    let mut current_chars: usize = 0;
+    let mut last_user_ms: i64 = 0;
+    let mut session_cwd = String::new();
+
+    for obj in &entries {
         let entry_type = obj.get("type").and_then(|v| v.as_str()).unwrap_or("");
         let ts = parse_ts(obj.get("timestamp").and_then(|v| v.as_str()).unwrap_or(""));
         let payload = match obj.get("payload").and_then(|v| v.as_object()) {
@@ -194,9 +265,6 @@ pub(crate) fn extract_segments(
         };
 
         if entry_type == "session_meta" {
-            if let Some(id) = payload.get("id").and_then(|v| v.as_str()) {
-                session_id = id.to_string();
-            }
             if let Some(cwd) = payload.get("cwd").and_then(|v| v.as_str()) {
                 session_cwd = cwd.to_string();
             }
@@ -256,18 +324,6 @@ pub(crate) fn extract_segments(
             }
 
             let seg = current.get_or_insert_with(|| {
-                // If session_meta was missing or malformed, fall back to the
-                // file stem (e.g. "rollout-<id>"). This is unique per file and
-                // deterministic, so ON CONFLICT (session_id, harness, segment_index)
-                // never collides across two different rollout files that both
-                // lack session_meta.
-                let effective_session_id = if session_id.is_empty() {
-                    path.file_stem()
-                        .map(|s| s.to_string_lossy().into_owned())
-                        .unwrap_or_else(|| "codex-unknown".into())
-                } else {
-                    session_id.clone()
-                };
                 let cwd = if session_cwd.is_empty() {
                     path.parent()
                         .map(|p| p.to_string_lossy().to_string())
@@ -278,9 +334,11 @@ pub(crate) fn extract_segments(
                 let project_dir = Path::new(&cwd)
                     .file_name()
                     .map(|n| n.to_string_lossy().to_string())
-                    .unwrap_or_else(|| effective_session_id.clone());
+                    .unwrap_or_else(|| identity.session_id.clone());
                 CodexSegment {
-                    session_id: effective_session_id,
+                    session_id: identity.session_id.clone(),
+                    parent_session_id: identity.parent_session_id.clone(),
+                    is_subagent: identity.is_subagent(),
                     project_dir,
                     cwd,
                     segment_index: segments.len() as i64,
@@ -371,7 +429,12 @@ pub(crate) fn build_summary_text(seg: &CodexSegment) -> String {
     const MAX_PROMPTS: usize = 30;
     const MAX_TOOLS: usize = 60;
     const MAX_ASSISTANT: usize = 5;
-    let mut lines = vec![format!("Codex session (project: {})", seg.cwd)];
+    let header = if seg.is_subagent {
+        format!("Codex session (subagent, project: {})", seg.cwd)
+    } else {
+        format!("Codex session (project: {})", seg.cwd)
+    };
+    let mut lines = vec![header];
     if !seg.user_prompts.is_empty() {
         lines.push(String::new());
         lines.push("User requests:".to_string());
@@ -497,9 +560,10 @@ pub fn upsert_segment_tx(tx: &rusqlite::Transaction, seg: &CodexSegment) -> Resu
              tool_calls_json, user_prompts_json, source_file, snapshot_diffs_json,
              commit_messages_json, message_count, token_count, start_time, end_time,
              content_hash, created_at)
-         VALUES (?1, 'codex', ?2, '', '', ?3, ?4, NULL, '', '', NULL, 0, ?5, ?6, ?7, ?8,
-                 'null', '[]', ?9, 0, ?10, ?11, ?12, ?13)
+         VALUES (?1, 'codex', ?2, '', '', ?3, ?4, NULL, '', '', ?5, ?6, ?7, ?8, ?9, ?10,
+                 'null', '[]', ?11, 0, ?12, ?13, ?14, ?15)
          ON CONFLICT (session_id, harness, segment_index) DO UPDATE SET
+             start_time        = excluded.start_time,
              end_time          = excluded.end_time,
              summary_text      = excluded.summary_text,
              tool_calls_json   = excluded.tool_calls_json,
@@ -507,12 +571,17 @@ pub fn upsert_segment_tx(tx: &rusqlite::Transaction, seg: &CodexSegment) -> Resu
              message_count     = excluded.message_count,
              content_hash      = excluded.content_hash,
              cwd               = excluded.cwd,
-             project_dir       = excluded.project_dir",
+             project_dir       = excluded.project_dir,
+             source_file       = excluded.source_file,
+             is_subagent       = excluded.is_subagent,
+             parent_session_id = excluded.parent_session_id",
         params![
             seg.session_id,
             seg.segment_index,
             seg.project_dir,
             seg.cwd,
+            seg.parent_session_id,
+            i64::from(seg.is_subagent),
             summary_text,
             tool_calls_json,
             user_prompts_json,
@@ -582,6 +651,7 @@ pub fn upsert_segment(conn: &rusqlite::Connection, seg: &CodexSegment) -> Result
 pub struct CodexCoverageReport {
     pub total_state_threads: usize,
     pub covered_threads: usize,
+    pub zero_segment_threads: Vec<String>,
     pub in_flight_threads: Vec<String>,
     pub missing_rollout_threads: Vec<String>,
     pub missing_hippo_threads: Vec<String>,
@@ -686,6 +756,7 @@ pub fn check_codex_coverage(
 
     let mut state_ids = HashSet::new();
     let mut covered_threads = 0usize;
+    let mut zero_segment_threads = Vec::new();
     let mut in_flight_threads = Vec::new();
     let mut missing_rollout_threads = Vec::new();
     let mut missing_hippo_threads = Vec::new();
@@ -704,6 +775,11 @@ pub fn check_codex_coverage(
             in_flight_threads.push(thread.id.clone());
             continue;
         }
+        if processed_without_segments(hippo_conn, &thread.rollout_path) {
+            covered_threads += 1;
+            zero_segment_threads.push(thread.id.clone());
+            continue;
+        }
         missing_hippo_threads.push(thread.id.clone());
     }
 
@@ -719,12 +795,14 @@ pub fn check_codex_coverage(
     };
 
     in_flight_threads.sort();
+    zero_segment_threads.sort();
     missing_rollout_threads.sort();
     missing_hippo_threads.sort();
 
     Ok(CodexCoverageReport {
         total_state_threads: state_threads.len(),
         covered_threads,
+        zero_segment_threads,
         in_flight_threads,
         missing_rollout_threads,
         missing_hippo_threads,
@@ -746,13 +824,43 @@ fn cursor_key(meta: &std::fs::Metadata) -> String {
     format!("codex-{}", meta.ino())
 }
 
-fn read_cursor(conn: &rusqlite::Connection, key: &str) -> i64 {
+#[derive(Debug, Default)]
+struct CursorState {
+    last_seen_updated_at: i64,
+    last_id: String,
+}
+
+fn read_cursor(conn: &rusqlite::Connection, key: &str) -> CursorState {
     conn.query_row(
-        "SELECT last_seen_updated_at FROM agentic_cursor WHERE source_key = ?1",
+        "SELECT last_seen_updated_at, last_id FROM agentic_cursor WHERE source_key = ?1",
         params![key],
-        |r| r.get(0),
+        |r| {
+            Ok(CursorState {
+                last_seen_updated_at: r.get(0)?,
+                last_id: r.get::<_, Option<String>>(1)?.unwrap_or_default(),
+            })
+        },
     )
-    .unwrap_or(0)
+    .unwrap_or_default()
+}
+
+fn modified_ms(meta: &std::fs::Metadata) -> Option<i64> {
+    meta.modified()
+        .ok()?
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .map(|d| d.as_millis() as i64)
+}
+
+fn processed_without_segments(conn: &Connection, path: &Path) -> bool {
+    let Ok(meta) = std::fs::metadata(path) else {
+        return false;
+    };
+    let Some(mtime_ms) = modified_ms(&meta) else {
+        return false;
+    };
+    let state = read_cursor(conn, &cursor_key(&meta));
+    state.last_seen_updated_at >= mtime_ms && state.last_id.is_empty()
 }
 
 fn write_cursor(
@@ -836,12 +944,7 @@ pub fn poll_tick(config: &HippoConfig) -> Result<usize> {
             // Finding 3: an unreadable mtime would otherwise fall back to 0 and
             // be silently skipped forever (mtime_ms <= cursor). Warn (naming the
             // file) instead of skipping silently, then skip this tick.
-            let Some(mtime_ms) = meta
-                .modified()
-                .ok()
-                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                .map(|d| d.as_millis() as i64)
-            else {
+            let Some(mtime_ms) = modified_ms(&meta) else {
                 warn!(
                     "codex: unreadable mtime for {}, skipping this tick",
                     path.display()
@@ -853,8 +956,18 @@ pub fn poll_tick(config: &HippoConfig) -> Result<usize> {
                 continue;
             }
             let key = cursor_key(&meta);
-            if mtime_ms <= read_cursor(&conn, &key) {
+            let cursor = read_cursor(&conn, &key);
+            let identity_drift = rollout_path_session_id(path)
+                .is_some_and(|expected| !cursor.last_id.is_empty() && cursor.last_id != expected);
+            if mtime_ms <= cursor.last_seen_updated_at && !identity_drift {
                 continue; // unchanged since last successful parse
+            }
+            if identity_drift {
+                info!(
+                    path = %path.display(),
+                    previous_session_id = %cursor.last_id,
+                    "codex: reprocessing rollout whose cursor used a parent thread id"
+                );
             }
             match ingest_file(&conn, path, &redaction) {
                 Ok((count, session_id)) => {
@@ -922,6 +1035,8 @@ mod tests {
     fn sample_segment() -> CodexSegment {
         CodexSegment {
             session_id: "s1".into(),
+            parent_session_id: None,
+            is_subagent: false,
             project_dir: "proj".into(),
             cwd: "/work/proj".into(),
             segment_index: 0,
@@ -1032,6 +1147,53 @@ mod tests {
                 .iter()
                 .any(|p| p.contains("hello codex"))
         );
+    }
+
+    #[test]
+    fn extract_segments_preserves_subagent_identity_and_parent() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir
+            .path()
+            .join("rollout-2026-07-10T02-11-39-019f4b15-1013-71c3-bf5d-b8c90271d65f.jsonl");
+        let lines = [
+            r#"{"timestamp":"2026-07-10T08:11:39.531Z","type":"session_meta","payload":{"id":"019f4b15-1013-71c3-bf5d-b8c90271d65f","cwd":"/proj"}}"#,
+            r#"{"timestamp":"2026-07-10T08:11:39.531Z","type":"session_meta","payload":{"id":"019f4b11-bbd5-7121-ae30-ccc501c8b512","cwd":"/proj"}}"#,
+            r#"{"timestamp":"2026-07-10T08:11:40.000Z","type":"event_msg","payload":{"type":"user_message","message":"inspect the parser"}}"#,
+        ];
+        std::fs::write(&p, lines.join("\n")).unwrap();
+
+        let segs = extract_segments(&p, &RedactionEngine::builtin()).unwrap();
+        assert_eq!(segs.len(), 1);
+        assert_eq!(segs[0].session_id, "019f4b15-1013-71c3-bf5d-b8c90271d65f");
+        assert_eq!(
+            segs[0].parent_session_id.as_deref(),
+            Some("019f4b11-bbd5-7121-ae30-ccc501c8b512")
+        );
+        assert!(segs[0].is_subagent);
+        assert!(build_summary_text(&segs[0]).contains("subagent"));
+    }
+
+    #[test]
+    fn missing_session_meta_falls_back_to_filename_uuid_not_stem() {
+        // A canonically-named rollout with content but no `session_meta` id must
+        // derive its session id from the filename UUID — the SAME value
+        // `rollout_path_session_id` returns — so `poll_tick`'s identity-drift
+        // check does not see a permanent mismatch and re-ingest every tick.
+        let dir = tempfile::tempdir().unwrap();
+        let uuid = "019f4b15-1013-71c3-bf5d-b8c90271d65f";
+        let p = dir
+            .path()
+            .join(format!("rollout-2026-07-10T02-11-39-{uuid}.jsonl"));
+        let lines = [
+            r#"{"timestamp":"2026-07-10T08:11:40.000Z","type":"event_msg","payload":{"type":"user_message","message":"no session_meta here"}}"#,
+        ];
+        std::fs::write(&p, lines.join("\n")).unwrap();
+
+        let segs = extract_segments(&p, &RedactionEngine::builtin()).unwrap();
+        assert_eq!(segs.len(), 1);
+        assert_eq!(segs[0].session_id, uuid);
+        assert!(!segs[0].is_subagent);
+        assert_eq!(rollout_path_session_id(&p).as_deref(), Some(uuid));
     }
 
     #[test]
@@ -1237,6 +1399,8 @@ mod tests {
         // Insert a real Codex row (should be included).
         let codex_seg = CodexSegment {
             session_id: "codex-covered".into(),
+            parent_session_id: None,
+            is_subagent: false,
             project_dir: "proj".into(),
             cwd: "/work/proj".into(),
             segment_index: 0,

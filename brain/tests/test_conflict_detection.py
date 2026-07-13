@@ -98,7 +98,7 @@ def test_decision_contradiction_newer_vs_older() -> None:
 
 
 @pytest.fixture
-def conn() -> sqlite3.Connection:
+def conn():
     c = sqlite3.connect(":memory:")
     c.executescript(TRUST_EVAL_SCHEMA)
     c.execute(
@@ -108,7 +108,10 @@ def conn() -> sqlite3.Connection:
         (_SETTLED, _NOW, _SETTLED, _NOW),
     )
     c.commit()
-    return c
+    try:
+        yield c
+    finally:
+        c.close()
 
 
 def test_agent_query_surfaces_conflicts(conn: sqlite3.Connection) -> None:
