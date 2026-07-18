@@ -31,7 +31,99 @@ pub struct HippoConfig {
     #[serde(default)]
     pub vault: VaultConfig,
     #[serde(default)]
+    pub auto_memory: AutoMemoryConfig,
+    #[serde(default)]
     pub reaper: ReaperConfig,
+}
+
+/// Explicit read-only Claude Code auto-memory sources. Fleet discovery is a
+/// later layer; this list is the deterministic single-file operator contract.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AutoMemoryDiscoveryConfig {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default = "default_true")]
+    pub claude_projects: bool,
+    #[serde(default = "default_true")]
+    pub read_claude_settings: bool,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+impl Default for AutoMemoryDiscoveryConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            claude_projects: true,
+            read_claude_settings: true,
+        }
+    }
+}
+
+impl AutoMemoryDiscoveryConfig {
+    /// Whether Python discovery can produce ingest sources (matches `discover_memory_roots`).
+    pub fn produces_sources(&self) -> bool {
+        self.enabled && (self.claude_projects || self.read_claude_settings)
+    }
+
+    /// Whether the daemon should attach FSEvents to `~/.claude/projects` (default layout only).
+    pub fn watches_claude_projects_fleet(&self) -> bool {
+        self.enabled && self.claude_projects
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AutoMemoryConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_auto_memory_poll_interval_secs")]
+    pub poll_interval_secs: u64,
+    /// FSEvents debounce before spawning per-file reconcile (Python stable-read follows).
+    #[serde(default = "default_auto_memory_debounce_ms")]
+    pub debounce_ms: u64,
+    /// In-process periodic full reconcile while the watcher is running.
+    #[serde(default = "default_auto_memory_reconcile_fallback_secs")]
+    pub reconcile_fallback_secs: u64,
+    #[serde(default)]
+    pub discovery: AutoMemoryDiscoveryConfig,
+    #[serde(default)]
+    pub sources: Vec<AutoMemorySourceConfig>,
+}
+
+fn default_auto_memory_poll_interval_secs() -> u64 {
+    60
+}
+
+fn default_auto_memory_debounce_ms() -> u64 {
+    500
+}
+
+fn default_auto_memory_reconcile_fallback_secs() -> u64 {
+    60
+}
+
+impl Default for AutoMemoryConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            poll_interval_secs: default_auto_memory_poll_interval_secs(),
+            debounce_ms: default_auto_memory_debounce_ms(),
+            reconcile_fallback_secs: default_auto_memory_reconcile_fallback_secs(),
+            discovery: AutoMemoryDiscoveryConfig::default(),
+            sources: Vec::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AutoMemorySourceConfig {
+    pub path: PathBuf,
+    #[serde(default)]
+    pub repository: Option<String>,
+    #[serde(default)]
+    pub logical_path: Option<String>,
 }
 
 /// OpenAI-compatible inference backend (LM Studio, oMLX, ollama, vLLM, etc.).
@@ -174,6 +266,20 @@ fn default_data_dir() -> PathBuf {
         .or_else(|| dirs::home_dir().map(|h| h.join(".local/share")))
         .unwrap_or_else(|| PathBuf::from(".local/share"));
     base.join("hippo")
+}
+
+/// Canonical install location for the Python brain package, mirroring the
+/// `hippo daemon install` default. The single source of truth for where the
+/// `uv --project <brain>` calls (install, serve, auto-memory poll) point.
+///
+/// Deliberately home-based and NOT derived from `data_dir`: the installer always
+/// places the brain under `~/.local/share/hippo-brain`, so deriving it from a
+/// (potentially `XDG_DATA_HOME`-overridden) `data_dir` would point callers at a
+/// directory the installer never created.
+pub fn default_brain_dir() -> PathBuf {
+    dirs::home_dir()
+        .map(|h| h.join(".local/share/hippo-brain"))
+        .unwrap_or_else(|| PathBuf::from(".local/share/hippo-brain"))
 }
 
 /// XDG-based config directory. Same rationale as default_data_dir.
@@ -944,6 +1050,28 @@ mod tests {
     use super::*;
 
     #[test]
+    fn default_brain_dir_is_canonical_install_location() {
+        // The brain dir must resolve to the install location (`~/.local/share/
+        // hippo-brain`), NOT a sibling of `data_dir`. Otherwise an XDG_DATA_HOME
+        // override that relocates data_dir would point the auto-memory poller at a
+        // brain that was never installed there.
+        let dir = default_brain_dir();
+        assert!(
+            dir.ends_with("hippo-brain"),
+            "expected brain dir to end with hippo-brain, got {}",
+            dir.display()
+        );
+        assert!(
+            dir.to_string_lossy().contains(".local/share/hippo-brain"),
+            "expected canonical install location, got {}",
+            dir.display()
+        );
+        if let Some(home) = dirs::home_dir() {
+            assert_eq!(dir, home.join(".local/share/hippo-brain"));
+        }
+    }
+
+    #[test]
     fn test_default_config() {
         let config = HippoConfig::default();
         assert_eq!(config.inference.base_url, "http://127.0.0.1:42069/v1");
@@ -1390,5 +1518,63 @@ related_top_k = 12
         assert_eq!(c.vault.poll_interval_secs, 600);
         assert_eq!(c.vault.related_top_k, 12);
         assert_eq!(c.vault.hub_degree_cap, 200); // default preserved
+    }
+
+    #[test]
+    fn auto_memory_config_defaults_disabled_and_parses_explicit_sources() {
+        let default_cfg: HippoConfig = toml::from_str("").unwrap();
+        assert!(!default_cfg.auto_memory.enabled);
+        assert!(default_cfg.auto_memory.sources.is_empty());
+
+        let cfg: HippoConfig = toml::from_str(
+            r#"
+            [auto_memory]
+            enabled = true
+            [[auto_memory.sources]]
+            path = "/tmp/hippo-memory/MEMORY.md"
+            repository = "sjcarpenter/hippo"
+            logical_path = "MEMORY.md"
+            "#,
+        )
+        .unwrap();
+        assert!(cfg.auto_memory.enabled);
+        assert_eq!(cfg.auto_memory.sources.len(), 1);
+        assert_eq!(
+            cfg.auto_memory.sources[0].path,
+            PathBuf::from("/tmp/hippo-memory/MEMORY.md")
+        );
+        assert_eq!(
+            cfg.auto_memory.sources[0].repository.as_deref(),
+            Some("sjcarpenter/hippo")
+        );
+        assert_eq!(
+            cfg.auto_memory.sources[0].logical_path.as_deref(),
+            Some("MEMORY.md")
+        );
+        assert_eq!(default_cfg.auto_memory.debounce_ms, 500);
+        assert_eq!(default_cfg.auto_memory.reconcile_fallback_secs, 60);
+    }
+
+    #[test]
+    fn auto_memory_discovery_gate_matches_python_policy() {
+        let default_cfg = AutoMemoryDiscoveryConfig::default();
+        assert!(default_cfg.produces_sources());
+        assert!(default_cfg.watches_claude_projects_fleet());
+
+        let settings_only = AutoMemoryDiscoveryConfig {
+            enabled: true,
+            claude_projects: false,
+            read_claude_settings: true,
+        };
+        assert!(settings_only.produces_sources());
+        assert!(!settings_only.watches_claude_projects_fleet());
+
+        let disabled = AutoMemoryDiscoveryConfig {
+            enabled: false,
+            claude_projects: true,
+            read_claude_settings: true,
+        };
+        assert!(!disabled.produces_sources());
+        assert!(!disabled.watches_claude_projects_fleet());
     }
 }

@@ -1,8 +1,10 @@
 import asyncio
 import datetime as _dt
 import logging
+import os
 import sqlite3
 import time
+from typing import Any
 
 import sqlite_vec  # type: ignore[import-untyped]
 from contextlib import asynccontextmanager, nullcontext, suppress
@@ -13,12 +15,25 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.routing import Route
 
+from hippo_brain.agent_query import AgentQueryRequest, run_agent_query
+from hippo_brain.memory_query import (
+    MemoryQueryRequest,
+    query_memory_current,
+    resolve_limit,
+    run_memory_history_query,
+)
 from hippo_brain.client import InferenceClient
-from hippo_brain.schema_version import EXPECTED_SCHEMA_VERSION, ACCEPTED_READ_VERSIONS
+from hippo_brain.openapi import build_openapi_spec
+from hippo_brain.schema_version import (
+    ACCEPTED_READ_VERSIONS,
+    EXPECTED_SCHEMA_VERSION,
+    require_accepted_schema,
+)
 from hippo_brain.version import get_version
 from hippo_brain.vault_export import export_vault
 from hippo_brain._version import __version__ as _hippo_version
 from hippo_brain.embeddings import (
+    embed_dict_from_result,
     embed_knowledge_node,
     get_or_create_table,
     open_vector_db,
@@ -29,7 +44,6 @@ from hippo_brain.rag import ask as rag_ask
 from hippo_brain.enrichment import (
     SYSTEM_PROMPT,
     build_enrichment_prompt,
-    claim_pending_events_by_session,
     mark_queue_failed,
     parse_enrichment_response,
     write_knowledge_node,
@@ -37,27 +51,31 @@ from hippo_brain.enrichment import (
 from hippo_brain.browser_enrichment import (
     BROWSER_SYSTEM_PROMPT,
     build_browser_enrichment_prompt,
-    claim_pending_browser_events,
     format_browser_context_for_shell_prompt,
     get_correlated_browser_events,
     mark_browser_queue_failed,
     write_browser_knowledge_node,
 )
+from hippo_brain.capture_alarm_lessons import sync_capture_alarms_to_lessons
 from hippo_brain.claude_sessions import (
     CLAUDE_SYSTEM_PROMPT,
-    claim_pending_claude_segments,
     mark_claude_queue_failed,
     write_claude_knowledge_node,
 )
+from hippo_brain.auto_memory import (
+    MEMORY_ENRICHMENT_SYSTEM_PROMPT,
+    build_memory_enrichment_prompt,
+    mark_memory_enrichment_failed,
+    write_memory_knowledge_node,
+)
+from hippo_brain.enrichment_sources import claim_all_sources, enrich_all_sources
 from hippo_brain.opencode_sessions import (
     OPENCODE_ENRICHMENT_PROMPT,
     build_opencode_enrichment_prompt,
-    claim_pending_opencode_segments,
     mark_opencode_queue_failed,
     write_opencode_knowledge_node,
 )
 from hippo_brain.workflow_enrichment import (
-    claim_pending_workflow_runs,
     enrich_one_async,
     mark_workflow_queue_failed,
 )
@@ -194,6 +212,9 @@ def _collect_queue_depths(conn: sqlite3.Connection) -> list[tuple[str, str, int]
               AND s.harness = 'opencode'
               AND s.probe_tag IS NULL
         """,
+        "claude-auto-memory": """
+            SELECT COUNT(*) FROM memory_enrichment_queue WHERE status = ?
+        """,
     }
     depths: list[tuple[str, str, int]] = []
     for source, sql in queries.items():
@@ -231,7 +252,11 @@ class BrainServer:
         if not db_path:
             db_path = str(Path.home() / ".local" / "share" / "hippo" / "hippo.db")
         if not data_dir:
-            data_dir = str(Path.home() / ".local" / "share" / "hippo")
+            # Keep the vector store colocated with an explicitly supplied DB.
+            # Tests, benchmarks, and alternate deployments commonly override
+            # db_path without also repeating its parent as data_dir; falling
+            # back to $HOME here opened the live production vector DB instead.
+            data_dir = str(Path(db_path).expanduser().parent)
         self.db_path = db_path
         self.data_dir = data_dir
         self.client = InferenceClient(base_url=inference_base_url, timeout=inference_timeout_secs)
@@ -274,6 +299,10 @@ class BrainServer:
                 self._vector_table = get_or_create_table(self._vector_db)
                 logger.info("vector store initialized: %s", self._vector_table)
             except Exception as e:
+                if self._vector_db is not None:
+                    self._vector_db.close()
+                    self._vector_db = None
+                self._vector_table = None
                 logger.error("failed to initialize vector store: %s", e)
         self.last_success_at_ms: int | None = None
         self.last_error: str | None = None
@@ -298,13 +327,7 @@ class BrainServer:
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA foreign_keys=ON")
         conn.execute("PRAGMA busy_timeout=5000")
-        version = conn.execute("PRAGMA user_version").fetchone()[0]
-        if version not in ACCEPTED_READ_VERSIONS:
-            conn.close()
-            raise RuntimeError(
-                f"DB schema version mismatch: expected {EXPECTED_SCHEMA_VERSION}, found {version}. "
-                "Please run migrations or delete the database."
-            )
+        require_accepted_schema(conn)
         return conn
 
     async def health(self, request: Request) -> JSONResponse:
@@ -318,6 +341,8 @@ class BrainServer:
         browser_queue_failed = 0
         workflow_queue_depth = 0
         workflow_queue_failed = 0
+        memory_queue_depth = 0
+        memory_queue_failed = 0
         db_reachable = True
         try:
             conn = self._get_conn()
@@ -364,6 +389,16 @@ class BrainServer:
                 except Exception:
                     workflow_queue_depth = 0
                     workflow_queue_failed = 0
+                try:
+                    memory_queue_depth = conn.execute(
+                        "SELECT COUNT(*) FROM memory_enrichment_queue WHERE status = 'pending'"
+                    ).fetchone()[0]
+                    memory_queue_failed = conn.execute(
+                        "SELECT COUNT(*) FROM memory_enrichment_queue WHERE status = 'failed'"
+                    ).fetchone()[0]
+                except Exception:
+                    memory_queue_depth = 0
+                    memory_queue_failed = 0
             finally:
                 conn.close()
         except Exception:
@@ -385,6 +420,7 @@ class BrainServer:
         return JSONResponse(
             {
                 "status": status,
+                "pid": os.getpid(),
                 "version": get_version(),
                 "expected_schema_version": EXPECTED_SCHEMA_VERSION,
                 "accepted_read_versions": sorted(ACCEPTED_READ_VERSIONS),
@@ -401,6 +437,8 @@ class BrainServer:
                 "browser_queue_failed": browser_queue_failed,
                 "workflow_queue_depth": workflow_queue_depth,
                 "workflow_queue_failed": workflow_queue_failed,
+                "memory_queue_depth": memory_queue_depth,
+                "memory_queue_failed": memory_queue_failed,
                 "enrichment_model": self.enrichment_model,
                 "enrichment_model_preferred": self._preferred_model,
                 "query_inflight": self._query_inflight,
@@ -883,6 +921,125 @@ class BrainServer:
         status = 200 if "answer" in result else 502
         return JSONResponse(result, status_code=status)
 
+    async def agent_query(self, request: Request) -> JSONResponse:
+        """Compact agent query: bounded answer + evidence packets + freshness."""
+        body = await request.json()
+        query = body.get("query", "")
+        if not query:
+            return JSONResponse({"error": "query is required"}, status_code=400)
+
+        mode = body.get("mode", "known")
+        limit = body.get("limit", 10)
+        try:
+            limit = int(limit)
+        except (TypeError, ValueError):  # fmt: skip
+            return JSONResponse({"error": "limit must be an integer"}, status_code=400)
+        if limit <= 0:
+            return JSONResponse({"error": "limit must be greater than 0"}, status_code=400)
+        if limit > MAX_QUERY_LIMIT:
+            return JSONResponse(
+                {"error": f"limit must be <= {MAX_QUERY_LIMIT}"},
+                status_code=400,
+            )
+
+        req = AgentQueryRequest(
+            query=query,
+            mode=mode,
+            source=body.get("source", ""),
+            since=body.get("since", ""),
+            project=body.get("project", ""),
+            branch=body.get("branch", ""),
+            limit=limit,
+            include_excluded=bool(body.get("include_excluded", False)),
+        )
+
+        query_vec = None
+        if self.embedding_model and query:
+            try:
+                from hippo_brain.embeddings import EMBED_DIM, _pad_or_truncate
+
+                vecs = await self.client.embed([query], model=self.embedding_model)
+                query_vec = _pad_or_truncate(vecs[0], EMBED_DIM)
+            except Exception as exc:
+                logger.warning("agent_query embed failed: %s", exc)
+
+        conn = self._get_conn()
+        try:
+            result = run_agent_query(conn, req, query_vec)
+        except ValueError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
+        finally:
+            conn.close()
+
+        return JSONResponse(result)
+
+    async def memory_query(self, request: Request) -> JSONResponse:
+        """Query current projected Claude auto-memory documents."""
+        body = await request.json()
+        limit = body.get("limit", 20)
+        offset = body.get("offset", 0)
+        try:
+            limit = resolve_limit(int(limit), default=20)
+            offset = int(offset)
+        except (TypeError, ValueError) as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
+        if offset < 0:
+            return JSONResponse({"error": "offset must be >= 0"}, status_code=400)
+
+        req = MemoryQueryRequest(
+            query=body.get("query", ""),
+            repository=body.get("repository", ""),
+            category=body.get("category", ""),
+            logical_path=body.get("logical_path", ""),
+            document_uuid=body.get("document_uuid", ""),
+            since=body.get("since", ""),
+            limit=limit,
+            offset=offset,
+            include_non_queryable=bool(body.get("include_non_queryable", False)),
+            include_source_path=bool(body.get("include_source_path", False)),
+        )
+        conn = self._get_conn()
+        try:
+            result = query_memory_current(conn, req)
+        except ValueError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
+        finally:
+            conn.close()
+        return JSONResponse(result)
+
+    async def memory_history(self, request: Request) -> JSONResponse:
+        """Explicit bounded revision history for one auto-memory document."""
+        body = await request.json()
+        repository = body.get("repository", "")
+        logical_path = body.get("logical_path", "")
+        document_uuid = body.get("document_uuid", "")
+        if not document_uuid and not (repository and logical_path):
+            return JSONResponse(
+                {"error": "document_uuid or repository+logical_path is required"},
+                status_code=400,
+            )
+        limit = body.get("limit", 50)
+        try:
+            limit = resolve_limit(int(limit), default=50)
+        except (TypeError, ValueError) as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
+
+        conn = self._get_conn()
+        try:
+            result = run_memory_history_query(
+                conn,
+                repository=repository,
+                logical_path=logical_path,
+                document_uuid=document_uuid,
+                limit=limit,
+                include_source_path=bool(body.get("include_source_path", False)),
+            )
+        except ValueError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
+        finally:
+            conn.close()
+        return JSONResponse(result)
+
     async def control_pause(self, request: Request) -> JSONResponse:
         """Pause the enrichment loop. Idempotent.
 
@@ -942,6 +1099,10 @@ class BrainServer:
             return JSONResponse({"error": f"{type(e).__name__}: {e}"}, status_code=500)
         finally:
             conn.close()
+
+    async def openapi_json(self, request: Request) -> JSONResponse:
+        """Serve the explicit OpenAPI contract for the Starlette brain API."""
+        return JSONResponse(build_openapi_spec())
 
     def _resolve_model_from_preflight(self, loaded: list[str]) -> bool:
         """Sync model selection from preflight's already-fetched model list."""
@@ -1047,7 +1208,6 @@ class BrainServer:
         overlap with the next LLM call.
         """
         self.enrichment_running = True
-        worker_id = "brain-enrichment"
         try:
             while True:
                 try:
@@ -1086,6 +1246,15 @@ class BrainServer:
                         )
                         await asyncio.sleep(0.1)
 
+                    # F-15: graduate new capture_alarms into lessons (best-effort).
+                    try:
+                        sync_capture_alarms_to_lessons(self.db_path)
+                    except Exception:
+                        logger.warning(
+                            "capture alarm lesson sync failed",
+                            exc_info=True,
+                        )
+
                     self._enrichment_active = True
                     try:
                         decision = await preflight_inference(
@@ -1106,82 +1275,12 @@ class BrainServer:
 
                         conn = self._get_conn()
                         try:
-                            # Claim all work upfront (sequential — avoids SQLite write contention)
-                            shell_chunks = claim_pending_events_by_session(
-                                conn,
-                                self.enrichment_batch_size,
-                                worker_id,
-                                self.session_stale_secs,
-                                max_claim_batch=self.max_claim_batch,
-                                stale_lock_timeout_ms=self.lock_timeout_ms,
-                            )
-                            try:
-                                claude_batches = claim_pending_claude_segments(
-                                    conn,
-                                    worker_id,
-                                    max_claim_batch=self.max_claim_batch,
-                                    stale_lock_timeout_ms=self.lock_timeout_ms,
-                                )
-                            except Exception as e:
-                                logger.debug("no claude segments to process: %s", e)
-                                claude_batches = []
-                            try:
-                                browser_batches = claim_pending_browser_events(
-                                    conn,
-                                    worker_id,
-                                    stale_secs=60,
-                                    max_claim_batch=self.max_claim_batch,
-                                    stale_lock_timeout_ms=self.lock_timeout_ms,
-                                    long_dwell_bypass_ms=self.long_dwell_bypass_ms,
-                                )
-                            except Exception as e:
-                                logger.warning("browser claim error: %s", e, exc_info=True)
-                                browser_batches = []
-                            try:
-                                workflow_run_ids = claim_pending_workflow_runs(
-                                    conn,
-                                    worker_id,
-                                    stale_lock_timeout_ms=self.lock_timeout_ms,
-                                    max_claim_batch=self.max_claim_batch,
-                                )
-                            except Exception as e:
-                                logger.warning("workflow claim error: %s", e, exc_info=True)
-                                workflow_run_ids = []
-                            try:
-                                opencode_batches = claim_pending_opencode_segments(
-                                    conn,
-                                    worker_id,
-                                    max_claim_batch=self.max_claim_batch,
-                                    stale_lock_timeout_ms=self.lock_timeout_ms,
-                                )
-                            except Exception as e:
-                                # AP-11: a real exception here (SQL error,
-                                # schema mismatch) is a structural failure and
-                                # must not be downgraded to debug. Mirrors the
-                                # browser/workflow claim paths above.
-                                logger.warning("opencode claim error: %s", e, exc_info=True)
-                                opencode_batches = []
-
-                            if (
-                                not shell_chunks
-                                and not claude_batches
-                                and not browser_batches
-                                and not workflow_run_ids
-                                and not opencode_batches
-                            ):
+                            claims = claim_all_sources(conn, self)
+                            if not any(claims.values()):
                                 continue
 
-                            # Process all sources concurrently — each method uses its own
-                            # DB connection for writes so they don't block each other.
-                            # Shell receives the claim conn for read-only browser correlation.
                             t0 = time.monotonic()
-                            await asyncio.gather(
-                                self._enrich_shell_batches(shell_chunks, conn),
-                                self._enrich_claude_batches(claude_batches),
-                                self._enrich_browser_batches(browser_batches),
-                                self._enrich_workflow_runs(workflow_run_ids),
-                                self._enrich_opencode_batches(opencode_batches),
-                            )
+                            await enrich_all_sources(self, claims, conn)
                             _hist(_loop_duration, (time.monotonic() - t0) * 1000)
                         finally:
                             conn.close()
@@ -1619,6 +1718,82 @@ class BrainServer:
         if embed_tasks:
             await asyncio.gather(*embed_tasks, return_exceptions=True)
 
+    async def _enrich_memory_claims(self, claims):
+        """Enrich claimed Claude auto-memory revisions through the normal local backend."""
+        if not claims:
+            return
+        embed_tasks: list[asyncio.Task[Any]] = []
+        for claim in claims:
+            revision_id = claim.revision_id
+            tracer = _get_tracer()
+            span = (
+                tracer.start_as_current_span(
+                    "enrichment.claude-auto-memory",
+                    attributes={
+                        "hippo.revision_id": revision_id,
+                        "hippo.model": self.enrichment_model,
+                    },
+                )
+                if tracer
+                else nullcontext()
+            )
+            batch_start_ms = int(time.time() * 1000)
+            with span:
+                try:
+                    result = await self._call_llm_with_retries(
+                        MEMORY_ENRICHMENT_SYSTEM_PROMPT,
+                        build_memory_enrichment_prompt(claim),
+                        "claude-auto-memory",
+                    )
+                    conn = self._get_conn()
+                    try:
+                        node_id = write_memory_knowledge_node(
+                            conn,
+                            result,
+                            revision_id,
+                            self.enrichment_model,
+                        )
+                    finally:
+                        conn.close()
+                    self._record_success()
+                    if node_id is None:
+                        logger.info(
+                            "auto-memory revision %d superseded before enrichment finished; "
+                            "stale result discarded",
+                            revision_id,
+                        )
+                        continue
+                    _add(_nodes_created, source="claude-auto-memory")
+                    logger.info("enriched auto-memory revision %d -> node %d", revision_id, node_id)
+
+                    if self.embedding_model:
+                        embed_tasks.append(
+                            asyncio.create_task(
+                                self._embed_node(
+                                    node_id,
+                                    embed_dict_from_result(node_id, result.embed_text),
+                                    "claude-auto-memory",
+                                )
+                            )
+                        )
+                except Exception as e:
+                    _add(_enrichment_failures, source="claude-auto-memory")
+                    err_msg = self._record_error(e)
+                    self._log_enrichment_failure(
+                        "memory_enrichment_queue",
+                        "claude-auto-memory.chat",
+                        e,
+                        claim_count=1,
+                        claim_age_ms=int(time.time() * 1000) - batch_start_ms,
+                    )
+                    retry_conn = self._get_conn()
+                    try:
+                        mark_memory_enrichment_failed(retry_conn, revision_id, err_msg)
+                    finally:
+                        retry_conn.close()
+        if embed_tasks:
+            await asyncio.gather(*embed_tasks, return_exceptions=True)
+
     async def _enrich_opencode_batches(self, batches):
         """Process opencode session segment batches via the agentic queue."""
         if not batches:
@@ -1829,6 +2004,14 @@ class BrainServer:
         self._reaper_task = None
         self._embed_reaper_task = None
 
+    def close(self) -> None:
+        """Release the long-lived vector-store connection owned by this server."""
+        vector_db = self._vector_db
+        self._vector_db = None
+        self._vector_table = None
+        if vector_db is not None:
+            vector_db.close()
+
     def get_routes(self) -> list[Route]:
         return [
             Route("/health", self.health, methods=["GET"]),
@@ -1838,9 +2021,13 @@ class BrainServer:
             Route("/knowledge/{id:int}", self.get_knowledge, methods=["GET"]),
             Route("/query", self.query, methods=["POST"]),
             Route("/ask", self.ask, methods=["POST"]),
+            Route("/agent/query", self.agent_query, methods=["POST"]),
+            Route("/memory/query", self.memory_query, methods=["POST"]),
+            Route("/memory/history", self.memory_history, methods=["POST"]),
             Route("/control/pause", self.control_pause, methods=["POST"]),
             Route("/control/resume", self.control_resume, methods=["POST"]),
             Route("/vault/export", self.vault_export, methods=["POST"]),
+            Route("/openapi.json", self.openapi_json, methods=["GET"]),
         ]
 
 
@@ -1910,6 +2097,7 @@ def create_app(
             yield
         finally:
             await server.stop_enrichment()
+            server.close()
 
     app = Starlette(
         routes=server.get_routes(),

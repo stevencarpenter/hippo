@@ -6,7 +6,7 @@
 //! via `content_hash`, so running backfill multiple times is safe.
 //!
 //! Per-file behaviour:
-//! 1. Reset `claude_session_offsets.size_at_last_read = 0` so the live
+//! 1. Reset `agentic_session_offsets.size_at_last_read = 0` so the live
 //!    watcher reprocesses the file on its next FSEvents tick.
 //! 2. Call `claude_session::ingest_session_file` to re-parse and upsert.
 //! 3. Accumulate per-file stats for the final summary table.
@@ -189,10 +189,10 @@ fn collect_paths(glob_pattern: &str, since: Option<DateTime<Utc>>) -> Result<Vec
 /// the file. It's fine if no row exists yet (UPDATE matches 0 rows, no error).
 fn reset_offset(conn: &rusqlite::Connection, path: &Path) -> Result<()> {
     conn.execute(
-        "UPDATE claude_session_offsets SET size_at_last_read = 0 WHERE path = ?1",
+        "UPDATE agentic_session_offsets SET size_at_last_read = 0 WHERE path = ?1",
         rusqlite::params![path.to_string_lossy()],
     )
-    .context("failed to reset claude_session_offsets")?;
+    .context("failed to reset agentic_session_offsets")?;
     Ok(())
 }
 
@@ -246,10 +246,10 @@ mod tests {
 
         let conn = open_db(&db_path).unwrap();
 
-        // Pre-seed a claude_session_offsets row.
+        // Pre-seed an agentic_session_offsets row.
         let now_ms = Utc::now().timestamp_millis();
         conn.execute(
-            "INSERT INTO claude_session_offsets (path, session_id, byte_offset, inode, device, size_at_last_read, updated_at) VALUES (?1, ?2, 0, 0, 0, 9999, ?3)",
+            "INSERT INTO agentic_session_offsets (path, session_id, byte_offset, inode, device, size_at_last_read, updated_at) VALUES (?1, ?2, 0, 0, 0, 9999, ?3)",
             rusqlite::params![jsonl_path.to_string_lossy(), session_id, now_ms],
         ).unwrap();
         drop(conn);
@@ -269,7 +269,7 @@ mod tests {
         let conn = open_db(&db_path).unwrap();
         let size: i64 = conn
             .query_row(
-                "SELECT size_at_last_read FROM claude_session_offsets WHERE path = ?1",
+                "SELECT size_at_last_read FROM agentic_session_offsets WHERE path = ?1",
                 rusqlite::params![jsonl_path.to_string_lossy()],
                 |r| r.get(0),
             )
@@ -298,7 +298,7 @@ mod tests {
         let conn = open_db(&db_path).unwrap();
         let now_ms = Utc::now().timestamp_millis();
         conn.execute(
-            "INSERT INTO claude_session_offsets (path, session_id, byte_offset, inode, device, size_at_last_read, updated_at) VALUES (?1, ?2, 100, 0, 0, 512, ?3)",
+            "INSERT INTO agentic_session_offsets (path, session_id, byte_offset, inode, device, size_at_last_read, updated_at) VALUES (?1, ?2, 100, 0, 0, 512, ?3)",
             rusqlite::params![jsonl_path.to_string_lossy(), session_id, now_ms],
         ).unwrap();
 
@@ -306,7 +306,7 @@ mod tests {
 
         let size: i64 = conn
             .query_row(
-                "SELECT size_at_last_read FROM claude_session_offsets WHERE path = ?1",
+                "SELECT size_at_last_read FROM agentic_session_offsets WHERE path = ?1",
                 rusqlite::params![jsonl_path.to_string_lossy()],
                 |r| r.get(0),
             )

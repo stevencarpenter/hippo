@@ -12,7 +12,9 @@ use tokio::net::UnixStream;
 use uuid::Uuid;
 use walkdir::WalkDir;
 
+use crate::browser_health::{self, BROWSER_EVENT_WARN_SECS, BrowserExtensionConnectivity};
 use crate::codex_session;
+use crate::cursor_session;
 use crate::framing::{read_frame, write_frame};
 
 const REQUEST_TIMEOUT_MS: u64 = 5_000;
@@ -1216,8 +1218,8 @@ pub async fn handle_doctor(config: &HippoConfig, explain: bool) -> Result<()> {
     // Check Claude session hook
     check_claude_session_hook(config);
 
-    // Check Firefox extension build + Native Messaging manifest
-    check_firefox_extension();
+    // Check Firefox extension build + permanent install + dist/
+    fail_count += check_firefox_extension(explain);
 
     // Per-source capture-freshness audit (one line per raw data source
     // hippo is supposed to collect). Uses day-level thresholds — complements
@@ -1246,6 +1248,7 @@ pub async fn handle_doctor(config: &HippoConfig, explain: bool) -> Result<()> {
                 check_claude_session_coverage(&conn, &home.join(".claude/projects"), explain);
         }
         fail_count += check_cursor_session_coverage(config, &conn, explain);
+        fail_count += check_auto_memory_health(config, &conn, explain);
         fail_count += check_watchdog_heartbeat(&conn, explain);
         // Auto-resolved alarm count is informational — never increments fail_count.
         check_resolved_alarm_count(&conn);
@@ -1586,6 +1589,15 @@ pub fn source_freshness_probes() -> Vec<SourceFreshnessProbe> {
                 hard_ms: 30 * DAY_MS,
             },
         },
+        SourceFreshnessProbe {
+            name: "claude-auto-memory",
+            query: "SELECT COUNT(*), MAX(updated_at) FROM memory_documents \
+                    WHERE state = 'active' AND repository != 'hippo/__hippo_probe__'",
+            thresholds: FreshnessThresholds {
+                soft_ms: 7 * DAY_MS,
+                hard_ms: 30 * DAY_MS,
+            },
+        },
     ]
 }
 
@@ -1861,11 +1873,97 @@ where
 /// which `test_session_state_config_error_fallback_alarms` guards against.
 const SESSION_STATE_CONFIG_ERROR_FALLBACK: (bool, bool, bool) = (true, true, false);
 
-/// Fail-open-for-alerting fallback returned by `opencode_db_recent` on the same
-/// config-load failure: `true` skips the "opencode DB idle" suppression arm so
-/// a stale opencode row still alarms. Guarded by
-/// `test_opencode_db_recent_config_error_fallback_alarms`.
-const OPENCODE_DB_RECENT_CONFIG_ERROR_FALLBACK: bool = true;
+/// Fail-open-for-alerting fallback for `opencode_session_state` on config-load
+/// failure or DB-open error: `(true, true)` skips all idle-suppression arms so a
+/// stale opencode row still alarms. Guarded by
+/// `test_opencode_session_state_config_error_fallback_alarms`.
+const OPENCODE_SESSION_STATE_CONFIG_ERROR_FALLBACK: (bool, bool) = (true, true);
+
+fn print_browser_staleness_explain(
+    event_age_secs: i64,
+    heartbeat_age_secs: Option<i64>,
+    probe_ok: Option<i64>,
+    firefox_running: bool,
+    last_error_msg: Option<&str>,
+) {
+    let connectivity = browser_health::browser_extension_connectivity(
+        firefox_running,
+        heartbeat_age_secs,
+        event_age_secs,
+    );
+    let state = browser_health::browser_capture_state_label(connectivity, event_age_secs, probe_ok);
+    println!("     STATE:  {state}");
+    if let Some(msg) = last_error_msg.filter(|m| !m.is_empty()) {
+        println!("     EXT:    {msg}");
+        println!(
+            "     NOTE:   last_error_msg is last-writer-wins (extension heartbeat or daemon ingest)"
+        );
+    }
+
+    match connectivity {
+        BrowserExtensionConnectivity::FirefoxNotRunning => {
+            println!(
+                "     CAUSE:  Firefox is not running — browser capture is expected to be idle"
+            );
+            println!(
+                "     FIX:    Launch Firefox when you want browsing captured; re-run `hippo doctor`"
+            );
+        }
+        BrowserExtensionConnectivity::NeverConnected => {
+            println!(
+                "     CAUSE:  Firefox is running but the extension has never heartbeated the daemon"
+            );
+            println!(
+                "     FIX:    Install the extension permanently (`mise run install:ext`; survives restarts); \
+                 verify NM manifest via `hippo daemon install --force`"
+            );
+            println!(
+                "     DEV:    about:debugging → Load Temporary Add-on is for active extension development only"
+            );
+        }
+        BrowserExtensionConnectivity::Disconnected => {
+            println!(
+                "     CAUSE:  Extension heartbeat is stale — native messaging or the daemon socket may be wedged"
+            );
+            println!(
+                "     FIX:    Restart Firefox; run `hippo probe --source browser`; \
+                 if the extension was loaded via about:debugging, run `mise run install:ext` for a permanent install"
+            );
+            println!("     LOGS:   tail -f ~/.local/share/hippo/daemon.stderr.log");
+        }
+        BrowserExtensionConnectivity::Connected => {
+            if probe_ok == Some(0) {
+                println!(
+                    "     CAUSE:  Extension is connected but the synthetic probe round-trip is failing \
+                     (user events may still trickle in sporadically)"
+                );
+                println!(
+                    "     FIX:    `hippo probe --source browser`; check extension Browser Console and daemon logs"
+                );
+            } else if probe_ok == Some(1) && event_age_secs > BROWSER_EVENT_WARN_SECS {
+                println!(
+                    "     CAUSE:  Extension and synthetic probe are healthy; no user browsing on allowlisted domains recently"
+                );
+                println!(
+                    "     FIX:    Visit an allowlisted domain with ≥3s dwell, or ignore if you are not browsing"
+                );
+            } else {
+                println!(
+                    "     CAUSE:  No browser events have updated source_health within the ~15 minute cadence"
+                );
+                println!(
+                    "     FIX:    Visit an allowlisted domain with ≥3s dwell; run `hippo probe --source browser`"
+                );
+            }
+        }
+    }
+
+    println!(
+        "     NOTE:   Source freshness browser uses 48h/14d thresholds on browser_events; \
+         this line uses the tighter source_health cadence."
+    );
+    println!("     DOC:    docs/capture/operator-runbook.md");
+}
 
 /// Check 1: Per-source staleness via the `source_health` table (requires P0.1 migration).
 ///
@@ -1873,7 +1971,7 @@ const OPENCODE_DB_RECENT_CONFIG_ERROR_FALLBACK: bool = true;
 fn check_source_staleness(db: &rusqlite::Connection, explain: bool) -> u32 {
     // Query source_health — if the table doesn't exist yet, print a soft notice and bail.
     let rows_result = db.prepare(
-        "SELECT source, last_event_ts, last_error_msg, consecutive_failures, events_last_1h, probe_ok \
+        "SELECT source, last_event_ts, last_heartbeat_ts, last_error_msg, consecutive_failures, events_last_1h, probe_ok \
          FROM source_health \
          WHERE source IN ('shell', 'browser', 'agentic-session-claude', 'claude-tool', 'agentic-session-opencode', 'agentic-session-codex', 'agentic-session-cursor') \
          ORDER BY source",
@@ -1897,6 +1995,8 @@ fn check_source_staleness(db: &rusqlite::Connection, explain: bool) -> u32 {
     struct SourceRow {
         source: String,
         last_event_ts: Option<i64>,
+        last_heartbeat_ts: Option<i64>,
+        last_error_msg: Option<String>,
         probe_ok: Option<i64>,
     }
 
@@ -1904,8 +2004,10 @@ fn check_source_staleness(db: &rusqlite::Connection, explain: bool) -> u32 {
         Ok(SourceRow {
             source: row.get(0)?,
             last_event_ts: row.get(1)?,
-            // columns 2, 3, 4 are last_error_msg, consecutive_failures, events_last_1h — not used
-            probe_ok: row.get(5)?,
+            last_heartbeat_ts: row.get(2)?,
+            last_error_msg: row.get(3)?,
+            // column 4 is consecutive_failures — not used here
+            probe_ok: row.get(6)?,
         })
     }) {
         Ok(m) => m,
@@ -1928,18 +2030,7 @@ fn check_source_staleness(db: &rusqlite::Connection, explain: bool) -> u32 {
         .as_millis() as i64;
 
     // Check Firefox running (for browser suppression).
-    // macOS Firefox (incl. Developer Edition) exposes the main process as `firefox`;
-    // `firefox-bin` is Linux-only. Match either to keep the check portable.
-    // `-q` suppresses pgrep's PID output so it doesn't leak into doctor output.
-    let firefox_running = || -> bool {
-        ["firefox", "firefox-bin"].iter().any(|name| {
-            std::process::Command::new("pgrep")
-                .args(["-qx", name])
-                .status()
-                .map(|s| s.success())
-                .unwrap_or(false)
-        })
-    };
+    let firefox_running = browser_health::firefox_running;
 
     // Load the runtime config once for both poller-backed idle probes below
     // (codex + opencode). A single parse avoids two TOML reads per doctor run
@@ -1952,14 +2043,14 @@ fn check_source_staleness(db: &rusqlite::Connection, explain: bool) -> u32 {
     let doctor_config = hippo_core::config::HippoConfig::load_default();
 
     // Inspect the Codex rollout files under the configured session roots.
-    // Two facts drive doctor suppression, mirroring opencode's DB checks:
+    // Two facts drive doctor suppression, mirroring opencode's session-table checks:
     //   - `any_exist`: at least one `rollout-*.jsonl` file is present.
     //     False ⇒ "user has never run Codex" — suppress rather than alarm.
     //   - `any_recent`: at least one `rollout-*.jsonl` was modified within the
-    //     IDLE_WINDOW_SECS window (the same window opencode uses for its DB
-    //     mtime). False (with files present) ⇒ "user just isn't using Codex
-    //     right now" — suppress.  True with a stale `source_health` row ⇒ a
-    //     genuine ingestion failure, so it is NOT suppressed.
+    //     IDLE_WINDOW_SECS window (the same 10-minute idle window opencode uses
+    //     for its `MAX(time_updated)` query). False (with files present) ⇒ "user
+    //     just isn't using Codex right now" — suppress.  True with a stale
+    //     `source_health` row ⇒ a genuine ingestion failure, so it is NOT suppressed.
     let codex_session_state = || -> (bool, bool, bool) {
         // Config unreadable: fail open for alerting (see the const's docs).
         let Ok(cfg) = doctor_config.as_ref() else {
@@ -2015,14 +2106,15 @@ fn check_source_staleness(db: &rusqlite::Connection, explain: bool) -> u32 {
     };
 
     // Inspect the Cursor agent-transcript files under the configured session
-    // roots. Two facts drive doctor suppression, mirroring opencode's DB checks:
+    // roots. Two facts drive doctor suppression, mirroring opencode's session-table checks:
     //   - `any_exist`: at least one `agent-transcripts/*.jsonl` file is present.
     //     False ⇒ "user has never run Cursor" — suppress rather than alarm.
     //   - `any_recent`: at least one `agent-transcripts/*.jsonl` was modified
-    //     within the IDLE_WINDOW_SECS window (the same window opencode uses for
-    //     its DB mtime). False (with files present) ⇒ "user just isn't using
-    //     Cursor right now" — suppress.  True with a stale `source_health` row ⇒
-    //     a genuine ingestion failure, so it is NOT suppressed.
+    //     within the IDLE_WINDOW_SECS window (the same 10-minute idle window
+    //     opencode uses for its `MAX(time_updated)` query). False (with files
+    //     present) ⇒ "user just isn't using Cursor right now" — suppress.  True
+    //     with a stale `source_health` row ⇒ a genuine ingestion failure, so it
+    //     is NOT suppressed.
     let cursor_session_state = || -> (bool, bool, bool) {
         // Config unreadable: fail open for alerting (mirrors codex above).
         let Ok(cfg) = doctor_config.as_ref() else {
@@ -2073,24 +2165,68 @@ fn check_source_staleness(db: &rusqlite::Connection, explain: bool) -> u32 {
         (any_exist, any_recent, any_in_flight)
     };
 
-    // Check whether the opencode DB itself looks active — the file exists
-    // and has been modified within IDLE_WINDOW_SECS. Stale opencode means
-    // "user just isn't using opencode right now," not "the poller is broken."
-    let opencode_db_recent = || -> bool {
+    // Check the opencode `session` table for recent activity.
+    //   - `any_exist`:  at least one session row exists in the DB.
+    //     False ⇒ "user has never run opencode" — suppress rather than alarm.
+    //   - `any_recent`: any session has `time_updated` within IDLE_WINDOW_SECS.
+    //     False (with rows present) ⇒ "user just isn't using opencode right now"
+    //     — suppress.  True with a stale `source_health` row ⇒ a genuine
+    //     ingestion failure, so it is NOT suppressed.
+    //
+    // Checking the DB file mtime is NOT a reliable proxy for session activity:
+    // opencode continuously writes account state, event sequences, credentials,
+    // and workspace state to the same DB, so the file mtime is always "recent"
+    // even when no coding sessions have run for hours.
+    let opencode_session_state = || -> (bool, bool) {
         // Config unreadable: fail open for alerting (see the const's docs).
         let Ok(cfg) = doctor_config.as_ref() else {
-            return OPENCODE_DB_RECENT_CONFIG_ERROR_FALLBACK;
+            return OPENCODE_SESSION_STATE_CONFIG_ERROR_FALLBACK;
         };
-        let Ok(meta) = std::fs::metadata(&cfg.opencode.db_path) else {
-            return false;
+        // Disabled source: skip the DB query; `!opencode_enabled` classifies
+        // the row as "source disabled" regardless of session state.
+        if !cfg.opencode.enabled {
+            return (false, false);
+        }
+        let db_path = &cfg.opencode.db_path;
+        // DB absent ⇒ opencode has never been used on this machine. Returns
+        // (false, false) which the suppression logic classifies as "no opencode
+        // sessions found" — same outcome as a DB with zero rows.
+        if !db_path.exists() {
+            return (false, false);
+        }
+        let conn = match rusqlite::Connection::open_with_flags(
+            db_path,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        ) {
+            Ok(c) => c,
+            Err(_) => return OPENCODE_SESSION_STATE_CONFIG_ERROR_FALLBACK,
         };
-        let idle_cutoff = std::time::SystemTime::now()
-            .checked_sub(std::time::Duration::from_secs(IDLE_WINDOW_SECS))
-            .unwrap_or(std::time::UNIX_EPOCH);
-        meta.modified().map(|m| m > idle_cutoff).unwrap_or(false)
+        let idle_cutoff_ms = {
+            let now_ms = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis() as i64;
+            now_ms - (IDLE_WINDOW_SECS as i64 * 1000)
+        };
+        // Single query: row count + most-recent time_updated.
+        match conn.query_row(
+            "SELECT COUNT(*), MAX(time_updated) FROM session",
+            [],
+            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, Option<i64>>(1)?)),
+        ) {
+            Ok((count, max_ts)) => {
+                let any_exist = count > 0;
+                let any_recent = max_ts.map(|ts| ts > idle_cutoff_ms).unwrap_or(false);
+                (any_exist, any_recent)
+            }
+            // DB unreadable or table missing: fail open (same as config error).
+            Err(_) => OPENCODE_SESSION_STATE_CONFIG_ERROR_FALLBACK,
+        }
     };
 
-    // Check if there's a recent claude JSONL with mtime < 5 minutes (for claude-session suppression).
+    // Check for a Claude transcript with a semantic event in the last five
+    // minutes. Filesystem mtime alone is not activity: Claude can retouch a
+    // completed transcript for metadata-only updates hours later.
     let recent_claude_session = || -> bool {
         let projects_dir = match dirs::home_dir() {
             Some(h) => h.join(".claude/projects"),
@@ -2099,38 +2235,19 @@ fn check_source_staleness(db: &rusqlite::Connection, explain: bool) -> u32 {
         let five_min_ago = std::time::SystemTime::now()
             .checked_sub(std::time::Duration::from_secs(300))
             .unwrap_or(std::time::UNIX_EPOCH);
-        let Ok(entries) = std::fs::read_dir(&projects_dir) else {
-            return false;
-        };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.extension().and_then(|e| e.to_str()) == Some("jsonl")
-                && let Ok(meta) = std::fs::metadata(&path)
-                && let Ok(modified) = meta.modified()
-                && modified > five_min_ago
-            {
-                return true;
-            }
-            // Also recurse one level (projects/*/session.jsonl layout).
-            if path.is_dir()
-                && let Ok(sub) = std::fs::read_dir(&path)
-            {
-                for sub_entry in sub.flatten() {
-                    let sub_path = sub_entry.path();
-                    if sub_path.extension().and_then(|e| e.to_str()) == Some("jsonl")
-                        && let Ok(meta) = std::fs::metadata(&sub_path)
-                        && let Ok(modified) = meta.modified()
-                        && modified > five_min_ago
-                    {
-                        return true;
-                    }
-                }
-            }
-        }
-        false
+        let cutoff_ms = five_min_ago
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as i64;
+        let mut candidates = Vec::new();
+        collect_active_jsonls(&projects_dir, five_min_ago, &mut candidates);
+        candidates
+            .iter()
+            .any(|path| claude_jsonl_has_recent_semantic_activity(path, cutoff_ms, db))
     };
 
     let mut fail_count: u32 = 0;
+    let (opencode_sessions_do_exist, opencode_sessions_are_recent) = opencode_session_state();
     let (codex_sessions_do_exist, codex_sessions_are_recent, codex_session_is_in_flight) =
         codex_session_state();
     let (cursor_sessions_do_exist, cursor_sessions_are_recent, cursor_session_is_in_flight) =
@@ -2145,7 +2262,8 @@ fn check_source_staleness(db: &rusqlite::Connection, explain: bool) -> u32 {
         probe_ok: None, // per-row; filled in inside the loop
         firefox_running: firefox_running(),
         recent_claude_session: recent_claude_session(),
-        opencode_db_recent: opencode_db_recent(),
+        opencode_sessions_exist: opencode_sessions_do_exist,
+        opencode_sessions_recent: opencode_sessions_are_recent,
         opencode_enabled,
         codex_sessions_exist: codex_sessions_do_exist,
         codex_sessions_recent: codex_sessions_are_recent,
@@ -2185,17 +2303,48 @@ fn check_source_staleness(db: &rusqlite::Connection, explain: bool) -> u32 {
 
         let age_secs = (now_ms - last_ts) / 1000;
         let human = format_age_secs(age_secs);
+        let heartbeat_age_secs = row.last_heartbeat_ts.map(|ts| (now_ms - ts) / 1000);
 
         let signals = SuppressionSignals {
             probe_ok: row.probe_ok,
             ..suppression_env
         };
+        let browser_ext_error = (source == "browser")
+            .then_some(row.last_error_msg.as_deref())
+            .flatten()
+            .filter(|m| !m.is_empty());
+        let browser_state = (source == "browser").then(|| {
+            browser_health::browser_capture_state_label(
+                browser_health::browser_extension_connectivity(
+                    suppression_env.firefox_running,
+                    heartbeat_age_secs,
+                    age_secs,
+                ),
+                age_secs,
+                row.probe_ok,
+            )
+        });
         match classify_source_staleness(source, age_secs, signals) {
             SourceStalenessStatus::Ok => {
-                println!("[OK] {}  {}", padded, human);
+                if let Some(state) = browser_state {
+                    println!("[OK] {}  {} ({})", padded, human, state);
+                } else {
+                    println!("[OK] {}  {}", padded, human);
+                }
             }
             SourceStalenessStatus::Warn => {
-                println!("[WW] {}  {} (WARN)", padded, human);
+                if let Some(state) = browser_state {
+                    if let Some(err) = browser_ext_error {
+                        println!(
+                            "[WW] {}  {} (WARN) — {} — last_error: {}",
+                            padded, human, state, err
+                        );
+                    } else {
+                        println!("[WW] {}  {} (WARN) — {}", padded, human, state);
+                    }
+                } else {
+                    println!("[WW] {}  {} (WARN)", padded, human);
+                }
             }
             SourceStalenessStatus::Suppressed(reason) => {
                 println!(
@@ -2204,14 +2353,35 @@ fn check_source_staleness(db: &rusqlite::Connection, explain: bool) -> u32 {
                 );
             }
             SourceStalenessStatus::Fail => {
-                println!("[!!] {}  {} (FAIL)", padded, human);
+                if let Some(state) = browser_state {
+                    if let Some(err) = browser_ext_error {
+                        println!(
+                            "[!!] {}  {} (FAIL) — {} — last_error: {}",
+                            padded, human, state, err
+                        );
+                    } else {
+                        println!("[!!] {}  {} (FAIL) — {}", padded, human, state);
+                    }
+                } else {
+                    println!("[!!] {}  {} (FAIL)", padded, human);
+                }
                 fail_count += 1;
                 if explain {
-                    println!("     CAUSE:  No events have landed in SQLite for this source");
-                    println!(
-                        "     FIX:    Check source is running: hippo doctor (re-run); tail -f ~/.local/share/hippo/daemon.stderr.log"
-                    );
-                    println!("     DOC:    docs/capture/architecture.md");
+                    if source == "browser" {
+                        print_browser_staleness_explain(
+                            age_secs,
+                            heartbeat_age_secs,
+                            row.probe_ok,
+                            suppression_env.firefox_running,
+                            row.last_error_msg.as_deref(),
+                        );
+                    } else {
+                        println!("     CAUSE:  No events have landed in SQLite for this source");
+                        println!(
+                            "     FIX:    Check source is running: hippo doctor (re-run); tail -f ~/.local/share/hippo/daemon.stderr.log"
+                        );
+                        println!("     DOC:    docs/capture/architecture.md");
+                    }
                 }
             }
         }
@@ -2257,10 +2427,11 @@ fn check_codex_state_coverage(
             let recoverable_missing = report.missing_hippo_threads.len();
             if recoverable_missing == 0 {
                 println!(
-                    "[OK] {}  {}/{} threads captured ({} in-flight, {} log-only diagnostics)",
+                    "[OK] {}  {}/{} threads accounted for ({} zero-segment expected absent, {} in-flight, {} log-only diagnostics)",
                     padded,
                     report.covered_threads,
                     report.total_state_threads,
+                    report.zero_segment_threads.len(),
                     report.in_flight_threads.len(),
                     report.log_only_thread_count
                 );
@@ -2277,12 +2448,13 @@ fn check_codex_state_coverage(
             }
 
             println!(
-                "[!!] {}  {}/{} threads captured; {} missing from Hippo, {} unrecoverable (rollout deleted) ({} in-flight)",
+                "[!!] {}  {}/{} threads accounted for; {} missing from Hippo, {} unrecoverable (rollout deleted) ({} zero-segment expected absent, {} in-flight)",
                 padded,
                 report.covered_threads,
                 report.total_state_threads,
                 report.missing_hippo_threads.len(),
                 report.missing_rollout_threads.len(),
+                report.zero_segment_threads.len(),
                 report.in_flight_threads.len()
             );
             if explain {
@@ -2519,6 +2691,7 @@ fn check_cursor_session_coverage(
 
     let mut any_root = false;
     let mut total_transcripts = 0usize;
+    let mut zero_segment = 0usize;
     let mut in_flight = 0usize;
     let mut missing: Vec<String> = Vec::new();
 
@@ -2551,6 +2724,10 @@ fn check_cursor_session_coverage(
             if known.contains(stem) {
                 continue;
             }
+            if cursor_session::processed_without_segments(db, path) {
+                zero_segment += 1;
+                continue;
+            }
             if missing.len() < 10 {
                 missing.push(stem.to_string());
             } else {
@@ -2567,15 +2744,15 @@ fn check_cursor_session_coverage(
     let missing_count = missing.len();
     if missing_count == 0 {
         println!(
-            "[OK] {}  {} transcript(s) captured ({} in-flight)",
-            padded, total_transcripts, in_flight
+            "[OK] {}  {} transcript(s) accounted for ({} zero-segment expected absent, {} in-flight)",
+            padded, total_transcripts, zero_segment, in_flight
         );
         return 0;
     }
 
     println!(
-        "[!!] {}  {} of {} transcript(s) missing from Hippo ({} in-flight)",
-        padded, missing_count, total_transcripts, in_flight
+        "[!!] {}  {} of {} transcript(s) missing from Hippo ({} zero-segment expected absent, {} in-flight)",
+        padded, missing_count, total_transcripts, zero_segment, in_flight
     );
     if explain {
         let shown: Vec<&str> = missing
@@ -2635,10 +2812,12 @@ struct SuppressionSignals {
     firefox_running: bool,
     /// A Claude session JSONL was modified within the last 5 minutes.
     recent_claude_session: bool,
-    /// The opencode DB file was modified within the last 10 minutes.
-    opencode_db_recent: bool,
+    /// At least one opencode session row exists in the opencode DB.
+    opencode_sessions_exist: bool,
+    /// Any opencode session has `time_updated` within the last 10 minutes.
+    opencode_sessions_recent: bool,
     /// `[opencode] enabled` from config — false means the source is intentionally
-    /// disabled and staleness alarms must not fire regardless of file activity.
+    /// disabled and staleness alarms must not fire regardless of session activity.
     opencode_enabled: bool,
     /// At least one Codex `rollout-*.jsonl` file exists under the roots.
     codex_sessions_exist: bool,
@@ -2701,7 +2880,16 @@ fn source_staleness_suppression_reason(
         // even if transcript files exist on disk, the poller is halted so a stale
         // `source_health` row is expected — not a capture failure.
         "agentic-session-opencode" if !signals.opencode_enabled => Some("source disabled"),
-        "agentic-session-opencode" if !signals.opencode_db_recent => Some("opencode DB idle"),
+        // Never-installed: no sessions in the DB at all.
+        "agentic-session-opencode" if !signals.opencode_sessions_exist => {
+            Some("no opencode sessions found")
+        }
+        // Sessions exist but none updated recently: user just isn't running
+        // opencode right now. A recent session with a stale source_health row
+        // is intentionally NOT matched — that is a genuine ingestion failure.
+        "agentic-session-opencode" if !signals.opencode_sessions_recent => {
+            Some("opencode sessions idle")
+        }
         "agentic-session-codex" if !signals.codex_enabled => Some("source disabled"),
         // Codex has two distinct idle cases. Never-installed (no rollout files
         // at all) is checked first. Otherwise, files exist but none changed
@@ -3045,6 +3233,150 @@ fn watchdog_heartbeat_status(age_secs: i64) -> WatchdogHeartbeatStatus {
     }
 }
 
+/// Auto-memory reliability doctor check (SNUG-138) — SQLite only, no brain HTTP.
+fn check_auto_memory_health(config: &HippoConfig, db: &rusqlite::Connection, explain: bool) -> u32 {
+    if !config.auto_memory.enabled {
+        println!("[--] {:<29}  source disabled", "auto-memory health");
+        return 0;
+    }
+
+    let table_exists: bool = db
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='memory_documents')",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap_or(false);
+    if !table_exists {
+        println!("[--] {:<29}  schema not migrated", "auto-memory health");
+        return 0;
+    }
+
+    let now_ms = chrono::Utc::now().timestamp_millis();
+    let mut fail_count = 0u32;
+
+    let watcher_age: Option<i64> = db
+        .query_row(
+            "SELECT last_heartbeat_ts FROM source_health WHERE source = 'auto-memory-watcher'",
+            [],
+            |row| row.get(0),
+        )
+        .ok()
+        .flatten();
+    match watcher_age {
+        None => println!(
+            "[WW] {:<29}  watcher never heartbeated",
+            "auto-memory watcher"
+        ),
+        Some(ts) => {
+            let age_ms = (now_ms - ts).max(0);
+            if age_ms > 15 * 60 * 1000 {
+                println!(
+                    "[!!] {:<29}  heartbeat stale ({} ago)",
+                    "auto-memory watcher",
+                    format_duration_ms(age_ms)
+                );
+                if explain {
+                    println!("     CAUSE: FSEvents watcher or periodic reconcile may be down.");
+                    println!(
+                        "     FIX: launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.hippo.auto-memory-watcher.plist"
+                    );
+                }
+                fail_count += 1;
+            } else {
+                println!(
+                    "[OK] {:<29}  heartbeat {}",
+                    "auto-memory watcher",
+                    format_duration_ms(age_ms)
+                );
+            }
+        }
+    }
+
+    let ingest_row: Option<(Option<i64>, i64, Option<String>)> = db
+        .query_row(
+            "SELECT last_event_ts, consecutive_failures, last_error_msg
+             FROM source_health WHERE source = 'claude-auto-memory'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .ok();
+    match ingest_row {
+        None => println!("[WW] {:<29}  no ingest health row", "auto-memory ingest"),
+        Some((last_event, consecutive, err)) => {
+            if consecutive > 3 {
+                println!(
+                    "[!!] {:<29}  {} consecutive failures",
+                    "auto-memory ingest", consecutive
+                );
+                if explain {
+                    if let Some(msg) = err {
+                        println!("     CAUSE: {msg}");
+                    }
+                    println!("     FIX: hippo-auto-memory-poll; inspect auto-memory.log");
+                }
+                fail_count += 1;
+            } else if let Some(ts) = last_event {
+                let age = format_duration_ms((now_ms - ts).max(0));
+                println!("[OK] {:<29}  last ingest {}", "auto-memory ingest", age);
+            } else {
+                println!("[--] {:<29}  no ingest events yet", "auto-memory ingest");
+            }
+        }
+    }
+
+    let (pending, failed): (i64, i64) = db
+        .query_row(
+            "SELECT
+                (SELECT COUNT(*) FROM memory_enrichment_queue meq
+                 JOIN memory_revisions mr ON mr.id = meq.revision_id
+                 JOIN memory_documents md ON md.id = mr.document_id
+                 WHERE meq.status = 'pending' AND md.repository != 'hippo/__hippo_probe__'),
+                (SELECT COUNT(*) FROM memory_enrichment_queue meq
+                 JOIN memory_revisions mr ON mr.id = meq.revision_id
+                 JOIN memory_documents md ON md.id = mr.document_id
+                 WHERE meq.status = 'failed' AND md.repository != 'hippo/__hippo_probe__')",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap_or((0, 0));
+    if failed > 0 {
+        println!(
+            "[!!] {:<29}  pending={pending} failed={failed}",
+            "auto-memory enrichment"
+        );
+        if explain {
+            println!("     FIX: hippo-auto-memory-replay --limit 50");
+        }
+        fail_count += 1;
+    } else if pending > 0 {
+        println!("[WW] {:<29}  pending={pending}", "auto-memory enrichment");
+    } else {
+        println!("[OK] {:<29}  queue empty", "auto-memory enrichment");
+    }
+
+    let stale_projections: i64 = db
+        .query_row(
+            "SELECT COUNT(*) FROM memory_documents
+             WHERE state = 'active' AND projection_status = 'pending'
+               AND repository != 'hippo/__hippo_probe__'
+               AND updated_at < ?1",
+            rusqlite::params![now_ms - 30 * 60 * 1000],
+            |row| row.get(0),
+        )
+        .unwrap_or(0);
+    if stale_projections > 0 {
+        println!(
+            "[WW] {:<29}  {stale_projections} stale pending projection(s)",
+            "auto-memory projection"
+        );
+    } else {
+        println!("[OK] {:<29}  projections fresh", "auto-memory projection");
+    }
+
+    fail_count
+}
+
 /// Check 8: Watchdog heartbeat — verify the watchdog row in source_health is fresh.
 ///
 /// Returns 1 if the watchdog row is stale (>= 180s), 0 otherwise.
@@ -3296,6 +3628,40 @@ fn collect_active_jsonls(
     }
 }
 
+/// Determine whether a recently touched Claude transcript contains recent
+/// semantic activity.
+///
+/// Parsing the transcript is authoritative. If it has no extractable segment,
+/// fall back to the stored row timestamp for compatibility with older/minimal
+/// transcript shapes. An unreadable file or a file with no DB row fails open
+/// for alerting so doctor never suppresses a genuine capture gap.
+fn claude_jsonl_has_recent_semantic_activity(
+    path: &std::path::Path,
+    cutoff_ms: i64,
+    db: &rusqlite::Connection,
+) -> bool {
+    match crate::claude_session::session_file_latest_event_ms(path) {
+        Ok(Some(latest)) => latest > cutoff_ms,
+        Err(_) => true,
+        Ok(None) => {
+            let Some(session_id) = path.file_stem().and_then(|s| s.to_str()) else {
+                return true;
+            };
+            let stored_latest = db
+                .query_row(
+                    "SELECT MAX(end_time) FROM agentic_sessions
+                     WHERE session_id = ?1
+                       AND harness = 'claude-code'
+                       AND probe_tag IS NULL",
+                    [session_id],
+                    |row| row.get::<_, Option<i64>>(0),
+                )
+                .unwrap_or(None);
+            stored_latest.is_none_or(|latest| latest > cutoff_ms)
+        }
+    }
+}
+
 /// Returns true for Claude workflow orchestration journals, not session files.
 ///
 /// These are `journal.jsonl` metadata files under a `subagents/.../workflows`
@@ -3323,7 +3689,9 @@ fn is_workflow_journal(path: &std::path::Path) -> bool {
 /// `projects_dir` and verify each has a matching real row in `agentic_sessions`.
 ///
 /// `projects_dir` is `~/.claude/projects` (injectable for tests).
-/// A session file is "active" if its mtime is < 5 minutes old.
+/// A session file is "active" if its mtime and newest semantic event are both
+/// < 5 minutes old. Requiring semantic recency avoids treating metadata-only
+/// transcript touches as live conversations.
 /// Recursion handles subagent transcripts at `<proj>/<parent>/subagents/*.jsonl`.
 /// Returns fail_count capped at 3.
 pub fn check_claude_session_db(
@@ -3346,6 +3714,11 @@ pub fn check_claude_session_db(
     // Collect active JSONL paths (mtime within last 5 minutes) recursively.
     let mut active: Vec<std::path::PathBuf> = Vec::new();
     collect_active_jsonls(projects_dir, five_min_ago, &mut active);
+    let cutoff_ms = five_min_ago
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as i64;
+    active.retain(|path| claude_jsonl_has_recent_semantic_activity(path, cutoff_ms, db));
 
     if active.is_empty() {
         println!("[--] {:<29}  no active sessions", LABEL);
@@ -3802,28 +4175,13 @@ fn expected_claude_session_hook_path(data_dir: &std::path::Path) -> Option<PathB
 }
 
 /// Check that the Firefox extension's compiled dist/ bundle exists and the
-/// Native Messaging manifest is installed.
+/// extension is side-loaded into the Firefox Developer Edition profile
+/// (survives restarts).
 ///
-/// The extension's `manifest.json` references `dist/background.js` and
-/// `dist/content.js`, but `dist/` is gitignored — it must be produced by
-/// `mise run build:ext:dist`. If dist/ is missing the extension loads cleanly
-/// as a temporary add-on in Firefox but captures nothing (silent no-op).
-fn check_firefox_extension() {
-    // Native Messaging manifest — the bridge between Firefox and hippo-daemon.
-    let nm_manifest = dirs::home_dir().map(|h| {
-        h.join("Library/Application Support/Mozilla/NativeMessagingHosts/hippo_daemon.json")
-    });
-    match nm_manifest {
-        Some(path) if path.exists() => println!("[OK] Firefox Native Messaging manifest installed"),
-        Some(path) => {
-            println!(
-                "[!!] Firefox Native Messaging manifest missing: {}",
-                path.display()
-            );
-            println!("     Fix: hippo daemon install --force");
-        }
-        None => println!("[--] Firefox Native Messaging check skipped (no home dir)"),
-    }
+/// Native Messaging manifest is checked separately by `check_nm_manifest`.
+/// Profile resolution mirrors `mise.toml` `[tasks."install:ext"]` (lines ~113–146).
+fn check_firefox_extension(explain: bool) -> u32 {
+    let mut fail_count = check_firefox_extension_permanent_install(explain);
 
     // Extension dist/ files. We locate the repo via the canonical path of the
     // currently running binary — typically `<repo>/target/release/hippo`, with
@@ -3831,19 +4189,73 @@ fn check_firefox_extension() {
     // layout, skip rather than false-alarm.
     let Some(repo_root) = repo_root_from_current_exe() else {
         println!("[--] Firefox extension dist/ check skipped (could not locate repo root)");
-        return;
+        return fail_count;
     };
-    check_firefox_extension_dist_at(&repo_root.join("extension/firefox"));
+    fail_count += check_firefox_extension_dist_at(&repo_root.join("extension/firefox"), explain);
+    fail_count
 }
 
-fn check_firefox_extension_dist_at(ext_dir: &std::path::Path) {
+/// Verify `mise run install:ext` has side-loaded the unsigned .xpi into the
+/// Firefox Developer Edition profile.
+fn check_firefox_extension_permanent_install(explain: bool) -> u32 {
+    let Some(home) = dirs::home_dir() else {
+        println!("[--] Firefox extension install   skipped (no home dir)");
+        return 0;
+    };
+    let Some(profile) = browser_health::firefox_dev_edition_profile_dir(&home) else {
+        println!("[--] Firefox extension install   no Dev Edition profile");
+        return 0;
+    };
+    if !profile.is_dir() {
+        println!(
+            "[--] Firefox extension install   Dev Edition profile dir missing ({})",
+            profile.display()
+        );
+        return 0;
+    };
+    let xpi = browser_health::firefox_extension_xpi_path(&profile);
+    if browser_health::firefox_extension_xpi_installed(&profile) {
+        let prefs = profile.join("prefs.js");
+        if prefs.is_file() && !browser_health::firefox_unsigned_install_allowed(&prefs) {
+            println!(
+                "[WW] Firefox extension installed but xpinstall.signatures.required is not false"
+            );
+            println!("     Firefox may delete the unsigned .xpi on restart.");
+            println!("     Fix: about:config → xpinstall.signatures.required = false");
+        } else {
+            println!(
+                "[OK] Firefox extension installed permanently ({})",
+                xpi.display()
+            );
+        }
+        0
+    } else {
+        println!("[!!] Firefox extension not permanently installed");
+        println!("     Temporary about:debugging loads do not survive Firefox restarts.");
+        println!("     Fix: mise run install:ext");
+        if explain {
+            println!(
+                "     CAUSE:  No hippo-browser@local.xpi in the Firefox Dev Edition profile extensions/ dir"
+            );
+            println!(
+                "     FIX:    mise run install:ext (one-time: about:config → xpinstall.signatures.required = false)"
+            );
+            println!(
+                "     DOC:    about:debugging → Load Temporary Add-on is for active extension development only; see docs/capture/operator-runbook.md"
+            );
+        }
+        1
+    }
+}
+
+fn check_firefox_extension_dist_at(ext_dir: &std::path::Path, explain: bool) -> u32 {
     if !ext_dir.exists() {
         // Not fatal: release installs won't have the repo extension dir.
         println!(
             "[--] Firefox extension dir not found at {}",
             ext_dir.display()
         );
-        return;
+        return 0;
     }
     let required = ["dist/background.js", "dist/content.js"];
     let missing: Vec<&str> = required
@@ -3856,6 +4268,7 @@ fn check_firefox_extension_dist_at(ext_dir: &std::path::Path) {
             "[OK] Firefox extension dist/ built ({})",
             ext_dir.join("dist").display()
         );
+        0
     } else {
         println!(
             "[!!] Firefox extension dist/ missing: {}",
@@ -3863,6 +4276,12 @@ fn check_firefox_extension_dist_at(ext_dir: &std::path::Path) {
         );
         println!("     The extension loads but captures nothing when dist/ is absent.");
         println!("     Fix: mise run build:ext:dist");
+        if explain {
+            println!("     CAUSE:  extension/firefox/dist/ is gitignored and was not built");
+            println!("     FIX:    mise run build:ext:dist");
+            println!("     DOC:    extension/firefox/README.md");
+        }
+        1
     }
 }
 
@@ -4094,6 +4513,26 @@ mod tests {
     }
 
     #[test]
+    fn check_cursor_session_coverage_accepts_processed_zero_segment_transcript() {
+        let dir = tempdir().unwrap();
+        let conn = coverage_test_db(dir.path());
+        let root = dir.path().join("cursor-projects");
+        let transcripts = root.join("slug/agent-transcripts/parent/subagents");
+        std::fs::create_dir_all(&transcripts).unwrap();
+        let empty = transcripts.join("empty-child.jsonl");
+        std::fs::write(&empty, "").unwrap();
+
+        let mut config = HippoConfig::default();
+        config.storage.data_dir = dir.path().to_path_buf();
+        config.cursor.enabled = true;
+        config.cursor.session_roots = vec![root];
+        config.cursor.min_idle_secs = 0;
+
+        assert_eq!(cursor_session::ingest_one(&config, &empty).unwrap(), 0);
+        assert_eq!(check_cursor_session_coverage(&config, &conn, false), 0);
+    }
+
+    #[test]
     fn check_cursor_session_coverage_disabled_is_skipped() {
         let dir = tempdir().unwrap();
         let conn = coverage_test_db(dir.path());
@@ -4139,7 +4578,7 @@ mod tests {
             .collect();
         assert_eq!(missing, vec!["dist/background.js", "dist/content.js"]);
 
-        check_firefox_extension_dist_at(&ext);
+        assert_eq!(check_firefox_extension_dist_at(&ext, false), 1);
     }
 
     #[test]
@@ -4157,14 +4596,17 @@ mod tests {
             .collect();
         assert!(missing.is_empty());
 
-        check_firefox_extension_dist_at(&ext);
+        assert_eq!(check_firefox_extension_dist_at(&ext, false), 0);
     }
 
     #[test]
     fn test_check_firefox_extension_dist_at_handles_missing_ext_dir() {
         // Nonexistent path must not panic — release installs won't have it.
         let tmp = tempdir().unwrap();
-        check_firefox_extension_dist_at(&tmp.path().join("does-not-exist"));
+        assert_eq!(
+            check_firefox_extension_dist_at(&tmp.path().join("does-not-exist"), false),
+            0
+        );
     }
 
     #[tokio::test]
@@ -4652,7 +5094,7 @@ replacement = "***"
         let line = format_suppressed_source_staleness_line(
             "agentic-session-opencode events",
             "10h ago",
-            "opencode DB idle",
+            "opencode sessions idle",
         );
 
         assert!(
@@ -4679,7 +5121,10 @@ replacement = "***"
             probe_ok: None,
             firefox_running: false,
             recent_claude_session,
-            opencode_db_recent: false,
+            // Default to "never used opencode" so existing tests that don't
+            // care about opencode keep their meaning.
+            opencode_sessions_exist: false,
+            opencode_sessions_recent: false,
             // Default all enabled flags to `true` so existing tests keep their
             // meaning — they test idle/not-installed suppression, not disabled-source
             // suppression.
@@ -4911,18 +5356,67 @@ replacement = "***"
         );
     }
 
-    /// Same class fix — disabled opencode must suppress regardless of DB mtime.
+    /// Disabled opencode must suppress regardless of session activity.
     #[test]
     fn test_opencode_disabled_suppresses_staleness() {
         let sig = SuppressionSignals {
             opencode_enabled: false,
-            opencode_db_recent: true, // DB looks active — would alarm if check absent
+            // Sessions look active — would alarm if the `enabled` check were absent.
+            opencode_sessions_exist: true,
+            opencode_sessions_recent: true,
             ..signals(false, false, false, false, false)
         };
         assert_eq!(
             classify_source_staleness("agentic-session-opencode", 2 * 3600, sig),
             SourceStalenessStatus::Suppressed("source disabled"),
-            "opencode with enabled=false must be suppressed regardless of DB mtime"
+            "opencode with enabled=false must be suppressed regardless of session activity"
+        );
+    }
+
+    /// Never-installed opencode (no session rows at all, or DB absent) must suppress.
+    /// The `db_path.exists() == false` early-return and the `count == 0` SQL path
+    /// both produce `(false, false)` — same suppression outcome, tested here.
+    #[test]
+    fn test_opencode_staleness_suppressed_when_no_sessions_exist() {
+        let sig = SuppressionSignals {
+            opencode_sessions_exist: false,
+            opencode_sessions_recent: false,
+            ..signals(false, false, false, false, false)
+        };
+        assert_eq!(
+            classify_source_staleness("agentic-session-opencode", 2 * 3600, sig),
+            SourceStalenessStatus::Suppressed("no opencode sessions found"),
+            "machines without any opencode sessions (or no DB at all) should not alarm"
+        );
+    }
+
+    /// Sessions exist but none updated recently → user is idle → suppress.
+    #[test]
+    fn test_opencode_staleness_suppressed_when_sessions_exist_but_idle() {
+        let sig = SuppressionSignals {
+            opencode_sessions_exist: true,
+            opencode_sessions_recent: false,
+            ..signals(false, false, false, false, false)
+        };
+        assert_eq!(
+            classify_source_staleness("agentic-session-opencode", 2 * 3600, sig),
+            SourceStalenessStatus::Suppressed("opencode sessions idle"),
+            "previously-used but idle opencode should be suppressed, not alarmed"
+        );
+    }
+
+    /// Sessions are recent yet source_health is stale — genuine ingestion failure, must alarm.
+    #[test]
+    fn test_opencode_staleness_alarms_when_sessions_fresh_but_health_stale() {
+        let sig = SuppressionSignals {
+            opencode_sessions_exist: true,
+            opencode_sessions_recent: true,
+            ..signals(false, false, false, false, false)
+        };
+        assert_eq!(
+            classify_source_staleness("agentic-session-opencode", 2 * 3600, sig),
+            SourceStalenessStatus::Fail,
+            "recent opencode sessions with a stale source_health row must alarm"
         );
     }
 
@@ -4962,14 +5456,16 @@ replacement = "***"
         );
     }
 
-    /// Sibling guard for `opencode_db_recent`'s config-error fallback: `true`
-    /// must keep a stale opencode row alarming rather than suppressing it as
-    /// "idle". Flipping `OPENCODE_DB_RECENT_CONFIG_ERROR_FALLBACK` to `false`
-    /// breaks this test.
+    /// Regression guard for opencode's config-error / DB-open-error fallback:
+    /// `OPENCODE_SESSION_STATE_CONFIG_ERROR_FALLBACK` must keep a stale opencode
+    /// row alarming rather than suppressing it as "idle". Flipping either element
+    /// of the tuple to `false` breaks this test.
     #[test]
-    fn test_opencode_db_recent_config_error_fallback_alarms() {
+    fn test_opencode_session_state_config_error_fallback_alarms() {
+        let (exist, recent) = OPENCODE_SESSION_STATE_CONFIG_ERROR_FALLBACK;
         let sig = SuppressionSignals {
-            opencode_db_recent: OPENCODE_DB_RECENT_CONFIG_ERROR_FALLBACK,
+            opencode_sessions_exist: exist,
+            opencode_sessions_recent: recent,
             ..signals(false, false, false, false, false)
         };
         assert_eq!(
@@ -5101,6 +5597,31 @@ replacement = "***"
             check_claude_session_db(&projects, dir.path(), &conn, false),
             0,
             "active session present in agentic_sessions must not be reported missing"
+        );
+    }
+
+    #[test]
+    fn metadata_only_claude_touch_is_not_semantic_activity() {
+        let dir = tempdir().unwrap();
+        let conn = coverage_test_db(dir.path());
+        let path = dir.path().join("metadata-touch.jsonl");
+        std::fs::write(
+            &path,
+            concat!(
+                "{\"type\":\"user\",\"timestamp\":\"2023-11-14T22:13:21Z\",",
+                "\"sessionId\":\"metadata-touch\",\"message\":{\"role\":\"user\",",
+                "\"content\":[{\"type\":\"text\",\"text\":\"old prompt\"}]}}\n"
+            ),
+        )
+        .unwrap();
+
+        assert!(
+            !claude_jsonl_has_recent_semantic_activity(
+                &path,
+                chrono::Utc::now().timestamp_millis() - 300_000,
+                &conn,
+            ),
+            "a fresh mtime must not make an old transcript semantically active"
         );
     }
 
@@ -5246,5 +5767,46 @@ replacement = "***"
 
         assert!(line.contains("[!!]"));
         assert!(line.contains("format"));
+    }
+
+    #[test]
+    fn browser_connectivity_detects_fresh_heartbeat() {
+        assert_eq!(
+            browser_health::browser_extension_connectivity(true, Some(30), 24 * 60),
+            BrowserExtensionConnectivity::Connected
+        );
+    }
+
+    #[test]
+    fn browser_connectivity_detects_stale_heartbeat() {
+        assert_eq!(
+            browser_health::browser_extension_connectivity(true, Some(600), 24 * 60),
+            BrowserExtensionConnectivity::Disconnected
+        );
+    }
+
+    #[test]
+    fn browser_capture_state_distinguishes_probe_failure() {
+        let state = browser_health::browser_capture_state_label(
+            BrowserExtensionConnectivity::Connected,
+            24 * 60,
+            Some(0),
+        );
+        assert!(
+            state.contains("probe failing"),
+            "expected probe-failure label, got: {state}"
+        );
+    }
+
+    #[test]
+    fn browser_capture_state_labels_idle_firefox() {
+        assert_eq!(
+            browser_health::browser_capture_state_label(
+                BrowserExtensionConnectivity::FirefoxNotRunning,
+                24 * 60,
+                None,
+            ),
+            "Firefox not running"
+        );
     }
 }

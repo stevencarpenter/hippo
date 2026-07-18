@@ -6,6 +6,7 @@ Reference documentation for hippo's capture-reliability stack — what every sou
 
 | Audience | Entry point |
 |---|---|
+| **Agent using MCP/RAG** — "what does this evidence mean?" | [`source-trust-contracts.md`](source-trust-contracts.md) |
 | **New contributor** — "what does the system do?" | [`architecture.md`](architecture.md) |
 | **Operator** — "something looks wrong" | [`operator-runbook.md`](operator-runbook.md) |
 | **Source author** — "I want to add a new capture path" | [`adding-a-source.md`](adding-a-source.md) (the full eleven-step contract). Read [`anti-patterns.md`](anti-patterns.md) first if you haven't. |
@@ -16,6 +17,8 @@ Reference documentation for hippo's capture-reliability stack — what every sou
 
 | Doc | Topic |
 |---|---|
+| [`retrieval-eligibility.md`](retrieval-eligibility.md) | Default eligibility policy for agent retrieval (probes, journals, in-flight). |
+| [`source-trust-contracts.md`](source-trust-contracts.md) | Agent-facing per-source semantics: identity, timestamps, freshness, safe citations. |
 | [`architecture.md`](architecture.md) | The four layers (capture path / `source_health` / watchdog / probe / alarms), I-1..I-12 invariants with thresholds, how the pieces interact. |
 | [`sources.md`](sources.md) | Per-source coverage matrix: shell, claude-session, browser, workflow runs, and the rest. Entry point, tables, invariants, probe coverage. |
 | [`anti-patterns.md`](anti-patterns.md) | AP-1..AP-12: forbidden patterns with rationale and the right alternative. Review blockers. |

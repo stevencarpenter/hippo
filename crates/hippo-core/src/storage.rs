@@ -7,13 +7,25 @@ use std::path::Path;
 
 use crate::events::{BrowserEvent, ShellEvent};
 
-const SCHEMA: &str = include_str!("schema.sql");
+const SCHEMA: &str = concat!(
+    include_str!("schema.sql"),
+    "\n",
+    include_str!("schema/auto_memory.sql"),
+    "\n",
+    include_str!("schema/auto_memory_taxonomy.sql")
+);
 
 /// Schema version the daemon expects a healthy DB to be at. Exposed so
 /// startup code (e.g. the brain handshake) can cross-check without
 /// re-declaring the value. Keep in sync with
 /// `brain/src/hippo_brain/schema_version.py::EXPECTED_SCHEMA_VERSION`.
-pub const EXPECTED_VERSION: i64 = 18;
+pub const EXPECTED_VERSION: i64 = 23;
+
+/// Idempotent v18→v19 auto-memory DDL (same file as fresh-install assembly).
+const AUTO_MEMORY_SCHEMA: &str = include_str!("schema/auto_memory.sql");
+
+/// Idempotent v19→v20 auto-memory taxonomy DDL.
+const AUTO_MEMORY_TAXONOMY_SCHEMA: &str = include_str!("schema/auto_memory_taxonomy.sql");
 
 /// Idempotent `ALTER TABLE … ADD COLUMN`. Pre-checks `PRAGMA table_info`
 /// for the column name; if absent, runs the supplied DDL. Used by
@@ -1410,6 +1422,100 @@ pub fn open_db(path: &Path) -> Result<Connection> {
             // the migration doesn't re-trigger on every open.
             conn.execute_batch("PRAGMA user_version = 18;")?;
         }
+    }
+
+    // v18→v19: add the durable, read-only Claude auto-memory source model.
+    // This migration is additive so it is safe for every supported historical
+    // version after the preceding migration blocks have repaired their own
+    // schema families. The DDL is idempotent to make crash recovery harmless.
+    if (1..19).contains(&version) {
+        conn.execute_batch(AUTO_MEMORY_SCHEMA)?;
+        if table_exists(&conn, "source_health")? {
+            conn.execute_batch(
+                "INSERT OR IGNORE INTO source_health
+                    (source, last_event_ts, updated_at)
+                 VALUES ('claude-auto-memory', NULL, unixepoch('now') * 1000);",
+            )?;
+        }
+        conn.execute_batch("PRAGMA user_version = 19;")?;
+    }
+
+    // v19→v20: auto-memory category and index-link tables.
+    if (1..20).contains(&version) {
+        conn.execute_batch(AUTO_MEMORY_TAXONOMY_SCHEMA)?;
+        conn.execute_batch("PRAGMA user_version = 20;")?;
+    }
+
+    // v20→v21: auto-memory watcher source_health identity.
+    if (1..21).contains(&version) {
+        if table_exists(&conn, "source_health")? {
+            conn.execute_batch(
+                "INSERT OR IGNORE INTO source_health (source, last_event_ts, updated_at)
+                 VALUES ('auto-memory-watcher', NULL, unixepoch('now') * 1000);",
+            )?;
+        }
+        conn.execute_batch("PRAGMA user_version = 21;")?;
+    }
+
+    // v21→v22: rename watcher resume state to harness-neutral table (SNUG-115 Phase A).
+    if (1..22).contains(&version) {
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS agentic_session_offsets (
+                path              TEXT    PRIMARY KEY,
+                session_id        TEXT,
+                byte_offset       INTEGER NOT NULL DEFAULT 0,
+                inode             INTEGER,
+                device            INTEGER,
+                size_at_last_read INTEGER NOT NULL DEFAULT 0,
+                updated_at        INTEGER NOT NULL
+             ) STRICT;",
+        )?;
+        if table_exists(&conn, "claude_session_offsets")? {
+            conn.execute_batch(
+                "INSERT OR IGNORE INTO agentic_session_offsets
+                    (path, session_id, byte_offset, inode, device, size_at_last_read, updated_at)
+                 SELECT path, session_id, byte_offset, inode, device, size_at_last_read, updated_at
+                 FROM claude_session_offsets;",
+            )?;
+        }
+        conn.execute_batch("PRAGMA user_version = 22;")?;
+    }
+
+    // v22→v23: drop frozen legacy `claude_*` tables (SNUG-115 Phase B).
+    // v17→v18 already backfilled rows into the agentic family; refuse to drop
+    // when the full legacy family is present but agentic row counts lag behind.
+    if (1..23).contains(&version) {
+        if table_exists(&conn, "claude_sessions")? {
+            let legacy_count: i64 =
+                conn.query_row("SELECT COUNT(*) FROM claude_sessions", [], |row| row.get(0))?;
+            let full_legacy_family = table_exists(&conn, "knowledge_node_claude_sessions")?
+                && table_exists(&conn, "claude_enrichment_queue")?;
+            if legacy_count > 0 && full_legacy_family && table_exists(&conn, "agentic_sessions")? {
+                let agentic_count: i64 = conn.query_row(
+                    "SELECT COUNT(*) FROM agentic_sessions
+                     WHERE harness IN ('claude-code', 'codex', 'cursor', 'opencode')",
+                    [],
+                    |row| row.get(0),
+                )?;
+                if agentic_count < legacy_count {
+                    anyhow::bail!(
+                        "v22→v23: refusing to drop legacy claude_sessions ({legacy_count} rows) \
+                         because agentic_sessions has only {agentic_count} harness rows. \
+                         Verify v17→v18 backfill and restore from backup before retrying."
+                    );
+                }
+            }
+        }
+        conn.execute_batch(
+            "PRAGMA foreign_keys = OFF;
+             DROP TABLE IF EXISTS knowledge_node_claude_sessions;
+             DROP TABLE IF EXISTS claude_enrichment_queue;
+             DROP TABLE IF EXISTS claude_sessions;
+             DROP TABLE IF EXISTS claude_session_parity;
+             DROP TABLE IF EXISTS claude_session_offsets;
+             PRAGMA foreign_keys = ON;
+             PRAGMA user_version = 23;",
+        )?;
     } else if version != 0 && version != EXPECTED_VERSION {
         anyhow::bail!(
             "DB schema version mismatch: expected {}, found {}. \
@@ -1443,15 +1549,15 @@ pub fn open_db(path: &Path) -> Result<Connection> {
                 ('agentic-session-opencode', NULL, unixepoch('now') * 1000),
                 ('agentic-session-codex',    NULL, unixepoch('now') * 1000),
                 ('agentic-session-cursor',   NULL, unixepoch('now') * 1000),
-                ('brain-preflight',          NULL, unixepoch('now') * 1000);",
+                ('brain-preflight',          NULL, unixepoch('now') * 1000),
+                ('claude-auto-memory',       NULL, unixepoch('now') * 1000),
+                ('auto-memory-watcher',      NULL, unixepoch('now') * 1000);",
         );
     }
     Ok(conn)
 }
 
-/// Idempotently apply the full `schema.sql` to an already-open connection.
-/// Every statement uses `CREATE … IF NOT EXISTS`, so this is a no-op for
-/// objects that already exist.
+/// Idempotently apply the full `schema.sql` for bench-mode daemon startup.
 ///
 /// `open_db` only applies `SCHEMA` when `user_version == 0` (fresh DB),
 /// trusting that any DB with `user_version > 0` is the product of the
@@ -1462,11 +1568,14 @@ pub fn open_db(path: &Path) -> Result<Connection> {
 /// knowledge_node_*, workflow_annotations, lessons, …) when writing
 /// enrichment results, but the bench DB only has the input tables.
 ///
-/// This function lets bench-mode fill the gap without touching prod's
-/// migration semantics. Operator runs should never call it — they go
-/// through `open_db` whose v=0 / migration paths are what guarantees
-/// schema integrity in production.
-pub fn ensure_schema(conn: &Connection) -> Result<()> {
+/// Bench-mode daemon startup calls this to fill the gap without touching
+/// prod's migration semantics. Operator runs must use `open_db` instead.
+pub fn init_bench_schema(conn: &Connection) -> Result<()> {
+    ensure_schema(conn)
+}
+
+/// Internal implementation shared with unit tests in this module.
+fn ensure_schema(conn: &Connection) -> Result<()> {
     conn.execute_batch(SCHEMA)?;
     Ok(())
 }
@@ -2879,28 +2988,27 @@ mod tests {
             .unwrap();
         assert_eq!(v, EXPECTED_VERSION);
 
-        // Pre-existing row is preserved.
-        let count: i64 = conn
-            .query_row("SELECT COUNT(*) FROM claude_sessions", [], |r| r.get(0))
-            .unwrap();
-        assert_eq!(count, 1);
-
-        // Both new columns exist and are NULL on the migrated row.
-        let (content_hash, last_enriched): (Option<String>, Option<String>) = conn
+        // Partial test DB (claude_sessions only): v17→v18 skips backfill and v23
+        // drops the legacy table. Column migration is verified on agentic_sessions
+        // in `test_migrate_v11_to_v12_recovers_from_partial_success`.
+        let legacy_exists: bool = conn
             .query_row(
-                "SELECT content_hash, last_enriched_content_hash FROM claude_sessions",
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='claude_sessions')",
                 [],
-                |r| Ok((r.get(0)?, r.get(1)?)),
+                |r| r.get(0),
             )
             .unwrap();
-        assert!(
-            content_hash.is_none(),
-            "content_hash must be NULL on legacy row"
-        );
-        assert!(
-            last_enriched.is_none(),
-            "last_enriched_content_hash must be NULL on legacy row"
-        );
+        assert!(!legacy_exists);
+
+        let cols: Vec<String> = conn
+            .prepare("SELECT name FROM pragma_table_info('agentic_sessions')")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+        assert!(cols.contains(&"content_hash".to_string()));
+        assert!(cols.contains(&"last_enriched_content_hash".to_string()));
     }
 
     /// A previous v11→v12 attempt may have crashed after adding `content_hash`
@@ -2954,9 +3062,10 @@ mod tests {
             .unwrap();
         assert_eq!(v, EXPECTED_VERSION);
 
-        // Both columns must now exist.
+        // Both columns must now exist on the live agentic table (legacy
+        // claude_sessions is dropped in v23).
         let cols: Vec<String> = conn
-            .prepare("SELECT name FROM pragma_table_info('claude_sessions')")
+            .prepare("SELECT name FROM pragma_table_info('agentic_sessions')")
             .unwrap()
             .query_map([], |r| r.get(0))
             .unwrap()
@@ -2964,6 +3073,15 @@ mod tests {
             .unwrap();
         assert!(cols.contains(&"content_hash".to_string()));
         assert!(cols.contains(&"last_enriched_content_hash".to_string()));
+
+        let legacy_exists: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='claude_sessions')",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(!legacy_exists);
     }
 
     /// v12→v13 migration: extend the entities.type CHECK list with
@@ -3816,6 +3934,304 @@ mod tests {
         }
     }
 
+    #[test]
+    fn test_fresh_db_has_auto_memory_schema() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("auto-memory-fresh.db");
+        let conn = open_db(&db).unwrap();
+
+        for table in [
+            "memory_documents",
+            "memory_revisions",
+            "memory_chunks",
+            "memory_enrichment_queue",
+            "knowledge_node_memory_chunks",
+        ] {
+            let exists: bool = conn
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1)",
+                    [table],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert!(exists, "fresh DB missing {table}");
+        }
+
+        let source_seeded: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM source_health WHERE source='claude-auto-memory')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(
+            source_seeded,
+            "fresh DB must seed claude-auto-memory health"
+        );
+    }
+
+    #[test]
+    fn test_migrate_v18_to_v19_adds_auto_memory_schema_without_touching_data() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("auto-memory-v18.db");
+        let conn = Connection::open(&db).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE sentinel (id INTEGER PRIMARY KEY, value TEXT NOT NULL);
+             INSERT INTO sentinel(value) VALUES ('preserved');
+             PRAGMA user_version = 18;",
+        )
+        .unwrap();
+        drop(conn);
+
+        let conn = open_db(&db).unwrap();
+        let version: i64 = conn
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, EXPECTED_VERSION);
+        assert_eq!(
+            conn.query_row("SELECT value FROM sentinel", [], |row| row
+                .get::<_, String>(0))
+                .unwrap(),
+            "preserved"
+        );
+        let queue_exists: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='memory_enrichment_queue')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(queue_exists);
+    }
+
+    #[test]
+    fn test_migrate_v19_to_v20_adds_auto_memory_taxonomy_without_touching_data() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("auto-memory-v19.db");
+        let conn = Connection::open(&db).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE sentinel (id INTEGER PRIMARY KEY, value TEXT NOT NULL);
+             INSERT INTO sentinel(value) VALUES ('preserved');
+             PRAGMA user_version = 19;",
+        )
+        .unwrap();
+        drop(conn);
+
+        let conn = open_db(&db).unwrap();
+        let version: i64 = conn
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, EXPECTED_VERSION);
+        assert_eq!(
+            conn.query_row("SELECT value FROM sentinel", [], |row| row
+                .get::<_, String>(0))
+                .unwrap(),
+            "preserved"
+        );
+        let categories_exists: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='memory_document_categories')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(categories_exists);
+        let links_exists: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='memory_document_links')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(links_exists);
+    }
+
+    #[test]
+    fn test_migrate_v21_to_v22_copies_claude_session_offsets_to_agentic() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("offsets-v21.db");
+        let conn = Connection::open(&db).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE claude_session_offsets (
+                path              TEXT    PRIMARY KEY,
+                session_id        TEXT,
+                byte_offset       INTEGER NOT NULL DEFAULT 0,
+                inode             INTEGER,
+                device            INTEGER,
+                size_at_last_read INTEGER NOT NULL DEFAULT 0,
+                updated_at        INTEGER NOT NULL
+             ) STRICT;
+             INSERT INTO claude_session_offsets
+                (path, session_id, byte_offset, inode, device, size_at_last_read, updated_at)
+             VALUES ('/tmp/sess.jsonl', 'sess-1', 512, 42, 7, 512, 1000);
+             PRAGMA user_version = 21;",
+        )
+        .unwrap();
+        drop(conn);
+
+        let conn = open_db(&db).unwrap();
+        let version: i64 = conn
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, EXPECTED_VERSION);
+
+        let agentic_exists: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='agentic_session_offsets')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(agentic_exists);
+
+        let (size, session_id): (i64, String) = conn
+            .query_row(
+                "SELECT size_at_last_read, session_id FROM agentic_session_offsets WHERE path = ?1",
+                ["/tmp/sess.jsonl"],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(size, 512);
+        assert_eq!(session_id, "sess-1");
+
+        let legacy_exists: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='claude_session_offsets')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(
+            !legacy_exists,
+            "legacy claude_session_offsets dropped in v23"
+        );
+    }
+
+    #[test]
+    fn test_migrate_v22_to_v23_drops_legacy_claude_tables() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("legacy-v22.db");
+        let conn = Connection::open(&db).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE claude_sessions (id INTEGER PRIMARY KEY, session_id TEXT NOT NULL);
+             CREATE TABLE claude_enrichment_queue (id INTEGER PRIMARY KEY, claude_session_id INTEGER NOT NULL);
+             CREATE TABLE knowledge_node_claude_sessions (
+                knowledge_node_id INTEGER NOT NULL,
+                claude_session_id INTEGER NOT NULL,
+                PRIMARY KEY (knowledge_node_id, claude_session_id)
+             );
+             CREATE TABLE claude_session_parity (id INTEGER PRIMARY KEY);
+             CREATE TABLE claude_session_offsets (path TEXT PRIMARY KEY);
+             PRAGMA user_version = 22;",
+        )
+        .unwrap();
+        drop(conn);
+
+        let conn = open_db(&db).unwrap();
+        let version: i64 = conn
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, EXPECTED_VERSION);
+
+        for table in [
+            "claude_sessions",
+            "claude_enrichment_queue",
+            "knowledge_node_claude_sessions",
+            "claude_session_parity",
+            "claude_session_offsets",
+        ] {
+            let exists: bool = conn
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1)",
+                    [table],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert!(!exists, "v23 should drop legacy table {table}");
+        }
+    }
+
+    #[test]
+    fn test_migrate_v21_to_v22_is_idempotent_on_reopen() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("offsets-v21-reopen.db");
+        let conn = Connection::open(&db).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE claude_session_offsets (
+                path TEXT PRIMARY KEY,
+                session_id TEXT,
+                byte_offset INTEGER NOT NULL DEFAULT 0,
+                inode INTEGER,
+                device INTEGER,
+                size_at_last_read INTEGER NOT NULL DEFAULT 0,
+                updated_at INTEGER NOT NULL
+             ) STRICT;
+             INSERT INTO claude_session_offsets
+                (path, session_id, byte_offset, inode, device, size_at_last_read, updated_at)
+             VALUES ('/tmp/a.jsonl', 'a', 1, 1, 1, 1, 1);
+             PRAGMA user_version = 21;",
+        )
+        .unwrap();
+        drop(conn);
+
+        let conn = open_db(&db).unwrap();
+        drop(conn);
+        let conn = open_db(&db).unwrap();
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM agentic_session_offsets", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(count, 1);
+        let version: i64 = conn
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, EXPECTED_VERSION);
+    }
+
+    #[test]
+    fn test_fresh_install_has_agentic_session_offsets_not_legacy() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("fresh.db");
+        let conn = open_db(&db).unwrap();
+        let agentic: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='agentic_session_offsets')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let legacy: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='claude_session_offsets')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(agentic);
+        assert!(!legacy);
+
+        for table in [
+            "claude_sessions",
+            "claude_enrichment_queue",
+            "knowledge_node_claude_sessions",
+            "claude_session_parity",
+        ] {
+            let exists: bool = conn
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1)",
+                    [table],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert!(
+                !exists,
+                "fresh install must not create legacy table {table}"
+            );
+        }
+        drop(conn);
+    }
+
     /// REGRESSION (BT-29 schema gap, 2026-05-04): the bench's corpus init
     /// writes a column-compatible subset of input tables (sessions, events,
     /// env_snapshots, …) and stamps `PRAGMA user_version = EXPECTED_VERSION`.
@@ -3919,7 +4335,7 @@ mod tests {
             "knowledge_nodes",
             "entities",
             "knowledge_node_events",
-            "knowledge_node_claude_sessions",
+            "knowledge_node_agentic_sessions",
             "knowledge_node_workflow_runs",
             "workflow_annotations",
             "lessons",
@@ -3943,6 +4359,27 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM events", [], |r| r.get(0))
             .unwrap();
         assert_eq!(event_count, 1, "ensure_schema must not touch existing rows");
+
+        for index in [
+            "idx_events_envelope_id",
+            "idx_events_timestamp",
+            "idx_events_session",
+            "idx_events_source_kind",
+            "idx_entities_type_name",
+        ] {
+            let exists: bool = conn
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='index' AND name=?1)",
+                    [index],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert!(
+                exists,
+                "ensure_schema should have created index '{}'",
+                index
+            );
+        }
 
         // Idempotent: second application is a no-op.
         ensure_schema(&conn).unwrap();

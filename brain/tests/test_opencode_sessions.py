@@ -146,6 +146,11 @@ class TestClaimPath:
             snapshot_diffs_json='{"additions": 0, "deletions": 0, "files": 0}',
             commit_messages_json="[]",
         )
+        conn.execute(
+            "UPDATE agentic_sessions SET content_hash = 'empty-v1' "
+            "WHERE session_id = 's-empty' AND harness = 'opencode'"
+        )
+        conn.commit()
 
         batches = claim_pending_opencode_segments(conn, "test-worker")
         # Ineligible → dropped from batches.
@@ -154,7 +159,7 @@ class TestClaimPath:
         # Queue row must be marked 'skipped' with the eligibility reason.
         row = conn.execute(
             """
-            SELECT q.status, q.error_message
+            SELECT q.status, q.error_message, s.last_enriched_content_hash
             FROM agentic_enrichment_queue q
             JOIN agentic_sessions s ON q.session_id = s.id
             WHERE s.session_id = 's-empty'
@@ -162,6 +167,7 @@ class TestClaimPath:
         ).fetchone()
         assert row[0] == "skipped"
         assert "message_count" in row[1]
+        assert row[2] == "empty-v1"
 
 
 class TestPromptFormatting:

@@ -49,6 +49,9 @@ pub struct ExtensionHeartbeat {
     pub extension_version: String,
     pub enabled_state: bool,
     pub sent_at_ms: i64,
+    /// Most recent native-messaging failure from the extension, if any.
+    #[serde(default)]
+    pub last_error_msg: Option<String>,
 }
 
 /// Discriminated union for all messages the extension can send via Native Messaging.
@@ -222,6 +225,7 @@ pub async fn run(config: &HippoConfig) -> Result<()> {
                     &hippo_core::protocol::DaemonRequest::UpdateSourceHealthHeartbeat {
                         source: "browser".to_string(),
                         ts: hb.sent_at_ms,
+                        last_error_msg: hb.last_error_msg,
                     },
                     1000, // 1-second timeout; heartbeat is best-effort
                 )
@@ -350,9 +354,41 @@ pub async fn run(config: &HippoConfig) -> Result<()> {
                 debug!(id = %envelope_id, "event sent to daemon");
                 send_response("ok", None);
             }
-            Err(e) => {
-                error!(%e, "failed to send event to daemon");
-                send_response("error", Some(format!("daemon send failed: {e}")));
+            Err(send_error) => {
+                // Native Messaging has no client-side retry. Persist the envelope
+                // locally so a daemon restart can recover it instead of silently
+                // losing every browser visit that lands during the outage window.
+                // This is the same envelope shape the daemon's own socket and
+                // fallback paths store: URL/referrer tracking params are stripped
+                // above, matching how the daemon persists a browser event (browser
+                // text is not run through RedactionEngine on any browser path).
+                match hippo_core::storage::write_fallback_jsonl(&config.fallback_dir(), &envelope) {
+                    Ok(()) => {
+                        warn!(
+                            error = %send_error,
+                            id = %envelope_id,
+                            "daemon unavailable; browser event queued in fallback"
+                        );
+                        #[cfg(feature = "otel")]
+                        crate::metrics::FALLBACK_WRITES.add(1, &[]);
+                        // The event is durably accepted even though delivery is deferred.
+                        send_response("ok", None);
+                    }
+                    Err(fallback_error) => {
+                        error!(
+                            error = %send_error,
+                            fallback_error = %fallback_error,
+                            id = %envelope_id,
+                            "browser event could not reach daemon or fallback storage"
+                        );
+                        send_response(
+                            "error",
+                            Some(format!(
+                                "daemon send failed: {send_error}; fallback write failed: {fallback_error}"
+                            )),
+                        );
+                    }
+                }
             }
         }
     }
@@ -473,7 +509,8 @@ mod tests {
             "type": "heartbeat",
             "extension_version": "0.2.0",
             "enabled_state": true,
-            "sent_at_ms": 1711900000000
+            "sent_at_ms": 1711900000000,
+            "last_error_msg": "Error: no such native application"
         }"#;
         let msg: NmMessage = serde_json::from_str(json).unwrap();
         match msg {
@@ -481,6 +518,10 @@ mod tests {
                 assert_eq!(hb.extension_version, "0.2.0");
                 assert!(hb.enabled_state);
                 assert_eq!(hb.sent_at_ms, 1711900000000);
+                assert_eq!(
+                    hb.last_error_msg.as_deref(),
+                    Some("Error: no such native application")
+                );
             }
             _ => panic!("expected Heartbeat variant"),
         }

@@ -133,7 +133,7 @@ def _select_candidate_nodes(
             f"""
             SELECT n.id, n.uuid, n.created_at, 'claude' AS _source
             FROM knowledge_nodes n
-            JOIN knowledge_node_claude_sessions kncs ON kncs.knowledge_node_id = n.id
+            JOIN knowledge_node_agentic_sessions knas ON knas.knowledge_node_id = n.id
             WHERE n.enrichment_version < {TARGET_ENRICHMENT_VERSION}
             GROUP BY n.id
             """
@@ -163,16 +163,16 @@ def _fetch_shell_events(conn: sqlite3.Connection, node_id: int) -> list[dict]:
 
 
 def _fetch_claude_segments(conn: sqlite3.Connection, node_id: int) -> list[dict]:
-    """Return claude_sessions rows linked to the given knowledge node."""
+    """Return agentic session rows linked to the given knowledge node."""
     rows = conn.execute(
         """
-        SELECT cs.id, cs.session_id, cs.cwd, cs.git_branch, cs.summary_text,
-               cs.tool_calls_json, cs.user_prompts_json, cs.message_count,
-               cs.start_time, cs.end_time, cs.content_hash
-        FROM claude_sessions cs
-        JOIN knowledge_node_claude_sessions kncs ON kncs.claude_session_id = cs.id
-        WHERE kncs.knowledge_node_id = ?
-        ORDER BY cs.start_time ASC
+        SELECT a.id, a.session_id, a.cwd, a.git_branch, a.summary_text,
+               a.tool_calls_json, a.user_prompts_json, a.message_count,
+               a.start_time, a.end_time, a.content_hash
+        FROM agentic_sessions a
+        JOIN knowledge_node_agentic_sessions knas ON knas.agentic_session_id = a.id
+        WHERE knas.knowledge_node_id = ?
+        ORDER BY a.start_time ASC
         """,
         (node_id,),
     ).fetchall()

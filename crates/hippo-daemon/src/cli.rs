@@ -119,7 +119,9 @@ pub enum Commands {
     },
     /// Run synthetic capture probes and record results in source_health
     Probe {
-        /// Run only the named source probe (shell, claude-tool, agentic-session-claude, browser).
+        /// Run only the named source probe (shell, claude-tool, agentic-session-claude,
+        /// agentic-session-cursor, agentic-session-opencode, agentic-session-codex,
+        /// browser, claude-auto-memory).
         /// Omit to run all probes.
         #[arg(long)]
         source: Option<String>,
@@ -142,6 +144,10 @@ pub enum Commands {
     CodexPoll,
     /// Poll Cursor Agent CLI transcript files and ingest new sessions.
     CursorPoll,
+    /// Poll configured Claude auto-memory Markdown sources for ingest.
+    AutoMemoryPoll,
+    /// Watch configured Claude auto-memory sources via FSEvents (KeepAlive service).
+    AutoMemoryWatch,
     /// Run the daemon in the foreground (alias for `daemon run`).
     ///
     /// BT-09: shipped so `hippo serve` no longer fails with "unrecognized

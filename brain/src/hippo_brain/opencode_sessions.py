@@ -200,6 +200,18 @@ def _skip_ineligible_opencode_segments(conn, segments: list[dict]) -> list[dict]
                 "UPDATE agentic_sessions SET enriched = 1 WHERE id = ?",
                 (seg["id"],),
             )
+            # Skipping is terminal for this exact content version. Advance the
+            # watermark so the daemon does not keep treating the unchanged row
+            # as unenriched. Guard on the claimed hash because the source may
+            # have grown while the brain held the queue lock; a newer version
+            # must receive its own eligibility decision.
+            seg_hash = seg.get("content_hash")
+            if seg_hash is not None:
+                conn.execute(
+                    "UPDATE agentic_sessions SET last_enriched_content_hash = ? "
+                    "WHERE id = ? AND content_hash = ?",
+                    (seg_hash, seg["id"], seg_hash),
+                )
     if len(eligible) != len(segments):
         conn.commit()
     return eligible

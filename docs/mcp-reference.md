@@ -2,6 +2,8 @@
 
 Full reference for hippo's MCP server. Every tool that `hippo-mcp` exposes, with arguments, return shapes, examples, and selection guidance. The MCP server source is `brain/src/hippo_brain/mcp.py`; this doc is what to read instead.
 
+**Before citing evidence:** read [`docs/capture/source-trust-contracts.md`](capture/source-trust-contracts.md) for per-source identity, timestamp, freshness, and safe-citation semantics. Eligibility filters (what retrieval excludes by default) are in [`docs/capture/retrieval-eligibility.md`](capture/retrieval-eligibility.md).
+
 For setup (adding hippo to your MCP config), see the [README's MCP Server section](../README.md#mcp-server). For the trust-boundary discussion (what granting MCP access actually exposes), see the [README's Privacy and Security section](../README.md#privacy-and-security).
 
 ## Tool selection guide
@@ -9,7 +11,8 @@ For setup (adding hippo to your MCP config), see the [README's MCP Server sectio
 | You want… | Reach for | Why |
 |---|---|---|
 | A synthesized prose answer with cited sources | `ask` | Performs retrieval + LLM synthesis end-to-end. Slow (~1-3 s) but most useful for "what was I working on?" / "how did I fix that?" / "why did we choose X?" |
-| A list of relevant knowledge nodes (no synthesis) | `search_knowledge` or `search_hybrid` | Retrieval only. Fastest path. Use `search_hybrid` when you want score-fused vec0 + FTS5 results; `search_knowledge` for the simpler "semantic with lexical fallback" path. |
+| A compact answer plus evidence packets in one call | `agent_query` | Modes: `known`, `evidence`, `recent`, `decisions`. Returns bounded answer, hits with `evidence` (inline `freshness` + `confidence`), aggregated `freshness`, and `conflicts` when stale or contradictory evidence is detected. |
+| A list of relevant knowledge nodes (no synthesis) | `search_knowledge` or `search_hybrid` | Retrieval only. Fastest path. Use `search_hybrid` when you want score-fused vec0 + FTS5 results; `search_knowledge` for the simpler "semantic with lexical fallback" path. Each hit's `evidence` packets include inline capture `freshness` (SNUG-125) and an explainable `confidence` rating (SNUG-126). |
 | A Markdown context block ready to paste into another agent's prompt | `get_context` | Same retrieval as `search_hybrid`, rendered as a prompt-shaped block (numbered list + per-hit summary/outcome/cwd/uuid). |
 | Raw shell commands / Claude tool calls / browser visits — not enriched summaries | `search_events` | Operates on the events tables, not knowledge nodes. Use for "what command did I run?" / "what URL was I on?" |
 | The list of projects in the corpus | `list_projects` | Use for discovery before filtering other tools by `project`. |
@@ -103,9 +106,23 @@ When any filter is applied, the implementation forces lexical mode (filter pushd
   "captured_at": 1730000000000,
   "linked_event_ids": [12345, 12346],
   "linked_claude_session_ids": [501, 502],
-  "linked_browser_event_ids": [9001]
+  "linked_browser_event_ids": [9001],
+  "evidence": [
+    {
+      "ref": "shell-12345",
+      "source_kind": "shell",
+      "table": "events",
+      "row_id": 12345,
+      "timestamp_ms": 1730000000000,
+      "excerpt": "cargo build --release",
+      "rank": 0,
+      "retrieval_score": 0.87
+    }
+  ]
 }
 ```
+
+`search_hybrid` and semantic `search_knowledge` (via `_retrieve_filtered`) include an `evidence` array on each hit — inspectable citations per [`source-trust-contracts.md`](capture/source-trust-contracts.md). Operator debug: `hippo-evidence-inspect shell-12345`.
 
 The `linked_*_ids` arrays are empty when a node has no links to that source (e.g., a browser-only node returns `[]` for `linked_event_ids`).
 
@@ -301,6 +318,8 @@ Lessons graduate only after 2+ occurrences (single failures stay in `lesson_pend
 
 ## See also
 
+- [Source trust contracts](capture/source-trust-contracts.md) — per-source semantics for agents (SNUG-122)
+- [Retrieval eligibility](capture/retrieval-eligibility.md) — default noise-control policy (SNUG-121)
 - [README MCP Server section](../README.md#mcp-server) — setup
 - [`docs/lifecycle.md`](lifecycle.md) — what writes to the tables these tools query
 - [`docs/schema.md`](schema.md) — the SQLite tables behind each return shape

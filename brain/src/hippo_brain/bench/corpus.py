@@ -1,6 +1,6 @@
 """Corpus fixture sampling, writing, loading, and verification.
 
-The corpus targets the real hippo schema (events / claude_sessions /
+The corpus targets the real hippo schema (events / agentic_sessions /
 browser_events / workflow_runs and their enrichment queues) so the bench
 shadow brain can drain it the same way it would drain a live database.
 
@@ -155,10 +155,7 @@ _SOURCE_SPECS: dict[str, _SourceSpec] = {
     ),
     # Schema-v18 agentic unification: Claude Code sessions live in
     # agentic_sessions (harness='claude-code'), and the live brain enriches
-    # from agentic_enrichment_queue. The legacy claude_sessions /
-    # claude_enrichment_queue tables are FROZEN (still created by schema.sql,
-    # never written/claimed) so a Claude corpus built against them could never
-    # be enriched. This spec reads from and writes to the agentic family.
+    # from agentic_enrichment_queue.
     "claude": _SourceSpec(
         select=(
             "SELECT id, session_id, harness, segment_index, model, agent, "
@@ -364,44 +361,6 @@ CREATE TABLE IF NOT EXISTS events (
 CREATE TABLE IF NOT EXISTS enrichment_queue (
     id INTEGER PRIMARY KEY,
     event_id INTEGER NOT NULL UNIQUE REFERENCES events(id),
-    status TEXT NOT NULL DEFAULT 'pending'
-        CHECK (status IN ('pending','processing','done','failed','skipped')),
-    priority INTEGER NOT NULL DEFAULT 5,
-    retry_count INTEGER NOT NULL DEFAULT 0,
-    max_retries INTEGER NOT NULL DEFAULT 5,
-    error_message TEXT,
-    locked_at INTEGER,
-    locked_by TEXT,
-    created_at INTEGER NOT NULL DEFAULT (unixepoch('now', 'subsec') * 1000),
-    updated_at INTEGER NOT NULL DEFAULT (unixepoch('now', 'subsec') * 1000)
-);
-
-CREATE TABLE IF NOT EXISTS claude_sessions (
-    id INTEGER PRIMARY KEY,
-    session_id TEXT NOT NULL,
-    project_dir TEXT NOT NULL,
-    cwd TEXT NOT NULL,
-    git_branch TEXT,
-    segment_index INTEGER NOT NULL,
-    start_time INTEGER NOT NULL,
-    end_time INTEGER NOT NULL,
-    summary_text TEXT NOT NULL,
-    tool_calls_json TEXT,
-    user_prompts_json TEXT,
-    message_count INTEGER NOT NULL,
-    token_count INTEGER,
-    source_file TEXT NOT NULL,
-    is_subagent INTEGER NOT NULL DEFAULT 0,
-    parent_session_id TEXT,
-    enriched INTEGER NOT NULL DEFAULT 0,
-    probe_tag TEXT,
-    content_hash TEXT,
-    last_enriched_content_hash TEXT
-);
-
-CREATE TABLE IF NOT EXISTS claude_enrichment_queue (
-    id INTEGER PRIMARY KEY,
-    claude_session_id INTEGER NOT NULL UNIQUE REFERENCES claude_sessions(id),
     status TEXT NOT NULL DEFAULT 'pending'
         CHECK (status IN ('pending','processing','done','failed','skipped')),
     priority INTEGER NOT NULL DEFAULT 5,
@@ -925,6 +884,8 @@ def init_corpus(
         raise FileExistsError(f"dest_sqlite already exists: {dest_sqlite}")
     if dest_jsonl.exists() and not force:
         raise FileExistsError(f"dest_jsonl already exists: {dest_jsonl}")
+    if manifest_path.exists() and not force:
+        raise FileExistsError(f"manifest already exists: {manifest_path}")
 
     cleanup_paths = [dest_sqlite, dest_jsonl, manifest_path]
     sampled_at = _dt.datetime.now(tz=_dt.UTC).isoformat()

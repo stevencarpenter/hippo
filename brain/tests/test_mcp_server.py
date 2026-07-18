@@ -17,7 +17,9 @@ from hippo_brain.embeddings import EMBED_DIM
 from hippo_brain.mcp import (
     _get_conn,
     _load_config,
+    _open_retrieval_conn,
     _state,
+    agent_query,
     ask,
     get_entities,
     mcp,
@@ -25,6 +27,7 @@ from hippo_brain.mcp import (
     search_knowledge,
 )
 from hippo_brain.retrieval import SearchResult
+from hippo_brain.schema_version import EXPECTED_SCHEMA_VERSION
 
 
 class TestToolRegistration:
@@ -49,8 +52,35 @@ class TestToolRegistration:
     def test_list_projects_registered(self):
         assert "list_projects" in mcp._tool_manager._tools
 
-    def test_exactly_nine_tools(self):
-        assert len(mcp._tool_manager._tools) == 9
+    def test_agent_query_registered(self):
+        assert "agent_query" in mcp._tool_manager._tools
+
+    def test_query_memory_registered(self):
+        assert "query_memory" in mcp._tool_manager._tools
+
+    def test_query_memory_history_registered(self):
+        assert "query_memory_history" in mcp._tool_manager._tools
+
+    def test_exactly_twelve_tools(self):
+        assert len(mcp._tool_manager._tools) == 12
+
+
+class TestAgentQueryTool:
+    def test_invalid_mode_returns_structured_error(self, knowledge_db):
+        conn, db_path = knowledge_db
+        _state.db_path = str(db_path)
+        _state.vector_table = None
+        _state.inference_client = None
+
+        result = asyncio.run(agent_query("cargo", mode="bogus"))
+        assert "error" in result
+        assert "unknown mode" in result["error"]
+
+
+def _stamp_readable_schema_version(db_path: str) -> None:
+    conn = sqlite3.connect(db_path)
+    conn.execute(f"PRAGMA user_version = {EXPECTED_SCHEMA_VERSION}")
+    conn.close()
 
 
 class TestGetConn:
@@ -59,6 +89,7 @@ class TestGetConn:
             db_path = f.name
 
         try:
+            _stamp_readable_schema_version(db_path)
             conn = _get_conn(db_path=db_path)
             assert isinstance(conn, sqlite3.Connection)
             # Verify we can execute a query
@@ -73,6 +104,7 @@ class TestGetConn:
             db_path = f.name
 
         try:
+            _stamp_readable_schema_version(db_path)
             conn = _get_conn(db_path=db_path)
             mode = conn.execute("PRAGMA journal_mode").fetchone()[0]
             assert mode == "wal"
@@ -81,6 +113,29 @@ class TestGetConn:
             Path(db_path).unlink(missing_ok=True)
             Path(db_path + "-wal").unlink(missing_ok=True)
             Path(db_path + "-shm").unlink(missing_ok=True)
+
+    def test_rejects_wrong_schema_version(self, tmp_path):
+        db_path = tmp_path / "stale.db"
+        conn = sqlite3.connect(str(db_path))
+        conn.execute("PRAGMA user_version = 11")
+        conn.close()
+
+        with pytest.raises(RuntimeError, match="schema version mismatch"):
+            _get_conn(db_path=str(db_path))
+
+    def test_open_retrieval_conn_rejects_wrong_schema_version(self, tmp_path):
+        db_path = tmp_path / "stale.db"
+        conn = sqlite3.connect(str(db_path))
+        conn.execute("PRAGMA user_version = 11")
+        conn.close()
+
+        previous_db_path = _state.db_path
+        _state.db_path = str(db_path)
+        try:
+            with pytest.raises(RuntimeError, match="schema version mismatch"):
+                _open_retrieval_conn()
+        finally:
+            _state.db_path = previous_db_path
 
 
 class TestMCPStdioProtocol:
@@ -127,8 +182,18 @@ class TestMCPStdioProtocol:
             assert "result" in response
             assert "serverInfo" in response["result"]
         finally:
+            if proc.stdin is not None:
+                proc.stdin.close()
             proc.terminate()
-            proc.wait(timeout=5)
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait(timeout=5)
+            if proc.stdout is not None:
+                proc.stdout.close()
+            if proc.stderr is not None:
+                proc.stderr.close()
 
 
 # ---------------------------------------------------------------------------
@@ -319,7 +384,8 @@ class TestSearchKnowledgeTool:
         results = asyncio.run(search_knowledge("cargo", mode="semantic", limit=10))
         assert len(results) == 1  # Fell back to lexical successfully
 
-    def test_semantic_search_pads_query_vector_to_embed_dim(self, knowledge_db, monkeypatch):
+    def test_semantic_search_routes_through_retrieve_filtered(self, knowledge_db, monkeypatch):
+        """Semantic mode must use _retrieve_filtered so eligibility policy applies."""
         conn, db_path = knowledge_db
         _state.db_path = str(db_path)
         _state.embedding_model = "test-model"
@@ -329,26 +395,35 @@ class TestSearchKnowledgeTool:
         mock_client.embed.return_value = [[0.25] * 384]
         _state.inference_client = mock_client
 
-        def fake_search_similar(table, query_vec, limit=10):
-            assert table is _state.vector_table
-            assert len(query_vec) == EMBED_DIM
+        captured: dict = {}
+
+        async def fake_retrieve_filtered(**kwargs):
+            captured.update(kwargs)
             return [
                 {
-                    "_distance": 0.1,
+                    "uuid": "u1",
+                    "score": 0.9,
                     "summary": "semantic result",
+                    "intent": "",
                     "outcome": "success",
-                    "tags": "[]",
+                    "tags": [],
                     "embed_text": "semantic result",
                     "cwd": "/projects/hippo",
                     "git_branch": "main",
+                    "captured_at": 0,
+                    "linked_event_ids": [],
+                    "linked_claude_session_ids": [],
+                    "linked_browser_event_ids": [],
                 }
             ]
 
-        monkeypatch.setattr("hippo_brain.mcp.search_similar", fake_search_similar)
+        monkeypatch.setattr("hippo_brain.mcp._retrieve_filtered", fake_retrieve_filtered)
 
         results = asyncio.run(search_knowledge("cargo", mode="semantic", limit=10))
+        assert captured["mode"] == "semantic"
+        assert captured["include_excluded"] is False
         assert len(results) == 1
-        assert results[0]["score"] == 0.9
+        assert results[0]["uuid"] == "u1"
 
     def test_empty_query_returns_all(self, knowledge_db):
         conn, db_path = knowledge_db

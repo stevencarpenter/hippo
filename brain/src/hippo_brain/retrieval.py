@@ -14,16 +14,45 @@ from __future__ import annotations
 import json
 import math
 import sqlite3
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Protocol, Sequence
 
 from hippo_brain.enrichment import IDENTIFIER_ENTITY_TYPES
+from hippo_brain.evidence_packets import (
+    attach_retrieval_scores,
+    make_agentic_packet,
+    make_browser_packet,
+    make_memory_packet,
+    make_shell_packet,
+    make_workflow_packet,
+)
+from hippo_brain.auto_memory_categories import validate_memory_category_filter
+from hippo_brain.retrieval_eligibility import (
+    agentic_session_eligible_sql,
+    browser_event_eligible_sql,
+    include_excluded_from_env,
+    knowledge_node_eligible_exists_sql,
+    shell_event_eligible_sql,
+    workflow_run_eligible_sql,
+)
+from hippo_brain.confidence_scoring import attach_confidence_to_results
+from hippo_brain.source_freshness import attach_freshness_to_results
+from hippo_brain.source_filters import (
+    knowledge_memory_category_clause,
+    knowledge_memory_project_clause,
+    knowledge_source_exists_clause,
+)
 
 
 RRF_K = 60
 CANDIDATE_POOL = 3000
 MMR_LAMBDA = 0.7
 MAX_COSINE_DISTANCE = 2.0
+
+
+def _column_exists(conn: sqlite3.Connection, table: str, column: str) -> bool:
+    rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
+    return any(row[1] == column for row in rows)
 
 
 @dataclass
@@ -33,8 +62,10 @@ class Filters:
     project: str | None = None
     since_ms: int | None = None
     source: str | None = None  # "shell" | "claude" | "browser" | "workflow"
+    memory_category: str | None = None
     branch: str | None = None
     entity: str | None = None
+    include_excluded: bool = False
 
 
 @dataclass
@@ -51,7 +82,9 @@ class SearchResult:
     design_decisions: list[dict] = field(default_factory=list)
     linked_event_ids: list[int] = field(default_factory=list)
     linked_source_ids: list[str] = field(default_factory=list)
+    evidence: list[dict] = field(default_factory=list)
     entities: dict[str, list[str]] = field(default_factory=dict)
+    confidence: dict = field(default_factory=dict)
 
 
 class _Backend(Protocol):
@@ -181,17 +214,24 @@ def search(
     if limit <= 0:
         return []
     filters = filters or Filters()
+    if include_excluded_from_env():
+        filters = replace(filters, include_excluded=True)
     backend = backend or _default_backend()
 
     if mode == "semantic":
-        return _semantic(conn, query_vec, filters, limit, backend)
-    if mode == "lexical":
-        return _lexical(conn, query, filters, limit, backend)
-    if mode == "recent":
-        return _recent(conn, query, filters, limit, backend)
-    if mode == "hybrid":
-        return _hybrid(conn, query, query_vec, filters, limit, backend)
-    raise ValueError(f"unknown retrieval mode: {mode!r}")
+        results = _semantic(conn, query_vec, filters, limit, backend)
+    elif mode == "lexical":
+        results = _lexical(conn, query, filters, limit, backend)
+    elif mode == "recent":
+        results = _recent(conn, query, filters, limit, backend)
+    elif mode == "hybrid":
+        results = _hybrid(conn, query, query_vec, filters, limit, backend)
+    else:
+        raise ValueError(f"unknown retrieval mode: {mode!r}")
+
+    attach_freshness_to_results(conn, results)
+    attach_confidence_to_results(results)
+    return results
 
 
 # ---------------------------------------------------------------------------
@@ -213,7 +253,9 @@ def _semantic(
         return []
     allowed = _apply_filters(conn, [nid for nid, _ in raw], filters)
     ordered = [(nid, dist) for nid, dist in raw if nid in allowed]
-    details = _fetch_details(conn, [nid for nid, _ in ordered])
+    details = _fetch_details(
+        conn, [nid for nid, _ in ordered], include_excluded=filters.include_excluded
+    )
     vecs = _get_vectors(conn, [nid for nid, _ in ordered])
     scored = [(nid, _cosine_to_score(dist)) for nid, dist in ordered]
     picked = _mmr(scored, vecs, limit)
@@ -234,7 +276,7 @@ def _lexical(
         return []
     allowed = _apply_filters(conn, [nid for nid, _ in raw], filters)
     ordered = [nid for nid, _ in raw if nid in allowed][:limit]
-    details = _fetch_details(conn, ordered)
+    details = _fetch_details(conn, ordered, include_excluded=filters.include_excluded)
     # Score = positional (1.0 for top, linearly down to ~0).
     n = max(len(ordered), 1)
     results: list[SearchResult] = []
@@ -263,7 +305,7 @@ def _recent(
     if not candidate_ids:
         candidate_ids = _all_recent_ids(conn, CANDIDATE_POOL)
     allowed = _apply_filters(conn, candidate_ids, filters)
-    details = _fetch_details(conn, list(allowed))
+    details = _fetch_details(conn, list(allowed), include_excluded=filters.include_excluded)
     ordered = sorted(
         (d for d in details.values()),
         key=lambda d: d["captured_at"],
@@ -309,7 +351,9 @@ def _hybrid(
 
     vecs = _get_vectors(conn, [nid for nid, _ in scored])
     picked = _mmr(scored, vecs, limit)
-    details = _fetch_details(conn, [nid for nid, _ in picked])
+    details = _fetch_details(
+        conn, [nid for nid, _ in picked], include_excluded=filters.include_excluded
+    )
     return [_to_result(score, details.get(nid)) for nid, score in picked if nid in details]
 
 
@@ -331,12 +375,19 @@ def _apply_filters(
     """
     if not candidate_ids:
         return set()
-    if _is_empty_filter(filters):
+    if _is_empty_filter(filters) and filters.include_excluded:
         return set(candidate_ids)
 
     placeholders = ",".join("?" for _ in candidate_ids)
     clauses: list[str] = [f"kn.id IN ({placeholders})"]
     params: list[object] = list(candidate_ids)
+
+    if not filters.include_excluded:
+        elig_sql, elig_params = knowledge_node_eligible_exists_sql(
+            conn, "kn.id", include_excluded=False
+        )
+        clauses.append(elig_sql)
+        params.extend(elig_params)
 
     if filters.since_ms is not None:
         clauses.append(
@@ -345,18 +396,42 @@ def _apply_filters(
         params.extend([filters.since_ms] * 4)
 
     if filters.project:
-        clauses.append(
-            "(e.cwd LIKE ? OR e.git_repo LIKE ? OR asx.cwd LIKE ? OR asx.project_dir LIKE ?)"
-        )
         pattern = f"%{filters.project}%"
+        project_terms = [
+            "e.cwd LIKE ?",
+            "e.git_repo LIKE ?",
+            "asx.cwd LIKE ?",
+            "asx.project_dir LIKE ?",
+        ]
         params.extend([pattern, pattern, pattern, pattern])
+        # Auto-memory nodes link only via knowledge_node_memory_chunks (no event /
+        # session row), so reach memory_documents.repository via the shared clause —
+        # otherwise project-scoped RAG silently drops them (parity with MCP search).
+        memory_project = knowledge_memory_project_clause(conn)
+        if memory_project is not None:
+            project_terms.append(memory_project)
+            params.extend([pattern, pattern])
+        clauses.append("(" + " OR ".join(project_terms) + ")")
 
     if filters.branch:
         clauses.append("(e.git_branch = ? OR asx.git_branch = ?)")
         params.extend([filters.branch, filters.branch])
 
     if filters.source:
-        clauses.append(_source_clause(filters.source))
+        source_clause = knowledge_source_exists_clause(
+            filters.source, conn, include_excluded=filters.include_excluded
+        )
+        if source_clause is None:
+            raise ValueError(f"unknown source filter: {filters.source!r}")
+        clauses.append(source_clause)
+
+    if filters.memory_category:
+        validate_memory_category_filter(filters.memory_category)
+        category_clause = knowledge_memory_category_clause(conn)
+        if category_clause is None:
+            raise ValueError("memory category filter requires schema v20+")
+        clauses.append(category_clause)
+        params.append(filters.memory_category)
 
     sql = f"""
         SELECT DISTINCT kn.id
@@ -364,7 +439,8 @@ def _apply_filters(
         LEFT JOIN knowledge_node_events kne ON kne.knowledge_node_id = kn.id
         LEFT JOIN events e ON e.id = kne.event_id
         LEFT JOIN knowledge_node_agentic_sessions kncs ON kncs.knowledge_node_id = kn.id
-        LEFT JOIN agentic_sessions asx ON asx.id = kncs.agentic_session_id AND asx.probe_tag IS NULL
+        LEFT JOIN agentic_sessions asx ON asx.id = kncs.agentic_session_id
+            AND {agentic_session_eligible_sql("asx", include_excluded=filters.include_excluded)}
         LEFT JOIN knowledge_node_browser_events knbe ON knbe.knowledge_node_id = kn.id
         LEFT JOIN browser_events be ON be.id = knbe.browser_event_id
         WHERE {" AND ".join(clauses)}
@@ -389,7 +465,8 @@ def _apply_filters(
             LEFT JOIN knowledge_node_events kne ON kne.knowledge_node_id = kn.id
             LEFT JOIN events e ON e.id = kne.event_id
             LEFT JOIN knowledge_node_agentic_sessions kncs ON kncs.knowledge_node_id = kn.id
-            LEFT JOIN agentic_sessions asx ON asx.id = kncs.agentic_session_id AND asx.probe_tag IS NULL
+            LEFT JOIN agentic_sessions asx ON asx.id = kncs.agentic_session_id
+            AND {agentic_session_eligible_sql("asx", include_excluded=filters.include_excluded)}
             LEFT JOIN knowledge_node_browser_events knbe ON knbe.knowledge_node_id = kn.id
             LEFT JOIN browser_events be ON be.id = knbe.browser_event_id
             WHERE {" AND ".join(clauses)}
@@ -402,40 +479,12 @@ def _apply_filters(
     return {row[0] for row in rows}
 
 
-def _source_clause(source: str) -> str:
-    mapping = {
-        "shell": (
-            "EXISTS (SELECT 1 FROM knowledge_node_events kne_s "
-            "WHERE kne_s.knowledge_node_id = kn.id)"
-        ),
-        # Join agentic_sessions and exclude probe rows (AP-6) so a node linked
-        # ONLY to a probe session is not surfaced by source="claude" — matching
-        # the probe-filtered _apply_filters joins and _fetch_details.
-        "claude": (
-            "EXISTS (SELECT 1 FROM knowledge_node_agentic_sessions knc_s "
-            "JOIN agentic_sessions asx_s ON asx_s.id = knc_s.agentic_session_id "
-            "WHERE knc_s.knowledge_node_id = kn.id AND asx_s.probe_tag IS NULL)"
-        ),
-        "browser": (
-            "EXISTS (SELECT 1 FROM knowledge_node_browser_events knb_s "
-            "WHERE knb_s.knowledge_node_id = kn.id)"
-        ),
-        "workflow": (
-            "EXISTS (SELECT 1 FROM knowledge_node_workflow_runs knwr_s "
-            "WHERE knwr_s.knowledge_node_id = kn.id)"
-        ),
-    }
-    clause = mapping.get(source)
-    if clause is None:
-        raise ValueError(f"unknown source filter: {source!r}")
-    return clause
-
-
 def _is_empty_filter(f: Filters) -> bool:
     return (
         f.project is None
         and f.since_ms is None
         and f.source is None
+        and f.memory_category is None
         and f.branch is None
         and f.entity is None
     )
@@ -446,7 +495,12 @@ def _is_empty_filter(f: Filters) -> bool:
 # ---------------------------------------------------------------------------
 
 
-def _fetch_details(conn: sqlite3.Connection, node_ids: Sequence[int]) -> dict[int, dict]:
+def _fetch_details(
+    conn: sqlite3.Connection,
+    node_ids: Sequence[int],
+    *,
+    include_excluded: bool = False,
+) -> dict[int, dict]:
     """Fetch the canonical SearchResult fields for each node id."""
     if not node_ids:
         return {}
@@ -481,28 +535,44 @@ def _fetch_details(conn: sqlite3.Connection, node_ids: Sequence[int]) -> dict[in
             "captured_at": created_at,
             "linked_event_ids": [],
             "linked_source_ids": [],
+            "evidence_packets": [],
             "entities": {},
         }
 
     # Attach shell event metadata (cwd/branch/captured_at prefer event data).
-    # Knowledge nodes are only created from non-probe events (probes skip the
-    # enrichment queue), so rows linked via knowledge_node_events are never probes.
+    shell_extra = [col for col in ("command", "source_kind") if _column_exists(conn, "events", col)]
+    shell_cols = ["e.id", "e.timestamp", "e.cwd", "e.git_branch", *[f"e.{c}" for c in shell_extra]]
     ev_rows = conn.execute(  # nosemgrep: unfiltered-event-table-select
         f"""
-        SELECT kne.knowledge_node_id, e.id, e.timestamp, e.cwd, e.git_branch
+        SELECT kne.knowledge_node_id, {", ".join(shell_cols)}
         FROM knowledge_node_events kne
         JOIN events e ON e.id = kne.event_id
         WHERE kne.knowledge_node_id IN ({placeholders})
+          AND {shell_event_eligible_sql("e", include_excluded=include_excluded, conn=conn)}
         ORDER BY e.timestamp DESC
         """,
         list(node_ids),
     ).fetchall()
-    for kn_id, ev_id, ts, cwd, branch in ev_rows:
+    for row in ev_rows:
+        kn_id = row[0]
+        ev_id = row[1]
+        ts = row[2]
+        cwd = row[3]
+        branch = row[4]
+        extras = dict(zip(shell_extra, row[5:], strict=False))
         d = details.get(kn_id)
         if d is None:
             continue
         d["linked_event_ids"].append(ev_id)
         d["linked_source_ids"].append(f"shell-{ev_id}")
+        d["evidence_packets"].append(
+            make_shell_packet(
+                event_id=ev_id,
+                timestamp_ms=ts or 0,
+                command=extras.get("command"),
+                source_kind=extras.get("source_kind"),
+            )
+        )
         if not d["cwd"] and cwd:
             d["cwd"] = cwd
         if not d["git_branch"] and branch:
@@ -513,71 +583,184 @@ def _fetch_details(conn: sqlite3.Connection, node_ids: Sequence[int]) -> dict[in
     # Attach browser source linkage. Probes never enqueue, so browser-linked
     # nodes are normally real events; `be.probe_tag IS NULL` is defense-in-depth
     # vs AP-6 (probes must never surface in user-facing queries).
+    browser_extra = [
+        col
+        for col in ("timestamp", "title", "url", "domain")
+        if _column_exists(conn, "browser_events", col)
+    ]
+    br_cols = ["be.id", *[f"be.{c}" for c in browser_extra]]
     br_rows = conn.execute(  # nosemgrep: unfiltered-event-table-select
         f"""
-        SELECT knbe.knowledge_node_id, be.id
+        SELECT knbe.knowledge_node_id, {", ".join(br_cols)}
         FROM knowledge_node_browser_events knbe
         JOIN browser_events be ON be.id = knbe.browser_event_id
         WHERE knbe.knowledge_node_id IN ({placeholders})
-          AND be.probe_tag IS NULL
+          AND {browser_event_eligible_sql("be", include_excluded=include_excluded)}
         ORDER BY be.id DESC
         """,
         list(node_ids),
     ).fetchall()
-    for kn_id, be_id in br_rows:
+    for row in br_rows:
+        kn_id = row[0]
+        be_id = row[1]
+        fields = dict(zip(browser_extra, row[2:], strict=False))
         d = details.get(kn_id)
         if d is None:
             continue
         d["linked_source_ids"].append(f"browser-{be_id}")
+        d["evidence_packets"].append(
+            make_browser_packet(
+                event_id=be_id,
+                timestamp_ms=fields.get("timestamp") or 0,
+                title=fields.get("title"),
+                url=fields.get("url"),
+                domain=fields.get("domain"),
+            )
+        )
 
     # Attach workflow source linkage (CI runs have no probe variant).
+    workflow_extra = [
+        col
+        for col in ("started_at", "name", "repo", "conclusion")
+        if _column_exists(conn, "workflow_runs", col)
+    ]
+    wf_cols = ["wr.id", *[f"wr.{c}" for c in workflow_extra]]
     wf_rows = conn.execute(
         f"""
-        SELECT knwr.knowledge_node_id, wr.id
+        SELECT knwr.knowledge_node_id, {", ".join(wf_cols)}
         FROM knowledge_node_workflow_runs knwr
         JOIN workflow_runs wr ON wr.id = knwr.run_id
         WHERE knwr.knowledge_node_id IN ({placeholders})
+          AND {workflow_run_eligible_sql("wr", include_excluded=include_excluded)}
         ORDER BY wr.id DESC
         """,
         list(node_ids),
     ).fetchall()
-    for kn_id, wr_id in wf_rows:
+    for row in wf_rows:
+        kn_id = row[0]
+        wr_id = row[1]
+        fields = dict(zip(workflow_extra, row[2:], strict=False))
         d = details.get(kn_id)
         if d is None:
             continue
         d["linked_source_ids"].append(f"workflow-{wr_id}")
+        d["evidence_packets"].append(
+            make_workflow_packet(
+                run_id=wr_id,
+                timestamp_ms=fields.get("started_at") or 0,
+                name=fields.get("name"),
+                repo=fields.get("repo"),
+                conclusion=fields.get("conclusion"),
+            )
+        )
 
     # Attach agentic-session linkage (cwd/branch backfill only if still empty;
     # linked_source_ids is always appended). Probes are excluded via
     # `asx.probe_tag IS NULL` (defense-in-depth vs AP-6; probes never enqueue so
     # are normally unlinked anyway).
+    optional_agentic = [
+        col
+        for col in ("session_id", "segment_index", "summary_text", "source_file", "end_time")
+        if _column_exists(conn, "agentic_sessions", col)
+    ]
+    cs_cols = [
+        "asx.id",
+        "asx.harness",
+        "asx.start_time",
+        "asx.cwd",
+        "asx.git_branch",
+        *[f"asx.{col}" for col in optional_agentic],
+    ]
     cs_rows = conn.execute(  # nosemgrep: unfiltered-event-table-select
         f"""
-        SELECT kncs.knowledge_node_id, asx.id, asx.harness,
-               asx.start_time, asx.cwd, asx.git_branch
+        SELECT kncs.knowledge_node_id, {", ".join(cs_cols)}
         FROM knowledge_node_agentic_sessions kncs
         JOIN agentic_sessions asx ON asx.id = kncs.agentic_session_id
         WHERE kncs.knowledge_node_id IN ({placeholders})
-          AND asx.probe_tag IS NULL
+          AND {agentic_session_eligible_sql("asx", include_excluded=include_excluded)}
         ORDER BY asx.start_time DESC, asx.id DESC
         """,
         list(node_ids),
     ).fetchall()
-    for kn_id, asx_id, harness, ts, cwd, branch in cs_rows:
+    for row in cs_rows:
+        kn_id = row[0]
+        asx_id = row[1]
+        harness = row[2]
+        start_time = row[3]
+        cwd = row[4]
+        branch = row[5]
+        fields = dict(zip(optional_agentic, row[6:], strict=False))
+        session_id = fields.get("session_id", "")
+        segment_index = fields.get("segment_index", 0)
+        summary_text = fields.get("summary_text")
+        source_file = fields.get("source_file")
+        end_time = fields.get("end_time", start_time)
         d = details.get(kn_id)
         if d is None:
             continue
-        # The bench corpus/Q/A only tags claude-code agentic sessions as
-        # `claude-`; other harnesses (codex/cursor/opencode) are tagged by
-        # their harness name so the source id stays unambiguous.
         prefix = "claude" if harness == "claude-code" else harness
-        d["linked_source_ids"].append(f"{prefix}-{asx_id}")
+        ref = f"{prefix}-{asx_id}"
+        d["linked_source_ids"].append(ref)
+        d["evidence_packets"].append(
+            make_agentic_packet(
+                row_id=asx_id,
+                harness=harness,
+                session_id=str(session_id) if session_id is not None else "",
+                segment_index=int(segment_index or 0),
+                timestamp_ms=end_time or start_time or 0,
+                summary_text=str(summary_text) if summary_text is not None else None,
+                source_path=str(source_file) if source_file is not None else None,
+                ref=ref,
+            )
+        )
         if not d["cwd"] and cwd:
             d["cwd"] = cwd
         if not d["git_branch"] and branch:
             d["git_branch"] = branch
-        if ts and ts > d["captured_at"]:
-            d["captured_at"] = ts
+        if start_time and start_time > d["captured_at"]:
+            d["captured_at"] = start_time
+
+    if _column_exists(conn, "memory_chunks", "id"):
+        mem_rows = conn.execute(
+            f"""
+            SELECT knmc.knowledge_node_id, mc.id, mc.heading_path, mc.content,
+                   mr.created_at, md.repository, md.source_path
+            FROM knowledge_node_memory_chunks knmc
+            JOIN memory_chunks mc ON mc.id = knmc.memory_chunk_id
+            JOIN memory_revisions mr ON mr.id = mc.revision_id
+            JOIN memory_documents md ON md.id = mr.document_id
+            WHERE knmc.knowledge_node_id IN ({placeholders})
+              AND md.state = 'active'
+              AND md.active_revision_id = mr.id
+            ORDER BY mr.created_at DESC
+            """,
+            list(node_ids),
+        ).fetchall()
+        for row in mem_rows:
+            kn_id = row[0]
+            chunk_id = row[1]
+            heading = row[2]
+            content = row[3]
+            created_at = row[4]
+            repository = row[5]
+            source_path = row[6]
+            d = details.get(kn_id)
+            if d is None:
+                continue
+            ref = f"memory-{chunk_id}"
+            d["linked_source_ids"].append(ref)
+            d["evidence_packets"].append(
+                make_memory_packet(
+                    chunk_id=chunk_id,
+                    timestamp_ms=created_at or 0,
+                    heading=heading,
+                    content=content,
+                    repository=repository,
+                    source_path=source_path,
+                )
+            )
+            if created_at and created_at > d["captured_at"]:
+                d["captured_at"] = created_at
 
     # Hydrate type-bucketed entity names so the RAG renderer can surface them
     # as a structural `Entities:` line above the truncatable `Detail:` block.
@@ -725,8 +908,11 @@ def _to_result(score: float, detail: dict | None) -> SearchResult:
             design_decisions=[],
             linked_event_ids=[],
             linked_source_ids=[],
+            evidence=[],
             entities={},
+            confidence={},
         )
+    packets = attach_retrieval_scores(list(detail.get("evidence_packets") or []), score)
     return SearchResult(
         uuid=detail["uuid"],
         score=round(max(0.0, min(1.0, score)), 4),
@@ -740,6 +926,7 @@ def _to_result(score: float, detail: dict | None) -> SearchResult:
         design_decisions=list(detail.get("design_decisions") or []),
         linked_event_ids=list(detail["linked_event_ids"]),
         linked_source_ids=sorted(detail.get("linked_source_ids") or []),
+        evidence=packets,
         entities=dict(detail.get("entities") or {}),
     )
 

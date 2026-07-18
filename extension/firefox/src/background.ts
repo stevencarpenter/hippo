@@ -24,24 +24,43 @@ export { HEARTBEAT_INTERVAL_MS, buildHeartbeatPayload };
  * timestamp is persisted to `browser.storage.local` so the popup badge
  * can display freshness without querying the daemon.
  */
+/** Truncate operator-facing error strings to match daemon storage limits. */
+const MAX_ERROR_MSG_LEN = 512;
+
+function truncateError(msg: string): string {
+  return msg.slice(0, MAX_ERROR_MSG_LEN);
+}
+
 async function sendHeartbeat(): Promise<void> {
   const manifest = browser.runtime.getManifest();
-  const msg = buildHeartbeatPayload(manifest.version, settings.enabled);
+  const stored = await browser.storage.local.get(["lastSendError"]);
+  const lastError =
+    typeof stored.lastSendError === "string" && stored.lastSendError.length > 0
+      ? stored.lastSendError
+      : null;
+  const msg = buildHeartbeatPayload(manifest.version, settings.enabled, lastError);
   try {
     // sendNativeMessage resolves with the response object from the NM host.
     // Inspect status to distinguish daemon-side errors from transport errors.
     const resp = (await browser.runtime.sendNativeMessage(NATIVE_HOST, msg)) as {
       status?: string;
+      error?: string;
     };
     if (resp?.status === "ok") {
-      browser.storage.local.set({ lastHeartbeatTs: msg.sent_at_ms, lastHeartbeatOk: true });
+      await browser.storage.local.set({
+        lastHeartbeatTs: msg.sent_at_ms,
+        lastHeartbeatOk: true,
+      });
+      await browser.storage.local.remove("lastSendError");
     } else {
+      const err = truncateError(resp?.error ?? `daemon status: ${resp?.status ?? "unknown"}`);
       console.warn("[hippo] heartbeat daemon error:", resp);
-      browser.storage.local.set({ lastHeartbeatOk: false });
+      await browser.storage.local.set({ lastHeartbeatOk: false, lastSendError: err });
     }
   } catch (e) {
+    const err = truncateError(String(e));
     console.warn("[hippo] heartbeat failed:", e);
-    browser.storage.local.set({ lastHeartbeatOk: false });
+    await browser.storage.local.set({ lastHeartbeatOk: false, lastSendError: err });
   }
 }
 
@@ -208,13 +227,14 @@ browser.runtime.onMessage.addListener(
           settings.captureCount++;
           persistCaptureCount();
           browser.storage.local.set({ lastSendOk: true, lastSendAt: Date.now() });
+          browser.storage.local.remove("lastSendError");
         },
         (error) => {
           console.error("[hippo] native messaging error:", error);
           browser.storage.local.set({
             lastSendOk: false,
             lastSendAt: Date.now(),
-            lastSendError: String(error),
+            lastSendError: truncateError(String(error)),
           });
         },
       );

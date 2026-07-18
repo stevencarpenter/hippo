@@ -1,7 +1,6 @@
 """Parse Claude Code session logs into segments for enrichment."""
 
 import json
-import sqlite3
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -16,6 +15,7 @@ from hippo_brain.enrichment import (
 )
 from hippo_brain.entity_resolver import strip_worktree_prefix
 from hippo_brain.models import EnrichmentResult
+from hippo_brain.vector_store import vec_table_available
 from hippo_brain.watchdog import DEFAULT_LOCK_TIMEOUT_MS
 
 STALE_LOCK_TIMEOUT_MS = DEFAULT_LOCK_TIMEOUT_MS
@@ -391,66 +391,13 @@ def build_claude_enrichment_prompt(segments: list[SessionSegment]) -> str:
 
 
 def _eligibility_source_for_harness(harness: str | None) -> str:
-    if harness in {None, "", "claude-code", "codex", "cursor"}:
+    # `not harness` covers both None and "" and lets the type checker narrow
+    # `harness` to a non-empty `str` on the fall-through, so the final return
+    # matches the declared `-> str` (a set-membership test on `{None, ...}`
+    # does not narrow).
+    if not harness or harness in {"claude-code", "codex", "cursor"}:
         return "claude"
     return harness
-
-
-def ensure_claude_tables(conn) -> None:
-    """Ensure Claude session tables exist (Python-side migration for v2 → v3)."""
-    version = conn.execute("PRAGMA user_version").fetchone()[0]
-    if version >= 3:
-        return
-
-    conn.executescript(
-        """
-        CREATE TABLE IF NOT EXISTS claude_sessions (
-            id INTEGER PRIMARY KEY,
-            session_id TEXT NOT NULL,
-            project_dir TEXT NOT NULL,
-            cwd TEXT NOT NULL,
-            git_branch TEXT,
-            segment_index INTEGER NOT NULL,
-            start_time INTEGER NOT NULL,
-            end_time INTEGER NOT NULL,
-            summary_text TEXT NOT NULL,
-            tool_calls_json TEXT,
-            user_prompts_json TEXT,
-            message_count INTEGER NOT NULL,
-            token_count INTEGER,
-            source_file TEXT NOT NULL,
-            is_subagent INTEGER NOT NULL DEFAULT 0,
-            parent_session_id TEXT,
-            enriched INTEGER NOT NULL DEFAULT 0,
-            created_at INTEGER NOT NULL DEFAULT (unixepoch('now', 'subsec') * 1000),
-            UNIQUE (session_id, segment_index)
-        );
-        CREATE TABLE IF NOT EXISTS knowledge_node_claude_sessions (
-            knowledge_node_id INTEGER NOT NULL REFERENCES knowledge_nodes (id),
-            claude_session_id INTEGER NOT NULL REFERENCES claude_sessions (id),
-            PRIMARY KEY (knowledge_node_id, claude_session_id)
-        );
-        CREATE TABLE IF NOT EXISTS claude_enrichment_queue (
-            id INTEGER PRIMARY KEY,
-            claude_session_id INTEGER NOT NULL UNIQUE REFERENCES claude_sessions (id),
-            status TEXT NOT NULL DEFAULT 'pending'
-                CHECK (status IN ('pending', 'processing', 'done', 'failed', 'skipped')),
-            priority INTEGER NOT NULL DEFAULT 5,
-            retry_count INTEGER NOT NULL DEFAULT 0,
-            max_retries INTEGER NOT NULL DEFAULT 5,
-            error_message TEXT,
-            locked_at INTEGER,
-            locked_by TEXT,
-            created_at INTEGER NOT NULL DEFAULT (unixepoch('now', 'subsec') * 1000),
-            updated_at INTEGER NOT NULL DEFAULT (unixepoch('now', 'subsec') * 1000)
-        );
-        CREATE INDEX IF NOT EXISTS idx_claude_sessions_cwd ON claude_sessions (cwd);
-        CREATE INDEX IF NOT EXISTS idx_claude_sessions_session ON claude_sessions (session_id);
-        CREATE INDEX IF NOT EXISTS idx_claude_queue_pending ON claude_enrichment_queue (status, priority)
-            WHERE status = 'pending';
-        PRAGMA user_version = 3;
-        """
-    )
 
 
 def insert_segment(conn, segment: SessionSegment) -> int | None:
@@ -638,6 +585,23 @@ def claim_pending_claude_segments(
     return all_batches
 
 
+def _agentic_segment_has_node(conn, agentic_session_id: int) -> bool:
+    """True when a knowledge-node link already projects this agentic segment.
+
+    A ``last_enriched_content_hash`` watermark alone is not proof the node was
+    ever written (legacy/partial rows can carry the watermark with no surviving
+    link), so the drop guard requires the link to actually exist.
+    """
+    return (
+        conn.execute(
+            "SELECT EXISTS(SELECT 1 FROM knowledge_node_agentic_sessions "
+            "WHERE agentic_session_id = ?)",
+            (agentic_session_id,),
+        ).fetchone()[0]
+        == 1
+    )
+
+
 def _drop_already_enriched_claude_segments(conn, segments: list[dict]) -> list[dict]:
     """Drop segments whose content was already enriched (idempotency guard).
 
@@ -654,7 +618,13 @@ def _drop_already_enriched_claude_segments(conn, segments: list[dict]) -> list[d
     for seg in segments:
         ch = seg.get("content_hash")
         leh = seg.get("last_enriched_content_hash")
-        if ch is not None and ch == leh:
+        # A matching watermark is a necessary precondition for dropping, and it
+        # is the uncommon case (the daemon normally re-enqueues only on a hash
+        # change). Let ``and`` short-circuit so the per-segment node-existence
+        # SELECT runs only for those candidates instead of once per segment —
+        # the changed-hash majority never pays for a query whose result it
+        # would discard.
+        if ch is not None and ch == leh and _agentic_segment_has_node(conn, seg["id"]):
             conn.execute(
                 "UPDATE agentic_enrichment_queue "
                 "SET status = 'done', locked_at = NULL, locked_by = NULL, updated_at = ? "
@@ -762,15 +732,6 @@ def _knowledge_node_link_tables(conn) -> dict[str, str]:
     return tables
 
 
-def _vec_table_available(conn) -> bool:
-    """True if the vec0 ``knowledge_vectors`` virtual table is reachable."""
-    try:
-        conn.execute("SELECT knowledge_node_id FROM knowledge_vectors LIMIT 0")
-        return True
-    except sqlite3.OperationalError:
-        return False
-
-
 def replace_prior_agentic_nodes(conn, segment_ids: list[int]) -> int:
     """Delete prior knowledge nodes linked SOLELY to ``segment_ids``.
 
@@ -825,7 +786,7 @@ def replace_prior_agentic_nodes(conn, segment_ids: list[int]) -> int:
     if not prior:
         return 0
 
-    vec_ok = _vec_table_available(conn)
+    vec_ok = vec_table_available(conn)
     if not vec_ok:
         # Deleting nodes without clearing their vectors would orphan vec0 rows
         # (vec0 has no FK cascade). Refuse rather than corrupt the vector store.

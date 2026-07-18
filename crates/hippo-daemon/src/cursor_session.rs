@@ -645,6 +645,32 @@ fn read_cursor(conn: &rusqlite::Connection, key: &str) -> i64 {
     .unwrap_or(0)
 }
 
+/// True when the poller has already consumed this exact file version and the
+/// parser intentionally produced no session row. Coverage checks use this to
+/// distinguish empty/assistant-only transcript stubs from capture loss.
+pub(crate) fn processed_without_segments(conn: &rusqlite::Connection, path: &Path) -> bool {
+    let Ok(meta) = std::fs::metadata(path) else {
+        return false;
+    };
+    let Some(mtime_ms) = meta
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_millis() as i64)
+    else {
+        return false;
+    };
+    let key = cursor_key(&meta);
+    conn.query_row(
+        "SELECT last_seen_updated_at >= ?2
+                AND (COALESCE(last_id, '') = '' OR ?3 = 0)
+         FROM agentic_cursor WHERE source_key = ?1",
+        params![key, mtime_ms, meta.len() as i64],
+        |row| row.get::<_, bool>(0),
+    )
+    .unwrap_or(false)
+}
+
 fn write_cursor(
     conn: &rusqlite::Connection,
     key: &str,
@@ -823,10 +849,9 @@ fn ingest_file(
 ) -> Result<(usize, String)> {
     let segments = extract_segments(path, mtime_ms, redaction)?;
     if segments.is_empty() {
-        // Cursor advance is intentional for segment-less transcripts; surface
-        // the path-derived session id so `agentic_cursor.last_id` is meaningful
-        // for inspection rather than an empty string.
-        return Ok((0, PathIdentity::from_path(path).session_id));
+        // Empty last_id is an explicit "processed, zero segments" sentinel.
+        // Doctor uses it to distinguish expected-absent stubs from capture loss.
+        return Ok((0, String::new()));
     }
     let session_id = segments[0].session_id.clone();
     let tx = conn.unchecked_transaction()?;

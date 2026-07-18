@@ -388,6 +388,116 @@ run = "cargo run --bin hippo -- daemon run"
 description = "Run the brain enrichment server"
 run = "uv run --project brain hippo-brain serve"
 
+[tasks."ingest:auto-memory"]
+description = "Ingest one explicit Claude Code auto-memory Markdown file"
+run = "uv run --project brain hippo-auto-memory"
+
+[tasks."acceptance:auto-memory"]
+description = "Offline auto-memory reliability acceptance (SNUG-138)"
+run = "uv run --project brain pytest brain/tests/test_auto_memory_reliability.py brain/tests/test_auto_memory_lifecycle.py::test_full_lifecycle_add_update_history_rename_delete -q"
+
+[tasks."brain:api"]
+description = "Call the structured brain API CLI: mise run brain:api -- <operation> [args]"
+run = '''
+#!/usr/bin/env bash
+set -euo pipefail
+if [ "$#" -eq 0 ]; then
+    uv run --project brain hippo-brain-api --help
+    exit 2
+fi
+uv run --project brain hippo-brain-api "$@"
+'''
+
+[tasks."brain:api:health"]
+description = "GET /health from the brain API"
+run = "uv run --project brain hippo-brain-api health"
+
+[tasks."brain:api:sessions"]
+description = "GET /sessions from the brain API; forwards optional CLI args"
+run = '''
+#!/usr/bin/env bash
+set -euo pipefail
+uv run --project brain hippo-brain-api sessions "$@"
+'''
+
+[tasks."brain:api:events"]
+description = "GET /events from the brain API; forwards optional CLI args"
+run = '''
+#!/usr/bin/env bash
+set -euo pipefail
+uv run --project brain hippo-brain-api events "$@"
+'''
+
+[tasks."brain:api:knowledge"]
+description = "GET /knowledge from the brain API; forwards optional CLI args"
+run = '''
+#!/usr/bin/env bash
+set -euo pipefail
+uv run --project brain hippo-brain-api knowledge "$@"
+'''
+
+[tasks."brain:api:knowledge-get"]
+description = "GET /knowledge/{id}; usage: mise run brain:api:knowledge-get -- <id>"
+run = '''
+#!/usr/bin/env bash
+set -euo pipefail
+if [ "$#" -lt 1 ]; then
+    echo "Usage: mise run brain:api:knowledge-get -- <id>" >&2
+    exit 2
+fi
+uv run --project brain hippo-brain-api knowledge-get "$@"
+'''
+
+[tasks."brain:api:query"]
+description = "POST /query; usage: mise run brain:api:query -- <text> [--mode semantic|lexical] [--limit N]"
+run = '''
+#!/usr/bin/env bash
+set -euo pipefail
+if [ "$#" -lt 1 ]; then
+    echo "Usage: mise run brain:api:query -- <text> [--mode semantic|lexical] [--limit N]" >&2
+    exit 2
+fi
+uv run --project brain hippo-brain-api query "$@"
+'''
+
+[tasks."brain:api:ask"]
+description = "POST /ask; usage: mise run brain:api:ask -- <question> [--limit N]"
+run = '''
+#!/usr/bin/env bash
+set -euo pipefail
+if [ "$#" -lt 1 ]; then
+    echo "Usage: mise run brain:api:ask -- <question> [--limit N]" >&2
+    exit 2
+fi
+uv run --project brain hippo-brain-api ask "$@"
+'''
+
+[tasks."brain:api:pause"]
+description = "POST /control/pause to pause enrichment while ingestion continues"
+run = "uv run --project brain hippo-brain-api pause"
+
+[tasks."brain:api:resume"]
+description = "POST /control/resume to resume enrichment"
+run = "uv run --project brain hippo-brain-api resume"
+
+[tasks."brain:api:openapi"]
+description = "Print the built-in OpenAPI contract without requiring a running brain"
+run = "uv run --project brain hippo-brain-api openapi --offline"
+
+[tasks."brain:api:openapi:live"]
+description = "GET /openapi.json from the running brain API"
+run = "uv run --project brain hippo-brain-api openapi"
+
+[tasks."brain:api:openapi:write"]
+description = "Write the OpenAPI contract to OUT (default: brain/openapi.json)"
+run = '''
+#!/usr/bin/env bash
+set -euo pipefail
+OUT="${OUT:-brain/openapi.json}"
+uv run --project brain hippo-brain-api openapi --offline > "$OUT"
+echo "Wrote $OUT"
+'''
+
 [tasks.status]
 description = "Show daemon status"
 run = "cargo run --bin hippo -- status"
@@ -795,7 +905,9 @@ for label in \
   com.hippo.opencode-poll \
   com.hippo.xcode-claude-ingest \
   com.hippo.codex-session \
-  com.hippo.cursor-session
+  com.hippo.cursor-session \
+  com.hippo.auto-memory \
+  com.hippo.auto-memory-watcher
 do
   plist="$HOME/Library/LaunchAgents/${label}.plist"
   name="${label#com.hippo.}"
@@ -824,7 +936,9 @@ for label in \
   com.hippo.opencode-poll \
   com.hippo.xcode-claude-ingest \
   com.hippo.codex-session \
-  com.hippo.cursor-session
+  com.hippo.cursor-session \
+  com.hippo.auto-memory \
+  com.hippo.auto-memory-watcher
 do
   plist="$HOME/Library/LaunchAgents/${label}.plist"
   name="${label#com.hippo.}"
@@ -957,14 +1071,19 @@ echo "  mise run start"
 """
 
 [tasks."re-enrich:failed"]
-description = "Redrive failed enrichment queue items (shell, Claude, browser, workflow, agentic) back to pending"
+description = "Redrive failed enrichment queue items (shell, browser, workflow, unified agentic) back to pending"
 run = """
 #!/usr/bin/env bash
 set -euo pipefail
 
-DB=~/.local/share/hippo/hippo.db
+DB="${HIPPO_DB:-$HOME/.local/share/hippo/hippo.db}"
 
-for TABLE in enrichment_queue claude_enrichment_queue browser_enrichment_queue workflow_enrichment_queue agentic_enrichment_queue; do
+for TABLE in enrichment_queue browser_enrichment_queue workflow_enrichment_queue agentic_enrichment_queue; do
+    TABLE_EXISTS=$(sqlite3 "$DB" "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = '$TABLE')")
+    if [[ "$TABLE_EXISTS" != "1" ]]; then
+        echo "  $TABLE: skipped (table absent)"
+        continue
+    fi
     BEFORE=$(sqlite3 "$DB" "SELECT COUNT(*) FROM $TABLE WHERE status = 'failed'")
     sqlite3 "$DB" "UPDATE $TABLE SET status = 'pending', retry_count = 0, error_message = NULL, locked_at = NULL, locked_by = NULL WHERE status = 'failed'"
     echo "  $TABLE: requeued $BEFORE failed item(s)"
@@ -992,13 +1111,13 @@ echo "==> Stopping brain..."
 pkill -f 'hippo-brain' 2>/dev/null && sleep 1 || true
 
 echo "==> Resetting Claude knowledge nodes..."
-sqlite3 "$DB" "DELETE FROM knowledge_node_entities WHERE knowledge_node_id IN (SELECT knowledge_node_id FROM knowledge_node_claude_sessions)"
-sqlite3 "$DB" "DELETE FROM knowledge_node_claude_sessions"
+sqlite3 "$DB" "DELETE FROM knowledge_node_entities WHERE knowledge_node_id IN (SELECT knowledge_node_id FROM knowledge_node_agentic_sessions WHERE agentic_session_id IN (SELECT id FROM agentic_sessions WHERE harness = 'claude-code'))"
+sqlite3 "$DB" "DELETE FROM knowledge_node_agentic_sessions WHERE agentic_session_id IN (SELECT id FROM agentic_sessions WHERE harness = 'claude-code')"
 sqlite3 "$DB" "DELETE FROM knowledge_nodes WHERE id NOT IN (SELECT knowledge_node_id FROM knowledge_node_events)"
-sqlite3 "$DB" "UPDATE claude_sessions SET enriched = 0"
-sqlite3 "$DB" "UPDATE claude_enrichment_queue SET status = 'pending', retry_count = 0, error_message = NULL, locked_at = NULL, locked_by = NULL"
+sqlite3 "$DB" "UPDATE agentic_sessions SET enriched = 0 WHERE harness = 'claude-code'"
+sqlite3 "$DB" "UPDATE agentic_enrichment_queue SET status = 'pending', retry_count = 0, error_message = NULL, locked_at = NULL, locked_by = NULL WHERE session_id IN (SELECT id FROM agentic_sessions WHERE harness = 'claude-code')"
 
-PENDING=$(sqlite3 "$DB" "SELECT COUNT(*) FROM claude_enrichment_queue WHERE status = 'pending'")
+PENDING=$(sqlite3 "$DB" "SELECT COUNT(*) FROM agentic_enrichment_queue WHERE status = 'pending' AND session_id IN (SELECT id FROM agentic_sessions WHERE harness = 'claude-code')")
 echo "  Queued $PENDING segments for 1:1 re-enrichment"
 echo ""
 
@@ -1199,6 +1318,10 @@ echo "Installed skill: $SKILL_DST -> $SKILL_SRC"
 """
 
 # ── Bench (model benchmark; separate data root, not normal hippo execution) ──
+
+[tasks."bench:auto-memory-spike"]
+description = "Regenerate the synthetic Claude auto-memory chunking comparison report"
+run = "uv run --project brain python -m hippo_brain.bench.auto_memory_spike --fixture brain/src/hippo_brain/_fixtures/auto_memory_spike --output docs/research/2026-06-27-auto-memory-spike-results.md"
 
 [tasks."bench:qa:seed"]
 description = "Seed the Q/A fixture (eval-qa-v1.jsonl) from the committed template"

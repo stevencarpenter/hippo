@@ -10,16 +10,21 @@ from pathlib import Path
 
 from mcp.server.fastmcp import FastMCP
 
+from hippo_brain.agent_query import AgentQueryRequest, run_agent_query
+from hippo_brain.memory_query import (
+    MemoryQueryRequest,
+    query_memory_current,
+    resolve_limit,
+    run_memory_history_query,
+)
 from hippo_brain.client import InferenceClient
 from hippo_brain.embeddings import (
     EMBED_DIM,
     _pad_or_truncate,
     get_or_create_table,
     open_vector_db,
-    search_similar,
 )
 from hippo_brain.mcp_logging import setup_logging
-from hippo_brain.telemetry import add as _add, get_meter, hist as _hist
 from hippo_brain.mcp_queries import (
     MAX_LIMIT,
     format_context_block,
@@ -29,10 +34,11 @@ from hippo_brain.mcp_queries import (
     list_projects_impl,
     search_events_impl,
     search_knowledge_lexical,
-    shape_semantic_results,
 )
 from hippo_brain.rag import ask as rag_ask, format_rag_response
-from hippo_brain.telemetry import get_tracer as _get_tracer
+from hippo_brain.retrieval_eligibility import include_excluded_from_env
+from hippo_brain.schema_version import require_accepted_schema
+from hippo_brain.telemetry import add as _add, get_meter, get_tracer as _get_tracer, hist as _hist
 
 logger = setup_logging("hippo-mcp")
 
@@ -140,6 +146,7 @@ def _get_conn(db_path: str = "") -> sqlite3.Connection:
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")
     conn.execute("PRAGMA busy_timeout=5000")
+    require_accepted_schema(conn)
     return conn
 
 
@@ -173,6 +180,8 @@ mcp = FastMCP(
         "Hippo is a local knowledge base capturing shell activity, Claude sessions, "
         "and browser history. Use ask to get synthesized answers about past activity. "
         "Use search_knowledge for raw semantic or lexical search over knowledge nodes. "
+        "Use query_memory for current Claude auto-memory documents and "
+        "query_memory_history for explicit revision history. "
         "Use search_events for raw event history. "
         "Use get_entities to explore the knowledge graph."
     ),
@@ -188,6 +197,8 @@ async def search_knowledge(
     since: str = "",
     source: str = "",
     branch: str = "",
+    category: str = "",
+    include_excluded: bool = False,
 ) -> list[dict]:
     """Search the Hippo knowledge base for enriched knowledge nodes.
 
@@ -199,15 +210,19 @@ async def search_knowledge(
         project: Substring match on cwd or git_repo of linked events/sessions.
         since: Window like "24h", "7d", "30m". Empty means no time filter.
         source: Restrict to nodes linked to a specific source: "shell",
-                "claude", "browser", or "workflow". Empty means all sources.
+                "claude", "browser", "workflow", or "claude-auto-memory".
+                Empty means all sources; an unrecognized source raises.
         branch: Exact match on git_branch of linked events/sessions.
+        category: Auto-memory category filter (feedback, project, reference, user, index).
+        include_excluded: Operator mode — include probe/diagnostic rows (default false).
     """
+    include_excluded = include_excluded or include_excluded_from_env()
     limit = _clamp_limit(limit)
     _add(_tool_calls, tool="search_knowledge")
     t0 = time.monotonic()
     logger.info(
         "search_knowledge called: query=%r mode=%s limit=%d project=%r since=%r "
-        "source=%r branch=%r",
+        "source=%r branch=%r category=%r",
         query,
         mode,
         limit,
@@ -215,6 +230,7 @@ async def search_knowledge(
         since,
         source,
         branch,
+        category,
     )
 
     tracer = _get_tracer()
@@ -228,23 +244,19 @@ async def search_knowledge(
     )
     with span_ctx:
         try:
-            if (
-                mode == "semantic"
-                and _state.inference_client
-                and _state.vector_table
-                and not (project or since or source or branch)
-            ):
+            if mode == "semantic" and _state.inference_client:
                 try:
-                    vecs = await _state.inference_client.embed(
-                        [query], model=_state.embedding_model
+                    results = await _retrieve_filtered(
+                        query=query,
+                        mode="semantic",
+                        limit=limit,
+                        project=project,
+                        since=since,
+                        source=source,
+                        branch=branch,
+                        category=category,
+                        include_excluded=include_excluded,
                     )
-                    query_vec = _pad_or_truncate(vecs[0], EMBED_DIM)
-                    hits = search_similar(_state.vector_table, query_vec, limit=limit)
-                    conn = _get_conn()
-                    try:
-                        results = shape_semantic_results(hits, conn=conn)
-                    finally:
-                        conn.close()
                     elapsed = time.monotonic() - t0
                     _hist(_tool_duration, elapsed * 1000, tool="search_knowledge")
                     logger.info(
@@ -256,7 +268,7 @@ async def search_knowledge(
                 except Exception:
                     logger.exception("Semantic search failed, falling back to lexical")
 
-            # Lexical search (explicit mode or fallback, or when filters are applied)
+            # Lexical search (explicit mode or fallback)
             conn = _get_conn()
             try:
                 results = search_knowledge_lexical(
@@ -267,6 +279,8 @@ async def search_knowledge(
                     since=since,
                     source=source,
                     branch=branch,
+                    category=category,
+                    include_excluded=include_excluded,
                 )
             finally:
                 conn.close()
@@ -294,6 +308,7 @@ async def ask(
     since: str = "",
     source: str = "",
     branch: str = "",
+    include_excluded: bool = False,
 ) -> str:
     """Ask a question and get a synthesized answer from your knowledge base.
 
@@ -312,7 +327,9 @@ async def ask(
         source: Restrict to nodes linked to "shell", "claude", "browser",
                 or "workflow". Empty means all sources.
         branch: Exact match on git_branch of linked events/sessions.
+        include_excluded: Operator mode — include probe/diagnostic rows (default false).
     """
+    include_excluded = include_excluded or include_excluded_from_env()
     limit = _clamp_limit(limit)
     _add(_tool_calls, tool="ask")
     t0 = time.monotonic()
@@ -346,6 +363,7 @@ async def ask(
             since=since_ms,
             source=source or None,
             branch=branch or None,
+            include_excluded=include_excluded,
             conn=conn,
         )
     except Exception:
@@ -598,6 +616,9 @@ def _result_to_dict(result) -> dict:
         "captured_at": result.captured_at,
         "design_decisions": list(result.design_decisions),
         "linked_event_ids": list(result.linked_event_ids),
+        "linked_source_ids": list(result.linked_source_ids),
+        "evidence": list(result.evidence),
+        "confidence": dict(result.confidence) if result.confidence else {},
     }
 
 
@@ -610,7 +631,9 @@ async def _retrieve_filtered(
     since: str,
     source: str,
     branch: str,
+    category: str = "",
     entity: str = "",
+    include_excluded: bool = False,
 ) -> list[dict]:
     """Run a filtered retrieval, returning SearchResult-shaped dicts.
 
@@ -627,6 +650,8 @@ async def _retrieve_filtered(
         source=source or None,
         branch=branch or None,
         entity=entity or None,
+        memory_category=category or None,
+        include_excluded=include_excluded or include_excluded_from_env(),
     )
 
     query_vec = None
@@ -652,6 +677,8 @@ async def _retrieve_filtered(
                 since=since,
                 source=source,
                 branch=branch,
+                category=category,
+                include_excluded=filters.include_excluded,
             )
     finally:
         conn.close()
@@ -669,10 +696,13 @@ def _open_retrieval_conn() -> sqlite3.Connection:
     try:
         from hippo_brain.vector_store import open_conn
 
-        return open_conn(_state.db_path)
-    except Exception:
+        conn = open_conn(_state.db_path)
+    except ImportError:
         # vector_store may be missing in older deploys; fall back to plain conn
         return _get_conn()
+    # Gate outside the try so a schema mismatch cannot be masked by fallback.
+    require_accepted_schema(conn)
+    return conn
 
 
 @mcp.tool()
@@ -792,6 +822,168 @@ async def get_context(
         _add(_tool_errors, tool="get_context")
         logger.exception("get_context failed")
         raise
+
+
+@mcp.tool()
+async def agent_query(
+    query: str,
+    mode: str = "known",
+    limit: int = 10,
+    project: str = "",
+    since: str = "",
+    source: str = "",
+    branch: str = "",
+    include_excluded: bool = False,
+) -> dict:
+    """Compact agent query — concise answer plus evidence packets.
+
+    Modes:
+    - ``known``: what Hippo knows about the topic (default)
+    - ``evidence``: answer summarizes evidence packet counts; hits carry full packets
+    - ``recent``: recent knowledge around the topic
+    - ``decisions``: nodes with documented design decisions
+
+    Returns a bounded dict: answer, hits (with evidence), freshness hints.
+    """
+    limit = _clamp_limit(limit)
+    _add(_tool_calls, tool="agent_query")
+    t0 = time.monotonic()
+    logger.info(
+        "agent_query called: query=%r mode=%s limit=%d source=%r",
+        query,
+        mode,
+        limit,
+        source,
+    )
+
+    req = AgentQueryRequest(
+        query=query,
+        mode=mode,
+        source=source,
+        since=since,
+        project=project,
+        branch=branch,
+        limit=limit,
+        include_excluded=include_excluded or include_excluded_from_env(),
+    )
+
+    query_vec = None
+    if _state.inference_client and query:
+        try:
+            vecs = await _state.inference_client.embed([query], model=_state.embedding_model)
+            query_vec = _pad_or_truncate(vecs[0], EMBED_DIM)
+        except Exception:
+            logger.exception("query embedding failed in agent_query")
+
+    conn = _open_retrieval_conn()
+    try:
+        try:
+            result = run_agent_query(conn, req, query_vec)
+        except ValueError as exc:
+            _add(_tool_errors, tool="agent_query")
+            return {"error": str(exc)}
+    finally:
+        conn.close()
+
+    elapsed = time.monotonic() - t0
+    _hist(_tool_duration, elapsed * 1000, tool="agent_query")
+    logger.info("agent_query completed in %.3fs", elapsed)
+    return result
+
+
+@mcp.tool()
+async def query_memory(
+    query: str = "",
+    repository: str = "",
+    category: str = "",
+    logical_path: str = "",
+    document_uuid: str = "",
+    since: str = "",
+    limit: int = 20,
+    offset: int = 0,
+    include_non_queryable: bool = False,
+    include_source_path: bool = False,
+) -> dict:
+    """Query current Claude auto-memory documents (projected chunks only by default).
+
+    Returns bounded provenance-rich chunks. Use ``query_memory_history`` for
+    explicit prior revisions. Local ``source_path`` is omitted unless
+    ``include_source_path=true`` (diagnostics only).
+    """
+    limit = resolve_limit(limit)
+    _add(_tool_calls, tool="query_memory")
+    t0 = time.monotonic()
+    req = MemoryQueryRequest(
+        query=query,
+        repository=repository,
+        category=category,
+        logical_path=logical_path,
+        document_uuid=document_uuid,
+        since=since,
+        limit=limit,
+        offset=offset,
+        include_non_queryable=include_non_queryable,
+        include_source_path=include_source_path,
+    )
+    conn = _open_retrieval_conn()
+    try:
+        try:
+            result = query_memory_current(conn, req)
+        except ValueError as exc:
+            _add(_tool_errors, tool="query_memory")
+            return {"error": str(exc)}
+    finally:
+        conn.close()
+    elapsed = time.monotonic() - t0
+    _hist(_tool_duration, elapsed * 1000, tool="query_memory")
+    logger.info("query_memory completed: %d results in %.3fs", len(result["results"]), elapsed)
+    return result
+
+
+@mcp.tool()
+async def query_memory_history(
+    repository: str = "",
+    logical_path: str = "",
+    document_uuid: str = "",
+    limit: int = 50,
+    include_source_path: bool = False,
+) -> dict:
+    """Return bounded revision history for one auto-memory document.
+
+    Requires ``document_uuid`` or both ``repository`` and ``logical_path``.
+    History never mixes into ``query_memory`` current results.
+    """
+    limit = resolve_limit(limit, default=50)
+    _add(_tool_calls, tool="query_memory_history")
+    t0 = time.monotonic()
+    if not document_uuid and not (repository and logical_path):
+        return {
+            "error": "document_uuid or repository+logical_path is required for history",
+        }
+    conn = _open_retrieval_conn()
+    try:
+        try:
+            result = run_memory_history_query(
+                conn,
+                repository=repository,
+                logical_path=logical_path,
+                document_uuid=document_uuid,
+                limit=limit,
+                include_source_path=include_source_path,
+            )
+        except ValueError as exc:
+            _add(_tool_errors, tool="query_memory_history")
+            return {"error": str(exc)}
+    finally:
+        conn.close()
+    elapsed = time.monotonic() - t0
+    _hist(_tool_duration, elapsed * 1000, tool="query_memory_history")
+    logger.info(
+        "query_memory_history completed: %d revisions in %.3fs",
+        len(result["results"]),
+        elapsed,
+    )
+    return result
 
 
 @mcp.tool()

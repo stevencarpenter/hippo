@@ -93,7 +93,7 @@ def test_link_table_discovery_finds_all_and_excludes_node_table(tmp_db):
     assert "knowledge_nodes" not in tables
     assert tables["knowledge_node_agentic_sessions"] == "agentic_session_id"
     assert tables["knowledge_node_entities"] == "entity_id"
-    assert tables["knowledge_node_claude_sessions"] == "claude_session_id"
+    assert tables["knowledge_node_agentic_sessions"] == "agentic_session_id"
     # All keycols are the single non-node column.
     for t, keycol in tables.items():
         cols = [r[1] for r in conn.execute(f"PRAGMA table_info({t})")]

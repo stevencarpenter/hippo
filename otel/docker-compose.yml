@@ -50,6 +50,7 @@ services:
     volumes:
       - ./grafana/datasources.yml:/etc/grafana/provisioning/datasources/datasources.yml:ro
       - ./grafana/dashboards:/etc/grafana/provisioning/dashboards:ro
+      - ./grafana/alerting:/etc/grafana/provisioning/alerting:ro
       - ${HOME}/.local/share/hippo/otel/grafana:/var/lib/grafana
     ports:
       - "3030:3000"

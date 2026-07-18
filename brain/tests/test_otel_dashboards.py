@@ -1,10 +1,10 @@
-"""Drift-prevention tests for Grafana dashboard JSON files.
+"""Drift-prevention tests for Grafana dashboard JSON and alert rule YAML.
 
 These tests guard against the class of bugs where dashboard PromQL expressions
-reference metric names that do not exist in the OTel instrumentation — either
-because an instrument was renamed, removed, or never created. A failure here
-tells the developer exactly which dashboard and metric drifted, and which file
-to look at for the authoritative name.
+or provisioned alert queries reference metric names that do not exist in the
+OTel instrumentation — either because an instrument was renamed, removed, or
+never created. A failure here tells the developer exactly which dashboard
+or alert rule drifted, and which file to look at for the authoritative name.
 
 The guarantee is enforced in two layers that chain together:
   * Test 1 / Test 4 check that every metric a dashboard references is in the
@@ -23,11 +23,14 @@ import json
 import re
 from pathlib import Path
 
+import yaml
+
 # ---------------------------------------------------------------------------
 # Repo root, resolved relative to this file so the tests work from any cwd.
 # ---------------------------------------------------------------------------
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _DASHBOARDS_DIR = _REPO_ROOT / "otel" / "grafana" / "dashboards"
+_ALERTING_DIR = _REPO_ROOT / "otel" / "grafana" / "alerting"
 
 # ---------------------------------------------------------------------------
 # Canonical EMITTED metric names for production dashboards.
@@ -137,6 +140,19 @@ _PROD_DASHBOARD_NAMES = frozenset(
         "hippo-daemon.json",
         "hippo-enrichment.json",
         "hippo-processes.json",
+    ]
+)
+
+# Provisioned capture-reliability alert rules (SNUG-96).
+_PROD_ALERT_FILES = frozenset(["hippo-capture-alerts.yml"])
+
+_REQUIRED_ALERT_UIDS = frozenset(
+    [
+        "hippo_daemon_events_dropped",
+        "hippo_watcher_events_dropped",
+        "hippo_watchdog_stall",
+        "hippo_probe_failure_rate",
+        "hippo_invariant_violation",
     ]
 )
 
@@ -835,3 +851,64 @@ def test_rust_parser_skips_builders_without_build():
 
     incomplete = '.u64_counter("hippo.test.incomplete")  // never reaches build'
     assert _rust_emitter_names(incomplete) == set()
+
+
+# ---------------------------------------------------------------------------
+# Test 11: Provisioned Grafana alert rules must reference only allowed metrics
+# and include the SNUG-96 capture-reliability alert set.
+# ---------------------------------------------------------------------------
+
+
+def _load_prod_alert_rules() -> list[tuple[str, dict]]:
+    results = []
+    for name in sorted(_PROD_ALERT_FILES):
+        path = _ALERTING_DIR / name
+        assert path.exists(), (
+            f"Expected alert provisioning file not found: {path}. "
+            "If it was intentionally removed, update _PROD_ALERT_FILES."
+        )
+        results.append((name, yaml.safe_load(path.read_text())))
+    return results
+
+
+def _collect_alert_exprs(alert_doc: dict) -> list[tuple[str, str]]:
+    """Return (rule_uid, promql_expr) for every Prometheus query in alert data."""
+    results: list[tuple[str, str]] = []
+    for group in alert_doc.get("groups", []):
+        for rule in group.get("rules", []):
+            uid = rule.get("uid", "?")
+            for query in rule.get("data", []):
+                model = query.get("model", {})
+                if model.get("datasource", {}).get("type") == "prometheus":
+                    expr = model.get("expr", "")
+                    if expr:
+                        results.append((uid, expr))
+    return results
+
+
+def test_alert_rules_reference_allowed_metrics():
+    """Every hippo_* metric in provisioned alert PromQL must be in EMITTED_METRICS."""
+    violations: list[str] = []
+    for filename, doc in _load_prod_alert_rules():
+        for uid, expr in _collect_alert_exprs(doc):
+            for raw in _extract_metric_names(expr):
+                normalized = _normalize_metric_name(raw)
+                if normalized not in EMITTED_METRICS:
+                    violations.append(
+                        f"{filename} rule {uid}: {raw!r} (normalized {normalized!r}) "
+                        f"not in EMITTED_METRICS"
+                    )
+    assert not violations, "Alert rule metric drift:\n" + "\n".join(violations)
+
+
+def test_required_capture_alert_rules_exist():
+    """SNUG-96 acceptance: daemon drops, watcher drops, watchdog stall, probe fail, invariant."""
+    found: set[str] = set()
+    for _filename, doc in _load_prod_alert_rules():
+        for group in doc.get("groups", []):
+            for rule in group.get("rules", []):
+                uid = rule.get("uid")
+                if uid:
+                    found.add(uid)
+    missing = _REQUIRED_ALERT_UIDS - found
+    assert not missing, f"Missing required alert rule uids: {sorted(missing)}"

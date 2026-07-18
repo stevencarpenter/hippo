@@ -319,7 +319,8 @@ CREATE TABLE events (
     timestamp INTEGER NOT NULL,
     cwd TEXT NOT NULL,
     git_repo TEXT,
-    git_branch TEXT
+    git_branch TEXT,
+    probe_tag TEXT
 );
 CREATE TABLE knowledge_node_events (
     knowledge_node_id INTEGER,
@@ -330,9 +331,13 @@ CREATE TABLE agentic_sessions (
     id INTEGER PRIMARY KEY,
     harness TEXT,
     start_time INTEGER,
+    end_time INTEGER,
     cwd TEXT,
     project_dir TEXT,
     git_branch TEXT,
+    summary_text TEXT DEFAULT 'work',
+    message_count INTEGER DEFAULT 5,
+    source_file TEXT DEFAULT '/proj/session.jsonl',
     probe_tag TEXT
 );
 CREATE TABLE knowledge_node_agentic_sessions (
@@ -349,6 +354,7 @@ CREATE TABLE knowledge_node_browser_events (
 CREATE TABLE workflow_runs (
     id INTEGER PRIMARY KEY,
     status TEXT,
+    conclusion TEXT,
     created_at INTEGER
 );
 CREATE TABLE knowledge_node_workflow_runs (
@@ -387,7 +393,9 @@ def _smoke_conn() -> sqlite3.Connection:
     )
     conn.execute("INSERT INTO knowledge_node_events VALUES (1, 10)")
     conn.execute(
-        "INSERT INTO agentic_sessions (id, start_time, cwd, project_dir, git_branch) VALUES (20, 1100, '/p', '/p', 'main')"
+        "INSERT INTO agentic_sessions "
+        "(id, start_time, end_time, cwd, project_dir, git_branch, summary_text, message_count) "
+        "VALUES (20, 1100, 1_700_000_000_000, '/p', '/p', 'main', 'work', 5)"
     )
     conn.execute("INSERT INTO knowledge_node_agentic_sessions VALUES (2, 20)")
     conn.execute("INSERT INTO browser_events (id, timestamp) VALUES (30, 1200)")

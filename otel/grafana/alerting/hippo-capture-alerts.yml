@@ -1,0 +1,303 @@
+# Provisioned Grafana alert rules for Hippo capture reliability.
+# Loaded from /etc/grafana/provisioning/alerting on stack start.
+# Metric names use Prometheus exporter suffixes (see brain/tests/test_otel_dashboards.py).
+apiVersion: 1
+groups:
+  - orgId: 1
+    name: hippo_capture_1m
+    folder: Hippo
+    interval: 1m
+    rules:
+      - uid: hippo_daemon_events_dropped
+        title: Daemon events dropped
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 600
+              to: 0
+            datasourceUid: prometheus
+            model:
+              datasource:
+                type: prometheus
+                uid: prometheus
+              editorMode: code
+              expr: sum(rate(hippo_daemon_events_dropped_total[5m]))
+              instant: true
+              intervalMs: 1000
+              maxDataPoints: 43200
+              range: false
+              refId: A
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              conditions:
+                - evaluator:
+                    params:
+                      - 0
+                    type: gt
+                  operator:
+                    type: and
+                  query:
+                    params:
+                      - C
+                  reducer:
+                    params: []
+                    type: last
+                  type: query
+              datasource:
+                type: __expr__
+                uid: __expr__
+              expression: A
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: C
+              type: threshold
+        noDataState: OK
+        execErrState: Error
+        for: 5m
+        annotations:
+          summary: Daemon is dropping shell/browser events before SQLite insert
+          description: >-
+            hippo_daemon_events_dropped_total rate is positive for 5+ minutes.
+            Check daemon logs and fallback JSONL under ~/.local/share/hippo/.
+          runbook_url: https://github.com/stevencarpenter/hippo/blob/main/docs/capture/operator-runbook.md
+        labels:
+          severity: warning
+          component: daemon
+        isPaused: false
+
+      - uid: hippo_watcher_events_dropped
+        title: FS watcher events dropped
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 600
+              to: 0
+            datasourceUid: prometheus
+            model:
+              datasource:
+                type: prometheus
+                uid: prometheus
+              editorMode: code
+              expr: sum(rate(hippo_watcher_events_dropped_total[5m]))
+              instant: true
+              intervalMs: 1000
+              maxDataPoints: 43200
+              range: false
+              refId: A
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              conditions:
+                - evaluator:
+                    params:
+                      - 0
+                    type: gt
+                  operator:
+                    type: and
+                  query:
+                    params:
+                      - C
+                  reducer:
+                    params: []
+                    type: last
+                  type: query
+              datasource:
+                type: __expr__
+                uid: __expr__
+              expression: A
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: C
+              type: threshold
+        noDataState: OK
+        execErrState: Error
+        for: 5m
+        annotations:
+          summary: Claude session watcher channel is saturated
+          description: >-
+            hippo_watcher_events_dropped_total rate is positive for 5+ minutes.
+            FSEvents notifications are being dropped; session ingest may lag.
+        labels:
+          severity: warning
+          component: watcher
+        isPaused: false
+
+      - uid: hippo_watchdog_stall
+        title: Watchdog not running
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 600
+              to: 0
+            datasourceUid: prometheus
+            model:
+              datasource:
+                type: prometheus
+                uid: prometheus
+              editorMode: code
+              expr: sum(rate(hippo_watchdog_run_total[5m]))
+              instant: true
+              intervalMs: 1000
+              maxDataPoints: 43200
+              range: false
+              refId: A
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              conditions:
+                - evaluator:
+                    params:
+                      - 0.001
+                    type: lt
+                  operator:
+                    type: and
+                  query:
+                    params:
+                      - C
+                  reducer:
+                    params: []
+                    type: last
+                  type: query
+              datasource:
+                type: __expr__
+                uid: __expr__
+              expression: A
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: C
+              type: threshold
+        noDataState: OK
+        execErrState: Error
+        for: 5m
+        annotations:
+          summary: Watchdog evaluation loop has stalled
+          description: >-
+            hippo_watchdog_run_total rate is near zero for 5+ minutes while OTel
+            metrics are flowing. Expected ~1 run/min via com.hippo.watchdog.
+        labels:
+          severity: critical
+          component: watchdog
+        isPaused: false
+
+      - uid: hippo_probe_failure_rate
+        title: Probe failure rate high
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 900
+              to: 0
+            datasourceUid: prometheus
+            model:
+              datasource:
+                type: prometheus
+                uid: prometheus
+              editorMode: code
+              expr: >-
+                sum(rate(hippo_probe_run_total{ok="false"}[15m]))
+                /
+                clamp_min(sum(rate(hippo_probe_run_total[15m])), 1e-9)
+              instant: true
+              intervalMs: 1000
+              maxDataPoints: 43200
+              range: false
+              refId: A
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              conditions:
+                - evaluator:
+                    params:
+                      - 0.1
+                    type: gt
+                  operator:
+                    type: and
+                  query:
+                    params:
+                      - C
+                  reducer:
+                    params: []
+                    type: last
+                  type: query
+              datasource:
+                type: __expr__
+                uid: __expr__
+              expression: A
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: C
+              type: threshold
+        noDataState: OK
+        execErrState: Error
+        for: 15m
+        annotations:
+          summary: Synthetic probe failure rate exceeds 10%
+          description: >-
+            More than 10% of hippo_probe_run_total executions report ok=false
+            over a 15-minute window. Run `hippo probe` and `hippo doctor --explain`.
+        labels:
+          severity: warning
+          component: probe
+        isPaused: false
+
+      - uid: hippo_invariant_violation
+        title: Capture invariant violation
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 900
+              to: 0
+            datasourceUid: prometheus
+            model:
+              datasource:
+                type: prometheus
+                uid: prometheus
+              editorMode: code
+              expr: sum(rate(hippo_watchdog_invariant_violation_total[15m]))
+              instant: true
+              intervalMs: 1000
+              maxDataPoints: 43200
+              range: false
+              refId: A
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              conditions:
+                - evaluator:
+                    params:
+                      - 0
+                    type: gt
+                  operator:
+                    type: and
+                  query:
+                    params:
+                      - C
+                  reducer:
+                    params: []
+                    type: last
+                  type: query
+              datasource:
+                type: __expr__
+                uid: __expr__
+              expression: A
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: C
+              type: threshold
+        noDataState: OK
+        execErrState: Error
+        for: 15m
+        annotations:
+          summary: Watchdog detected a capture invariant violation
+          description: >-
+            hippo_watchdog_invariant_violation_total rate is positive. Check
+            `hippo alarms list` and docs/capture/architecture.md invariants I-1..I-15.
+        labels:
+          severity: critical
+          component: watchdog
+        isPaused: false

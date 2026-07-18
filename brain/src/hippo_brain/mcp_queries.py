@@ -10,7 +10,22 @@ import sqlite3
 import time
 from datetime import datetime, timezone
 
+from hippo_brain.auto_memory_categories import (
+    list_document_categories,
+    list_document_links,
+    validate_memory_category_filter,
+)
 from hippo_brain.models import CIAnnotation, CIJob, CIStatus, Lesson
+from hippo_brain.retrieval_eligibility import (
+    agentic_session_eligible_sql,
+    knowledge_node_eligible_exists_sql,
+)
+from hippo_brain.source_filters import (
+    knowledge_memory_category_clause,
+    knowledge_memory_project_clause,
+    knowledge_source_exists_clause,
+    table_exists as _table_exists,
+)
 
 
 MAX_LIMIT = 100
@@ -31,14 +46,6 @@ def _safe_json_loads(value, default):
         return default
 
 
-def _table_exists(conn: sqlite3.Connection, table_name: str) -> bool:
-    row = conn.execute(
-        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
-        (table_name,),
-    ).fetchone()
-    return row is not None
-
-
 def _agentic_link_target(
     conn: sqlite3.Connection,
 ) -> tuple[str | None, str | None, str | None]:
@@ -46,10 +53,6 @@ def _agentic_link_target(
         conn, "agentic_sessions"
     ):
         return "knowledge_node_agentic_sessions", "agentic_session_id", "agentic_sessions"
-    if _table_exists(conn, "knowledge_node_claude_sessions") and _table_exists(
-        conn, "claude_sessions"
-    ):
-        return "knowledge_node_claude_sessions", "claude_session_id", "claude_sessions"
     return None, None, None
 
 
@@ -154,12 +157,48 @@ def parse_since(since: str) -> int:
     return now_ms - (value * unit_ms)
 
 
+def _memory_provenance(
+    conn: sqlite3.Connection, node_id: int
+) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
+    if not _table_exists(conn, "knowledge_node_memory_chunks"):
+        return [], []
+    row = conn.execute(
+        "SELECT md.id FROM knowledge_node_memory_chunks knmc "
+        "JOIN memory_chunks mc ON mc.id = knmc.memory_chunk_id "
+        "JOIN memory_revisions mr ON mr.id = mc.revision_id "
+        "JOIN memory_documents md ON md.id = mr.document_id "
+        "WHERE knmc.knowledge_node_id = ? AND md.active_revision_id = mr.id "
+        "AND md.state = 'active' LIMIT 1",
+        (node_id,),
+    ).fetchone()
+    if row is None:
+        return [], []
+    document_id = int(row[0])
+    categories = [
+        {
+            "category": item.category,
+            "source": item.source,
+            "confidence": item.confidence,
+            "model": item.model,
+            "enrichment_version": item.enrichment_version,
+            "created_at": item.created_at,
+            "updated_at": item.updated_at,
+        }
+        for item in list_document_categories(conn, document_id)
+    ]
+    links = list_document_links(conn, document_id)
+    return categories, links
+
+
 def _build_knowledge_filter_clause(
     conn: sqlite3.Connection,
     project: str,
     since_ms: int,
     source: str,
     branch: str,
+    category: str = "",
+    *,
+    include_excluded: bool = False,
 ) -> tuple[str, list]:
     """Compose a WHERE-fragment + params for knowledge_nodes filter columns.
 
@@ -169,6 +208,13 @@ def _build_knowledge_filter_clause(
     clauses: list[str] = []
     params: list = []
     link_table, link_column, session_table = _agentic_link_target(conn)
+
+    if not include_excluded:
+        elig_sql, elig_params = knowledge_node_eligible_exists_sql(
+            conn, "kn.id", include_excluded=False
+        )
+        clauses.append(elig_sql)
+        params.extend(elig_params)
 
     if since_ms:
         clauses.append("kn.created_at >= ?")
@@ -188,9 +234,13 @@ def _build_knowledge_filter_clause(
                 f" OR EXISTS (SELECT 1 FROM {link_table} links "
                 f"  JOIN {session_table} s ON s.id = links.{link_column} "
                 "  WHERE links.knowledge_node_id = kn.id "
-                "    AND s.probe_tag IS NULL "
+                f"    AND {agentic_session_eligible_sql('s', include_excluded=include_excluded)} "
                 "    AND (s.cwd LIKE ? OR s.project_dir LIKE ?))"
             )
+            params.extend([like, like])
+        memory_project = knowledge_memory_project_clause(conn)
+        if memory_project is not None:
+            project_clause += f" OR {memory_project}"
             params.extend([like, like])
         project_clause += ")"
         clauses.append(project_clause)
@@ -207,33 +257,36 @@ def _build_knowledge_filter_clause(
                 f" OR EXISTS (SELECT 1 FROM {link_table} links "
                 f"  JOIN {session_table} s ON s.id = links.{link_column} "
                 "  WHERE links.knowledge_node_id = kn.id "
-                "    AND s.probe_tag IS NULL AND s.git_branch = ?)"
+                f"    AND {agentic_session_eligible_sql('s', include_excluded=include_excluded)} AND s.git_branch = ?)"
             )
             params.append(branch)
         branch_clause += ")"
         clauses.append(branch_clause)
 
     if source:
-        if source == "claude" and link_table and link_column and session_table:
-            # AP-6 defense-in-depth: join the session table and exclude probe
-            # rows so source="claude" cannot surface a probe-only knowledge node
-            # (parity with retrieval.py's `probe_tag IS NULL` agentic joins).
-            clauses.append(
-                f"EXISTS (SELECT 1 FROM {link_table} link "
-                f"  JOIN {session_table} s ON s.id = link.{link_column} "
-                "  WHERE link.knowledge_node_id = kn.id AND s.probe_tag IS NULL)"
-            )
-        else:
-            source_table = {
-                "shell": "knowledge_node_events",
-                "browser": "knowledge_node_browser_events",
-                "workflow": "knowledge_node_workflow_runs",
-            }.get(source)
-            if source_table:
-                clauses.append(
-                    f"EXISTS (SELECT 1 FROM {source_table} link "
-                    "WHERE link.knowledge_node_id = kn.id)"
-                )
+        source_clause = knowledge_source_exists_clause(
+            source,
+            conn,
+            claude_link_table=link_table,
+            claude_link_column=link_column,
+            claude_session_table=session_table,
+            include_excluded=include_excluded,
+        )
+        if source_clause is None:
+            # Mirror retrieval._apply_filters: an unrecognized (or unavailable)
+            # source must fail loudly. Silently dropping the clause would widen the
+            # result set to every knowledge node — a silent data-scope violation
+            # rather than the empty/error result the caller expects.
+            raise ValueError(f"unknown source filter: {source!r}")
+        clauses.append(source_clause)
+
+    if category:
+        validate_memory_category_filter(category)
+        category_clause = knowledge_memory_category_clause(conn)
+        if category_clause is None:
+            raise ValueError("memory category filter requires schema v20+")
+        clauses.append(category_clause)
+        params.append(category)
 
     where = (" AND " + " AND ".join(clauses)) if clauses else ""
     return where, params
@@ -247,11 +300,20 @@ def search_knowledge_lexical(
     since: str = "",
     source: str = "",
     branch: str = "",
+    category: str = "",
+    *,
+    include_excluded: bool = False,
 ) -> list[dict]:
     """Lexical (LIKE) search over knowledge_nodes with optional filter pushdown."""
     since_ms = parse_since(since)
     where_extra, extra_params = _build_knowledge_filter_clause(
-        conn, project=project, since_ms=since_ms, source=source, branch=branch
+        conn,
+        project=project,
+        since_ms=since_ms,
+        source=source,
+        branch=branch,
+        category=category,
+        include_excluded=include_excluded,
     )
 
     if query:
@@ -282,8 +344,10 @@ def search_knowledge_lexical(
     for row in rows:
         node_id, uuid, content_str, embed_text, outcome, tags_str, created_at = row
         content = _safe_json_loads(content_str, {})
+        source_meta = content.get("source", {}) if isinstance(content, dict) else {}
         tags = _safe_json_loads(tags_str, []) if tags_str else []
         event_ids, claude_ids, browser_ids = _knowledge_node_links(conn, node_id)
+        memory_categories, memory_links = _memory_provenance(conn, node_id)
 
         results.append(
             {
@@ -297,6 +361,13 @@ def search_knowledge_lexical(
                 "cwd": "",
                 "git_branch": "",
                 "captured_at": created_at,
+                "source": source_meta.get("kind", ""),
+                "source_path": source_meta.get("source_path", ""),
+                "repository": source_meta.get("repository", ""),
+                "logical_path": source_meta.get("logical_path", ""),
+                "content_hash": source_meta.get("content_hash", ""),
+                "memory_categories": memory_categories,
+                "memory_links": memory_links,
                 "linked_event_ids": event_ids,
                 "linked_claude_session_ids": claude_ids,
                 "linked_browser_event_ids": browser_ids,
@@ -393,61 +464,35 @@ def _search_claude_events(
     since_val = since_ms if since_ms else None
     project_pat = f"%{project}%" if project else None
     branch_val = branch or None
-    if _table_exists(conn, "agentic_sessions"):
-        rows = conn.execute(
-            """
-            SELECT id, start_time, summary_text, cwd, git_branch, message_count,
-                   tool_calls_json
-            FROM agentic_sessions
-            WHERE probe_tag IS NULL
-              AND harness IN ('claude-code', 'opencode', 'codex', 'cursor')
-              AND (? IS NULL OR summary_text LIKE ?)
-              AND (? IS NULL OR start_time >= ?)
-              AND (? IS NULL OR cwd LIKE ?)
-              AND (? IS NULL OR git_branch = ?)
-            ORDER BY start_time DESC
-            LIMIT ?
-            """,
-            (
-                query_pat,
-                query_pat,
-                since_val,
-                since_val,
-                project_pat,
-                project_pat,
-                branch_val,
-                branch_val,
-                limit,
-            ),
-        ).fetchall()
-    elif _table_exists(conn, "claude_sessions"):
-        rows = conn.execute(
-            """
-            SELECT id, start_time, summary_text, cwd, git_branch, message_count,
-                   tool_calls_json
-            FROM claude_sessions
-            WHERE probe_tag IS NULL
-              AND (? IS NULL OR summary_text LIKE ?)
-              AND (? IS NULL OR start_time >= ?)
-              AND (? IS NULL OR cwd LIKE ?)
-              AND (? IS NULL OR git_branch = ?)
-            ORDER BY start_time DESC
-            LIMIT ?
-            """,
-            (
-                query_pat,
-                query_pat,
-                since_val,
-                since_val,
-                project_pat,
-                project_pat,
-                branch_val,
-                branch_val,
-                limit,
-            ),
-        ).fetchall()
-    else:
+    if not _table_exists(conn, "agentic_sessions"):
         return []
+
+    rows = conn.execute(
+        """
+        SELECT id, start_time, summary_text, cwd, git_branch, message_count,
+               tool_calls_json
+        FROM agentic_sessions
+        WHERE probe_tag IS NULL
+          AND harness IN ('claude-code', 'opencode', 'codex', 'cursor')
+          AND (? IS NULL OR summary_text LIKE ?)
+          AND (? IS NULL OR start_time >= ?)
+          AND (? IS NULL OR cwd LIKE ?)
+          AND (? IS NULL OR git_branch = ?)
+        ORDER BY start_time DESC
+        LIMIT ?
+        """,
+        (
+            query_pat,
+            query_pat,
+            since_val,
+            since_val,
+            project_pat,
+            project_pat,
+            branch_val,
+            branch_val,
+            limit,
+        ),
+    ).fetchall()
 
     results = []
     for row in rows:
@@ -588,15 +633,6 @@ def list_projects_impl(conn: sqlite3.Connection, limit: int = 100) -> list[dict]
             WHERE project_dir IS NOT NULL AND project_dir != ''
               AND probe_tag IS NULL
               AND harness IN ('claude-code', 'codex', 'cursor', 'opencode')
-            GROUP BY project_dir
-        """
-    elif _table_exists(conn, "claude_sessions"):
-        session_project_sql = """
-            SELECT NULL AS git_repo, project_dir AS cwd_root,
-                   MAX(start_time) AS last_seen
-            FROM claude_sessions
-            WHERE project_dir IS NOT NULL AND project_dir != ''
-              AND probe_tag IS NULL
             GROUP BY project_dir
         """
     else:

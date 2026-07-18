@@ -44,11 +44,18 @@ idempotently backfills historical `claude_sessions`
 the `agentic_*` tables (harness derived from `source_file`). The legacy
 `claude_*` tables are now frozen — still created by `schema.sql`, no
 longer written, dropped in a later unification step.
+v18→v19 adds the read-only Claude auto-memory tables: document,
+revision, chunk, enrichment queue, and knowledge-node link.
+v19→v20 adds auto-memory category provenance and MEMORY.md index links.
+v21→v22 renames watcher resume state to `agentic_session_offsets` (SNUG-115 Phase A).
+v22→v23 drops the frozen legacy `claude_*` tables (SNUG-115 Phase B).
 """
 
 from __future__ import annotations
 
-EXPECTED_SCHEMA_VERSION: int = 18
+import sqlite3
+
+EXPECTED_SCHEMA_VERSION: int = 23
 
 # Versions brain can read without erroring.
 #
@@ -63,3 +70,14 @@ EXPECTED_SCHEMA_VERSION: int = 18
 # deployment the daemon always migrates the DB to EXPECTED_SCHEMA_VERSION
 # before brain attaches.
 ACCEPTED_READ_VERSIONS: frozenset[int] = frozenset({EXPECTED_SCHEMA_VERSION})
+
+
+def require_accepted_schema(conn: sqlite3.Connection) -> None:
+    """Reject connections to DBs the brain cannot read safely."""
+    version = conn.execute("PRAGMA user_version").fetchone()[0]
+    if version not in ACCEPTED_READ_VERSIONS:
+        conn.close()
+        raise RuntimeError(
+            f"DB schema version mismatch: expected {EXPECTED_SCHEMA_VERSION}, found {version}. "
+            "Please run migrations or delete the database."
+        )

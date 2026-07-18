@@ -44,10 +44,12 @@ def _seed_minimal_full_schema(conn: sqlite3.Connection) -> None:
         (recent,),
     )
     conn.execute(
-        "INSERT INTO claude_sessions "
-        "(session_id, project_dir, cwd, segment_index, start_time, end_time, "
-        " summary_text, tool_calls_json, user_prompts_json, message_count, source_file) "
-        "VALUES ('s1', '/proj', '/proj', 0, ?, ?, 'a summary', '[\"Bash\"]', '[]', 8, '/log.jsonl')",
+        "INSERT INTO agentic_sessions "
+        "(session_id, harness, segment_index, model, agent, project_dir, cwd, "
+        " start_time, end_time, summary_text, tool_calls_json, user_prompts_json, "
+        " message_count, source_file) "
+        "VALUES ('s1', 'claude-code', 0, '', '', '/proj', '/proj', ?, ?, "
+        " 'a summary', '[\"Bash\"]', '[]', 8, '/log.jsonl')",
         (recent, recent + 1000),
     )
     conn.execute(

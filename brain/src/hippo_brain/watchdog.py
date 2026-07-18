@@ -79,6 +79,7 @@ QUEUES: tuple[QueueSpec, ...] = (
     # reaper covers). Reaping the frozen table would only double-count locks that
     # already moved to the agentic queue, so it is intentionally omitted.
     QueueSpec("agentic", "agentic_enrichment_queue", "id"),
+    QueueSpec("memory", "memory_enrichment_queue", "id"),
 )
 
 

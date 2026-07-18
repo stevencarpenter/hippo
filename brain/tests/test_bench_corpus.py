@@ -379,6 +379,7 @@ def test_overwrite_protection(seeded_db, tmp_path):
     init_corpus(**common_kwargs)
     with pytest.raises(FileExistsError):
         init_corpus(**common_kwargs)
+    init_corpus(**common_kwargs, force=True)
 
 
 # ── 9. Probe-tag exclusion ────────────────────────────────────────────────
@@ -516,8 +517,8 @@ def test_claude_source_lands_in_agentic_sessions(seeded_db, tmp_path):
             assert enq is not None and enq > 0
             assert upd is not None and upd > 0
 
-        # The frozen claude_enrichment_queue is NOT seeded.
-        (frozen_q,) = conn.execute("SELECT COUNT(*) FROM claude_enrichment_queue").fetchone()
-        assert frozen_q == 0
+        # Legacy claude_enrichment_queue was dropped in schema v23.
+        with pytest.raises(sqlite3.OperationalError):
+            conn.execute("SELECT COUNT(*) FROM claude_enrichment_queue").fetchone()
     finally:
         conn.close()

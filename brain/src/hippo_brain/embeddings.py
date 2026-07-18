@@ -102,6 +102,11 @@ def get_or_create_table(handle: sqlite3.Connection) -> sqlite3.Connection:
     return handle
 
 
+def embed_dict_from_result(node_id: int, embed_text: str) -> dict:
+    """Minimal payload for :func:`embed_knowledge_node`."""
+    return {"id": node_id, "embed_text": embed_text}
+
+
 def _check_vec_dim(vec: list[float], label: str) -> None:
     if len(vec) != EMBED_DIM:
         raise ValueError(

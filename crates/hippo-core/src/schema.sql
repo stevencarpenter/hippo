@@ -148,64 +148,7 @@ CREATE TABLE IF NOT EXISTS enrichment_queue
     updated_at INTEGER NOT NULL DEFAULT (unixepoch('now', 'subsec') * 1000)
 );
 
--- Claude Code session segments (conversations, not shell commands)
-CREATE TABLE IF NOT EXISTS claude_sessions
-(
-    id INTEGER PRIMARY KEY,
-    session_id TEXT NOT NULL,
-    project_dir TEXT NOT NULL,
-    cwd TEXT NOT NULL,
-    git_branch TEXT,
-    segment_index INTEGER NOT NULL,
-    start_time INTEGER NOT NULL,
-    end_time INTEGER NOT NULL,
-    summary_text TEXT NOT NULL,
-    tool_calls_json TEXT,
-    user_prompts_json TEXT,
-    message_count INTEGER NOT NULL,
-    token_count INTEGER,
-    source_file TEXT NOT NULL,
-    is_subagent INTEGER NOT NULL DEFAULT 0,
-    parent_session_id TEXT,
-    enriched INTEGER NOT NULL DEFAULT 0,
-    -- probe_tag is set only on synthetic probe rows; NULL on all real sessions.
-    probe_tag TEXT,
-    -- v12: SHA256 of the segment's content (tool_calls_json + "|" +
-    -- user_prompts_json + "|" + assistant_texts joined with "\n") at the time
-    -- the daemon last upserted this row. summary_text is intentionally NOT
-    -- part of the hash. Set by the watcher on every upsert; NULL on legacy
-    -- rows migrated from v11.
-    content_hash TEXT,
-    -- v12: hash of the content that the brain last enriched. Set by the
-    -- enrichment worker when it completes; NULL until first enrichment.
-    -- Re-enrichment is triggered when content_hash != last_enriched_content_hash.
-    last_enriched_content_hash TEXT,
-    created_at INTEGER NOT NULL DEFAULT (unixepoch('now', 'subsec') * 1000),
-    UNIQUE (session_id, segment_index)
-);
-
-CREATE TABLE IF NOT EXISTS knowledge_node_claude_sessions
-(
-    knowledge_node_id INTEGER NOT NULL REFERENCES knowledge_nodes (id),
-    claude_session_id INTEGER NOT NULL REFERENCES claude_sessions (id),
-    PRIMARY KEY (knowledge_node_id, claude_session_id)
-);
-
-CREATE TABLE IF NOT EXISTS claude_enrichment_queue
-(
-    id INTEGER PRIMARY KEY,
-    claude_session_id INTEGER NOT NULL UNIQUE REFERENCES claude_sessions (id),
-    status TEXT NOT NULL DEFAULT 'pending'
-    CHECK (status IN ('pending', 'processing', 'done', 'failed', 'skipped')),
-    priority INTEGER NOT NULL DEFAULT 5,
-    retry_count INTEGER NOT NULL DEFAULT 0,
-    max_retries INTEGER NOT NULL DEFAULT 5,
-    error_message TEXT,
-    locked_at INTEGER,
-    locked_by TEXT,
-    created_at INTEGER NOT NULL DEFAULT (unixepoch('now', 'subsec') * 1000),
-    updated_at INTEGER NOT NULL DEFAULT (unixepoch('now', 'subsec') * 1000)
-);
+-- Claude Code session segments live in `agentic_sessions` (harness = 'claude-code').
 
 CREATE INDEX IF NOT EXISTS idx_events_session ON events (session_id);
 CREATE INDEX IF NOT EXISTS idx_events_timestamp ON events (timestamp DESC);
@@ -225,11 +168,6 @@ CREATE INDEX IF NOT EXISTS idx_relationships_to ON relationships (to_entity_id, 
 CREATE INDEX IF NOT EXISTS idx_event_entities_entity ON event_entities (entity_id, event_id);
 CREATE INDEX IF NOT EXISTS idx_kn_entities_entity ON knowledge_node_entities (entity_id);
 CREATE INDEX IF NOT EXISTS idx_queue_pending ON enrichment_queue (status, priority)
-WHERE status = 'pending';
-CREATE INDEX IF NOT EXISTS idx_claude_sessions_cwd ON claude_sessions (cwd);
-CREATE INDEX IF NOT EXISTS idx_claude_sessions_session ON claude_sessions (session_id);
-CREATE INDEX IF NOT EXISTS idx_claude_sessions_start_time ON claude_sessions (start_time DESC);
-CREATE INDEX IF NOT EXISTS idx_claude_queue_pending ON claude_enrichment_queue (status, priority)
 WHERE status = 'pending';
 
 -- Browser activity events (captured via Firefox extension)
@@ -481,7 +419,7 @@ CREATE TABLE IF NOT EXISTS source_health (
 INSERT OR IGNORE INTO source_health (source, last_event_ts, updated_at) VALUES
     ('shell',         (SELECT MAX(timestamp)  FROM events          WHERE source_kind = 'shell'),   unixepoch('now') * 1000),
     ('claude-tool',   (SELECT MAX(timestamp)  FROM events          WHERE source_kind = 'claude-tool'), unixepoch('now') * 1000),
-    ('agentic-session-claude',(SELECT MAX(start_time) FROM claude_sessions),                      unixepoch('now') * 1000),
+    ('agentic-session-claude', NULL, unixepoch('now') * 1000),
     ('browser',       (SELECT MAX(timestamp)  FROM browser_events),                                unixepoch('now') * 1000);
 
 -- ─── v9: capture_alarms table for watchdog invariant violations ────────
@@ -512,8 +450,8 @@ CREATE INDEX IF NOT EXISTS idx_capture_alarms_invariant_active
     ON capture_alarms (invariant_id, acked_at)
     WHERE acked_at IS NULL AND resolved_at IS NULL;
 
--- Watcher offset tracking: resume-after-restart for the FS watcher (T-5).
-CREATE TABLE IF NOT EXISTS claude_session_offsets (
+-- Watcher offset tracking: resume-after-restart for agentic FS watchers (T-5).
+CREATE TABLE IF NOT EXISTS agentic_session_offsets (
     path              TEXT    PRIMARY KEY,
     session_id        TEXT,
     byte_offset       INTEGER NOT NULL DEFAULT 0,
@@ -522,24 +460,6 @@ CREATE TABLE IF NOT EXISTS claude_session_offsets (
     size_at_last_read INTEGER NOT NULL DEFAULT 0,
     updated_at        INTEGER NOT NULL
 ) STRICT;
-
--- Hourly parity snapshots comparing tailer vs. watcher counts (M3 gate).
--- Unused since T-8 (PR #89): the tmux tailer that wrote `tailer_count` was
--- removed and the watcher's parity-row writer was deleted along with it.
--- Table is kept to avoid a v10→v11 migration purely to drop dead schema; it
--- holds the historical parity rows from the dual-run validation window.
-CREATE TABLE IF NOT EXISTS claude_session_parity (
-    id             INTEGER PRIMARY KEY AUTOINCREMENT,
-    path           TEXT    NOT NULL,
-    tailer_count   INTEGER NOT NULL DEFAULT 0,
-    watcher_count  INTEGER NOT NULL DEFAULT 0,
-    mismatch_count INTEGER NOT NULL DEFAULT 0,
-    window_start   INTEGER NOT NULL,
-    window_end     INTEGER NOT NULL
-) STRICT;
-
-CREATE INDEX IF NOT EXISTS idx_claude_session_parity_path_window
-    ON claude_session_parity (path, window_start);
 
 -- ─── v14/v17: Agentic sessions and cursor tracking ─────────────────────
 --
@@ -555,9 +475,7 @@ CREATE INDEX IF NOT EXISTS idx_claude_session_parity_path_window
 -- enrichment writers onto it and backfilled all historical claude_sessions
 -- rows into it. As of v18, all four harnesses (claude-code, opencode, codex,
 -- cursor) write here directly, segmented sessions carry `segment_index >= 0`,
--- and `harness` disambiguates origin. The legacy claude_sessions /
--- claude_enrichment_queue / knowledge_node_claude_sessions tables are frozen
--- (no longer written) and are dropped in a later unification step.
+-- and `harness` disambiguates origin. Legacy `claude_*` tables were dropped in v23.
 CREATE TABLE IF NOT EXISTS agentic_sessions (
     id                          INTEGER PRIMARY KEY,
     session_id                  TEXT    NOT NULL,
@@ -636,6 +554,9 @@ CREATE TABLE IF NOT EXISTS agentic_cursor (
     updated_at           INTEGER NOT NULL
 );
 
+-- Claude Code auto-memory tables live in schema/auto_memory.sql (concatenated at
+-- install/migrate time in storage.rs). Seed capture-health for the memory source.
+
 -- Seed source_health rows for agentic sources.
 -- `agentic-session-claude` uses MAX(start_time) from backend;
 -- `agentic-session-opencode`, `agentic-session-codex`, and
@@ -648,9 +569,8 @@ INSERT OR IGNORE INTO source_health (source, last_event_ts, updated_at) VALUES
     -- brain-preflight: the brain's enrichment loop writes here every cycle
     -- with the inference-backend reachability result. Watchdog I-12 reads
     -- consecutive_failures to alarm when preflight has been stuck failing.
-    ('brain-preflight',          NULL, unixepoch('now') * 1000);
+    ('brain-preflight',          NULL, unixepoch('now') * 1000),
+    ('claude-auto-memory',       NULL, unixepoch('now') * 1000),
+    ('auto-memory-watcher',      NULL, unixepoch('now') * 1000);
 
--- The `claude_session_offsets` table (deprecated since T-5) is preserved
--- to avoid breaking existing CREATE SCHEMA users.
-
-PRAGMA user_version = 18;
+PRAGMA user_version = 23;

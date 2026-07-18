@@ -203,6 +203,8 @@ def _queue(conn, session_id, status="processing"):
 
 def test_drop_already_enriched_skips_matching_hash(vdb):
     sess = _session(vdb, "s1")
+    node = _node(vdb)
+    _link(vdb, node, sess)
     _queue(vdb, sess)
     segs = [{"id": sess, "content_hash": "abc", "last_enriched_content_hash": "abc"}]
 
@@ -217,6 +219,28 @@ def test_drop_already_enriched_skips_matching_hash(vdb):
     )
     assert (
         vdb.execute("SELECT enriched FROM agentic_sessions WHERE id=?", (sess,)).fetchone()[0] == 1
+    )
+
+
+def test_drop_already_enriched_repairs_matching_hash_without_node(vdb):
+    """A watermark alone is not proof of completed enrichment.
+
+    Legacy/partial rows can carry ``last_enriched_content_hash`` without a
+    surviving knowledge-node link. Keeping the claimed segment lets the normal
+    writer rebuild that missing projection.
+    """
+    sess = _session(vdb, "s-missing-node")
+    _queue(vdb, sess)
+    segs = [{"id": sess, "content_hash": "abc", "last_enriched_content_hash": "abc"}]
+
+    kept = _drop_already_enriched_claude_segments(vdb, segs)
+
+    assert kept == segs
+    assert (
+        vdb.execute(
+            "SELECT status FROM agentic_enrichment_queue WHERE session_id=?", (sess,)
+        ).fetchone()[0]
+        == "processing"
     )
 
 

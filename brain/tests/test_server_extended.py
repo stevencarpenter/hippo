@@ -7,7 +7,8 @@ fallback, and the full enrichment pipeline for shell/browser/workflow sources.
 
 import asyncio
 import time
-from unittest.mock import AsyncMock, patch
+from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -34,6 +35,25 @@ def _make_server(db_path: str, **kwargs) -> BrainServer:
 def _make_app(db_path: str, **kwargs) -> Starlette:
     server = _make_server(db_path, **kwargs)
     return Starlette(routes=server.get_routes())
+
+
+def test_server_derives_data_dir_from_explicit_db_path(tmp_path: Path):
+    db_path = tmp_path / "isolated" / "hippo.db"
+    server = _make_server(str(db_path))
+    assert Path(server.data_dir) == db_path.parent
+
+
+def test_server_close_releases_owned_vector_connection(tmp_path: Path):
+    server = _make_server(str(tmp_path / "hippo.db"))
+    vector_db = MagicMock()
+    server._vector_db = vector_db
+    server._vector_table = object()
+
+    server.close()
+
+    vector_db.close.assert_called_once_with()
+    assert server._vector_db is None
+    assert server._vector_table is None
 
 
 # ---- Enrichment queue telemetry source coverage ----
@@ -81,6 +101,7 @@ def test_collect_queue_depths_splits_agentic_sources():
     assert rows[("opencode", "failed")] == 1
     assert rows[("workflow", "processing")] == 1
     assert rows[("browser", "failed")] == 1
+    conn.close()
 
 
 def test_collect_queue_depths_tolerates_missing_table():
@@ -109,6 +130,7 @@ def test_collect_queue_depths_tolerates_missing_table():
     # Sources whose tables do not exist must be absent, not raise.
     assert ("workflow", "pending") not in rows
     assert ("opencode", "pending") not in rows
+    conn.close()
 
 
 def test_source_label_for_claude_segments_splits_codex_metrics():
@@ -143,7 +165,7 @@ def test_source_label_for_cursor_segments():
 # ---- /health embed_model_drift ----
 
 
-def test_health_reports_degraded_on_embed_model_drift(tmp_db):
+def test_health_reports_degraded_on_embed_model_drift(tmp_db, request: pytest.FixtureRequest):
     """When the stored embedding model differs from the running one, /health
     reports status=degraded and includes drift info.
 
@@ -152,8 +174,7 @@ def test_health_reports_degraded_on_embed_model_drift(tmp_db):
     """
     _, db_path = tmp_db
     server = _make_server(str(db_path), embedding_model="live-model")
-    # Simulate a live vector DB handle without actually needing lancedb.
-    server._vector_db = object()  # sentinel — health only checks `is not None`
+    request.addfinalizer(server.close)
 
     with patch("hippo_brain.server.get_stored_embed_model", return_value="stored-model"):
         app = Starlette(routes=server.get_routes())
@@ -167,11 +188,11 @@ def test_health_reports_degraded_on_embed_model_drift(tmp_db):
         assert "live-model" in data["embed_model_drift"]
 
 
-def test_health_ok_when_embed_models_match(tmp_db):
+def test_health_ok_when_embed_models_match(tmp_db, request: pytest.FixtureRequest):
     """When stored and live embedding models match, no drift is reported."""
     _, db_path = tmp_db
     server = _make_server(str(db_path), embedding_model="same-model")
-    server._vector_db = object()
+    request.addfinalizer(server.close)
 
     with patch("hippo_brain.server.get_stored_embed_model", return_value="same-model"):
         app = Starlette(routes=server.get_routes())
@@ -233,7 +254,9 @@ def test_query_rejects_negative_limit(tmp_db):
 # ---- /query semantic → lexical fallback ----
 
 
-def test_query_semantic_falls_back_to_lexical_on_embed_failure(tmp_db):
+def test_query_semantic_falls_back_to_lexical_on_embed_failure(
+    tmp_db, request: pytest.FixtureRequest
+):
     """When the embedding call raises, semantic search falls back to lexical
     and still returns results with a warning flag.
 
@@ -257,6 +280,7 @@ def test_query_semantic_falls_back_to_lexical_on_embed_failure(tmp_db):
 
     # Force the semantic branch: embedding_model set AND vector_table stub
     server = _make_server(str(db_path), embedding_model="fake-embed")
+    request.addfinalizer(server.close)
     server._vector_table = object()  # truthy but embed will fail before use
     server.client.embed = AsyncMock(side_effect=RuntimeError("embed offline"))
 
@@ -323,7 +347,7 @@ def test_knowledge_filter_by_since_ms_cuts_off_old(tmp_db):
 
 
 @pytest.mark.asyncio
-async def test_shell_enrichment_schedules_embedding(tmp_db):
+async def test_shell_enrichment_schedules_embedding(tmp_db, request: pytest.FixtureRequest):
     """When embedding_model is configured, the shell enrichment pipeline
     schedules _embed_node so nodes land in the vector store.
 
@@ -347,6 +371,7 @@ async def test_shell_enrichment_schedules_embedding(tmp_db):
     conn.commit()
 
     server = _make_server(str(db_path), embedding_model="fake-embed")
+    request.addfinalizer(server.close)
     server.poll_interval_secs = 0
     server.session_stale_secs = 120
     server.client.chat = AsyncMock(
@@ -381,7 +406,9 @@ async def test_shell_enrichment_schedules_embedding(tmp_db):
 
 
 @pytest.mark.asyncio
-async def test_browser_enrichment_writes_node_and_schedules_embedding(tmp_db):
+async def test_browser_enrichment_writes_node_and_schedules_embedding(
+    tmp_db, request: pytest.FixtureRequest
+):
     """Browser enrichment claims a pending event, writes a knowledge node,
     and schedules embedding. Regression target: parity with shell — browser
     source must not silently bypass the vector store."""
@@ -398,6 +425,7 @@ async def test_browser_enrichment_writes_node_and_schedules_embedding(tmp_db):
     conn.commit()
 
     server = _make_server(str(db_path), embedding_model="fake-embed")
+    request.addfinalizer(server.close)
     server.poll_interval_secs = 0
     server.client.chat = AsyncMock(
         return_value=(
@@ -487,7 +515,7 @@ async def test_workflow_enrichment_calls_enrich_one_async(tmp_db):
 
 
 @pytest.mark.asyncio
-async def test_workflow_enrichment_schedules_embedding(tmp_db):
+async def test_workflow_enrichment_schedules_embedding(tmp_db, request: pytest.FixtureRequest):
     """Workflow enrichment must schedule _embed_node, like every other source.
 
     Regression target: workflow/CI knowledge nodes were written to SQLite but
@@ -509,6 +537,7 @@ async def test_workflow_enrichment_schedules_embedding(tmp_db):
     conn.commit()
 
     server = _make_server(str(db_path), embedding_model="fake-embed")
+    request.addfinalizer(server.close)
     server.poll_interval_secs = 0
     server.client.chat = AsyncMock(
         return_value=(

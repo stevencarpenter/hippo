@@ -8,20 +8,65 @@
 
 use anyhow::{Context, Result};
 use hippo_core::config::HippoConfig;
-use hippo_core::redaction::RedactionEngine;
 use hippo_core::storage;
 use rusqlite::OptionalExtension;
 use std::time::Instant;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 use uuid::Uuid;
 
 /// Maximum time to wait for a probe row to appear in SQLite.
 const POLL_DEADLINE_MS: u64 = 10_000;
 const POLL_INTERVAL_MS: u64 = 200;
 
+const VALID_PROBE_SOURCES: &[&str] = &[
+    "shell",
+    "claude-tool",
+    "agentic-session-claude",
+    "agentic-session-cursor",
+    "agentic-session-opencode",
+    "agentic-session-codex",
+    "browser",
+    "claude-auto-memory",
+];
+
+type SyncProbeFn = fn(&HippoConfig) -> Result<(bool, Option<i64>)>;
+
+fn should_run_auto_memory_probe(config: &HippoConfig, run_all: bool, source: Option<&str>) -> bool {
+    source == Some("claude-auto-memory") || (run_all && config.auto_memory.enabled)
+}
+
+fn run_sync_probe(
+    config: &HippoConfig,
+    run_all: bool,
+    source: Option<&str>,
+    name: &str,
+    probe_fn: SyncProbeFn,
+) -> Result<()> {
+    if !(run_all || source == Some(name)) {
+        return Ok(());
+    }
+    match probe_fn(config) {
+        Ok((ok, lag)) => {
+            println!(
+                "[probe] {name}: {} (lag={}ms)",
+                if ok { "OK" } else { "FAIL" },
+                lag.map(|l| l.to_string()).as_deref().unwrap_or("N/A")
+            );
+            write_probe_result(config, name, ok, lag)?;
+        }
+        Err(e) => {
+            warn!("{name} probe error: {e:#}");
+            println!("[probe] {name}: ERROR — {e:#}");
+            write_probe_result(config, name, false, None)?;
+        }
+    }
+    Ok(())
+}
+
 /// Run one or all probes, then write results to `source_health`.
 ///
 /// `source` is one of `"shell"`, `"claude-tool"`, `"agentic-session-claude"`,
+/// `"agentic-session-opencode"`, `"agentic-session-codex"`,
 /// `"agentic-session-cursor"`, `"browser"`, or `None` to run all in sequence.
 pub async fn run(config: &HippoConfig, source: Option<&str>) -> Result<()> {
     let run_all = source.is_none();
@@ -62,41 +107,34 @@ pub async fn run(config: &HippoConfig, source: Option<&str>) -> Result<()> {
         }
     }
 
-    if run_all || source == Some("agentic-session-claude") {
-        match probe_claude_session(config) {
-            Ok((ok, lag)) => {
-                println!(
-                    "[probe] agentic-session-claude: {} (lag={}ms)",
-                    if ok { "OK" } else { "FAIL" },
-                    lag.map(|l| l.to_string()).as_deref().unwrap_or("N/A")
-                );
-                write_probe_result(config, "agentic-session-claude", ok, lag)?;
-            }
-            Err(e) => {
-                warn!("agentic-session-claude probe error: {e:#}");
-                println!("[probe] agentic-session-claude: ERROR — {e:#}");
-                write_probe_result(config, "agentic-session-claude", false, None)?;
-            }
-        }
-    }
-
-    if run_all || source == Some("agentic-session-cursor") {
-        match probe_cursor_session(config) {
-            Ok((ok, lag)) => {
-                println!(
-                    "[probe] agentic-session-cursor: {} (lag={}ms)",
-                    if ok { "OK" } else { "FAIL" },
-                    lag.map(|l| l.to_string()).as_deref().unwrap_or("N/A")
-                );
-                write_probe_result(config, "agentic-session-cursor", ok, lag)?;
-            }
-            Err(e) => {
-                warn!("agentic-session-cursor probe error: {e:#}");
-                println!("[probe] agentic-session-cursor: ERROR — {e:#}");
-                write_probe_result(config, "agentic-session-cursor", false, None)?;
-            }
-        }
-    }
+    run_sync_probe(
+        config,
+        run_all,
+        source,
+        "agentic-session-claude",
+        probe_claude_session,
+    )?;
+    run_sync_probe(
+        config,
+        run_all,
+        source,
+        "agentic-session-cursor",
+        crate::probe_agentic::probe_cursor_session,
+    )?;
+    run_sync_probe(
+        config,
+        run_all,
+        source,
+        "agentic-session-opencode",
+        crate::probe_agentic::probe_opencode_session,
+    )?;
+    run_sync_probe(
+        config,
+        run_all,
+        source,
+        "agentic-session-codex",
+        crate::probe_agentic::probe_codex_session,
+    )?;
 
     if run_all || source == Some("browser") {
         match probe_browser(config).await {
@@ -116,19 +154,27 @@ pub async fn run(config: &HippoConfig, source: Option<&str>) -> Result<()> {
         }
     }
 
+    // The scheduled all-source probe must not alarm on an intentionally
+    // disabled optional source. An explicit source request remains available
+    // as an operator diagnostic even while ingestion is disabled.
+    if should_run_auto_memory_probe(config, run_all, source) {
+        run_sync_probe(
+            config,
+            run_all,
+            source,
+            "claude-auto-memory",
+            crate::probe_auto_memory::probe_auto_memory,
+        )?;
+    } else if run_all {
+        debug!("claude-auto-memory probe skipped: source disabled");
+    }
+
     if let Some(s) = source
-        && !matches!(
-            s,
-            "shell"
-                | "claude-tool"
-                | "agentic-session-claude"
-                | "browser"
-                | "agentic-session-cursor"
-        )
+        && !VALID_PROBE_SOURCES.contains(&s)
     {
         anyhow::bail!(
-            "unknown probe source '{}'; valid: shell, claude-tool, agentic-session-claude, browser, agentic-session-cursor",
-            s
+            "unknown probe source '{s}'; valid: {}",
+            VALID_PROBE_SOURCES.join(", ")
         );
     }
 
@@ -193,22 +239,27 @@ async fn probe_claude_tool(config: &HippoConfig) -> Result<(bool, Option<i64>)> 
 /// Claude-session probe: assertion-based, not injection.
 ///
 /// For every `~/.claude/projects/**/*.jsonl` modified in the last 5 minutes,
-/// assert that an `agentic_sessions` row exists with `source_file = <path>` and
-/// `end_time >= mtime_ms - 300_000`. If no JSONL was recently active: trivially
-/// pass (no Claude session running). If JSONL exists but no matching row: fail.
+/// assert that the transcript's current segment fingerprints are represented
+/// exactly in `agentic_sessions`. If no JSONL was recently active: trivially
+/// pass (no Claude session running). If a recent JSONL has semantic changes the
+/// watcher has not captured: fail.
 ///
 /// Recursive walk covers main sessions and subagent sessions at any depth:
 /// ~/.claude/projects/<project>/<session>.jsonl
 /// ~/.claude/projects/<project>/<parent>/subagents/<id>.jsonl
 fn probe_claude_session(config: &HippoConfig) -> Result<(bool, Option<i64>)> {
-    let now_ms = chrono::Utc::now().timestamp_millis();
-    let window_ms: i64 = 5 * 60 * 1000; // 5 minutes
-    let stale_threshold_ms: i64 = 5 * 60 * 1000; // 5-minute tolerance
-
-    // Find JSONL files modified within the last 5 minutes.
     let projects_dir = dirs::home_dir()
         .context("cannot determine home dir")?
         .join(".claude/projects");
+    probe_claude_session_in_dir(config, &projects_dir, chrono::Utc::now().timestamp_millis())
+}
+
+fn probe_claude_session_in_dir(
+    config: &HippoConfig,
+    projects_dir: &std::path::Path,
+    now_ms: i64,
+) -> Result<(bool, Option<i64>)> {
+    let window_ms: i64 = 5 * 60 * 1000;
 
     if !projects_dir.exists() {
         info!("claude-session probe: ~/.claude/projects not found — trivial pass");
@@ -216,7 +267,7 @@ fn probe_claude_session(config: &HippoConfig) -> Result<(bool, Option<i64>)> {
     }
 
     let mut recent_jsonl: Vec<(std::path::PathBuf, i64)> = Vec::new();
-    let mut dirs_to_scan = vec![projects_dir];
+    let mut dirs_to_scan = vec![projects_dir.to_path_buf()];
 
     // Recursive walk to catch main sessions and subagent sessions at any depth.
     while let Some(dir) = dirs_to_scan.pop() {
@@ -258,231 +309,34 @@ fn probe_claude_session(config: &HippoConfig) -> Result<(bool, Option<i64>)> {
     let mut latest_lag: Option<i64> = None;
 
     for (jsonl_path, mtime_ms) in &recent_jsonl {
-        let path_str = jsonl_path.to_string_lossy();
-        let threshold = mtime_ms - stale_threshold_ms;
-
-        let count: i64 = db
-            .query_row(
-                "SELECT COUNT(*) FROM agentic_sessions
-                 WHERE source_file = ?1
-                   AND harness = 'claude-code'
-                   AND probe_tag IS NULL
-                   AND end_time >= ?2",
-                rusqlite::params![path_str.as_ref(), threshold],
-                |row| row.get(0),
-            )
-            .with_context(|| format!("failed to query agentic_sessions for {}", path_str))?;
-
-        if count == 0 {
-            warn!("claude-session probe: no row for {}", path_str);
-            all_ok = false;
-        } else {
-            // Compute lag as now_ms - MAX(end_time).
-            let max_end: Option<i64> = db
-                .query_row(
-                    "SELECT MAX(end_time) FROM agentic_sessions
-                     WHERE source_file = ?1 AND harness = 'claude-code' AND probe_tag IS NULL",
-                    rusqlite::params![path_str.as_ref()],
-                    |row| row.get(0),
+        let (matches, latest_end) = crate::claude_session::session_file_matches_db(&db, jsonl_path)
+            .with_context(|| {
+                format!(
+                    "failed to compare Claude transcript coverage for {}",
+                    jsonl_path.display()
                 )
-                .with_context(|| {
-                    format!(
-                        "claude-session probe: failed to query MAX(end_time) for {}",
-                        path_str
-                    )
-                })?;
+            })?;
 
-            if let Some(end) = max_end {
-                let lag = now_ms - end;
-                latest_lag = Some(match latest_lag {
-                    Some(prev) => prev.max(lag),
-                    None => lag,
-                });
-            }
-        }
-    }
-
-    Ok((all_ok, latest_lag))
-}
-
-/// Settle floor for the cursor probe eligibility window, in ms.
-///
-/// A transcript must be at least this old before we assert it was ingested.
-/// Decoupled from `cursor.min_idle_secs` on purpose: deriving the floor from
-/// config (the old `2 * min_idle` formula) let an operator with a large
-/// `min_idle_secs` push the floor past `CURSOR_PROBE_WINDOW_MS`, collapsing the
-/// eligibility window to empty so the probe silently trivial-passed and stopped
-/// covering the source. 90 s ≈ one 60 s poll interval plus margin, which is
-/// enough slack that the poller has had a chance to ingest a settled file.
-const CURSOR_PROBE_SETTLE_MS: i64 = 90_000;
-
-/// Outer edge of the cursor probe eligibility window, in ms.
-///
-/// Widened to 10 min (from the 5 min used by the Claude probe) so that a file
-/// which becomes eligible at `CURSOR_PROBE_SETTLE_MS` (90 s) is still in-window
-/// when the next ~5 min probe firing lands: the window span is
-/// `600_000 - 90_000 = 510_000 ms`, comfortably wider than the 300 s probe
-/// interval, so a settled transcript is asserted by at least one probe run
-/// rather than slipping between firings (the coverage-gap concern).
-const CURSOR_PROBE_WINDOW_MS: i64 = 600_000;
-
-/// Cursor-session probe: assertion-based, mirrors `probe_claude_session`.
-///
-/// For every `~/.cursor/projects/**/agent-transcripts/**/*.jsonl` whose age
-/// (`now - mtime`) falls in `[settle_ms, CURSOR_PROBE_WINDOW_MS]`, assert a
-/// `agentic_sessions` row exists with that `source_file` — *but only when the
-/// transcript actually yields ≥1 segment*. A legitimately segment-less
-/// transcript (assistant-only, no user turn) is correctly written as zero rows
-/// by `cursor_session::poll_tick`, so asserting a row for it would be a false
-/// FAIL; such files are skipped (treated as pass).
-///
-/// `settle_ms` is clamped strictly below `CURSOR_PROBE_WINDOW_MS` so the window
-/// is always non-empty regardless of config — see `CURSOR_PROBE_SETTLE_MS`.
-/// Lag is reported as `now - MAX(end_time)` of the matched rows (true ingestion
-/// latency), mirroring `probe_claude_session`, not the file's age.
-fn probe_cursor_session(config: &HippoConfig) -> Result<(bool, Option<i64>)> {
-    // A disabled source intentionally ingests nothing (`poll_tick` early-returns),
-    // so transcripts left on disk will never have matching `agentic_sessions` rows.
-    // Asserting against them would write `probe_ok = 0` and trip watchdog I-8 as a
-    // false alarm. Trivially pass instead, mirroring `poll_tick`'s disabled guard.
-    if !config.cursor.enabled {
-        info!("cursor-session probe: cursor ingestion disabled — trivial pass");
-        return Ok((true, None));
-    }
-    let now_ms = chrono::Utc::now().timestamp_millis();
-    let window_ms: i64 = CURSOR_PROBE_WINDOW_MS;
-    // Clamp the settle floor strictly below the window so `[settle_ms, window_ms]`
-    // can never be empty (the empty-window bug that silently disabled coverage).
-    let settle_ms: i64 = CURSOR_PROBE_SETTLE_MS.min(window_ms / 2);
-
-    let roots = &config.cursor.session_roots;
-    let mut recent: Vec<(std::path::PathBuf, i64)> = Vec::new();
-    for root in roots {
-        if !root.is_dir() {
-            continue;
-        }
-        for entry in walkdir::WalkDir::new(root)
-            .into_iter()
-            .filter_map(|e| e.ok())
-        {
-            let path = entry.path();
-            let is_jsonl = path.extension().map(|e| e == "jsonl").unwrap_or(false);
-            let under = path
-                .components()
-                .any(|c| c.as_os_str() == "agent-transcripts");
-            if !(is_jsonl && under) {
-                continue;
-            }
-            let Some(mtime_ms) = entry.metadata().ok().and_then(|m| {
-                m.modified().ok().and_then(|t| {
-                    t.duration_since(std::time::UNIX_EPOCH)
-                        .ok()
-                        .map(|d| d.as_millis() as i64)
-                })
-            }) else {
-                continue;
-            };
-            let age = now_ms - mtime_ms;
-            if age >= settle_ms && age <= window_ms {
-                recent.push((path.to_path_buf(), mtime_ms));
-            }
-        }
-    }
-
-    if recent.is_empty() {
-        info!("cursor-session probe: no settled recent transcripts — trivial pass");
-        return Ok((true, None));
-    }
-
-    let db =
-        storage::open_db(&config.db_path()).context("cannot open DB for cursor-session probe")?;
-    // Lazy-load the redaction engine: only the DB-miss branch below actually
-    // needs it (to re-parse a file we suspect was never written). The happy
-    // path — file present, row exists — skips disk I/O for `redact.toml` and
-    // the regex recompile entirely.
-    let mut redaction: Option<RedactionEngine> = None;
-    let mut all_ok = true;
-    let mut latest_lag: Option<i64> = None;
-    for (path, mtime_ms) in &recent {
-        let path_str = path.to_string_lossy();
-
-        // Cheap path first: ask the DB whether this transcript already has a
-        // row in the same window the existence check uses. The common case is
-        // that `poll_tick` already ingested the file and wrote a row, so the
-        // probe satisfies its assertion without touching the file or running
-        // any redaction patterns — a meaningful saving for a directory with
-        // many in-window transcripts.
-        let count: i64 = db
-            .query_row(
-                "SELECT COUNT(*) FROM agentic_sessions
-                 WHERE source_file = ?1
-                   AND harness = 'cursor'
-                   AND probe_tag IS NULL
-                   AND end_time >= ?2",
-                rusqlite::params![path_str.as_ref(), mtime_ms - window_ms],
-                |row| row.get(0),
-            )
-            .with_context(|| format!("failed to query agentic_sessions for {}", path_str))?;
-
-        if count > 0 {
-            // Assertion satisfied. Lag = now - MAX(end_time) of the matched
-            // rows — true ingestion latency (mirrors probe_claude_session),
-            // not the file's age.
-            let max_end: Option<i64> = db
-                .query_row(
-                    "SELECT MAX(end_time) FROM agentic_sessions
-                     WHERE source_file = ?1 AND harness = 'cursor' AND probe_tag IS NULL",
-                    rusqlite::params![path_str.as_ref()],
-                    |row| row.get(0),
-                )
-                .with_context(|| {
-                    format!(
-                        "cursor-session probe: failed to query MAX(end_time) for {}",
-                        path_str
-                    )
-                })?;
-            if let Some(end) = max_end {
-                let lag = now_ms - end;
-                latest_lag = Some(latest_lag.map_or(lag, |p: i64| p.max(lag)));
-            }
-            continue;
-        }
-
-        // DB miss: parse to decide whether a row was even expected.
-        // `poll_tick` writes zero rows for a segment-less transcript (no user
-        // turn), so we must not assert a row exists for one. Mirror the real
-        // ingestion exactly by parsing with the same extractor it uses; a read
-        // error is transient (the poller will retry), so we skip rather than
-        // FAIL on it. This is the only branch that pays parse + redaction
-        // cost, so we lazy-load the redaction engine on first use.
-        let engine = match redaction.as_ref() {
-            Some(r) => r,
-            None => {
-                redaction = Some(crate::load_redaction_engine(config));
-                redaction.as_ref().expect("just set above")
-            }
-        };
-        let segment_count = match crate::cursor_session::extract_segments(path, *mtime_ms, engine) {
-            Ok(segs) => segs.len(),
-            Err(e) => {
-                warn!(
-                    "cursor-session probe: cannot parse {} ({e:#}) — skipping",
-                    path_str
-                );
-                continue;
-            }
-        };
-        if segment_count == 0 {
-            info!(
-                "cursor-session probe: {} yields no segments — no row expected, skipping",
-                path_str
+        if !matches {
+            warn!(
+                "claude-session probe: transcript contents not represented for {}",
+                jsonl_path.display()
             );
+            all_ok = false;
             continue;
         }
-        // Segment-bearing transcript with no row: genuine FAIL.
-        warn!("cursor-session probe: no row for {}", path_str);
-        all_ok = false;
+
+        // Only report a latency when the transcript contains a semantic event
+        // near its mtime. Metadata-only touches can be hours newer than the
+        // final event and do not define a meaningful capture lag.
+        if let Some(end) = latest_end
+            && mtime_ms.saturating_sub(end).abs() <= window_ms
+        {
+            let lag = now_ms.saturating_sub(end).max(0);
+            latest_lag = Some(latest_lag.map_or(lag, |prev| prev.max(lag)));
+        }
     }
+
     Ok((all_ok, latest_lag))
 }
 
@@ -671,246 +525,153 @@ fn write_probe_result(
 
 #[cfg(test)]
 mod tests {
-    use hippo_core::config::HippoConfig;
-    use std::path::{Path, PathBuf};
-    use std::time::{Duration, SystemTime};
+    use super::*;
+    use std::io::Write;
+    use tempfile::TempDir;
 
-    /// Build a `HippoConfig` whose data dir and cursor session root live under
-    /// `tmp`. The DB is created lazily by the probe via `storage::open_db`.
-    fn test_config(tmp: &Path, root: &Path) -> HippoConfig {
-        let data = tmp.join("data");
-        std::fs::create_dir_all(&data).unwrap();
+    #[test]
+    fn scheduled_probe_skips_disabled_auto_memory() {
+        let config = HippoConfig::default();
+        assert!(!config.auto_memory.enabled);
+        assert!(!should_run_auto_memory_probe(&config, true, None));
+    }
+
+    #[test]
+    fn explicit_auto_memory_probe_remains_available_when_disabled() {
+        let config = HippoConfig::default();
+        assert!(should_run_auto_memory_probe(
+            &config,
+            false,
+            Some("claude-auto-memory")
+        ));
+    }
+
+    fn claude_probe_fixture() -> (TempDir, HippoConfig, std::path::PathBuf) {
+        let temp = tempfile::tempdir().unwrap();
+        let projects_dir = temp.path().join("claude-projects");
+        let project_dir = projects_dir.join("-tmp-test");
+        std::fs::create_dir_all(&project_dir).unwrap();
+
         let mut config = HippoConfig::default();
-        config.storage.data_dir = data;
-        config.cursor.session_roots = vec![root.to_path_buf()];
-        config
-    }
+        config.storage.data_dir = temp.path().join("hippo-data");
+        std::fs::create_dir_all(&config.storage.data_dir).unwrap();
 
-    /// Write a transcript at `<root>/<slug>/agent-transcripts/<id>/<id>.jsonl`
-    /// with the given body, then backdate its mtime to `age` ago so it lands in
-    /// the probe's eligibility window. Returns the file path.
-    fn write_transcript(root: &Path, id: &str, body: &str, age: Duration) -> PathBuf {
-        let dir = root
-            .join("Users-x-projects-foo")
-            .join("agent-transcripts")
-            .join(id);
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join(format!("{id}.jsonl"));
-        std::fs::write(&path, body).unwrap();
-        let mtime = SystemTime::now() - age;
-        filetime::set_file_mtime(&path, filetime::FileTime::from_system_time(mtime)).unwrap();
-        path
-    }
-
-    /// A one-turn user+assistant transcript that yields exactly one segment.
-    fn user_transcript() -> String {
-        [
-            r#"{"role":"user","message":{"content":[{"type":"text","text":"<user_query>\nfix the build\n</user_query>"}]}}"#,
-            r#"{"role":"assistant","message":{"content":[{"type":"text","text":"On it."}]}}"#,
-        ]
-        .join("\n")
-    }
-
-    /// An assistant-only transcript: no user turn, so `extract_segments` yields
-    /// zero segments and `poll_tick` writes no row.
-    fn assistant_only_transcript() -> String {
-        r#"{"role":"assistant","message":{"content":[{"type":"text","text":"orphaned reply"}]}}"#
-            .to_string()
-    }
-
-    /// Ingest `path` through the real cursor pipeline so a matching
-    /// `agentic_sessions` row exists exactly as production would write it
-    /// (`source_file = path`, `end_time = file mtime`).
-    fn ingest(config: &HippoConfig, path: &Path) -> usize {
-        crate::cursor_session::ingest_one(config, path).unwrap()
+        (temp, config, project_dir)
     }
 
     #[test]
-    fn cursor_probe_trivial_pass_when_no_transcripts() {
-        let tmp = tempfile::tempdir().unwrap();
-        let config = test_config(tmp.path(), &tmp.path().join("nonexistent"));
-        let (ok, lag) = super::probe_cursor_session(&config).unwrap();
-        assert!(ok);
-        assert_eq!(lag, None);
-    }
+    fn claude_probe_ignores_metadata_only_mtime_changes() {
+        let (_temp, config, project_dir) = claude_probe_fixture();
+        let path = project_dir.join("session-touch.jsonl");
+        let mut file = std::fs::File::create(&path).unwrap();
+        writeln!(
+            file,
+            "{}",
+            crate::watch_claude_sessions::make_test_jsonl_line(
+                "session-touch",
+                1,
+                "user",
+                "old prompt"
+            )
+        )
+        .unwrap();
+        writeln!(
+            file,
+            "{}",
+            crate::watch_claude_sessions::make_test_jsonl_line(
+                "session-touch",
+                2,
+                "assistant",
+                "old reply"
+            )
+        )
+        .unwrap();
+        drop(file);
 
-    /// Happy path: an in-window transcript that yields a segment and has a
-    /// matching ingested row → (true, Some(lag)).
-    #[test]
-    fn cursor_probe_happy_path_in_window_with_row() {
-        let tmp = tempfile::tempdir().unwrap();
-        let root = tmp.path().join("roots");
-        let config = test_config(tmp.path(), &root);
-        // ~3 min old: past the 90 s settle, inside the 10 min window.
-        let path = write_transcript(
-            &root,
-            "happy-1",
-            &user_transcript(),
-            Duration::from_secs(180),
-        );
-        assert_eq!(ingest(&config, &path), 1, "expected one ingested segment");
-
-        let (ok, lag) = super::probe_cursor_session(&config).unwrap();
-        assert!(ok, "probe should pass when the in-window row exists");
-        let lag = lag.expect("happy path should report a lag");
-        assert!(lag >= 0, "lag must be non-negative, got {lag}");
-    }
-
-    /// Genuine failure: an in-window transcript that SHOULD have a row (it
-    /// yields a segment) but none was ingested → (false, _).
-    #[test]
-    fn cursor_probe_fails_when_expected_row_missing() {
-        let tmp = tempfile::tempdir().unwrap();
-        let root = tmp.path().join("roots");
-        let config = test_config(tmp.path(), &root);
-        // Settled, in-window, yields a segment — but we never ingest it.
-        write_transcript(
-            &root,
-            "missing-1",
-            &user_transcript(),
-            Duration::from_secs(180),
-        );
-
-        let (ok, _lag) = super::probe_cursor_session(&config).unwrap();
-        assert!(
-            !ok,
-            "probe must FAIL when a segment-bearing in-window transcript has no row"
-        );
-    }
-
-    /// Disabled-source guard (#3): with `[cursor] enabled = false` the poller
-    /// ingests nothing, so a settled segment-bearing transcript has no row — but
-    /// the probe must trivially PASS rather than write `probe_ok = 0` and trip
-    /// watchdog I-8 on an intentionally disabled source. Mirror of
-    /// `cursor_probe_fails_when_expected_row_missing` with the source disabled.
-    #[test]
-    fn cursor_probe_trivial_pass_when_disabled() {
-        let tmp = tempfile::tempdir().unwrap();
-        let root = tmp.path().join("roots");
-        let mut config = test_config(tmp.path(), &root);
-        config.cursor.enabled = false;
-        // Settled, in-window, segment-bearing — would FAIL if enabled, but it
-        // was never ingested because the source is off.
-        write_transcript(
-            &root,
-            "disabled-1",
-            &user_transcript(),
-            Duration::from_secs(180),
-        );
-
-        let (ok, lag) = super::probe_cursor_session(&config).unwrap();
-        assert!(ok, "disabled cursor probe must trivially pass, not FAIL");
-        assert_eq!(lag, None);
-    }
-
-    /// Zero-segment skip (finding #2): an assistant-only in-window transcript
-    /// correctly has no row, and the probe must treat that as a pass — not a
-    /// false FAIL.
-    #[test]
-    fn cursor_probe_skips_zero_segment_transcript() {
-        let tmp = tempfile::tempdir().unwrap();
-        let root = tmp.path().join("roots");
-        let config = test_config(tmp.path(), &root);
-        let path = write_transcript(
-            &root,
-            "empty-1",
-            &assistant_only_transcript(),
-            Duration::from_secs(180),
-        );
-        // Confirm the contract: real ingestion writes zero rows for this file.
+        let db = storage::open_db(&config.db_path()).unwrap();
         assert_eq!(
-            ingest(&config, &path),
-            0,
-            "assistant-only yields no segments"
+            crate::claude_session::ingest_session_file(&db, &path),
+            (1, 0, 0)
         );
-
-        let (ok, lag) = super::probe_cursor_session(&config).unwrap();
-        assert!(
-            ok,
-            "probe must pass: a segment-less transcript correctly has no row"
-        );
-        assert_eq!(lag, None, "no asserted rows → no lag");
-    }
-
-    /// High `min_idle_secs` non-blindness (finding #1): with `min_idle_secs =
-    /// 300`, the old `settle = 2 * min_idle = 600 s` collapsed the window to
-    /// empty so the probe trivial-passed even with a missing row. The fixed,
-    /// clamped settle keeps a ~200 s-old transcript in-window, so a missing
-    /// row is still caught.
-    #[test]
-    fn cursor_probe_not_blind_with_high_min_idle() {
-        let tmp = tempfile::tempdir().unwrap();
-        let root = tmp.path().join("roots");
-        let mut config = test_config(tmp.path(), &root);
-        config.cursor.min_idle_secs = 300;
-        // ~200 s old: would be excluded by the old 600 s settle floor, but is
-        // in-window now. It yields a segment and has no row → must FAIL.
-        write_transcript(
-            &root,
-            "blind-1",
-            &user_transcript(),
-            Duration::from_secs(200),
-        );
-
-        let (ok, _lag) = super::probe_cursor_session(&config).unwrap();
-        assert!(
-            !ok,
-            "probe must still assert (not be blind) when min_idle_secs is large"
-        );
-    }
-
-    /// Lag semantics (finding #3): lag is `now - MAX(end_time)` of the matched
-    /// rows, NOT the file's age (`now - mtime`). We insert a row whose
-    /// `end_time` is far in the past relative to the file's recent mtime, then
-    /// assert the reported lag reflects `end_time`, not mtime.
-    #[test]
-    fn cursor_probe_lag_reflects_end_time_not_mtime() {
-        let tmp = tempfile::tempdir().unwrap();
-        let root = tmp.path().join("roots");
-        let config = test_config(tmp.path(), &root);
-        // File mtime is ~3 min old. The row we insert below carries an
-        // end_time that is much more recent (~1 min ago) — distinct from the
-        // mtime but still inside the staleness guard (end_time >= mtime - window).
-        // If lag were `now - mtime` it would be ~180 s; because lag is
-        // `now - end_time` it must be ~60 s instead.
-        let file_age = Duration::from_secs(180);
-        let path = write_transcript(&root, "lag-1", &user_transcript(), file_age);
+        drop(db);
 
         let now_ms = chrono::Utc::now().timestamp_millis();
-        let end_time = now_ms - 60_000; // 1 min ago — recent, in-window.
-        let conn = hippo_core::storage::open_db(&config.db_path()).unwrap();
-        let seg = crate::cursor_session::CursorSegment {
-            session_id: "lag-1".into(),
-            project_dir: "foo".into(),
-            cwd: "/work/foo".into(),
-            segment_index: 0,
-            start_time: end_time,
-            end_time,
-            user_prompts: vec!["do a thing".into()],
-            assistant_texts: vec![],
-            tool_calls: vec![],
-            message_count: 1,
-            source_file: path.to_string_lossy().into_owned(),
-            is_subagent: false,
-            parent_session_id: None,
-        };
-        crate::cursor_session::upsert_segment(&conn, &seg).unwrap();
+        let (ok, lag) =
+            probe_claude_session_in_dir(&config, project_dir.parent().unwrap(), now_ms).unwrap();
+        assert!(ok, "an mtime-only touch must not fail transcript coverage");
+        assert_eq!(lag, None, "an old semantic event has no useful probe lag");
+    }
 
-        let (ok, lag) = super::probe_cursor_session(&config).unwrap();
-        assert!(ok, "row exists → probe passes");
-        let lag = lag.expect("should report lag");
-        let file_age_ms = file_age.as_millis() as i64;
-        // Lag tracks end_time (~60 s), which is well under the file's age
-        // (~180 s). If the probe still used `now - mtime` this would be ~180 s.
-        assert!(
-            lag < file_age_ms - 30_000,
-            "lag ({lag}ms) must reflect end_time (~60s), not file mtime (~{file_age_ms}ms)"
+    #[test]
+    fn claude_probe_detects_uningested_semantic_changes() {
+        let (_temp, config, project_dir) = claude_probe_fixture();
+        let path = project_dir.join("session-drift.jsonl");
+        let mut file = std::fs::File::create(&path).unwrap();
+        writeln!(
+            file,
+            "{}",
+            crate::watch_claude_sessions::make_test_jsonl_line(
+                "session-drift",
+                1,
+                "user",
+                "first prompt"
+            )
+        )
+        .unwrap();
+        writeln!(
+            file,
+            "{}",
+            crate::watch_claude_sessions::make_test_jsonl_line(
+                "session-drift",
+                2,
+                "assistant",
+                "first reply"
+            )
+        )
+        .unwrap();
+        drop(file);
+
+        let db = storage::open_db(&config.db_path()).unwrap();
+        assert_eq!(
+            crate::claude_session::ingest_session_file(&db, &path),
+            (1, 0, 0)
         );
-        // And it must be in the right neighbourhood of end_time (~60 s),
-        // allowing generous slack for test-execution time.
-        assert!(
-            (30_000..120_000).contains(&lag),
-            "lag ({lag}ms) should be ~60s (now - end_time)"
+
+        let mut file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap();
+        writeln!(
+            file,
+            "{}",
+            crate::watch_claude_sessions::make_test_jsonl_line(
+                "session-drift",
+                3,
+                "user",
+                "missed append"
+            )
+        )
+        .unwrap();
+        drop(file);
+        drop(db);
+
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        let (ok, _) =
+            probe_claude_session_in_dir(&config, project_dir.parent().unwrap(), now_ms).unwrap();
+        assert!(!ok, "an uningested semantic append must fail coverage");
+
+        let db = storage::open_db(&config.db_path()).unwrap();
+        assert_eq!(
+            crate::claude_session::ingest_session_file(&db, &path),
+            (1, 0, 0)
         );
+        drop(db);
+        let (ok, _) = probe_claude_session_in_dir(
+            &config,
+            project_dir.parent().unwrap(),
+            chrono::Utc::now().timestamp_millis(),
+        )
+        .unwrap();
+        assert!(ok, "ingesting the append must restore coverage");
     }
 }

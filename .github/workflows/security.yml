@@ -27,7 +27,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        # macOS on merges to main only, not every PR (macOS bills ~10x Linux).
+        # Coverage preserved at merge; revert to `[ubuntu-latest, macos-latest]`
+        # to require macOS pre-merge.
+        os: ${{ github.event_name == 'push' && fromJSON('["ubuntu-latest", "macos-latest"]') || fromJSON('["ubuntu-latest"]') }}
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v6

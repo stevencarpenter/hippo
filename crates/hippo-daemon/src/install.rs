@@ -30,6 +30,10 @@ pub fn render_plist(template: &str, vars: &PlistVars) -> String {
             "__VAULT_POLL_INTERVAL_SECS__",
             &vars.vault_poll_interval_secs.to_string(),
         )
+        .replace(
+            "__AUTO_MEMORY_POLL_INTERVAL_SECS__",
+            &vars.auto_memory_poll_interval_secs.to_string(),
+        )
 }
 
 pub struct PlistVars {
@@ -46,6 +50,7 @@ pub struct PlistVars {
     pub codex_poll_interval_secs: u64,
     pub cursor_poll_interval_secs: u64,
     pub vault_poll_interval_secs: u64,
+    pub auto_memory_poll_interval_secs: u64,
 }
 
 /// Auto-detect system paths for plist variable substitution.
@@ -80,6 +85,10 @@ pub fn detect_vars(brain_dir: &Path) -> Result<PlistVars> {
         .as_ref()
         .map(|c| c.vault.poll_interval_secs)
         .unwrap_or(300);
+    let auto_memory_poll_interval_secs = cfg
+        .as_ref()
+        .map(|c| c.auto_memory.poll_interval_secs)
+        .unwrap_or(60);
 
     let scripts_dir = brain_dir.join("scripts");
 
@@ -108,6 +117,7 @@ pub fn detect_vars(brain_dir: &Path) -> Result<PlistVars> {
         codex_poll_interval_secs,
         cursor_poll_interval_secs,
         vault_poll_interval_secs,
+        auto_memory_poll_interval_secs,
     })
 }
 
@@ -763,6 +773,7 @@ mod tests {
             codex_poll_interval_secs: 60,
             cursor_poll_interval_secs: 60,
             vault_poll_interval_secs: 300,
+            auto_memory_poll_interval_secs: 60,
         };
 
         let result = render_plist(template, &vars);
@@ -800,6 +811,7 @@ mod tests {
             codex_poll_interval_secs: 60,
             cursor_poll_interval_secs: 60,
             vault_poll_interval_secs: 300,
+            auto_memory_poll_interval_secs: 60,
         };
         let tmpl = "<integer>__VAULT_POLL_INTERVAL_SECS__</integer>";
         let out = render_plist(tmpl, &vars);
@@ -824,6 +836,7 @@ mod tests {
             codex_poll_interval_secs: 60,
             cursor_poll_interval_secs: 60,
             vault_poll_interval_secs: 300,
+            auto_memory_poll_interval_secs: 60,
         };
 
         let rendered = render_plist(template, &vars);

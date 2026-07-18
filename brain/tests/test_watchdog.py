@@ -148,6 +148,38 @@ def test_reaper_flips_stale_agentic_processing_to_pending(tmp_db):
     assert row[3] == 1
 
 
+def test_reaper_flips_stale_memory_processing_to_pending(tmp_db, tmp_path):
+    from hippo_brain.auto_memory import ingest_memory_file
+
+    conn, _ = tmp_db
+    now_ms = int(time.time() * 1000)
+    stale_at = now_ms - (DEFAULT_LOCK_TIMEOUT_MS + 60_000)
+
+    source = tmp_path / "MEMORY.md"
+    source.write_text("# A\n\nContent.\n")
+    ingested = ingest_memory_file(conn, source, repository="hippo", now_ms=now_ms)
+    # Simulate a worker that claimed the row then crashed before completing.
+    conn.execute(
+        "UPDATE memory_enrichment_queue SET status = 'processing', locked_at = ?, "
+        "locked_by = 'dead-worker' WHERE revision_id = ?",
+        (stale_at, ingested.revision_id),
+    )
+    conn.commit()
+
+    result = reap_stale_locks(conn, lock_timeout_ms=DEFAULT_LOCK_TIMEOUT_MS, now_ms=now_ms)
+
+    assert result["memory"] == 1
+    row = conn.execute(
+        "SELECT status, locked_at, locked_by, retry_count "
+        "FROM memory_enrichment_queue WHERE revision_id = ?",
+        (ingested.revision_id,),
+    ).fetchone()
+    assert row[0] == "pending"
+    assert row[1] is None
+    assert row[2] is None
+    assert row[3] == 1
+
+
 def test_reaper_ignores_fresh_locks(tmp_db):
     conn, _ = tmp_db
     now_ms = int(time.time() * 1000)

@@ -2,8 +2,8 @@ mod cli;
 mod install;
 
 use hippo_daemon::{
-    backfill, claude_session, codex_session, commands, cursor_session, daemon, gh_api, gh_poll,
-    opencode_session, watch_claude_sessions,
+    auto_memory_poll, backfill, claude_session, codex_session, commands, cursor_session, daemon,
+    gh_api, gh_poll, opencode_session, watch_auto_memory, watch_claude_sessions,
 };
 
 use anyhow::{Context, Result};
@@ -215,12 +215,7 @@ async fn main() -> Result<()> {
                 force,
                 brain_dir: brain_dir_arg,
             } => {
-                let brain_dir = brain_dir_arg.unwrap_or_else(|| {
-                    // Default to ~/.local/share/hippo-brain
-                    dirs::home_dir()
-                        .expect("cannot determine home directory")
-                        .join(".local/share/hippo-brain")
-                });
+                let brain_dir = brain_dir_arg.unwrap_or_else(hippo_core::config::default_brain_dir);
 
                 let vars = install::detect_vars(&brain_dir)?;
 
@@ -252,6 +247,9 @@ async fn main() -> Result<()> {
                 let cursor_session_was_loaded =
                     install::service_is_loaded("com.hippo.cursor-session");
                 let vault_sync_was_loaded = install::service_is_loaded("com.hippo.vault-sync");
+                let auto_memory_was_loaded = install::service_is_loaded("com.hippo.auto-memory");
+                let auto_memory_watcher_was_loaded =
+                    install::service_is_loaded("com.hippo.auto-memory-watcher");
                 let stack_was_active = daemon_was_loaded
                     || brain_was_loaded
                     || watchdog_was_loaded
@@ -261,7 +259,9 @@ async fn main() -> Result<()> {
                     || opencode_poll_was_loaded
                     || codex_session_was_loaded
                     || cursor_session_was_loaded
-                    || vault_sync_was_loaded;
+                    || vault_sync_was_loaded
+                    || auto_memory_was_loaded
+                    || auto_memory_watcher_was_loaded;
 
                 if brain_was_loaded {
                     print!("  Draining brain (waiting for in-flight requests)");
@@ -338,6 +338,20 @@ async fn main() -> Result<()> {
                     );
                     println!("  Stopped vault-sync");
                 }
+                if auto_memory_was_loaded {
+                    install::service_bootout(
+                        &domain,
+                        &launch_agents.join("com.hippo.auto-memory.plist"),
+                    );
+                    println!("  Stopped auto-memory");
+                }
+                if auto_memory_watcher_was_loaded {
+                    install::service_bootout(
+                        &domain,
+                        &launch_agents.join("com.hippo.auto-memory-watcher.plist"),
+                    );
+                    println!("  Stopped auto-memory-watcher");
+                }
                 // Always boot out the renamed legacy job on every reinstall so
                 // a stale com.hippo.xcode-codex-ingest plist cannot be
                 // re-bootstrapped by anything iterating LaunchAgents.
@@ -365,6 +379,10 @@ async fn main() -> Result<()> {
                     include_str!("../../../launchd/com.hippo.codex-session.plist");
                 let cursor_session_template =
                     include_str!("../../../launchd/com.hippo.cursor-session.plist");
+                let auto_memory_template =
+                    include_str!("../../../launchd/com.hippo.auto-memory.plist");
+                let auto_memory_watcher_template =
+                    include_str!("../../../launchd/com.hippo.auto-memory-watcher.plist");
                 let opencode_poll_template =
                     include_str!("../../../launchd/com.hippo.opencode-poll.plist");
                 let vault_sync_template =
@@ -415,6 +433,27 @@ async fn main() -> Result<()> {
                 } else {
                     println!("  (cursor source disabled; skipping cursor-session plist)");
                     install::remove_plist("com.hippo.cursor-session")?;
+                    false
+                };
+
+                let auto_memory_installed = if config.auto_memory.enabled {
+                    install::install_plist(
+                        "com.hippo.auto-memory",
+                        auto_memory_template,
+                        &vars,
+                        force,
+                    )?;
+                    install::install_plist(
+                        "com.hippo.auto-memory-watcher",
+                        auto_memory_watcher_template,
+                        &vars,
+                        force,
+                    )?;
+                    true
+                } else {
+                    println!("  (auto-memory source disabled; skipping auto-memory plist)");
+                    install::remove_plist("com.hippo.auto-memory")?;
+                    install::remove_plist("com.hippo.auto-memory-watcher")?;
                     false
                 };
 
@@ -547,6 +586,16 @@ async fn main() -> Result<()> {
                     vault_sync_was_loaded,
                     stack_was_active,
                 );
+                let auto_memory_started = install::should_start_optional_poll_agent(
+                    auto_memory_installed,
+                    auto_memory_was_loaded,
+                    stack_was_active,
+                );
+                let auto_memory_watcher_started = install::should_start_optional_poll_agent(
+                    auto_memory_installed,
+                    auto_memory_watcher_was_loaded,
+                    stack_was_active,
+                );
 
                 // Reload core services that were already running, and ensure
                 // installed support agents are loaded for an active stack.
@@ -605,6 +654,16 @@ async fn main() -> Result<()> {
                             "com.hippo.vault-sync.plist",
                             vault_sync_started,
                         ),
+                        (
+                            "auto-memory",
+                            "com.hippo.auto-memory.plist",
+                            auto_memory_started,
+                        ),
+                        (
+                            "auto-memory-watcher",
+                            "com.hippo.auto-memory-watcher.plist",
+                            auto_memory_watcher_started,
+                        ),
                     ];
                     for (label, plist, gated) in support_agents {
                         if !gated {
@@ -625,7 +684,9 @@ async fn main() -> Result<()> {
                     || (opencode_poll_installed && !opencode_poll_started)
                     || (codex_session_installed && !codex_session_started)
                     || (cursor_session_installed && !cursor_session_started)
-                    || (vault_sync_installed && !vault_sync_started);
+                    || (vault_sync_installed && !vault_sync_started)
+                    || (auto_memory_installed && !auto_memory_started)
+                    || (auto_memory_installed && !auto_memory_watcher_started);
                 if needs_manual_start {
                     println!();
                     println!("Load with:");
@@ -675,16 +736,24 @@ async fn main() -> Result<()> {
                             "  launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.hippo.vault-sync.plist"
                         );
                     }
+                    if auto_memory_installed && !auto_memory_started {
+                        println!(
+                            "  launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.hippo.auto-memory.plist"
+                        );
+                    }
+                    if auto_memory_installed && !auto_memory_watcher_started {
+                        println!(
+                            "  launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.hippo.auto-memory-watcher.plist"
+                        );
+                    }
                 }
             }
             DaemonAction::InstallOmlx { force } => {
                 // The omlx plist only references __HOME__/__PATH__/__DATA_DIR__,
                 // all of which PlistVars already provides. brain_dir is unused
                 // by the template but required to materialise PlistVars; the
-                // default is fine.
-                let brain_dir = dirs::home_dir()
-                    .context("cannot determine home directory")?
-                    .join(".local/share/hippo-brain");
+                // shared canonical resolver is fine.
+                let brain_dir = hippo_core::config::default_brain_dir();
                 let vars = install::detect_vars(&brain_dir)?;
                 let template = include_str!("../../../launchd/com.hippo.omlx.plist");
                 install::install_plist("com.hippo.omlx", template, &vars, force)?;
@@ -989,10 +1058,18 @@ async fn main() -> Result<()> {
                 _ => eprintln!("Unexpected response"),
             }
         }
-        Commands::ExportTraining { out: _, since: _ } => {
-            anyhow::bail!(
-                "Training export is not yet implemented. Use: uv run --project brain hippo-brain export"
-            );
+        Commands::ExportTraining { out, since } => {
+            let mut cmd = std::process::Command::new("uv");
+            cmd.args(["run", "--project", "brain", "hippo-brain", "export"])
+                .arg("--out")
+                .arg(&out);
+            if let Some(s) = &since {
+                cmd.arg("--since").arg(s);
+            }
+            let status = cmd.status()?;
+            if !status.success() {
+                anyhow::bail!("hippo-brain export failed (exit {status})");
+            }
         }
         Commands::Export { action } => match action {
             ExportAction::Vault { out, full } => {
@@ -1239,6 +1316,16 @@ async fn main() -> Result<()> {
                 std::process::exit(1);
             }
         },
+        Commands::AutoMemoryPoll => match auto_memory_poll::poll_tick(&config) {
+            Ok(n) => tracing::info!(changed = n, "auto-memory poll: completed"),
+            Err(e) => {
+                eprintln!("Error running auto-memory poll: {e:#}");
+                std::process::exit(1);
+            }
+        },
+        Commands::AutoMemoryWatch => {
+            watch_auto_memory::run(&config).await?;
+        }
         // BT-09: `hippo serve` is a foreground-run alias for `hippo daemon run`.
         // Honors the same logic so bench code (and any future operator
         // muscle-memory) doesn't have to know about the daemon subcommand

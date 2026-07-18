@@ -1,0 +1,23 @@
+"""Shared constants for Claude auto-memory ingestion."""
+
+from __future__ import annotations
+
+import uuid
+
+SOURCE_KIND = "claude-auto-memory"
+WATCHER_SOURCE = "auto-memory-watcher"
+# Synthetic probe fixture identity — excluded from all user-facing retrieval (AP-6).
+PROBE_REPOSITORY = "hippo/__hippo_probe__"
+PROBE_LOGICAL_PATH = "synthetic/probe-memory.md"
+CHUNKER_NAME = "markdown-headings"
+CHUNKER_VERSION = 1
+_IDENTITY_NAMESPACE = uuid.UUID("0fc25921-9c30-4c16-85da-b489ea81f087")
+DEFAULT_MAX_REVISION_COUNT = 20
+DEFAULT_MAX_REVISION_AGE_DAYS = 90
+DEFAULT_ABSENCE_CONFIRM_POLLS = 2
+_MAX_DIFF_CHARS = 16_384
+DEFAULT_DEBOUNCE_MS = 500
+DEFAULT_STABLE_IDLE_MS = 250
+DEFAULT_STABLE_SAMPLE_MS = 50
+DEFAULT_STABLE_TIMEOUT_MS = 10_000
+DEFAULT_RECONCILE_FALLBACK_SECS = 60

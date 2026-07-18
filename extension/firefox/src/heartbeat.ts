@@ -20,11 +20,19 @@ export const HEARTBEAT_INTERVAL_MS = 5 * 60 * 1000;
  * @param version - The extension version string (from `browser.runtime.getManifest().version`).
  * @param enabledState - Whether capture is currently enabled (`settings.enabled`).
  */
-export function buildHeartbeatPayload(version: string, enabledState: boolean): HippoHeartbeat {
-  return {
+export function buildHeartbeatPayload(
+  version: string,
+  enabledState: boolean,
+  lastErrorMsg?: string | null,
+): HippoHeartbeat {
+  const payload: HippoHeartbeat = {
     type: "heartbeat",
     extension_version: version,
     enabled_state: enabledState,
     sent_at_ms: Date.now(),
   };
+  if (lastErrorMsg) {
+    payload.last_error_msg = lastErrorMsg.slice(0, 512);
+  }
+  return payload;
 }

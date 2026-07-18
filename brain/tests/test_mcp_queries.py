@@ -52,28 +52,6 @@ def db():
             enriched INTEGER NOT NULL DEFAULT 0,
             probe_tag TEXT DEFAULT NULL
         );
-        CREATE TABLE claude_sessions (
-            id INTEGER PRIMARY KEY,
-            session_id TEXT NOT NULL,
-            project_dir TEXT NOT NULL,
-            cwd TEXT NOT NULL,
-            git_branch TEXT,
-            segment_index INTEGER NOT NULL,
-            start_time INTEGER NOT NULL,
-            end_time INTEGER NOT NULL,
-            summary_text TEXT NOT NULL,
-            tool_calls_json TEXT,
-            user_prompts_json TEXT,
-            message_count INTEGER NOT NULL,
-            token_count INTEGER,
-            source_file TEXT NOT NULL,
-            is_subagent INTEGER NOT NULL DEFAULT 0,
-            parent_session_id TEXT,
-            enriched INTEGER NOT NULL DEFAULT 0,
-            created_at INTEGER NOT NULL DEFAULT 0,
-            probe_tag TEXT DEFAULT NULL,
-            UNIQUE (session_id, segment_index)
-        );
         CREATE TABLE agentic_sessions (
             id INTEGER PRIMARY KEY,
             session_id TEXT NOT NULL,
@@ -138,11 +116,6 @@ def db():
             knowledge_node_id INTEGER NOT NULL,
             event_id INTEGER NOT NULL,
             PRIMARY KEY (knowledge_node_id, event_id)
-        );
-        CREATE TABLE knowledge_node_claude_sessions (
-            knowledge_node_id INTEGER NOT NULL,
-            claude_session_id INTEGER NOT NULL,
-            PRIMARY KEY (knowledge_node_id, claude_session_id)
         );
         CREATE TABLE knowledge_node_agentic_sessions (
             knowledge_node_id INTEGER NOT NULL,

@@ -37,6 +37,9 @@ const PROBE_INTERVAL_MS: i64 = 300_000;
 const LIVENESS_GRACE_MS: i64 = 120_000;
 const SHELL_LIVENESS_STALE_MS: i64 = PROBE_INTERVAL_MS + LIVENESS_GRACE_MS;
 const BROWSER_ROUNDTRIP_STALE_MS: i64 = PROBE_INTERVAL_MS + LIVENESS_GRACE_MS;
+const AUTO_MEMORY_WATCHER_STALE_MS: i64 = 15 * 60 * 1000;
+const AUTO_MEMORY_PROJECTION_STALE_MS: i64 = 30 * 60 * 1000;
+const AUTO_MEMORY_PROBE_REPOSITORY: &str = "hippo/__hippo_probe__";
 
 // DDL used by the pre-migration safety path only.  The authoritative definition
 // lives in `schema.sql` and `storage.rs`; this is a fallback for the case where
@@ -162,6 +165,7 @@ pub fn run(config: &HippoConfig) -> Result<()> {
     // knowledge_vectors shadow table and the agentic-node shadow table
     // respectively), not just the in-memory source_health rows.
     let mut violations = check_invariants(&rows, now_ms);
+    suppress_disabled_auto_memory_violations(&mut violations, config.auto_memory.enabled);
     // I-14 needs a DB query, not just source_health rows — checked here.
     if let Some(v) = check_i14_embedding_orphans(
         &conn,
@@ -179,6 +183,14 @@ pub fn run(config: &HippoConfig) -> Result<()> {
         i64::try_from(config.watchdog.dup_node_alarm_threshold).unwrap_or(i64::MAX),
     )? {
         violations.push(v);
+    }
+    if config.auto_memory.enabled && !bench_pause_window_active() {
+        if let Some(v) = check_i19_stale_memory_projection(&conn, now_ms)? {
+            violations.push(v);
+        }
+        if let Some(v) = check_i20_orphaned_memory_chunk_links(&conn, now_ms)? {
+            violations.push(v);
+        }
     }
 
     // ── Step 4: Insert capture_alarms rows for violations ─────────────────
@@ -215,42 +227,24 @@ pub fn run(config: &HippoConfig) -> Result<()> {
         })
         .to_string();
 
-        // Insert the alarm row, with a single retry on SQLITE_BUSY before
-        // giving up.  busy_timeout=5000 handles the common case; this retry
-        // covers the rare window where a second BUSY fires after the first
-        // timeout expires.  On persistent failure we log and continue so
-        // the remaining invariants are still evaluated.
-        let insert_result = conn.execute(
-            "INSERT INTO capture_alarms (invariant_id, raised_at, details_json)
-             VALUES (?1, ?2, ?3)",
-            rusqlite::params![&v.invariant_id, now_ms, &details_json],
-        );
+        let insert_result = crate::with_busy_retry("watchdog_alarm_insert", || {
+            conn.execute(
+                "INSERT INTO capture_alarms (invariant_id, raised_at, details_json)
+                 VALUES (?1, ?2, ?3)",
+                rusqlite::params![&v.invariant_id, now_ms, &details_json],
+            )
+            .map(|_| ())
+        });
         if let Err(e) = insert_result {
             if crate::is_sqlite_busy(&e) {
-                // BT-15: track contention for bench's "is this model causing
-                // write pressure?" diagnostic. Increment via the shared helper
-                // so post-review I-3 keeps every busy-count site's labelling
-                // consistent.
-                #[cfg(feature = "otel")]
-                {
-                    crate::metrics::record_db_busy(&e, "watchdog_alarm_insert");
-                }
-                std::thread::sleep(std::time::Duration::from_millis(100));
-                if let Err(retry_err) = conn.execute(
-                    "INSERT INTO capture_alarms (invariant_id, raised_at, details_json)
-                     VALUES (?1, ?2, ?3)",
-                    rusqlite::params![&v.invariant_id, now_ms, &details_json],
-                ) {
-                    error!(
-                        invariant = %v.invariant_id,
-                        error = %retry_err,
-                        "watchdog: alarm insert failed after SQLITE_BUSY retry; skipping"
-                    );
-                    continue;
-                }
-            } else {
-                return Err(e.into());
+                error!(
+                    invariant = %v.invariant_id,
+                    error = %e,
+                    "watchdog: alarm insert failed after SQLITE_BUSY retry; skipping"
+                );
+                continue;
             }
+            return Err(e.into());
         }
 
         error!(
@@ -322,6 +316,18 @@ pub fn run(config: &HippoConfig) -> Result<()> {
     crate::metrics::WATCHDOG_RUN.add(1, &[]);
 
     Ok(())
+}
+
+fn suppress_disabled_auto_memory_violations(
+    violations: &mut Vec<InvariantViolation>,
+    auto_memory_enabled: bool,
+) {
+    if auto_memory_enabled {
+        return;
+    }
+    violations.retain(|violation| {
+        violation.source != "claude-auto-memory" && violation.source != "auto-memory-watcher"
+    });
 }
 
 /// Returns `(active, resolved_unacked)` from `capture_alarms`. Errors are
@@ -479,10 +485,13 @@ pub fn check_invariants(rows: &[SourceHealthRow], now_ms: i64) -> Vec<InvariantV
     // I-3: Claude-tool concurrency — structured log only per spec; no alarm row.
     // Omitted from T-1; activated in future when probe data is available.
 
-    // I-4: Browser round-trip (>2 min stale while probe says active)
+    // I-4: Browser round-trip (stale events while extension heartbeat is fresh)
     // BT-16: suppressed during bench pause window.
-    if !bench_paused && let Some(v) = check_i4_browser_roundtrip(&by_source, now_ms) {
-        violations.push(v);
+    if !bench_paused {
+        let firefox_running = crate::browser_health::firefox_running();
+        if let Some(v) = check_i4_browser_roundtrip(&by_source, now_ms, firefox_running) {
+            violations.push(v);
+        }
     }
 
     // I-5: Drop visibility — architectural / OTel counter; no source_health proxy.
@@ -518,6 +527,16 @@ pub fn check_invariants(rows: &[SourceHealthRow], now_ms: i64) -> Vec<InvariantV
     // bench pauses prod brain enrichment but doesn't make preflight stop
     // running; a stuck preflight is real either way.
     if let Some(v) = check_i12_brain_preflight_stuck(&by_source, now_ms) {
+        violations.push(v);
+    }
+
+    // I-17: Auto-memory watcher heartbeat stale while ingest is active.
+    if !bench_paused && let Some(v) = check_i17_auto_memory_watcher(&by_source, now_ms) {
+        violations.push(v);
+    }
+
+    // I-18: Auto-memory reconcile/ingest repeated failures.
+    if !bench_paused && let Some(v) = check_i18_auto_memory_ingest_proxy(&by_source, now_ms) {
         violations.push(v);
     }
 
@@ -591,19 +610,25 @@ pub fn check_i2_claude_session_proxy(
 
 /// I-4: Browser round-trip.
 /// Fires when `browser.last_event_ts` is older than the probe cadence plus
-/// launchd/SQLite jitter grace **and**
-/// `browser.probe_ok = 1` (Firefox running + extension heartbeat fresh).
+/// launchd/SQLite jitter grace **and** `browser.last_heartbeat_ts` is fresh
+/// (within the 5-minute heartbeat cadence plus grace) — i.e. the extension is
+/// connected but the event round-trip (user visits or synthetic probe) has stalled.
 pub fn check_i4_browser_roundtrip(
     by_source: &std::collections::HashMap<&str, &SourceHealthRow>,
     now_ms: i64,
+    firefox_running: bool,
 ) -> Option<InvariantViolation> {
     let row = by_source.get("browser")?;
+
+    if !firefox_running {
+        return None;
+    }
 
     // Skip if the source has never delivered an event.
     let last_event = row.last_event_ts?;
 
-    // probe_ok = 1 encodes (Firefox running) AND (heartbeat fresh < 2 min).
-    if row.probe_ok != Some(1) {
+    let heartbeat = row.last_heartbeat_ts?;
+    if !crate::browser_health::browser_heartbeat_fresh(heartbeat, now_ms) {
         return None;
     }
 
@@ -656,6 +681,133 @@ pub fn check_i12_brain_preflight_stuck(
         });
     }
     None
+}
+
+/// I-17: Auto-memory watcher heartbeat stale while ingest has been active.
+pub fn check_i17_auto_memory_watcher(
+    by_source: &std::collections::HashMap<&str, &SourceHealthRow>,
+    now_ms: i64,
+) -> Option<InvariantViolation> {
+    let ingest = by_source.get("claude-auto-memory")?;
+    let watcher = by_source.get("auto-memory-watcher")?;
+    let ingest_ts = ingest.last_event_ts?;
+    if now_ms - ingest_ts > AUTO_MEMORY_WATCHER_STALE_MS * 4 {
+        return None;
+    }
+    let heartbeat = watcher.last_heartbeat_ts.or(watcher.last_success_ts)?;
+    let age_ms = now_ms - heartbeat;
+    if age_ms > AUTO_MEMORY_WATCHER_STALE_MS {
+        Some(InvariantViolation {
+            invariant_id: "I-17".to_string(),
+            source: "auto-memory-watcher".to_string(),
+            since_ms: age_ms,
+            details: json!({
+                "last_heartbeat_ts": watcher.last_heartbeat_ts,
+                "ingest_last_event_ts": ingest.last_event_ts,
+                "note": "FSEvents watcher or periodic reconcile may be stalled",
+            }),
+        })
+    } else {
+        None
+    }
+}
+
+/// I-18: Auto-memory reconcile/ingest repeated failures.
+pub fn check_i18_auto_memory_ingest_proxy(
+    by_source: &std::collections::HashMap<&str, &SourceHealthRow>,
+    now_ms: i64,
+) -> Option<InvariantViolation> {
+    let row = by_source.get("claude-auto-memory")?;
+    if row.consecutive_failures <= 3 {
+        return None;
+    }
+    let since = row.last_error_ts.or(row.last_event_ts).unwrap_or(now_ms);
+    Some(InvariantViolation {
+        invariant_id: "I-18".to_string(),
+        source: "claude-auto-memory".to_string(),
+        since_ms: now_ms - since,
+        details: json!({
+            "consecutive_failures": row.consecutive_failures,
+            "last_error_msg": row.last_error_msg.clone(),
+        }),
+    })
+}
+
+/// I-19: Stale searchable projection after source mutation.
+pub fn check_i19_stale_memory_projection(
+    conn: &Connection,
+    now_ms: i64,
+) -> Result<Option<InvariantViolation>> {
+    let table_exists: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='memory_documents')",
+        [],
+        |row| row.get(0),
+    )?;
+    if !table_exists {
+        return Ok(None);
+    }
+    let cutoff = now_ms - AUTO_MEMORY_PROJECTION_STALE_MS;
+    let count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM memory_documents
+         WHERE state = 'active'
+           AND projection_status = 'pending'
+           AND repository != ?1
+           AND updated_at < ?2",
+        rusqlite::params![AUTO_MEMORY_PROBE_REPOSITORY, cutoff],
+        |row| row.get(0),
+    )?;
+    if count == 0 {
+        return Ok(None);
+    }
+    Ok(Some(InvariantViolation {
+        invariant_id: "I-19".to_string(),
+        source: "claude-auto-memory".to_string(),
+        since_ms: AUTO_MEMORY_PROJECTION_STALE_MS,
+        details: json!({
+            "stale_projection_count": count,
+            "note": "active documents still pending enrichment projection",
+        }),
+    }))
+}
+
+/// I-20: Orphaned active memory chunk links (no knowledge node).
+pub fn check_i20_orphaned_memory_chunk_links(
+    conn: &Connection,
+    now_ms: i64,
+) -> Result<Option<InvariantViolation>> {
+    let table_exists: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master
+                       WHERE type='table' AND name='knowledge_node_memory_chunks')",
+        [],
+        |row| row.get(0),
+    )?;
+    if !table_exists {
+        return Ok(None);
+    }
+    let count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM memory_chunks mc
+         LEFT JOIN knowledge_node_memory_chunks knmc ON knmc.memory_chunk_id = mc.id
+         JOIN memory_revisions mr ON mr.id = mc.revision_id
+         JOIN memory_documents md ON md.id = mr.document_id
+         WHERE md.active_revision_id = mr.id
+           AND md.state = 'active'
+           AND md.repository != ?1
+           AND knmc.knowledge_node_id IS NULL",
+        rusqlite::params![AUTO_MEMORY_PROBE_REPOSITORY],
+        |row| row.get(0),
+    )?;
+    if count == 0 {
+        return Ok(None);
+    }
+    Ok(Some(InvariantViolation {
+        invariant_id: "I-20".to_string(),
+        source: "claude-auto-memory".to_string(),
+        since_ms: 0,
+        details: json!({
+            "orphan_chunk_links": count,
+            "checked_at_ms": now_ms,
+        }),
+    }))
 }
 
 /// I-11: Opencode-session coverage proxy.
@@ -1461,7 +1613,7 @@ mod tests {
     // ── I-4 ────────────────────────────────────────────────────────────────
 
     #[test]
-    fn watchdog_i4_fires_when_stale_and_probe_active() {
+    fn watchdog_i4_fires_when_stale_and_heartbeat_fresh() {
         let row = SourceHealthRow {
             last_event_ts: Some(NOW - 480_000), // beyond 5 min cadence + grace
             probe_ok: Some(1),
@@ -1469,7 +1621,7 @@ mod tests {
             ..blank_row("browser")
         };
         let rows = vec![row];
-        let result = check_i4_browser_roundtrip(&by_source(&rows), NOW);
+        let result = check_i4_browser_roundtrip(&by_source(&rows), NOW, true);
         assert!(result.is_some());
         let v = result.unwrap();
         assert_eq!(v.invariant_id, "I-4");
@@ -1486,7 +1638,7 @@ mod tests {
         };
         let rows = vec![row];
         assert!(
-            check_i4_browser_roundtrip(&by_source(&rows), NOW).is_none(),
+            check_i4_browser_roundtrip(&by_source(&rows), NOW, true).is_none(),
             "browser liveness should tolerate the normal 5 minute probe cadence"
         );
     }
@@ -1495,22 +1647,25 @@ mod tests {
     fn watchdog_i4_suppressed_when_fresh() {
         let row = SourceHealthRow {
             last_event_ts: Some(NOW - 60_000), // 1 min < 2 min threshold
-            probe_ok: Some(1),
+            last_heartbeat_ts: Some(NOW - 60_000),
             ..blank_row("browser")
         };
         let rows = vec![row];
-        assert!(check_i4_browser_roundtrip(&by_source(&rows), NOW).is_none());
+        assert!(check_i4_browser_roundtrip(&by_source(&rows), NOW, true).is_none());
     }
 
     #[test]
-    fn watchdog_i4_suppressed_when_probe_not_active() {
+    fn watchdog_i4_suppressed_when_heartbeat_stale() {
         let row = SourceHealthRow {
-            last_event_ts: Some(NOW - 300_000),
-            probe_ok: Some(0), // extension not active / Firefox not running
+            last_event_ts: Some(NOW - 480_000),
+            last_heartbeat_ts: Some(NOW - 500_000), // beyond 7 min cadence window
             ..blank_row("browser")
         };
         let rows = vec![row];
-        assert!(check_i4_browser_roundtrip(&by_source(&rows), NOW).is_none());
+        assert!(
+            check_i4_browser_roundtrip(&by_source(&rows), NOW, true).is_none(),
+            "stale heartbeat means extension is not connected — I-4 must not fire"
+        );
     }
 
     // ── I-8 ────────────────────────────────────────────────────────────────
@@ -2006,6 +2161,28 @@ mod tests {
         let result = check_i15_cursor_coverage_proxy(&by_source(&rows), NOW).unwrap();
         assert_eq!(result.invariant_id, "I-15");
         assert_eq!(result.since_ms, 45_000);
+    }
+
+    #[test]
+    fn disabled_auto_memory_suppresses_probe_violations() {
+        let rows = vec![SourceHealthRow {
+            probe_ok: Some(0),
+            probe_last_run_ts: Some(NOW - 30_000),
+            ..blank_row("claude-auto-memory")
+        }];
+        let mut violations = check_invariants(&rows, NOW);
+        assert!(
+            violations
+                .iter()
+                .any(|v| v.invariant_id == "I-8" && v.source == "claude-auto-memory")
+        );
+
+        suppress_disabled_auto_memory_violations(&mut violations, false);
+        assert!(violations.is_empty());
+
+        let mut enabled = check_invariants(&rows, NOW);
+        suppress_disabled_auto_memory_violations(&mut enabled, true);
+        assert_eq!(enabled.len(), 1);
     }
 
     /// check_invariants must return an empty Vec when no violations exist.

@@ -47,7 +47,8 @@ CREATE TABLE events (
     timestamp INTEGER NOT NULL,
     cwd TEXT NOT NULL,
     git_repo TEXT,
-    git_branch TEXT
+    git_branch TEXT,
+    probe_tag TEXT
 );
 CREATE TABLE knowledge_node_events (
     knowledge_node_id INTEGER NOT NULL,
@@ -56,11 +57,17 @@ CREATE TABLE knowledge_node_events (
 );
 CREATE TABLE agentic_sessions (
     id INTEGER PRIMARY KEY,
+    session_id TEXT NOT NULL DEFAULT '',
     harness TEXT NOT NULL DEFAULT 'claude-code',
+    segment_index INTEGER NOT NULL DEFAULT 0,
     start_time INTEGER NOT NULL,
+    end_time INTEGER NOT NULL,
     cwd TEXT NOT NULL,
     project_dir TEXT,
     git_branch TEXT,
+    summary_text TEXT NOT NULL DEFAULT 'session work',
+    message_count INTEGER NOT NULL DEFAULT 5,
+    source_file TEXT NOT NULL DEFAULT '/proj/session.jsonl',
     probe_tag TEXT
 );
 CREATE TABLE knowledge_node_agentic_sessions (
@@ -76,7 +83,10 @@ CREATE TABLE browser_events (
 CREATE TABLE workflow_runs (
     id INTEGER PRIMARY KEY,
     repo TEXT,
-    head_sha TEXT
+    head_sha TEXT,
+    status TEXT NOT NULL DEFAULT 'completed',
+    conclusion TEXT DEFAULT 'success',
+    started_at INTEGER
 );
 CREATE TABLE knowledge_node_browser_events (
     knowledge_node_id INTEGER NOT NULL,
@@ -222,9 +232,20 @@ def _link_claude(
 ) -> None:
     conn.execute(
         "INSERT INTO agentic_sessions"
-        " (id, harness, start_time, cwd, project_dir, git_branch, probe_tag)"
-        " VALUES (?, ?, ?, ?, ?, ?, ?)",
-        (session_id, harness, start_time, cwd, project_dir, branch, probe_tag),
+        " (id, session_id, harness, segment_index, start_time, end_time, cwd, project_dir,"
+        " git_branch, summary_text, message_count, source_file, probe_tag)"
+        " VALUES (?, ?, ?, 0, ?, ?, ?, ?, ?, 'session work', 5, '/proj/session.jsonl', ?)",
+        (
+            session_id,
+            f"sess-{session_id}",
+            harness,
+            start_time,
+            start_time + 60_000,
+            cwd,
+            project_dir,
+            branch,
+            probe_tag,
+        ),
     )
     conn.execute(
         "INSERT INTO knowledge_node_agentic_sessions"
@@ -235,8 +256,9 @@ def _link_claude(
 
 def _link_workflow(conn: sqlite3.Connection, node_id: int, run_id: int) -> None:
     conn.execute(
-        "INSERT OR IGNORE INTO workflow_runs (id, repo, head_sha) VALUES (?, ?, ?)",
-        (run_id, "owner/repo", "deadbeef"),
+        "INSERT OR IGNORE INTO workflow_runs (id, repo, head_sha, status, conclusion, started_at) "
+        "VALUES (?, ?, ?, 'completed', 'success', ?)",
+        (run_id, "owner/repo", "deadbeef", 1_700_000_000_000),
     )
     conn.execute(
         "INSERT INTO knowledge_node_workflow_runs (knowledge_node_id, run_id) VALUES (?, ?)",
@@ -638,14 +660,14 @@ def test_linked_source_ids_cover_all_four_sources(conn):
 
 
 def test_linked_source_ids_excludes_probe_browser_events(conn):
-    """Probe browser events must never surface (AP-6 defense-in-depth)."""
+    """Probe-only nodes must not appear in user-facing retrieval (AP-6)."""
     _insert_node(conn, 1, summary="probe-guard")
     _link_browser(conn, 1, 20, probe_tag="canary-x")
 
     backend = FakeBackend(fts=[(1, -1.0)])
-    [result] = search(conn, "q", None, Filters(), mode="lexical", limit=5, backend=backend)
+    results = search(conn, "q", None, Filters(), mode="lexical", limit=5, backend=backend)
 
-    assert result.linked_source_ids == []
+    assert results == []
 
 
 def test_constants_match_spec():
@@ -829,6 +851,35 @@ def test_fetch_details_skips_probe_agentic_session(tmp_db):
     details = _fetch_details(conn, [1])
     assert details[1]["cwd"] == ""
     assert details[1]["captured_at"] == 1000
+
+
+def test_project_filter_includes_auto_memory_nodes(tmp_db, tmp_path):
+    """A project-scoped filter must keep auto-memory nodes (matched by repository).
+
+    Auto-memory nodes link only via knowledge_node_memory_chunks, so the project
+    clause must reach memory_documents.repository — otherwise RAG/`hippo ask`
+    silently drops memory nodes that MCP search returns.
+    """
+    from hippo_brain.auto_memory import ingest_memory_file, write_memory_knowledge_node
+    from hippo_brain.models import EnrichmentResult
+
+    conn, _ = tmp_db
+    source = tmp_path / "MEMORY.md"
+    source.write_text("# Build\n\nUse cargo.\n")
+    ingested = ingest_memory_file(conn, source, repository="hippo", now_ms=1000)
+    result = EnrichmentResult(
+        summary="Cargo build.",
+        intent="document",
+        outcome="success",
+        tags=["build"],
+        embed_text="cargo build hippo",
+    )
+    node_id = write_memory_knowledge_node(
+        conn, result, ingested.revision_id, "mock-model", now_ms=2000
+    )
+
+    assert _apply_filters(conn, [node_id], Filters(project="hippo")) == {node_id}
+    assert _apply_filters(conn, [node_id], Filters(project="not-a-match")) == set()
 
 
 def test_source_clause_claude_matches_agentic_link(tmp_db):

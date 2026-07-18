@@ -821,7 +821,90 @@ fn extract_segments(
         segments.push(last);
     }
 
-    Ok(segments)
+    Ok(collapse_adjacent_identical_segments(segments))
+}
+
+/// Verify that the current semantic contents of a Claude transcript are
+/// represented exactly in `agentic_sessions`.
+///
+/// File modification time is deliberately not part of this comparison.
+/// Claude may rewrite transcript metadata (for example titles or permission
+/// state) long after the final timestamped conversation entry, so treating
+/// mtime as conversation time creates false probe failures. Comparing the
+/// extracted segment hashes still detects an append or rewrite that the
+/// watcher has not ingested.
+pub(crate) fn session_file_matches_db(
+    conn: &Connection,
+    path: &Path,
+) -> Result<(bool, Option<i64>)> {
+    let redaction = RedactionEngine::builtin();
+    let session_file = SessionFile::from_path(path);
+    let segments = extract_segments(&session_file, &redaction)?;
+
+    let mut stmt = conn.prepare(
+        "SELECT segment_index, content_hash
+         FROM agentic_sessions
+         WHERE source_file = ?1
+           AND harness = 'claude-code'
+           AND probe_tag IS NULL",
+    )?;
+    let stored = stmt
+        .query_map([path.to_string_lossy().as_ref()], |row| {
+            Ok((row.get::<_, i64>(0)?, row.get::<_, Option<String>>(1)?))
+        })?
+        .collect::<rusqlite::Result<HashMap<_, _>>>()?;
+
+    let matches = stored.len() == segments.len()
+        && segments.iter().all(|segment| {
+            stored
+                .get(&segment.segment_index)
+                .and_then(Option::as_deref)
+                .is_some_and(|hash| hash == compute_segment_content_hash(segment))
+        });
+    let latest_end = segments.iter().map(|segment| segment.end_time).max();
+
+    Ok((matches, latest_end))
+}
+
+/// Return the newest timestamp carried by an extractable semantic segment.
+///
+/// Callers use this instead of filesystem mtime when deciding whether a
+/// Claude transcript is active. Claude may retouch completed files for
+/// metadata-only changes hours after the conversation ended.
+pub(crate) fn session_file_latest_event_ms(path: &Path) -> Result<Option<i64>> {
+    // Redaction is skipped deliberately. `doctor` calls this for every
+    // recently-touched transcript (against a sub-2s budget), and the only value
+    // read back is `end_time` — a parsed timestamp. Segment boundaries key off
+    // `current_chars`, which `extract_segments` accumulates from the RAW text
+    // length before redaction runs, so a no-op engine yields byte-identical
+    // timestamps while skipping the per-line regex pass. Unlike
+    // `session_file_matches_db`, no redacted text is hashed or stored here, so
+    // there is no secret-exposure surface.
+    let redaction = RedactionEngine::disabled();
+    let session_file = SessionFile::from_path(path);
+    Ok(extract_segments(&session_file, &redaction)?
+        .iter()
+        .map(|segment| segment.end_time)
+        .max())
+}
+
+/// Drop a trailing segment when it is byte-for-byte identical to its predecessor.
+///
+/// Watcher re-parses occasionally produced adjacent `segment_index` values with
+/// identical enrichment content (SNUG-101). Collapsing here keeps ingest idempotent
+/// without touching rows already in SQLite.
+fn collapse_adjacent_identical_segments(mut segments: Vec<SessionSegment>) -> Vec<SessionSegment> {
+    while segments.len() >= 2 {
+        let n = segments.len();
+        if compute_segment_content_hash(&segments[n - 2])
+            == compute_segment_content_hash(&segments[n - 1])
+        {
+            segments.pop();
+        } else {
+            break;
+        }
+    }
+    segments
 }
 
 /// Build the human-readable `summary_text` column shipped to enrichment.
@@ -925,7 +1008,10 @@ fn decide_enqueue(
 /// The upsert uses `ON CONFLICT (session_id, harness, segment_index) DO UPDATE` so
 /// every watcher reparse keeps the DB in sync with the latest file content.
 /// `last_enriched_content_hash` is NOT touched here — only the brain sets it.
-fn insert_segments(conn: &Connection, segments: &[SessionSegment]) -> Result<(usize, usize)> {
+fn insert_segments(
+    conn: &Connection,
+    segments: &[SessionSegment],
+) -> rusqlite::Result<(usize, usize)> {
     let mut inserted = 0usize;
     let mut skipped = 0usize;
     let now_ms = Utc::now().timestamp_millis();
@@ -1129,6 +1215,25 @@ fn insert_segments(conn: &Connection, segments: &[SessionSegment]) -> Result<(us
     Ok((inserted, skipped))
 }
 
+/// Insert segments with a single SQLITE_BUSY retry. Shared by the FS watcher
+/// (`ingest_session_file`) and batch CLI (`write_session_segments`).
+fn try_insert_segments(conn: &Connection, segments: &[SessionSegment]) -> (usize, usize, usize) {
+    match crate::with_busy_retry("claude_session_insert", || insert_segments(conn, segments)) {
+        Ok((inserted, skipped)) => (inserted, skipped, 0),
+        Err(e) => {
+            if crate::is_sqlite_busy(&e) {
+                error!(
+                    %e,
+                    "failed to insert session segments after SQLITE_BUSY retry"
+                );
+            } else {
+                error!(%e, "failed to insert session segments");
+            }
+            (0, 0, 1)
+        }
+    }
+}
+
 /// Extract segments from a JSONL session file and insert them into the given
 /// connection. Used by the FS watcher (per-event invocation in a `spawn_blocking`
 /// task with its own connection). Returns `(inserted, skipped, errors)`.
@@ -1148,13 +1253,7 @@ pub fn ingest_session_file(conn: &Connection, path: &Path) -> (usize, usize, usi
         return (0, 0, 0);
     }
 
-    match insert_segments(conn, &segments) {
-        Ok((inserted, skipped)) => (inserted, skipped, 0),
-        Err(e) => {
-            error!(%e, "failed to insert session segments");
-            (0, 0, 1)
-        }
-    }
+    try_insert_segments(conn, &segments)
 }
 
 fn write_session_segments(db_path: &Path, path: &Path) -> (usize, usize, usize) {
@@ -1181,13 +1280,7 @@ fn write_session_segments(db_path: &Path, path: &Path) -> (usize, usize, usize) 
         }
     };
 
-    match insert_segments(&conn, &segments) {
-        Ok((inserted, skipped)) => (inserted, skipped, 0),
-        Err(e) => {
-            error!(%e, "failed to insert claude_sessions segments");
-            (0, 0, 1)
-        }
-    }
+    try_insert_segments(&conn, &segments)
 }
 
 /// Run the importer in batch mode: read all lines, send all events, exit.
@@ -1310,6 +1403,56 @@ mod tests {
         assert_eq!(
             format_tool_command("Bash", &input),
             "cargo test -p hippo-core"
+        );
+    }
+
+    /// `session_file_latest_event_ms` uses the no-op redaction engine for speed.
+    /// Lock in that this yields the SAME `end_time` the builtin (secret-redacting)
+    /// engine produces — even when the transcript contains a secret that builtin
+    /// actually rewrites — so the doctor/probe timestamp cannot silently diverge.
+    #[test]
+    fn latest_event_ms_matches_builtin_extraction_end_time() {
+        use crate::watch_claude_sessions::make_test_jsonl_line;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let session_id = "equiv-session";
+        let path = tmp.path().join(format!("{session_id}.jsonl"));
+        // Include an AWS key so builtin redaction genuinely rewrites the text;
+        // `ts_offset_secs` 0/5/9 make the newest event deterministic.
+        let content = [
+            make_test_jsonl_line(session_id, 0, "user", "start AKIAIOSFODNN7EXAMPLE"),
+            make_test_jsonl_line(session_id, 5, "assistant", "working AKIAIOSFODNN7EXAMPLE"),
+            make_test_jsonl_line(session_id, 9, "user", "done"),
+        ]
+        .join("\n");
+        std::fs::write(&path, content).unwrap();
+
+        // Builtin path (what the probe's session_file_matches_db uses).
+        let builtin_segments =
+            extract_segments(&SessionFile::from_path(&path), &RedactionEngine::builtin()).unwrap();
+        let builtin_end = builtin_segments.iter().map(|s| s.end_time).max();
+
+        // The no-op path under review.
+        let disabled_end = session_file_latest_event_ms(&path).unwrap();
+
+        assert_eq!(
+            disabled_end, builtin_end,
+            "disabled-redaction end_time must equal builtin-redaction end_time"
+        );
+        assert_eq!(
+            disabled_end,
+            Some((1_700_000_000 + 9) * 1000),
+            "newest event is the last user prompt"
+        );
+        // Sanity: redaction really does differ between the two engines, so the
+        // equivalence above is a real invariant and not a trivial no-secret case.
+        assert!(
+            builtin_segments.iter().any(|s| s
+                .user_prompts
+                .iter()
+                .chain(&s.assistant_texts)
+                .any(|t| t.contains("[REDACTED]"))),
+            "builtin must have redacted the AWS key"
         );
     }
 
@@ -2114,6 +2257,27 @@ mod tests {
     }
 
     #[test]
+    fn test_collapse_adjacent_identical_trailing_segment() {
+        let first = make_test_segment("session-dup-001", 0);
+        let mut duplicate = first.clone();
+        duplicate.segment_index = 1;
+        let collapsed = collapse_adjacent_identical_segments(vec![first, duplicate]);
+        assert_eq!(collapsed.len(), 1);
+        assert_eq!(collapsed[0].segment_index, 0);
+    }
+
+    #[test]
+    fn test_collapse_adjacent_identical_keeps_distinct_segments() {
+        let mut second = make_test_segment("session-dup-002", 1);
+        second.user_prompts.push("follow-up".to_string());
+        let collapsed = collapse_adjacent_identical_segments(vec![
+            make_test_segment("session-dup-002", 0),
+            second,
+        ]);
+        assert_eq!(collapsed.len(), 2);
+    }
+
+    #[test]
     fn test_upsert_inserts_new_segment() {
         let conn = open_test_db();
         let seg = make_test_segment("session-new-001", 0);
@@ -2385,5 +2549,81 @@ mod tests {
             queue_count, 0,
             "empty segment must not produce an agentic_enrichment_queue row"
         );
+    }
+
+    // ─── SNUG-110: SQLITE_BUSY retry ─────────────────────────────────────────
+
+    fn write_single_exchange_jsonl(path: &Path, session_id: &str) {
+        use crate::watch_claude_sessions::make_test_jsonl_line;
+        let content = format!(
+            "{}\n{}\n{}\n",
+            make_test_jsonl_line(session_id, 0, "system", "init"),
+            make_test_jsonl_line(session_id, 1, "user", "hello"),
+            make_test_jsonl_line(session_id, 2, "assistant", "hi"),
+        );
+        std::fs::write(path, content).unwrap();
+    }
+
+    #[test]
+    fn test_ingest_session_file_retries_transient_busy() {
+        use std::sync::{Arc, Barrier};
+        use std::time::Duration;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let db_path = tmp.path().join("test.db");
+        let session_id = "busy-retry-session-001";
+        let jsonl_path = tmp.path().join(format!("{session_id}.jsonl"));
+        write_single_exchange_jsonl(&jsonl_path, session_id);
+
+        let barrier = Arc::new(Barrier::new(2));
+        let db_path_lock = db_path.clone();
+        let barrier_holder = barrier.clone();
+
+        let holder = std::thread::spawn(move || {
+            let conn = hippo_core::storage::open_db(&db_path_lock).unwrap();
+            conn.execute_batch("BEGIN IMMEDIATE").unwrap();
+            barrier_holder.wait();
+            std::thread::sleep(Duration::from_millis(50));
+            conn.execute_batch("COMMIT").unwrap();
+        });
+
+        barrier.wait();
+        let conn = hippo_core::storage::open_db(&db_path).unwrap();
+        conn.busy_timeout(Duration::from_millis(0)).unwrap();
+        let (inserted, _skipped, errors) = ingest_session_file(&conn, &jsonl_path);
+        holder.join().unwrap();
+
+        assert_eq!(errors, 0);
+        assert!(inserted > 0);
+    }
+
+    #[test]
+    fn test_try_insert_segments_retries_transient_busy() {
+        use std::sync::{Arc, Barrier};
+        use std::time::Duration;
+
+        let conn = open_test_db();
+        let db_path = std::path::PathBuf::from(conn.path().unwrap());
+        let seg = make_test_segment("busy-shared-session-001", 0);
+
+        let barrier = Arc::new(Barrier::new(2));
+        let db_path_lock = db_path.clone();
+        let barrier_holder = barrier.clone();
+
+        let holder = std::thread::spawn(move || {
+            let locker = hippo_core::storage::open_db(&db_path_lock).unwrap();
+            locker.execute_batch("BEGIN IMMEDIATE").unwrap();
+            barrier_holder.wait();
+            std::thread::sleep(Duration::from_millis(50));
+            locker.execute_batch("COMMIT").unwrap();
+        });
+
+        barrier.wait();
+        conn.busy_timeout(Duration::from_millis(0)).unwrap();
+        let (inserted, _skipped, errors) = try_insert_segments(&conn, std::slice::from_ref(&seg));
+        holder.join().unwrap();
+
+        assert_eq!(errors, 0);
+        assert_eq!(inserted, 1);
     }
 }

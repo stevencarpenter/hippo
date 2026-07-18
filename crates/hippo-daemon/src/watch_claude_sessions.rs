@@ -45,7 +45,7 @@ const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(30);
 const BACKOFF_DURATION: Duration = Duration::from_secs(60);
 const PER_FILE_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// Per-file tracking state (in memory; persisted to `claude_session_offsets`).
+/// Per-file tracking state (in memory; persisted to `agentic_session_offsets`).
 #[derive(Default)]
 struct FileState {
     byte_offset: u64,
@@ -56,11 +56,11 @@ struct FileState {
     cooldown_until: Option<Instant>,
 }
 
-/// Load all saved offsets from `claude_session_offsets` into memory.
+/// Load all saved offsets from `agentic_session_offsets` into memory.
 fn load_offsets(conn: &Connection) -> Result<HashMap<PathBuf, FileState>> {
     let mut stmt = conn.prepare(
         "SELECT path, byte_offset, inode, device, size_at_last_read
-         FROM claude_session_offsets",
+         FROM agentic_session_offsets",
     )?;
     let rows = stmt.query_map([], |row| {
         Ok((
@@ -89,12 +89,12 @@ fn load_offsets(conn: &Connection) -> Result<HashMap<PathBuf, FileState>> {
     Ok(map)
 }
 
-/// Persist a file's offset to `claude_session_offsets`.
+/// Persist a file's offset to `agentic_session_offsets`.
 fn save_offset(conn: &Connection, path: &Path, state: &FileState) -> Result<()> {
     let now_ms = Utc::now().timestamp_millis();
     let session_id = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
     conn.execute(
-        "INSERT INTO claude_session_offsets
+        "INSERT INTO agentic_session_offsets
              (path, session_id, byte_offset, inode, device, size_at_last_read, updated_at)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
          ON CONFLICT(path) DO UPDATE SET
@@ -815,6 +815,49 @@ mod tests {
             re_inserted, 0,
             "re-process with no new content should insert 0"
         );
+    }
+
+    #[tokio::test]
+    async fn process_file_no_cooldown_when_insert_succeeds_under_contention() {
+        use std::sync::{Arc, Barrier};
+        use std::time::Duration;
+
+        let dir = TempDir::new().unwrap();
+        let db_path = dir.path().join("test.db");
+        open_db(&db_path).expect("init test db");
+
+        let session_id = "busy-watcher-session-001";
+        let jsonl_path = dir.path().join(format!("{session_id}.jsonl"));
+        let content = [
+            j(session_id, 0, "system", "init"),
+            j(session_id, 1, "user", "hello"),
+            j(session_id, 2, "assistant", "hi"),
+        ]
+        .join("\n")
+            + "\n";
+        std::fs::write(&jsonl_path, &content).unwrap();
+
+        let barrier = Arc::new(Barrier::new(2));
+        let db_path_lock = db_path.clone();
+        let barrier_holder = barrier.clone();
+        let holder = std::thread::spawn(move || {
+            let conn = open_db(&db_path_lock).unwrap();
+            conn.execute_batch("BEGIN IMMEDIATE").unwrap();
+            barrier_holder.wait();
+            std::thread::sleep(Duration::from_millis(50));
+            conn.execute_batch("COMMIT").unwrap();
+        });
+
+        barrier.wait();
+        let mut state = FileState::default();
+        let inserted = process_file(&jsonl_path, &mut state, &db_path)
+            .await
+            .unwrap();
+        holder.join().unwrap();
+
+        assert!(inserted > 0);
+        assert!(state.cooldown_until.is_none());
+        assert_eq!(state.byte_offset, content.len() as u64);
     }
 
     #[tokio::test]
