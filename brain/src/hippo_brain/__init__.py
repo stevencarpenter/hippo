@@ -31,6 +31,7 @@ def _default_settings() -> dict:
         "embed_reaper_interval_secs": 300,
         "embed_reaper_batch_size": 50,
         "embed_orphan_stale_secs": 900,
+        "retrieval": {},
     }
 
 
@@ -88,16 +89,19 @@ def _load_runtime_settings() -> dict:
         "embed_reaper_interval_secs": reaper.get("interval_secs", 300),
         "embed_reaper_batch_size": reaper.get("batch_size", 50),
         "embed_orphan_stale_secs": reaper.get("orphan_stale_secs", 900),
+        "retrieval": config.get("retrieval", {}),
     }
 
 
 def _cmd_serve(args: object) -> None:
     import uvicorn
 
+    from hippo_brain import retrieval
     from hippo_brain.server import create_app
     from hippo_brain.telemetry import init_telemetry
 
     settings = _load_runtime_settings()
+    retrieval.configure(settings.get("retrieval"))
 
     # Brain uses HTTP OTLP (port 4318); config.toml stores the daemon's gRPC
     # endpoint (4317) as the single [telemetry] endpoint key. This replace

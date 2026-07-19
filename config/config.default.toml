@@ -37,6 +37,19 @@ lock_timeout_secs = 600
 # data_dir = "~/.local/share/hippo"
 # config_dir = "~/.config/hippo"
 
+# Retrieval-quality knobs for hybrid search (brain + MCP server). Read by the
+# Python brain only; defaults preserve classic behavior except the recency
+# prior, which is on by default. Uncomment to tune.
+[retrieval]
+# rrf_k = 60                      # Reciprocal-rank-fusion constant (higher = flatter rank influence)
+# candidate_pool = 3000           # Top-k pulled from each of vector + FTS before fusion
+# mmr_lambda = 0.7                # MMR relevance-vs-diversity tradeoff (1.0 = pure relevance)
+# vector_weight = 1.0             # Weight of the vector (semantic) arm in RRF fusion
+# lexical_weight = 1.0            # Weight of the FTS5 (keyword) arm in RRF fusion
+# min_score = 0.0                 # Drop results scoring below this (0 = keep all)
+# recency_half_life_days = 90     # Recency prior half-life; 0 disables recency weighting
+# recency_floor = 0.5             # Minimum recency multiplier for ancient nodes
+
 [browser]
 enabled = true
 min_dwell_ms = 3000                 # Skip visits shorter than this (ms)
