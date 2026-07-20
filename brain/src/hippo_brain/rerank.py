@@ -66,7 +66,10 @@ def parse_ranking(text: str, n: int) -> list[int] | None:
     """
     if not text:
         return None
-    match = re.search(r"\[[\d,\s]*\]", text)
+    # Allow a leading "-" and "." too: a model that emits [3.0, 1.0] (a valid,
+    # if unnecessary, JSON float) shouldn't lose the entire ranking just
+    # because the regex's character class didn't admit '.'.
+    match = re.search(r"\[[\d,.\s-]*\]", text)
     if match is None:
         return None
     try:
@@ -78,7 +81,13 @@ def parse_ranking(text: str, n: int) -> list[int] | None:
     order: list[int] = []
     seen: set[int] = set()
     for entry in raw:
-        if not isinstance(entry, int):
+        if isinstance(entry, bool):
+            continue
+        if isinstance(entry, float):
+            if not entry.is_integer():
+                continue
+            entry = int(entry)
+        elif not isinstance(entry, int):
             continue
         idx = entry - 1
         if 0 <= idx < n and idx not in seen:

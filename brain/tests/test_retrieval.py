@@ -1208,3 +1208,102 @@ def test_configure_parses_tier2_knobs():
         assert t.rerank_pool == 12
     finally:
         configure(None)
+
+
+# ---------------------------------------------------------------------------
+# Regression tests: code-review fixes
+# ---------------------------------------------------------------------------
+
+
+def test_hybrid_top_score_normalizes_to_one_even_with_recency_on(conn):
+    """Recency must be applied BEFORE the final top-score normalization, or
+    the top hit ends up below 1.0 whenever it isn't also the freshest node —
+    silently breaking the "top score == 1.0" invariant that min_score and
+    confidence_scoring's absolute thresholds rely on."""
+    import time as _time
+
+    now_ms = int(_time.time() * 1000)
+    _insert_node(conn, 1, summary="stale but most relevant", created_at=now_ms - 400 * 86_400_000)
+    _insert_node(conn, 2, summary="fresh but less relevant", created_at=now_ms - 86_400_000)
+    _install_vec_fixture(conn, {1: [1.0, 0.0], 2: [0.0, 1.0]})
+    backend = FakeBackend(knn=[(1, 0.1), (2, 1.9)], fts=[(1, -5.0)])
+
+    results = search(conn, "q", [1.0, 0.0], Filters(), mode="hybrid", limit=2, backend=backend)
+    assert results[0].uuid == "uuid-1"
+    assert results[0].score == pytest.approx(1.0)
+
+
+def test_min_score_ignored_for_positional_score_modes(conn):
+    """lexical/recent scores are positional (1.0 - rank/n), not an absolute
+    relevance measure — min_score must not chop a fixed fraction of them."""
+    _insert_node(conn, 1, summary="a")
+    _insert_node(conn, 2, summary="b")
+    _insert_node(conn, 3, summary="c")
+    backend = FakeBackend(fts=[(1, -1.0), (2, -1.0), (3, -1.0)])
+
+    strict = Tuning(min_score=0.9, recency_half_life_days=0)
+    results = search(
+        conn, "q", None, Filters(), mode="lexical", limit=5, backend=backend, tuning=strict
+    )
+    assert len(results) == 3  # all three positional hits survive
+
+
+def test_apply_recency_treats_epoch_zero_as_a_real_ancient_timestamp():
+    """created_at == 0 is a valid (if ancient) timestamp, not a sentinel for
+    "missing" — it must decay toward the floor, not stay at full strength."""
+    from hippo_brain.retrieval import _apply_recency
+
+    t = Tuning(recency_half_life_days=90, recency_floor=0.5)
+    now_ms = 9000 * 86_400_000  # far beyond any half-life from epoch 0
+    out = _apply_recency(None, [(1, 1.0)], t, now_ms=now_ms, created_at={1: 0})
+    assert out[0][1] == pytest.approx(0.5)
+
+
+def test_recent_mode_gets_entity_expansion_like_lexical_and_hybrid(conn):
+    """Entity expansion was previously copy-pasted into _lexical/_hybrid only,
+    silently skipping _recent's FTS call. Centralizing it in _call_fts fixes
+    the gap; verify _recent's query also carries the expansion."""
+    _insert_node(conn, 1, summary="ok")
+    conn.execute(
+        "INSERT INTO entities (id, type, name, canonical) VALUES (1, 'tool', 'sqlite-vec', 'sqlitevec')"
+    )
+    backend = FakeBackend(fts=[(1, -1.0)])
+
+    search(conn, "load sqlitevec now", None, Filters(), mode="recent", limit=5, backend=backend)
+    assert len(backend.fts_queries) == 1
+    assert '"sqlite-vec"' in backend.fts_queries[0]
+
+
+def test_command_pool_bounds_the_command_arm_independently_of_candidate_pool(conn):
+    _insert_node(conn, 1, summary="a")
+    _install_vec_fixture(conn, {1: [1.0, 0.0]})
+    backend = FakeBackend(knn=[(1, 0.5)], knn_command=[(1, 0.5)])
+    limits_by_column: dict[str, list[int]] = {"vec_knowledge": [], "vec_command": []}
+    orig_knn_search = backend.knn_search
+
+    def recording_knn_search(conn_, vec, column="vec_knowledge", limit=10):
+        limits_by_column[column].append(limit)
+        return orig_knn_search(conn_, vec, column=column, limit=limit)
+
+    backend.knn_search = recording_knn_search
+
+    search(
+        conn,
+        "q",
+        [1.0, 0.0],
+        Filters(),
+        mode="hybrid",
+        limit=5,
+        backend=backend,
+        tuning=Tuning(candidate_pool=3000, command_pool=7, recency_half_life_days=0),
+    )
+    assert limits_by_column["vec_knowledge"] == [3000]
+    assert limits_by_column["vec_command"] == [7]
+
+
+def test_configure_parses_command_pool():
+    try:
+        t = configure({"command_pool": 250})
+        assert t.command_pool == 250
+    finally:
+        configure(None)

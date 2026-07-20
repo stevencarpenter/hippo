@@ -136,6 +136,7 @@ def run_downstream_proxy_pass(
     k: int = 10,
     *,
     search_fn: Callable[..., list[Any]] | None = None,
+    tuning: retrieval.Tuning | None = None,
 ) -> dict:
     """Run retrieval × ``modes`` over ``qa_items`` and aggregate.
 
@@ -143,8 +144,17 @@ def run_downstream_proxy_pass(
     ``search_fn`` is the retrieval callable; defaults to
     :func:`hippo_brain.retrieval.search` so tests can inject a stub
     without monkeypatching.
+
+    ``tuning`` defaults to a determinism-safe :class:`~hippo_brain.retrieval.Tuning`
+    with the recency prior disabled — this gate measures retrieval-algorithm
+    quality, not "how the corpus happened to age since it was captured", and
+    the process running it never calls ``retrieval.configure()`` so it would
+    otherwise silently run on ``DEFAULT_TUNING`` (recency on, wall-clock
+    dependent) regardless of what an operator's ``[retrieval]`` config says.
+    Pass an explicit ``tuning`` to measure a specific configuration instead.
     """
     search = search_fn or retrieval.search
+    tuning = tuning if tuning is not None else retrieval.Tuning(recency_half_life_days=0)
     per_mode: dict[str, dict] = {}
     per_item_scores: list[dict] = []
 
@@ -153,7 +163,7 @@ def run_downstream_proxy_pass(
         for item in qa_items:
             query = item["question"]
             query_vec = embedding_fn(query)
-            results = search(conn, query, query_vec, mode=mode, limit=k)
+            results = search(conn, query, query_vec, mode=mode, limit=k, tuning=tuning)
             score = score_single_retrieval(results, item["golden_event_id"])
             score["qa_id"] = item.get("qa_id")
             score["golden_event_id"] = item["golden_event_id"]

@@ -43,6 +43,7 @@ DEFAULT_MAX_CONTEXT_CHARS = 12000
 DEFAULT_SOURCES_LIMIT = 10
 _MIN_PER_HIT_FIELD_CHARS = 80
 _ENTITIES_LINE_CAP = 500
+_SOURCE_COMMANDS_RAW_CAP = 500
 _INTENT_LINE_CAP = 200
 _LIST_FIELD_CAP = 600
 
@@ -174,7 +175,7 @@ def _shape_rag_sources(
                 "cwd": hit.get("cwd", ""),
                 "git_branch": hit.get("git_branch", ""),
                 "timestamp": hit.get("captured_at", 0),
-                "commands_raw": hit.get("commands_raw", ""),
+                "commands_raw": _truncate(hit.get("commands_raw", ""), _SOURCE_COMMANDS_RAW_CAP),
                 "uuid": hit.get("uuid", ""),
                 "linked_event_ids": list(hit.get("linked_event_ids", []) or []),
                 "evidence": list(hit.get("evidence", []) or []),

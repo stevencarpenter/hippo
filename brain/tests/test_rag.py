@@ -91,6 +91,13 @@ class TestShapeRagSources:
     def test_empty_hits(self):
         assert _shape_rag_sources([]) == []
 
+    def test_commands_raw_is_truncated_like_summary(self):
+        from hippo_brain.rag import _SOURCE_COMMANDS_RAW_CAP
+
+        huge = "x" * (_SOURCE_COMMANDS_RAW_CAP + 500)
+        sources = _shape_rag_sources([{"_distance": 0.1, "commands_raw": huge}])
+        assert len(sources[0]["commands_raw"]) <= _SOURCE_COMMANDS_RAW_CAP
+
     def test_missing_fields_default_gracefully(self):
         sources = _shape_rag_sources([{"_distance": 0.1}])
         src = sources[0]

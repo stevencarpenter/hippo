@@ -63,7 +63,7 @@ def _stub_search_factory(ranked: dict[str, list[str]]):
     qa = _load_qa()
     by_question = {item["question"]: item["qa_id"] for item in qa}
 
-    def _search(_conn, query, _query_vec, mode=None, limit=10):
+    def _search(_conn, query, _query_vec, mode=None, limit=10, tuning=None):
         qa_id = by_question[query]
         ids = ranked[qa_id][:limit]
         return [{"event_id": eid} for eid in ids]

@@ -172,7 +172,7 @@ def test_mode_aggregation_mean_mrr() -> None:
     def fake_embedding(_q: str) -> list[float]:
         return [0.0]
 
-    def fake_search(_conn, query, _vec, *, mode, limit):
+    def fake_search(_conn, query, _vec, *, mode, limit, tuning=None):
         if mode == "hybrid":
             for item in qa_items:
                 if item["question"] == query:
@@ -249,7 +249,7 @@ def test_per_item_carries_golden_event_id():
 
     qa_items = [{"qa_id": "qa-001", "question": "q?", "golden_event_id": "claude-7"}]
 
-    def fake_search(conn, query, vec, *, mode, limit):
+    def fake_search(conn, query, vec, *, mode, limit, tuning=None):
         # Return a single result whose source id matches the golden.
         return [{"event_id": "claude-7"}]
 

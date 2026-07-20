@@ -91,3 +91,13 @@ def test_build_rerank_messages_numbers_candidates():
     assert "why did the build fail?" in user
     assert "[1] summary a" in user
     assert "[2] summary b" in user
+
+
+class TestParseRankingRegressions:
+    def test_accepts_integer_valued_floats(self):
+        assert parse_ranking("[3.0, 1.0, 2.0]", 3) == [2, 0, 1]
+
+    def test_rejects_non_integer_floats(self):
+        # 1.5 isn't a valid 1-based rank; it's dropped like any other
+        # out-of-range/malformed entry, not accepted as index 0 or 1.
+        assert parse_ranking("[1.5, 2]", 2) == [1, 0]

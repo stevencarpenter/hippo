@@ -67,6 +67,11 @@ class Tuning:
     vector_weight: float = 1.0
     lexical_weight: float = 1.0
     command_weight: float = 0.5
+    # Deliberately smaller than candidate_pool: at rrf_k=60, a rank-500 hit
+    # contributes < 0.5/561 ≈ 0.0009 to the fused score — far below anything
+    # that could move the final top-k — so this auxiliary arm doesn't need
+    # the full pool depth to be effective, and skipping it halves that cost.
+    command_pool: int = 500
     min_score: float = 0.0
     recency_half_life_days: float = 90.0
     recency_floor: float = 0.5
@@ -113,6 +118,7 @@ def configure(section: dict | None) -> Tuning:
         vector_weight=_num("vector_weight", DEFAULT_TUNING.vector_weight, lo=0.0, hi=100.0),
         lexical_weight=_num("lexical_weight", DEFAULT_TUNING.lexical_weight, lo=0.0, hi=100.0),
         command_weight=_num("command_weight", DEFAULT_TUNING.command_weight, lo=0.0, hi=100.0),
+        command_pool=int(_num("command_pool", DEFAULT_TUNING.command_pool, lo=10, hi=50_000)),
         min_score=_num("min_score", DEFAULT_TUNING.min_score, lo=0.0, hi=1.0),
         recency_half_life_days=_num(
             "recency_half_life_days", DEFAULT_TUNING.recency_half_life_days, lo=0.0, hi=36_500.0
@@ -252,7 +258,7 @@ def _sanitize_fts_query(query: str) -> str:
         if len(tok) < 2 or lowered in _FTS_STOPWORDS or lowered in seen:
             continue
         seen.add(lowered)
-        tokens.append(tok.replace('"', '""'))
+        tokens.append(tok)
         if len(tokens) >= _FTS_MAX_TOKENS:
             break
     if not tokens:
@@ -261,7 +267,7 @@ def _sanitize_fts_query(query: str) -> str:
     # only one token survives — no need to OR it with itself.
     if len(tokens) == 1 and tokens[0].lower() == escaped.strip().lower():
         return phrase
-    return " OR ".join([phrase, *(f'"{tok}"' for tok in tokens)])
+    return " OR ".join([phrase, *(_quote_fts_term(tok) for tok in tokens)])
 
 
 def _call_fts(
@@ -269,14 +275,25 @@ def _call_fts(
     conn: sqlite3.Connection,
     query: str,
     limit: int,
-    extra_terms: Sequence[str] = (),
+    t: Tuning = DEFAULT_TUNING,
 ) -> list[tuple[int, float]]:
+    """Run the FTS5 arm, expanding entity aliases when ``t.entity_expansion``.
+
+    Centralizing the expansion gate here (rather than at each caller) means
+    every FTS consumer — lexical, hybrid, recent — gets it consistently; a
+    per-caller copy-paste previously let ``_recent`` silently miss it.
+    """
     fts_query = _sanitize_fts_query(query)
+    extra_terms = _expand_entity_terms(conn, query) if t.entity_expansion else []
     if extra_terms:
-        escaped = (term.replace('"', '""') for term in extra_terms)
-        fts_query = " OR ".join([fts_query, *(f'"{term}"' for term in escaped)])
+        fts_query = " OR ".join([fts_query, *(_quote_fts_term(term) for term in extra_terms)])
     raw = backend.fts_search(conn, fts_query, limit=limit)
     return [(r["knowledge_node_id"], float(r.get("bm25", 0.0))) for r in raw]
+
+
+def _quote_fts_term(term: str) -> str:
+    escaped = term.replace('"', '""')
+    return f'"{escaped}"'
 
 
 _ENTITY_EXPANSION_CAP = 8
@@ -417,7 +434,12 @@ def search(
     else:
         raise ValueError(f"unknown retrieval mode: {mode!r}")
 
-    if t.min_score > 0.0:
+    # min_score is an absolute-relevance cutoff; only "semantic" and "hybrid"
+    # produce absolute scores (cosine similarity / normalized RRF). "lexical"
+    # and "recent" scores are purely positional (1.0 - rank/n), so applying
+    # the same cutoff there would chop a fixed *fraction* of results — however
+    # strong the matches — rather than filtering out weak ones.
+    if t.min_score > 0.0 and mode in ("semantic", "hybrid"):
         results = [r for r in results if r.score >= t.min_score]
 
     attach_freshness_to_results(conn, results)
@@ -465,8 +487,7 @@ def _lexical(
 ) -> list[SearchResult]:
     if not query:
         return []
-    extra_terms = _expand_entity_terms(conn, query) if t.entity_expansion else []
-    raw = _call_fts(backend, conn, query, t.candidate_pool, extra_terms=extra_terms)
+    raw = _call_fts(backend, conn, query, t.candidate_pool, t)
     if not raw:
         return []
     allowed = _apply_filters(conn, [nid for nid, _ in raw], filters)
@@ -494,7 +515,7 @@ def _recent(
     # "date-ordered with loose query match" — use FTS if query provided, else
     # pull most recent knowledge_nodes filtered by the same WHERE stack.
     if query:
-        raw = _call_fts(backend, conn, query, t.candidate_pool)
+        raw = _call_fts(backend, conn, query, t.candidate_pool, t)
         candidate_ids = [nid for nid, _ in raw]
     else:
         candidate_ids = []
@@ -524,20 +545,14 @@ def _hybrid(
         return _lexical(conn, query, filters, limit, backend, t)
 
     vec_hits = _call_knn(backend, conn, query_vec, t.candidate_pool)
-    if query and t.entity_expansion:
-        extra_terms = _expand_entity_terms(conn, query)
-    else:
-        extra_terms = []
-    fts_hits = (
-        _call_fts(backend, conn, query, t.candidate_pool, extra_terms=extra_terms) if query else []
-    )
+    fts_hits = _call_fts(backend, conn, query, t.candidate_pool, t) if query else []
     # Third arm: KNN over the command-text embeddings (``vec_command``). These
     # vectors have always been written by enrichment but were never queried;
     # ORing them in recovers matches phrased like the commands that were run
     # rather than like the prose summary. Weight 0 skips the query entirely.
     if t.command_weight > 0:
         try:
-            cmd_hits = _call_knn(backend, conn, query_vec, t.candidate_pool, column="vec_command")
+            cmd_hits = _call_knn(backend, conn, query_vec, t.command_pool, column="vec_command")
         except Exception:
             # Older DBs / fixtures may lack the column — vec arm still stands.
             cmd_hits = []
@@ -558,15 +573,20 @@ def _hybrid(
 
     allowed = _apply_filters(conn, list(rrf.keys()), filters)
     scored = [(nid, score) for nid, score in rrf.items() if nid in allowed]
-    scored.sort(key=lambda x: x[1], reverse=True)
     if not scored:
         return []
 
-    # Normalize so top RRF score = 1.0.
-    top = scored[0][1] or 1.0
+    # Recency must be applied BEFORE the top-score normalization below: doing
+    # it after (as an earlier version of this code did) leaves the top result
+    # at something less than 1.0 whenever it isn't also the freshest, which
+    # silently breaks the "top score == 1.0" invariant that min_score and
+    # confidence_scoring's absolute thresholds rely on.
+    scored = _apply_recency(conn, scored, t)
+
+    # Normalize so top score = 1.0.
+    top = max((s for _, s in scored), default=0.0) or 1.0
     scored = [(nid, s / top) for nid, s in scored]
 
-    scored = _apply_recency(conn, scored, t)
     vecs = _get_vectors(conn, [nid for nid, _ in scored])
     picked = _mmr(scored, vecs, limit, t.mmr_lambda)
     details = _fetch_details(
@@ -1064,6 +1084,7 @@ def _apply_recency(
     t: Tuning,
     *,
     now_ms: int | None = None,
+    created_at: dict[int, int] | None = None,
 ) -> list[tuple[int, float]]:
     """Blend a recency prior into relevance scores (before MMR selection).
 
@@ -1071,24 +1092,33 @@ def _apply_recency(
     when the underlying activity happened. Disabled (identity) when
     ``recency_half_life_days`` is 0. Nodes with no ``created_at`` row keep
     their score untouched.
+
+    ``created_at``: an optional pre-fetched ``{node_id: created_at}`` map (a
+    caller that already ran ``_fetch_details`` has this for free). When
+    omitted, timestamps are queried here.
     """
     if t.recency_half_life_days <= 0 or not scored:
         return scored
-    ids = [nid for nid, _ in scored]
-    placeholders = ",".join("?" for _ in ids)
-    try:
-        rows = conn.execute(  # nosemgrep
-            f"SELECT id, created_at FROM knowledge_nodes WHERE id IN ({placeholders})",
-            ids,
-        ).fetchall()
-    except sqlite3.OperationalError:
-        return scored
-    created = {nid: ts for nid, ts in rows}
+    if created_at is None:
+        ids = [nid for nid, _ in scored]
+        placeholders = ",".join("?" for _ in ids)
+        try:
+            rows = conn.execute(  # nosemgrep
+                f"SELECT id, created_at FROM knowledge_nodes WHERE id IN ({placeholders})",
+                ids,
+            ).fetchall()
+        except sqlite3.OperationalError:
+            return scored
+        created_at = {nid: ts for nid, ts in rows}
     now = now_ms if now_ms is not None else int(time.time() * 1000)
     out: list[tuple[int, float]] = []
     for nid, score in scored:
-        ts = created.get(nid)
-        if ts:
+        ts = created_at.get(nid)
+        # `ts is not None` (not truthiness): created_at == 0 is a real,
+        # ancient epoch timestamp that must decay toward the floor, not a
+        # "missing timestamp" sentinel that skips decay and leaves the score
+        # at full (as-if-freshest) strength.
+        if ts is not None:
             score *= _recency_multiplier(now - ts, t.recency_half_life_days, t.recency_floor)
         out.append((nid, score))
     return out
@@ -1231,14 +1261,6 @@ def _dict_list(raw: object) -> list[dict]:
     if not isinstance(raw, list):
         return []
     return [entry for entry in raw if isinstance(entry, dict)]
-
-
-def _extract_summary(content_str: str | None) -> str:
-    return str(_parse_content(content_str).get("summary") or "")
-
-
-def _extract_design_decisions(content_str: str | None) -> list[dict]:
-    return _dict_list(_parse_content(content_str).get("design_decisions"))
 
 
 def _parse_tags(tags_str: str | None) -> list[str]:
