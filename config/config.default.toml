@@ -46,9 +46,13 @@ lock_timeout_secs = 600
 # mmr_lambda = 0.7                # MMR relevance-vs-diversity tradeoff (1.0 = pure relevance)
 # vector_weight = 1.0             # Weight of the vector (semantic) arm in RRF fusion
 # lexical_weight = 1.0            # Weight of the FTS5 (keyword) arm in RRF fusion
+# command_weight = 0.5            # Weight of the vec_command (command-text) arm; 0 disables it
 # min_score = 0.0                 # Drop results scoring below this (0 = keep all)
 # recency_half_life_days = 90     # Recency prior half-life; 0 disables recency weighting
 # recency_floor = 0.5             # Minimum recency multiplier for ancient nodes
+# entity_expansion = true         # OR known entity aliases of query tokens into the FTS arm
+# rerank = false                  # LLM listwise rerank of top candidates in `ask` (adds latency)
+# rerank_pool = 30                # Candidates fetched for the rerank stage when rerank = true
 
 [browser]
 enabled = true

@@ -10,7 +10,9 @@ from datetime import datetime, timezone
 
 from hippo_brain.embeddings import EMBED_DIM, _pad_or_truncate, search_similar
 from hippo_brain.enrichment import IDENTIFIER_ENTITY_TYPES
+from hippo_brain.rerank import rerank_results
 from hippo_brain.retrieval import Filters, SearchResult
+from hippo_brain.retrieval import get_tuning as retrieval_get_tuning
 from hippo_brain.retrieval import search as retrieval_search
 from hippo_brain.telemetry import get_meter
 
@@ -648,14 +650,27 @@ async def ask(
     try:
         _t1 = time.monotonic()
         if use_retrieval_search:
+            tuning = retrieval_get_tuning()
+            # With reranking on, over-fetch so the LLM has a wider pool to
+            # reorder; the rerank stage cuts back down to `limit`.
+            fetch_limit = max(limit, tuning.rerank_pool) if tuning.rerank else limit
             results = retrieval_search(
                 retrieval_conn,
                 question,
                 list(query_vec),
                 filters=effective_filters,
                 mode=mode,
-                limit=limit,
+                limit=fetch_limit,
             )
+            if tuning.rerank and len(results) > 1:
+                _tr = time.monotonic()
+                results = await rerank_results(
+                    inference_client, query_model, question, results, limit
+                )
+                if _rag_duration:
+                    _rag_duration.record((time.monotonic() - _tr) * 1000, {"stage": "rerank"})
+            else:
+                results = results[:limit]
             hits = [_result_to_hit(r) for r in results]
         elif effective_filters is not None:
             return _degraded_response(

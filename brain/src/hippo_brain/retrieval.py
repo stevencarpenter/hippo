@@ -66,9 +66,13 @@ class Tuning:
     mmr_lambda: float = MMR_LAMBDA
     vector_weight: float = 1.0
     lexical_weight: float = 1.0
+    command_weight: float = 0.5
     min_score: float = 0.0
     recency_half_life_days: float = 90.0
     recency_floor: float = 0.5
+    entity_expansion: bool = True
+    rerank: bool = False
+    rerank_pool: int = 30
 
 
 DEFAULT_TUNING = Tuning()
@@ -92,17 +96,31 @@ def configure(section: dict | None) -> Tuning:
             return default
         return max(lo, min(hi, value))
 
+    def _flag(key: str, default: bool) -> bool:
+        value = section.get(key, default)
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            return value.strip().lower() in ("1", "true", "yes", "on")
+        if isinstance(value, (int, float)):
+            return bool(value)
+        return default
+
     _active_tuning = Tuning(
         rrf_k=int(_num("rrf_k", DEFAULT_TUNING.rrf_k, lo=1, hi=10_000)),
         candidate_pool=int(_num("candidate_pool", DEFAULT_TUNING.candidate_pool, lo=10, hi=50_000)),
         mmr_lambda=_num("mmr_lambda", DEFAULT_TUNING.mmr_lambda, lo=0.0, hi=1.0),
         vector_weight=_num("vector_weight", DEFAULT_TUNING.vector_weight, lo=0.0, hi=100.0),
         lexical_weight=_num("lexical_weight", DEFAULT_TUNING.lexical_weight, lo=0.0, hi=100.0),
+        command_weight=_num("command_weight", DEFAULT_TUNING.command_weight, lo=0.0, hi=100.0),
         min_score=_num("min_score", DEFAULT_TUNING.min_score, lo=0.0, hi=1.0),
         recency_half_life_days=_num(
             "recency_half_life_days", DEFAULT_TUNING.recency_half_life_days, lo=0.0, hi=36_500.0
         ),
         recency_floor=_num("recency_floor", DEFAULT_TUNING.recency_floor, lo=0.0, hi=1.0),
+        entity_expansion=_flag("entity_expansion", DEFAULT_TUNING.entity_expansion),
+        rerank=_flag("rerank", DEFAULT_TUNING.rerank),
+        rerank_pool=int(_num("rerank_pool", DEFAULT_TUNING.rerank_pool, lo=1, hi=200)),
     )
     return _active_tuning
 
@@ -184,10 +202,14 @@ def _default_backend() -> _Backend:
 
 
 def _call_knn(
-    backend: _Backend, conn: sqlite3.Connection, query_vec: Sequence[float], limit: int
+    backend: _Backend,
+    conn: sqlite3.Connection,
+    query_vec: Sequence[float],
+    limit: int,
+    column: str = "vec_knowledge",
 ) -> list[tuple[int, float]]:
     """Adapt the backend's dict return to a ``(id, distance)`` list."""
-    raw = backend.knn_search(conn, query_vec, limit=limit)
+    raw = backend.knn_search(conn, query_vec, column=column, limit=limit)
     return [(r["knowledge_node_id"], float(r.get("distance", 0.0))) for r in raw]
 
 
@@ -243,10 +265,68 @@ def _sanitize_fts_query(query: str) -> str:
 
 
 def _call_fts(
-    backend: _Backend, conn: sqlite3.Connection, query: str, limit: int
+    backend: _Backend,
+    conn: sqlite3.Connection,
+    query: str,
+    limit: int,
+    extra_terms: Sequence[str] = (),
 ) -> list[tuple[int, float]]:
-    raw = backend.fts_search(conn, _sanitize_fts_query(query), limit=limit)
+    fts_query = _sanitize_fts_query(query)
+    if extra_terms:
+        escaped = (term.replace('"', '""') for term in extra_terms)
+        fts_query = " OR ".join([fts_query, *(f'"{term}"' for term in escaped)])
+    raw = backend.fts_search(conn, fts_query, limit=limit)
     return [(r["knowledge_node_id"], float(r.get("bm25", 0.0))) for r in raw]
+
+
+_ENTITY_EXPANSION_CAP = 8
+
+
+def _expand_entity_terms(conn: sqlite3.Connection, query: str) -> list[str]:
+    """Map query tokens to known entity aliases for the FTS keyword arm.
+
+    When a query token matches an entity's ``name`` (resp. ``canonical``), the
+    counterpart spelling is returned as an extra keyword term — so a question
+    using an alias still lexically matches nodes tagged with the canonical
+    form, and vice versa. Restricted to identifier-like entity types and
+    capped at ``_ENTITY_EXPANSION_CAP`` terms. Returns ``[]`` on any schema
+    absence (unit-test fixtures without an ``entities`` table).
+    """
+    tokens = {
+        tok.lower()
+        for tok in _FTS_TOKEN_RE.findall(query)
+        if len(tok) >= 2 and tok.lower() not in _FTS_STOPWORDS
+    }
+    if not tokens:
+        return []
+    token_list = sorted(tokens)
+    placeholders = ",".join("?" for _ in token_list)
+    type_placeholders = ",".join("?" for _ in IDENTIFIER_ENTITY_TYPES)
+    try:
+        rows = conn.execute(  # nosemgrep
+            f"""
+            SELECT DISTINCT name, canonical FROM entities
+            WHERE (lower(name) IN ({placeholders}) OR lower(canonical) IN ({placeholders}))
+              AND type IN ({type_placeholders})
+            """,
+            [*token_list, *token_list, *IDENTIFIER_ENTITY_TYPES],
+        ).fetchall()
+    except sqlite3.OperationalError:
+        return []
+    extras: list[str] = []
+    seen: set[str] = set(tokens)
+    for name, canonical in rows:
+        for candidate in (name, canonical):
+            if not candidate:
+                continue
+            lowered = str(candidate).lower()
+            if lowered in seen:
+                continue
+            seen.add(lowered)
+            extras.append(str(candidate))
+            if len(extras) >= _ENTITY_EXPANSION_CAP:
+                return extras
+    return extras
 
 
 def _get_vectors(conn: sqlite3.Connection, node_ids: Sequence[int]) -> dict[int, list[float]]:
@@ -385,7 +465,8 @@ def _lexical(
 ) -> list[SearchResult]:
     if not query:
         return []
-    raw = _call_fts(backend, conn, query, t.candidate_pool)
+    extra_terms = _expand_entity_terms(conn, query) if t.entity_expansion else []
+    raw = _call_fts(backend, conn, query, t.candidate_pool, extra_terms=extra_terms)
     if not raw:
         return []
     allowed = _apply_filters(conn, [nid for nid, _ in raw], filters)
@@ -443,14 +524,34 @@ def _hybrid(
         return _lexical(conn, query, filters, limit, backend, t)
 
     vec_hits = _call_knn(backend, conn, query_vec, t.candidate_pool)
-    fts_hits = _call_fts(backend, conn, query, t.candidate_pool) if query else []
+    if query and t.entity_expansion:
+        extra_terms = _expand_entity_terms(conn, query)
+    else:
+        extra_terms = []
+    fts_hits = (
+        _call_fts(backend, conn, query, t.candidate_pool, extra_terms=extra_terms) if query else []
+    )
+    # Third arm: KNN over the command-text embeddings (``vec_command``). These
+    # vectors have always been written by enrichment but were never queried;
+    # ORing them in recovers matches phrased like the commands that were run
+    # rather than like the prose summary. Weight 0 skips the query entirely.
+    if t.command_weight > 0:
+        try:
+            cmd_hits = _call_knn(backend, conn, query_vec, t.candidate_pool, column="vec_command")
+        except Exception:
+            # Older DBs / fixtures may lack the column — vec arm still stands.
+            cmd_hits = []
+    else:
+        cmd_hits = []
 
-    # Weighted RRF merge (both weights default to 1.0 — classic RRF).
+    # Weighted RRF merge (vector/lexical weights default to 1.0 — classic RRF).
     rrf: dict[int, float] = {}
     for rank, hit in enumerate(vec_hits):
         rrf[hit[0]] = rrf.get(hit[0], 0.0) + t.vector_weight / (t.rrf_k + rank + 1)
     for rank, hit in enumerate(fts_hits):
         rrf[hit[0]] = rrf.get(hit[0], 0.0) + t.lexical_weight / (t.rrf_k + rank + 1)
+    for rank, hit in enumerate(cmd_hits):
+        rrf[hit[0]] = rrf.get(hit[0], 0.0) + t.command_weight / (t.rrf_k + rank + 1)
 
     if not rrf:
         return []

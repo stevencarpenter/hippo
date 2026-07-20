@@ -972,3 +972,85 @@ class TestEnrichmentFieldsInPrompt:
         assert hit["commands_raw"] == "pytest -x"
         assert hit["key_decisions"] == ["kd"]
         assert hit["problems_encountered"] == ["pe"]
+
+
+class TestRerankIntegration:
+    """`ask` over-fetches and reorders via the LLM when [retrieval] rerank is on."""
+
+    @pytest.mark.asyncio
+    async def test_rerank_reorders_sources(self):
+        from hippo_brain.retrieval import Tuning
+
+        client = _healthy_client()
+        # First chat call = rerank ranking; second = synthesis.
+        client.chat.side_effect = ["[2, 1]", "synthesized answer"]
+        sentinel_conn = sqlite3.connect(":memory:")
+        try:
+            with (
+                patch("hippo_brain.rag.retrieval_search") as retrieval_mock,
+                patch(
+                    "hippo_brain.rag.retrieval_get_tuning",
+                    return_value=Tuning(rerank=True, rerank_pool=5),
+                ),
+            ):
+                retrieval_mock.return_value = [
+                    _fake_search_result(uuid="first", summary="one"),
+                    _fake_search_result(uuid="second", summary="two", score=0.5),
+                ]
+                result = await ask(
+                    "q", client, None, "m", "e", project="/home/user", conn=sentinel_conn
+                )
+
+            assert [s["uuid"] for s in result["sources"]] == ["second", "first"]
+            assert result["answer"] == "synthesized answer"
+            assert client.chat.await_count == 2
+        finally:
+            sentinel_conn.close()
+
+    @pytest.mark.asyncio
+    async def test_rerank_overfetches_to_pool_size(self):
+        from hippo_brain.retrieval import Tuning
+
+        client = _healthy_client()
+        client.chat.side_effect = ["[1]", "answer"]
+        sentinel_conn = sqlite3.connect(":memory:")
+        try:
+            with (
+                patch("hippo_brain.rag.retrieval_search") as retrieval_mock,
+                patch(
+                    "hippo_brain.rag.retrieval_get_tuning",
+                    return_value=Tuning(rerank=True, rerank_pool=30),
+                ),
+            ):
+                retrieval_mock.return_value = [_fake_search_result(uuid="only")]
+                await ask(
+                    "q",
+                    client,
+                    None,
+                    "m",
+                    "e",
+                    limit=5,
+                    project="/home/user",
+                    conn=sentinel_conn,
+                )
+            assert retrieval_mock.call_args.kwargs["limit"] == 30
+        finally:
+            sentinel_conn.close()
+
+    @pytest.mark.asyncio
+    async def test_rerank_off_keeps_single_llm_call(self):
+        client = _healthy_client(chat_return="answer")
+        sentinel_conn = sqlite3.connect(":memory:")
+        try:
+            with patch("hippo_brain.rag.retrieval_search") as retrieval_mock:
+                retrieval_mock.return_value = [
+                    _fake_search_result(uuid="a"),
+                    _fake_search_result(uuid="b", score=0.5),
+                ]
+                result = await ask(
+                    "q", client, None, "m", "e", project="/home/user", conn=sentinel_conn
+                )
+            assert [s["uuid"] for s in result["sources"]] == ["a", "b"]
+            assert client.chat.await_count == 1
+        finally:
+            sentinel_conn.close()

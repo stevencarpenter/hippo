@@ -130,19 +130,23 @@ class FakeBackend:
 
     knn: list[tuple[int, float]] = field(default_factory=list)
     fts: list[tuple[int, float]] = field(default_factory=list)
+    knn_command: list[tuple[int, float]] = field(default_factory=list)
+    fts_queries: list[str] = field(default_factory=list)
 
     def knn_search(self, _conn, _query_vec, column="vec_knowledge", limit=10):
         assert column in {"vec_knowledge", "vec_command"}
+        data = self.knn if column == "vec_knowledge" else self.knn_command
         return [
             {
                 "knowledge_node_id": nid,
                 "distance": dist,
                 "score": max(0.0, 1.0 - dist / 2.0),
             }
-            for nid, dist in self.knn[:limit]
+            for nid, dist in data[:limit]
         ]
 
-    def fts_search(self, _conn, _query, limit=10):
+    def fts_search(self, _conn, query, limit=10):
+        self.fts_queries.append(query)
         return [
             {
                 "knowledge_node_id": nid,
@@ -1117,3 +1121,90 @@ def test_fetch_details_tolerates_missing_new_fields(conn):
     assert r.commands_raw == ""
     assert r.key_decisions == []
     assert r.problems_encountered == []
+
+
+# ---------------------------------------------------------------------------
+# Tier 2: vec_command arm + entity expansion
+# ---------------------------------------------------------------------------
+
+
+def test_hybrid_command_arm_surfaces_command_only_matches(conn):
+    _insert_node(conn, 1, summary="prose match")
+    _insert_node(conn, 2, summary="command match")
+    _install_vec_fixture(conn, {1: [1.0, 0.0], 2: [0.0, 1.0]})
+    # Node 2 is invisible to the knowledge-vector and FTS arms; only the
+    # command-embedding arm knows about it.
+    backend = FakeBackend(knn=[(1, 0.3)], knn_command=[(2, 0.1), (1, 0.5)])
+
+    results = search(
+        conn, "q", [1.0, 0.0], Filters(), mode="hybrid", limit=5, backend=backend, tuning=NO_RECENCY
+    )
+    assert sorted(r.uuid for r in results) == ["uuid-1", "uuid-2"]
+
+    off = Tuning(command_weight=0.0, recency_half_life_days=0)
+    results_off = search(
+        conn, "q", [1.0, 0.0], Filters(), mode="hybrid", limit=5, backend=backend, tuning=off
+    )
+    assert [r.uuid for r in results_off] == ["uuid-1"]
+
+
+def test_entity_expansion_adds_alias_terms_to_fts_query(conn):
+    _insert_node(conn, 1, summary="ok")
+    conn.execute(
+        "INSERT INTO entities (id, type, name, canonical) VALUES (1, 'tool', 'sqlite-vec', 'sqlitevec')"
+    )
+    backend = FakeBackend(fts=[(1, -1.0)])
+
+    search(
+        conn, "how do I load sqlitevec", None, Filters(), mode="lexical", limit=5, backend=backend
+    )
+    assert len(backend.fts_queries) == 1
+    # The alias spelling (entity name) is OR'd into the keyword arm.
+    assert '"sqlite-vec"' in backend.fts_queries[0]
+
+    off = Tuning(entity_expansion=False)
+    backend2 = FakeBackend(fts=[(1, -1.0)])
+    search(
+        conn,
+        "how do I load sqlitevec",
+        None,
+        Filters(),
+        mode="lexical",
+        limit=5,
+        backend=backend2,
+        tuning=off,
+    )
+    assert '"sqlite-vec"' not in backend2.fts_queries[0]
+
+
+def test_entity_expansion_ignores_non_identifier_types_and_missing_table():
+    from hippo_brain.retrieval import _expand_entity_terms
+
+    c = sqlite3.connect(":memory:")
+    # No entities table at all → graceful empty.
+    assert _expand_entity_terms(c, "anything sqlitevec") == []
+    c.executescript(SCHEMA)
+    c.execute(
+        "INSERT INTO entities (id, type, name, canonical) VALUES (1, 'error', 'sqlitevec', 'boom-alias')"
+    )
+    # 'error' is not an identifier entity type → no expansion.
+    assert _expand_entity_terms(c, "what about sqlitevec") == []
+    c.close()
+
+
+def test_configure_parses_tier2_knobs():
+    try:
+        t = configure(
+            {
+                "command_weight": 0,
+                "entity_expansion": "false",
+                "rerank": True,
+                "rerank_pool": 12,
+            }
+        )
+        assert t.command_weight == 0.0
+        assert t.entity_expansion is False
+        assert t.rerank is True
+        assert t.rerank_pool == 12
+    finally:
+        configure(None)
