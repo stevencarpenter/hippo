@@ -85,6 +85,7 @@ def _load_config() -> dict:
         "inference_base_url": "http://127.0.0.1:42069/v1",
         "embedding_model": "",
         "query_model": "",
+        "retrieval": {},
     }
 
     if not config_path.exists():
@@ -117,6 +118,7 @@ def _load_config() -> dict:
         "inference_base_url": inference.get("base_url", "http://127.0.0.1:42069/v1"),
         "embedding_model": models.get("embedding", ""),
         "query_model": models.get("query", "") or models.get("enrichment", ""),
+        "retrieval": config.get("retrieval", {}),
     }
 
 
@@ -152,7 +154,10 @@ def _get_conn(db_path: str = "") -> sqlite3.Connection:
 
 def _init_state() -> None:
     """Load config and initialize the inference client and vector table (called once at startup)."""
+    from hippo_brain import retrieval as _retrieval_mod
+
     config = _load_config()
+    _retrieval_mod.configure(config.get("retrieval"))
     _state.db_path = config["db_path"]
     _state.embedding_model = config["embedding_model"]
     _state.query_model = config["query_model"]
@@ -191,7 +196,7 @@ mcp = FastMCP(
 @mcp.tool()
 async def search_knowledge(
     query: str,
-    mode: str = "semantic",
+    mode: str = "hybrid",
     limit: int = 10,
     project: str = "",
     since: str = "",
@@ -204,8 +209,9 @@ async def search_knowledge(
 
     Args:
         query: Search query text.
-        mode: "semantic" (vector similarity via the inference server) or "lexical" (LIKE match).
-              Defaults to "semantic"; falls back to lexical on embedding failure.
+        mode: "hybrid" (RRF fusion of vector + FTS5 keyword search, default),
+              "semantic" (pure vector similarity), or "lexical" (FTS5 BM25).
+              Falls back to a SQL LIKE scan if vec0/FTS5 are unavailable.
         limit: Maximum number of results to return (default 10).
         project: Substring match on cwd or git_repo of linked events/sessions.
         since: Window like "24h", "7d", "30m". Empty means no time filter.
@@ -244,11 +250,13 @@ async def search_knowledge(
     )
     with span_ctx:
         try:
-            if mode == "semantic" and _state.inference_client:
+            # An empty query means "list nodes" — FTS/vector search need query
+            # text, so route it to the LIKE scan below which returns everything.
+            if query and mode in ("hybrid", "semantic", "lexical"):
                 try:
                     results = await _retrieve_filtered(
                         query=query,
-                        mode="semantic",
+                        mode=mode,
                         limit=limit,
                         project=project,
                         since=since,
@@ -260,15 +268,16 @@ async def search_knowledge(
                     elapsed = time.monotonic() - t0
                     _hist(_tool_duration, elapsed * 1000, tool="search_knowledge")
                     logger.info(
-                        "search_knowledge completed: %d results in %.3fs (semantic)",
+                        "search_knowledge completed: %d results in %.3fs (%s)",
                         len(results),
                         elapsed,
+                        mode,
                     )
                     return results
                 except Exception:
-                    logger.exception("Semantic search failed, falling back to lexical")
+                    logger.exception("%s search failed, falling back to LIKE scan", mode)
 
-            # Lexical search (explicit mode or fallback)
+            # LIKE scan: last-resort fallback, or an unrecognized mode.
             conn = _get_conn()
             try:
                 results = search_knowledge_lexical(
@@ -609,6 +618,10 @@ def _result_to_dict(result) -> dict:
         "score": result.score,
         "summary": result.summary,
         "embed_text": result.embed_text,
+        "intent": result.intent,
+        "commands_raw": result.commands_raw,
+        "key_decisions": list(result.key_decisions),
+        "problems_encountered": list(result.problems_encountered),
         "outcome": result.outcome,
         "tags": list(result.tags),
         "cwd": result.cwd,

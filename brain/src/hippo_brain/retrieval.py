@@ -11,9 +11,12 @@ with a fake backend.
 
 from __future__ import annotations
 
+import heapq
 import json
 import math
+import re
 import sqlite3
+import time
 from dataclasses import dataclass, field, replace
 from typing import Protocol, Sequence
 
@@ -50,6 +53,89 @@ MMR_LAMBDA = 0.7
 MAX_COSINE_DISTANCE = 2.0
 
 
+@dataclass(frozen=True)
+class Tuning:
+    """Retrieval-quality knobs, overridable via the ``[retrieval]`` config section.
+
+    Defaults reproduce the historical hardcoded behavior except for the recency
+    prior, which is on by default (set ``recency_half_life_days = 0`` to disable
+    and recover the pre-recency ordering exactly).
+    """
+
+    rrf_k: int = RRF_K
+    candidate_pool: int = CANDIDATE_POOL
+    mmr_lambda: float = MMR_LAMBDA
+    vector_weight: float = 1.0
+    lexical_weight: float = 1.0
+    command_weight: float = 0.5
+    # Deliberately smaller than candidate_pool: at rrf_k=60, a rank-500 hit
+    # contributes < 0.5/561 ≈ 0.0009 to the fused score — far below anything
+    # that could move the final top-k — so this auxiliary arm doesn't need
+    # the full pool depth to be effective, and skipping it halves that cost.
+    command_pool: int = 500
+    min_score: float = 0.0
+    recency_half_life_days: float = 90.0
+    recency_floor: float = 0.5
+    entity_expansion: bool = True
+    rerank: bool = False
+    rerank_pool: int = 30
+
+
+DEFAULT_TUNING = Tuning()
+_active_tuning = DEFAULT_TUNING
+
+
+def configure(section: dict | None) -> Tuning:
+    """Install module-wide tuning from a ``[retrieval]`` config.toml section.
+
+    Unknown keys are ignored; values are coerced and clamped to sane ranges so a
+    typo'd config degrades to defaults instead of crashing the query path.
+    Returns the installed :class:`Tuning`.
+    """
+    global _active_tuning
+    section = section or {}
+
+    def _num(key: str, default: float, *, lo: float, hi: float) -> float:
+        try:
+            value = float(section.get(key, default))
+        except TypeError, ValueError:
+            return default
+        return max(lo, min(hi, value))
+
+    def _flag(key: str, default: bool) -> bool:
+        value = section.get(key, default)
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            return value.strip().lower() in ("1", "true", "yes", "on")
+        if isinstance(value, (int, float)):
+            return bool(value)
+        return default
+
+    _active_tuning = Tuning(
+        rrf_k=int(_num("rrf_k", DEFAULT_TUNING.rrf_k, lo=1, hi=10_000)),
+        candidate_pool=int(_num("candidate_pool", DEFAULT_TUNING.candidate_pool, lo=10, hi=50_000)),
+        mmr_lambda=_num("mmr_lambda", DEFAULT_TUNING.mmr_lambda, lo=0.0, hi=1.0),
+        vector_weight=_num("vector_weight", DEFAULT_TUNING.vector_weight, lo=0.0, hi=100.0),
+        lexical_weight=_num("lexical_weight", DEFAULT_TUNING.lexical_weight, lo=0.0, hi=100.0),
+        command_weight=_num("command_weight", DEFAULT_TUNING.command_weight, lo=0.0, hi=100.0),
+        command_pool=int(_num("command_pool", DEFAULT_TUNING.command_pool, lo=10, hi=50_000)),
+        min_score=_num("min_score", DEFAULT_TUNING.min_score, lo=0.0, hi=1.0),
+        recency_half_life_days=_num(
+            "recency_half_life_days", DEFAULT_TUNING.recency_half_life_days, lo=0.0, hi=36_500.0
+        ),
+        recency_floor=_num("recency_floor", DEFAULT_TUNING.recency_floor, lo=0.0, hi=1.0),
+        entity_expansion=_flag("entity_expansion", DEFAULT_TUNING.entity_expansion),
+        rerank=_flag("rerank", DEFAULT_TUNING.rerank),
+        rerank_pool=int(_num("rerank_pool", DEFAULT_TUNING.rerank_pool, lo=1, hi=200)),
+    )
+    return _active_tuning
+
+
+def get_tuning() -> Tuning:
+    return _active_tuning
+
+
 def _column_exists(conn: sqlite3.Connection, table: str, column: str) -> bool:
     rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
     return any(row[1] == column for row in rows)
@@ -79,6 +165,10 @@ class SearchResult:
     cwd: str
     git_branch: str
     captured_at: int
+    intent: str = ""
+    commands_raw: str = ""
+    key_decisions: list[str] = field(default_factory=list)
+    problems_encountered: list[str] = field(default_factory=list)
     design_decisions: list[dict] = field(default_factory=list)
     linked_event_ids: list[int] = field(default_factory=list)
     linked_source_ids: list[str] = field(default_factory=list)
@@ -119,31 +209,149 @@ def _default_backend() -> _Backend:
 
 
 def _call_knn(
-    backend: _Backend, conn: sqlite3.Connection, query_vec: Sequence[float], limit: int
+    backend: _Backend,
+    conn: sqlite3.Connection,
+    query_vec: Sequence[float],
+    limit: int,
+    column: str = "vec_knowledge",
 ) -> list[tuple[int, float]]:
     """Adapt the backend's dict return to a ``(id, distance)`` list."""
-    raw = backend.knn_search(conn, query_vec, limit=limit)
+    raw = backend.knn_search(conn, query_vec, column=column, limit=limit)
     return [(r["knowledge_node_id"], float(r.get("distance", 0.0))) for r in raw]
 
 
+# Stopwords stripped from the tokenized FTS query. Deliberately small: only
+# words that carry no retrieval signal for a technical knowledge base —
+# aggressive stopword lists would eat meaningful tokens like "make" or "run".
+_FTS_STOPWORDS = frozenset(
+    """
+    a an and are as at be but by did do does for from had has have how i in is
+    it its me my of on or our so that the their there these they this to was
+    we were what when where which who why will with you your
+    """.split()
+)
+
+_FTS_TOKEN_RE = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_./@:-]*")
+
+_FTS_MAX_TOKENS = 16
+
+
+def _query_tokens(query: str) -> list[str]:
+    """Meaningful tokens of a free-text query, in order of first appearance.
+
+    Single-character tokens and stopwords are dropped; duplicates are removed
+    case-insensitively while original casing is preserved. The single source
+    of query tokenization for both the FTS keyword arm and entity-alias
+    expansion — keep them in lockstep so expansion never fires for a token
+    the FTS query itself dropped.
+    """
+    seen: set[str] = set()
+    tokens: list[str] = []
+    for tok in _FTS_TOKEN_RE.findall(query):
+        lowered = tok.lower()
+        if len(tok) < 2 or lowered in _FTS_STOPWORDS or lowered in seen:
+            continue
+        seen.add(lowered)
+        tokens.append(tok)
+    return tokens
+
+
 def _sanitize_fts_query(query: str) -> str:
-    """Wrap a free-text query as a quoted FTS5 phrase.
+    """Build an FTS5 MATCH query from free text: exact phrase OR keywords.
 
     Natural-language questions contain characters FTS5 treats as operators
-    (``?``, ``:``, ``-``, ``*``, ``(``, ``"``). Quoting the entire query as a
-    phrase is the simplest way to let raw user input reach MATCH without
-    producing a syntax error. Embedded double-quotes are escaped by doubling
-    per FTS5's quoting rules.
+    (``?``, ``:``, ``-``, ``*``, ``(``, ``"``), so every emitted term is
+    quoted (embedded double-quotes doubled per FTS5's rules). The historical
+    behavior — the whole query as one quoted phrase — required the question
+    to appear verbatim in a document for BM25 to hit at all, which almost
+    never happens for real questions and silently degraded hybrid search to
+    vector-only. We now OR the phrase with individually quoted keyword
+    tokens (stopwords dropped, capped at ``_FTS_MAX_TOKENS``): documents
+    matching more keywords rank higher, and the intact phrase still boosts
+    exact matches.
     """
     escaped = query.replace('"', '""')
-    return f'"{escaped}"'
+    phrase = f'"{escaped}"'
+    tokens = _query_tokens(query)[:_FTS_MAX_TOKENS]
+    if not tokens:
+        return phrase
+    # A quoted multi-word query is already a phrase of its single token when
+    # only one token survives — no need to OR it with itself.
+    if len(tokens) == 1 and tokens[0].lower() == escaped.strip().lower():
+        return phrase
+    return " OR ".join([phrase, *(_quote_fts_term(tok) for tok in tokens)])
 
 
 def _call_fts(
-    backend: _Backend, conn: sqlite3.Connection, query: str, limit: int
+    backend: _Backend,
+    conn: sqlite3.Connection,
+    query: str,
+    limit: int,
+    t: Tuning = DEFAULT_TUNING,
 ) -> list[tuple[int, float]]:
-    raw = backend.fts_search(conn, _sanitize_fts_query(query), limit=limit)
+    """Run the FTS5 arm, expanding entity aliases when ``t.entity_expansion``.
+
+    Centralizing the expansion gate here (rather than at each caller) means
+    every FTS consumer — lexical, hybrid, recent — gets it consistently; a
+    per-caller copy-paste previously let ``_recent`` silently miss it.
+    """
+    fts_query = _sanitize_fts_query(query)
+    extra_terms = _expand_entity_terms(conn, query) if t.entity_expansion else []
+    if extra_terms:
+        fts_query = " OR ".join([fts_query, *(_quote_fts_term(term) for term in extra_terms)])
+    raw = backend.fts_search(conn, fts_query, limit=limit)
     return [(r["knowledge_node_id"], float(r.get("bm25", 0.0))) for r in raw]
+
+
+def _quote_fts_term(term: str) -> str:
+    escaped = term.replace('"', '""')
+    return f'"{escaped}"'
+
+
+_ENTITY_EXPANSION_CAP = 8
+
+
+def _expand_entity_terms(conn: sqlite3.Connection, query: str) -> list[str]:
+    """Map query tokens to known entity aliases for the FTS keyword arm.
+
+    When a query token matches an entity's ``name`` (resp. ``canonical``), the
+    counterpart spelling is returned as an extra keyword term — so a question
+    using an alias still lexically matches nodes tagged with the canonical
+    form, and vice versa. Restricted to identifier-like entity types and
+    capped at ``_ENTITY_EXPANSION_CAP`` terms. Returns ``[]`` on any schema
+    absence (unit-test fixtures without an ``entities`` table).
+    """
+    tokens = {tok.lower() for tok in _query_tokens(query)}
+    if not tokens:
+        return []
+    token_list = sorted(tokens)
+    placeholders = ",".join("?" for _ in token_list)
+    type_placeholders = ",".join("?" for _ in IDENTIFIER_ENTITY_TYPES)
+    try:
+        rows = conn.execute(  # nosemgrep
+            f"""
+            SELECT DISTINCT name, canonical FROM entities
+            WHERE (lower(name) IN ({placeholders}) OR lower(canonical) IN ({placeholders}))
+              AND type IN ({type_placeholders})
+            """,
+            [*token_list, *token_list, *IDENTIFIER_ENTITY_TYPES],
+        ).fetchall()
+    except sqlite3.OperationalError:
+        return []
+    extras: list[str] = []
+    seen: set[str] = set(tokens)
+    for name, canonical in rows:
+        for candidate in (name, canonical):
+            if not candidate:
+                continue
+            lowered = str(candidate).lower()
+            if lowered in seen:
+                continue
+            seen.add(lowered)
+            extras.append(str(candidate))
+            if len(extras) >= _ENTITY_EXPANSION_CAP:
+                return extras
+    return extras
 
 
 def _get_vectors(conn: sqlite3.Connection, node_ids: Sequence[int]) -> dict[int, list[float]]:
@@ -188,6 +396,7 @@ def search(
     limit: int = 10,
     *,
     backend: _Backend | None = None,
+    tuning: Tuning | None = None,
 ) -> list[SearchResult]:
     """Search knowledge nodes.
 
@@ -210,6 +419,9 @@ def search(
     backend:
         Override the vec0/FTS5 backend (for unit tests). Defaults to
         :mod:`hippo_brain.vector_store`.
+    tuning:
+        Override retrieval knobs for this call. Defaults to the module-wide
+        tuning installed by :func:`configure` (or :data:`DEFAULT_TUNING`).
     """
     if limit <= 0:
         return []
@@ -217,17 +429,26 @@ def search(
     if include_excluded_from_env():
         filters = replace(filters, include_excluded=True)
     backend = backend or _default_backend()
+    t = tuning or _active_tuning
 
     if mode == "semantic":
-        results = _semantic(conn, query_vec, filters, limit, backend)
+        results = _semantic(conn, query_vec, filters, limit, backend, t)
     elif mode == "lexical":
-        results = _lexical(conn, query, filters, limit, backend)
+        results = _lexical(conn, query, filters, limit, backend, t)
     elif mode == "recent":
-        results = _recent(conn, query, filters, limit, backend)
+        results = _recent(conn, query, filters, limit, backend, t)
     elif mode == "hybrid":
-        results = _hybrid(conn, query, query_vec, filters, limit, backend)
+        results = _hybrid(conn, query, query_vec, filters, limit, backend, t)
     else:
         raise ValueError(f"unknown retrieval mode: {mode!r}")
+
+    # min_score is an absolute-relevance cutoff; only "semantic" and "hybrid"
+    # produce absolute scores (cosine similarity / normalized RRF). "lexical"
+    # and "recent" scores are purely positional (1.0 - rank/n), so applying
+    # the same cutoff there would chop a fixed *fraction* of results — however
+    # strong the matches — rather than filtering out weak ones.
+    if t.min_score > 0.0 and mode in ("semantic", "hybrid"):
+        results = [r for r in results if r.score >= t.min_score]
 
     attach_freshness_to_results(conn, results)
     attach_confidence_to_results(results)
@@ -245,20 +466,26 @@ def _semantic(
     filters: Filters,
     limit: int,
     backend: _Backend,
+    t: Tuning,
 ) -> list[SearchResult]:
     if query_vec is None:
         raise ValueError("semantic mode requires a query_vec")
-    raw = _call_knn(backend, conn, query_vec, CANDIDATE_POOL)
+    raw = _call_knn(backend, conn, query_vec, t.candidate_pool)
     if not raw:
         return []
     allowed = _apply_filters(conn, [nid for nid, _ in raw], filters)
     ordered = [(nid, dist) for nid, dist in raw if nid in allowed]
-    details = _fetch_details(
-        conn, [nid for nid, _ in ordered], include_excluded=filters.include_excluded
-    )
-    vecs = _get_vectors(conn, [nid for nid, _ in ordered])
     scored = [(nid, _cosine_to_score(dist)) for nid, dist in ordered]
-    picked = _mmr(scored, vecs, limit)
+    scored = _apply_recency(conn, scored, t)
+    pool = _mmr_pool(scored, limit)
+    vecs = _get_vectors(conn, [nid for nid, _ in pool])
+    picked = _mmr(pool, vecs, limit, t.mmr_lambda)
+    # Hydrate details for the picked results only — hydrating the full
+    # candidate pool (six link-table queries over up to candidate_pool nodes)
+    # before MMR cut the list to `limit` was pure waste.
+    details = _fetch_details(
+        conn, [nid for nid, _ in picked], include_excluded=filters.include_excluded
+    )
     return [_to_result(score, details.get(nid)) for nid, score in picked if nid in details]
 
 
@@ -268,10 +495,11 @@ def _lexical(
     filters: Filters,
     limit: int,
     backend: _Backend,
+    t: Tuning,
 ) -> list[SearchResult]:
     if not query:
         return []
-    raw = _call_fts(backend, conn, query, CANDIDATE_POOL)
+    raw = _call_fts(backend, conn, query, t.candidate_pool, t)
     if not raw:
         return []
     allowed = _apply_filters(conn, [nid for nid, _ in raw], filters)
@@ -294,16 +522,17 @@ def _recent(
     filters: Filters,
     limit: int,
     backend: _Backend,
+    t: Tuning,
 ) -> list[SearchResult]:
     # "date-ordered with loose query match" — use FTS if query provided, else
     # pull most recent knowledge_nodes filtered by the same WHERE stack.
     if query:
-        raw = _call_fts(backend, conn, query, CANDIDATE_POOL)
+        raw = _call_fts(backend, conn, query, t.candidate_pool, t)
         candidate_ids = [nid for nid, _ in raw]
     else:
         candidate_ids = []
     if not candidate_ids:
-        candidate_ids = _all_recent_ids(conn, CANDIDATE_POOL)
+        candidate_ids = _all_recent_ids(conn, t.candidate_pool)
     allowed = _apply_filters(conn, candidate_ids, filters)
     details = _fetch_details(conn, list(allowed), include_excluded=filters.include_excluded)
     ordered = sorted(
@@ -321,36 +550,58 @@ def _hybrid(
     filters: Filters,
     limit: int,
     backend: _Backend,
+    t: Tuning,
 ) -> list[SearchResult]:
     if query_vec is None:
         # Degrade to lexical if we don't have a vector.
-        return _lexical(conn, query, filters, limit, backend)
+        return _lexical(conn, query, filters, limit, backend, t)
 
-    vec_hits = _call_knn(backend, conn, query_vec, CANDIDATE_POOL)
-    fts_hits = _call_fts(backend, conn, query, CANDIDATE_POOL) if query else []
+    vec_hits = _call_knn(backend, conn, query_vec, t.candidate_pool)
+    fts_hits = _call_fts(backend, conn, query, t.candidate_pool, t) if query else []
+    # Third arm: KNN over the command-text embeddings (``vec_command``). These
+    # vectors have always been written by enrichment but were never queried;
+    # ORing them in recovers matches phrased like the commands that were run
+    # rather than like the prose summary. Weight 0 skips the query entirely.
+    if t.command_weight > 0:
+        try:
+            cmd_hits = _call_knn(backend, conn, query_vec, t.command_pool, column="vec_command")
+        except Exception:
+            # Older DBs / fixtures may lack the column — vec arm still stands.
+            cmd_hits = []
+    else:
+        cmd_hits = []
 
-    # RRF merge.
+    # Weighted RRF merge (vector/lexical weights default to 1.0 — classic RRF).
     rrf: dict[int, float] = {}
     for rank, hit in enumerate(vec_hits):
-        rrf[hit[0]] = rrf.get(hit[0], 0.0) + 1.0 / (RRF_K + rank + 1)
+        rrf[hit[0]] = rrf.get(hit[0], 0.0) + t.vector_weight / (t.rrf_k + rank + 1)
     for rank, hit in enumerate(fts_hits):
-        rrf[hit[0]] = rrf.get(hit[0], 0.0) + 1.0 / (RRF_K + rank + 1)
+        rrf[hit[0]] = rrf.get(hit[0], 0.0) + t.lexical_weight / (t.rrf_k + rank + 1)
+    for rank, hit in enumerate(cmd_hits):
+        rrf[hit[0]] = rrf.get(hit[0], 0.0) + t.command_weight / (t.rrf_k + rank + 1)
 
     if not rrf:
         return []
 
     allowed = _apply_filters(conn, list(rrf.keys()), filters)
     scored = [(nid, score) for nid, score in rrf.items() if nid in allowed]
-    scored.sort(key=lambda x: x[1], reverse=True)
     if not scored:
         return []
 
-    # Normalize so top RRF score = 1.0.
-    top = scored[0][1] or 1.0
+    # Recency must be applied BEFORE the top-score normalization below: doing
+    # it after (as an earlier version of this code did) leaves the top result
+    # at something less than 1.0 whenever it isn't also the freshest, which
+    # silently breaks the "top score == 1.0" invariant that min_score and
+    # confidence_scoring's absolute thresholds rely on.
+    scored = _apply_recency(conn, scored, t)
+
+    # Normalize so top score = 1.0.
+    top = max((s for _, s in scored), default=0.0) or 1.0
     scored = [(nid, s / top) for nid, s in scored]
 
-    vecs = _get_vectors(conn, [nid for nid, _ in scored])
-    picked = _mmr(scored, vecs, limit)
+    pool = _mmr_pool(scored, limit)
+    vecs = _get_vectors(conn, [nid for nid, _ in pool])
+    picked = _mmr(pool, vecs, limit, t.mmr_lambda)
     details = _fetch_details(
         conn, [nid for nid, _ in picked], include_excluded=filters.include_excluded
     )
@@ -519,17 +770,20 @@ def _fetch_details(
 
     details: dict[int, dict] = {}
     for node_id, uuid, content_str, embed_text, outcome, tags_str, created_at in rows:
-        summary = _extract_summary(content_str)
-        design_decisions = _extract_design_decisions(content_str)
+        content = _parse_content(content_str)
         tags = _parse_tags(tags_str)
         details[node_id] = {
             "id": node_id,
             "uuid": uuid,
-            "summary": summary,
+            "summary": content.get("summary") or "",
             "embed_text": embed_text or "",
             "outcome": outcome,
             "tags": tags,
-            "design_decisions": design_decisions,
+            "intent": str(content.get("intent") or ""),
+            "commands_raw": str(content.get("commands_raw") or ""),
+            "key_decisions": _string_list(content.get("key_decisions")),
+            "problems_encountered": _string_list(content.get("problems_encountered")),
+            "design_decisions": _dict_list(content.get("design_decisions")),
             "cwd": "",
             "git_branch": "",
             "captured_at": created_at,
@@ -824,67 +1078,141 @@ def _cosine_to_score(distance: float) -> float:
     return 1.0 - d / MAX_COSINE_DISTANCE
 
 
+def _recency_multiplier(age_ms: float, half_life_days: float, floor: float) -> float:
+    """Exponential decay from 1.0 (fresh) toward ``floor`` (ancient).
+
+    The floor keeps old-but-relevant nodes retrievable — recency is a prior,
+    not a filter.
+    """
+    half_life_ms = half_life_days * 86_400_000.0
+    if half_life_ms <= 0:
+        return 1.0
+    decay = 0.5 ** (max(0.0, age_ms) / half_life_ms)
+    return floor + (1.0 - floor) * decay
+
+
+def _apply_recency(
+    conn: sqlite3.Connection,
+    scored: list[tuple[int, float]],
+    t: Tuning,
+    *,
+    now_ms: int | None = None,
+    created_at: dict[int, int] | None = None,
+) -> list[tuple[int, float]]:
+    """Blend a recency prior into relevance scores (before MMR selection).
+
+    Uses ``knowledge_nodes.created_at`` — a cheap, always-present proxy for
+    when the underlying activity happened. Disabled (identity) when
+    ``recency_half_life_days`` is 0. Nodes with no ``created_at`` row keep
+    their score untouched.
+
+    ``created_at``: an optional pre-fetched ``{node_id: created_at}`` map (a
+    caller that already ran ``_fetch_details`` has this for free). When
+    omitted, timestamps are queried here.
+    """
+    if t.recency_half_life_days <= 0 or not scored:
+        return scored
+    if created_at is None:
+        ids = [nid for nid, _ in scored]
+        placeholders = ",".join("?" for _ in ids)
+        try:
+            rows = conn.execute(  # nosemgrep
+                f"SELECT id, created_at FROM knowledge_nodes WHERE id IN ({placeholders})",
+                ids,
+            ).fetchall()
+        except sqlite3.OperationalError:
+            return scored
+        created_at = {nid: ts for nid, ts in rows}
+    now = now_ms if now_ms is not None else int(time.time() * 1000)
+    out: list[tuple[int, float]] = []
+    for nid, score in scored:
+        ts = created_at.get(nid)
+        # `ts is not None` (not truthiness): created_at == 0 is a real,
+        # ancient epoch timestamp that must decay toward the floor, not a
+        # "missing timestamp" sentinel that skips decay and leaves the score
+        # at full (as-if-freshest) strength.
+        if ts is not None:
+            score *= _recency_multiplier(now - ts, t.recency_half_life_days, t.recency_floor)
+        out.append((nid, score))
+    return out
+
+
+# Cap on how many top-scored candidates enter MMR selection. MMR is O(k · n)
+# with a 768-dim cosine similarity per pair in pure Python, and _get_vectors
+# JSON-decodes one 768-float array per candidate — over a multi-thousand
+# candidate pool that costs seconds per query. Beyond a few hundred ranks the
+# relevance term is far too small for the diversity term to promote a
+# candidate into the top-k at any realistic mmr_lambda, so the tail is pure
+# waste. The cap never goes below the requested limit.
+_MMR_POOL_CAP = 500
+
+
+def _mmr_pool(scored: Sequence[tuple[int, float]], limit: int) -> list[tuple[int, float]]:
+    """Top candidates by score, bounded by ``_MMR_POOL_CAP`` (see above)."""
+    cap = max(_MMR_POOL_CAP, limit)
+    if len(scored) <= cap:
+        return list(scored)
+    return heapq.nlargest(cap, scored, key=lambda x: x[1])
+
+
 def _mmr(
     scored: Sequence[tuple[int, float]],
     vecs: dict[int, list[float]],
     k: int,
+    mmr_lambda: float = MMR_LAMBDA,
 ) -> list[tuple[int, float]]:
     """Select ``k`` items with MMR diversification.
 
-    Items missing a vector are still considered (with zero diversity penalty),
-    so lexical-only hits don't get disadvantaged in hybrid mode.
+    Items missing a vector (or with a zero-norm vector) are still considered,
+    with zero diversity penalty, so lexical-only hits don't get disadvantaged
+    in hybrid mode.
+
+    Each candidate's diversity term is its max cosine similarity to any
+    already-picked item. That max is maintained incrementally — per round,
+    each remaining candidate is compared only against the newest pick — and
+    vectors are unit-normalized once up front so each comparison is a plain
+    dot product. A naive rescan of the full picked set with per-pair norm
+    computation made this the dominant cost of a hybrid query.
     """
     if k <= 0 or not scored:
         return []
     pool = list(scored)
     pool.sort(key=lambda x: x[1], reverse=True)
 
+    unit: dict[int, list[float]] = {}
+    for nid, _ in pool:
+        v = vecs.get(nid)
+        if v is None:
+            continue
+        norm = math.sqrt(sum(x * x for x in v))
+        if norm:
+            unit[nid] = [x / norm for x in v]
+
     picked: list[tuple[int, float]] = [pool[0]]
     remaining = pool[1:]
+    # Max cosine similarity of each remaining candidate to any picked item.
+    best_sim = dict.fromkeys((nid for nid, _ in remaining), 0.0)
+    newest_vec = unit.get(pool[0][0])
 
     while remaining and len(picked) < k:
         best_idx = 0
         best_mmr = -math.inf
         for i, (nid, score) in enumerate(remaining):
-            diversity = _max_similarity(vecs.get(nid), [vecs.get(p) for p, _ in picked])
-            mmr = MMR_LAMBDA * score - (1.0 - MMR_LAMBDA) * diversity
+            if newest_vec is not None:
+                v = unit.get(nid)
+                if v is not None:
+                    sim = sum(x * y for x, y in zip(v, newest_vec))
+                    if sim > best_sim[nid]:
+                        best_sim[nid] = sim
+            mmr = mmr_lambda * score - (1.0 - mmr_lambda) * best_sim[nid]
             if mmr > best_mmr:
                 best_mmr = mmr
                 best_idx = i
-        picked.append(remaining.pop(best_idx))
+        chosen = remaining.pop(best_idx)
+        picked.append(chosen)
+        newest_vec = unit.get(chosen[0])
 
     return picked
-
-
-def _max_similarity(vec: list[float] | None, others: Sequence[list[float] | None]) -> float:
-    """Maximum cosine similarity between ``vec`` and any of ``others``.
-
-    Returns ``0`` when either side is missing a vector — i.e. lexical-only
-    hits pay no diversity penalty because we can't measure their distance.
-    """
-    if vec is None:
-        return 0.0
-    best = 0.0
-    for o in others:
-        if o is None:
-            continue
-        sim = _cosine_similarity(vec, o)
-        if sim > best:
-            best = sim
-    return best
-
-
-def _cosine_similarity(a: Sequence[float], b: Sequence[float]) -> float:
-    dot = 0.0
-    na = 0.0
-    nb = 0.0
-    for x, y in zip(a, b):
-        dot += x * y
-        na += x * x
-        nb += y * y
-    if na == 0 or nb == 0:
-        return 0.0
-    return dot / (math.sqrt(na) * math.sqrt(nb))
 
 
 # ---------------------------------------------------------------------------
@@ -923,6 +1251,10 @@ def _to_result(score: float, detail: dict | None) -> SearchResult:
         cwd=detail["cwd"],
         git_branch=detail["git_branch"],
         captured_at=detail["captured_at"],
+        intent=str(detail.get("intent") or ""),
+        commands_raw=str(detail.get("commands_raw") or ""),
+        key_decisions=list(detail.get("key_decisions") or []),
+        problems_encountered=list(detail.get("problems_encountered") or []),
         design_decisions=list(detail.get("design_decisions") or []),
         linked_event_ids=list(detail["linked_event_ids"]),
         linked_source_ids=sorted(detail.get("linked_source_ids") or []),
@@ -931,35 +1263,28 @@ def _to_result(score: float, detail: dict | None) -> SearchResult:
     )
 
 
-def _extract_summary(content_str: str | None) -> str:
+def _parse_content(content_str: str | None) -> dict:
+    """Parse a knowledge_node content JSON blob, returning ``{}`` on any junk."""
     if not content_str:
-        return ""
+        return {}
     try:
         payload = json.loads(content_str)
     except json.JSONDecodeError, TypeError:
-        return ""
-    if isinstance(payload, dict):
-        return payload.get("summary") or ""
-    return ""
+        return {}
+    return payload if isinstance(payload, dict) else {}
 
 
-def _extract_design_decisions(content_str: str | None) -> list[dict]:
-    """Extract design_decisions list from a knowledge_node content JSON blob.
+def _string_list(raw: object) -> list[str]:
+    """Coerce an enrichment list field (key_decisions, problems_encountered)."""
+    if not isinstance(raw, list):
+        return []
+    return [str(entry) for entry in raw if isinstance(entry, (str, int, float)) and str(entry)]
 
-    Older nodes (pre-issue #98) won't have this key; return an empty list so
-    the RAG context renderer can skip it cleanly. Each surviving entry is
-    expected to be a dict with `considered`, `chosen`, `reason` keys —
-    written through `validate_enrichment_data` so the shape is enforced.
-    """
-    if not content_str:
-        return []
-    try:
-        payload = json.loads(content_str)
-    except json.JSONDecodeError, TypeError:
-        return []
-    if not isinstance(payload, dict):
-        return []
-    raw = payload.get("design_decisions")
+
+def _dict_list(raw: object) -> list[dict]:
+    """Coerce design_decisions entries — each expected to be a dict with
+    `considered`, `chosen`, `reason` keys (enforced by validate_enrichment_data;
+    older pre-issue-#98 nodes simply lack the key)."""
     if not isinstance(raw, list):
         return []
     return [entry for entry in raw if isinstance(entry, dict)]

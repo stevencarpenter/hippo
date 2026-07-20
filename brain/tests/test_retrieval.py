@@ -16,14 +16,21 @@ from dataclasses import dataclass, field
 import pytest
 
 from hippo_brain.retrieval import (
+    DEFAULT_TUNING,
     MMR_LAMBDA,
     RRF_K,
     Filters,
     SearchResult,
+    Tuning,
     _apply_filters,
     _fetch_details,
+    configure,
     search,
 )
+
+# Recency-neutral tuning: score-exactness tests below pin pre-recency math, so
+# they disable the decay prior (fixture nodes have ancient created_at values).
+NO_RECENCY = Tuning(recency_half_life_days=0)
 
 
 # ---------------------------------------------------------------------------
@@ -123,19 +130,23 @@ class FakeBackend:
 
     knn: list[tuple[int, float]] = field(default_factory=list)
     fts: list[tuple[int, float]] = field(default_factory=list)
+    knn_command: list[tuple[int, float]] = field(default_factory=list)
+    fts_queries: list[str] = field(default_factory=list)
 
     def knn_search(self, _conn, _query_vec, column="vec_knowledge", limit=10):
         assert column in {"vec_knowledge", "vec_command"}
+        data = self.knn if column == "vec_knowledge" else self.knn_command
         return [
             {
                 "knowledge_node_id": nid,
                 "distance": dist,
                 "score": max(0.0, 1.0 - dist / 2.0),
             }
-            for nid, dist in self.knn[:limit]
+            for nid, dist in data[:limit]
         ]
 
-    def fts_search(self, _conn, _query, limit=10):
+    def fts_search(self, _conn, query, limit=10):
+        self.fts_queries.append(query)
         return [
             {
                 "knowledge_node_id": nid,
@@ -317,7 +328,16 @@ def test_semantic_mode_normalizes_scores(conn):
     _install_vec_fixture(conn, {1: [1.0, 0.0], 2: [0.0, 1.0]})
     backend = FakeBackend(knn=[(1, 0.2), (2, 1.8)])
 
-    results = search(conn, "", [1.0, 0.0], Filters(), mode="semantic", limit=5, backend=backend)
+    results = search(
+        conn,
+        "",
+        [1.0, 0.0],
+        Filters(),
+        mode="semantic",
+        limit=5,
+        backend=backend,
+        tuning=NO_RECENCY,
+    )
 
     assert [r.uuid for r in results] == ["uuid-1", "uuid-2"]
     # cosine_distance in [0,2] → score = 1 - d/2. 0.2 → 0.9; 1.8 → 0.1.
@@ -347,7 +367,16 @@ def test_hybrid_mode_rrf_merges_and_normalizes(conn):
         fts=[(3, -2.0), (2, -1.0), (1, -0.5)],
     )
 
-    results = search(conn, "q", [1.0, 0.0], Filters(), mode="hybrid", limit=3, backend=backend)
+    results = search(
+        conn,
+        "q",
+        [1.0, 0.0],
+        Filters(),
+        mode="hybrid",
+        limit=3,
+        backend=backend,
+        tuning=NO_RECENCY,
+    )
 
     assert len(results) == 3
     assert results[0].score == pytest.approx(1.0)
@@ -467,8 +496,37 @@ def test_lexical_mode_handles_punctuation_in_query(conn):
 def test_sanitize_fts_query_quotes_and_escapes():
     from hippo_brain.retrieval import _sanitize_fts_query
 
-    assert _sanitize_fts_query("hello?") == '"hello?"'
-    assert _sanitize_fts_query('say "hi"') == '"say ""hi"""'
+    # Single meaningful token: phrase + keyword variants both quoted.
+    assert _sanitize_fts_query("hello") == '"hello"'
+    assert _sanitize_fts_query("hello?") == '"hello?" OR "hello"'
+    # Embedded double-quotes are doubled per FTS5 quoting rules everywhere.
+    assert _sanitize_fts_query('say "hi"') == '"say ""hi""" OR "say" OR "hi"'
+
+
+def test_sanitize_fts_query_tokenizes_and_drops_stopwords():
+    from hippo_brain.retrieval import _sanitize_fts_query
+
+    q = _sanitize_fts_query("what is the sqlite-vec migration for hippo?")
+    # The full phrase survives as an exact-match booster...
+    assert q.startswith('"what is the sqlite-vec migration for hippo?"')
+    # ...and meaningful tokens are OR'd in so BM25 can match documents that
+    # don't contain the question verbatim.
+    assert '"sqlite-vec"' in q
+    assert '"migration"' in q
+    assert '"hippo"' in q
+    # Stopwords carry no signal and are dropped from the keyword arm.
+    assert '"what"' not in q
+    assert '"the"' not in q
+    assert " OR " in q
+
+
+def test_sanitize_fts_query_caps_token_count():
+    from hippo_brain.retrieval import _FTS_MAX_TOKENS, _sanitize_fts_query
+
+    query = " ".join(f"token{i}" for i in range(50))
+    q = _sanitize_fts_query(query)
+    # phrase + at most _FTS_MAX_TOKENS keyword terms.
+    assert q.count(" OR ") == _FTS_MAX_TOKENS
 
 
 def test_since_filter_respects_epoch_ms_lower_bound(conn):
@@ -928,3 +986,324 @@ def test_source_clause_claude_excludes_probe_only_node(tmp_db):
     conn.commit()
     kept = _apply_filters(conn, [1], Filters(source="claude"))
     assert kept == set(), "probe-only-linked node must be excluded from source=claude"
+
+
+# ---------------------------------------------------------------------------
+# Tuning: recency prior, weighted fusion, min_score, configure()
+# ---------------------------------------------------------------------------
+
+
+def test_recency_prior_prefers_fresh_node_at_equal_relevance(conn):
+    import time as _time
+
+    now_ms = int(_time.time() * 1000)
+    _insert_node(conn, 1, summary="stale", created_at=now_ms - 400 * 86_400_000)
+    _insert_node(conn, 2, summary="fresh", created_at=now_ms - 86_400_000)
+    _install_vec_fixture(conn, {1: [1.0, 0.0], 2: [0.0, 1.0]})
+    # Identical vector distance; stale node wins FTS slightly, so without the
+    # recency prior node 1 would rank first.
+    backend = FakeBackend(knn=[(1, 0.5), (2, 0.5)], fts=[(1, -2.0), (2, -1.0)])
+
+    default = search(conn, "q", [1.0, 0.0], Filters(), mode="hybrid", limit=2, backend=backend)
+    neutral = search(
+        conn, "q", [1.0, 0.0], Filters(), mode="hybrid", limit=2, backend=backend, tuning=NO_RECENCY
+    )
+
+    assert [r.uuid for r in neutral] == ["uuid-1", "uuid-2"]
+    assert [r.uuid for r in default] == ["uuid-2", "uuid-1"]
+
+
+def test_recency_floor_keeps_ancient_nodes_retrievable(conn):
+    from hippo_brain.retrieval import _recency_multiplier
+
+    hl, floor = 90.0, 0.5
+    assert _recency_multiplier(0, hl, floor) == pytest.approx(1.0)
+    assert _recency_multiplier(90 * 86_400_000, hl, floor) == pytest.approx(0.75)
+    # 100 half-lives out: decays to the floor, never to zero.
+    assert _recency_multiplier(9000 * 86_400_000, hl, floor) == pytest.approx(floor)
+    # Half-life 0 disables the prior entirely.
+    assert _recency_multiplier(9000 * 86_400_000, 0.0, floor) == 1.0
+
+
+def test_hybrid_lexical_weight_zero_ignores_fts_arm(conn):
+    for i in range(1, 3):
+        _insert_node(conn, i, summary=f"n{i}")
+    _install_vec_fixture(conn, {1: [1.0, 0.0], 2: [0.0, 1.0]})
+    # FTS strongly prefers node 2; vectors prefer node 1.
+    backend = FakeBackend(knn=[(1, 0.1), (2, 1.5)], fts=[(2, -9.0), (2, -8.0)])
+
+    vec_only = Tuning(lexical_weight=0.0, recency_half_life_days=0)
+    results = search(
+        conn, "q", [1.0, 0.0], Filters(), mode="hybrid", limit=2, backend=backend, tuning=vec_only
+    )
+    assert results[0].uuid == "uuid-1"
+
+
+def test_min_score_drops_weak_results(conn):
+    _insert_node(conn, 1, summary="strong")
+    _insert_node(conn, 2, summary="weak")
+    _install_vec_fixture(conn, {1: [1.0, 0.0], 2: [0.0, 1.0]})
+    backend = FakeBackend(knn=[(1, 0.2), (2, 1.8)])
+
+    strict = Tuning(min_score=0.5, recency_half_life_days=0)
+    results = search(
+        conn, "", [1.0, 0.0], Filters(), mode="semantic", limit=5, backend=backend, tuning=strict
+    )
+    assert [r.uuid for r in results] == ["uuid-1"]
+
+
+def test_configure_coerces_clamps_and_ignores_junk():
+    from hippo_brain import retrieval as r
+
+    try:
+        t = configure(
+            {
+                "rrf_k": "120",
+                "mmr_lambda": 5.0,
+                "recency_half_life_days": 30,
+                "vector_weight": "not-a-number",
+                "unknown_knob": 1,
+            }
+        )
+        assert t.rrf_k == 120
+        assert t.mmr_lambda == 1.0  # clamped into [0, 1]
+        assert t.recency_half_life_days == 30.0
+        assert t.vector_weight == DEFAULT_TUNING.vector_weight  # junk → default
+        assert t.candidate_pool == DEFAULT_TUNING.candidate_pool  # unspecified → default
+        assert r.get_tuning() is t
+    finally:
+        configure(None)
+    assert r.get_tuning() == DEFAULT_TUNING
+
+
+def test_configure_none_resets_to_defaults():
+    configure({"rrf_k": 5})
+    assert configure(None) == DEFAULT_TUNING
+
+
+# ---------------------------------------------------------------------------
+# Detail fetch: enrichment fields surfaced to the RAG prompt
+# ---------------------------------------------------------------------------
+
+
+def test_fetch_details_extracts_intent_decisions_problems_commands(conn):
+    _insert_node(
+        conn,
+        1,
+        content={
+            "summary": "fixed the build",
+            "intent": "debugging",
+            "commands_raw": "cargo build --release",
+            "key_decisions": ["Chose build.rs over vergen", 42],
+            "problems_encountered": ["linker OOM, fixed with mold"],
+            "design_decisions": [{"considered": "vergen", "chosen": "build.rs", "reason": "deps"}],
+        },
+    )
+    backend = FakeBackend(fts=[(1, -1.0)])
+    results = search(conn, "build", None, Filters(), mode="lexical", limit=5, backend=backend)
+
+    assert len(results) == 1
+    r = results[0]
+    assert r.intent == "debugging"
+    assert r.commands_raw == "cargo build --release"
+    assert r.key_decisions == ["Chose build.rs over vergen", "42"]
+    assert r.problems_encountered == ["linker OOM, fixed with mold"]
+    assert r.design_decisions == [{"considered": "vergen", "chosen": "build.rs", "reason": "deps"}]
+
+
+def test_fetch_details_tolerates_missing_new_fields(conn):
+    _insert_node(conn, 1, summary="plain old node")
+    backend = FakeBackend(fts=[(1, -1.0)])
+    results = search(conn, "plain", None, Filters(), mode="lexical", limit=5, backend=backend)
+
+    r = results[0]
+    assert r.intent == ""
+    assert r.commands_raw == ""
+    assert r.key_decisions == []
+    assert r.problems_encountered == []
+
+
+# ---------------------------------------------------------------------------
+# Tier 2: vec_command arm + entity expansion
+# ---------------------------------------------------------------------------
+
+
+def test_hybrid_command_arm_surfaces_command_only_matches(conn):
+    _insert_node(conn, 1, summary="prose match")
+    _insert_node(conn, 2, summary="command match")
+    _install_vec_fixture(conn, {1: [1.0, 0.0], 2: [0.0, 1.0]})
+    # Node 2 is invisible to the knowledge-vector and FTS arms; only the
+    # command-embedding arm knows about it.
+    backend = FakeBackend(knn=[(1, 0.3)], knn_command=[(2, 0.1), (1, 0.5)])
+
+    results = search(
+        conn, "q", [1.0, 0.0], Filters(), mode="hybrid", limit=5, backend=backend, tuning=NO_RECENCY
+    )
+    assert sorted(r.uuid for r in results) == ["uuid-1", "uuid-2"]
+
+    off = Tuning(command_weight=0.0, recency_half_life_days=0)
+    results_off = search(
+        conn, "q", [1.0, 0.0], Filters(), mode="hybrid", limit=5, backend=backend, tuning=off
+    )
+    assert [r.uuid for r in results_off] == ["uuid-1"]
+
+
+def test_entity_expansion_adds_alias_terms_to_fts_query(conn):
+    _insert_node(conn, 1, summary="ok")
+    conn.execute(
+        "INSERT INTO entities (id, type, name, canonical) VALUES (1, 'tool', 'sqlite-vec', 'sqlitevec')"
+    )
+    backend = FakeBackend(fts=[(1, -1.0)])
+
+    search(
+        conn, "how do I load sqlitevec", None, Filters(), mode="lexical", limit=5, backend=backend
+    )
+    assert len(backend.fts_queries) == 1
+    # The alias spelling (entity name) is OR'd into the keyword arm.
+    assert '"sqlite-vec"' in backend.fts_queries[0]
+
+    off = Tuning(entity_expansion=False)
+    backend2 = FakeBackend(fts=[(1, -1.0)])
+    search(
+        conn,
+        "how do I load sqlitevec",
+        None,
+        Filters(),
+        mode="lexical",
+        limit=5,
+        backend=backend2,
+        tuning=off,
+    )
+    assert '"sqlite-vec"' not in backend2.fts_queries[0]
+
+
+def test_entity_expansion_ignores_non_identifier_types_and_missing_table():
+    from hippo_brain.retrieval import _expand_entity_terms
+
+    c = sqlite3.connect(":memory:")
+    # No entities table at all → graceful empty.
+    assert _expand_entity_terms(c, "anything sqlitevec") == []
+    c.executescript(SCHEMA)
+    c.execute(
+        "INSERT INTO entities (id, type, name, canonical) VALUES (1, 'error', 'sqlitevec', 'boom-alias')"
+    )
+    # 'error' is not an identifier entity type → no expansion.
+    assert _expand_entity_terms(c, "what about sqlitevec") == []
+    c.close()
+
+
+def test_configure_parses_tier2_knobs():
+    try:
+        t = configure(
+            {
+                "command_weight": 0,
+                "entity_expansion": "false",
+                "rerank": True,
+                "rerank_pool": 12,
+            }
+        )
+        assert t.command_weight == 0.0
+        assert t.entity_expansion is False
+        assert t.rerank is True
+        assert t.rerank_pool == 12
+    finally:
+        configure(None)
+
+
+# ---------------------------------------------------------------------------
+# Regression tests: code-review fixes
+# ---------------------------------------------------------------------------
+
+
+def test_hybrid_top_score_normalizes_to_one_even_with_recency_on(conn):
+    """Recency must be applied BEFORE the final top-score normalization, or
+    the top hit ends up below 1.0 whenever it isn't also the freshest node —
+    silently breaking the "top score == 1.0" invariant that min_score and
+    confidence_scoring's absolute thresholds rely on."""
+    import time as _time
+
+    now_ms = int(_time.time() * 1000)
+    _insert_node(conn, 1, summary="stale but most relevant", created_at=now_ms - 400 * 86_400_000)
+    _insert_node(conn, 2, summary="fresh but less relevant", created_at=now_ms - 86_400_000)
+    _install_vec_fixture(conn, {1: [1.0, 0.0], 2: [0.0, 1.0]})
+    backend = FakeBackend(knn=[(1, 0.1), (2, 1.9)], fts=[(1, -5.0)])
+
+    results = search(conn, "q", [1.0, 0.0], Filters(), mode="hybrid", limit=2, backend=backend)
+    assert results[0].uuid == "uuid-1"
+    assert results[0].score == pytest.approx(1.0)
+
+
+def test_min_score_ignored_for_positional_score_modes(conn):
+    """lexical/recent scores are positional (1.0 - rank/n), not an absolute
+    relevance measure — min_score must not chop a fixed fraction of them."""
+    _insert_node(conn, 1, summary="a")
+    _insert_node(conn, 2, summary="b")
+    _insert_node(conn, 3, summary="c")
+    backend = FakeBackend(fts=[(1, -1.0), (2, -1.0), (3, -1.0)])
+
+    strict = Tuning(min_score=0.9, recency_half_life_days=0)
+    results = search(
+        conn, "q", None, Filters(), mode="lexical", limit=5, backend=backend, tuning=strict
+    )
+    assert len(results) == 3  # all three positional hits survive
+
+
+def test_apply_recency_treats_epoch_zero_as_a_real_ancient_timestamp():
+    """created_at == 0 is a valid (if ancient) timestamp, not a sentinel for
+    "missing" — it must decay toward the floor, not stay at full strength."""
+    from hippo_brain.retrieval import _apply_recency
+
+    t = Tuning(recency_half_life_days=90, recency_floor=0.5)
+    now_ms = 9000 * 86_400_000  # far beyond any half-life from epoch 0
+    out = _apply_recency(None, [(1, 1.0)], t, now_ms=now_ms, created_at={1: 0})
+    assert out[0][1] == pytest.approx(0.5)
+
+
+def test_recent_mode_gets_entity_expansion_like_lexical_and_hybrid(conn):
+    """Entity expansion was previously copy-pasted into _lexical/_hybrid only,
+    silently skipping _recent's FTS call. Centralizing it in _call_fts fixes
+    the gap; verify _recent's query also carries the expansion."""
+    _insert_node(conn, 1, summary="ok")
+    conn.execute(
+        "INSERT INTO entities (id, type, name, canonical) VALUES (1, 'tool', 'sqlite-vec', 'sqlitevec')"
+    )
+    backend = FakeBackend(fts=[(1, -1.0)])
+
+    search(conn, "load sqlitevec now", None, Filters(), mode="recent", limit=5, backend=backend)
+    assert len(backend.fts_queries) == 1
+    assert '"sqlite-vec"' in backend.fts_queries[0]
+
+
+def test_command_pool_bounds_the_command_arm_independently_of_candidate_pool(conn):
+    _insert_node(conn, 1, summary="a")
+    _install_vec_fixture(conn, {1: [1.0, 0.0]})
+    backend = FakeBackend(knn=[(1, 0.5)], knn_command=[(1, 0.5)])
+    limits_by_column: dict[str, list[int]] = {"vec_knowledge": [], "vec_command": []}
+    orig_knn_search = backend.knn_search
+
+    def recording_knn_search(conn_, vec, column="vec_knowledge", limit=10):
+        limits_by_column[column].append(limit)
+        return orig_knn_search(conn_, vec, column=column, limit=limit)
+
+    backend.knn_search = recording_knn_search
+
+    search(
+        conn,
+        "q",
+        [1.0, 0.0],
+        Filters(),
+        mode="hybrid",
+        limit=5,
+        backend=backend,
+        tuning=Tuning(candidate_pool=3000, command_pool=7, recency_half_life_days=0),
+    )
+    assert limits_by_column["vec_knowledge"] == [3000]
+    assert limits_by_column["vec_command"] == [7]
+
+
+def test_configure_parses_command_pool():
+    try:
+        t = configure({"command_pool": 250})
+        assert t.command_pool == 250
+    finally:
+        configure(None)

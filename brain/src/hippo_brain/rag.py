@@ -10,7 +10,9 @@ from datetime import datetime, timezone
 
 from hippo_brain.embeddings import EMBED_DIM, _pad_or_truncate, search_similar
 from hippo_brain.enrichment import IDENTIFIER_ENTITY_TYPES
+from hippo_brain.rerank import rerank_results
 from hippo_brain.retrieval import Filters, SearchResult
+from hippo_brain.retrieval import get_tuning as retrieval_get_tuning
 from hippo_brain.retrieval import search as retrieval_search
 from hippo_brain.telemetry import get_meter
 
@@ -41,6 +43,9 @@ DEFAULT_MAX_CONTEXT_CHARS = 12000
 DEFAULT_SOURCES_LIMIT = 10
 _MIN_PER_HIT_FIELD_CHARS = 80
 _ENTITIES_LINE_CAP = 500
+_SOURCE_COMMANDS_RAW_CAP = 500
+_INTENT_LINE_CAP = 200
+_LIST_FIELD_CAP = 600
 
 _SYSTEM_PROMPT = (
     "You are a personal knowledge assistant. The user is asking about their own past "
@@ -170,7 +175,7 @@ def _shape_rag_sources(
                 "cwd": hit.get("cwd", ""),
                 "git_branch": hit.get("git_branch", ""),
                 "timestamp": hit.get("captured_at", 0),
-                "commands_raw": hit.get("commands_raw", ""),
+                "commands_raw": _truncate(hit.get("commands_raw", ""), _SOURCE_COMMANDS_RAW_CAP),
                 "uuid": hit.get("uuid", ""),
                 "linked_event_ids": list(hit.get("linked_event_ids", []) or []),
                 "evidence": list(hit.get("evidence", []) or []),
@@ -195,6 +200,8 @@ def _hit_lines(
     lines = [f"[{index}] (score: {score}, {date_str})"]
     if hit.get("summary"):
         lines.append(f"Summary: {hit['summary']}")
+    if hit.get("intent"):
+        lines.append(f"Intent: {_truncate(str(hit['intent']), _INTENT_LINE_CAP)}")
     entities_line = _render_entities_line(hit.get("entities"))
     if entities_line:
         lines.append(entities_line)
@@ -207,6 +214,14 @@ def _hit_lines(
     if design_lines:
         lines.append("Design decisions:")
         lines.extend(design_lines)
+    key_lines = _render_string_list_lines(hit.get("key_decisions"))
+    if key_lines:
+        lines.append("Key decisions:")
+        lines.extend(key_lines)
+    problem_lines = _render_string_list_lines(hit.get("problems_encountered"))
+    if problem_lines:
+        lines.append("Problems encountered:")
+        lines.extend(problem_lines)
     if hit.get("commands_raw"):
         lines.append(f"Commands: {_truncate(hit['commands_raw'], cmd_cap)}")
     if hit.get("cwd"):
@@ -225,6 +240,21 @@ def _hit_lines(
     if tags and isinstance(tags, list):
         lines.append(f"Tags: {', '.join(tags)}")
     return lines
+
+
+def _render_string_list_lines(raw: object, max_chars: int = _LIST_FIELD_CAP) -> list[str]:
+    """Render a list-of-strings enrichment field (key_decisions,
+    problems_encountered) as indented bullet lines under a total char cap.
+
+    These fields are short LLM-authored lists, so a fixed cap keeps them out
+    of the proportional embed/commands budget while bounding worst-case size.
+    """
+    if not isinstance(raw, list) or max_chars <= 0:
+        return []
+    rendered = "\n".join(f"  - {entry}" for entry in raw if isinstance(entry, str) and entry)
+    if not rendered:
+        return []
+    return _truncate(rendered, max_chars).splitlines()
 
 
 def _design_decision_payload(design_decisions: list[dict] | object) -> str:
@@ -452,7 +482,10 @@ def _result_to_hit(r: SearchResult) -> dict:
         "_distance": round(1.0 - max(0.0, min(1.0, r.score)), 4),
         "summary": r.summary,
         "embed_text": r.embed_text,
-        "commands_raw": "",
+        "intent": r.intent,
+        "commands_raw": r.commands_raw,
+        "key_decisions": list(r.key_decisions),
+        "problems_encountered": list(r.problems_encountered),
         "cwd": r.cwd,
         "git_branch": r.git_branch,
         "captured_at": r.captured_at,
@@ -618,14 +651,29 @@ async def ask(
     try:
         _t1 = time.monotonic()
         if use_retrieval_search:
+            tuning = retrieval_get_tuning()
+            # With reranking on, over-fetch so the LLM has a wider pool to
+            # reorder; the rerank stage cuts back down to `limit`.
+            fetch_limit = max(limit, tuning.rerank_pool) if tuning.rerank else limit
             results = retrieval_search(
                 retrieval_conn,
                 question,
                 list(query_vec),
                 filters=effective_filters,
                 mode=mode,
-                limit=limit,
+                limit=fetch_limit,
             )
+            if tuning.rerank:
+                # rerank_results owns the trivial-input short-circuit and
+                # always cuts to `limit`, including on its failure paths.
+                _tr = time.monotonic()
+                results = await rerank_results(
+                    inference_client, query_model, question, results, limit
+                )
+                if _rag_duration:
+                    _rag_duration.record((time.monotonic() - _tr) * 1000, {"stage": "rerank"})
+            else:
+                results = results[:limit]
             hits = [_result_to_hit(r) for r in results]
         elif effective_filters is not None:
             return _degraded_response(

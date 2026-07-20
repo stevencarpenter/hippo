@@ -233,3 +233,133 @@ def test_memory_knowledge_includes_evidence_packet(conn: sqlite3.Connection) -> 
     assert pkt["ref"] == "memory-100"
     assert pkt["source_kind"] == "claude-auto-memory"
     assert "Vector store" in pkt["excerpt"]
+
+
+# ---------------------------------------------------------------------------
+# inspect_evidence per-kind branches + the hippo-evidence-inspect CLI
+# ---------------------------------------------------------------------------
+
+
+def _insert_settled_agentic(conn: sqlite3.Connection, row_id: int, harness: str) -> None:
+    conn.execute(
+        "INSERT INTO agentic_sessions "
+        "(id, session_id, harness, segment_index, start_time, end_time, cwd, git_branch, "
+        " summary_text, message_count, source_file) "
+        "VALUES (?, 'sess-x', ?, 0, ?, ?, '/p', 'main', 'work', 3, '/proj/s.jsonl')",
+        (row_id, harness, _SETTLED_END - 1000, _SETTLED_END),
+    )
+
+
+def test_inspect_evidence_agentic_claude_and_codex(conn: sqlite3.Connection) -> None:
+    _insert_settled_agentic(conn, 21, "claude-code")
+    _insert_settled_agentic(conn, 22, "codex")
+    conn.commit()
+
+    claude = inspect_evidence(conn, "claude-21")
+    assert claude["table"] == "agentic_sessions"
+    assert claude["row"]["harness"] == "claude-code"
+
+    codex = inspect_evidence(conn, "codex-22")
+    assert codex["row"]["harness"] == "codex"
+
+    # A claude ref must not resolve a codex row (harness mismatch).
+    with pytest.raises(LookupError):
+        inspect_evidence(conn, "claude-22")
+
+
+def test_inspect_evidence_browser_workflow_memory(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        "INSERT INTO browser_events (id, timestamp, title, url, domain) "
+        "VALUES (41, ?, 'WAL docs', 'https://sqlite.org/wal', 'sqlite.org')",
+        (_SETTLED_END,),
+    )
+    conn.execute(
+        "INSERT INTO workflow_runs (id, name, repo, conclusion, started_at) "
+        "VALUES (51, 'CI', 'o/hippo', 'success', ?)",
+        (_SETTLED_END,),
+    )
+    conn.execute(
+        "INSERT INTO memory_documents (id, uuid, repository, source_path, state, updated_at) "
+        "VALUES (2, 'doc-2', 'hippo', 'MEMORY.md', 'active', ?)",
+        (_SETTLED_END,),
+    )
+    conn.execute(
+        "INSERT INTO memory_revisions (id, document_id, revision_number, created_at) "
+        "VALUES (11, 2, 1, ?)",
+        (_SETTLED_END,),
+    )
+    conn.execute("UPDATE memory_documents SET active_revision_id = 11 WHERE id = 2")
+    conn.execute(
+        "INSERT INTO memory_chunks (id, revision_id, ordinal, heading_path, content, created_at) "
+        "VALUES (101, 11, 0, 'Notes', 'chunk body', ?)",
+        (_SETTLED_END,),
+    )
+    conn.commit()
+
+    assert inspect_evidence(conn, "browser-41")["row"]["domain"] == "sqlite.org"
+    assert inspect_evidence(conn, "workflow-51")["row"]["conclusion"] == "success"
+    memory = inspect_evidence(conn, "memory-101")
+    assert memory["row"]["content"] == "chunk body"
+    assert memory["row"]["repository"] == "hippo"
+
+    with pytest.raises(LookupError):
+        inspect_evidence(conn, "browser-999")
+    with pytest.raises(ValueError):
+        inspect_evidence(conn, "not-a-ref-at-all !")
+
+
+def test_inspect_evidence_memory_requires_active_revision(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        "INSERT INTO memory_documents (id, uuid, repository, source_path, state, updated_at) "
+        "VALUES (3, 'doc-3', 'hippo', 'MEMORY.md', 'active', ?)",
+        (_SETTLED_END,),
+    )
+    conn.execute(
+        "INSERT INTO memory_revisions (id, document_id, revision_number, created_at) "
+        "VALUES (12, 3, 1, ?)",
+        (_SETTLED_END,),
+    )
+    # active_revision_id deliberately left NULL — stale chunk must not resolve.
+    conn.execute(
+        "INSERT INTO memory_chunks (id, revision_id, ordinal, heading_path, content, created_at) "
+        "VALUES (102, 12, 0, 'Stale', 'orphan chunk', ?)",
+        (_SETTLED_END,),
+    )
+    conn.commit()
+
+    with pytest.raises(LookupError):
+        inspect_evidence(conn, "memory-102")
+
+
+class TestEvidenceInspectCli:
+    def _make_db(self, tmp_path) -> str:
+        db = tmp_path / "hippo.db"
+        c = sqlite3.connect(db)
+        c.executescript(TRUST_EVAL_SCHEMA)
+        c.execute(
+            "INSERT INTO events (id, timestamp, command, cwd, git_branch, source_kind) "
+            "VALUES (7, ?, 'git status', '/p', 'main', 'shell')",
+            (_SETTLED_END,),
+        )
+        c.commit()
+        c.close()
+        return str(db)
+
+    def test_main_prints_row_json(self, tmp_path, capsys) -> None:
+        from hippo_brain.evidence_packets import main
+
+        rc = main(["shell-7", "--db", self._make_db(tmp_path)])
+        assert rc == 0
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["table"] == "events"
+        assert payload["row"]["command"] == "git status"
+
+    def test_main_missing_db_and_bad_ref(self, tmp_path, capsys) -> None:
+        from hippo_brain.evidence_packets import main
+
+        assert main(["shell-7", "--db", str(tmp_path / "nope.db")]) == 1
+        assert "database not found" in capsys.readouterr().err
+
+        db = self._make_db(tmp_path)
+        assert main(["shell-999", "--db", db]) == 1
+        assert "no eligible events row" in capsys.readouterr().err

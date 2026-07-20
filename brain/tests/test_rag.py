@@ -91,6 +91,13 @@ class TestShapeRagSources:
     def test_empty_hits(self):
         assert _shape_rag_sources([]) == []
 
+    def test_commands_raw_is_truncated_like_summary(self):
+        from hippo_brain.rag import _SOURCE_COMMANDS_RAW_CAP
+
+        huge = "x" * (_SOURCE_COMMANDS_RAW_CAP + 500)
+        sources = _shape_rag_sources([{"_distance": 0.1, "commands_raw": huge}])
+        assert len(sources[0]["commands_raw"]) <= _SOURCE_COMMANDS_RAW_CAP
+
     def test_missing_fields_default_gracefully(self):
         sources = _shape_rag_sources([{"_distance": 0.1}])
         src = sources[0]
@@ -917,3 +924,140 @@ class TestEntitiesLine:
         assert "pytest" in line
         assert "UNIQUE constraint failed" not in line
         assert "database is locked" not in line
+
+
+class TestEnrichmentFieldsInPrompt:
+    """intent / key_decisions / problems_encountered / commands_raw surfaced by
+    the hybrid retrieval path must reach the synthesis prompt."""
+
+    def test_intent_key_decisions_problems_rendered(self):
+        from hippo_brain.rag import _build_rag_prompt
+
+        hit = dict(
+            SAMPLE_HITS[0],
+            intent="debugging",
+            key_decisions=["Chose build.rs over vergen crate for zero dependencies"],
+            problems_encountered=["linker OOM; fixed by switching to mold"],
+        )
+        user = _build_rag_prompt("what happened?", [hit])[1]["content"]
+        assert "Intent: debugging" in user
+        assert "Key decisions:" in user
+        assert "Chose build.rs over vergen crate" in user
+        assert "Problems encountered:" in user
+        assert "switching to mold" in user
+
+    def test_new_fields_omitted_when_absent(self):
+        from hippo_brain.rag import _build_rag_prompt
+
+        hit = dict(SAMPLE_HITS[0], intent="", key_decisions=[], problems_encountered=[])
+        user = _build_rag_prompt("q", [hit])[1]["content"]
+        assert "Intent:" not in user
+        assert "Key decisions:" not in user
+        assert "Problems encountered:" not in user
+
+    def test_result_to_hit_carries_new_fields(self):
+        from hippo_brain.rag import _result_to_hit
+        from hippo_brain.retrieval import SearchResult
+
+        r = SearchResult(
+            uuid="u",
+            score=0.9,
+            summary="s",
+            embed_text="e",
+            outcome="success",
+            tags=[],
+            cwd="/p",
+            git_branch="main",
+            captured_at=1_700_000_000_000,
+            intent="testing",
+            commands_raw="pytest -x",
+            key_decisions=["kd"],
+            problems_encountered=["pe"],
+        )
+        hit = _result_to_hit(r)
+        assert hit["intent"] == "testing"
+        assert hit["commands_raw"] == "pytest -x"
+        assert hit["key_decisions"] == ["kd"]
+        assert hit["problems_encountered"] == ["pe"]
+
+
+class TestRerankIntegration:
+    """`ask` over-fetches and reorders via the LLM when [retrieval] rerank is on."""
+
+    @pytest.mark.asyncio
+    async def test_rerank_reorders_sources(self):
+        from hippo_brain.retrieval import Tuning
+
+        client = _healthy_client()
+        # First chat call = rerank ranking; second = synthesis.
+        client.chat.side_effect = ["[2, 1]", "synthesized answer"]
+        sentinel_conn = sqlite3.connect(":memory:")
+        try:
+            with (
+                patch("hippo_brain.rag.retrieval_search") as retrieval_mock,
+                patch(
+                    "hippo_brain.rag.retrieval_get_tuning",
+                    return_value=Tuning(rerank=True, rerank_pool=5),
+                ),
+            ):
+                retrieval_mock.return_value = [
+                    _fake_search_result(uuid="first", summary="one"),
+                    _fake_search_result(uuid="second", summary="two", score=0.5),
+                ]
+                result = await ask(
+                    "q", client, None, "m", "e", project="/home/user", conn=sentinel_conn
+                )
+
+            assert [s["uuid"] for s in result["sources"]] == ["second", "first"]
+            assert result["answer"] == "synthesized answer"
+            assert client.chat.await_count == 2
+        finally:
+            sentinel_conn.close()
+
+    @pytest.mark.asyncio
+    async def test_rerank_overfetches_to_pool_size(self):
+        from hippo_brain.retrieval import Tuning
+
+        client = _healthy_client()
+        client.chat.side_effect = ["[1]", "answer"]
+        sentinel_conn = sqlite3.connect(":memory:")
+        try:
+            with (
+                patch("hippo_brain.rag.retrieval_search") as retrieval_mock,
+                patch(
+                    "hippo_brain.rag.retrieval_get_tuning",
+                    return_value=Tuning(rerank=True, rerank_pool=30),
+                ),
+            ):
+                retrieval_mock.return_value = [_fake_search_result(uuid="only")]
+                await ask(
+                    "q",
+                    client,
+                    None,
+                    "m",
+                    "e",
+                    limit=5,
+                    project="/home/user",
+                    conn=sentinel_conn,
+                )
+            assert retrieval_mock.call_args.kwargs["limit"] == 30
+        finally:
+            sentinel_conn.close()
+
+    @pytest.mark.asyncio
+    async def test_rerank_off_keeps_single_llm_call(self):
+        client = _healthy_client(chat_return="answer")
+        sentinel_conn = sqlite3.connect(":memory:")
+        try:
+            with patch("hippo_brain.rag.retrieval_search") as retrieval_mock:
+                retrieval_mock.return_value = [
+                    _fake_search_result(uuid="a"),
+                    _fake_search_result(uuid="b", score=0.5),
+                ]
+                result = await ask(
+                    "q", client, None, "m", "e", project="/home/user", conn=sentinel_conn
+                )
+            assert [s["uuid"] for s in result["sources"]] == ["a", "b"]
+            assert client.chat.await_count == 1
+        finally:
+            sentinel_conn.close()
