@@ -481,9 +481,7 @@ def _load_shell_events_for_node(conn: sqlite3.Connection, node_id: int) -> list[
 def _load_claude_sessions_for_node(conn: sqlite3.Connection, node_id: int) -> list[dict]:
     tables = {
         row[0]
-        for row in conn.execute(
-            "SELECT name FROM sqlite_master WHERE type = 'table'"
-        ).fetchall()
+        for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()
     }
     if "knowledge_node_agentic_sessions" in tables:
         rows = conn.execute(

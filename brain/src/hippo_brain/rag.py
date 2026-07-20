@@ -663,7 +663,9 @@ async def ask(
                 mode=mode,
                 limit=fetch_limit,
             )
-            if tuning.rerank and len(results) > 1:
+            if tuning.rerank:
+                # rerank_results owns the trivial-input short-circuit and
+                # always cuts to `limit`, including on its failure paths.
                 _tr = time.monotonic()
                 results = await rerank_results(
                     inference_client, query_model, question, results, limit

@@ -18,6 +18,7 @@ import json
 import logging
 import re
 
+from hippo_brain.evidence_packets import _truncate
 from hippo_brain.retrieval import SearchResult
 
 logger = logging.getLogger("hippo_brain.rerank")
@@ -37,8 +38,8 @@ _RERANK_SYSTEM_PROMPT = (
 
 
 def _clip(text: str, cap: int) -> str:
-    text = " ".join((text or "").split())
-    return text if len(text) <= cap else text[: cap - 1] + "…"
+    """Collapse whitespace (candidates must stay one line each), then truncate."""
+    return _truncate(" ".join((text or "").split()), cap)
 
 
 def build_rerank_messages(question: str, results: list[SearchResult]) -> list[dict]:

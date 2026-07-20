@@ -392,10 +392,14 @@ def _smoke_conn() -> sqlite3.Connection:
         "INSERT INTO events (id, timestamp, cwd, git_repo, git_branch) VALUES (10, 1000, '/p', 'r', 'main')"
     )
     conn.execute("INSERT INTO knowledge_node_events VALUES (1, 10)")
+    # end_time bound as a parameter: SQLite only grew digit-separator literal
+    # support (1_700_000_000_000) in 3.46, and CI/container images routinely
+    # ship older builds.
     conn.execute(
         "INSERT INTO agentic_sessions "
         "(id, start_time, end_time, cwd, project_dir, git_branch, summary_text, message_count) "
-        "VALUES (20, 1100, 1_700_000_000_000, '/p', '/p', 'main', 'work', 5)"
+        "VALUES (20, 1100, ?, '/p', '/p', 'main', 'work', 5)",
+        (1_700_000_000_000,),
     )
     conn.execute("INSERT INTO knowledge_node_agentic_sessions VALUES (2, 20)")
     conn.execute("INSERT INTO browser_events (id, timestamp) VALUES (30, 1200)")

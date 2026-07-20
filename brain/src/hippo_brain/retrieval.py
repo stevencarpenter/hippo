@@ -11,6 +11,7 @@ with a fake backend.
 
 from __future__ import annotations
 
+import heapq
 import json
 import math
 import re
@@ -235,6 +236,26 @@ _FTS_TOKEN_RE = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_./@:-]*")
 _FTS_MAX_TOKENS = 16
 
 
+def _query_tokens(query: str) -> list[str]:
+    """Meaningful tokens of a free-text query, in order of first appearance.
+
+    Single-character tokens and stopwords are dropped; duplicates are removed
+    case-insensitively while original casing is preserved. The single source
+    of query tokenization for both the FTS keyword arm and entity-alias
+    expansion — keep them in lockstep so expansion never fires for a token
+    the FTS query itself dropped.
+    """
+    seen: set[str] = set()
+    tokens: list[str] = []
+    for tok in _FTS_TOKEN_RE.findall(query):
+        lowered = tok.lower()
+        if len(tok) < 2 or lowered in _FTS_STOPWORDS or lowered in seen:
+            continue
+        seen.add(lowered)
+        tokens.append(tok)
+    return tokens
+
+
 def _sanitize_fts_query(query: str) -> str:
     """Build an FTS5 MATCH query from free text: exact phrase OR keywords.
 
@@ -251,16 +272,7 @@ def _sanitize_fts_query(query: str) -> str:
     """
     escaped = query.replace('"', '""')
     phrase = f'"{escaped}"'
-    seen: set[str] = set()
-    tokens: list[str] = []
-    for tok in _FTS_TOKEN_RE.findall(query):
-        lowered = tok.lower()
-        if len(tok) < 2 or lowered in _FTS_STOPWORDS or lowered in seen:
-            continue
-        seen.add(lowered)
-        tokens.append(tok)
-        if len(tokens) >= _FTS_MAX_TOKENS:
-            break
+    tokens = _query_tokens(query)[:_FTS_MAX_TOKENS]
     if not tokens:
         return phrase
     # A quoted multi-word query is already a phrase of its single token when
@@ -309,11 +321,7 @@ def _expand_entity_terms(conn: sqlite3.Connection, query: str) -> list[str]:
     capped at ``_ENTITY_EXPANSION_CAP`` terms. Returns ``[]`` on any schema
     absence (unit-test fixtures without an ``entities`` table).
     """
-    tokens = {
-        tok.lower()
-        for tok in _FTS_TOKEN_RE.findall(query)
-        if len(tok) >= 2 and tok.lower() not in _FTS_STOPWORDS
-    }
+    tokens = {tok.lower() for tok in _query_tokens(query)}
     if not tokens:
         return []
     token_list = sorted(tokens)
@@ -467,13 +475,17 @@ def _semantic(
         return []
     allowed = _apply_filters(conn, [nid for nid, _ in raw], filters)
     ordered = [(nid, dist) for nid, dist in raw if nid in allowed]
-    details = _fetch_details(
-        conn, [nid for nid, _ in ordered], include_excluded=filters.include_excluded
-    )
-    vecs = _get_vectors(conn, [nid for nid, _ in ordered])
     scored = [(nid, _cosine_to_score(dist)) for nid, dist in ordered]
     scored = _apply_recency(conn, scored, t)
-    picked = _mmr(scored, vecs, limit, t.mmr_lambda)
+    pool = _mmr_pool(scored, limit)
+    vecs = _get_vectors(conn, [nid for nid, _ in pool])
+    picked = _mmr(pool, vecs, limit, t.mmr_lambda)
+    # Hydrate details for the picked results only — hydrating the full
+    # candidate pool (six link-table queries over up to candidate_pool nodes)
+    # before MMR cut the list to `limit` was pure waste.
+    details = _fetch_details(
+        conn, [nid for nid, _ in picked], include_excluded=filters.include_excluded
+    )
     return [_to_result(score, details.get(nid)) for nid, score in picked if nid in details]
 
 
@@ -587,8 +599,9 @@ def _hybrid(
     top = max((s for _, s in scored), default=0.0) or 1.0
     scored = [(nid, s / top) for nid, s in scored]
 
-    vecs = _get_vectors(conn, [nid for nid, _ in scored])
-    picked = _mmr(scored, vecs, limit, t.mmr_lambda)
+    pool = _mmr_pool(scored, limit)
+    vecs = _get_vectors(conn, [nid for nid, _ in pool])
+    picked = _mmr(pool, vecs, limit, t.mmr_lambda)
     details = _fetch_details(
         conn, [nid for nid, _ in picked], include_excluded=filters.include_excluded
     )
@@ -1124,6 +1137,24 @@ def _apply_recency(
     return out
 
 
+# Cap on how many top-scored candidates enter MMR selection. MMR is O(k · n)
+# with a 768-dim cosine similarity per pair in pure Python, and _get_vectors
+# JSON-decodes one 768-float array per candidate — over a multi-thousand
+# candidate pool that costs seconds per query. Beyond a few hundred ranks the
+# relevance term is far too small for the diversity term to promote a
+# candidate into the top-k at any realistic mmr_lambda, so the tail is pure
+# waste. The cap never goes below the requested limit.
+_MMR_POOL_CAP = 500
+
+
+def _mmr_pool(scored: Sequence[tuple[int, float]], limit: int) -> list[tuple[int, float]]:
+    """Top candidates by score, bounded by ``_MMR_POOL_CAP`` (see above)."""
+    cap = max(_MMR_POOL_CAP, limit)
+    if len(scored) <= cap:
+        return list(scored)
+    return heapq.nlargest(cap, scored, key=lambda x: x[1])
+
+
 def _mmr(
     scored: Sequence[tuple[int, float]],
     vecs: dict[int, list[float]],
@@ -1132,60 +1163,56 @@ def _mmr(
 ) -> list[tuple[int, float]]:
     """Select ``k`` items with MMR diversification.
 
-    Items missing a vector are still considered (with zero diversity penalty),
-    so lexical-only hits don't get disadvantaged in hybrid mode.
+    Items missing a vector (or with a zero-norm vector) are still considered,
+    with zero diversity penalty, so lexical-only hits don't get disadvantaged
+    in hybrid mode.
+
+    Each candidate's diversity term is its max cosine similarity to any
+    already-picked item. That max is maintained incrementally — per round,
+    each remaining candidate is compared only against the newest pick — and
+    vectors are unit-normalized once up front so each comparison is a plain
+    dot product. A naive rescan of the full picked set with per-pair norm
+    computation made this the dominant cost of a hybrid query.
     """
     if k <= 0 or not scored:
         return []
     pool = list(scored)
     pool.sort(key=lambda x: x[1], reverse=True)
 
+    unit: dict[int, list[float]] = {}
+    for nid, _ in pool:
+        v = vecs.get(nid)
+        if v is None:
+            continue
+        norm = math.sqrt(sum(x * x for x in v))
+        if norm:
+            unit[nid] = [x / norm for x in v]
+
     picked: list[tuple[int, float]] = [pool[0]]
     remaining = pool[1:]
+    # Max cosine similarity of each remaining candidate to any picked item.
+    best_sim = dict.fromkeys((nid for nid, _ in remaining), 0.0)
+    newest_vec = unit.get(pool[0][0])
 
     while remaining and len(picked) < k:
         best_idx = 0
         best_mmr = -math.inf
         for i, (nid, score) in enumerate(remaining):
-            diversity = _max_similarity(vecs.get(nid), [vecs.get(p) for p, _ in picked])
-            mmr = mmr_lambda * score - (1.0 - mmr_lambda) * diversity
+            if newest_vec is not None:
+                v = unit.get(nid)
+                if v is not None:
+                    sim = sum(x * y for x, y in zip(v, newest_vec))
+                    if sim > best_sim[nid]:
+                        best_sim[nid] = sim
+            mmr = mmr_lambda * score - (1.0 - mmr_lambda) * best_sim[nid]
             if mmr > best_mmr:
                 best_mmr = mmr
                 best_idx = i
-        picked.append(remaining.pop(best_idx))
+        chosen = remaining.pop(best_idx)
+        picked.append(chosen)
+        newest_vec = unit.get(chosen[0])
 
     return picked
-
-
-def _max_similarity(vec: list[float] | None, others: Sequence[list[float] | None]) -> float:
-    """Maximum cosine similarity between ``vec`` and any of ``others``.
-
-    Returns ``0`` when either side is missing a vector — i.e. lexical-only
-    hits pay no diversity penalty because we can't measure their distance.
-    """
-    if vec is None:
-        return 0.0
-    best = 0.0
-    for o in others:
-        if o is None:
-            continue
-        sim = _cosine_similarity(vec, o)
-        if sim > best:
-            best = sim
-    return best
-
-
-def _cosine_similarity(a: Sequence[float], b: Sequence[float]) -> float:
-    dot = 0.0
-    na = 0.0
-    nb = 0.0
-    for x, y in zip(a, b):
-        dot += x * y
-        na += x * x
-        nb += y * y
-    if na == 0 or nb == 0:
-        return 0.0
-    return dot / (math.sqrt(na) * math.sqrt(nb))
 
 
 # ---------------------------------------------------------------------------
