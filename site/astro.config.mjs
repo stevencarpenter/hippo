@@ -1,5 +1,6 @@
 // @ts-check
 import { defineConfig } from "astro/config";
+import { unified } from "@astrojs/markdown-remark";
 import sitemap from "@astrojs/sitemap";
 import pagefind from "astro-pagefind";
 import rehypeSlug from "rehype-slug";
@@ -29,22 +30,24 @@ export default defineConfig({
       theme: "css-variables",
       wrap: false,
     },
-    remarkPlugins: [remarkEditOnGithub],
-    rehypePlugins: [
-      [rehypeLinkRewrite, {}],
-      [rehypeImageResolve, {}],
-      rehypeSlug,
-      [
-        rehypeAutolinkHeadings,
-        {
-          behavior: "append",
-          properties: { className: ["anchor"], "aria-hidden": "true", tabIndex: -1 },
-          // Empty text — the ¶ glyph is rendered via CSS ::before so it never
-          // pollutes heading.text in either tabs or in `headings[]`.
-          content: { type: "text", value: "" },
-        },
+    processor: unified({
+      remarkPlugins: [remarkEditOnGithub],
+      rehypePlugins: [
+        [rehypeLinkRewrite, {}],
+        [rehypeImageResolve, {}],
+        rehypeSlug,
+        [
+          rehypeAutolinkHeadings,
+          {
+            behavior: "append",
+            properties: { className: ["anchor"], "aria-hidden": "true", tabIndex: -1 },
+            // Empty text — the ¶ glyph is rendered via CSS ::before so it never
+            // pollutes heading.text in either tabs or in `headings[]`.
+            content: { type: "text", value: "" },
+          },
+        ],
       ],
-    ],
+    }),
   },
   vite: {
     server: {
