@@ -2,12 +2,17 @@
 # flagged by Dependabot / `pnpm audit`. pnpm 10 reads `overrides` from here,
 # not from the deprecated "pnpm" field in package.json.
 #
-#   astro is bumped directly in package.json (^6.4.6); the rest are transitive:
+#   astro is bumped directly in package.json (^7.1.0); the rest are transitive:
 #   - dompurify / vite / esbuild / yaml / js-yaml : pulled by astro + vitest
 #   - undici / brace-expansion@5                  : dev-only, via linkinator
+#
+#   vite tracks whatever major astro requires — Astro 7 requires Vite 8
+#   (astro's own package.json pins "vite": "^8.0.13"); bump this alongside
+#   any future astro major upgrade or the override silently downgrades vite
+#   and breaks the static build.
 overrides:
   dompurify: "^3.4.9"
-  vite: "^7.3.5"
+  vite: "^8.0.13"
   esbuild: "^0.28.1"
   yaml: "^2.8.3"
   js-yaml: "^4.2.0"

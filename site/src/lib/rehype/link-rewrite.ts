@@ -110,7 +110,7 @@ export function rehypeLinkRewrite(): (tree: Root, file: import("vfile").VFile) =
       // External absolute URL (any non-blob http(s)): mark + arrow.
       if (/^https?:\/\//.test(href)) {
         props.target = "_blank";
-        props.rel = "noopener";
+        props.rel = ["noopener"];
         appendArrow(node);
         return;
       }
@@ -144,7 +144,7 @@ export function rehypeLinkRewrite(): (tree: Root, file: import("vfile").VFile) =
         // link lands somewhere instead of resolving to /docs/<broken>.
         props.href = ghBlob(resolved, fragment);
         props.target = "_blank";
-        props.rel = "noopener";
+        props.rel = ["noopener"];
         appendArrow(node);
         return;
       }
@@ -165,7 +165,7 @@ export function rehypeLinkRewrite(): (tree: Root, file: import("vfile").VFile) =
         // /docs/<current>/crates/... — a 404.
         props.href = ghTree(dirNoSlash, fragment);
         props.target = "_blank";
-        props.rel = "noopener";
+        props.rel = ["noopener"];
         return;
       }
 
@@ -174,7 +174,7 @@ export function rehypeLinkRewrite(): (tree: Root, file: import("vfile").VFile) =
       // useful instead of resolving to a non-existent /docs/... URL.
       props.href = ghBlob(resolved, fragment);
       props.target = "_blank";
-      props.rel = "noopener";
+      props.rel = ["noopener"];
       appendArrow(node);
     });
   };
