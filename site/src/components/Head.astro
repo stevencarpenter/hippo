@@ -61,7 +61,10 @@ const fullTitle = title === "Hippo" ? title : `${title} · Hippo`;
 {/* Colour scheme. Must be `is:inline` and sit in <head> so the attribute is on
     <html> before first paint — a bundled/deferred script would flash the wrong
     palette. Precedence: the reader's stored choice, then the OS setting, then
-    dark when the OS expresses no preference.
+    dark when neither is available (see the note on `system()` — that last tier
+    is narrower than it sounds). With JS off, CSS alone cannot run the ladder,
+    so no-JS visitors get dark regardless of their OS; that trade-off is
+    documented in tokens.css.
 
     The click handler is delegated from `document` rather than bound to the
     button: ClientRouter swaps the body, and a delegated listener survives that
@@ -82,8 +85,13 @@ const fullTitle = title === "Hippo" ? title : `${title} · Hippo`;
       }
     };
 
-    // Tiers 2 and 3 — browsers report `light` only when the OS actually asks
-    // for it, so an OS with no preference (or no matchMedia) lands on dark.
+    /* Tier 2, and tier 3 only in the narrow case below.
+     *
+     * Media Queries L5 removed `no-preference`, and `light` is now defined to
+     * include "has not expressed an active preference" — so there is no third
+     * OS state to detect. Testing for `light` positively means the dark
+     * fallback also catches a missing/throwing matchMedia, which is the only
+     * way tier 3 is actually reachable. */
     const system = () => {
       try {
         return window.matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark";
@@ -98,11 +106,11 @@ const fullTitle = title === "Hippo" ? title : `${title} · Hippo`;
       document.documentElement.setAttribute("data-theme", theme);
       document.querySelector('meta[name="theme-color"]')?.setAttribute("content", BG[theme]);
 
-      const next = theme === "dark" ? "light" : "dark";
+      // State only. The button's accessible name is a static noun in its
+      // markup — overwriting it with an action phrase here would make screen
+      // readers announce the opposite of the current state.
       for (const btn of document.querySelectorAll("[data-theme-toggle]")) {
         btn.setAttribute("aria-pressed", String(theme === "dark"));
-        btn.setAttribute("aria-label", `Switch to ${next} theme`);
-        btn.setAttribute("title", `Switch to ${next} theme`);
       }
     };
 

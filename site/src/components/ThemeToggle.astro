@@ -8,8 +8,16 @@
  * and survives ClientRouter swaps without rebinding. This component only needs
  * to render the `data-theme-toggle` hook.
  *
- * SSR defaults describe the dark default; the head script re-syncs them if the
- * reader has a stored preference.
+ * ARIA: `aria-pressed` carries the state, so the accessible name must be a
+ * stable noun — it reads "Dark theme, toggle button, pressed". Pairing
+ * aria-pressed with an action-phrased name ("Switch to light theme") announces
+ * the opposite of the truth, so don't reintroduce one. The name comes from the
+ * .sr-only span rather than an aria-label so it stays in the DOM, and there is
+ * deliberately no `title` — it would land in `description` and be announced a
+ * second time.
+ *
+ * The SSR value describes the dark default; the head script corrects
+ * aria-pressed before paint if the reader resolves to light.
  */
 ---
 <button
@@ -17,8 +25,6 @@
   class="theme-toggle"
   data-theme-toggle
   aria-pressed="true"
-  aria-label="Switch to light theme"
-  title="Switch to light theme"
 >
   {/* Sun — shown while dark is active (i.e. "switch to light"). */}
   <svg class="glyph glyph-sun" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
@@ -32,7 +38,8 @@
   <svg class="glyph glyph-moon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
     <path d="M20.2 14.6A8.6 8.6 0 1 1 9.4 3.8a6.9 6.9 0 0 0 10.8 10.8z" />
   </svg>
-  <span class="sr-only">Toggle colour scheme</span>
+  {/* The button's accessible name. Must stay a noun — see the ARIA note above. */}
+  <span class="sr-only">Dark theme</span>
 </button>
 
 <style>
@@ -67,8 +74,10 @@
     stroke-linecap: round;
   }
 
-  /* Visibility follows the html attribute, so the correct glyph is already
-     painted server-side — no JS needed to keep the icon in sync. */
+  /* Visibility follows the html attribute. The SSR markup carries no
+     `data-theme` at all — the head script stamps it before the body is parsed,
+     so the right glyph is correct at first paint without a JS-driven class
+     swap here. Not "server-side"; pre-paint. */
   .glyph-moon { display: none; }
   :global(html[data-theme="light"]) .glyph-sun { display: none; }
   :global(html[data-theme="light"]) .glyph-moon { display: inline; }
