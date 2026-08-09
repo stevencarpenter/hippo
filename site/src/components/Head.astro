@@ -56,6 +56,86 @@ const fullTitle = title === "Hippo" ? title : `${title} · Hippo`;
 <link rel="preload" href="/fonts/fraunces-variable.woff2" as="font" type="font/woff2" crossorigin />
 <link rel="preload" href="/fonts/jetbrains-mono-variable.woff2" as="font" type="font/woff2" crossorigin />
 
-<meta name="theme-color" content="#efe4ce" />
+<meta name="theme-color" content="#1f1812" />
+
+{/* Colour scheme. Must be `is:inline` and sit in <head> so the attribute is on
+    <html> before first paint — a bundled/deferred script would flash the wrong
+    palette. Precedence: the reader's stored choice, then the OS setting, then
+    dark when the OS expresses no preference.
+
+    The click handler is delegated from `document` rather than bound to the
+    button: ClientRouter swaps the body, and a delegated listener survives that
+    without rebinding or double-binding. `astro:after-swap` re-applies the
+    attribute because Astro resets <html> attributes from the incoming page. */}
+<script is:inline>
+  (() => {
+    const KEY = "hippo-theme";
+    const BG = { dark: "#1f1812", light: "#efe4ce" };
+
+    // Tier 1 — an explicit toggle choice. null means "never chosen".
+    const stored = () => {
+      try {
+        const value = localStorage.getItem(KEY);
+        return value === "light" || value === "dark" ? value : null;
+      } catch {
+        return null; // Private mode / storage blocked — fall through to the OS.
+      }
+    };
+
+    // Tiers 2 and 3 — browsers report `light` only when the OS actually asks
+    // for it, so an OS with no preference (or no matchMedia) lands on dark.
+    const system = () => {
+      try {
+        return window.matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark";
+      } catch {
+        return "dark";
+      }
+    };
+
+    const resolve = () => stored() ?? system();
+
+    const apply = (theme) => {
+      document.documentElement.setAttribute("data-theme", theme);
+      document.querySelector('meta[name="theme-color"]')?.setAttribute("content", BG[theme]);
+
+      const next = theme === "dark" ? "light" : "dark";
+      for (const btn of document.querySelectorAll("[data-theme-toggle]")) {
+        btn.setAttribute("aria-pressed", String(theme === "dark"));
+        btn.setAttribute("aria-label", `Switch to ${next} theme`);
+        btn.setAttribute("title", `Switch to ${next} theme`);
+      }
+    };
+
+    apply(resolve());
+
+    // The toggle button is not parsed yet on the pre-paint pass above, so sync
+    // its labels once the body exists.
+    document.addEventListener("DOMContentLoaded", () => apply(resolve()));
+    document.addEventListener("astro:after-swap", () => apply(resolve()));
+
+    // Follow the OS live — macOS flips itself at sunset — but only while the
+    // reader has not overridden it with the toggle.
+    try {
+      window.matchMedia("(prefers-color-scheme: light)").addEventListener("change", () => {
+        if (!stored()) apply(system());
+      });
+    } catch {
+      // No matchMedia support; the value resolved above still stands.
+    }
+
+    document.addEventListener("click", (event) => {
+      const btn = event.target.closest?.("[data-theme-toggle]");
+      if (!btn) return;
+
+      const next = document.documentElement.getAttribute("data-theme") === "light" ? "dark" : "light";
+      try {
+        localStorage.setItem(KEY, next);
+      } catch {
+        // Preference won't persist, but the toggle still works for this page.
+      }
+      apply(next);
+    });
+  })();
+</script>
 
 <ClientRouter />

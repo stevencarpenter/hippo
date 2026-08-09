@@ -19,6 +19,19 @@
   --code-bg:      #e9ddc5;
   --rule:         rgba(42, 29, 16, 0.50);   /* 3.05:1 on --paper, 3.18:1 on --paper-2 (A1) */
   --rule-soft:    rgba(42, 29, 16, 0.15);   /* decorative paper rules; no contrast req */
+  --code-string:  #5a3a1f;                  /* syntax strings — AA on --code-bg */
+  --zebra:        rgba(42, 29, 16, 0.03);   /* prose table even-row tint */
+
+  /* Status badges (/status) */
+  --badge-active-bg:     #c8d8b8;
+  --badge-active-fg:     #2a3d20;
+  --badge-active-rule:   #4a6535;
+  --badge-quiet-bg:      #ead9b1;
+  --badge-quiet-fg:      #5e4a1d;
+  --badge-quiet-rule:    #8a6a30;
+  --badge-hibernate-bg:  #d5c9b3;
+  --badge-hibernate-fg:  #463829;
+  --badge-hibernate-rule:#6a5847;
 
   /* Type stacks */
   --font-display: "Fraunces", "Source Serif 4", Iowan Old Style, Apple Garamond, serif;
@@ -78,8 +91,31 @@
   }
 }
 
-/* Lights-low / dark tokens (D8). No toggle UI in v1.0 — tokens defined so impl can land. */
-[data-theme="dark"] {
+/* Lights-low / dark tokens (D8).
+ *
+ * Scheme precedence, resolved by the pre-paint script in Head.astro:
+ *   1. the reader's stored toggle choice
+ *   2. the OS `prefers-color-scheme`
+ *   3. dark, when the OS expresses no preference
+ *
+ * That ladder lives in JS, not here, so this palette is written once: the
+ * script always stamps `data-theme` on <html> before first paint, and CSS just
+ * reads the attribute. Expressing the ladder in CSS would mean repeating the
+ * whole block, since a media query can't be unioned into a selector list.
+ *
+ * Selector shape: light values live on bare :root above as the fallback base,
+ * and dark applies unless light was resolved. So:
+ *   data-theme="dark"   -> dark  (matched by :not([light]))
+ *   data-theme="light"  -> light (wins on the base rule, no !important needed)
+ *   no attribute        -> dark  (script hasn't run / JS off — tier 3)
+ *
+ * Scoped to `screen` so print always falls through to the paper tokens on
+ * :root — a dark --ink is cream, which prints as nothing.
+ */
+@media screen {
+:root:not([data-theme="light"]) {
+  color-scheme: dark;
+
   --paper:        #1f1812;
   --paper-2:      #261d15;
   --ink:          #efe4ce;
@@ -91,4 +127,19 @@
   --code-bg:      #2a1f17;
   --rule:         rgba(239, 228, 206, 0.50);
   --rule-soft:    rgba(239, 228, 206, 0.15);
+  --code-string:  #d9a97c;                  /* AA on dark --code-bg */
+  --zebra:        rgba(239, 228, 206, 0.045);
+
+  --badge-active-bg:     #24361b;
+  --badge-active-fg:     #bfd6ac;
+  --badge-active-rule:   #6a8f52;
+  --badge-quiet-bg:      #382c11;
+  --badge-quiet-fg:      #e3cd96;
+  --badge-quiet-rule:    #97783c;
+  --badge-hibernate-bg:  #2e281f;
+  --badge-hibernate-fg:  #cabba4;
+  --badge-hibernate-rule:#7d6c56;
+}
+
+:root[data-theme="light"] { color-scheme: light; }
 }

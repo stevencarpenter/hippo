@@ -82,8 +82,8 @@ pre[data-wrap="true"] code {
   --astro-code-background: var(--code-bg);
   --astro-code-token-comment: var(--quiet-on-code);
   --astro-code-token-keyword: var(--oxblood);
-  --astro-code-token-string: #5a3a1f;
-  --astro-code-token-string-expression: #5a3a1f;
+  --astro-code-token-string: var(--code-string);
+  --astro-code-token-string-expression: var(--code-string);
   --astro-code-token-number: var(--sepia);
   --astro-code-token-punctuation: var(--sepia);
   --astro-code-token-function: var(--ink);

@@ -1,5 +1,6 @@
 ---
 import Wordmark from "./Wordmark.astro";
+import ThemeToggle from "./ThemeToggle.astro";
 
 const path = Astro.url.pathname.replace(/\/$/, "") || "/";
 const items = [
@@ -32,6 +33,9 @@ function isActive(href: string): boolean {
         ))}
         <li>
           <a href="https://github.com/stevencarpenter/hippo" rel="noopener" target="_blank">GitHub <span aria-hidden="true">↗</span></a>
+        </li>
+        <li class="nav-toggle">
+          <ThemeToggle />
         </li>
       </ul>
     </nav>
@@ -71,6 +75,9 @@ function isActive(href: string): boolean {
   }
   nav a:hover { color: var(--oxblood); border-bottom-color: var(--oxblood); }
   nav a.active { color: var(--oxblood); border-bottom-color: var(--oxblood); }
+
+  /* Nudge the toggle off the text baseline the links sit on. */
+  .nav-toggle { display: flex; align-items: center; margin-inline-start: -0.4rem; }
 
   @media (max-width: 720px) {
     .header-inner { flex-direction: column; align-items: flex-start; gap: 0.6rem; }
