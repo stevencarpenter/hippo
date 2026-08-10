@@ -16,8 +16,10 @@
  * deliberately no `title` — it would land in `description` and be announced a
  * second time.
  *
- * The SSR value describes the dark default; the head script corrects
- * aria-pressed before paint if the reader resolves to light.
+ * The SSR value describes the dark default. The head script corrects
+ * aria-pressed at DOMContentLoaded, not pre-paint — its first pass runs while
+ * only <head> exists, so it cannot see this button yet. Only the glyph is
+ * pre-paint-correct, because that is pure CSS keyed off <html>.
  */
 ---
 <button

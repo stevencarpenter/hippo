@@ -116,8 +116,8 @@ const fullTitle = title === "Hippo" ? title : `${title} · Hippo`;
 
     apply(resolve());
 
-    // The toggle button is not parsed yet on the pre-paint pass above, so sync
-    // its labels once the body exists.
+    // The toggle button is not parsed yet on the pre-paint pass above, so its
+    // aria-pressed is set here instead, once the body exists.
     document.addEventListener("DOMContentLoaded", () => apply(resolve()));
     document.addEventListener("astro:after-swap", () => apply(resolve()));
 
