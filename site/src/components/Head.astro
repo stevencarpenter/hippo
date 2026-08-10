@@ -56,6 +56,94 @@ const fullTitle = title === "Hippo" ? title : `${title} · Hippo`;
 <link rel="preload" href="/fonts/fraunces-variable.woff2" as="font" type="font/woff2" crossorigin />
 <link rel="preload" href="/fonts/jetbrains-mono-variable.woff2" as="font" type="font/woff2" crossorigin />
 
-<meta name="theme-color" content="#efe4ce" />
+<meta name="theme-color" content="#1f1812" />
+
+{/* Colour scheme. Must be `is:inline` and sit in <head> so the attribute is on
+    <html> before first paint — a bundled/deferred script would flash the wrong
+    palette. Precedence: the reader's stored choice, then the OS setting, then
+    dark when neither is available (see the note on `system()` — that last tier
+    is narrower than it sounds). With JS off, CSS alone cannot run the ladder,
+    so no-JS visitors get dark regardless of their OS; that trade-off is
+    documented in tokens.css.
+
+    The click handler is delegated from `document` rather than bound to the
+    button: ClientRouter swaps the body, and a delegated listener survives that
+    without rebinding or double-binding. `astro:after-swap` re-applies the
+    attribute because Astro resets <html> attributes from the incoming page. */}
+<script is:inline>
+  (() => {
+    const KEY = "hippo-theme";
+    const BG = { dark: "#1f1812", light: "#efe4ce" };
+
+    // Tier 1 — an explicit toggle choice. null means "never chosen".
+    const stored = () => {
+      try {
+        const value = localStorage.getItem(KEY);
+        return value === "light" || value === "dark" ? value : null;
+      } catch {
+        return null; // Private mode / storage blocked — fall through to the OS.
+      }
+    };
+
+    /* Tier 2, and tier 3 only in the narrow case below.
+     *
+     * Media Queries L5 removed `no-preference`, and `light` is now defined to
+     * include "has not expressed an active preference" — so there is no third
+     * OS state to detect. Testing for `light` positively means the dark
+     * fallback also catches a missing/throwing matchMedia, which is the only
+     * way tier 3 is actually reachable. */
+    const system = () => {
+      try {
+        return window.matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark";
+      } catch {
+        return "dark";
+      }
+    };
+
+    const resolve = () => stored() ?? system();
+
+    const apply = (theme) => {
+      document.documentElement.setAttribute("data-theme", theme);
+      document.querySelector('meta[name="theme-color"]')?.setAttribute("content", BG[theme]);
+
+      // State only. The button's accessible name is a static noun in its
+      // markup — overwriting it with an action phrase here would make screen
+      // readers announce the opposite of the current state.
+      for (const btn of document.querySelectorAll("[data-theme-toggle]")) {
+        btn.setAttribute("aria-pressed", String(theme === "dark"));
+      }
+    };
+
+    apply(resolve());
+
+    // The toggle button is not parsed yet on the pre-paint pass above, so its
+    // aria-pressed is set here instead, once the body exists.
+    document.addEventListener("DOMContentLoaded", () => apply(resolve()));
+    document.addEventListener("astro:after-swap", () => apply(resolve()));
+
+    // Follow the OS live — macOS flips itself at sunset — but only while the
+    // reader has not overridden it with the toggle.
+    try {
+      window.matchMedia("(prefers-color-scheme: light)").addEventListener("change", () => {
+        if (!stored()) apply(system());
+      });
+    } catch {
+      // No matchMedia support; the value resolved above still stands.
+    }
+
+    document.addEventListener("click", (event) => {
+      const btn = event.target.closest?.("[data-theme-toggle]");
+      if (!btn) return;
+
+      const next = document.documentElement.getAttribute("data-theme") === "light" ? "dark" : "light";
+      try {
+        localStorage.setItem(KEY, next);
+      } catch {
+        // Preference won't persist, but the toggle still works for this page.
+      }
+      apply(next);
+    });
+  })();
+</script>
 
 <ClientRouter />

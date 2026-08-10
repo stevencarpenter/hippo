@@ -14,11 +14,31 @@
   --oxblood:      #8a3a1f;
   /* DECORATIVE ONLY — illustration strokes, hatch. Fails AA at small text by design. */
   --rust:         #b58a4b;
-  --quiet:        #7a6649;            /* AA on --paper */
+  /* 4.36:1 on --paper, 4.79:1 on --paper-2. The --paper case is BELOW AA (4.5)
+     and has been since the palette landed — the old `AA on --paper` annotation
+     here was never accurate. Tracked separately; not changed in this pass
+     because it shifts the shipped light theme. */
+  --quiet:        #7a6649;
   --quiet-on-code:#6f5a3e;            /* AA on --code-bg — use ONLY for code comments */
   --code-bg:      #e9ddc5;
   --rule:         rgba(42, 29, 16, 0.50);   /* 3.05:1 on --paper, 3.18:1 on --paper-2 (A1) */
   --rule-soft:    rgba(42, 29, 16, 0.15);   /* decorative paper rules; no contrast req */
+  --code-string:  #5a3a1f;                  /* syntax strings — AA on --code-bg */
+  --zebra:        rgba(42, 29, 16, 0.03);   /* prose table even-row tint */
+  --grain-1:      rgba(42, 29, 16, 0.025);  /* tier-1 paper texture, first pass */
+  --grain-2:      rgba(42, 29, 16, 0.02);   /* tier-1 paper texture, second pass */
+  --admonition-bg:rgba(107, 60, 32, 0.04);
+
+  /* Status badges (/status) */
+  --badge-active-bg:     #c8d8b8;
+  --badge-active-fg:     #2a3d20;
+  --badge-active-rule:   #4a6535;
+  --badge-quiet-bg:      #ead9b1;
+  --badge-quiet-fg:      #5e4a1d;
+  --badge-quiet-rule:    #8a6a30;
+  --badge-hibernate-bg:  #d5c9b3;
+  --badge-hibernate-fg:  #463829;
+  --badge-hibernate-rule:#6a5847;
 
   /* Type stacks */
   --font-display: "Fraunces", "Source Serif 4", Iowan Old Style, Apple Garamond, serif;
@@ -78,17 +98,70 @@
   }
 }
 
-/* Lights-low / dark tokens (D8). No toggle UI in v1.0 — tokens defined so impl can land. */
-[data-theme="dark"] {
+/* Lights-low / dark tokens (D8).
+ *
+ * Scheme precedence, resolved by the pre-paint script in Head.astro:
+ *   1. the reader's stored toggle choice
+ *   2. the OS `prefers-color-scheme`
+ *   3. dark, when neither is available
+ *
+ * Tier 3 is narrower than it looks. Media Queries L5 dropped `no-preference`,
+ * and `light` is now defined to cover "has not expressed an active preference"
+ * — so there is no detectable third OS state, and tier 3 is reachable only
+ * where `matchMedia` itself is missing. In practice the ladder is: stored
+ * choice, else the OS, else dark.
+ *
+ * That ladder lives in JS, not here, so this palette is written once: the
+ * script always stamps `data-theme` on <html> before first paint, and CSS just
+ * reads the attribute. Expressing the ladder in CSS would mean repeating the
+ * whole block, since a media query can't be unioned into a selector list.
+ *
+ * Selector shape: light values live on bare :root above as the fallback base,
+ * and dark applies unless light was resolved. So:
+ *   data-theme="dark"   -> dark  (matched by :not([light]))
+ *   data-theme="light"  -> light (wins on the base rule, no !important needed)
+ *   no attribute        -> dark
+ *
+ * That last row is a deliberate accepted trade-off, not tier 3: CSS alone
+ * cannot run the ladder, so a visitor with JS disabled gets dark REGARDLESS of
+ * their OS setting. Honouring the OS without JS would mean duplicating this
+ * whole block under `@media (prefers-color-scheme: dark)`. The toggle needs JS
+ * anyway, so the duplication was judged not worth it.
+ *
+ * Scoped to `screen` so print always falls through to the paper tokens on
+ * :root — a dark --ink is cream, which prints as nothing.
+ */
+@media screen {
+:root:not([data-theme="light"]) {
+  color-scheme: dark;
+
   --paper:        #1f1812;
   --paper-2:      #261d15;
   --ink:          #efe4ce;
   --sepia:        #c39a76;
   --oxblood:      #d97a5e;
   --rust:         #c89968;
-  --quiet:        #8b7860;
+  --quiet:        #9c8a72;                  /* 5.25:1 on --paper, 4.96:1 on --paper-2 */
   --quiet-on-code:#a99275;
   --code-bg:      #2a1f17;
   --rule:         rgba(239, 228, 206, 0.50);
   --rule-soft:    rgba(239, 228, 206, 0.15);
+  --code-string:  #d9a97c;                  /* AA on dark --code-bg */
+  --zebra:        rgba(239, 228, 206, 0.045);
+  --grain-1:      rgba(239, 228, 206, 0.022);
+  --grain-2:      rgba(239, 228, 206, 0.018);
+  --admonition-bg:rgba(217, 122, 94, 0.07);
+
+  --badge-active-bg:     #24361b;
+  --badge-active-fg:     #bfd6ac;
+  --badge-active-rule:   #6a8f52;
+  --badge-quiet-bg:      #382c11;
+  --badge-quiet-fg:      #e3cd96;
+  --badge-quiet-rule:    #97783c;
+  --badge-hibernate-bg:  #2e281f;
+  --badge-hibernate-fg:  #cabba4;
+  --badge-hibernate-rule:#7d6c56;
+}
+
+:root[data-theme="light"] { color-scheme: light; }
 }

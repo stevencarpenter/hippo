@@ -160,7 +160,7 @@
   border-bottom: 1px solid var(--rule-soft);
   vertical-align: top;
 }
-.prose tbody tr:nth-child(even) { background: rgba(42, 29, 16, 0.03); }
+.prose tbody tr:nth-child(even) { background: var(--zebra); }
 
 /* Inline code — light background, no border. nowrap keeps short identifiers
    like `hippo doctor` from breaking mid-token in body prose. break-word lets

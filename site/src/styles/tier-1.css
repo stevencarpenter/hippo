@@ -6,8 +6,8 @@
 body.tier-1 {
   background-color: var(--paper);
   background-image:
-    radial-gradient(circle at 25% 18%, rgba(42,29,16,0.025) 0 1px, transparent 1.5px),
-    radial-gradient(circle at 70% 60%, rgba(42,29,16,0.02) 0 1px, transparent 1.5px);
+    radial-gradient(circle at 25% 18%, var(--grain-1) 0 1px, transparent 1.5px),
+    radial-gradient(circle at 70% 60%, var(--grain-2) 0 1px, transparent 1.5px);
   background-size: 240px 240px, 280px 280px;
 }
 
@@ -208,7 +208,7 @@ body.tier-1 {
   margin: 1.4em 0;
   padding: 0.7rem 1rem;
   border-left: 3px solid var(--sepia);
-  background: rgba(107, 60, 32, 0.04);
+  background: var(--admonition-bg);
 }
 .admonition .admonition-title {
   font-family: var(--font-label);
@@ -236,9 +236,9 @@ body.tier-1 {
   border: 1px solid var(--ink);
   background: var(--paper-2);
 }
-.status-badge.active { background: #c8d8b8; color: #2a3d20; border-color: #4a6535; }
-.status-badge.quiet { background: #ead9b1; color: #5e4a1d; border-color: #8a6a30; }
-.status-badge.hibernating { background: #d5c9b3; color: #463829; border-color: #6a5847; }
+.status-badge.active { background: var(--badge-active-bg); color: var(--badge-active-fg); border-color: var(--badge-active-rule); }
+.status-badge.quiet { background: var(--badge-quiet-bg); color: var(--badge-quiet-fg); border-color: var(--badge-quiet-rule); }
+.status-badge.hibernating { background: var(--badge-hibernate-bg); color: var(--badge-hibernate-fg); border-color: var(--badge-hibernate-rule); }
 
 /* Definition list — used on /status. */
 .tier-1 dl {
