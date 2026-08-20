@@ -634,7 +634,7 @@ fn extract_assistant_content(msg: &serde_json::Value) -> (Vec<String>, Vec<ToolC
 /// tool-call summary. Matches the Python `redact_segment_secrets` step; the
 /// builtin pattern set is shared with `hippo_brain.redaction`.
 fn extract_segments(
-    session_file: &SessionFile,
+    session_file: &SessionFile<'_>,
     redaction: &RedactionEngine,
 ) -> Result<Vec<SessionSegment>> {
     let file = std::fs::File::open(session_file.path)

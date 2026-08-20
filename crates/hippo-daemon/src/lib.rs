@@ -194,6 +194,7 @@ mod busy_retry_tests {
         assert_eq!(attempts, 1);
     }
 
+    #[cfg(feature = "otel")]
     #[test]
     fn record_db_busy_claude_session_insert() {
         assert!(crate::metrics::record_db_busy(

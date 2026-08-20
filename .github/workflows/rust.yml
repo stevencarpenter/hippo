@@ -78,13 +78,31 @@ jobs:
           shared-key: rust-ci-${{ matrix.os }}-${{ github.base_ref || github.ref_name }}
           cache-on-failure: true
 
-      - name: Build all targets
+      # PRs build and test with default features off: the otel stack (tonic,
+      # prost, opentelemetry) is unused in CI and PR runs fire on every
+      # agent-loop push. Merges to main build and test with otel on, and both
+      # clippy steps type-check both configurations on every run, so a PR that
+      # breaks otel-gated code still fails pre-merge.
+      - name: Build all targets (PR, no default features)
+        if: github.event_name == 'pull_request'
+        run: cargo build --all-targets --locked --no-default-features
+
+      - name: Build all targets (merge, default features)
+        if: github.event_name == 'push'
         run: cargo build --all-targets --locked
 
       - name: Run clippy
         run: cargo clippy --all-targets --locked --no-deps -- -D warnings
 
-      - name: Run tests
+      - name: Clippy (no default features)
+        run: cargo clippy --no-default-features --all-targets -p hippo-daemon -- -D warnings
+
+      - name: Run tests (PR, no default features)
+        if: github.event_name == 'pull_request'
+        run: cargo test --locked --no-fail-fast --no-default-features
+
+      - name: Run tests (merge, default features)
+        if: github.event_name == 'push'
         run: cargo test --locked --no-fail-fast
 
       - name: Install cargo-audit

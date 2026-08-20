@@ -44,13 +44,12 @@ jobs:
           echo "version=${VERSION}" >> "${GITHUB_OUTPUT}"
           echo "Version: ${VERSION}"
 
+      # Minimal artifact: default features (otel) are disabled to keep the
+      # binary and the build small. Build from source for the full feature
+      # set. Symbol stripping comes from profile.release in Cargo.toml.
       - name: Build daemon binary (aarch64)
         run: |
-          cargo build --release --target aarch64-apple-darwin --bin hippo --locked
-
-      - name: Strip binary
-        run: |
-          strip target/aarch64-apple-darwin/release/hippo
+          cargo build --release --target aarch64-apple-darwin --bin hippo --locked --no-default-features
 
       - name: Prepare artifact
         id: artifact
@@ -230,7 +229,7 @@ jobs:
 
           ## Components
 
-          - **hippo-daemon**: Rust binary for shell capture, secret redaction, and CLI queries
+          - **hippo-daemon**: Rust binary for shell capture, secret redaction, and CLI queries. Minimal build with default features disabled (no OTel metrics exporter); build from source with \`cargo build --release\` for the full feature set.
           - **hippo-brain**: Python enrichment server with LLM integration and vector embeddings
 
           ## Verification
@@ -266,13 +265,15 @@ jobs:
 
       - name: Release summary
         run: |
-          echo "### Release ${{ github.ref_name }} Published! :rocket:" >> "${GITHUB_STEP_SUMMARY}"
-          echo "" >> "${GITHUB_STEP_SUMMARY}"
-          echo "#### Artifacts" >> "${GITHUB_STEP_SUMMARY}"
-          echo "- Daemon: \`${{ needs.build-daemon.outputs.artifact_name }}\`" >> "${GITHUB_STEP_SUMMARY}"
-          echo "- Brain: \`${{ needs.build-brain.outputs.artifact_name }}\`" >> "${GITHUB_STEP_SUMMARY}"
-          echo "" >> "${GITHUB_STEP_SUMMARY}"
-          echo "#### Quick Install" >> "${GITHUB_STEP_SUMMARY}"
-          echo '```bash' >> "${GITHUB_STEP_SUMMARY}"
-          echo "curl -fsSL https://github.com/stevencarpenter/hippo/releases/download/${{ github.ref_name }}/install.sh | bash" >> "${GITHUB_STEP_SUMMARY}"
-          echo '```' >> "${GITHUB_STEP_SUMMARY}"
+          {
+            echo "### Release ${{ github.ref_name }} Published! :rocket:"
+            echo ""
+            echo "#### Artifacts"
+            echo "- Daemon: \`${{ needs.build-daemon.outputs.artifact_name }}\`"
+            echo "- Brain: \`${{ needs.build-brain.outputs.artifact_name }}\`"
+            echo ""
+            echo "#### Quick Install"
+            echo '```bash'
+            echo "curl -fsSL https://github.com/stevencarpenter/hippo/releases/download/${{ github.ref_name }}/install.sh | bash"
+            echo '```'
+          } >> "${GITHUB_STEP_SUMMARY}"
