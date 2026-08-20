@@ -84,6 +84,9 @@ jobs:
       - name: Run clippy
         run: cargo clippy --all-targets --locked --no-deps -- -D warnings
 
+      - name: Clippy (no default features)
+        run: cargo clippy --no-default-features --all-targets -p hippo-daemon -- -D warnings
+
       - name: Run tests
         run: cargo test --locked --no-fail-fast
 

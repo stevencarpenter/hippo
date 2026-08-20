@@ -5833,7 +5833,7 @@ pub mod workflow_store {
         pub raw_json: &'a str,
     }
 
-    pub fn upsert_run(conn: &Connection, run: &RunRow, now_ms: i64) -> Result<()> {
+    pub fn upsert_run(conn: &Connection, run: &RunRow<'_>, now_ms: i64) -> Result<()> {
         conn.execute(
             "INSERT INTO workflow_runs
                 (id, repo, head_sha, head_branch, event, status, conclusion,
@@ -5879,7 +5879,7 @@ pub mod workflow_store {
         pub raw_json: &'a str,
     }
 
-    pub fn upsert_job(conn: &Connection, job: &JobRow) -> Result<()> {
+    pub fn upsert_job(conn: &Connection, job: &JobRow<'_>) -> Result<()> {
         conn.execute(
             "INSERT INTO workflow_jobs
                 (id, run_id, name, status, conclusion, started_at, completed_at,

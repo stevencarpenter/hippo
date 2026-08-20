@@ -523,7 +523,7 @@ fn decide_enqueue(
 /// caller-supplied transaction. Idempotent via `ON CONFLICT (session_id,
 /// harness, segment_index)`. Unlike Codex, Cursor passes real `is_subagent` /
 /// `parent_session_id` values.
-pub fn upsert_segment_tx(tx: &rusqlite::Transaction, seg: &CursorSegment) -> Result<()> {
+pub fn upsert_segment_tx(tx: &rusqlite::Transaction<'_>, seg: &CursorSegment) -> Result<()> {
     let now_ms = chrono::Utc::now().timestamp_millis();
     let tool_calls_json = serde_json::to_string(&seg.tool_calls).unwrap_or_else(|_| "[]".into());
     let user_prompts_json =

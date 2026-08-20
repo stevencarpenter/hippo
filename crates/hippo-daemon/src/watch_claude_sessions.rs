@@ -176,6 +176,7 @@ async fn process_file(path: &Path, state: &mut FileState, db_path: &Path) -> Res
         return Ok(0);
     }
 
+    #[cfg(feature = "otel")]
     let start = Instant::now();
     let path_owned = path.to_path_buf();
     let db_path_owned = db_path.to_path_buf();
@@ -211,10 +212,8 @@ async fn process_file(path: &Path, state: &mut FileState, db_path: &Path) -> Res
         Ok(r) => r,
     };
 
-    let elapsed_ms = start.elapsed().as_secs_f64() * 1000.0;
-
     #[cfg(feature = "otel")]
-    crate::metrics::WATCHER_PROCESS_DURATION_MS.record(elapsed_ms, &[]);
+    crate::metrics::WATCHER_PROCESS_DURATION_MS.record(start.elapsed().as_secs_f64() * 1000.0, &[]);
 
     let (inserted, _skipped, errors) = match join_result {
         Err(join_err) => {

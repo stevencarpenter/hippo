@@ -524,7 +524,7 @@ fn decide_enqueue(
 /// `ON CONFLICT (session_id, harness, segment_index)`. `ingest_file` (Task 7) calls
 /// this directly so a whole rollout file's segments commit atomically
 /// (spec §4.3, AP-1).
-pub fn upsert_segment_tx(tx: &rusqlite::Transaction, seg: &CodexSegment) -> Result<()> {
+pub fn upsert_segment_tx(tx: &rusqlite::Transaction<'_>, seg: &CodexSegment) -> Result<()> {
     let now_ms = chrono::Utc::now().timestamp_millis();
     let tool_calls_json = serde_json::to_string(&seg.tool_calls).unwrap_or_else(|_| "[]".into());
     let user_prompts_json =
