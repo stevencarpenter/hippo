@@ -14,11 +14,9 @@
   --oxblood:      #8a3a1f;
   /* DECORATIVE ONLY — illustration strokes, hatch. Fails AA at small text by design. */
   --rust:         #b58a4b;
-  /* 4.36:1 on --paper, 4.79:1 on --paper-2. The --paper case is BELOW AA (4.5)
-     and has been since the palette landed — the old `AA on --paper` annotation
-     here was never accurate. Tracked separately; not changed in this pass
-     because it shifts the shipped light theme. */
-  --quiet:        #7a6649;
+  /* 5.07:1 on --paper, 5.58:1 on --paper-2; 4.76:1 on --code-bg (AA everywhere).
+     Darkened from #7a6649 (4.36:1 on --paper, below AA) per HIPO-3. */
+  --quiet:        #6f5c41;
   --quiet-on-code:#6f5a3e;            /* AA on --code-bg — use ONLY for code comments */
   --code-bg:      #e9ddc5;
   --rule:         rgba(42, 29, 16, 0.50);   /* 3.05:1 on --paper, 3.18:1 on --paper-2 (A1) */
