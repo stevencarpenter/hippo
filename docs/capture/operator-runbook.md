@@ -105,7 +105,7 @@ hippo doctor --explain
 
 Pick the first `[!!]` failure. The CAUSE/FIX/DOC block will tell you which file in this directory documents the relevant invariant. For example:
 
-- `[!!] shell events: 8m ago (FAIL)` → I-1 violation. See [`architecture.md`](architecture.md) I-1; check whether your shell session has been idle (suppression) or whether the hook actually fired (run `hippo probe --source shell`).
+- `[!!] shell events: 8m ago (FAIL)` → I-1 violation. `hippo doctor` already suppresses this line when no real shell command has landed in the last 10 minutes (shown verbatim as `[--] shell events ... (suppressed — shell idle)`), so a `FAIL` here means a real command landed recently and capture then went silent. See [`architecture.md`](architecture.md) I-1; run `hippo probe --source shell` to confirm the pipe.
 - `[!!] watchdog heartbeat: 4m ago (FAIL)` → I-7 violation. Watchdog crashed or its launchd job is missing. Check `launchctl list | grep hippo`. If `com.hippo.watchdog` is missing, run `hippo daemon install --force`.
 - `[!!] fallback files: 5 files > 24h (recovery broken)` → I-9 violation. Daemon is up but old fallback files under `~/.local/share/hippo/fallback/` aren't being drained. Check the daemon's launchd logs (`~/.local/share/hippo/daemon.stderr.log` and the rolling `daemon.YYYY-MM-DD.log` files written by the tracing appender) for write errors.
 

@@ -16,6 +16,7 @@ use crate::browser_health::{self, BROWSER_EVENT_WARN_SECS, BrowserExtensionConne
 use crate::codex_session;
 use crate::cursor_session;
 use crate::framing::{read_frame, write_frame};
+use crate::shell_health;
 
 const REQUEST_TIMEOUT_MS: u64 = 5_000;
 
@@ -2109,6 +2110,13 @@ fn check_source_staleness(db: &rusqlite::Connection, explain: bool) -> u32 {
             .any(|path| claude_jsonl_has_recent_semantic_activity(path, cutoff_ms, db))
     };
 
+    // Real (non-probe) shell activity within the idle window. Fails open
+    // (`true`) on a query error so a DB hiccup never silently hides a real
+    // shell capture failure behind a misleading "shell idle" suppression.
+    let shell_activity_recent =
+        shell_health::shell_real_activity_recent(db, now_ms, shell_health::SHELL_IDLE_WINDOW_MS)
+            .unwrap_or(true);
+
     let mut fail_count: u32 = 0;
     let (opencode_sessions_do_exist, opencode_sessions_are_recent) = opencode_session_state();
     let (codex_sessions_do_exist, codex_sessions_are_recent, codex_session_is_in_flight) =
@@ -2123,6 +2131,7 @@ fn check_source_staleness(db: &rusqlite::Connection, explain: bool) -> u32 {
         .unwrap_or((true, true, true));
     let suppression_env = SuppressionSignals {
         probe_ok: None, // per-row; filled in inside the loop
+        shell_activity_recent,
         firefox_running: firefox_running(),
         recent_claude_session: recent_claude_session(),
         opencode_sessions_exist: opencode_sessions_do_exist,
@@ -2671,6 +2680,13 @@ enum SourceStalenessStatus {
 struct SuppressionSignals {
     /// `probe_ok` column from `source_health` (synthetic-probe state).
     probe_ok: Option<i64>,
+    /// A real (non-probe) `shell` event has landed within
+    /// `shell_health::SHELL_IDLE_WINDOW_MS`. `false` means the user simply
+    /// hasn't been at the keyboard recently: the synthetic probe
+    /// (`com.hippo.probe`, every 5 min) touches `last_event_ts` on its own
+    /// cadence regardless of user presence, so this is the actual
+    /// idle-vs-broken disambiguator for `shell`. See `shell_health`.
+    shell_activity_recent: bool,
     /// A Firefox process is currently running.
     firefox_running: bool,
     /// A Claude session JSONL was modified within the last 5 minutes.
@@ -2735,6 +2751,10 @@ fn source_staleness_suppression_reason(
 ) -> Option<&'static str> {
     match source {
         "shell" if signals.probe_ok == Some(0) => Some("probe disabled"),
+        // No real (non-probe) shell command recently: the user simply isn't
+        // at the keyboard. Checked after `probe_ok == Some(0)` so a probe
+        // that is actually failing keeps its own, more specific reason.
+        "shell" if !signals.shell_activity_recent => Some("shell idle"),
         "agentic-session-claude" if !signals.recent_claude_session => Some("no active session"),
         "claude-tool" if signals.probe_ok == Some(0) => Some("probe disabled"),
         "browser" if !signals.firefox_running => Some("no active Firefox session"),
@@ -4879,8 +4899,27 @@ replacement = "***"
         )
         .unwrap();
 
+        // A real (non-probe) shell command landed a few minutes ago: the
+        // user is demonstrably active, so this must alarm as a genuine
+        // capture break rather than being suppressed as shell idleness.
+        conn.execute(
+            "INSERT OR IGNORE INTO sessions (id, start_time, shell, hostname, username) \
+             VALUES (1, 0, 'zsh', 'test-host', 'test-user')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO events (session_id, timestamp, command, duration_ms, cwd, hostname, shell, source_kind) \
+             VALUES (1, (unixepoch('now')-120)*1000, 'echo hi', 0, '/tmp', 'test-host', 'zsh', 'shell')",
+            [],
+        )
+        .unwrap();
+
         let fail = check_source_staleness(&conn, false);
-        assert_eq!(fail, 1, "stale shell row should return fail_count=1");
+        assert_eq!(
+            fail, 1,
+            "stale shell row with recent real activity should return fail_count=1"
+        );
 
         // Now seed a fresh shell row (1 second ago) and assert 0 failures.
         conn.execute(
@@ -4893,6 +4932,34 @@ replacement = "***"
 
         let fail2 = check_source_staleness(&conn, false);
         assert_eq!(fail2, 0, "fresh shell row should return fail_count=0");
+    }
+
+    /// Regression test for issue #263: a stale shell `source_health` row
+    /// with no real (non-probe) shell activity anywhere in `events` must be
+    /// suppressed as ordinary idleness, not counted as a doctor failure.
+    #[test]
+    fn test_doctor_staleness_check_suppresses_shell_when_no_real_activity() {
+        let tmp = tempdir().unwrap();
+        let db_path = tmp.path().join("hippo.db");
+        let conn = hippo_core::storage::open_db(&db_path).unwrap();
+
+        // Stale shell row, same as test_doctor_staleness_check, but this
+        // time no row is ever inserted into `events`: nothing but the
+        // synthetic probe (which never lands in `events` as real activity
+        // for this scenario) has touched this source_health row.
+        conn.execute(
+            "INSERT OR REPLACE INTO source_health \
+             (source, last_event_ts, consecutive_failures, updated_at) \
+             VALUES ('shell', (unixepoch('now')-3600)*1000, 0, unixepoch('now')*1000)",
+            [],
+        )
+        .unwrap();
+
+        let fail = check_source_staleness(&conn, false);
+        assert_eq!(
+            fail, 0,
+            "a stale shell row with no real shell activity should be suppressed as idle"
+        );
     }
 
     #[test]
@@ -4948,6 +5015,10 @@ replacement = "***"
     ) -> SuppressionSignals {
         SuppressionSignals {
             probe_ok: None,
+            // Fail-open default: none of these tests exercise `source ==
+            // "shell"`, so this value is inert for them. Dedicated shell
+            // idle tests override it explicitly via struct update syntax.
+            shell_activity_recent: true,
             firefox_running: false,
             recent_claude_session,
             // Default to "never used opencode" so existing tests that don't
@@ -4970,6 +5041,52 @@ replacement = "***"
             cursor_session_in_flight: false,
             cursor_enabled: true,
         }
+    }
+
+    /// Regression test for issue #263: `shell_activity_recent = false`
+    /// suppresses a stale shell row as idle rather than alarming.
+    #[test]
+    fn test_shell_staleness_suppressed_when_idle() {
+        let sig = SuppressionSignals {
+            shell_activity_recent: false,
+            ..signals(false, false, false, false, false)
+        };
+        assert_eq!(
+            classify_source_staleness("shell", 20 * 60, sig),
+            SourceStalenessStatus::Suppressed("shell idle"),
+            "a stale shell row with no recent real activity should be suppressed, not alarmed"
+        );
+    }
+
+    /// The idle carve-out must not swallow a genuine break: recent real
+    /// shell activity plus a stale row still alarms.
+    #[test]
+    fn test_shell_staleness_still_fails_when_activity_recent() {
+        let sig = SuppressionSignals {
+            shell_activity_recent: true,
+            ..signals(false, false, false, false, false)
+        };
+        assert_eq!(
+            classify_source_staleness("shell", 20 * 60, sig),
+            SourceStalenessStatus::Fail,
+            "recent real shell activity plus a stale row is a genuine capture failure"
+        );
+    }
+
+    /// An outright probe failure keeps its own, more specific suppression
+    /// reason even when the shell also happens to be idle.
+    #[test]
+    fn test_shell_staleness_probe_disabled_takes_precedence_over_idle() {
+        let sig = SuppressionSignals {
+            probe_ok: Some(0),
+            shell_activity_recent: false,
+            ..signals(false, false, false, false, false)
+        };
+        assert_eq!(
+            classify_source_staleness("shell", 20 * 60, sig),
+            SourceStalenessStatus::Suppressed("probe disabled"),
+            "a failing probe should keep its own reason instead of being relabelled idle"
+        );
     }
 
     #[test]

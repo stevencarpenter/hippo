@@ -32,7 +32,7 @@ For the system reference these rules guard, see [`architecture.md`](architecture
 
 **Why.** Shell silence overnight is normal. Browser silence is normal when Firefox is closed. Unconditional alarms train users to dismiss them — and they'll dismiss a real outage for the same reason. Alerting must distinguish "user active, source silent" from "user asleep, source correctly quiet."
 
-**The right way.** Watchdog gates silence alarms on corroborating signals: terminal is frontmost app, recent keystroke activity, source process confirmed running (`pgrep -x firefox` for browser, `pgrep -x zsh` + HIDIdleTime for shell). Thresholds per-source, configurable, conservative defaults.
+**The right way.** Watchdog and doctor gate silence alarms on corroborating signals drawn from data hippo already captures, not new OS-level process/idle-time checks: source process confirmed running (`pgrep -x firefox` for browser), backing session files changed recently (opencode/Codex/Cursor idle probes), and for shell, the recency of a real (`probe_tag IS NULL`) shell event (`shell_health::shell_real_activity_recent`). The synthetic probe alone cannot serve as that signal, since it lands on its own 5-minute cadence regardless of user presence. Thresholds per-source, configurable, conservative defaults.
 
 ---
 
