@@ -56,7 +56,19 @@ const fullTitle = title === "Hippo" ? title : `${title} · Hippo`;
 <link rel="preload" href="/fonts/fraunces-variable.woff2" as="font" type="font/woff2" crossorigin />
 <link rel="preload" href="/fonts/jetbrains-mono-variable.woff2" as="font" type="font/woff2" crossorigin />
 
-<meta name="theme-color" content="#1f1812" />
+{/* Media-scoped so browsers that honour theme-color (Chrome, Firefox,
+    Samsung Internet, Safari <= 18.6) match the OS scheme before the head
+    script runs. Safari 26+ ignores theme-color for regular tabs (installed
+    web apps only) and derives chrome colour from the body/fixed-element
+    background instead, so these metas and the script's sync loop are inert
+    there. Known seam on supporting browsers: a no-JS light-OS visitor gets a
+    light chrome bar over the dark no-JS page rendering (the documented
+    tokens.css trade-off); accepted, since the OS-matching bar is right for
+    the vastly more common JS-enabled load. The head script overrides both
+    metas' content when a stored toggle choice exists, which media queries
+    cannot express. */}
+<meta name="theme-color" content="#efe4ce" media="(prefers-color-scheme: light)" />
+<meta name="theme-color" content="#1f1812" media="(prefers-color-scheme: dark)" />
 
 {/* Colour scheme. Must be `is:inline` and sit in <head> so the attribute is on
     <html> before first paint — a bundled/deferred script would flash the wrong
@@ -104,7 +116,11 @@ const fullTitle = title === "Hippo" ? title : `${title} · Hippo`;
 
     const apply = (theme) => {
       document.documentElement.setAttribute("data-theme", theme);
-      document.querySelector('meta[name="theme-color"]')?.setAttribute("content", BG[theme]);
+      // Both media-scoped metas get the resolved value, so whichever one the
+      // browser honours reflects the stored choice, not just the OS scheme.
+      for (const meta of document.querySelectorAll('meta[name="theme-color"]')) {
+        meta.setAttribute("content", BG[theme]);
+      }
 
       // State only. The button's accessible name is a static noun in its
       // markup — overwriting it with an action phrase here would make screen
