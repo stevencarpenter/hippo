@@ -76,6 +76,14 @@
     stroke-linecap: round;
   }
 
+  /* No-JS gate (HIPO-2). The SSR markup carries no `data-theme`; the head
+     script stamps it on <html> before the body is parsed on every JS-enabled
+     load. So a missing attribute means the click handler never registered, and
+     the button would be a dead control that still announces aria-pressed to
+     screen readers. Hiding on attribute absence removes it from the a11y tree
+     with no flash or layout shift, and needs no separate `js` class. */
+  :global(html:not([data-theme])) .theme-toggle { display: none; }
+
   /* Visibility follows the html attribute. The SSR markup carries no
      `data-theme` at all — the head script stamps it before the body is parsed,
      so the right glyph is correct at first paint without a JS-driven class
