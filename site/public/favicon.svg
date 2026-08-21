@@ -1,7 +1,11 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
-  <!-- Scheme-aware (HIPO-4): follows the OS prefers-color-scheme. Favicons
-       cannot read the site's stored toggle choice, so OS scheme is the best
-       available signal. Values mirror tokens.css --paper / --ink per scheme. -->
+  <!-- Scheme-aware (HIPO-4): follows the OS prefers-color-scheme in
+       Chrome/Firefox/Edge. Safari loads SVG favicons but ignores embedded
+       media queries and always renders the light base rules; the deferred
+       favicon.ico/apple-touch-icon work (see Head.astro) is the eventual
+       Safari fix. Favicons cannot read the site's stored toggle choice, so
+       OS scheme is the best available signal. Values mirror tokens.css
+       --paper / --ink per scheme. -->
   <style>
     .ground { fill: #efe4ce; }
     .stroke { stroke: #2a1d10; }
