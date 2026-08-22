@@ -32,6 +32,16 @@ use rusqlite::Connection;
 /// idle carve-out.
 pub const SHELL_IDLE_WINDOW_MS: i64 = 600_000;
 
+/// Hard backstop on how long the idle carve-out may suppress I-1, the shell
+/// arm of I-8, and doctor's shell staleness check. Ordinary idleness — sleep,
+/// stepping away, a long weekend — does not plausibly last this long; without
+/// this cap a sustained outage where `probe_ok` is frozen at a stale `1`
+/// (the launchd job itself stopped running, e.g. issue #263's follow-up
+/// incident class) would be suppressed as "idle" forever and could never
+/// reach `Fail`. Mirrors the fixed 24 h backstop I-9 uses for fallback file
+/// age (`docs/capture/architecture.md`).
+pub const SHELL_IDLE_SUPPRESSION_BACKSTOP_MS: i64 = 86_400_000;
+
 /// True when a real (non-probe) `shell` event has landed within `window_ms`
 /// of `now_ms`. Returns `Ok(false)` (not an error) when no such event exists
 /// yet, e.g. a fresh install that has only seen probe traffic so far: that
@@ -129,5 +139,38 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let conn = open_test_conn(&dir);
         assert!(!shell_real_activity_recent(&conn, NOW, SHELL_IDLE_WINDOW_MS).unwrap());
+    }
+
+    /// Boundary: an event exactly at the window edge (`<=`) still counts as
+    /// recent activity.
+    #[test]
+    fn event_exactly_at_window_edge_is_activity() {
+        let dir = TempDir::new().unwrap();
+        let conn = open_test_conn(&dir);
+        insert_event(&conn, NOW - SHELL_IDLE_WINDOW_MS, "shell", None);
+        assert!(shell_real_activity_recent(&conn, NOW, SHELL_IDLE_WINDOW_MS).unwrap());
+    }
+
+    /// Boundary: one millisecond past the window edge is no longer recent.
+    #[test]
+    fn event_one_ms_past_window_edge_is_not_activity() {
+        let dir = TempDir::new().unwrap();
+        let conn = open_test_conn(&dir);
+        insert_event(&conn, NOW - SHELL_IDLE_WINDOW_MS - 1, "shell", None);
+        assert!(!shell_real_activity_recent(&conn, NOW, SHELL_IDLE_WINDOW_MS).unwrap());
+    }
+
+    /// A missing `events` table (e.g. schema not yet migrated, or a
+    /// corrupted DB) makes the underlying query fail. Callers fail open via
+    /// `.unwrap_or(true)` — this test just pins down that the function
+    /// itself surfaces `Err` rather than silently returning `Ok(false)`, so
+    /// callers actually reach their fail-open branch instead of a
+    /// misleadingly confident `Ok(false)`.
+    #[test]
+    fn query_error_surfaces_as_err_not_a_false_positive_ok() {
+        let dir = TempDir::new().unwrap();
+        let conn = open_test_conn(&dir);
+        conn.execute("DROP TABLE events", []).unwrap();
+        assert!(shell_real_activity_recent(&conn, NOW, SHELL_IDLE_WINDOW_MS).is_err());
     }
 }

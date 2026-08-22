@@ -2115,7 +2115,12 @@ fn check_source_staleness(db: &rusqlite::Connection, explain: bool) -> u32 {
     // shell capture failure behind a misleading "shell idle" suppression.
     let shell_activity_recent =
         shell_health::shell_real_activity_recent(db, now_ms, shell_health::SHELL_IDLE_WINDOW_MS)
-            .unwrap_or(true);
+            .unwrap_or_else(|e| {
+                eprintln!(
+                    "warning: shell_real_activity_recent query failed ({e}), failing open (assuming recent activity)"
+                );
+                true
+            });
 
     let mut fail_count: u32 = 0;
     let (opencode_sessions_do_exist, opencode_sessions_are_recent) = opencode_session_state();
@@ -2735,7 +2740,19 @@ fn classify_source_staleness(
     }
 
     if let Some(reason) = source_staleness_suppression_reason(source, signals) {
-        return SourceStalenessStatus::Suppressed(reason);
+        // Backstop: "shell idle" must not suppress indefinitely. Beyond a
+        // full day of silence, ordinary idleness (sleep, a long weekend) no
+        // longer plausibly explains it, and continuing to suppress would
+        // make the shell Fail classification unreachable during a genuine
+        // sustained outage (frozen `probe_ok = 1`). Every other suppression
+        // reason reflects a definitive signal, not an idle guess, so only
+        // this one is capped. Mirrors the watchdog I-1/I-8 backstop in
+        // `shell_health::SHELL_IDLE_SUPPRESSION_BACKSTOP_MS`.
+        let idle_backstop_exceeded = reason == "shell idle"
+            && age_secs >= shell_health::SHELL_IDLE_SUPPRESSION_BACKSTOP_MS / 1000;
+        if !idle_backstop_exceeded {
+            return SourceStalenessStatus::Suppressed(reason);
+        }
     }
 
     if age_secs < thresh.fail_secs {
@@ -5086,6 +5103,38 @@ replacement = "***"
             classify_source_staleness("shell", 20 * 60, sig),
             SourceStalenessStatus::Suppressed("probe disabled"),
             "a failing probe should keep its own reason instead of being relabelled idle"
+        );
+    }
+
+    /// The idle suppression must not last forever: once age crosses the
+    /// backstop (24h), a stale-and-idle shell row is a genuine sustained
+    /// outage (frozen `probe_ok = 1`) and doctor must report Fail.
+    #[test]
+    fn test_shell_staleness_backstop_exceeded_fails_despite_idle() {
+        let sig = SuppressionSignals {
+            shell_activity_recent: false,
+            ..signals(false, false, false, false, false)
+        };
+        let age_secs = shell_health::SHELL_IDLE_SUPPRESSION_BACKSTOP_MS / 1000 + 1;
+        assert_eq!(
+            classify_source_staleness("shell", age_secs, sig),
+            SourceStalenessStatus::Fail,
+            "a full day of silence should fail regardless of the idle signal"
+        );
+    }
+
+    /// Just under the backstop, idle suppression still applies.
+    #[test]
+    fn test_shell_staleness_suppressed_when_idle_and_under_backstop() {
+        let sig = SuppressionSignals {
+            shell_activity_recent: false,
+            ..signals(false, false, false, false, false)
+        };
+        let age_secs = shell_health::SHELL_IDLE_SUPPRESSION_BACKSTOP_MS / 1000 - 1;
+        assert_eq!(
+            classify_source_staleness("shell", age_secs, sig),
+            SourceStalenessStatus::Suppressed("shell idle"),
+            "just under the backstop, idle suppression still applies"
         );
     }
 
