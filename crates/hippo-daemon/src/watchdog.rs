@@ -164,7 +164,21 @@ pub fn run(config: &HippoConfig) -> Result<()> {
     // I-14 and I-16 run outside check_invariants: each needs a DB query (the
     // knowledge_vectors shadow table and the agentic-node shadow table
     // respectively), not just the in-memory source_health rows.
-    let mut violations = check_invariants(&rows, now_ms);
+    //
+    // I-1/I-8 also need one extra DB fact beyond source_health: whether a
+    // real (non-probe) shell event has landed recently. On a query failure
+    // this fails open (`true` = "assume recent activity") so a DB hiccup
+    // never silently suppresses a real alarm; see `shell_health`.
+    let shell_real_activity_recent = crate::shell_health::shell_real_activity_recent(
+        &conn,
+        now_ms,
+        crate::shell_health::SHELL_IDLE_WINDOW_MS,
+    )
+    .unwrap_or_else(|e| {
+        warn!(error = %e, "shell_real_activity_recent query failed, failing open (assuming recent activity)");
+        true
+    });
+    let mut violations = check_invariants(&rows, now_ms, shell_real_activity_recent);
     suppress_disabled_auto_memory_violations(&mut violations, config.auto_memory.enabled);
     // I-14 needs a DB query, not just source_health rows — checked here.
     if let Some(v) = check_i14_embedding_orphans(
@@ -460,7 +474,15 @@ fn is_pause_lockfile_active(path: &std::path::Path, now: std::time::SystemTime) 
 /// `bench_pause_window_active()`), I-2, I-4, I-8, I-11, I-13, and I-15 are
 /// suppressed — during a bench run prod brain is intentionally paused and
 /// capture freshness predicates would fire spuriously, drowning real alarms.
-pub fn check_invariants(rows: &[SourceHealthRow], now_ms: i64) -> Vec<InvariantViolation> {
+///
+/// `shell_real_activity_recent` is the idle-vs-broken disambiguator for I-1
+/// and the `shell` arm of I-8 (see `shell_health`); the caller computes it
+/// via a DB query since it needs the `events` table, not just `source_health`.
+pub fn check_invariants(
+    rows: &[SourceHealthRow],
+    now_ms: i64,
+    shell_real_activity_recent: bool,
+) -> Vec<InvariantViolation> {
     let by_source: std::collections::HashMap<&str, &SourceHealthRow> =
         rows.iter().map(|r| (r.source.as_str(), r)).collect();
 
@@ -471,7 +493,7 @@ pub fn check_invariants(rows: &[SourceHealthRow], now_ms: i64) -> Vec<InvariantV
     }
 
     // I-1: Shell liveness (>60 s stale while probe says active)
-    if let Some(v) = check_i1_shell_liveness(&by_source, now_ms) {
+    if let Some(v) = check_i1_shell_liveness(&by_source, now_ms, shell_real_activity_recent) {
         violations.push(v);
     }
 
@@ -505,7 +527,11 @@ pub fn check_invariants(rows: &[SourceHealthRow], now_ms: i64) -> Vec<InvariantV
     // prod brain is paused, so freshness alarms during a bench run are
     // spurious by definition.
     if !bench_paused {
-        violations.extend(check_i8_probe_freshness(rows, now_ms));
+        violations.extend(check_i8_probe_freshness(
+            rows,
+            now_ms,
+            shell_real_activity_recent,
+        ));
     }
 
     // I-11: Opencode-session coverage proxy.
@@ -544,26 +570,57 @@ pub fn check_invariants(rows: &[SourceHealthRow], now_ms: i64) -> Vec<InvariantV
 }
 
 /// I-1: Shell liveness.
+///
 /// Fires when `shell.last_event_ts` is older than the probe cadence plus
-/// launchd/SQLite jitter grace **and**
-/// `shell.probe_ok = 1` (shell active: zsh running, hippo.zsh sourced,
-/// user not idle).  Sources with `last_event_ts IS NULL` (never seen) are
-/// skipped — a fresh install should not alarm before the first shell event.
+/// launchd/SQLite jitter grace, **and** `shell.probe_ok = 1`, **and**
+/// (a real (non-probe) shell event has landed within the idle window checked
+/// by `shell_health::shell_real_activity_recent`, **or** the staleness has
+/// exceeded `shell_health::SHELL_IDLE_SUPPRESSION_BACKSTOP_MS`).
+///
+/// `probe_ok = 1` means only "the last synthetic probe round-trip
+/// succeeded": `com.hippo.probe` sends an unconditional synthetic canary
+/// every 5 minutes through the same insert path as real shell commands, so
+/// it advances `last_event_ts` regardless of whether a human is present. An
+/// earlier version of this comment read `probe_ok` as "user not idle",
+/// which is wrong (see issue #263): a machine that has been asleep for
+/// hours still shows `probe_ok = 1`, a stale leftover from before the
+/// sleep. The `shell_real_activity_recent` check is the actual idle
+/// carve-out: it requires evidence of a genuine, `probe_tag IS NULL` event
+/// recently, which distinguishes "nobody is at the keyboard" (suppress)
+/// from "the pipe broke while someone was actively using the shell"
+/// (alarm).
+///
+/// Sources with `last_event_ts IS NULL` (never seen) are skipped: a fresh
+/// install should not alarm before the first shell event.
 pub fn check_i1_shell_liveness(
     by_source: &std::collections::HashMap<&str, &SourceHealthRow>,
     now_ms: i64,
+    shell_real_activity_recent: bool,
 ) -> Option<InvariantViolation> {
     let row = by_source.get("shell")?;
 
     // Skip if the source has never delivered an event.
     let last_event = row.last_event_ts?;
 
+    let age_ms = now_ms - last_event;
+
     // Suppress when probe says the shell is not active.
     if row.probe_ok != Some(1) {
         return None;
     }
 
-    let age_ms = now_ms - last_event;
+    // Idle carve-out: no real (non-probe) shell command has landed within
+    // the wider idle window, so a stale `last_event_ts` reflects ordinary
+    // idleness (sleep, stepping away) rather than a broken pipe. Capped by
+    // `SHELL_IDLE_SUPPRESSION_BACKSTOP_MS` so a sustained outage with a
+    // frozen `probe_ok = 1` still alarms eventually instead of being
+    // suppressed forever.
+    if !shell_real_activity_recent
+        && age_ms < crate::shell_health::SHELL_IDLE_SUPPRESSION_BACKSTOP_MS
+    {
+        return None;
+    }
+
     if age_ms > SHELL_LIVENESS_STALE_MS {
         Some(InvariantViolation {
             invariant_id: "I-1".to_string(),
@@ -1012,21 +1069,54 @@ pub fn check_i16_duplicate_agentic_nodes(
     }
 }
 
+/// Probe considered stale beyond this age (15 min). Shared by the general
+/// I-8 staleness check and, for `shell`, by the idle carve-out below.
+const PROBE_STALE_MS: i64 = 900_000;
+
 /// I-8: Probe freshness.
 ///
 /// For each source where `probe_last_run_ts IS NOT NULL`:
 ///   - alarm if `probe_ok = 0` (probe ran and failed), OR
 ///   - alarm if `probe_last_run_ts < now - 15 min` (probe hasn't run recently).
 ///
+/// For `source == "shell"` only, a stale-but-not-failing probe is also
+/// suppressed when no real (non-probe) shell event has landed recently
+/// either (`shell_real_activity_recent = false`, see `shell_health`), and
+/// the staleness is still within `SHELL_IDLE_SUPPRESSION_BACKSTOP_MS`.
+/// `com.hippo.probe` fires on its own 5-minute cadence independent of user
+/// activity, so if it AND real shell commands have both gone silent for the
+/// same stretch, the most likely explanation is that the machine itself was
+/// asleep, not that shell-probe delivery specifically broke — but only up to
+/// the backstop; beyond it, ordinary idleness no longer plausibly explains
+/// the silence and the alarm fires regardless. An outright probe failure
+/// (`probe_ok = 0`) is never suppressed by idleness: that is always a real
+/// signal.
+///
 /// Yields one violation per affected source.
-pub fn check_i8_probe_freshness(rows: &[SourceHealthRow], now_ms: i64) -> Vec<InvariantViolation> {
+pub fn check_i8_probe_freshness(
+    rows: &[SourceHealthRow],
+    now_ms: i64,
+    shell_real_activity_recent: bool,
+) -> Vec<InvariantViolation> {
     rows.iter()
         .filter_map(|row| {
             let probe_run = row.probe_last_run_ts?; // skip sources with no probe
 
             let age_ms = now_ms - probe_run;
-            let is_stale = age_ms > 900_000; // > 15 min
+            let is_stale = age_ms > PROBE_STALE_MS;
             let is_failing = row.probe_ok == Some(0);
+
+            // Capped by `SHELL_IDLE_SUPPRESSION_BACKSTOP_MS` so a sustained
+            // outage still alarms eventually instead of being suppressed
+            // forever; see `check_i1_shell_liveness`.
+            if row.source == "shell"
+                && is_stale
+                && !is_failing
+                && !shell_real_activity_recent
+                && age_ms < crate::shell_health::SHELL_IDLE_SUPPRESSION_BACKSTOP_MS
+            {
+                return None;
+            }
 
             if is_stale || is_failing {
                 Some(InvariantViolation {
@@ -1410,7 +1500,7 @@ mod tests {
             ..blank_row("shell")
         };
         let rows = vec![row];
-        let result = check_i1_shell_liveness(&by_source(&rows), NOW);
+        let result = check_i1_shell_liveness(&by_source(&rows), NOW, true);
         assert!(result.is_some(), "expected I-1 violation");
         let v = result.unwrap();
         assert_eq!(v.invariant_id, "I-1");
@@ -1429,7 +1519,7 @@ mod tests {
         };
         let rows = vec![row];
         assert!(
-            check_i1_shell_liveness(&by_source(&rows), NOW).is_none(),
+            check_i1_shell_liveness(&by_source(&rows), NOW, true).is_none(),
             "shell liveness should tolerate the normal 5 minute probe cadence"
         );
     }
@@ -1442,7 +1532,7 @@ mod tests {
             ..blank_row("shell")
         };
         let rows = vec![row];
-        assert!(check_i1_shell_liveness(&by_source(&rows), NOW).is_none());
+        assert!(check_i1_shell_liveness(&by_source(&rows), NOW, true).is_none());
     }
 
     #[test]
@@ -1453,7 +1543,7 @@ mod tests {
             ..blank_row("shell")
         };
         let rows = vec![row];
-        assert!(check_i1_shell_liveness(&by_source(&rows), NOW).is_none());
+        assert!(check_i1_shell_liveness(&by_source(&rows), NOW, true).is_none());
     }
 
     #[test]
@@ -1464,7 +1554,7 @@ mod tests {
             ..blank_row("shell")
         };
         let rows = vec![row];
-        assert!(check_i1_shell_liveness(&by_source(&rows), NOW).is_none());
+        assert!(check_i1_shell_liveness(&by_source(&rows), NOW, true).is_none());
     }
 
     #[test]
@@ -1475,7 +1565,76 @@ mod tests {
             ..blank_row("shell")
         };
         let rows = vec![row];
-        assert!(check_i1_shell_liveness(&by_source(&rows), NOW).is_none());
+        assert!(check_i1_shell_liveness(&by_source(&rows), NOW, true).is_none());
+    }
+
+    /// Core regression test for issue #263: a machine that has been asleep
+    /// for hours shows a stale `last_event_ts` and a stale-but-still-`1`
+    /// `probe_ok` (a leftover from before sleep, not proof the pipe is
+    /// live). Without a real-activity signal this reads exactly like "shell
+    /// active but capture broken" and fires I-1 on ordinary idleness.
+    #[test]
+    fn watchdog_i1_suppressed_when_idle_despite_stale_probe_ok() {
+        let row = SourceHealthRow {
+            last_event_ts: Some(NOW - 7_200_000), // 2h stale, matches issue's "shell silent 2h 7m"
+            probe_ok: Some(1),                    // stale-true leftover from before sleep
+            ..blank_row("shell")
+        };
+        let rows = vec![row];
+        assert!(
+            check_i1_shell_liveness(&by_source(&rows), NOW, false).is_none(),
+            "no real shell activity recently means the user is idle, not that capture broke"
+        );
+    }
+
+    /// The idle carve-out must not swallow a genuine break: if a real shell
+    /// command landed recently (the user is demonstrably at the keyboard)
+    /// and last_event_ts is still stale beyond the I-1 threshold, that is a
+    /// real capture failure and must still alarm.
+    #[test]
+    fn watchdog_i1_still_fires_when_real_activity_recent_but_pipe_stale() {
+        let row = SourceHealthRow {
+            last_event_ts: Some(NOW - 480_000), // beyond 7 min threshold
+            probe_ok: Some(1),
+            ..blank_row("shell")
+        };
+        let rows = vec![row];
+        assert!(
+            check_i1_shell_liveness(&by_source(&rows), NOW, true).is_some(),
+            "recent real shell activity plus a stale pipe is a genuine break, not idleness"
+        );
+    }
+
+    /// The idle carve-out must not suppress forever: once staleness exceeds
+    /// `SHELL_IDLE_SUPPRESSION_BACKSTOP_MS`, I-1 fires even with no real
+    /// activity and a frozen `probe_ok = 1` (a sustained outage, not a nap).
+    #[test]
+    fn watchdog_i1_fires_despite_idle_once_backstop_exceeded() {
+        let row = SourceHealthRow {
+            last_event_ts: Some(NOW - crate::shell_health::SHELL_IDLE_SUPPRESSION_BACKSTOP_MS - 1),
+            probe_ok: Some(1),
+            ..blank_row("shell")
+        };
+        let rows = vec![row];
+        assert!(
+            check_i1_shell_liveness(&by_source(&rows), NOW, false).is_some(),
+            "a full day of silence should alarm regardless of the idle signal"
+        );
+    }
+
+    /// Just under the backstop, the idle carve-out still applies.
+    #[test]
+    fn watchdog_i1_suppressed_when_idle_and_under_backstop() {
+        let row = SourceHealthRow {
+            last_event_ts: Some(NOW - crate::shell_health::SHELL_IDLE_SUPPRESSION_BACKSTOP_MS + 1),
+            probe_ok: Some(1),
+            ..blank_row("shell")
+        };
+        let rows = vec![row];
+        assert!(
+            check_i1_shell_liveness(&by_source(&rows), NOW, false).is_none(),
+            "just under the backstop, idle suppression still applies"
+        );
     }
 
     // ── I-2 proxy ──────────────────────────────────────────────────────────
@@ -1671,15 +1830,97 @@ mod tests {
     // ── I-8 ────────────────────────────────────────────────────────────────
 
     #[test]
-    fn watchdog_i8_fires_when_probe_stale() {
+    fn watchdog_i8_fires_when_probe_stale_and_activity_recent() {
         let row = SourceHealthRow {
             probe_last_run_ts: Some(NOW - 1_000_000), // ~16 min > 15 min threshold
             probe_ok: Some(1),
             ..blank_row("shell")
         };
-        let violations = check_i8_probe_freshness(&[row], NOW);
+        let violations = check_i8_probe_freshness(&[row], NOW, true);
         assert_eq!(violations.len(), 1);
         assert_eq!(violations[0].invariant_id, "I-8");
+    }
+
+    /// Core regression test for issue #263: the probe going stale for the
+    /// same stretch that real shell activity also went quiet is the
+    /// signature of the machine having been asleep, not of the probe path
+    /// specifically breaking. Must not alarm.
+    #[test]
+    fn watchdog_i8_shell_suppressed_when_stale_and_idle() {
+        let row = SourceHealthRow {
+            probe_last_run_ts: Some(NOW - 4_920_000), // ~82 min, matches "shell silent 1h 18m"
+            probe_ok: Some(1),
+            ..blank_row("shell")
+        };
+        let violations = check_i8_probe_freshness(&[row], NOW, false);
+        assert!(
+            violations.is_empty(),
+            "stale probe plus no real shell activity should read as idle, not broken"
+        );
+    }
+
+    /// Boundary: exactly at `PROBE_STALE_MS`, the probe is not yet stale
+    /// (`age_ms > PROBE_STALE_MS`, not `>=`).
+    #[test]
+    fn watchdog_i8_not_stale_exactly_at_threshold() {
+        let row = SourceHealthRow {
+            probe_last_run_ts: Some(NOW - PROBE_STALE_MS),
+            probe_ok: Some(1),
+            ..blank_row("shell")
+        };
+        let violations = check_i8_probe_freshness(&[row], NOW, true);
+        assert!(
+            violations.is_empty(),
+            "probe age exactly at the threshold should not yet be stale"
+        );
+    }
+
+    /// Boundary: one millisecond past `PROBE_STALE_MS`, the probe is stale.
+    #[test]
+    fn watchdog_i8_stale_one_ms_past_threshold() {
+        let row = SourceHealthRow {
+            probe_last_run_ts: Some(NOW - PROBE_STALE_MS - 1),
+            probe_ok: Some(1),
+            ..blank_row("shell")
+        };
+        let violations = check_i8_probe_freshness(&[row], NOW, true);
+        assert_eq!(violations.len(), 1, "one ms past the threshold is stale");
+    }
+
+    /// The idle carve-out must not suppress forever: once staleness exceeds
+    /// `SHELL_IDLE_SUPPRESSION_BACKSTOP_MS`, I-8 fires even while idle.
+    #[test]
+    fn watchdog_i8_shell_fires_despite_idle_once_backstop_exceeded() {
+        let row = SourceHealthRow {
+            probe_last_run_ts: Some(
+                NOW - crate::shell_health::SHELL_IDLE_SUPPRESSION_BACKSTOP_MS - 1,
+            ),
+            probe_ok: Some(1),
+            ..blank_row("shell")
+        };
+        let violations = check_i8_probe_freshness(&[row], NOW, false);
+        assert_eq!(
+            violations.len(),
+            1,
+            "a full day of stale probe plus idle should alarm regardless"
+        );
+    }
+
+    /// A non-shell source gets no idle carve-out: I-8 stays a plain
+    /// staleness check for every other source.
+    #[test]
+    fn watchdog_i8_non_shell_source_ignores_idle_signal() {
+        let row = SourceHealthRow {
+            probe_last_run_ts: Some(NOW - 1_000_000),
+            probe_ok: Some(1),
+            ..blank_row("browser")
+        };
+        let violations = check_i8_probe_freshness(&[row], NOW, false);
+        assert_eq!(
+            violations.len(),
+            1,
+            "the shell idle carve-out must not apply to other sources"
+        );
     }
 
     #[test]
@@ -1689,9 +1930,26 @@ mod tests {
             probe_ok: Some(0),
             ..blank_row("shell")
         };
-        let violations = check_i8_probe_freshness(&[row], NOW);
+        let violations = check_i8_probe_freshness(&[row], NOW, true);
         assert_eq!(violations.len(), 1);
         assert_eq!(violations[0].invariant_id, "I-8");
+    }
+
+    /// An outright probe failure is never suppressed by idleness, even for
+    /// shell: a failing round-trip is always a real signal.
+    #[test]
+    fn watchdog_i8_shell_failing_probe_still_fires_when_idle() {
+        let row = SourceHealthRow {
+            probe_last_run_ts: Some(NOW - 4_920_000),
+            probe_ok: Some(0),
+            ..blank_row("shell")
+        };
+        let violations = check_i8_probe_freshness(&[row], NOW, false);
+        assert_eq!(
+            violations.len(),
+            1,
+            "a genuinely failing probe must still alarm regardless of idleness"
+        );
     }
 
     #[test]
@@ -1701,7 +1959,7 @@ mod tests {
             probe_ok: Some(1),
             ..blank_row("shell")
         };
-        let violations = check_i8_probe_freshness(&[row], NOW);
+        let violations = check_i8_probe_freshness(&[row], NOW, true);
         assert!(violations.is_empty());
     }
 
@@ -1711,7 +1969,7 @@ mod tests {
             probe_last_run_ts: None, // no probe configured for this source
             ..blank_row("shell")
         };
-        let violations = check_i8_probe_freshness(&[row], NOW);
+        let violations = check_i8_probe_freshness(&[row], NOW, true);
         assert!(violations.is_empty());
     }
 
@@ -2170,7 +2428,7 @@ mod tests {
             probe_last_run_ts: Some(NOW - 30_000),
             ..blank_row("claude-auto-memory")
         }];
-        let mut violations = check_invariants(&rows, NOW);
+        let mut violations = check_invariants(&rows, NOW, true);
         assert!(
             violations
                 .iter()
@@ -2180,7 +2438,7 @@ mod tests {
         suppress_disabled_auto_memory_violations(&mut violations, false);
         assert!(violations.is_empty());
 
-        let mut enabled = check_invariants(&rows, NOW);
+        let mut enabled = check_invariants(&rows, NOW, true);
         suppress_disabled_auto_memory_violations(&mut enabled, true);
         assert_eq!(enabled.len(), 1);
     }
@@ -2195,7 +2453,7 @@ mod tests {
             blank_row("browser"),
             blank_row("watchdog"),
         ];
-        let violations = check_invariants(&rows, NOW);
+        let violations = check_invariants(&rows, NOW, true);
         assert!(violations.is_empty());
     }
 }
