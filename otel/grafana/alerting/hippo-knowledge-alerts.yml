@@ -1,0 +1,537 @@
+# Provisioned Grafana alert rules for Hippo KNOWLEDGE health (recall, graveyard,
+# identity, hygiene). Complements hippo-capture-alerts.yml (capture reliability).
+# Metric names are emitted by scripts/hippo-metrics-exporter.py (Prometheus :9835);
+# the allow-list lives in brain/tests/test_otel_dashboards.py (_EXPORTER_METRICS).
+apiVersion: 1
+groups:
+  - orgId: 1
+    name: hippo_knowledge_1m
+    folder: Hippo
+    interval: 1m
+    rules:
+      # ── Recall health ────────────────────────────────────────────────
+      - uid: hippo_kb_recall_down
+        title: Recall path down (golden-question probe)
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 600
+              to: 0
+            datasourceUid: prometheus
+            model:
+              datasource: { type: prometheus, uid: prometheus }
+              editorMode: code
+              expr: min_over_time(hippo_kb_recall_up[5m])
+              instant: true
+              range: false
+              refId: A
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              conditions:
+                - evaluator: { params: [1], type: lt }
+                  operator: { type: and }
+                  query: { params: [C] }
+                  reducer: { params: [], type: last }
+                  type: query
+              datasource: { type: __expr__, uid: __expr__ }
+              expression: A
+              refId: C
+              type: threshold
+        noDataState: Alerting
+        execErrState: Error
+        for: 5m
+        annotations:
+          summary: /ask recall path failing — golden questions not answered
+          description: >-
+            At least one golden question failed to round-trip brain /ask with a
+            non-empty answer for 5+ minutes (or the exporter itself is down —
+            noDataState is Alerting on purpose). Classify with
+            hippo_kb_recall_failures_total by reason: brain_down, llm_timeout,
+            http_error_*, empty_answer. Check brain logs and the inference server.
+        labels:
+          severity: critical
+          component: brain
+        isPaused: false
+
+      - uid: hippo_kb_recall_slow
+        title: Recall path degraded (latency SLO)
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 900
+              to: 0
+            datasourceUid: prometheus
+            model:
+              datasource: { type: prometheus, uid: prometheus }
+              editorMode: code
+              expr: avg_over_time(hippo_kb_recall_latency_milliseconds[15m])
+              instant: true
+              range: false
+              refId: A
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              conditions:
+                - evaluator: { params: [15000], type: gt }
+                  operator: { type: and }
+                  query: { params: [C] }
+                  reducer: { params: [], type: last }
+                  type: query
+              datasource: { type: __expr__, uid: __expr__ }
+              expression: A
+              refId: C
+              type: threshold
+        noDataState: OK
+        execErrState: Error
+        for: 15m
+        annotations:
+          summary: /ask latency above 15s for 15 minutes
+          description: >-
+            Golden-question round-trips average >15s — degraded inference server
+            or retrieval slowness. Recall under stress is the product; this is
+            the recall SLO.
+        labels:
+          severity: warning
+          component: brain
+        isPaused: false
+
+      - uid: hippo_kb_recall_failures
+        title: Recall probe failure burst
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 3600
+              to: 0
+            datasourceUid: prometheus
+            model:
+              datasource: { type: prometheus, uid: prometheus }
+              editorMode: code
+              expr: sum(increase(hippo_kb_recall_failures_total[1h]))
+              instant: true
+              range: false
+              refId: A
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              conditions:
+                - evaluator: { params: [3], type: gt }
+                  operator: { type: and }
+                  query: { params: [C] }
+                  reducer: { params: [], type: last }
+                  type: query
+              datasource: { type: __expr__, uid: __expr__ }
+              expression: A
+              refId: C
+              type: threshold
+        noDataState: OK
+        execErrState: Error
+        for: 5m
+        annotations:
+          summary: More than 3 recall probe failures in one hour
+          description: >-
+            Intermittent recall failures — flapping inference server or
+            intermittent retrieval errors. Check reason labels for the class.
+        labels:
+          severity: warning
+          component: brain
+        isPaused: false
+
+      # ── Capture hygiene ──────────────────────────────────────────────
+      - uid: hippo_kb_alarms_lingering
+        title: Capture alarm backlog unresolved
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 600
+              to: 0
+            datasourceUid: prometheus
+            model:
+              datasource: { type: prometheus, uid: prometheus }
+              editorMode: code
+              expr: hippo_kb_capture_alarms_active
+              instant: true
+              range: false
+              refId: A
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              conditions:
+                - evaluator: { params: [0], type: gt }
+                  operator: { type: and }
+                  query: { params: [C] }
+                  reducer: { params: [], type: last }
+                  type: query
+              datasource: { type: __expr__, uid: __expr__ }
+              expression: A
+              refId: C
+              type: threshold
+        noDataState: OK
+        execErrState: Error
+        for: 4h
+        annotations:
+          summary: capture_alarms rows unresolved for 4+ hours
+          description: >-
+            Alarms are being raised but never resolved/acked — hygiene debt that
+            desensitizes the alarm channel. Run `hippo alarms list` and resolve
+            or acknowledge.
+        labels:
+          severity: warning
+          component: watchdog
+        isPaused: false
+
+      - uid: hippo_kb_capture_stale
+        title: Capture source silent for 1h
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 600
+              to: 0
+            datasourceUid: prometheus
+            model:
+              datasource: { type: prometheus, uid: prometheus }
+              editorMode: code
+              expr: max(hippo_kb_capture_source_last_event_age_milliseconds)
+              instant: true
+              range: false
+              refId: A
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              conditions:
+                - evaluator: { params: [3600000], type: gt }
+                  operator: { type: and }
+                  query: { params: [C] }
+                  reducer: { params: [], type: last }
+                  type: query
+              datasource: { type: __expr__, uid: __expr__ }
+              expression: A
+              refId: C
+              type: threshold
+        noDataState: OK
+        execErrState: Error
+        for: 10m
+        annotations:
+          summary: A capture source has produced no events for 1+ hour
+          description: >-
+            max(last_event_age) across sources exceeds 1h. Some sources are
+            naturally bursty (browser, cursor); check which source is stale on
+            the Knowledge Health dashboard before acting.
+        labels:
+          severity: warning
+          component: daemon
+        isPaused: false
+
+      # ── Graveyard / corpus health ────────────────────────────────────
+      - uid: hippo_kb_graveyard_contamination
+        title: Dead-project contamination high
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 600
+              to: 0
+            datasourceUid: prometheus
+            model:
+              datasource: { type: prometheus, uid: prometheus }
+              editorMode: code
+              expr: hippo_kb_dead_project_node_ratio
+              instant: true
+              range: false
+              refId: A
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              conditions:
+                - evaluator: { params: [0.5], type: gt }
+                  operator: { type: and }
+                  query: { params: [C] }
+                  reducer: { params: [], type: last }
+                  type: query
+              datasource: { type: __expr__, uid: __expr__ }
+              expression: A
+              refId: C
+              type: threshold
+        noDataState: OK
+        execErrState: Error
+        for: 1h
+        annotations:
+          summary: Majority of retrieval-corpus nodes come from dead projects
+          description: >-
+            >50% of linked knowledge nodes are sourced exclusively from projects
+            dead >=30d. Vitality-weighted ranking / lifecycle filtering becomes
+            mandatory (panel verdict T1). Current baseline ~2%.
+        labels:
+          severity: warning
+          component: brain
+        isPaused: false
+
+      - uid: hippo_kb_stranded_hours_jump
+        title: Large stranded-effort increase on dead projects
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 604800
+              to: 0
+            datasourceUid: prometheus
+            model:
+              datasource: { type: prometheus, uid: prometheus }
+              editorMode: code
+              expr: increase(hippo_kb_stranded_hours{window="30d"}[7d])
+              instant: true
+              range: false
+              refId: A
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              conditions:
+                - evaluator: { params: [100], type: gt }
+                  operator: { type: and }
+                  query: { params: [C] }
+                  reducer: { params: [], type: last }
+                  type: query
+              datasource: { type: __expr__, uid: __expr__ }
+              expression: A
+              refId: C
+              type: threshold
+        noDataState: OK
+        execErrState: Error
+        for: 1h
+        annotations:
+          summary: ">100h of shell effort newly stranded on dead projects this week"
+          description: >-
+            Informational nudge, not an incident: a batch of prototypes died
+            this week. Consider running epitaph/exit interviews on the newly
+            dead set (build #3) while the reasons are still fresh.
+        labels:
+          severity: info
+          component: knowledge
+        isPaused: false
+
+      # ── Security / redaction canaries ────────────────────────────────
+      - uid: hippo_kb_env_secret_keys
+        title: Secretish env-snapshot key names detected
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 600
+              to: 0
+            datasourceUid: prometheus
+            model:
+              datasource: { type: prometheus, uid: prometheus }
+              editorMode: code
+              expr: hippo_kb_env_secretish_keys
+              instant: true
+              range: false
+              refId: A
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              conditions:
+                - evaluator: { params: [0], type: gt }
+                  operator: { type: and }
+                  query: { params: [C] }
+                  reducer: { params: [], type: last }
+                  type: query
+              datasource: { type: __expr__, uid: __expr__ }
+              expression: A
+              refId: C
+              type: threshold
+        noDataState: OK
+        execErrState: Error
+        for: 5m
+        annotations:
+          summary: Env snapshots contain key names matching secret patterns
+          description: >-
+            The redaction allow-list may be passing a secret-bearing key through
+            (key NAMES only are counted — values are never read by the exporter).
+            Inspect `SELECT DISTINCT key FROM env_snapshots` and the redaction
+            config before it reaches indexed/embedded text.
+        labels:
+          severity: warning
+          component: redaction
+        isPaused: false
+
+      - uid: hippo_kb_canary_leak
+        title: Canary secret found in a store
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 600
+              to: 0
+            datasourceUid: prometheus
+            model:
+              datasource: { type: prometheus, uid: prometheus }
+              editorMode: code
+              expr: max(hippo_kb_canary_found)
+              instant: true
+              range: false
+              refId: A
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              conditions:
+                - evaluator: { params: [0], type: gt }
+                  operator: { type: and }
+                  query: { params: [C] }
+                  reducer: { params: [], type: last }
+                  type: query
+              datasource: { type: __expr__, uid: __expr__ }
+              expression: A
+              refId: C
+              type: threshold
+        noDataState: OK
+        execErrState: Error
+        for: 0m
+        annotations:
+          summary: A canary secret survived in a store it should not inhabit
+          description: >-
+            The canary leak drill found a seeded canary outside its allowed
+            scope (events/FTS/vectors/logs). Security panel verdict C-class:
+            treat as a leak incident. Requires the drill state file
+            (~/.local/share/hippo/canary_drill.json) written by the drill job.
+        labels:
+          severity: critical
+          component: security
+        isPaused: false
+
+      # ── Exporter self-health ─────────────────────────────────────────
+      - uid: hippo_kb_collector_errors
+        title: Knowledge exporter metric-family failures
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 900
+              to: 0
+            datasourceUid: prometheus
+            model:
+              datasource: { type: prometheus, uid: prometheus }
+              editorMode: code
+              expr: sum(increase(hippo_kb_collector_errors_total[15m]))
+              instant: true
+              range: false
+              refId: A
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              conditions:
+                - evaluator: { params: [0], type: gt }
+                  operator: { type: and }
+                  query: { params: [C] }
+                  reducer: { params: [], type: last }
+                  type: query
+              datasource: { type: __expr__, uid: __expr__ }
+              expression: A
+              refId: C
+              type: threshold
+        noDataState: OK
+        execErrState: Error
+        for: 5m
+        annotations:
+          summary: Knowledge-health exporter families are failing to compute
+          description: >-
+            One or more metric families errored (schema drift, locked DB).
+            Check the exporter log and the {name} label for the failing family.
+            Silence is never acceptable — failed families count here instead of
+            disappearing.
+        labels:
+          severity: warning
+          component: exporter
+        isPaused: false
+
+      # ── Snowball rules: pre-wired, PAUSED until their feature ships ──
+      - uid: hippo_kb_push_useful_floor
+        title: "[snowball] Push useful-tap below 1/week"
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 604800
+              to: 0
+            datasourceUid: prometheus
+            model:
+              datasource: { type: prometheus, uid: prometheus }
+              editorMode: code
+              expr: sum(increase(hippo_kb_push_fires_total{tapped="useful"}[7d]))
+              instant: true
+              range: false
+              refId: A
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              conditions:
+                - evaluator: { params: [1], type: lt }
+                  operator: { type: and }
+                  query: { params: [C] }
+                  reducer: { params: [], type: last }
+                  type: query
+              datasource: { type: __expr__, uid: __expr__ }
+              expression: A
+              refId: C
+              type: threshold
+        noDataState: OK
+        execErrState: Error
+        for: 0m
+        annotations:
+          summary: Push interventions are not earning their intrusion budget
+          description: >-
+            UNPAUSE WHEN preflight injection + useful/noise taps ship (build #8).
+            Riley's floor: if useful taps <1/week sustained, auto-revert push to
+            pull-only. June's suppression check runs alongside it.
+        labels:
+          severity: warning
+          component: push
+        isPaused: true
+
+      - uid: hippo_kb_epitaph_unconfirmed
+        title: "[snowball] Majority of epitaphs unconfirmed"
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 600
+              to: 0
+            datasourceUid: prometheus
+            model:
+              datasource: { type: prometheus, uid: prometheus }
+              editorMode: code
+              expr: hippo_kb_epitaphs_total{confirmed="no"} / clamp_min(sum(hippo_kb_epitaphs_total), 1)
+              instant: true
+              range: false
+              refId: A
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              conditions:
+                - evaluator: { params: [0.5], type: gt }
+                  operator: { type: and }
+                  query: { params: [C] }
+                  reducer: { params: [], type: last }
+                  type: query
+              datasource: { type: __expr__, uid: __expr__ }
+              expression: A
+              refId: C
+              type: threshold
+        noDataState: OK
+        execErrState: Error
+        for: 1h
+        annotations:
+          summary: Most epitaphs are auto-generated and never human-confirmed
+          description: >-
+            UNPAUSE WHEN the exit probe ships (build #3). Red-team guard: epitaphs
+            are written at peak disappointment and are LLM summaries of captured
+            transcripts — unconfirmed epitaphs are systematically biased data.
+            >50% unconfirmed = the exit interview is being skipped.
+        labels:
+          severity: warning
+          component: knowledge
+        isPaused: true

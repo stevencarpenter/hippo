@@ -1644,3 +1644,31 @@ done
 echo "==> Determinism gate"
 uv run --project brain hippo-bench determinism "$DIR/r1.jsonl" "$DIR/r2.jsonl" "$DIR/r3.jsonl"
 '''
+
+# ── Knowledge-health monitoring (otel stack) ─────────────────────────
+
+[tasks."metrics:exporter"]
+description = "Run the knowledge-health metrics exporter in the foreground (Prometheus :9835)"
+run = "python3 scripts/hippo-metrics-exporter.py"
+
+[tasks."metrics:install"]
+description = "Install + bootstrap the com.hippo.metrics-exporter LaunchAgent"
+run = """
+set -euo pipefail
+python3 - << 'PY'
+import pathlib, os
+tpl = open("launchd/com.hippo.metrics-exporter.plist").read()
+home = str(pathlib.Path.home())
+out = tpl.replace("__REPO_DIR__", os.getcwd()).replace("__HOME__", home).replace("__DATA_DIR__", f"{home}/.local/share/hippo")
+dst = pathlib.Path.home() / "Library/LaunchAgents/com.hippo.metrics-exporter.plist"
+dst.write_text(out)
+print("installed:", dst)
+PY
+launchctl bootout gui/$(id -u)/com.hippo.metrics-exporter 2>/dev/null || true
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.hippo.metrics-exporter.plist
+echo "bootstrapped com.hippo.metrics-exporter"
+"""
+
+[tasks."otel:restart"]
+description = "Recreate Prometheus + Grafana to reload otel/ provisioning (scrape jobs, dashboards, alerts)"
+run = "docker compose -f otel/docker-compose.yml up -d prometheus grafana"

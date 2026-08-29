@@ -1,123 +1,62 @@
-# Hippo OTel Observability Stack
+# Hippo OTel stack — knowledge-health monitoring
 
-Optional Docker Compose stack for monitoring Hippo services with OpenTelemetry.
+Grafana (3030) · Prometheus (9090) · Loki · Tempo, plus the knowledge-health
+exporter (host, :9835) that bridges SQLite-derived metrics and the /ask
+recall probe into Prometheus.
 
-## Quick Start
+## Components
 
-```bash
-# Start the stack
-mise run otel:up
+| Piece | What it does |
+|---|---|
+| `scripts/hippo-metrics-exporter.py` | Read-only bridge: hippo.db → Prometheus text + JSON on :9835. Runs the **recall probe** (3 golden questions round-tripped through brain `/ask`, cached, async). Never writes to the DB. Under launchd as `com.hippo.metrics-exporter`. |
+| `otel/prometheus.yml` | Scrapes `host.docker.internal:9835` (`hippo-knowledge-health` job) + the OTel collector. |
+| `otel/grafana/dashboards/hippo-knowledge-health.json` | "Hippo — Knowledge Health": recall, capture, corpus, graveyard, identity/hygiene, snowball rows. |
+| `otel/grafana/alerting/hippo-knowledge-alerts.yml` | 10 active rules + 2 pre-wired **paused** snowball rules. |
+| `launchd/com.hippo.metrics-exporter.plist` | LaunchAgent template (placeholders substituted by `mise run metrics:install`). |
+| `brain/tests/test_otel_dashboards.py` | Registry: dashboards/alerts may only reference `EMITTED_METRICS` (OTel) ∪ `_EXPORTER_METRICS` (exporter); both are source-backed. |
 
-# Build daemon with OTel support
-mise run build:otel
+## Tasks
 
-# Enable telemetry in config
-hippo config edit
-# Set: [telemetry] enabled = true
+- `mise run metrics:exporter` — run the exporter in the foreground
+- `mise run metrics:install` — (re)install + bootstrap the LaunchAgent
+- `mise run otel:restart` — recreate Prometheus + Grafana to reload `otel/` provisioning
 
-# For brain: set env var before starting
-export HIPPO_OTEL_ENABLED=1
+## Snowball map — what lights up which metric
 
-# Restart services
-mise run restart
+Metrics in the "Snowball" dashboard row emit **only when their backing table
+exists**, so panels show No data (never fake zeros) until the feature ships:
 
-# Open Grafana
-open http://localhost:3030
-```
+| Dashboard metric | Unlock | Alert that arms on unlock |
+|---|---|---|
+| `hippo_kb_canary_found` | Build #0: canary leak drill writes `~/.local/share/hippo/canary_drill.json` (run BEFORE shipping agent write paths — security panel verdict) | `hippo_kb_canary_leak` (already active; fires when the file exists and a canary is found) |
+| `hippo_kb_retrieval_events_total` | Build #1: `retrieval_events` table (the feedback loop — critical path for every other claim) | — |
+| `hippo_kb_epitaphs_total{confirmed}` | Build #3: dormancy detector + one-question exit probe + `epitaphs` table | `hippo_kb_epitaph_unconfirmed` (paused — unpause at ship) |
+| `hippo_kb_push_fires_total{tapped}` | Build #8: preflight injection + useful/noise taps + `push_trials` | `hippo_kb_push_useful_floor` (paused — unpause at ship) |
+| `hippo_kb_nodes_by_status`, `hippo_kb_contradictions_open` | Build #7: node status machine + write API (provisional-only) | — |
+| `hippo_kb_bets` | Kill ledger: `bets` table + behavioral resolver | — |
 
-Dashboard inventory, provisioned alert rules, and on-call pointers: [`docs/observability.md`](../docs/observability.md).
+## Why recall has a probe
 
-Hippo persists OTEL data on the host under `~/.local/share/hippo/otel/`, so restarting or recreating
-the Docker Compose stack does not wipe Grafana, Prometheus, Loki, or Tempo state.
+2026-08-29: all 8 `/ask` synthesis queries timed out while every capture probe
+was green — capture is industrialized, recall had no watchdog. The exporter's
+golden-question probe (death-reason, decision-recall, freshness) treats the
+retrieval path as a production dependency with an SLO:
 
-## Architecture
+- `hippo_kb_recall_up == 0` for 5m → **critical** (noDataState: Alerting, so a
+  dead exporter also fires it)
+- latency >15s for 15m → warning (`hippo_kb_recall_slow`)
+- failure bursts classified by reason: `brain_down` / `llm_timeout` /
+  `http_error_*` / `empty_answer`
 
-```
-hippo-daemon ──┐
-               ├── OTLP ──→ OTel Collector ──→ Tempo (traces)
-hippo-brain  ──┤                            ──→ Loki (logs)
-               │                            ──→ Prometheus (metrics)
-hippo-mcp   ──┘
-                                               Grafana (visualization)
-```
+## Notes
 
-## Services
-
-| Service | Port | Purpose |
-|---------|------|---------|
-| OTel Collector | 4317 (gRPC), 4318 (HTTP) | Receives OTLP telemetry |
-| Grafana | 3030 | Dashboards and exploration |
-| Tempo | 3200 | Trace storage |
-| Loki | 3100 | Log aggregation |
-| Prometheus | 9090 | Metrics storage |
-
-## Enabling Telemetry
-
-### Daemon (Rust)
-
-1. Build with OTel feature: `cargo build --features otel`
-2. Set in `~/.config/hippo/config.toml`:
-
-```toml
-[telemetry]
-enabled = true
-endpoint = "http://localhost:4317"
-```
-
-### Brain / MCP (Python)
-
-Set the environment variable:
-
-```bash
-export HIPPO_OTEL_ENABLED=1
-# Optional: override endpoint (default: http://localhost:4318)
-export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318
-```
-
-## Commands
-
-```bash
-mise run otel:up                                     # Pull latest images and start stack
-mise run otel:down                                   # Stop stack
-mise run otel:logs                                   # Tail logs
-mise run otel:backup                                 # Snapshot persisted OTEL data
-HIPPO_OTEL_RESET_CONFIRM=delete mise run otel:reset  # Backup, then stop + delete OTEL data
-mise run otel:status                                 # Show container status
-```
-
-## Process Metrics
-
-Daemon and brain emit OTel [`process.*` semantic-convention](https://opentelemetry.io/docs/specs/semconv/resource/process/) metrics from inside each process — no host-side exporter needed, so Docker-on-macOS host-visibility limits don't apply.
-
-| Metric | Kind | Unit | Source | Notes |
-|---|---|---|---|---|
-| `process.cpu.utilization` | Gauge | `1` (fraction of one core) | daemon, brain | Sampled at 10–15s |
-| `process.memory.usage` | Gauge | bytes (RSS) | daemon, brain | |
-| `process.memory.virtual` | Gauge | bytes (VSZ) | daemon, brain | |
-| `process.threads` | Gauge | count | brain only | Daemon omitted — sysinfo has no cross-platform thread count |
-| `process.cpu.time` | Counter | ms | daemon, brain | Cumulative user + system time |
-
-Series are labelled by `service_name` (`hippo-daemon` / `hippo-brain`) once the otel-collector translates them to Prometheus. See the **Hippo Processes** dashboard in Grafana.
-
-## Storage and Retention
-
-- **Persistent data path:** `~/.local/share/hippo/otel/`
-- **Backups:** `~/.local/share/hippo/otel/backups/`
-- **Prometheus retention:** `30d` by default, capped at `10GB`
-
-You can override the Prometheus defaults before starting the stack:
-
-```bash
-export HIPPO_OTEL_PROMETHEUS_RETENTION=60d
-export HIPPO_OTEL_PROMETHEUS_RETENTION_SIZE=25GB
-mise run otel:up
-```
-
-## Reuse
-
-This `otel/` directory is self-contained. To use it in another project:
-
-1. Copy the `otel/` directory
-2. Edit `otel/grafana/dashboards/` to add your dashboards
-3. Run `docker compose up -d` from the `otel/` directory
-4. Point your services at `localhost:4317` (gRPC) or `localhost:4318` (HTTP)
+- Exporter opens the DB `mode=ro` + `PRAGMA query_only=ON` — it can never
+  write, never lock, and never wedge capture.
+- Metric families compute under per-family try/except; failures increment
+  `hippo_kb_collector_errors_total{name}` instead of vanishing.
+- The recall probe is async with a TTL (default 120s): scrapes always serve
+  cached probe state and never block on the LLM.
+- Contamination definition: nodes linked (via `knowledge_node_agentic_sessions`)
+  exclusively to projects dead ≥30d, where a project is a git repo or an
+  agentic-session project dir (baseline ~2%, Aug 2026).
+- Stranded hours: all-time shell hours on dead-30d projects (baseline ~1,800h).

@@ -140,11 +140,67 @@ _PROD_DASHBOARD_NAMES = frozenset(
         "hippo-daemon.json",
         "hippo-enrichment.json",
         "hippo-processes.json",
+        "hippo-knowledge-health.json",
     ]
 )
 
-# Provisioned capture-reliability alert rules (SNUG-96).
-_PROD_ALERT_FILES = frozenset(["hippo-capture-alerts.yml"])
+# Provisioned capture-reliability alert rules (SNUG-96) + knowledge-health rules.
+_PROD_ALERT_FILES = frozenset(["hippo-capture-alerts.yml", "hippo-knowledge-alerts.yml"])
+
+# ---------------------------------------------------------------------------
+# Knowledge-health exporter metrics (scripts/hippo-metrics-exporter.py).
+#
+# These are NOT OTel instruments: they are computed by a stdlib Python exporter
+# that reads hippo.db read-only and probes brain /ask. Dashboards and alert
+# rules may reference EMITTED_METRICS (OTel) ∪ _EXPORTER_METRICS (exporter).
+# test_exporter_metrics_are_source_backed keeps this list accountable to the
+# exporter source the same way Test 8 keeps EMITTED_METRICS accountable to the
+# daemon/brain instruments.
+# ---------------------------------------------------------------------------
+_EXPORTER_SCRIPT = _REPO_ROOT / "scripts" / "hippo-metrics-exporter.py"
+
+_EXPORTER_METRICS: frozenset[str] = frozenset(
+    [
+        "hippo_kb_up",
+        "hippo_kb_scrape_duration_milliseconds",
+        "hippo_kb_collector_errors_total",
+        "hippo_kb_events_total",
+        "hippo_kb_events_24h",
+        "hippo_kb_last_event_age_milliseconds",
+        "hippo_kb_stdout_nonempty_total",
+        "hippo_kb_stderr_nonempty_total",
+        "hippo_kb_knowledge_nodes_total",
+        "hippo_kb_agentic_sessions_total",
+        "hippo_kb_agentic_messages_total",
+        "hippo_kb_db_size_bytes",
+        "hippo_kb_capture_alarms_active",
+        "hippo_kb_capture_source_ok",
+        "hippo_kb_capture_source_last_event_age_milliseconds",
+        "hippo_kb_dead_projects",
+        "hippo_kb_stranded_hours",
+        "hippo_kb_dead_project_node_ratio",
+        "hippo_kb_project_identifiers",
+        "hippo_kb_project_fragmentation_ratio",
+        "hippo_kb_design_decisions_total",
+        "hippo_kb_env_secretish_keys",
+        "hippo_kb_recall_up",
+        "hippo_kb_recall_ok",
+        "hippo_kb_recall_latency_milliseconds",
+        "hippo_kb_recall_failures_total",
+        "hippo_kb_recall_probe_timestamp_seconds",
+        "hippo_kb_canary_found",
+        "hippo_kb_canary_drill_timestamp_seconds",
+        # Snowball metrics: emitted only when the backing feature/table exists.
+        "hippo_kb_retrieval_events_total",
+        "hippo_kb_epitaphs_total",
+        "hippo_kb_push_fires_total",
+        "hippo_kb_nodes_by_status",
+        "hippo_kb_contradictions_open",
+        "hippo_kb_bets",
+    ]
+)
+
+DASHBOARD_ALLOWED_METRICS = EMITTED_METRICS | _EXPORTER_METRICS
 
 _REQUIRED_ALERT_UIDS = frozenset(
     [
@@ -153,6 +209,22 @@ _REQUIRED_ALERT_UIDS = frozenset(
         "hippo_watchdog_stall",
         "hippo_probe_failure_rate",
         "hippo_invariant_violation",
+    ]
+)
+
+# Knowledge-health alert rules (recall, graveyard, hygiene, security canaries).
+_REQUIRED_KB_ALERT_UIDS = frozenset(
+    [
+        "hippo_kb_recall_down",
+        "hippo_kb_recall_slow",
+        "hippo_kb_recall_failures",
+        "hippo_kb_alarms_lingering",
+        "hippo_kb_capture_stale",
+        "hippo_kb_graveyard_contamination",
+        "hippo_kb_stranded_hours_jump",
+        "hippo_kb_env_secret_keys",
+        "hippo_kb_canary_leak",
+        "hippo_kb_collector_errors",
     ]
 )
 
@@ -249,14 +321,15 @@ def test_all_referenced_metrics_are_allowed():
     in the canonical EMITTED_METRICS set.
 
     A failure here means either:
-      (a) a metric was renamed in the OTel instrumentation and the dashboard
-          was not updated, or
-      (b) a metric was removed from the instrumentation but the dashboard still
+      (a) a metric was renamed in its emitter (OTel instrument or the
+          knowledge-health exporter) and the dashboard was not updated, or
+      (b) a metric was removed from its emitter but the dashboard still
           references the old name.
 
     Fix: update the dashboard expr to use the new name, OR add the new
     instrument to brain/src/hippo_brain/ (or the Rust daemon) and update
-    EMITTED_METRICS in this file.
+    EMITTED_METRICS, OR add it to scripts/hippo-metrics-exporter.py and update
+    _EXPORTER_METRICS in this file.
     """
     violations: list[str] = []
 
@@ -264,7 +337,7 @@ def test_all_referenced_metrics_are_allowed():
         for panel_id, ref_id, expr in _collect_all_exprs(dashboard):
             for raw_name in _extract_metric_names(expr):
                 normalized = _normalize_metric_name(raw_name)
-                if normalized not in EMITTED_METRICS:
+                if normalized not in DASHBOARD_ALLOWED_METRICS:
                     violations.append(
                         f"  dashboard={filename!r}  panel_id={panel_id}  "
                         f"refId={ref_id!r}  metric={raw_name!r} "
@@ -273,9 +346,11 @@ def test_all_referenced_metrics_are_allowed():
 
     assert not violations, (
         "The following production dashboard panels reference hippo_* metrics "
-        "that are NOT in the EMITTED_METRICS allow-list in this test file.\n"
+        "that are NOT in the EMITTED_METRICS ∪ _EXPORTER_METRICS allow-list in "
+        "this test file.\n"
         "Update the dashboard to use the correct metric name, or add the "
-        "instrument and update EMITTED_METRICS.\n\n" + "\n".join(violations)
+        "instrument and update EMITTED_METRICS / _EXPORTER_METRICS.\n\n"
+        + "\n".join(violations)
     )
 
 
@@ -887,16 +962,17 @@ def _collect_alert_exprs(alert_doc: dict) -> list[tuple[str, str]]:
 
 
 def test_alert_rules_reference_allowed_metrics():
-    """Every hippo_* metric in provisioned alert PromQL must be in EMITTED_METRICS."""
+    """Every hippo_* metric in provisioned alert PromQL must be in
+    EMITTED_METRICS ∪ _EXPORTER_METRICS."""
     violations: list[str] = []
     for filename, doc in _load_prod_alert_rules():
         for uid, expr in _collect_alert_exprs(doc):
             for raw in _extract_metric_names(expr):
                 normalized = _normalize_metric_name(raw)
-                if normalized not in EMITTED_METRICS:
+                if normalized not in DASHBOARD_ALLOWED_METRICS:
                     violations.append(
                         f"{filename} rule {uid}: {raw!r} (normalized {normalized!r}) "
-                        f"not in EMITTED_METRICS"
+                        f"not in EMITTED_METRICS ∪ _EXPORTER_METRICS"
                     )
     assert not violations, "Alert rule metric drift:\n" + "\n".join(violations)
 
@@ -912,3 +988,30 @@ def test_required_capture_alert_rules_exist():
                     found.add(uid)
     missing = _REQUIRED_ALERT_UIDS - found
     assert not missing, f"Missing required alert rule uids: {sorted(missing)}"
+    missing_kb = _REQUIRED_KB_ALERT_UIDS - found
+    assert not missing_kb, f"Missing required knowledge-health alert uids: {sorted(missing_kb)}"
+
+
+# ---------------------------------------------------------------------------
+# Test 12: Knowledge-health exporter metrics must be source-backed.
+#
+# Every entry in _EXPORTER_METRICS must appear as a quoted string literal in
+# scripts/hippo-metrics-exporter.py — the same accountability Test 8 enforces
+# for OTel instruments, applied to the exporter's hand-rolled exposition.
+# ---------------------------------------------------------------------------
+
+
+def test_exporter_metrics_are_source_backed():
+    """_EXPORTER_METRICS entries must exist in the exporter source."""
+    assert _EXPORTER_SCRIPT.exists(), (
+        f"Knowledge-health exporter script missing: {_EXPORTER_SCRIPT}. "
+        "Restore it or prune _EXPORTER_METRICS."
+    )
+    source = _EXPORTER_SCRIPT.read_text()
+    not_backed = sorted(name for name in _EXPORTER_METRICS if f'"{name}"' not in source)
+    assert not not_backed, (
+        "The following _EXPORTER_METRICS entries are NOT declared in "
+        f"{_EXPORTER_SCRIPT.name}:\n" + "\n".join(f"  {name}" for name in not_backed)
+        + "\n\nEither the registry name is stale, or the exporter no longer "
+        "emits this metric (check the registry block near the top of the script)."
+    )
