@@ -3,7 +3,7 @@ members = ["crates/hippo-core", "crates/hippo-daemon"]
 resolver = "3"
 
 [workspace.package]
-version = "0.31.2"
+version = "0.32.0"
 edition = "2024"
 license = "MIT"
 

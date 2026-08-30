@@ -349,8 +349,7 @@ def test_all_referenced_metrics_are_allowed():
         "that are NOT in the EMITTED_METRICS ∪ _EXPORTER_METRICS allow-list in "
         "this test file.\n"
         "Update the dashboard to use the correct metric name, or add the "
-        "instrument and update EMITTED_METRICS / _EXPORTER_METRICS.\n\n"
-        + "\n".join(violations)
+        "instrument and update EMITTED_METRICS / _EXPORTER_METRICS.\n\n" + "\n".join(violations)
     )
 
 
@@ -1011,7 +1010,8 @@ def test_exporter_metrics_are_source_backed():
     not_backed = sorted(name for name in _EXPORTER_METRICS if f'"{name}"' not in source)
     assert not not_backed, (
         "The following _EXPORTER_METRICS entries are NOT declared in "
-        f"{_EXPORTER_SCRIPT.name}:\n" + "\n".join(f"  {name}" for name in not_backed)
+        f"{_EXPORTER_SCRIPT.name}:\n"
+        + "\n".join(f"  {name}" for name in not_backed)
         + "\n\nEither the registry name is stale, or the exporter no longer "
         "emits this metric (check the registry block near the top of the script)."
     )
