@@ -17,7 +17,7 @@ For an architectural overview of what each tool does, see [`architecture.md`](ar
 
 ## Doctor
 
-`hippo doctor` runs ten checks in under 2 seconds. Each emits one of `[OK]`, `[WW]` (warning), `[!!]` (failure), or `[--]` (informational, e.g., "no rows ever"). Exit code is the count of `[!!]` failures.
+`hippo doctor` runs its full check suite in under 2 seconds. Each emits one of `[OK]`, `[WW]` (warning), `[!!]` (failure), or `[--]` (informational, e.g., "no rows ever"). Exit code is the count of `[!!]` failures.
 
 Use `--explain` to get CAUSE / FIX / DOC per failure. The DOC link points back into this directory.
 

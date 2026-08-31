@@ -283,7 +283,7 @@ groups:
             model:
               datasource: { type: prometheus, uid: prometheus }
               editorMode: code
-              expr: increase(hippo_kb_stranded_hours{window="30d"}[7d])
+              expr: delta(hippo_kb_stranded_hours{window="30d"}[7d])
               instant: true
               range: false
               refId: A
@@ -461,7 +461,7 @@ groups:
             model:
               datasource: { type: prometheus, uid: prometheus }
               editorMode: code
-              expr: sum(increase(hippo_kb_push_fires_total{tapped="useful"}[7d]))
+              expr: sum(delta(hippo_kb_push_fires{tapped="useful"}[7d]))
               instant: true
               range: false
               refId: A
@@ -504,7 +504,7 @@ groups:
             model:
               datasource: { type: prometheus, uid: prometheus }
               editorMode: code
-              expr: hippo_kb_epitaphs_total{confirmed="no"} / clamp_min(sum(hippo_kb_epitaphs_total), 1)
+              expr: hippo_kb_epitaphs{confirmed="no"} / clamp_min(sum(hippo_kb_epitaphs), 1)
               instant: true
               range: false
               refId: A

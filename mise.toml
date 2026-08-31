@@ -900,6 +900,7 @@ for label in \
   com.hippo.brain \
   com.hippo.watchdog \
   com.hippo.probe \
+  com.hippo.metrics-exporter \
   com.hippo.claude-session-watcher \
   com.hippo.gh-poll \
   com.hippo.opencode-poll \
@@ -931,6 +932,7 @@ for label in \
   com.hippo.brain \
   com.hippo.watchdog \
   com.hippo.probe \
+  com.hippo.metrics-exporter \
   com.hippo.claude-session-watcher \
   com.hippo.gh-poll \
   com.hippo.opencode-poll \
@@ -966,6 +968,7 @@ echo "Unloading LaunchAgents..."
 launchctl bootout "$DOMAIN" ~/Library/LaunchAgents/com.hippo.omlx.plist 2>/dev/null && echo "  Unloaded com.hippo.omlx" || echo "  com.hippo.omlx not loaded"
 launchctl bootout "$DOMAIN" ~/Library/LaunchAgents/com.hippo.daemon.plist 2>/dev/null && echo "  Unloaded com.hippo.daemon" || echo "  com.hippo.daemon not loaded"
 launchctl bootout "$DOMAIN" ~/Library/LaunchAgents/com.hippo.brain.plist 2>/dev/null && echo "  Unloaded com.hippo.brain" || echo "  com.hippo.brain not loaded"
+launchctl bootout "$DOMAIN" ~/Library/LaunchAgents/com.hippo.metrics-exporter.plist 2>/dev/null && echo "  Unloaded com.hippo.metrics-exporter" || echo "  com.hippo.metrics-exporter not loaded"
 
 echo "Killing all hippo processes (SIGKILL)..."
 pkill -9 -f '/opt/homebrew/.*/omlx serve' 2>/dev/null && echo "  Killed oMLX serve processes" || echo "  No oMLX serve processes found"
@@ -973,6 +976,7 @@ pkill -9 -f 'hippo.*(daemon|send-event)' 2>/dev/null && echo "  Killed daemon pr
 pkill -9 -f 'hippo ingest claude-session' 2>/dev/null && echo "  Killed session tailers" || echo "  No session tailers found"
 pkill -9 -f 'hippo-brain' 2>/dev/null && echo "  Killed brain processes" || echo "  No brain processes found"
 pkill -9 -f 'hippo-mcp' 2>/dev/null && echo "  Killed MCP servers" || echo "  No MCP servers found"
+pkill -9 -f 'hippo-metrics-exporter' 2>/dev/null && echo "  Killed metrics exporter" || echo "  No metrics exporter found"
 
 echo "Cleaning up socket..."
 rm -f ~/.local/share/hippo/daemon.sock /tmp/hippo-daemon.sock
@@ -1653,22 +1657,15 @@ run = "python3 scripts/hippo-metrics-exporter.py"
 
 [tasks."metrics:install"]
 description = "Install + bootstrap the com.hippo.metrics-exporter LaunchAgent"
-run = """
-set -euo pipefail
-python3 - << 'PY'
-import pathlib, os
-tpl = open("launchd/com.hippo.metrics-exporter.plist").read()
-home = str(pathlib.Path.home())
-out = tpl.replace("__REPO_DIR__", os.getcwd()).replace("__HOME__", home).replace("__DATA_DIR__", f"{home}/.local/share/hippo")
-dst = pathlib.Path.home() / "Library/LaunchAgents/com.hippo.metrics-exporter.plist"
-dst.write_text(out)
-print("installed:", dst)
-PY
-launchctl bootout gui/$(id -u)/com.hippo.metrics-exporter 2>/dev/null || true
-launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.hippo.metrics-exporter.plist
-echo "bootstrapped com.hippo.metrics-exporter"
-"""
+# The exporter plist is installed by `hippo daemon install` alongside every
+# other LaunchAgent, so it uses the same placeholder substitution and the same
+# bootout/bootstrap cycle. Re-templating it here would duplicate install.rs and
+# drift from it.
+run = "hippo daemon install --force"
 
 [tasks."otel:restart"]
 description = "Recreate Prometheus + Grafana to reload otel/ provisioning (scrape jobs, dashboards, alerts)"
-run = "docker compose -f otel/docker-compose.yml up -d prometheus grafana"
+# --force-recreate is required: `up -d` is a no-op for a running container whose
+# config is unchanged, and the provisioning files are bind-mounted, so without
+# it a dashboard or alert-rule edit is never picked up.
+run = "docker compose -f otel/docker-compose.yml up -d --force-recreate prometheus grafana"

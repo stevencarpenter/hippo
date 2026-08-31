@@ -7,7 +7,7 @@
     <key>ProgramArguments</key>
     <array>
         <string>/usr/bin/python3</string>
-        <string>__REPO_DIR__/scripts/hippo-metrics-exporter.py</string>
+        <string>__SCRIPTS_DIR__/hippo-metrics-exporter.py</string>
     </array>
     <key>EnvironmentVariables</key>
     <dict>

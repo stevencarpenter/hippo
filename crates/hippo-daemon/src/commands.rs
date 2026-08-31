@@ -1288,6 +1288,14 @@ pub async fn handle_doctor(config: &HippoConfig, explain: bool) -> Result<()> {
         println!("[--] {:<29}  no home dir", "native-msg manifest");
     }
 
+    // Metrics exporter liveness (optional service — only installed with OTel).
+    if let Some(home) = dirs::home_dir() {
+        let exporter_plist = home.join("Library/LaunchAgents/com.hippo.metrics-exporter.plist");
+        fail_count += check_metrics_exporter(&exporter_plist, METRICS_EXPORTER_ADDR, explain);
+    } else {
+        println!("[--] {:<29}  no home dir", "metrics exporter");
+    }
+
     if fail_count > 0 {
         std::process::exit(fail_count as i32);
     }
@@ -3339,6 +3347,72 @@ fn check_watchdog_heartbeat(db: &rusqlite::Connection, explain: bool) -> u32 {
             }
         },
     }
+}
+
+// ─── Metrics-exporter liveness ──────────────────────────────────────────────
+
+/// Default listen address of the knowledge-health Prometheus exporter
+/// (`scripts/hippo-metrics-exporter.py`, LaunchAgent `com.hippo.metrics-exporter`).
+pub const METRICS_EXPORTER_ADDR: &str = "127.0.0.1:9835";
+
+/// Connect budget for the exporter liveness probe. Doctor's whole run has a
+/// 2 s wall-clock budget, so this must be a hard, short bound — a loopback
+/// connect either completes in microseconds or the service is not there.
+const METRICS_EXPORTER_CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(500);
+
+/// Doctor check: the metrics exporter LaunchAgent is alive if it is installed.
+///
+/// The exporter is optional — it is only installed alongside the opt-in OTel
+/// stack. When its plist is absent this reports `[--]` and returns 0, so users
+/// who never enabled observability are not failed. When the plist IS present
+/// but nothing answers on `addr`, the job has died silently (the exit-78 class
+/// of failure) and this returns 1.
+///
+/// `plist_path` and `addr` are injectable for tests.
+pub fn check_metrics_exporter(plist_path: &std::path::Path, addr: &str, explain: bool) -> u32 {
+    const LABEL: &str = "metrics exporter";
+
+    if !plist_path.exists() {
+        println!("[--] {:<29}  not installed (optional)", LABEL);
+        return 0;
+    }
+
+    if metrics_exporter_responds(addr) {
+        println!("[OK] {:<29}  listening on {}", LABEL, addr);
+        return 0;
+    }
+
+    println!(
+        "[!!] {:<29}  installed but not listening on {}",
+        LABEL, addr
+    );
+    if explain {
+        println!(
+            "     CAUSE:  com.hippo.metrics-exporter is installed but nothing answers on {addr} — the job died or never started"
+        );
+        println!(
+            "     FIX:    launchctl kickstart -k gui/$(id -u)/com.hippo.metrics-exporter; check ~/.local/share/hippo/metrics-exporter.log"
+        );
+        println!("     DOC:    docs/capture/operator-runbook.md");
+    }
+    1
+}
+
+/// True if a TCP connection to `addr` completes within the connect budget.
+///
+/// A plain connect is used rather than an HTTP `GET /healthz` because it
+/// cannot block on a slow or wedged response body: `connect_timeout` is a
+/// hard bound, whereas a read would need its own timeout plumbing for the
+/// same signal (the socket being accepted).
+fn metrics_exporter_responds(addr: &str) -> bool {
+    use std::net::ToSocketAddrs;
+
+    let Ok(mut candidates) = addr.to_socket_addrs() else {
+        return false;
+    };
+    candidates.any(|sa| {
+        std::net::TcpStream::connect_timeout(&sa, METRICS_EXPORTER_CONNECT_TIMEOUT).is_ok()
+    })
 }
 
 /// Informational doctor line: how many alarms the watchdog has auto-resolved
@@ -5705,5 +5779,44 @@ replacement = "***"
             ),
             "Firefox not running"
         );
+    }
+
+    // ── metrics exporter liveness ──────────────────────────────────────────
+
+    #[test]
+    fn metrics_exporter_absent_plist_is_skip() {
+        let tmp = tempdir().unwrap();
+        let plist = tmp.path().join("com.hippo.metrics-exporter.plist");
+        // Not installed — optional service, never a doctor failure.
+        assert_eq!(check_metrics_exporter(&plist, "127.0.0.1:9", false), 0);
+    }
+
+    #[test]
+    fn metrics_exporter_installed_but_dead_port_fails() {
+        let tmp = tempdir().unwrap();
+        let plist = tmp.path().join("com.hippo.metrics-exporter.plist");
+        std::fs::write(&plist, "<plist/>").unwrap();
+        // Bind and immediately drop a listener to obtain a port nothing owns.
+        let dead_port = {
+            let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            l.local_addr().unwrap().port()
+        };
+        let started = std::time::Instant::now();
+        assert_eq!(
+            check_metrics_exporter(&plist, &format!("127.0.0.1:{dead_port}"), true),
+            1
+        );
+        // Must stay well inside doctor's 2 s total budget.
+        assert!(started.elapsed() < std::time::Duration::from_secs(1));
+    }
+
+    #[test]
+    fn metrics_exporter_installed_and_listening_is_ok() {
+        let tmp = tempdir().unwrap();
+        let plist = tmp.path().join("com.hippo.metrics-exporter.plist");
+        std::fs::write(&plist, "<plist/>").unwrap();
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap().to_string();
+        assert_eq!(check_metrics_exporter(&plist, &addr, false), 0);
     }
 }
