@@ -22,7 +22,7 @@ groups:
             model:
               datasource: { type: prometheus, uid: prometheus }
               editorMode: code
-              expr: min_over_time(hippo_kb_recall_up[5m])
+              expr: min_over_time(hippo_kb_recall_up[5m]) and on() max_over_time(up{job="hippo-knowledge-health"}[5m]) == 1
               instant: true
               range: false
               refId: A
@@ -39,20 +39,70 @@ groups:
               expression: A
               refId: C
               type: threshold
-        noDataState: Alerting
+        noDataState: OK
         execErrState: Error
         for: 5m
         annotations:
           summary: /ask recall path failing — golden questions not answered
           description: >-
             At least one golden question failed to round-trip brain /ask with a
-            non-empty answer for 5+ minutes (or the exporter itself is down —
-            noDataState is Alerting on purpose). Classify with
-            hippo_kb_recall_failures_total by reason: brain_down, llm_timeout,
-            http_error_*, empty_answer. Check brain logs and the inference server.
+            non-empty answer for 5+ minutes, while the exporter scrape target
+            itself was up. Classify with hippo_kb_recall_failures_total by
+            reason: brain_down, llm_timeout, http_error_*, empty_answer. Check
+            brain logs and the inference server. If hippo_kb_exporter_down is
+            also firing instead, this is the disabled-exporter state
+            ([telemetry] enabled = false), not a recall outage.
         labels:
           severity: critical
           component: brain
+        isPaused: false
+
+      - uid: hippo_kb_exporter_down
+        title: Knowledge-health exporter not scraping
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 1200
+              to: 0
+            datasourceUid: prometheus
+            model:
+              datasource: { type: prometheus, uid: prometheus }
+              editorMode: code
+              expr: max_over_time(up{job="hippo-knowledge-health"}[10m])
+              instant: true
+              range: false
+              refId: A
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              conditions:
+                - evaluator: { params: [1], type: lt }
+                  operator: { type: and }
+                  query: { params: [C] }
+                  reducer: { params: [], type: last }
+                  type: query
+              datasource: { type: __expr__, uid: __expr__ }
+              expression: A
+              refId: C
+              type: threshold
+        noDataState: OK
+        execErrState: Error
+        for: 10m
+        annotations:
+          summary: Exporter target 127.0.0.1:9835 not answering for 10+ minutes
+          description: >-
+            The hippo-knowledge-health scrape target is down — either the
+            exporter LaunchAgent died or it was never installed. The exporter
+            is gated on [telemetry] enabled = true in ~/.config/hippo/config.toml;
+            if you run the OTel Docker stack without that flag, this alert is
+            expected (pause it or set enabled = true and run
+            `hippo daemon install --force`). Otherwise check
+            `launchctl list com.hippo.metrics-exporter` and
+            ~/.local/share/hippo/metrics-exporter.log.
+        labels:
+          severity: warning
+          component: exporter
         isPaused: false
 
       - uid: hippo_kb_recall_slow
@@ -92,7 +142,8 @@ groups:
           description: >-
             Golden-question round-trips average >15s — degraded inference server
             or retrieval slowness. Recall under stress is the product; this is
-            the recall SLO.
+            the recall SLO. Latency is emitted only for successful probes, so
+            fast-failing (brain_down) round-trips do not drag the average down.
         labels:
           severity: warning
           component: brain

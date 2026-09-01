@@ -71,8 +71,9 @@ Alert rules provision from every file in `otel/grafana/alerting/` on stack start
 
 | Alert | Fires when | `for` | Severity |
 |-------|------------|-------|----------|
-| Recall path down | `min_over_time(hippo_kb_recall_up[5m]) < 1` | 5m | critical |
-| Recall path degraded | `avg_over_time(hippo_kb_recall_latency_milliseconds[15m]) > 15000` | 15m | warning |
+| Recall path down | `min_over_time(hippo_kb_recall_up[5m]) < 1` while the exporter scrape target is up | 5m | critical |
+| Exporter not scraping | `up{job="hippo-knowledge-health"} < 1` for 10m | 10m | warning |
+| Recall path degraded | `avg_over_time(hippo_kb_recall_latency_milliseconds[15m]) > 15000` (successful probes only) | 15m | warning |
 | Recall probe failure burst | `sum(increase(hippo_kb_recall_failures_total[1h])) > 3` | 5m | warning |
 | Capture alarm backlog | `hippo_kb_capture_alarms_active` above threshold | 4h | warning |
 | Capture stale | `max(hippo_kb_capture_source_last_event_age_milliseconds)` above threshold | 10m | warning |
@@ -84,7 +85,7 @@ Alert rules provision from every file in `otel/grafana/alerting/` on stack start
 
 Two further rules (`hippo_kb_epitaph_unconfirmed`, `hippo_kb_push_useful_floor`) ship `isPaused: true` — they target snowball metrics whose backing tables do not exist yet. Unpause them when the feature lands.
 
-**Recall down is the one exception to `noDataState: OK`:** `hippo_kb_recall_down` uses `noDataState: Alerting`, deliberately, so an exporter that has died also pages. Every other rule stays `noDataState: OK`.
+All rules use `noDataState: OK`. Dead-exporter detection moved out of `hippo_kb_recall_down` (which previously used `noDataState: Alerting` for that) into the dedicated `hippo_kb_exporter_down` rule on `up{job="hippo-knowledge-health"}` — that keeps the OTel-stack-without-exporter deployment (`[telemetry] enabled = false`) from paging critical, while still surfacing the dead-exporter case as a warning.
 
 All capture rules use `noDataState: OK` so a stack with telemetry disabled does not page. When OTel is enabled but a rule has no series, treat that as "instrument not emitting" rather than healthy silence.
 

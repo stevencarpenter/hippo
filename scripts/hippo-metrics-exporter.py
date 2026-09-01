@@ -194,8 +194,8 @@ def base_name(p: object) -> str:
 
 
 def canon(name: str) -> str:
-    """Normalized identity: collapse -/_/space variants."""
-    return re.sub(r"[-_\s]+", "", name)
+    """Normalized identity: collapse dot/-/_/space variants."""
+    return re.sub(r"[-._\s]+", "", name.lower())
 
 
 _SECRET_PATTERNS = (
@@ -318,11 +318,27 @@ class Registry:
 
 def collect_db(reg: Registry, now_ms: int, db_path: Path | None = None) -> None:
     path = db_path or DB_PATH
-    reg.gauge(
-        "hippo_kb_db_size_bytes",
-        path.stat().st_size,
-        help="On-disk size of hippo.db (main database file, excluding WAL).",
-    )
+    try:
+        size = path.stat().st_size
+    except OSError as exc:
+        # TOCTOU unlink or permission error — surface as collector error, don't
+        # raise before the outer db_snapshot try/except (and handle direct test
+        # callers that bypass db_snapshot's exists() guard).
+        bump(
+            "hippo_kb_collector_errors_total",
+            {"name": "db_size"},
+            help="Cumulative metric-family computation failures by family name, "
+                 "since exporter start.",
+        )
+        print(f"[exporter] db size stat failed for {path}: {exc}", flush=True)
+        # Continue without the size gauge; still try to open the DB.
+        size = None
+    if size is not None:
+        reg.gauge(
+            "hippo_kb_db_size_bytes",
+            size,
+            help="On-disk size of hippo.db (main database file, excluding WAL).",
+        )
     conn = _open_ro(path)
     try:
         reg.family("events", lambda: _f_events(reg, conn, now_ms))
@@ -772,7 +788,14 @@ def _run_probe_inner() -> None:
 
 def collect_probe(reg: Registry) -> None:
     """Serve cached probe state immediately; refresh in a background thread
-    when stale so the /metrics scrape never blocks on the LLM round-trip."""
+    when stale so the /metrics scrape never blocks on the LLM round-trip.
+
+    Burst scrapes (Prometheus + /metrics.json) may call this concurrently;
+    the try-acquire/release + daemon thread pattern ensures at most one probe
+    is in flight — `run_probe` re-checks the TTL and does its own
+    `tryAcquire` on `_probe_lock`, so concurrent scrapes don't queue burst
+    threads.
+    """
     now = time.time()
     stale = now - probe_state["ts"] >= PROBE_TTL_S
     if stale and _probe_lock.acquire(blocking=False):
@@ -787,8 +810,14 @@ def collect_probe(reg: Registry) -> None:
         lbl = {"question": s["question"][:48]}
         reg.gauge("hippo_kb_recall_ok", 1.0 if s["ok"] else 0.0, lbl,
                   help="Per-golden-question recall probe result.")
-        reg.gauge("hippo_kb_recall_latency_milliseconds", s["ms"], lbl,
-                  help="Per-golden-question /ask round-trip latency.")
+        if s["ok"]:
+            # Latency is emitted only for successful round-trips: a failed probe
+            # (brain_down = connection refused) records millisecond-scale "latency"
+            # that would drag the recall-slow SLO average down and mask a genuinely
+            # slow-when-it-succeeds inference server.
+            reg.gauge("hippo_kb_recall_latency_milliseconds", s["ms"], lbl,
+                      help="Per-golden-question /ask round-trip latency (successful "
+                           "probes only).")
     reg.gauge("hippo_kb_recall_probe_timestamp_seconds", st["ts"],
               help="Unix time of the last recall probe run.")
 
@@ -801,15 +830,41 @@ def collect_probe(reg: Registry) -> None:
 def collect_canary(reg: Registry) -> None:
     if not CANARY_FILE.exists():
         return
-    doc = json.loads(CANARY_FILE.read_text())
-    for store, found in doc.get("stores", {}).items():
+    try:
+        doc = json.loads(CANARY_FILE.read_text())
+    except (OSError, json.JSONDecodeError, ValueError) as exc:
+        bump(
+            "hippo_kb_collector_errors_total",
+            {"name": "canary"},
+            help="Cumulative metric-family computation failures by family name, "
+                 "since exporter start.",
+        )
+        print(f"[exporter] canary read failed (torn write?): {exc}", flush=True)
+        return
+    stores = doc.get("stores")
+    if not isinstance(stores, dict):
+        # Malformed drill output: record the failure rather than emitting a
+        # scrape with no canary samples and no signal.
+        bump(
+            "hippo_kb_collector_errors_total",
+            {"name": "canary"},
+            help="Cumulative metric-family computation failures by family name, "
+                 "since exporter start.",
+        )
+        print(f"[exporter] canary file has non-dict 'stores': {type(stores).__name__}",
+              flush=True)
+        return
+    for store, found in stores.items():
         reg.gauge("hippo_kb_canary_found", 1.0 if found else 0.0, {"store": store},
                   help="Canary secrets found per store by the last canary leak drill "
                        "(>0 anywhere = leak).")
     ts = doc.get("timestamp")
     if ts:
-        reg.gauge("hippo_kb_canary_drill_timestamp_seconds", float(ts),
-                  help="Unix time of the last canary drill.")
+        try:
+            reg.gauge("hippo_kb_canary_drill_timestamp_seconds", float(ts),
+                      help="Unix time of the last canary drill.")
+        except (TypeError, ValueError):
+            pass
 
 
 # ---------------------------------------------------------------------------
@@ -824,7 +879,9 @@ def _esc(v: str) -> str:
 def _fmt(v: float) -> str:
     if v == int(v) and abs(v) < 1e15:
         return str(int(v))
-    return repr(round(v, 3))
+    # Shortest-round-trip float exposition (repr): full precision for gauges
+    # like recall latency and stranded hours, and small increments survive.
+    return repr(v)
 
 
 def build_registry() -> Registry:

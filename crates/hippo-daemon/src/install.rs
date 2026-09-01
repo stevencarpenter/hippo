@@ -834,20 +834,34 @@ mod tests {
         let launchd_dir = repo_root.join("launchd");
         let shipped_scripts = repo_root.join("scripts");
 
-        let mut checked = 0;
+        // Explicit allowlist: every __SCRIPTS_DIR__ reference must be a known
+        // shipped script. A new reference without an allowlist entry fails
+        // loudly, and a removed reference doesn't silently reduce coverage.
+        let known_scripts: std::collections::HashSet<&str> =
+            ["hippo-metrics-exporter.py", "hippo-ingest-claude.py"]
+                .into_iter()
+                .collect();
+
+        let re =
+            regex::Regex::new(r#"__SCRIPTS_DIR__/([^<\s"']+)"#).expect("static regex is valid");
+        let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
         for entry in std::fs::read_dir(&launchd_dir).expect("read launchd/") {
             let path = entry.expect("dir entry").path();
             if path.extension().is_none_or(|e| e != "plist") {
                 continue;
             }
             let body = std::fs::read_to_string(&path).expect("read plist");
-            for fragment in body.split("__SCRIPTS_DIR__/").skip(1) {
-                let script_name = fragment
-                    .split('<')
-                    .next()
-                    .expect("split always yields one element")
-                    .trim();
-                let shipped = shipped_scripts.join(script_name);
+            for cap in re.captures_iter(&body) {
+                let script_name = cap[1].trim().to_string();
+                assert!(
+                    known_scripts.contains(script_name.as_str()),
+                    "{} references __SCRIPTS_DIR__/{}, which is not in the known-scripts allowlist {:?} — \
+                     add it to known_scripts if intentional",
+                    path.display(),
+                    script_name,
+                    known_scripts,
+                );
+                let shipped = shipped_scripts.join(&script_name);
                 assert!(
                     shipped.is_file(),
                     "{} references __SCRIPTS_DIR__/{}, but {} does not exist — \
@@ -856,16 +870,19 @@ mod tests {
                     script_name,
                     shipped.display(),
                 );
-                checked += 1;
+                seen.insert(script_name);
             }
         }
-        // Guard against the loop silently matching nothing (e.g. the plists
-        // move, or the placeholder is renamed) and the test passing vacuously.
-        assert!(
-            checked >= 2,
-            "expected at least the metrics-exporter and xcode-claude-ingest \
-             references, found {checked}"
-        );
+        // Every known script must be referenced at least once — guards against
+        // the loop silently matching nothing (plists moved / placeholder renamed)
+        // and against a known script being unreferenced.
+        for expected in &known_scripts {
+            assert!(
+                seen.contains(*expected),
+                "known script {expected} was not referenced by any plist — \
+                 expected at least one __SCRIPTS_DIR__/{expected} reference (seen: {seen:?})"
+            );
+        }
     }
 
     #[test]

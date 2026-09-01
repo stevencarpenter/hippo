@@ -3404,15 +3404,23 @@ pub fn check_metrics_exporter(plist_path: &std::path::Path, addr: &str, explain:
 /// cannot block on a slow or wedged response body: `connect_timeout` is a
 /// hard bound, whereas a read would need its own timeout plumbing for the
 /// same signal (the socket being accepted).
+///
+/// `addr` is resolved via `ToSocketAddrs`; only the first resolved address
+/// is probed, so the wall-clock cost is exactly one
+/// `METRICS_EXPORTER_CONNECT_TIMEOUT`. This also caps the doctor check at
+/// 500 ms of its 2 s budget when `localhost` resolves to multiple
+/// candidates (127.0.0.1 + ::1); the exporter binds only `127.0.0.1:9835`,
+/// so probing beyond the first candidate would be wasted latency anyway.
 fn metrics_exporter_responds(addr: &str) -> bool {
     use std::net::ToSocketAddrs;
 
     let Ok(mut candidates) = addr.to_socket_addrs() else {
         return false;
     };
-    candidates.any(|sa| {
-        std::net::TcpStream::connect_timeout(&sa, METRICS_EXPORTER_CONNECT_TIMEOUT).is_ok()
-    })
+    let Some(sa) = candidates.next() else {
+        return false;
+    };
+    std::net::TcpStream::connect_timeout(&sa, METRICS_EXPORTER_CONNECT_TIMEOUT).is_ok()
 }
 
 /// Informational doctor line: how many alarms the watchdog has auto-resolved
@@ -5796,16 +5804,11 @@ replacement = "***"
         let tmp = tempdir().unwrap();
         let plist = tmp.path().join("com.hippo.metrics-exporter.plist");
         std::fs::write(&plist, "<plist/>").unwrap();
-        // Bind and immediately drop a listener to obtain a port nothing owns.
-        let dead_port = {
-            let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-            l.local_addr().unwrap().port()
-        };
+        // Port 1 is reserved and never bound by a user process; unlike
+        // "bind 0 then drop" it doesn't race a re-bind between drop and probe.
+        let dead_addr = "127.0.0.1:1";
         let started = std::time::Instant::now();
-        assert_eq!(
-            check_metrics_exporter(&plist, &format!("127.0.0.1:{dead_port}"), true),
-            1
-        );
+        assert_eq!(check_metrics_exporter(&plist, dead_addr, true), 1);
         // Must stay well inside doctor's 2 s total budget.
         assert!(started.elapsed() < std::time::Duration::from_secs(1));
     }

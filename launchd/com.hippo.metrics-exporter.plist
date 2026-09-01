@@ -16,6 +16,8 @@
     </dict>
     <key>KeepAlive</key>
     <true/>
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
     <key>RunAtLoad</key>
     <true/>
     <key>StandardOutPath</key>
