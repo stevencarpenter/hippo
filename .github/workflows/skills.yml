@@ -1,0 +1,37 @@
+name: Skills CI
+
+on:
+  pull_request:
+    paths:
+      - "extension/claude-skill/**"
+      - "mise.toml"
+      - "scripts/check-claude-skills.sh"
+      - ".github/workflows/skills.yml"
+  push:
+    branches: [main]
+    paths:
+      - "extension/claude-skill/**"
+      - "mise.toml"
+      - "scripts/check-claude-skills.sh"
+      - ".github/workflows/skills.yml"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: Validate shipped Claude Code skills
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v6
+
+      # Guards against a skill being deleted while mise.toml still installs
+      # it — `install:skill` creates a dangling symlink and `mise run install`
+      # only warns, so this drift is otherwise silent (see PR #169).
+      - name: Check skill manifests and mise references
+        run: bash scripts/check-claude-skills.sh

@@ -215,6 +215,15 @@ pub enum DaemonAction {
         /// Path to the brain project directory (defaults to XDG_DATA_HOME/hippo-brain or ~/.local/share/hippo-brain)
         #[arg(long)]
         brain_dir: Option<std::path::PathBuf>,
+        /// Path to record for the `hippo` binary in the generated plists.
+        ///
+        /// Defaults to $HIPPO_BIN, then to the running executable. Set this
+        /// when the binary is reached through a stable symlink that should
+        /// outlive the file it currently points at (a nix profile path, for
+        /// example) — the default resolves symlinks and would pin the plists
+        /// to a path a later upgrade makes stale.
+        #[arg(long)]
+        binary_path: Option<std::path::PathBuf>,
     },
     /// Render and install the optional com.hippo.omlx LaunchAgent.
     ///

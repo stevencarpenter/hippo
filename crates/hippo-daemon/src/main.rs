@@ -214,10 +214,11 @@ async fn main() -> Result<()> {
             DaemonAction::Install {
                 force,
                 brain_dir: brain_dir_arg,
+                binary_path,
             } => {
                 let brain_dir = brain_dir_arg.unwrap_or_else(hippo_core::config::default_brain_dir);
 
-                let vars = install::detect_vars(&brain_dir)?;
+                let vars = install::detect_vars(&brain_dir, binary_path)?;
 
                 println!("Installing LaunchAgents...");
                 println!("  hippo binary: {}", vars.hippo_bin.display());
@@ -764,7 +765,7 @@ async fn main() -> Result<()> {
                 // by the template but required to materialise PlistVars; the
                 // shared canonical resolver is fine.
                 let brain_dir = hippo_core::config::default_brain_dir();
-                let vars = install::detect_vars(&brain_dir)?;
+                let vars = install::detect_vars(&brain_dir, None)?;
                 let template = include_str!("../../../launchd/com.hippo.omlx.plist");
                 install::install_plist("com.hippo.omlx", template, &vars, force)?;
             }

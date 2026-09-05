@@ -130,6 +130,11 @@ jobs:
           cp -r scripts hippo-brain-release/brain/
           cp -r shell hippo-brain-release/brain/
 
+          # Ship the Claude Code skills so release installs get them too.
+          # Without this they exist only in a source checkout, which is how
+          # they went three months unshipped after PR #169.
+          cp -r extension/claude-skill hippo-brain-release/brain/
+
           # Create the tarball (single top-level entry: brain/)
           tar -czf "${ARTIFACT_NAME}" -C hippo-brain-release brain
 

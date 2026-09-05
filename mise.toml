@@ -1307,18 +1307,54 @@ description = "Build daemon with OTel instrumentation (release)"
 run = "cargo build -p hippo-daemon --features otel --release"
 
 [tasks."install:skill"]
-description = "Install the using-hippo-brain Claude Code skill into ~/.claude/skills/"
+description = "Install every shipped Claude Code skill into ~/.claude/skills/"
 run = """
 #!/usr/bin/env bash
+# Symlinks each skill under extension/claude-skill/ into ~/.claude/skills/.
+#
+# A destination this checkout does not already own is left alone rather than
+# replaced: the previous version unconditionally `rm -rf`'d the target, which
+# silently destroyed skills managed by an external dotfiles setup. Refreshing
+# our own links stays automatic; anything else is the user's to resolve.
 set -euo pipefail
-SKILL_SRC="$(pwd)/extension/claude-skill/using-hippo-brain"
-SKILL_DST="$HOME/.claude/skills/using-hippo-brain"
-mkdir -p "$(dirname "$SKILL_DST")"
-if [ -L "$SKILL_DST" ] || [ -e "$SKILL_DST" ]; then
-    rm -rf "$SKILL_DST"
-fi
-ln -s "$SKILL_SRC" "$SKILL_DST"
-echo "Installed skill: $SKILL_DST -> $SKILL_SRC"
+SKILL_ROOT="$(pwd)/extension/claude-skill"
+DEST_ROOT="$HOME/.claude/skills"
+mkdir -p "$DEST_ROOT"
+
+installed=0
+skipped=0
+shopt -s nullglob
+for src in "$SKILL_ROOT"/*/; do
+    src="${src%/}"
+    name="$(basename "$src")"
+    dst="$DEST_ROOT/$name"
+
+    if [ -e "$dst" ] || [ -L "$dst" ]; then
+        # Ours to refresh only if it is a symlink already pointing into this
+        # checkout. A real directory, or a link elsewhere, belongs to someone
+        # else. A dangling link is ours to clear: it points nowhere.
+        owned=0
+        if [ -L "$dst" ]; then
+            current="$(readlink "$dst")"
+            case "$current" in
+                "$SKILL_ROOT"/*) owned=1 ;;
+            esac
+            [ -e "$dst" ] || owned=1
+        fi
+        if [ "$owned" -eq 0 ]; then
+            echo "  skip: $name is managed elsewhere ($dst)"
+            skipped=$((skipped + 1))
+            continue
+        fi
+        rm -rf "$dst"
+    fi
+
+    ln -s "$src" "$dst"
+    echo "  installed: $name -> $dst"
+    installed=$((installed + 1))
+done
+
+echo "Skills: $installed installed, $skipped skipped"
 """
 
 # ── Bench (model benchmark; separate data root, not normal hippo execution) ──

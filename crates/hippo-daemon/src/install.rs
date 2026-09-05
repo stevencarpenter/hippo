@@ -48,9 +48,34 @@ pub struct PlistVars {
     pub auto_memory_poll_interval_secs: u64,
 }
 
+/// Resolve the `hippo` path to record in the LaunchAgent plists.
+///
+/// Precedence: the explicit argument, then `HIPPO_BIN`, then the running
+/// executable.
+///
+/// `current_exe` resolves symlinks, so it reports the real file rather than
+/// the path used to invoke it. That is wrong for any install whose binary
+/// lives behind a stable symlink into content-addressed or versioned storage
+/// — a nix profile, a Homebrew Cellar path, a versioned release directory.
+/// The plists would pin the *current* build's real path, and the next upgrade
+/// leaves them pointing at a path that is about to be collected. An override
+/// lets the caller record the stable path it wants launchd to follow.
+fn resolve_hippo_bin(explicit: Option<PathBuf>) -> Result<PathBuf> {
+    if let Some(path) = explicit {
+        return Ok(path);
+    }
+    if let Some(path) = std::env::var_os("HIPPO_BIN").filter(|v| !v.is_empty()) {
+        return Ok(PathBuf::from(path));
+    }
+    std::env::current_exe().context("cannot determine hippo binary path")
+}
+
 /// Auto-detect system paths for plist variable substitution.
-pub fn detect_vars(brain_dir: &Path) -> Result<PlistVars> {
-    let hippo_bin = std::env::current_exe().context("cannot determine hippo binary path")?;
+///
+/// `hippo_bin_override` wins over `HIPPO_BIN` and over the running
+/// executable; see [`resolve_hippo_bin`].
+pub fn detect_vars(brain_dir: &Path, hippo_bin_override: Option<PathBuf>) -> Result<PlistVars> {
+    let hippo_bin = resolve_hippo_bin(hippo_bin_override)?;
     let uv_bin = which("uv").unwrap_or_else(|| PathBuf::from("/usr/local/bin/uv"));
     let home = dirs::home_dir().context("cannot determine home directory")?;
     let path = std::env::var("PATH").unwrap_or_default();
@@ -686,8 +711,36 @@ mod tests {
     }
 
     #[test]
+    fn test_resolve_hippo_bin_prefers_explicit_over_env() {
+        // Explicit argument wins even when HIPPO_BIN is set. Uses the env var
+        // only to prove precedence; see the serial note on the env test below.
+        let explicit = PathBuf::from("/stable/profile/bin/hippo");
+        let resolved = resolve_hippo_bin(Some(explicit.clone())).unwrap();
+        assert_eq!(resolved, explicit);
+    }
+
+    #[test]
+    fn test_resolve_hippo_bin_falls_back_to_current_exe() {
+        // No explicit path and no HIPPO_BIN: the running executable, which is
+        // the historical behaviour every existing install depends on.
+        let resolved = resolve_hippo_bin(None).unwrap();
+        assert_eq!(resolved, std::env::current_exe().unwrap());
+    }
+
+    #[test]
+    fn test_detect_vars_accepts_binary_override() {
+        let stable = PathBuf::from("/etc/profiles/per-user/someone/bin/hippo");
+        let vars = detect_vars(Path::new("/fake/brain"), Some(stable.clone())).unwrap();
+        assert_eq!(
+            vars.hippo_bin, stable,
+            "the override must reach the plist variables verbatim, not be \
+             canonicalized the way current_exe would"
+        );
+    }
+
+    #[test]
     fn test_detect_vars_finds_current_exe() {
-        let vars = detect_vars(Path::new("/fake/brain")).unwrap();
+        let vars = detect_vars(Path::new("/fake/brain"), None).unwrap();
         assert!(vars.hippo_bin.exists() || vars.hippo_bin.to_string_lossy().contains("hippo"));
         assert!(!vars.home.as_os_str().is_empty());
         assert!(!vars.path.is_empty());

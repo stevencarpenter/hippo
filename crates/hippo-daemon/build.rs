@@ -4,10 +4,19 @@ fn main() {
     // Base version from Cargo.toml workspace (set by Cargo as env var for build scripts)
     let base = std::env::var("CARGO_PKG_VERSION").unwrap();
 
-    let version = git_describe_version(&base);
+    // A hermetic builder (nix, a source tarball, any sandbox without .git)
+    // can state the version directly rather than letting `git describe` fail
+    // into "-dev+unknown". `hippo doctor` compares CLI, daemon, and brain
+    // versions for equality, so an unknown marker there reads as a permanent
+    // version mismatch.
+    let version = match std::env::var("HIPPO_VERSION_FULL") {
+        Ok(explicit) if !explicit.trim().is_empty() => explicit,
+        _ => git_describe_version(&base),
+    };
     println!("cargo:rustc-env=HIPPO_VERSION_FULL={version}");
 
-    // Rebuild when git state changes
+    // Rebuild when the explicit version or git state changes
+    println!("cargo:rerun-if-env-changed=HIPPO_VERSION_FULL");
     println!("cargo:rerun-if-changed=../../.git/HEAD");
     println!("cargo:rerun-if-changed=../../.git/refs/");
 }
