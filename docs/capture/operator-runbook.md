@@ -17,7 +17,7 @@ For an architectural overview of what each tool does, see [`architecture.md`](ar
 
 ## Doctor
 
-`hippo doctor` runs ten checks in under 2 seconds. Each emits one of `[OK]`, `[WW]` (warning), `[!!]` (failure), or `[--]` (informational, e.g., "no rows ever"). Exit code is the count of `[!!]` failures.
+`hippo doctor` runs its full check suite in under 2 seconds. Each emits one of `[OK]`, `[WW]` (warning), `[!!]` (failure), or `[--]` (informational, e.g., "no rows ever"). Exit code is the count of `[!!]` failures.
 
 Use `--explain` to get CAUSE / FIX / DOC per failure. The DOC link points back into this directory.
 
@@ -221,6 +221,12 @@ mise run start && hippo doctor && hippo alarms list
 ```
 
 The script is idempotent (a second `--apply` deletes 0) and verifies `PRAGMA foreign_key_check` is clean before committing. Post-run, `knowledge_nodes` count == `knowledge_vectors` count and the I-16 query returns 0.
+
+## Telemetry / metrics exporter
+
+The knowledge-health exporter (`com.hippo.metrics-exporter`, `scripts/hippo-metrics-exporter.py:1` on `127.0.0.1:9835`) is optional and gated on `[telemetry] enabled = true` in `~/.config/hippo/config.toml`. When disabled, `hippo daemon install` removes any stale `com.hippo.metrics-exporter.plist` so generic loaders (`mise run start`, which iterates known labels) cannot resurrect it after a config flip. This is intentional and differs from pre-`friday` behavior where a stale plist persisted until manually removed.
+
+Migration: if you previously relied on the stale plist surviving a `telemetry.enabled = false` flip, re-enable with `telemetry.enabled = true` then `hippo daemon install --force` and `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.hippo.metrics-exporter.plist`.
 
 ## Recovery: manual operations
 

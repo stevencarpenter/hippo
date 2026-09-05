@@ -237,6 +237,8 @@ async fn main() -> Result<()> {
                 let brain_was_loaded = install::service_is_loaded("com.hippo.brain");
                 let watchdog_was_loaded = install::service_is_loaded("com.hippo.watchdog");
                 let probe_was_loaded = install::service_is_loaded("com.hippo.probe");
+                let metrics_exporter_was_loaded =
+                    install::service_is_loaded("com.hippo.metrics-exporter");
                 let watcher_was_loaded =
                     install::service_is_loaded("com.hippo.claude-session-watcher");
                 let gh_poll_was_loaded = install::service_is_loaded("com.hippo.gh-poll");
@@ -253,6 +255,7 @@ async fn main() -> Result<()> {
                     || brain_was_loaded
                     || watchdog_was_loaded
                     || probe_was_loaded
+                    || metrics_exporter_was_loaded
                     || watcher_was_loaded
                     || gh_poll_was_loaded
                     || opencode_poll_was_loaded
@@ -293,6 +296,13 @@ async fn main() -> Result<()> {
                 if probe_was_loaded {
                     install::service_bootout(&domain, &launch_agents.join("com.hippo.probe.plist"));
                     println!("  Stopped probe");
+                }
+                if metrics_exporter_was_loaded {
+                    install::service_bootout(
+                        &domain,
+                        &launch_agents.join("com.hippo.metrics-exporter.plist"),
+                    );
+                    println!("  Stopped metrics-exporter");
                 }
                 if watcher_was_loaded {
                     install::service_bootout(
@@ -362,6 +372,8 @@ async fn main() -> Result<()> {
                 let watchdog_template = include_str!("../../../launchd/com.hippo.watchdog.plist");
                 let gh_poll_template = include_str!("../../../launchd/com.hippo.gh-poll.plist");
                 let probe_template = include_str!("../../../launchd/com.hippo.probe.plist");
+                let metrics_exporter_template =
+                    include_str!("../../../launchd/com.hippo.metrics-exporter.plist");
                 let watcher_template =
                     include_str!("../../../launchd/com.hippo.claude-session-watcher.plist");
                 let xcode_claude_template =
@@ -381,6 +393,27 @@ async fn main() -> Result<()> {
                 install::install_plist("com.hippo.brain", brain_template, &vars, force)?;
                 install::install_plist("com.hippo.probe", probe_template, &vars, force)?;
                 install::install_plist("com.hippo.watchdog", watchdog_template, &vars, force)?;
+                // Knowledge-health exporter plist — only written when telemetry
+                // is enabled (mirrors the codex/cursor gates). The exporter is
+                // not a passive listener: its recall probe POSTs golden
+                // questions to brain `/ask` on a timer, spending local LLM
+                // inference, so it must not run for users who never opted into
+                // observability. When disabled, also remove any stale plist on
+                // disk so generic loaders (e.g. `mise run start`, which
+                // iterates these labels) can't resurrect it after a config flip.
+                let metrics_exporter_installed = if config.telemetry.enabled {
+                    install::install_plist(
+                        "com.hippo.metrics-exporter",
+                        metrics_exporter_template,
+                        &vars,
+                        force,
+                    )?;
+                    true
+                } else {
+                    println!("  (telemetry disabled; skipping metrics-exporter plist)");
+                    install::remove_plist("com.hippo.metrics-exporter")?;
+                    false
+                };
                 install::install_plist(
                     "com.hippo.claude-session-watcher",
                     watcher_template,
@@ -544,6 +577,11 @@ async fn main() -> Result<()> {
                     opencode_poll_was_loaded,
                     stack_was_active,
                 );
+                let metrics_exporter_started = install::should_start_optional_poll_agent(
+                    metrics_exporter_installed,
+                    metrics_exporter_was_loaded,
+                    stack_was_active,
+                );
                 let codex_session_started = install::should_start_optional_poll_agent(
                     codex_session_installed,
                     codex_session_was_loaded,
@@ -597,6 +635,11 @@ async fn main() -> Result<()> {
                         ("watchdog", "com.hippo.watchdog.plist", true),
                         ("probe", "com.hippo.probe.plist", true),
                         (
+                            "metrics-exporter",
+                            "com.hippo.metrics-exporter.plist",
+                            metrics_exporter_started,
+                        ),
+                        (
                             "claude-session-watcher",
                             "com.hippo.claude-session-watcher.plist",
                             true,
@@ -645,6 +688,7 @@ async fn main() -> Result<()> {
                     || !stack_was_active
                     || (gh_poll_installed && !gh_poll_started)
                     || (opencode_poll_installed && !opencode_poll_started)
+                    || (metrics_exporter_installed && !metrics_exporter_started)
                     || (codex_session_installed && !codex_session_started)
                     || (cursor_session_installed && !cursor_session_started)
                     || (auto_memory_installed && !auto_memory_started)
@@ -671,6 +715,15 @@ async fn main() -> Result<()> {
                         );
                         println!(
                             "  launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.hippo.claude-session-watcher.plist"
+                        );
+                    }
+                    // Gated separately from the block above: the exporter plist
+                    // only exists when telemetry is enabled, so hinting at it
+                    // unconditionally would tell the user to bootstrap a file
+                    // that isn't there.
+                    if metrics_exporter_installed && !metrics_exporter_started {
+                        println!(
+                            "  launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.hippo.metrics-exporter.plist"
                         );
                     }
                     if gh_poll_installed && !gh_poll_started {

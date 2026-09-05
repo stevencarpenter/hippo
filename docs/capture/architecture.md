@@ -108,7 +108,7 @@ Synthetic round-trip verification, every 5 minutes per source.
 
 The system promises observability, not correctness. If something breaks, the goal is for the user to see it within minutes, not 21 days (the duration of an actual past silent browser-capture outage that motivated this architecture).
 
-- **`hippo doctor`** — interactive, < 2 s wall-clock, ten checks, exit code = fail count. `--explain` adds CAUSE/FIX/DOC per failure.
+- **`hippo doctor`** — interactive, < 2 s wall-clock, exit code = fail count. `--explain` adds CAUSE/FIX/DOC per failure.
 - **`hippo alarms list`** — unacknowledged alarms; exits 1 if any.
 - **macOS notification** — opt-in via `[watchdog] notify_macos = true`. Rate-limited to one per invariant per hour.
 - **OTel** — every counter is a Prometheus metric when the `otel` feature is built (default-on). See [`otel/README.md`](../../otel/README.md) for the local Grafana stack.

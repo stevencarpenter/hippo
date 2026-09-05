@@ -815,6 +815,112 @@ mod tests {
         assert!(rendered.contains("<string>/Users/me</string>"));
     }
 
+    /// Every `__SCRIPTS_DIR__/<file>` referenced by a LaunchAgent plist must
+    /// name a file that actually ships.
+    ///
+    /// `__SCRIPTS_DIR__` renders to `<brain_dir>/scripts`, and release.yml
+    /// (`cp -r scripts hippo-brain-release/brain/`) packs the REPO-ROOT
+    /// `scripts/` directory to exactly that path — so repo-root `scripts/`
+    /// is the source of truth for what exists there at runtime. A plist
+    /// referencing a name that is not in repo-root `scripts/` renders a
+    /// well-formed path to a nonexistent file, and the agent dies at launch
+    /// with exit 78. Rendering alone cannot catch that; this can.
+    #[test]
+    fn scripts_dir_plist_references_name_files_that_ship() {
+        let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .and_then(Path::parent)
+            .expect("crates/hippo-daemon has a repo root two levels up");
+        let launchd_dir = repo_root.join("launchd");
+        let shipped_scripts = repo_root.join("scripts");
+
+        // Explicit allowlist: every __SCRIPTS_DIR__ reference must be a known
+        // shipped script. A new reference without an allowlist entry fails
+        // loudly, and a removed reference doesn't silently reduce coverage.
+        let known_scripts: std::collections::HashSet<&str> =
+            ["hippo-metrics-exporter.py", "hippo-ingest-claude.py"]
+                .into_iter()
+                .collect();
+
+        let re =
+            regex::Regex::new(r#"__SCRIPTS_DIR__/([^<\s"']+)"#).expect("static regex is valid");
+        let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+        for entry in std::fs::read_dir(&launchd_dir).expect("read launchd/") {
+            let path = entry.expect("dir entry").path();
+            if path.extension().is_none_or(|e| e != "plist") {
+                continue;
+            }
+            let body = std::fs::read_to_string(&path).expect("read plist");
+            for cap in re.captures_iter(&body) {
+                let script_name = cap[1].trim().to_string();
+                assert!(
+                    known_scripts.contains(script_name.as_str()),
+                    "{} references __SCRIPTS_DIR__/{}, which is not in the known-scripts allowlist {:?} — \
+                     add it to known_scripts if intentional",
+                    path.display(),
+                    script_name,
+                    known_scripts,
+                );
+                let shipped = shipped_scripts.join(&script_name);
+                assert!(
+                    shipped.is_file(),
+                    "{} references __SCRIPTS_DIR__/{}, but {} does not exist — \
+                     the rendered LaunchAgent would point at a missing file",
+                    path.display(),
+                    script_name,
+                    shipped.display(),
+                );
+                seen.insert(script_name);
+            }
+        }
+        // Every known script must be referenced at least once — guards against
+        // the loop silently matching nothing (plists moved / placeholder renamed)
+        // and against a known script being unreferenced.
+        for expected in &known_scripts {
+            assert!(
+                seen.contains(*expected),
+                "known script {expected} was not referenced by any plist — \
+                 expected at least one __SCRIPTS_DIR__/{expected} reference (seen: {seen:?})"
+            );
+        }
+    }
+
+    #[test]
+    fn metrics_exporter_template_renders_with_existing_vars() {
+        let template = include_str!("../../../launchd/com.hippo.metrics-exporter.plist");
+        let vars = PlistVars {
+            hippo_bin: PathBuf::from("/usr/local/bin/hippo"),
+            uv_bin: PathBuf::from("/opt/homebrew/bin/uv"),
+            brain_dir: PathBuf::from("/Users/me/.local/share/hippo-brain"),
+            scripts_dir: PathBuf::from("/Users/me/.local/share/hippo-brain/scripts"),
+            home: PathBuf::from("/Users/me"),
+            path: "/opt/homebrew/bin:/usr/bin:/bin".to_string(),
+            data_dir: PathBuf::from("/Users/me/.local/share/hippo"),
+            otel_enabled: "0".to_string(),
+            otel_endpoint: "http://localhost:4318".to_string(),
+            opencode_poll_interval_secs: 30,
+            codex_poll_interval_secs: 60,
+            cursor_poll_interval_secs: 60,
+            auto_memory_poll_interval_secs: 60,
+        };
+
+        let rendered = render_plist(template, &vars);
+
+        // No unsupported placeholder (e.g. the old __REPO_DIR__) survives.
+        assert!(
+            !rendered.contains("__"),
+            "unrendered placeholder: {rendered}"
+        );
+        assert!(rendered.contains("<string>com.hippo.metrics-exporter</string>"));
+        assert!(rendered.contains("<string>/usr/bin/python3</string>"));
+        assert!(rendered.contains(
+            "<string>/Users/me/.local/share/hippo-brain/scripts/hippo-metrics-exporter.py</string>"
+        ));
+        assert!(
+            rendered.contains("<string>/Users/me/.local/share/hippo/metrics-exporter.log</string>")
+        );
+    }
+
     #[test]
     fn parse_launchctl_pid_extracts_running_process_pid() {
         // Actual `launchctl list com.hippo.brain` output for a healthy service.

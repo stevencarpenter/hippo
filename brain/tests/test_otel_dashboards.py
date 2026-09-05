@@ -19,8 +19,11 @@ here instead of silently rendering an empty Grafana panel.
 Run as part of the normal pytest suite; no external services required.
 """
 
+import importlib.util
 import json
 import re
+import sqlite3
+import time
 from pathlib import Path
 
 import yaml
@@ -140,11 +143,48 @@ _PROD_DASHBOARD_NAMES = frozenset(
         "hippo-daemon.json",
         "hippo-enrichment.json",
         "hippo-processes.json",
+        "hippo-knowledge-health.json",
     ]
 )
 
-# Provisioned capture-reliability alert rules (SNUG-96).
-_PROD_ALERT_FILES = frozenset(["hippo-capture-alerts.yml"])
+# Provisioned capture-reliability alert rules (SNUG-96) + knowledge-health rules.
+_PROD_ALERT_FILES = frozenset(["hippo-capture-alerts.yml", "hippo-knowledge-alerts.yml"])
+
+# ---------------------------------------------------------------------------
+# Knowledge-health exporter metrics (scripts/hippo-metrics-exporter.py).
+#
+# These are NOT OTel instruments: they are computed by a stdlib Python exporter
+# that reads hippo.db read-only and probes brain /ask. Dashboards and alert
+# rules may reference EMITTED_METRICS (OTel) ∪ _EXPORTER_METRICS (exporter).
+# test_exporter_metrics_are_source_backed keeps this list accountable to the
+# exporter source the same way Test 8 keeps EMITTED_METRICS accountable to the
+# daemon/brain instruments.
+# ---------------------------------------------------------------------------
+_EXPORTER_SCRIPT = _REPO_ROOT / "scripts" / "hippo-metrics-exporter.py"
+
+
+def _load_exporter():
+    """Import scripts/hippo-metrics-exporter.py as a module (hyphenated filename)."""
+    spec = importlib.util.spec_from_file_location("hippo_metrics_exporter", _EXPORTER_SCRIPT)
+    assert spec and spec.loader, f"cannot load exporter from {_EXPORTER_SCRIPT}"
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+_EXPORTER = _load_exporter()
+
+# The allow-list is DERIVED from the exporter's own registry, not restated here.
+# Test 12 then renders the exporter against a synthetic database and asserts the
+# registry is honest: every declared name is actually emitted.
+_EXPORTER_METRICS: frozenset[str] = frozenset(
+    _EXPORTER.METRIC_NAMES
+    + _EXPORTER.DEFERRED_METRIC_NAMES
+    + _EXPORTER.COUNTER_METRIC_NAMES
+    + _EXPORTER.FUTURE_METRIC_NAMES
+)
+
+DASHBOARD_ALLOWED_METRICS = EMITTED_METRICS | _EXPORTER_METRICS
 
 _REQUIRED_ALERT_UIDS = frozenset(
     [
@@ -153,6 +193,22 @@ _REQUIRED_ALERT_UIDS = frozenset(
         "hippo_watchdog_stall",
         "hippo_probe_failure_rate",
         "hippo_invariant_violation",
+    ]
+)
+
+# Knowledge-health alert rules (recall, graveyard, hygiene, security canaries).
+_REQUIRED_KB_ALERT_UIDS = frozenset(
+    [
+        "hippo_kb_recall_down",
+        "hippo_kb_recall_slow",
+        "hippo_kb_recall_failures",
+        "hippo_kb_alarms_lingering",
+        "hippo_kb_capture_stale",
+        "hippo_kb_graveyard_contamination",
+        "hippo_kb_stranded_hours_jump",
+        "hippo_kb_env_secret_keys",
+        "hippo_kb_canary_leak",
+        "hippo_kb_collector_errors",
     ]
 )
 
@@ -249,14 +305,15 @@ def test_all_referenced_metrics_are_allowed():
     in the canonical EMITTED_METRICS set.
 
     A failure here means either:
-      (a) a metric was renamed in the OTel instrumentation and the dashboard
-          was not updated, or
-      (b) a metric was removed from the instrumentation but the dashboard still
+      (a) a metric was renamed in its emitter (OTel instrument or the
+          knowledge-health exporter) and the dashboard was not updated, or
+      (b) a metric was removed from its emitter but the dashboard still
           references the old name.
 
     Fix: update the dashboard expr to use the new name, OR add the new
     instrument to brain/src/hippo_brain/ (or the Rust daemon) and update
-    EMITTED_METRICS in this file.
+    EMITTED_METRICS, OR add it to scripts/hippo-metrics-exporter.py and update
+    _EXPORTER_METRICS in this file.
     """
     violations: list[str] = []
 
@@ -264,7 +321,7 @@ def test_all_referenced_metrics_are_allowed():
         for panel_id, ref_id, expr in _collect_all_exprs(dashboard):
             for raw_name in _extract_metric_names(expr):
                 normalized = _normalize_metric_name(raw_name)
-                if normalized not in EMITTED_METRICS:
+                if normalized not in DASHBOARD_ALLOWED_METRICS:
                     violations.append(
                         f"  dashboard={filename!r}  panel_id={panel_id}  "
                         f"refId={ref_id!r}  metric={raw_name!r} "
@@ -273,9 +330,10 @@ def test_all_referenced_metrics_are_allowed():
 
     assert not violations, (
         "The following production dashboard panels reference hippo_* metrics "
-        "that are NOT in the EMITTED_METRICS allow-list in this test file.\n"
+        "that are NOT in the EMITTED_METRICS ∪ _EXPORTER_METRICS allow-list in "
+        "this test file.\n"
         "Update the dashboard to use the correct metric name, or add the "
-        "instrument and update EMITTED_METRICS.\n\n" + "\n".join(violations)
+        "instrument and update EMITTED_METRICS / _EXPORTER_METRICS.\n\n" + "\n".join(violations)
     )
 
 
@@ -887,16 +945,17 @@ def _collect_alert_exprs(alert_doc: dict) -> list[tuple[str, str]]:
 
 
 def test_alert_rules_reference_allowed_metrics():
-    """Every hippo_* metric in provisioned alert PromQL must be in EMITTED_METRICS."""
+    """Every hippo_* metric in provisioned alert PromQL must be in
+    EMITTED_METRICS ∪ _EXPORTER_METRICS."""
     violations: list[str] = []
     for filename, doc in _load_prod_alert_rules():
         for uid, expr in _collect_alert_exprs(doc):
             for raw in _extract_metric_names(expr):
                 normalized = _normalize_metric_name(raw)
-                if normalized not in EMITTED_METRICS:
+                if normalized not in DASHBOARD_ALLOWED_METRICS:
                     violations.append(
                         f"{filename} rule {uid}: {raw!r} (normalized {normalized!r}) "
-                        f"not in EMITTED_METRICS"
+                        f"not in EMITTED_METRICS ∪ _EXPORTER_METRICS"
                     )
     assert not violations, "Alert rule metric drift:\n" + "\n".join(violations)
 
@@ -912,3 +971,267 @@ def test_required_capture_alert_rules_exist():
                     found.add(uid)
     missing = _REQUIRED_ALERT_UIDS - found
     assert not missing, f"Missing required alert rule uids: {sorted(missing)}"
+    missing_kb = _REQUIRED_KB_ALERT_UIDS - found
+    assert not missing_kb, f"Missing required knowledge-health alert uids: {sorted(missing_kb)}"
+
+
+# ---------------------------------------------------------------------------
+# Test 12: Knowledge-health exporter metrics must actually be EMITTED.
+#
+# The earlier version of this test only checked that each name appeared as a
+# string literal in the exporter source — which the exporter's own name
+# registry satisfied trivially, so a metric that was declared but never passed
+# to gauge()/counter() (hippo_kb_db_size_bytes was exactly that) still passed
+# while its dashboard panel rendered permanently blank.
+#
+# This version imports the exporter, points it at a synthetic hippo.db built to
+# exercise every family, renders a real scrape, and asserts on the sample names
+# that come out. That is the guarantee Test 8 gives OTel instruments.
+# ---------------------------------------------------------------------------
+
+_CORE_SCHEMA = """
+CREATE TABLE events (
+    id INTEGER PRIMARY KEY, timestamp INTEGER, cwd TEXT, git_repo TEXT,
+    duration_ms INTEGER, stdout TEXT, stderr TEXT
+);
+CREATE TABLE knowledge_nodes (id INTEGER PRIMARY KEY, design_decisions TEXT, tags TEXT);
+CREATE TABLE agentic_sessions (
+    id INTEGER PRIMARY KEY, project_dir TEXT, message_count INTEGER DEFAULT 0
+);
+CREATE TABLE knowledge_node_agentic_sessions (
+    knowledge_node_id INTEGER, agentic_session_id INTEGER
+);
+CREATE TABLE capture_alarms (id INTEGER PRIMARY KEY, resolved_at INTEGER);
+CREATE TABLE source_health (source TEXT PRIMARY KEY, probe_ok INTEGER, last_event_ts INTEGER);
+CREATE TABLE env_snapshots (id INTEGER PRIMARY KEY, content_hash TEXT, env_json TEXT);
+"""
+
+_SNOWBALL_SCHEMA = """
+CREATE TABLE retrieval_events (id INTEGER PRIMARY KEY);
+CREATE TABLE epitaphs (id INTEGER PRIMARY KEY, confirmed_by TEXT);
+CREATE TABLE push_trials (id INTEGER PRIMARY KEY, tapped_useful INTEGER, tapped_noise INTEGER);
+CREATE TABLE nodes (id INTEGER PRIMARY KEY, status TEXT);
+CREATE TABLE contradictions (id INTEGER PRIMARY KEY, resolved_at INTEGER);
+CREATE TABLE bets (id INTEGER PRIMARY KEY, resolved_at INTEGER);
+"""
+
+
+def _build_fixture_db(path, snowball: bool):
+    """A synthetic hippo.db shaped to exercise every always-on metric family."""
+    now_ms = int(time.time() * 1000)
+    dead_ms = now_ms - 200 * 86400000  # older than every graveyard window
+    conn = sqlite3.connect(path)
+    conn.executescript(_CORE_SCHEMA)
+    if snowball:
+        conn.executescript(_SNOWBALL_SCHEMA)
+    # A live project and a dead one, each over MIN_EVENTS_FOR_PROJECT.
+    for i in range(12):
+        conn.execute(
+            "INSERT INTO events (timestamp, cwd, git_repo, duration_ms, stdout, stderr) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (now_ms - i * 1000, "/w/live", "/w/live", 1000, "out", "err"),
+        )
+    for i in range(12):
+        conn.execute(
+            "INSERT INTO events (timestamp, cwd, git_repo, duration_ms, stdout, stderr) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (dead_ms - i * 1000, "/w/dead-proj", "/w/dead-proj", 3600000, "", ""),
+        )
+    conn.execute("INSERT INTO knowledge_nodes (design_decisions, tags) VALUES ('[{}]', 'x')")
+    conn.execute("INSERT INTO knowledge_nodes (design_decisions, tags) VALUES (NULL, 'y')")
+    conn.execute(
+        "INSERT INTO agentic_sessions (id, project_dir, message_count) VALUES (1, '/w/dead-proj', 7)"
+    )
+    conn.execute("INSERT INTO knowledge_node_agentic_sessions VALUES (1, 1)")
+    conn.execute("INSERT INTO capture_alarms (resolved_at) VALUES (NULL)")
+    conn.execute("INSERT INTO source_health VALUES ('shell', 1, ?)", (now_ms - 5000,))
+    conn.execute(
+        "INSERT INTO env_snapshots (content_hash, env_json) VALUES ('h', ?)",
+        (json.dumps({"PATH": "/usr/bin", "HOME": "/home/x"}),),
+    )
+    if snowball:
+        conn.execute("INSERT INTO retrieval_events DEFAULT VALUES")
+        conn.execute("INSERT INTO epitaphs (confirmed_by) VALUES ('me')")
+        conn.execute("INSERT INTO push_trials (tapped_useful, tapped_noise) VALUES (1, 0)")
+        conn.execute("INSERT INTO nodes (status) VALUES ('provisional')")
+        conn.execute("INSERT INTO contradictions (resolved_at) VALUES (NULL)")
+        conn.execute("INSERT INTO bets (resolved_at) VALUES (NULL)")
+    conn.commit()
+    conn.close()
+
+
+def _render_against(db_path, monkeypatch, canary_path=None):
+    """Render one full scrape with the exporter pointed at a fixture DB."""
+    monkeypatch.setattr(_EXPORTER, "DB_PATH", db_path)
+    # Never let the test touch the real brain server: the probe must be a no-op.
+    monkeypatch.setattr(_EXPORTER, "PROBE_TTL_S", 10**9)
+    monkeypatch.setattr(
+        _EXPORTER, "CANARY_FILE", canary_path or (db_path.parent / "no-canary.json")
+    )
+    _EXPORTER.reset_db_cache_for_test()
+    _EXPORTER.reset_counters_for_test()
+    return _EXPORTER.build_registry()
+
+
+def test_exporter_emits_every_always_on_metric(tmp_path, monkeypatch):
+    """Every METRIC_NAMES entry must appear in a real render. No paper registry."""
+    db = tmp_path / "hippo.db"
+    _build_fixture_db(db, snowball=False)
+    reg = _render_against(db, monkeypatch)
+    emitted = {s["name"] for s in reg.samples}
+    missing = sorted(set(_EXPORTER.METRIC_NAMES) - emitted)
+    assert not missing, (
+        "These METRIC_NAMES entries are declared but NOT emitted by a real scrape "
+        f"of {_EXPORTER_SCRIPT.name}:\n"
+        + "\n".join(f"  {name}" for name in missing)
+        + "\n\nEither the registry name is stale, or the gauge()/counter() call "
+        "was lost. A declared-but-unemitted name renders a blank dashboard panel."
+    )
+
+
+def test_exporter_emits_snowball_metrics_when_tables_exist(tmp_path, monkeypatch):
+    """FUTURE_METRIC_NAMES must light up once their backing tables land."""
+    db = tmp_path / "hippo.db"
+    _build_fixture_db(db, snowball=True)
+    reg = _render_against(db, monkeypatch)
+    emitted = {s["name"] for s in reg.samples}
+    missing = sorted(set(_EXPORTER.FUTURE_METRIC_NAMES) - emitted)
+    assert not missing, f"Snowball metrics not emitted with backing tables present: {missing}"
+
+
+def test_exporter_emits_no_undeclared_metrics(tmp_path, monkeypatch):
+    """The reverse direction: nothing may be emitted that the registry omits."""
+    db = tmp_path / "hippo.db"
+    _build_fixture_db(db, snowball=True)
+    reg = _render_against(db, monkeypatch)
+    undeclared = sorted({s["name"] for s in reg.samples} - _EXPORTER_METRICS)
+    assert not undeclared, (
+        f"Exporter emits metrics absent from its registry: {undeclared}. "
+        "Add them to METRIC_NAMES/FUTURE_METRIC_NAMES so dashboards may reference them."
+    )
+
+
+def test_exporter_counters_are_cumulative(tmp_path, monkeypatch):
+    """`*_total` must accumulate across scrapes, or increase()/rate() is always 0.
+
+    Two alerts (hippo_kb_recall_failures, hippo_kb_collector_errors) are built on
+    increase() over these series. A per-scrape value that resets makes those
+    alerts structurally unfireable, which is how they originally shipped.
+    """
+    db = tmp_path / "hippo.db"
+    _build_fixture_db(db, snowball=False)
+    monkeypatch.setattr(_EXPORTER, "DB_PATH", db)
+    monkeypatch.setattr(_EXPORTER, "PROBE_TTL_S", 10**9)
+    monkeypatch.setattr(_EXPORTER, "CANARY_FILE", tmp_path / "no-canary.json")
+    _EXPORTER.reset_counters_for_test()
+
+    def value_of(reg, name):
+        return sum(s["value"] for s in reg.samples if s["name"] == name)
+
+    for _ in range(3):
+        _EXPORTER.bump("hippo_kb_recall_failures_total", {"reason": "brain_down"})
+        _EXPORTER.reset_db_cache_for_test()
+        reg = _EXPORTER.build_registry()
+    assert value_of(reg, "hippo_kb_recall_failures_total") == 3.0
+
+    _EXPORTER.bump("hippo_kb_recall_failures_total", {"reason": "brain_down"})
+    _EXPORTER.reset_db_cache_for_test()
+    reg = _EXPORTER.build_registry()
+    assert value_of(reg, "hippo_kb_recall_failures_total") == 4.0
+
+
+def test_exporter_counters_are_typed_counter(tmp_path, monkeypatch):
+    """`# TYPE ... counter` must be emitted for the cumulative series."""
+    db = tmp_path / "hippo.db"
+    _build_fixture_db(db, snowball=False)
+    monkeypatch.setattr(_EXPORTER, "DB_PATH", db)
+    monkeypatch.setattr(_EXPORTER, "PROBE_TTL_S", 10**9)
+    monkeypatch.setattr(_EXPORTER, "CANARY_FILE", tmp_path / "no-canary.json")
+    _EXPORTER.reset_counters_for_test()
+    _EXPORTER.reset_db_cache_for_test()
+    _EXPORTER.bump("hippo_kb_collector_errors_total", {"name": "x"}, help="h")
+    text = _EXPORTER.render_prometheus(_EXPORTER.build_registry()).decode()
+    assert "# TYPE hippo_kb_collector_errors_total counter" in text
+    # And no gauge may carry the counter-only `_total` suffix.
+    gauge_totals = [
+        line.split()[2]
+        for line in text.splitlines()
+        if line.startswith("# TYPE ")
+        and line.endswith(" gauge")
+        and line.split()[2].endswith("_total")
+    ]
+    assert not gauge_totals, f"gauges named _total (Prometheus convention): {gauge_totals}"
+
+
+def test_exporter_secretish_env_keys_detected(tmp_path, monkeypatch):
+    """The redaction canary must read real snapshot keys out of env_json.
+
+    env_snapshots has no per-key column — env vars live in a JSON blob. An
+    implementation that looks for a `key`/`name` column emits nothing at all,
+    leaving the security panel and its alert permanently, falsely green.
+    """
+    db = tmp_path / "hippo.db"
+    _build_fixture_db(db, snowball=False)
+    conn = sqlite3.connect(db)
+    conn.execute(
+        "INSERT INTO env_snapshots (content_hash, env_json) VALUES ('leak', ?)",
+        (json.dumps({"AWS_SECRET_ACCESS_KEY": "x", "PATH": "/usr/bin"}),),
+    )
+    conn.commit()
+    conn.close()
+    reg = _render_against(db, monkeypatch)
+    vals = [s["value"] for s in reg.samples if s["name"] == "hippo_kb_env_secretish_keys"]
+    assert vals == [1.0], f"expected exactly one secretish key detected, got {vals}"
+
+
+def test_exporter_render_is_reentrant(tmp_path, monkeypatch):
+    """Concurrent scrapes must not interleave samples into each other.
+
+    The exporter is served by ThreadingHTTPServer; shared module-level sample
+    state produced responses containing every in-flight render's samples, i.e.
+    duplicate series, which Prometheus rejects outright.
+    """
+    import threading as _threading
+
+    db = tmp_path / "hippo.db"
+    _build_fixture_db(db, snowball=True)
+    monkeypatch.setattr(_EXPORTER, "DB_PATH", db)
+    monkeypatch.setattr(_EXPORTER, "PROBE_TTL_S", 10**9)
+    monkeypatch.setattr(_EXPORTER, "CANARY_FILE", tmp_path / "no-canary.json")
+    _EXPORTER.reset_db_cache_for_test()
+    _EXPORTER.reset_counters_for_test()
+
+    baseline = len(_EXPORTER.build_registry().samples)
+    counts: list[int] = []
+    lock = _threading.Lock()
+
+    def scrape():
+        n = len(_EXPORTER.build_registry().samples)
+        with lock:
+            counts.append(n)
+
+    threads = [_threading.Thread(target=scrape) for _ in range(16)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert counts and all(c == baseline for c in counts), (
+        f"concurrent scrapes returned varying sample counts {sorted(set(counts))}; "
+        f"expected all == {baseline}. Per-request state has leaked back to module scope."
+    )
+
+
+def test_exporter_no_duplicate_series_in_exposition(tmp_path, monkeypatch):
+    """Every (name, labels) pair may appear at most once per exposition."""
+    db = tmp_path / "hippo.db"
+    _build_fixture_db(db, snowball=True)
+    reg = _render_against(db, monkeypatch)
+    seen = [(s["name"], tuple(sorted(s["labels"].items()))) for s in reg.samples]
+    dupes = sorted({k for k in seen if seen.count(k) > 1})
+    assert not dupes, f"duplicate series in one exposition (Prometheus rejects these): {dupes}"
+
+
+def test_exporter_script_exists():
+    assert _EXPORTER_SCRIPT.exists(), (
+        f"Knowledge-health exporter script missing: {_EXPORTER_SCRIPT}."
+    )
