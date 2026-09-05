@@ -24,10 +24,26 @@ ENVIRONMENT:
                   recovering from a partial install or a corrupted binary.
                   Example: HIPPO_FORCE=1 ./install.sh
 
+    HIPPO_INSTALL_SKILLS
+                  When set to 0, false, no (case-insensitive), skip installing
+                  the bundled Claude Code skills. Skills are installed by
+                  default; a skill already managed elsewhere (a symlink, or a
+                  copy you have edited) is never overwritten regardless.
+                  Example: HIPPO_INSTALL_SKILLS=0 ./install.sh
+
+    HIPPO_INSTALL_DAEMON
+                  When set to 0, false, no (case-insensitive), skip installing
+                  the `hippo` binary. For hosts that get the daemon from
+                  somewhere else (a nix flake, a package manager) while still
+                  wanting this script to install the Python brain. The binary
+                  must be on PATH before the brain and LaunchAgents are set up.
+                  Example: HIPPO_INSTALL_DAEMON=0 ./install.sh
+
 INSTALL LOCATIONS:
     ~/.local/bin/hippo                          daemon binary
-    ~/.local/share/hippo-brain/                 brain package (includes scripts/
-                                                and shell/)
+    ~/.local/share/hippo-brain/                 brain package (includes scripts/,
+                                                shell/ and claude-skill/)
+    ~/.claude/skills/                           Claude Code skills (copies)
     ~/.local/state/hippo/install-receipts/      per-component install receipts
                                                 (respects XDG_STATE_HOME)
     ~/.config/hippo/                            config
@@ -190,6 +206,14 @@ parse_checksum() {
 }
 
 # Check whether a component is already installed at the expected checksum.
+# True when the user asked for a forced reinstall via HIPPO_FORCE.
+force_requested() {
+    case "${HIPPO_FORCE:-}" in
+        1|true|TRUE|True|yes|YES|Yes) return 0 ;;
+    esac
+    return 1
+}
+
 # Returns 0 (skip) if the receipt matches and the install target exists,
 # 1 otherwise. Set HIPPO_FORCE=1 (or true/yes) to bypass and always reinstall.
 check_receipt() {
@@ -198,9 +222,7 @@ check_receipt() {
     local target_path="$3"
     local receipt="${RECEIPTS_DIR}/${component}.sha256"
 
-    case "${HIPPO_FORCE:-}" in
-        1|true|TRUE|True|yes|YES|Yes) return 1 ;;
-    esac
+    force_requested && return 1
 
     if [ ! -f "${receipt}" ] || [ ! -e "${target_path}" ]; then
         return 1
@@ -233,6 +255,18 @@ write_receipt() {
 # Install daemon binary
 install_daemon() {
     local arch="$1"
+
+    case "${HIPPO_INSTALL_DAEMON:-1}" in
+        0|false|FALSE|False|no|NO|No)
+            if ! command -v hippo >/dev/null 2>&1 && [ ! -x "${BIN_DIR}/hippo" ]; then
+                log_error "HIPPO_INSTALL_DAEMON=0 but no hippo binary is on PATH."
+                log_error "Install the daemon first, or unset the variable."
+                exit 1
+            fi
+            log_info "Skipping daemon install (HIPPO_INSTALL_DAEMON=${HIPPO_INSTALL_DAEMON})"
+            return 0
+            ;;
+    esac
     local tag="$2"
     local checksums_file="$3"
     local temp_dir="$4"
@@ -379,6 +413,91 @@ install_brain() {
         log_info "Removing legacy scripts directory at ${legacy_scripts}..."
         rm -rf "${legacy_scripts}"
     fi
+}
+
+# Hash a directory's contents (paths + bytes), so an unchanged skill is a
+# no-op on re-run and a user's local edit is detectable.
+checksum_dir() {
+    local dir="$1"
+    ( cd "${dir}" && find . -type f -print0 \
+        | LC_ALL=C sort -z \
+        | xargs -0 shasum -a 256 \
+        | shasum -a 256 \
+        | cut -d' ' -f1 )
+}
+
+# Install the Claude Code skills shipped in the brain tarball.
+#
+# Unlike the `install:skill` mise task, which symlinks a source checkout, a
+# release install has no checkout to point at — so these are copied. Each skill
+# gets its own receipt keyed on the source content hash, which makes re-runs
+# no-ops and lets an upgrade tell "unchanged", "new version available", and
+# "the user edited this" apart.
+#
+# Set HIPPO_INSTALL_SKILLS=0 to skip entirely.
+install_skills() {
+    local src_root="${BRAIN_DIR}/claude-skill"
+    local dest_root="${HOME}/.claude/skills"
+
+    case "${HIPPO_INSTALL_SKILLS:-1}" in
+        0|false|FALSE|False|no|NO|No)
+            log_info "Skipping Claude Code skills (HIPPO_INSTALL_SKILLS=${HIPPO_INSTALL_SKILLS})"
+            return 0
+            ;;
+    esac
+
+    if [ ! -d "${src_root}" ]; then
+        log_info "No Claude Code skills in this release; skipping"
+        return 0
+    fi
+
+    log_info "Installing Claude Code skills..."
+    mkdir -p "${dest_root}"
+
+    local installed=0 skipped=0 src name dst checksum stored current
+    for src in "${src_root}"/*/; do
+        [ -d "${src}" ] || continue
+        src="${src%/}"
+        name="$(basename "${src}")"
+        dst="${dest_root}/${name}"
+        checksum="$(checksum_dir "${src}")"
+
+        if check_receipt "skill-${name}" "${checksum}" "${dst}"; then
+            skipped=$((skipped + 1))
+            continue
+        fi
+
+        if [ -L "${dst}" ]; then
+            # A symlink is someone else's management (a dotfiles repo, or the
+            # mise task pointing at a checkout). Never replace it.
+            log_warning "  ${name}: symlinked elsewhere, leaving alone"
+            skipped=$((skipped + 1))
+            continue
+        fi
+
+        if [ -d "${dst}" ]; then
+            stored="$(cat "${RECEIPTS_DIR}/skill-${name}.sha256" 2>/dev/null || true)"
+            if [ -z "${stored}" ]; then
+                log_warning "  ${name}: already present and not installed by hippo, leaving alone"
+                skipped=$((skipped + 1))
+                continue
+            fi
+            current="$(checksum_dir "${dst}")"
+            if [ "${current}" != "${stored}" ] && ! force_requested; then
+                log_warning "  ${name}: locally modified, leaving alone (HIPPO_FORCE=1 to overwrite)"
+                skipped=$((skipped + 1))
+                continue
+            fi
+            rm -rf "${dst}"
+        fi
+
+        cp -R "${src}" "${dst}"
+        write_receipt "skill-${name}" "${checksum}"
+        log_info "  ${name}: installed"
+        installed=$((installed + 1))
+    done
+
+    log_success "Claude Code skills: ${installed} installed, ${skipped} unchanged or skipped"
 }
 
 # Setup configuration
@@ -635,6 +754,9 @@ main() {
     echo ""
 
     install_brain "${tag}" "${temp_dir}/SHA256SUMS.txt" "${temp_dir}"
+    echo ""
+
+    install_skills
     echo ""
 
     warn_on_stale_shell_hook_sources
