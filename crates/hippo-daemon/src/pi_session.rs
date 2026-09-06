@@ -23,7 +23,7 @@
 //! mtime is the fallback when a line timestamp is absent. Segments
 //! additionally split on accumulated character count.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use anyhow::{Context, Result};
 use hippo_core::config::HippoConfig;
@@ -116,13 +116,12 @@ pub(crate) fn parse_ts(ts: &str) -> i64 {
 /// UUID suffix of `<timestamp>_<uuid>.jsonl` filenames (or the portion before
 /// a `_reviewer_transcript` suffix for subagent review transcripts), falling
 /// back to the full file stem. `cwd` prefers the header value (ground truth),
-/// then tool-path recovery in `extract_segments`, then the slug decode.
+/// then the per-line cwd, then the slug decode.
 #[derive(Debug, Clone)]
 pub(crate) struct PathIdentity {
     pub session_id: String,
     pub project_dir: String,
     pub cwd: String,
-    pub slug: String,
     pub is_subagent: bool,
     pub parent_session_id: Option<String>,
 }
@@ -256,69 +255,10 @@ impl PathIdentity {
             session_id,
             project_dir,
             cwd,
-            slug,
             is_subagent,
             parent_session_id,
         }
     }
-}
-
-/// Whitespace-split a shell command and keep only the absolute-path-looking
-/// tokens (those starting with `/`), trimming common surrounding quote/paren
-/// punctuation.
-fn absolute_tokens_in_command(command: &str) -> Vec<String> {
-    command
-        .split_whitespace()
-        .map(|tok| tok.trim_matches(|c: char| "\"'`(),;:".contains(c)))
-        .filter(|tok| tok.starts_with('/'))
-        .map(|tok| tok.to_string())
-        .collect()
-}
-
-/// Collect candidate absolute paths from a `toolCall` block's `arguments`
-/// object: the well-known path-bearing keys plus absolute tokens inside
-/// `command`. Non-absolute values are ignored.
-fn collect_tool_paths(input: &serde_json::Value, out: &mut Vec<String>) {
-    let Some(obj) = input.as_object() else {
-        return;
-    };
-    for key in ["path", "file_path", "filePath", "cwd", "target_directory"] {
-        if let Some(v) = obj.get(key).and_then(|v| v.as_str())
-            && v.starts_with('/')
-        {
-            out.push(v.to_string());
-        }
-    }
-    for cmd_key in ["command", "cmd"] {
-        if let Some(cmd) = obj.get(cmd_key).and_then(|v| v.as_str()) {
-            out.extend(absolute_tokens_in_command(cmd));
-        }
-    }
-}
-
-/// Recover the *true* cwd from absolute paths found in the transcript, using
-/// the slug as the disambiguation target. For each candidate path `P`, test
-/// every ancestor prefix `pre` (longest first): if encoding `pre` the way Pi
-/// encodes a cwd (`--` + `pre` without its leading `/` with `/`→`-` + `--`)
-/// equals `slug`, then `pre` is the ground-truth cwd.
-fn recover_cwd_from_paths(slug: &str, candidate_paths: &[String]) -> Option<String> {
-    if slug.is_empty() {
-        return None;
-    }
-    for cand in candidate_paths {
-        for pre in Path::new(cand).ancestors() {
-            let Some(rel) = pre.to_str().and_then(|s| s.strip_prefix('/')) else {
-                continue;
-            };
-            if rel.is_empty() {
-                continue;
-            }
-            if format!("--{}--", rel.replace('/', "-")) == slug {
-                return Some(pre.to_string_lossy().into_owned());
-            }
-        }
-    }
-    None
 }
 
 /// Join the `text` of every `text` block in a `content` array.
@@ -421,7 +361,6 @@ pub(crate) fn extract_segments(
     let mut current: Option<PiSegment> = None;
     let mut current_chars: usize = 0;
     let mut last_user_ms: i64 = 0;
-    let mut candidate_paths: Vec<String> = Vec::new();
 
     for (line_idx, line) in raw.lines().enumerate() {
         let line = line.trim();
@@ -564,7 +503,6 @@ pub(crate) fn extract_segments(
                         .get("arguments")
                         .cloned()
                         .unwrap_or(serde_json::Value::Null);
-                    collect_tool_paths(&args, &mut candidate_paths);
                     let summary = redaction.redact(&tool_summary(&args)).text;
                     current_chars += summary.chars().count();
                     seg.tool_calls.push(ToolCall {
@@ -584,20 +522,6 @@ pub(crate) fn extract_segments(
             || !seg.assistant_texts.is_empty())
     {
         segments.push(seg);
-    }
-
-    // The slug decode is ambiguous for hyphenated path components; an
-    // authoritative cwd (header or per-line) skips recovery entirely. Only
-    // recover when the identity fell back to the slug.
-    let has_authoritative_cwd = !header_cwd.is_empty() || line_cwd.is_some();
-    if !has_authoritative_cwd
-        && let Some(real_cwd) = recover_cwd_from_paths(&id.slug, &candidate_paths)
-    {
-        let real_project_dir = project_dir_for(&real_cwd, &id.slug);
-        for seg in &mut segments {
-            seg.cwd = real_cwd.clone();
-            seg.project_dir = real_project_dir.clone();
-        }
     }
 
     // Backfill zero start times (no parseable timestamp anywhere) from mtime so
@@ -809,14 +733,6 @@ pub fn upsert_segment_tx(tx: &rusqlite::Transaction<'_>, seg: &PiSegment) -> Res
             params![agentic_session_id, now_ms],
         )?;
     }
-    Ok(())
-}
-
-/// Convenience wrapper: upsert one segment in its own transaction.
-pub fn upsert_segment(conn: &rusqlite::Connection, seg: &PiSegment) -> Result<()> {
-    let tx = conn.unchecked_transaction()?;
-    upsert_segment_tx(&tx, seg)?;
-    tx.commit()?;
     Ok(())
 }
 
@@ -1059,19 +975,10 @@ pub(crate) fn session_file_id(path: &Path) -> String {
     session_id_from_filename(path)
 }
 
-/// Test-only constructor for a `HippoConfig` pointed at a temp data dir.
-#[doc(hidden)]
-pub fn test_config(data_dir: &Path, roots: &[PathBuf]) -> HippoConfig {
-    let mut cfg = HippoConfig::default();
-    cfg.storage.data_dir = data_dir.to_path_buf();
-    cfg.pi.session_roots = roots.to_vec();
-    cfg.pi.min_idle_secs = 60;
-    cfg
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
 
     fn write_transcript(dir: &Path, slug: &str, name: &str, lines: &[&str]) -> PathBuf {
         let d = dir.join(slug);

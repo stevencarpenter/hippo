@@ -29,6 +29,28 @@ async fn poll_socket_removal(socket: &std::path::Path, timeout: std::time::Durat
     }
 }
 
+/// Block until `path` appears, polling every 500ms for up to `wait_secs`.
+/// Exits the process when it never does. Shared by the `hippo ingest` arms.
+async fn wait_for_path(path: &std::path::Path, wait_secs: u64) {
+    if path.exists() {
+        return;
+    }
+    if wait_secs == 0 {
+        eprintln!("File not found: {}", path.display());
+        std::process::exit(1);
+    }
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(wait_secs);
+    eprint!("Waiting for {}...", path.display());
+    while !path.exists() {
+        if std::time::Instant::now() >= deadline {
+            eprintln!("\nFile not found after {}s: {}", wait_secs, path.display());
+            std::process::exit(1);
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    }
+    eprintln!(" found.");
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     // Load config early — needed for telemetry init before CLI parsing
@@ -1156,28 +1178,7 @@ async fn main() -> Result<()> {
                 wait_for_file,
             } => {
                 let path = std::path::Path::new(&path);
-                if !path.exists() {
-                    if wait_for_file > 0 {
-                        let deadline = std::time::Instant::now()
-                            + std::time::Duration::from_secs(wait_for_file);
-                        eprint!("Waiting for {}...", path.display());
-                        while !path.exists() {
-                            if std::time::Instant::now() >= deadline {
-                                eprintln!(
-                                    "\nFile not found after {}s: {}",
-                                    wait_for_file,
-                                    path.display()
-                                );
-                                std::process::exit(1);
-                            }
-                            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-                        }
-                        eprintln!(" found.");
-                    } else {
-                        eprintln!("File not found: {}", path.display());
-                        std::process::exit(1);
-                    }
-                }
+                wait_for_path(path, wait_for_file).await;
                 let socket = config.socket_path();
                 let timeout = config.daemon.socket_timeout_ms;
                 let db = config.db_path();
@@ -1190,28 +1191,7 @@ async fn main() -> Result<()> {
                 wait_for_file,
             } => {
                 let path = std::path::Path::new(&path);
-                if !path.exists() {
-                    if wait_for_file > 0 {
-                        let deadline = std::time::Instant::now()
-                            + std::time::Duration::from_secs(wait_for_file);
-                        eprint!("Waiting for {}...", path.display());
-                        while !path.exists() {
-                            if std::time::Instant::now() >= deadline {
-                                eprintln!(
-                                    "\nFile not found after {}s: {}",
-                                    wait_for_file,
-                                    path.display()
-                                );
-                                std::process::exit(1);
-                            }
-                            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-                        }
-                        eprintln!(" found.");
-                    } else {
-                        eprintln!("File not found: {}", path.display());
-                        std::process::exit(1);
-                    }
-                }
+                wait_for_path(path, wait_for_file).await;
                 match cursor_session::ingest_one(&config, path) {
                     Ok(n) => println!("Cursor import complete: {n} segments ingested"),
                     Err(e) => {
@@ -1225,28 +1205,7 @@ async fn main() -> Result<()> {
                 wait_for_file,
             } => {
                 let path = std::path::Path::new(&path);
-                if !path.exists() {
-                    if wait_for_file > 0 {
-                        let deadline = std::time::Instant::now()
-                            + std::time::Duration::from_secs(wait_for_file);
-                        eprint!("Waiting for {}...", path.display());
-                        while !path.exists() {
-                            if std::time::Instant::now() >= deadline {
-                                eprintln!(
-                                    "\nFile not found after {}s: {}",
-                                    wait_for_file,
-                                    path.display()
-                                );
-                                std::process::exit(1);
-                            }
-                            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-                        }
-                        eprintln!(" found.");
-                    } else {
-                        eprintln!("File not found: {}", path.display());
-                        std::process::exit(1);
-                    }
-                }
+                wait_for_path(path, wait_for_file).await;
                 match pi_session::ingest_one(&config, path) {
                     Ok(n) => println!("Pi import complete: {n} segments ingested"),
                     Err(e) => {

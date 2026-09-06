@@ -179,10 +179,6 @@ fn count_cursor_segments(path: &Path, mtime_ms: i64, engine: &RedactionEngine) -
     Ok(crate::cursor_session::extract_segments(path, mtime_ms, engine)?.len())
 }
 
-fn is_pi_transcript(path: &Path) -> bool {
-    crate::pi_session::is_transcript(path)
-}
-
 fn count_pi_segments(path: &Path, mtime_ms: i64, engine: &RedactionEngine) -> Result<usize> {
     Ok(crate::pi_session::extract_segments(path, mtime_ms, engine)?.len())
 }
@@ -229,7 +225,7 @@ pub(crate) fn probe_pi_session(config: &HippoConfig) -> Result<(bool, Option<i64
         &config.pi.session_roots,
         settle_ms,
         window_ms,
-        is_pi_transcript,
+        crate::pi_session::is_transcript,
     )?;
     assert_source_file_rows(
         config,
