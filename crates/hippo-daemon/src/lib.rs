@@ -16,6 +16,7 @@ pub mod health_score;
 pub mod metrics;
 pub mod native_messaging;
 pub mod opencode_session;
+pub mod pi_session;
 pub mod probe;
 mod probe_agentic;
 mod probe_auto_memory;

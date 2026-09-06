@@ -907,6 +907,7 @@ for label in \
   com.hippo.xcode-claude-ingest \
   com.hippo.codex-session \
   com.hippo.cursor-session \
+  com.hippo.pi-session \
   com.hippo.auto-memory \
   com.hippo.auto-memory-watcher
 do
@@ -939,6 +940,7 @@ for label in \
   com.hippo.xcode-claude-ingest \
   com.hippo.codex-session \
   com.hippo.cursor-session \
+  com.hippo.pi-session \
   com.hippo.auto-memory \
   com.hippo.auto-memory-watcher
 do

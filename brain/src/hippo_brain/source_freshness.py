@@ -21,6 +21,7 @@ SOURCE_KIND_HEALTH: dict[str, str] = {
     "claude": "agentic-session-claude",
     "codex": "agentic-session-codex",
     "cursor": "agentic-session-cursor",
+    "pi": "agentic-session-pi",
     "opencode": "agentic-session-opencode",
     "browser": "browser",
     "workflow": "workflow",
@@ -32,6 +33,7 @@ BURSTY_SOURCES = frozenset(
         "agentic-session-opencode",
         "agentic-session-codex",
         "agentic-session-cursor",
+        "agentic-session-pi",
     }
 )
 
@@ -49,6 +51,7 @@ _THRESHOLDS_MS: dict[str, tuple[int, int]] = {
     "agentic-session-opencode": (3 * _DAY_MS, 30 * _DAY_MS),
     "agentic-session-codex": (3 * _DAY_MS, 30 * _DAY_MS),
     "agentic-session-cursor": (3 * _DAY_MS, 30 * _DAY_MS),
+    "agentic-session-pi": (3 * _DAY_MS, 30 * _DAY_MS),
     "claude-auto-memory": (7 * _DAY_MS, 30 * _DAY_MS),
 }
 
@@ -79,6 +82,10 @@ _COVERAGE_SQL: dict[str, str] = {
     "agentic-session-cursor": (
         "SELECT COUNT(*), MAX(end_time) FROM agentic_sessions "
         "WHERE harness = 'cursor' AND probe_tag IS NULL"
+    ),
+    "agentic-session-pi": (
+        "SELECT COUNT(*), MAX(end_time) FROM agentic_sessions "
+        "WHERE harness = 'pi' AND probe_tag IS NULL"
     ),
     "claude-auto-memory": (
         "SELECT COUNT(*), MAX(md.updated_at) FROM memory_documents md "

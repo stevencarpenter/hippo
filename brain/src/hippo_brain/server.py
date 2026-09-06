@@ -144,6 +144,7 @@ CODEX_SOURCE_SQL = (
     "s.source_file LIKE '%/.codex/%' OR s.source_file LIKE '%/CodingAssistant/codex/%'"
 )
 CURSOR_SOURCE_SQL = "s.source_file LIKE '%/.cursor/%'"
+PI_SOURCE_SQL = "s.source_file LIKE '%/.pi/%'"
 
 
 def _is_codex_source_file(source_file: str | None) -> bool:
@@ -156,6 +157,10 @@ def _is_cursor_source_file(source_file: str | None) -> bool:
     return bool(source_file and "/.cursor/" in source_file)
 
 
+def _is_pi_source_file(source_file: str | None) -> bool:
+    return bool(source_file and "/.pi/" in source_file)
+
+
 def _source_label_for_claude_segments(segments: list[dict]) -> str:
     harnesses = {seg.get("harness") for seg in segments if seg.get("harness")}
     if len(harnesses) == 1:
@@ -165,11 +170,14 @@ def _source_label_for_claude_segments(segments: list[dict]) -> str:
             "codex": "codex",
             "cursor": "cursor",
             "opencode": "opencode",
+            "pi": "pi",
         }.get(harness, "claude")
     if segments and all(_is_codex_source_file(seg.get("source_file")) for seg in segments):
         return "codex"
     if segments and all(_is_cursor_source_file(seg.get("source_file")) for seg in segments):
         return "cursor"
+    if segments and all(_is_pi_source_file(seg.get("source_file")) for seg in segments):
+        return "pi"
     return "claude"
 
 
@@ -199,6 +207,14 @@ def _collect_queue_depths(conn: sqlite3.Connection) -> list[tuple[str, str, int]
             WHERE q.status = ?
               AND s.probe_tag IS NULL
               AND s.harness = 'codex'
+        """,
+        "pi": """
+            SELECT COUNT(*)
+            FROM agentic_enrichment_queue q
+            JOIN agentic_sessions s ON q.session_id = s.id
+            WHERE q.status = ?
+              AND s.probe_tag IS NULL
+              AND s.harness = 'pi'
         """,
         "browser": "SELECT COUNT(*) FROM browser_enrichment_queue WHERE status = ?",
         "workflow": "SELECT COUNT(*) FROM workflow_enrichment_queue WHERE status = ?",

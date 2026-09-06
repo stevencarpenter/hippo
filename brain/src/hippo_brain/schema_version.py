@@ -49,13 +49,15 @@ revision, chunk, enrichment queue, and knowledge-node link.
 v19→v20 adds auto-memory category provenance and MEMORY.md index links.
 v21→v22 renames watcher resume state to `agentic_session_offsets` (SNUG-115 Phase A).
 v22→v23 drops the frozen legacy `claude_*` tables (SNUG-115 Phase B).
+v23→v24 widens the `agentic_sessions.harness` CHECK to include 'pi'
+and seeds the `agentic-session-pi` source_health row.
 """
 
 from __future__ import annotations
 
 import sqlite3
 
-EXPECTED_SCHEMA_VERSION: int = 23
+EXPECTED_SCHEMA_VERSION: int = 24
 
 # Versions brain can read without erroring.
 #

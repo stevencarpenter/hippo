@@ -262,6 +262,30 @@ enabled = true
 # poll_interval_secs = 60
 # session_roots = []  # leave commented out; Rust default supplies ~/.cursor/projects
 
+[pi]
+# Pi agent session transcript ingestion.
+#
+# When enabled, `hippo pi-poll` (invoked every 60 s by the
+# `com.hippo.pi-session` LaunchAgent) walks `session_roots` for
+# `*.jsonl` files (one per session, `<timestamp>_<uuid>.jsonl`), parses each
+# into task-boundary segments (5-minute user-prompt gap or char cap), and writes
+# them as segmented rows in `agentic_sessions` with `harness = 'pi'` —
+# distinguished by the `.pi/` path stored in the `source_file` column.
+# The brain enriches these alongside Claude Code data.
+#
+# `session_roots` defaults to:
+#   ~/.pi/agent/sessions
+#
+# To verify:
+#   1. Ensure `~/.pi/agent/sessions` contains `<slug>/*.jsonl` files
+#   2. Run once: `hippo pi-poll`
+#   3. Verify: `hippo doctor` shows healthy `agentic-session-pi` source
+
+enabled = true
+# min_idle_secs = 60
+# poll_interval_secs = 60
+# session_roots = []  # leave commented out; Rust default supplies ~/.pi/agent/sessions
+
 # Claude Code auto-memory files are external, strictly read-only inputs.
 # Start with explicit sources; fleet discovery can be enabled separately when
 # its privacy boundaries are configured.

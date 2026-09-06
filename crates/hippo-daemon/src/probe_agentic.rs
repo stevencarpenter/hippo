@@ -179,6 +179,14 @@ fn count_cursor_segments(path: &Path, mtime_ms: i64, engine: &RedactionEngine) -
     Ok(crate::cursor_session::extract_segments(path, mtime_ms, engine)?.len())
 }
 
+fn is_pi_transcript(path: &Path) -> bool {
+    crate::pi_session::is_transcript(path)
+}
+
+fn count_pi_segments(path: &Path, mtime_ms: i64, engine: &RedactionEngine) -> Result<usize> {
+    Ok(crate::pi_session::extract_segments(path, mtime_ms, engine)?.len())
+}
+
 fn count_codex_segments(path: &Path, _mtime_ms: i64, engine: &RedactionEngine) -> Result<usize> {
     Ok(crate::codex_session::extract_segments(path, engine)?.len())
 }
@@ -207,6 +215,36 @@ pub(crate) fn probe_cursor_session(config: &HippoConfig) -> Result<(bool, Option
         },
         window_ms,
         count_cursor_segments,
+    )
+}
+
+pub(crate) fn probe_pi_session(config: &HippoConfig) -> Result<(bool, Option<i64>)> {
+    if !config.pi.enabled {
+        info!("pi-session probe: pi ingestion disabled — trivial pass");
+        return Ok((true, None));
+    }
+    let window_ms = POLLER_PROBE_WINDOW_MS;
+    let settle_ms = POLLER_PROBE_SETTLE_MS.min(window_ms / 2);
+    let recent = walk_settled_files(
+        &config.pi.session_roots,
+        settle_ms,
+        window_ms,
+        is_pi_transcript,
+    )?;
+    assert_source_file_rows(
+        config,
+        "pi-session probe",
+        &recent,
+        SourceFileProbeSpec {
+            harness: "pi",
+            probe_label: "pi-session probe",
+            // Pi segments carry per-line transcript timestamps, but a resumed
+            // session's earlier segments predate the file mtime — same reason
+            // codex omits the floor.
+            end_time_floor_from_mtime: false,
+        },
+        window_ms,
+        count_pi_segments,
     )
 }
 

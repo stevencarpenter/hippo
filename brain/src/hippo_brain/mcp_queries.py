@@ -473,7 +473,7 @@ def _search_claude_events(
                tool_calls_json
         FROM agentic_sessions
         WHERE probe_tag IS NULL
-          AND harness IN ('claude-code', 'opencode', 'codex', 'cursor')
+          AND harness IN ('claude-code', 'opencode', 'codex', 'cursor', 'pi')
           AND (? IS NULL OR summary_text LIKE ?)
           AND (? IS NULL OR start_time >= ?)
           AND (? IS NULL OR cwd LIKE ?)
@@ -632,7 +632,7 @@ def list_projects_impl(conn: sqlite3.Connection, limit: int = 100) -> list[dict]
             FROM agentic_sessions
             WHERE project_dir IS NOT NULL AND project_dir != ''
               AND probe_tag IS NULL
-              AND harness IN ('claude-code', 'codex', 'cursor', 'opencode')
+              AND harness IN ('claude-code', 'codex', 'cursor', 'opencode', 'pi')
             GROUP BY project_dir
         """
     else:

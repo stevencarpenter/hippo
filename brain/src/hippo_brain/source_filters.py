@@ -9,7 +9,7 @@ from hippo_brain.auto_memory_constants import PROBE_REPOSITORY
 CLAUDE_AUTO_MEMORY_SOURCE = "claude-auto-memory"
 
 # Logical source families keyed by linked_source_ids prefix (see retrieval._fetch_details).
-_AGENTIC_LINK_PREFIXES = ("claude-", "codex-", "cursor-", "opencode-")
+_AGENTIC_LINK_PREFIXES = ("claude-", "codex-", "cursor-", "opencode-", "pi-")
 
 
 def source_kind_from_linked_id(link: str) -> str | None:
