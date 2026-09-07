@@ -127,7 +127,7 @@ class RunWriter:
     def close(self) -> None:
         self._f.close()
 
-    def __enter__(self) -> "RunWriter":
+    def __enter__(self) -> RunWriter:
         return self
 
     def __exit__(self, *_exc) -> None:

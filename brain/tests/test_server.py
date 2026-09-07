@@ -6,7 +6,6 @@ import time
 from unittest.mock import AsyncMock, patch
 
 import pytest
-
 from starlette.testclient import TestClient
 
 from hippo_brain.server import BrainServer, create_app

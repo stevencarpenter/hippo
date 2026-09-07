@@ -53,7 +53,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from hippo_brain.entity_resolver import (  # noqa: E402
+from hippo_brain.entity_resolver import (
     canonicalize,
     is_path_type,
     strip_worktree_prefix,

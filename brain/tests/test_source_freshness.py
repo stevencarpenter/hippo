@@ -8,14 +8,14 @@ import time
 import pytest
 
 from hippo_brain.retrieval import Filters, search
+from hippo_brain.retrieval_eligibility import IN_FLIGHT_SETTLE_MS
 from hippo_brain.source_freshness import (
+    CoverageSnapshot,
     attach_freshness_to_packets,
     build_freshness_snapshot,
     classify_capture_status,
-    CoverageSnapshot,
 )
-from hippo_brain.retrieval_eligibility import IN_FLIGHT_SETTLE_MS
-from tests.retrieval_fixtures import FakeBackend, TRUST_EVAL_SCHEMA
+from tests.retrieval_fixtures import TRUST_EVAL_SCHEMA, FakeBackend
 
 _NOW = int(time.time() * 1000)
 _SETTLED = _NOW - IN_FLIGHT_SETTLE_MS - 60_000

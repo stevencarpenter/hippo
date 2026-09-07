@@ -19,7 +19,7 @@ const SCHEMA: &str = concat!(
 /// startup code (e.g. the brain handshake) can cross-check without
 /// re-declaring the value. Keep in sync with
 /// `brain/src/hippo_brain/schema_version.py::EXPECTED_SCHEMA_VERSION`.
-pub const EXPECTED_VERSION: i64 = 23;
+pub const EXPECTED_VERSION: i64 = 24;
 
 /// Idempotent v18→v19 auto-memory DDL (same file as fresh-install assembly).
 const AUTO_MEMORY_SCHEMA: &str = include_str!("schema/auto_memory.sql");
@@ -1493,7 +1493,7 @@ pub fn open_db(path: &Path) -> Result<Connection> {
             if legacy_count > 0 && full_legacy_family && table_exists(&conn, "agentic_sessions")? {
                 let agentic_count: i64 = conn.query_row(
                     "SELECT COUNT(*) FROM agentic_sessions
-                     WHERE harness IN ('claude-code', 'codex', 'cursor', 'opencode')",
+                     WHERE harness IN ('claude-code', 'codex', 'cursor', 'opencode', 'pi')",
                     [],
                     |row| row.get(0),
                 )?;
@@ -1516,6 +1516,106 @@ pub fn open_db(path: &Path) -> Result<Connection> {
              PRAGMA foreign_keys = ON;
              PRAGMA user_version = 23;",
         )?;
+    }
+
+    // v23→v24: widen the `agentic_sessions.harness` CHECK to include 'pi' so
+    // the Pi transcript poller can write rows. SQLite can't alter CHECK in
+    // place — same table-rebuild recipe as v16→v17 (explicit transaction,
+    // FK OFF, scoped check as a QUERY before the version bump). Also seeds
+    // the `agentic-session-pi` source_health row: the poller's UPDATE is a
+    // silent no-op without it (same lesson as the codex/cursor seeds).
+    if (1..24).contains(&version) {
+        if table_exists(&conn, "agentic_sessions")? {
+            // Normalize first so the SELECT in the rebuild can always
+            // reference `probe_tag`. Idempotent no-op when present.
+            normalize_agentic_sessions_schema(&conn)?;
+
+            conn.execute_batch(
+                "PRAGMA foreign_keys = OFF;
+                 BEGIN;
+                 DROP TABLE IF EXISTS agentic_sessions_new;
+                 CREATE TABLE agentic_sessions_new (
+                     id                          INTEGER PRIMARY KEY,
+                     session_id                  TEXT    NOT NULL,
+                     harness                     TEXT    NOT NULL DEFAULT 'opencode'
+                                                     CHECK (harness IN ('claude-code', 'opencode', 'codex', 'cursor', 'pi')),
+                     segment_index               INTEGER NOT NULL DEFAULT 0,
+                     model                       TEXT    NOT NULL DEFAULT '',
+                     agent                       TEXT    DEFAULT '',
+                     project_dir                 TEXT    NOT NULL,
+                     cwd                         TEXT    NOT NULL,
+                     git_branch                  TEXT,
+                     slug                        TEXT    DEFAULT '',
+                     title                       TEXT    DEFAULT '',
+                     parent_session_id           TEXT,
+                     is_subagent                 INTEGER NOT NULL DEFAULT 0,
+                     summary_text                TEXT    NOT NULL,
+                     tool_calls_json             TEXT,
+                     user_prompts_json           TEXT,
+                     source_file                 TEXT    DEFAULT '',
+                     snapshot_diffs_json         TEXT    DEFAULT 'null',
+                     commit_messages_json        TEXT    DEFAULT '[]',
+                     message_count               INTEGER NOT NULL DEFAULT 0,
+                     token_count                 INTEGER NOT NULL DEFAULT 0,
+                     start_time                  INTEGER NOT NULL,
+                     end_time                    INTEGER NOT NULL,
+                     content_hash                TEXT,
+                     last_enriched_content_hash  TEXT,
+                     created_at                  INTEGER NOT NULL DEFAULT (unixepoch('now', 'subsec') * 1000),
+                     enriched                    INTEGER NOT NULL DEFAULT 0,
+                     probe_tag                   TEXT,
+                     UNIQUE (session_id, harness, segment_index)
+                 );
+                 INSERT INTO agentic_sessions_new
+                    (id, session_id, harness, segment_index, model, agent,
+                     project_dir, cwd, git_branch, slug, title, parent_session_id,
+                     is_subagent, summary_text, tool_calls_json, user_prompts_json,
+                     source_file, snapshot_diffs_json, commit_messages_json,
+                     message_count, token_count, start_time, end_time,
+                     content_hash, last_enriched_content_hash, created_at,
+                     enriched, probe_tag)
+                 SELECT
+                    id, session_id, harness, segment_index, model, agent,
+                    project_dir, cwd, git_branch, slug, title, parent_session_id,
+                    is_subagent, summary_text, tool_calls_json, user_prompts_json,
+                    source_file, snapshot_diffs_json, commit_messages_json,
+                    message_count, token_count, start_time, end_time,
+                    content_hash, last_enriched_content_hash, created_at,
+                    enriched, probe_tag
+                 FROM agentic_sessions;
+                 DROP TABLE agentic_sessions;
+                 ALTER TABLE agentic_sessions_new RENAME TO agentic_sessions;
+                 CREATE INDEX IF NOT EXISTS idx_agentic_sessions_harness
+                     ON agentic_sessions (harness);
+                 CREATE INDEX IF NOT EXISTS idx_agentic_sessions_cwd
+                     ON agentic_sessions (cwd);
+                 CREATE INDEX IF NOT EXISTS idx_agentic_sessions_start_time
+                     ON agentic_sessions (start_time DESC);
+                 CREATE INDEX IF NOT EXISTS idx_agentic_sessions_enriched
+                     ON agentic_sessions (enriched) WHERE enriched = 0;",
+            )?;
+
+            enforce_no_fk_violations(&conn, "v23→v24 agentic_sessions rebuild")?;
+
+            conn.execute_batch(
+                "PRAGMA user_version = 24;
+                 COMMIT;
+                 PRAGMA foreign_keys = ON;",
+            )?;
+        } else {
+            // No table to rebuild (partial-schema test DBs); still advance
+            // the version so the migration doesn't re-trigger on every open.
+            conn.execute_batch("PRAGMA user_version = 24;")?;
+        }
+        // Seed separately from the rebuild: partial-schema test DBs may
+        // have `agentic_sessions` without `source_health` (mirrors the
+        // v15→v16 cursor-seed guard).
+        if table_exists(&conn, "source_health")? {
+            conn.execute_batch(
+                "INSERT OR IGNORE INTO source_health (source, last_event_ts, updated_at) VALUES
+                    ('agentic-session-pi', NULL, unixepoch('now') * 1000);",
+            )?;
+        }
     } else if version != 0 && version != EXPECTED_VERSION {
         anyhow::bail!(
             "DB schema version mismatch: expected {}, found {}. \
@@ -1549,6 +1649,7 @@ pub fn open_db(path: &Path) -> Result<Connection> {
                 ('agentic-session-opencode', NULL, unixepoch('now') * 1000),
                 ('agentic-session-codex',    NULL, unixepoch('now') * 1000),
                 ('agentic-session-cursor',   NULL, unixepoch('now') * 1000),
+                ('agentic-session-pi',       NULL, unixepoch('now') * 1000),
                 ('brain-preflight',          NULL, unixepoch('now') * 1000),
                 ('claude-auto-memory',       NULL, unixepoch('now') * 1000),
                 ('auto-memory-watcher',      NULL, unixepoch('now') * 1000);",
@@ -5230,6 +5331,105 @@ mod tests {
             clean_links, 1,
             "clean link must be re-resolved into the agentic link table"
         );
+    }
+
+    #[test]
+    fn test_migrate_v23_to_v24_widens_harness_check_for_pi() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("test.db");
+        {
+            let conn = rusqlite::Connection::open(&db_path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE agentic_sessions (
+                    id              INTEGER PRIMARY KEY,
+                    session_id      TEXT    NOT NULL,
+                    harness         TEXT    NOT NULL DEFAULT 'opencode'
+                                        CHECK (harness IN ('claude-code', 'opencode', 'codex', 'cursor')),
+                    segment_index   INTEGER NOT NULL DEFAULT 0,
+                    model           TEXT    NOT NULL DEFAULT '',
+                    agent           TEXT    DEFAULT '',
+                    project_dir     TEXT    NOT NULL,
+                    cwd             TEXT    NOT NULL,
+                    git_branch      TEXT,
+                    slug            TEXT    DEFAULT '',
+                    title           TEXT    DEFAULT '',
+                    parent_session_id TEXT,
+                    is_subagent     INTEGER NOT NULL DEFAULT 0,
+                    summary_text    TEXT    NOT NULL,
+                    tool_calls_json TEXT,
+                    user_prompts_json TEXT,
+                    source_file     TEXT    DEFAULT '',
+                    snapshot_diffs_json TEXT DEFAULT 'null',
+                    commit_messages_json TEXT DEFAULT '[]',
+                    message_count   INTEGER NOT NULL DEFAULT 0,
+                    token_count     INTEGER NOT NULL DEFAULT 0,
+                    start_time      INTEGER NOT NULL,
+                    end_time        INTEGER NOT NULL,
+                    content_hash    TEXT,
+                    last_enriched_content_hash TEXT,
+                    created_at      INTEGER NOT NULL DEFAULT 1700000000000,
+                    enriched        INTEGER NOT NULL DEFAULT 0,
+                    probe_tag       TEXT,
+                    UNIQUE (session_id, harness, segment_index)
+                );
+                INSERT INTO agentic_sessions
+                    (id, session_id, harness, project_dir, cwd, summary_text,
+                     start_time, end_time)
+                VALUES
+                    (7, 'sess-keep', 'cursor', '/proj', '/proj', 'keep me',
+                     1700000000000, 1700000001000);
+                CREATE TABLE source_health (
+                    source                 TEXT PRIMARY KEY,
+                    last_event_ts          INTEGER,
+                    last_success_ts        INTEGER,
+                    last_error_ts          INTEGER,
+                    last_error_msg         TEXT,
+                    consecutive_failures   INTEGER NOT NULL DEFAULT 0,
+                    events_last_1h         INTEGER NOT NULL DEFAULT 0,
+                    events_last_24h        INTEGER NOT NULL DEFAULT 0,
+                    expected_min_per_hour  INTEGER,
+                    probe_ok               INTEGER,
+                    probe_lag_ms           INTEGER,
+                    probe_last_run_ts      INTEGER,
+                    last_heartbeat_ts      INTEGER,
+                    updated_at             INTEGER NOT NULL DEFAULT 0
+                );
+                PRAGMA user_version = 23;",
+            )
+            .unwrap();
+        }
+        let conn = open_db(&db_path).unwrap();
+        let v: i64 = conn
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(v, EXPECTED_VERSION);
+        // Pre-migration row survives the rebuild with values intact.
+        let summary: String = conn
+            .query_row(
+                "SELECT summary_text FROM agentic_sessions WHERE id = 7",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(summary, "keep me");
+        // The widened CHECK now accepts harness='pi'.
+        conn.execute(
+            "INSERT INTO agentic_sessions
+                (session_id, harness, project_dir, cwd, summary_text,
+                 start_time, end_time)
+             VALUES ('sess-pi', 'pi', '/p', '/p', 'pi row', 1, 2)",
+            [],
+        )
+        .expect("v24 CHECK must accept harness='pi'");
+        // The pi source_health row is seeded.
+        let exists: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM source_health WHERE source = 'agentic-session-pi')",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(exists, "v24 migration must seed agentic-session-pi");
     }
 
     #[test]

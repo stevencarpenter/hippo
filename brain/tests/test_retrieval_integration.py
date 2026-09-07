@@ -16,7 +16,6 @@ import pytest
 from hippo_brain import retrieval, vector_store
 from hippo_brain.retrieval import Filters, Tuning
 from hippo_brain.vector_store import EMBED_DIM
-
 from tests.retrieval_fixtures import TRUST_EVAL_SCHEMA
 
 pytest.importorskip("sqlite_vec")

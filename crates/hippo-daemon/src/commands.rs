@@ -16,6 +16,7 @@ use crate::browser_health::{self, BROWSER_EVENT_WARN_SECS, BrowserExtensionConne
 use crate::codex_session;
 use crate::cursor_session;
 use crate::framing::{read_frame, write_frame};
+use crate::pi_session;
 use crate::shell_health;
 
 const REQUEST_TIMEOUT_MS: u64 = 5_000;
@@ -1248,6 +1249,7 @@ pub async fn handle_doctor(config: &HippoConfig, explain: bool) -> Result<()> {
                 check_claude_session_coverage(&conn, &home.join(".claude/projects"), explain);
         }
         fail_count += check_cursor_session_coverage(config, &conn, explain);
+        fail_count += check_pi_session_coverage(config, &conn, explain);
         fail_count += check_auto_memory_health(config, &conn, explain);
         fail_count += check_watchdog_heartbeat(&conn, explain);
         // Auto-resolved alarm count is informational — never increments fail_count.
@@ -1369,8 +1371,8 @@ const DAY_MS: i64 = 24 * HOUR_MS;
 ///
 /// Session-table probes (claude-session, agentic-session-*) use `MAX(end_time)`
 /// rather than `MAX(start_time)` on purpose: the upsert pattern across
-/// `claude_session.rs`, `codex_session.rs`, `cursor_session.rs`, and
-/// `opencode_session.rs` advances `end_time` on every conflict-update but
+/// `claude_session.rs`, `codex_session.rs`, `cursor_session.rs`,
+/// `pi_session.rs`, and `opencode_session.rs` advances `end_time` on every conflict-update but
 /// deliberately preserves `start_time`, so `end_time` is the column that tracks
 /// "most recent activity" — the question freshness is actually asking. Using
 /// `start_time` would let a long-running session's freshness lag by the segment
@@ -1456,6 +1458,17 @@ pub fn source_freshness_probes() -> Vec<SourceFreshnessProbe> {
             name: "agentic-session-cursor",
             query: "SELECT COUNT(*), MAX(end_time) FROM agentic_sessions \
                     WHERE harness = 'cursor' AND probe_tag IS NULL",
+            thresholds: FreshnessThresholds {
+                soft_ms: 3 * DAY_MS,
+                hard_ms: 30 * DAY_MS,
+            },
+        },
+        // Pi rows in `agentic_sessions` keyed by `harness = 'pi'`. Probe
+        // rows excluded per AP-6. Thresholds mirror opencode.
+        SourceFreshnessProbe {
+            name: "agentic-session-pi",
+            query: "SELECT COUNT(*), MAX(end_time) FROM agentic_sessions \
+                    WHERE harness = 'pi' AND probe_tag IS NULL",
             thresholds: FreshnessThresholds {
                 soft_ms: 3 * DAY_MS,
                 hard_ms: 30 * DAY_MS,
@@ -1845,7 +1858,7 @@ fn check_source_staleness(db: &rusqlite::Connection, explain: bool) -> u32 {
     let rows_result = db.prepare(
         "SELECT source, last_event_ts, last_heartbeat_ts, last_error_msg, consecutive_failures, events_last_1h, probe_ok \
          FROM source_health \
-         WHERE source IN ('shell', 'browser', 'agentic-session-claude', 'claude-tool', 'agentic-session-opencode', 'agentic-session-codex', 'agentic-session-cursor') \
+         WHERE source IN ('shell', 'browser', 'agentic-session-claude', 'claude-tool', 'agentic-session-opencode', 'agentic-session-codex', 'agentic-session-cursor', 'agentic-session-pi') \
          ORDER BY source",
     );
 
@@ -2037,6 +2050,56 @@ fn check_source_staleness(db: &rusqlite::Connection, explain: bool) -> u32 {
         (any_exist, any_recent, any_in_flight)
     };
 
+    // Inspect the Pi session transcripts under the configured session roots.
+    // Same two facts as Cursor: `any_exist` (user has run Pi) and `any_recent`
+    // (modified within IDLE_WINDOW_SECS). Any `*.jsonl` under the roots is a
+    // transcript candidate — the roots themselves are the `<slug>/` parents.
+    let pi_session_state = || -> (bool, bool, bool) {
+        // Config unreadable: fail open for alerting (mirrors codex above).
+        let Ok(cfg) = doctor_config.as_ref() else {
+            return SESSION_STATE_CONFIG_ERROR_FALLBACK;
+        };
+        // Disabled source: skip the WalkDir; `!pi_enabled` classifies the
+        // row (mirrors codex above).
+        if !cfg.pi.enabled {
+            return (false, false, false);
+        }
+        let now = std::time::SystemTime::now();
+        let recent_cutoff = now
+            .checked_sub(std::time::Duration::from_secs(IDLE_WINDOW_SECS))
+            .unwrap_or(std::time::UNIX_EPOCH);
+        // In-flight = modified within the poller's settle gate (mirrors cursor).
+        let in_flight_cutoff = now
+            .checked_sub(std::time::Duration::from_secs(cfg.pi.min_idle_secs))
+            .unwrap_or(std::time::UNIX_EPOCH);
+        let mut any_exist = false;
+        let mut any_recent = false;
+        let mut any_in_flight = false;
+        for root in &cfg.pi.session_roots {
+            if !root.is_dir() {
+                continue;
+            }
+            for entry in WalkDir::new(root).into_iter().filter_map(|e| e.ok()) {
+                let path = entry.path();
+                if !pi_session::is_transcript(path) {
+                    continue;
+                }
+                any_exist = true;
+                if let Ok(meta) = entry.metadata()
+                    && let Ok(modified) = meta.modified()
+                {
+                    any_recent |= modified > recent_cutoff;
+                    any_in_flight |= modified > in_flight_cutoff;
+                }
+                // Both freshness facts settled — stop walking.
+                if any_recent && any_in_flight {
+                    return (true, true, true);
+                }
+            }
+        }
+        (any_exist, any_recent, any_in_flight)
+    };
+
     // Check the opencode `session` table for recent activity.
     //   - `any_exist`:  at least one session row exists in the DB.
     //     False ⇒ "user has never run opencode" — suppress rather than alarm.
@@ -2136,12 +2199,21 @@ fn check_source_staleness(db: &rusqlite::Connection, explain: bool) -> u32 {
         codex_session_state();
     let (cursor_sessions_do_exist, cursor_sessions_are_recent, cursor_session_is_in_flight) =
         cursor_session_state();
+    let (pi_sessions_do_exist, pi_sessions_are_recent, pi_session_is_in_flight) =
+        pi_session_state();
     // Extract enabled flags from config; fall back to `true` (no suppression) on
     // a config-load error so a broken config file doesn't silently hide real failures.
-    let (opencode_enabled, codex_enabled, cursor_enabled) = doctor_config
+    let (opencode_enabled, codex_enabled, cursor_enabled, pi_enabled) = doctor_config
         .as_ref()
-        .map(|cfg| (cfg.opencode.enabled, cfg.codex.enabled, cfg.cursor.enabled))
-        .unwrap_or((true, true, true));
+        .map(|cfg| {
+            (
+                cfg.opencode.enabled,
+                cfg.codex.enabled,
+                cfg.cursor.enabled,
+                cfg.pi.enabled,
+            )
+        })
+        .unwrap_or((true, true, true, true));
     let suppression_env = SuppressionSignals {
         probe_ok: None, // per-row; filled in inside the loop
         shell_activity_recent,
@@ -2158,6 +2230,10 @@ fn check_source_staleness(db: &rusqlite::Connection, explain: bool) -> u32 {
         cursor_sessions_recent: cursor_sessions_are_recent,
         cursor_session_in_flight: cursor_session_is_in_flight,
         cursor_enabled,
+        pi_sessions_exist: pi_sessions_do_exist,
+        pi_sessions_recent: pi_sessions_are_recent,
+        pi_session_in_flight: pi_session_is_in_flight,
+        pi_enabled,
     };
 
     // All expected sources — report missing ones too.
@@ -2165,6 +2241,7 @@ fn check_source_staleness(db: &rusqlite::Connection, explain: bool) -> u32 {
         "agentic-session-codex",
         "agentic-session-cursor",
         "agentic-session-opencode",
+        "agentic-session-pi",
         "browser",
         "agentic-session-claude",
         "claude-tool",
@@ -2654,6 +2731,113 @@ fn check_cursor_session_coverage(
     (missing_count.min(3)) as u32
 }
 
+/// Doctor completeness check: on-disk Pi transcripts vs `agentic_sessions`
+/// (harness = 'pi', probe_tag IS NULL). Enumerates every `*.jsonl` under the
+/// configured pi session roots and compares the resolved session id
+/// (`pi_session::session_file_id`: header id, else reviewer runId, else
+/// filename UUID) — the file stem itself is `<timestamp>_<uuid>` (or the
+/// constant `session`), so stems never match rows.
+fn check_pi_session_coverage(
+    config: &HippoConfig,
+    db: &rusqlite::Connection,
+    explain: bool,
+) -> u32 {
+    let label = "Pi session coverage";
+    let padded = format!("{:<29}", label);
+
+    if !config.pi.enabled {
+        println!("[--] {}  disabled", padded);
+        return 0;
+    }
+
+    let known = match read_agentic_session_ids(db, "pi") {
+        Ok(set) => set,
+        Err(e) => {
+            println!("[!!] {}  coverage check failed: {e}", padded);
+            return 1;
+        }
+    };
+
+    // Skip files still inside the idle window — like the poller, an in-flight
+    // transcript is not yet expected to have a row.
+    let idle_cutoff = std::time::SystemTime::now()
+        .checked_sub(std::time::Duration::from_secs(config.pi.min_idle_secs))
+        .unwrap_or(std::time::UNIX_EPOCH);
+
+    let mut any_root = false;
+    let mut total_transcripts = 0usize;
+    let mut zero_segment = 0usize;
+    let mut in_flight = 0usize;
+    let mut missing: Vec<String> = Vec::new();
+
+    for root in &config.pi.session_roots {
+        if !root.is_dir() {
+            continue;
+        }
+        any_root = true;
+        for entry in WalkDir::new(root).into_iter().filter_map(|e| e.ok()) {
+            let path = entry.path();
+            if !pi_session::is_transcript(path) {
+                continue;
+            }
+            // Skip in-flight files (modified within the idle window).
+            if let Ok(meta) = entry.metadata()
+                && let Ok(modified) = meta.modified()
+                && modified > idle_cutoff
+            {
+                in_flight += 1;
+                continue;
+            }
+            total_transcripts += 1;
+            let session_id = pi_session::session_file_id(path);
+            if known.contains(&session_id) {
+                continue;
+            }
+            if pi_session::processed_without_segments(db, path) {
+                zero_segment += 1;
+                continue;
+            }
+            if missing.len() < 10 {
+                missing.push(session_id);
+            } else {
+                missing.push(String::new());
+            }
+        }
+    }
+
+    if !any_root {
+        println!("[--] {}  no Pi sessions dir", padded);
+        return 0;
+    }
+
+    let missing_count = missing.len();
+    if missing_count == 0 {
+        println!(
+            "[OK] {}  {} transcript(s) accounted for ({} zero-segment expected absent, {} in-flight)",
+            padded, total_transcripts, zero_segment, in_flight
+        );
+        return 0;
+    }
+
+    println!(
+        "[!!] {}  {} of {} transcript(s) missing from Hippo ({} zero-segment expected absent, {} in-flight)",
+        padded, missing_count, total_transcripts, zero_segment, in_flight
+    );
+    if explain {
+        let shown: Vec<&str> = missing
+            .iter()
+            .filter(|s| !s.is_empty())
+            .map(|s| s.as_str())
+            .collect();
+        if !shown.is_empty() {
+            println!("     MISSING HIPPO: {}", shown.join(", "));
+        }
+        println!("     FIX:    run `hippo pi-poll`, then re-run `hippo doctor`");
+        println!("     DOC:    docs/capture/operator-runbook.md");
+    }
+    (missing_count.min(3)) as u32
+}
+
 /// Read the set of `agentic_sessions.session_id` for a given harness, excluding
 /// synthetic probe rows. Shared by the Claude/Cursor coverage checks; mirrors
 /// `codex_session::read_hippo_session_ids` (which is harness-fixed to 'codex').
@@ -2735,6 +2919,17 @@ struct SuppressionSignals {
     /// `[cursor] enabled` from config — false means the source is intentionally
     /// disabled and staleness alarms must not fire regardless of file activity.
     cursor_enabled: bool,
+    /// At least one Pi session transcript `.jsonl` exists under the roots.
+    pi_sessions_exist: bool,
+    /// At least one Pi session transcript `.jsonl` changed within 10 minutes.
+    pi_sessions_recent: bool,
+    /// The newest Pi session transcript `.jsonl` was modified within `[pi]
+    /// min_idle_secs` — i.e. it is still being written, so the poller is
+    /// *correctly* skipping it (mirrors `cursor_session_in_flight`).
+    pi_session_in_flight: bool,
+    /// `[pi] enabled` from config — false means the source is intentionally
+    /// disabled and staleness alarms must not fire regardless of file activity.
+    pi_enabled: bool,
 }
 
 fn classify_source_staleness(
@@ -2823,6 +3018,12 @@ fn source_staleness_suppression_reason(
             Some("Cursor session in-flight (settling)")
         }
         "agentic-session-cursor" if !signals.cursor_sessions_recent => Some("Cursor sessions idle"),
+        "agentic-session-pi" if !signals.pi_enabled => Some("source disabled"),
+        "agentic-session-pi" if !signals.pi_sessions_exist => Some("no Pi sessions found"),
+        "agentic-session-pi" if signals.pi_session_in_flight => {
+            Some("Pi session in-flight (settling)")
+        }
+        "agentic-session-pi" if !signals.pi_sessions_recent => Some("Pi sessions idle"),
         _ => None,
     }
 }
@@ -2849,15 +3050,16 @@ fn source_staleness_thresholds_for(source: &str) -> SourceStalenessThresholds {
             warn_secs: 300,
             fail_secs: 600,
         },
-        // Opencode, Codex, and Cursor are all interval pollers — tolerate a
-        // missed tick before warning, an hour before failing. All three also
+        // Opencode, Codex, Cursor, and Pi are all interval pollers — tolerate a
+        // missed tick before warning, an hour before failing. All four also
         // suppress idle-source warnings in `source_staleness_suppression_reason`.
-        "agentic-session-opencode" | "agentic-session-codex" | "agentic-session-cursor" => {
-            SourceStalenessThresholds {
-                warn_secs: 300,
-                fail_secs: 3600,
-            }
-        }
+        "agentic-session-opencode"
+        | "agentic-session-codex"
+        | "agentic-session-cursor"
+        | "agentic-session-pi" => SourceStalenessThresholds {
+            warn_secs: 300,
+            fail_secs: 3600,
+        },
         _ => SourceStalenessThresholds {
             warn_secs: 300,
             fail_secs: 1800,
@@ -5139,6 +5341,10 @@ replacement = "***"
             cursor_sessions_recent,
             cursor_session_in_flight: false,
             cursor_enabled: true,
+            pi_sessions_exist: false,
+            pi_sessions_recent: false,
+            pi_session_in_flight: false,
+            pi_enabled: true,
         }
     }
 
@@ -5530,6 +5736,18 @@ replacement = "***"
             classify_source_staleness("agentic-session-cursor", 2 * 3600, cursor_sig),
             SourceStalenessStatus::Fail,
             "config-load failure must not hide a stale Cursor source_health row"
+        );
+
+        let pi_sig = SuppressionSignals {
+            pi_sessions_exist: exist,
+            pi_sessions_recent: recent,
+            pi_session_in_flight: in_flight,
+            ..signals(false, false, false, false, false)
+        };
+        assert_eq!(
+            classify_source_staleness("agentic-session-pi", 2 * 3600, pi_sig),
+            SourceStalenessStatus::Fail,
+            "config-load failure must not hide a stale Pi source_health row"
         );
     }
 

@@ -22,7 +22,7 @@ STALE_LOCK_TIMEOUT_MS = DEFAULT_LOCK_TIMEOUT_MS
 
 # 5-minute gap between user prompts = task boundary
 TASK_GAP_MS = 5 * 60 * 1000
-CLAUDE_LIKE_HARNESSES = ("claude-code", "codex", "cursor")
+CLAUDE_LIKE_HARNESSES = ("claude-code", "codex", "cursor", "pi")
 
 CLAUDE_SYSTEM_PROMPT = """You are a developer activity analyst. You receive a summary of a Claude Code AI assistant session segment — what the developer asked and what the AI did on their behalf.
 
@@ -175,9 +175,7 @@ def _extract_tool_summary(block: dict) -> dict | None:
     summary = ""
     if name == "Bash":
         summary = inp.get("command", "")[:200]
-    elif name in ("Read", "Write"):
-        summary = inp.get("file_path", "")
-    elif name == "Edit":
+    elif name in ("Read", "Write") or name == "Edit":
         summary = inp.get("file_path", "")
     elif name == "Grep":
         pattern = inp.get("pattern", "")
@@ -395,7 +393,7 @@ def _eligibility_source_for_harness(harness: str | None) -> str:
     # `harness` to a non-empty `str` on the fall-through, so the final return
     # matches the declared `-> str` (a set-membership test on `{None, ...}`
     # does not narrow).
-    if not harness or harness in {"claude-code", "codex", "cursor"}:
+    if not harness or harness in {"claude-code", "codex", "cursor", "pi"}:
         return "claude"
     return harness
 

@@ -2,8 +2,8 @@ from unittest.mock import MagicMock, patch
 
 from hippo_brain.bench.enrich_call import (
     build_prompt,
-    call_enrichment,
     call_embedding,
+    call_enrichment,
 )
 
 

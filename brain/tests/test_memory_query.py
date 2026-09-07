@@ -10,13 +10,13 @@ import pytest
 
 from hippo_brain.auto_memory import ingest_memory_file, write_memory_knowledge_node
 from hippo_brain.auto_memory_lifecycle import RevisionRetention, reconcile_configured_sources
+from hippo_brain.mcp import query_memory, query_memory_history
 from hippo_brain.memory_query import (
     MemoryQueryRequest,
     query_memory_current,
     run_memory_history_query,
 )
 from hippo_brain.models import EnrichmentResult
-from hippo_brain.mcp import query_memory, query_memory_history
 
 
 @pytest.fixture

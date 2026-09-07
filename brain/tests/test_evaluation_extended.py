@@ -14,14 +14,13 @@ import pytest
 
 from hippo_brain.evaluation import (
     Question,
+    _pairwise_mean_cosine,
     derive_sources,
     ndcg_at_k,
     near_duplicate_density,
     run_benchmark,
     source_diversity,
 )
-from hippo_brain.evaluation import _pairwise_mean_cosine
-
 
 # ---------------------------------------------------------------------------
 # Metric edge cases

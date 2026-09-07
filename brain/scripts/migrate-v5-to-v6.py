@@ -57,10 +57,15 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 # sqlite-vec must be loaded before any connection touches knowledge_vectors.
-import sqlite_vec  # type: ignore[import-untyped]  # noqa: E402
+import sqlite_vec  # type: ignore[import-untyped]
 
-from hippo_brain.enrichment import is_enrichment_eligible  # type: ignore[import-untyped]  # noqa: E402
-from hippo_brain.watchdog import QUEUES, reap_stale_locks  # type: ignore[import-untyped]  # noqa: E402
+from hippo_brain.enrichment import (
+    is_enrichment_eligible,  # type: ignore[import-untyped]
+)
+from hippo_brain.watchdog import (  # type: ignore[import-untyped]
+    QUEUES,
+    reap_stale_locks,
+)
 
 _SCRIPTS_DIR = Path(__file__).resolve().parent
 
@@ -95,7 +100,7 @@ class _JsonLineHandler(logging.FileHandler):
 
     def emit(self, record: logging.LogRecord) -> None:
         try:
-            ts = datetime.datetime.now(datetime.timezone.utc).isoformat()
+            ts = datetime.datetime.now(datetime.UTC).isoformat()
             entry: dict[str, object] = {
                 "ts": ts,
                 "level": record.levelname,
@@ -230,7 +235,7 @@ def phase_preflight(
             "and proceed past phase 1."
         )
 
-    ts = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    ts = datetime.datetime.now(datetime.UTC).strftime("%Y%m%dT%H%M%SZ")
     backup_path = db_path.parent / f"hippo.db.v5-backup-{ts}"
     log.info("[preflight] creating WAL-safe backup → %s", backup_path)
     backup_conn = sqlite3.connect(str(backup_path))
@@ -370,28 +375,28 @@ def phase_schema_forward(
 
 # Hardcoded per-table SQL — table names are literals, never user input.
 _SQL_COUNT_STALE: dict[str, str] = {
-    "enrichment_queue": "SELECT COUNT(*) FROM enrichment_queue WHERE status = 'processing' AND COALESCE(locked_at, 0) <= ?",  # noqa: E501
-    "agentic_enrichment_queue": "SELECT COUNT(*) FROM agentic_enrichment_queue WHERE status = 'processing' AND COALESCE(locked_at, 0) <= ?",  # noqa: E501
-    "browser_enrichment_queue": "SELECT COUNT(*) FROM browser_enrichment_queue WHERE status = 'processing' AND COALESCE(locked_at, 0) <= ?",  # noqa: E501
-    "workflow_enrichment_queue": "SELECT COUNT(*) FROM workflow_enrichment_queue WHERE status = 'processing' AND COALESCE(locked_at, 0) <= ?",  # noqa: E501
+    "enrichment_queue": "SELECT COUNT(*) FROM enrichment_queue WHERE status = 'processing' AND COALESCE(locked_at, 0) <= ?",
+    "agentic_enrichment_queue": "SELECT COUNT(*) FROM agentic_enrichment_queue WHERE status = 'processing' AND COALESCE(locked_at, 0) <= ?",
+    "browser_enrichment_queue": "SELECT COUNT(*) FROM browser_enrichment_queue WHERE status = 'processing' AND COALESCE(locked_at, 0) <= ?",
+    "workflow_enrichment_queue": "SELECT COUNT(*) FROM workflow_enrichment_queue WHERE status = 'processing' AND COALESCE(locked_at, 0) <= ?",
 }
 _SQL_COUNT_FAILED_ELIGIBLE: dict[str, str] = {
-    "enrichment_queue": "SELECT COUNT(*) FROM enrichment_queue WHERE status = 'failed' AND retry_count < max_retries AND COALESCE(updated_at, 0) > ?",  # noqa: E501
-    "agentic_enrichment_queue": "SELECT COUNT(*) FROM agentic_enrichment_queue WHERE status = 'failed' AND retry_count < max_retries AND COALESCE(updated_at, 0) > ?",  # noqa: E501
-    "browser_enrichment_queue": "SELECT COUNT(*) FROM browser_enrichment_queue WHERE status = 'failed' AND retry_count < max_retries AND COALESCE(updated_at, 0) > ?",  # noqa: E501
-    "workflow_enrichment_queue": "SELECT COUNT(*) FROM workflow_enrichment_queue WHERE status = 'failed' AND retry_count < max_retries AND COALESCE(updated_at, 0) > ?",  # noqa: E501
+    "enrichment_queue": "SELECT COUNT(*) FROM enrichment_queue WHERE status = 'failed' AND retry_count < max_retries AND COALESCE(updated_at, 0) > ?",
+    "agentic_enrichment_queue": "SELECT COUNT(*) FROM agentic_enrichment_queue WHERE status = 'failed' AND retry_count < max_retries AND COALESCE(updated_at, 0) > ?",
+    "browser_enrichment_queue": "SELECT COUNT(*) FROM browser_enrichment_queue WHERE status = 'failed' AND retry_count < max_retries AND COALESCE(updated_at, 0) > ?",
+    "workflow_enrichment_queue": "SELECT COUNT(*) FROM workflow_enrichment_queue WHERE status = 'failed' AND retry_count < max_retries AND COALESCE(updated_at, 0) > ?",
 }
 _SQL_RESET_FAILED: dict[str, str] = {
-    "enrichment_queue": "UPDATE enrichment_queue SET status = 'pending', error_message = 'reset by v5→v6 migration', locked_at = NULL, locked_by = NULL, updated_at = ? WHERE status = 'failed' AND retry_count < max_retries AND COALESCE(updated_at, 0) > ?",  # noqa: E501
-    "agentic_enrichment_queue": "UPDATE agentic_enrichment_queue SET status = 'pending', error_message = 'reset by v5→v6 migration', locked_at = NULL, locked_by = NULL, updated_at = ? WHERE status = 'failed' AND retry_count < max_retries AND COALESCE(updated_at, 0) > ?",  # noqa: E501
-    "browser_enrichment_queue": "UPDATE browser_enrichment_queue SET status = 'pending', error_message = 'reset by v5→v6 migration', locked_at = NULL, locked_by = NULL, updated_at = ? WHERE status = 'failed' AND retry_count < max_retries AND COALESCE(updated_at, 0) > ?",  # noqa: E501
-    "workflow_enrichment_queue": "UPDATE workflow_enrichment_queue SET status = 'pending', error_message = 'reset by v5→v6 migration', locked_at = NULL, locked_by = NULL, updated_at = ? WHERE status = 'failed' AND retry_count < max_retries AND COALESCE(updated_at, 0) > ?",  # noqa: E501
+    "enrichment_queue": "UPDATE enrichment_queue SET status = 'pending', error_message = 'reset by v5→v6 migration', locked_at = NULL, locked_by = NULL, updated_at = ? WHERE status = 'failed' AND retry_count < max_retries AND COALESCE(updated_at, 0) > ?",
+    "agentic_enrichment_queue": "UPDATE agentic_enrichment_queue SET status = 'pending', error_message = 'reset by v5→v6 migration', locked_at = NULL, locked_by = NULL, updated_at = ? WHERE status = 'failed' AND retry_count < max_retries AND COALESCE(updated_at, 0) > ?",
+    "browser_enrichment_queue": "UPDATE browser_enrichment_queue SET status = 'pending', error_message = 'reset by v5→v6 migration', locked_at = NULL, locked_by = NULL, updated_at = ? WHERE status = 'failed' AND retry_count < max_retries AND COALESCE(updated_at, 0) > ?",
+    "workflow_enrichment_queue": "UPDATE workflow_enrichment_queue SET status = 'pending', error_message = 'reset by v5→v6 migration', locked_at = NULL, locked_by = NULL, updated_at = ? WHERE status = 'failed' AND retry_count < max_retries AND COALESCE(updated_at, 0) > ?",
 }
 _SQL_GIVEUP: dict[str, str] = {
-    "enrichment_queue": "UPDATE enrichment_queue SET giveup = 1 WHERE status = 'failed' AND COALESCE(updated_at, 0) <= ?",  # noqa: E501
-    "agentic_enrichment_queue": "UPDATE agentic_enrichment_queue SET giveup = 1 WHERE status = 'failed' AND COALESCE(updated_at, 0) <= ?",  # noqa: E501
-    "browser_enrichment_queue": "UPDATE browser_enrichment_queue SET giveup = 1 WHERE status = 'failed' AND COALESCE(updated_at, 0) <= ?",  # noqa: E501
-    "workflow_enrichment_queue": "UPDATE workflow_enrichment_queue SET giveup = 1 WHERE status = 'failed' AND COALESCE(updated_at, 0) <= ?",  # noqa: E501
+    "enrichment_queue": "UPDATE enrichment_queue SET giveup = 1 WHERE status = 'failed' AND COALESCE(updated_at, 0) <= ?",
+    "agentic_enrichment_queue": "UPDATE agentic_enrichment_queue SET giveup = 1 WHERE status = 'failed' AND COALESCE(updated_at, 0) <= ?",
+    "browser_enrichment_queue": "UPDATE browser_enrichment_queue SET giveup = 1 WHERE status = 'failed' AND COALESCE(updated_at, 0) <= ?",
+    "workflow_enrichment_queue": "UPDATE workflow_enrichment_queue SET giveup = 1 WHERE status = 'failed' AND COALESCE(updated_at, 0) <= ?",
 }
 
 
@@ -919,7 +924,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 def main(argv: list[str] | None = None) -> int:
     args = _parse_args(argv)
 
-    ts = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    ts = datetime.datetime.now(datetime.UTC).strftime("%Y%m%dT%H%M%SZ")
     log_path = args.log or Path("logs") / f"migration-{ts}.log"
     log = _setup_logging(log_path)
 

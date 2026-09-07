@@ -29,6 +29,8 @@ pub struct HippoConfig {
     #[serde(default)]
     pub cursor: CursorConfig,
     #[serde(default)]
+    pub pi: PiConfig,
+    #[serde(default)]
     pub auto_memory: AutoMemoryConfig,
     #[serde(default)]
     pub reaper: ReaperConfig,
@@ -793,6 +795,55 @@ impl Default for CursorConfig {
     }
 }
 
+fn default_pi_enabled() -> bool {
+    true
+}
+
+fn default_pi_poll_interval_secs() -> u64 {
+    60
+}
+
+fn default_pi_min_idle_secs() -> u64 {
+    60
+}
+
+fn default_pi_session_roots() -> Vec<PathBuf> {
+    let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
+    vec![home.join(".pi/agent/sessions")]
+}
+
+/// Pi agent session transcript ingestion. The poller walks `session_roots`
+/// for `*.jsonl` files (one per session, `<timestamp>_<uuid>.jsonl`) and writes
+/// segmented rows into `agentic_sessions` with `harness = 'pi'`, distinguished
+/// by the `.pi/` path stored in the `source_file` column.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PiConfig {
+    /// Enable Pi session ingestion. When false, `poll_tick` is a no-op.
+    #[serde(default = "default_pi_enabled")]
+    pub enabled: bool,
+    /// Directories scanned recursively for `*.jsonl` session transcripts.
+    #[serde(default = "default_pi_session_roots")]
+    pub session_roots: Vec<PathBuf>,
+    /// Skip files modified within this many seconds — they may be in-flight
+    /// and a partial read would freeze the segment at an early state.
+    #[serde(default = "default_pi_min_idle_secs")]
+    pub min_idle_secs: u64,
+    /// launchd StartInterval for the pi-session poll job, in seconds.
+    #[serde(default = "default_pi_poll_interval_secs")]
+    pub poll_interval_secs: u64,
+}
+
+impl Default for PiConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_pi_enabled(),
+            session_roots: default_pi_session_roots(),
+            min_idle_secs: default_pi_min_idle_secs(),
+            poll_interval_secs: default_pi_poll_interval_secs(),
+        }
+    }
+}
+
 impl HippoConfig {
     pub fn load(path: &Path) -> Result<Self> {
         // nosemgrep
@@ -1429,6 +1480,26 @@ strip_params = ["secret", "nonce"]
         let toml = "";
         let cfg: HippoConfig = toml::from_str(toml).unwrap();
         assert!(cfg.cursor.enabled);
+    }
+
+    #[test]
+    fn pi_config_defaults_are_sane() {
+        let c = PiConfig::default();
+        assert!(c.enabled);
+        assert_eq!(c.poll_interval_secs, 60);
+        assert_eq!(c.min_idle_secs, 60);
+        assert!(
+            c.session_roots
+                .iter()
+                .any(|p| p.ends_with(".pi/agent/sessions"))
+        );
+    }
+
+    #[test]
+    fn hippo_config_has_pi_with_default() {
+        let toml = "";
+        let cfg: HippoConfig = toml::from_str(toml).unwrap();
+        assert!(cfg.pi.enabled);
     }
 
     #[test]

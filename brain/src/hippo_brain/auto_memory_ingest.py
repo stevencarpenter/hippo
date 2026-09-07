@@ -12,12 +12,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlsplit
 
+from hippo_brain.auto_memory_categories import reconcile_document_taxonomy
 from hippo_brain.auto_memory_constants import (
+    _IDENTITY_NAMESPACE,
     CHUNKER_NAME,
     CHUNKER_VERSION,
     PROBE_REPOSITORY,
     SOURCE_KIND,
-    _IDENTITY_NAMESPACE,
 )
 from hippo_brain.auto_memory_lifecycle import (
     RevisionRetention,
@@ -25,7 +26,6 @@ from hippo_brain.auto_memory_lifecycle import (
     prune_document_revisions,
     try_resolve_rename,
 )
-from hippo_brain.auto_memory_categories import reconcile_document_taxonomy
 from hippo_brain.markdown_chunking import MarkdownChunk, markdown_heading_chunks
 from hippo_brain.redaction import redact
 
@@ -75,8 +75,7 @@ def derive_repository_identity(source_path: Path | str, explicit: str | None = N
                 host = parsed.hostname or "git"
                 path = parsed.path
             clean_path = path.strip("/")
-            if clean_path.endswith(".git"):
-                clean_path = clean_path[:-4]
+            clean_path = clean_path.removesuffix(".git")
             if clean_path:
                 return f"{host}/{clean_path}"
         return f"local-git:{root}"

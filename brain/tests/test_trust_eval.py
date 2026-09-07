@@ -17,7 +17,6 @@ from hippo_brain.trust_eval import (
     run_case_search,
     validate_corpus,
 )
-
 from tests.retrieval_fixtures import TRUST_EVAL_SCHEMA, FakeBackend
 
 

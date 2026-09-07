@@ -25,6 +25,7 @@ const VALID_PROBE_SOURCES: &[&str] = &[
     "agentic-session-cursor",
     "agentic-session-opencode",
     "agentic-session-codex",
+    "agentic-session-pi",
     "browser",
     "claude-auto-memory",
 ];
@@ -67,7 +68,7 @@ fn run_sync_probe(
 ///
 /// `source` is one of `"shell"`, `"claude-tool"`, `"agentic-session-claude"`,
 /// `"agentic-session-opencode"`, `"agentic-session-codex"`,
-/// `"agentic-session-cursor"`, `"browser"`, or `None` to run all in sequence.
+/// `"agentic-session-cursor"`, `"agentic-session-pi"`, `"browser"`, or `None` to run all in sequence.
 pub async fn run(config: &HippoConfig, source: Option<&str>) -> Result<()> {
     let run_all = source.is_none();
 
@@ -134,6 +135,13 @@ pub async fn run(config: &HippoConfig, source: Option<&str>) -> Result<()> {
         source,
         "agentic-session-codex",
         crate::probe_agentic::probe_codex_session,
+    )?;
+    run_sync_probe(
+        config,
+        run_all,
+        source,
+        "agentic-session-pi",
+        crate::probe_agentic::probe_pi_session,
     )?;
 
     if run_all || source == Some("browser") {

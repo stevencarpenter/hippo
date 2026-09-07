@@ -12,31 +12,31 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
-from hippo_brain.auto_memory_constants import (
-    SOURCE_KIND,
-    _IDENTITY_NAMESPACE,
-)
 from hippo_brain.auto_memory_categories import replace_model_categories
+from hippo_brain.auto_memory_constants import (
+    _IDENTITY_NAMESPACE,
+    SOURCE_KIND,
+)
+from hippo_brain.auto_memory_health import replay_failed_enrichments
+from hippo_brain.auto_memory_ingest import (
+    IngestResult,
+    derive_repository_identity,
+    ingest_memory_file,
+)
 from hippo_brain.auto_memory_lifecycle import (
     RevisionRetention,
     query_memory_history,
     reconcile_configured_sources,
     revision_retention_from_config,
 )
-from hippo_brain.auto_memory_ingest import (
-    IngestResult,
-    derive_repository_identity,
-    ingest_memory_file,
-)
-from hippo_brain.auto_memory_health import replay_failed_enrichments
 from hippo_brain.auto_memory_reconcile import (
     ReconcileConfig,
     document_absence_outcome,
     inventory_from_config,
+    load_sources_from_config,
     reconcile_config_from_dict,
     reconcile_source,
     reconcile_sources,
-    load_sources_from_config,
 )
 from hippo_brain.models import EnrichmentResult
 from hippo_brain.schema_version import EXPECTED_SCHEMA_VERSION
@@ -115,7 +115,7 @@ def claim_pending_memories(
         revision_ids = [
             int(row[0])
             for row in conn.execute(
-                f"SELECT revision_id FROM memory_enrichment_queue "  # noqa: S608
+                f"SELECT revision_id FROM memory_enrichment_queue "
                 f"WHERE {claimable} ORDER BY priority, enqueued_at LIMIT ?",
                 (*claimable_params, limit),
             ).fetchall()
@@ -123,7 +123,7 @@ def claim_pending_memories(
         if revision_ids:
             placeholders = ",".join("?" for _ in revision_ids)
             conn.execute(
-                f"UPDATE memory_enrichment_queue SET status = 'processing', locked_at = ?, "  # noqa: S608
+                f"UPDATE memory_enrichment_queue SET status = 'processing', locked_at = ?, "
                 f"locked_by = ?, updated_at = ? WHERE revision_id IN ({placeholders}) "
                 f"AND {claimable}",
                 (claimed_at, worker_id, claimed_at, *revision_ids, *claimable_params),

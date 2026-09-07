@@ -464,7 +464,7 @@ CREATE TABLE IF NOT EXISTS agentic_session_offsets (
 -- ─── v14/v17: Agentic sessions and cursor tracking ─────────────────────
 --
 -- `agentic_sessions` replaces `claude_sessions` semantics. All harnesses
--- (claude-code, opencode, codex, cursor) share the same table; the `harness`
+-- (claude-code, opencode, codex, cursor, pi) share the same table; the `harness`
 -- column disambiguates their origin. The brain's enrichment contract reads
 -- from this table and writes knowledge nodes; the daemon's pollers
 -- INSERT/UPSERT here independently.
@@ -476,11 +476,12 @@ CREATE TABLE IF NOT EXISTS agentic_session_offsets (
 -- rows into it. As of v18, all four harnesses (claude-code, opencode, codex,
 -- cursor) write here directly, segmented sessions carry `segment_index >= 0`,
 -- and `harness` disambiguates origin. Legacy `claude_*` tables were dropped in v23.
+-- v24 widened the harness CHECK to include 'pi'.
 CREATE TABLE IF NOT EXISTS agentic_sessions (
     id                          INTEGER PRIMARY KEY,
     session_id                  TEXT    NOT NULL,
     harness                     TEXT    NOT NULL DEFAULT 'opencode'
-                                    CHECK (harness IN ('claude-code', 'opencode', 'codex', 'cursor')),
+                                    CHECK (harness IN ('claude-code', 'opencode', 'codex', 'cursor', 'pi')),
     segment_index               INTEGER NOT NULL DEFAULT 0,
     model                       TEXT    NOT NULL DEFAULT '',
     agent                       TEXT    DEFAULT '',
@@ -559,13 +560,15 @@ CREATE TABLE IF NOT EXISTS agentic_cursor (
 
 -- Seed source_health rows for agentic sources.
 -- `agentic-session-claude` uses MAX(start_time) from backend;
--- `agentic-session-opencode`, `agentic-session-codex`, and
--- `agentic-session-cursor` start at NULL (no data yet on a fresh database).
+-- `agentic-session-opencode`, `agentic-session-codex`,
+-- `agentic-session-cursor`, and `agentic-session-pi` start at NULL
+-- (no data yet on a fresh database).
 INSERT OR IGNORE INTO source_health (source, last_event_ts, updated_at) VALUES
     ('agentic-session-claude',  (SELECT MAX(start_time) FROM agentic_sessions WHERE harness = 'claude-code'), unixepoch('now') * 1000),
     ('agentic-session-opencode', NULL, unixepoch('now') * 1000),
     ('agentic-session-codex',   NULL, unixepoch('now') * 1000),
     ('agentic-session-cursor',  NULL, unixepoch('now') * 1000),
+    ('agentic-session-pi',      NULL, unixepoch('now') * 1000),
     -- brain-preflight: the brain's enrichment loop writes here every cycle
     -- with the inference-backend reachability result. Watchdog I-12 reads
     -- consecutive_failures to alarm when preflight has been stuck failing.
@@ -573,4 +576,4 @@ INSERT OR IGNORE INTO source_health (source, last_event_ts, updated_at) VALUES
     ('claude-auto-memory',       NULL, unixepoch('now') * 1000),
     ('auto-memory-watcher',      NULL, unixepoch('now') * 1000);
 
-PRAGMA user_version = 23;
+PRAGMA user_version = 24;

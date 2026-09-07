@@ -8,7 +8,7 @@ import json
 import re
 import sqlite3
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from hippo_brain.auto_memory_categories import (
     list_document_categories,
@@ -24,9 +24,10 @@ from hippo_brain.source_filters import (
     knowledge_memory_category_clause,
     knowledge_memory_project_clause,
     knowledge_source_exists_clause,
+)
+from hippo_brain.source_filters import (
     table_exists as _table_exists,
 )
-
 
 MAX_LIMIT = 100
 MAX_ANNOTATIONS_PER_JOB = 10
@@ -473,7 +474,7 @@ def _search_claude_events(
                tool_calls_json
         FROM agentic_sessions
         WHERE probe_tag IS NULL
-          AND harness IN ('claude-code', 'opencode', 'codex', 'cursor')
+          AND harness IN ('claude-code', 'opencode', 'codex', 'cursor', 'pi')
           AND (? IS NULL OR summary_text LIKE ?)
           AND (? IS NULL OR start_time >= ?)
           AND (? IS NULL OR cwd LIKE ?)
@@ -632,7 +633,7 @@ def list_projects_impl(conn: sqlite3.Connection, limit: int = 100) -> list[dict]
             FROM agentic_sessions
             WHERE project_dir IS NOT NULL AND project_dir != ''
               AND probe_tag IS NULL
-              AND harness IN ('claude-code', 'codex', 'cursor', 'opencode')
+              AND harness IN ('claude-code', 'codex', 'cursor', 'opencode', 'pi')
             GROUP BY project_dir
         """
     else:
@@ -669,7 +670,7 @@ def list_projects_impl(conn: sqlite3.Connection, limit: int = 100) -> list[dict]
 def _format_iso(ts_ms: int) -> str:
     if not ts_ms:
         return ""
-    return datetime.fromtimestamp(ts_ms / 1000, tz=timezone.utc).strftime("%Y-%m-%d %H:%MZ")
+    return datetime.fromtimestamp(ts_ms / 1000, tz=UTC).strftime("%Y-%m-%d %H:%MZ")
 
 
 def format_context_block(query: str, results: list[dict]) -> str:

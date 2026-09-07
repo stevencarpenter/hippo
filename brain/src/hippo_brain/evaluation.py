@@ -20,13 +20,13 @@ import sqlite3
 import statistics
 import sys
 import time
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Iterable, Sequence
+from typing import Any
 
 from hippo_brain.retrieval import Filters, SearchResult
 from hippo_brain.retrieval import search as retrieval_search
-
 
 # ---------------------------------------------------------------------------
 # Quantitative metrics (pure functions)

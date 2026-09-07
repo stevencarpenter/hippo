@@ -11,12 +11,12 @@ from pathlib import Path
 from typing import Any
 
 from hippo_brain.auto_memory_constants import (
+    _MAX_DIFF_CHARS,
     CHUNKER_NAME,
     CHUNKER_VERSION,
     DEFAULT_ABSENCE_CONFIRM_POLLS,
     DEFAULT_MAX_REVISION_AGE_DAYS,
     DEFAULT_MAX_REVISION_COUNT,
-    _MAX_DIFF_CHARS,
 )
 from hippo_brain.vector_store import vec_table_available
 

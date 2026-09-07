@@ -11,12 +11,6 @@ from pathlib import Path
 from mcp.server.fastmcp import FastMCP
 
 from hippo_brain.agent_query import AgentQueryRequest, run_agent_query
-from hippo_brain.memory_query import (
-    MemoryQueryRequest,
-    query_memory_current,
-    resolve_limit,
-    run_memory_history_query,
-)
 from hippo_brain.client import InferenceClient
 from hippo_brain.embeddings import (
     EMBED_DIM,
@@ -35,10 +29,20 @@ from hippo_brain.mcp_queries import (
     search_events_impl,
     search_knowledge_lexical,
 )
-from hippo_brain.rag import ask as rag_ask, format_rag_response
+from hippo_brain.memory_query import (
+    MemoryQueryRequest,
+    query_memory_current,
+    resolve_limit,
+    run_memory_history_query,
+)
+from hippo_brain.rag import ask as rag_ask
+from hippo_brain.rag import format_rag_response
 from hippo_brain.retrieval_eligibility import include_excluded_from_env
 from hippo_brain.schema_version import require_accepted_schema
-from hippo_brain.telemetry import add as _add, get_meter, get_tracer as _get_tracer, hist as _hist
+from hippo_brain.telemetry import add as _add
+from hippo_brain.telemetry import get_meter
+from hippo_brain.telemetry import get_tracer as _get_tracer
+from hippo_brain.telemetry import hist as _hist
 
 logger = setup_logging("hippo-mcp")
 

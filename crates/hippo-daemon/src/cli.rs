@@ -116,7 +116,7 @@ pub enum Commands {
     Probe {
         /// Run only the named source probe (shell, claude-tool, agentic-session-claude,
         /// agentic-session-cursor, agentic-session-opencode, agentic-session-codex,
-        /// browser, claude-auto-memory).
+        /// agentic-session-pi, browser, claude-auto-memory).
         /// Omit to run all probes.
         #[arg(long)]
         source: Option<String>,
@@ -139,6 +139,8 @@ pub enum Commands {
     CodexPoll,
     /// Poll Cursor Agent CLI transcript files and ingest new sessions.
     CursorPoll,
+    /// Poll Pi agent session transcripts and ingest new sessions.
+    PiPoll,
     /// Poll configured Claude auto-memory Markdown sources for ingest.
     AutoMemoryPoll,
     /// Watch configured Claude auto-memory sources via FSEvents (KeepAlive service).
@@ -312,6 +314,14 @@ pub enum IngestSource {
     /// Import a Claude Code session JSONL file
     ClaudeSession {
         /// Path to the JSONL session file
+        path: String,
+        /// Wait up to N seconds for the file to appear before importing (default: 0 = no wait)
+        #[arg(long, default_value_t = 0)]
+        wait_for_file: u64,
+    },
+    /// Import a Pi agent session transcript JSONL file
+    PiSession {
+        /// Path to the JSONL transcript file
         path: String,
         /// Wait up to N seconds for the file to appear before importing (default: 0 = no wait)
         #[arg(long, default_value_t = 0)]

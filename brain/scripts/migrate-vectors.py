@@ -26,8 +26,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from hippo_brain.client import InferenceClient  # noqa: E402
-from hippo_brain.embeddings import embed_knowledge_node, open_vector_db  # noqa: E402
+from hippo_brain.client import InferenceClient
+from hippo_brain.embeddings import embed_knowledge_node, open_vector_db
 
 logging.basicConfig(
     level=logging.INFO,

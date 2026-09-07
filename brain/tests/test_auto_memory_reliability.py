@@ -22,9 +22,9 @@ from hippo_brain.auto_memory_health import (
 )
 from hippo_brain.auto_memory_probe import probe_fixture_dir, run_probe
 from hippo_brain.auto_memory_reconcile import reconcile_sources
+from hippo_brain.mcp_queries import search_knowledge_lexical
 from hippo_brain.memory_query import MemoryQueryRequest, query_memory_current
 from hippo_brain.models import EnrichmentResult
-from hippo_brain.mcp_queries import search_knowledge_lexical
 
 
 @pytest.fixture

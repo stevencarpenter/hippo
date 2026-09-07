@@ -2,7 +2,6 @@ import json
 
 from hippo_brain.bench.paths import bench_results_db_path
 from hippo_brain.bench.results_store import SCHEMA_VERSION, connect
-
 from tests._bench_fixtures import (
     _manifest,
     _model_summary,

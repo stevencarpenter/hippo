@@ -284,7 +284,7 @@ class TestProjectRootFallbackChain:
 
     def test_auto_detect_fallback_finds_git_dirs(self, tmp_path, monkeypatch):
         monkeypatch.delenv("HIPPO_PROJECT_ROOTS", raising=False)
-        monkeypatch.setattr("hippo_brain.entity_resolver._load_config_roots", lambda: [])
+        monkeypatch.setattr("hippo_brain.entity_resolver._load_config_roots", list)
         proj_a = tmp_path / "proj-a"
         proj_b = tmp_path / "proj-b"
         (proj_a / ".git").mkdir(parents=True)
@@ -299,8 +299,8 @@ class TestProjectRootFallbackChain:
 
     def test_warning_logged_when_all_sources_empty(self, monkeypatch, caplog):
         monkeypatch.delenv("HIPPO_PROJECT_ROOTS", raising=False)
-        monkeypatch.setattr("hippo_brain.entity_resolver._load_config_roots", lambda: [])
-        monkeypatch.setattr("hippo_brain.entity_resolver._auto_detect_roots", lambda: [])
+        monkeypatch.setattr("hippo_brain.entity_resolver._load_config_roots", list)
+        monkeypatch.setattr("hippo_brain.entity_resolver._auto_detect_roots", list)
         with caplog.at_level(logging.WARNING, logger="hippo_brain.entity_resolver"):
             roots = _resolve_project_roots(None)
         assert roots == []

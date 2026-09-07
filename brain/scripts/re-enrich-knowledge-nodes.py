@@ -68,11 +68,11 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from hippo_brain import vector_store  # noqa: E402
-from hippo_brain.claude_sessions import CLAUDE_SYSTEM_PROMPT  # noqa: E402
-from hippo_brain.client import InferenceClient  # noqa: E402
-from hippo_brain.embeddings import embed_knowledge_node  # noqa: E402
-from hippo_brain.enrichment import (  # noqa: E402
+from hippo_brain import vector_store
+from hippo_brain.claude_sessions import CLAUDE_SYSTEM_PROMPT
+from hippo_brain.client import InferenceClient
+from hippo_brain.embeddings import embed_knowledge_node
+from hippo_brain.enrichment import (
     CURRENT_ENRICHMENT_VERSION,
     SHELL_ENTITY_TYPE_MAP,
     SYSTEM_PROMPT,

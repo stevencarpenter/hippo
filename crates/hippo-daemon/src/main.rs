@@ -3,7 +3,7 @@ mod install;
 
 use hippo_daemon::{
     auto_memory_poll, backfill, claude_session, codex_session, commands, cursor_session, daemon,
-    gh_api, gh_poll, opencode_session, watch_auto_memory, watch_claude_sessions,
+    gh_api, gh_poll, opencode_session, pi_session, watch_auto_memory, watch_claude_sessions,
 };
 
 use anyhow::{Context, Result};
@@ -27,6 +27,28 @@ async fn poll_socket_removal(socket: &std::path::Path, timeout: std::time::Durat
             return false;
         }
     }
+}
+
+/// Block until `path` appears, polling every 500ms for up to `wait_secs`.
+/// Exits the process when it never does. Shared by the `hippo ingest` arms.
+async fn wait_for_path(path: &std::path::Path, wait_secs: u64) {
+    if path.exists() {
+        return;
+    }
+    if wait_secs == 0 {
+        eprintln!("File not found: {}", path.display());
+        std::process::exit(1);
+    }
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(wait_secs);
+    eprint!("Waiting for {}...", path.display());
+    while !path.exists() {
+        if std::time::Instant::now() >= deadline {
+            eprintln!("\nFile not found after {}s: {}", wait_secs, path.display());
+            std::process::exit(1);
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    }
+    eprintln!(" found.");
 }
 
 #[tokio::main]
@@ -249,6 +271,7 @@ async fn main() -> Result<()> {
                     install::service_is_loaded("com.hippo.codex-session");
                 let cursor_session_was_loaded =
                     install::service_is_loaded("com.hippo.cursor-session");
+                let pi_session_was_loaded = install::service_is_loaded("com.hippo.pi-session");
                 let auto_memory_was_loaded = install::service_is_loaded("com.hippo.auto-memory");
                 let auto_memory_watcher_was_loaded =
                     install::service_is_loaded("com.hippo.auto-memory-watcher");
@@ -262,6 +285,7 @@ async fn main() -> Result<()> {
                     || opencode_poll_was_loaded
                     || codex_session_was_loaded
                     || cursor_session_was_loaded
+                    || pi_session_was_loaded
                     || auto_memory_was_loaded
                     || auto_memory_watcher_was_loaded;
 
@@ -340,6 +364,13 @@ async fn main() -> Result<()> {
                     );
                     println!("  Stopped cursor-session");
                 }
+                if pi_session_was_loaded {
+                    install::service_bootout(
+                        &domain,
+                        &launch_agents.join("com.hippo.pi-session.plist"),
+                    );
+                    println!("  Stopped pi-session");
+                }
                 if auto_memory_was_loaded {
                     install::service_bootout(
                         &domain,
@@ -383,6 +414,8 @@ async fn main() -> Result<()> {
                     include_str!("../../../launchd/com.hippo.codex-session.plist");
                 let cursor_session_template =
                     include_str!("../../../launchd/com.hippo.cursor-session.plist");
+                let pi_session_template =
+                    include_str!("../../../launchd/com.hippo.pi-session.plist");
                 let auto_memory_template =
                     include_str!("../../../launchd/com.hippo.auto-memory.plist");
                 let auto_memory_watcher_template =
@@ -456,6 +489,20 @@ async fn main() -> Result<()> {
                 } else {
                     println!("  (cursor source disabled; skipping cursor-session plist)");
                     install::remove_plist("com.hippo.cursor-session")?;
+                    false
+                };
+
+                let pi_session_installed = if config.pi.enabled {
+                    install::install_plist(
+                        "com.hippo.pi-session",
+                        pi_session_template,
+                        &vars,
+                        force,
+                    )?;
+                    true
+                } else {
+                    println!("  (pi source disabled; skipping pi-session plist)");
+                    install::remove_plist("com.hippo.pi-session")?;
                     false
                 };
 
@@ -593,6 +640,11 @@ async fn main() -> Result<()> {
                     cursor_session_was_loaded,
                     stack_was_active,
                 );
+                let pi_session_started = install::should_start_optional_poll_agent(
+                    pi_session_installed,
+                    pi_session_was_loaded,
+                    stack_was_active,
+                );
                 let auto_memory_started = install::should_start_optional_poll_agent(
                     auto_memory_installed,
                     auto_memory_was_loaded,
@@ -662,6 +714,11 @@ async fn main() -> Result<()> {
                             cursor_session_started,
                         ),
                         (
+                            "pi-session",
+                            "com.hippo.pi-session.plist",
+                            pi_session_started,
+                        ),
+                        (
                             "auto-memory",
                             "com.hippo.auto-memory.plist",
                             auto_memory_started,
@@ -692,6 +749,7 @@ async fn main() -> Result<()> {
                     || (metrics_exporter_installed && !metrics_exporter_started)
                     || (codex_session_installed && !codex_session_started)
                     || (cursor_session_installed && !cursor_session_started)
+                    || (pi_session_installed && !pi_session_started)
                     || (auto_memory_installed && !auto_memory_started)
                     || (auto_memory_installed && !auto_memory_watcher_started);
                 if needs_manual_start {
@@ -745,6 +803,11 @@ async fn main() -> Result<()> {
                     if cursor_session_installed && !cursor_session_started {
                         println!(
                             "  launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.hippo.cursor-session.plist"
+                        );
+                    }
+                    if pi_session_installed && !pi_session_started {
+                        println!(
+                            "  launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.hippo.pi-session.plist"
                         );
                     }
                     if auto_memory_installed && !auto_memory_started {
@@ -1115,28 +1178,7 @@ async fn main() -> Result<()> {
                 wait_for_file,
             } => {
                 let path = std::path::Path::new(&path);
-                if !path.exists() {
-                    if wait_for_file > 0 {
-                        let deadline = std::time::Instant::now()
-                            + std::time::Duration::from_secs(wait_for_file);
-                        eprint!("Waiting for {}...", path.display());
-                        while !path.exists() {
-                            if std::time::Instant::now() >= deadline {
-                                eprintln!(
-                                    "\nFile not found after {}s: {}",
-                                    wait_for_file,
-                                    path.display()
-                                );
-                                std::process::exit(1);
-                            }
-                            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-                        }
-                        eprintln!(" found.");
-                    } else {
-                        eprintln!("File not found: {}", path.display());
-                        std::process::exit(1);
-                    }
-                }
+                wait_for_path(path, wait_for_file).await;
                 let socket = config.socket_path();
                 let timeout = config.daemon.socket_timeout_ms;
                 let db = config.db_path();
@@ -1149,32 +1191,25 @@ async fn main() -> Result<()> {
                 wait_for_file,
             } => {
                 let path = std::path::Path::new(&path);
-                if !path.exists() {
-                    if wait_for_file > 0 {
-                        let deadline = std::time::Instant::now()
-                            + std::time::Duration::from_secs(wait_for_file);
-                        eprint!("Waiting for {}...", path.display());
-                        while !path.exists() {
-                            if std::time::Instant::now() >= deadline {
-                                eprintln!(
-                                    "\nFile not found after {}s: {}",
-                                    wait_for_file,
-                                    path.display()
-                                );
-                                std::process::exit(1);
-                            }
-                            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-                        }
-                        eprintln!(" found.");
-                    } else {
-                        eprintln!("File not found: {}", path.display());
-                        std::process::exit(1);
-                    }
-                }
+                wait_for_path(path, wait_for_file).await;
                 match cursor_session::ingest_one(&config, path) {
                     Ok(n) => println!("Cursor import complete: {n} segments ingested"),
                     Err(e) => {
                         eprintln!("Error importing cursor session: {e:#}");
+                        std::process::exit(1);
+                    }
+                }
+            }
+            IngestSource::PiSession {
+                path,
+                wait_for_file,
+            } => {
+                let path = std::path::Path::new(&path);
+                wait_for_path(path, wait_for_file).await;
+                match pi_session::ingest_one(&config, path) {
+                    Ok(n) => println!("Pi import complete: {n} segments ingested"),
+                    Err(e) => {
+                        eprintln!("Error importing pi session: {e:#}");
                         std::process::exit(1);
                     }
                 }
@@ -1319,6 +1354,13 @@ async fn main() -> Result<()> {
             Ok(n) => tracing::info!(ingested = n, "cursor poll: completed"),
             Err(e) => {
                 eprintln!("Error running cursor poll: {e:#}");
+                std::process::exit(1);
+            }
+        },
+        Commands::PiPoll => match pi_session::poll_tick(&config) {
+            Ok(n) => tracing::info!(ingested = n, "pi poll: completed"),
+            Err(e) => {
+                eprintln!("Error running pi poll: {e:#}");
                 std::process::exit(1);
             }
         },

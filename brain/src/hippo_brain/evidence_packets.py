@@ -27,7 +27,7 @@ from hippo_brain.retrieval_eligibility import (
 )
 from hippo_brain.source_filters import source_kind_from_linked_id
 
-_REF_RE = re.compile(r"^(shell|claude|codex|cursor|opencode|browser|workflow|memory)-(\d+)$")
+_REF_RE = re.compile(r"^(shell|claude|codex|cursor|opencode|pi|browser|workflow|memory)-(\d+)$")
 
 
 @dataclass(frozen=True)
@@ -226,7 +226,7 @@ def _inspect_evidence_row(
             raise LookupError(f"no eligible events row for {ref}")
         return {"ref": ref, "table": "events", "row": _row_to_dict(row)}
 
-    if kind in ("claude", "codex", "cursor", "opencode"):
+    if kind in ("claude", "codex", "cursor", "opencode", "pi"):
         harness = "claude-code" if kind == "claude" else kind
         row = conn.execute(
             f"""

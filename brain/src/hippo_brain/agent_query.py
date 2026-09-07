@@ -11,16 +11,17 @@ import argparse
 import json
 import sqlite3
 import sys
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any
 
 from hippo_brain.conflict_detection import analyze_conflicts, apply_conflict_confidence_caps
 from hippo_brain.mcp_queries import MAX_LIMIT, parse_since
 from hippo_brain.retrieval import Filters, SearchResult, search
 from hippo_brain.retrieval_eligibility import include_excluded_from_env
-from hippo_brain.source_freshness import aggregate_freshness_from_packets
 from hippo_brain.source_filters import CLAUDE_AUTO_MEMORY_SOURCE
+from hippo_brain.source_freshness import aggregate_freshness_from_packets
 
 AGENT_QUERY_MODES = frozenset({"known", "evidence", "recent", "decisions"})
 AGENT_QUERY_SOURCES = frozenset(

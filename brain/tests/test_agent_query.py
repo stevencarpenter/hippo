@@ -10,7 +10,7 @@ import pytest
 
 from hippo_brain.agent_query import AgentQueryRequest, run_agent_query
 from hippo_brain.retrieval_eligibility import IN_FLIGHT_SETTLE_MS
-from tests.retrieval_fixtures import FakeBackend, TRUST_EVAL_SCHEMA
+from tests.retrieval_fixtures import TRUST_EVAL_SCHEMA, FakeBackend
 
 _NOW = int(time.time() * 1000)
 _SETTLED_END = _NOW - IN_FLIGHT_SETTLE_MS - 60_000

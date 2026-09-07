@@ -53,7 +53,7 @@ def test_main_enrichment_pass_one_attempt_per_event(mock_call):
         model="m1",
         entries=entries,
         timeout_sec=10,
-        metrics_snapshot=lambda: {},
+        metrics_snapshot=dict,
         temperature=0.0,
         run_id="run-test",
     )
@@ -79,7 +79,7 @@ def test_main_enrichment_pass_populates_gates(mock_call):
         model="m1",
         entries=entries,
         timeout_sec=10,
-        metrics_snapshot=lambda: {},
+        metrics_snapshot=dict,
         temperature=0.0,
     )
     assert len(attempts) == 1
@@ -106,7 +106,7 @@ def test_main_enrichment_pass_does_not_embed(mock_call):
             model="m1",
             entries=entries,
             timeout_sec=10,
-            metrics_snapshot=lambda: {},
+            metrics_snapshot=dict,
             temperature=0.0,
         )
         mock_embed.assert_not_called()

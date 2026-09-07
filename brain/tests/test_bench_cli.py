@@ -102,19 +102,22 @@ def test_cli_determinism_returns_1_on_regression(tmp_path):
     """Operator's CI gate: exit code 1 when any model exceeds budget. Pinned so
     a refactor that swapped 0/1 returns can't silently flip the gate's polarity.
     """
-    rows = lambda mrr: [  # noqa: E731 — closure-style helper inside test
-        {
-            "record_type": "model_summary",
-            "run_id": "t",
-            "model": {"id": "model-A"},
-            "downstream_proxy": {
-                "modes": {"hybrid": {"mrr": mrr, "hit_at_1": 0.50}},
-                "qa_count": 8,
-                "k": 10,
-                "per_item": [],
-            },
-        }
-    ]
+
+    def rows(mrr: float) -> list[dict]:
+        return [
+            {
+                "record_type": "model_summary",
+                "run_id": "t",
+                "model": {"id": "model-A"},
+                "downstream_proxy": {
+                    "modes": {"hybrid": {"mrr": mrr, "hit_at_1": 0.50}},
+                    "qa_count": 8,
+                    "k": 10,
+                    "per_item": [],
+                },
+            }
+        ]
+
     p1 = tmp_path / "r1.jsonl"
     p2 = tmp_path / "r2.jsonl"
     p1.write_text(json.dumps(rows(0.40)[0]))

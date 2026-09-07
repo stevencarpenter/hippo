@@ -27,6 +27,10 @@ pub fn render_plist(template: &str, vars: &PlistVars) -> String {
             &vars.cursor_poll_interval_secs.to_string(),
         )
         .replace(
+            "__PI_POLL_INTERVAL_SECS__",
+            &vars.pi_poll_interval_secs.to_string(),
+        )
+        .replace(
             "__AUTO_MEMORY_POLL_INTERVAL_SECS__",
             &vars.auto_memory_poll_interval_secs.to_string(),
         )
@@ -45,6 +49,7 @@ pub struct PlistVars {
     pub opencode_poll_interval_secs: u64,
     pub codex_poll_interval_secs: u64,
     pub cursor_poll_interval_secs: u64,
+    pub pi_poll_interval_secs: u64,
     pub auto_memory_poll_interval_secs: u64,
 }
 
@@ -101,6 +106,7 @@ pub fn detect_vars(brain_dir: &Path, hippo_bin_override: Option<PathBuf>) -> Res
         .as_ref()
         .map(|c| c.cursor.poll_interval_secs)
         .unwrap_or(60);
+    let pi_poll_interval_secs = cfg.as_ref().map(|c| c.pi.poll_interval_secs).unwrap_or(60);
     let auto_memory_poll_interval_secs = cfg
         .as_ref()
         .map(|c| c.auto_memory.poll_interval_secs)
@@ -132,6 +138,7 @@ pub fn detect_vars(brain_dir: &Path, hippo_bin_override: Option<PathBuf>) -> Res
         opencode_poll_interval_secs,
         codex_poll_interval_secs,
         cursor_poll_interval_secs,
+        pi_poll_interval_secs,
         auto_memory_poll_interval_secs,
     })
 }
@@ -815,6 +822,7 @@ mod tests {
             opencode_poll_interval_secs: 30,
             codex_poll_interval_secs: 60,
             cursor_poll_interval_secs: 60,
+            pi_poll_interval_secs: 60,
             auto_memory_poll_interval_secs: 60,
         };
 
@@ -853,6 +861,7 @@ mod tests {
             opencode_poll_interval_secs: 30,
             codex_poll_interval_secs: 60,
             cursor_poll_interval_secs: 60,
+            pi_poll_interval_secs: 60,
             auto_memory_poll_interval_secs: 60,
         };
 
@@ -954,6 +963,7 @@ mod tests {
             opencode_poll_interval_secs: 30,
             codex_poll_interval_secs: 60,
             cursor_poll_interval_secs: 60,
+            pi_poll_interval_secs: 60,
             auto_memory_poll_interval_secs: 60,
         };
 

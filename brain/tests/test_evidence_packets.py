@@ -11,7 +11,7 @@ import pytest
 from hippo_brain.evidence_packets import inspect_evidence, parse_ref
 from hippo_brain.retrieval import Filters, search
 from hippo_brain.retrieval_eligibility import IN_FLIGHT_SETTLE_MS
-from tests.retrieval_fixtures import FakeBackend, TRUST_EVAL_SCHEMA
+from tests.retrieval_fixtures import TRUST_EVAL_SCHEMA, FakeBackend
 
 _NOW = int(time.time() * 1000)
 _SETTLED_END = _NOW - IN_FLIGHT_SETTLE_MS - 60_000
