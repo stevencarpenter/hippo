@@ -76,7 +76,7 @@ class _FakeInference:
     def __init__(self, reply: str):
         self._reply = reply
 
-    async def chat(self, *, messages, model):  # noqa: ARG002
+    async def chat(self, *, messages, model):
         return self._reply
 
 

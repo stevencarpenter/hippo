@@ -21,7 +21,6 @@ from dataclasses import dataclass
 
 import httpx
 
-
 # Default sampling temperature. 0.7 is a deliberate choice — at near-zero
 # temperatures (e.g., 0.1) most modern models produce nearly deterministic
 # outputs, making self-consistency a vacuous signal. 0.7 is the OpenAI

@@ -731,8 +731,8 @@ class TestMcpTelemetryInstrumentsInitialize:
         import logging
 
         import hippo_brain.mcp as mcp_module
-        from hippo_brain.telemetry import init_telemetry
         from hippo_brain.mcp import _init_telemetry_instruments
+        from hippo_brain.telemetry import init_telemetry
 
         monkeypatch.setenv("HIPPO_OTEL_ENABLED", "1")
 

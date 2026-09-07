@@ -8,7 +8,7 @@ import json
 import re
 import sqlite3
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from hippo_brain.auto_memory_categories import (
     list_document_categories,
@@ -24,9 +24,10 @@ from hippo_brain.source_filters import (
     knowledge_memory_category_clause,
     knowledge_memory_project_clause,
     knowledge_source_exists_clause,
+)
+from hippo_brain.source_filters import (
     table_exists as _table_exists,
 )
-
 
 MAX_LIMIT = 100
 MAX_ANNOTATIONS_PER_JOB = 10
@@ -669,7 +670,7 @@ def list_projects_impl(conn: sqlite3.Connection, limit: int = 100) -> list[dict]
 def _format_iso(ts_ms: int) -> str:
     if not ts_ms:
         return ""
-    return datetime.fromtimestamp(ts_ms / 1000, tz=timezone.utc).strftime("%Y-%m-%d %H:%MZ")
+    return datetime.fromtimestamp(ts_ms / 1000, tz=UTC).strftime("%Y-%m-%d %H:%MZ")
 
 
 def format_context_block(query: str, results: list[dict]) -> str:

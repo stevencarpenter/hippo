@@ -14,8 +14,8 @@ from hippo_brain.auto_memory_lifecycle import (
     RevisionRetention,
     reconcile_configured_sources,
 )
-from hippo_brain.models import EnrichmentResult
 from hippo_brain.mcp_queries import search_knowledge_lexical
+from hippo_brain.models import EnrichmentResult
 
 
 @pytest.fixture

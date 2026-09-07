@@ -15,9 +15,9 @@ from hippo_brain.auto_memory import (
     mark_memory_enrichment_failed,
     write_memory_knowledge_node,
 )
-from hippo_brain.models import EnrichmentResult
-from hippo_brain.mcp_queries import search_knowledge_lexical
 from hippo_brain.client import MockInferenceClient
+from hippo_brain.mcp_queries import search_knowledge_lexical
+from hippo_brain.models import EnrichmentResult
 from hippo_brain.server import BrainServer
 
 

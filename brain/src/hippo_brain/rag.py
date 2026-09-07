@@ -6,7 +6,7 @@ import json
 import logging
 import sqlite3
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from hippo_brain.embeddings import EMBED_DIM, _pad_or_truncate, search_similar
 from hippo_brain.enrichment import IDENTIFIER_ENTITY_TYPES
@@ -73,7 +73,7 @@ _SYSTEM_PROMPT = (
 
 def _format_timestamp(ts_ms: int) -> str:
     """Format epoch-ms timestamp as YYYY-MM-DD."""
-    return datetime.fromtimestamp(ts_ms / 1000, tz=timezone.utc).strftime("%Y-%m-%d")
+    return datetime.fromtimestamp(ts_ms / 1000, tz=UTC).strftime("%Y-%m-%d")
 
 
 def _truncate(text: str, max_len: int) -> str:

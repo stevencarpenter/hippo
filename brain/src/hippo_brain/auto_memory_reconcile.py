@@ -23,12 +23,12 @@ from hippo_brain.auto_memory_discovery import (
     memory_roots_to_file_sources,
     merge_configured_sources,
 )
-from hippo_brain.auto_memory_ingest import ingest_memory_file
 from hippo_brain.auto_memory_health import (
     bump_watcher_heartbeat,
     record_reconcile_failure,
     snapshot_health,
 )
+from hippo_brain.auto_memory_ingest import ingest_memory_file
 from hippo_brain.auto_memory_lifecycle import (
     RevisionRetention,
     reconcile_configured_sources,

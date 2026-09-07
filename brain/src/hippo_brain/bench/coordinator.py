@@ -26,16 +26,16 @@ from hippo_brain.bench.metrics import MetricsSampler
 from hippo_brain.bench.model_lifecycle import get_model_lifecycle
 from hippo_brain.bench.output import AttemptRecord
 from hippo_brain.bench.paths import bench_qa_path, bench_run_tree
-from hippo_brain.bench.qa import collect_corpus_event_ids
 from hippo_brain.bench.pause_rpc import PauseRpcClient
 from hippo_brain.bench.preflight import check_brain_port_free
+from hippo_brain.bench.qa import collect_corpus_event_ids
 from hippo_brain.bench.runner import run_main_enrichment_pass, run_self_consistency_pass
-from hippo_brain.vector_store import open_conn as open_vec_conn
 from hippo_brain.bench.shadow_stack import (
     spawn_shadow_stack,
     teardown_shadow_stack,
     wait_for_brain_ready,
 )
+from hippo_brain.vector_store import open_conn as open_vec_conn
 
 logger = logging.getLogger(__name__)
 

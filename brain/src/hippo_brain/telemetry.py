@@ -46,7 +46,7 @@ class TelemetryInitError(RuntimeError):
 def init_telemetry(
     service_name: str,
     endpoint: str = "",
-) -> "callable | None":
+) -> callable | None:
     """Initialize OpenTelemetry providers for traces, metrics, and logs.
 
     Returns a shutdown callable on success, or ``None`` when telemetry is not
@@ -199,10 +199,9 @@ def _register_process_metrics() -> None:
     instruments and emit SDK warnings.
     """
     try:
+        import psutil
         from opentelemetry import metrics as otel_metrics
         from opentelemetry.metrics import CallbackOptions, Observation
-
-        import psutil
     except ImportError as e:
         logger.warning("process metrics unavailable: %s", e)
         return

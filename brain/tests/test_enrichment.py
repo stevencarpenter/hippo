@@ -6,6 +6,7 @@ import pytest
 from hippo_brain.enrichment import (
     build_enrichment_prompt,
     claim_pending_events_by_session,
+    is_enrichment_eligible,
     mark_queue_failed,
     parse_enrichment_response,
     write_knowledge_node,
@@ -974,7 +975,6 @@ def test_upsert_entities_does_not_strip_non_path_types(tmp_db):
 # ---------------------------------------------------------------------------
 # Enrichment eligibility
 # ---------------------------------------------------------------------------
-from hippo_brain.enrichment import is_enrichment_eligible  # noqa: E402
 
 
 class TestEligibilityShell:

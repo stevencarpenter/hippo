@@ -16,7 +16,6 @@ from hippo_brain.rag import (
 )
 from hippo_brain.retrieval import Filters, SearchResult
 
-
 # -- Fixtures ---------------------------------------------------------------
 
 SAMPLE_HITS = [

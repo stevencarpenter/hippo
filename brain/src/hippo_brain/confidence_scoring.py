@@ -8,7 +8,8 @@ Answers without inspectable evidence are never rated high confidence.
 from __future__ import annotations
 
 import time
-from typing import Any, Sequence
+from collections.abc import Sequence
+from typing import Any
 
 CONFIDENCE_LEVELS = frozenset({"high", "medium", "low", "insufficient"})
 

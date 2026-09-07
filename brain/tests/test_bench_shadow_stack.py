@@ -18,12 +18,11 @@ import subprocess
 import sys
 import tempfile
 import time
+import tomllib
 from unittest.mock import MagicMock, patch
 
 import httpx
 import pytest
-
-import tomllib
 
 from hippo_brain.bench import shadow_stack
 from hippo_brain.bench.shadow_stack import (

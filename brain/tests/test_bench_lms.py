@@ -1,4 +1,4 @@
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -20,9 +20,8 @@ def test_ensure_available_ok_when_binary_present():
 
 
 def test_ensure_available_raises_when_binary_missing():
-    with patch("shutil.which", return_value=None):
-        with pytest.raises(LmsUnavailable):
-            ensure_available()
+    with patch("shutil.which", return_value=None), pytest.raises(LmsUnavailable):
+        ensure_available()
 
 
 def test_list_loaded_parses_json_output():
@@ -34,9 +33,8 @@ def test_list_loaded_parses_json_output():
 
 def test_list_loaded_raises_on_nonzero_exit():
     fake_proc = MagicMock(returncode=1, stdout="", stderr="boom")
-    with patch("subprocess.run", return_value=fake_proc):
-        with pytest.raises(LmsError):
-            list_loaded()
+    with patch("subprocess.run", return_value=fake_proc), pytest.raises(LmsError):
+        list_loaded()
 
 
 def test_load_invokes_lms_load_with_identifier():

@@ -12,7 +12,6 @@ from hippo_brain.bench.auto_memory_spike import (
     whole_file,
 )
 
-
 FIXTURE = Path(__file__).parents[1] / "src/hippo_brain/_fixtures/auto_memory_spike"
 
 

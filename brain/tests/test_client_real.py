@@ -1,8 +1,9 @@
 """Tests for the real InferenceClient HTTP methods using httpx mock transport."""
 
+from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
+
 import httpx
 import pytest
-from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
 from hippo_brain import client as client_module
 from hippo_brain.client import InferenceClient

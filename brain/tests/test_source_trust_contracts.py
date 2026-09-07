@@ -71,7 +71,7 @@ def test_contracts_json_has_citation_examples(contracts_data: dict) -> None:
 def test_contracts_json_entries_have_core_fields(contracts_data: dict) -> None:
     for family in contracts_data["families"]:
         assert "id" in family
-        assert "tables" in family and family["tables"]
+        assert family.get("tables")
         assert "identity_fields" in family
 
 

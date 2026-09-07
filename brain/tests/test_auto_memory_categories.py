@@ -12,8 +12,8 @@ from hippo_brain.auto_memory_categories import (
     list_document_links,
     replace_model_categories,
 )
-from hippo_brain.models import EnrichmentResult
 from hippo_brain.mcp_queries import search_knowledge_lexical
+from hippo_brain.models import EnrichmentResult
 from hippo_brain.retrieval import Filters, _apply_filters
 
 

@@ -14,24 +14,26 @@ import json
 import random
 from pathlib import Path
 
+from hippo_brain.auto_memory import (
+    MEMORY_ENRICHMENT_SYSTEM_PROMPT as MEMORY_SYSTEM_PROMPT,
+)
+from hippo_brain.auto_memory import (
+    render_memory_enrichment_input,
+)
+from hippo_brain.browser_enrichment import BROWSER_SYSTEM_PROMPT
+from hippo_brain.claude_sessions import CLAUDE_SYSTEM_PROMPT
+
 # Source-specific system prompts — imported from the enrichment modules so
 # they stay in sync with the live pipeline.  The auto-memory prompt is
 # truncated to its system-role text only (the enrichment loop appends
 # document chunks as the user message).
 from hippo_brain.enrichment import SYSTEM_PROMPT as SHELL_SYSTEM_PROMPT
-from hippo_brain.claude_sessions import CLAUDE_SYSTEM_PROMPT
-from hippo_brain.browser_enrichment import BROWSER_SYSTEM_PROMPT
 from hippo_brain.workflow_enrichment import WORKFLOW_SYSTEM_PROMPT
-from hippo_brain.auto_memory import (
-    MEMORY_ENRICHMENT_SYSTEM_PROMPT as MEMORY_SYSTEM_PROMPT,
-    render_memory_enrichment_input,
-)
 
 
 def _write_jsonl(path: Path, examples: list[dict]) -> None:
     with open(path, "w") as f:
-        for ex in examples:
-            f.write(json.dumps(ex) + "\n")
+        f.writelines(json.dumps(ex) + "\n" for ex in examples)
 
 
 def _build_shell_user_message(events: list[tuple]) -> str:

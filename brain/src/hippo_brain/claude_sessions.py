@@ -175,9 +175,7 @@ def _extract_tool_summary(block: dict) -> dict | None:
     summary = ""
     if name == "Bash":
         summary = inp.get("command", "")[:200]
-    elif name in ("Read", "Write"):
-        summary = inp.get("file_path", "")
-    elif name == "Edit":
+    elif name in ("Read", "Write") or name == "Edit":
         summary = inp.get("file_path", "")
     elif name == "Grep":
         pattern = inp.get("pattern", "")

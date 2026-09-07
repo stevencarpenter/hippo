@@ -238,7 +238,7 @@ def _cmd_ingest(args: argparse.Namespace) -> int:
             # rest of the batch. Report it and move on.
             try:
                 res = ingest_run(t, conn=conn, force=args.force)
-            except Exception as e:  # noqa: BLE001 — isolate one bad file from the batch
+            except Exception as e:
                 errors += 1
                 log.exception("ingest failed for %s", t)
                 print(f"{t.name}: ERROR ({type(e).__name__}: {e})")

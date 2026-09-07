@@ -15,7 +15,8 @@ import os
 import sqlite3
 import time
 
-from hippo_brain.source_filters import _MEMORY_SOURCE_EXISTS, table_exists as _table_exists
+from hippo_brain.source_filters import _MEMORY_SOURCE_EXISTS
+from hippo_brain.source_filters import table_exists as _table_exists
 
 # Align with capture probe / poller settle windows (see probe_agentic.rs).
 IN_FLIGHT_SETTLE_MS = 90_000

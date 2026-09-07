@@ -22,8 +22,8 @@ from __future__ import annotations
 import logging
 import sqlite3
 import struct
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Iterable
 
 import sqlite_vec  # type: ignore[import-untyped]
 
@@ -34,15 +34,15 @@ EMBED_DIM = 768
 # All SQL statements are static module-level literals. No user input is ever
 # concatenated into SQL — bind parameters only. Column selection in
 # ``knn_search`` is a lookup against a fixed allow-list of pre-built queries.
-_SQL_CREATE_VEC_TABLE = "CREATE VIRTUAL TABLE IF NOT EXISTS knowledge_vectors USING vec0(knowledge_node_id INTEGER PRIMARY KEY, vec_knowledge FLOAT[768] distance_metric=cosine, vec_command FLOAT[768] distance_metric=cosine)"  # noqa: E501
-_SQL_CREATE_EMBED_META_TABLE = "CREATE TABLE IF NOT EXISTS embed_model_meta (id INTEGER PRIMARY KEY CHECK (id = 1), model TEXT NOT NULL)"  # noqa: E501
+_SQL_CREATE_VEC_TABLE = "CREATE VIRTUAL TABLE IF NOT EXISTS knowledge_vectors USING vec0(knowledge_node_id INTEGER PRIMARY KEY, vec_knowledge FLOAT[768] distance_metric=cosine, vec_command FLOAT[768] distance_metric=cosine)"
+_SQL_CREATE_EMBED_META_TABLE = "CREATE TABLE IF NOT EXISTS embed_model_meta (id INTEGER PRIMARY KEY CHECK (id = 1), model TEXT NOT NULL)"
 _SQL_GET_STORED_EMBED_MODEL = "SELECT model FROM embed_model_meta WHERE id = 1"
-_SQL_UPSERT_EMBED_MODEL = "INSERT INTO embed_model_meta (id, model) VALUES (1, ?) ON CONFLICT(id) DO UPDATE SET model = excluded.model"  # noqa: E501
-_SQL_KNN_VEC_KNOWLEDGE = "SELECT knowledge_node_id, distance FROM knowledge_vectors WHERE vec_knowledge MATCH ? AND k = ? ORDER BY distance"  # noqa: E501
-_SQL_KNN_VEC_COMMAND = "SELECT knowledge_node_id, distance FROM knowledge_vectors WHERE vec_command MATCH ? AND k = ? ORDER BY distance"  # noqa: E501
-_SQL_INSERT_VECTORS = "INSERT OR REPLACE INTO knowledge_vectors (knowledge_node_id, vec_knowledge, vec_command) VALUES (?, ?, ?)"  # noqa: E501
+_SQL_UPSERT_EMBED_MODEL = "INSERT INTO embed_model_meta (id, model) VALUES (1, ?) ON CONFLICT(id) DO UPDATE SET model = excluded.model"
+_SQL_KNN_VEC_KNOWLEDGE = "SELECT knowledge_node_id, distance FROM knowledge_vectors WHERE vec_knowledge MATCH ? AND k = ? ORDER BY distance"
+_SQL_KNN_VEC_COMMAND = "SELECT knowledge_node_id, distance FROM knowledge_vectors WHERE vec_command MATCH ? AND k = ? ORDER BY distance"
+_SQL_INSERT_VECTORS = "INSERT OR REPLACE INTO knowledge_vectors (knowledge_node_id, vec_knowledge, vec_command) VALUES (?, ?, ?)"
 _SQL_DELETE_VECTORS = "DELETE FROM knowledge_vectors WHERE knowledge_node_id = ?"
-_SQL_FTS_SEARCH = "SELECT rowid, bm25(knowledge_fts) AS score FROM knowledge_fts WHERE knowledge_fts MATCH ? ORDER BY score LIMIT ?"  # noqa: E501
+_SQL_FTS_SEARCH = "SELECT rowid, bm25(knowledge_fts) AS score FROM knowledge_fts WHERE knowledge_fts MATCH ? ORDER BY score LIMIT ?"
 
 _KNN_QUERIES = {
     "vec_knowledge": _SQL_KNN_VEC_KNOWLEDGE,

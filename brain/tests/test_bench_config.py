@@ -1,4 +1,4 @@
-from hippo_brain.bench.config import BenchConfig, DEFAULT_THRESHOLDS
+from hippo_brain.bench.config import DEFAULT_THRESHOLDS, BenchConfig
 from hippo_brain.bench.paths import (
     bench_runs_dir,
     corpus_jsonl_path,

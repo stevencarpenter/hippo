@@ -56,9 +56,9 @@ __all__ = [
     "EMBED_DIM",
     "EmbedDriftError",
     "_pad_or_truncate",
-    "open_vector_db",
-    "get_or_create_table",
     "embed_knowledge_node",
+    "get_or_create_table",
+    "open_vector_db",
     "search_similar",
 ]
 

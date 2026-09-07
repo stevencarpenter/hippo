@@ -9,8 +9,9 @@ from __future__ import annotations
 
 import sqlite3
 import time
+from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Any, Sequence
+from typing import Any
 
 from hippo_brain.source_filters import CLAUDE_AUTO_MEMORY_SOURCE, table_exists
 

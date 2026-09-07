@@ -6,13 +6,13 @@ import json
 from pathlib import Path
 
 
-def _format_float(value: int | float | None, fmt: str) -> str:
+def _format_float(value: float | None, fmt: str) -> str:
     if value is None:
         return "n/a"
     return format(value, fmt)
 
 
-def _format_duration_sec(value: int | float | None) -> str:
+def _format_duration_sec(value: float | None) -> str:
     if value is None:
         return "n/a"
     return f"{int(value):5d}s"

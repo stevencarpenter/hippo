@@ -11,12 +11,10 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-
 from starlette.applications import Starlette
 from starlette.testclient import TestClient
 
-from hippo_brain.server import BrainServer
-from hippo_brain.server import _collect_queue_depths, _source_label_for_claude_segments
+from hippo_brain.server import BrainServer, _collect_queue_depths, _source_label_for_claude_segments
 from hippo_brain.watchdog import PreflightDecision
 
 

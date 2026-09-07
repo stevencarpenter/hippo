@@ -4,47 +4,22 @@ import logging
 import os
 import sqlite3
 import time
+from contextlib import asynccontextmanager, nullcontext, suppress
+from pathlib import Path
 from typing import Any
 
 import sqlite_vec  # type: ignore[import-untyped]
-from contextlib import asynccontextmanager, nullcontext, suppress
-from pathlib import Path
-
 from starlette.applications import Starlette
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.routing import Route
 
 from hippo_brain.agent_query import AgentQueryRequest, run_agent_query
-from hippo_brain.memory_query import (
-    MemoryQueryRequest,
-    query_memory_current,
-    resolve_limit,
-    run_memory_history_query,
-)
-from hippo_brain.client import InferenceClient
-from hippo_brain.openapi import build_openapi_spec
-from hippo_brain.schema_version import (
-    ACCEPTED_READ_VERSIONS,
-    EXPECTED_SCHEMA_VERSION,
-    require_accepted_schema,
-)
-from hippo_brain.version import get_version
-from hippo_brain.embeddings import (
-    embed_dict_from_result,
-    embed_knowledge_node,
-    get_or_create_table,
-    open_vector_db,
-    search_similar,
-)
-from hippo_brain.vector_store import get_stored_embed_model
-from hippo_brain.rag import ask as rag_ask
-from hippo_brain.enrichment import (
-    SYSTEM_PROMPT,
-    build_enrichment_prompt,
-    mark_queue_failed,
-    parse_enrichment_response,
-    write_knowledge_node,
+from hippo_brain.auto_memory import (
+    MEMORY_ENRICHMENT_SYSTEM_PROMPT,
+    build_memory_enrichment_prompt,
+    mark_memory_enrichment_failed,
+    write_memory_knowledge_node,
 )
 from hippo_brain.browser_enrichment import (
     BROWSER_SYSTEM_PROMPT,
@@ -60,36 +35,66 @@ from hippo_brain.claude_sessions import (
     mark_claude_queue_failed,
     write_claude_knowledge_node,
 )
-from hippo_brain.auto_memory import (
-    MEMORY_ENRICHMENT_SYSTEM_PROMPT,
-    build_memory_enrichment_prompt,
-    mark_memory_enrichment_failed,
-    write_memory_knowledge_node,
+from hippo_brain.client import InferenceClient
+from hippo_brain.embeddings import (
+    embed_dict_from_result,
+    embed_knowledge_node,
+    get_or_create_table,
+    open_vector_db,
+    search_similar,
+)
+from hippo_brain.enrichment import (
+    SYSTEM_PROMPT,
+    build_enrichment_prompt,
+    mark_queue_failed,
+    parse_enrichment_response,
+    write_knowledge_node,
 )
 from hippo_brain.enrichment_sources import claim_all_sources, enrich_all_sources
+from hippo_brain.memory_query import (
+    MemoryQueryRequest,
+    query_memory_current,
+    resolve_limit,
+    run_memory_history_query,
+)
+from hippo_brain.openapi import build_openapi_spec
 from hippo_brain.opencode_sessions import (
     OPENCODE_ENRICHMENT_PROMPT,
     build_opencode_enrichment_prompt,
     mark_opencode_queue_failed,
     write_opencode_knowledge_node,
 )
-from hippo_brain.workflow_enrichment import (
-    enrich_one_async,
-    mark_workflow_queue_failed,
+from hippo_brain.rag import ask as rag_ask
+from hippo_brain.schema_version import (
+    ACCEPTED_READ_VERSIONS,
+    EXPECTED_SCHEMA_VERSION,
+    require_accepted_schema,
 )
+from hippo_brain.telemetry import (
+    add as _add,
+)
+from hippo_brain.telemetry import (
+    get_meter,
+    is_telemetry_active,
+    is_telemetry_enabled,
+)
+from hippo_brain.telemetry import (
+    get_tracer as _get_tracer,
+)
+from hippo_brain.telemetry import (
+    hist as _hist,
+)
+from hippo_brain.vector_store import get_stored_embed_model
+from hippo_brain.version import get_version
 from hippo_brain.watchdog import (
     DEFAULT_LOCK_TIMEOUT_MS,
     DEFAULT_MAX_CLAIM_BATCH,
     preflight_inference,
     reap_stale_locks,
 )
-from hippo_brain.telemetry import (
-    add as _add,
-    get_meter,
-    get_tracer as _get_tracer,
-    hist as _hist,
-    is_telemetry_active,
-    is_telemetry_enabled,
+from hippo_brain.workflow_enrichment import (
+    enrich_one_async,
+    mark_workflow_queue_failed,
 )
 
 _meter = get_meter()

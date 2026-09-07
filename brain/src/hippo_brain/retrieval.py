@@ -17,9 +17,12 @@ import math
 import re
 import sqlite3
 import time
+from collections.abc import Sequence
 from dataclasses import dataclass, field, replace
-from typing import Protocol, Sequence
+from typing import Protocol
 
+from hippo_brain.auto_memory_categories import validate_memory_category_filter
+from hippo_brain.confidence_scoring import attach_confidence_to_results
 from hippo_brain.enrichment import IDENTIFIER_ENTITY_TYPES
 from hippo_brain.evidence_packets import (
     attach_retrieval_scores,
@@ -29,7 +32,6 @@ from hippo_brain.evidence_packets import (
     make_shell_packet,
     make_workflow_packet,
 )
-from hippo_brain.auto_memory_categories import validate_memory_category_filter
 from hippo_brain.retrieval_eligibility import (
     agentic_session_eligible_sql,
     browser_event_eligible_sql,
@@ -38,14 +40,12 @@ from hippo_brain.retrieval_eligibility import (
     shell_event_eligible_sql,
     workflow_run_eligible_sql,
 )
-from hippo_brain.confidence_scoring import attach_confidence_to_results
-from hippo_brain.source_freshness import attach_freshness_to_results
 from hippo_brain.source_filters import (
     knowledge_memory_category_clause,
     knowledge_memory_project_clause,
     knowledge_source_exists_clause,
 )
-
+from hippo_brain.source_freshness import attach_freshness_to_results
 
 RRF_K = 60
 CANDIDATE_POOL = 3000
@@ -224,11 +224,59 @@ def _call_knn(
 # words that carry no retrieval signal for a technical knowledge base —
 # aggressive stopword lists would eat meaningful tokens like "make" or "run".
 _FTS_STOPWORDS = frozenset(
-    """
-    a an and are as at be but by did do does for from had has have how i in is
-    it its me my of on or our so that the their there these they this to was
-    we were what when where which who why will with you your
-    """.split()
+    [
+        "a",
+        "an",
+        "and",
+        "are",
+        "as",
+        "at",
+        "be",
+        "but",
+        "by",
+        "did",
+        "do",
+        "does",
+        "for",
+        "from",
+        "had",
+        "has",
+        "have",
+        "how",
+        "i",
+        "in",
+        "is",
+        "it",
+        "its",
+        "me",
+        "my",
+        "of",
+        "on",
+        "or",
+        "our",
+        "so",
+        "that",
+        "the",
+        "their",
+        "there",
+        "these",
+        "they",
+        "this",
+        "to",
+        "was",
+        "we",
+        "were",
+        "what",
+        "when",
+        "where",
+        "which",
+        "who",
+        "why",
+        "will",
+        "with",
+        "you",
+        "your",
+    ]
 )
 
 _FTS_TOKEN_RE = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_./@:-]*")
@@ -1202,8 +1250,7 @@ def _mmr(
                 v = unit.get(nid)
                 if v is not None:
                     sim = sum(x * y for x, y in zip(v, newest_vec))
-                    if sim > best_sim[nid]:
-                        best_sim[nid] = sim
+                    best_sim[nid] = max(best_sim[nid], sim)
             mmr = mmr_lambda * score - (1.0 - mmr_lambda) * best_sim[nid]
             if mmr > best_mmr:
                 best_mmr = mmr

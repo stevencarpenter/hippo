@@ -25,9 +25,10 @@ import argparse
 import json
 import sqlite3
 import sys
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Protocol, Sequence
+from typing import Any, Protocol
 
 from hippo_brain.retrieval import Filters, SearchResult, search
 from hippo_brain.source_filters import source_kind_from_linked_id
