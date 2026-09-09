@@ -5,7 +5,7 @@ Covers the full pipeline end-to-end against an ephemeral SQLite database:
 1. Build a minimal v6-shaped schema (knowledge_nodes + FTS5 triggers + vec0).
 2. Insert a knowledge_node + matching fts5 / vec0 rows.
 3. Call ``retrieval.search()`` in every mode and assert contract invariants.
-4. Call ``mcp_queries.shape_semantic_results`` and assert uuid + linked events
+4. Serialize retrieval results through MCP and assert uuid + linked events
    are present.
 5. Call ``rag.ask`` with a mocked client that raises on chat and assert the
    degraded response preserves sources.
@@ -24,7 +24,7 @@ from pathlib import Path
 import pytest
 
 from hippo_brain import rag, retrieval, vector_store
-from hippo_brain.mcp_queries import shape_semantic_results
+from hippo_brain.mcp import _result_to_dict
 from hippo_brain.retrieval import Filters
 
 EMBED_DIM = vector_store.EMBED_DIM
@@ -171,11 +171,11 @@ def test_search_hybrid_filter_project_requires_link(db: sqlite3.Connection) -> N
 
 
 # ---------------------------------------------------------------------------
-# mcp_queries shaping
+# MCP result serialization
 # ---------------------------------------------------------------------------
 
 
-def test_shape_semantic_results_exposes_uuid_and_linked_events(db: sqlite3.Connection) -> None:
+def test_mcp_results_expose_uuid_and_linked_events(db: sqlite3.Connection) -> None:
     _insert_node(
         db,
         node_id=7,
@@ -197,12 +197,9 @@ def test_shape_semantic_results_exposes_uuid_and_linked_events(db: sqlite3.Conne
     db.execute("INSERT INTO knowledge_node_events (knowledge_node_id, event_id) VALUES (7, 101)")
     db.commit()
 
-    shaped = shape_semantic_results(
-        [{"id": 7, "summary": "s", "_distance": 0.2, "tags": ["t"]}],
-        conn=db,
-    )
-    assert len(shaped) == 1
-    r = shaped[0]
+    results = retrieval.search(db, query="s", query_vec=_unit_vec(0), mode="semantic")
+    assert len(results) == 1
+    r = _result_to_dict(results[0])
     assert r["uuid"] == "node-7-uuid"
     assert r["linked_event_ids"] == [101]
     assert 0.0 <= r["score"] <= 1.0

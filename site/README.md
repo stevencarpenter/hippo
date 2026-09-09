@@ -5,12 +5,14 @@ The hippobrain.org marketing-and-docs site. Astro static output → GitHub Pages
 ## Local development
 
 ```bash
+cd site
 pnpm install
 pnpm dev          # http://localhost:4321
 pnpm build        # static output in dist/
 pnpm preview      # serve dist/
 pnpm check        # astro type/syntax checking
 pnpm test         # rehype plugin unit tests
+pnpm lint:links   # linkinator on the built dist
 ```
 
 ## Where things live

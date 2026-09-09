@@ -16,6 +16,7 @@ use crate::browser_health::{self, BROWSER_EVENT_WARN_SECS, BrowserExtensionConne
 use crate::codex_session;
 use crate::cursor_session;
 use crate::framing::{read_frame, write_frame};
+use crate::load_redaction_engine;
 use crate::pi_session;
 use crate::shell_health;
 
@@ -129,10 +130,6 @@ pub async fn send_event_fire_and_forget(
     let json = serde_json::to_vec(&request)?;
     write_frame(&mut stream, &json).await?;
     Ok(())
-}
-
-fn load_redaction_engine(config: &HippoConfig) -> RedactionEngine {
-    crate::load_redaction_engine(config)
 }
 
 fn format_optional_brain_field(label: &str, value: Option<&str>) -> Option<String> {

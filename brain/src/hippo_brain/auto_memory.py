@@ -24,13 +24,11 @@ from hippo_brain.auto_memory_ingest import (
     ingest_memory_file,
 )
 from hippo_brain.auto_memory_lifecycle import (
-    RevisionRetention,
     query_memory_history,
     reconcile_configured_sources,
     revision_retention_from_config,
 )
 from hippo_brain.auto_memory_reconcile import (
-    ReconcileConfig,
     document_absence_outcome,
     inventory_from_config,
     load_sources_from_config,
@@ -421,24 +419,6 @@ def _open_db(db_path: Path) -> sqlite3.Connection:
 
 def _schema_version(conn: sqlite3.Connection) -> int:
     return int(conn.execute("PRAGMA user_version").fetchone()[0])
-
-
-def poll_sources(
-    conn: sqlite3.Connection,
-    sources: list[dict[str, Any]],
-    *,
-    retention: RevisionRetention | None = None,
-    reconcile: ReconcileConfig | None = None,
-) -> int:
-    """Reconcile every configured auto-memory source. Returns changed revision count."""
-    summary = reconcile_sources(
-        conn,
-        sources,
-        retention=retention,
-        reconcile=reconcile,
-        require_stable=True,
-    )
-    return int(summary["changed"])
 
 
 def reconcile_from_config(

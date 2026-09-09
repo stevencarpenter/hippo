@@ -1,7 +1,7 @@
 """Retrieval + synthesis evaluation harness.
 
 Exposes pure metric functions and a ``hippo-eval`` CLI. See the design spec
-at ``docs/superpowers/specs/2026-04-17-eval-harness-design.md``.
+at ``docs/archive/feature-waves/2026-04-17-eval-harness-design.md``.
 
 The CLI runs a labeled Q/A set against the live hippo corpus via
 :func:`hippo_brain.retrieval.search` and :func:`hippo_brain.rag.ask`, and
@@ -14,7 +14,6 @@ import argparse
 import asyncio
 import json
 import math
-import random
 import re
 import sqlite3
 import statistics
@@ -206,83 +205,6 @@ def keyword_match(answer: str, keywords: Sequence[str]) -> bool:
         return False
     lowered = answer.lower()
     return any(k and k.lower() in lowered for k in keywords)
-
-
-def embedding_cohesion(
-    conn: sqlite3.Connection,
-    project: str,
-    sample: int = 200,
-) -> float:
-    """Ratio of in-project mean cosine to random-pair mean cosine.
-
-    Ratios > 1 mean nodes sharing a project cluster tighter than background.
-    Returns ``nan`` if either pool is too small or ``knowledge_vectors``
-    isn't loaded.
-    """
-    try:
-        rows = conn.execute(
-            """
-            SELECT DISTINCT kv.knowledge_node_id, vec_to_json(kv.vec_knowledge)
-            FROM knowledge_vectors kv
-            JOIN knowledge_node_events kne ON kne.knowledge_node_id = kv.knowledge_node_id
-            JOIN events e ON e.id = kne.event_id
-            WHERE e.git_repo LIKE ? OR e.cwd LIKE ?
-            LIMIT ?
-            """,
-            (f"%{project}%", f"%{project}%", sample),
-        ).fetchall()
-    except sqlite3.OperationalError:
-        return float("nan")
-
-    in_project = [_parse_vec(r[1]) for r in rows if r[1]]
-    in_project = [v for v in in_project if v]
-    if len(in_project) < 4:
-        return float("nan")
-
-    try:
-        bg_rows = conn.execute(
-            "SELECT vec_to_json(vec_knowledge) FROM knowledge_vectors LIMIT ?",
-            (sample,),
-        ).fetchall()
-    except sqlite3.OperationalError:
-        return float("nan")
-    background = [_parse_vec(r[0]) for r in bg_rows if r[0]]
-    background = [v for v in background if v]
-    if len(background) < 4:
-        return float("nan")
-
-    in_mean = _pairwise_mean_cosine(in_project)
-    bg_mean = _pairwise_mean_cosine(background)
-    if bg_mean <= 0:
-        return float("nan")
-    return in_mean / bg_mean
-
-
-def _parse_vec(blob: str | None) -> list[float]:
-    if not blob:
-        return []
-    try:
-        data = json.loads(blob)
-    except json.JSONDecodeError, TypeError:
-        return []
-    if not isinstance(data, list):
-        return []
-    try:
-        return [float(x) for x in data]
-    except TypeError, ValueError:
-        return []
-
-
-def _pairwise_mean_cosine(vecs: Sequence[Sequence[float]], max_pairs: int = 2000) -> float:
-    n = len(vecs)
-    if n < 2:
-        return 0.0
-    pairs = [(i, j) for i in range(n) for j in range(i + 1, n)]
-    if len(pairs) > max_pairs:
-        rng = random.Random(1234)
-        pairs = rng.sample(pairs, max_pairs)
-    sims = [_cosine(vecs[i], vecs[j]) for i, j in pairs]
-    return sum(sims) / len(sims) if sims else 0.0
 
 
 # ---------------------------------------------------------------------------

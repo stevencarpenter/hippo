@@ -12,7 +12,6 @@ from hippo_brain.embeddings import (
     EMBED_DIM,
     _pad_or_truncate,
     embed_knowledge_node,
-    get_or_create_table,
     open_vector_db,
     search_similar,
 )
@@ -41,8 +40,7 @@ def vector_db():
         try:
             conn.executescript(_SCHEMA_BOOTSTRAP)
             conn.commit()
-            handle = get_or_create_table(conn)
-            yield conn, handle
+            yield conn
         finally:
             conn.close()
 
@@ -74,15 +72,15 @@ def sample_node(node_id: int = 1, embed_text: str = "cargo test hippo-core") -> 
 
 
 async def test_embed_and_search(vector_db, mock_client):
-    conn, handle = vector_db
+    conn = vector_db
     _seed_node(conn, 1, "cargo test hippo-core", summary="Ran hippo-core tests")
 
-    await embed_knowledge_node(mock_client, handle, sample_node(), embed_model="test")
+    await embed_knowledge_node(mock_client, conn, sample_node(), embed_model="test")
 
     vecs = await mock_client.embed(["cargo test hippo-core"])
     query_vec = _pad_or_truncate(vecs[0], EMBED_DIM)
 
-    results = search_similar(handle, query_vec, column="vec_knowledge", limit=5)
+    results = search_similar(conn, query_vec, column="vec_knowledge", limit=5)
     assert len(results) == 1
     assert results[0]["embed_text"] == "cargo test hippo-core"
     assert results[0]["summary"] == "Ran hippo-core tests"
@@ -90,12 +88,12 @@ async def test_embed_and_search(vector_db, mock_client):
 
 
 async def test_multiple_nodes(vector_db, mock_client):
-    conn, handle = vector_db
+    conn = vector_db
     for i in range(3):
         _seed_node(conn, i + 1, f"command {i}")
         await embed_knowledge_node(
             mock_client,
-            handle,
+            conn,
             sample_node(node_id=i + 1, embed_text=f"command {i}"),
             embed_model="test",
         )
@@ -105,15 +103,15 @@ async def test_multiple_nodes(vector_db, mock_client):
 
 
 async def test_embed_requires_node_id(vector_db, mock_client):
-    _, handle = vector_db
+    conn = vector_db
     with pytest.raises(ValueError, match="primary key"):
-        await embed_knowledge_node(mock_client, handle, {"embed_text": "x"}, embed_model="test")
+        await embed_knowledge_node(mock_client, conn, {"embed_text": "x"}, embed_model="test")
 
 
 def test_search_similar_rejects_unknown_column(vector_db):
-    _, handle = vector_db
+    conn = vector_db
     with pytest.raises(ValueError):
-        search_similar(handle, [0.0] * EMBED_DIM, column="vec_bogus")
+        search_similar(conn, [0.0] * EMBED_DIM, column="vec_bogus")
 
 
 def test_open_vector_db_creates_parent_dir(tmp_path: Path):
@@ -128,7 +126,7 @@ async def test_embed_knowledge_node_issues_two_single_item_calls(vector_db, mock
     calls, never batched together. Batching disparate-length inputs triggers
     an oMLX server bug where the shorter item returns an all-null vector.
     """
-    conn, handle = vector_db
+    conn = vector_db
     _seed_node(conn, 1, "long identifier-dense summary " * 200, summary="x")
 
     node = sample_node(
@@ -137,7 +135,7 @@ async def test_embed_knowledge_node_issues_two_single_item_calls(vector_db, mock
     )
     node["commands_raw"] = "cargo test"  # short — would trigger oMLX bug if batched
 
-    await embed_knowledge_node(mock_client, handle, node, embed_model="test")
+    await embed_knowledge_node(mock_client, conn, node, embed_model="test")
 
     assert len(mock_client.embed_calls) == 2, (
         f"expected two separate single-item embed calls, got "

@@ -39,7 +39,6 @@ from hippo_brain.client import InferenceClient
 from hippo_brain.embeddings import (
     embed_dict_from_result,
     embed_knowledge_node,
-    get_or_create_table,
     open_vector_db,
     search_similar,
 )
@@ -315,7 +314,7 @@ class BrainServer:
         if self.embedding_model:
             try:
                 self._vector_db = open_vector_db(self.data_dir)
-                self._vector_table = get_or_create_table(self._vector_db)
+                self._vector_table = self._vector_db
                 logger.info("vector store initialized: %s", self._vector_table)
             except Exception as e:
                 if self._vector_db is not None:

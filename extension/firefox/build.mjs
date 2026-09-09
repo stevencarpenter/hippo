@@ -1,6 +1,8 @@
 import { build, context } from "esbuild";
 
-const common = {
+const options = {
+  entryPoints: ["src/background.ts", "src/content.ts", "src/popup.ts"],
+  outdir: "dist",
   bundle: true,
   format: "iife",
   target: "es2022",
@@ -8,19 +10,11 @@ const common = {
   minify: false,
 };
 
-const entries = [
-  { entryPoints: ["src/background.ts"], outfile: "dist/background.js" },
-  { entryPoints: ["src/content.ts"], outfile: "dist/content.js" },
-  { entryPoints: ["src/popup.ts"], outfile: "dist/popup.js" },
-];
-
 if (process.argv.includes("--watch")) {
-  for (const entry of entries) {
-    const ctx = await context({ ...common, ...entry });
-    await ctx.watch();
-  }
+  const ctx = await context(options);
+  await ctx.watch();
   console.log("watching for changes...");
 } else {
-  await Promise.all(entries.map((e) => build({ ...common, ...e })));
+  await build(options);
   console.log("built dist/");
 }

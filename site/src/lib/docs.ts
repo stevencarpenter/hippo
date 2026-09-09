@@ -36,25 +36,6 @@ export function gitHubSourcePath(slug: string): string {
   return `docs/${slug}.md`;
 }
 
-/** Reverse: repo path → site slug. Mirrors `repoPathToSitePath` in rehype-link-rewrite but local. */
-export function sourcePathToSlug(repoRelPath: string): string | null {
-  if (repoRelPath === "README.md") return "getting-started";
-  if (repoRelPath === "CONTRIBUTING.md") return "contributing";
-  if (!repoRelPath.startsWith("docs/")) return null;
-  if (
-    repoRelPath.startsWith("docs/archive/") ||
-    repoRelPath.startsWith("docs/superpowers/")
-  ) {
-    return null;
-  }
-  const inside = repoRelPath.slice("docs/".length);
-  if (!inside.endsWith(".md")) return null;
-  const noExt = inside.slice(0, -".md".length);
-  if (!noExt.includes("/")) return `reference/${noExt}`;
-  if (noExt.endsWith("/README")) return noExt.slice(0, -"/README".length);
-  return noExt;
-}
-
 /**
  * Per-spec U6 motif assignment by docs section. Used as the chapter mark for the
  * first heading of a top-level section, and on /404 / hero (plate-frame).

@@ -89,58 +89,6 @@ def _knowledge_node_links(
     return event_ids, claude_ids, browser_ids
 
 
-def _lookup_knowledge_uuid(conn: sqlite3.Connection, knowledge_node_id: int) -> str:
-    row = conn.execute(
-        "SELECT uuid FROM knowledge_nodes WHERE id = ?", (knowledge_node_id,)
-    ).fetchone()
-    return row[0] if row else ""
-
-
-def shape_semantic_results(hits: list[dict], conn: sqlite3.Connection | None = None) -> list[dict]:
-    """Transform raw LanceDB search hits into the spec-compliant result shape.
-
-    Strips internal fields (vector arrays, session_id, enrichment_model) and
-    maps to the canonical schema. When ``conn`` is provided, augments each
-    result with ``uuid`` and linked event/session/browser ids so agents can
-    follow up.
-    """
-    results = []
-    for hit in hits:
-        raw_tags = hit.get("tags", [])
-        if isinstance(raw_tags, str):
-            tags = _safe_json_loads(raw_tags, [])
-        else:
-            tags = raw_tags or []
-
-        node_id = hit.get("id")
-        uuid = ""
-        event_ids: list[int] = []
-        claude_ids: list[int] = []
-        browser_ids: list[int] = []
-        if conn is not None and node_id is not None:
-            uuid = _lookup_knowledge_uuid(conn, node_id)
-            event_ids, claude_ids, browser_ids = _knowledge_node_links(conn, node_id)
-
-        results.append(
-            {
-                "uuid": uuid,
-                "score": round(1.0 - hit.get("_distance", 0.0), 4),
-                "summary": hit.get("summary", ""),
-                "intent": "",
-                "outcome": hit.get("outcome", ""),
-                "tags": tags,
-                "embed_text": hit.get("embed_text", ""),
-                "cwd": hit.get("cwd", ""),
-                "git_branch": hit.get("git_branch", ""),
-                "captured_at": hit.get("captured_at", 0),
-                "linked_event_ids": event_ids,
-                "linked_claude_session_ids": claude_ids,
-                "linked_browser_event_ids": browser_ids,
-            }
-        )
-    return results
-
-
 def parse_since(since: str) -> int:
     """Parse a duration string like '24h', '7d', '30m' into an epoch-ms threshold.
 

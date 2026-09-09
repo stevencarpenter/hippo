@@ -12,9 +12,6 @@ import { DEFAULT_ALLOWLIST, MIN_DWELL_MS, NATIVE_HOST, SEARCH_ENGINES } from "./
 import { HEARTBEAT_INTERVAL_MS, buildHeartbeatPayload } from "./heartbeat";
 import type { BrowserVisit, PageVisitMessage, Settings } from "./types";
 
-// Re-export for consumers that import from background.ts directly.
-export { HEARTBEAT_INTERVAL_MS, buildHeartbeatPayload };
-
 // --- Heartbeat ---
 
 /**

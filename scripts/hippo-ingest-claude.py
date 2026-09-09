@@ -175,7 +175,6 @@ async def run_enrichment(
     from hippo_brain.client import InferenceClient
     from hippo_brain.embeddings import (
         embed_knowledge_node,
-        get_or_create_table,
         open_vector_db,
     )
 
@@ -207,8 +206,7 @@ async def run_enrichment(
     vector_table = None
     if embedding_model:
         try:
-            vector_db = open_vector_db(str(data_dir))
-            vector_table = get_or_create_table(vector_db)
+            vector_table = open_vector_db(data_dir)
         except Exception as e:
             print(f"Warning: could not initialize vector store: {e}")
 

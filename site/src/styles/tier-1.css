@@ -203,26 +203,6 @@ body.tier-1 {
 .marginalia.danger { border-left-color: var(--oxblood); color: var(--oxblood); }
 .marginalia.danger::before { content: "†"; }
 
-/* Admonitions in docs (warn/note/danger) */
-.admonition {
-  margin: 1.4em 0;
-  padding: 0.7rem 1rem;
-  border-left: 3px solid var(--sepia);
-  background: var(--admonition-bg);
-}
-.admonition .admonition-title {
-  font-family: var(--font-label);
-  letter-spacing: 0.18em;
-  text-transform: uppercase;
-  font-size: 11px;
-  color: var(--sepia);
-  margin-bottom: 0.3rem;
-}
-.admonition.warn { border-left-color: var(--rust); }
-.admonition.warn .admonition-title { color: var(--rust); }
-.admonition.danger { border-left-color: var(--oxblood); }
-.admonition.danger .admonition-title { color: var(--oxblood); }
-
 /* Status badges — green/yellow/grey by state, with text label. */
 .status-badge {
   display: inline-flex;

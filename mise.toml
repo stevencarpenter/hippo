@@ -1004,8 +1004,8 @@ run = "cargo run --bin hippo -- redact test \"$1\""
 description = "Show vector store contents and stats"
 run = """
 uv run --project brain python -c "
-from hippo_brain.embeddings import open_vector_db, get_or_create_table, EMBED_DIM
-table = get_or_create_table(open_vector_db('$HOME/.local/share/hippo'))
+from hippo_brain.embeddings import open_vector_db, EMBED_DIM
+table = open_vector_db('$HOME/.local/share/hippo')
 t = table.to_arrow()
 print(f'Vector store: {t.num_rows} rows, {EMBED_DIM}d embeddings')
 print()
@@ -1027,12 +1027,12 @@ set -euo pipefail
 if [ -z "${1:-}" ]; then echo "Usage: mise run vectors:search <query>"; exit 1; fi
 uv run --project brain python -c "
 import asyncio, sys
-from hippo_brain.embeddings import open_vector_db, get_or_create_table, search_similar
+from hippo_brain.embeddings import open_vector_db, search_similar
 from hippo_brain.client import InferenceClient
 async def main():
     client = InferenceClient()
     vecs = await client.embed([sys.argv[1]], model='$(grep "^embedding" ~/.config/hippo/config.toml | cut -d'"' -f2)')
-    table = get_or_create_table(open_vector_db('$HOME/.local/share/hippo'))
+    table = open_vector_db('$HOME/.local/share/hippo')
     results = search_similar(table, vecs[0], limit=5)
     for r in results:
         d = r.get('_distance', 0)

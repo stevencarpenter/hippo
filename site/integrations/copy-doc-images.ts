@@ -25,7 +25,7 @@ export function copyDocImages(): AstroIntegration {
           return;
         }
         mkdirSync(dest, { recursive: true });
-        const count = walkAndCopy(src, dest, "");
+        const count = walkAndCopy(src, dest);
         logger.info(`copy-doc-images: mirrored ${count} files into public/docs-images`);
       },
     },
@@ -36,16 +36,15 @@ export function copyDocImages(): AstroIntegration {
  * Walk `srcDir`, copying every file to `destDir`/<relative-subpath>. Returns count.
  * Skips .excalidraw source files. Creates intermediate dirs as needed.
  */
-function walkAndCopy(srcDir: string, destDir: string, rel: string): number {
+function walkAndCopy(srcDir: string, destDir: string): number {
   let count = 0;
   for (const entry of readdirSync(srcDir)) {
     const sf = path.join(srcDir, entry);
     const stat = statSync(sf);
     if (stat.isDirectory()) {
-      const nestedSrc = sf;
       const nestedDest = path.join(destDir, entry);
       mkdirSync(nestedDest, { recursive: true });
-      count += walkAndCopy(nestedSrc, nestedDest, path.posix.join(rel, entry));
+      count += walkAndCopy(sf, nestedDest);
     } else if (stat.isFile()) {
       if (entry.endsWith(".excalidraw")) continue;
       copyFileSync(sf, path.join(destDir, entry));

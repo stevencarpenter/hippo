@@ -13,7 +13,6 @@ from hippo_brain.embeddings import (
     EMBED_DIM,
     _pad_or_truncate,
     embed_knowledge_node,
-    get_or_create_table,
     open_vector_db,
 )
 from hippo_brain.vector_store import (
@@ -47,7 +46,6 @@ def db_with_schema():
         try:
             conn.executescript(_SCHEMA_BOOTSTRAP)
             conn.commit()
-            get_or_create_table(conn)
             yield conn
         finally:
             conn.close()

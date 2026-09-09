@@ -3,34 +3,16 @@
 Python enrichment and query server for Hippo. Polls the shared SQLite database for new shell events, enriches them via
 a local OpenAI-compatible inference server (default oMLX, LM Studio also supported), and serves knowledge queries over HTTP.
 
-## Setup
+## Development
+
+Run from the repository root:
 
 ```bash
-uv sync --project brain
-```
-
-## Running
-
-```bash
-# Start the HTTP query server (port 9175)
-uv run --project brain hippo-brain serve
-
-# Or via mise
-mise run run:brain
-```
-
-## Testing
-
-```bash
-uv run --project brain pytest brain/tests -v
-uv run --project brain pytest brain/tests -v --cov=hippo_brain --cov-report=term-missing
-```
-
-## Linting
-
-```bash
-uv run --project brain ruff check brain/
-uv run --project brain ruff format --check brain/
+mise run build:brain       # Sync Python dependencies
+mise run run:brain         # HTTP query server on port 9175
+mise run test:python       # Tests with coverage
+mise run lint:python
+mise run fmt:check
 ```
 
 ## MCP Server
@@ -41,20 +23,9 @@ The brain also includes an MCP server that exposes Hippo's knowledge base as too
 uv run --project brain hippo-mcp
 ```
 
-**Tools** (current set; see [`docs/mcp-reference.md`](../docs/mcp-reference.md) for full arguments, return shapes, examples, and selection guide):
-
-| Tool | Description |
-|------|-------------|
-| `ask` | RAG query — synthesizes an answer from relevant knowledge nodes |
-| `search_knowledge` | Semantic or lexical search over enriched knowledge nodes |
-| `search_hybrid` | Hybrid sqlite-vec + FTS5 search with score fusion |
-| `search_events` | Search raw events (shell commands, Claude sessions, browser visits) |
-| `get_entities` | List extracted entities (projects, tools, files, env vars, concepts) |
-| `get_context` / `get_lessons` / `list_projects` / `get_ci_status` | Auxiliary lookups; see source for details |
-
-**Transport:** stdio using newline-delimited JSON (JSONL) — one JSON-RPC message per line. This is the default for MCP SDK v1.x stdio transport.
-
-**Configuration:** See the MCP Server section in the project root `CLAUDE.md` for mcp-master.json setup and config propagation steps.
+See [MCP setup](../README.md#mcp-server) for client configuration and
+[the tool reference](../docs/mcp-reference.md) for arguments, return shapes,
+and examples. Transport is stdio with one JSON-RPC message per line.
 
 ## Modules
 

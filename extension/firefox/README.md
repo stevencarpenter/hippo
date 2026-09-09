@@ -43,11 +43,11 @@ running when the task completes, restart it to pick up changes.
 
 If you're actively editing the extension code:
 
-1. Navigate to `about:debugging#/runtime/this-firefox`
-2. Click **Load Temporary Add-on**
-3. Select `extension/firefox/manifest.json`
+1. Run `mise run build:ext:dist` from the repository root.
+2. Navigate to `about:debugging#/runtime/this-firefox`.
+3. Click **Load Temporary Add-on** and select `extension/firefox/manifest.json`.
 
-This loads the source directly (no build step) but doesn't survive Firefox restarts.
+Firefox loads the compiled `dist/` bundles. Temporary add-ons do not survive restarts.
 
 ### 3. Verify
 
@@ -58,13 +58,13 @@ This loads the source directly (no build step) but doesn't survive Firefox resta
 
 ## How It Works
 
-**Content script** (`content.js`) — injected into all pages:
+**Content script** (`src/content.ts`), injected into allowlisted domains:
 - Tracks visible dwell time via Page Visibility API
 - Measures max scroll depth
 - Extracts main content via Mozilla Readability on page departure
 - Only sends if dwell > 3 seconds
 
-**Background script** (`background.js`):
+**Background script** (`src/background.ts`):
 - Filters by domain allowlist
 - Extracts search queries from referrer URLs (Google, DuckDuckGo, Bing, GitHub)
 - Sends to `hippo_daemon` native messaging host
@@ -99,7 +99,7 @@ Or edit the allowlist directly from the extension popup.
 | File | Purpose |
 |------|---------|
 | `manifest.json` | WebExtension manifest (MV2) |
-| `content.ts` | Page-level dwell/scroll/content capture |
-| `background.ts` | Allowlist filtering, search query extraction, Native Messaging |
-| `popup.html/ts` | Extension popup UI (toggle, stats, allowlist editor) |
+| `src/content.ts` | Page-level dwell/scroll/content capture |
+| `src/background.ts` | Allowlist filtering, search query extraction, Native Messaging |
+| `popup.html`, `src/popup.ts` | Extension popup UI (toggle, stats, allowlist editor) |
 | `lib/Readability.js` | Mozilla Readability v0.6.0 (vendored) |

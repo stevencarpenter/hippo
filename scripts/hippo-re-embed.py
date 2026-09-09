@@ -23,7 +23,6 @@ from hippo_brain.client import InferenceClient
 from hippo_brain.embeddings import (
     EMBED_DIM,
     _pad_or_truncate,
-    get_or_create_table,
     open_vector_db,
 )
 
@@ -97,8 +96,7 @@ async def main():
         shutil.rmtree(vectors_dir)
         print(f"Deleted {vectors_dir}")
 
-    db = open_vector_db(str(data_dir))
-    table = get_or_create_table(db)
+    table = open_vector_db(data_dir)
 
     client = InferenceClient(base_url=inference_url)
 

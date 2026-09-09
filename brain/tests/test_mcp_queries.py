@@ -11,7 +11,6 @@ from hippo_brain.mcp_queries import (
     parse_since,
     search_events_impl,
     search_knowledge_lexical,
-    shape_semantic_results,
 )
 
 
@@ -630,41 +629,6 @@ class TestListProjects:
 
         results = list_projects_impl(db, limit=10)
         assert any(r["cwd_root"] == "/p/claude-only" for r in results)
-
-
-class TestShapeSemanticResults:
-    def test_includes_uuid_and_links_when_conn(self, db):
-        kid = _insert_kn(db, "u-sem", embed_text="hello")
-        db.execute(
-            "INSERT INTO events (id, timestamp, command, exit_code, duration_ms, cwd, shell) "
-            "VALUES (77, 1000, 'cmd', 0, 1, '/x', 'zsh')"
-        )
-        db.execute("INSERT INTO knowledge_node_events VALUES (?, 77)", (kid,))
-        db.commit()
-
-        hits = [
-            {
-                "id": kid,
-                "_distance": 0.1,
-                "summary": "s",
-                "outcome": "success",
-                "tags": "[]",
-                "embed_text": "hello",
-                "cwd": "/x",
-                "git_branch": "main",
-                "captured_at": 1000,
-            }
-        ]
-        results = shape_semantic_results(hits, conn=db)
-        assert results[0]["uuid"] == "u-sem"
-        assert results[0]["linked_event_ids"] == [77]
-        assert 0.0 <= results[0]["score"] <= 1.0
-
-    def test_no_conn_leaves_uuid_empty(self):
-        hits = [{"id": 1, "_distance": 0.0, "summary": "s", "embed_text": "e"}]
-        results = shape_semantic_results(hits, conn=None)
-        assert results[0]["uuid"] == ""
-        assert results[0]["linked_event_ids"] == []
 
 
 class TestFormatContextBlock:

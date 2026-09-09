@@ -6,7 +6,7 @@ The state of `~/.local/share/hippo/hippo.db`: the live tables, the per-version m
 
 | Fact | Value |
 |---|---|
-| Current version | **21** |
+| Current version | **24** |
 | Authoritative schema | [`crates/hippo-core/src/schema.sql`](../crates/hippo-core/src/schema.sql) |
 | Version constant (Rust) | `crates/hippo-core/src/storage.rs::EXPECTED_VERSION` |
 | Version constant (Python) | `brain/src/hippo_brain/schema_version.py::EXPECTED_SCHEMA_VERSION` |
@@ -47,6 +47,8 @@ The Rust migration runner at `storage.rs::open_db` walks every version from the 
 | **v20** | Auto-memory taxonomy tables. | `memory_categories`, `memory_index_links`, and related taxonomy DDL via `AUTO_MEMORY_TAXONOMY_SCHEMA`. | Category/index metadata for auto-memory retrieval; additive only. |
 | **v21** | Auto-memory watcher source_health identity. | Seeds `source_health.source = 'auto-memory-watcher'` via `INSERT OR IGNORE`. | Watcher liveness for the auto-memory ingest path joins the capture-health family. |
 | **v22** | Watcher resume-state rename (SNUG-115 Phase A). | Creates `agentic_session_offsets` (same columns as legacy `claude_session_offsets`) and `INSERT OR IGNORE` copies existing rows. **Does not drop** legacy tables. | Claude FS watcher and backfill CLI read/write `agentic_session_offsets`. Legacy `claude_session_offsets` remains frozen on upgraded DBs until Phase B. |
+| **v23** | Retired legacy Claude tables (SNUG-115 Phase B). | Drops `claude_sessions`, `claude_enrichment_queue`, `knowledge_node_claude_sessions`, `claude_session_offsets`, and `claude_session_parity`. | The v18 backfill and v22 offset copy supply their replacements. The migration checks row counts before dropping a populated legacy family; see [cutover procedure](capture/legacy-claude-tables-cutover.md). |
+| **v24** | Pi session ingestion. | Rebuilds the `agentic_sessions.harness` CHECK to include `pi`, preserving ids and links. Seeds `source_health.source = 'agentic-session-pi'`. | Pi uses the shared agentic queue and retrieval path. |
 
 ## Reading the live schema
 
@@ -70,10 +72,8 @@ sqlite3 ~/.local/share/hippo/hippo.db "PRAGMA user_version;"
 |---|---|---|
 | `events` | Shell commands and Claude tool-use events. `source_kind` distinguishes; `probe_tag` marks synthetic. | `storage.rs::insert_event_at` |
 | `sessions` | One row per zsh session (start time, hostname, shell, user). | Daemon at session start |
-| `agentic_sessions` | **Live session store** for all four harnesses. One row per `(session_id, harness, segment_index)`; `harness` ∈ {`claude-code`, `codex`, `cursor`, `opencode`}. Holds segment-derived summary, tool calls / user prompts JSON, message count, content hashes. | `claude_session.rs::insert_segments`, `codex_session.rs::upsert_segment_tx`, `cursor_session.rs::upsert_segment_tx`, `claude_sessions.py` write path |
-| `claude_sessions` | **FROZEN (legacy).** One row per `(session_id, segment_index)`. Backfilled into `agentic_sessions` at v18 (harness derived from `source_file`); still created by `schema.sql`, no longer written, dropped in Phase B (v23) per [`capture/legacy-claude-tables-cutover.md`](capture/legacy-claude-tables-cutover.md). | (no live writer — frozen at v18) |
+| `agentic_sessions` | **Live session store** for all five harnesses. One row per `(session_id, harness, segment_index)`; `harness` ∈ {`claude-code`, `codex`, `cursor`, `opencode`, `pi`}. Holds segment-derived summary, tool calls / user prompts JSON, message count, content hashes. | `claude_session.rs::insert_segments`, `codex_session.rs::upsert_segment_tx`, `cursor_session.rs::upsert_segment_tx`, `pi_session.rs::upsert_segment_tx`, `opencode_session.rs::upsert_session` |
 | `agentic_session_offsets` | Per-file FS-watcher resume state (byte_offset, inode, device). | `watch_claude_sessions.rs::process_file` |
-| `claude_session_offsets` | **FROZEN (legacy).** Pre-v22 name for watcher resume state; copied to `agentic_session_offsets` at v22. Still present on upgraded DBs until Phase B drop. | (no live writer — frozen at v22) |
 | `browser_events` | Firefox-extension visits with Readability-extracted main text, dwell, scroll depth. | `storage.rs::insert_browser_event` |
 | `workflow_runs` / `_jobs` / `_annotations` / `_log_excerpts` | GitHub Actions ingest. | `gh_poll.rs::run_once` |
 | `sha_watchlist` | Per-(repo, sha) follow flag for in-flight CI runs. Drives the gh-poller's "wait for this SHA's runs to settle" loop. | `gh_poll.rs` |
@@ -82,46 +82,19 @@ sqlite3 ~/.local/share/hippo/hippo.db "PRAGMA user_version;"
 | `knowledge_nodes` | The synthesized output of enrichment. The `content` column is a JSON blob (with `summary` / `intent` / `entities` / `tool_calls` / etc. as inner fields); `embed_text` and `node_type`/`outcome`/`tags` are real columns. | `enrichment.py::write_knowledge_node`, `claude_sessions.py::write_claude_knowledge_node` |
 | `knowledge_node_agentic_sessions` | **Live session-link table** tying knowledge nodes back to their `agentic_sessions` source rows. | `claude_sessions.py::write_claude_knowledge_node` |
 | `knowledge_node_events` / `_browser_events` / `_workflow_runs` / `_lessons` | Link tables tying knowledge nodes back to their source events. | Same writers as `knowledge_nodes` |
-| `knowledge_node_claude_sessions` | **FROZEN (legacy)** session-link table. Backfilled into `knowledge_node_agentic_sessions` at v18; no longer written, dropped in Phase B (v23) per [`capture/legacy-claude-tables-cutover.md`](capture/legacy-claude-tables-cutover.md). | (no live writer — frozen at v18) |
 | `entities` | Extracted identifiers (project, file, tool, service, repo, host, person, concept, domain, env_var). UNIQUE `(type, canonical)`. | `enrichment.py::upsert_entities` |
 | `event_entities` / `knowledge_node_entities` | Many-to-many links from rows to extracted entities. | Same |
 | `relationships` | Directed `(source_entity, predicate, target_entity)` graph edges. | Brain enrichment |
-| `agentic_enrichment_queue` | **Live agentic queue**, shared across all four harnesses (claude-code, codex, cursor, opencode). Each row is a claim ticket with `status`, `priority`, `retry_count`, `locked_at`, `locked_by`, referencing `agentic_sessions(id)`. | Daemon writers on insert; brain on claim/complete; watchdog reaper on timeout |
+| `agentic_enrichment_queue` | **Live agentic queue**, shared across all five harnesses (claude-code, codex, cursor, opencode, pi). Each row is a claim ticket with `status`, `priority`, `retry_count`, `locked_at`, `locked_by`, referencing `agentic_sessions(id)`. | Daemon writers on insert; brain on claim/complete; watchdog reaper on timeout |
 | `enrichment_queue` / `browser_enrichment_queue` / `workflow_enrichment_queue` | Per-source queue tables for shell events, browser visits, and workflow runs. Each row is a claim ticket with `status`, `priority`, `retry_count`, `locked_at`, `locked_by`. | Daemon on insert; brain on claim/complete; watchdog reaper on timeout |
-| `claude_enrichment_queue` | **FROZEN (legacy)** agentic queue. Un-terminal rows backfilled into `agentic_enrichment_queue` at v18; no longer written, dropped in Phase B (v23) per [`capture/legacy-claude-tables-cutover.md`](capture/legacy-claude-tables-cutover.md). | (no live writer — frozen at v18) |
-| `source_health` | Per-source last_event_ts, consecutive_failures, probe_ok, probe_lag_ms. The watchdog's source of truth. | Daemon (capture path), watchdog (probe results) |
+| `source_health` | Per-source last_event_ts, consecutive_failures, probe_ok, probe_lag_ms. The watchdog's source of truth. | Capture writers and probes |
 | `capture_alarms` | Watchdog invariant violations. Append-only ledger. | `hippo watchdog run` |
-| `claude_session_parity` | Legacy parity-check ledger from the tmux-tailer / FS-watcher transition (T-5..T-8). Retained so v9→v10 migrations on existing databases converge with the same shape as fresh installs; not written by any current code path. | (no live writer) |
 | `knowledge_fts` | FTS5 virtual table over `knowledge_nodes.summary` / `embed_text` / `content`. | Triggers (auto-synced with `knowledge_nodes`) |
 | `knowledge_vectors` | sqlite-vec virtual table holding 768-dim embedding vectors. | `embeddings.py::embed_knowledge_node` (Python brain — Rust daemon doesn't load vec0) |
 | `embed_model_meta` | Single-row tracking table for the model that produced the corpus's vectors. | Same |
 
-### Foreign-key relationships (high level)
-
-```
-sessions ──< events
-             ├── source_kind in {'shell', 'claude-tool', ...}
-             └── probe_tag NULL except for synthetic probes
-
-agentic_sessions ──< knowledge_node_agentic_sessions >── knowledge_nodes   (LIVE)
-claude_sessions  ──< knowledge_node_claude_sessions  >── knowledge_nodes   (FROZEN — backfilled into agentic_* at v18)
-events           ──< knowledge_node_events            >── knowledge_nodes
-browser_events   ──< knowledge_node_browser_events    >── knowledge_nodes
-workflow_runs    ──< knowledge_node_workflow_runs     >── knowledge_nodes
-lessons          ──< knowledge_node_lessons           >── knowledge_nodes
-
-knowledge_nodes ──< knowledge_node_entities >── entities
-                ──< knowledge_fts (FTS5 mirror, trigger-synced)
-                ──< knowledge_vectors (sqlite-vec mirror, brain-managed)
-
-source_health      (no FKs; one row per logical source)
-capture_alarms     (no FKs; references invariant_id by string)
-enrichment_queue   ──> events
-agentic_enrichment_queue ──> agentic_sessions   (LIVE — shared by all four harnesses)
-claude_enrichment_queue  ──> claude_sessions    (FROZEN — backfilled into agentic_* at v18)
-browser_enrichment_queue ──> browser_events
-workflow_enrichment_queue ──> workflow_runs
-```
+The legacy `claude_*` tables were dropped in v23. See the migration history and
+[cutover procedure](capture/legacy-claude-tables-cutover.md) for their replacements.
 
 `PRAGMA foreign_keys` is ON for every connection (`storage.rs::open_db`, `vector_store.py::open_conn`).
 
@@ -129,8 +102,8 @@ workflow_enrichment_queue ──> workflow_runs
 
 - **Single-shot per version.** Each migration block in `storage.rs::open_db` runs at most once per database lifetime: the version range guard (`if (1..=N).contains(&version)`) becomes false after `PRAGMA user_version = N+1` lands.
 - **Idempotent on partial-success crash (v8 and later).** From v8 onward, every CREATE uses `IF NOT EXISTS`; every ALTER goes through `add_column_if_missing` which pre-checks `PRAGMA table_info`; every seed insert uses `INSERT OR IGNORE`. A daemon that crashes after adding a column but before bumping `user_version` retries the migration cleanly on next start. The v1→v2 and v6→v7 blocks predate this discipline (see the carve-out at the top of the changelog) — they require manual recovery if interrupted between the unguarded `ALTER` and the matching `PRAGMA user_version` inside the same `execute_batch`.
-- **Atomic version bumps for the table-recreate path.** **v13** (entities CHECK) and **v17** (segment-capable `agentic_sessions`) are the two true table-recreates, and **v18** (Claude-family backfill) reuses the same transactional discipline without dropping anything. Each bundles `PRAGMA user_version = N` into the same `execute_batch` as the `COMMIT` (preceded by `DROP TABLE` / `RENAME` for the recreates) — a crash after the rename/backfill can't leave the DB at the prior version with the new structure live. Earlier versions (including v8, which is a CREATE-IF-NOT-EXISTS plus `add_column_if_missing` loop) issue `PRAGMA user_version = N` in a separate `execute_batch` after the migration body completes, so re-run safety on those steps comes from the idempotency of each individual statement, not from atomicity with the version bump.
-- **PRAGMA `foreign_keys` discipline.** Migrations that drop or rebuild a table (v13, v17) — and the v18 backfill that crosses FK boundaries — explicitly turn FKs off, run inside a transaction, run a `PRAGMA foreign_key_check` as a query before the version bump, and turn FKs back on at the end. Other migrations rely on the default `foreign_keys=ON` set by `open_db`.
+- **Atomic table rewrites.** v13, v17, and v24 rebuild tables; v18 backfills the agentic family. Each commits the data change and `PRAGMA user_version` in one transaction. Earlier additive migrations use separate version bumps and rely on idempotent statements for crash recovery.
+- **Foreign keys during migration.** v13, v17, v18, and v24 disable foreign-key enforcement for the transaction, check for violations before the version bump, and re-enable enforcement after commit. v23 disables enforcement while dropping the retired tables with `DROP TABLE IF EXISTS`.
 
 ## Version mismatch recovery
 

@@ -17,7 +17,7 @@
     page-break-inside: avoid;
   }
   h1, h2, h3 { page-break-after: avoid; }
-  blockquote, table, .marginalia, .admonition { page-break-inside: avoid; }
+  blockquote, table, .marginalia { page-break-inside: avoid; }
   svg { opacity: 0.6; }
   img { max-width: 100% !important; }
 }

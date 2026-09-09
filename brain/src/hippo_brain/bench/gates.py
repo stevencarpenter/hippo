@@ -23,13 +23,8 @@ class SchemaCheckResult:
 
 
 def _strip_code_fence(text: str) -> str:
-    m = _FENCE_WHOLE_RE.match(text)
-    if m:
-        return m.group(1)
-    m = _FENCE_ANY_RE.search(text)
-    if m:
-        return m.group(1)
-    return text
+    match = _FENCE_WHOLE_RE.match(text) or _FENCE_ANY_RE.search(text)
+    return match.group(1) if match else text
 
 
 def _extract_json_object(text: str) -> str | None:

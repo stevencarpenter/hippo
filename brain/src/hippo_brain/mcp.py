@@ -15,7 +15,6 @@ from hippo_brain.client import InferenceClient
 from hippo_brain.embeddings import (
     EMBED_DIM,
     _pad_or_truncate,
-    get_or_create_table,
     open_vector_db,
 )
 from hippo_brain.mcp_logging import setup_logging
@@ -134,7 +133,7 @@ class _ServerState:
     inference_client: InferenceClient | None = None
     embedding_model: str = ""
     query_model: str = ""
-    vector_table: object | None = None  # lancedb.table.Table
+    vector_table: sqlite3.Connection | None = None
 
 
 _state = _ServerState()
@@ -168,9 +167,8 @@ def _init_state() -> None:
     _state.inference_client = InferenceClient(base_url=config["inference_base_url"])
 
     try:
-        db = open_vector_db(config["data_dir"])
-        _state.vector_table = get_or_create_table(db)
-        logger.info("Vector table initialized at %s/vectors", config["data_dir"])
+        _state.vector_table = open_vector_db(config["data_dir"])
+        logger.info("Vector store initialized at %s", _state.db_path)
     except Exception:
         logger.exception("Failed to initialize vector table — semantic search unavailable")
         _state.vector_table = None

@@ -8,7 +8,7 @@ import sqlite3
 import time
 from datetime import UTC, datetime
 
-from hippo_brain.embeddings import EMBED_DIM, _pad_or_truncate, search_similar
+from hippo_brain.embeddings import EMBED_DIM, _pad_or_truncate
 from hippo_brain.enrichment import IDENTIFIER_ENTITY_TYPES
 from hippo_brain.rerank import rerank_results
 from hippo_brain.retrieval import Filters, SearchResult
@@ -529,7 +529,7 @@ def _resolve_filters(
 async def ask(
     question: str,
     inference_client,
-    vector_table,
+    vector_table: sqlite3.Connection | None,
     query_model: str,
     embedding_model: str,
     limit: int = 10,
@@ -543,7 +543,7 @@ async def ask(
     branch: str | None = None,
     entity: str | None = None,
     mode: str = "hybrid",
-    conn=None,
+    conn: sqlite3.Connection | None = None,
     include_excluded: bool = False,
 ) -> dict:
     """Run the full RAG pipeline: preflight → embed → retrieve → synthesize.
@@ -560,21 +560,18 @@ async def ask(
 
     Args:
         max_context_chars: Cap on rendered retrieval context; long fields are
-            truncated proportionally if the cap is exceeded. Default 8000.
+            truncated proportionally if the cap is exceeded. Default 12000.
         skip_preflight: Skip the inference server ``health_check`` (useful in tests
             where the client doesn't expose one).
         filters: Fully-formed :class:`retrieval.Filters` object, if the caller
             already has one.
         project / since / source / branch / entity: flat shortcut kwargs —
             if any are set (and ``filters`` is not), a ``Filters`` is built
-            internally. Setting any filter routes retrieval through
-            :func:`hippo_brain.retrieval.search` instead of the legacy
-            ``search_similar`` path.
+            internally.
         mode: Retrieval mode (``"hybrid"`` / ``"semantic"`` / ``"lexical"`` /
-            ``"recent"``). Only applied on the filtered path.
-        conn: sqlite3 connection for the filtered path. Falls back to
-            ``vector_table`` if not provided (for callers that pass their
-            connection positionally).
+            ``"recent"``).
+        conn: SQLite connection for retrieval. Defaults to ``vector_table``
+            for callers that pass their connection positionally.
     """
     endpoint = getattr(inference_client, "base_url", "<unknown>")
 
@@ -630,13 +627,6 @@ async def ask(
     query_vec = _pad_or_truncate(vecs[0], EMBED_DIM)
 
     # 2. Retrieve relevant knowledge nodes.
-    #
-    # Prefer ``retrieval.search`` (hybrid RRF + FTS5 + MMR diversification)
-    # whenever we have a real sqlite3.Connection. This applies regardless of
-    # whether filters are set, so vanilla ``ask`` calls also benefit from
-    # MMR's lexical+temporal diversity instead of pure-semantic KNN. The
-    # legacy ``search_similar`` path is kept for non-sqlite handles (e.g.
-    # LanceDB tables on deploys without sqlite-vec).
     effective_filters = _resolve_filters(
         filters,
         project=project,
@@ -647,48 +637,41 @@ async def ask(
         include_excluded=include_excluded,
     )
     retrieval_conn = conn if conn is not None else vector_table
-    use_retrieval_search = isinstance(retrieval_conn, sqlite3.Connection)
+    if not isinstance(retrieval_conn, sqlite3.Connection):
+        return _degraded_response(
+            model=query_model,
+            sources=[],
+            error=(
+                f"retrieve failed [ConfigError] model={query_model!r} endpoint={endpoint}: "
+                "no sqlite connection was supplied (pass conn=... or ensure "
+                "vector_table is a sqlite3.Connection)"
+            ),
+            stage="retrieve",
+        )
     try:
         _t1 = time.monotonic()
-        if use_retrieval_search:
-            tuning = retrieval_get_tuning()
-            # With reranking on, over-fetch so the LLM has a wider pool to
-            # reorder; the rerank stage cuts back down to `limit`.
-            fetch_limit = max(limit, tuning.rerank_pool) if tuning.rerank else limit
-            results = retrieval_search(
-                retrieval_conn,
-                question,
-                list(query_vec),
-                filters=effective_filters,
-                mode=mode,
-                limit=fetch_limit,
-            )
-            if tuning.rerank:
-                # rerank_results owns the trivial-input short-circuit and
-                # always cuts to `limit`, including on its failure paths.
-                _tr = time.monotonic()
-                results = await rerank_results(
-                    inference_client, query_model, question, results, limit
-                )
-                if _rag_duration:
-                    _rag_duration.record((time.monotonic() - _tr) * 1000, {"stage": "rerank"})
-            else:
-                results = results[:limit]
-            hits = [_result_to_hit(r) for r in results]
-        elif effective_filters is not None:
-            return _degraded_response(
-                model=query_model,
-                sources=[],
-                error=(
-                    "retrieve failed [ConfigError] model="
-                    f"{query_model!r} endpoint={endpoint}: filters were requested "
-                    "but no sqlite connection was supplied (pass conn=... or ensure "
-                    "vector_table is a sqlite3.Connection)"
-                ),
-                stage="retrieve",
-            )
+        tuning = retrieval_get_tuning()
+        # With reranking on, over-fetch so the LLM has a wider pool to
+        # reorder; the rerank stage cuts back down to `limit`.
+        fetch_limit = max(limit, tuning.rerank_pool) if tuning.rerank else limit
+        results = retrieval_search(
+            retrieval_conn,
+            question,
+            list(query_vec),
+            filters=effective_filters,
+            mode=mode,
+            limit=fetch_limit,
+        )
+        if tuning.rerank:
+            # rerank_results owns the trivial-input short-circuit and
+            # always cuts to `limit`, including on its failure paths.
+            _tr = time.monotonic()
+            results = await rerank_results(inference_client, query_model, question, results, limit)
+            if _rag_duration:
+                _rag_duration.record((time.monotonic() - _tr) * 1000, {"stage": "rerank"})
         else:
-            hits = search_similar(vector_table, query_vec, limit=limit)
+            results = results[:limit]
+        hits = [_result_to_hit(r) for r in results]
         if _rag_duration:
             _rag_duration.record((time.monotonic() - _t1) * 1000, {"stage": "retrieve"})
     except Exception as e:

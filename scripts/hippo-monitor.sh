@@ -81,9 +81,9 @@ while true; do
 
     # ── Knowledge store ──
     VCOUNT=$(uv run --project brain python -c "
-from hippo_brain.embeddings import open_vector_db, get_or_create_table
+from hippo_brain.embeddings import open_vector_db
 try:
-    t = get_or_create_table(open_vector_db('$HOME/.local/share/hippo'))
+    t = open_vector_db('$HOME/.local/share/hippo')
     print(t.count_rows())
 except:
     print(0)

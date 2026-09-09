@@ -3,7 +3,7 @@
  *
  * Tests the payload shape and interval constant without requiring a real
  * browser runtime.  `buildHeartbeatPayload()` and `HEARTBEAT_INTERVAL_MS`
- * are pure helpers exported from background.ts precisely so they can be
+ * are pure helpers exported from heartbeat.ts so they can be
  * tested here without mocking the full browser API.
  */
 

@@ -32,9 +32,6 @@
     "zod": "^4.4.2"
   },
   "devDependencies": {
-    "@fontsource-variable/fraunces": "^5.2.9",
-    "@fontsource-variable/jetbrains-mono": "^5.2.8",
-    "@fontsource-variable/source-serif-4": "^5.2.9",
     "@types/hast": "^3.0.4",
     "@types/mdast": "^4.0.4",
     "@types/node": "^24.10.0",

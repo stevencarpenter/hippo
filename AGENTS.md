@@ -2,8 +2,8 @@
 
 ## What This Is
 
-Hippo - a local knowledge capture daemon for macOS. Rust daemon captures shell activity, Python brain enriches it via
-local LLMs.
+Hippo captures local developer activity on macOS. The Rust daemon and source
+watchers store events; the Python brain enriches them through a local LLM.
 
 ## Project Structure
 
@@ -13,64 +13,61 @@ local LLMs.
 - `shell/` - zsh hook scripts
 - `config/` - default config templates
 - `launchd/` - LaunchAgent plists
+- `extension/firefox/` - browser activity capture
 
 ## Commands
 
-### Canonical Workflow: mise
+Use `mise run <task>` for common build, test, lint, and service operations.
+Run these commands from the repository root:
 
-All build, test, lint, and service management workflows are defined in `mise.toml` at the project root. Use `mise run <task>` for all common operations. Examples:
-
+```bash
 mise run build:all         # Build Rust and sync Python deps
 mise run test              # Run all tests (Rust + Python, lint, format)
+mise run test:core         # hippo-core tests
+mise run test:daemon       # hippo-daemon unit tests
+mise run test:integration  # hippo-daemon integration tests
+mise run test:python       # Brain tests with coverage
+mise run lint              # clippy + ruff
+mise run fmt:check         # Rust + Python formatting
 mise run run:brain         # Start the brain server
 mise run run:daemon        # Start the daemon in foreground
 mise run doctor            # Run diagnostic checks
-mise run nuke              # Force stop all Hippo processes and clean up
+mise run install           # Rebuild, install, configure, start, verify
+mise run start             # Start services via launchd
+mise run stop              # Stop services via launchd
+mise run restart           # Stop + start
+mise run nuke              # Force stop processes; preserve captured data
+```
 
-See `mise.toml` for the full list of tasks.
-
-### Rust (daemon + CLI)
-
-cargo build
-cargo test
-cargo test -p hippo-core
-cargo test -p hippo-daemon
-cargo clippy --all-targets -- -D warnings
-cargo fmt --check
-cargo run --bin hippo -- daemon run
-cargo run --bin hippo -- status
-
-### Python (brain)
-
-uv sync --project brain
-uv run --project brain pytest brain/tests -v
-uv run --project brain ruff check brain/
-uv run --project brain ruff format --check brain/
-uv run --project brain hippo-brain serve
+See [mise.toml](mise.toml) for task definitions and
+[CONTRIBUTING.md](CONTRIBUTING.md) for focused tests and CI differences.
 
 ## Architecture
 
-Two long-lived processes share a single SQLite database at `~/.local/share/hippo/hippo.db`:
+Processes share SQLite at `~/.local/share/hippo/hippo.db`:
 
-1. **hippo-daemon** (Rust) — captures events via Unix socket and Native Messaging, redacts secrets, writes to SQLite, serves CLI queries
-2. **hippo-brain** (Python) — polls enrichment queues from SQLite, calls a local OpenAI-compatible inference server (default oMLX, also tested with LM Studio), writes knowledge nodes + vector embeddings to SQLite via sqlite-vec (vec0 virtual tables + FTS5)
+- **hippo-daemon** captures shell and Native Messaging events, redacts secrets,
+  stores events, and serves CLI requests over a length-prefixed JSON Unix socket.
+  Shell sends are fire-and-forget; CLI queries use request/response.
+- **Source watchers and pollers** write directly to SQLite. Claude Code, Codex,
+  Cursor, opencode, and Pi share `agentic_sessions`, keyed by
+  `(session_id, harness, segment_index)`, and `agentic_enrichment_queue`.
+  The Claude FSEvents watcher is `watch_claude_sessions.rs`; repeated ingest
+  upserts segments and re-enqueues changed content.
+- **hippo-brain** polls enrichment queues, calls a local OpenAI-compatible
+  inference server (default oMLX, also tested with LM Studio), and writes knowledge
+  nodes and embeddings. Retrieval uses sqlite-vec and FTS5 in the same database.
+  `hippo query` without `--raw` and `hippo ask` call the brain HTTP API.
+- **hippo-mcp** serves stdio clients and reads SQLite directly.
+- **Probe LaunchAgents** record round-trip results in `source_health`.
+  The watchdog reads this state independently of the daemon socket and writes
+  violations to `capture_alarms`, so a wedged daemon cannot silence its alarms.
 
-Three additional LaunchAgents support capture reliability and Claude session ingestion:
-
-3. **com.hippo.claude-session-watcher** — `notify`/FSEvents watcher on `~/.claude/projects/**/*.jsonl`; ingests Claude Code sessions into `claude_sessions` (`crates/hippo-daemon/src/watch_claude_sessions.rs`)
-4. **com.hippo.watchdog** — runs every 60 s, asserts I-1..I-10 invariants against `source_health`, writes `capture_alarms` rows on violations
-5. **com.hippo.probe** — runs every 5 min, round-trips synthetic events through each capture path, records latency in `source_health.probe_lag_ms`
-
-Communication:
-
-- Shell hook to daemon: fire-and-forget via Unix socket (length-prefixed JSON)
-- CLI to daemon: request/response via same Unix socket
-- Watcher to SQLite: direct write via `claude_session::ingest_session_file` (own connection, `INSERT OR IGNORE` makes re-processing idempotent)
-- Watchdog to SQLite: direct read of `source_health`, write to `capture_alarms`; never touches the daemon socket so a wedged daemon can't silence its own alarm
-- `hippo query` (non-raw) to brain: HTTP request to brain local server
-- Brain to SQLite: direct read/write (WAL mode, busy_timeout=5000); vectors live in the same DB via sqlite-vec
-
-The capture-reliability stack (P0–P3, shipped 2026-04-24 → 2026-04-26) is documented in `docs/capture-reliability/`. The retired tmux-based session tailer and its sev1 history are archived under `docs/archive/`.
+See [capture architecture](docs/capture/architecture.md),
+[source contracts](docs/capture/sources.md), and the
+[operator runbook](docs/capture/operator-runbook.md). Capture changes must follow
+the [anti-pattern rules](docs/capture/anti-patterns.md). Historical designs and
+incidents remain in [docs/archive/](docs/archive/).
 
 ## Data Storage
 
@@ -80,13 +77,17 @@ The capture-reliability stack (P0–P3, shipped 2026-04-24 → 2026-04-26) is do
 | Config | `~/.config/hippo/config.toml`   | User configuration                                                   |
 | Logs   | `~/.local/share/hippo/*.log`    | Daemon, brain, watcher, watchdog, and probe logs (7-day rotation via tracing-appender) |
 
+Rust defaults respect `XDG_DATA_HOME` and `XDG_CONFIG_HOME`. Brain and MCP read
+`~/.config/hippo/config.toml`; set `[storage].data_dir` there for a custom database
+location.
+
 ## Code Exploration
 
 When codegraph MCP tools are available (`mcp__codegraph__*`), use `codegraph_explore` first for "how does X work / trace X" questions over Rust source — typically 2–5 calls vs. 30+ for grep+read. Fall back to `rg`/`Read` for non-indexed artifacts: `.plist`, YAML, Python, shell scripts.
 
 ## Style
 
-- Rust: edition 2024, clippy clean, anyhow for errors
+- Rust: edition 2024, clippy clean, anyhow for errors; favor immutability and functional combinators
 - Python: 3.14+ required, ruff for lint+format, uv for package management
 - All timestamps: Unix epoch milliseconds (i64/INTEGER)
 - SQLite: WAL mode, PRAGMA foreign_keys=ON, PRAGMA busy_timeout=5000 on every connection

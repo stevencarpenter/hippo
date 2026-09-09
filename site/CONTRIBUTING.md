@@ -6,16 +6,7 @@ load-bearing.
 
 ## Local development
 
-```bash
-cd site
-pnpm install
-pnpm dev          # http://localhost:4321
-pnpm build        # static output in dist/
-pnpm preview      # serve dist/
-pnpm check        # astro type / syntax checking
-pnpm test         # rehype plugin unit tests
-pnpm lint:links   # linkinator on the built dist
-```
+See [the README](./README.md#local-development) for development and validation commands.
 
 The site builds against the **same checkout** as the daemon. Edits to
 `../docs/`, `../README.md`, or `../CONTRIBUTING.md` (root) are picked up

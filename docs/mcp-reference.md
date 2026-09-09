@@ -12,7 +12,7 @@ For setup (adding hippo to your MCP config), see the [README's MCP Server sectio
 |---|---|---|
 | A synthesized prose answer with cited sources | `ask` | Performs retrieval + LLM synthesis end-to-end. Slow (~1-3 s) but most useful for "what was I working on?" / "how did I fix that?" / "why did we choose X?" |
 | A compact answer plus evidence packets in one call | `agent_query` | Modes: `known`, `evidence`, `recent`, `decisions`. Returns bounded answer, hits with `evidence` (inline `freshness` + `confidence`), aggregated `freshness`, and `conflicts` when stale or contradictory evidence is detected. |
-| A list of relevant knowledge nodes (no synthesis) | `search_knowledge` or `search_hybrid` | Retrieval only. Fastest path. Use `search_hybrid` when you want score-fused vec0 + FTS5 results; `search_knowledge` for the simpler "semantic with lexical fallback" path. Each hit's `evidence` packets include inline capture `freshness` (SNUG-125) and an explainable `confidence` rating (SNUG-126). |
+| A list of relevant knowledge nodes (no synthesis) | `search_knowledge` or `search_hybrid` | Retrieval only. Fastest path. Both default to vec0 + FTS5 fusion; choose `search_hybrid` for entity filtering or `search_knowledge` for auto-memory category filtering. Each hit's `evidence` packets include inline capture `freshness` (SNUG-125) and an explainable `confidence` rating (SNUG-126). |
 | A Markdown context block ready to paste into another agent's prompt | `get_context` | Same retrieval as `search_hybrid`, rendered as a prompt-shaped block (numbered list + per-hit summary/outcome/cwd/uuid). |
 | Raw shell commands / Claude tool calls / browser visits — not enriched summaries | `search_events` | Operates on the events tables, not knowledge nodes. Use for "what command did I run?" / "what URL was I on?" |
 | The list of projects in the corpus | `list_projects` | Use for discovery before filtering other tools by `project`. |
@@ -77,20 +77,25 @@ Sources:
 
 ### `search_knowledge`
 
-Search enriched knowledge nodes; no synthesis. Defaults to semantic; falls back to lexical on embedding failure or when filters are applied.
+Search enriched knowledge nodes without synthesis. Defaults to hybrid vector and
+FTS5 retrieval. Falls back to a SQL `LIKE` scan when retrieval is unavailable;
+an empty query lists nodes through that scan.
 
 **Arguments**
 
 | Name | Type | Default | Notes |
 |---|---|---|---|
 | `query` | `str` | required | Search query text. |
-| `mode` | `str` | `"semantic"` | `"semantic"` (vector similarity via the inference server's embedding model) or `"lexical"` (SQL `LIKE` over `knowledge_nodes.content` / `embed_text` — does NOT use the FTS5 index). |
+| `mode` | `str` | `"hybrid"` | `"hybrid"` (vector + FTS5 fusion), `"semantic"` (vector similarity), or `"lexical"` (FTS5 BM25). |
 | `limit` | `int` | `10` | |
 | `project` / `since` / `source` / `branch` | `str` | `""` | See [Common arguments](#common-arguments). |
+| `category` | `str` | `""` | Auto-memory category: `feedback`, `project`, `reference`, `user`, or `index`. |
+| `include_excluded` | `bool` | `false` | Operator mode: include rows excluded by the default eligibility policy. |
 
-When any filter is applied, the implementation forces lexical mode (filter pushdown isn't supported in the semantic path).
+Filters apply in all three modes. Unknown source or category filters raise an error.
 
-**Returns** — list of `SearchResult`-shaped dicts (from `shape_semantic_results` / `search_knowledge_lexical` in `brain/src/hippo_brain/mcp_queries.py`):
+**Returns:** a list of dictionaries serialized from `retrieval.SearchResult` by
+`mcp._result_to_dict`. Example fields:
 
 ```json
 {
@@ -98,15 +103,14 @@ When any filter is applied, the implementation forces lexical mode (filter pushd
   "score": 0.87,
   "summary": "...",
   "intent": "",
-  "outcome": "success" | "partial" | "failure" | "unknown",
+  "outcome": "success",
   "tags": ["tag1", "tag2"],
   "embed_text": "identifier-dense tag soup",
   "cwd": "/Users/.../projects/hippo",
   "git_branch": "main",
   "captured_at": 1730000000000,
   "linked_event_ids": [12345, 12346],
-  "linked_claude_session_ids": [501, 502],
-  "linked_browser_event_ids": [9001],
+  "linked_source_ids": ["shell-12345", "claude-501", "browser-9001"],
   "evidence": [
     {
       "ref": "shell-12345",
@@ -122,9 +126,14 @@ When any filter is applied, the implementation forces lexical mode (filter pushd
 }
 ```
 
-`search_hybrid` and semantic `search_knowledge` (via `_retrieve_filtered`) include an `evidence` array on each hit — inspectable citations per [`source-trust-contracts.md`](capture/source-trust-contracts.md). Operator debug: `hippo-evidence-inspect shell-12345`.
+The retrieval path includes `evidence` and `confidence` on each hit. See
+[source trust contracts](capture/source-trust-contracts.md) for citation semantics.
+Inspect a source with `hippo-evidence-inspect shell-12345`.
 
-The `linked_*_ids` arrays are empty when a node has no links to that source (e.g., a browser-only node returns `[]` for `linked_event_ids`).
+The SQL fallback (`mcp_queries.search_knowledge_lexical`) returns `score: null`,
+`linked_event_ids`, `linked_claude_session_ids`, and `linked_browser_event_ids`.
+It omits `evidence` and `confidence`. Link arrays are empty when no matching
+source is linked.
 
 ---
 
@@ -134,7 +143,8 @@ Hybrid retrieval (sqlite-vec + FTS5 score fusion) over knowledge nodes. No synth
 
 **Arguments**
 
-Same as `search_knowledge`, plus:
+Accepts `query`, `limit`, `project`, `since`, `source`, and `branch` as above,
+with these mode and entity controls:
 
 | Name | Type | Default | Notes |
 |---|---|---|---|
@@ -145,7 +155,9 @@ Same as `search_knowledge`, plus:
 
 **When to prefer over `search_knowledge`**
 
-`search_hybrid` is the structured retrieval path used by `ask`/`get_context` internally; it supports filter pushdown and the `entity` argument. Reach for `search_knowledge` only when you want the legacy "semantic with lexical fallback" behavior.
+Use `search_hybrid` for the `entity` filter or `recent` mode. Use
+`search_knowledge` for auto-memory `category` or explicit `include_excluded`.
+Both tools use the same filtered retrieval implementation.
 
 ---
 

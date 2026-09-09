@@ -42,23 +42,9 @@ If `hippo events` returns nothing, see [Troubleshooting](#troubleshooting) below
 
 ## Architecture
 
-```
-+-----------+                  +--------------+                +--------------+
-|  zsh      |  Unix socket     |              |  SQLite (WAL)  |              |
-|  shell    | ---------------> |              | <------------> | hippo-brain  |
-+-----------+                  |              |                | (Python)     |
-+-----------+  FSEvents        | hippo-daemon |                +------+-------+
-|  Claude   |  watcher         | (Rust)       |                       |
-|  Code     | ---------------> |              |                +------+-------+
-+-----------+                  |              |                |  hippo-mcp   |
-+-----------+  Native Msg      |              |                | (MCP server) |
-|  Firefox  | ---------------> |              |                +--------------+
-|  ext.     |                  |              |                  ^         |
-+-----------+                  +--------------+           stdio  |  SQLite |
-                                                        (JSONL) | sqlite-vec |
-                                                                |  LM API |
-                                                          Claude Code / Desktop
-```
+The daemon accepts shell and browser events. Session watchers and pollers write
+directly to the shared SQLite database. The brain enriches queued records, and
+MCP queries the same database independently of the brain HTTP server.
 
 | Component | Language | Role |
 |-----------|----------|------|
@@ -66,17 +52,17 @@ If `hippo events` returns nothing, see [Troubleshooting](#troubleshooting) below
 | **hippo-brain** | Python | Polls enrichment queues, calls the local inference server for summarization, correlates browser research with shell activity, writes knowledge nodes + vector embeddings to SQLite via sqlite-vec. |
 | **hippo-mcp** | Python | MCP server exposing the knowledge base over stdio. Claude Code queries your personal knowledge base mid-conversation. |
 
-Five core LaunchAgents run under `gui/$(id -u)`:
+Core LaunchAgents run under `gui/$(id -u)`:
 
 | Agent | Role |
 |-------|------|
 | `com.hippo.daemon` | Long-lived Rust daemon (KeepAlive) |
 | `com.hippo.brain` | Long-lived Python brain server (KeepAlive) |
 | `com.hippo.claude-session-watcher` | FSEvents watcher on `~/.claude/projects/**/*.jsonl` (KeepAlive); ingests Claude Code sessions |
-| `com.hippo.watchdog` | Capture-reliability monitor; runs every 60 s, asserts I-1..I-12 invariants, writes `capture_alarms` rows |
+| `com.hippo.watchdog` | Capture-reliability monitor; runs every 60 s, checks capture invariants, writes `capture_alarms` rows |
 | `com.hippo.probe` | Synthetic canary probes; runs every 5 min, round-trips a real event through each capture path and records latency in `source_health` |
 
-`hippo daemon install --force` writes the plists and bootstraps all five. The capture-reliability stack (source health, invariants, watchdog, probes, alarms) is documented in [`docs/capture/`](docs/capture/) — start with [`architecture.md`](docs/capture/architecture.md). For an end-to-end trace of how a shell command, Claude session segment, or browser visit becomes a knowledge node, see [`docs/lifecycle.md`](docs/lifecycle.md). Review-blocker rules every contributor must follow live in [`docs/capture/anti-patterns.md`](docs/capture/anti-patterns.md).
+`hippo daemon install --force` writes and bootstraps the configured service plists. The capture-reliability stack (source health, invariants, watchdog, probes, alarms) is documented in [`docs/capture/`](docs/capture/) — start with [`architecture.md`](docs/capture/architecture.md). For an end-to-end trace of how a shell command, Claude session segment, or browser visit becomes a knowledge node, see [`docs/lifecycle.md`](docs/lifecycle.md). Review-blocker rules every contributor must follow live in [`docs/capture/anti-patterns.md`](docs/capture/anti-patterns.md).
 
 If Hippo is configured to use oMLX, `mise run install:omlx` installs an
 optional `com.hippo.omlx` LaunchAgent. It starts `/opt/homebrew/opt/omlx/bin/omlx
@@ -296,25 +282,8 @@ mise run doctor             # Diagnostic checks
 
 Run `mise tasks` for the complete list.
 
-### Without mise
-
-```bash
-# Rust
-cargo build                                      # default features include `otel`
-cargo build --no-default-features                # build without OTel instrumentation
-cargo test --workspace --locked --no-fail-fast   # matches CI
-cargo clippy --all-targets --locked -- -D warnings
-cargo fmt --check
-
-# Python
-uv sync --project brain
-uv run --project brain pytest brain/tests -v
-uv run --project brain ruff check brain/
-uv run --project brain ruff format --check brain/
-
-# MCP server
-uv run --project brain hippo-mcp
-```
+See [CONTRIBUTING.md](CONTRIBUTING.md) for focused test commands, CI differences,
+and contribution rules. Task implementations live in [mise.toml](mise.toml).
 
 ### HippoGUI (separate repository)
 

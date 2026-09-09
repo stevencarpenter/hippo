@@ -1,19 +1,4 @@
-"""Knowledge-node embedding pipeline, backed by SQLite + sqlite-vec.
-
-The public surface is preserved from the LanceDB era so existing callers
-(mcp.py, server.py, rag.py, tests) keep working:
-
-- ``EMBED_DIM``
-- ``_pad_or_truncate``
-- ``open_vector_db(data_dir)`` — returns a handle (now a sqlite3 connection)
-- ``get_or_create_table(handle)`` — idempotent; returns the same handle
-- ``embed_knowledge_node(client, handle, node_dict, ...)``
-- ``search_similar(handle, query_vec, column=..., limit=...)``
-
-Under the hood, vectors are written to the ``knowledge_vectors`` vec0 table
-in the main hippo SQLite DB. ``search_similar`` joins that table against
-``knowledge_nodes`` so callers receive the same dict shape they did before.
-"""
+"""Embed knowledge nodes and search vectors in the shared SQLite database."""
 
 from __future__ import annotations
 
@@ -57,7 +42,6 @@ __all__ = [
     "EmbedDriftError",
     "_pad_or_truncate",
     "embed_knowledge_node",
-    "get_or_create_table",
     "open_vector_db",
     "search_similar",
 ]
@@ -89,17 +73,6 @@ def open_vector_db(data_dir: str | Path) -> sqlite3.Connection:
     db_path = Path(data_dir) / "hippo.db"
     db_path.parent.mkdir(parents=True, exist_ok=True)
     return open_conn(db_path)
-
-
-def get_or_create_table(handle: sqlite3.Connection) -> sqlite3.Connection:
-    """Idempotent no-op for API compatibility.
-
-    ``open_vector_db`` already ensures the vec0 table exists. Previous
-    LanceDB-era callers would chain ``get_or_create_table(open_vector_db(...))``;
-    the same chain still works.
-    """
-    vector_store.ensure_vec_table(handle)
-    return handle
 
 
 def embed_dict_from_result(node_id: int, embed_text: str) -> dict:

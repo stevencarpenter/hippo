@@ -15,6 +15,8 @@ the protocol definition used between the shell hook and daemon.
 
 ## Testing
 
+Run from the repository root:
+
 ```bash
-cargo test -p hippo-core
+mise run test:core
 ```

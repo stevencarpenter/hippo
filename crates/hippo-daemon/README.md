@@ -5,13 +5,15 @@ the CLI provides tools for querying, managing, and diagnosing the system.
 
 ## Running
 
+Run from the repository root:
+
 ```bash
 # Foreground (for development)
-cargo run --bin hippo -- daemon run
+mise run run:daemon
 
 # Via launchd
-cargo run --bin hippo -- daemon install
-cargo run --bin hippo -- daemon start
+mise run install
+mise run start
 ```
 
 ## CLI Commands
@@ -53,5 +55,6 @@ cargo run --bin hippo -- daemon start
 ## Testing
 
 ```bash
-cargo test -p hippo-daemon
+mise run test:daemon       # Unit tests
+mise run test:integration  # Integration tests
 ```

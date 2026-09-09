@@ -14,7 +14,6 @@ import pytest
 
 from hippo_brain.evaluation import (
     Question,
-    _pairwise_mean_cosine,
     derive_sources,
     ndcg_at_k,
     near_duplicate_density,
@@ -66,43 +65,6 @@ class TestNearDupDensityUndersize:
 
     def test_one_vector_nan(self):
         assert math.isnan(near_duplicate_density([[1.0, 0.0, 0.0]]))
-
-
-class TestPairwiseMeanCosineSampling:
-    """When pair count exceeds ``max_pairs`` the function must sample.
-
-    We use a tiny ``max_pairs`` so the sampling branch actually fires, then
-    assert the result is:
-      * finite (didn't crash),
-      * deterministic (uses the module-level RNG seed 1234 under the hood).
-
-    The RNG is seeded inline, so two calls with the same input return the same
-    mean — pinning that the seed stays fixed (flipping to a global RNG would
-    break eval reproducibility).
-    """
-
-    def test_samples_deterministically(self):
-        # 6 unit-ish vectors → 15 pairs. Force sampling by capping at 4.
-        vecs = [
-            [1.0, 0.0],
-            [0.9, 0.1],
-            [0.8, 0.2],
-            [0.0, 1.0],
-            [0.1, 0.9],
-            [0.2, 0.8],
-        ]
-        a = _pairwise_mean_cosine(vecs, max_pairs=4)
-        b = _pairwise_mean_cosine(vecs, max_pairs=4)
-        assert math.isfinite(a)
-        assert a == b  # deterministic under seeded RNG
-
-    def test_unsampled_matches_full(self):
-        # When pairs <= max_pairs, no sampling: full mean computed.
-        vecs = [[1.0, 0.0], [0.0, 1.0], [1.0, 1.0]]
-        val = _pairwise_mean_cosine(vecs, max_pairs=100)
-        # Exact pairwise cosines: (0, sqrt(1/2), sqrt(1/2)) → mean = sqrt(1/2)*2/3
-        expected = (0.0 + math.sqrt(0.5) + math.sqrt(0.5)) / 3
-        assert val == pytest.approx(expected)
 
 
 # ---------------------------------------------------------------------------

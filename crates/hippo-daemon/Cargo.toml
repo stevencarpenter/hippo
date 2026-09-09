@@ -63,7 +63,6 @@ otel = [
 
 [dev-dependencies]
 tempfile.workspace = true
-tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 wiremock = "0.6"
 proptest = "1"
 filetime = "0.2"

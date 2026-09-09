@@ -25,7 +25,6 @@
   --zebra:        rgba(42, 29, 16, 0.03);   /* prose table even-row tint */
   --grain-1:      rgba(42, 29, 16, 0.025);  /* tier-1 paper texture, first pass */
   --grain-2:      rgba(42, 29, 16, 0.02);   /* tier-1 paper texture, second pass */
-  --admonition-bg:rgba(107, 60, 32, 0.04);
 
   /* Status badges (/status) */
   --badge-active-bg:     #c8d8b8;
@@ -148,7 +147,6 @@
   --zebra:        rgba(239, 228, 206, 0.045);
   --grain-1:      rgba(239, 228, 206, 0.022);
   --grain-2:      rgba(239, 228, 206, 0.018);
-  --admonition-bg:rgba(217, 122, 94, 0.07);
 
   --badge-active-bg:     #24361b;
   --badge-active-fg:     #bfd6ac;
