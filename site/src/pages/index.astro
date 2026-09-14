@@ -49,7 +49,7 @@ const blogPosts = (await getCollection("blog", ({ data }) => !data.draft))
     <div class="page">
       <PlateBadge label="Plate III" figure="fig. 3 — daemon · brain · MCP" />
       <h2 id="plate-iii-heading">How it works.</h2>
-      <div class="arch">
+      <div class="arch" tabindex="0" role="region" aria-label="Architecture diagram">
         <svg viewBox="0 0 800 240" role="img" aria-labelledby="arch-title arch-desc" class="arch-diagram">
           <title id="arch-title">Hippo architecture: capture sources feed the daemon, the brain enriches with a local LLM, the MCP server answers questions.</title>
           <desc id="arch-desc">Three capture-source families on the left — zsh hook, agentic-CLI session watchers for Claude Code, Codex, Cursor, and opencode, and the Firefox WebExtension — write events to the hippo-daemon Rust process via a Unix socket. The daemon redacts secrets and writes to a SQLite database with FTS5 plus sqlite-vec. The hippo-brain Python process reads enrichment queues from SQLite, calls a local OpenAI-compatible inference server (oMLX by default; LM Studio also works), and writes knowledge nodes back to SQLite. An MCP server exposes ask, search_knowledge, search_events, and get_entities tools to client editors over stdio.</desc>
@@ -184,12 +184,13 @@ ten checks complete in 0.61s — all green.</code></pre>
   .col-icon { margin-bottom: 0.4rem; color: var(--sepia); }
   .col-icon :global(svg) { width: 32px; height: 32px; }
   .arch {
+    overflow-x: auto;
     margin: 1.4rem 0;
     padding: 1.4rem;
     background: var(--paper-2);
     border: 1px solid var(--rule-soft);
   }
-  .arch-diagram { width: 100%; height: auto; max-height: 320px; color: var(--ink); }
+  .arch-diagram { width: 100%; min-width: 960px; height: auto; color: var(--ink); }
   .post-list { list-style: none; padding: 0; }
   .post-list li { padding: 1rem 0; border-bottom: 1px solid var(--rule-soft); }
   .post-list h3 { font-family: var(--font-display); font-size: 1.2rem; margin: 0.2rem 0; }

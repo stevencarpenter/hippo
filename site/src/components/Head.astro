@@ -1,5 +1,4 @@
 ---
-import { ClientRouter } from "astro:transitions";
 import "../styles/reset.css";
 import "../styles/fonts.css";
 import "../styles/tokens.css";
@@ -78,10 +77,7 @@ const fullTitle = title === "Hippo" ? title : `${title} · Hippo`;
     so no-JS visitors get dark regardless of their OS; that trade-off is
     documented in tokens.css.
 
-    The click handler is delegated from `document` rather than bound to the
-    button: ClientRouter swaps the body, and a delegated listener survives that
-    without rebinding or double-binding. `astro:after-swap` re-applies the
-    attribute because Astro resets <html> attributes from the incoming page. */}
+    Native page navigation gives each page a fresh script lifecycle. */}
 <script is:inline>
   (() => {
     const KEY = "hippo-theme";
@@ -135,7 +131,6 @@ const fullTitle = title === "Hippo" ? title : `${title} · Hippo`;
     // The toggle button is not parsed yet on the pre-paint pass above, so its
     // aria-pressed is set here instead, once the body exists.
     document.addEventListener("DOMContentLoaded", () => apply(resolve()));
-    document.addEventListener("astro:after-swap", () => apply(resolve()));
 
     // Follow the OS live — macOS flips itself at sunset — but only while the
     // reader has not overridden it with the toggle.
@@ -162,4 +157,15 @@ const fullTitle = title === "Hippo" ? title : `${title} · Hippo`;
   })();
 </script>
 
-<ClientRouter />
+<script>
+  // Safari needs explicit keyboard focus on overflowing code and tables.
+  const focusScrollRegions = () => {
+    for (const element of document.querySelectorAll<HTMLElement>("pre, .prose table")) {
+      if (element.scrollWidth > element.clientWidth) element.tabIndex = 0;
+      else element.removeAttribute("tabindex");
+    }
+  };
+  focusScrollRegions();
+  window.addEventListener("resize", focusScrollRegions);
+  document.fonts.ready.then(focusScrollRegions);
+</script>

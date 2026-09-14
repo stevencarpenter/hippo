@@ -9,7 +9,7 @@ const filtered = headings.filter((h) => h.depth === 2 || h.depth === 3);
 ---
 {filtered.length >= 3 && (
   <aside class="docs-rail-right" aria-label="On this page">
-    <h5>On this page</h5>
+    <h2>On this page</h2>
     <ul>
       {filtered.map((h) => (
         <li class={`depth-${h.depth}`}>
@@ -25,32 +25,14 @@ const filtered = headings.filter((h) => h.depth === 2 || h.depth === 3);
   (() => {
     const links = Array.from(document.querySelectorAll('[data-heading-link]'));
     if (!links.length) return;
-    const slugToLink = new Map();
-    links.forEach((a) => slugToLink.set(a.getAttribute('data-heading-link'), a));
-    const targets = Array.from(slugToLink.keys())
-      .map((slug) => document.getElementById(slug))
-      .filter((el) => el instanceof Element);
-    if (!targets.length) return;
-    let active = null;
-    const setActive = (slug) => {
-      if (active === slug) return;
-      slugToLink.forEach((a, s) => {
-        if (s === slug) {
-          a.setAttribute('aria-current', 'location');
-          a.classList.add('active');
-        } else {
-          a.removeAttribute('aria-current');
-          a.classList.remove('active');
-        }
+    const targets = links.map((link) => document.getElementById(link.dataset.headingLink));
+    const observer = new IntersectionObserver(() => {
+      const active = targets.findLast((heading) => heading && heading.getBoundingClientRect().top <= innerHeight * 0.3) || targets[0];
+      links.forEach((link) => {
+        if (link.dataset.headingLink === active?.id) link.setAttribute("aria-current", "location");
+        else link.removeAttribute("aria-current");
       });
-      active = slug;
-    };
-    const observer = new IntersectionObserver((entries) => {
-      const visible = entries
-        .filter((e) => e.isIntersecting)
-        .sort((a, b) => a.target.getBoundingClientRect().top - b.target.getBoundingClientRect().top);
-      if (visible[0]) setActive(visible[0].target.id);
     }, { rootMargin: '0px 0px -70% 0px', threshold: 0 });
-    targets.forEach((t) => observer.observe(t));
+    targets.forEach((t) => t && observer.observe(t));
   })();
 </script>

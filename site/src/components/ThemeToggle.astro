@@ -5,7 +5,7 @@
  *
  * No client script lives here on purpose — the handler is a delegated listener
  * in Head.astro's `is:inline` block so it runs before first paint (no flash)
- * and survives ClientRouter swaps without rebinding. This component only needs
+ * on each page. This component only needs
  * to render the `data-theme-toggle` hook.
  *
  * ARIA: `aria-pressed` carries the state, so the accessible name must be a
@@ -50,9 +50,8 @@
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    width: 1.9rem;
-    height: 1.9rem;
-    margin-block-end: -0.45rem;
+    width: 2.75rem;
+    height: 2.75rem;
     padding: 0;
     background: none;
     border: 1px solid transparent;
@@ -96,7 +95,4 @@
     .theme-toggle { transition: color 120ms ease-out; }
   }
 
-  @media (max-width: 720px) {
-    .theme-toggle { margin-block-end: 0; }
-  }
 </style>

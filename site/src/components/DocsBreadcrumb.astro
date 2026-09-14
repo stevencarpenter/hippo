@@ -16,7 +16,7 @@ const { trail } = Astro.props;
       <Fragment>
         {idx > 0 && <span class={`sep ${isMid ? "seg-mid" : ""}`} aria-hidden="true">/</span>}
         {isLast || !crumb.href ? (
-          <span class="current">{crumb.label}</span>
+          <span class:list={{ current: isLast, "seg-mid": isMid }} aria-current={isLast ? "page" : undefined}>{crumb.label}</span>
         ) : (
           <a class={`breadcrumb-segment ${isMid ? "seg-mid" : ""}`} href={crumb.href}>{crumb.label}</a>
         )}
