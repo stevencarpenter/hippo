@@ -5,16 +5,22 @@
 #   astro is bumped directly in package.json (^7.1.0); the rest are transitive:
 #   - dompurify / vite / esbuild / yaml / js-yaml : pulled by astro + vitest
 #   - undici / brace-expansion@5                  : dev-only, via linkinator
+#   - fast-uri                                    : dev-only, via @astrojs/check -> ajv
+#
+#   These four carry advisory floors, not just major pins: dompurify
+#   >=3.4.13, js-yaml >=4.3.2, fast-uri >=3.1.6, brace-expansion >=5.0.9.
+#   Loosening any of them below its floor reopens a Dependabot alert.
 #
 #   vite tracks whatever major astro requires — Astro 7 requires Vite 8
 #   (astro's own package.json pins "vite": "^8.0.13"); bump this alongside
 #   any future astro major upgrade or the override silently downgrades vite
 #   and breaks the static build.
 overrides:
-  dompurify: "^3.4.9"
+  dompurify: "^3.4.13"
   vite: "^8.0.13"
   esbuild: "^0.28.1"
   yaml: "^2.8.3"
-  js-yaml: "^4.2.0"
+  js-yaml: "^4.3.2"
+  fast-uri: "^3.1.6"
   undici: "^7.28.0"
-  "brace-expansion@5": "^5.0.6"
+  "brace-expansion@5": "^5.0.9"
