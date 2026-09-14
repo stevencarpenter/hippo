@@ -1173,7 +1173,10 @@ def test_exporter_counters_are_cumulative(tmp_path, monkeypatch):
     db = tmp_path / "hippo.db"
     _build_fixture_db(db, snowball=False)
     monkeypatch.setattr(_EXPORTER, "DB_PATH", db)
-    monkeypatch.setattr(_EXPORTER, "PROBE_TTL_S", 10**9)
+    # 0 disables the probe outright. A huge TTL does NOT: probe_state["ts"]
+    # starts at 0.0, so now - 0 exceeds any sane TTL and collect_probe spawns
+    # a real probe thread whose failure bumps race this test's assertions.
+    monkeypatch.setattr(_EXPORTER, "PROBE_TTL_S", 0)
     monkeypatch.setattr(_EXPORTER, "CANARY_FILE", tmp_path / "no-canary.json")
     _EXPORTER.reset_counters_for_test()
 
@@ -1197,7 +1200,10 @@ def test_exporter_counters_are_typed_counter(tmp_path, monkeypatch):
     db = tmp_path / "hippo.db"
     _build_fixture_db(db, snowball=False)
     monkeypatch.setattr(_EXPORTER, "DB_PATH", db)
-    monkeypatch.setattr(_EXPORTER, "PROBE_TTL_S", 10**9)
+    # 0 disables the probe outright. A huge TTL does NOT: probe_state["ts"]
+    # starts at 0.0, so now - 0 exceeds any sane TTL and collect_probe spawns
+    # a real probe thread whose failure bumps race this test's assertions.
+    monkeypatch.setattr(_EXPORTER, "PROBE_TTL_S", 0)
     monkeypatch.setattr(_EXPORTER, "CANARY_FILE", tmp_path / "no-canary.json")
     _EXPORTER.reset_counters_for_test()
     _EXPORTER.reset_db_cache_for_test()
@@ -1248,7 +1254,10 @@ def test_exporter_render_is_reentrant(tmp_path, monkeypatch):
     db = tmp_path / "hippo.db"
     _build_fixture_db(db, snowball=True)
     monkeypatch.setattr(_EXPORTER, "DB_PATH", db)
-    monkeypatch.setattr(_EXPORTER, "PROBE_TTL_S", 10**9)
+    # 0 disables the probe outright. A huge TTL does NOT: probe_state["ts"]
+    # starts at 0.0, so now - 0 exceeds any sane TTL and collect_probe spawns
+    # a real probe thread whose failure bumps race this test's assertions.
+    monkeypatch.setattr(_EXPORTER, "PROBE_TTL_S", 0)
     monkeypatch.setattr(_EXPORTER, "CANARY_FILE", tmp_path / "no-canary.json")
     _EXPORTER.reset_db_cache_for_test()
     _EXPORTER.reset_counters_for_test()
