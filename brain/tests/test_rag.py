@@ -341,6 +341,7 @@ class TestAsk:
 
         client.chat.assert_called_once()
         assert client.chat.call_args.kwargs["model"] == "big-model"
+        assert client.chat.call_args.kwargs["max_tokens"] == 2048
 
     @pytest.mark.asyncio
     async def test_preflight_failure_returns_degraded_without_calling_embed(self):

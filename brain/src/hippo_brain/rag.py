@@ -40,6 +40,7 @@ _rag_degraded = (
 logger = logging.getLogger("hippo_brain.rag")
 
 DEFAULT_MAX_CONTEXT_CHARS = 12000
+MAX_ANSWER_TOKENS = 2048
 DEFAULT_SOURCES_LIMIT = 10
 _MIN_PER_HIT_FIELD_CHARS = 80
 _ENTITIES_LINE_CAP = 500
@@ -717,7 +718,10 @@ async def ask(
     # 4. Synthesize.
     try:
         _t2 = time.monotonic()
-        answer = await inference_client.chat(messages, model=query_model)
+        # Bound generation at the backend; a caller timeout does not stop inference.
+        answer = await inference_client.chat(
+            messages, model=query_model, max_tokens=MAX_ANSWER_TOKENS
+        )
         if _rag_duration:
             _rag_duration.record((time.monotonic() - _t2) * 1000, {"stage": "synthesize"})
     except Exception as e:

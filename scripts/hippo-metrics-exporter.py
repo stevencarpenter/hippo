@@ -4,7 +4,7 @@
 Read-only bridge between hippo.db / the brain server and Prometheus. Emits
 the knowledge-base metrics that the OTel capture pipeline does not cover
 (graveyard, dead-project contamination, project identity fragmentation,
-decision yield, hook hygiene) plus the recall probe: a synthetic /ask
+decision yield, hook hygiene) plus an opt-in recall probe: a synthetic /ask
 round-trip that treats the retrieval path as a production dependency.
 Capture has watchdogs and probes; this gives recall the same treatment.
 
@@ -68,7 +68,8 @@ DB_PATH = Path(os.environ.get("HIPPO_DB", DATA_DIR / "hippo.db"))
 PORT = int(os.environ.get("HIPPO_METRICS_PORT", "9835"))
 BRAIN_URL = os.environ.get("HIPPO_BRAIN_URL", "http://127.0.0.1:9175").rstrip("/")
 DB_TTL_S = float(os.environ.get("HIPPO_DB_TTL", "15"))
-PROBE_TTL_S = float(os.environ.get("HIPPO_PROBE_TTL", "120"))
+# Synthetic inference is opt-in. Zero disables it, including at startup.
+PROBE_TTL_S = float(os.environ.get("HIPPO_PROBE_TTL", "0"))
 PROBE_TIMEOUT_S = float(os.environ.get("HIPPO_PROBE_TIMEOUT", "45"))
 CANARY_FILE = Path(os.environ.get("HIPPO_CANARY_FILE", DATA_DIR / "canary_drill.json"))
 
@@ -98,6 +99,7 @@ MIN_EVENTS_FOR_PROJECT = 10
 
 METRIC_NAMES = [
     "hippo_kb_up",
+    "hippo_kb_recall_probe_enabled",
     "hippo_kb_scrape_duration_milliseconds",
     # --- corpus ---
     "hippo_kb_events",
@@ -727,12 +729,13 @@ probe_state: dict = {"ts": 0.0, "samples": [], "all_ok": False}
 
 
 def run_probe() -> None:
-    now = time.time()
-    if now - probe_state["ts"] < PROBE_TTL_S and probe_state["samples"]:
+    if PROBE_TTL_S <= 0:
         return
     if not _probe_lock.acquire(blocking=False):
         return  # a probe is already in flight; serve cached state
     try:
+        if probe_state["samples"] and time.time() - probe_state["ts"] < PROBE_TTL_S:
+            return
         _run_probe_inner()
     finally:
         _probe_lock.release()
@@ -748,7 +751,10 @@ def _ask_once(question: str) -> tuple[bool, str]:
         )
         with urllib.request.urlopen(req, timeout=PROBE_TIMEOUT_S) as resp:
             body = json.loads(resp.read())
-        ok = isinstance(body, dict) and len(str(body.get("answer", "")).strip()) > 0
+        if isinstance(body, dict) and (body.get("degraded") or body.get("error")):
+            return False, "degraded_answer"
+        answer = body.get("answer") if isinstance(body, dict) else None
+        ok = isinstance(answer, str) and bool(answer.strip())
         return ok, "" if ok else "empty_answer"
     except urllib.error.HTTPError as e:
         return False, f"http_error_{e.code}"
@@ -766,7 +772,6 @@ def _ask_once(question: str) -> tuple[bool, str]:
 
 
 def _run_probe_inner() -> None:
-    now = time.time()
     samples: list[dict] = []
     all_ok = True
     for q in GOLDEN_QUESTIONS:
@@ -783,7 +788,8 @@ def _run_probe_inner() -> None:
                       "since exporter start.")
             print(f"[exporter] recall probe failed ({reason}): {q}", flush=True)
         samples.append({"question": q, "ok": ok, "reason": reason, "ms": ms})
-    probe_state.update({"ts": now, "samples": samples, "all_ok": all_ok})
+    # Cool down after completion, even when the batch took longer than the TTL.
+    probe_state.update({"ts": time.time(), "samples": samples, "all_ok": all_ok})
 
 
 def collect_probe(reg: Registry) -> None:
@@ -796,6 +802,10 @@ def collect_probe(reg: Registry) -> None:
     `tryAcquire` on `_probe_lock`, so concurrent scrapes don't queue burst
     threads.
     """
+    reg.gauge("hippo_kb_recall_probe_enabled", 1.0 if PROBE_TTL_S > 0 else 0.0,
+              help="1 if synthetic /ask probes are enabled (HIPPO_PROBE_TTL > 0).")
+    if PROBE_TTL_S <= 0:
+        return
     now = time.time()
     stale = now - probe_state["ts"] >= PROBE_TTL_S
     if stale and _probe_lock.acquire(blocking=False):
@@ -819,7 +829,7 @@ def collect_probe(reg: Registry) -> None:
                       help="Per-golden-question /ask round-trip latency (successful "
                            "probes only).")
     reg.gauge("hippo_kb_recall_probe_timestamp_seconds", st["ts"],
-              help="Unix time of the last recall probe run.")
+              help="Unix time the last recall probe batch completed.")
 
 
 # ---------------------------------------------------------------------------
