@@ -11,14 +11,11 @@ const { sections, currentSlug } = Astro.props;
   <details open class="rail-details">
     <summary>Sections</summary>
     {sections.map((section) => (
-      <div class="section">
-        <h5>
-          {section.url
-            ? <a class="section-link" href={section.url}>{section.label}</a>
-            : section.label}
-        </h5>
+      <details class="section" open={section.id === "getting-started" || section.entries.some((entry) => entry.slug === currentSlug) || section.url === `/docs/${currentSlug}`}>
+        <summary><h2>{section.label}</h2></summary>
         {section.caption && <span class="caption" lang="la"><em>{section.caption}</em></span>}
         <ul>
+          {section.url && <li><a href={section.url} aria-current={section.url === `/docs/${currentSlug}` ? "page" : undefined}>Overview</a></li>}
           {section.entries.map((entry) => {
             const active = entry.slug === currentSlug;
             return (
@@ -28,10 +25,20 @@ const { sections, currentSlug } = Astro.props;
             );
           })}
         </ul>
-      </div>
+      </details>
     ))}
   </details>
 </aside>
+
+<script is:inline>
+  (() => {
+    const menu = document.querySelector(".rail-details");
+    const desktop = window.matchMedia("(min-width: 769px)");
+    const sync = () => { menu.open = desktop.matches; };
+    sync();
+    desktop.addEventListener("change", sync);
+  })();
+</script>
 
 <style>
   /* On non-mobile screens, ignore the <details> chrome — display children plain. */
@@ -39,15 +46,6 @@ const { sections, currentSlug } = Astro.props;
     .docs-rail-left .rail-details { display: contents; }
     .docs-rail-left .rail-details > summary { display: none; }
   }
-  /* Section heading-as-link: keep the small-caps label aesthetic; underline on hover only. */
-  .docs-rail-left h5 .section-link {
-    color: inherit;
-    text-decoration: none;
-  }
-  .docs-rail-left h5 .section-link:hover {
-    color: var(--oxblood);
-    text-decoration: underline;
-    text-decoration-color: var(--rule);
-    text-underline-offset: 0.2em;
-  }
+  .section > summary { cursor: pointer; min-height: 44px; align-content: center; color: var(--sepia); }
+  .section > summary h2 { display: inline; }
 </style>

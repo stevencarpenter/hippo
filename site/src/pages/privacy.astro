@@ -13,7 +13,7 @@ import PlateBadge from "../components/PlateBadge.astro";
        handles the data on your machine. This page documents the entire pipeline,
        source by source.</p>
 
-    <div class="data-flow">
+    <div class="data-flow" tabindex="0" role="region" aria-label="Data flow diagram">
       <svg viewBox="0 0 700 300" role="img" aria-labelledby="flow-title flow-desc">
         <title id="flow-title">Data flow: capture sources to enriched knowledge, all on-device.</title>
         <desc id="flow-desc">Three capture-source families on the left — shell hook, agentic-CLI session watchers (Claude Code, Codex, Cursor, opencode), and Firefox browsing — flow through a redactor in the daemon. Redacted events land in a local SQLite database. The brain reads enrichment queues from that database, calls a local OpenAI-compatible inference server (oMLX by default; LM Studio also works) bound to localhost, and writes knowledge nodes back. The MCP server reads only from SQLite to answer questions over stdio. Nothing in this diagram crosses the machine boundary, drawn as a dashed sepia border around the entire flow.</desc>
@@ -108,10 +108,11 @@ import PlateBadge from "../components/PlateBadge.astro";
 
 <style>
   .data-flow {
+    overflow-x: auto;
     margin: 1.6rem 0 2rem;
     padding: 1.4rem;
     background: var(--paper-2);
     border: 1px solid var(--rule-soft);
   }
-  .data-flow svg { width: 100%; height: auto; max-height: 320px; color: var(--ink); }
+  .data-flow svg { width: 100%; min-width: 840px; height: auto; color: var(--ink); }
 </style>

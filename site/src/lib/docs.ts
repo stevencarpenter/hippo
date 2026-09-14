@@ -157,6 +157,7 @@ export function buildSidebar(
 ): SidebarSection[] {
   const capture: SidebarEntry[] = [];
   const reference: SidebarEntry[] = [];
+  const research: SidebarEntry[] = [];
   /** Per-section index URLs. Populated when a `<section>/README.md` exists, so the
    *  rail and docs index can render the section label as a link. */
   const sectionUrls: Record<string, string> = {};
@@ -168,23 +169,8 @@ export function buildSidebar(
       slug.startsWith("superpowers/") ||
       slug.startsWith("initial-research/")
     ) continue;
-    // Top-level docs/<x>.md becomes reference/<x>.
-    const segments = slug.split("/");
-    const last = segments[segments.length - 1];
-    let routeSlug: string;
-    let isSectionIndex = false;
-    if (segments.length === 1) {
-      routeSlug = `reference/${slug}`;
-    } else if (last === "README" || last === "readme") {
-      routeSlug = segments.slice(0, -1).join("/");
-      isSectionIndex = true;
-    } else {
-      routeSlug = slug;
-    }
-    // Section-index README entries: don't add to the entries list (would duplicate
-    // the section heading), but DO record the URL so the heading can become a link.
-    // Codex: previously the README was dropped without recording the URL anywhere,
-    // making /docs/capture and similar index pages undiscoverable from the rail.
+    const routeSlug = routeSlugForDocsEntry(entry.id);
+    const isSectionIndex = /\/(README|readme)$/.test(slug);
     if (isSectionIndex) {
       sectionUrls[routeSlug] = `/docs/${routeSlug}`;
       continue;
@@ -201,6 +187,8 @@ export function buildSidebar(
     };
     if (routeSlug.startsWith("capture/") || routeSlug === "capture") {
       capture.push(sidebarEntry);
+    } else if (routeSlug.startsWith("research/") || routeSlug.startsWith("baselines/")) {
+      research.push(sidebarEntry);
     } else {
       reference.push(sidebarEntry);
     }
@@ -208,6 +196,7 @@ export function buildSidebar(
 
   capture.sort((a, b) => a.title.localeCompare(b.title));
   reference.sort((a, b) => a.title.localeCompare(b.title));
+  research.sort((a, b) => a.title.localeCompare(b.title));
 
   const sections: SidebarSection[] = [];
 
@@ -245,6 +234,10 @@ export function buildSidebar(
       caption: "sectio coronalis",
       entries: reference,
     });
+  }
+
+  if (research.length > 0) {
+    sections.push({ id: "research", label: "Research and evaluations", entries: research });
   }
 
   if (contribEntries.length > 0) {

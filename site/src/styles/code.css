@@ -38,7 +38,9 @@ pre[data-wrap="true"] code {
 }
 
 /* Copy button (A8 — always visible, never hover-only). */
-.code-block { position: relative; }
+.code-block { position: relative; min-width: 0; }
+.code-block:has(.code-copy) pre { padding-top: 3.5rem; }
+html:not([data-theme]) .code-copy { display: none; }
 .code-block .code-copy {
   position: absolute;
   top: 0.4rem;
@@ -46,7 +48,9 @@ pre[data-wrap="true"] code {
   background: var(--paper);
   color: var(--ink);
   border: 1px solid var(--rule);
-  padding: 0.2rem 0.55rem;
+  padding: 0.4rem 0.65rem;
+  min-height: 2.75rem;
+  min-width: 2.75rem;
   font-family: var(--font-label);
   font-size: 11px;
   letter-spacing: 0.18em;
@@ -57,11 +61,6 @@ pre[data-wrap="true"] code {
 .code-block .code-copy:hover, .code-block .code-copy:focus-visible {
   background: var(--ink);
   color: var(--paper);
-}
-.code-block .code-copy.copied {
-  background: var(--sepia);
-  color: var(--paper);
-  border-color: var(--sepia);
 }
 
 /* Shiki css-variables theme — sepia syntax tokens. */

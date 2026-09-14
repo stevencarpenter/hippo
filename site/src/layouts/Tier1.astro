@@ -19,11 +19,9 @@ const { title, description, ogImage, noIndex } = Astro.props;
   <body class="tier-1">
     <a class="skip-link" href="#main">Skip to content</a>
     <Header />
-    <main id="main" tabindex="-1">
+    <main id="main" tabindex="-1" data-pagefind-body={noIndex ? undefined : true}>
       <slot />
     </main>
     <Footer />
-    {/* Live region for code-copy announcements (A8). */}
-    <div id="sr-announce" class="sr-only" role="status" aria-live="polite" aria-atomic="true"></div>
   </body>
 </html>

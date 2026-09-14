@@ -5,8 +5,8 @@
 @media print {
   body { background: white !important; color: black !important; font-size: 11pt; }
   .skip-link, .site-header, .site-footer, .docs-rail-left, .docs-rail-right,
-  .code-copy, .search-mount { display: none !important; }
-  .tier-2 .docs-shell { grid-template-columns: 1fr; padding: 0; }
+  .code-copy, .code-feedback, .search-mount { display: none !important; }
+  .tier-2[data-outline] .docs-shell { grid-template-columns: 1fr; padding: 0; }
   a { color: black; text-decoration: underline; }
   a[href^="http"]::after { content: " [" attr(href) "]"; font-size: 0.85em; color: #333; }
   pre {
@@ -16,6 +16,10 @@
     color: black;
     page-break-inside: avoid;
   }
+  pre, pre code { white-space: pre-wrap; overflow-wrap: anywhere; overflow: visible; }
+  .prose table { display: table; table-layout: fixed; overflow: visible; }
+  .prose th, .prose td { overflow-wrap: anywhere; }
+  .arch-diagram, .data-flow svg { min-width: 0 !important; }
   h1, h2, h3 { page-break-after: avoid; }
   blockquote, table, .marginalia, .admonition { page-break-inside: avoid; }
   svg { opacity: 0.6; }

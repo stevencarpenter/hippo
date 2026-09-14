@@ -13,6 +13,19 @@ pnpm check        # astro type/syntax checking
 pnpm test         # rehype plugin unit tests
 ```
 
+## Browser regression check
+
+After building and starting the preview, run from the repository root:
+
+```bash
+npx @playwright/cli open http://127.0.0.1:4321
+npx @playwright/cli run-code "$(cat site/scripts/browser-check.js)"
+```
+
+Checks mobile layouts, keyboard navigation, theme persistence, clipboard success
+and failure, search results and empty states, reduced motion, and JavaScript-disabled
+fallbacks. Playwright runs through the CLI without adding a project dependency.
+
 ## Where things live
 
 - `src/pages/` — routes (tier-1 marketing, tier-2 docs, blog, RSS)

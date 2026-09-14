@@ -15,9 +15,12 @@ const headings = [
   <h1>Docs.</h1>
   <p class="lede"><em>— what hippo does, by section.</em></p>
 
-  <p>Source of truth for everything below is <code>../docs/</code> in the repo. Edit
-     a doc on GitHub and the next deploy of this site renders the change verbatim.
-     Each doc page has an &ldquo;Edit on GitHub&rdquo; footer with a deep link.</p>
+  <ul>
+    <li><a href="/install">Install Hippo</a> and verify capture is running.</li>
+    <li><a href="/docs/capture/sources">Configure capture sources</a> for your workflow.</li>
+    <li><a href="/docs/reference/mcp-reference">Query captured knowledge</a> through MCP.</li>
+    <li><a href="/docs/capture/operator-runbook">Diagnose capture problems</a> with the operator runbook.</li>
+  </ul>
 
   {sections.map((section) => (
     <section class="docs-section" id={section.id}>

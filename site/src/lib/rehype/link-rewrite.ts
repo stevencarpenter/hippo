@@ -1,4 +1,3 @@
-import type { Plugin } from "unified";
 import type { Root, Element } from "hast";
 import { visit } from "unist-util-visit";
 import path from "node:path";

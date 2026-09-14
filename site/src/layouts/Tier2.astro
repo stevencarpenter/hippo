@@ -35,12 +35,11 @@ const outlineDataAttr = outlineCount < 3 ? "none" : "shown";
     <Header />
     <div class="docs-shell">
       <DocsRail sections={sections} currentSlug={currentSlug} />
-      <main id="main" tabindex="-1" class="docs-main prose prose-tier-2">
+      <main id="main" tabindex="-1" class="docs-main prose prose-tier-2" data-pagefind-body>
         <slot />
       </main>
       <DocsOutline headings={headings} />
     </div>
     <Footer />
-    <div id="sr-announce" class="sr-only" role="status" aria-live="polite" aria-atomic="true"></div>
   </body>
 </html>
