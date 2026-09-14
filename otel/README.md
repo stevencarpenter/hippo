@@ -66,8 +66,11 @@ retrieval path as a production dependency with an SLO:
   `/metrics.json` requests cannot interleave into duplicate series.
 - Database families are cached for `HIPPO_DB_TTL` (default 15s): the full scans
   over `events` are the expensive part and grow with the corpus.
-- The recall probe is async with a TTL (default 120s): scrapes always serve
-  cached probe state and never block on the LLM.
+- The recall probe is disabled by default (`HIPPO_PROBE_TTL=0`). Set a positive
+  cooldown such as `HIPPO_PROBE_TTL=3600` to opt into synthetic inference.
+  The cooldown starts after each batch completes; scrapes serve cached state.
+  `hippo_kb_recall_probe_enabled` reports the setting, and recall result series
+  are absent while disabled.
 - Contamination definition: nodes linked (via `knowledge_node_agentic_sessions`)
   exclusively to projects dead ≥30d, where a project is a git repo or an
   agentic-session project dir (baseline ~2%, Aug 2026).

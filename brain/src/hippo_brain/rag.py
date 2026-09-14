@@ -535,6 +535,7 @@ async def ask(
     limit: int = 10,
     *,
     max_context_chars: int = DEFAULT_MAX_CONTEXT_CHARS,
+    max_tokens: int | None = None,
     skip_preflight: bool = False,
     filters: Filters | None = None,
     project: str | None = None,
@@ -717,7 +718,11 @@ async def ask(
     # 4. Synthesize.
     try:
         _t2 = time.monotonic()
-        answer = await inference_client.chat(messages, model=query_model)
+        # Bound generation at the backend only when the caller opts in; a caller
+        # timeout does not stop inference, so synthetic traffic (the recall probe)
+        # sets a cap. Interactive callers keep the client's full budget.
+        chat_kwargs = {} if max_tokens is None else {"max_tokens": max_tokens}
+        answer = await inference_client.chat(messages, model=query_model, **chat_kwargs)
         if _rag_duration:
             _rag_duration.record((time.monotonic() - _t2) * 1000, {"stage": "synthesize"})
     except Exception as e:

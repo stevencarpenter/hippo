@@ -25,6 +25,7 @@ import re
 import sqlite3
 import time
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import yaml
 
@@ -1064,13 +1065,64 @@ def _render_against(db_path, monkeypatch, canary_path=None):
     """Render one full scrape with the exporter pointed at a fixture DB."""
     monkeypatch.setattr(_EXPORTER, "DB_PATH", db_path)
     # Never let the test touch the real brain server: the probe must be a no-op.
-    monkeypatch.setattr(_EXPORTER, "PROBE_TTL_S", 10**9)
+    monkeypatch.setattr(_EXPORTER, "PROBE_TTL_S", 0)
     monkeypatch.setattr(
         _EXPORTER, "CANARY_FILE", canary_path or (db_path.parent / "no-canary.json")
     )
     _EXPORTER.reset_db_cache_for_test()
     _EXPORTER.reset_counters_for_test()
     return _EXPORTER.build_registry()
+
+
+def test_recall_probe_disabled_without_inference(monkeypatch):
+    monkeypatch.delenv("HIPPO_PROBE_TTL", raising=False)
+    exporter = _load_exporter()
+    request = MagicMock(side_effect=AssertionError("disabled probe made an HTTP request"))
+    monkeypatch.setattr(exporter.urllib.request, "urlopen", request)
+    exporter.run_probe()  # Startup path.
+    reg = exporter.Registry()
+    exporter.collect_probe(reg)  # Scrape path.
+    request.assert_not_called()
+    assert [(s["name"], s["value"]) for s in reg.samples] == [
+        ("hippo_kb_recall_probe_enabled", 0.0)
+    ]
+
+
+def test_recall_probe_cooldown_starts_after_slow_batch(monkeypatch):
+    monkeypatch.setattr(_EXPORTER, "PROBE_TTL_S", 120)
+    monkeypatch.setattr(_EXPORTER, "probe_state", {"ts": 0.0, "samples": []})
+    now = [1000.0]
+    monkeypatch.setattr(_EXPORTER.time, "time", lambda: now[0])
+    calls = []
+
+    def timeout(question):
+        calls.append(question)
+        now[0] += 45
+        return False, "llm_timeout"
+
+    monkeypatch.setattr(_EXPORTER, "_ask_once", timeout)
+    _EXPORTER.run_probe()
+    assert _EXPORTER.probe_state["ts"] == 1135.0
+    _EXPORTER.run_probe()
+    assert len(calls) == 3
+    now[0] += 120
+    _EXPORTER.run_probe()
+    assert len(calls) == 6
+
+
+def test_recall_probe_rejects_null_and_degraded_answers(monkeypatch):
+    response = MagicMock()
+    response.__enter__.return_value = response
+    monkeypatch.setattr(_EXPORTER.urllib.request, "urlopen", lambda *a, **kw: response)
+    for body, expected in [
+        ({"answer": None, "degraded": True}, (False, "degraded_answer")),
+        ({"answer": "fallback", "error": "synthesis failed"}, (False, "degraded_answer")),
+        ({"answer": None}, (False, "empty_answer")),
+        ({"answer": " "}, (False, "empty_answer")),
+        ({"answer": "A real answer", "degraded": False}, (True, "")),
+    ]:
+        response.read.return_value = json.dumps(body).encode()
+        assert _EXPORTER._ask_once("question") == expected
 
 
 def test_exporter_emits_every_always_on_metric(tmp_path, monkeypatch):
@@ -1121,7 +1173,10 @@ def test_exporter_counters_are_cumulative(tmp_path, monkeypatch):
     db = tmp_path / "hippo.db"
     _build_fixture_db(db, snowball=False)
     monkeypatch.setattr(_EXPORTER, "DB_PATH", db)
-    monkeypatch.setattr(_EXPORTER, "PROBE_TTL_S", 10**9)
+    # 0 disables the probe outright. A huge TTL does NOT: probe_state["ts"]
+    # starts at 0.0, so now - 0 exceeds any sane TTL and collect_probe spawns
+    # a real probe thread whose failure bumps race this test's assertions.
+    monkeypatch.setattr(_EXPORTER, "PROBE_TTL_S", 0)
     monkeypatch.setattr(_EXPORTER, "CANARY_FILE", tmp_path / "no-canary.json")
     _EXPORTER.reset_counters_for_test()
 
@@ -1145,7 +1200,10 @@ def test_exporter_counters_are_typed_counter(tmp_path, monkeypatch):
     db = tmp_path / "hippo.db"
     _build_fixture_db(db, snowball=False)
     monkeypatch.setattr(_EXPORTER, "DB_PATH", db)
-    monkeypatch.setattr(_EXPORTER, "PROBE_TTL_S", 10**9)
+    # 0 disables the probe outright. A huge TTL does NOT: probe_state["ts"]
+    # starts at 0.0, so now - 0 exceeds any sane TTL and collect_probe spawns
+    # a real probe thread whose failure bumps race this test's assertions.
+    monkeypatch.setattr(_EXPORTER, "PROBE_TTL_S", 0)
     monkeypatch.setattr(_EXPORTER, "CANARY_FILE", tmp_path / "no-canary.json")
     _EXPORTER.reset_counters_for_test()
     _EXPORTER.reset_db_cache_for_test()
@@ -1196,7 +1254,10 @@ def test_exporter_render_is_reentrant(tmp_path, monkeypatch):
     db = tmp_path / "hippo.db"
     _build_fixture_db(db, snowball=True)
     monkeypatch.setattr(_EXPORTER, "DB_PATH", db)
-    monkeypatch.setattr(_EXPORTER, "PROBE_TTL_S", 10**9)
+    # 0 disables the probe outright. A huge TTL does NOT: probe_state["ts"]
+    # starts at 0.0, so now - 0 exceeds any sane TTL and collect_probe spawns
+    # a real probe thread whose failure bumps race this test's assertions.
+    monkeypatch.setattr(_EXPORTER, "PROBE_TTL_S", 0)
     monkeypatch.setattr(_EXPORTER, "CANARY_FILE", tmp_path / "no-canary.json")
     _EXPORTER.reset_db_cache_for_test()
     _EXPORTER.reset_counters_for_test()

@@ -138,6 +138,9 @@ logger = logging.getLogger("hippo_brain")
 # enormous result sets through the LM. Lower than MAX_LIST_LIMIT because the
 # downstream cost (embedding + LLM context) is super-linear in result count.
 MAX_QUERY_LIMIT = 100
+# Ceiling on a caller-supplied /ask output budget, matching InferenceClient.chat's
+# own default. Bounds how much generation one request can pin on the host.
+MAX_ANSWER_TOKENS_CEILING = 16384
 
 # Upper bound for `limit` on plain SQL list endpoints (/knowledge, /events,
 # /sessions). These are just bounded SELECTs, so the cap is mainly to avoid
@@ -907,6 +910,24 @@ class BrainServer:
                 status_code=400,
             )
 
+        # Optional output-token budget. Unset means the inference client's own
+        # default: interactive callers are not capped. Synthetic callers (the
+        # recall probe) set this so a client timeout cannot leave the backend
+        # generating unbounded.
+        max_tokens = body.get("max_tokens")
+        if max_tokens is not None:
+            try:
+                max_tokens = int(max_tokens)
+            except (TypeError, ValueError):  # fmt: skip
+                return JSONResponse({"error": "max_tokens must be an integer"}, status_code=400)
+            if max_tokens <= 0:
+                return JSONResponse({"error": "max_tokens must be greater than 0"}, status_code=400)
+            if max_tokens > MAX_ANSWER_TOKENS_CEILING:
+                return JSONResponse(
+                    {"error": f"max_tokens must be <= {MAX_ANSWER_TOKENS_CEILING}"},
+                    status_code=400,
+                )
+
         if not self.embedding_model or self._vector_table is None:
             return JSONResponse(
                 {"error": "Semantic search unavailable (no embedding model or vector store)"},
@@ -931,6 +952,7 @@ class BrainServer:
                 query_model=model,
                 embedding_model=self.embedding_model,
                 limit=limit,
+                max_tokens=max_tokens,
             )
         finally:
             self._query_inflight = max(0, self._query_inflight - 1)

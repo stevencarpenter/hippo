@@ -341,6 +341,16 @@ class TestAsk:
 
         client.chat.assert_called_once()
         assert client.chat.call_args.kwargs["model"] == "big-model"
+        # Interactive callers are not capped: ask() leaves max_tokens to the client.
+        assert "max_tokens" not in client.chat.call_args.kwargs
+
+    @pytest.mark.asyncio
+    async def test_passes_explicit_max_tokens_to_chat(self):
+        client = _healthy_client(chat_return="answer")
+        with patch("hippo_brain.rag.search_similar", return_value=SAMPLE_HITS):
+            await ask("q", client, MagicMock(), "big-model", "embed-model", max_tokens=2048)
+
+        assert client.chat.call_args.kwargs["max_tokens"] == 2048
 
     @pytest.mark.asyncio
     async def test_preflight_failure_returns_degraded_without_calling_embed(self):

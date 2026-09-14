@@ -408,6 +408,32 @@ def test_ask_limit_validates_integer_and_range(tmp_db):
         )
 
 
+def test_ask_max_tokens_validates_integer_and_range(tmp_db):
+    """max_tokens is an opt-in per-request output budget: reject non-int,
+    <= 0, and anything above the ceiling that bounds host generation."""
+    from hippo_brain.server import MAX_ANSWER_TOKENS_CEILING
+
+    _, db_path = tmp_db
+    app = _make_app(str(db_path))
+    client = TestClient(app)
+
+    bad_inputs = [
+        ({"question": "hi", "max_tokens": "not-a-number"}, "must be an integer"),
+        ({"question": "hi", "max_tokens": 0}, "greater than 0"),
+        ({"question": "hi", "max_tokens": -5}, "greater than 0"),
+        (
+            {"question": "hi", "max_tokens": MAX_ANSWER_TOKENS_CEILING + 1},
+            str(MAX_ANSWER_TOKENS_CEILING),
+        ),
+    ]
+    for body, expected_substring in bad_inputs:
+        resp = client.post("/ask", json=body)
+        assert resp.status_code == 400, f"input {body} should 400, got {resp.status_code}"
+        assert expected_substring in resp.json()["error"], (
+            f"input {body} error '{resp.json()['error']}' missing '{expected_substring}'"
+        )
+
+
 def test_list_endpoints_reject_oversized_limit(tmp_db):
     """The list endpoints (/knowledge, /events, /sessions) cap limit at
     MAX_LIST_LIMIT to bound response size."""
