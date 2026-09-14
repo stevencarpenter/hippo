@@ -71,6 +71,8 @@ DB_TTL_S = float(os.environ.get("HIPPO_DB_TTL", "15"))
 # Synthetic inference is opt-in. Zero disables it, including at startup.
 PROBE_TTL_S = float(os.environ.get("HIPPO_PROBE_TTL", "0"))
 PROBE_TIMEOUT_S = float(os.environ.get("HIPPO_PROBE_TIMEOUT", "45"))
+# Output-token budget for synthetic probe questions only; interactive /ask is uncapped.
+PROBE_MAX_ANSWER_TOKENS = 2048
 CANARY_FILE = Path(os.environ.get("HIPPO_CANARY_FILE", DATA_DIR / "canary_drill.json"))
 
 # Golden questions for the recall probe. One per question-class the panel
@@ -745,7 +747,16 @@ def _ask_once(question: str) -> tuple[bool, str]:
     try:
         req = urllib.request.Request(
             BRAIN_URL + "/ask",
-            data=json.dumps({"question": question, "limit": 5}).encode(),
+            data=json.dumps(
+                {
+                    "question": question,
+                    "limit": 5,
+                    # Probe-only output budget. The client timeout below does not
+                    # cancel backend generation, so bound it server-side. Interactive
+                    # /ask callers send no cap and keep the full budget.
+                    "max_tokens": PROBE_MAX_ANSWER_TOKENS,
+                }
+            ).encode(),
             headers={"Content-Type": "application/json"},
             method="POST",
         )
