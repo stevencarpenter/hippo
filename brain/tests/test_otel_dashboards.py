@@ -1076,9 +1076,7 @@ def _render_against(db_path, monkeypatch, canary_path=None):
 
 def test_recall_probe_disabled_without_inference(monkeypatch):
     monkeypatch.delenv("HIPPO_PROBE_TTL", raising=False)
-    spec = importlib.util.spec_from_file_location("idle_exporter", _EXPORTER_SCRIPT)
-    exporter = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(exporter)
+    exporter = _load_exporter()
     request = MagicMock(side_effect=AssertionError("disabled probe made an HTTP request"))
     monkeypatch.setattr(exporter.urllib.request, "urlopen", request)
     exporter.run_probe()  # Startup path.
