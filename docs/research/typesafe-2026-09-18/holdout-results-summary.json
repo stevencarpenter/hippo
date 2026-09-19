@@ -1,0 +1,414 @@
+{
+  "requests": 28,
+  "errors": [],
+  "models": [
+    "jev-1.13.0"
+  ],
+  "input_tokens": 18483,
+  "output_tokens": 1776,
+  "estimated_usd_at_0.042_per_million_input_tokens": 0.0007762860000000001,
+  "ranking": {
+    "successful_requests": 12,
+    "latency_median_ms": 258.17499999999995,
+    "latency_p95_ms": 332.89,
+    "details": [
+      {
+        "id": "h-latency",
+        "reverse": false,
+        "order": [
+          0,
+          2,
+          3,
+          1
+        ],
+        "scores_in_input_order": [
+          2.63,
+          0.74,
+          1.24,
+          0.98
+        ],
+        "ndcg": 0.9197207891481876,
+        "top1_correct": true,
+        "answerable": 0.53,
+        "answerable_correct_at_0.5": false
+      },
+      {
+        "id": "h-latency",
+        "reverse": true,
+        "order": [
+          0,
+          2,
+          3,
+          1
+        ],
+        "scores_in_input_order": [
+          0.97,
+          1.94,
+          0.8,
+          2.38
+        ],
+        "ndcg": 0.9197207891481876,
+        "top1_correct": true,
+        "answerable": 0.7,
+        "answerable_correct_at_0.5": false
+      },
+      {
+        "id": "h-owner",
+        "reverse": false,
+        "order": [
+          0,
+          3,
+          2,
+          1
+        ],
+        "scores_in_input_order": [
+          2.37,
+          0.05,
+          0.24,
+          0.57
+        ],
+        "ndcg": 1.0,
+        "top1_correct": true,
+        "answerable": 0.67,
+        "answerable_correct_at_0.5": false
+      },
+      {
+        "id": "h-owner",
+        "reverse": true,
+        "order": [
+          0,
+          3,
+          2,
+          1
+        ],
+        "scores_in_input_order": [
+          0.54,
+          0.31,
+          0.08,
+          2.39
+        ],
+        "ndcg": 1.0,
+        "top1_correct": true,
+        "answerable": 0.61,
+        "answerable_correct_at_0.5": false
+      },
+      {
+        "id": "h-health",
+        "reverse": false,
+        "order": [
+          3,
+          0,
+          1,
+          2
+        ],
+        "scores_in_input_order": [
+          2.02,
+          1.17,
+          0.99,
+          2.5
+        ],
+        "ndcg": 1.0,
+        "top1_correct": true,
+        "answerable": 0.73,
+        "answerable_correct_at_0.5": false
+      },
+      {
+        "id": "h-health",
+        "reverse": true,
+        "order": [
+          3,
+          0,
+          2,
+          1
+        ],
+        "scores_in_input_order": [
+          2.49,
+          1.17,
+          1.11,
+          2.12
+        ],
+        "ndcg": 0.9674679834891693,
+        "top1_correct": true,
+        "answerable": 0.8,
+        "answerable_correct_at_0.5": false
+      },
+      {
+        "id": "h-branch",
+        "reverse": false,
+        "order": [
+          1,
+          0,
+          3,
+          2
+        ],
+        "scores_in_input_order": [
+          1.5,
+          2.97,
+          0.78,
+          1.15
+        ],
+        "ndcg": 1.0,
+        "top1_correct": true,
+        "answerable": 0.85,
+        "answerable_correct_at_0.5": false
+      },
+      {
+        "id": "h-branch",
+        "reverse": true,
+        "order": [
+          1,
+          0,
+          3,
+          2
+        ],
+        "scores_in_input_order": [
+          1.12,
+          0.35,
+          2.97,
+          1.67
+        ],
+        "ndcg": 1.0,
+        "top1_correct": true,
+        "answerable": 0.84,
+        "answerable_correct_at_0.5": false
+      },
+      {
+        "id": "h-negation",
+        "reverse": false,
+        "order": [
+          2,
+          3,
+          1,
+          0
+        ],
+        "scores_in_input_order": [
+          0.19,
+          1.12,
+          2.99,
+          1.18
+        ],
+        "ndcg": 1.0,
+        "top1_correct": true,
+        "answerable": 0.95,
+        "answerable_correct_at_0.5": true
+      },
+      {
+        "id": "h-negation",
+        "reverse": true,
+        "order": [
+          2,
+          3,
+          1,
+          0
+        ],
+        "scores_in_input_order": [
+          1.21,
+          2.99,
+          1.14,
+          0.28
+        ],
+        "ndcg": 1.0,
+        "top1_correct": true,
+        "answerable": 0.95,
+        "answerable_correct_at_0.5": true
+      },
+      {
+        "id": "h-latest",
+        "reverse": false,
+        "order": [
+          1,
+          2,
+          0,
+          3
+        ],
+        "scores_in_input_order": [
+          1.41,
+          2.99,
+          1.57,
+          0.96
+        ],
+        "ndcg": 0.9753714271839448,
+        "top1_correct": true,
+        "answerable": 0.96,
+        "answerable_correct_at_0.5": true
+      },
+      {
+        "id": "h-latest",
+        "reverse": true,
+        "order": [
+          1,
+          2,
+          0,
+          3
+        ],
+        "scores_in_input_order": [
+          0.85,
+          1.62,
+          3.0,
+          1.18
+        ],
+        "ndcg": 0.9753714271839448,
+        "top1_correct": true,
+        "answerable": 0.98,
+        "answerable_correct_at_0.5": true
+      }
+    ],
+    "top1": [
+      6,
+      6
+    ],
+    "mean_ndcg": 0.9825153693886888,
+    "baseline_original_order_top1": [
+      4,
+      6
+    ],
+    "baseline_original_order_mean_ndcg": 0.8282523854395043,
+    "answerable_accuracy_at_0.5": [
+      4,
+      12
+    ]
+  },
+  "verification": {
+    "successful_requests": 8,
+    "latency_median_ms": 214.2,
+    "latency_p95_ms": 272.73,
+    "details": [
+      {
+        "id": "hv01",
+        "expected": "unsupported",
+        "predicted": "unsupported",
+        "confidence": 0.99,
+        "correct": true
+      },
+      {
+        "id": "hv02",
+        "expected": "contradicts",
+        "predicted": "contradicts",
+        "confidence": 0.77,
+        "correct": true
+      },
+      {
+        "id": "hv03",
+        "expected": "unsupported",
+        "predicted": "unsupported",
+        "confidence": 1.0,
+        "correct": true
+      },
+      {
+        "id": "hv04",
+        "expected": "supports",
+        "predicted": "supports",
+        "confidence": 1.0,
+        "correct": true
+      },
+      {
+        "id": "hv05",
+        "expected": "unsupported",
+        "predicted": "contradicts",
+        "confidence": 0.73,
+        "correct": false
+      },
+      {
+        "id": "hv06",
+        "expected": "unsupported",
+        "predicted": "unsupported",
+        "confidence": 0.4,
+        "correct": true
+      },
+      {
+        "id": "hv07",
+        "expected": "unsupported",
+        "predicted": "unsupported",
+        "confidence": 1.0,
+        "correct": true
+      },
+      {
+        "id": "hv08",
+        "expected": "contradicts",
+        "predicted": "contradicts",
+        "confidence": 0.93,
+        "correct": true
+      }
+    ],
+    "accuracy": [
+      7,
+      8
+    ],
+    "accuracy_confidence_ge_0.8": [
+      5,
+      5
+    ],
+    "false_supports": []
+  },
+  "routing": {
+    "successful_requests": 8,
+    "latency_median_ms": 243.26,
+    "latency_p95_ms": 304.33,
+    "details": [
+      {
+        "id": "hq01",
+        "expected": "evidence",
+        "predicted": "evidence",
+        "confidence": 0.8,
+        "correct": true
+      },
+      {
+        "id": "hq02",
+        "expected": "decisions",
+        "predicted": "decisions",
+        "confidence": 0.99,
+        "correct": true
+      },
+      {
+        "id": "hq03",
+        "expected": "recent",
+        "predicted": "decisions",
+        "confidence": 0.44,
+        "correct": false
+      },
+      {
+        "id": "hq04",
+        "expected": "evidence",
+        "predicted": "evidence",
+        "confidence": 0.35,
+        "correct": true
+      },
+      {
+        "id": "hq05",
+        "expected": "none",
+        "predicted": "none",
+        "confidence": 0.46,
+        "correct": true
+      },
+      {
+        "id": "hq06",
+        "expected": "known",
+        "predicted": "known",
+        "confidence": 0.61,
+        "correct": true
+      },
+      {
+        "id": "hq07",
+        "expected": "known",
+        "predicted": "known",
+        "confidence": 0.26,
+        "correct": true
+      },
+      {
+        "id": "hq08",
+        "expected": "decisions",
+        "predicted": "decisions",
+        "confidence": 0.99,
+        "correct": true
+      }
+    ],
+    "accuracy": [
+      7,
+      8
+    ],
+    "accuracy_confidence_ge_0.8": [
+      3,
+      3
+    ]
+  }
+}
