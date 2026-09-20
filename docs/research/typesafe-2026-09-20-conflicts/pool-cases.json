@@ -1,0 +1,1164 @@
+[
+  {
+    "id": "pool10-decision-04",
+    "task": "decision_conflict",
+    "expected": "compatible",
+    "category": "paraphrase",
+    "provenance": "Follow-up stress case authored after inspecting initial Jev results, not an independent holdout. Derived from decision-04 without changing target evidence, prompt, rules, or expected label.",
+    "rationale": "The two chosen strings denote the same SQLite vector extension.",
+    "state": {
+      "hits": [
+        {
+          "summary": "Unrelated documentation task docs-0: fixed spelling in guide 0. This says nothing about builds, vector storage, deployments or database settings.",
+          "cwd": "/synthetic/hippo",
+          "git_branch": "main",
+          "captured_at": 1789900000000,
+          "outcome": "success",
+          "design_decisions": [
+            {
+              "chosen": "Correct spelling in guide 0",
+              "considered": "Leave the typo",
+              "reason": "Editorial correction only."
+            }
+          ]
+        },
+        {
+          "summary": "Unrelated documentation task docs-1: fixed spelling in guide 1. This says nothing about builds, vector storage, deployments or database settings.",
+          "cwd": "/synthetic/hippo",
+          "git_branch": "main",
+          "captured_at": 1789900001000,
+          "outcome": "success",
+          "design_decisions": [
+            {
+              "chosen": "Correct spelling in guide 1",
+              "considered": "Leave the typo",
+              "reason": "Editorial correction only."
+            }
+          ]
+        },
+        {
+          "summary": "Unrelated documentation task docs-2: fixed spelling in guide 2. This says nothing about builds, vector storage, deployments or database settings.",
+          "cwd": "/synthetic/hippo",
+          "git_branch": "main",
+          "captured_at": 1789900002000,
+          "outcome": "success",
+          "design_decisions": [
+            {
+              "chosen": "Correct spelling in guide 2",
+              "considered": "Leave the typo",
+              "reason": "Editorial correction only."
+            }
+          ]
+        },
+        {
+          "summary": "R1 uses the sqlite-vec extension within SQLite for vectors.",
+          "cwd": "/synthetic/hippo",
+          "git_branch": "main",
+          "captured_at": 1789900000000,
+          "outcome": null,
+          "design_decisions": [
+            {
+              "chosen": "sqlite-vec",
+              "considered": "",
+              "reason": ""
+            }
+          ]
+        },
+        {
+          "summary": "R1 stores vectors through the SQLite sqlite-vec extension.",
+          "cwd": "/synthetic/hippo",
+          "git_branch": "main",
+          "captured_at": 1789900001000,
+          "outcome": null,
+          "design_decisions": [
+            {
+              "chosen": "SQLite with sqlite-vec",
+              "considered": "",
+              "reason": ""
+            }
+          ]
+        },
+        {
+          "summary": "Unrelated documentation task docs-3: fixed spelling in guide 3. This says nothing about builds, vector storage, deployments or database settings.",
+          "cwd": "/synthetic/hippo",
+          "git_branch": "main",
+          "captured_at": 1789900003000,
+          "outcome": "success",
+          "design_decisions": [
+            {
+              "chosen": "Correct spelling in guide 3",
+              "considered": "Leave the typo",
+              "reason": "Editorial correction only."
+            }
+          ]
+        },
+        {
+          "summary": "Unrelated documentation task docs-4: fixed spelling in guide 4. This says nothing about builds, vector storage, deployments or database settings.",
+          "cwd": "/synthetic/hippo",
+          "git_branch": "main",
+          "captured_at": 1789900004000,
+          "outcome": "success",
+          "design_decisions": [
+            {
+              "chosen": "Correct spelling in guide 4",
+              "considered": "Leave the typo",
+              "reason": "Editorial correction only."
+            }
+          ]
+        },
+        {
+          "summary": "Unrelated documentation task docs-5: fixed spelling in guide 5. This says nothing about builds, vector storage, deployments or database settings.",
+          "cwd": "/synthetic/hippo",
+          "git_branch": "main",
+          "captured_at": 1789900005000,
+          "outcome": "success",
+          "design_decisions": [
+            {
+              "chosen": "Correct spelling in guide 5",
+              "considered": "Leave the typo",
+              "reason": "Editorial correction only."
+            }
+          ]
+        },
+        {
+          "summary": "Unrelated documentation task docs-6: fixed spelling in guide 6. This says nothing about builds, vector storage, deployments or database settings.",
+          "cwd": "/synthetic/hippo",
+          "git_branch": "main",
+          "captured_at": 1789900006000,
+          "outcome": "success",
+          "design_decisions": [
+            {
+              "chosen": "Correct spelling in guide 6",
+              "considered": "Leave the typo",
+              "reason": "Editorial correction only."
+            }
+          ]
+        },
+        {
+          "summary": "Unrelated documentation task docs-7: fixed spelling in guide 7. This says nothing about builds, vector storage, deployments or database settings.",
+          "cwd": "/synthetic/hippo",
+          "git_branch": "main",
+          "captured_at": 1789900007000,
+          "outcome": "success",
+          "design_decisions": [
+            {
+              "chosen": "Correct spelling in guide 7",
+              "considered": "Leave the typo",
+              "reason": "Editorial correction only."
+            }
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "id": "pool10-decision-08",
+    "task": "decision_conflict",
+    "expected": "compatible",
+    "category": "explicit_replacement",
+    "provenance": "Follow-up stress case authored after inspecting initial Jev results, not an independent holdout. Derived from decision-08 without changing target evidence, prompt, rules, or expected label.",
+    "rationale": "The newer decision expressly replaces the old decision. This changes the raw-string heuristic label without contradicting chronology.",
+    "state": {
+      "hits": [
+        {
+          "summary": "Unrelated documentation task docs-0: fixed spelling in guide 0. This says nothing about builds, vector storage, deployments or database settings.",
+          "cwd": "/synthetic/hippo",
+          "git_branch": "main",
+          "captured_at": 1789900000000,
+          "outcome": "success",
+          "design_decisions": [
+            {
+              "chosen": "Correct spelling in guide 0",
+              "considered": "Leave the typo",
+              "reason": "Editorial correction only."
+            }
+          ]
+        },
+        {
+          "summary": "Unrelated documentation task docs-1: fixed spelling in guide 1. This says nothing about builds, vector storage, deployments or database settings.",
+          "cwd": "/synthetic/hippo",
+          "git_branch": "main",
+          "captured_at": 1789900001000,
+          "outcome": "success",
+          "design_decisions": [
+            {
+              "chosen": "Correct spelling in guide 1",
+              "considered": "Leave the typo",
+              "reason": "Editorial correction only."
+            }
+          ]
+        },
+        {
+          "summary": "Unrelated documentation task docs-2: fixed spelling in guide 2. This says nothing about builds, vector storage, deployments or database settings.",
+          "cwd": "/synthetic/hippo",
+          "git_branch": "main",
+          "captured_at": 1789900002000,
+          "outcome": "success",
+          "design_decisions": [
+            {
+              "chosen": "Correct spelling in guide 2",
+              "considered": "Leave the typo",
+              "reason": "Editorial correction only."
+            }
+          ]
+        },
+        {
+          "summary": "ADR-7 originally selected LanceDB for production vectors.",
+          "cwd": "/synthetic/hippo",
+          "git_branch": "main",
+          "captured_at": 1789900000000,
+          "outcome": null,
+          "design_decisions": [
+            {
+              "chosen": "LanceDB",
+              "considered": "sqlite-vec",
+              "reason": ""
+            }
+          ]
+        },
+        {
+          "summary": "ADR-8 replaces ADR-7 effective today: migrate production vectors from LanceDB to sqlite-vec. The old choice is retired.",
+          "cwd": "/synthetic/hippo",
+          "git_branch": "main",
+          "captured_at": 1789900001000,
+          "outcome": null,
+          "design_decisions": [
+            {
+              "chosen": "sqlite-vec",
+              "considered": "LanceDB",
+              "reason": ""
+            }
+          ]
+        },
+        {
+          "summary": "Unrelated documentation task docs-3: fixed spelling in guide 3. This says nothing about builds, vector storage, deployments or database settings.",
+          "cwd": "/synthetic/hippo",
+          "git_branch": "main",
+          "captured_at": 1789900003000,
+          "outcome": "success",
+          "design_decisions": [
+            {
+              "chosen": "Correct spelling in guide 3",
+              "considered": "Leave the typo",
+              "reason": "Editorial correction only."
+            }
+          ]
+        },
+        {
+          "summary": "Unrelated documentation task docs-4: fixed spelling in guide 4. This says nothing about builds, vector storage, deployments or database settings.",
+          "cwd": "/synthetic/hippo",
+          "git_branch": "main",
+          "captured_at": 1789900004000,
+          "outcome": "success",
+          "design_decisions": [
+            {
+              "chosen": "Correct spelling in guide 4",
+              "considered": "Leave the typo",
+              "reason": "Editorial correction only."
+            }
+          ]
+        },
+        {
+          "summary": "Unrelated documentation task docs-5: fixed spelling in guide 5. This says nothing about builds, vector storage, deployments or database settings.",
+          "cwd": "/synthetic/hippo",
+          "git_branch": "main",
+          "captured_at": 1789900005000,
+          "outcome": "success",
+          "design_decisions": [
+            {
+              "chosen": "Correct spelling in guide 5",
+              "considered": "Leave the typo",
+              "reason": "Editorial correction only."
+            }
+          ]
+        },
+        {
+          "summary": "Unrelated documentation task docs-6: fixed spelling in guide 6. This says nothing about builds, vector storage, deployments or database settings.",
+          "cwd": "/synthetic/hippo",
+          "git_branch": "main",
+          "captured_at": 1789900006000,
+          "outcome": "success",
+          "design_decisions": [
+            {
+              "chosen": "Correct spelling in guide 6",
+              "considered": "Leave the typo",
+              "reason": "Editorial correction only."
+            }
+          ]
+        },
+        {
+          "summary": "Unrelated documentation task docs-7: fixed spelling in guide 7. This says nothing about builds, vector storage, deployments or database settings.",
+          "cwd": "/synthetic/hippo",
+          "git_branch": "main",
+          "captured_at": 1789900007000,
+          "outcome": "success",
+          "design_decisions": [
+            {
+              "chosen": "Correct spelling in guide 7",
+              "considered": "Leave the typo",
+              "reason": "Editorial correction only."
+            }
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "id": "pool10-decision-15",
+    "task": "decision_conflict",
+    "expected": "conflict",
+    "category": "middle_conflict_masked",
+    "provenance": "Follow-up stress case authored after inspecting initial Jev results, not an independent holdout. Derived from decision-15 without changing target evidence, prompt, rules, or expected label.",
+    "rationale": "The middle record conflicts with both endpoints for the same release. Matching oldest and newest choices do not resolve it.",
+    "state": {
+      "hits": [
+        {
+          "summary": "Unrelated documentation task docs-0: fixed spelling in guide 0. This says nothing about builds, vector storage, deployments or database settings.",
+          "cwd": "/synthetic/hippo",
+          "git_branch": "main",
+          "captured_at": 1789900000000,
+          "outcome": "success",
+          "design_decisions": [
+            {
+              "chosen": "Correct spelling in guide 0",
+              "considered": "Leave the typo",
+              "reason": "Editorial correction only."
+            }
+          ]
+        },
+        {
+          "summary": "Unrelated documentation task docs-1: fixed spelling in guide 1. This says nothing about builds, vector storage, deployments or database settings.",
+          "cwd": "/synthetic/hippo",
+          "git_branch": "main",
+          "captured_at": 1789900001000,
+          "outcome": "success",
+          "design_decisions": [
+            {
+              "chosen": "Correct spelling in guide 1",
+              "considered": "Leave the typo",
+              "reason": "Editorial correction only."
+            }
+          ]
+        },
+        {
+          "summary": "Unrelated documentation task docs-2: fixed spelling in guide 2. This says nothing about builds, vector storage, deployments or database settings.",
+          "cwd": "/synthetic/hippo",
+          "git_branch": "main",
+          "captured_at": 1789900002000,
+          "outcome": "success",
+          "design_decisions": [
+            {
+              "chosen": "Correct spelling in guide 2",
+              "considered": "Leave the typo",
+              "reason": "Editorial correction only."
+            }
+          ]
+        },
+        {
+          "summary": "The final R1 production vector backend is exclusively sqlite-vec.",
+          "cwd": "/synthetic/hippo",
+          "git_branch": "main",
+          "captured_at": 1789900000000,
+          "outcome": null,
+          "design_decisions": [
+            {
+              "chosen": "sqlite-vec",
+              "considered": "",
+              "reason": ""
+            }
+          ]
+        },
+        {
+          "summary": "The final R1 production vector backend is exclusively LanceDB.",
+          "cwd": "/synthetic/hippo",
+          "git_branch": "main",
+          "captured_at": 1789900001000,
+          "outcome": null,
+          "design_decisions": [
+            {
+              "chosen": "LanceDB",
+              "considered": "",
+              "reason": ""
+            }
+          ]
+        },
+        {
+          "summary": "The final R1 production vector backend is exclusively sqlite-vec.",
+          "cwd": "/synthetic/hippo",
+          "git_branch": "main",
+          "captured_at": 1789900002000,
+          "outcome": null,
+          "design_decisions": [
+            {
+              "chosen": "sqlite-vec",
+              "considered": "",
+              "reason": ""
+            }
+          ]
+        },
+        {
+          "summary": "Unrelated documentation task docs-3: fixed spelling in guide 3. This says nothing about builds, vector storage, deployments or database settings.",
+          "cwd": "/synthetic/hippo",
+          "git_branch": "main",
+          "captured_at": 1789900003000,
+          "outcome": "success",
+          "design_decisions": [
+            {
+              "chosen": "Correct spelling in guide 3",
+              "considered": "Leave the typo",
+              "reason": "Editorial correction only."
+            }
+          ]
+        },
+        {
+          "summary": "Unrelated documentation task docs-4: fixed spelling in guide 4. This says nothing about builds, vector storage, deployments or database settings.",
+          "cwd": "/synthetic/hippo",
+          "git_branch": "main",
+          "captured_at": 1789900004000,
+          "outcome": "success",
+          "design_decisions": [
+            {
+              "chosen": "Correct spelling in guide 4",
+              "considered": "Leave the typo",
+              "reason": "Editorial correction only."
+            }
+          ]
+        },
+        {
+          "summary": "Unrelated documentation task docs-5: fixed spelling in guide 5. This says nothing about builds, vector storage, deployments or database settings.",
+          "cwd": "/synthetic/hippo",
+          "git_branch": "main",
+          "captured_at": 1789900005000,
+          "outcome": "success",
+          "design_decisions": [
+            {
+              "chosen": "Correct spelling in guide 5",
+              "considered": "Leave the typo",
+              "reason": "Editorial correction only."
+            }
+          ]
+        },
+        {
+          "summary": "Unrelated documentation task docs-6: fixed spelling in guide 6. This says nothing about builds, vector storage, deployments or database settings.",
+          "cwd": "/synthetic/hippo",
+          "git_branch": "main",
+          "captured_at": 1789900006000,
+          "outcome": "success",
+          "design_decisions": [
+            {
+              "chosen": "Correct spelling in guide 6",
+              "considered": "Leave the typo",
+              "reason": "Editorial correction only."
+            }
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "id": "pool10-decision-16",
+    "task": "decision_conflict",
+    "expected": "conflict",
+    "category": "same_chosen_incompatible_qualifiers",
+    "provenance": "Follow-up stress case authored after inspecting initial Jev results, not an independent holdout. Derived from decision-16 without changing target evidence, prompt, rules, or expected label.",
+    "rationale": "Identical chosen labels hide mutually exclusive journal-mode decisions for the same database.",
+    "state": {
+      "hits": [
+        {
+          "summary": "Unrelated documentation task docs-0: fixed spelling in guide 0. This says nothing about builds, vector storage, deployments or database settings.",
+          "cwd": "/synthetic/hippo",
+          "git_branch": "main",
+          "captured_at": 1789900000000,
+          "outcome": "success",
+          "design_decisions": [
+            {
+              "chosen": "Correct spelling in guide 0",
+              "considered": "Leave the typo",
+              "reason": "Editorial correction only."
+            }
+          ]
+        },
+        {
+          "summary": "Unrelated documentation task docs-1: fixed spelling in guide 1. This says nothing about builds, vector storage, deployments or database settings.",
+          "cwd": "/synthetic/hippo",
+          "git_branch": "main",
+          "captured_at": 1789900001000,
+          "outcome": "success",
+          "design_decisions": [
+            {
+              "chosen": "Correct spelling in guide 1",
+              "considered": "Leave the typo",
+              "reason": "Editorial correction only."
+            }
+          ]
+        },
+        {
+          "summary": "Unrelated documentation task docs-2: fixed spelling in guide 2. This says nothing about builds, vector storage, deployments or database settings.",
+          "cwd": "/synthetic/hippo",
+          "git_branch": "main",
+          "captured_at": 1789900002000,
+          "outcome": "success",
+          "design_decisions": [
+            {
+              "chosen": "Correct spelling in guide 2",
+              "considered": "Leave the typo",
+              "reason": "Editorial correction only."
+            }
+          ]
+        },
+        {
+          "summary": "R1 production uses SQLite for hippo.db; journal_mode must be WAL.",
+          "cwd": "/synthetic/hippo",
+          "git_branch": "main",
+          "captured_at": 1789900000000,
+          "outcome": null,
+          "design_decisions": [
+            {
+              "chosen": "SQLite",
+              "considered": "",
+              "reason": "WAL is mandatory"
+            }
+          ]
+        },
+        {
+          "summary": "R1 production uses SQLite for hippo.db; journal_mode must be DELETE and WAL is forbidden.",
+          "cwd": "/synthetic/hippo",
+          "git_branch": "main",
+          "captured_at": 1789900001000,
+          "outcome": null,
+          "design_decisions": [
+            {
+              "chosen": "SQLite",
+              "considered": "",
+              "reason": "DELETE mode is mandatory"
+            }
+          ]
+        },
+        {
+          "summary": "Unrelated documentation task docs-3: fixed spelling in guide 3. This says nothing about builds, vector storage, deployments or database settings.",
+          "cwd": "/synthetic/hippo",
+          "git_branch": "main",
+          "captured_at": 1789900003000,
+          "outcome": "success",
+          "design_decisions": [
+            {
+              "chosen": "Correct spelling in guide 3",
+              "considered": "Leave the typo",
+              "reason": "Editorial correction only."
+            }
+          ]
+        },
+        {
+          "summary": "Unrelated documentation task docs-4: fixed spelling in guide 4. This says nothing about builds, vector storage, deployments or database settings.",
+          "cwd": "/synthetic/hippo",
+          "git_branch": "main",
+          "captured_at": 1789900004000,
+          "outcome": "success",
+          "design_decisions": [
+            {
+              "chosen": "Correct spelling in guide 4",
+              "considered": "Leave the typo",
+              "reason": "Editorial correction only."
+            }
+          ]
+        },
+        {
+          "summary": "Unrelated documentation task docs-5: fixed spelling in guide 5. This says nothing about builds, vector storage, deployments or database settings.",
+          "cwd": "/synthetic/hippo",
+          "git_branch": "main",
+          "captured_at": 1789900005000,
+          "outcome": "success",
+          "design_decisions": [
+            {
+              "chosen": "Correct spelling in guide 5",
+              "considered": "Leave the typo",
+              "reason": "Editorial correction only."
+            }
+          ]
+        },
+        {
+          "summary": "Unrelated documentation task docs-6: fixed spelling in guide 6. This says nothing about builds, vector storage, deployments or database settings.",
+          "cwd": "/synthetic/hippo",
+          "git_branch": "main",
+          "captured_at": 1789900006000,
+          "outcome": "success",
+          "design_decisions": [
+            {
+              "chosen": "Correct spelling in guide 6",
+              "considered": "Leave the typo",
+              "reason": "Editorial correction only."
+            }
+          ]
+        },
+        {
+          "summary": "Unrelated documentation task docs-7: fixed spelling in guide 7. This says nothing about builds, vector storage, deployments or database settings.",
+          "cwd": "/synthetic/hippo",
+          "git_branch": "main",
+          "captured_at": 1789900007000,
+          "outcome": "success",
+          "design_decisions": [
+            {
+              "chosen": "Correct spelling in guide 7",
+              "considered": "Leave the typo",
+              "reason": "Editorial correction only."
+            }
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "id": "pool10-outcome-08",
+    "task": "outcome_conflict",
+    "expected": "compatible",
+    "category": "explicit_retry",
+    "provenance": "Follow-up stress case authored after inspecting initial Jev results, not an independent holdout. Derived from outcome-08 without changing target evidence, prompt, rules, or expected label.",
+    "rationale": "The first failed attempt and successful retry are different attempts with an explicit sequence.",
+    "state": {
+      "hits": [
+        {
+          "summary": "Unrelated documentation task docs-0: fixed spelling in guide 0. This says nothing about builds, vector storage, deployments or database settings.",
+          "cwd": "/synthetic/hippo",
+          "git_branch": "main",
+          "captured_at": 1789900000000,
+          "outcome": "success",
+          "design_decisions": [
+            {
+              "chosen": "Correct spelling in guide 0",
+              "considered": "Leave the typo",
+              "reason": "Editorial correction only."
+            }
+          ]
+        },
+        {
+          "summary": "Unrelated documentation task docs-1: fixed spelling in guide 1. This says nothing about builds, vector storage, deployments or database settings.",
+          "cwd": "/synthetic/hippo",
+          "git_branch": "main",
+          "captured_at": 1789900001000,
+          "outcome": "success",
+          "design_decisions": [
+            {
+              "chosen": "Correct spelling in guide 1",
+              "considered": "Leave the typo",
+              "reason": "Editorial correction only."
+            }
+          ]
+        },
+        {
+          "summary": "Unrelated documentation task docs-2: fixed spelling in guide 2. This says nothing about builds, vector storage, deployments or database settings.",
+          "cwd": "/synthetic/hippo",
+          "git_branch": "main",
+          "captured_at": 1789900002000,
+          "outcome": "success",
+          "design_decisions": [
+            {
+              "chosen": "Correct spelling in guide 2",
+              "considered": "Leave the typo",
+              "reason": "Editorial correction only."
+            }
+          ]
+        },
+        {
+          "summary": "Deployment job deploy-10 attempt 1 failed with a timeout.",
+          "cwd": "/synthetic/hippo",
+          "git_branch": "main",
+          "captured_at": 1789900000000,
+          "outcome": "failure",
+          "design_decisions": []
+        },
+        {
+          "summary": "Deployment job deploy-10 attempt 2 retried after attempt 1 and succeeded.",
+          "cwd": "/synthetic/hippo",
+          "git_branch": "main",
+          "captured_at": 1789900001000,
+          "outcome": "success",
+          "design_decisions": []
+        },
+        {
+          "summary": "Unrelated documentation task docs-3: fixed spelling in guide 3. This says nothing about builds, vector storage, deployments or database settings.",
+          "cwd": "/synthetic/hippo",
+          "git_branch": "main",
+          "captured_at": 1789900003000,
+          "outcome": "success",
+          "design_decisions": [
+            {
+              "chosen": "Correct spelling in guide 3",
+              "considered": "Leave the typo",
+              "reason": "Editorial correction only."
+            }
+          ]
+        },
+        {
+          "summary": "Unrelated documentation task docs-4: fixed spelling in guide 4. This says nothing about builds, vector storage, deployments or database settings.",
+          "cwd": "/synthetic/hippo",
+          "git_branch": "main",
+          "captured_at": 1789900004000,
+          "outcome": "success",
+          "design_decisions": [
+            {
+              "chosen": "Correct spelling in guide 4",
+              "considered": "Leave the typo",
+              "reason": "Editorial correction only."
+            }
+          ]
+        },
+        {
+          "summary": "Unrelated documentation task docs-5: fixed spelling in guide 5. This says nothing about builds, vector storage, deployments or database settings.",
+          "cwd": "/synthetic/hippo",
+          "git_branch": "main",
+          "captured_at": 1789900005000,
+          "outcome": "success",
+          "design_decisions": [
+            {
+              "chosen": "Correct spelling in guide 5",
+              "considered": "Leave the typo",
+              "reason": "Editorial correction only."
+            }
+          ]
+        },
+        {
+          "summary": "Unrelated documentation task docs-6: fixed spelling in guide 6. This says nothing about builds, vector storage, deployments or database settings.",
+          "cwd": "/synthetic/hippo",
+          "git_branch": "main",
+          "captured_at": 1789900006000,
+          "outcome": "success",
+          "design_decisions": [
+            {
+              "chosen": "Correct spelling in guide 6",
+              "considered": "Leave the typo",
+              "reason": "Editorial correction only."
+            }
+          ]
+        },
+        {
+          "summary": "Unrelated documentation task docs-7: fixed spelling in guide 7. This says nothing about builds, vector storage, deployments or database settings.",
+          "cwd": "/synthetic/hippo",
+          "git_branch": "main",
+          "captured_at": 1789900007000,
+          "outcome": "success",
+          "design_decisions": [
+            {
+              "chosen": "Correct spelling in guide 7",
+              "considered": "Leave the typo",
+              "reason": "Editorial correction only."
+            }
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "id": "pool10-outcome-09",
+    "task": "outcome_conflict",
+    "expected": "compatible",
+    "category": "different_stages",
+    "provenance": "Follow-up stress case authored after inspecting initial Jev results, not an independent holdout. Derived from outcome-09 without changing target evidence, prompt, rules, or expected label.",
+    "rationale": "Build success and integration-test failure are compatible stages of one pipeline.",
+    "state": {
+      "hits": [
+        {
+          "summary": "Unrelated documentation task docs-0: fixed spelling in guide 0. This says nothing about builds, vector storage, deployments or database settings.",
+          "cwd": "/synthetic/hippo",
+          "git_branch": "main",
+          "captured_at": 1789900000000,
+          "outcome": "success",
+          "design_decisions": [
+            {
+              "chosen": "Correct spelling in guide 0",
+              "considered": "Leave the typo",
+              "reason": "Editorial correction only."
+            }
+          ]
+        },
+        {
+          "summary": "Unrelated documentation task docs-1: fixed spelling in guide 1. This says nothing about builds, vector storage, deployments or database settings.",
+          "cwd": "/synthetic/hippo",
+          "git_branch": "main",
+          "captured_at": 1789900001000,
+          "outcome": "success",
+          "design_decisions": [
+            {
+              "chosen": "Correct spelling in guide 1",
+              "considered": "Leave the typo",
+              "reason": "Editorial correction only."
+            }
+          ]
+        },
+        {
+          "summary": "Unrelated documentation task docs-2: fixed spelling in guide 2. This says nothing about builds, vector storage, deployments or database settings.",
+          "cwd": "/synthetic/hippo",
+          "git_branch": "main",
+          "captured_at": 1789900002000,
+          "outcome": "success",
+          "design_decisions": [
+            {
+              "chosen": "Correct spelling in guide 2",
+              "considered": "Leave the typo",
+              "reason": "Editorial correction only."
+            }
+          ]
+        },
+        {
+          "summary": "Pipeline ci-50 build stage succeeded and produced an artifact.",
+          "cwd": "/synthetic/hippo",
+          "git_branch": "main",
+          "captured_at": 1789900000000,
+          "outcome": "success",
+          "design_decisions": []
+        },
+        {
+          "summary": "Pipeline ci-50 integration-test stage failed after the successful build stage.",
+          "cwd": "/synthetic/hippo",
+          "git_branch": "main",
+          "captured_at": 1789900001000,
+          "outcome": "failure",
+          "design_decisions": []
+        },
+        {
+          "summary": "Unrelated documentation task docs-3: fixed spelling in guide 3. This says nothing about builds, vector storage, deployments or database settings.",
+          "cwd": "/synthetic/hippo",
+          "git_branch": "main",
+          "captured_at": 1789900003000,
+          "outcome": "success",
+          "design_decisions": [
+            {
+              "chosen": "Correct spelling in guide 3",
+              "considered": "Leave the typo",
+              "reason": "Editorial correction only."
+            }
+          ]
+        },
+        {
+          "summary": "Unrelated documentation task docs-4: fixed spelling in guide 4. This says nothing about builds, vector storage, deployments or database settings.",
+          "cwd": "/synthetic/hippo",
+          "git_branch": "main",
+          "captured_at": 1789900004000,
+          "outcome": "success",
+          "design_decisions": [
+            {
+              "chosen": "Correct spelling in guide 4",
+              "considered": "Leave the typo",
+              "reason": "Editorial correction only."
+            }
+          ]
+        },
+        {
+          "summary": "Unrelated documentation task docs-5: fixed spelling in guide 5. This says nothing about builds, vector storage, deployments or database settings.",
+          "cwd": "/synthetic/hippo",
+          "git_branch": "main",
+          "captured_at": 1789900005000,
+          "outcome": "success",
+          "design_decisions": [
+            {
+              "chosen": "Correct spelling in guide 5",
+              "considered": "Leave the typo",
+              "reason": "Editorial correction only."
+            }
+          ]
+        },
+        {
+          "summary": "Unrelated documentation task docs-6: fixed spelling in guide 6. This says nothing about builds, vector storage, deployments or database settings.",
+          "cwd": "/synthetic/hippo",
+          "git_branch": "main",
+          "captured_at": 1789900006000,
+          "outcome": "success",
+          "design_decisions": [
+            {
+              "chosen": "Correct spelling in guide 6",
+              "considered": "Leave the typo",
+              "reason": "Editorial correction only."
+            }
+          ]
+        },
+        {
+          "summary": "Unrelated documentation task docs-7: fixed spelling in guide 7. This says nothing about builds, vector storage, deployments or database settings.",
+          "cwd": "/synthetic/hippo",
+          "git_branch": "main",
+          "captured_at": 1789900007000,
+          "outcome": "success",
+          "design_decisions": [
+            {
+              "chosen": "Correct spelling in guide 7",
+              "considered": "Leave the typo",
+              "reason": "Editorial correction only."
+            }
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "id": "pool10-outcome-17",
+    "task": "outcome_conflict",
+    "expected": "conflict",
+    "category": "irrelevant_neighbor",
+    "provenance": "Follow-up stress case authored after inspecting initial Jev results, not an independent holdout. Derived from outcome-17 without changing target evidence, prompt, rules, or expected label.",
+    "rationale": "A separate successful run does not resolve the contradiction about ingest-31 attempt 1.",
+    "state": {
+      "hits": [
+        {
+          "summary": "Unrelated documentation task docs-0: fixed spelling in guide 0. This says nothing about builds, vector storage, deployments or database settings.",
+          "cwd": "/synthetic/hippo",
+          "git_branch": "main",
+          "captured_at": 1789900000000,
+          "outcome": "success",
+          "design_decisions": [
+            {
+              "chosen": "Correct spelling in guide 0",
+              "considered": "Leave the typo",
+              "reason": "Editorial correction only."
+            }
+          ]
+        },
+        {
+          "summary": "Unrelated documentation task docs-1: fixed spelling in guide 1. This says nothing about builds, vector storage, deployments or database settings.",
+          "cwd": "/synthetic/hippo",
+          "git_branch": "main",
+          "captured_at": 1789900001000,
+          "outcome": "success",
+          "design_decisions": [
+            {
+              "chosen": "Correct spelling in guide 1",
+              "considered": "Leave the typo",
+              "reason": "Editorial correction only."
+            }
+          ]
+        },
+        {
+          "summary": "Unrelated documentation task docs-2: fixed spelling in guide 2. This says nothing about builds, vector storage, deployments or database settings.",
+          "cwd": "/synthetic/hippo",
+          "git_branch": "main",
+          "captured_at": 1789900002000,
+          "outcome": "success",
+          "design_decisions": [
+            {
+              "chosen": "Correct spelling in guide 2",
+              "considered": "Leave the typo",
+              "reason": "Editorial correction only."
+            }
+          ]
+        },
+        {
+          "summary": "Finished ingest-30 attempt 1 succeeded.",
+          "cwd": "/synthetic/hippo",
+          "git_branch": "main",
+          "captured_at": 1789900000000,
+          "outcome": "success",
+          "design_decisions": []
+        },
+        {
+          "summary": "Finished ingest-31 attempt 1 successfully committed all requested nodes.",
+          "cwd": "/synthetic/hippo",
+          "git_branch": "main",
+          "captured_at": 1789900001000,
+          "outcome": "success",
+          "design_decisions": []
+        },
+        {
+          "summary": "Finished ingest-31 attempt 1 failed and committed no nodes.",
+          "cwd": "/synthetic/hippo",
+          "git_branch": "main",
+          "captured_at": 1789900002000,
+          "outcome": "failure",
+          "design_decisions": []
+        },
+        {
+          "summary": "Unrelated documentation task docs-3: fixed spelling in guide 3. This says nothing about builds, vector storage, deployments or database settings.",
+          "cwd": "/synthetic/hippo",
+          "git_branch": "main",
+          "captured_at": 1789900003000,
+          "outcome": "success",
+          "design_decisions": [
+            {
+              "chosen": "Correct spelling in guide 3",
+              "considered": "Leave the typo",
+              "reason": "Editorial correction only."
+            }
+          ]
+        },
+        {
+          "summary": "Unrelated documentation task docs-4: fixed spelling in guide 4. This says nothing about builds, vector storage, deployments or database settings.",
+          "cwd": "/synthetic/hippo",
+          "git_branch": "main",
+          "captured_at": 1789900004000,
+          "outcome": "success",
+          "design_decisions": [
+            {
+              "chosen": "Correct spelling in guide 4",
+              "considered": "Leave the typo",
+              "reason": "Editorial correction only."
+            }
+          ]
+        },
+        {
+          "summary": "Unrelated documentation task docs-5: fixed spelling in guide 5. This says nothing about builds, vector storage, deployments or database settings.",
+          "cwd": "/synthetic/hippo",
+          "git_branch": "main",
+          "captured_at": 1789900005000,
+          "outcome": "success",
+          "design_decisions": [
+            {
+              "chosen": "Correct spelling in guide 5",
+              "considered": "Leave the typo",
+              "reason": "Editorial correction only."
+            }
+          ]
+        },
+        {
+          "summary": "Unrelated documentation task docs-6: fixed spelling in guide 6. This says nothing about builds, vector storage, deployments or database settings.",
+          "cwd": "/synthetic/hippo",
+          "git_branch": "main",
+          "captured_at": 1789900006000,
+          "outcome": "success",
+          "design_decisions": [
+            {
+              "chosen": "Correct spelling in guide 6",
+              "considered": "Leave the typo",
+              "reason": "Editorial correction only."
+            }
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "id": "pool10-outcome-20",
+    "task": "outcome_conflict",
+    "expected": "conflict",
+    "category": "timestamp_not_recovery",
+    "provenance": "Follow-up stress case authored after inspecting initial Jev results, not an independent holdout. Derived from outcome-20 without changing target evidence, prompt, rules, or expected label.",
+    "rationale": "The later captured account still describes the same completed run. No retry, correction, or retraction is stated.",
+    "state": {
+      "hits": [
+        {
+          "summary": "Unrelated documentation task docs-0: fixed spelling in guide 0. This says nothing about builds, vector storage, deployments or database settings.",
+          "cwd": "/synthetic/hippo",
+          "git_branch": "main",
+          "captured_at": 1789900000000,
+          "outcome": "success",
+          "design_decisions": [
+            {
+              "chosen": "Correct spelling in guide 0",
+              "considered": "Leave the typo",
+              "reason": "Editorial correction only."
+            }
+          ]
+        },
+        {
+          "summary": "Unrelated documentation task docs-1: fixed spelling in guide 1. This says nothing about builds, vector storage, deployments or database settings.",
+          "cwd": "/synthetic/hippo",
+          "git_branch": "main",
+          "captured_at": 1789900001000,
+          "outcome": "success",
+          "design_decisions": [
+            {
+              "chosen": "Correct spelling in guide 1",
+              "considered": "Leave the typo",
+              "reason": "Editorial correction only."
+            }
+          ]
+        },
+        {
+          "summary": "Unrelated documentation task docs-2: fixed spelling in guide 2. This says nothing about builds, vector storage, deployments or database settings.",
+          "cwd": "/synthetic/hippo",
+          "git_branch": "main",
+          "captured_at": 1789900002000,
+          "outcome": "success",
+          "design_decisions": [
+            {
+              "chosen": "Correct spelling in guide 2",
+              "considered": "Leave the typo",
+              "reason": "Editorial correction only."
+            }
+          ]
+        },
+        {
+          "summary": "Completed benchmark bench-90 attempt 1 failed its required accuracy threshold.",
+          "cwd": "/synthetic/hippo",
+          "git_branch": "main",
+          "captured_at": 1789900000000,
+          "outcome": "failure",
+          "design_decisions": []
+        },
+        {
+          "summary": "Completed benchmark bench-90 attempt 1 passed its required accuracy threshold.",
+          "cwd": "/synthetic/hippo",
+          "git_branch": "main",
+          "captured_at": 1789986400000,
+          "outcome": "success",
+          "design_decisions": []
+        },
+        {
+          "summary": "Unrelated documentation task docs-3: fixed spelling in guide 3. This says nothing about builds, vector storage, deployments or database settings.",
+          "cwd": "/synthetic/hippo",
+          "git_branch": "main",
+          "captured_at": 1789900003000,
+          "outcome": "success",
+          "design_decisions": [
+            {
+              "chosen": "Correct spelling in guide 3",
+              "considered": "Leave the typo",
+              "reason": "Editorial correction only."
+            }
+          ]
+        },
+        {
+          "summary": "Unrelated documentation task docs-4: fixed spelling in guide 4. This says nothing about builds, vector storage, deployments or database settings.",
+          "cwd": "/synthetic/hippo",
+          "git_branch": "main",
+          "captured_at": 1789900004000,
+          "outcome": "success",
+          "design_decisions": [
+            {
+              "chosen": "Correct spelling in guide 4",
+              "considered": "Leave the typo",
+              "reason": "Editorial correction only."
+            }
+          ]
+        },
+        {
+          "summary": "Unrelated documentation task docs-5: fixed spelling in guide 5. This says nothing about builds, vector storage, deployments or database settings.",
+          "cwd": "/synthetic/hippo",
+          "git_branch": "main",
+          "captured_at": 1789900005000,
+          "outcome": "success",
+          "design_decisions": [
+            {
+              "chosen": "Correct spelling in guide 5",
+              "considered": "Leave the typo",
+              "reason": "Editorial correction only."
+            }
+          ]
+        },
+        {
+          "summary": "Unrelated documentation task docs-6: fixed spelling in guide 6. This says nothing about builds, vector storage, deployments or database settings.",
+          "cwd": "/synthetic/hippo",
+          "git_branch": "main",
+          "captured_at": 1789900006000,
+          "outcome": "success",
+          "design_decisions": [
+            {
+              "chosen": "Correct spelling in guide 6",
+              "considered": "Leave the typo",
+              "reason": "Editorial correction only."
+            }
+          ]
+        },
+        {
+          "summary": "Unrelated documentation task docs-7: fixed spelling in guide 7. This says nothing about builds, vector storage, deployments or database settings.",
+          "cwd": "/synthetic/hippo",
+          "git_branch": "main",
+          "captured_at": 1789900007000,
+          "outcome": "success",
+          "design_decisions": [
+            {
+              "chosen": "Correct spelling in guide 7",
+              "considered": "Leave the typo",
+              "reason": "Editorial correction only."
+            }
+          ]
+        }
+      ]
+    }
+  }
+]

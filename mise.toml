@@ -1361,6 +1361,30 @@ echo "Skills: $installed installed, $skipped skipped"
 
 # ── Bench (model benchmark; separate data root, not normal hippo execution) ──
 
+[tasks."bench:decisions"]
+description = "Compare isolated rules, LLM and Jev decision sidecars (rules only by default)"
+run = "uv run --project brain hippo-decision-bench run ${@}"
+
+[tasks."bench:decisions:summary"]
+description = "Report paired decision quality, coverage, latency and token usage"
+run = "uv run --project brain hippo-decision-bench summary ${@}"
+
+[tasks."bench:conflicts"]
+description = "Compare current conflict heuristics and semantic sidecars (offline by default)"
+run = "uv run --project brain hippo-decision-bench run --cases docs/research/typesafe-2026-09-20-conflicts/cases.json --arms current,rules ${@}"
+
+[tasks."bench:conflicts:replay"]
+description = "Verify archived conflict experiment hashes and replay per-case comparisons offline"
+run = "python3 docs/research/typesafe-2026-09-20-conflicts/audit.py ${@}"
+
+[tasks."bench:decisions:metrics"]
+description = "Serve decision experiment metrics on loopback :9836"
+run = "uv run --project brain hippo-decision-bench metrics ${@}"
+
+[tasks."test:decisions"]
+description = "Test decision sidecar isolation, contracts, rules and metrics offline"
+run = "uv run --project brain pytest brain/tests/test_decision_sidecar.py brain/tests/test_rerank.py -q"
+
 [tasks."bench:auto-memory-spike"]
 description = "Regenerate the synthetic Claude auto-memory chunking comparison report"
 run = "uv run --project brain python -m hippo_brain.bench.auto_memory_spike --fixture brain/src/hippo_brain/_fixtures/auto_memory_spike --output docs/research/2026-06-27-auto-memory-spike-results.md"

@@ -1,0 +1,158 @@
+[
+  {
+    "id": "empty-evidence",
+    "task": "verification",
+    "priority": 100,
+    "when": [
+      {
+        "fact": "empty_source",
+        "op": "eq",
+        "value": true
+      }
+    ],
+    "output": "unsupported"
+  },
+  {
+    "id": "identical-claim",
+    "task": "verification",
+    "priority": 90,
+    "when": [
+      {
+        "fact": "identical_text",
+        "op": "eq",
+        "value": true
+      }
+    ],
+    "output": "supports"
+  },
+  {
+    "id": "literal-query",
+    "task": "ranking",
+    "priority": 100,
+    "when": [
+      {
+        "fact": "exact_query",
+        "op": "eq",
+        "value": true
+      }
+    ],
+    "output": 3
+  },
+  {
+    "id": "many-shared-tokens",
+    "task": "ranking",
+    "priority": 50,
+    "when": [
+      {
+        "fact": "token_overlap",
+        "op": "ge",
+        "value": 3
+      }
+    ],
+    "output": 2
+  },
+  {
+    "id": "some-shared-tokens",
+    "task": "ranking",
+    "priority": 40,
+    "when": [
+      {
+        "fact": "token_overlap",
+        "op": "ge",
+        "value": 1
+      }
+    ],
+    "output": 1
+  },
+  {
+    "id": "no-shared-tokens",
+    "task": "ranking",
+    "priority": 30,
+    "when": [
+      {
+        "fact": "token_overlap",
+        "op": "eq",
+        "value": 0
+      }
+    ],
+    "output": 0
+  },
+  {
+    "id": "decision_conflict-0-record",
+    "task": "decision_conflict",
+    "priority": 100,
+    "when": [
+      {
+        "fact": "comparable_records",
+        "op": "eq",
+        "value": 0
+      }
+    ],
+    "output": "compatible"
+  },
+  {
+    "id": "decision_conflict-1-record",
+    "task": "decision_conflict",
+    "priority": 100,
+    "when": [
+      {
+        "fact": "comparable_records",
+        "op": "eq",
+        "value": 1
+      }
+    ],
+    "output": "compatible"
+  },
+  {
+    "id": "decision_conflict-identical",
+    "task": "decision_conflict",
+    "priority": 90,
+    "when": [
+      {
+        "fact": "identical_records",
+        "op": "eq",
+        "value": true
+      }
+    ],
+    "output": "compatible"
+  },
+  {
+    "id": "outcome_conflict-0-record",
+    "task": "outcome_conflict",
+    "priority": 100,
+    "when": [
+      {
+        "fact": "comparable_records",
+        "op": "eq",
+        "value": 0
+      }
+    ],
+    "output": "compatible"
+  },
+  {
+    "id": "outcome_conflict-1-record",
+    "task": "outcome_conflict",
+    "priority": 100,
+    "when": [
+      {
+        "fact": "comparable_records",
+        "op": "eq",
+        "value": 1
+      }
+    ],
+    "output": "compatible"
+  },
+  {
+    "id": "outcome_conflict-identical",
+    "task": "outcome_conflict",
+    "priority": 90,
+    "when": [
+      {
+        "fact": "identical_records",
+        "op": "eq",
+        "value": true
+      }
+    ],
+    "output": "compatible"
+  }
+]

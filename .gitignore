@@ -18,6 +18,9 @@ __pycache__/
 *.db-shm
 *.jsonl
 !docs/baselines/**/*.jsonl
+# Authored synthetic conflict experiments, including exact requests and responses.
+!docs/research/typesafe-2026-09-20-conflicts/run/*.jsonl
+!docs/research/typesafe-2026-09-20-conflicts/pool-run/*.jsonl
 !brain/src/hippo_brain/bench/qa_template.jsonl
 !brain/tests/fixtures/**/*.jsonl
 !crates/hippo-daemon/tests/fixtures/**/*.jsonl
