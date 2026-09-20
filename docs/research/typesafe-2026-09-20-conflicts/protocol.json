@@ -43,5 +43,7 @@
     "machdep.cpu.brand_string": "Apple M5 Max",
     "hw.memsize": "137438953472",
     "hw.ncpu": "18"
-  }
+  },
+  "run_id": "1789900816256-0d945bb6",
+  "artifact_directory": "run"
 }

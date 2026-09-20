@@ -108,6 +108,13 @@ on different documentation branches (`outcome-18`) and the temporal example
 outcome cases correctly in both orders, despite different per-call scores.
 One additional correct call is not evidence of a general accuracy advantage.
 
+Overall accuracy also hides the outcome tradeoff. Among the 18 positive outcome
+decisions, current code missed two, Jev missed four, and the local LLM missed
+five. Current code raised 14 false outcome conflicts; both models raised zero.
+Thus the models' higher total accuracy came with more missed genuine outcome
+conflicts. Decision-conflict judgments had a different result: Jev and the local
+LLM corrected all 14 false flags and six misses in the current detector.
+
 The direct Jev decision-conflict median/p95 was 148/211 ms; the direct local
 LLM was 10,385/17,112 ms. Outcome medians/p95s were 150/220 ms for Jev and
 10,041/20,832 ms for the local LLM. The current deterministic code took roughly
@@ -118,6 +125,20 @@ has different serving hardware and uncontrolled background load.
 
 The remaining rules-first local LLM results will be recorded after its worker
 completes. No prompts, rules or labels are being tuned during these runs.
+
+An additional offline composition retains every current warning and consults
+the saved Jev judgment only when current code reports compatibility. On the
+initial corpus it detects all labeled conflicts in both orders, correcting
+eight missed-conflict decisions, while retaining all 28 existing false alarms.
+It would consult Jev on 32/88 inputs rather than 88/88. Its quality is 30/44
+for each task because preserving warnings also preserves false alarms.
+
+This is a post-hoc simulation of an additive policy, not an executed seventh
+arm. The call count is simulated, latency was not measured, and fresh Jev
+responses can differ. It supports considering Jev as an additional advisory
+signal; it does not establish a production accuracy gain. Recall searches for
+this composition returned the current experiment and earlier sidecar work,
+not an earlier evaluation of the composition.
 
 ## Ten-hit stress protocol
 

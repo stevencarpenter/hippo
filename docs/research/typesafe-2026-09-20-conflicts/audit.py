@@ -110,6 +110,34 @@ def audit(root):
                 target.append(case_id)
             paired.append({"task": task, "arm": arm, "baseline": baseline,
                            "consistent_correct_wins": wins, "consistent_correct_losses": losses, "tied_cases": ties})
+    simulations = []
+    if "current" in manifest["arms"] and "jev" in manifest["arms"]:
+        for task in sorted({case["task"] for case in inputs}):
+            simulation = {"task": task, "planned_decisions": 0, "correct": 0,
+                          "false_conflicts": 0, "missed_conflicts": 0,
+                          "simulated_jev_calls": 0, "unavailable_judgments": 0}
+            for case in inputs:
+                if case["task"] != task:
+                    continue
+                expected = labels[f"{task}:{case['id']}"]["expected"]
+                for repeat in range(manifest["repeats"]):
+                    simulation["planned_decisions"] += 1
+                    current = records.get((task, case["id"], repeat, "current"))
+                    jev = records.get((task, case["id"], repeat, "jev"))
+                    if not current or current["status"] != "ok":
+                        simulation["unavailable_judgments"] += 1
+                        continue
+                    verdict = current["output"]["verdict"]
+                    if verdict != "conflict":
+                        simulation["simulated_jev_calls"] += 1
+                        if jev and jev["status"] == "ok":
+                            verdict = jev["output"]["verdict"]
+                        else:
+                            simulation["unavailable_judgments"] += 1
+                    simulation["correct"] += verdict == expected
+                    simulation["false_conflicts"] += verdict == "conflict" and expected == "compatible"
+                    simulation["missed_conflicts"] += verdict == "compatible" and expected == "conflict"
+            simulations.append(simulation)
     repeated_requests = defaultdict(list)
     for row in records.values():
         if row["status"] == "ok" and row.get("request_hash"):
@@ -138,6 +166,7 @@ def audit(root):
     return {"run_id": manifest["run_id"], "validated_records": len(records),
             "planned_records": len(planned), "missing_records": len(planned) - len(records),
             "repeated_request_groups": len(repeated), "identical_request_variations": variations,
+            "posthoc_preserve_warnings_simulation": simulations,
             "groups": groups, "paired": paired, "cases": cases}
 
 

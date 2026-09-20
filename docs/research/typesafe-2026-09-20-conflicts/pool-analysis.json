@@ -5,6 +5,26 @@
   "missing_records": 0,
   "repeated_request_groups": 16,
   "identical_request_variations": [],
+  "posthoc_preserve_warnings_simulation": [
+    {
+      "task": "decision_conflict",
+      "planned_decisions": 8,
+      "correct": 4,
+      "false_conflicts": 4,
+      "missed_conflicts": 0,
+      "simulated_jev_calls": 0,
+      "unavailable_judgments": 0
+    },
+    {
+      "task": "outcome_conflict",
+      "planned_decisions": 8,
+      "correct": 4,
+      "false_conflicts": 4,
+      "missed_conflicts": 0,
+      "simulated_jev_calls": 0,
+      "unavailable_judgments": 0
+    }
+  ],
   "groups": [
     {
       "task": "decision_conflict",
