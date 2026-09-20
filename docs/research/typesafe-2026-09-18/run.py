@@ -205,20 +205,21 @@ def summarize(rows, cases):
             original = [
                 d for d in details if not d["reverse"] and d["ndcg"] is not None
             ]
+            baseline = [lookup[d["id"]] for d in original]
             result["top1"] = [sum(d["top1_correct"] for d in original), len(original)]
-            result["mean_ndcg"] = statistics.mean(d["ndcg"] for d in original)
+            result["mean_ndcg"] = (
+                statistics.mean(d["ndcg"] for d in original) if original else None
+            )
             result["baseline_original_order_top1"] = [
-                sum(
-                    c["grades"][0] == max(c["grades"])
-                    for c in cases[kind]
-                    if max(c["grades"])
-                ),
-                sum(bool(max(c["grades"])) for c in cases[kind]),
+                sum(c["grades"][0] == max(c["grades"]) for c in baseline),
+                len(baseline),
             ]
-            result["baseline_original_order_mean_ndcg"] = statistics.mean(
-                ndcg(c["grades"], list(range(len(c["grades"]))))
-                for c in cases[kind]
-                if max(c["grades"])
+            result["baseline_original_order_mean_ndcg"] = (
+                statistics.mean(
+                    ndcg(c["grades"], list(range(len(c["grades"])))) for c in baseline
+                )
+                if baseline
+                else None
             )
             result["answerable_accuracy_at_0.5"] = [
                 sum(d["answerable_correct_at_0.5"] for d in details),
