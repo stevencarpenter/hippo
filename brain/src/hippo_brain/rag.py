@@ -8,6 +8,7 @@ import sqlite3
 import time
 from datetime import UTC, datetime
 
+from hippo_brain.decision_capture import capture_decision, capture_query
 from hippo_brain.embeddings import EMBED_DIM, _pad_or_truncate, search_similar
 from hippo_brain.enrichment import IDENTIFIER_ENTITY_TYPES
 from hippo_brain.rerank import rerank_results
@@ -180,6 +181,11 @@ def _shape_rag_sources(
                 "linked_event_ids": list(hit.get("linked_event_ids", []) or []),
                 "evidence": list(hit.get("evidence", []) or []),
                 "confidence": dict(hit.get("confidence", {}) or {}),
+                **(
+                    {"controlled_topics": hit["controlled_topics"]}
+                    if hit.get("controlled_topics")
+                    else {}
+                ),
             }
         )
     return sources[:limit]
@@ -498,6 +504,11 @@ def _result_to_hit(r: SearchResult) -> dict:
         "evidence": list(r.evidence),
         "entities": dict(r.entities),
         "confidence": dict(r.confidence) if r.confidence else {},
+        **(
+            {"controlled_topics": r.controlled_topics}
+            if getattr(r, "controlled_topics", None)
+            else {}
+        ),
     }
 
 
@@ -546,6 +557,9 @@ async def ask(
     mode: str = "hybrid",
     conn=None,
     include_excluded: bool = False,
+    jev_client=None,
+    capture_origin: str = "interactive",
+    decision_diagnostics: dict | None = None,
 ) -> dict:
     """Run the full RAG pipeline: preflight → embed → retrieve → synthesize.
 
@@ -655,7 +669,12 @@ async def ask(
             tuning = retrieval_get_tuning()
             # With reranking on, over-fetch so the LLM has a wider pool to
             # reorder; the rerank stage cuts back down to `limit`.
-            fetch_limit = max(limit, tuning.rerank_pool) if tuning.rerank else limit
+            rerank_pool = (
+                min(tuning.rerank_pool, 30)
+                if tuning.rerank_backend == "jev"
+                else tuning.rerank_pool
+            )
+            fetch_limit = max(limit, rerank_pool) if tuning.rerank else limit
             results = retrieval_search(
                 retrieval_conn,
                 question,
@@ -664,13 +683,42 @@ async def ask(
                 mode=mode,
                 limit=fetch_limit,
             )
+            if _rag_duration:
+                _rag_duration.record(
+                    (time.monotonic() - _t1) * 1000, {"stage": "candidate_retrieval"}
+                )
+            capture_query(question, results, filters=effective_filters, origin=capture_origin)
             if tuning.rerank:
                 # rerank_results owns the trivial-input short-circuit and
                 # always cuts to `limit`, including on its failure paths.
                 _tr = time.monotonic()
-                results = await rerank_results(
-                    inference_client, query_model, question, results, limit
-                )
+                if tuning.rerank_backend == "local":
+                    results = await rerank_results(
+                        inference_client, query_model, question, results, limit
+                    )
+                else:
+                    diagnostics = decision_diagnostics if decision_diagnostics is not None else {}
+                    # Honor wider caller limits without sending more than the
+                    # validated online candidate ceiling to a fast backend.
+                    tail = results[30:]
+                    results = await rerank_results(
+                        inference_client,
+                        query_model,
+                        question,
+                        results[:30],
+                        min(limit, 30),
+                        backend=tuning.rerank_backend,
+                        adaptive=tuning.rerank_adaptive,
+                        deadline_ms=tuning.decision_deadline_ms,
+                        conn=retrieval_conn,
+                        effective_filters=effective_filters,
+                        jev_client=jev_client,
+                        diagnostics=diagnostics,
+                        recipe=tuning.rerank_recipe,
+                    )
+                    diagnostics["unranked_tail_count"] = min(len(tail), max(0, limit - 30))
+                    results = (results + tail)[:limit]
+                    capture_decision(diagnostics, origin=capture_origin)
                 if _rag_duration:
                     _rag_duration.record((time.monotonic() - _tr) * 1000, {"stage": "rerank"})
             else:
@@ -690,6 +738,7 @@ async def ask(
             )
         else:
             hits = search_similar(vector_table, query_vec, limit=limit)
+            capture_query(question, hits, filters=effective_filters, origin=capture_origin)
         if _rag_duration:
             _rag_duration.record((time.monotonic() - _t1) * 1000, {"stage": "retrieve"})
     except Exception as e:

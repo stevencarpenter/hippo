@@ -4,6 +4,7 @@ import argparse
 import hashlib
 import json
 import math
+import os
 import statistics
 from collections import defaultdict
 from pathlib import Path
@@ -172,6 +173,10 @@ def audit(root):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("run_dir", nargs="?", type=Path, default=Path(__file__).parent / "run")
+    archive = (
+        Path(os.environ.get("XDG_DATA_HOME") or Path.home() / ".local/share")
+        / "hippo-bench/decisions/archive/typesafe-2026-09-20-conflicts"
+    )
+    parser.add_argument("run_dir", nargs="?", type=Path, default=archive / "run")
     args = parser.parse_args()
     print(json.dumps(audit(args.run_dir), indent=2, allow_nan=False))

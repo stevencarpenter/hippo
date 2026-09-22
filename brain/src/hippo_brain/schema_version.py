@@ -51,27 +51,21 @@ v21→v22 renames watcher resume state to `agentic_session_offsets` (SNUG-115 Ph
 v22→v23 drops the frozen legacy `claude_*` tables (SNUG-115 Phase B).
 v23→v24 widens the `agentic_sessions.harness` CHECK to include 'pi'
 and seeds the `agentic-session-pi` source_health row.
+v24→v25 adds optional node classification state. v24 remains readable because
+classification is disabled when its additive table is absent.
 """
 
 from __future__ import annotations
 
 import sqlite3
 
-EXPECTED_SCHEMA_VERSION: int = 24
+EXPECTED_SCHEMA_VERSION: int = 25
 
-# Versions brain can read without erroring.
-#
-# Historically this set carried v5–v10 for "rollback compatibility" on
-# the assumption that older migrations only touched columns brain didn't
-# read. v12→v13 broke that assumption: it changes the entities.type
-# CHECK list, and the enrichment write path now emits 'env_var'-typed
-# rows on every node. Any DB at v5–v12 still has the pre-env_var CHECK
-# and would fail mid-enrichment with a CHECK constraint error. Reject
-# at connect time instead — the brain/daemon handshake already enforces
-# strict equality (`schema_handshake.rs`), and on this single-host
-# deployment the daemon always migrates the DB to EXPECTED_SCHEMA_VERSION
-# before brain attaches.
-ACCEPTED_READ_VERSIONS: frozenset[int] = frozenset({EXPECTED_SCHEMA_VERSION})
+# The v25 table is optional and additive. Ordinary queries and enrichment remain
+# valid on v24; classification checks its table before reading or writing. Older
+# versions still lack mandatory writer contracts and remain unsupported. The
+# daemon handshake retains exact version equality before running migrations.
+ACCEPTED_READ_VERSIONS: frozenset[int] = frozenset({24, EXPECTED_SCHEMA_VERSION})
 
 
 def require_accepted_schema(conn: sqlite3.Connection) -> None:

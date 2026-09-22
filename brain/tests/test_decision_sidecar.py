@@ -669,7 +669,9 @@ def test_current_conflict_worker_metrics_and_source_snapshot(tmp_path, monkeypat
     assert current["accuracy"] == 0 and summary["complete"]
     assert 'task="decision_conflict",arm="current"' in sidecar.prometheus(run_dir)
     for path in sidecar.implementation_paths():
-        assert (run_dir / "source" / path.name).read_bytes() == path.read_bytes()
+        relative = path.relative_to(Path(sidecar.__file__).parents[1])
+        assert (run_dir / "source" / relative).read_bytes() == path.read_bytes()
+    assert len(sidecar.implementation_hashes()) == len(sidecar.implementation_paths())
     audit = runpy.run_path(
         str(Path(__file__).parents[2] / "docs/research/typesafe-2026-09-20-conflicts/audit.py")
     )["audit"]

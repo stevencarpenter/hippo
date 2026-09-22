@@ -12,6 +12,7 @@ import time
 import uuid
 from datetime import datetime
 
+from hippo_brain.classification import enqueue_node
 from hippo_brain.claude_sessions import replace_prior_agentic_nodes
 from hippo_brain.enrichment import (
     CURRENT_ENRICHMENT_VERSION,
@@ -354,6 +355,7 @@ def write_opencode_knowledge_node(
                         (ch, seg_id),
                     )
 
+        enqueue_node(conn, node_id)
         conn.commit()
         return node_id
     except Exception:

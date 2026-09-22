@@ -19,7 +19,9 @@ const SCHEMA: &str = concat!(
 /// startup code (e.g. the brain handshake) can cross-check without
 /// re-declaring the value. Keep in sync with
 /// `brain/src/hippo_brain/schema_version.py::EXPECTED_SCHEMA_VERSION`.
-pub const EXPECTED_VERSION: i64 = 24;
+pub const EXPECTED_VERSION: i64 = 25;
+
+const CLASSIFICATION_SCHEMA: &str = include_str!("schema/classification.sql");
 
 /// Idempotent v18→v19 auto-memory DDL (same file as fresh-install assembly).
 const AUTO_MEMORY_SCHEMA: &str = include_str!("schema/auto_memory.sql");
@@ -1616,6 +1618,14 @@ pub fn open_db(path: &Path) -> Result<Connection> {
                     ('agentic-session-pi', NULL, unixepoch('now') * 1000);",
             )?;
         }
+    }
+
+    // v24→v25 is additive; existing knowledge, vectors and source links are untouched.
+    if (1..25).contains(&version) {
+        let tx = conn.transaction()?;
+        tx.execute_batch(CLASSIFICATION_SCHEMA)?;
+        tx.execute_batch("PRAGMA user_version = 25;")?;
+        tx.commit()?;
     } else if version != 0 && version != EXPECTED_VERSION {
         anyhow::bail!(
             "DB schema version mismatch: expected {}, found {}. \
@@ -2238,6 +2248,110 @@ pub fn open_memory() -> Result<Connection> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_migrate_v24_to_v25_preserves_nodes_and_cascades_classification() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("classification-v24.db");
+        let conn = Connection::open(&db).unwrap();
+        conn.execute_batch(SCHEMA).unwrap();
+        conn.execute_batch(
+            "DROP TABLE knowledge_node_classifications;
+             INSERT INTO knowledge_nodes(uuid,content,embed_text,tags)
+             VALUES ('source-node', '{\"summary\":\"preserved\"}', 'original', '[\"tag\"]');
+             INSERT INTO entities(type,name,canonical) VALUES
+                 ('concept','original','hippo/topic/database-storage');
+             INSERT INTO knowledge_node_entities VALUES (1,1);
+             PRAGMA user_version = 24;",
+        )
+        .unwrap();
+        drop(conn);
+
+        let conn = open_db(&db).unwrap();
+        assert_eq!(
+            conn.query_row("SELECT canonical FROM entities WHERE id=1", [], |row| {
+                row.get::<_, String>(0)
+            })
+            .unwrap(),
+            "hippo/topic/database-storage"
+        );
+        assert_eq!(
+            conn.query_row("SELECT count(*) FROM knowledge_node_entities", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .unwrap(),
+            1
+        );
+        assert_eq!(
+            conn.query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
+                .unwrap(),
+            EXPECTED_VERSION
+        );
+        assert_eq!(
+            conn.query_row("SELECT embed_text FROM knowledge_nodes", [], |row| row
+                .get::<_, String>(
+                0
+            ))
+            .unwrap(),
+            "original"
+        );
+        conn.execute_batch(
+            "INSERT INTO knowledge_node_classifications
+             (node_id,node_uuid,requested_revision,desired_input_hash,recipe_hash,
+              taxonomy_version,model_id,prompt_hash,threshold_hash,input_version,
+              status,enqueued_at,updated_at)
+             VALUES (1,'source-node',1,'input','recipe','taxonomy','1.13.0','prompt',
+                     'threshold','input-v1','pending',1,1);",
+        )
+        .unwrap();
+        assert!(
+            conn.execute(
+                "UPDATE knowledge_node_classifications SET accepted_topics_json='invalid'",
+                []
+            )
+            .is_err()
+        );
+        assert!(
+            conn.execute(
+                "UPDATE knowledge_node_classifications SET status='unknown'",
+                []
+            )
+            .is_err()
+        );
+        drop(conn);
+
+        let conn = open_db(&db).unwrap();
+        assert_eq!(
+            conn.query_row(
+                "SELECT count(*) FROM knowledge_node_classifications",
+                [],
+                |row| row.get::<_, i64>(0)
+            )
+            .unwrap(),
+            1
+        );
+        conn.execute(
+            "DELETE FROM knowledge_node_entities WHERE knowledge_node_id=1",
+            [],
+        )
+        .unwrap();
+        conn.execute("DELETE FROM knowledge_nodes WHERE id=1", [])
+            .unwrap();
+        assert_eq!(
+            conn.query_row(
+                "SELECT count(*) FROM knowledge_node_classifications",
+                [],
+                |row| row.get::<_, i64>(0)
+            )
+            .unwrap(),
+            0
+        );
+    }
+
+    #[test]
+    fn test_classification_migration_matches_fresh_schema() {
+        assert!(SCHEMA.contains(CLASSIFICATION_SCHEMA));
+    }
     use crate::events::{EventEnvelope, GitState, ShellEvent, ShellKind};
     use std::path::PathBuf;
 

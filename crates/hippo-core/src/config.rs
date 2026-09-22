@@ -970,6 +970,12 @@ impl RedactConfig {
         Self {
             patterns: vec![
                 RedactPattern {
+                    name: "private_key_pem".to_string(),
+                    // Run before assignments consume the opening marker; mirror Python.
+                    regex: r"(?s)-----BEGIN [A-Z ]*PRIVATE KEY-----.*?(?:-----END [A-Z ]*PRIVATE KEY-----|$)|\[REDACTED\](?: [A-Z ]*PRIVATE KEY-----)?[ \t]*\r?\n(?:(?:Proc-Type|DEK-Info):[^\r\n]*\r?\n)*(?:[ \t]*\r?\n)*(?:[A-Za-z0-9+/=]+[ \t]*\r?\n)+-----END [A-Z ]*PRIVATE KEY-----".to_string(),
+                    replacement: "[REDACTED]".to_string(),
+                },
+                RedactPattern {
                     name: "aws_access_key".to_string(),
                     regex: r"AKIA[0-9A-Z]{16}".to_string(),
                     replacement: "[REDACTED]".to_string(),
@@ -992,11 +998,6 @@ impl RedactConfig {
                 RedactPattern {
                     name: "bearer_header".to_string(),
                     regex: r"(?i)authorization:\s*bearer\s+\S+".to_string(),
-                    replacement: "[REDACTED]".to_string(),
-                },
-                RedactPattern {
-                    name: "private_key_pem".to_string(),
-                    regex: r"-----BEGIN [A-Z ]*PRIVATE KEY-----".to_string(),
                     replacement: "[REDACTED]".to_string(),
                 },
             ],

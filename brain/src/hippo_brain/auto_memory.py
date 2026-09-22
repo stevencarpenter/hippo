@@ -12,6 +12,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
+from hippo_brain.classification import enqueue_node
 from hippo_brain.auto_memory_categories import replace_model_categories
 from hippo_brain.auto_memory_constants import (
     _IDENTITY_NAMESPACE,
@@ -354,6 +355,10 @@ def write_memory_knowledge_node(
                     (old_node_id[0],),
                 )
                 conn.execute(
+                    "DELETE FROM knowledge_node_entities WHERE knowledge_node_id = ?",
+                    (old_node_id[0],),
+                )
+                conn.execute(
                     "DELETE FROM knowledge_nodes WHERE id = ?",
                     (old_node_id[0],),
                 )
@@ -379,6 +384,7 @@ def write_memory_knowledge_node(
             model_name=model_name,
             now_ms=completed_at,
         )
+        enqueue_node(conn, node_id)
         conn.commit()
     except Exception:
         conn.rollback()

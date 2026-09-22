@@ -69,6 +69,8 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 from hippo_brain import vector_store
+from hippo_brain.classification import configure as configure_classification
+from hippo_brain.classification import enqueue_node, load_recipe
 from hippo_brain.claude_sessions import CLAUDE_SYSTEM_PROMPT
 from hippo_brain.client import InferenceClient
 from hippo_brain.embeddings import embed_knowledge_node
@@ -284,6 +286,7 @@ def _update_node_in_place(
         # Wipe stale entity links, then re-upsert under the new rules.
         conn.execute("DELETE FROM knowledge_node_entities WHERE knowledge_node_id = ?", (node_id,))
         upsert_entities(conn, node_id, result.entities, SHELL_ENTITY_TYPE_MAP, now_ms)
+        enqueue_node(conn, node_id)
         conn.commit()
     except Exception:
         conn.rollback()
@@ -382,6 +385,11 @@ async def _process_node(
 
 async def main_async(args: argparse.Namespace) -> int:
     settings = _load_settings()
+    classification_settings = settings.get("classification", {})
+    configure_classification(
+        classification_settings.get("enabled") is True,
+        load_recipe(classification_settings.get("recipe_path")),
+    )
     db_path = Path(args.db) if args.db else _default_db_path()
     if not db_path.exists():
         log.error("Database not found: %s", db_path)

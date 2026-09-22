@@ -20,6 +20,13 @@ from typing import Any
 REPLACEMENT = "[REDACTED]"
 
 _PATTERNS: tuple[re.Pattern[str], ...] = (
+    # Run first: assignment rules otherwise consume part of the opening marker.
+    # Also remove bodies left behind by historical marker-only redaction.
+    re.compile(
+        r"(?s)-----BEGIN [A-Z ]*PRIVATE KEY-----.*?(?:-----END [A-Z ]*PRIVATE KEY-----|$)"
+        r"|\[REDACTED\](?: [A-Z ]*PRIVATE KEY-----)?[ \t]*\r?\n"
+        r"(?:(?:Proc-Type|DEK-Info):[^\r\n]*\r?\n)*(?:[ \t]*\r?\n)*(?:[A-Za-z0-9+/=]+[ \t]*\r?\n)+-----END [A-Z ]*PRIVATE KEY-----"
+    ),
     re.compile(r"AKIA[0-9A-Z]{16}"),
     re.compile(r"ghp_[a-zA-Z0-9]{36}|github_pat_[a-zA-Z0-9_]{82}"),
     re.compile(
@@ -28,7 +35,6 @@ _PATTERNS: tuple[re.Pattern[str], ...] = (
     ),
     re.compile(r"eyJ[a-zA-Z0-9_-]{10,}\.eyJ[a-zA-Z0-9_-]{10,}\.[a-zA-Z0-9_-]+"),
     re.compile(r"(?i)authorization:\s*bearer\s+\S+"),
-    re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----"),
 )
 
 

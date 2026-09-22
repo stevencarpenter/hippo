@@ -4,6 +4,7 @@ import json
 import time
 import uuid
 
+from hippo_brain.classification import enqueue_node
 from hippo_brain.claude_sessions import find_identical_node
 from hippo_brain.enrichment import (
     CURRENT_ENRICHMENT_VERSION,
@@ -354,6 +355,7 @@ def write_browser_knowledge_node(
                 f"WHERE browser_event_id IN ({placeholders})",
                 [now_ms, *event_ids],
             )
+            enqueue_node(conn, existing_id)
             conn.commit()
             return None
 
@@ -404,6 +406,7 @@ def write_browser_knowledge_node(
             [now_ms, *event_ids],
         )
 
+        enqueue_node(conn, node_id)
         conn.commit()
         return node_id
     except Exception:

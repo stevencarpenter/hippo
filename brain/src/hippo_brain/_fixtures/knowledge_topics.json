@@ -1,0 +1,416 @@
+{
+  "capture-ingestion": {
+    "description": "Capturing developer activity from shells, agent sessions, browsers or filesystem watchers. Excludes generic database ingestion without activity capture.",
+    "terms": [
+      "capture",
+      "watcher",
+      "ingestion",
+      "shell hook",
+      "session ingestion",
+      "native messaging"
+    ],
+    "inclusions": [
+      "Capturing developer activity from shells, agent sessions, browsers or filesystem watchers. Excludes generic database ingestion without activity capture."
+    ],
+    "exclusions": [
+      "A data warehouse CSV import."
+    ],
+    "positive_examples": [
+      "Implement a shell hook and filesystem session watcher."
+    ],
+    "hard_negatives": [
+      "A data warehouse CSV import."
+    ],
+    "aliases": [
+      "activity capture",
+      "shell hook",
+      "session ingestion",
+      "filesystem watcher",
+      "native messaging"
+    ]
+  },
+  "knowledge-retrieval": {
+    "description": "Searching or retrieving knowledge, relevance ranking, embeddings, vector search, RAG or knowledge graphs. Merely calling a search tool is insufficient.",
+    "terms": [
+      "retrieval",
+      "reranking",
+      "embedding",
+      "vector search",
+      "rag",
+      "knowledge graph"
+    ],
+    "inclusions": [
+      "Searching or retrieving knowledge, relevance ranking, embeddings, vector search, RAG or knowledge graphs. Merely calling a search tool is insufficient."
+    ],
+    "exclusions": [
+      "A search tool mentioned in a deployment log."
+    ],
+    "positive_examples": [
+      "Evaluate hybrid knowledge search and relevance reranking."
+    ],
+    "hard_negatives": [
+      "A search tool mentioned in a deployment log."
+    ],
+    "aliases": [
+      "knowledge retrieval",
+      "vector search",
+      "semantic search",
+      "reranking",
+      "knowledge graph",
+      "retrieval augmented generation"
+    ]
+  },
+  "database-storage": {
+    "description": "Database schemas, SQL, persistence, transactions, indexes or storage consistency.",
+    "terms": [
+      "database",
+      "sqlite",
+      "sql",
+      "schema",
+      "transaction",
+      "persistence"
+    ],
+    "inclusions": [
+      "Database schemas, SQL, persistence, transactions, indexes or storage consistency."
+    ],
+    "exclusions": [
+      "A database product named in a UI screenshot."
+    ],
+    "positive_examples": [
+      "Fix SQLite transaction isolation and add a database index."
+    ],
+    "hard_negatives": [
+      "A database product named in a UI screenshot."
+    ],
+    "aliases": [
+      "database schema",
+      "sqlite",
+      "sql query",
+      "database transaction",
+      "storage consistency"
+    ]
+  },
+  "observability": {
+    "description": "Logging, metrics, tracing, health checks, alarms or monitoring as a substantive subject.",
+    "terms": [
+      "observability",
+      "metrics",
+      "logging",
+      "tracing",
+      "health check",
+      "monitoring"
+    ],
+    "inclusions": [
+      "Logging, metrics, tracing, health checks, alarms or monitoring as a substantive subject."
+    ],
+    "exclusions": [
+      "Logging into a website."
+    ],
+    "positive_examples": [
+      "Instrument tracing spans and an alarm on queue latency."
+    ],
+    "hard_negatives": [
+      "Logging into a website."
+    ],
+    "aliases": [
+      "observability",
+      "distributed tracing",
+      "health check",
+      "monitoring metrics"
+    ]
+  },
+  "testing-validation": {
+    "description": "Testing software correctness, regression checks, validation or evaluation methodology. A passing test mentioned in an unrelated change is insufficient.",
+    "terms": [
+      "test",
+      "tests",
+      "testing",
+      "validation",
+      "regression",
+      "evaluation"
+    ],
+    "inclusions": [
+      "Testing software correctness, regression checks, validation or evaluation methodology. A passing test mentioned in an unrelated change is insufficient."
+    ],
+    "exclusions": [
+      "Tests passed after changing a README."
+    ],
+    "positive_examples": [
+      "Design a regression suite and an evaluation rubric."
+    ],
+    "hard_negatives": [
+      "Tests passed after changing a README."
+    ],
+    "aliases": [
+      "regression testing",
+      "test coverage",
+      "evaluation methodology",
+      "software validation"
+    ]
+  },
+  "performance-optimization": {
+    "description": "Improving or measuring runtime latency, throughput, memory, compute consumption, caching or profiling.",
+    "terms": [
+      "performance",
+      "latency",
+      "throughput",
+      "profiling",
+      "optimization",
+      "caching"
+    ],
+    "inclusions": [
+      "Improving or measuring runtime latency, throughput, memory, compute consumption, caching or profiling."
+    ],
+    "exclusions": [
+      "A fast response without performance work."
+    ],
+    "positive_examples": [
+      "Profile allocations and reduce query p95 latency."
+    ],
+    "hard_negatives": [
+      "A fast response without performance work."
+    ],
+    "aliases": [
+      "performance optimization",
+      "latency profiling",
+      "memory profiling",
+      "throughput benchmark"
+    ]
+  },
+  "security-access": {
+    "description": "Authentication, authorization, credentials, vulnerabilities, privacy or secret handling.",
+    "terms": [
+      "security",
+      "authentication",
+      "authorization",
+      "credentials",
+      "vulnerability",
+      "secrets"
+    ],
+    "inclusions": [
+      "Authentication, authorization, credentials, vulnerabilities, privacy or secret handling."
+    ],
+    "exclusions": [
+      "A secret mentioned as a variable name."
+    ],
+    "positive_examples": [
+      "Rotate credentials and test authorization boundaries."
+    ],
+    "hard_negatives": [
+      "A secret mentioned as a variable name."
+    ],
+    "aliases": [
+      "authentication",
+      "authorization",
+      "credential rotation",
+      "secret handling",
+      "security vulnerability"
+    ]
+  },
+  "deployment-operations": {
+    "description": "Deploying, releasing, configuring or operating running applications, services or infrastructure.",
+    "terms": [
+      "deployment",
+      "deploy",
+      "release",
+      "infrastructure",
+      "launchd",
+      "operations"
+    ],
+    "inclusions": [
+      "Deploying, releasing, configuring or operating running applications, services or infrastructure."
+    ],
+    "exclusions": [
+      "Describe an undeployed algorithm."
+    ],
+    "positive_examples": [
+      "Deploy a service and diagnose its launchd lifecycle."
+    ],
+    "hard_negatives": [
+      "Describe an undeployed algorithm."
+    ],
+    "aliases": [
+      "service deployment",
+      "release operations",
+      "launchd",
+      "infrastructure configuration"
+    ]
+  },
+  "build-dependencies": {
+    "description": "Build systems, compilers, toolchains, package management or dependency version changes.",
+    "terms": [
+      "build",
+      "compiler",
+      "toolchain",
+      "dependency",
+      "dependencies",
+      "package"
+    ],
+    "inclusions": [
+      "Build systems, compilers, toolchains, package management or dependency version changes."
+    ],
+    "exclusions": [
+      "Build a conceptual diagram."
+    ],
+    "positive_examples": [
+      "Pin dependency versions and fix compiler compatibility."
+    ],
+    "hard_negatives": [
+      "Build a conceptual diagram."
+    ],
+    "aliases": [
+      "build system",
+      "package management",
+      "dependency version",
+      "compiler toolchain"
+    ]
+  },
+  "source-control": {
+    "description": "Version-control workflows, commits, branches, merging or pull-request mechanics. Merely naming a branch or commit is insufficient.",
+    "terms": [
+      "git",
+      "jujutsu",
+      "commit",
+      "branch",
+      "merge",
+      "pull request"
+    ],
+    "inclusions": [
+      "Version-control workflows, commits, branches, merging or pull-request mechanics. Merely naming a branch or commit is insufficient."
+    ],
+    "exclusions": [
+      "A branch name appears in a test result."
+    ],
+    "positive_examples": [
+      "Resolve a merge conflict and restructure stacked pull requests."
+    ],
+    "hard_negatives": [
+      "A branch name appears in a test result."
+    ],
+    "aliases": [
+      "version control",
+      "merge conflict",
+      "pull request",
+      "git rebase",
+      "git branch"
+    ]
+  },
+  "code-structure": {
+    "description": "Software architecture, API contracts, module boundaries, data models, type design or refactoring as a substantive subject.",
+    "terms": [
+      "architecture",
+      "refactor",
+      "refactoring",
+      "api design",
+      "type safety",
+      "data model"
+    ],
+    "inclusions": [
+      "Software architecture, API contracts, module boundaries, data models, type design or refactoring as a substantive subject."
+    ],
+    "exclusions": [
+      "An HTTP call without API design work."
+    ],
+    "positive_examples": [
+      "Refactor module boundaries and define a typed API contract."
+    ],
+    "hard_negatives": [
+      "An HTTP call without API design work."
+    ],
+    "aliases": [
+      "software architecture",
+      "module boundaries",
+      "api design",
+      "type safety",
+      "data model"
+    ]
+  },
+  "ui-interaction": {
+    "description": "User interfaces, interaction design, visual layout, accessibility, forms or navigation.",
+    "terms": [
+      "frontend",
+      "interface",
+      "accessibility",
+      "navigation",
+      "layout",
+      "user experience"
+    ],
+    "inclusions": [
+      "User interfaces, interaction design, visual layout, accessibility, forms or navigation."
+    ],
+    "exclusions": [
+      "Use an interface in a command example."
+    ],
+    "positive_examples": [
+      "Improve form navigation and keyboard accessibility."
+    ],
+    "hard_negatives": [
+      "Use an interface in a command example."
+    ],
+    "aliases": [
+      "user interface",
+      "interaction design",
+      "keyboard accessibility",
+      "user experience",
+      "visual layout"
+    ]
+  },
+  "documentation-learning": {
+    "description": "Authoring, repairing or learning from documentation, guides or tutorials as the main activity. Merely citing documentation is insufficient.",
+    "terms": [
+      "documentation",
+      "tutorial",
+      "guide",
+      "readme",
+      "learning",
+      "docs"
+    ],
+    "inclusions": [
+      "Authoring, repairing or learning from documentation, guides or tutorials as the main activity. Merely citing documentation is insufficient."
+    ],
+    "exclusions": [
+      "Read API documentation while fixing storage."
+    ],
+    "positive_examples": [
+      "Write an operator guide and repair its examples."
+    ],
+    "hard_negatives": [
+      "Read API documentation while fixing storage."
+    ],
+    "aliases": [
+      "documentation authoring",
+      "operator guide",
+      "tutorial writing",
+      "readme documentation"
+    ]
+  },
+  "networking-protocols": {
+    "description": "Network transport, HTTP behavior, DNS, sockets, routing or communication protocols. Merely calling an API is insufficient.",
+    "terms": [
+      "network",
+      "http",
+      "dns",
+      "socket",
+      "protocol",
+      "tcp"
+    ],
+    "inclusions": [
+      "Network transport, HTTP behavior, DNS, sockets, routing or communication protocols. Merely calling an API is insufficient."
+    ],
+    "exclusions": [
+      "Call an HTTP API to classify a document."
+    ],
+    "positive_examples": [
+      "Diagnose DNS resolution and HTTP timeout behavior."
+    ],
+    "hard_negatives": [
+      "Call an HTTP API to classify a document."
+    ],
+    "aliases": [
+      "network protocol",
+      "dns resolution",
+      "http transport",
+      "tcp socket"
+    ]
+  }
+}

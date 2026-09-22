@@ -757,7 +757,7 @@ def _ask_once(question: str) -> tuple[bool, str]:
                     "max_tokens": PROBE_MAX_ANSWER_TOKENS,
                 }
             ).encode(),
-            headers={"Content-Type": "application/json"},
+            headers={"Content-Type": "application/json", "X-Hippo-Query-Origin": "probe"},
             method="POST",
         )
         with urllib.request.urlopen(req, timeout=PROBE_TIMEOUT_S) as resp:

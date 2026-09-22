@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
+from hippo_brain.classification import enqueue_node
 from hippo_brain.enrichment import (
     CURRENT_ENRICHMENT_VERSION,
     SHELL_ENTITY_TYPE_MAP,
@@ -910,6 +911,7 @@ def write_claude_knowledge_node(
         # Upsert entities
         upsert_entities(conn, node_id, result.entities, SHELL_ENTITY_TYPE_MAP, now_ms)
 
+        enqueue_node(conn, node_id)
         conn.commit()
         return node_id
     except Exception:

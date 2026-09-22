@@ -1,8 +1,8 @@
 """Run a synthetic TypeSafe screen, or replay saved results without API access.
 
-python3 docs/research/typesafe-2026-09-18/run.py --live
 python3 docs/research/typesafe-2026-09-18/run.py
-Only --live makes paid requests. Credentials are never serialized.
+Only --live makes paid requests; supply a new external --results path.
+Offline replay never rewrites saved artifacts. Credentials are never serialized.
 """
 
 import argparse
@@ -18,6 +18,11 @@ import urllib.error
 import urllib.request
 
 ROOT = Path(__file__).resolve().parent
+ARCHIVE = (
+    Path(os.environ.get("XDG_DATA_HOME") or Path.home() / ".local/share")
+    / "hippo-bench/decisions/archive"
+    / ROOT.name
+)
 MODEL = "jev-1.13.0"
 ROUTES = {
     "known": "General information or summary about captured developer activity.",
@@ -256,17 +261,27 @@ def main():
     parser.add_argument("--live", action="store_true")
     parser.add_argument("--self-check", action="store_true")
     parser.add_argument("--cases", type=Path, default=ROOT / "cases.json")
-    parser.add_argument("--results", type=Path, default=ROOT / "results.json")
+    parser.add_argument("--results", type=Path, default=ARCHIVE / "results.json")
     args = parser.parse_args()
     cases = json.loads(args.cases.read_text())
     self_check(cases)
     if args.self_check:
         print("Offline harness checks passed")
         return
-    path = args.results
+    path = args.results.expanduser().resolve()
+    summary_path = path.with_name(path.stem + "-summary.json")
     if args.live:
+        if path.is_relative_to(ROOT.parents[2]) or any(
+            (parent / ".git").exists() for parent in path.parents
+        ):
+            parser.error("--results must be outside a git repository")
+        if path.exists() or summary_path.exists():
+            parser.error("--live requires a new --results path; saved artifacts are immutable")
         if not os.environ.get("TYPESAFE_API_KEY"):
             parser.error("TYPESAFE_API_KEY is not available")
+        path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        with path.open("x"):
+            pass
         jobs = [
             (kind, case, reverse)
             for kind in ("ranking", "verification", "routing")
@@ -287,9 +302,11 @@ def main():
                 )
     rows = json.loads(path.read_text())["rows"]
     summary = summarize(rows, cases)
-    path.with_name(path.stem + "-summary.json").write_text(
-        json.dumps(summary, indent=2) + "\n"
-    )
+    if args.live:
+        with summary_path.open("x") as output:
+            output.write(json.dumps(summary, indent=2) + "\n")
+    elif summary_path.exists() and json.loads(summary_path.read_text()) != summary:
+        raise ValueError("Saved summary differs from offline replay")
     print(
         json.dumps(
             {

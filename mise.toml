@@ -313,6 +313,10 @@ run = "cargo test -p hippo-daemon --tests"
 description = "Run Python brain tests with coverage"
 run = "uv run --project brain pytest brain/tests -v --cov=hippo_brain --cov-report=term-missing"
 
+[tasks."test:python:focused"]
+description = "Run selected Python tests (pass pytest paths and options)"
+run = 'uv run --project brain pytest "$@"'
+
 # ── Lint ─────────────────────────────────────────────────────────────
 
 [tasks.lint]
@@ -1381,9 +1385,29 @@ run = "python3 docs/research/typesafe-2026-09-20-conflicts/audit.py ${@}"
 description = "Serve decision experiment metrics on loopback :9836"
 run = "uv run --project brain hippo-decision-bench metrics ${@}"
 
+[tasks."bench:knowledge"]
+description = "Prepare or report real-corpus retrieval experiments outside the checkout"
+run = "uv run --project brain python -m hippo_brain.bench.knowledge_probe ${@}"
+
+[tasks."bench:knowledge:tags"]
+description = "Classify and test topic tags on external database copies"
+run = "uv run --project brain python -m hippo_brain.bench.knowledge_tags ${@}"
+
+[tasks."bench:knowledge:corpus"]
+description = "Prepare, label, validate and score an external retrieval/classification corpus"
+run = "uv run --project brain python -m hippo_brain.bench.knowledge_corpus ${@}"
+
+[tasks."bench:knowledge:replay"]
+description = "Replay runtime ranking recipes on frozen external candidates"
+run = "uv run --project brain hippo-decision-bench replay ${@}"
+
+[tasks.classification]
+description = "Inspect classification, resume bounded backfill, or inspect topic connections"
+run = "uv run --project brain python -m hippo_brain.classification_cli ${@}"
+
 [tasks."test:decisions"]
 description = "Test decision sidecar isolation, contracts, rules and metrics offline"
-run = "uv run --project brain pytest brain/tests/test_decision_sidecar.py brain/tests/test_rerank.py -q"
+run = "uv run --project brain pytest brain/tests/test_decision_sidecar.py brain/tests/test_rerank.py brain/tests/test_knowledge_probe.py brain/tests/test_knowledge_tags.py -q"
 
 [tasks."bench:auto-memory-spike"]
 description = "Regenerate the synthetic Claude auto-memory chunking comparison report"

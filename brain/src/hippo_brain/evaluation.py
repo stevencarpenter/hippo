@@ -20,7 +20,7 @@ import sqlite3
 import statistics
 import sys
 import time
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -81,6 +81,93 @@ def ndcg_at_k(
     if idcg == 0.0:
         return float("nan")
     return dcg / idcg
+
+
+def graded_retrieval_metrics(
+    retrieved: Sequence[str], judgments: Mapping[str, int], *, cutoff: int = 30
+) -> dict[str, float | int | None]:
+    """Score a fully judged pool with exponential gains; retain unknowns as unknown.
+
+    The historical ``ndcg_at_k`` uses linear gains and implicit zero labels.
+    Keep that contract for legacy reports. These versioned metrics require every
+    returned candidate through ``cutoff`` to be judged and use grades 2+ for hits.
+    ``None`` means undefined or incomplete, never a fabricated negative label.
+    """
+    if cutoff <= 0 or len(set(retrieved)) != len(retrieved):
+        raise ValueError("cutoff must be positive and retrieved UUIDs unique")
+    if any(type(grade) is not int or not 0 <= grade <= 3 for grade in judgments.values()):
+        raise ValueError("relevance grades must be integers from zero through three")
+    order = list(retrieved[:cutoff])
+    unknown = [uid for uid in order if uid not in judgments]
+    relevant = {uid for uid, grade in judgments.items() if grade >= 2}
+    result: dict[str, float | int | None] = {
+        "judged_nodes": len(judgments),
+        "relevant_nodes": len(relevant),
+        "unjudged_returned": len(unknown),
+        "ndcg_at_5": None,
+        "mrr": None,
+        "candidate_recall": None,
+    }
+    for k in (1, 5, 10):
+        result[f"hit_at_{k}"] = None
+        result[f"recall_at_{k}"] = None
+    if unknown:
+        return result
+    gains = {uid: float(2**grade - 1) for uid, grade in judgments.items()}
+    ndcg = ndcg_at_k(order, gains, 5)
+    result["ndcg_at_5"] = ndcg if math.isfinite(ndcg) else None
+    if relevant:
+        result["mrr"] = mrr(order, relevant)
+        result["candidate_recall"] = recall_at_k(order, relevant, cutoff)
+        for k in (1, 5, 10):
+            result[f"hit_at_{k}"] = float(bool(relevant.intersection(order[:k])))
+            result[f"recall_at_{k}"] = recall_at_k(order, relevant, k)
+    return result
+
+
+def paired_family_interval(
+    candidate: Mapping[str, float],
+    baseline: Mapping[str, float],
+    families: Mapping[str, str],
+    *,
+    samples: int = 2000,
+    seed: int = 20260922,
+) -> dict[str, float | int | None]:
+    """Query-weighted paired mean and cluster-bootstrap 95% interval.
+
+    Resample entire task families, retaining all their questions. A missing pair,
+    nonfinite value, or absent family is an error, not silently dropped data.
+    One family supports a point estimate but cannot establish generalization.
+    """
+    if samples < 100 or set(candidate) != set(baseline):
+        raise ValueError("paired intervals need identical query IDs and at least 100 samples")
+    grouped: dict[str, list[float]] = {}
+    for qid, value in candidate.items():
+        if not families.get(qid) or not math.isfinite(value) or not math.isfinite(baseline[qid]):
+            raise ValueError("paired values must be finite and have a task family")
+        grouped.setdefault(families[qid], []).append(value - baseline[qid])
+    differences = [v for values in grouped.values() for v in values]
+    result: dict[str, float | int | None] = {
+        "questions": len(differences),
+        "families": len(grouped),
+        "mean": statistics.mean(differences) if differences else None,
+        "lower": None,
+        "upper": None,
+        "bootstrap_samples": samples,
+        "seed": seed,
+    }
+    if len(grouped) < 2:
+        return result
+    clusters = [(sum(values), len(values)) for _, values in sorted(grouped.items())]
+    rng = random.Random(seed)
+    estimates = []
+    for _ in range(samples):
+        draw = rng.choices(clusters, k=len(clusters))
+        estimates.append(sum(total for total, _ in draw) / sum(count for _, count in draw))
+    estimates.sort()
+    result["lower"] = estimates[int((samples - 1) * 0.025)]
+    result["upper"] = estimates[math.ceil((samples - 1) * 0.975)]
+    return result
 
 
 def source_diversity(sources_per_hit: Sequence[Sequence[str]]) -> float:
@@ -381,6 +468,15 @@ class Question:
     relevant_knowledge_node_uuids: list[str] = field(default_factory=list)
     acceptable_answer_keywords: list[str] = field(default_factory=list)
     source_bias: str = "mixed"
+    coverage_gap_reason: str | None = None
+    origin: str = "unspecified"
+    task_family_id: str = ""
+    split: str = ""
+    as_of_ms: int | None = None
+    source_keys: list[str] = field(default_factory=list)
+    source_content_hashes: dict[str, str] = field(default_factory=dict)
+    expected_answerability: str = "unknown"
+    filters: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -417,18 +513,31 @@ class ScoreReport:
 
 
 def load_questions(path: str | Path) -> list[Question]:
-    data = json.loads(Path(path).read_text())
-    raw = data.get("questions", data) if isinstance(data, dict) else data
+    text = Path(path).read_text()
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError:
+        data = [json.loads(line) for line in text.splitlines() if line.strip()]
+    raw = data.get("questions", [data]) if isinstance(data, dict) else data
     questions: list[Question] = []
     for q in raw:
         questions.append(
             Question(
-                id=str(q.get("id", "")),
+                id=str(q.get("id", q.get("qa_id", ""))),
                 question=str(q.get("question", "")),
                 intent=str(q.get("intent", "")),
                 relevant_knowledge_node_uuids=list(q.get("relevant_knowledge_node_uuids", [])),
                 acceptable_answer_keywords=list(q.get("acceptable_answer_keywords", [])),
                 source_bias=str(q.get("source_bias", "mixed")),
+                coverage_gap_reason=q.get("coverage_gap_reason"),
+                origin=str(q.get("origin", "unspecified")),
+                task_family_id=str(q.get("task_family_id", "")),
+                split=str(q.get("split", "")),
+                as_of_ms=q.get("as_of_ms"),
+                source_keys=list(q.get("source_keys", [])),
+                source_content_hashes=dict(q.get("source_content_hashes", {})),
+                expected_answerability=str(q.get("expected_answerability", "unknown")),
+                filters=dict(q.get("filters", {})),
             )
         )
     return questions
@@ -466,8 +575,13 @@ async def score_question(
             query_vec = None
 
     try:
+        if q.as_of_ms is not None:
+            raise ValueError(
+                "as-of questions require frozen knowledge-corpus replay, not live hippo-eval"
+            )
+        filters = Filters(**q.filters)
         hits = retrieval_search(
-            conn, q.question, query_vec, filters=Filters(), mode=mode, limit=limit
+            conn, q.question, query_vec, filters=filters, mode=mode, limit=limit
         )
     except Exception as e:
         elapsed = (time.monotonic() - t0) * 1000
@@ -511,9 +625,10 @@ async def score_question(
                 embedding_model,
                 limit=limit,
                 skip_preflight=True,
-                filters=Filters(),
+                filters=filters,
                 mode=mode,
                 conn=conn,
+                capture_origin="benchmark",
             )
             answer = res.get("answer")
             degraded = bool(res.get("degraded"))
@@ -642,6 +757,17 @@ def render_markdown(report: ScoreReport) -> str:
         lines.append("## Corpus")
         for k, v in report.corpus.items():
             lines.append(f"- **{k}**: {v}")
+    gap_counts: dict[str, int] = {}
+    for result in report.results:
+        if result.q.coverage_gap_reason:
+            reason = result.q.coverage_gap_reason
+            gap_counts[reason] = gap_counts.get(reason, 0) + 1
+    if gap_counts:
+        lines.append("")
+        lines.append(
+            "Recorded source coverage gaps: "
+            + ", ".join(f"{reason}={count}" for reason, count in sorted(gap_counts.items()))
+        )
     lines.append("")
     lines.append("## Summary")
     lines.append("")

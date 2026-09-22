@@ -3,6 +3,7 @@ import re
 import time
 import uuid
 
+from hippo_brain.classification import enqueue_node, source_entity_canonical
 from hippo_brain.entity_resolver import canonicalize, is_path_type, strip_worktree_prefix
 from hippo_brain.models import EnrichmentResult, validate_enrichment_data
 from hippo_brain.watchdog import DEFAULT_LOCK_TIMEOUT_MS
@@ -149,7 +150,7 @@ def upsert_entities(conn, node_id: int, entities_dict, entity_type_map: dict, no
             # On conflict, repair an existing polluted name with the new clean
             # one; otherwise leave it alone (avoid churn for stable rows).
             display_name = strip_worktree_prefix(name) if is_path_type(entity_type) else name
-            canonical = canonicalize(entity_type, name)
+            canonical = source_entity_canonical(entity_type, canonicalize(entity_type, name))
             cursor = conn.execute(
                 """
                 INSERT INTO entities (type, name, canonical, first_seen, last_seen, created_at)
@@ -522,6 +523,7 @@ def write_knowledge_node(
             [(now_ms, eid) for eid in event_ids],
         )
 
+        enqueue_node(conn, node_id)
         conn.commit()
         return node_id
     except Exception:

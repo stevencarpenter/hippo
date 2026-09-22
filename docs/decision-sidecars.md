@@ -1,5 +1,9 @@
 # Isolated decision sidecars
 
+The opt-in runtime, expanded corpus workflow, and classification commands are
+documented in [Jev decisions](jev-decisions.md). This page describes the original
+isolated sidecar runner and its historical comparison contract.
+
 Run the offline rules benchmark:
 
 ```sh
@@ -9,7 +13,10 @@ mise run bench:decisions
 The runner prints its artifact directory under
 `$XDG_DATA_HOME/hippo-bench/decisions/` (default
 `~/.local/share/hippo-bench/decisions/`). Each arm runs in a separate process.
-No worker opens `hippo.db`, claims enrichment work, changes models, pauses the
+Generated runs, source snapshots and recorded results must remain outside Git.
+Archived experiments live under `decisions/archive/`; only authored corpora,
+reusable scripts and concise documentation belong in the repository.
+No decision worker opens `hippo.db`, claims enrichment work, changes models, pauses the
 brain, or publishes a result into Hippo. Production inference selection stays
 unchanged. No new dependencies are required.
 
@@ -50,7 +57,7 @@ server provides compute isolation. Arm execution is sequential by default;
 Use sequential runs when comparing latency without inter-arm contention.
 
 Jev arms send the selected corpus text to TypeSafe. Capture alone is local;
-only an explicit run containing `jev` or `rules_jev` makes those requests.
+decision runs containing `jev` or `rules_jev` make those requests.
 The default run is rules-only and makes no inference requests.
 
 All inference requests are single attempts with a configurable `--timeout`
@@ -217,8 +224,79 @@ as zero accuracy. Repeats are not independent labeled examples.
 
 New runs also save the relevant Python source files under `source/`, alongside
 their manifest hashes. The [conflict research record](research/typesafe-2026-09-20-conflicts/README.md)
-contains the fixed corpus, reviewed policy, recorded requests/responses and
-offline analysis for the September 20 comparison.
+contains the fixed corpus, policy and replay instructions. Recorded requests,
+responses, measured protocols, source snapshots and analyses reside under
+`$XDG_DATA_HOME/hippo-bench/decisions/archive/`
+(default `~/.local/share/hippo-bench/decisions/archive/`), in
+`typesafe-2026-09-20-conflicts/`. The initial paired
+sidecar run and earlier failed run are copied under
+`archive/typesafe-2026-09-20-sidecars/`, with their original run IDs.
+`archive/relocation-2026-09-22.json` records the verified source and archive
+SHA256 hashes. Offline replay reads archived results without rewriting them.
+
+Real-corpus experiments use `bench:knowledge` to snapshot the source database
+through a read-only connection, freeze source-linked questions and candidate
+pools, and obtain query embeddings from the configured local server:
+
+```sh
+mise run bench:knowledge -- prepare --qa /absolute/path/qa.jsonl --count 50
+probe=/absolute/external/knowledge-TIMESTAMP  # Use the printed directory.
+mise run bench:decisions -- --cases "$probe/cases.json" \
+  --arms llm,jev,rules,rules_jev,rules_llm --repeats 1 \
+  --llm-url http://127.0.0.1:42069/v1 --llm-model YOUR_CURRENT_QUERY_MODEL \
+  --jev-model jev-1.13.0
+rerank_run=/absolute/external/RUN_ID  # Use the decision runner's directory.
+mise run bench:knowledge -- report "$probe" "$rerank_run" > "$probe/rerank-report.json"
+```
+
+`prepare` defaults to `~/.local/share/hippo/hippo.db` and
+`~/.config/hippo/config.toml`; `--source` and `--config` override them. Use the
+model and endpoint frozen in `protocol.json` for the decision run. `report`
+validates frozen inputs and recorded responses before comparing hit@1/5/10,
+mean reciprocal rank and latency. The metric is known-source recovery: other
+candidates are unjudged, not relevance negatives. It does not measure exhaustive
+relevance, answer correctness or live-query prevalence.
+
+Prepare topic classification from those frozen pools:
+
+```sh
+mise run bench:knowledge:tags -- prepare "$probe"
+```
+
+Before inference, independently annotate all 50 entries in
+`classification-label-inputs.json` using the frozen `knowledge_topics.json`.
+Write `classification-reference.json` with methodology, input/taxonomy SHA256
+hashes and `labels` rows containing UUID `id`, numeric `node_id`, unique `topics`,
+reasons and uncertainty notes. Allow empty topic lists and exclude incidental
+mentions. Do not inspect model outputs while labeling. Agent-reviewed references
+must be identified as such; they are not human ground truth.
+
+After the reranking report and reference labels exist, execute classification
+and apply its results only to new database clones:
+
+```sh
+mise run bench:knowledge:tags -- classify "$probe" --concurrency 4
+tags_run="$probe/tags-TIMESTAMP"  # Use the printed classification directory.
+mise run bench:knowledge:tags -- apply "$probe" "$tags_run"
+mise run bench:knowledge:tags -- evaluate "$probe" "$tags_run"
+```
+
+Classification compares existing tags mapped through fixed keyword rules,
+declarative word/phrase rules over summary/detail, and 14 Jev Noul judgments
+per node using `jev-1.13.0`. The primary threshold is 0.8; 0.5 is diagnostic.
+`classify` sends redacted summary/detail text to TypeSafe with one attempt per
+node. `evaluate` reports reference-label precision/recall, errors, timing and
+retrieval recovery for each clone. Connection metrics distinguish pairs sharing
+any reference topic from links supported by the same specific reference topic.
+
+The `rules_tags` and `jev_tags` clones add tags to node tags/content and FTS;
+`jev_tags_vectors` also re-embeds topic-enriched semantic text using the local
+embedding server. All three add namespaced topic entity links. These links mean
+only shared topics, not duplicate identity or evidential support. The source
+database, baseline snapshot, source links and command vectors remain unchanged.
+Only the candidate-pool cohort is modified. All snapshots, labels, requests,
+responses, clones and reports remain under the external decision directory.
+Production capture, enrichment, retrieval and model selection remain unchanged.
 
 Contracts and question design follow TypeSafe's
 [HTTP API](https://docs.typesafe.ai/api.md),

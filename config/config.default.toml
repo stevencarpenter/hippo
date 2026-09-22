@@ -54,6 +54,15 @@ lock_timeout_secs = 600
 # entity_expansion = true         # OR known entity aliases of query tokens into the FTS arm
 # rerank = false                  # LLM listwise rerank of top candidates in `ask` (adds latency)
 # rerank_pool = 30                # Candidates fetched for the rerank stage when rerank = true
+# rerank_backend = "local"        # local, jev, or rules; Jev uses TYPESAFE_API_KEY
+# rerank_recipe = "multi-v1"      # Versioned recipe; single-v1 preserves the original experiment
+# rerank_adaptive = false         # Fetch additional evidence only within the decision budget
+# decision_deadline_ms = 2000     # Total Jev decision budget, including client queue wait
+# topic_retrieval = false         # Add bounded candidates through current controlled topics
+
+[classification]
+enabled = false                  # Background controlled-topic classification; preserves content/vectors
+# recipe_path = "/absolute/path/calibrated-topics.json" # Versioned thresholds and publication allowlist
 
 [browser]
 enabled = true
