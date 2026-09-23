@@ -4,6 +4,10 @@ Grafana (3030) · Prometheus (9090) · Loki · Tempo, plus the knowledge-health
 exporter (host, :9835) that bridges SQLite-derived metrics and the /ask
 recall probe into Prometheus.
 
+Set `HIPPO_OTEL_GRAFANA_ADMIN_PASSWORD` before `mise run otel:up`. The
+Compose stack accepts connections only on `127.0.0.1` and requires Grafana
+authentication. Keep the variable available for subsequent Compose commands.
+
 Dashboard inventory, the full alert-rule tables, enabling telemetry, and
 on-call pointers: [`docs/observability.md`](../docs/observability.md).
 

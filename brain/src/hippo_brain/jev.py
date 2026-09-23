@@ -16,7 +16,7 @@ from typing import Any, NotRequired, TypedDict
 
 import httpx
 
-from hippo_brain.redaction import redact
+from hippo_brain.redaction import REPLACEMENT, is_secret_key, redact
 
 MODEL = "1.13.0"
 ENDPOINT = "https://api.typesafe.ai/v1/systemone"
@@ -51,8 +51,11 @@ def redact_state(value: Any) -> Any:
     if isinstance(value, str):
         return redact(value)
     if isinstance(value, dict):
-        return {key: redact_state(item) for key, item in value.items()}
-    if isinstance(value, list):
+        return {
+            key: REPLACEMENT if is_secret_key(key) else redact_state(item)
+            for key, item in value.items()
+        }
+    if isinstance(value, (list, tuple)):
         return [redact_state(item) for item in value]
     return value
 

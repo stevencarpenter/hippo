@@ -62,7 +62,7 @@ browser.storage.local
 
     const stored = result.allowlist;
     const domains =
-      Array.isArray(stored) && stored.length > 0
+      Array.isArray(stored)
         ? (stored as string[])
         : DEFAULT_ALLOWLIST;
     allowlistTextarea.value = domains.join("\n");

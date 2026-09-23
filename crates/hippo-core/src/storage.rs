@@ -2118,12 +2118,24 @@ pub fn get_status(conn: &Connection) -> Result<crate::protocol::StatusInfo> {
     })
 }
 
+// A separate stable inode coordinates opens and renames across processes.
+fn lock_fallback(fallback_dir: &Path, name: &str) -> Result<std::fs::File> {
+    std::fs::create_dir_all(fallback_dir)?;
+    let lock = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(fallback_dir.join(name))?;
+    lock.lock()?;
+    Ok(lock)
+}
+
 pub fn write_fallback_jsonl(
     fallback_dir: &Path,
     envelope: &crate::events::EventEnvelope,
 ) -> Result<()> {
     use std::io::Write;
-    std::fs::create_dir_all(fallback_dir)?;
+    let _append_lock = lock_fallback(fallback_dir, ".append.lock")?;
     let date = Utc::now().format("%Y-%m-%d");
     let path = fallback_dir.join(format!("{}.jsonl", date));
     let mut file = std::fs::OpenOptions::new()
@@ -2144,7 +2156,12 @@ pub fn list_fallback_files(fallback_dir: &Path) -> Result<Vec<std::path::PathBuf
     let mut files: Vec<std::path::PathBuf> = std::fs::read_dir(fallback_dir)?
         .filter_map(|e| e.ok())
         .map(|e| e.path())
-        .filter(|p| p.extension().and_then(|e| e.to_str()) == Some("jsonl"))
+        .filter(|p| {
+            matches!(
+                p.extension().and_then(|e| e.to_str()),
+                Some("jsonl" | "recovering")
+            )
+        })
         .collect();
     files.sort();
     Ok(files)
@@ -2155,7 +2172,26 @@ pub fn recover_fallback_files(
     fallback_dir: &Path,
     session_map: &mut HashMap<String, i64>,
 ) -> Result<(usize, usize)> {
-    let files = list_fallback_files(fallback_dir)?;
+    if !fallback_dir.exists() {
+        return Ok((0, 0));
+    }
+    // Serialize recoverers, but never hold the append lock while waiting on SQLite.
+    let _recovery_lock = lock_fallback(fallback_dir, ".recovery.lock")?;
+    let files = {
+        let _append_lock = lock_fallback(fallback_dir, ".append.lock")?;
+        let mut claimed = Vec::new();
+        for path in list_fallback_files(fallback_dir)? {
+            if path.extension().is_some_and(|ext| ext == "recovering") {
+                claimed.push(path); // resume a recovery interrupted before archival
+            } else {
+                let target =
+                    path.with_extension(format!("{}.jsonl.recovering", uuid::Uuid::new_v4()));
+                std::fs::rename(&path, &target)?;
+                claimed.push(target);
+            }
+        }
+        claimed
+    };
     let mut recovered = 0usize;
     let mut errors = 0usize;
 
@@ -2221,11 +2257,11 @@ pub fn recover_fallback_files(
 
         if file_errors == 0 {
             // All lines succeeded — mark as done
-            let done_path = file_path.with_extension("jsonl.done");
+            let done_path = file_path.with_extension("done");
             std::fs::rename(file_path, done_path)?;
         } else {
             // Some lines failed — preserve for operator inspection
-            let partial_path = file_path.with_extension("jsonl.partial");
+            let partial_path = file_path.with_extension("partial");
             std::fs::rename(file_path, partial_path)?;
         }
     }
@@ -2622,6 +2658,70 @@ mod tests {
     }
 
     #[test]
+    fn fallback_append_during_recovery_remains_pending() {
+        use crate::events::EventEnvelope;
+        use std::time::{Duration, Instant};
+
+        let dir = tempfile::tempdir().unwrap();
+        let fallback_dir = dir.path().join("fallback");
+        let db_path = dir.path().join("hippo.db");
+        let recovery_conn = open_db(&db_path).unwrap();
+        let blocker = open_db(&db_path).unwrap();
+        write_fallback_jsonl(&fallback_dir, &EventEnvelope::shell(sample_shell_event())).unwrap();
+        blocker.execute_batch("BEGIN IMMEDIATE").unwrap();
+        let recovery_dir = fallback_dir.clone();
+        let recovery = std::thread::spawn(move || {
+            recover_fallback_files(&recovery_conn, &recovery_dir, &mut HashMap::new()).unwrap()
+        });
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while !list_fallback_files(&fallback_dir)
+            .unwrap()
+            .iter()
+            .any(|p| p.extension().is_some_and(|ext| ext == "recovering"))
+        {
+            assert!(
+                Instant::now() < deadline,
+                "recovery never claimed the input"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        // Recovery has claimed its immutable input and is blocked on SQLite.
+        // This append must return without waiting for that SQLite transaction.
+        let mut second = sample_shell_event();
+        second.command = "second event".into();
+        write_fallback_jsonl(&fallback_dir, &EventEnvelope::shell(second)).unwrap();
+        blocker.execute_batch("ROLLBACK").unwrap();
+        assert_eq!(recovery.join().unwrap(), (1, 0));
+        assert_eq!(list_fallback_files(&fallback_dir).unwrap().len(), 1);
+        assert_eq!(
+            recover_fallback_files(&blocker, &fallback_dir, &mut HashMap::new()).unwrap(),
+            (1, 0)
+        );
+        let count: i64 = blocker
+            .query_row("SELECT COUNT(*) FROM events", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 2);
+    }
+
+    #[test]
+    fn fallback_recovery_resumes_a_claimed_file_after_restart() {
+        let dir = tempfile::tempdir().unwrap();
+        write_fallback_jsonl(
+            dir.path(),
+            &crate::events::EventEnvelope::shell(sample_shell_event()),
+        )
+        .unwrap();
+        let path = list_fallback_files(dir.path()).unwrap().remove(0);
+        std::fs::rename(&path, path.with_extension("jsonl.recovering")).unwrap();
+        let conn = open_memory().unwrap();
+        assert_eq!(
+            recover_fallback_files(&conn, dir.path(), &mut HashMap::new()).unwrap(),
+            (1, 0)
+        );
+        assert!(list_fallback_files(dir.path()).unwrap().is_empty());
+    }
+
+    #[test]
     fn test_recover_fallback_preserves_envelope_timestamp() {
         let dir = tempfile::tempdir().unwrap();
         let fallback_dir = dir.path().join("fallback");
@@ -2988,9 +3088,14 @@ mod tests {
         assert!(!file_path.exists(), ".jsonl file should have been renamed");
 
         // .partial file exists (not .done) because of the failed line
-        let partial_path = file_path.with_extension("jsonl.partial");
+        let partial_exists = std::fs::read_dir(&fallback_dir).unwrap().any(|e| {
+            e.unwrap()
+                .path()
+                .extension()
+                .is_some_and(|ext| ext == "partial")
+        });
         assert!(
-            partial_path.exists(),
+            partial_exists,
             "file should be renamed to .partial when some lines fail"
         );
 

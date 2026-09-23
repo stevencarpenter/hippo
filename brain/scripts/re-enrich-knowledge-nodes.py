@@ -1,11 +1,9 @@
 #!/usr/bin/env python3
-"""One-shot re-enrichment of existing knowledge nodes.
+"""Re-enrich existing knowledge nodes in place.
 
-Re-runs enrichment for knowledge nodes that pre-date the current prompt /
-model setup, using the same code paths the live brain uses, and updates
-each node in place. Preserves ``id`` / ``uuid`` / ``created_at`` / link
-rows; only the derived content (summary, embed_text, entities, tags,
-design_decisions, etc.) is replaced.
+Updates derived content and embeddings while preserving node identity and
+source links. By default, selects nodes below the current enrichment version;
+``--force`` also selects nodes already at that version.
 
 Why this exists
 ---------------
@@ -20,8 +18,8 @@ Sources handled
 ---------------
 - **shell** — link table ``knowledge_node_events``, prompt via
   ``build_enrichment_prompt`` against rows from ``events``.
-- **claude** — link table ``knowledge_node_claude_sessions``, prompt is
-  the concatenation of ``claude_sessions.summary_text`` rows joined by
+- **claude** — ``knowledge_node_agentic_sessions`` links to Claude Code
+  ``agentic_sessions``; prompt concatenates their ``summary_text`` rows with
   ``\\n---\\n``, mirroring ``Server._enrich_claude_batches``.
 
 Sources NOT handled by this version
@@ -38,7 +36,7 @@ by future runs of this script. Add explicit handling later if needed.
 Usage
 -----
     uv run --project brain python brain/scripts/re-enrich-knowledge-nodes.py \\
-        [--db PATH] [--source shell|claude|all] [--limit N] [--dry-run] \\
+        [--db PATH] [--source shell|claude|all] [--force] [--limit N] [--dry-run] \\
         [--throttle-ms MS] [--newest-first]
 
 Resume semantics
@@ -47,7 +45,8 @@ The script bumps each successfully-processed node's
 ``enrichment_version`` to ``TARGET_ENRICHMENT_VERSION``. The default
 WHERE clause filters ``enrichment_version < TARGET_VERSION``, so a
 re-run picks up where a prior run left off. Failed nodes stay at the
-old version and will be retried on the next run. Each bump of the
+old version and will be retried on the next run. With ``--force``, failed
+nodes stay eligible for the next forced run. Each bump of the
 target invalidates the entire corpus — it ratchets up when an
 enrichment-prompt or entity-taxonomy change makes older outputs
 structurally stale (most recent: v3 added the ``env_vars`` bucket).
@@ -109,7 +108,11 @@ def _load_settings() -> dict:
 
 
 def _select_candidate_nodes(
-    conn: sqlite3.Connection, source: str, limit: int | None, newest_first: bool
+    conn: sqlite3.Connection,
+    source: str,
+    limit: int | None,
+    newest_first: bool,
+    force: bool = False,
 ) -> list[dict]:
     """Return knowledge_nodes rows that need re-enrichment, joined with source.
 
@@ -118,6 +121,7 @@ def _select_candidate_nodes(
     """
     order_clause = "DESC" if newest_first else "ASC"
     limit_clause = f"LIMIT {int(limit)}" if limit and limit > 0 else ""
+    version_filter = "1 = 1" if force else f"n.enrichment_version < {TARGET_ENRICHMENT_VERSION}"
 
     queries = []
     if source in ("shell", "all"):
@@ -126,7 +130,7 @@ def _select_candidate_nodes(
             SELECT n.id, n.uuid, n.created_at, 'shell' AS _source
             FROM knowledge_nodes n
             JOIN knowledge_node_events kne ON kne.knowledge_node_id = n.id
-            WHERE n.enrichment_version < {TARGET_ENRICHMENT_VERSION}
+            WHERE {version_filter}
             GROUP BY n.id
             """
         )
@@ -136,7 +140,8 @@ def _select_candidate_nodes(
             SELECT n.id, n.uuid, n.created_at, 'claude' AS _source
             FROM knowledge_nodes n
             JOIN knowledge_node_agentic_sessions knas ON knas.knowledge_node_id = n.id
-            WHERE n.enrichment_version < {TARGET_ENRICHMENT_VERSION}
+            JOIN agentic_sessions a ON a.id = knas.agentic_session_id
+            WHERE a.harness = 'claude-code' AND {version_filter}
             GROUP BY n.id
             """
         )
@@ -173,7 +178,7 @@ def _fetch_claude_segments(conn: sqlite3.Connection, node_id: int) -> list[dict]
                a.start_time, a.end_time, a.content_hash
         FROM agentic_sessions a
         JOIN knowledge_node_agentic_sessions knas ON knas.agentic_session_id = a.id
-        WHERE knas.knowledge_node_id = ?
+        WHERE knas.knowledge_node_id = ? AND a.harness = 'claude-code'
         ORDER BY a.start_time ASC
         """,
         (node_id,),
@@ -315,18 +320,13 @@ async def _re_embed(
     if not embed_model:
         log.debug("no embed_model configured; skipping re-embed for node %d", node_id)
         return
-    # vec0 virtual tables don't honor INSERT OR REPLACE the way classical
-    # tables do — re-inserting against an existing knowledge_node_id raises
-    # `UNIQUE constraint failed on knowledge_vectors primary key`. The live
-    # brain never hits this because each enrichment creates a fresh node id.
-    # In re-enrichment we update in place, so we must DELETE first.
-    conn.execute("DELETE FROM knowledge_vectors WHERE knowledge_node_id = ?", (node_id,))
     await embed_knowledge_node(
         client,
         conn,
         {"id": node_id, "embed_text": embed_text, "commands_raw": ""},
         embed_model=embed_model,
         allow_embed_switch=False,
+        replace_existing=True,
     )
 
 
@@ -421,7 +421,9 @@ async def main_async(args: argparse.Namespace) -> int:
     # to None disables the auto-transaction.
     conn.isolation_level = None
 
-    candidates = _select_candidate_nodes(conn, args.source, args.limit, args.newest_first)
+    candidates = _select_candidate_nodes(
+        conn, args.source, args.limit, args.newest_first, args.force
+    )
     log.info(
         "Selected %d candidate node(s) for re-enrichment "
         "(source=%s limit=%s newest_first=%s target_version=%d)",
@@ -465,6 +467,9 @@ async def main_async(args: argparse.Namespace) -> int:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--db", type=str, default=None, help="path to hippo.db")
+    parser.add_argument(
+        "--force", action="store_true", help="re-enrich matching nodes at the current version too"
+    )
     parser.add_argument(
         "--source",
         choices=("shell", "claude", "all"),

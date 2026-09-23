@@ -7,6 +7,7 @@ Telemetry is **off by default**. Nothing is emitted until you build with OTel su
 ## Quick start
 
 ```bash
+export HIPPO_OTEL_GRAFANA_ADMIN_PASSWORD='<private password>'
 mise run otel:up          # Grafana + Prometheus + collector on localhost
 mise run build:otel       # daemon with OTel feature
 hippo config edit         # [telemetry] enabled = true
@@ -15,7 +16,13 @@ mise run restart
 open http://localhost:3030
 ```
 
-Default Grafana login: `admin` / `hippo` (anonymous Admin is also enabled for local use).
+Grafana requires the configured password for the `admin` account. The stack
+publishes its ports on `127.0.0.1`, and anonymous access is disabled. Grafana
+uses `GF_SECURITY_ADMIN_PASSWORD` only when the database is first created. If
+you already ran the stack with the former `admin` / `hippo` credentials, change
+the existing account password in Grafana's user preferences. [Grafana's
+configuration reference](https://grafana.com/docs/grafana/latest/setup-grafana/configure-grafana/)
+documents the first-run behavior.
 
 ## Architecture
 

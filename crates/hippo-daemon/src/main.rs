@@ -54,13 +54,9 @@ async fn wait_for_path(path: &std::path::Path, wait_secs: u64) {
 #[tokio::main]
 async fn main() -> Result<()> {
     // Load config early — needed for telemetry init before CLI parsing
-    let config = match HippoConfig::load_default() {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("Warning: failed to load config: {e:#}. Using defaults.");
-            HippoConfig::default()
-        }
-    };
+    // Missing configuration already uses defaults in load_default. Invalid or
+    // unreadable configuration must not silently re-enable disabled capture.
+    let config = HippoConfig::load_default()?;
 
     // Set up rolling file appender for runtime logs (7-day retention).
     // The launchd StandardErrorPath still captures pre-main panics and OS-level

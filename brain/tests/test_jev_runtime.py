@@ -508,6 +508,33 @@ async def test_http_redaction_noul_validation_and_no_hidden_retries():
             parse_nouls(data, questions)
 
 
+async def test_json_and_nested_credential_values_never_reach_jev_transport():
+    requests = []
+    state = {
+        "text": '{"password": "supersecret123", "api_key": "abcdefgh123456789"}',
+        "nested": [{"password": "short", "public": "keep"}],
+        "tuple": ({"AUTH_TOKEN": "two word secret"},),
+        "private_key": "-----BEGIN PRIVATE KEY-----\nZmFrZXNlY3JldA==\n-----END PRIVATE KEY-----",
+    }
+
+    def handler(request):
+        requests.append(json.loads(request.content))
+        return httpx.Response(
+            200, json={"model": "jev-1.13.0", "answers": {"q": {"type": "noul", "noul": 0.9}}}
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        client = JevClient("test-key", client=http)
+        await client.assess(state, {"q": {"type": "noul", "instructions": "Is this relevant?"}})
+    assert requests[0]["state"] == {
+        "text": "{[REDACTED], [REDACTED]}",
+        "nested": [{"password": "[REDACTED]", "public": "keep"}],
+        "tuple": [{"AUTH_TOKEN": "[REDACTED]"}],
+        "private_key": "[REDACTED]",
+    }
+    assert state["nested"][0]["password"] == "short"
+
+
 @pytest.mark.parametrize(
     "opening",
     [

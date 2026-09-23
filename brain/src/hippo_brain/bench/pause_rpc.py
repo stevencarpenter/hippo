@@ -12,6 +12,7 @@ import datetime as _dt
 import json
 import logging
 import os
+import time
 from pathlib import Path
 
 import httpx
@@ -54,11 +55,8 @@ def _write_lockfile_atomic(brain_url: str) -> None:
 def recover_stale_pause(default_brain_url: str) -> bool:
     """If a pause lockfile exists, read its brain_url and POST resume.
 
-    Returns True if a stale lockfile was found and recovery attempted,
-    False if no lockfile present. Best-effort on the HTTP call — even a
-    failed POST removes the lockfile to avoid permanent paste-staleness
-    when the brain itself has rotated. The caller's next /health probe
-    will surface any genuinely-still-paused state.
+    Returns True after confirmed recovery, False if no marker is present.
+    Failed recovery raises and retains the marker for another attempt.
     """
     if not PAUSE_LOCKFILE.exists():
         return False
@@ -75,15 +73,8 @@ def recover_stale_pause(default_brain_url: str) -> bool:
         logger.warning("BT-06: lockfile read failed (%s) — using default brain_url", e)
         brain_url = default_brain_url
 
-    try:
-        httpx.post(f"{brain_url.rstrip('/')}/control/resume", timeout=10.0)
-    except Exception as e:
-        logger.warning("BT-06: recovery resume POST failed: %s — removing lockfile anyway", e)
-
-    try:
-        PAUSE_LOCKFILE.unlink(missing_ok=True)
-    except Exception as e:
-        logger.warning("BT-06: lockfile unlink failed: %s", e)
+    if PauseRpcClient(brain_url).resume() is None:
+        raise RuntimeError("production resume failed; recovery marker retained")
     return True
 
 
@@ -104,63 +95,53 @@ class PauseRpcClient:
         except Exception:
             return None
 
-    def pause(self) -> dict | None:
-        """POST /control/pause. Returns response JSON or None on skip.
+    def pause(self, timeout_sec: float = 300.0) -> dict | None:
+        """Pause and wait boundedly until all in-flight inference has finished.
 
-        Writes the pause lockfile BEFORE the HTTP call. If the bench is
-        SIGKILL'd between this point and resume(), the next bench start
-        finds the lockfile and recovers (BT-06).
-
-        Post-review CC-1 + M2: the lockfile is the watchdog's ground truth
-        of "bench has paused prod brain RIGHT NOW", so any failure that
-        leaves a partial or stale lockfile would mute I-2/I-4/I-8 alarms
-        for up to the 30-min C-1 staleness window even though prod was
-        never paused. Both `_write_lockfile_atomic` (rare: disk full,
-        permission errors mid-write — could orphan `.lock.tmp`) and the
-        HTTP call (common: brain unreachable, 5xx) get rolled back here.
+        Retain the marker after dispatch failures: the server may have accepted
+        the pause even if its response was lost. Only confirmed resume clears it.
         """
         if self.skip:
             return None
+        if timeout_sec <= 0:
+            raise ValueError("pause timeout must be positive")
         try:
             _write_lockfile_atomic(self.base_url)
-            r = httpx.post(f"{self.base_url}/control/pause", timeout=10.0)
-            r.raise_for_status()
         except Exception:
-            # Roll back any partial state. Both PAUSE_LOCKFILE (the renamed
-            # final file) and .lock.tmp (the pre-rename target) need cleanup
-            # depending on which step raised; missing_ok=True handles the
-            # case where one or both never got created.
             for orphan in (PAUSE_LOCKFILE, PAUSE_LOCKFILE.with_suffix(".lock.tmp")):
-                try:
-                    orphan.unlink(missing_ok=True)
-                except Exception as unlink_err:
-                    logger.warning(
-                        "BT-06/CC-1/M2: pause failed AND %s unlink failed: %s. "
-                        "Watchdog may suppress I-2/I-4/I-8 until the next bench's "
-                        "recover_stale_pause runs (or the C-1 30-min mtime gate elapses).",
-                        orphan,
-                        unlink_err,
-                    )
+                orphan.unlink(missing_ok=True)
             raise
-        return r.json()
+        deadline = time.monotonic() + timeout_sec
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError("production inference did not quiesce before pause deadline")
+            response = httpx.post(f"{self.base_url}/control/pause", timeout=min(10.0, remaining))
+            response.raise_for_status()
+            result = response.json()
+            if not isinstance(result, dict) or type(result.get("in_flight_finished")) is not bool:
+                raise ValueError("invalid production pause acknowledgement")
+            if result["in_flight_finished"]:
+                return result
+            time.sleep(min(0.25, max(0.0, deadline - time.monotonic())))
 
     def resume(self) -> dict | None:
-        """POST /control/resume. Best-effort — swallows errors (called in atexit).
-
-        Removes the pause lockfile only after the HTTP call returns
-        (success OR failure — a failed resume probably means the brain is
-        already gone, in which case there's nothing to keep paused).
-        """
+        """Return confirmed resume or None; retain the recovery marker on failure."""
         if self.skip:
             return None
-        result: dict | None = None
         try:
-            r = httpx.post(f"{self.base_url}/control/resume", timeout=10.0)
-            result = r.json()
-        except Exception:
-            result = None
+            response = httpx.post(f"{self.base_url}/control/resume", timeout=10.0)
+            response.raise_for_status()
+            result = response.json()
+            if not isinstance(result, dict) or not isinstance(result.get("resumed_at"), str):
+                raise ValueError("invalid production resume acknowledgement")
+        except Exception as exc:
+            logger.warning(
+                "production resume failed (%s); recovery marker retained", type(exc).__name__
+            )
+            return None
         try:
             PAUSE_LOCKFILE.unlink(missing_ok=True)
-        except Exception as e:
-            logger.warning("BT-06: lockfile unlink during resume failed: %s", e)
+        except OSError as exc:
+            logger.warning("pause marker cleanup failed: %s", exc)
         return result

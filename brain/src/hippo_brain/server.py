@@ -259,6 +259,8 @@ def _query_priority(handler):
     async def wrapped(self, request):
         from hippo_brain.classification import query_activity
 
+        if self._paused:
+            return JSONResponse({"error": "brain is paused"}, status_code=503)
         self._query_inflight += 1
         self._query_arrived.set()
         try:
@@ -352,6 +354,7 @@ class BrainServer:
         # (preflight + claim + gather). Used by /control/pause so callers like
         # hippo-bench can confirm prod is quiescent before claiming the LM slot.
         self._enrichment_active: bool = False
+        self._embed_reaper_active: bool = False
         # Set whenever a query is in flight; the enrichment loop sleeps on this
         # event so it wakes immediately rather than waiting out the full poll
         # interval before yielding to the LM.
@@ -1146,9 +1149,9 @@ class BrainServer:
     async def control_pause(self, request: Request) -> JSONResponse:
         """Pause the enrichment loop. Idempotent.
 
-        in_flight_finished reflects both /ask queries and the enrichment
-        loop body — bench callers need both quiescent before they own the
-        inference server slot.
+        New queries and background inference stop while paused. Existing
+        queries, enrichment, classification, and reaper embeddings must drain
+        before bench callers can own the inference server slot.
         """
         if not self._paused:
             self._paused = True
@@ -1157,6 +1160,7 @@ class BrainServer:
             self._query_inflight == 0
             and not self._enrichment_active
             and not self._classification_active
+            and not self._embed_reaper_active
         )
         return JSONResponse(
             {
@@ -1324,6 +1328,11 @@ class BrainServer:
                             self._query_inflight,
                         )
                         await asyncio.sleep(0.1)
+
+                    # Pause can arrive during either wait above. No await may
+                    # separate this check from marking enrichment active.
+                    if self._paused:
+                        continue
 
                     # F-15: graduate new capture_alarms into lessons (best-effort).
                     try:
@@ -1581,6 +1590,8 @@ class BrainServer:
                         )
                     finally:
                         conn.close()
+                    if node_id is None:
+                        continue
                     _add(_nodes_created, source=source_label)
                     self._record_success()
                     logger.info(
@@ -1913,6 +1924,8 @@ class BrainServer:
                         )
                     finally:
                         conn.close()
+                    if node_id is None:
+                        continue
                     _add(_nodes_created, source="opencode")
                     self._record_success()
                     logger.info(
@@ -1956,7 +1969,12 @@ class BrainServer:
                     )
                     retry_conn = self._get_conn()
                     try:
-                        mark_opencode_queue_failed(retry_conn, segment_ids, err_msg)
+                        mark_opencode_queue_failed(
+                            retry_conn,
+                            segment_ids,
+                            err_msg,
+                            content_hashes=[s.get("content_hash") for s in segments],
+                        )
                     finally:
                         retry_conn.close()
 
@@ -2040,6 +2058,9 @@ class BrainServer:
         if not rows:
             return
         for node_id, embed_text in rows:
+            if self._paused:
+                break
+            self._embed_reaper_active = True
             try:
                 await self._embed_node(
                     node_id,
@@ -2050,6 +2071,8 @@ class BrainServer:
                 # One bad node must not abandon the rest of the batch; it stays
                 # an orphan and is retried next tick.
                 logger.warning("embed reaper: re-embed failed for node %d", node_id, exc_info=True)
+            finally:
+                self._embed_reaper_active = False
         logger.info("embed reaper: swept %d orphaned node(s)", len(rows))
 
     async def _embed_reaper_loop(self):

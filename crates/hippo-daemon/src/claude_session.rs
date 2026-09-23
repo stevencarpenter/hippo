@@ -960,16 +960,12 @@ fn build_summary_text(seg: &SessionSegment) -> String {
 ///   BEFORE the upsert (None if no prior row or if prior row had NULL hash).
 /// - `prior_queue_status` — the existing `claude_enrichment_queue.status` for
 ///   this segment (None if no queue row exists yet).
-/// - `prior_queue_updated_at_ms` — epoch-ms of `claude_enrichment_queue.updated_at`
-///   (None if no queue row exists yet).
-/// - `now_ms` — epoch-ms now.
 ///
 /// # Rules (in priority order)
 /// 1. `was_insert` → enqueue (new segments need first enrichment).
 /// 2. `prior_queue_status == Some("processing")` → skip (worker is on it).
 /// 3. `current_hash == prior_last_enriched_hash` → skip (no new content).
-/// 4. `(now_ms - prior_queue_updated_at_ms) < 300_000` → skip (5-min debounce).
-/// 5. Otherwise → enqueue.
+/// 4. Otherwise → enqueue. Watermark advancement must never strand changed content.
 ///
 /// Empty-segment short-circuit is handled by the CALLER, not this function.
 fn decide_enqueue(
@@ -977,8 +973,6 @@ fn decide_enqueue(
     current_hash: &str,
     prior_last_enriched_hash: Option<&str>,
     prior_queue_status: Option<&str>,
-    prior_queue_updated_at_ms: Option<i64>,
-    now_ms: i64,
 ) -> bool {
     if was_insert {
         return true;
@@ -987,11 +981,6 @@ fn decide_enqueue(
         return false;
     }
     if prior_last_enriched_hash == Some(current_hash) {
-        return false;
-    }
-    if let Some(updated_at) = prior_queue_updated_at_ms
-        && (now_ms - updated_at) < 300_000
-    {
         return false;
     }
     true
@@ -1040,18 +1029,12 @@ fn insert_segments(
         // T-A.3 step 2: read prior state in a single SELECT so decide_enqueue
         // has the data it needs without a second round-trip after the upsert.
         // Returns (id, prior_content_hash, last_enriched_content_hash,
-        //          queue_status, queue_updated_at).
+        //          queue_status).
         #[allow(clippy::type_complexity)]
-        let prior: Option<(
-            i64,
-            Option<String>,
-            Option<String>,
-            Option<String>,
-            Option<i64>,
-        )> = tx
+        let prior: Option<(i64, Option<String>, Option<String>, Option<String>)> = tx
             .query_row(
                 "SELECT s.id, s.content_hash, s.last_enriched_content_hash,
-                        q.status, q.updated_at
+                        q.status
                  FROM agentic_sessions s
                  LEFT JOIN agentic_enrichment_queue q ON q.session_id = s.id
                  WHERE s.session_id = ?1
@@ -1064,17 +1047,15 @@ fn insert_segments(
                         row.get::<_, Option<String>>(1)?,
                         row.get::<_, Option<String>>(2)?,
                         row.get::<_, Option<String>>(3)?,
-                        row.get::<_, Option<i64>>(4)?,
                     ))
                 },
             )
             .optional()?;
 
         let was_insert = prior.is_none();
-        let prior_content_hash = prior.as_ref().and_then(|(_, h, _, _, _)| h.as_deref());
-        let prior_last_enriched_hash = prior.as_ref().and_then(|(_, _, h, _, _)| h.as_deref());
-        let prior_queue_status = prior.as_ref().and_then(|(_, _, _, s, _)| s.as_deref());
-        let prior_queue_updated_at_ms = prior.as_ref().and_then(|(_, _, _, _, u)| *u);
+        let prior_content_hash = prior.as_ref().and_then(|(_, h, _, _)| h.as_deref());
+        let prior_last_enriched_hash = prior.as_ref().and_then(|(_, _, h, _)| h.as_deref());
+        let prior_queue_status = prior.as_ref().and_then(|(_, _, _, s)| s.as_deref());
 
         // T-A.3 step 3: upsert with ON CONFLICT DO UPDATE.
         // Identity columns (session_id, segment_index, project_dir, source_file,
@@ -1125,7 +1106,7 @@ fn insert_segments(
         let agentic_session_id: i64 = if was_insert {
             tx.last_insert_rowid()
         } else {
-            prior.as_ref().map(|(id, _, _, _, _)| *id).unwrap()
+            prior.as_ref().map(|(id, _, _, _)| *id).unwrap()
         };
 
         // "inserted" = new row created OR content hash changed from the prior
@@ -1159,8 +1140,6 @@ fn insert_segments(
                 &content_hash,
                 prior_last_enriched_hash,
                 prior_queue_status,
-                prior_queue_updated_at_ms,
-                now_ms,
             )
         {
             // Safe upsert: on conflict, only overwrite non-processing rows.
@@ -2130,22 +2109,13 @@ mod tests {
     #[test]
     fn test_decide_enqueue_inserts_always() {
         // was_insert=true must always enqueue, regardless of other params
-        assert!(decide_enqueue(true, "hash1", None, None, None, 0));
+        assert!(decide_enqueue(true, "hash1", None, None));
+        assert!(decide_enqueue(true, "hash1", Some("hash1"), Some("done")));
         assert!(decide_enqueue(
             true,
             "hash1",
             Some("hash1"),
-            Some("done"),
-            Some(0),
-            0
-        ));
-        assert!(decide_enqueue(
-            true,
-            "hash1",
-            Some("hash1"),
-            Some("processing"),
-            Some(0),
-            0
+            Some("processing")
         ));
     }
 
@@ -2156,9 +2126,7 @@ mod tests {
             false,
             "new-hash",
             Some("old-enriched-hash"),
-            Some("processing"),
-            Some(0),
-            1_000_000
+            Some("processing")
         ));
     }
 
@@ -2169,53 +2137,29 @@ mod tests {
             false,
             "same-hash",
             Some("same-hash"),
-            Some("done"),
-            Some(0),
-            1_000_000
+            Some("done")
         ));
     }
 
     #[test]
-    fn test_decide_enqueue_skip_when_within_debounce() {
-        // Within 5-minute (300_000 ms) debounce window → skip
-        let now_ms = 1_000_000i64;
-        let updated_at = now_ms - 100_000; // 100s ago = within debounce
-        assert!(!decide_enqueue(
-            false,
-            "new-hash",
-            Some("old-enriched"),
-            Some("done"),
-            Some(updated_at),
-            now_ms
-        ));
-    }
-
-    #[test]
-    fn test_decide_enqueue_enqueue_when_hash_changed_and_debounced() {
-        // hash changed + past debounce window → enqueue
-        let now_ms = 1_000_000i64;
-        let updated_at = now_ms - 400_000; // 400s ago = past 5-min debounce
+    fn test_decide_enqueue_changed_content_enqueues_after_completion() {
+        // A recent completion must not strand new content.
         assert!(decide_enqueue(
             false,
             "new-hash",
             Some("old-enriched"),
-            Some("done"),
-            Some(updated_at),
-            now_ms
+            Some("done")
         ));
     }
 
     #[test]
     fn test_decide_enqueue_enqueue_when_no_prior_queue_row() {
         // No prior queue row (None status) + hash changed → enqueue
-        // (no debounce applies when there's no prior queue row)
         assert!(decide_enqueue(
             false,
             "new-hash",
             Some("old-enriched"),
-            None, // no queue row
-            None,
-            1_000_000
+            None
         ));
     }
 

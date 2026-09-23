@@ -521,3 +521,54 @@ def test_orchestrate_writes_computed_gates_instead_of_hardcoded_pass(stub_corpus
     assert summary["gates"]["schema_validity_rate"] == 0.0
     assert summary["tier0_verdict"]["passed"] is False
     assert "schema_validity_rate" in summary["tier0_verdict"]["failed_gates"]
+
+
+@pytest.mark.parametrize(
+    "pause_result", [{"in_flight_finished": False}, None, RuntimeError("pause failed")]
+)
+def test_pause_failure_never_starts_model(stub_corpus, tmp_path, pause_result):
+    sqlite, manifest = stub_corpus
+    with (
+        patch("hippo_brain.bench.orchestrate.PauseRpcClient") as client,
+        patch("hippo_brain.bench.orchestrate.run_one_model") as run,
+        patch("hippo_brain.bench.orchestrate._safe_ingest"),
+    ):
+        client.return_value.probe_health.return_value = None
+        if isinstance(pause_result, Exception):
+            client.return_value.pause.side_effect = pause_result
+        else:
+            client.return_value.pause.return_value = pause_result
+        with pytest.raises(RuntimeError):
+            orchestrate_run(
+                candidate_models=["m"],
+                corpus_sqlite=sqlite,
+                manifest_path=manifest,
+                out_path=tmp_path / "run.jsonl",
+                skip_checks=True,
+            )
+        run.assert_not_called()
+        client.return_value.resume.assert_called_once()
+
+
+def test_resume_failure_recorded_in_run_end(stub_corpus, tmp_path):
+    sqlite, manifest = stub_corpus
+    out = tmp_path / "run.jsonl"
+    with (
+        patch("hippo_brain.bench.orchestrate.PauseRpcClient") as client,
+        patch(
+            "hippo_brain.bench.orchestrate.run_one_model", side_effect=RuntimeError("model failed")
+        ),
+        patch("hippo_brain.bench.orchestrate._safe_ingest"),
+    ):
+        client.return_value.probe_health.return_value = None
+        client.return_value.pause.return_value = {"in_flight_finished": True}
+        client.return_value.resume.return_value = None
+        result = orchestrate_run(
+            candidate_models=["m"],
+            corpus_sqlite=sqlite,
+            manifest_path=manifest,
+            out_path=out,
+            skip_checks=True,
+        )
+    assert result.prod_brain_resumed_ok is False
+    assert json.loads(out.read_text().splitlines()[-1])["prod_brain_resumed_ok"] is False

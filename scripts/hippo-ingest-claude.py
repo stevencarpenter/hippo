@@ -258,13 +258,22 @@ async def run_enrichment(
 
             if result is None:
                 print(f"    FAILED after 3 attempts: {last_err}")
-                mark_claude_queue_failed(conn, segment_ids, str(last_err))
+                mark_claude_queue_failed(
+                    conn, segment_ids, str(last_err),
+                    content_hashes=[s.get("content_hash") for s in segments],
+                )
                 total_failed += len(segments)
                 continue
 
             node_id = write_claude_knowledge_node(
-                conn, result, segment_ids, enrichment_model
+                conn,
+                result,
+                segment_ids,
+                enrichment_model,
+                content_hashes=[s.get("content_hash") for s in segments],
             )
+            if node_id is None:
+                continue
             total_enriched += len(segments)
             print(f"    -> node {node_id}: {result.summary[:80]}")
 

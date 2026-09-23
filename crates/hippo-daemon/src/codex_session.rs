@@ -499,8 +499,6 @@ fn decide_enqueue(
     current_hash: &str,
     prior_last_enriched_hash: Option<&str>,
     prior_queue_status: Option<&str>,
-    prior_queue_updated_at_ms: Option<i64>,
-    now_ms: i64,
 ) -> bool {
     if was_insert {
         return true; // new segment — always needs first enrichment
@@ -510,11 +508,6 @@ fn decide_enqueue(
     }
     if prior_last_enriched_hash == Some(current_hash) {
         return false; // content unchanged since last successful enrichment
-    }
-    if let Some(updated_at) = prior_queue_updated_at_ms
-        && (now_ms - updated_at) < 300_000
-    {
-        return false; // 5-minute debounce
     }
     true
 }
@@ -536,22 +529,21 @@ pub fn upsert_segment_tx(tx: &rusqlite::Transaction<'_>, seg: &CodexSegment) -> 
     // new content_hash against what was last enriched. One SELECT, mirroring
     // `claude_session::insert_segments`.
     #[allow(clippy::type_complexity)]
-    let prior: Option<(i64, Option<String>, Option<String>, Option<i64>)> = tx
+    let prior: Option<(i64, Option<String>, Option<String>)> = tx
         .query_row(
-            "SELECT s.id, s.last_enriched_content_hash, q.status, q.updated_at
+            "SELECT s.id, s.last_enriched_content_hash, q.status
              FROM agentic_sessions s
              LEFT JOIN agentic_enrichment_queue q ON q.session_id = s.id
              WHERE s.session_id = ?1
                AND s.harness = 'codex'
                AND s.segment_index = ?2",
             params![seg.session_id, seg.segment_index],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
         )
         .optional()?;
     let was_insert = prior.is_none();
-    let prior_last_enriched_hash = prior.as_ref().and_then(|(_, h, _, _)| h.as_deref());
-    let prior_queue_status = prior.as_ref().and_then(|(_, _, s, _)| s.as_deref());
-    let prior_queue_updated_at_ms = prior.as_ref().and_then(|(_, _, _, u)| *u);
+    let prior_last_enriched_hash = prior.as_ref().and_then(|(_, h, _)| h.as_deref());
+    let prior_queue_status = prior.as_ref().and_then(|(_, _, s)| s.as_deref());
 
     tx.execute(
         "INSERT INTO agentic_sessions
@@ -599,7 +591,7 @@ pub fn upsert_segment_tx(tx: &rusqlite::Transaction<'_>, seg: &CodexSegment) -> 
     let agentic_session_id: i64 = if was_insert {
         tx.last_insert_rowid()
     } else {
-        prior.as_ref().map(|(id, _, _, _)| *id).unwrap()
+        prior.as_ref().map(|(id, _, _)| *id).unwrap()
     };
 
     // Re-pend for enrichment only on genuinely new content (decide_enqueue).
@@ -613,8 +605,6 @@ pub fn upsert_segment_tx(tx: &rusqlite::Transaction<'_>, seg: &CodexSegment) -> 
         &content_hash,
         prior_last_enriched_hash,
         prior_queue_status,
-        prior_queue_updated_at_ms,
-        now_ms,
     ) {
         tx.execute(
             "INSERT INTO agentic_enrichment_queue
@@ -1366,48 +1356,16 @@ mod tests {
 
     #[test]
     fn decide_enqueue_gates_on_content_change() {
-        let now = 2_000_000_000_000;
-        let stale = now - 600_000; // 10 min ago — past the 5-min debounce
         // New segment — always enqueued.
-        assert!(decide_enqueue(true, "h1", None, None, None, now));
+        assert!(decide_enqueue(true, "h1", None, None));
         // A worker holds the row — never trample it.
-        assert!(!decide_enqueue(
-            false,
-            "h1",
-            None,
-            Some("processing"),
-            Some(stale),
-            now
-        ));
+        assert!(!decide_enqueue(false, "h1", None, Some("processing")));
         // Content unchanged since last enrichment — skip.
-        assert!(!decide_enqueue(
-            false,
-            "h1",
-            Some("h1"),
-            Some("done"),
-            Some(stale),
-            now
-        ));
+        assert!(!decide_enqueue(false, "h1", Some("h1"), Some("done")));
         // Content changed — re-enqueue.
-        assert!(decide_enqueue(
-            false,
-            "h2",
-            Some("h1"),
-            Some("done"),
-            Some(stale),
-            now
-        ));
-        // Changed, but a re-pend already landed inside the debounce window — skip.
-        assert!(!decide_enqueue(
-            false,
-            "h2",
-            Some("h1"),
-            Some("done"),
-            Some(now - 1_000),
-            now
-        ));
+        assert!(decide_enqueue(false, "h2", Some("h1"), Some("done")));
         // Content changed, no prior queue row at all — must enqueue.
-        assert!(decide_enqueue(false, "h2", Some("h1"), None, None, now));
+        assert!(decide_enqueue(false, "h2", Some("h1"), None));
     }
 
     #[test]

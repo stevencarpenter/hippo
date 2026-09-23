@@ -18,6 +18,17 @@ from collections.abc import Iterable
 from typing import Any
 
 REPLACEMENT = "[REDACTED]"
+_SECRET_NAME = (
+    r"api[_-]?key|api[_-]?token|access[_-]?token|auth[_-]?token|"
+    r"secret[_-]?key|private[_-]?key|password"
+)
+_SECRET_KEY = re.compile(rf"(?:{_SECRET_NAME})", re.IGNORECASE)
+
+
+def is_secret_key(value: object) -> bool:
+    """Recognize credential field names at structured-data boundaries."""
+    return isinstance(value, str) and _SECRET_KEY.fullmatch(value) is not None
+
 
 _PATTERNS: tuple[re.Pattern[str], ...] = (
     # Run first: assignment rules otherwise consume part of the opening marker.
@@ -29,10 +40,11 @@ _PATTERNS: tuple[re.Pattern[str], ...] = (
     ),
     re.compile(r"AKIA[0-9A-Z]{16}"),
     re.compile(r"ghp_[a-zA-Z0-9]{36}|github_pat_[a-zA-Z0-9_]{82}"),
+    # Quoted values may contain whitespace or escaped quotes, including JSON.
     re.compile(
-        r"(?i)(api[_-]?key|api[_-]?token|access[_-]?token|auth[_-]?token|"
-        r"secret[_-]?key|private[_-]?key|password)\s*[=:]\s*\S{8,}"
+        rf"""(?i)["']?(?:{_SECRET_NAME})["']?\s*[=:]\s*(?:"(?:\\.|[^"\\])*(?:"|$)|'(?:\\.|[^'\\])*(?:'|$))"""
     ),
+    re.compile(rf"(?i)(?:{_SECRET_NAME})\s*[=:]\s*\S{{8,}}"),
     re.compile(r"eyJ[a-zA-Z0-9_-]{10,}\.eyJ[a-zA-Z0-9_-]{10,}\.[a-zA-Z0-9_-]+"),
     re.compile(r"(?i)authorization:\s*bearer\s+\S+"),
 )

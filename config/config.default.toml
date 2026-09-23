@@ -335,7 +335,7 @@ enabled = false
 #   4. Reinstall: mise run install
 #   5. Verify: hippo doctor
 #
-# Access Grafana: http://localhost:3030 (admin/hippo)
+# Access Grafana: http://localhost:3030 (admin / configured password)
 # OTel Collector health: http://localhost:13133
 enabled = false
 endpoint = "http://localhost:4317"

@@ -213,6 +213,32 @@ replacement = "***"
     }
 
     #[test]
+    fn quoted_credentials_match_default_template_and_preserve_adjacent_fields() {
+        let config: RedactConfig =
+            toml::from_str(include_str!("../../../config/redact.default.toml")).unwrap();
+        for engine in [engine(), RedactionEngine::new(&config).unwrap()] {
+            for (input, expected) in [
+                (
+                    r#"{"password":"two word secret","public":"keep"}"#,
+                    r#"{[REDACTED],"public":"keep"}"#,
+                ),
+                ("API_KEY='short'", "[REDACTED]"),
+                (r#"password="escaped \" quote""#, "[REDACTED]"),
+                ("password=\"line one\nline two\"", "[REDACTED]"),
+                ("password=\"unterminated secret", "[REDACTED]"),
+                ("password='x' public=keep", "[REDACTED] public=keep"),
+                ("CACHE_KEY='keep'", "CACHE_KEY='keep'"),
+                (
+                    "{\"private_key\":\"-----BEGIN PRIVATE KEY-----\nZmFrZXNlY3JldA==\n-----END PRIVATE KEY-----\",\"public\":\"keep\"}",
+                    "{[REDACTED],\"public\":\"keep\"}",
+                ),
+            ] {
+                assert_eq!(engine.redact(input).text, expected, "{input}");
+            }
+        }
+    }
+
+    #[test]
     fn test_no_false_positive_on_cache_key() {
         let result = engine().redact("CACHE_KEY=foo");
         assert_eq!(result.text, "CACHE_KEY=foo");

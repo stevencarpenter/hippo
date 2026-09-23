@@ -401,18 +401,6 @@ install_brain() {
 
     write_receipt "brain" "${expected_checksum}"
     log_success "Brain installed"
-
-    # One-time cleanup: prior releases installed scripts at ~/.local/share/scripts/
-    # (a generic path). The new layout places them under ${BRAIN_DIR}/scripts.
-    # Remove the orphaned legacy tree so it doesn't linger on disk.
-    local legacy_scripts="${share_dir}/scripts"
-    # Only nuke the legacy path if it looks hippo-owned. Match ANY hippo-*.py
-    # rather than a single pinned filename so a future rename doesn't leave
-    # orphaned trees behind.
-    if [ -d "${legacy_scripts}" ] && [ -n "$(find "${legacy_scripts}" -maxdepth 1 -name 'hippo-*.py' -print -quit 2>/dev/null)" ]; then
-        log_info "Removing legacy scripts directory at ${legacy_scripts}..."
-        rm -rf "${legacy_scripts}"
-    fi
 }
 
 # Hash a directory's contents (paths + bytes), so an unchanged skill is a

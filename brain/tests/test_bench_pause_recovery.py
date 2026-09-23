@@ -31,7 +31,8 @@ def test_lockfile_written_on_pause(isolated_lockfile: Path) -> None:
 
     with patch.object(pause_rpc.httpx, "post") as mock_post:
         mock_post.return_value = MagicMock(
-            json=lambda: {"paused_at": "x"}, raise_for_status=lambda: None
+            json=lambda: {"paused_at": "x", "in_flight_finished": True},
+            raise_for_status=lambda: None,
         )
         rpc.pause()
 
@@ -54,9 +55,8 @@ def test_lockfile_removed_on_resume(isolated_lockfile: Path) -> None:
     assert not isolated_lockfile.exists()
 
 
-def test_lockfile_removed_even_if_resume_post_fails(isolated_lockfile: Path) -> None:
-    """Defensive: if the brain is gone, we still remove our lockfile so the
-    next bench start doesn't think there's something to recover."""
+def test_lockfile_retained_if_resume_post_fails(isolated_lockfile: Path) -> None:
+    """A lost response must leave recovery possible."""
     isolated_lockfile.parent.mkdir(parents=True, exist_ok=True)
     isolated_lockfile.write_text(json.dumps({"brain_url": "http://localhost:8000"}))
 
@@ -64,7 +64,7 @@ def test_lockfile_removed_even_if_resume_post_fails(isolated_lockfile: Path) -> 
     with patch.object(pause_rpc.httpx, "post", side_effect=ConnectionError("brain dead")):
         rpc.resume()
 
-    assert not isolated_lockfile.exists()
+    assert isolated_lockfile.exists()
 
 
 def test_recover_resumes_when_stale_lockfile_present(isolated_lockfile: Path) -> None:
@@ -82,7 +82,7 @@ def test_recover_resumes_when_stale_lockfile_present(isolated_lockfile: Path) ->
     )
 
     with patch.object(pause_rpc.httpx, "post") as mock_post:
-        mock_post.return_value = MagicMock()
+        mock_post.return_value = MagicMock(json=lambda: {"resumed_at": "x"})
         recovered = pause_rpc.recover_stale_pause("http://fallback:9999")
 
     assert recovered is True
@@ -105,7 +105,7 @@ def test_recover_falls_back_when_lockfile_corrupt(isolated_lockfile: Path) -> No
     isolated_lockfile.write_text("not json {{{")
 
     with patch.object(pause_rpc.httpx, "post") as mock_post:
-        mock_post.return_value = MagicMock()
+        mock_post.return_value = MagicMock(json=lambda: {"resumed_at": "x"})
         recovered = pause_rpc.recover_stale_pause("http://fallback:9999")
 
     assert recovered is True
@@ -121,50 +121,66 @@ def test_skip_flag_does_not_write_lockfile(isolated_lockfile: Path) -> None:
     assert not isolated_lockfile.exists()
 
 
-# ----------------------------------------------------------------------------
-# Post-review CC-1: pause RPC failure must NOT leave a stale lockfile behind
-# (otherwise watchdog suppresses I-2/I-4/I-8 even though prod was never paused)
-# ----------------------------------------------------------------------------
-
-
-def test_lockfile_unlinked_when_pause_http_call_raises(isolated_lockfile: Path) -> None:
-    """If httpx.post raises, pause() must roll back the lockfile and re-raise.
-
-    Without this, a transient pause RPC error (network blip, brain restart
-    between probe and pause) would leave the lockfile in place; the watchdog
-    would then suppress I-2/I-4/I-8 alarms for up to the C-1 staleness window
-    even though prod was never actually paused.
-    """
+@pytest.mark.parametrize("failure", ["transport", "http", "malformed"])
+def test_failed_pause_retains_recovery_marker(isolated_lockfile, failure):
     import httpx
 
-    rpc = pause_rpc.PauseRpcClient(base_url="http://localhost:8000")
-
-    with patch.object(pause_rpc.httpx, "post") as mock_post:
-        mock_post.side_effect = httpx.ConnectError("synthetic: brain unreachable")
-        with pytest.raises(httpx.ConnectError, match="synthetic"):
-            rpc.pause()
-
-    assert not isolated_lockfile.exists(), (
-        "CC-1: pause() must unlink the lockfile if the HTTP POST raises — "
-        "leaving it behind mutes the watchdog for the suppression window"
+    rpc = pause_rpc.PauseRpcClient("http://offline.invalid")
+    response = httpx.Response(
+        503 if failure == "http" else 200,
+        json={},
+        request=httpx.Request("POST", "http://offline.invalid"),
     )
+    with patch.object(pause_rpc.httpx, "post") as post:
+        post.return_value = response
+        if failure == "transport":
+            post.side_effect = httpx.ReadTimeout("lost acknowledgement")
+        with pytest.raises((httpx.HTTPError, ValueError)):
+            rpc.pause()
+    assert isolated_lockfile.exists()
 
 
-def test_lockfile_unlinked_when_pause_returns_5xx(isolated_lockfile: Path) -> None:
-    """raise_for_status() raises on 5xx; same rollback contract applies."""
+@pytest.mark.parametrize("failure", ["transport", "http", "malformed"])
+def test_failed_recovery_retains_marker(isolated_lockfile, failure):
     import httpx
 
-    rpc = pause_rpc.PauseRpcClient(base_url="http://localhost:8000")
+    isolated_lockfile.write_text('{"brain_url":"http://offline.invalid"}')
+    response = httpx.Response(
+        503 if failure == "http" else 200,
+        json={},
+        request=httpx.Request("POST", "http://offline.invalid"),
+    )
+    with patch.object(pause_rpc.httpx, "post") as post:
+        post.return_value = response
+        if failure == "transport":
+            post.side_effect = httpx.ReadTimeout("lost acknowledgement")
+        with pytest.raises(RuntimeError, match="marker retained"):
+            pause_rpc.recover_stale_pause("http://offline.invalid")
+    assert isolated_lockfile.exists()
 
-    def _raise_5xx() -> None:
-        raise httpx.HTTPStatusError("synthetic 503", request=MagicMock(), response=MagicMock())
 
-    with patch.object(pause_rpc.httpx, "post") as mock_post:
-        mock_post.return_value = MagicMock(raise_for_status=_raise_5xx)
-        with pytest.raises(httpx.HTTPStatusError, match="synthetic 503"):
-            rpc.pause()
+def test_pause_waits_for_inflight_work(isolated_lockfile):
+    with patch.object(pause_rpc.httpx, "post") as post, patch.object(pause_rpc.time, "sleep"):
+        post.side_effect = [
+            MagicMock(json=lambda: {"in_flight_finished": False}),
+            MagicMock(json=lambda: {"in_flight_finished": True}),
+        ]
+        assert pause_rpc.PauseRpcClient("http://offline.invalid").pause() == {
+            "in_flight_finished": True
+        }
+        assert post.call_count == 2
 
-    assert not isolated_lockfile.exists()
+
+def test_pause_deadline_retains_marker(isolated_lockfile):
+    with (
+        patch.object(pause_rpc.httpx, "post") as post,
+        patch.object(pause_rpc.time, "monotonic", side_effect=[0.0, 0.0, 1.0, 1.0]),
+        patch.object(pause_rpc.time, "sleep"),
+    ):
+        post.return_value = MagicMock(json=lambda: {"in_flight_finished": False})
+        with pytest.raises(TimeoutError, match="quiesce"):
+            pause_rpc.PauseRpcClient("http://offline.invalid").pause(timeout_sec=1.0)
+    assert isolated_lockfile.exists()
 
 
 def test_pause_cleans_up_orphan_tmp_when_write_lockfile_raises(

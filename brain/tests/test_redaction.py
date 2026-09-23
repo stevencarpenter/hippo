@@ -6,6 +6,7 @@ strings in this file are real secrets.
 """
 
 from dataclasses import dataclass, field
+import json
 
 import pytest
 
@@ -28,6 +29,30 @@ def test_github_pat_redacted():
 def test_generic_secret_assignment_redacted():
     out = redact("API_KEY = supersecretvalue123")
     assert "supersecretvalue123" not in out
+
+
+@pytest.mark.parametrize(
+    "key",
+    ["password", "API_KEY", "api-token", "access_token", "auth-token", "secret_key", "private_key"],
+)
+@pytest.mark.parametrize("secret", ["short", "two word secret", 'escaped " quote', "line\nbreak"])
+def test_json_credential_assignments_redacted(key, secret):
+    text = json.dumps({key: secret, "public": "keep"})
+    assert redact(text) == '{[REDACTED], "public": "keep"}'
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "password='two word secret'",
+        "'password': 'two word secret'",
+        'password="unterminated secret',
+        '"password": "unterminated secret',
+        'password="line\nbreak"',
+    ],
+)
+def test_quoted_credentials_redacted(text):
+    assert redact(text) == REPLACEMENT
 
 
 def test_jwt_redacted():

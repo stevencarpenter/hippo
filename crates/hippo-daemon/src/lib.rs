@@ -108,27 +108,50 @@ where
     }
 }
 
-/// Redact a shell event: scrub the command, filter env to allowlist, redact env values.
-/// Returns the redacted event plus the per-rule hit breakdown from the command
-/// redaction pass, so callers can emit per-rule observability (see #52). The
-/// breakdown is command-only — env values are redacted too, but their hits are
-/// not currently surfaced (would require a separate metric dimension).
+/// Scrub command, captured output, and allowlisted environment values.
+/// Returns the redacted event and per-rule hits across all retained content.
 pub fn redact_shell_event(
     event: &ShellEvent,
     redaction: &RedactionEngine,
 ) -> (Box<ShellEvent>, Vec<(String, u32)>) {
-    let RedactionResult { text, count, hits } = redaction.redact(&event.command);
+    let mut count = 0;
+    let mut hits: Vec<(String, u32)> = Vec::new();
+    let mut scrub = |value: &str| {
+        let RedactionResult {
+            text,
+            count: field_count,
+            hits: field_hits,
+        } = redaction.redact(value);
+        count += field_count;
+        for (name, n) in field_hits {
+            if let Some((_, total)) = hits.iter_mut().find(|(rule, _)| rule == &name) {
+                *total += n;
+            } else {
+                hits.push((name, n));
+            }
+        }
+        text
+    };
+    let text = scrub(&event.command);
     let filtered_env = event
         .env_snapshot
         .iter()
         .filter(|(k, _)| ENV_ALLOWLIST.contains(&k.as_str()))
-        .map(|(k, v)| (k.clone(), redaction.redact(v).text))
+        .map(|(k, v)| (k.clone(), scrub(v)))
         .collect();
+
+    let mut stdout = event.stdout.clone();
+    let mut stderr = event.stderr.clone();
+    for output in [&mut stdout, &mut stderr].into_iter().flatten() {
+        output.content = scrub(&output.content);
+    }
 
     let redacted = Box::new(ShellEvent {
         command: text,
         redaction_count: count,
         env_snapshot: filtered_env,
+        stdout,
+        stderr,
         ..event.clone()
     });
     (redacted, hits)

@@ -320,6 +320,9 @@ def _cmd_run(args: argparse.Namespace) -> int:
         print("=" * 64)
     if result.preflight_aborted:
         return 2
+    if not result.prod_brain_resumed_ok:
+        print("Production resume failed; recovery marker retained. Run hippo-bench recover.")
+        return 3
     if result.models_errored and not result.models_completed:
         return 3
     return 0
