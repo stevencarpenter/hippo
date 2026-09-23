@@ -62,3 +62,38 @@ print -r -- "$_HIPPO_GIT_BRANCH"
     let branch = String::from_utf8(output.stdout).unwrap();
     assert_eq!(branch.trim(), "old-branch");
 }
+
+#[test]
+fn clean_zsh_loads_clock_and_sends_numeric_duration() {
+    let temp = tempdir().unwrap();
+    let hook = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../shell/hippo.zsh");
+    let output = Command::new("zsh")
+        .args(["-f", "-c"])
+        .arg(
+            r#"
+source "$HOOK"
+_HIPPO_OUTPUT_FILE="$SCRATCH"
+git() { return 1; }
+hippo() { print -rl -- "$@" > "$CAPTURE_ARGS"; }
+_hippo_preexec 'echo safe'
+_hippo_precmd
+for i in {1..100}; do
+    [[ -s "$CAPTURE_ARGS" ]] && break
+    sleep 0.01
+done
+[[ -s "$CAPTURE_ARGS" ]]
+"#,
+        )
+        .env("HOOK", hook)
+        .env("SCRATCH", temp.path().join("output"))
+        .env("CAPTURE_ARGS", temp.path().join("args"))
+        .current_dir(temp.path())
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{:?}", output);
+    let args = fs::read_to_string(temp.path().join("args")).unwrap();
+    let args: Vec<_> = args.lines().collect();
+    let duration = args.iter().position(|s| *s == "--duration-ms").unwrap();
+    assert!(args[duration + 1].parse::<u64>().is_ok(), "{args:?}");
+    assert!(String::from_utf8_lossy(&output.stderr).is_empty());
+}

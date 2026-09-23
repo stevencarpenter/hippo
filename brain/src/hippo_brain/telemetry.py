@@ -8,6 +8,7 @@ service fails loud rather than silently shipping zero metrics.
 """
 
 import logging
+import math
 import os
 
 logger = logging.getLogger("hippo_brain.telemetry")
@@ -188,6 +189,120 @@ def hist(histogram, value, **attrs):
     """Record an OTel histogram value if it exists (no-op when ``None``)."""
     if histogram:
         histogram.record(value, attrs)
+
+
+def record_decision_metrics(diagnostics: dict, task: str = "rerank") -> None:
+    """Record one completed decision using bounded labels and measured values.
+
+    Rerank diagnostics contain ``passes``; a classification completion is one
+    assessment record with ``total_ms``. Attempt duration includes queue wait;
+    HTTP duration is client wall time, not server inference time. Stages overlap
+    and must not be summed. Only transport-reported network calls and provider
+    token counts are recorded. Missing measurements remain explicitly unknown.
+    """
+    try:
+        meter = get_meter("hippo-brain.decisions")
+        if meter is None or not isinstance(diagnostics, dict):
+            return
+
+        def label(value: object, allowed: tuple[str, ...]) -> str:
+            return value if isinstance(value, str) and value in allowed else "unknown"
+
+        status = diagnostics.get("status", diagnostics.get("stop_reason"))
+        if status == "cancelled":
+            outcome = "cancelled"
+        elif diagnostics.get("fallback_reason") or status in (
+            "deadline",
+            "assessment_failed",
+            "invalid_decision",
+        ):
+            outcome = "fallback"
+        elif status in (
+            "ready",
+            "complete",
+            "success",
+            "single_pass",
+            "stable_order",
+            "request_budget",
+            "native_preserve",
+            "no_new_evidence",
+            "unambiguous",
+            "rules_complete",
+        ):
+            outcome = "success"
+        else:
+            outcome = label(status, ("failed", "error", "retry", "stale", "skipped"))
+        attrs = {
+            "backend": label(diagnostics.get("backend"), ("jev", "local", "rules")),
+            "task": label(task, ("rerank", "classification", "query_topic")),
+            "outcome": outcome,
+        }
+        prefix = "hippo.brain.decision."
+        counts = {
+            name: meter.create_counter(prefix + name, unit="1", description=description)
+            for name, description in {
+                "count": "Completed decision operations by outcome",
+                "requests": "Transport-reported HTTP dispatches",
+                "errors": "Decisions that failed, fell back, or require retry",
+                "usage_unknown": "Assessments with missing or invalid provider token usage",
+                "requests_unknown": "Assessments without a transport dispatch count",
+            }.items()
+        }
+        tokens = meter.create_counter(
+            prefix + "tokens", unit="{token}", description="Provider-reported token usage"
+        )
+        duration = meter.create_histogram(
+            prefix + "duration",
+            unit="ms",
+            description="Measured decision stages; overlapping, not additive",
+        )
+        counts["count"].add(1, attrs)
+        if outcome in ("fallback", "failed", "error", "retry"):
+            counts["errors"].add(1, attrs)
+
+        def timing(value: object, stage: str) -> None:
+            if type(value) in (int, float) and math.isfinite(value) and value >= 0:
+                duration.record(value, {**attrs, "stage": stage})
+
+        timing(diagnostics.get("elapsed_ms", diagnostics.get("total_ms")), "decision")
+        timing(diagnostics.get("rule_ms"), "rules")
+        records = diagnostics.get("passes", [diagnostics] if task == "classification" else [])
+        if not isinstance(records, list):
+            return
+        for record in records:
+            if not isinstance(record, dict):
+                continue
+            timing(record.get("elapsed_ms", record.get("network_ms")), "attempt")
+            for key, stage in (
+                ("composition_ms", "composition"),
+                ("source_fetch_ms", "source_fetch"),
+                ("apply_ms", "sql_apply"),
+            ):
+                timing(record.get(key), stage)
+            transport = record.get("transport")
+            transport = transport if isinstance(transport, dict) else {}
+            timing(transport.get("queue_ms"), "queue")
+            timing(transport.get("http_ms"), "http")
+            calls = transport.get("network_calls")
+            if type(calls) is int and calls >= 0:
+                counts["requests"].add(calls, attrs)
+            else:
+                counts["requests_unknown"].add(1, attrs)
+            usage = record.get("usage")
+            usage = usage if isinstance(usage, dict) else {}
+            complete_usage = True
+            for direction in ("input", "output"):
+                value = usage.get(direction + "_tokens")
+                if type(value) is int and value >= 0:
+                    tokens.add(value, {**attrs, "direction": direction})
+                else:
+                    complete_usage = False
+            if not complete_usage and (type(calls) is not int or calls != 0):
+                counts["usage_unknown"].add(1, attrs)
+    except Exception:
+        # Advisory metrics cannot fail a query, a classifier publication, or
+        # cancellation cleanup. Avoid logging source-bearing diagnostics here.
+        return
 
 
 def _register_process_metrics() -> None:

@@ -16,6 +16,7 @@ import time
 import uuid
 from pathlib import Path
 
+from hippo_brain.classification import enqueue_node
 from hippo_brain.claude_sessions import find_identical_node
 from hippo_brain.client import InferenceClient
 from hippo_brain.enrichment import CURRENT_ENRICHMENT_VERSION, parse_enrichment_response
@@ -62,6 +63,9 @@ async def enrich_one_async(
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
     try:
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA foreign_keys=ON")
+        conn.execute("PRAGMA busy_timeout=5000")
         run = conn.execute("SELECT * FROM workflow_runs WHERE id = ?", (run_id,)).fetchone()
         if run is None:
             return
@@ -178,6 +182,7 @@ async def enrich_one_async(
                 "UPDATE workflow_enrichment_queue SET status='done', updated_at=? WHERE run_id=?",
                 (now, run_id),
             )
+            enqueue_node(conn, existing_id)
             conn.commit()
             return None
 
@@ -234,6 +239,7 @@ async def enrich_one_async(
             "UPDATE workflow_enrichment_queue SET status='done', updated_at=? WHERE run_id=?",
             (now, run_id),
         )
+        enqueue_node(conn, node_id)
         conn.commit()
 
         # Lesson clustering for each failing annotation (sync — opens its own

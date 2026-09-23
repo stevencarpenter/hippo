@@ -5,7 +5,7 @@
 [![Rust](https://img.shields.io/badge/rust-edition_2024-orange.svg)](https://blog.rust-lang.org/2025/02/20/Rust-1.85.0/)
 [![Python](https://img.shields.io/badge/python-3.14%2B-blue.svg)](https://www.python.org/)
 
-Local-first knowledge capture daemon for macOS. Hippo watches your shell activity, Claude Code sessions, and Firefox browsing, redacts known secret formats, enriches events with a local LLM, and builds a searchable second brain — all without sending data to third-party services. LLM inference runs against any OpenAI-compatible local server on your machine — defaults target [oMLX](https://omlx.ai) (continuous batching + tiered KV cache for Apple Silicon), and [LM Studio](https://lmstudio.ai/) works as a drop-in alternative. Telemetry is off by default and points at localhost when on. See [Privacy and Security](#privacy-and-security) for the full data-flow story.
+Local-first knowledge capture daemon for macOS. Hippo watches your shell activity, Claude Code sessions, and Firefox browsing, redacts known secret formats, enriches events with a local LLM, and builds a searchable second brain with local inference by default. LLM inference runs against any OpenAI-compatible local server on your machine — defaults target [oMLX](https://omlx.ai) (continuous batching + tiered KV cache for Apple Silicon), and [LM Studio](https://lmstudio.ai/) works as a drop-in alternative. Telemetry is off by default and points at localhost when on. See [Privacy and Security](#privacy-and-security) for the full data-flow story.
 
 ## Why hippo
 
@@ -13,7 +13,7 @@ Hippo solves a problem that shell history (`~/.zsh_history`, fish history, Atuin
 
 - **Cross-source recall.** Your shell command from Tuesday, the Claude Code conversation that produced it, and the StackOverflow tab you had open are all linked into one searchable knowledge graph.
 - **Semantic + lexical retrieval.** Ask `hippo ask "how did I fix that build error?"` and get a synthesized answer with cited sources, not a `grep` over command strings.
-- **Local-only by default.** Your shell stdout, conversation transcripts, and browsing history never leave your machine. The LLM that summarizes them is local too.
+- **Local-only by default.** See [Privacy and Security](#privacy-and-security) for local inference and opt-in external data flows.
 - **MCP-native.** Claude Code can query your knowledge base mid-conversation through the MCP server, so the model can look up "what was I just doing" without you re-explaining.
 
 If you want a faster `^R`, use Atuin. If you want hippo's setup, keep reading.
@@ -182,11 +182,12 @@ mise run brain:api:openapi:live         # Fetch /openapi.json from the running b
 mise run brain:api:openapi:write        # Write OUT, default brain/openapi.json
 ```
 
-`brain:api:pause` is a soft pause: `hippo-brain` stays up for health, query, and
-resume calls but stops claiming new enrichment work. The daemon and ingest
-agents continue writing events and queue rows. To fully unload a local chat model
-for a benchmark, stop only `com.hippo.brain` and leave `com.hippo.daemon` plus
-the ingest agents running.
+`brain:api:pause` keeps health and resume available but rejects new HTTP knowledge
+queries with 503 and stops new background inference. Existing queries, enrichment,
+classification, and embedding reaper work drain asynchronously; repeat the pause
+request until `in_flight_finished` is true before using the inference slot.
+Standalone MCP processes are not paused by this HTTP control. The daemon and
+ingest agents continue writing events and queue rows. Pause does not unload models.
 
 Capture-reliability operator runbook (recipes for "I ran a command but it's not in `hippo events`", "doctor shows red", "schema mismatch", etc.): [`docs/capture/operator-runbook.md`](docs/capture/operator-runbook.md).
 
@@ -264,11 +265,11 @@ The `[models]` section must be configured for enrichment to work. Set the model 
 
 ## Privacy and Security
 
-Hippo captures shell commands (including stdout/stderr), Claude Code session transcripts, and browser visits from allowlisted domains. All data is stored locally in `~/.local/share/hippo/hippo.db` (SQLite, unencrypted — use macOS FileVault for full-disk encryption). No data is sent to Anthropic, OpenAI, or any cloud service.
+Hippo captures shell commands (including stdout/stderr), Claude Code session transcripts, and browser visits from allowlisted domains. All data is stored locally in `~/.local/share/hippo/hippo.db` (SQLite, unencrypted — use macOS FileVault for full-disk encryption). Default inference stays local. Opting into Jev reranking or classification sends bounded, redacted query/candidate or node evidence to TypeSafe's cloud API. See the [Jev operator reference](docs/jev-decisions.md) for configuration and request limits.
 
-**LLM calls are local.** Enrichment and RAG queries go to whichever local OpenAI-compatible server you configure (`[inference].base_url`, default `http://localhost:8000/v1` for omlx). If you point that URL at a remote backend, your shell history and session transcripts travel that path.
+**Enrichment and answer synthesis use the configured inference server.** Enrichment and RAG queries go to whichever local OpenAI-compatible server you configure (`[inference].base_url`, default `http://localhost:8000/v1` for omlx). If you point that URL at a remote backend, your shell history and session transcripts travel that path.
 
-**Redaction is best-effort.** Hippo redacts known secret formats (AWS keys, GitHub tokens, `password=` assignments, JWTs, PEM headers) before storage. Regex-based redaction cannot catch secrets in positional arguments, non-standard env-var names, or multi-line stdout payloads. Treat it as a noise filter, not a security guarantee. Test patterns with `hippo redact test "your candidate string"`. Full reference (default rules, evaluation model, custom patterns, known false-negatives, browser URL redaction): [`docs/redaction.md`](docs/redaction.md).
+**Redaction is best-effort.** Hippo filters known secret formats before storage on supported capture paths and before Jev dispatch. Treat it as a noise filter, not a security guarantee. Test patterns with `hippo redact test "your candidate string"`. Full reference (default rules, evaluation model, custom patterns, known false-negatives, browser URL redaction): [`docs/redaction.md`](docs/redaction.md).
 
 **The SQLite database is accessible to any process running as your user.** Single-user assumption. Consider restricting `~/.local/share/hippo/` to `700` if you share the machine.
 
@@ -377,7 +378,7 @@ All paths follow XDG defaults. Override with `XDG_DATA_HOME` / `XDG_CONFIG_HOME`
 | Logs | `~/.local/share/hippo/*.log` | Daemon and brain logs |
 | Fallback | `~/.local/share/hippo/*.fallback.jsonl` | Last-resort durability backstop when the daemon socket is unreachable; replayed on next daemon start |
 
-Schema uses `PRAGMA user_version = N` (current: v14). Daemon and brain handshake on this constant at startup. See [`docs/schema.md`](docs/schema.md) for the per-version changelog, table map, and version-mismatch recovery; see [`docs/release.md`](docs/release.md) for the lockstep release workflow.
+Schema uses `PRAGMA user_version = N`; the authoritative version is in `crates/hippo-core/src/schema.sql`. Daemon and brain handshake on their expected version at startup. See [`docs/schema.md`](docs/schema.md) for the per-version changelog, table map, and version-mismatch recovery; see [`docs/release.md`](docs/release.md) for the lockstep release workflow.
 
 ## License
 

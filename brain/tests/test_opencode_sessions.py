@@ -8,6 +8,10 @@ flow plus the failure-retry path.
 Acts as the regression bed for F-26..F-28 in `docs/capture/test-matrix.md`.
 """
 
+import sqlite3
+
+import pytest
+
 from hippo_brain.enrichment import is_enrichment_eligible
 from hippo_brain.models import EnrichmentResult
 from hippo_brain.opencode_sessions import (
@@ -254,6 +258,61 @@ class TestWriteKnowledgeNode:
         ).fetchall()
         assert link_pairs == sorted([(node_id, sid) for sid in seg_ids])
 
+    @pytest.mark.parametrize("claimed_hash", ["old-content", None])
+    def test_changed_batch_preserves_prior_node_and_requeues(self, tmp_db, claimed_hash):
+        conn, db_path = tmp_db
+        ids = [_insert_session(conn, session_id=f"stale-{i}") for i in range(2)]
+        conn.execute("UPDATE agentic_sessions SET content_hash = ?", (claimed_hash,))
+        conn.commit()
+        prior_node = write_opencode_knowledge_node(
+            conn, self._make_result(), ids, "old-model", [claimed_hash, claimed_hash]
+        )
+        conn.execute("UPDATE agentic_enrichment_queue SET status='pending', retry_count=4")
+        conn.commit()
+        claim_pending_opencode_segments(conn, "old-worker")
+        # A separate producer commits newer content after the worker's claim.
+        with sqlite3.connect(db_path) as producer:
+            producer.execute(
+                "UPDATE agentic_sessions SET content_hash='new-content' WHERE id=?", (ids[0],)
+            )
+        assert (
+            write_opencode_knowledge_node(
+                conn, self._make_result(), ids, "stale-model", [claimed_hash, claimed_hash]
+            )
+            is None
+        )
+        assert conn.execute("SELECT id FROM knowledge_nodes").fetchall() == [(prior_node,)]
+        assert (
+            conn.execute(
+                "SELECT status, retry_count, locked_at, locked_by FROM agentic_enrichment_queue"
+            ).fetchall()
+            == [("pending", 4, None, None)] * 2
+        )
+        assert (
+            conn.execute(
+                "SELECT last_enriched_content_hash FROM agentic_sessions ORDER BY id"
+            ).fetchall()
+            == [(claimed_hash,)] * 2
+        )
+        batches = claim_pending_opencode_segments(conn, "fresh-worker")
+        hashes = {seg["id"]: seg["content_hash"] for batch in batches for seg in batch}
+        assert hashes == {ids[0]: "new-content", ids[1]: claimed_hash}
+
+    def test_matching_claim_publishes_and_advances_watermark(self, tmp_db):
+        conn, _ = tmp_db
+        seg_id = _insert_session(conn, session_id="current")
+        conn.execute("UPDATE agentic_sessions SET content_hash='current-content'")
+        conn.commit()
+        claim_pending_opencode_segments(conn, "worker")
+        node_id = write_opencode_knowledge_node(
+            conn, self._make_result(), [seg_id], "test-model", ["current-content"]
+        )
+        assert isinstance(node_id, int)
+        assert conn.execute(
+            "SELECT last_enriched_content_hash FROM agentic_sessions"
+        ).fetchone() == ("current-content",)
+        assert conn.execute("SELECT status FROM agentic_enrichment_queue").fetchone() == ("done",)
+
     def test_write_flips_enriched_and_closes_queue(self, tmp_db):
         conn, _ = tmp_db
         seg_id = _insert_session(conn, session_id="closeout")
@@ -275,6 +334,26 @@ class TestWriteKnowledgeNode:
 
 
 class TestMarkQueueFailed:
+    @pytest.mark.parametrize("claimed_hash", ["old-content", None])
+    def test_failure_of_old_content_does_not_exhaust_new_content(self, tmp_db, claimed_hash):
+        conn, _ = tmp_db
+        seg_id = _insert_session(conn, session_id="stale-failure")
+        conn.execute("UPDATE agentic_sessions SET content_hash=?", (claimed_hash,))
+        conn.execute("UPDATE agentic_enrichment_queue SET retry_count=4")
+        conn.commit()
+        claim_pending_opencode_segments(conn, "worker")
+        conn.execute("UPDATE agentic_sessions SET content_hash='new-content'")
+        conn.commit()
+        mark_opencode_queue_failed(conn, [seg_id], "old timeout", [claimed_hash])
+        assert conn.execute(
+            "SELECT status, retry_count, error_message, locked_at, locked_by "
+            "FROM agentic_enrichment_queue"
+        ).fetchone() == ("pending", 4, None, None, None)
+        assert (
+            claim_pending_opencode_segments(conn, "fresh-worker")[0][0]["content_hash"]
+            == "new-content"
+        )
+
     def test_first_failure_keeps_queue_pending(self, tmp_db):
         conn, _ = tmp_db
         seg_id = _insert_session(conn, session_id="retry-1")

@@ -18,6 +18,12 @@ __pycache__/
 *.db-shm
 *.jsonl
 !docs/baselines/**/*.jsonl
+# Generated benchmark archives belong outside the repository.
+docs/research/**/run/
+docs/research/**/pool-run/
+docs/research/**/*results*.json
+docs/research/**/*analysis.json
+docs/research/**/*protocol.json
 !brain/src/hippo_brain/bench/qa_template.jsonl
 !brain/tests/fixtures/**/*.jsonl
 !crates/hippo-daemon/tests/fixtures/**/*.jsonl

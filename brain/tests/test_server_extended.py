@@ -582,6 +582,131 @@ def test_brain_server_stores_reaper_settings():
 # ---- Task 4: _embed_reaper_tick + _embed_reaper_loop ----
 
 
+@pytest.mark.parametrize(
+    "endpoint", ["/query", "/ask", "/agent/query", "/memory/query", "/memory/history"]
+)
+def test_paused_queries_rejected_until_resume(tmp_db, endpoint):
+    _, db_path = tmp_db
+    server = _make_server(str(db_path))
+    try:
+        with TestClient(Starlette(routes=server.get_routes())) as client:
+            initial_status = client.post(endpoint, json={}).status_code
+            assert client.post("/control/pause").json()["in_flight_finished"] is True
+            response = client.post(endpoint, json={})
+            assert response.status_code == 503
+            assert server._query_inflight == 0
+            assert client.post("/control/resume").status_code == 200
+            assert client.post(endpoint, json={}).status_code == initial_status
+    finally:
+        server.close()
+
+
+@pytest.mark.asyncio
+async def test_pause_waits_for_active_query(tmp_db, monkeypatch):
+    _, db_path = tmp_db
+    server = _make_server(str(db_path), embedding_model="test-embed")
+    server._vector_table = object()
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def embed(*args, **kwargs):
+        started.set()
+        await release.wait()
+        return [[0.0]]
+
+    monkeypatch.setattr(server.client, "embed", embed)
+    monkeypatch.setattr("hippo_brain.server.search_similar", lambda *args, **kwargs: [])
+    request = MagicMock(json=AsyncMock(return_value={"text": "query"}))
+    task = asyncio.create_task(server.query(request))
+    try:
+        await asyncio.wait_for(started.wait(), 1)
+        assert b'"in_flight_finished":false' in (await server.control_pause(None)).body
+        assert (await server.query(request)).status_code == 503
+        release.set()
+        assert (await asyncio.wait_for(task, 1)).status_code == 200
+        assert b'"in_flight_finished":true' in (await server.control_pause(None)).body
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        server.close()
+
+
+@pytest.mark.asyncio
+async def test_pause_during_enrichment_poll_prevents_new_inference(tmp_db, monkeypatch):
+    _, db_path = tmp_db
+    server = _make_server(str(db_path))
+    polling = asyncio.Event()
+    release_poll = asyncio.Event()
+    waiting_for_resume = asyncio.Event()
+
+    async def poll():
+        polling.set()
+        await release_poll.wait()
+
+    async def wait_for_resume():
+        waiting_for_resume.set()
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(server._query_arrived, "wait", poll)
+    monkeypatch.setattr(server._resume_event, "wait", wait_for_resume)
+    preflight = AsyncMock()
+    monkeypatch.setattr("hippo_brain.server.preflight_inference", preflight)
+    task = asyncio.create_task(server._enrichment_loop())
+    try:
+        await asyncio.wait_for(polling.wait(), 1)
+        response = await server.control_pause(None)
+        assert b'"in_flight_finished":true' in response.body
+        release_poll.set()
+        await asyncio.wait_for(waiting_for_resume.wait(), 1)
+        preflight.assert_not_called()
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        server.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cancel", [False, True])
+async def test_pause_drains_active_embed_reaper_and_stops_batch(tmp_db, monkeypatch, cancel):
+    conn, db_path = tmp_db
+    conn.execute("CREATE TABLE IF NOT EXISTS knowledge_vectors_rowids (rowid INTEGER PRIMARY KEY)")
+    for nid in (1, 2):
+        conn.execute(
+            "INSERT INTO knowledge_nodes (id, uuid, content, embed_text, node_type, "
+            "created_at, updated_at) VALUES (?, ?, 'c', 'et', 'observation', 1, 1)",
+            (nid, f"pause-{nid}"),
+        )
+    conn.commit()
+    server = _make_server(str(db_path))
+    started = asyncio.Event()
+    release = asyncio.Event()
+    seen = []
+
+    async def embed(node_id, node_dict, source_label):
+        seen.append(node_id)
+        started.set()
+        await release.wait()
+
+    monkeypatch.setattr(server, "_embed_node", embed)
+    task = asyncio.create_task(server._embed_reaper_tick())
+    try:
+        await asyncio.wait_for(started.wait(), 1)
+        response = await server.control_pause(None)
+        assert b'"in_flight_finished":false' in response.body
+        if cancel:
+            task.cancel()
+        else:
+            release.set()
+        await asyncio.wait_for(asyncio.gather(task, return_exceptions=True), 1)
+        response = await server.control_pause(None)
+        assert b'"in_flight_finished":true' in response.body
+        assert seen == [1]
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        server.close()
+
+
 @pytest.mark.asyncio
 async def test_embed_reaper_tick_reembeds_only_old_orphans(tmp_db):
     """The reaper re-embeds nodes older than the staleness window that lack a

@@ -77,6 +77,10 @@ impl Drop for ChildGuard {
 }
 
 fn hippo_command(temp: &TempDir) -> Command {
+    let config_dir = temp.path().join("xdg-config/hippo");
+    fs::create_dir_all(&config_dir).unwrap();
+    // Keep the fixture from handshaking with a running production brain.
+    fs::write(config_dir.join("config.toml"), "[brain]\nport = 0\n").unwrap();
     let mut command = Command::new(env!("CARGO_BIN_EXE_hippo"));
     command
         .env("XDG_DATA_HOME", temp.path().join("xdg-data"))
@@ -89,6 +93,7 @@ fn process_config(temp: &TempDir) -> HippoConfig {
     let mut config = HippoConfig::default();
     config.storage.data_dir = temp.path().join("xdg-data/hippo");
     config.storage.config_dir = temp.path().join("xdg-config/hippo");
+    config.brain.port = 0;
     config
 }
 
@@ -98,7 +103,7 @@ fn spawn_daemon(temp: &TempDir) -> ChildGuard {
         .args(["daemon", "run"])
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stderr(Stdio::inherit())
         .spawn()
         .expect("spawn daemon");
     ChildGuard(child)
@@ -290,7 +295,13 @@ fn nm_stdio_across_daemon_restart_loses_no_events() {
     let temp = tempfile::tempdir().unwrap();
     let config = process_config(&temp);
     let mut daemon = spawn_daemon(&temp);
-    wait_until(READY, || config.socket_path().exists());
+    wait_until(READY, || {
+        assert!(
+            daemon.0.try_wait().unwrap().is_none(),
+            "daemon exited before readiness"
+        );
+        config.socket_path().exists()
+    });
 
     let (mut native_host, mut stdin, responses) = spawn_native_host(&temp);
     let first_url = "https://docs.rs/hippo-restart-first";
@@ -334,7 +345,13 @@ fn nm_stdio_across_daemon_restart_loses_no_events() {
     });
 
     let mut restarted_daemon = spawn_daemon(&temp);
-    wait_until(READY, || config.socket_path().exists());
+    wait_until(READY, || {
+        assert!(
+            restarted_daemon.0.try_wait().unwrap().is_none(),
+            "daemon exited before readiness"
+        );
+        config.socket_path().exists()
+    });
     wait_until(READY, || {
         let Ok(conn) = storage::open_db(&config.db_path()) else {
             return false;

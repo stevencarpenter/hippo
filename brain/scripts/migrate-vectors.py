@@ -28,6 +28,7 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from hippo_brain.client import InferenceClient
 from hippo_brain.embeddings import embed_knowledge_node, open_vector_db
+from hippo_brain.vector_store import open_conn
 
 logging.basicConfig(
     level=logging.INFO,
@@ -69,9 +70,7 @@ def _load_models(config_path: Path) -> tuple[str, str, str]:
 
 async def run(db_path: Path | None, data_dir: Path | None, config_path: Path) -> int:
     if db_path:
-        # If --db is provided, use its parent as data_dir (for config/etc)
-        actual_data_dir = db_path.parent
-        conn = open_vector_db(actual_data_dir)
+        conn = open_conn(db_path)
     else:
         conn = open_vector_db(data_dir)
     base_url, embed_model, command_model = _load_models(config_path)

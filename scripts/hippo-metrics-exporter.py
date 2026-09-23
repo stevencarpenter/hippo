@@ -61,9 +61,7 @@ from pathlib import Path
 # Configuration
 # ---------------------------------------------------------------------------
 
-DATA_DIR = Path(
-    os.environ.get("XDG_DATA_HOME", Path.home() / ".local/share")
-) / "hippo"
+DATA_DIR = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local/share")) / "hippo"
 DB_PATH = Path(os.environ.get("HIPPO_DB", DATA_DIR / "hippo.db"))
 PORT = int(os.environ.get("HIPPO_METRICS_PORT", "9835"))
 BRAIN_URL = os.environ.get("HIPPO_BRAIN_URL", "http://127.0.0.1:9175").rstrip("/")
@@ -236,8 +234,9 @@ _COUNTERS: dict[tuple[str, tuple[tuple[str, str], ...]], float] = {}
 _COUNTER_HELP: dict[str, str] = {}
 
 
-def bump(name: str, labels: dict[str, str] | None = None, by: float = 1.0,
-         help: str = "") -> float:
+def bump(
+    name: str, labels: dict[str, str] | None = None, by: float = 1.0, help: str = ""
+) -> float:
     """Increment a process-lifetime counter series and return its new value."""
     key = (name, tuple(sorted((labels or {}).items())))
     with _COUNTER_LOCK:
@@ -282,15 +281,29 @@ class Registry:
             self.help.setdefault(name, text)
         self.type.setdefault(name, typ)
 
-    def gauge(self, name: str, value: float, labels: dict[str, str] | None = None,
-              help: str = "") -> None:
+    def gauge(
+        self,
+        name: str,
+        value: float,
+        labels: dict[str, str] | None = None,
+        help: str = "",
+    ) -> None:
         self._declare(name, help, "gauge")
-        self.samples.append({"name": name, "labels": labels or {}, "value": float(value)})
+        self.samples.append(
+            {"name": name, "labels": labels or {}, "value": float(value)}
+        )
 
-    def counter(self, name: str, value: float, labels: dict[str, str] | None = None,
-                help: str = "") -> None:
+    def counter(
+        self,
+        name: str,
+        value: float,
+        labels: dict[str, str] | None = None,
+        help: str = "",
+    ) -> None:
         self._declare(name, help, "counter")
-        self.samples.append({"name": name, "labels": labels or {}, "value": float(value)})
+        self.samples.append(
+            {"name": name, "labels": labels or {}, "value": float(value)}
+        )
 
     def extend(self, other: Registry) -> None:
         for k, v in other.help.items():
@@ -310,7 +323,7 @@ class Registry:
                 "hippo_kb_collector_errors_total",
                 {"name": name},
                 help="Cumulative metric-family computation failures by family name, "
-                     "since exporter start.",
+                "since exporter start.",
             )
             print(f"[exporter] family {name} failed: {exc}", flush=True)
 
@@ -332,7 +345,7 @@ def collect_db(reg: Registry, now_ms: int, db_path: Path | None = None) -> None:
             "hippo_kb_collector_errors_total",
             {"name": "db_size"},
             help="Cumulative metric-family computation failures by family name, "
-                 "since exporter start.",
+            "since exporter start.",
         )
         print(f"[exporter] db size stat failed for {path}: {exc}", flush=True)
         # Continue without the size gauge; still try to open the DB.
@@ -376,8 +389,11 @@ def _f_events(reg: Registry, conn: sqlite3.Connection, now_ms: int) -> None:
     reg.gauge("hippo_kb_events_24h", e24, help="Events captured in the last 24 hours.")
     row = conn.execute("SELECT MAX(timestamp) FROM events").fetchone()
     if row and row[0]:
-        reg.gauge("hippo_kb_last_event_age_milliseconds", now_ms - row[0],
-                  help="Age of the newest event (capture staleness).")
+        reg.gauge(
+            "hippo_kb_last_event_age_milliseconds",
+            now_ms - row[0],
+            help="Age of the newest event (capture staleness).",
+        )
     so = conn.execute(
         "SELECT COUNT(*) FROM events WHERE stdout IS NOT NULL AND stdout != ''"
     ).fetchone()[0]
@@ -385,9 +401,12 @@ def _f_events(reg: Registry, conn: sqlite3.Connection, now_ms: int) -> None:
         "SELECT COUNT(*) FROM events WHERE stderr IS NOT NULL AND stderr != ''"
     ).fetchone()[0]
     reg.gauge("hippo_kb_stdout_nonempty", so, help="Events with non-empty stdout.")
-    reg.gauge("hippo_kb_stderr_nonempty", se,
-              help="Events with non-empty stderr. Persistently 0 = shell hook captures "
-                   "combined stdout only (schema-ready, hook-starved).")
+    reg.gauge(
+        "hippo_kb_stderr_nonempty",
+        se,
+        help="Events with non-empty stderr. Persistently 0 = shell hook captures "
+        "combined stdout only (schema-ready, hook-starved).",
+    )
 
 
 def _f_nodes(reg: Registry, conn: sqlite3.Connection) -> None:
@@ -403,16 +422,20 @@ def _f_sessions(reg: Registry, conn: sqlite3.Connection) -> None:
     for t in ("agentic_session_messages", "session_messages"):
         if _table_exists(conn, t):
             m = conn.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0]
-            reg.gauge("hippo_kb_agentic_messages", m,
-                      help="Total agentic session messages.")
+            reg.gauge(
+                "hippo_kb_agentic_messages", m, help="Total agentic session messages."
+            )
             return
     if "message_count" in _cols(conn, "agentic_sessions"):
         m = conn.execute(
             "SELECT COALESCE(SUM(message_count), 0) FROM agentic_sessions"
         ).fetchone()[0]
-        reg.gauge("hippo_kb_agentic_messages", m,
-                  help="Total agentic session messages (summed from "
-                       "agentic_sessions.message_count).")
+        reg.gauge(
+            "hippo_kb_agentic_messages",
+            m,
+            help="Total agentic session messages (summed from "
+            "agentic_sessions.message_count).",
+        )
 
 
 def _f_alarms(reg: Registry, conn: sqlite3.Connection) -> None:
@@ -424,15 +447,24 @@ def _f_alarms(reg: Registry, conn: sqlite3.Connection) -> None:
             "SELECT COUNT(*) FROM capture_alarms WHERE resolved_at IS NULL"
         ).fetchone()[0]
     elif "resolved" in cols:
-        active = conn.execute("SELECT COUNT(*) FROM capture_alarms WHERE resolved = 0").fetchone()[0]
+        active = conn.execute(
+            "SELECT COUNT(*) FROM capture_alarms WHERE resolved = 0"
+        ).fetchone()[0]
     elif "active" in cols:
-        active = conn.execute("SELECT COUNT(*) FROM capture_alarms WHERE active = 1").fetchone()[0]
+        active = conn.execute(
+            "SELECT COUNT(*) FROM capture_alarms WHERE active = 1"
+        ).fetchone()[0]
     elif "cleared_at" in cols:
-        active = conn.execute("SELECT COUNT(*) FROM capture_alarms WHERE cleared_at IS NULL").fetchone()[0]
+        active = conn.execute(
+            "SELECT COUNT(*) FROM capture_alarms WHERE cleared_at IS NULL"
+        ).fetchone()[0]
     else:
         return
-    reg.gauge("hippo_kb_capture_alarms_active", active,
-              help="Capture alarms currently unresolved.")
+    reg.gauge(
+        "hippo_kb_capture_alarms_active",
+        active,
+        help="Capture alarms currently unresolved.",
+    )
 
 
 def _f_sources(reg: Registry, conn: sqlite3.Connection, now_ms: int) -> None:
@@ -444,33 +476,49 @@ def _f_sources(reg: Registry, conn: sqlite3.Connection, now_ms: int) -> None:
         return
     okcol = _first_col(cols, ["probe_ok"])
     lagcol = _first_col(cols, ["last_event_ts", "last_event_at", "max_event_ts"])
-    for row in conn.execute(f"SELECT {scol}{', ' + okcol if okcol else ''}"
-                            f"{', ' + lagcol if lagcol else ''} FROM source_health"):
+    for row in conn.execute(
+        f"SELECT {scol}{', ' + okcol if okcol else ''}"
+        f"{', ' + lagcol if lagcol else ''} FROM source_health"
+    ):
         src = row[0]
         idx = 1
         if okcol:
-            reg.gauge("hippo_kb_capture_source_ok", 1 if row[idx] else 0, {"source": src},
-                      help="Per-source probe health (1 = ok).")
+            reg.gauge(
+                "hippo_kb_capture_source_ok",
+                1 if row[idx] else 0,
+                {"source": src},
+                help="Per-source probe health (1 = ok).",
+            )
             idx += 1
         if lagcol and row[idx]:
-            reg.gauge("hippo_kb_capture_source_last_event_age_milliseconds", now_ms - row[idx],
-                      {"source": src}, help="Per-source capture staleness.")
+            reg.gauge(
+                "hippo_kb_capture_source_last_event_age_milliseconds",
+                now_ms - row[idx],
+                {"source": src},
+                help="Per-source capture staleness.",
+            )
 
 
 def _session_project_names(conn: sqlite3.Connection) -> set[str]:
     """Project basenames referenced by agentic sessions (defines 'is a project')."""
     if not _table_exists(conn, "agentic_sessions"):
         return set()
-    pcol = _first_col(_cols(conn, "agentic_sessions"),
-                      ["project_dir", "project", "cwd", "directory", "path"])
+    pcol = _first_col(
+        _cols(conn, "agentic_sessions"),
+        ["project_dir", "project", "cwd", "directory", "path"],
+    )
     if not pcol:
         return set()
-    return {b for (p,) in conn.execute(f"SELECT DISTINCT {pcol} FROM agentic_sessions")
-            if (b := base_name(p))}
+    return {
+        b
+        for (p,) in conn.execute(f"SELECT DISTINCT {pcol} FROM agentic_sessions")
+        if (b := base_name(p))
+    }
 
 
-def _project_stats(conn: sqlite3.Connection,
-                   session_projects: set[str] | None = None) -> dict[str, dict]:
+def _project_stats(
+    conn: sqlite3.Connection, session_projects: set[str] | None = None
+) -> dict[str, dict]:
     """basename -> {n, mx, d} for PROJECT directories only.
 
     A directory counts as a project if it is a git repo (events.git_repo) or an
@@ -490,14 +538,21 @@ def _project_stats(conn: sqlite3.Connection,
             e["d"] += d or 0
 
     # Git repos are projects by definition: accept unconditionally.
-    acc("SELECT git_repo, MAX(timestamp), COUNT(*), SUM(duration_ms) FROM events "
-        "WHERE git_repo IS NOT NULL AND git_repo != '' GROUP BY git_repo")
+    acc(
+        "SELECT git_repo, MAX(timestamp), COUNT(*), SUM(duration_ms) FROM events "
+        "WHERE git_repo IS NOT NULL AND git_repo != '' GROUP BY git_repo"
+    )
     # cwd-derived stats only for directories already known to be projects
     # (an agentic-session project dir or an already-accepted git-repo basename);
     # shell cwd-only directories (~/bin, /tmp, ...) are excluded.
-    allowed = (set(session_projects) | set(stats)) if session_projects is not None else None
-    acc("SELECT cwd, MAX(timestamp), COUNT(*), SUM(duration_ms) FROM events "
-        "WHERE cwd IS NOT NULL AND cwd != '' GROUP BY cwd", allowed)
+    allowed = (
+        (set(session_projects) | set(stats)) if session_projects is not None else None
+    )
+    acc(
+        "SELECT cwd, MAX(timestamp), COUNT(*), SUM(duration_ms) FROM events "
+        "WHERE cwd IS NOT NULL AND cwd != '' GROUP BY cwd",
+        allowed,
+    )
     return stats
 
 
@@ -505,28 +560,51 @@ def _dead_sets(stats: dict[str, dict], now_ms: int) -> dict[int, set[str]]:
     out: dict[int, set[str]] = {}
     for w in WINDOWS:
         cutoff = now_ms - w * 86400000
-        out[w] = {b for b, e in stats.items()
-                  if e["n"] >= MIN_EVENTS_FOR_PROJECT and e["mx"] < cutoff}
+        out[w] = {
+            b
+            for b, e in stats.items()
+            if e["n"] >= MIN_EVENTS_FOR_PROJECT and e["mx"] < cutoff
+        }
     return out
 
 
-def _f_graveyard(reg: Registry, conn: sqlite3.Connection, now_ms: int,
-                 stats: dict[str, dict]) -> None:
+def _f_graveyard(
+    reg: Registry, conn: sqlite3.Connection, now_ms: int, stats: dict[str, dict]
+) -> None:
     dead = _dead_sets(stats, now_ms)
     for w in WINDOWS:
-        reg.gauge("hippo_kb_dead_projects", len(dead[w]), {"window": f"{w}d"},
-                  help="Projects with >=10 events and no activity inside the window.")
+        reg.gauge(
+            "hippo_kb_dead_projects",
+            len(dead[w]),
+            {"window": f"{w}d"},
+            help="Projects with >=10 events and no activity inside the window.",
+        )
         stranded = sum(stats[b]["d"] for b in dead[w]) / 3.6e6
-        reg.gauge("hippo_kb_stranded_hours", stranded, {"window": f"{w}d"},
-                  help="All-time shell hours on projects dead within the window "
-                       "(wasted-effort estimate).")
+        reg.gauge(
+            "hippo_kb_stranded_hours",
+            stranded,
+            {"window": f"{w}d"},
+            help="All-time shell hours on projects dead within the window "
+            "(wasted-effort estimate).",
+        )
     # Dead-project contamination of knowledge nodes (30d window).
     dead30 = dead[30]
-    ratio_help = ("Fraction of linked knowledge nodes sourced exclusively from "
-                  "dead (30d) projects.")
-    link_table = next((t for t in ("knowledge_node_agentic_sessions",
-                                   "knowledge_node_sessions", "kn_agentic_sessions")
-                       if _table_exists(conn, t)), None)
+    ratio_help = (
+        "Fraction of linked knowledge nodes sourced exclusively from "
+        "dead (30d) projects."
+    )
+    link_table = next(
+        (
+            t
+            for t in (
+                "knowledge_node_agentic_sessions",
+                "knowledge_node_sessions",
+                "kn_agentic_sessions",
+            )
+            if _table_exists(conn, t)
+        ),
+        None,
+    )
     if not link_table or not dead30:
         reg.gauge("hippo_kb_dead_project_node_ratio", 0.0, help=ratio_help)
         return
@@ -550,19 +628,33 @@ def _f_graveyard(reg: Registry, conn: sqlite3.Connection, now_ms: int,
         reg.gauge("hippo_kb_dead_project_node_ratio", 0.0, help=ratio_help)
         return
     dead_only = sum(1 for ps in node_projects.values() if ps and ps <= dead30)
-    reg.gauge("hippo_kb_dead_project_node_ratio", dead_only / len(node_projects),
-              help=ratio_help)
+    reg.gauge(
+        "hippo_kb_dead_project_node_ratio",
+        dead_only / len(node_projects),
+        help=ratio_help,
+    )
 
 
 def _f_identity(reg: Registry, stats: dict[str, dict]) -> None:
     raw = len(stats)
     norm = len({canon(b) for b in stats})
-    reg.gauge("hippo_kb_project_identifiers", raw, {"kind": "raw"},
-              help="Distinct project basenames seen in events (pre-normalization).")
-    reg.gauge("hippo_kb_project_identifiers", norm, {"kind": "normalized"},
-              help="Distinct project basenames after dot/separator normalization.")
-    reg.gauge("hippo_kb_project_fragmentation_ratio", (raw / norm) if norm else 1.0,
-              help="raw/normalized project identifiers (>1 means alias fragmentation).")
+    reg.gauge(
+        "hippo_kb_project_identifiers",
+        raw,
+        {"kind": "raw"},
+        help="Distinct project basenames seen in events (pre-normalization).",
+    )
+    reg.gauge(
+        "hippo_kb_project_identifiers",
+        norm,
+        {"kind": "normalized"},
+        help="Distinct project basenames after dot/separator normalization.",
+    )
+    reg.gauge(
+        "hippo_kb_project_fragmentation_ratio",
+        (raw / norm) if norm else 1.0,
+        help="raw/normalized project identifiers (>1 means alias fragmentation).",
+    )
 
 
 def _f_decisions(reg: Registry, conn: sqlite3.Connection) -> None:
@@ -579,8 +671,11 @@ def _f_decisions(reg: Registry, conn: sqlite3.Connection) -> None:
         ).fetchone()[0]
     else:
         return
-    reg.gauge("hippo_kb_design_decisions", n,
-              help="Knowledge nodes carrying structured design decisions.")
+    reg.gauge(
+        "hippo_kb_design_decisions",
+        n,
+        help="Knowledge nodes carrying structured design decisions.",
+    )
 
 
 def _env_snapshot_keys(conn: sqlite3.Connection) -> set[str]:
@@ -592,9 +687,11 @@ def _env_snapshot_keys(conn: sqlite3.Connection) -> set[str]:
     """
     try:
         return {
-            k for (k,) in conn.execute(
+            k
+            for (k,) in conn.execute(
                 "SELECT DISTINCT j.key FROM env_snapshots e, json_each(e.env_json) j"
-            ) if k
+            )
+            if k
         }
     except sqlite3.OperationalError:
         keys: set[str] = set()
@@ -614,10 +711,13 @@ def _f_envsnap(reg: Registry, conn: sqlite3.Connection) -> None:
     if "env_json" not in _cols(conn, "env_snapshots"):
         return
     bad = sorted(k for k in _env_snapshot_keys(conn) if looks_secretish(k))
-    reg.gauge("hippo_kb_env_secretish_keys", len(bad),
-              help="Distinct env-snapshot key NAMES matching secret patterns (key names "
-                   "only; values are never read). >0 means a redaction/allow-list "
-                   "regression.")
+    reg.gauge(
+        "hippo_kb_env_secretish_keys",
+        len(bad),
+        help="Distinct env-snapshot key NAMES matching secret patterns (key names "
+        "only; values are never read). >0 means a redaction/allow-list "
+        "regression.",
+    )
     for k in bad[:10]:
         print(f"[exporter] secretish env key present: {k}", flush=True)
 
@@ -626,7 +726,9 @@ def _f_snowball(reg: Registry, conn: sqlite3.Connection) -> None:
     """Emit future-feature metrics only when their tables exist (snowball)."""
     if _table_exists(conn, "retrieval_events"):
         n = conn.execute("SELECT COUNT(*) FROM retrieval_events").fetchone()[0]
-        reg.gauge("hippo_kb_retrieval_events", n, help="Retrieval feedback events logged.")
+        reg.gauge(
+            "hippo_kb_retrieval_events", n, help="Retrieval feedback events logged."
+        )
     if _table_exists(conn, "epitaphs"):
         cols = _cols(conn, "epitaphs")
         ccol = _first_col(cols, ["confirmed_by", "confirmed"])
@@ -635,47 +737,84 @@ def _f_snowball(reg: Registry, conn: sqlite3.Connection) -> None:
             yes = conn.execute(
                 "SELECT COUNT(*) FROM epitaphs WHERE confirmed_by IS NOT NULL AND confirmed_by != ''"
             ).fetchone()[0]
-            reg.gauge("hippo_kb_epitaphs", yes, {"confirmed": "yes"},
-                      help="Epitaphs (project death records) by confirmation state.")
+            reg.gauge(
+                "hippo_kb_epitaphs",
+                yes,
+                {"confirmed": "yes"},
+                help="Epitaphs (project death records) by confirmation state.",
+            )
             reg.gauge("hippo_kb_epitaphs", total - yes, {"confirmed": "no"})
         else:
-            reg.gauge("hippo_kb_epitaphs", total, {"confirmed": "unknown"},
-                      help="Epitaphs (project death records) by confirmation state.")
+            reg.gauge(
+                "hippo_kb_epitaphs",
+                total,
+                {"confirmed": "unknown"},
+                help="Epitaphs (project death records) by confirmation state.",
+            )
     if _table_exists(conn, "push_trials"):
         cols = _cols(conn, "push_trials")
         ucol = _first_col(cols, ["tapped_useful"])
         ncol = _first_col(cols, ["tapped_noise"])
         total = conn.execute("SELECT COUNT(*) FROM push_trials").fetchone()[0]
         if ucol and ncol:
-            u = conn.execute(f"SELECT COUNT(*) FROM push_trials WHERE {ucol} = 1").fetchone()[0]
-            nz = conn.execute(f"SELECT COUNT(*) FROM push_trials WHERE {ncol} = 1").fetchone()[0]
-            reg.gauge("hippo_kb_push_fires", u, {"tapped": "useful"},
-                      help="Push interventions by user tap verdict.")
+            u = conn.execute(
+                f"SELECT COUNT(*) FROM push_trials WHERE {ucol} = 1"
+            ).fetchone()[0]
+            nz = conn.execute(
+                f"SELECT COUNT(*) FROM push_trials WHERE {ncol} = 1"
+            ).fetchone()[0]
+            reg.gauge(
+                "hippo_kb_push_fires",
+                u,
+                {"tapped": "useful"},
+                help="Push interventions by user tap verdict.",
+            )
             reg.gauge("hippo_kb_push_fires", nz, {"tapped": "noise"})
             reg.gauge("hippo_kb_push_fires", max(0, total - u - nz), {"tapped": "none"})
         else:
-            reg.gauge("hippo_kb_push_fires", total, {"tapped": "none"},
-                      help="Push interventions by user tap verdict.")
+            reg.gauge(
+                "hippo_kb_push_fires",
+                total,
+                {"tapped": "none"},
+                help="Push interventions by user tap verdict.",
+            )
     if _table_exists(conn, "nodes") and "status" in _cols(conn, "nodes"):
-        for status, n in conn.execute("SELECT status, COUNT(*) FROM nodes GROUP BY status"):
-            reg.gauge("hippo_kb_nodes_by_status", n, {"status": str(status)},
-                      help="Write-API nodes by lifecycle status.")
+        for status, n in conn.execute(
+            "SELECT status, COUNT(*) FROM nodes GROUP BY status"
+        ):
+            reg.gauge(
+                "hippo_kb_nodes_by_status",
+                n,
+                {"status": str(status)},
+                help="Write-API nodes by lifecycle status.",
+            )
     if _table_exists(conn, "contradictions"):
         cols = _cols(conn, "contradictions")
         rcol = _first_col(cols, ["resolved_by", "resolved_at"])
         where = f"WHERE {rcol} IS NULL" if rcol else ""
         n = conn.execute(f"SELECT COUNT(*) FROM contradictions {where}").fetchone()[0]
-        reg.gauge("hippo_kb_contradictions_open", n,
-                  help="Unresolved cross-writer contradictions.")
+        reg.gauge(
+            "hippo_kb_contradictions_open",
+            n,
+            help="Unresolved cross-writer contradictions.",
+        )
     if _table_exists(conn, "bets"):
         cols = _cols(conn, "bets")
         rcol = _first_col(cols, ["resolved_at"])
         total = conn.execute("SELECT COUNT(*) FROM bets").fetchone()[0]
-        resolved = conn.execute(
-            f"SELECT COUNT(*) FROM bets WHERE {rcol} IS NOT NULL"
-        ).fetchone()[0] if rcol else 0
-        reg.gauge("hippo_kb_bets", total - resolved, {"state": "open"},
-                  help="Bets (declared hypotheses with kill criteria) by state.")
+        resolved = (
+            conn.execute(
+                f"SELECT COUNT(*) FROM bets WHERE {rcol} IS NOT NULL"
+            ).fetchone()[0]
+            if rcol
+            else 0
+        )
+        reg.gauge(
+            "hippo_kb_bets",
+            total - resolved,
+            {"state": "open"},
+            help="Bets (declared hypotheses with kill criteria) by state.",
+        )
         reg.gauge("hippo_kb_bets", resolved, {"state": "resolved"})
 
 
@@ -694,9 +833,12 @@ _db_cache: dict = {"ts": 0.0, "reg": None}
 
 def db_snapshot(now_ms: int) -> Registry | None:
     if not DB_PATH.exists():
-        bump("hippo_kb_collector_errors_total", {"name": "db_missing"},
-             help="Cumulative metric-family computation failures by family name, "
-                  "since exporter start.")
+        bump(
+            "hippo_kb_collector_errors_total",
+            {"name": "db_missing"},
+            help="Cumulative metric-family computation failures by family name, "
+            "since exporter start.",
+        )
         return None
     with _db_cache_lock:
         now = time.time()
@@ -707,9 +849,12 @@ def db_snapshot(now_ms: int) -> Registry | None:
         try:
             collect_db(reg, now_ms)
         except Exception as exc:  # noqa: BLE001 — a DB-level failure must not kill the scrape
-            bump("hippo_kb_collector_errors_total", {"name": "db"},
-                 help="Cumulative metric-family computation failures by family name, "
-                      "since exporter start.")
+            bump(
+                "hippo_kb_collector_errors_total",
+                {"name": "db"},
+                help="Cumulative metric-family computation failures by family name, "
+                "since exporter start.",
+            )
             print(f"[exporter] db snapshot failed: {exc}", flush=True)
             return cached
         _db_cache.update({"ts": now, "reg": reg})
@@ -757,7 +902,10 @@ def _ask_once(question: str) -> tuple[bool, str]:
                     "max_tokens": PROBE_MAX_ANSWER_TOKENS,
                 }
             ).encode(),
-            headers={"Content-Type": "application/json"},
+            headers={
+                "Content-Type": "application/json",
+                "X-Hippo-Query-Origin": "probe",
+            },
             method="POST",
         )
         with urllib.request.urlopen(req, timeout=PROBE_TIMEOUT_S) as resp:
@@ -793,10 +941,12 @@ def _run_probe_inner() -> None:
             all_ok = False
             # One increment per failed probe RUN, not per scrape: this is the
             # series the recall-failure-burst alert integrates with increase().
-            bump("hippo_kb_recall_failures_total",
-                 {"question": q[:48], "reason": reason},
-                 help="Cumulative recall probe failures by question and reason class, "
-                      "since exporter start.")
+            bump(
+                "hippo_kb_recall_failures_total",
+                {"question": q[:48], "reason": reason},
+                help="Cumulative recall probe failures by question and reason class, "
+                "since exporter start.",
+            )
             print(f"[exporter] recall probe failed ({reason}): {q}", flush=True)
         samples.append({"question": q, "ok": ok, "reason": reason, "ms": ms})
     # Cool down after completion, even when the batch took longer than the TTL.
@@ -813,8 +963,11 @@ def collect_probe(reg: Registry) -> None:
     `tryAcquire` on `_probe_lock`, so concurrent scrapes don't queue burst
     threads.
     """
-    reg.gauge("hippo_kb_recall_probe_enabled", 1.0 if PROBE_TTL_S > 0 else 0.0,
-              help="1 if synthetic /ask probes are enabled (HIPPO_PROBE_TTL > 0).")
+    reg.gauge(
+        "hippo_kb_recall_probe_enabled",
+        1.0 if PROBE_TTL_S > 0 else 0.0,
+        help="1 if synthetic /ask probes are enabled (HIPPO_PROBE_TTL > 0).",
+    )
     if PROBE_TTL_S <= 0:
         return
     now = time.time()
@@ -825,22 +978,36 @@ def collect_probe(reg: Registry) -> None:
     st = probe_state
     if not st.get("samples"):
         return
-    reg.gauge("hippo_kb_recall_up", 1.0 if st.get("all_ok") else 0.0,
-              help="1 if every golden question round-tripped /ask with a non-empty answer.")
+    reg.gauge(
+        "hippo_kb_recall_up",
+        1.0 if st.get("all_ok") else 0.0,
+        help="1 if every golden question round-tripped /ask with a non-empty answer.",
+    )
     for s in st["samples"]:
         lbl = {"question": s["question"][:48]}
-        reg.gauge("hippo_kb_recall_ok", 1.0 if s["ok"] else 0.0, lbl,
-                  help="Per-golden-question recall probe result.")
+        reg.gauge(
+            "hippo_kb_recall_ok",
+            1.0 if s["ok"] else 0.0,
+            lbl,
+            help="Per-golden-question recall probe result.",
+        )
         if s["ok"]:
             # Latency is emitted only for successful round-trips: a failed probe
             # (brain_down = connection refused) records millisecond-scale "latency"
             # that would drag the recall-slow SLO average down and mask a genuinely
             # slow-when-it-succeeds inference server.
-            reg.gauge("hippo_kb_recall_latency_milliseconds", s["ms"], lbl,
-                      help="Per-golden-question /ask round-trip latency (successful "
-                           "probes only).")
-    reg.gauge("hippo_kb_recall_probe_timestamp_seconds", st["ts"],
-              help="Unix time the last recall probe batch completed.")
+            reg.gauge(
+                "hippo_kb_recall_latency_milliseconds",
+                s["ms"],
+                lbl,
+                help="Per-golden-question /ask round-trip latency (successful "
+                "probes only).",
+            )
+    reg.gauge(
+        "hippo_kb_recall_probe_timestamp_seconds",
+        st["ts"],
+        help="Unix time the last recall probe batch completed.",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -858,7 +1025,7 @@ def collect_canary(reg: Registry) -> None:
             "hippo_kb_collector_errors_total",
             {"name": "canary"},
             help="Cumulative metric-family computation failures by family name, "
-                 "since exporter start.",
+            "since exporter start.",
         )
         print(f"[exporter] canary read failed (torn write?): {exc}", flush=True)
         return
@@ -870,20 +1037,29 @@ def collect_canary(reg: Registry) -> None:
             "hippo_kb_collector_errors_total",
             {"name": "canary"},
             help="Cumulative metric-family computation failures by family name, "
-                 "since exporter start.",
+            "since exporter start.",
         )
-        print(f"[exporter] canary file has non-dict 'stores': {type(stores).__name__}",
-              flush=True)
+        print(
+            f"[exporter] canary file has non-dict 'stores': {type(stores).__name__}",
+            flush=True,
+        )
         return
     for store, found in stores.items():
-        reg.gauge("hippo_kb_canary_found", 1.0 if found else 0.0, {"store": store},
-                  help="Canary secrets found per store by the last canary leak drill "
-                       "(>0 anywhere = leak).")
+        reg.gauge(
+            "hippo_kb_canary_found",
+            1.0 if found else 0.0,
+            {"store": store},
+            help="Canary secrets found per store by the last canary leak drill "
+            "(>0 anywhere = leak).",
+        )
     ts = doc.get("timestamp")
     if ts:
         try:
-            reg.gauge("hippo_kb_canary_drill_timestamp_seconds", float(ts),
-                      help="Unix time of the last canary drill.")
+            reg.gauge(
+                "hippo_kb_canary_drill_timestamp_seconds",
+                float(ts),
+                help="Unix time of the last canary drill.",
+            )
         except (TypeError, ValueError):
             pass
 
@@ -920,8 +1096,11 @@ def build_registry() -> Registry:
     # THIS scrape are visible in it.
     for name, labels, value in counter_series():
         reg.counter(name, value, labels, help=_COUNTER_HELP.get(name, ""))
-    reg.gauge("hippo_kb_scrape_duration_milliseconds", (time.monotonic() - t0) * 1000,
-              help="Time the last scrape took to compute (excludes the async recall probe).")
+    reg.gauge(
+        "hippo_kb_scrape_duration_milliseconds",
+        (time.monotonic() - t0) * 1000,
+        help="Time the last scrape took to compute (excludes the async recall probe).",
+    )
     return reg
 
 
@@ -936,7 +1115,9 @@ def render_prometheus(reg: Registry) -> bytes:
         lines.append(f"# TYPE {name} {reg.type.get(name, 'gauge')}")
         for s in by_name[name]:
             if s["labels"]:
-                lbl = ",".join(f'{k}="{_esc(v)}"' for k, v in sorted(s["labels"].items()))
+                lbl = ",".join(
+                    f'{k}="{_esc(v)}"' for k, v in sorted(s["labels"].items())
+                )
                 lines.append(f"{name}{{{lbl}}} {_fmt(s['value'])}")
             else:
                 lines.append(f"{name} {_fmt(s['value'])}")
@@ -946,8 +1127,11 @@ def render_prometheus(reg: Registry) -> bytes:
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:  # noqa: N802
         if self.path == "/metrics":
-            self._send(200, render_prometheus(build_registry()),
-                       "text/plain; version=0.0.4; charset=utf-8")
+            self._send(
+                200,
+                render_prometheus(build_registry()),
+                "text/plain; version=0.0.4; charset=utf-8",
+            )
         elif self.path == "/metrics.json":
             body = json.dumps({"samples": build_registry().samples}).encode()
             self._send(200, body, "application/json")
@@ -970,9 +1154,12 @@ class Handler(BaseHTTPRequestHandler):
 def main() -> None:
     threading.Thread(target=run_probe, daemon=True).start()
     server = ThreadingHTTPServer(("127.0.0.1", PORT), Handler)
-    print(f"[exporter] hippo-metrics-exporter on 127.0.0.1:{PORT} "
-          f"(db={DB_PATH}, brain={BRAIN_URL}, db_ttl={DB_TTL_S}s, "
-          f"probe_ttl={PROBE_TTL_S}s)", flush=True)
+    print(
+        f"[exporter] hippo-metrics-exporter on 127.0.0.1:{PORT} "
+        f"(db={DB_PATH}, brain={BRAIN_URL}, db_ttl={DB_TTL_S}s, "
+        f"probe_ttl={PROBE_TTL_S}s)",
+        flush=True,
+    )
     server.serve_forever()
 
 

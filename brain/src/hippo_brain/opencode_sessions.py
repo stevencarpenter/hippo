@@ -12,7 +12,8 @@ import time
 import uuid
 from datetime import datetime
 
-from hippo_brain.claude_sessions import replace_prior_agentic_nodes
+from hippo_brain.classification import enqueue_node
+from hippo_brain.claude_sessions import release_changed_agentic_batch, replace_prior_agentic_nodes
 from hippo_brain.enrichment import (
     CURRENT_ENRICHMENT_VERSION,
     is_enrichment_eligible,
@@ -262,12 +263,13 @@ def write_opencode_knowledge_node(
     segment_ids: list[int],
     model_name: str,
     content_hashes: list[str | None] | None = None,
-) -> int:
+) -> int | None:
     """Insert knowledge node, link to opencode session(s), mark queue done.
 
     ``content_hashes`` (parallel to ``segment_ids``, daemon-computed) advances
     each segment's ``last_enriched_content_hash`` so the daemon's re-enqueue
-    gate can suppress unchanged re-polls. ``None`` entries are skipped.
+    gate can suppress unchanged re-polls. Superseded results return ``None``
+    after releasing the batch for a fresh claim, without publishing a node.
     """
     if content_hashes is not None and len(content_hashes) != len(segment_ids):
         raise ValueError(
@@ -290,8 +292,12 @@ def write_opencode_knowledge_node(
     )
     tags_json = json.dumps(result.tags)
 
-    conn.execute("BEGIN")
+    conn.execute("BEGIN IMMEDIATE")
     try:
+        if release_changed_agentic_batch(conn, segment_ids, content_hashes, now_ms):
+            conn.commit()
+            return None
+
         # Idempotent re-enrichment: replace any prior node(s) for these segments
         # rather than appending a duplicate (mirrors write_claude_knowledge_node).
         replace_prior_agentic_nodes(conn, segment_ids)
@@ -354,6 +360,7 @@ def write_opencode_knowledge_node(
                         (ch, seg_id),
                     )
 
+        enqueue_node(conn, node_id)
         conn.commit()
         return node_id
     except Exception:
@@ -361,24 +368,42 @@ def write_opencode_knowledge_node(
         raise
 
 
-def mark_opencode_queue_failed(conn, segment_ids: list[int], error: str) -> None:
-    """Increment retry_count on the queue entries; flip to 'failed' once exhausted."""
-    now_ms = int(time.time() * 1000)
-    for seg_id in segment_ids:
-        conn.execute(
-            """
-            UPDATE agentic_enrichment_queue
-            SET retry_count   = retry_count + 1,
-                error_message = ?,
-                locked_at     = NULL,
-                locked_by     = NULL,
-                updated_at    = ?,
-                status        = CASE
-                                    WHEN retry_count + 1 >= max_retries THEN 'failed'
-                                    ELSE 'pending'
-                                END
-            WHERE session_id = ?
-            """,
-            (error, now_ms, seg_id),
+def mark_opencode_queue_failed(
+    conn,
+    segment_ids: list[int],
+    error: str,
+    content_hashes: list[str | None] | None = None,
+) -> None:
+    """Retry attempted content, releasing changed content without charging retries."""
+    if content_hashes is not None and len(content_hashes) != len(segment_ids):
+        raise ValueError(
+            f"content_hashes length ({len(content_hashes)}) does not match "
+            f"segment_ids length ({len(segment_ids)})"
         )
-    conn.commit()
+    now_ms = int(time.time() * 1000)
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        if release_changed_agentic_batch(conn, segment_ids, content_hashes, now_ms):
+            conn.commit()
+            return
+        for seg_id in segment_ids:
+            conn.execute(
+                """
+                UPDATE agentic_enrichment_queue
+                SET retry_count   = retry_count + 1,
+                    error_message = ?,
+                    locked_at     = NULL,
+                    locked_by     = NULL,
+                    updated_at    = ?,
+                    status        = CASE
+                                        WHEN retry_count + 1 >= max_retries THEN 'failed'
+                                        ELSE 'pending'
+                                    END
+                WHERE session_id = ?
+                """,
+                (error, now_ms, seg_id),
+            )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise

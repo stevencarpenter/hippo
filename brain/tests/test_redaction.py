@@ -6,6 +6,9 @@ strings in this file are real secrets.
 """
 
 from dataclasses import dataclass, field
+import json
+
+import pytest
 
 from hippo_brain.redaction import REPLACEMENT, redact, redact_segment_secrets
 
@@ -28,6 +31,30 @@ def test_generic_secret_assignment_redacted():
     assert "supersecretvalue123" not in out
 
 
+@pytest.mark.parametrize(
+    "key",
+    ["password", "API_KEY", "api-token", "access_token", "auth-token", "secret_key", "private_key"],
+)
+@pytest.mark.parametrize("secret", ["short", "two word secret", 'escaped " quote', "line\nbreak"])
+def test_json_credential_assignments_redacted(key, secret):
+    text = json.dumps({key: secret, "public": "keep"})
+    assert redact(text) == '{[REDACTED], "public": "keep"}'
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "password='two word secret'",
+        "'password': 'two word secret'",
+        'password="unterminated secret',
+        '"password": "unterminated secret',
+        'password="line\nbreak"',
+    ],
+)
+def test_quoted_credentials_redacted(text):
+    assert redact(text) == REPLACEMENT
+
+
 def test_jwt_redacted():
     jwt = "eyJabcdefghij.eyJklmnopqrst.signaturepart"
     out = redact(jwt)
@@ -42,7 +69,40 @@ def test_bearer_header_redacted():
 
 def test_private_key_pem_redacted():
     out = redact("-----BEGIN RSA PRIVATE KEY-----\nbody\n-----END...")
-    assert "BEGIN RSA PRIVATE KEY" not in out
+    assert out == REPLACEMENT
+
+
+@pytest.mark.parametrize("kind", ["", "RSA ", "EC ", "OPENSSH ", "ENCRYPTED "])
+@pytest.mark.parametrize("legacy", [False, True])
+def test_private_key_body_redacted_with_surrounding_text(kind, legacy):
+    begin = REPLACEMENT if legacy else f"-----BEGIN {kind}PRIVATE KEY-----"
+    text = f"before\n{begin}\r\nZmFrZXNlY3JldA==\r\n-----END {kind}PRIVATE KEY-----\nafter"
+    assert redact(text) == f"before\n{REPLACEMENT}\nafter"
+
+
+def test_redacted_normal_text_and_public_keys_preserved():
+    text = "[REDACTED]\nordinary text\n-----BEGIN PUBLIC KEY-----\nYWJj\n-----END PUBLIC KEY-----"
+    assert redact(text) == text
+
+
+@pytest.mark.parametrize("kind", ["", "RSA ", "EC ", "OPENSSH ", "ENCRYPTED "])
+@pytest.mark.parametrize("legacy", [False, True])
+def test_assignment_wrapped_private_key_body_redacted(kind, legacy):
+    opening = (
+        f"[REDACTED] {kind}PRIVATE KEY-----"
+        if legacy
+        else f"private_key=-----BEGIN {kind}PRIVATE KEY-----"
+    )
+    text = f"{opening}\nZmFrZXNlY3JldA==\n-----END {kind}PRIVATE KEY-----\nafter"
+    assert redact(text) == f"{REPLACEMENT}\nafter"
+
+
+def test_legacy_encrypted_private_key_metadata_redacted():
+    text = (
+        "[REDACTED]\nProc-Type: 4,ENCRYPTED\nDEK-Info: AES-256-CBC,0123456789ABCDEF\n"
+        "\nZmFrZXNlY3JldA==\n-----END RSA PRIVATE KEY-----\nafter"
+    )
+    assert redact(text) == f"{REPLACEMENT}\nafter"
 
 
 def test_empty_input_returns_empty():

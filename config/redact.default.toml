@@ -1,4 +1,14 @@
 [[patterns]]
+name = "private_key_pem"
+regex = '(?s)-----BEGIN [A-Z ]*PRIVATE KEY-----.*?(?:-----END [A-Z ]*PRIVATE KEY-----|$)|\[REDACTED\](?: [A-Z ]*PRIVATE KEY-----)?[ \t]*\r?\n(?:(?:Proc-Type|DEK-Info):[^\r\n]*\r?\n)*(?:[ \t]*\r?\n)*(?:[A-Za-z0-9+/=]+[ \t]*\r?\n)+-----END [A-Z ]*PRIVATE KEY-----'
+replacement = "[REDACTED]"
+
+[[patterns]]
+name = "quoted_secret_assignment"
+regex = '''(?i)["']?(?:api[_-]?key|api[_-]?token|access[_-]?token|auth[_-]?token|secret[_-]?key|private[_-]?key|password)["']?\s*[=:]\s*(?:"(?:\\.|[^"\\])*(?:"|$)|'(?:\\.|[^'\\])*(?:'|$))'''
+replacement = "[REDACTED]"
+
+[[patterns]]
 name = "aws_access_key"
 regex = 'AKIA[0-9A-Z]{16}'
 replacement = "[REDACTED]"
@@ -21,9 +31,4 @@ replacement = "[REDACTED]"
 [[patterns]]
 name = "bearer_header"
 regex = '(?i)authorization:\s*bearer\s+\S+'
-replacement = "[REDACTED]"
-
-[[patterns]]
-name = "private_key_pem"
-regex = '-----BEGIN [A-Z ]*PRIVATE KEY-----'
 replacement = "[REDACTED]"

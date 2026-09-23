@@ -124,6 +124,7 @@ async def embed_knowledge_node(
     command_model: str = "",
     *,
     allow_embed_switch: bool = False,
+    replace_existing: bool = False,
 ) -> None:
     """Embed a knowledge node and persist both vectors to ``knowledge_vectors``.
 
@@ -166,9 +167,22 @@ async def embed_knowledge_node(
         _check_vec_dim(command_vecs[0], "command")
         vec_command = command_vecs[0]
 
-        vector_store.insert_vectors(handle, node_id, vec_knowledge, vec_command)
-        record_embed_model(handle, embed_model)
-        handle.commit()
+        if replace_existing:
+            # vec0 does not replace an existing primary key. Keep the old row
+            # until both inference calls succeed, then swap it atomically.
+            handle.execute("BEGIN IMMEDIATE")
+        try:
+            if replace_existing:
+                handle.execute(
+                    "DELETE FROM knowledge_vectors WHERE knowledge_node_id = ?", (node_id,)
+                )
+            vector_store.insert_vectors(handle, node_id, vec_knowledge, vec_command)
+            record_embed_model(handle, embed_model)
+            handle.commit()
+        except Exception:
+            if replace_existing:
+                handle.rollback()
+            raise
 
         if _embed_duration:
             _embed_duration.record((time.monotonic() - t0) * 1000)

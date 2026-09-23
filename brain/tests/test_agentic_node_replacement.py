@@ -278,6 +278,8 @@ def test_write_opencode_advances_last_enriched_hash(vdb):
     _queue(vdb, sess)
     result = EnrichmentResult(summary="s", intent="i", outcome="success", embed_text="e")
 
+    vdb.execute("UPDATE agentic_sessions SET content_hash = ? WHERE id = ?", ("hash123", sess))
+    vdb.commit()
     write_opencode_knowledge_node(vdb, result, [sess], "m", content_hashes=["hash123"])
 
     leh = vdb.execute(

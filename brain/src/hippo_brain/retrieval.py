@@ -79,6 +79,11 @@ class Tuning:
     entity_expansion: bool = True
     rerank: bool = False
     rerank_pool: int = 30
+    rerank_backend: str = "local"
+    rerank_adaptive: bool = False
+    rerank_recipe: str = "multi-v1"
+    decision_deadline_ms: int = 2000
+    topic_retrieval: bool = False
 
 
 DEFAULT_TUNING = Tuning()
@@ -100,6 +105,8 @@ def configure(section: dict | None) -> Tuning:
             value = float(section.get(key, default))
         except TypeError, ValueError:
             return default
+        if not math.isfinite(value):
+            return default
         return max(lo, min(hi, value))
 
     def _flag(key: str, default: bool) -> bool:
@@ -111,6 +118,10 @@ def configure(section: dict | None) -> Tuning:
         if isinstance(value, (int, float)):
             return bool(value)
         return default
+
+    def _choice(key: str, default: str, choices: tuple[str, ...]) -> str:
+        value = section.get(key, default)
+        return value if isinstance(value, str) and value in choices else default
 
     _active_tuning = Tuning(
         rrf_k=int(_num("rrf_k", DEFAULT_TUNING.rrf_k, lo=1, hi=10_000)),
@@ -128,6 +139,11 @@ def configure(section: dict | None) -> Tuning:
         entity_expansion=_flag("entity_expansion", DEFAULT_TUNING.entity_expansion),
         rerank=_flag("rerank", DEFAULT_TUNING.rerank),
         rerank_pool=int(_num("rerank_pool", DEFAULT_TUNING.rerank_pool, lo=1, hi=200)),
+        rerank_backend=_choice("rerank_backend", "local", ("local", "jev", "rules")),
+        rerank_adaptive=_flag("rerank_adaptive", False),
+        rerank_recipe=_choice("rerank_recipe", "multi-v1", ("multi-v1", "single-v1")),
+        decision_deadline_ms=int(_num("decision_deadline_ms", 2000, lo=1, hi=2000)),
+        topic_retrieval=_flag("topic_retrieval", False),
     )
     return _active_tuning
 
@@ -175,6 +191,7 @@ class SearchResult:
     evidence: list[dict] = field(default_factory=list)
     entities: dict[str, list[str]] = field(default_factory=dict)
     confidence: dict = field(default_factory=dict)
+    controlled_topics: dict[str, float] = field(default_factory=dict)
 
 
 class _Backend(Protocol):
@@ -445,6 +462,10 @@ def search(
     *,
     backend: _Backend | None = None,
     tuning: Tuning | None = None,
+    now_ms: int | None = None,
+    topic_ids: Sequence[str] | None = None,
+    diagnostics: dict | None = None,
+    topic_pool_limit: int = 30,
 ) -> list[SearchResult]:
     """Search knowledge nodes.
 
@@ -470,6 +491,17 @@ def search(
     tuning:
         Override retrieval knobs for this call. Defaults to the module-wide
         tuning installed by :func:`configure` (or :data:`DEFAULT_TUNING`).
+    now_ms:
+        Explicit recency clock for reproducible replay. Does not change source
+        eligibility or make a current snapshot historically valid.
+    topic_ids:
+        Already accepted query topic IDs. If omitted, the enabled topic channel
+        uses exact reviewed aliases. This function makes no inference calls.
+    diagnostics:
+        Optional bounded channel accounting, including displaced baseline IDs.
+    topic_pool_limit:
+        Maximum hybrid result pool with topic retrieval enabled. The default
+        online ceiling is 30; isolated experiments may explicitly request 60.
     """
     if limit <= 0:
         return []
@@ -478,15 +510,30 @@ def search(
         filters = replace(filters, include_excluded=True)
     backend = backend or _default_backend()
     t = tuning or _active_tuning
+    if topic_pool_limit not in (30, 60):
+        raise ValueError("topic_pool_limit must be 30 or 60")
 
     if mode == "semantic":
-        results = _semantic(conn, query_vec, filters, limit, backend, t)
+        results = _semantic(conn, query_vec, filters, limit, backend, t, now_ms=now_ms)
     elif mode == "lexical":
         results = _lexical(conn, query, filters, limit, backend, t)
     elif mode == "recent":
         results = _recent(conn, query, filters, limit, backend, t)
     elif mode == "hybrid":
-        results = _hybrid(conn, query, query_vec, filters, limit, backend, t)
+        if t.topic_retrieval:
+            limit = min(limit, topic_pool_limit)
+        results = _hybrid(
+            conn,
+            query,
+            query_vec,
+            filters,
+            limit,
+            backend,
+            t,
+            now_ms=now_ms,
+            topic_ids=topic_ids,
+            diagnostics=diagnostics,
+        )
     else:
         raise ValueError(f"unknown retrieval mode: {mode!r}")
 
@@ -498,8 +545,11 @@ def search(
     if t.min_score > 0.0 and mode in ("semantic", "hybrid"):
         results = [r for r in results if r.score >= t.min_score]
 
-    attach_freshness_to_results(conn, results)
-    attach_confidence_to_results(results)
+    if t.topic_retrieval and results:
+        _attach_controlled_topics(conn, results)
+
+    attach_freshness_to_results(conn, results, now_ms=now_ms)
+    attach_confidence_to_results(results, now_ms=now_ms)
     return results
 
 
@@ -515,6 +565,8 @@ def _semantic(
     limit: int,
     backend: _Backend,
     t: Tuning,
+    *,
+    now_ms: int | None = None,
 ) -> list[SearchResult]:
     if query_vec is None:
         raise ValueError("semantic mode requires a query_vec")
@@ -524,7 +576,7 @@ def _semantic(
     allowed = _apply_filters(conn, [nid for nid, _ in raw], filters)
     ordered = [(nid, dist) for nid, dist in raw if nid in allowed]
     scored = [(nid, _cosine_to_score(dist)) for nid, dist in ordered]
-    scored = _apply_recency(conn, scored, t)
+    scored = _apply_recency(conn, scored, t, now_ms=now_ms)
     pool = _mmr_pool(scored, limit)
     vecs = _get_vectors(conn, [nid for nid, _ in pool])
     picked = _mmr(pool, vecs, limit, t.mmr_lambda)
@@ -599,18 +651,24 @@ def _hybrid(
     limit: int,
     backend: _Backend,
     t: Tuning,
+    *,
+    now_ms: int | None = None,
+    topic_ids: Sequence[str] | None = None,
+    diagnostics: dict | None = None,
 ) -> list[SearchResult]:
-    if query_vec is None:
+    if query_vec is None and not t.topic_retrieval:
         # Degrade to lexical if we don't have a vector.
         return _lexical(conn, query, filters, limit, backend, t)
 
-    vec_hits = _call_knn(backend, conn, query_vec, t.candidate_pool)
+    vec_hits = (
+        _call_knn(backend, conn, query_vec, t.candidate_pool) if query_vec is not None else []
+    )
     fts_hits = _call_fts(backend, conn, query, t.candidate_pool, t) if query else []
     # Third arm: KNN over the command-text embeddings (``vec_command``). These
     # vectors have always been written by enrichment but were never queried;
     # ORing them in recovers matches phrased like the commands that were run
     # rather than like the prose summary. Weight 0 skips the query entirely.
-    if t.command_weight > 0:
+    if t.command_weight > 0 and query_vec is not None:
         try:
             cmd_hits = _call_knn(backend, conn, query_vec, t.command_pool, column="vec_command")
         except Exception:
@@ -628,6 +686,24 @@ def _hybrid(
     for rank, hit in enumerate(cmd_hits):
         rrf[hit[0]] = rrf.get(hit[0], 0.0) + t.command_weight / (t.rrf_k + rank + 1)
 
+    baseline_rrf = rrf.copy() if t.topic_retrieval and diagnostics is not None else {}
+    topic_hits = []
+    if t.topic_retrieval:
+        topic_hits = _topic_candidates(
+            conn,
+            query,
+            filters,
+            t,
+            set(rrf),
+            topic_ids=topic_ids,
+            now_ms=now_ms,
+            diagnostics=diagnostics,
+        )
+        # Versioned development recipe: topic-rrf-v1. Tune offline, not through
+        # a public knob that silently changes the accepted recipe.
+        for rank, node_id in enumerate(topic_hits):
+            rrf[node_id] = rrf.get(node_id, 0.0) + 0.5 / (t.rrf_k + rank + 1)
+
     if not rrf:
         return []
 
@@ -641,7 +717,7 @@ def _hybrid(
     # at something less than 1.0 whenever it isn't also the freshest, which
     # silently breaks the "top score == 1.0" invariant that min_score and
     # confidence_scoring's absolute thresholds rely on.
-    scored = _apply_recency(conn, scored, t)
+    scored = _apply_recency(conn, scored, t, now_ms=now_ms)
 
     # Normalize so top score = 1.0.
     top = max((s for _, s in scored), default=0.0) or 1.0
@@ -650,10 +726,165 @@ def _hybrid(
     pool = _mmr_pool(scored, limit)
     vecs = _get_vectors(conn, [nid for nid, _ in pool])
     picked = _mmr(pool, vecs, limit, t.mmr_lambda)
+    if t.topic_retrieval and diagnostics is not None:
+        selected = {nid for nid, _ in picked}
+        baseline_scored = _apply_recency(
+            conn,
+            [(nid, score) for nid, score in baseline_rrf.items() if nid in allowed],
+            t,
+            now_ms=now_ms,
+        )
+        baseline_top = max((score for _, score in baseline_scored), default=0.0) or 1.0
+        baseline_pool = _mmr_pool(
+            [(nid, score / baseline_top) for nid, score in baseline_scored], limit
+        )
+        baseline_picked = _mmr(
+            baseline_pool,
+            _get_vectors(conn, [nid for nid, _ in baseline_pool]),
+            limit,
+            t.mmr_lambda,
+        )
+        diagnostics["topic_selected_node_ids"] = [nid for nid, _ in picked if nid in topic_hits]
+        diagnostics["topic_displaced_node_ids"] = [
+            nid for nid, _ in baseline_picked if nid not in selected
+        ]
     details = _fetch_details(
         conn, [nid for nid, _ in picked], include_excluded=filters.include_excluded
     )
     return [_to_result(score, details.get(nid)) for nid, score in picked if nid in details]
+
+
+def _query_topics(query: str, topic_ids: Sequence[str] | None, topics: dict) -> list[str]:
+    """Select up to three fixed topics through reviewed whole-phrase aliases."""
+    if topic_ids is not None:
+        return list(
+            dict.fromkeys(
+                topic for topic in topic_ids if isinstance(topic, str) and topic in topics
+            )
+        )[:3]
+    matches: list[tuple[int, str]] = []
+    for topic, definition in topics.items():
+        positions = [
+            match.start()
+            for alias in definition.get("aliases", [])
+            if isinstance(alias, str) and alias
+            if (match := re.search(r"(?<!\w)" + re.escape(alias) + r"(?!\w)", query, re.I))
+        ]
+        if positions:
+            matches.append((min(positions), topic))
+    return [topic for _, topic in sorted(matches)[:3]]
+
+
+def _topic_candidates(
+    conn: sqlite3.Connection,
+    query: str,
+    filters: Filters,
+    t: Tuning,
+    baseline_ids: set[int],
+    *,
+    topic_ids: Sequence[str] | None,
+    now_ms: int | None,
+    diagnostics: dict | None,
+) -> list[int]:
+    """Admit current, eligible memberships with caps before RRF fusion.
+
+    Scalar classification rows are ranked before loading node content. Filtering
+    and fingerprint validation happen in bounded batches before the per-topic
+    limit, so excluded or stale rows cannot consume candidate capacity.
+    """
+    from hippo_brain.classification import current_topics, default_recipe
+
+    recipe = default_recipe()
+    selected_topics = _query_topics(query, topic_ids, recipe.topics)
+    if diagnostics is not None:
+        diagnostics.update(topic_recipe="topic-rrf-v1", query_topics=selected_topics)
+    now = now_ms if now_ms is not None else int(time.time() * 1000)
+    candidates: dict[str, tuple[int, float]] = {}
+    counts: dict[str, int] = {}
+    for topic in selected_topics:
+        try:
+            rows = conn.execute(
+                """
+                SELECT kn.id, kn.uuid, kn.created_at,
+                       json_extract(c.probabilities_json, ?)
+                FROM knowledge_node_classifications c
+                JOIN knowledge_nodes kn ON kn.id = c.node_id AND kn.uuid = c.node_uuid
+                WHERE c.status = 'ready' AND c.recipe_hash = ?
+                  AND c.applied_recipe_hash = c.recipe_hash
+                  AND c.applied_revision = c.requested_revision
+                  AND c.applied_input_hash = c.desired_input_hash
+                  AND EXISTS (
+                      SELECT 1 FROM json_each(c.accepted_topics_json) WHERE value = ?
+                  )
+                """,
+                (f'$."{topic}"', recipe.recipe_hash, topic),
+            ).fetchall()
+        except sqlite3.OperationalError as exc:
+            # Additive migration can be absent on old snapshots. Ordinary
+            # retrieval remains available; unrelated database failures propagate.
+            if "no such table" not in str(exc) and "no such column" not in str(exc):
+                raise
+            if diagnostics is not None:
+                diagnostics["topic_unavailable"] = "classification_schema"
+            return []
+        ranked: list[tuple[int, str, float]] = []
+        for node_id, uuid, created_at, probability in rows:
+            if not isinstance(probability, (int, float)) or not math.isfinite(probability):
+                continue
+            if not 0.0 <= probability <= 1.0:
+                continue
+            score = probability * _recency_multiplier(
+                now - created_at, t.recency_half_life_days, t.recency_floor
+            )
+            ranked.append((node_id, uuid, score))
+        ranked.sort(key=lambda item: (-item[2], item[1]))
+        admitted: set[str] = set()
+        for offset in range(0, len(ranked), 64):
+            batch = ranked[offset : offset + 64]
+            allowed = _apply_filters(conn, [node_id for node_id, _, _ in batch], filters)
+            memberships = current_topics(conn, sorted(allowed), recipe=recipe)
+            for node_id, uuid, score in batch:
+                if topic not in memberships.get(node_id, {}) or uuid in admitted:
+                    continue
+                admitted.add(uuid)
+                previous = candidates.get(uuid)
+                if previous is None or score > previous[1]:
+                    candidates[uuid] = (node_id, score)
+                if len(admitted) == 20:
+                    break
+            if len(admitted) == 20:
+                break
+        counts[topic] = len(admitted)
+    ordered = sorted(candidates.items(), key=lambda item: (-item[1][1], item[0]))
+    result: list[int] = []
+    added: list[int] = []
+    for _, (node_id, _) in ordered:
+        if node_id not in baseline_ids:
+            if len(added) == 40:
+                continue
+            added.append(node_id)
+        result.append(node_id)
+    if diagnostics is not None:
+        diagnostics.update(
+            topic_candidates_by_topic=counts,
+            topic_candidate_node_ids=result,
+            topic_added_node_ids=added,
+        )
+    return result
+
+
+def _attach_controlled_topics(conn: sqlite3.Connection, results: list[SearchResult]) -> None:
+    from hippo_brain.classification import current_topics
+
+    placeholders = ",".join("?" for _ in results)
+    rows = conn.execute(  # nosemgrep
+        f"SELECT id, uuid FROM knowledge_nodes WHERE uuid IN ({placeholders})",
+        [result.uuid for result in results],
+    ).fetchall()
+    memberships = current_topics(conn, [node_id for node_id, _ in rows])
+    by_uuid = {uuid: memberships.get(node_id, {}) for node_id, uuid in rows}
+    for result in results:
+        result.controlled_topics = by_uuid.get(result.uuid, {})
 
 
 # ---------------------------------------------------------------------------

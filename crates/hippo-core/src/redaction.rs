@@ -179,6 +179,66 @@ replacement = "***"
     }
 
     #[test]
+    fn test_redact_private_key_body_and_legacy_marker() {
+        for opening in [
+            "-----BEGIN RSA PRIVATE KEY-----",
+            "private_key=-----BEGIN RSA PRIVATE KEY-----",
+            "[REDACTED]",
+            "[REDACTED] RSA PRIVATE KEY-----",
+        ] {
+            let input = format!(
+                "before\n{opening}\r\nZmFrZXNlY3JldA==\r\n-----END RSA PRIVATE KEY-----\nafter"
+            );
+            assert_eq!(engine().redact(&input).text, "before\n[REDACTED]\nafter");
+        }
+        assert_eq!(
+            engine()
+                .redact("-----BEGIN PRIVATE KEY-----\ntruncated")
+                .text,
+            "[REDACTED]"
+        );
+    }
+
+    #[test]
+    fn test_default_template_redacts_legacy_encrypted_private_key() {
+        let config: RedactConfig =
+            toml::from_str(include_str!("../../../config/redact.default.toml")).unwrap();
+        let template = RedactionEngine::new(&config).unwrap();
+        for engine in [engine(), template] {
+            let input = "[REDACTED]\nProc-Type: 4,ENCRYPTED\nDEK-Info: AES-256-CBC,0123456789ABCDEF\n\nZmFrZXNlY3JldA==\n-----END RSA PRIVATE KEY-----\nafter";
+            assert_eq!(engine.redact(input).text, "[REDACTED]\nafter");
+            let input = "private_key=-----BEGIN PRIVATE KEY-----\nZmFrZXNlY3JldA==\n-----END PRIVATE KEY-----";
+            assert_eq!(engine.redact(input).text, "[REDACTED]");
+        }
+    }
+
+    #[test]
+    fn quoted_credentials_match_default_template_and_preserve_adjacent_fields() {
+        let config: RedactConfig =
+            toml::from_str(include_str!("../../../config/redact.default.toml")).unwrap();
+        for engine in [engine(), RedactionEngine::new(&config).unwrap()] {
+            for (input, expected) in [
+                (
+                    r#"{"password":"two word secret","public":"keep"}"#,
+                    r#"{[REDACTED],"public":"keep"}"#,
+                ),
+                ("API_KEY='short'", "[REDACTED]"),
+                (r#"password="escaped \" quote""#, "[REDACTED]"),
+                ("password=\"line one\nline two\"", "[REDACTED]"),
+                ("password=\"unterminated secret", "[REDACTED]"),
+                ("password='x' public=keep", "[REDACTED] public=keep"),
+                ("CACHE_KEY='keep'", "CACHE_KEY='keep'"),
+                (
+                    "{\"private_key\":\"-----BEGIN PRIVATE KEY-----\nZmFrZXNlY3JldA==\n-----END PRIVATE KEY-----\",\"public\":\"keep\"}",
+                    "{[REDACTED],\"public\":\"keep\"}",
+                ),
+            ] {
+                assert_eq!(engine.redact(input).text, expected, "{input}");
+            }
+        }
+    }
+
+    #[test]
     fn test_no_false_positive_on_cache_key() {
         let result = engine().redact("CACHE_KEY=foo");
         assert_eq!(result.text, "CACHE_KEY=foo");

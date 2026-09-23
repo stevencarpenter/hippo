@@ -477,8 +477,6 @@ fn decide_enqueue(
     current_hash: &str,
     prior_last_enriched_hash: Option<&str>,
     prior_queue_status: Option<&str>,
-    prior_queue_updated_at_ms: Option<i64>,
-    now_ms: i64,
 ) -> bool {
     if was_insert {
         return true; // new session — always needs first enrichment
@@ -489,20 +487,33 @@ fn decide_enqueue(
     if prior_last_enriched_hash == Some(current_hash) {
         return false; // content unchanged since last successful enrichment
     }
-    if let Some(updated_at) = prior_queue_updated_at_ms
-        && (now_ms - updated_at) < 300_000
-    {
-        return false; // 5-minute debounce
-    }
     true
+}
+
+// Redact before hashing and persistence so the stored snapshot and its hash agree.
+fn redact_session_metadata(session: &mut OpencodeSession, redaction: &RedactionEngine) {
+    fn redact_json(value: &mut Value, redaction: &RedactionEngine) {
+        match value {
+            Value::String(text) => *text = redaction.redact(text).text,
+            Value::Array(values) => values.iter_mut().for_each(|v| redact_json(v, redaction)),
+            Value::Object(values) => values.values_mut().for_each(|v| redact_json(v, redaction)),
+            _ => {}
+        }
+    }
+    session.title = redaction.redact(&session.title).text;
+    session.slug = redaction.redact(&session.slug).text;
+    if let Some(raw) = &session.summary_diffs {
+        let mut value = serde_json::from_str(raw).unwrap_or_else(|_| Value::String(raw.clone()));
+        redact_json(&mut value, redaction);
+        session.summary_diffs = Some(value.to_string());
+    }
 }
 
 // --- Write helpers ---
 
 fn upsert_session(conn: &rusqlite::Connection, s: &OpencodeSession) -> Result<()> {
     let now = chrono::Utc::now().timestamp_millis();
-    // opencode stores `summary_diffs` already serialized as JSON. Pass through
-    // verbatim (NULL → "null") to avoid double-encoding it as a JSON string.
+    // Diffs have already been redacted as JSON string values. Preserve the JSON shape.
     let diff_text = s.summary_diffs.as_deref().unwrap_or("null").to_string();
     let commit_json = "[]".to_string();
     let summary_text = build_summary_text(s);
@@ -518,22 +529,21 @@ fn upsert_session(conn: &rusqlite::Connection, s: &OpencodeSession) -> Result<()
     // mirroring `codex_session::upsert_segment_tx`. `last_enriched_content_hash`
     // is written by the brain, never here.
     #[allow(clippy::type_complexity)]
-    let prior: Option<(i64, Option<String>, Option<String>, Option<i64>)> = tx
+    let prior: Option<(i64, Option<String>, Option<String>)> = tx
         .query_row(
-            "SELECT s.id, s.last_enriched_content_hash, q.status, q.updated_at
+            "SELECT s.id, s.last_enriched_content_hash, q.status
              FROM agentic_sessions s
              LEFT JOIN agentic_enrichment_queue q ON q.session_id = s.id
              WHERE s.session_id = ?1
                AND s.harness = 'opencode'
                AND s.segment_index = 0",
             params![&s.id],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
         )
         .optional()?;
     let was_insert = prior.is_none();
-    let prior_last_enriched_hash = prior.as_ref().and_then(|(_, h, _, _)| h.as_deref());
-    let prior_queue_status = prior.as_ref().and_then(|(_, _, s, _)| s.as_deref());
-    let prior_queue_updated_at_ms = prior.as_ref().and_then(|(_, _, _, u)| *u);
+    let prior_last_enriched_hash = prior.as_ref().and_then(|(_, h, _)| h.as_deref());
+    let prior_queue_status = prior.as_ref().and_then(|(_, _, s)| s.as_deref());
 
     // segment_index is hard-coded to 0: opencode sessions are not segmented
     // (one row per session), and the v17 UNIQUE constraint
@@ -549,6 +559,7 @@ fn upsert_session(conn: &rusqlite::Connection, s: &OpencodeSession) -> Result<()
             model              = excluded.model,
             agent              = excluded.agent,
             title              = excluded.title,
+            slug               = excluded.slug,
             summary_text       = excluded.summary_text,
             snapshot_diffs_json = excluded.snapshot_diffs_json,
             commit_messages_json = excluded.commit_messages_json,
@@ -581,7 +592,7 @@ fn upsert_session(conn: &rusqlite::Connection, s: &OpencodeSession) -> Result<()
     // an update; the fresh-insert path needs a lookup because `?1` is the
     // opencode session_id, not the agentic_sessions rowid.
     let agentic_session_id: i64 = match prior.as_ref() {
-        Some((id, _, _, _)) => *id,
+        Some((id, _, _)) => *id,
         None => tx.query_row(
             "SELECT id FROM agentic_sessions
              WHERE session_id = ?1 AND harness = 'opencode' AND segment_index = 0",
@@ -604,8 +615,6 @@ fn upsert_session(conn: &rusqlite::Connection, s: &OpencodeSession) -> Result<()
         &content_hash,
         prior_last_enriched_hash,
         prior_queue_status,
-        prior_queue_updated_at_ms,
-        now,
     ) {
         tx.execute(
             "INSERT INTO agentic_enrichment_queue
@@ -758,8 +767,9 @@ pub fn poll_tick(config: &HippoConfig) -> Result<usize> {
     if new_sessions.is_empty() {
         return Ok(0);
     }
-    let redaction = RedactionEngine::builtin();
+    let redaction = crate::load_redaction_engine(config);
     for session in &mut new_sessions {
+        redact_session_metadata(session, &redaction);
         match read_session_context(&oc_conn, &session.id, &redaction) {
             Ok(context) => session.context = context,
             Err(e) => warn!(id = %session.id, "opencode context read failed: {e:#}"),
@@ -822,6 +832,55 @@ mod tests {
     }
 
     #[test]
+    fn redacted_metadata_and_changed_content_are_persisted_and_enqueued() {
+        let tmp = tempfile::tempdir().unwrap();
+        let conn = hippo_core::storage::open_db(&tmp.path().join("hippo.db")).unwrap();
+        let mut session = sample_session();
+        let secret = format!("ghp_{}", "A".repeat(36));
+        session.title = format!("fix {secret}");
+        session.slug = secret.clone();
+        session.summary_diffs = Some(
+            serde_json::json!([{
+                "before": secret, "after": ["safe", secret], "additions": 2
+            }])
+            .to_string(),
+        );
+        redact_session_metadata(&mut session, &RedactionEngine::builtin());
+        upsert_session(&conn, &session).unwrap();
+        let (title, slug, summary, diffs): (String, String, String, String) = conn
+            .query_row(
+                "SELECT title, slug, summary_text, snapshot_diffs_json FROM agentic_sessions",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )
+            .unwrap();
+        for text in [title, slug, summary, diffs.clone()] {
+            assert!(!text.contains(&secret));
+        }
+        let parsed: Value = serde_json::from_str(&diffs).unwrap();
+        assert_eq!(parsed[0]["additions"], 2);
+        assert_eq!(parsed[0]["after"][0], "safe");
+        assert_eq!(parsed[0]["after"][1], "[REDACTED]");
+        conn.execute_batch(
+            "UPDATE agentic_sessions SET last_enriched_content_hash=content_hash, enriched=1;
+            UPDATE agentic_enrichment_queue SET status='done';",
+        )
+        .unwrap();
+        session
+            .context
+            .user_prompts
+            .push("new final request".into());
+        session.time_updated += 1;
+        upsert_session(&conn, &session).unwrap();
+        let status: String = conn
+            .query_row("SELECT status FROM agentic_enrichment_queue", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(status, "pending");
+    }
+
+    #[test]
     fn content_hash_is_stable_and_changes_with_content() {
         let a = compute_content_hash(&sample_session());
         let b = compute_content_hash(&sample_session());
@@ -863,47 +922,15 @@ mod tests {
 
     #[test]
     fn decide_enqueue_gates_on_content_change() {
-        let now = 2_000_000_000_000;
-        let stale = now - 600_000; // 10 min ago — past the 5-min debounce
         // New session — always enqueued.
-        assert!(decide_enqueue(true, "h1", None, None, None, now));
+        assert!(decide_enqueue(true, "h1", None, None));
         // A worker holds the row — never trample it.
-        assert!(!decide_enqueue(
-            false,
-            "h1",
-            None,
-            Some("processing"),
-            Some(stale),
-            now
-        ));
+        assert!(!decide_enqueue(false, "h1", None, Some("processing")));
         // Content unchanged since last enrichment — skip.
-        assert!(!decide_enqueue(
-            false,
-            "h1",
-            Some("h1"),
-            Some("done"),
-            Some(stale),
-            now
-        ));
+        assert!(!decide_enqueue(false, "h1", Some("h1"), Some("done")));
         // Content changed — re-enqueue.
-        assert!(decide_enqueue(
-            false,
-            "h2",
-            Some("h1"),
-            Some("done"),
-            Some(stale),
-            now
-        ));
-        // Changed, but a re-pend already landed inside the debounce window — skip.
-        assert!(!decide_enqueue(
-            false,
-            "h2",
-            Some("h1"),
-            Some("done"),
-            Some(now - 1_000),
-            now
-        ));
+        assert!(decide_enqueue(false, "h2", Some("h1"), Some("done")));
         // Content changed, no prior queue row at all — must enqueue.
-        assert!(decide_enqueue(false, "h2", Some("h1"), None, None, now));
+        assert!(decide_enqueue(false, "h2", Some("h1"), None));
     }
 }

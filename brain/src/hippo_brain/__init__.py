@@ -32,6 +32,7 @@ def _default_settings() -> dict:
         "embed_reaper_batch_size": 50,
         "embed_orphan_stale_secs": 900,
         "retrieval": {},
+        "classification": {},
     }
 
 
@@ -90,6 +91,7 @@ def _load_runtime_settings() -> dict:
         "embed_reaper_batch_size": reaper.get("batch_size", 50),
         "embed_orphan_stale_secs": reaper.get("orphan_stale_secs", 900),
         "retrieval": config.get("retrieval", {}),
+        "classification": config.get("classification", {}),
     }
 
 
@@ -128,6 +130,8 @@ def _cmd_serve(args: object) -> None:
         embed_reaper_interval_secs=settings["embed_reaper_interval_secs"],
         embed_reaper_batch_size=settings["embed_reaper_batch_size"],
         embed_orphan_stale_secs=settings["embed_orphan_stale_secs"],
+        classification_enabled=settings.get("classification", {}).get("enabled") is True,
+        classification_recipe_path=settings.get("classification", {}).get("recipe_path"),
     )
     try:
         uvicorn.run(app, host="127.0.0.1", port=settings["port"])

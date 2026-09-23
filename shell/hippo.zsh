@@ -3,6 +3,7 @@
 
 # Guard against double-sourcing
 [[ -n "${_HIPPO_HOOK_LOADED}" ]] && return
+zmodload zsh/datetime || return
 _HIPPO_HOOK_LOADED=1
 
 autoload -Uz add-zsh-hook

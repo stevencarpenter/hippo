@@ -1,12 +1,14 @@
 """Parse Claude Code session logs into segments for enrichment."""
 
 import json
+import sqlite3
 import time
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
+from hippo_brain.classification import enqueue_node
 from hippo_brain.enrichment import (
     CURRENT_ENRICHMENT_VERSION,
     SHELL_ENTITY_TYPE_MAP,
@@ -802,13 +804,40 @@ def replace_prior_agentic_nodes(conn, segment_ids: list[int]) -> int:
     return len(prior)
 
 
+def release_changed_agentic_batch(
+    conn: sqlite3.Connection,
+    segment_ids: list[int],
+    content_hashes: list[str | None] | None,
+    now_ms: int,
+) -> bool:
+    """Release a superseded batch while the caller holds the SQLite write lock."""
+    if content_hashes is None:
+        return False
+    stale = any(
+        conn.execute(
+            "SELECT 1 FROM agentic_sessions WHERE id = ? AND content_hash IS ?",
+            (seg_id, claimed_hash),
+        ).fetchone()
+        is None
+        for seg_id, claimed_hash in zip(segment_ids, content_hashes, strict=True)
+    )
+    if stale:
+        conn.executemany(
+            "UPDATE agentic_enrichment_queue SET status = 'pending', "
+            "locked_at = NULL, locked_by = NULL, updated_at = ? "
+            "WHERE session_id = ? AND status = 'processing'",
+            [(now_ms, seg_id) for seg_id in segment_ids],
+        )
+    return stale
+
+
 def write_claude_knowledge_node(
     conn,
     result: EnrichmentResult,
     segment_ids: list[int],
     model_name: str,
     content_hashes: list[str | None] | None = None,
-) -> int:
+) -> int | None:
     """Insert knowledge node linked to Claude-like agentic session segments.
 
     ``content_hashes`` must be the same length as ``segment_ids`` when
@@ -818,6 +847,10 @@ def write_claude_knowledge_node(
     ``last_enriched_content_hash`` column is updated so the watcher dedup
     logic can detect future content changes.  ``None`` entries are skipped to
     avoid overwriting an existing value with NULL on legacy rows.
+
+    If any source changed since claim, discard the combined result and return
+    ``None`` after releasing processing rows for another attempt. Existing
+    knowledge and retry counts are preserved.
     """
     # Defensive length check: zip() silently truncates to the shorter
     # iterable, which would leave trailing segments without their
@@ -845,8 +878,12 @@ def write_claude_knowledge_node(
     )
     tags_json = json.dumps(result.tags)
 
-    conn.execute("BEGIN")
+    conn.execute("BEGIN IMMEDIATE")
     try:
+        if release_changed_agentic_batch(conn, segment_ids, content_hashes, now_ms):
+            conn.commit()
+            return None
+
         # Idempotent re-enrichment: drop any prior node(s) for these segments
         # before inserting the fresh one, so a re-enqueued (grown/re-parsed)
         # segment replaces its node set instead of accumulating duplicates.
@@ -910,6 +947,7 @@ def write_claude_knowledge_node(
         # Upsert entities
         upsert_entities(conn, node_id, result.entities, SHELL_ENTITY_TYPE_MAP, now_ms)
 
+        enqueue_node(conn, node_id)
         conn.commit()
         return node_id
     except Exception:
@@ -940,6 +978,7 @@ def mark_claude_queue_failed(
     mark *newer*, never-attempted content as handled and strand it. When
     ``content_hashes`` is omitted the watermark is left untouched (caller didn't
     say what was attempted). Transient failures ('pending') never touch it.
+    A changed batch is released without charging retries or recording the old error.
     """
     if content_hashes is not None and len(content_hashes) != len(segment_ids):
         raise ValueError(
@@ -948,33 +987,41 @@ def mark_claude_queue_failed(
         )
     now_ms = int(time.time() * 1000)
     hashes = content_hashes if content_hashes is not None else [None] * len(segment_ids)
-    for seg_id, attempted_hash in zip(segment_ids, hashes, strict=True):
-        conn.execute(
-            """
-            UPDATE agentic_enrichment_queue
-            SET retry_count   = retry_count + 1,
-                error_message = ?,
-                locked_at     = NULL,
-                locked_by     = NULL,
-                updated_at    = ?,
-                status        = CASE
-                                    WHEN retry_count + 1 >= max_retries THEN 'failed'
-                                    ELSE 'pending'
-                                END
-            WHERE session_id = ?
-            """,
-            (error, now_ms, seg_id),
-        )
-        if attempted_hash is not None:
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        if release_changed_agentic_batch(conn, segment_ids, content_hashes, now_ms):
+            conn.commit()
+            return
+        for seg_id, attempted_hash in zip(segment_ids, hashes, strict=True):
             conn.execute(
                 """
-                UPDATE agentic_sessions
-                SET last_enriched_content_hash = ?
-                WHERE id = ?
-                  AND content_hash = ?
-                  AND (SELECT status FROM agentic_enrichment_queue
-                       WHERE session_id = ?) = 'failed'
+                UPDATE agentic_enrichment_queue
+                SET retry_count   = retry_count + 1,
+                    error_message = ?,
+                    locked_at     = NULL,
+                    locked_by     = NULL,
+                    updated_at    = ?,
+                    status        = CASE
+                                        WHEN retry_count + 1 >= max_retries THEN 'failed'
+                                        ELSE 'pending'
+                                    END
+                WHERE session_id = ?
                 """,
-                (attempted_hash, seg_id, attempted_hash, seg_id),
+                (error, now_ms, seg_id),
             )
-    conn.commit()
+            if attempted_hash is not None:
+                conn.execute(
+                    """
+                    UPDATE agentic_sessions
+                    SET last_enriched_content_hash = ?
+                    WHERE id = ?
+                      AND content_hash = ?
+                      AND (SELECT status FROM agentic_enrichment_queue
+                           WHERE session_id = ?) = 'failed'
+                    """,
+                    (attempted_hash, seg_id, attempted_hash, seg_id),
+                )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise

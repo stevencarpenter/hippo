@@ -17,8 +17,10 @@ import uuid
 from pathlib import Path
 
 import pytest
+import sqlite_vec
 
 from hippo_brain.client import MockInferenceClient
+from hippo_brain.vector_store import ensure_vec_table
 
 SCRIPT_PATH = Path(__file__).parent.parent / "scripts" / "re-enrich-knowledge-nodes.py"
 
@@ -158,6 +160,71 @@ def test_candidate_selection_source_filter(conn, re_enrich):
         conn, source="claude", limit=None, newest_first=True
     )
     assert [c["_source"] for c in claude_only] == ["claude"]
+
+
+def test_forced_claude_re_enrichment_preserves_other_sources(conn, re_enrich):
+    target = re_enrich.TARGET_ENRICHMENT_VERSION
+    _seed_shell_node(conn, node_id=1, version=target)
+    _seed_claude_node(conn, node_id=2, version=target)
+    conn.execute("UPDATE agentic_sessions SET harness = 'codex' WHERE session_id = 'sess-x'")
+    _seed_claude_node(conn, node_id=3, version=target)
+
+    candidates = re_enrich._select_candidate_nodes(
+        conn, source="claude", limit=None, newest_first=True, force=True
+    )
+    assert [candidate["id"] for candidate in candidates] == [3]
+    codex_segment_id = conn.execute(
+        "SELECT id FROM agentic_sessions WHERE harness = 'codex'"
+    ).fetchone()["id"]
+    conn.execute(
+        "INSERT INTO knowledge_node_agentic_sessions (knowledge_node_id, agentic_session_id) "
+        "VALUES (?, ?)",
+        (3, codex_segment_id),
+    )
+    conn.commit()
+    assert len(re_enrich._fetch_claude_segments(conn, 3)) == 1
+
+    assert asyncio.run(
+        re_enrich._process_node(
+            MockInferenceClient(),
+            conn,
+            candidates[0],
+            enrichment_model="m",
+            embed_model="",
+            dry_run=False,
+        )
+    )
+    rows = conn.execute("SELECT id, content FROM knowledge_nodes ORDER BY id").fetchall()
+    assert [row["id"] for row in rows] == [1, 2, 3]
+    assert [json.loads(row["content"])["summary"] for row in rows] == [
+        "old summary",
+        "old",
+        "test command",
+    ]
+
+
+def test_re_embed_keeps_previous_vector_if_inference_fails(conn, re_enrich):
+    _seed_claude_node(conn, node_id=1)
+    conn.enable_load_extension(True)
+    sqlite_vec.load(conn)
+    conn.enable_load_extension(False)
+    ensure_vec_table(conn)
+    conn.isolation_level = None
+    asyncio.run(re_enrich._re_embed(MockInferenceClient(), conn, 1, "original", "test-model"))
+    before = conn.execute(
+        "SELECT vec_knowledge FROM knowledge_vectors WHERE knowledge_node_id = 1"
+    ).fetchone()[0]
+
+    class FailingClient:
+        async def embed(self, *args, **kwargs):
+            raise RuntimeError("inference unavailable")
+
+    with pytest.raises(RuntimeError, match="inference unavailable"):
+        asyncio.run(re_enrich._re_embed(FailingClient(), conn, 1, "replacement", "test-model"))
+    after = conn.execute(
+        "SELECT vec_knowledge FROM knowledge_vectors WHERE knowledge_node_id = 1"
+    ).fetchone()[0]
+    assert after == before
 
 
 def test_process_node_updates_in_place(conn, re_enrich):

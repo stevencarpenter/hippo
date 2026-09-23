@@ -180,7 +180,7 @@ Healthy: `0`.
 
 **Use instead.** Defenses by writer class:
 1. **Daemon re-enqueue gate** (agentic) — only re-enqueue a segment when its `content_hash` diverges from `last_enriched_content_hash` (`decide_enqueue`, mirrored across all four agentic pollers).
-2. **Write-time replacement** (agentic) — `replace_prior_agentic_nodes(conn, segment_ids)` deletes prior `observation` nodes linked *solely* to the segment set (all `knowledge_node_*` link rows + the vec0 vector, in the same transaction) *before* the new INSERT. Scoped to `'observation'` so a co-linked workflow `change_outcome` node is never collateral.
+2. **Write-time replacement** (agentic): pass the claimed content hashes to the success and failure writers. Under `BEGIN IMMEDIATE`, `release_changed_agentic_batch` checks them before replacement or retry accounting. A changed source discards the combined result, releases processing rows to pending, and preserves existing knowledge and retry counts. Only current results reach `replace_prior_agentic_nodes(conn, segment_ids)`, which deletes prior `observation` nodes linked *solely* to the segment set, including links and vectors, in the same transaction before insertion. Co-linked workflow nodes remain intact. Regression coverage: `brain/tests/test_claude_sessions.py` and `brain/tests/test_opencode_sessions.py`.
 3. **Skip-unchanged claim guard** (agentic) — drop a claimed segment whose `content_hash` already equals `last_enriched_content_hash` before the LLM call.
 4. **Write-time content dedup** (workflow, browser) — `find_identical_node(conn, content, embed_text, node_type)` links a new run/visit onto an existing identical node instead of minting a copy.
 

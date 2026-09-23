@@ -4,14 +4,16 @@ import dataclasses
 import sqlite3
 import time
 import tomllib
-from contextlib import nullcontext
+from contextlib import asynccontextmanager, nullcontext
 from dataclasses import dataclass
+from functools import wraps
 from pathlib import Path
 
 from mcp.server.fastmcp import FastMCP
 
 from hippo_brain.agent_query import AgentQueryRequest, run_agent_query
 from hippo_brain.client import InferenceClient
+from hippo_brain.decision_capture import capture_query
 from hippo_brain.embeddings import (
     EMBED_DIM,
     _pad_or_truncate,
@@ -90,6 +92,7 @@ def _load_config() -> dict:
         "embedding_model": "",
         "query_model": "",
         "retrieval": {},
+        "classification": {},
     }
 
     if not config_path.exists():
@@ -123,6 +126,7 @@ def _load_config() -> dict:
         "embedding_model": models.get("embedding", ""),
         "query_model": models.get("query", "") or models.get("enrichment", ""),
         "retrieval": config.get("retrieval", {}),
+        "classification": config.get("classification", {}),
     }
 
 
@@ -135,9 +139,24 @@ class _ServerState:
     embedding_model: str = ""
     query_model: str = ""
     vector_table: object | None = None  # lancedb.table.Table
+    jev_client: object | None = None
+    classification_enabled: bool = False
 
 
 _state = _ServerState()
+
+
+def _query_priority(handler):
+    """Let separate MCP processes suppress new background classification claims."""
+
+    @wraps(handler)
+    async def wrapped(*args, **kwargs):
+        from hippo_brain.classification import query_activity
+
+        with query_activity(_state.db_path, enabled=_state.classification_enabled):
+            return await handler(*args, **kwargs)
+
+    return wrapped
 
 
 def _clamp_limit(limit: int) -> int:
@@ -159,13 +178,27 @@ def _get_conn(db_path: str = "") -> sqlite3.Connection:
 def _init_state() -> None:
     """Load config and initialize the inference client and vector table (called once at startup)."""
     from hippo_brain import retrieval as _retrieval_mod
+    from hippo_brain import classification
 
     config = _load_config()
-    _retrieval_mod.configure(config.get("retrieval"))
+    tuning = _retrieval_mod.configure(config.get("retrieval"))
+    classification.configure(
+        False, classification.load_recipe(config.get("classification", {}).get("recipe_path"))
+    )
     _state.db_path = config["db_path"]
+    _state.classification_enabled = config.get("classification", {}).get("enabled") is True
     _state.embedding_model = config["embedding_model"]
     _state.query_model = config["query_model"]
     _state.inference_client = InferenceClient(base_url=config["inference_base_url"])
+    _state.jev_client = None
+    if tuning.rerank and tuning.rerank_backend == "jev":
+        from hippo_brain.jev import JevClient
+
+        try:
+            _state.jev_client = JevClient.from_env()
+        except (ValueError, RuntimeError) as exc:
+            logger.warning("Jev unavailable (%s)", type(exc).__name__)
+            _state.jev_client = None
 
     try:
         db = open_vector_db(config["data_dir"])
@@ -183,8 +216,19 @@ def _init_state() -> None:
     )
 
 
+@asynccontextmanager
+async def _mcp_lifespan(_server):
+    try:
+        yield {}
+    finally:
+        if _state.jev_client is not None:
+            await _state.jev_client.aclose()
+            _state.jev_client = None
+
+
 mcp = FastMCP(
     "hippo",
+    lifespan=_mcp_lifespan,
     instructions=(
         "Hippo is a local knowledge base capturing shell activity, Claude sessions, "
         "and browser history. Use ask to get synthesized answers about past activity. "
@@ -198,6 +242,7 @@ mcp = FastMCP(
 
 
 @mcp.tool()
+@_query_priority
 async def search_knowledge(
     query: str,
     mode: str = "hybrid",
@@ -314,6 +359,7 @@ async def search_knowledge(
 
 
 @mcp.tool()
+@_query_priority
 async def ask(
     question: str,
     limit: int = 10,
@@ -378,6 +424,8 @@ async def ask(
             branch=branch or None,
             include_excluded=include_excluded,
             conn=conn,
+            jev_client=_state.jev_client,
+            capture_origin="mcp",
         )
     except Exception:
         _add(_tool_errors, tool="ask")
@@ -394,6 +442,7 @@ async def ask(
 
 
 @mcp.tool()
+@_query_priority
 async def search_events(
     query: str = "",
     source: str = "all",
@@ -462,6 +511,7 @@ async def search_events(
 
 
 @mcp.tool()
+@_query_priority
 async def get_entities(
     type: str = "",
     query: str = "",
@@ -527,6 +577,7 @@ async def get_entities(
 
 
 @mcp.tool()
+@_query_priority
 async def get_ci_status(
     repo: str,
     sha: str | None = None,
@@ -570,6 +621,7 @@ async def get_ci_status(
 
 
 @mcp.tool()
+@_query_priority
 async def get_lessons(
     repo: str | None = None,
     path: str | None = None,
@@ -636,6 +688,11 @@ def _result_to_dict(result) -> dict:
         "linked_source_ids": list(result.linked_source_ids),
         "evidence": list(result.evidence),
         "confidence": dict(result.confidence) if result.confidence else {},
+        **(
+            {"controlled_topics": dict(result.controlled_topics)}
+            if result.controlled_topics
+            else {}
+        ),
     }
 
 
@@ -683,10 +740,11 @@ async def _retrieve_filtered(
     try:
         try:
             results = _retrieval.search(conn, query, query_vec, filters, mode=mode, limit=limit)
+            capture_query(query, results, filters=filters, origin="mcp")
             return [_result_to_dict(r) for r in results]
         except Exception:
             logger.exception("retrieval.search failed; falling back to lexical SQL")
-            return search_knowledge_lexical(
+            results = search_knowledge_lexical(
                 conn,
                 query,
                 limit=limit,
@@ -697,6 +755,8 @@ async def _retrieve_filtered(
                 category=category,
                 include_excluded=filters.include_excluded,
             )
+            capture_query(query, results, filters=filters, origin="mcp")
+            return results
     finally:
         conn.close()
 
@@ -723,6 +783,7 @@ def _open_retrieval_conn() -> sqlite3.Connection:
 
 
 @mcp.tool()
+@_query_priority
 async def search_hybrid(
     query: str,
     mode: str = "hybrid",
@@ -788,6 +849,7 @@ async def search_hybrid(
 
 
 @mcp.tool()
+@_query_priority
 async def get_context(
     query: str,
     limit: int = 5,
@@ -842,6 +904,7 @@ async def get_context(
 
 
 @mcp.tool()
+@_query_priority
 async def agent_query(
     query: str,
     mode: str = "known",
@@ -909,6 +972,7 @@ async def agent_query(
 
 
 @mcp.tool()
+@_query_priority
 async def query_memory(
     query: str = "",
     repository: str = "",
@@ -958,6 +1022,7 @@ async def query_memory(
 
 
 @mcp.tool()
+@_query_priority
 async def query_memory_history(
     repository: str = "",
     logical_path: str = "",
@@ -1004,6 +1069,7 @@ async def query_memory_history(
 
 
 @mcp.tool()
+@_query_priority
 async def list_projects(limit: int = 50) -> list[dict]:
     """Return distinct projects (git_repo + cwd_root) seen in the knowledge base.
 

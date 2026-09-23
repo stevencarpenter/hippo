@@ -22,6 +22,8 @@ import tomllib
 from pathlib import Path
 
 from hippo_brain.client import InferenceClient
+from hippo_brain.classification import configure as configure_classification
+from hippo_brain.classification import load_recipe
 from hippo_brain.embeddings import (
     embed_knowledge_node,
     get_or_create_table,
@@ -66,6 +68,12 @@ async def main():
         sys.exit(1)
     with config_path.open("rb") as f:
         config = tomllib.load(f)
+
+    classification_settings = config.get("classification", {})
+    configure_classification(
+        classification_settings.get("enabled") is True,
+        load_recipe(classification_settings.get("recipe_path")),
+    )
 
     models = config.get("models", {})
     # Use bulk model if available, fall back to regular enrichment model

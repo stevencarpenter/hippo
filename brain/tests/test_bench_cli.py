@@ -599,3 +599,22 @@ def test_cli_ingest_aborted_run_not_labeled_ingested(tmp_path, monkeypatch, caps
     out = capsys.readouterr().out
     assert "ingested run_id=run-abort" not in out
     assert "skipped" in out.lower()
+
+
+def test_cli_completed_models_still_fail_when_production_resume_fails(
+    monkeypatch, tmp_path, capsys
+):
+    from hippo_brain.bench.orchestrate import OrchestrationResult
+
+    monkeypatch.setattr("hippo_brain.bench.pause_rpc.recover_stale_pause", lambda _: False)
+    monkeypatch.setattr(
+        "hippo_brain.bench.cli.orchestrate_run",
+        lambda **kwargs: OrchestrationResult(
+            run_id="resume-failed",
+            out_path=kwargs["out_path"],
+            models_completed=["m"],
+            prod_brain_resumed_ok=False,
+        ),
+    )
+    assert main(["run", "--models", "m", "--out", str(tmp_path / "run.jsonl")]) == 3
+    assert "Production resume failed" in capsys.readouterr().out

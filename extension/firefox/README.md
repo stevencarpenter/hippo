@@ -58,7 +58,7 @@ This loads the source directly (no build step) but doesn't survive Firefox resta
 
 ## How It Works
 
-**Content script** (`content.js`) — injected into all pages:
+**Content script** (`content.js`), dynamically registered for allowed domains:
 - Tracks visible dwell time via Page Visibility API
 - Measures max scroll depth
 - Extracts main content via Mozilla Readability on page departure
@@ -92,7 +92,9 @@ domains = ["github.com", "stackoverflow.com", ...]
 strip_params = ["token", "api_key", "password", "secret"]
 ```
 
-Or edit the allowlist directly from the extension popup.
+The extension popup manages a separate capture allowlist; a visit must pass both
+it and the daemon-side allowlist. Saving an empty popup allowlist disables page
+capture and remains empty across popup reopening and browser restart.
 
 ## Files
 

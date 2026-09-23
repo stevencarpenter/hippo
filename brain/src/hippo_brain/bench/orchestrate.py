@@ -320,9 +320,15 @@ def orchestrate_run(
         atexit.register(pause_client.resume)
         if not skip_prod_pause:
             try:
-                pause_client.pause()
-            except Exception:  # noqa: BLE001
-                pass
+                acknowledgement = pause_client.pause()
+                if (
+                    not isinstance(acknowledgement, dict)
+                    or acknowledgement.get("in_flight_finished") is not True
+                ):
+                    raise RuntimeError("production inference is not quiescent")
+            except Exception:
+                pause_client.resume()
+                raise
 
         completed: list[str] = []
         errored: list[str] = []
@@ -418,9 +424,13 @@ def orchestrate_run(
             )
             completed.append(model)
 
-        prod_brain_resumed_ok = True
+        prod_brain_resumed_ok = skip_prod_pause
         try:
-            pause_client.resume()
+            acknowledgement = pause_client.resume()
+            prod_brain_resumed_ok = skip_prod_pause or (
+                isinstance(acknowledgement, dict)
+                and isinstance(acknowledgement.get("resumed_at"), str)
+            )
         except Exception:  # noqa: BLE001
             prod_brain_resumed_ok = False
 

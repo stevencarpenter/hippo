@@ -7,9 +7,9 @@ services:
     volumes:
       - ./otelcol-config.yml:/etc/otelcol/config.yml:ro
     ports:
-      - "4317:4317"
-      - "4318:4318"
-      - "13133:13133"
+      - "127.0.0.1:4317:4317"
+      - "127.0.0.1:4318:4318"
+      - "127.0.0.1:13133:13133"
     depends_on:
       - tempo
       - loki
@@ -36,7 +36,7 @@ services:
       - "--storage.tsdb.retention.time=${HIPPO_OTEL_PROMETHEUS_RETENTION:-30d}"
       - "--storage.tsdb.retention.size=${HIPPO_OTEL_PROMETHEUS_RETENTION_SIZE:-10GB}"
     ports:
-      - "9090:9090"
+      - "127.0.0.1:9090:9090"
     volumes:
       - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - ${HOME}/.local/share/hippo/otel/prometheus:/prometheus
@@ -44,16 +44,15 @@ services:
   grafana:
     image: grafana/grafana:12.4.2
     environment:
-      - GF_SECURITY_ADMIN_PASSWORD=hippo
-      - GF_AUTH_ANONYMOUS_ENABLED=true
-      - GF_AUTH_ANONYMOUS_ORG_ROLE=Admin
+      - GF_SECURITY_ADMIN_PASSWORD=${HIPPO_OTEL_GRAFANA_ADMIN_PASSWORD:?Set HIPPO_OTEL_GRAFANA_ADMIN_PASSWORD}
+      - GF_AUTH_ANONYMOUS_ENABLED=false
     volumes:
       - ./grafana/datasources.yml:/etc/grafana/provisioning/datasources/datasources.yml:ro
       - ./grafana/dashboards:/etc/grafana/provisioning/dashboards:ro
       - ./grafana/alerting:/etc/grafana/provisioning/alerting:ro
       - ${HOME}/.local/share/hippo/otel/grafana:/var/lib/grafana
     ports:
-      - "3030:3000"
+      - "127.0.0.1:3030:3000"
     depends_on:
       - tempo
       - loki

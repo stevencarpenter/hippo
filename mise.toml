@@ -313,6 +313,10 @@ run = "cargo test -p hippo-daemon --tests"
 description = "Run Python brain tests with coverage"
 run = "uv run --project brain pytest brain/tests -v --cov=hippo_brain --cov-report=term-missing"
 
+[tasks."test:python:focused"]
+description = "Run selected Python tests (pass pytest paths and options)"
+run = 'uv run --project brain pytest "$@"'
+
 # ── Lint ─────────────────────────────────────────────────────────────
 
 [tasks.lint]
@@ -878,7 +882,7 @@ if [ "$OTEL_ENABLED" = "0" ] && [ "$OTEL_COLLECTOR_UP" = "1" ]; then
     echo "      To enable observability:"
     echo "        1. Edit ~/.config/hippo/config.toml and set [telemetry] enabled = true"
     echo "        2. Run: mise run restart"
-    echo "        3. Access Grafana: http://localhost:3030 (admin/hippo)"
+    echo "        3. Access Grafana: http://localhost:3030 (admin / configured password)"
 elif [ "$OTEL_ENABLED" = "0" ] && [ "$OTEL_COLLECTOR_UP" = "0" ]; then
     echo "NOTE: OpenTelemetry observability is disabled."
     echo "      To enable it:"
@@ -1105,42 +1109,8 @@ description = "Ingest + immediately enrich Claude session logs"
 run = "uv run --project brain python scripts/hippo-ingest-claude.py --enrich ${@}"
 
 [tasks."re-enrich:claude"]
-description = "Nuke Claude knowledge nodes, re-enrich 1:1, then re-embed everything"
-run = """
-#!/usr/bin/env bash
-set -euo pipefail
-
-DATA_DIR=~/.local/share/hippo
-DB="$DATA_DIR/hippo.db"
-
-echo "==> Stopping brain..."
-pkill -f 'hippo-brain' 2>/dev/null && sleep 1 || true
-
-echo "==> Resetting Claude knowledge nodes..."
-sqlite3 "$DB" "DELETE FROM knowledge_node_entities WHERE knowledge_node_id IN (SELECT knowledge_node_id FROM knowledge_node_agentic_sessions WHERE agentic_session_id IN (SELECT id FROM agentic_sessions WHERE harness = 'claude-code'))"
-sqlite3 "$DB" "DELETE FROM knowledge_node_agentic_sessions WHERE agentic_session_id IN (SELECT id FROM agentic_sessions WHERE harness = 'claude-code')"
-sqlite3 "$DB" "DELETE FROM knowledge_nodes WHERE id NOT IN (SELECT knowledge_node_id FROM knowledge_node_events)"
-sqlite3 "$DB" "UPDATE agentic_sessions SET enriched = 0 WHERE harness = 'claude-code'"
-sqlite3 "$DB" "UPDATE agentic_enrichment_queue SET status = 'pending', retry_count = 0, error_message = NULL, locked_at = NULL, locked_by = NULL WHERE session_id IN (SELECT id FROM agentic_sessions WHERE harness = 'claude-code')"
-
-PENDING=$(sqlite3 "$DB" "SELECT COUNT(*) FROM agentic_enrichment_queue WHERE status = 'pending' AND session_id IN (SELECT id FROM agentic_sessions WHERE harness = 'claude-code')")
-echo "  Queued $PENDING segments for 1:1 re-enrichment"
-echo ""
-
-echo "==> Running Claude enrichment (1:1, this will take a while)..."
-uv run --project brain python scripts/hippo-ingest-claude.py --enrich ${1:-}
-echo ""
-
-echo "==> Deleting vector store..."
-rm -rf "$DATA_DIR/vectors"
-
-echo "==> Re-embedding all knowledge nodes..."
-uv run --project brain python scripts/hippo-re-embed.py
-echo ""
-
-echo "=== Done ==="
-echo "Restart brain: mise run start"
-"""
+description = "Re-enrich existing Claude knowledge nodes in place"
+run = "uv run --project brain python brain/scripts/re-enrich-knowledge-nodes.py --source claude --force ${@}"
 
 [tasks.re-embed]
 description = "Re-embed all knowledge nodes without re-enriching (use after changing embedding model)"
@@ -1176,6 +1146,10 @@ description = "Start the OTel observability stack (Grafana, Tempo, Loki, Prometh
 run = """
 #!/usr/bin/env bash
 set -euo pipefail
+if [ -z "${HIPPO_OTEL_GRAFANA_ADMIN_PASSWORD:-}" ]; then
+    echo "Set HIPPO_OTEL_GRAFANA_ADMIN_PASSWORD before starting Grafana" >&2
+    exit 1
+fi
 OTEL_DATA_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/hippo/otel"
 mkdir -p \
     "$OTEL_DATA_DIR/tempo" \
@@ -1227,7 +1201,7 @@ fi
 docker compose up -d --remove-orphans
 echo ""
 echo "=== OTel stack running ==="
-echo "  Grafana:        http://localhost:3030 (admin/hippo)"
+echo "  Grafana:        http://localhost:3030 (admin / configured password)"
 echo "  OTel Collector: localhost:4317 (gRPC) / localhost:4318 (HTTP)"
 echo "  Collector health: http://localhost:13133"
 echo "  Data dir:       $OTEL_DATA_DIR"
@@ -1360,6 +1334,50 @@ echo "Skills: $installed installed, $skipped skipped"
 """
 
 # ── Bench (model benchmark; separate data root, not normal hippo execution) ──
+
+[tasks."bench:decisions"]
+description = "Compare isolated rules, LLM and Jev decision sidecars (rules only by default)"
+run = "uv run --project brain hippo-decision-bench run ${@}"
+
+[tasks."bench:decisions:summary"]
+description = "Report paired decision quality, coverage, latency and token usage"
+run = "uv run --project brain hippo-decision-bench summary ${@}"
+
+[tasks."bench:conflicts"]
+description = "Compare current conflict heuristics and semantic sidecars (offline by default)"
+run = "uv run --project brain hippo-decision-bench run --cases docs/research/typesafe-2026-09-20-conflicts/cases.json --arms current,rules ${@}"
+
+[tasks."bench:conflicts:replay"]
+description = "Verify archived conflict experiment hashes and replay per-case comparisons offline"
+run = "python3 docs/research/typesafe-2026-09-20-conflicts/audit.py ${@}"
+
+[tasks."bench:decisions:metrics"]
+description = "Serve decision experiment metrics on loopback :9836"
+run = "uv run --project brain hippo-decision-bench metrics ${@}"
+
+[tasks."bench:knowledge"]
+description = "Prepare or report real-corpus retrieval experiments outside the checkout"
+run = "uv run --project brain python -m hippo_brain.bench.knowledge_probe ${@}"
+
+[tasks."bench:knowledge:tags"]
+description = "Classify and test topic tags on external database copies"
+run = "uv run --project brain python -m hippo_brain.bench.knowledge_tags ${@}"
+
+[tasks."bench:knowledge:corpus"]
+description = "Prepare, label, validate and score an external retrieval/classification corpus"
+run = "uv run --project brain python -m hippo_brain.bench.knowledge_corpus ${@}"
+
+[tasks."bench:knowledge:replay"]
+description = "Replay runtime ranking recipes on frozen external candidates"
+run = "uv run --project brain hippo-decision-bench replay ${@}"
+
+[tasks.classification]
+description = "Inspect classification, resume bounded backfill, or inspect topic connections"
+run = "uv run --project brain python -m hippo_brain.classification_cli ${@}"
+
+[tasks."test:decisions"]
+description = "Test decision sidecar isolation, contracts, rules and metrics offline"
+run = "uv run --project brain pytest brain/tests/test_decision_sidecar.py brain/tests/test_rerank.py brain/tests/test_knowledge_probe.py brain/tests/test_knowledge_tags.py -q"
 
 [tasks."bench:auto-memory-spike"]
 description = "Regenerate the synthetic Claude auto-memory chunking comparison report"

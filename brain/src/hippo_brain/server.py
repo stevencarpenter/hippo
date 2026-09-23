@@ -4,7 +4,8 @@ import logging
 import os
 import sqlite3
 import time
-from contextlib import asynccontextmanager, nullcontext, suppress
+from contextlib import asynccontextmanager, nullcontext
+from functools import wraps
 from pathlib import Path
 from typing import Any
 
@@ -251,6 +252,28 @@ def _collect_queue_depths(conn: sqlite3.Connection) -> list[tuple[str, str, int]
     return depths
 
 
+def _query_priority(handler):
+    """Prevent background claims while any HTTP knowledge query is running."""
+
+    @wraps(handler)
+    async def wrapped(self, request):
+        from hippo_brain.classification import query_activity
+
+        if self._paused:
+            return JSONResponse({"error": "brain is paused"}, status_code=503)
+        self._query_inflight += 1
+        self._query_arrived.set()
+        try:
+            with query_activity(self.db_path, enabled=self.classification_enabled):
+                return await handler(self, request)
+        finally:
+            self._query_inflight = max(0, self._query_inflight - 1)
+            if self._query_inflight == 0:
+                self._query_arrived.clear()
+
+    return wrapped
+
+
 class BrainServer:
     def __init__(
         self,
@@ -270,6 +293,8 @@ class BrainServer:
         embed_reaper_interval_secs: int = 300,
         embed_reaper_batch_size: int = 50,
         embed_orphan_stale_secs: int = 900,
+        classification_enabled: bool = False,
+        classification_recipe_path: str | None = None,
     ):
         if not db_path:
             db_path = str(Path.home() / ".local" / "share" / "hippo" / "hippo.db")
@@ -295,6 +320,32 @@ class BrainServer:
         self.embed_reaper_interval_secs = embed_reaper_interval_secs
         self.embed_reaper_batch_size = embed_reaper_batch_size
         self.embed_orphan_stale_secs = embed_orphan_stale_secs
+        self.classification_enabled = classification_enabled is True
+        self._classification_task = None
+        self._classification_active = False
+        self._classification_worker = None
+        self.classification_status = {
+            "enabled": self.classification_enabled,
+            "running": False,
+            "last_error": None,
+        }
+        self.jev_client = None
+        from hippo_brain import classification
+        from hippo_brain.retrieval import get_tuning
+
+        self.classification_recipe = classification.load_recipe(classification_recipe_path)
+        classification.configure(
+            enabled=self.classification_enabled, recipe=self.classification_recipe
+        )
+        tuning = get_tuning()
+        if self.classification_enabled or (tuning.rerank and tuning.rerank_backend == "jev"):
+            from hippo_brain.jev import JevClient
+
+            try:
+                self.jev_client = JevClient.from_env()
+            except (ValueError, RuntimeError) as exc:
+                self.classification_status["last_error"] = type(exc).__name__
+                logger.warning("Jev unavailable (%s)", type(exc).__name__)
         self.enrichment_running = False
         self._paused: bool = False
         self._paused_at_iso: str | None = None
@@ -303,6 +354,7 @@ class BrainServer:
         # (preflight + claim + gather). Used by /control/pause so callers like
         # hippo-bench can confirm prod is quiescent before claiming the LM slot.
         self._enrichment_active: bool = False
+        self._embed_reaper_active: bool = False
         # Set whenever a query is in flight; the enrichment loop sleeps on this
         # event so it wakes immediately rather than waiting out the full poll
         # interval before yielding to the LM.
@@ -354,6 +406,11 @@ class BrainServer:
 
     async def health(self, request: Request) -> JSONResponse:
         reachable = await self.client.is_reachable()
+        if self._classification_worker is not None:
+            try:
+                self.classification_status.update(self._classification_worker.status())
+            except sqlite3.Error as exc:
+                self.classification_status["last_error"] = type(exc).__name__
 
         queue_depth = 0
         queue_failed = 0
@@ -465,6 +522,10 @@ class BrainServer:
                 "enrichment_model_preferred": self._preferred_model,
                 "query_inflight": self._query_inflight,
                 "embed_model_drift": embed_model_drift,
+                "classification": dict(self.classification_status),
+                "jev": self.jev_client.diagnostics()
+                if self.jev_client is not None
+                else {"available": False},
                 "last_success_at_ms": self.last_success_at_ms,
                 "last_error": self.last_error,
                 "last_error_at_ms": self.last_error_at_ms,
@@ -511,6 +572,7 @@ class BrainServer:
         finally:
             conn.close()
 
+    @_query_priority
     async def query(self, request: Request) -> JSONResponse:
         body = await request.json()
         text = body.get("text", "")
@@ -890,6 +952,7 @@ class BrainServer:
         finally:
             conn.close()
 
+    @_query_priority
     async def ask(self, request: Request) -> JSONResponse:
         """RAG endpoint: retrieve relevant knowledge and synthesize an answer."""
         body = await request.json()
@@ -942,26 +1005,26 @@ class BrainServer:
                 status_code=503,
             )
 
-        self._query_inflight += 1
-        self._query_arrived.set()
-        try:
-            result = await rag_ask(
-                question=question,
-                inference_client=self.client,
-                vector_table=self._vector_table,
-                query_model=model,
-                embedding_model=self.embedding_model,
-                limit=limit,
-                max_tokens=max_tokens,
-            )
-        finally:
-            self._query_inflight = max(0, self._query_inflight - 1)
-            if self._query_inflight == 0:
-                self._query_arrived.clear()
+        result = await rag_ask(
+            question=question,
+            inference_client=self.client,
+            vector_table=self._vector_table,
+            query_model=model,
+            embedding_model=self.embedding_model,
+            limit=limit,
+            max_tokens=max_tokens,
+            jev_client=self.jev_client,
+            capture_origin=(
+                request.headers.get("x-hippo-query-origin")
+                if request.headers.get("x-hippo-query-origin") in ("probe", "benchmark")
+                else "http"
+            ),
+        )
 
         status = 200 if "answer" in result else 502
         return JSONResponse(result, status_code=status)
 
+    @_query_priority
     async def agent_query(self, request: Request) -> JSONResponse:
         """Compact agent query: bounded answer + evidence packets + freshness."""
         body = await request.json()
@@ -1014,6 +1077,7 @@ class BrainServer:
 
         return JSONResponse(result)
 
+    @_query_priority
     async def memory_query(self, request: Request) -> JSONResponse:
         """Query current projected Claude auto-memory documents."""
         body = await request.json()
@@ -1048,6 +1112,7 @@ class BrainServer:
             conn.close()
         return JSONResponse(result)
 
+    @_query_priority
     async def memory_history(self, request: Request) -> JSONResponse:
         """Explicit bounded revision history for one auto-memory document."""
         body = await request.json()
@@ -1084,19 +1149,25 @@ class BrainServer:
     async def control_pause(self, request: Request) -> JSONResponse:
         """Pause the enrichment loop. Idempotent.
 
-        in_flight_finished reflects both /ask queries and the enrichment
-        loop body — bench callers need both quiescent before they own the
-        inference server slot.
+        New queries and background inference stop while paused. Existing
+        queries, enrichment, classification, and reaper embeddings must drain
+        before bench callers can own the inference server slot.
         """
         if not self._paused:
             self._paused = True
             self._paused_at_iso = _dt.datetime.now(tz=_dt.UTC).isoformat()
-        in_flight_finished = self._query_inflight == 0 and not self._enrichment_active
+        in_flight_finished = (
+            self._query_inflight == 0
+            and not self._enrichment_active
+            and not self._classification_active
+            and not self._embed_reaper_active
+        )
         return JSONResponse(
             {
                 "paused_at": self._paused_at_iso,
                 "in_flight_finished": in_flight_finished,
                 "enrichment_active": self._enrichment_active,
+                "classification_active": self._classification_active,
                 "query_inflight": self._query_inflight,
             }
         )
@@ -1257,6 +1328,11 @@ class BrainServer:
                             self._query_inflight,
                         )
                         await asyncio.sleep(0.1)
+
+                    # Pause can arrive during either wait above. No await may
+                    # separate this check from marking enrichment active.
+                    if self._paused:
+                        continue
 
                     # F-15: graduate new capture_alarms into lessons (best-effort).
                     try:
@@ -1514,6 +1590,8 @@ class BrainServer:
                         )
                     finally:
                         conn.close()
+                    if node_id is None:
+                        continue
                     _add(_nodes_created, source=source_label)
                     self._record_success()
                     logger.info(
@@ -1846,6 +1924,8 @@ class BrainServer:
                         )
                     finally:
                         conn.close()
+                    if node_id is None:
+                        continue
                     _add(_nodes_created, source="opencode")
                     self._record_success()
                     logger.info(
@@ -1889,7 +1969,12 @@ class BrainServer:
                     )
                     retry_conn = self._get_conn()
                     try:
-                        mark_opencode_queue_failed(retry_conn, segment_ids, err_msg)
+                        mark_opencode_queue_failed(
+                            retry_conn,
+                            segment_ids,
+                            err_msg,
+                            content_hashes=[s.get("content_hash") for s in segments],
+                        )
                     finally:
                         retry_conn.close()
 
@@ -1973,6 +2058,9 @@ class BrainServer:
         if not rows:
             return
         for node_id, embed_text in rows:
+            if self._paused:
+                break
+            self._embed_reaper_active = True
             try:
                 await self._embed_node(
                     node_id,
@@ -1983,6 +2071,8 @@ class BrainServer:
                 # One bad node must not abandon the rest of the batch; it stays
                 # an orphan and is retried next tick.
                 logger.warning("embed reaper: re-embed failed for node %d", node_id, exc_info=True)
+            finally:
+                self._embed_reaper_active = False
         logger.info("embed reaper: swept %d orphaned node(s)", len(rows))
 
     async def _embed_reaper_loop(self):
@@ -1994,27 +2084,76 @@ class BrainServer:
             except Exception as e:
                 logger.warning("embed reaper loop error: %s", e, exc_info=True)
 
+    async def _classification_loop(self):
+        """Yield new classification claims to queries and operator pause."""
+        self.classification_status["running"] = True
+        try:
+            while True:
+                if not self._paused and self._query_inflight == 0:
+                    self._classification_active = True
+                    try:
+                        result = await self._classification_worker.process_batch(limit=2)
+                        self.classification_status.update(result)
+                        self.classification_status["last_error"] = None
+                    except Exception as exc:
+                        self.classification_status["last_error"] = type(exc).__name__
+                        logger.warning("classification batch failed (%s)", type(exc).__name__)
+                    finally:
+                        self._classification_active = False
+                await asyncio.sleep(max(0.1, self.poll_interval_secs))
+        finally:
+            self.classification_status["running"] = False
+
     def start_enrichment(self):
         self._enrichment_task = asyncio.create_task(self._enrichment_loop())
         self._reaper_task = asyncio.create_task(self._reaper_loop())
         self._embed_reaper_task = asyncio.create_task(self._embed_reaper_loop())
+        if self.classification_enabled and self.jev_client is not None:
+            from hippo_brain.classification import ClassificationWorker, schema_ready
+
+            try:
+                conn = self._get_conn()
+                try:
+                    ready = schema_ready(conn)
+                finally:
+                    conn.close()
+            except sqlite3.Error, RuntimeError:
+                ready = False
+            if ready:
+                self._classification_worker = ClassificationWorker(
+                    self.db_path, self.jev_client, recipe=self.classification_recipe
+                )
+                self._classification_task = asyncio.create_task(self._classification_loop())
+            else:
+                self.classification_status["last_error"] = "classification schema unavailable"
+                logger.warning("classification disabled: schema unavailable")
 
     async def stop_enrichment(self):
         tasks = [
             t
-            for t in (self._enrichment_task, self._reaper_task, self._embed_reaper_task)
+            for t in (
+                self._enrichment_task,
+                self._reaper_task,
+                self._embed_reaper_task,
+                self._classification_task,
+            )
             if t is not None
         ]
-        if not tasks:
-            return
         for t in tasks:
             t.cancel()
-        for t in tasks:
-            with suppress(asyncio.CancelledError):
-                await t
-        self._enrichment_task = None
-        self._reaper_task = None
-        self._embed_reaper_task = None
+        try:
+            outcomes = await asyncio.gather(*tasks, return_exceptions=True)
+        finally:
+            self._enrichment_task = None
+            self._reaper_task = None
+            self._embed_reaper_task = None
+            self._classification_task = None
+            client, self.jev_client = self.jev_client, None
+            if client is not None:
+                await client.aclose()
+        for outcome in outcomes:
+            if isinstance(outcome, Exception):
+                raise outcome
 
     def close(self) -> None:
         """Release the long-lived vector-store connection owned by this server."""
@@ -2059,6 +2198,8 @@ def create_app(
     embed_reaper_interval_secs: int = 300,
     embed_reaper_batch_size: int = 50,
     embed_orphan_stale_secs: int = 900,
+    classification_enabled: bool = False,
+    classification_recipe_path: str | None = None,
 ) -> Starlette:
     server = BrainServer(
         db_path=db_path,
@@ -2077,6 +2218,8 @@ def create_app(
         embed_reaper_interval_secs=embed_reaper_interval_secs,
         embed_reaper_batch_size=embed_reaper_batch_size,
         embed_orphan_stale_secs=embed_orphan_stale_secs,
+        classification_enabled=classification_enabled,
+        classification_recipe_path=classification_recipe_path,
     )
 
     if _meter:
@@ -2103,12 +2246,14 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(_app: Starlette):
-        server.start_enrichment()
         try:
+            server.start_enrichment()
             yield
         finally:
-            await server.stop_enrichment()
-            server.close()
+            try:
+                await server.stop_enrichment()
+            finally:
+                server.close()
 
     app = Starlette(
         routes=server.get_routes(),

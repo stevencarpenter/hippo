@@ -615,8 +615,6 @@ fn decide_enqueue(
     current_hash: &str,
     prior_last_enriched_hash: Option<&str>,
     prior_queue_status: Option<&str>,
-    prior_queue_updated_at_ms: Option<i64>,
-    now_ms: i64,
 ) -> bool {
     if was_insert {
         return true;
@@ -625,11 +623,6 @@ fn decide_enqueue(
         return false;
     }
     if prior_last_enriched_hash == Some(current_hash) {
-        return false;
-    }
-    if let Some(updated_at) = prior_queue_updated_at_ms
-        && (now_ms - updated_at) < 300_000
-    {
         return false;
     }
     true
@@ -647,22 +640,21 @@ pub fn upsert_segment_tx(tx: &rusqlite::Transaction<'_>, seg: &PiSegment) -> Res
     let content_hash = compute_content_hash(seg);
 
     #[allow(clippy::type_complexity)]
-    let prior: Option<(i64, Option<String>, Option<String>, Option<i64>)> = tx
+    let prior: Option<(i64, Option<String>, Option<String>)> = tx
         .query_row(
-            "SELECT s.id, s.last_enriched_content_hash, q.status, q.updated_at
+            "SELECT s.id, s.last_enriched_content_hash, q.status
              FROM agentic_sessions s
              LEFT JOIN agentic_enrichment_queue q ON q.session_id = s.id
              WHERE s.session_id = ?1
                AND s.harness = 'pi'
                AND s.segment_index = ?2",
             params![seg.session_id, seg.segment_index],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
         )
         .optional()?;
     let was_insert = prior.is_none();
-    let prior_last_enriched_hash = prior.as_ref().and_then(|(_, h, _, _)| h.as_deref());
-    let prior_queue_status = prior.as_ref().and_then(|(_, _, s, _)| s.as_deref());
-    let prior_queue_updated_at_ms = prior.as_ref().and_then(|(_, _, _, u)| *u);
+    let prior_last_enriched_hash = prior.as_ref().and_then(|(_, h, _)| h.as_deref());
+    let prior_queue_status = prior.as_ref().and_then(|(_, _, s)| s.as_deref());
 
     let is_subagent_i = if seg.is_subagent { 1 } else { 0 };
     tx.execute(
@@ -709,7 +701,7 @@ pub fn upsert_segment_tx(tx: &rusqlite::Transaction<'_>, seg: &PiSegment) -> Res
     let agentic_session_id: i64 = if was_insert {
         tx.last_insert_rowid()
     } else {
-        prior.as_ref().map(|(id, _, _, _)| *id).unwrap()
+        prior.as_ref().map(|(id, _, _)| *id).unwrap()
     };
 
     if decide_enqueue(
@@ -717,8 +709,6 @@ pub fn upsert_segment_tx(tx: &rusqlite::Transaction<'_>, seg: &PiSegment) -> Res
         &content_hash,
         prior_last_enriched_hash,
         prior_queue_status,
-        prior_queue_updated_at_ms,
-        now_ms,
     ) {
         tx.execute(
             "INSERT INTO agentic_enrichment_queue
@@ -1252,23 +1242,9 @@ mod tests {
 
     #[test]
     fn decide_enqueue_gates_on_content_change() {
-        assert!(decide_enqueue(true, "h1", None, None, None, 1_000));
-        assert!(!decide_enqueue(false, "h1", Some("h1"), None, None, 1_000));
-        assert!(!decide_enqueue(
-            false,
-            "h2",
-            Some("h1"),
-            Some("processing"),
-            None,
-            1_000
-        ));
-        assert!(decide_enqueue(
-            false,
-            "h2",
-            Some("h1"),
-            Some("failed"),
-            Some(0),
-            400_000
-        ));
+        assert!(decide_enqueue(true, "h1", None, None));
+        assert!(!decide_enqueue(false, "h1", Some("h1"), None));
+        assert!(!decide_enqueue(false, "h2", Some("h1"), Some("processing")));
+        assert!(decide_enqueue(false, "h2", Some("h1"), Some("failed")));
     }
 }

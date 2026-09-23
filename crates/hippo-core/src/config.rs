@@ -970,6 +970,18 @@ impl RedactConfig {
         Self {
             patterns: vec![
                 RedactPattern {
+                    name: "private_key_pem".to_string(),
+                    // Run before assignments consume the opening marker; mirror Python.
+                    regex: r"(?s)-----BEGIN [A-Z ]*PRIVATE KEY-----.*?(?:-----END [A-Z ]*PRIVATE KEY-----|$)|\[REDACTED\](?: [A-Z ]*PRIVATE KEY-----)?[ \t]*\r?\n(?:(?:Proc-Type|DEK-Info):[^\r\n]*\r?\n)*(?:[ \t]*\r?\n)*(?:[A-Za-z0-9+/=]+[ \t]*\r?\n)+-----END [A-Z ]*PRIVATE KEY-----".to_string(),
+                    replacement: "[REDACTED]".to_string(),
+                },
+                RedactPattern {
+                    name: "quoted_secret_assignment".to_string(),
+                    // Keep quoted JSON/shell credentials aligned with Python redaction.
+                    regex: r#"(?i)["']?(?:api[_-]?key|api[_-]?token|access[_-]?token|auth[_-]?token|secret[_-]?key|private[_-]?key|password)["']?\s*[=:]\s*(?:"(?:\\.|[^"\\])*(?:"|$)|'(?:\\.|[^'\\])*(?:'|$))"#.to_string(),
+                    replacement: "[REDACTED]".to_string(),
+                },
+                RedactPattern {
                     name: "aws_access_key".to_string(),
                     regex: r"AKIA[0-9A-Z]{16}".to_string(),
                     replacement: "[REDACTED]".to_string(),
@@ -992,11 +1004,6 @@ impl RedactConfig {
                 RedactPattern {
                     name: "bearer_header".to_string(),
                     regex: r"(?i)authorization:\s*bearer\s+\S+".to_string(),
-                    replacement: "[REDACTED]".to_string(),
-                },
-                RedactPattern {
-                    name: "private_key_pem".to_string(),
-                    regex: r"-----BEGIN [A-Z ]*PRIVATE KEY-----".to_string(),
                     replacement: "[REDACTED]".to_string(),
                 },
             ],
@@ -1120,7 +1127,7 @@ base_url = "http://localhost:1234/v1"
     #[test]
     fn test_builtin_redact_patterns() {
         let config = RedactConfig::builtin();
-        assert_eq!(config.patterns.len(), 6);
+        assert_eq!(config.patterns.len(), 7);
         let names: Vec<&str> = config.patterns.iter().map(|p| p.name.as_str()).collect();
         assert!(names.contains(&"aws_access_key"));
         assert!(names.contains(&"github_pat"));
@@ -1128,6 +1135,7 @@ base_url = "http://localhost:1234/v1"
         assert!(names.contains(&"bearer_header"));
         assert!(names.contains(&"private_key_pem"));
         assert!(names.contains(&"generic_secret_assignment"));
+        assert!(names.contains(&"quoted_secret_assignment"));
     }
 
     #[test]
@@ -1261,7 +1269,10 @@ replacement = "***"
     #[test]
     fn test_redact_load_missing_returns_builtin() {
         let config = RedactConfig::load(Path::new("/nonexistent/path/redact.toml")).unwrap();
-        assert_eq!(config.patterns.len(), 6);
+        assert_eq!(
+            config.patterns.len(),
+            RedactConfig::builtin().patterns.len()
+        );
     }
 
     #[test]

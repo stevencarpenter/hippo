@@ -1,0 +1,31 @@
+{
+  "description":"Follow-up synthetic stress cases authored after the initial screen, before follow-up calls. Original prompts unchanged. Not an independently curated holdout or production evaluation.",
+  "ranking":[
+    {"id":"h-latency","query":"By how many milliseconds did the retry fix reduce query latency?","candidates":["The retry fix reduced query latency according to the developer, but no measurements were recorded.","Queries use a 5000 millisecond busy timeout.","A browser page about reducing query latency by 50 milliseconds was visited.","The retry fix was deployed."],"grades":[1,0,0,1]},
+    {"id":"h-owner","query":"Who approved the Hippo database migration?","candidates":["The Hippo database migration was approved; the approver was not recorded.","Sam approved a database migration in an unrelated project.","Alex reviewed a Hippo frontend change.","Hippo migration documentation was updated."],"grades":[1,0,0,1]},
+    {"id":"h-health","query":"Is Hippo capture healthy right now on September 18?","candidates":["The latest available capture health observation is September 1, when all probes passed.","The watchdog checks capture health every minute.","A source-health table exists.","No current health observation is present in these records."],"grades":[1,1,0,1]},
+    {"id":"h-branch","query":"Which commit fixed session loss on main?","candidates":["Commit abc123 on an unmerged experimental branch fixed session loss in local tests.","A proposed session-loss fix is awaiting review; no main-branch fix is recorded.","The main branch received a documentation update def456.","Session loss was reported on main."],"grades":[1,1,0,1]},
+    {"id":"h-negation","query":"Why did the team reject periodic polling for session ingestion?","candidates":["The team adopted periodic polling in the unrelated Indexer project because it was easy to deploy.","An early proposal favored periodic polling for session ingestion.","Decision: reject periodic polling because it can miss short-lived files between scans. Use filesystem events instead.","Polling and filesystem events were benchmarked."],"grades":[0,1,3,1]},
+    {"id":"h-latest","query":"Which embedding backend is configured after the September 12 change?","candidates":["September 5: configured LM Studio as the embedding backend.","September 12: switched the configured embedding backend to oMLX. This supersedes the September 5 setup.","September 14: a browser visit read an LM Studio embedding tutorial; configuration was not changed.","A draft proposal suggested a remote embedding API."],"grades":[1,3,0,1]}
+  ],
+  "verification":[
+    {"id":"hv01","source":"The proposed retry change has not been evaluated or deployed.","claim":"The retry change reduces latency by 50%.","expected":"unsupported"},
+    {"id":"hv02","source":"Commit abc123 passed tests on a feature branch. The branch has not merged.","claim":"Commit abc123 is deployed from main.","expected":"contradicts"},
+    {"id":"hv03","source":"The process was running at 09:00. Its status after 09:00 is unknown.","claim":"The process was running at 10:00.","expected":"unsupported"},
+    {"id":"hv04","source":"The timeout rose from 100 ms to 200 ms.","claim":"The timeout doubled.","expected":"supports"},
+    {"id":"hv05","source":"The timeout rose from 100 ms to 200 ms.","claim":"Requests now complete twice as fast.","expected":"unsupported"},
+    {"id":"hv06","source":"The migration was approved. Sam wrote the migration proposal; the approver is not recorded.","claim":"Sam approved the migration.","expected":"unsupported"},
+    {"id":"hv07","source":"The daemon writes events to SQLite. The brain reads and enriches them.","claim":"The daemon writes events to SQLite and encrypts every event.","expected":"unsupported"},
+    {"id":"hv08","source":"The incident report says: 'No events were lost.' A later correction says twelve events were lost.","claim":"No events were lost in the incident.","expected":"contradicts"}
+  ],
+  "routing":[
+    {"id":"hq01","query":"Show the evidence for yesterday's decision to keep SQLite.","expected":"evidence"},
+    {"id":"hq02","query":"Why did we reject polling yesterday?","expected":"decisions"},
+    {"id":"hq03","query":"What new decisions were recorded today?","expected":"recent"},
+    {"id":"hq04","query":"Find the shell command I used to restart Hippo; don't run it.","expected":"evidence"},
+    {"id":"hq05","query":"Find the previous reset command and execute it again.","expected":"none"},
+    {"id":"hq06","query":"What do we know about our recent-change detection architecture?","expected":"known"},
+    {"id":"hq07","query":"How does the evidence packet format work?","expected":"known"},
+    {"id":"hq08","query":"Explain the reasoning behind our current retry policy.","expected":"decisions"}
+  ]
+}

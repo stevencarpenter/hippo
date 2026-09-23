@@ -641,6 +641,69 @@ class TestContentHashPropagation:
         ).fetchone()
         assert row[0] == "abc123"
 
+    @pytest.mark.parametrize("claimed_hash", ["old", None])
+    def test_changed_batch_is_reclaimed_without_publishing(self, tmp_db, claimed_hash):
+        from hippo_brain.vector_store import open_conn
+
+        _, db_path = tmp_db
+        conn = open_conn(db_path)
+        try:
+            ids = [insert_segment(conn, self._make_seg(f"changed-{i}")) for i in range(2)]
+            with conn:
+                conn.execute("UPDATE agentic_sessions SET content_hash = ?", (claimed_hash,))
+            previous_node = write_claude_knowledge_node(
+                conn, self._RESULT, ids, "test-model", content_hashes=[claimed_hash] * 2
+            )
+            with conn:
+                conn.execute(
+                    "UPDATE agentic_enrichment_queue SET status = 'pending', retry_count = 2"
+                )
+                # Clear only the dedup watermark so the old snapshot can be claimed.
+                conn.execute("UPDATE agentic_sessions SET last_enriched_content_hash = NULL")
+            batches = claim_pending_claude_segments(conn, "worker")
+            segments = [segment for batch in batches for segment in batch]
+            assert {segment["id"] for segment in segments} == set(ids)
+            with conn:
+                conn.execute(
+                    "UPDATE agentic_sessions SET content_hash = 'new', summary_text = 'latest' "
+                    "WHERE id = ?",
+                    (ids[0],),
+                )
+            assert (
+                write_claude_knowledge_node(
+                    conn, self._RESULT, ids, "test-model", content_hashes=[claimed_hash] * 2
+                )
+                is None
+            )
+            assert conn.execute("SELECT id FROM knowledge_nodes").fetchall() == [(previous_node,)]
+            assert (
+                conn.execute(
+                    "SELECT status, retry_count, locked_at, locked_by FROM agentic_enrichment_queue"
+                ).fetchall()
+                == [("pending", 2, None, None)] * 2
+            )
+            assert conn.execute(
+                "SELECT last_enriched_content_hash FROM agentic_sessions"
+            ).fetchall() == [(None,), (None,)]
+            reclaimed = [s for b in claim_pending_claude_segments(conn, "worker") for s in b]
+            latest = next(s for s in reclaimed if s["id"] == ids[0])
+            assert latest["summary_text"] == "latest"
+            assert latest["content_hash"] == "new"
+            node_id = write_claude_knowledge_node(
+                conn,
+                self._RESULT,
+                [s["id"] for s in reclaimed],
+                "test-model",
+                content_hashes=[s["content_hash"] for s in reclaimed],
+            )
+            assert node_id is not None
+            assert conn.execute("SELECT count(*) FROM knowledge_nodes").fetchone()[0] == 1
+            assert conn.execute(
+                "SELECT status, retry_count FROM agentic_enrichment_queue"
+            ).fetchall() == [("done", 2), ("done", 2)]
+        finally:
+            conn.close()
+
     def test_enrichment_failure_does_not_write_hash(self, tmp_db):
         """mark_claude_queue_failed does NOT touch last_enriched_content_hash."""
         db_conn, _ = tmp_db
@@ -746,7 +809,8 @@ class TestContentHashPropagation:
         ).fetchone()[0]
         assert leh is None, "NULL content_hash must not be propagated to the watermark"
 
-    def test_terminal_failure_does_not_watermark_changed_content(self, tmp_db):
+    @pytest.mark.parametrize("attempted_hash", ["old-content", None])
+    def test_terminal_failure_does_not_watermark_changed_content(self, tmp_db, attempted_hash):
         """If the daemon upsert a newer content_hash while the worker was enriching,
         a terminal failure on the OLD content must NOT watermark the new content —
         else the never-attempted new content is stranded (gate closed, no re-enqueue).
@@ -761,13 +825,14 @@ class TestContentHashPropagation:
         )
         db_conn.execute(
             "UPDATE agentic_enrichment_queue "
-            "SET retry_count = max_retries - 1 WHERE session_id = ?",
+            "SET status = 'processing', locked_by = 'old-worker', locked_at = 123, "
+            "retry_count = max_retries - 1 WHERE session_id = ?",
             (seg_id,),
         )
         db_conn.commit()
 
         mark_claude_queue_failed(
-            db_conn, [seg_id], "JSONDecodeError", content_hashes=["old-content"]
+            db_conn, [seg_id], "JSONDecodeError", content_hashes=[attempted_hash]
         )
 
         leh = db_conn.execute(
@@ -775,6 +840,15 @@ class TestContentHashPropagation:
             (seg_id,),
         ).fetchone()[0]
         assert leh is None, "must not watermark content that was never attempted"
+
+        assert db_conn.execute(
+            "SELECT status, retry_count, locked_at, locked_by, error_message "
+            "FROM agentic_enrichment_queue WHERE session_id = ?",
+            (seg_id,),
+        ).fetchone() == ("pending", 4, None, None, None)
+        reclaimed = claim_pending_claude_segments(db_conn, "new-worker")
+        assert reclaimed[0][0]["id"] == seg_id
+        assert reclaimed[0][0]["content_hash"] == "new-content"
 
     def test_mark_failed_rejects_misaligned_content_hashes(self, tmp_db):
         """content_hashes must align 1:1 with segment_ids — fail fast instead of

@@ -80,7 +80,7 @@ function loadSettings(): Promise<void> {
     if (typeof result.enabled === "boolean") {
       settings.enabled = result.enabled;
     }
-    if (Array.isArray(result.allowlist) && result.allowlist.length > 0) {
+    if (Array.isArray(result.allowlist)) {
       settings.allowlist = result.allowlist as string[];
     }
     if (typeof result.captureCount === "number") {
@@ -104,6 +104,8 @@ function isDomainAllowed(domain: string): boolean {
 }
 
 // --- Dynamic content script registration ---
+// The MV2 background must stay persistent: Firefox removes these registrations
+// when the extension page that registered them unloads.
 let registeredScript: browser.contentScripts.RegisteredContentScript | null = null;
 
 async function updateContentScripts(): Promise<void> {
@@ -269,12 +271,6 @@ settingsReady.then(() => updateContentScripts());
 // Fire heartbeat on startup (after settings loaded) and then every 5 minutes.
 // Startup heartbeat is deferred until settings are ready so `enabled_state`
 // reflects persisted state rather than the constructor default.
-//
-// We use `browser.alarms` (not setInterval) because the background page is
-// non-persistent (`manifest.json: background.persistent = false`).  Firefox
-// unloads idle event pages, which would silently kill a JS interval.  Alarms
-// are wake-capable: they fire even after the background page is unloaded,
-// causing Firefox to reload it and dispatch the alarm event.
 settingsReady.then(() => {
   sendHeartbeat();
   // Derive periodInMinutes from the canonical constant so they never drift.
@@ -283,11 +279,7 @@ settingsReady.then(() => {
   });
 });
 
-// Gate the alarm handler on settingsReady: when Firefox wakes the event page
-// to fire an alarm, module code re-runs and loadSettings() is called again.
-// The alarm can be dispatched before the storage read resolves, which would
-// cause sendHeartbeat() to see the default settings values.  Awaiting
-// settingsReady here is free when the page is already live (resolved promise).
+// An alarm can arrive before the startup storage read resolves.
 browser.alarms.onAlarm.addListener(async (alarm) => {
   await settingsReady;
   if (alarm.name === "hippo-heartbeat") {
