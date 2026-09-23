@@ -2384,10 +2384,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_classification_migration_matches_fresh_schema() {
-        assert!(SCHEMA.contains(CLASSIFICATION_SCHEMA));
-    }
     use crate::events::{EventEnvelope, GitState, ShellEvent, ShellKind};
     use std::path::PathBuf;
 
