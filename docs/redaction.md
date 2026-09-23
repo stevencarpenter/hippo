@@ -8,7 +8,7 @@ For the bigger threat model (data flow, encryption, MCP trust boundary), read th
 
 A regex-based filter that runs over event text **before storage**. Implemented in `crates/hippo-core/src/redaction.rs::RedactionEngine`. Applied to:
 
-- **Shell command strings**, plus values of env-allowlisted env vars, in `daemon.rs::flush_events` (via `redact_shell_event` in `crates/hippo-daemon/src/lib.rs`). The shell hook's captured output (`stdout`/`stderr` payload sent as the event's `--output`) is **not** currently passed through `RedactionEngine`; only the command and allowlisted env values are filtered before `insert_event_at`.
+- **Shell commands, captured stdout/stderr, and allowlisted environment values**, in `daemon.rs::flush_events` via `redact_shell_event` in `crates/hippo-daemon/src/lib.rs`. Per-rule hit counts cover all retained fields. Regression coverage: `crates/hippo-daemon/tests/capture_privacy.rs`.
 - **Claude session segment text** — `user_prompts`, `assistant_texts`, and per-tool-call `summary` fields are redacted in the FS-watcher path (`crates/hippo-daemon/src/claude_session.rs::extract_segments`, not in `flush_events`). The shared pattern set is loaded once via `RedactionEngine::builtin()`.
 - **Browser visits** — URL query parameters listed in `[browser.url_redaction] strip_params` are stripped in `native_messaging.rs::strip_sensitive_params` (see [Browser URL redaction](#browser-url-redaction) below). Browser titles and Readability-extracted page content are NOT currently passed through `RedactionEngine` before storage.
 
@@ -16,7 +16,7 @@ Redaction is **best-effort**. It catches known secret formats; it cannot catch s
 
 ## What redaction isn't
 
-- **Not a network filter.** Redaction runs at storage time, not at LLM-call time. The LM Studio prompt is built from already-redacted events, so secrets that *did* slip past redaction will reach the LLM. That LLM is local (LM Studio at `localhost:1234`); there's no third-party LLM in the path. But if you point LM Studio at a remote backend, see the README's Privacy section.
+- **Not a network filter.** Capture redaction cannot prevent all sensitive data from reaching inference. Jev additionally redacts structured credential fields and text before truncating outbound inputs (`brain/src/hippo_brain/jev.py` and `redaction.py`). For external data flows, see [README Privacy and Security](../README.md#privacy-and-security).
 - **Not a database scrubber.** Once a non-redacted secret has been stored in `events`, hippo doesn't re-process old rows when you add a pattern. Add a pattern → only future captures benefit.
 - **Not a substitute for FileVault.** The DB is unencrypted at rest.
 
@@ -48,21 +48,18 @@ The whole `redact.toml` is the rule set; patterns are loaded in file order. See 
 
 - **All patterns apply, not first-match.** `RedactionEngine::redact` iterates over `RegexSet::matches`, then calls `replace_all` for each matching rule. A single command can fire multiple rules.
 - **Order is deterministic.** Patterns evaluate in the order they appear in `redact.toml`. After each pattern's `replace_all`, subsequent patterns operate on the *already-redacted* text. This matters when patterns can overlap: an earlier pattern that replaces a substring with `[REDACTED]` prevents a later pattern from matching what was there.
-- **Per-rule hit attribution.** Counting happens before replacement (counting after `replace_all` would return zero, since `[REDACTED]` doesn't match the original pattern). Hit counts feed the OTel counter `hippo.daemon.redactions` with the rule name as the `rule` attribute (see `crates/hippo-daemon/src/metrics.rs`). Note that hits are only emitted for the shell `command` field today; redactions of allowlisted env values fire but aren't surfaced as separate counter increments.
+- **Per-rule hit attribution.** Counting happens before replacement (counting after `replace_all` would return zero, since `[REDACTED]` doesn't match the original pattern). Hit counts feed the OTel counter `hippo.daemon.redactions` with the rule name as the `rule` attribute (see `crates/hippo-daemon/src/metrics.rs`). Shell-event hit counts include command, captured output, and retained environment values.
 - **No event dropping.** When the entire command matches a pattern, the substring is replaced with `[REDACTED]` in-place; the event row is still stored. Hippo doesn't delete events even when redaction renders them empty. (See [issue #52](https://github.com/stevencarpenter/hippo/issues/52) for the open discussion of "over-redaction silently producing empty events" — the current behavior is "store the redacted row," which is auditable but means a power user might see `[REDACTED]` lines in `hippo events`.)
 
 ## Default patterns
 
-Shipped in [`config/redact.default.toml`](../config/redact.default.toml). All replacements are `"[REDACTED]"`. The regex column below shows the patterns verbatim — Markdown's `|` cell separator is escaped as `&#124;` where it appears inside a regex's alternation; the raw TOML uses a literal `|`.
-
-| Rule | Regex | Catches |
-|---|---|---|
-| `aws_access_key` | `AKIA[0-9A-Z]{16}` | Long-lived AWS access key IDs (the `AKIA*` prefix). |
-| `github_pat` | `ghp_[a-zA-Z0-9]{36}&#124;github_pat_[a-zA-Z0-9_]{82}` | GitHub classic personal access tokens (`ghp_`) and fine-grained tokens (`github_pat_`). |
-| `generic_secret_assignment` | `(?i)(api[_-]?key&#124;api[_-]?token&#124;access[_-]?token&#124;auth[_-]?token&#124;secret[_-]?key&#124;private[_-]?key&#124;password)\s*[=:]\s*\S{8,}` | `key=value` and `key: value` assignments where the key matches a known secret-y name and the value is ≥ 8 non-whitespace characters. |
-| `jwt` | `eyJ[a-zA-Z0-9_-]{10,}\.eyJ[a-zA-Z0-9_-]{10,}\.[a-zA-Z0-9_-]+` | Three-segment JWTs starting with the standard base64 `{` prefix. |
-| `bearer_header` | `(?i)authorization:\s*bearer\s+\S+` | HTTP `Authorization: Bearer <token>` headers. |
-| `private_key_pem` | `-----BEGIN [A-Z ]*PRIVATE KEY-----` | The leading line of any PEM-encoded private key. (The body and trailing `-----END` line aren't matched, so a key body in stdout would have its header redacted but the body would persist. This is a known gap.) |
+The authoritative patterns and evaluation order are in
+[`config/redact.default.toml`](../config/redact.default.toml), mirrored by
+`RedactConfig::builtin()` for capture paths using built-in rules. Do not copy regex definitions into documentation.
+Existing user `redact.toml` files are not automatically upgraded; compare them
+with the template to adopt the PEM-body and quoted-assignment rules. Regression
+coverage lives in `crates/hippo-core/src/redaction.rs` and
+`brain/tests/test_redaction.py`.
 
 ### Known false-negatives
 
@@ -72,8 +69,8 @@ The default rules **do not** catch:
 - **Secrets in positional arguments**: `./deploy prod my-secret-token` won't match anything — there's no `key=` prefix.
 - **Secrets in env-var names not on the keyword list**: `STRIPE_KEY=sk_live_...`, `SENDGRID_APIKEY=...` won't fire `generic_secret_assignment` because the keyword regex doesn't include `STRIPE` or `SENDGRID`.
 - **Secrets renamed locally**: `x=ghp_...` only fires `github_pat` (because the value matches), not `generic_secret_assignment` (because `x` isn't a recognized keyword). If the user pastes a non-`ghp_` token under a non-keyword name, neither rule fires.
-- **Multi-line secrets**: a key body across multiple stdout lines isn't matched by `private_key_pem` (which only matches the header).
-- **Secrets in JSON payloads not matching `keyword=value`**: e.g. `{"apiKey": "..."}`.  The keyword regex requires `=` or `:` adjacent to the keyword name; embedded JSON shapes pass through.
+- **Unmarked secret bodies**: arbitrary multi-line text without a recognized PEM marker or credential assignment can pass through. Complete PEM blocks, truncated blocks with an opening marker, and recognized bodies left by historical marker-only redaction are covered.
+- **Unrecognized JSON credential names**: quoted assignments for recognized names are covered, including whitespace and escaped quotes; arbitrary field names are not.
 
 If your workflow involves any of the above, write custom patterns. (See [Writing custom patterns](#writing-custom-patterns).)
 
@@ -187,7 +184,7 @@ What it doesn't catch:
 | Accidental capture of common token formats (AWS, GitHub PAT, JWT, PEM private keys) into the LLM context | Secrets in positional arguments, non-standard env-var names, or arbitrary file content the user pastes |
 | Common URL-borne tokens in browser visit URLs | Tokens in URL path segments or page content |
 | Secrets in `Authorization: Bearer …` HTTP headers logged to stdout | Secrets in custom auth schemes |
-| Storing structured PEM private-key headers | The body of a multi-line private key (only the header line matches) |
+| Storing recognized PEM private-key blocks, including their bodies | Unmarked key material without a recognized credential assignment |
 | Replay of `[REDACTED]` strings across the LLM/MCP path (since the secret has been replaced before storage) | Secrets that were already stored before a pattern was added |
 
 For threats outside this list, the answer is "don't paste secrets into your terminal." Hippo's job is to catch the common case.

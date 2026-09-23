@@ -2,39 +2,39 @@
 
 ## 1. Positioning statement
 
-Hippo is for engineers who spend their day moving between a terminal, an AI coding agent, and a browser tab — and who are tired of re-explaining context every time one of those tools starts a new session. AI coding agents (Claude Code, Codex, Cursor) reset to zero at the start of every conversation: yesterday's debugging trail, the StackOverflow tab that fixed it, and the shell commands that proved it are gone unless you paste them back in by hand. Shell history tools (Atuin, `~/.zsh_history`) only capture the command, not why you ran it or what happened after. Cloud "memory" products solve the recall problem by uploading your shell history and conversation transcripts to someone else's server. Hippo captures shell activity, Claude/Codex/Cursor agent sessions, and allowlisted browser visits into one local knowledge graph, enriches it with a local LLM, and hands it back to your coding agent over MCP — so the agent can ask "what was I just doing" and get a real, cited answer, without your data leaving your machine. Now is the moment because agentic coding sessions are the fastest-growing source of "context I need but don't have" — and they're also the easiest to capture, since the transcripts already exist on disk.
+Hippo is for engineers who spend their day moving between a terminal, an AI coding agent, and a browser tab — and who are tired of re-explaining context every time one of those tools starts a new session. AI coding agents (Claude Code, Codex, Cursor) reset to zero at the start of every conversation: yesterday's debugging trail, the StackOverflow tab that fixed it, and the shell commands that proved it are gone unless you paste them back in by hand. Shell history tools (Atuin, `~/.zsh_history`) only capture the command, not why you ran it or what happened after. Cloud "memory" products solve the recall problem by uploading your shell history and conversation transcripts to someone else's server. Hippo captures shell activity, Claude/Codex/Cursor agent sessions, and allowlisted browser visits into one local knowledge graph, enriches it with a local LLM, and hands it back to your coding agent over MCP — so the agent can ask "what was I just doing" and get a real, cited answer, using the [documented default local data flow](../README.md#privacy-and-security). Now is the moment because agentic coding sessions are the fastest-growing source of "context I need but don't have" — and they're also the easiest to capture, since the transcripts already exist on disk.
 
 ## 2. Tagline candidates
 
-1. Your shell, your agent sessions, your browser history — one searchable graph, entirely on your machine.
+1. Your shell, your agent sessions, your browser history in one searchable local graph.
 2. Local memory for the tools that already forgot what you told them yesterday.
 3. Cross-source recall for people who live in a terminal.
 4. What you ran, what the agent did, and why — linked, local, and queryable.
-5. The second brain that never leaves your laptop.
+5. A local-first second brain.
 
 ## 3. Elevator pitch (100 words)
 
-Hippo is a local-first knowledge capture daemon for macOS. It watches your shell commands, your Claude Code / Codex / Cursor agent sessions, and your allowlisted Firefox browsing, redacts known secret formats, and links them into one SQLite knowledge graph — the shell command, the agent conversation that produced it, and the docs tab you had open, all connected. A local LLM (via oMLX or LM Studio) enriches events into summarized, embedded knowledge nodes. Query it with `hippo ask "how did I fix that build error"` from a terminal, or let Claude Code query it directly through the bundled MCP server, mid-conversation, with no cloud round-trip.
+Hippo is a local-first knowledge capture daemon for macOS. It watches your shell commands, your Claude Code / Codex / Cursor agent sessions, and your allowlisted Firefox browsing, redacts known secret formats, and links them into one SQLite knowledge graph — the shell command, the agent conversation that produced it, and the docs tab you had open, all connected. A local LLM (via oMLX or LM Studio) enriches events into summarized, embedded knowledge nodes. Query it with `hippo ask "how did I fix that build error"` from a terminal, or let Claude Code query it directly through the bundled MCP server, mid-conversation, with [local inference by default](../README.md#privacy-and-security).
 
 ## 4. README hero section
 
 ### Hippo
 
-Local-first knowledge capture daemon for macOS. Hippo watches your shell activity, your Claude Code / Codex / Cursor agent sessions, and your Firefox browsing, redacts known secret formats, enriches events with a local LLM, and builds a searchable second brain — all without sending data to third-party services.
+Use the [README introduction](../README.md) as the authoritative product description.
 
 AI coding agents don't remember what happened in your last session. Your shell history doesn't know what the agent was doing when you ran that command. Your browser tab with the fix doesn't know either. Hippo links all three into one knowledge graph on your own machine, so you — or your agent, through MCP — can ask "how did I fix that build error last week" and get a synthesized answer with cited sources instead of scrolling back through terminal scrollback.
 
-LLM inference runs against any OpenAI-compatible local server — defaults target [oMLX](https://omlx.ai) for Apple Silicon, and [LM Studio](https://lmstudio.ai/) works as a drop-in alternative. No data reaches Anthropic, OpenAI, or any cloud service unless you point the inference URL at one yourself.
+Inference defaults and opt-in external data flows are defined in [Privacy and Security](../README.md#privacy-and-security).
 
 - **Cross-source recall.** A shell command, the Claude Code/Codex/Cursor session that produced it, and the browser tab you had open are linked into one searchable knowledge graph — not three disconnected logs.
 - **Semantic + lexical retrieval.** `hippo ask "how did I fix that build error?"` returns a synthesized answer with cited sources, not a `grep` over command strings.
-- **Local-only by default.** Shell stdout, agent transcripts, and browsing history never leave your machine. The LLM that summarizes them runs locally too.
+- **Local-only by default.** Link to the [privacy contract](../README.md#privacy-and-security), including opt-in cloud decisions.
 - **MCP-native.** Claude Code (or any MCP client) queries your knowledge base mid-conversation through the bundled `hippo-mcp` server — the model can look up "what was I just doing" without you re-explaining it.
 - **Built for reliability, not a demo.** A watchdog asserts capture invariants every 60 seconds, synthetic probes round-trip real events through every capture path every 5 minutes, and `hippo doctor` gives you a CAUSE/FIX/DOC breakdown the moment something drops.
 
 ## 5. Three differentiators (grounded in the code)
 
-**vs. cloud memory products.** The entire pipeline — daemon, enrichment, embeddings, MCP server — reads and writes a single local SQLite file (`~/.local/share/hippo/hippo.db`) and calls out only to a local OpenAI-compatible inference server (oMLX or LM Studio) on `127.0.0.1`. There is no hosted service in the loop by default: no account, no upload step, no vendor with a copy of your shell history. The trade-off is real and stated in the README itself — the DB is unencrypted at rest and readable by any process running as your user, so it's a single-user, single-machine model, not a synced multi-device one.
+**vs. cloud memory products.** Position against the [README privacy contract](../README.md#privacy-and-security), not an unconditional promise that no cloud requests can occur.
 
 **vs. plain RAG over your notes.** Most local RAG setups start from documents you deliberately wrote. Hippo's corpus is built from *ambient* capture — the shell hook (`preexec`/`precmd`), an FSEvents watcher on Claude session JSONL, Rust pollers for Codex and Cursor Agent transcripts, and Native Messaging from a Firefox extension — so the knowledge graph accumulates from things you did, not things you remembered to write down. The retrieval layer also fuses vector similarity (sqlite-vec) with FTS5 lexical search and returns per-hit `freshness` and `confidence` scores, not just a similarity number, so an agent citing hippo's output has a basis for trusting or discounting it.
 
@@ -45,7 +45,7 @@ LLM inference runs against any OpenAI-compatible local server — defaults targe
 1. **Hook** — the problem in one sentence: your coding agent forgets everything the moment the session ends, and so does your shell history, and so does your browser tab, and none of the three talk to each other.
 2. **What hippo actually is** — one Rust daemon + one Python brain + a SQLite file, watching shell/Claude/Codex/Cursor/Firefox, all local.
 3. **The graph, not just the log** — worked example: one `hippo ask` query that stitches together a shell error, the Claude Code session that diagnosed it, and the doc tab that had the fix, with cited sources.
-4. **Local LLM, not cloud** — oMLX/LM Studio, why local inference specifically (no data-leaves-machine trade-off, no per-token bill for something that runs continuously in the background).
+4. **Local inference by default**: explain the [privacy contract](../README.md#privacy-and-security) and distinguish opt-in cloud decisions.
 5. **MCP as the interesting part** — Claude Code querying its own history mid-conversation via the bundled MCP server; this is the part that's different from "just index my files."
 6. **What we don't pretend to solve** — single-user/single-machine, unencrypted DB (FileVault is on you), redaction is regex-based and best-effort, not a DLP guarantee, MCP access is a broad trust grant.
 7. **Reliability isn't an afterthought** — link the capture-reliability stack (watchdog invariants, 5-minute synthetic probes, `hippo doctor --explain`), and the honest reason it exists: two multi-week silent capture outages that a naive health check missed.

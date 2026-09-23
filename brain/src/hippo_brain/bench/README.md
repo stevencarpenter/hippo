@@ -212,7 +212,8 @@ prevents the prod brain from consuming LM Studio capacity during the bench
 window.
 
 - **Automatic** — no flags needed if the prod brain is running
-- **Resume is best-effort** — registered via `atexit` so it fires even on crash
+- **Drain before dispatch**: the client polls pause acknowledgements for up to 300 seconds and aborts unless `in_flight_finished` is true.
+- **Resume is confirmed**: normal completion records `prod_brain_resumed_ok`; `atexit` also attempts recovery on normal interpreter exit, but cannot handle SIGKILL. Failed or invalid acknowledgements retain the recovery marker.
 - **Override** — `--skip-prod-pause` bypasses pause/resume entirely
 
 The same control surface is available outside the bench harness:
@@ -223,15 +224,18 @@ mise run brain:api:health
 mise run brain:api:resume
 ```
 
-This is a soft pause. Ingestion continues and queue depth can grow, but the
-running prod brain may still hold a model connection for health/query traffic.
+See [brain control semantics](../../../../README.md#usage) for paused HTTP
+queries, asynchronous draining, and the separate MCP boundary. Keep other
+inference consumers idle; this control does not pause standalone processes.
 
 If the prod brain restarts during a bench run (e.g., due to launchd keepalive),
 the `model_summary` record will include `"prod_brain_restarted_during_bench": true`.
 
 If a prior bench was SIGKILL'd and left a stale pause lockfile, run
-`hippo-bench recover` to clear it. The `run` subcommand also auto-recovers at
-startup so this is rarely needed.
+`hippo-bench recover` to resume production. The marker is removed only after a
+valid successful resume acknowledgement. Failed recovery raises and preserves
+it for retry; restore brain reachability before retrying. The `run` subcommand
+also performs this recovery at startup.
 
 ---
 

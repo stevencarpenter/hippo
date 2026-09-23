@@ -1,6 +1,6 @@
 -- Coalescing classification work and owned topic results. Original node fields stay unchanged.
 CREATE TABLE IF NOT EXISTS knowledge_node_classifications (
-    node_id INTEGER PRIMARY KEY REFERENCES knowledge_nodes(id) ON DELETE CASCADE,
+    node_id INTEGER PRIMARY KEY REFERENCES knowledge_nodes (id) ON DELETE CASCADE,
     node_uuid TEXT NOT NULL,
     requested_revision INTEGER NOT NULL CHECK (requested_revision > 0),
     desired_input_hash TEXT NOT NULL,
@@ -19,9 +19,9 @@ CREATE TABLE IF NOT EXISTS knowledge_node_classifications (
     applied_input_hash TEXT,
     applied_recipe_hash TEXT,
     accepted_topics_json TEXT NOT NULL DEFAULT '[]'
-        CHECK (json_valid(accepted_topics_json) AND json_type(accepted_topics_json) = 'array'),
+    CHECK (json_valid(accepted_topics_json) AND json_type(accepted_topics_json) = 'array'),
     probabilities_json TEXT NOT NULL DEFAULT '{}'
-        CHECK (json_valid(probabilities_json) AND json_type(probabilities_json) = 'object'),
+    CHECK (json_valid(probabilities_json) AND json_type(probabilities_json) = 'object'),
     returned_model_id TEXT,
     error TEXT,
     enqueued_at INTEGER NOT NULL,
@@ -30,6 +30,6 @@ CREATE TABLE IF NOT EXISTS knowledge_node_classifications (
     updated_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_classification_claim
-    ON knowledge_node_classifications(status, next_attempt_at, lease_expires_at);
+ON knowledge_node_classifications (status, next_attempt_at, lease_expires_at);
 CREATE INDEX IF NOT EXISTS idx_classification_recipe
-    ON knowledge_node_classifications(recipe_hash, status);
+ON knowledge_node_classifications (recipe_hash, status);

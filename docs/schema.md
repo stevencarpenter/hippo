@@ -6,7 +6,7 @@ The state of `~/.local/share/hippo/hippo.db`: the live tables, the per-version m
 
 | Fact | Value |
 |---|---|
-| Current version | **21** |
+| Current version | `PRAGMA user_version` in the authoritative schema below |
 | Authoritative schema | [`crates/hippo-core/src/schema.sql`](../crates/hippo-core/src/schema.sql) |
 | Version constant (Rust) | `crates/hippo-core/src/storage.rs::EXPECTED_VERSION` |
 | Version constant (Python) | `brain/src/hippo_brain/schema_version.py::EXPECTED_SCHEMA_VERSION` |
@@ -14,7 +14,7 @@ The state of `~/.local/share/hippo/hippo.db`: the live tables, the per-version m
 | Migration runner | `crates/hippo-core/src/storage.rs::open_db` |
 | Live version (yours) | `sqlite3 ~/.local/share/hippo/hippo.db "PRAGMA user_version;"` |
 
-Daemon and brain handshake on this constant at startup. If they disagree the daemon refuses to bind its socket, the brain refuses to enrich, and `hippo doctor` surfaces the mismatch with a remediation hint. See [Version mismatch recovery](#version-mismatch-recovery).
+The daemon requires matching Rust and Python expected versions before migration. Python's accepted database versions are defined by `ACCEPTED_READ_VERSIONS` in `schema_version.py`; the additive classification migration allows ordinary queries and enrichment on the preceding schema, with classification disabled when its table is absent. See [Version mismatch recovery](#version-mismatch-recovery).
 
 ## Per-version changelog
 
@@ -48,6 +48,12 @@ The Rust migration runner at `storage.rs::open_db` walks every version from the 
 | **v21** | Auto-memory watcher source_health identity. | Seeds `source_health.source = 'auto-memory-watcher'` via `INSERT OR IGNORE`. | Watcher liveness for the auto-memory ingest path joins the capture-health family. |
 | **v22** | Watcher resume-state rename (SNUG-115 Phase A). | Creates `agentic_session_offsets` (same columns as legacy `claude_session_offsets`) and `INSERT OR IGNORE` copies existing rows. **Does not drop** legacy tables. | Claude FS watcher and backfill CLI read/write `agentic_session_offsets`. Legacy `claude_session_offsets` remains frozen on upgraded DBs until Phase B. |
 
+The v24-to-v25 migration adds optional classification state without rewriting
+knowledge content or vectors. Its authoritative DDL is
+[`schema/classification.sql`](../crates/hippo-core/src/schema/classification.sql),
+with fresh-install parity covered by the storage migration tests. Operational
+usage is in [Jev decisions](jev-decisions.md).
+
 ## Reading the live schema
 
 ```bash
@@ -70,10 +76,8 @@ sqlite3 ~/.local/share/hippo/hippo.db "PRAGMA user_version;"
 |---|---|---|
 | `events` | Shell commands and Claude tool-use events. `source_kind` distinguishes; `probe_tag` marks synthetic. | `storage.rs::insert_event_at` |
 | `sessions` | One row per zsh session (start time, hostname, shell, user). | Daemon at session start |
-| `agentic_sessions` | **Live session store** for all four harnesses. One row per `(session_id, harness, segment_index)`; `harness` ∈ {`claude-code`, `codex`, `cursor`, `opencode`}. Holds segment-derived summary, tool calls / user prompts JSON, message count, content hashes. | `claude_session.rs::insert_segments`, `codex_session.rs::upsert_segment_tx`, `cursor_session.rs::upsert_segment_tx`, `claude_sessions.py` write path |
-| `claude_sessions` | **FROZEN (legacy).** One row per `(session_id, segment_index)`. Backfilled into `agentic_sessions` at v18 (harness derived from `source_file`); still created by `schema.sql`, no longer written, dropped in Phase B (v23) per [`capture/legacy-claude-tables-cutover.md`](capture/legacy-claude-tables-cutover.md). | (no live writer — frozen at v18) |
+| `agentic_sessions` | Live session store. Supported harnesses and uniqueness constraints are defined in `schema.sql`. Holds segment-derived summary, tool calls / user prompts JSON, message count, content hashes. | Daemon session ingesters; brain enrichment writers |
 | `agentic_session_offsets` | Per-file FS-watcher resume state (byte_offset, inode, device). | `watch_claude_sessions.rs::process_file` |
-| `claude_session_offsets` | **FROZEN (legacy).** Pre-v22 name for watcher resume state; copied to `agentic_session_offsets` at v22. Still present on upgraded DBs until Phase B drop. | (no live writer — frozen at v22) |
 | `browser_events` | Firefox-extension visits with Readability-extracted main text, dwell, scroll depth. | `storage.rs::insert_browser_event` |
 | `workflow_runs` / `_jobs` / `_annotations` / `_log_excerpts` | GitHub Actions ingest. | `gh_poll.rs::run_once` |
 | `sha_watchlist` | Per-(repo, sha) follow flag for in-flight CI runs. Drives the gh-poller's "wait for this SHA's runs to settle" loop. | `gh_poll.rs` |
@@ -82,16 +86,13 @@ sqlite3 ~/.local/share/hippo/hippo.db "PRAGMA user_version;"
 | `knowledge_nodes` | The synthesized output of enrichment. The `content` column is a JSON blob (with `summary` / `intent` / `entities` / `tool_calls` / etc. as inner fields); `embed_text` and `node_type`/`outcome`/`tags` are real columns. | `enrichment.py::write_knowledge_node`, `claude_sessions.py::write_claude_knowledge_node` |
 | `knowledge_node_agentic_sessions` | **Live session-link table** tying knowledge nodes back to their `agentic_sessions` source rows. | `claude_sessions.py::write_claude_knowledge_node` |
 | `knowledge_node_events` / `_browser_events` / `_workflow_runs` / `_lessons` | Link tables tying knowledge nodes back to their source events. | Same writers as `knowledge_nodes` |
-| `knowledge_node_claude_sessions` | **FROZEN (legacy)** session-link table. Backfilled into `knowledge_node_agentic_sessions` at v18; no longer written, dropped in Phase B (v23) per [`capture/legacy-claude-tables-cutover.md`](capture/legacy-claude-tables-cutover.md). | (no live writer — frozen at v18) |
 | `entities` | Extracted identifiers (project, file, tool, service, repo, host, person, concept, domain, env_var). UNIQUE `(type, canonical)`. | `enrichment.py::upsert_entities` |
 | `event_entities` / `knowledge_node_entities` | Many-to-many links from rows to extracted entities. | Same |
 | `relationships` | Directed `(source_entity, predicate, target_entity)` graph edges. | Brain enrichment |
-| `agentic_enrichment_queue` | **Live agentic queue**, shared across all four harnesses (claude-code, codex, cursor, opencode). Each row is a claim ticket with `status`, `priority`, `retry_count`, `locked_at`, `locked_by`, referencing `agentic_sessions(id)`. | Daemon writers on insert; brain on claim/complete; watchdog reaper on timeout |
+| `agentic_enrichment_queue` | **Live agentic queue**, shared across supported harnesses. Each row is a claim ticket with `status`, `priority`, `retry_count`, `locked_at`, `locked_by`, referencing `agentic_sessions(id)`. | Daemon writers on insert; brain on claim/complete; watchdog reaper on timeout |
 | `enrichment_queue` / `browser_enrichment_queue` / `workflow_enrichment_queue` | Per-source queue tables for shell events, browser visits, and workflow runs. Each row is a claim ticket with `status`, `priority`, `retry_count`, `locked_at`, `locked_by`. | Daemon on insert; brain on claim/complete; watchdog reaper on timeout |
-| `claude_enrichment_queue` | **FROZEN (legacy)** agentic queue. Un-terminal rows backfilled into `agentic_enrichment_queue` at v18; no longer written, dropped in Phase B (v23) per [`capture/legacy-claude-tables-cutover.md`](capture/legacy-claude-tables-cutover.md). | (no live writer — frozen at v18) |
 | `source_health` | Per-source last_event_ts, consecutive_failures, probe_ok, probe_lag_ms. The watchdog's source of truth. | Daemon (capture path), watchdog (probe results) |
 | `capture_alarms` | Watchdog invariant violations. Append-only ledger. | `hippo watchdog run` |
-| `claude_session_parity` | Legacy parity-check ledger from the tmux-tailer / FS-watcher transition (T-5..T-8). Retained so v9→v10 migrations on existing databases converge with the same shape as fresh installs; not written by any current code path. | (no live writer) |
 | `knowledge_fts` | FTS5 virtual table over `knowledge_nodes.summary` / `embed_text` / `content`. | Triggers (auto-synced with `knowledge_nodes`) |
 | `knowledge_vectors` | sqlite-vec virtual table holding 768-dim embedding vectors. | `embeddings.py::embed_knowledge_node` (Python brain — Rust daemon doesn't load vec0) |
 | `embed_model_meta` | Single-row tracking table for the model that produced the corpus's vectors. | Same |
@@ -104,7 +105,6 @@ sessions ──< events
              └── probe_tag NULL except for synthetic probes
 
 agentic_sessions ──< knowledge_node_agentic_sessions >── knowledge_nodes   (LIVE)
-claude_sessions  ──< knowledge_node_claude_sessions  >── knowledge_nodes   (FROZEN — backfilled into agentic_* at v18)
 events           ──< knowledge_node_events            >── knowledge_nodes
 browser_events   ──< knowledge_node_browser_events    >── knowledge_nodes
 workflow_runs    ──< knowledge_node_workflow_runs     >── knowledge_nodes
@@ -117,8 +117,7 @@ knowledge_nodes ──< knowledge_node_entities >── entities
 source_health      (no FKs; one row per logical source)
 capture_alarms     (no FKs; references invariant_id by string)
 enrichment_queue   ──> events
-agentic_enrichment_queue ──> agentic_sessions   (LIVE — shared by all four harnesses)
-claude_enrichment_queue  ──> claude_sessions    (FROZEN — backfilled into agentic_* at v18)
+agentic_enrichment_queue ──> agentic_sessions   (shared by supported harnesses)
 browser_enrichment_queue ──> browser_events
 workflow_enrichment_queue ──> workflow_runs
 ```
@@ -154,7 +153,7 @@ uv run --project brain python -c \
   "from hippo_brain.schema_version import EXPECTED_SCHEMA_VERSION; print(EXPECTED_SCHEMA_VERSION)"
 ```
 
-All three numbers must match. Common causes and fixes:
+The daemon and brain expected versions must match; the daemon migrates older databases forward. Python's direct-read compatibility is defined above. Common causes and fixes:
 
 | Cause | Fix |
 |---|---|

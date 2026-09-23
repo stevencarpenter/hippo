@@ -111,14 +111,9 @@ Inference receives the original complete candidate set; rules do not prune it.
 These are separately executed paths, so their measured time and token usage
 include the inference calls they actually make.
 
-Capture inputs from an already enabled production reranker by setting
-`HIPPO_DECISION_CAPTURE=1` in the brain process's environment. This hook runs
-only when Hippo invokes `rerank_results`; it does not enable reranking.
-It writes at most 1,000 unique inputs to `decisions/captures/`, with private
-file permissions. Candidate counts and serialized input sizes are bounded.
-Duplicate inputs are skipped. Capture errors are logged by exception type and
-cannot change a query's result. The synchronous file write is opt-in and adds
-local filesystem work to that query.
+For production input capture, use the [capture configuration and limits](jev-decisions.md#capture-and-external-artifacts).
+Capture does not enable reranking; its synchronous file write adds local
+filesystem work to the query.
 
 Replay the frozen captures locally:
 

@@ -276,7 +276,9 @@ def main():
         ):
             parser.error("--results must be outside a git repository")
         if path.exists() or summary_path.exists():
-            parser.error("--live requires a new --results path; saved artifacts are immutable")
+            parser.error(
+                "--live requires a new --results path; saved artifacts are immutable"
+            )
         if not os.environ.get("TYPESAFE_API_KEY"):
             parser.error("TYPESAFE_API_KEY is not available")
         path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
