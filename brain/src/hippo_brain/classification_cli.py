@@ -233,6 +233,119 @@ def backfill(database: Path, cursor: Path, *, limit: int = 100) -> dict:
     }
 
 
+_EXPORT_COLUMNS = {
+    "node_id": "BIGINT",
+    "node_uuid": "VARCHAR",
+    "node_type": "VARCHAR",
+    "status": "VARCHAR",
+    "error": "VARCHAR",
+    "attempts": "INTEGER",
+    "requested_revision": "INTEGER",
+    "applied_revision": "INTEGER",
+    "enqueued_at": "BIGINT",
+    "started_at": "BIGINT",
+    "applied_at": "BIGINT",
+    "taxonomy_version": "VARCHAR",
+    "model_id": "VARCHAR",
+    "returned_model_id": "VARCHAR",
+    "input_version": "VARCHAR",
+    "recipe_hash": "VARCHAR",
+    "prompt_hash": "VARCHAR",
+    "threshold_hash": "VARCHAR",
+    "desired_input_hash": "VARCHAR",
+    "applied_input_hash": "VARCHAR",
+    "probabilities_json": "VARCHAR",
+    "accepted_topics_json": "VARCHAR",
+}
+
+
+def export(database: Path, out: Path) -> dict:
+    """Write classification state to Parquet from one consistent read.
+
+    ``classifications.parquet`` has one row per classification record; nodes never
+    enqueued are absent. ``topic-probabilities.parquet`` has one row per ready node
+    and topic. Both files publish together or not at all, and never overwrite.
+    """
+    try:
+        import duckdb
+    except ImportError as exc:
+        raise ValueError(
+            "classification export requires duckdb; run from a checkout synced with "
+            "`uv sync --project brain`"
+        ) from exc
+    out = external_path(out)
+    targets = [out / "classifications.parquet", out / "topic-probabilities.parquet"]
+    if any(path.exists() for path in targets):
+        raise ValueError("export files already exist; choose a new output directory")
+    out.mkdir(parents=True, exist_ok=True, mode=0o700)
+
+    def scratch(suffix: str) -> Path:
+        descriptor, name = tempfile.mkstemp(
+            dir=out, prefix=".classification-export-", suffix=suffix
+        )
+        os.close(descriptor)
+        return Path(name)
+
+    def literal(path: Path) -> str:
+        return "'" + str(path).replace("'", "''") + "'"
+
+    staging, *pending = scratch(".jsonl"), scratch(".parquet"), scratch(".parquet")
+    published: list[Path] = []
+    try:
+        with closing(_connect(database)) as conn:
+            _require_schema(conn)
+            # One SELECT is one SQLite read snapshot, even against a live WAL database.
+            rows = conn.execute(
+                "SELECT "
+                + ",".join(f"kn.{c}" if c == "node_type" else f"c.{c}" for c in _EXPORT_COLUMNS)
+                + " FROM knowledge_node_classifications c"
+                " JOIN knowledge_nodes kn ON kn.id=c.node_id ORDER BY c.node_id"
+            )
+            with staging.open("w") as stream:
+                for row in rows:
+                    stream.write(json.dumps(dict(zip(_EXPORT_COLUMNS, row, strict=True))) + "\n")
+        columns = ",".join(f"'{name}':'{kind}'" for name, kind in _EXPORT_COLUMNS.items())
+        try:
+            with closing(duckdb.connect()) as db:
+                db.execute(
+                    "CREATE TABLE c AS SELECT *, applied_at - started_at AS latency_ms "
+                    f"FROM read_json(?, format='newline_delimited', columns={{{columns}}})",
+                    [str(staging)],
+                )
+                db.execute(
+                    "CREATE TABLE t AS SELECT c.node_id, c.node_type, c.recipe_hash, e.key AS topic, "
+                    "e.value::DOUBLE AS prob, "
+                    "list_contains(json_extract_string(c.accepted_topics_json, '$[*]'), e.key) "
+                    "AS accepted FROM c, json_each(c.probabilities_json) e WHERE c.status = 'ready'"
+                )
+                for table, path in zip(("c", "t"), pending, strict=True):
+                    db.execute(
+                        f"COPY {table} TO {literal(path)} (FORMAT parquet, COMPRESSION zstd)"
+                    )
+                counts = {
+                    "classifications": db.execute("SELECT count(*) FROM c").fetchone()[0],
+                    "topic_probabilities": db.execute("SELECT count(*) FROM t").fetchone()[0],
+                }
+        except duckdb.Error as exc:
+            raise RuntimeError(f"Parquet export failed: {exc}") from exc
+        # link() refuses an existing target, so a concurrent export cannot be overwritten.
+        for path, target in zip(pending, targets, strict=True):
+            os.link(path, target)
+            published.append(target)
+    except BaseException:
+        for target in published:
+            target.unlink(missing_ok=True)
+        raise
+    finally:
+        for path in (staging, *pending):
+            path.unlink(missing_ok=True)
+    return {
+        "database": str(database.expanduser().resolve()),
+        "files": [str(path) for path in targets],
+        "rows": counts,
+    }
+
+
 def _provenance(conn: sqlite3.Connection, node_id: int, probability: float) -> dict:
     row = conn.execute(
         "SELECT node_uuid,applied_revision,applied_input_hash,applied_recipe_hash,"
@@ -317,10 +430,12 @@ def connections(
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
-    for command in ("status", "backfill", "connections"):
+    for command in ("status", "backfill", "connections", "export"):
         child = commands.add_parser(command)
         child.add_argument("--database", type=Path, required=True)
         child.add_argument("--recipe", type=Path, help="Override classification.recipe_path")
+        if command == "export":
+            child.add_argument("--out", type=Path, required=True)
         if command == "backfill":
             child.add_argument("--cursor", type=Path, required=True)
             child.add_argument("--limit", type=int, default=100)
@@ -345,6 +460,8 @@ def main(argv: list[str] | None = None) -> int:
             result = status(args.database)
         elif args.command == "backfill":
             result = backfill(args.database, args.cursor, limit=args.limit)
+        elif args.command == "export":
+            result = export(args.database, args.out)
         else:
             result = connections(
                 args.database,

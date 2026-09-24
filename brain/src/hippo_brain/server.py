@@ -252,6 +252,19 @@ def _collect_queue_depths(conn: sqlite3.Connection) -> list[tuple[str, str, int]
     return depths
 
 
+def _collect_classification_depths(conn: sqlite3.Connection) -> list[tuple[str, int]]:
+    """Classification rows by status, kept off the enrichment gauge so its sums stay enrichment-only."""
+    try:
+        counts = dict(
+            conn.execute(
+                "SELECT status, COUNT(*) FROM knowledge_node_classifications GROUP BY status"
+            )
+        )
+    except sqlite3.OperationalError:
+        return []
+    return [(status, int(counts.get(status, 0))) for status in QUEUE_DEPTH_STATUSES]
+
+
 def _query_priority(handler):
     """Prevent background claims while any HTTP knowledge query is running."""
 
@@ -2242,6 +2255,23 @@ def create_app(
             "hippo.brain.enrichment.queue_depth",
             callbacks=[_observe_queue_depths],
             description="Enrichment queue sizes",
+        )
+
+        def _observe_classification_depths(callback_options):
+            try:
+                conn = sqlite3.connect(f"file:{_resolved_db_path}?mode=ro", uri=True)
+                try:
+                    for status, count in _collect_classification_depths(conn):
+                        yield otel_metrics.Observation(count, {"status": status})
+                finally:
+                    conn.close()
+            except Exception:
+                pass
+
+        _meter.create_observable_gauge(
+            "hippo.brain.classification.queue_depth",
+            callbacks=[_observe_classification_depths],
+            description="Classification rows by status",
         )
 
     @asynccontextmanager

@@ -20,7 +20,7 @@
     {
       "id": 1,
       "title": "Queue Depth by Source & Status",
-      "description": "Auto-aggregated by source label. Any new source the brain emits appears here automatically — no dashboard edit required.",
+      "description": "Auto-aggregated by source label. Any new source the brain emits appears here automatically \u2014 no dashboard edit required.",
       "type": "timeseries",
       "gridPos": {
         "x": 0,
@@ -40,7 +40,7 @@
             "uid": "prometheus"
           },
           "expr": "sum by (source, status) (hippo_brain_enrichment_queue_depth)",
-          "legendFormat": "{{source}} · {{status}}",
+          "legendFormat": "{{source}} \u00b7 {{status}}",
           "editorMode": "code"
         }
       ],
@@ -122,7 +122,7 @@
     {
       "id": 3,
       "title": "Events Claimed / min",
-      "description": "Auto-aggregated by source label. Any new source the brain emits appears here automatically — no dashboard edit required.",
+      "description": "Auto-aggregated by source label. Any new source the brain emits appears here automatically \u2014 no dashboard edit required.",
       "type": "timeseries",
       "gridPos": {
         "x": 12,
@@ -491,7 +491,7 @@
     {
       "id": 9,
       "title": "RAG Latency by Stage",
-      "description": "Populated only when 'hippo ask' or the MCP ask tool is invoked — interactive, low-frequency. An empty panel is expected, not broken.",
+      "description": "Populated only when 'hippo ask' or the MCP ask tool is invoked \u2014 interactive, low-frequency. An empty panel is expected, not broken.",
       "type": "timeseries",
       "gridPos": {
         "x": 12,
@@ -538,7 +538,7 @@
     {
       "id": 10,
       "title": "RAG Retrieval Hits",
-      "description": "Populated only when 'hippo ask' or the MCP ask tool is invoked — interactive, low-frequency. An empty panel is expected, not broken.",
+      "description": "Populated only when 'hippo ask' or the MCP ask tool is invoked \u2014 interactive, low-frequency. An empty panel is expected, not broken.",
       "type": "timeseries",
       "gridPos": {
         "x": 18,
@@ -964,6 +964,271 @@
         "textMode": "auto",
         "colorMode": "background"
       }
+    },
+    {
+      "id": 19,
+      "type": "row",
+      "title": "Decisions (Jev / rules / local)",
+      "collapsed": false,
+      "gridPos": {
+        "x": 0,
+        "y": 48,
+        "w": 24,
+        "h": 1
+      },
+      "panels": []
+    },
+    {
+      "id": 20,
+      "type": "timeseries",
+      "title": "Decisions / min by Outcome",
+      "description": "Completed rerank, classification, and query-topic decisions. Fallback means the decision failed and the previous ranking or state was kept.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 49,
+        "w": 8,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (task, backend, outcome) (rate(hippo_brain_decision_count_total[$__rate_interval])) * 60",
+          "legendFormat": "{{task}} {{backend}} {{outcome}}",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        }
+      ]
+    },
+    {
+      "id": 21,
+      "type": "timeseries",
+      "title": "Decision Latency p95 by Stage",
+      "description": "Stages overlap and must not be summed. http is client wall time including network, not provider inference time.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 8,
+        "y": 49,
+        "w": 8,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.95, sum by (le, task, stage) (rate(hippo_brain_decision_duration_milliseconds_bucket{stage=~\"decision|http|queue\"}[$__rate_interval])))",
+          "legendFormat": "{{task}} {{stage}}",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        }
+      ]
+    },
+    {
+      "id": 22,
+      "type": "timeseries",
+      "title": "Classification Backlog",
+      "description": "Classification rows by status. A draining pending line is backfill progress; a flat nonzero line means the worker stopped.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 16,
+        "y": 49,
+        "w": 8,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (status) (hippo_brain_classification_queue_depth)",
+          "legendFormat": "{{status}}",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        }
+      ]
+    },
+    {
+      "id": 23,
+      "type": "timeseries",
+      "title": "Jev Tokens / hour",
+      "description": "Provider-reported tokens. Use for spend; missing usage is counted separately.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 57,
+        "w": 8,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (task, direction) (rate(hippo_brain_decision_tokens_total{backend=\"jev\"}[$__rate_interval])) * 3600",
+          "legendFormat": "{{task}} {{direction}}",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        }
+      ]
+    },
+    {
+      "id": 24,
+      "type": "timeseries",
+      "title": "Decision Error Ratio",
+      "description": "Decisions with a fallback, failed, error, or retry outcome, divided by all completed decisions.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 8,
+        "y": 57,
+        "w": 8,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (task) (rate(hippo_brain_decision_errors_total[$__rate_interval])) / sum by (task) (rate(hippo_brain_decision_count_total[$__rate_interval]))",
+          "legendFormat": "{{task}}",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        }
+      ]
+    },
+    {
+      "id": 25,
+      "type": "timeseries",
+      "title": "Jev HTTP Requests / min",
+      "description": "Transport-reported dispatches to the Jev endpoint.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 16,
+        "y": 57,
+        "w": 8,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (task) (rate(hippo_brain_decision_requests_total{backend=\"jev\"}[$__rate_interval])) * 60",
+          "legendFormat": "{{task}}",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        }
+      ]
     }
   ]
 }
