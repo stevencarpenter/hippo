@@ -1095,7 +1095,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "sum by (status) (hippo_brain_enrichment_queue_depth{source=\"classification\"})",
+          "expr": "sum by (status) (hippo_brain_classification_queue_depth)",
           "legendFormat": "{{status}}",
           "datasource": {
             "type": "prometheus",
@@ -1149,8 +1149,8 @@
     {
       "id": 24,
       "type": "timeseries",
-      "title": "Decision Fallback Ratio",
-      "description": "Errors (fallback, failed, retry) divided by completed decisions.",
+      "title": "Decision Error Ratio",
+      "description": "Decisions with a fallback, failed, error, or retry outcome, divided by all completed decisions.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"

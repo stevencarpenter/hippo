@@ -14,7 +14,12 @@ import pytest
 from starlette.applications import Starlette
 from starlette.testclient import TestClient
 
-from hippo_brain.server import BrainServer, _collect_queue_depths, _source_label_for_claude_segments
+from hippo_brain.server import (
+    BrainServer,
+    _collect_classification_depths,
+    _collect_queue_depths,
+    _source_label_for_claude_segments,
+)
 from hippo_brain.watchdog import PreflightDecision
 
 
@@ -68,8 +73,6 @@ def test_collect_queue_depths_splits_agentic_sources():
         CREATE TABLE enrichment_queue (status TEXT NOT NULL);
         CREATE TABLE browser_enrichment_queue (status TEXT NOT NULL);
         CREATE TABLE workflow_enrichment_queue (status TEXT NOT NULL);
-        CREATE TABLE knowledge_node_classifications (status TEXT NOT NULL);
-        INSERT INTO knowledge_node_classifications (status) VALUES ('pending'), ('pending'), ('ready');
         CREATE TABLE agentic_sessions (
             id INTEGER PRIMARY KEY,
             harness TEXT NOT NULL,
@@ -99,10 +102,28 @@ def test_collect_queue_depths_splits_agentic_sources():
     assert rows[("claude", "pending")] == 1
     assert rows[("codex", "pending")] == 2
     assert rows[("opencode", "failed")] == 1
-    assert rows[("classification", "pending")] == 2
+    assert all(source != "classification" for source, _ in rows)
     assert rows[("workflow", "processing")] == 1
     assert rows[("browser", "failed")] == 1
     conn.close()
+
+
+def test_collect_classification_depths_is_separate_and_tolerates_missing_table():
+    import sqlite3
+
+    conn = sqlite3.connect(":memory:")
+    assert _collect_classification_depths(conn) == []
+    conn.executescript(
+        """
+        CREATE TABLE knowledge_node_classifications (status TEXT NOT NULL);
+        INSERT INTO knowledge_node_classifications (status) VALUES ('pending'), ('pending'), ('ready');
+        """
+    )
+    assert _collect_classification_depths(conn) == [
+        ("pending", 2),
+        ("processing", 0),
+        ("failed", 0),
+    ]
 
 
 def test_collect_queue_depths_tolerates_missing_table():

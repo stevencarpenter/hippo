@@ -111,6 +111,7 @@ EMITTED_METRICS: frozenset[str] = frozenset(
         "hippo_brain_rag_duration_milliseconds",
         "hippo_brain_rag_retrieval_hits",
         # --- brain: Jev / rules / local decisions (telemetry.record_decision_metrics) ---
+        "hippo_brain_classification_queue_depth",
         "hippo_brain_decision_count_total",
         "hippo_brain_decision_errors_total",
         "hippo_brain_decision_requests_total",
