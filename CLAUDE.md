@@ -201,7 +201,7 @@ The OTel → Prometheus exporter appends a unit suffix to every instrument name:
 
 **Do not use `unit="1"` for scores or raw counts.** Unit `"1"` produces a misleading `_ratio` suffix on the Prometheus side (e.g., a 0–100 health score or an alarm count would become `hippo_daemon_health_grade_ratio`, not `hippo_daemon_health_grade`). Use an explicit descriptive unit or omit the unit entirely.
 
-Dashboard PromQL queries must use the suffixed Prometheus name. `brain/tests/test_otel_dashboards.py` enforces dashboard ↔ emitter name agreement — add new metrics there when adding new instruments.
+For dashboard metric contracts and runtime drift checks, see [`docs/observability.md`](docs/observability.md#dashboards).
 
 ### Bench results
 
