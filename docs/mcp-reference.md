@@ -20,6 +20,8 @@ For setup (adding hippo to your MCP config), see the [README's MCP Server sectio
 | CI status for a recent push | `get_ci_status` | Structured data; preferred over `ask` for known-shape queries. |
 | Lessons (graduated recurring CI failures) | `get_lessons` | Pre-flight before editing in a known failure-prone area. Lessons require ≥ 2 occurrences to graduate. |
 
+`agent_query` analyzes design decisions in every query mode before omitting them from non-`decisions` hit payloads. Its decision-conflict heuristic compares distinct nodes with matching cwd/branch and opposed explicit alternatives. A warning requires chronology review; no warning does not establish consistency. See the [confidence reference](capture/confidence-scoring.md) for confidence caps.
+
 The ones to reach for first: **`ask`** for natural-language questions with answer synthesis; **`search_hybrid`** for raw retrieval; **`search_events`** for raw event lookup.
 
 ## Common arguments
@@ -48,24 +50,12 @@ Natural-language question → synthesized answer with cited sources.
 | `limit` | `int` | `10` | Number of knowledge nodes to retrieve as context. |
 | `project` / `since` / `source` / `branch` | `str` | `""` | See [Common arguments](#common-arguments). |
 
-**Returns** — a single string (Markdown). Begins with the synthesized answer; ends with a `Sources:` block listing each cited node's score, summary, cwd, and timestamp. Rendered nicely by `glow`.
+**Returns**: a single Markdown string containing the answer and a `Sources:` block with score semantics, summary, location, timestamp, node UUID, and confidence explanation where available. See the [retrieval score contract](eval-harness-design.md#metrics) and [confidence reference](capture/confidence-scoring.md) for interpretation.
 
 **Example**
 
 ```
 ask({"question": "What dep bumps shipped in v0.13.0?", "since": "30d"})
-```
-
-```
-v0.13.0 included two CVE-related upgrades:
-- python-multipart 0.0.22 → 0.0.26
-- pygments 2.19.2 → 2.20.0
-
-Sources:
-  1. [98%] Patched two transitive Python vulnerabilities (python-multipart and pygments)…
-     /Users/carpenter/projects/hippo (feat/claude-tool-enrichment-policy) — 2026-04-22
-  2. [94%] Pushed v0.13.0 release tag…
-     /Users/carpenter/projects/hippo (main) — 2026-04-22
 ```
 
 **Pitfalls**
@@ -141,7 +131,7 @@ Same as `search_knowledge`, plus:
 | `mode` | `str` | `"hybrid"` | `"hybrid"` (default — RRF score fusion), `"semantic"`, `"lexical"`, or `"recent"`. |
 | `entity` | `str` | `""` | Require a specific canonical entity name to appear among the node's linked entities. |
 
-**Returns** — same `SearchResult` shape as `search_knowledge`.
+**Returns**: the `SearchResult` shape above, including `score_semantics` and `confidence`. See the [retrieval score contract](eval-harness-design.md#metrics) for interpretation.
 
 **When to prefer over `search_knowledge`**
 

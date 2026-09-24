@@ -260,12 +260,7 @@ _EXPORT_COLUMNS = {
 
 
 def export(database: Path, out: Path) -> dict:
-    """Write classification state to Parquet from one consistent read.
-
-    ``classifications.parquet`` has one row per classification record; nodes never
-    enqueued are absent. ``topic-probabilities.parquet`` has one row per ready node
-    and topic. Both files publish together or not at all, and never overwrite.
-    """
+    """Export one read snapshot; see docs/jev-decisions.md for the output contract."""
     try:
         import duckdb
     except ImportError as exc:
