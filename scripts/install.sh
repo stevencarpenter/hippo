@@ -408,7 +408,8 @@ install_brain() {
         log_error "Brain receipt write failed; existing brain restored"
         exit 1
     fi
-    rm -rf "${brain_backup}"
+    components_committed=true
+    rm -rf "${brain_backup}" || log_warning "Unable to remove brain backup: ${brain_backup}"
     log_success "Brain installed"
 }
 
@@ -416,7 +417,7 @@ install_brain() {
 # fails. The subshell's EXIT trap also handles explicit exits in the helpers.
 install_components() (
     local arch="$1" tag="$2" checksums_file="$3" temp_dir="$4"
-    local rollback_dir
+    local rollback_dir components_committed=false
     rollback_dir="$(mktemp -d "${temp_dir}/rollback.XXXXXX")"
     if [ -e "${BIN_DIR}/hippo" ] || [ -L "${BIN_DIR}/hippo" ]; then
         cp -pP "${BIN_DIR}/hippo" "${rollback_dir}/hippo"
@@ -426,7 +427,7 @@ install_components() (
     fi
     trap '
         install_status=$?
-        if [ "${install_status}" -ne 0 ]; then
+        if [ "${install_status}" -ne 0 ] && [ "${components_committed}" = false ]; then
             if [ -e "${rollback_dir}/hippo" ] || [ -L "${rollback_dir}/hippo" ]; then
                 mv -f "${rollback_dir}/hippo" "${BIN_DIR}/hippo"
             else
@@ -439,11 +440,12 @@ install_components() (
             fi
             log_error "Component upgrade failed; previous daemon restored"
         fi
-        rm -rf "${rollback_dir}"
+        rm -rf "${rollback_dir}" || log_warning "Unable to remove component backup: ${rollback_dir}"
         exit "${install_status}"
     ' EXIT
     install_daemon "${arch}" "${tag}" "${checksums_file}" "${temp_dir}"
     install_brain "${tag}" "${checksums_file}" "${temp_dir}"
+    components_committed=true
 )
 
 # Hash a directory's contents (paths + bytes), so an unchanged skill is a

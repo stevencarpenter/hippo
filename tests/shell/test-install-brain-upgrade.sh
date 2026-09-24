@@ -11,7 +11,7 @@ printf 'new\n' > "$tmp/release/brain/new-version"
 tar -czf "$tmp/hippo-brain-1.2.3.tar.gz" -C "$tmp/release" brain
 shasum -a 256 "$tmp/hippo-brain-1.2.3.tar.gz" | sed "s|$tmp/||" > "$tmp/SHA256SUMS.txt"
 
-for scenario in sync-fails imports-fail relocated-imports-fail receipt-fails success; do
+for scenario in sync-fails imports-fail relocated-imports-fail receipt-fails cleanup-fails success; do
     brain_dir="$tmp/$scenario/brain"
     bin_dir="$tmp/$scenario/bin"
     receipts_dir="$tmp/$scenario/receipts"
@@ -37,6 +37,13 @@ for scenario in sync-fails imports-fail relocated-imports-fail receipt-fails suc
         if [[ "$scenario" == receipt-fails ]]; then
             write_receipt() { exit 1; }
         fi
+        rm() {
+            if [[ "$scenario" == cleanup-fails && "${*: -1}" == *.previous ]]; then
+                printf "injected backup cleanup failure\n" >&2
+                return 1
+            fi
+            command rm "$@"
+        }
         uv() { [[ "$scenario" != sync-fails ]]; }
         verify_brain_imports() {
             [[ "$scenario" != imports-fail ]] || return 1
@@ -44,14 +51,18 @@ for scenario in sync-fails imports-fail relocated-imports-fail receipt-fails suc
         }
         install_components arm64 v1.2.3 "$release_dir/SHA256SUMS.txt" "$release_dir"
     ' _ "$repo_root" "$tmp" "$brain_dir" "$receipts_dir" "$scenario"; then
-        [[ "$scenario" == success ]]
+        [[ "$scenario" == success || "$scenario" == cleanup-fails ]]
+        if [[ "$scenario" == cleanup-fails ]]; then
+            backups=("$brain_dir".new.*.previous)
+            test -f "${backups[0]}/old-version"
+        fi
         test -f "$brain_dir/new-version"
         test ! -f "$brain_dir/old-version"
         [[ "$(cat "$receipts_dir/brain.sha256")" != old-checksum ]]
         [[ "$(cat "$bin_dir/hippo")" == new-daemon ]]
         [[ "$(cat "$receipts_dir/daemon.sha256")" == new-daemon-checksum ]]
     else
-        [[ "$scenario" != success ]]
+        [[ "$scenario" != success && "$scenario" != cleanup-fails ]]
         test -f "$brain_dir/old-version"
         test ! -f "$brain_dir/new-version"
         [[ "$(cat "$receipts_dir/brain.sha256")" == old-checksum ]]
