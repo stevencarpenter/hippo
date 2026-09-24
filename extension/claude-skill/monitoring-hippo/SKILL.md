@@ -217,6 +217,8 @@ curl -s 'http://localhost:9090/api/v1/label/__name__/values' | jq -r '.values[] 
 # Check specific metrics
 curl -s 'http://localhost:9090/api/v1/query?query=hippo_daemon_buffer_size' | jq .
 curl -s 'http://localhost:9090/api/v1/query?query=hippo_brain_enrichment_queue_depth' | jq .
+# Jev classification rows by status (separate from enrichment queues)
+curl -s 'http://localhost:9090/api/v1/query?query=hippo_brain_classification_queue_depth' | jq .
 
 # Check queue depth (should match daemon status)
 curl -s 'http://localhost:9090/api/v1/query?query=hippo_brain_enrichment_queue_depth' | jq -r '.data.result[]?.value[1]'
