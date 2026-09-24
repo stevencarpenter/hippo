@@ -68,6 +68,8 @@ def test_collect_queue_depths_splits_agentic_sources():
         CREATE TABLE enrichment_queue (status TEXT NOT NULL);
         CREATE TABLE browser_enrichment_queue (status TEXT NOT NULL);
         CREATE TABLE workflow_enrichment_queue (status TEXT NOT NULL);
+        CREATE TABLE knowledge_node_classifications (status TEXT NOT NULL);
+        INSERT INTO knowledge_node_classifications (status) VALUES ('pending'), ('pending'), ('ready');
         CREATE TABLE agentic_sessions (
             id INTEGER PRIMARY KEY,
             harness TEXT NOT NULL,
@@ -97,6 +99,7 @@ def test_collect_queue_depths_splits_agentic_sources():
     assert rows[("claude", "pending")] == 1
     assert rows[("codex", "pending")] == 2
     assert rows[("opencode", "failed")] == 1
+    assert rows[("classification", "pending")] == 2
     assert rows[("workflow", "processing")] == 1
     assert rows[("browser", "failed")] == 1
     conn.close()

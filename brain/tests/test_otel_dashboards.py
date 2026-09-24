@@ -110,6 +110,12 @@ EMITTED_METRICS: frozenset[str] = frozenset(
         "hippo_brain_rag_degraded_total",
         "hippo_brain_rag_duration_milliseconds",
         "hippo_brain_rag_retrieval_hits",
+        # --- brain: Jev / rules / local decisions (telemetry.record_decision_metrics) ---
+        "hippo_brain_decision_count_total",
+        "hippo_brain_decision_errors_total",
+        "hippo_brain_decision_requests_total",
+        "hippo_brain_decision_tokens_total",
+        "hippo_brain_decision_duration_milliseconds",
         # --- brain: MCP ---
         "hippo_brain_mcp_tool_calls_total",
         "hippo_brain_mcp_tool_errors_total",

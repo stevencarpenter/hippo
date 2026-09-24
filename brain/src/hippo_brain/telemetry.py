@@ -237,22 +237,35 @@ def record_decision_metrics(diagnostics: dict, task: str = "rerank") -> None:
             "task": label(task, ("rerank", "classification", "query_topic")),
             "outcome": outcome,
         }
-        prefix = "hippo.brain.decision."
+        # Literal names keep test_otel_dashboards' source-derived allow-list exact.
         counts = {
-            name: meter.create_counter(prefix + name, unit="1", description=description)
-            for name, description in {
-                "count": "Completed decision operations by outcome",
-                "requests": "Transport-reported HTTP dispatches",
-                "errors": "Decisions that failed, fell back, or require retry",
-                "usage_unknown": "Assessments with missing or invalid provider token usage",
-                "requests_unknown": "Assessments without a transport dispatch count",
-            }.items()
+            "count": meter.create_counter(
+                "hippo.brain.decision.count",
+                description="Completed decision operations by outcome",
+            ),
+            "requests": meter.create_counter(
+                "hippo.brain.decision.requests", description="Transport-reported HTTP dispatches"
+            ),
+            "errors": meter.create_counter(
+                "hippo.brain.decision.errors",
+                description="Decisions that failed, fell back, or require retry",
+            ),
+            "usage_unknown": meter.create_counter(
+                "hippo.brain.decision.usage_unknown",
+                description="Assessments with missing or invalid provider token usage",
+            ),
+            "requests_unknown": meter.create_counter(
+                "hippo.brain.decision.requests_unknown",
+                description="Assessments without a transport dispatch count",
+            ),
         }
         tokens = meter.create_counter(
-            prefix + "tokens", unit="{token}", description="Provider-reported token usage"
+            "hippo.brain.decision.tokens",
+            unit="{token}",
+            description="Provider-reported token usage",
         )
         duration = meter.create_histogram(
-            prefix + "duration",
+            "hippo.brain.decision.duration",
             unit="ms",
             description="Measured decision stages; overlapping, not additive",
         )

@@ -238,6 +238,7 @@ def _collect_queue_depths(conn: sqlite3.Connection) -> list[tuple[str, str, int]
         "claude-auto-memory": """
             SELECT COUNT(*) FROM memory_enrichment_queue WHERE status = ?
         """,
+        "classification": "SELECT COUNT(*) FROM knowledge_node_classifications WHERE status = ?",
     }
     depths: list[tuple[str, str, int]] = []
     for source, sql in queries.items():
