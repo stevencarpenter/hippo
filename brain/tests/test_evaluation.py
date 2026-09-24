@@ -114,16 +114,22 @@ class TestNearDuplicateDensity:
 
 class TestCoverageGap:
     def test_all_strong(self):
-        assert coverage_gap_score([0.9, 0.8, 0.7]) == 0.0
+        assert coverage_gap_score([0.9, 0.8, 0.7], score_semantics="recency_adjusted_cosine") == 0.0
 
     def test_all_weak(self):
-        assert coverage_gap_score([0.1, 0.2]) == 1.0
+        assert coverage_gap_score([0.1, 0.2], score_semantics="recency_adjusted_cosine") == 1.0
 
     def test_empty_is_full_gap(self):
         assert coverage_gap_score([]) == 1.0
 
     def test_threshold_respected(self):
-        assert coverage_gap_score([0.3, 0.6], threshold=0.5) == 0.5
+        assert (
+            coverage_gap_score([0.3, 0.6], threshold=0.5, score_semantics="recency_adjusted_cosine")
+            == 0.5
+        )
+
+    def test_relative_rank_does_not_establish_coverage(self):
+        assert math.isnan(coverage_gap_score([1.0, 0.99]))
 
 
 class TestCoherenceAndKeyword:

@@ -90,11 +90,13 @@ Per-question (computed in `evaluation.py`):
 - **NDCG@K** — normalized discounted cumulative gain.
 - **Source diversity** — *normalized Shannon entropy* of `source_kind` distribution across top-K hits, in `[0, 1]` (`source_diversity` in `evaluation.py`). 0 means all hits share one source; 1 means uniform spread across all observed sources.
 - **Near-duplicate density** — pairwise cosine-similarity density of top-K embeddings; high values flag duplicate-heavy retrievals.
-- **Coverage gap score** — *fraction of top-K scores that fall below the configured threshold* (default 0.5; `coverage_gap_score` in `evaluation.py`). 0.0 means all hits are strong; 1.0 means none are.
+- **Coverage gap score**: fraction of semantic mode scores below a threshold (default 0.5). This is a distance-score heuristic, not an answerability measurement. Hybrid, lexical, and recent modes report an undefined value for nonempty results because relative ranks cannot establish corpus coverage. Empty retrieval reports 1.0.
 - **Groundedness** — LM-judge 0/1 score for whether `ask()`'s answer is supported by the retrieved sources (skipped under `--no-judge`).
 - **Keyword hit** — boolean: at least one of `acceptable_answer_keywords` appears in the synthesized answer.
 
 Aggregate: macro-mean of each metric across the question set, plus per-`intent` and per-`source_bias` breakouts when emitted to `--out`.
+
+Retrieval results expose `score_semantics`. Hybrid RRF, lexical, and recent results use `relative_rank`; semantic results use `recency_adjusted_cosine`. The `min_score` setting applies only to semantic mode. Ranking order and normalized hybrid scores remain unchanged. Confidence is an evidence-quality heuristic with `relevance_calibrated=false`, not a probability of correctness. Relative ranking contributes no relevance confidence and cannot produce a high confidence level. These contracts do not establish whether a question is answerable.
 
 ## Degradation
 

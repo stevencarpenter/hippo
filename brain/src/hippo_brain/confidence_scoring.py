@@ -9,7 +9,9 @@ from __future__ import annotations
 
 import time
 from collections.abc import Sequence
-from typing import Any
+from typing import Any, Literal
+
+ScoreSemantics = Literal["relative_rank", "recency_adjusted_cosine"]
 
 CONFIDENCE_LEVELS = frozenset({"high", "medium", "low", "insufficient"})
 
@@ -74,7 +76,16 @@ def _recency_factor(captured_at: int, *, now_ms: int) -> dict[str, Any]:
     return _factor("recency", weight=0.15, score=score, detail=detail)
 
 
-def _retrieval_match_factor(retrieval_score: float) -> dict[str, Any]:
+def _retrieval_match_factor(
+    retrieval_score: float, score_semantics: ScoreSemantics
+) -> dict[str, Any]:
+    if score_semantics == "relative_rank":
+        return _factor(
+            "retrieval_match",
+            weight=0.20,
+            score=0.0,
+            detail="relative rank does not establish relevance",
+        )
     score = max(0.0, min(1.0, retrieval_score))
     if score >= 0.8:
         detail = "strong lexical/semantic match"
@@ -163,18 +174,27 @@ def assess_confidence(
     git_branch: str = "",
     captured_at: int = 0,
     now_ms: int | None = None,
+    score_semantics: ScoreSemantics = "relative_rank",
 ) -> dict[str, Any]:
-    """Return bounded confidence dict: level, score, factors, explanation."""
+    """Return an evidence-quality heuristic, not a probability of answer correctness.
+
+    Relative ranking cannot establish relevance, even when its top score is one.
+    Such results never receive high confidence; answerability remains unverified.
+    """
     now_ms = now_ms or int(time.time() * 1000)
     factors = [
         _evidence_factor(evidence),
         _source_diversity_factor(evidence),
         _recency_factor(captured_at, now_ms=now_ms),
-        _retrieval_match_factor(retrieval_score),
+        _retrieval_match_factor(retrieval_score, score_semantics),
         _capture_health_factor(evidence),
         _context_alignment_factor(cwd, git_branch),
     ]
     composite = round(sum(f["contribution"] for f in factors), 4)
+    if score_semantics == "relative_rank":
+        # Keep unverified relevance below the existing high-confidence boundary
+        # (0.72), including the numeric score consumed by downstream clients.
+        composite = min(composite, 0.7199)
 
     statuses = [
         pkt.get("freshness", {}).get("status")
@@ -201,8 +221,12 @@ def assess_confidence(
 
     if unhealthy_capture and level == "high":
         level = "medium"
+    if score_semantics == "relative_rank" and level == "high":
+        level = "medium"
 
     explanation = _compose_explanation(level, factors)
+    if score_semantics == "relative_rank" and has_evidence:
+        explanation += " Relative ranking does not establish relevance or answerability."
     withheld = level == "insufficient"
 
     return {
@@ -211,6 +235,8 @@ def assess_confidence(
         "factors": factors,
         "explanation": explanation,
         "withheld": withheld,
+        "score_semantics": score_semantics,
+        "relevance_calibrated": False,
     }
 
 
@@ -229,4 +255,5 @@ def attach_confidence_to_results(
             git_branch=str(getattr(result, "git_branch", "") or ""),
             captured_at=int(getattr(result, "captured_at", 0) or 0),
             now_ms=now_ms,
+            score_semantics=getattr(result, "score_semantics", "relative_rank"),
         )

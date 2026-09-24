@@ -1,5 +1,22 @@
+import os
 import tomllib
 from pathlib import Path
+
+
+def _secure_data_dir(path: str) -> None:
+    """Restrict the configured Hippo directory, never an arbitrary DB parent."""
+    directory = Path(path).expanduser()
+    home = Path.home().resolve()
+    if not path or directory.resolve() in (home, *home.parents):
+        raise ValueError("storage.data_dir must be a dedicated Hippo directory")
+    directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+    descriptor = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        if os.fstat(descriptor).st_uid != os.geteuid():
+            raise PermissionError("storage.data_dir must be owned by the current user")
+        os.fchmod(descriptor, 0o700)
+    finally:
+        os.close(descriptor)
 
 
 def _coerce_float(value: object, default: float) -> float:
@@ -103,6 +120,7 @@ def _cmd_serve(args: object) -> None:
     from hippo_brain.telemetry import init_telemetry
 
     settings = _load_runtime_settings()
+    _secure_data_dir(settings["data_dir"])
     retrieval.configure(settings.get("retrieval"))
 
     # Brain uses HTTP OTLP (port 4318); config.toml stores the daemon's gRPC

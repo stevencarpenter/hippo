@@ -22,7 +22,7 @@ from dataclasses import dataclass, field, replace
 from typing import Protocol
 
 from hippo_brain.auto_memory_categories import validate_memory_category_filter
-from hippo_brain.confidence_scoring import attach_confidence_to_results
+from hippo_brain.confidence_scoring import ScoreSemantics, attach_confidence_to_results
 from hippo_brain.enrichment import IDENTIFIER_ENTITY_TYPES
 from hippo_brain.evidence_packets import (
     attach_retrieval_scores,
@@ -192,6 +192,7 @@ class SearchResult:
     entities: dict[str, list[str]] = field(default_factory=dict)
     confidence: dict = field(default_factory=dict)
     controlled_topics: dict[str, float] = field(default_factory=dict)
+    score_semantics: ScoreSemantics = "relative_rank"
 
 
 class _Backend(Protocol):
@@ -537,12 +538,16 @@ def search(
     else:
         raise ValueError(f"unknown retrieval mode: {mode!r}")
 
-    # min_score is an absolute-relevance cutoff; only "semantic" and "hybrid"
-    # produce absolute scores (cosine similarity / normalized RRF). "lexical"
-    # and "recent" scores are purely positional (1.0 - rank/n), so applying
-    # the same cutoff there would chop a fixed *fraction* of results — however
-    # strong the matches — rather than filtering out weak ones.
-    if t.min_score > 0.0 and mode in ("semantic", "hybrid"):
+    # Only semantic scores retain a distance-based scale. Hybrid RRF and
+    # lexical/recent scores are relative ranks, so a threshold cannot establish
+    # relevance or answerability across queries. Preserve their ordering only.
+    for result in results:
+        result.score_semantics = (
+            "recency_adjusted_cosine" if mode == "semantic" else "relative_rank"
+        )
+        for packet in result.evidence:
+            packet["score_semantics"] = result.score_semantics
+    if t.min_score > 0.0 and mode == "semantic":
         results = [r for r in results if r.score >= t.min_score]
 
     if t.topic_retrieval and results:
@@ -712,11 +717,8 @@ def _hybrid(
     if not scored:
         return []
 
-    # Recency must be applied BEFORE the top-score normalization below: doing
-    # it after (as an earlier version of this code did) leaves the top result
-    # at something less than 1.0 whenever it isn't also the freshest, which
-    # silently breaks the "top score == 1.0" invariant that min_score and
-    # confidence_scoring's absolute thresholds rely on.
+    # Preserve the historical ranking scale: recency changes the order before
+    # top-score normalization. This score is relative, not absolute relevance.
     scored = _apply_recency(conn, scored, t, now_ms=now_ms)
 
     # Normalize so top score = 1.0.

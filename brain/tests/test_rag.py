@@ -77,6 +77,27 @@ class TestShapeRagSources:
         assert sources[0]["score"] == 0.92
         assert sources[1]["score"] == 0.85
 
+    def test_relative_rank_metadata_survives_source_shaping_and_text(self):
+        from hippo_brain.rag import _result_to_hit
+
+        hit = _result_to_hit(
+            _fake_search_result(
+                score=1.0,
+                score_semantics="relative_rank",
+                confidence={
+                    "level": "medium",
+                    "explanation": "Relative ranking does not establish relevance or answerability.",
+                },
+            )
+        )
+        sources = _shape_rag_sources([hit])
+        assert sources[0]["score_semantics"] == "relative_rank"
+        text = format_rag_response({"answer": "A note", "sources": sources})
+        assert "rank score 1.000; relative_rank" in text
+        assert "100%" not in text
+        assert "does not establish relevance" in text
+        assert f"node: {sources[0]['uuid']}" in text
+
     def test_includes_required_fields(self):
         sources = _shape_rag_sources(SAMPLE_HITS)
         src = sources[0]
@@ -276,7 +297,7 @@ class TestFormatRagResponse:
         }
         text = format_rag_response(result)
         assert "You set it up by running install." in text
-        assert "[92%]" in text
+        assert "[retrieval score 0.920; unknown]" in text
         assert "Configured Firefox native messaging" in text
         assert "Sources:" in text
 
