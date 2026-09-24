@@ -6,9 +6,11 @@ use hippo_core::redaction::RedactionEngine;
 use hippo_core::storage;
 use rusqlite::Connection;
 use std::collections::HashMap;
+use std::os::unix::fs::PermissionsExt;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
+use tokio::io::AsyncReadExt;
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::Mutex;
 use tokio::sync::watch;
@@ -25,6 +27,10 @@ use std::time::Instant as OtelInstant;
 
 use crate::framing::{read_frame, write_frame};
 use crate::schema_handshake::{HandshakeResult, check_brain_schema_compat, mismatch_advice};
+
+// Capture remains best effort until persistence. Give started frames five seconds
+// to finish during shutdown, then abandon stalled partial frames so restart can proceed.
+const SHUTDOWN_DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Map an `EventPayload` to the `source` attribute value used across daemon
 /// OTel metrics. Mirrors `storage::source_kind` derivation so labels agree
@@ -677,6 +683,7 @@ pub async fn run_with_mode(config: HippoConfig, bench_mode: bool) -> Result<()> 
         }
     }
 
+    storage::ensure_private_dir(&config.storage.data_dir)?;
     let redaction = crate::load_redaction_engine(&config);
 
     // Only remove a socket we can prove is stale. Refuse to replace
@@ -897,6 +904,7 @@ pub async fn run_with_mode(config: HippoConfig, bench_mode: bool) -> Result<()> 
 
     // Bind listener
     let listener = UnixListener::bind(&socket_path)?;
+    std::fs::set_permissions(&socket_path, std::fs::Permissions::from_mode(0o600))?;
     info!("daemon listening on {:?}", socket_path);
     let mut connection_tasks = JoinSet::new();
 
@@ -924,7 +932,22 @@ pub async fn run_with_mode(config: HippoConfig, bench_mode: bool) -> Result<()> 
     // Drop the listener so the socket fd is closed before removal
     drop(listener);
 
-    while let Some(join_result) = connection_tasks.join_next().await {
+    // Idle peers close in handle_connection; bound only the remaining in-flight work.
+    let connection_deadline = Instant::now() + SHUTDOWN_DRAIN_TIMEOUT;
+    while !connection_tasks.is_empty() {
+        let join_result =
+            match time::timeout_at(connection_deadline, connection_tasks.join_next()).await {
+                Ok(Some(result)) => result,
+                Ok(None) => break,
+                Err(_) => {
+                    warn!(
+                        remaining = connection_tasks.len(),
+                        "closing connections after shutdown grace period"
+                    );
+                    connection_tasks.shutdown().await;
+                    break;
+                }
+            };
         match join_result {
             Ok(Ok(())) => {}
             Ok(Err(e)) => warn!("connection error: {}", e),
@@ -961,7 +984,27 @@ pub async fn run_with_mode(config: HippoConfig, bench_mode: bool) -> Result<()> 
 
 #[tracing::instrument(skip_all)]
 async fn handle_connection(state: Arc<DaemonState>, mut stream: UnixStream) -> Result<()> {
-    while let Some(frame) = read_frame(&mut stream).await? {
+    let mut shutdown_rx = state.shutdown_tx.subscribe();
+    loop {
+        let mut first_byte = [0u8; 1];
+        let shutting_down = *shutdown_rx.borrow();
+        let read = tokio::select! {
+            // Drain bytes already accepted before observing shutdown. A one-byte
+            // read is cancellation-safe; once it succeeds, finish the whole frame.
+            biased;
+            read = stream.read(&mut first_byte) => read?,
+            _ = async {
+                if !shutting_down {
+                    let _ = shutdown_rx.changed().await;
+                }
+            } => break,
+        };
+        if read == 0 {
+            break;
+        }
+        let Some(frame) = read_frame(&mut first_byte.as_slice().chain(&mut stream)).await? else {
+            break;
+        };
         let request: DaemonRequest = serde_json::from_slice(&frame)?;
 
         let is_shutdown = matches!(request, DaemonRequest::Shutdown);
@@ -1149,6 +1192,23 @@ mod tests {
         let daemon_handle = tokio::spawn(async move { run(run_config).await });
         wait_for_daemon(&socket_path).await;
 
+        assert_eq!(
+            std::fs::metadata(&socket_path)
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
+        assert_eq!(
+            std::fs::metadata(&config.storage.data_dir)
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o700
+        );
+
         let second_run =
             tokio::time::timeout(Duration::from_millis(500), run(config.clone())).await;
         match second_run {
@@ -1177,6 +1237,40 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_shutdown_disconnects_idle_clients() {
+        let config = test_config();
+        let socket_path = config.socket_path();
+        let mut daemon_handle = tokio::spawn(run(config));
+        wait_for_daemon(&socket_path).await;
+
+        let mut idle_stream = UnixStream::connect(&socket_path).await.unwrap();
+        let request = DaemonRequest::GetEvents {
+            session_id: None,
+            since_ms: None,
+            project: None,
+            limit: Some(1),
+        };
+        write_frame(&mut idle_stream, &serde_json::to_vec(&request).unwrap())
+            .await
+            .unwrap();
+        // The reply synchronizes acceptance; keep the connection open afterwards.
+        assert!(read_frame(&mut idle_stream).await.unwrap().is_some());
+        crate::commands::send_request(&socket_path, &DaemonRequest::Shutdown)
+            .await
+            .unwrap();
+
+        let shutdown = tokio::time::timeout(Duration::from_secs(2), &mut daemon_handle).await;
+        drop(idle_stream);
+        if shutdown.is_err() {
+            daemon_handle.abort();
+            let _ = daemon_handle.await;
+            panic!("an idle connection prevented bounded daemon shutdown");
+        }
+        shutdown.unwrap().unwrap().unwrap();
+        assert!(!socket_path.exists());
+    }
+
+    #[tokio::test]
     async fn test_shutdown_waits_for_accepted_ingest_connections() {
         let config = test_config();
         let socket_path = config.socket_path();
@@ -1187,7 +1281,7 @@ mod tests {
         let split_at = payload.len() / 2;
 
         let run_config = config.clone();
-        let daemon_handle = tokio::spawn(async move { run(run_config).await });
+        let mut daemon_handle = tokio::spawn(async move { run(run_config).await });
         wait_for_daemon(&socket_path).await;
 
         let mut delayed_stream = UnixStream::connect(&socket_path).await.unwrap();
@@ -1209,15 +1303,20 @@ mod tests {
             shutdown_response
         );
 
-        sleep(Duration::from_millis(100)).await;
+        // Completion is slower than the former hardcoded one-second grace,
+        // but remains inside the explicit shutdown drain deadline.
+        sleep(Duration::from_millis(1_100)).await;
 
-        delayed_stream
-            .write_all(&payload[split_at..])
-            .await
-            .unwrap();
-        delayed_stream.shutdown().await.unwrap();
+        let _ = delayed_stream.write_all(&payload[split_at..]).await;
+        let _ = delayed_stream.shutdown().await;
 
-        let daemon_result = daemon_handle.await.unwrap();
+        let shutdown = tokio::time::timeout(Duration::from_secs(3), &mut daemon_handle).await;
+        if shutdown.is_err() {
+            daemon_handle.abort();
+            let _ = daemon_handle.await;
+            panic!("daemon failed to shut down after completing the accepted frame");
+        }
+        let daemon_result = shutdown.unwrap().unwrap();
         assert!(
             daemon_result.is_ok(),
             "daemon shut down with error: {daemon_result:?}"
@@ -1231,6 +1330,46 @@ mod tests {
             event_count, 1,
             "accepted ingest event was lost during shutdown"
         );
+    }
+
+    #[tokio::test]
+    async fn test_shutdown_bounds_stalled_partial_frames() {
+        let config = test_config();
+        let socket_path = config.socket_path();
+        let mut daemon_handle = tokio::spawn(run(config));
+        wait_for_daemon(&socket_path).await;
+
+        let mut stream = UnixStream::connect(&socket_path).await.unwrap();
+        let request = DaemonRequest::GetEvents {
+            session_id: None,
+            since_ms: None,
+            project: None,
+            limit: Some(1),
+        };
+        write_frame(&mut stream, &serde_json::to_vec(&request).unwrap())
+            .await
+            .unwrap();
+        assert!(read_frame(&mut stream).await.unwrap().is_some());
+        stream.write_all(&32u32.to_be_bytes()).await.unwrap();
+        stream.write_all(b"{").await.unwrap();
+
+        crate::commands::send_request(&socket_path, &DaemonRequest::Shutdown)
+            .await
+            .unwrap();
+        let started = Instant::now();
+        let shutdown = tokio::time::timeout(
+            SHUTDOWN_DRAIN_TIMEOUT + Duration::from_secs(1),
+            &mut daemon_handle,
+        )
+        .await;
+        if shutdown.is_err() {
+            daemon_handle.abort();
+            let _ = daemon_handle.await;
+            panic!("a stalled partial frame prevented bounded daemon shutdown");
+        }
+        shutdown.unwrap().unwrap().unwrap();
+        assert!(started.elapsed() >= SHUTDOWN_DRAIN_TIMEOUT - Duration::from_millis(100));
+        assert!(!socket_path.exists());
     }
 
     #[tokio::test]

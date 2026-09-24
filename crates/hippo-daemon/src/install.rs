@@ -171,7 +171,7 @@ pub fn install_gh_poll_wrapper(
     data_dir: &Path,
     force: bool,
 ) -> Result<PathBuf> {
-    std::fs::create_dir_all(data_dir)?;
+    hippo_core::storage::ensure_private_dir(data_dir)?;
     let wrapper = data_dir.join("gh-poll-wrapper.sh");
     if wrapper.exists() && !force {
         anyhow::bail!(

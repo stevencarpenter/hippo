@@ -3,6 +3,7 @@ use chrono::Utc;
 use rusqlite::{Connection, OptionalExtension};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, HashMap};
+use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::Path;
 
 use crate::events::{BrowserEvent, ShellEvent};
@@ -349,11 +350,73 @@ fn normalize_claude_session_source_health(conn: &mut Connection) -> Result<()> {
     Ok(())
 }
 
+/// Restrict an explicitly configured, Hippo-owned directory without changing ancestors.
+pub fn ensure_private_dir(path: &Path) -> Result<()> {
+    std::fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(path)?;
+    let dir = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_DIRECTORY)
+        .open(path)?;
+    let canonical = path.canonicalize()?;
+    anyhow::ensure!(
+        canonical.parent().is_some()
+            && dirs::home_dir()
+                .and_then(|home| home.canonicalize().ok())
+                .is_none_or(|home| !home.starts_with(&canonical)),
+        "data directory must be dedicated to Hippo: {}",
+        path.display()
+    );
+    // SAFETY: geteuid takes no arguments and has no preconditions.
+    anyhow::ensure!(
+        dir.metadata()?.uid() == unsafe { libc::geteuid() },
+        "data directory is not owned by the current user: {}",
+        path.display()
+    );
+    dir.set_permissions(std::fs::Permissions::from_mode(0o700))?;
+    Ok(())
+}
+
 pub fn open_db(path: &Path) -> Result<Connection> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
+    if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
+        // Existing parents can be shared directories for explicit snapshots.
+        // Runtime entrypoints secure their configured data_dir separately.
+        std::fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(parent)?;
     }
-    let mut conn = Connection::open(path)?;
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(path)?;
+    // SAFETY: geteuid takes no arguments and has no preconditions.
+    anyhow::ensure!(
+        file.metadata()?.uid() == unsafe { libc::geteuid() },
+        "database is not owned by the current user: {}",
+        path.display()
+    );
+    file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+    // Resolve ancestor aliases such as macOS /var -> /private/var, while
+    // leaving the final component subject to SQLite's NOFOLLOW check.
+    let parent = path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let filename = path
+        .file_name()
+        .ok_or_else(|| anyhow::anyhow!("database path has no filename: {}", path.display()))?;
+    let sqlite_path = parent.canonicalize()?.join(filename);
+    let mut conn = Connection::open_with_flags(
+        sqlite_path,
+        rusqlite::OpenFlags::default() | rusqlite::OpenFlags::SQLITE_OPEN_NOFOLLOW,
+    )?;
     conn.execute_batch(
         "PRAGMA journal_mode=WAL;
          PRAGMA foreign_keys=ON;
@@ -2120,11 +2183,13 @@ pub fn get_status(conn: &Connection) -> Result<crate::protocol::StatusInfo> {
 
 // A separate stable inode coordinates opens and renames across processes.
 fn lock_fallback(fallback_dir: &Path, name: &str) -> Result<std::fs::File> {
-    std::fs::create_dir_all(fallback_dir)?;
+    ensure_private_dir(fallback_dir)?;
     let lock = std::fs::OpenOptions::new()
         .create(true)
         .truncate(false)
         .write(true)
+        .mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW)
         .open(fallback_dir.join(name))?;
     lock.lock()?;
     Ok(lock)
@@ -2141,7 +2206,10 @@ pub fn write_fallback_jsonl(
     let mut file = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
+        .mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW)
         .open(path)?;
+    file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
     let json = serde_json::to_string(envelope)?;
     writeln!(file, "{}", json)?;
     Ok(())
@@ -2449,6 +2517,40 @@ mod tests {
     }
 
     #[test]
+    fn test_private_storage_repairs_permissions_without_changing_ancestors() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
+        let data_dir = root.path().join("hippo");
+        let db_path = data_dir.join("hippo.db");
+        let mode = |path: &Path| std::fs::metadata(path).unwrap().permissions().mode() & 0o777;
+
+        let conn = open_db(&db_path).unwrap();
+        assert_eq!(mode(&data_dir), 0o700);
+        for name in ["hippo.db", "hippo.db-wal", "hippo.db-shm"] {
+            assert_eq!(mode(&data_dir.join(name)), 0o600, "{name}");
+        }
+        drop(conn);
+        std::fs::set_permissions(&data_dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::set_permissions(&db_path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        ensure_private_dir(&data_dir).unwrap();
+        let _conn = open_db(&db_path).unwrap();
+        assert_eq!(mode(&data_dir), 0o700);
+        assert_eq!(mode(&db_path), 0o600);
+        assert_eq!(mode(root.path()), 0o755);
+
+        // Explicit snapshot files may live in shared directories.
+        let _snapshot = open_db(&root.path().join("snapshot.db")).unwrap();
+        assert_eq!(mode(root.path()), 0o755);
+
+        let db_link = root.path().join("linked.db");
+        std::os::unix::fs::symlink(&db_path, &db_link).unwrap();
+        assert!(open_db(&db_link).is_err());
+        let dir_link = root.path().join("linked-dir");
+        std::os::unix::fs::symlink(&data_dir, &dir_link).unwrap();
+        assert!(ensure_private_dir(&dir_link).is_err());
+    }
+
+    #[test]
     fn test_insert_event_and_queue() {
         let conn = open_memory().unwrap();
         let session_id = upsert_session(&conn, "sess-1", "laptop", "zsh", "user").unwrap();
@@ -2622,6 +2724,21 @@ mod tests {
 
         write_fallback_jsonl(&fallback_dir, &event1).unwrap();
         write_fallback_jsonl(&fallback_dir, &event2).unwrap();
+
+        assert_eq!(
+            std::fs::metadata(&fallback_dir)
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o700
+        );
+        for path in list_fallback_files(&fallback_dir).unwrap() {
+            assert_eq!(
+                std::fs::metadata(path).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+        }
 
         // Verify JSONL file exists
         let files = list_fallback_files(&fallback_dir).unwrap();

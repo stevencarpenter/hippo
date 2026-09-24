@@ -70,9 +70,31 @@ def test_high_multi_source_fresh_evidence() -> None:
         git_branch="main",
         captured_at=_SETTLED,
         now_ms=_NOW,
+        score_semantics="recency_adjusted_cosine",
     )
     assert out["level"] == "high"
     assert out["score"] >= 0.72
+
+
+def test_relative_rank_cannot_establish_high_confidence() -> None:
+    evidence = [
+        {"source_kind": kind, "freshness": _freshness("fresh")}
+        for kind in ("shell", "claude", "browser")
+    ]
+    out = assess_confidence(
+        retrieval_score=1.0,
+        evidence=evidence,
+        cwd="/hippo",
+        git_branch="main",
+        captured_at=_SETTLED,
+        now_ms=_NOW,
+    )
+    assert out["level"] == "medium"
+    assert out["relevance_calibrated"] is False
+    assert out["score"] < 0.72
+    assert "does not establish relevance" in out["explanation"]
+    match = next(f for f in out["factors"] if f["name"] == "retrieval_match")
+    assert match["contribution"] == 0.0
 
 
 @pytest.fixture
@@ -111,3 +133,33 @@ def test_search_attaches_confidence(conn: sqlite3.Connection) -> None:
     assert results[0].confidence
     assert results[0].confidence["level"] in {"medium", "high", "low"}
     assert results[0].confidence["explanation"]
+
+
+def test_opposite_vector_cannot_become_strong_match_through_rrf(conn: sqlite3.Connection) -> None:
+    """An unrelated nearest neighbor still ranks first; rank is not relevance."""
+    conn.execute(
+        "INSERT INTO knowledge_nodes (id, uuid, content, embed_text, created_at) "
+        "VALUES (1, 'font', '{\"summary\":\"Installed a terminal font\"}', 'terminal font', ?)",
+        (_SETTLED,),
+    )
+    conn.execute(
+        "INSERT INTO events (id, timestamp, command, cwd, git_branch) "
+        "VALUES (1, ?, 'brew install font', '/hippo', 'main')",
+        (_SETTLED,),
+    )
+    conn.execute("INSERT INTO knowledge_node_events VALUES (1, 1)")
+    results = search(
+        conn,
+        "What Postgres migration replaced sqlite-vec?",
+        [1.0, 0.0],
+        backend=FakeBackend(knn=[(1, 2.0)]),
+        now_ms=_NOW,
+    )
+    assert results[0].score == 1.0  # retain backwards-compatible ranking
+    assert results[0].score_semantics == "relative_rank"
+    assert results[0].evidence[0]["score_semantics"] == "relative_rank"
+    confidence = results[0].confidence
+    assert confidence["level"] != "high"
+    assert "strong lexical/semantic match" not in confidence["explanation"]
+    match = next(f for f in confidence["factors"] if f["name"] == "retrieval_match")
+    assert match["score"] == 0.0

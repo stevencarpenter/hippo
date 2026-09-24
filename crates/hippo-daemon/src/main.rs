@@ -62,12 +62,7 @@ async fn main() -> Result<()> {
     // The launchd StandardErrorPath still captures pre-main panics and OS-level
     // launch output; runtime application logs go here exclusively.
     let data_dir = config.storage.data_dir.clone();
-    std::fs::create_dir_all(&data_dir).unwrap_or_else(|e| {
-        eprintln!(
-            "Warning: could not create data dir {}: {e}",
-            data_dir.display()
-        )
-    });
+    hippo_core::storage::ensure_private_dir(&data_dir)?;
     let file_appender = tracing_appender::rolling::RollingFileAppender::builder()
         .rotation(tracing_appender::rolling::Rotation::DAILY)
         .filename_prefix("daemon")
@@ -237,6 +232,7 @@ async fn main() -> Result<()> {
                 let brain_dir = brain_dir_arg.unwrap_or_else(hippo_core::config::default_brain_dir);
 
                 let vars = install::detect_vars(&brain_dir, binary_path)?;
+                hippo_core::storage::ensure_private_dir(&vars.data_dir)?;
 
                 println!("Installing LaunchAgents...");
                 println!("  hippo binary: {}", vars.hippo_bin.display());

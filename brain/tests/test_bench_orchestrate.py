@@ -19,9 +19,10 @@ from hippo_brain.bench.preflight import CheckResult
 
 
 @pytest.fixture
-def stub_corpus(tmp_path: Path) -> tuple[Path, Path]:
+def stub_corpus(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, Path]:
     """Minimal corpus stubs — orchestrate reads the manifest with .get() fallbacks
     so a present-but-bare manifest is enough for dry-run paths."""
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
     sqlite = tmp_path / "corpus.sqlite"
     sqlite.write_bytes(b"")  # bytes never read in dry-run / mocked paths
     manifest = tmp_path / "corpus.manifest.json"

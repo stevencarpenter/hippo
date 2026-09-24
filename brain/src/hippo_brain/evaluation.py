@@ -27,6 +27,7 @@ from typing import Any
 
 from hippo_brain.retrieval import Filters, SearchResult
 from hippo_brain.retrieval import search as retrieval_search
+from hippo_brain.confidence_scoring import ScoreSemantics
 
 # ---------------------------------------------------------------------------
 # Quantitative metrics (pure functions)
@@ -204,10 +205,20 @@ def near_duplicate_density(vectors: Sequence[Sequence[float]]) -> float:
     return sum(sims) / len(sims)
 
 
-def coverage_gap_score(scores: Sequence[float], threshold: float = 0.5) -> float:
-    """Fraction of top-K scores that fall below ``threshold``."""
+def coverage_gap_score(
+    scores: Sequence[float],
+    threshold: float = 0.5,
+    *,
+    score_semantics: ScoreSemantics = "relative_rank",
+) -> float:
+    """Distance-score weakness heuristic; undefined for relative rankings.
+
+    This is not a measured answerability rate. Empty retrieval is a full gap.
+    """
     if not scores:
         return 1.0
+    if score_semantics == "relative_rank":
+        return float("nan")
     weak = sum(1 for s in scores if s < threshold)
     return weak / len(scores)
 
@@ -656,7 +667,9 @@ async def score_question(
         ndcg_at_k=ndcg_at_k(retrieved_uuids, relevance_graded, limit),
         source_diversity=source_diversity(sources_per_hit),
         near_duplicate_density=float("nan"),
-        coverage_gap_score=coverage_gap_score(scores),
+        coverage_gap_score=coverage_gap_score(
+            scores, score_semantics=hits[0].score_semantics if hits else "relative_rank"
+        ),
         groundedness=ground,
         keyword_hit=keyword_match(answer or "", q.acceptable_answer_keywords),
         elapsed_ms=elapsed,
@@ -816,28 +829,23 @@ def render_markdown(report: ScoreReport) -> str:
     lines.append("## Caveats")
     lines.append("")
     lines.append(
-        "- **FTS5 phrase-wrap (R-03)**: lexical mode wraps multi-word queries in "
-        "a single phrase, so recall on long natural-language questions is "
-        "pathologically low — not a ranking bug."
+        "- **Label scope**: recall, MRR, and nDCG measure recovery of the supplied "
+        "UUID labels. Stale or incomplete labels cannot establish current "
+        "end-to-end relevance, answer accuracy, or decision usefulness."
     )
     lines.append(
-        "- **RRF normalization (R-07)**: hybrid scores are normalized to top=1.0 "
-        "per query. Absolute score thresholds are not comparable across queries."
+        "- **Relative ranks**: hybrid, lexical, and recent scores are not absolute "
+        "relevance or correctness probabilities. Coverage gap is undefined for "
+        "their nonempty results; empty retrieval is a full gap."
     )
     lines.append(
-        "- **vec0 brute-force (R-02)**: there is no ANN index on "
-        "`knowledge_vectors`. Latency is O(N); hybrid≥LanceDB will stop holding "
-        "once the corpus grows well past ~2K nodes."
+        "- **Synthesis measurement**: keyword hits are substring checks, not factual "
+        "verification. Groundedness is an optional model judgment over the supplied "
+        "source text, not independent proof of correctness."
     )
     lines.append(
-        "- **events.git_repo is NULL** across the live v5 corpus, so project "
-        "filtering silently falls back to cwd-prefix. Low recall on "
-        "project-filtered queries is a data bug, not a retrieval bug."
-    )
-    lines.append(
-        "- **Branch corpus coverage**: on the `postgres` branch only ~1.7% of "
-        "events have knowledge-node coverage (vs ~13.4% on main). Labels are "
-        "drawn from the main-hippo corpus until backfill runs."
+        "- **Missing measurements**: undefined metrics are omitted from aggregate "
+        "means. Retrieval-only runs do not measure synthesis or abstention quality."
     )
     lines.append("")
 
@@ -855,12 +863,13 @@ def render_markdown(report: ScoreReport) -> str:
         )
     lines.append("")
 
-    lines.append("## Coverage gaps (weakest 10 questions)")
-    lines.append("")
-    weakest = sorted(report.results, key=lambda r: -r.coverage_gap_score)[:10]
-    for r in weakest:
-        lines.append(f"- `{r.q.id}` (gap={_fmt(r.coverage_gap_score)}): {r.q.question}")
-    lines.append("")
+    measured_gaps = [r for r in report.results if math.isfinite(r.coverage_gap_score)]
+    if measured_gaps:
+        lines.append("## Coverage gaps (weakest 10 measured questions)")
+        lines.append("")
+        for r in sorted(measured_gaps, key=lambda r: -r.coverage_gap_score)[:10]:
+            lines.append(f"- `{r.q.id}` (gap={_fmt(r.coverage_gap_score)}): {r.q.question}")
+        lines.append("")
 
     errors = [r for r in report.results if r.error]
     if errors:

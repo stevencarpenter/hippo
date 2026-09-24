@@ -271,13 +271,13 @@ Hippo captures shell commands (including stdout/stderr), Claude Code session tra
 
 **Redaction is best-effort.** Hippo filters known secret formats before storage on supported capture paths and before Jev dispatch. Treat it as a noise filter, not a security guarantee. Test patterns with `hippo redact test "your candidate string"`. Full reference (default rules, evaluation model, custom patterns, known false-negatives, browser URL redaction): [`docs/redaction.md`](docs/redaction.md).
 
-**The SQLite database is accessible to any process running as your user.** Single-user assumption. Consider restricting `~/.local/share/hippo/` to `700` if you share the machine.
+**The SQLite database is accessible to any process running as your user.** Daemon, brain, and MCP startup restrict the configured Hippo data directory to mode `0700`. The daemon creates database and socket files with mode `0600`. Use a dedicated data directory; startup rejects the home directory and its ancestors.
 
 **MCP access is broad.** Adding hippo to Claude Code's MCP config grants the model read access to your shell history, Claude transcripts, and browser history — including via prompt injection through code or documents you ask Claude to read.
 
 **Telemetry is off by default.** The OTel stack (`otel/`) is optional, points at `localhost:4317`, and only emits when `[telemetry] enabled = true`. See [`otel/README.md`](otel/README.md) for setup and [`docs/observability.md`](docs/observability.md) for dashboards and alert rules.
 
-**Network exposure.** The brain HTTP server binds `127.0.0.1:9175`. The daemon's Unix socket lives at `~/.local/share/hippo/daemon.sock`.
+**Network exposure.** The brain HTTP server binds `127.0.0.1:9175` and rejects non-loopback Host headers and cross-origin browser requests. These checks prevent browser cross-origin access and DNS rebinding; they do not authenticate local users. Other accounts and processes on the machine can still call the HTTP API. Hippo currently requires a trusted single-user host. The daemon's Unix socket lives at `~/.local/share/hippo/daemon.sock`.
 
 **Uninstall.** Stop services with `mise run stop`, remove `~/.local/share/hippo/`, `~/.config/hippo/`, and unload the LaunchAgents (`launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.hippo.*.plist`, then delete the plists).
 

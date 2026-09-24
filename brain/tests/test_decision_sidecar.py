@@ -580,7 +580,7 @@ def test_conflict_payload_whitelists_labels_and_preserves_current_detector():
 
     output = decision_conflicts.current(case["state"], case["task"])
     assert output["report"] == analyze_conflicts(case["state"]["hits"])
-    assert output["verdict"] == "conflict"  # Existing heuristic deliberately preserved.
+    assert output["verdict"] == "compatible"  # Unscoped, unrelated choices are not comparable.
     assert judge(case["state"], case["task"], rules())["verdict"] is None
 
 
@@ -665,8 +665,10 @@ def test_current_conflict_worker_metrics_and_source_snapshot(tmp_path, monkeypat
     assert rows[0]["input_hash"] != rows[2]["input_hash"]
     summary = sidecar.summarize(run_dir)
     current = next(group for group in summary["groups"] if group["arm"] == "current")
-    assert current["false_conflicts"] == 2 and current["missed_conflicts"] == 2
-    assert current["accuracy"] == 0 and summary["complete"]
+    # The scoped detector avoids the unrelated-choice alarm but cannot establish
+    # the hidden-middle contradiction without explicit scope and alternatives.
+    assert current["false_conflicts"] == 0 and current["missed_conflicts"] == 2
+    assert current["accuracy"] == 0.5 and summary["complete"]
     assert 'task="decision_conflict",arm="current"' in sidecar.prometheus(run_dir)
     for path in sidecar.implementation_paths():
         relative = path.relative_to(Path(sidecar.__file__).parents[1])
@@ -678,8 +680,8 @@ def test_current_conflict_worker_metrics_and_source_snapshot(tmp_path, monkeypat
     analysis = audit(run_dir)
     assert analysis["validated_records"] == 8 and analysis["missing_records"] == 0
     actual = next(group for group in analysis["groups"] if group["arm"] == "current")
-    assert actual["false_conflicts"] == 2 and actual["missed_conflicts"] == 2
-    assert actual["correct_in_both_orders"] == 0
+    assert actual["false_conflicts"] == 0 and actual["missed_conflicts"] == 2
+    assert actual["correct_in_both_orders"] == 1
     assert actual["changed_between_orders"] == 0
     with (run_dir / "current.jsonl").open("a") as stream:
         stream.write(sidecar.canonical(next(row for row in rows if row["arm"] == "current")) + "\n")

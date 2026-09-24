@@ -178,11 +178,13 @@ def run_agent_query(
 
     truncated = len(results) > limit
     results = results[:limit]
-    include_decisions = req.mode == "decisions"
-    hits = [_compact_hit(r, include_decisions=include_decisions) for r in results]
+    hits = [_compact_hit(r, include_decisions=True) for r in results]
 
     conflict_report = analyze_conflicts(hits)
     apply_conflict_confidence_caps(hits, conflict_report)
+    if req.mode != "decisions":
+        for hit in hits:
+            hit.pop("design_decisions", None)
 
     all_packets: list[dict[str, Any]] = []
     for hit in hits:
