@@ -62,6 +62,7 @@ otel = [
 ]
 
 [dev-dependencies]
+opentelemetry_sdk = { workspace = true, features = ["testing"] }
 tempfile.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 wiremock = "0.6"

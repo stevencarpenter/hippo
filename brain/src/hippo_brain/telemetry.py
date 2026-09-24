@@ -237,7 +237,6 @@ def record_decision_metrics(diagnostics: dict, task: str = "rerank") -> None:
             "task": label(task, ("rerank", "classification", "query_topic")),
             "outcome": outcome,
         }
-        # Literal names keep test_otel_dashboards' source-derived allow-list exact.
         counts = {
             "count": meter.create_counter(
                 "hippo.brain.decision.count",
