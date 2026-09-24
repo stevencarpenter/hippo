@@ -242,57 +242,74 @@ def test_all_referenced_metrics_are_allowed():
     )
 
 
-# ---------------------------------------------------------------------------
-# Test 2: No production dashboard JSON may contain "service_namespace".
-#
-# The isolation decision locks this: the {service_namespace!~".+"} filter was
-# a no-op and has been stripped from all production dashboards.  Any
-# re-introduction is a regression.
-# ---------------------------------------------------------------------------
+def _selector_label_names(expr: str) -> set[str]:
+    tokens = re.findall(
+        r'''"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|`[^`]*`|\#[^\n]*|[a-zA-Z_][a-zA-Z0-9_]*|=~|!~|!=|[{}=,]''',
+        expr,
+    )
+    tokens = [token for token in tokens if not token.startswith("#")]
+    labels = set()
+    in_selector = False
+    for index, token in enumerate(tokens[:-1]):
+        if token == "{":
+            in_selector = True
+        elif token == "}":
+            in_selector = False
+        elif in_selector and tokens[index + 1] in {"=", "!=", "=~", "!~"}:
+            labels.add(json.loads(token) if token.startswith('"') else token)
+    return labels
 
 
 def test_no_service_namespace_filter_in_prod_dashboards():
-    """Production dashboards must not contain 'service_namespace' anywhere.
+    violations = [
+        f"dashboard={filename!r} panel_id={panel_id} refId={ref_id!r} expr={expr!r}"
+        for filename, dashboard in _load_prod_dashboards()
+        for panel_id, ref_id, expr in _collect_all_exprs(dashboard)
+        if "service_namespace" in _selector_label_names(expr)
+    ]
+    assert not violations, "Retired service_namespace selectors:\n" + "\n".join(violations)
 
-    The {service_namespace!~".+"} selector was a permanent no-op (bench
-    dashboards are deleted; the OTel collector does not promote resource
-    attributes to labels).  It has been stripped.  If it reappears, the
-    dashboard was edited without reading the isolation decision.
 
-    Fix: remove every occurrence of 'service_namespace' from the dashboard
-    JSON, following the stripping rules in the shared contract:
-      {service_namespace!~".+"}                 -> bare metric name
-      {service_namespace!~".+", status="failed"} -> {status="failed"}
-    """
-    violations: list[str] = []
-
-    for filename, dashboard in _load_prod_dashboards():
-        raw_text = json.dumps(dashboard)
-        if "service_namespace" in raw_text:
-            # Find which panels/exprs contain it for a useful error message
-            panel_hits = []
-            for panel in _iter_panels(dashboard):
-                for target in panel.get("targets", []):
-                    expr = target.get("expr", "")
-                    if "service_namespace" in expr:
-                        panel_hits.append(
-                            f"    panel_id={panel.get('id', '?')}  "
-                            f"refId={target.get('refId', '?')}  expr={expr!r}"
-                        )
-            # Also flag if the literal appears outside exprs (e.g. in a label_selector field)
-            hit_detail = (
-                "\n".join(panel_hits)
-                if panel_hits
-                else "    (not in a target expr — search the raw JSON)"
-            )
-            violations.append(
-                f"  dashboard={filename!r} still contains 'service_namespace':\n{hit_detail}"
-            )
-
-    assert not violations, (
-        "The following production dashboards contain 'service_namespace', "
-        "which is a no-op filter that must be stripped.\n\n" + "\n".join(violations)
+@pytest.mark.parametrize(
+    ("expr", "rejected"),
+    [
+        ('hippo_x{status="service_namespace"}', False),
+        (r'hippo_x{status="{service_namespace=\"x\"}"}', False),
+        ("hippo_x{status='{service_namespace=\"x\"}'}", False),
+        ('hippo_x{status=`{service_namespace="x"}`}', False),
+        ('hippo_x # {service_namespace="x"}', False),
+        *[
+            (f'hippo_x{{status="ok", service_namespace {op} "x"}}', True)
+            for op in ("=", "!=", "=~", "!~")
+        ],
+        ('{ "service_namespace" = "x" }', True),
+        (r'hippo_x{status="brace } and escaped \"", service_namespace="x"}', True),
+    ],
+)
+def test_service_namespace_selector_policy(monkeypatch, expr, rejected):
+    dashboard = {
+        "description": "Retired service_namespace filter",
+        "panels": [
+            {
+                "panels": [
+                    {
+                        "id": 7,
+                        "targets": [
+                            {"refId": "A", "datasource": {"type": "prometheus"}, "expr": expr}
+                        ],
+                    }
+                ]
+            }
+        ],
+    }
+    monkeypatch.setattr(
+        sys.modules[__name__], "_load_prod_dashboards", lambda: [("fixture.json", dashboard)]
     )
+    if rejected:
+        with pytest.raises(AssertionError, match="Retired service_namespace selectors"):
+            test_no_service_namespace_filter_in_prod_dashboards()
+    else:
+        test_no_service_namespace_filter_in_prod_dashboards()
 
 
 # ---------------------------------------------------------------------------
