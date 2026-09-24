@@ -96,7 +96,7 @@ Per-question (computed in `evaluation.py`):
 
 Aggregate: macro-mean of each metric across the question set, plus per-`intent` and per-`source_bias` breakouts when emitted to `--out`.
 
-Retrieval results expose `score_semantics`. Hybrid RRF, lexical, and recent results use `relative_rank`; semantic results use `recency_adjusted_cosine`. The `min_score` setting applies only to semantic mode. Ranking order and normalized hybrid scores remain unchanged. Confidence is an evidence-quality heuristic with `relevance_calibrated=false`, not a probability of correctness. Relative ranking contributes no relevance confidence and cannot produce a high confidence level. These contracts do not establish whether a question is answerable.
+Retrieval results expose `score_semantics`. Hybrid RRF, lexical, and recent results use `relative_rank`; semantic results use `recency_adjusted_cosine`. The `min_score` setting applies only to semantic mode. Ranking order and normalized hybrid scores remain unchanged. The [confidence reference](capture/confidence-scoring.md) owns confidence interpretation and caps.
 
 ## Degradation
 

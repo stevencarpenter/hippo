@@ -26,7 +26,7 @@ curl -fsSL https://github.com/stevencarpenter/hippo/releases/latest/download/ins
 
 The release binaries are **arm64-only**. Intel Macs need to build from source — see [Manual Installation](#manual-installation).
 
-The installer downloads the daemon and brain with checksum verification, writes LaunchAgent plists, and prints a `hippo doctor` summary on completion. See the install script source at the link above for what it touches.
+The installer downloads the daemon and brain with checksum verification, writes LaunchAgent plists, and prints a `hippo doctor` summary on completion. Brain upgrades stage and verify a locked, relocatable environment before replacement; tested ordinary failures restore prior components and receipts. Backup cleanup failures warn without undoing a committed upgrade. Crash-atomic replacement and concurrent installers are not supported guarantees. See the install script source at the link above for what it touches.
 
 ## Verify it's working
 
@@ -277,7 +277,7 @@ Hippo captures shell commands (including stdout/stderr), Claude Code session tra
 
 **Telemetry is off by default.** The OTel stack (`otel/`) is optional, points at `localhost:4317`, and only emits when `[telemetry] enabled = true`. See [`otel/README.md`](otel/README.md) for setup and [`docs/observability.md`](docs/observability.md) for dashboards and alert rules.
 
-**Network exposure.** The brain HTTP server binds `127.0.0.1:9175` and rejects non-loopback Host headers and cross-origin browser requests. These checks prevent browser cross-origin access and DNS rebinding; they do not authenticate local users. Other accounts and processes on the machine can still call the HTTP API. Hippo currently requires a trusted single-user host. The daemon's Unix socket lives at `~/.local/share/hippo/daemon.sock`.
+**Network exposure.** The brain HTTP server binds `127.0.0.1:9175` and rejects non-loopback Host headers and cross-origin browser requests. Native local clients may omit Origin; any supplied Origin must match the request scheme and Host authority. These checks prevent browser cross-origin access and DNS rebinding; they do not authenticate local users. Other accounts and processes on the machine can still call the HTTP API. Hippo currently requires a trusted single-user host. The daemon's Unix socket lives at `~/.local/share/hippo/daemon.sock`.
 
 **Uninstall.** Stop services with `mise run stop`, remove `~/.local/share/hippo/`, `~/.config/hippo/`, and unload the LaunchAgents (`launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.hippo.*.plist`, then delete the plists).
 
