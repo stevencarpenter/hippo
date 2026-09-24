@@ -194,9 +194,10 @@ curl -s http://localhost:13133/
 - Hippo Daemon: http://localhost:3030/d/hippo-daemon
 - Hippo Enrichment Pipeline: http://localhost:3030/d/hippo-enrichment
 
-Login: user `admin`; the password is whatever `GF_SECURITY_ADMIN_PASSWORD` is
-set to in `otel/docker-compose.yml`. This is a localhost-only development
-stack with anonymous access enabled.
+Login: user `admin` with the password from `HIPPO_OTEL_GRAFANA_ADMIN_PASSWORD`,
+which `otel/docker-compose.yml` requires for a new Grafana database. Ports bind
+to `127.0.0.1` and anonymous access is disabled. An existing Grafana database
+keeps its previous admin password until you change it in Grafana.
 
 ### Check OTEL Logs
 ```bash
