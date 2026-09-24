@@ -1372,7 +1372,7 @@ description = "Replay runtime ranking recipes on frozen external candidates"
 run = "uv run --project brain hippo-decision-bench replay ${@}"
 
 [tasks.classification]
-description = "Inspect classification, resume bounded backfill, or inspect topic connections"
+description = "Inspect classification, resume bounded backfill, inspect topic connections, or export Parquet"
 run = "uv run --project brain python -m hippo_brain.classification_cli ${@}"
 
 [tasks."test:decisions"]

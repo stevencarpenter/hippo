@@ -63,6 +63,16 @@ mise run classification -- backfill \
 
 This command **writes queue state to the selected database**. Use an approved deployment or a writable experiment clone, never the immutable benchmark baseline. It does not call Jev. Repeat the same command until `complete` is true; the cursor binds the database, recipe, and initial node-ID high watermark. Replayed pages are idempotent. New nodes use the writer hooks, or a new backfill job. The enabled brain worker drains the queue. The worker claims two nodes per brain poll, about 22 nodes per minute at the default 5-second interval, so a 30,000-node corpus drains in about 22 hours. A 1,000-row page holds the SQLite write lock long enough to make concurrent worker claims fail with `database is locked`; a node can exhaust its three attempts during that window. Use the default 100-row limit while the worker runs.
 
+Export classification state to Parquet for offline analysis:
+
+```sh
+mise run classification -- export \
+  --database /absolute/path/hippo.db \
+  --out "$HOME/.local/share/hippo-investigations/classification-$(date -u +%Y%m%dT%H%MZ)"
+```
+
+The command reads the database once, so the export is consistent even while the worker runs. It writes `classifications.parquet` with one row per classification record (nodes never enqueued are absent; status, attempts, timestamps, `latency_ms`, recipe and input identity, and raw probability and accepted-topic JSON) and `topic-probabilities.parquet` with one row per ready node and topic (`prob`, `accepted`). The output directory must be outside the repository and the Hippo data directory, and existing export files are never overwritten. Both files publish together or not at all. The Parquet writer is DuckDB from the brain's development dependency group, so run the command from a checkout synced with `uv sync --project brain`. Reclassification overwrites rows in place, so an export is the only record of a run's results after a recipe or threshold change.
+
 Inspect current connections without inference:
 
 ```sh
