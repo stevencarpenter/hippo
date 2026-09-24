@@ -244,7 +244,7 @@ def test_all_referenced_metrics_are_allowed():
 
 def _selector_label_names(expr: str) -> set[str]:
     tokens = re.findall(
-        r'''"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|`[^`]*`|\#[^\n]*|[a-zA-Z_][a-zA-Z0-9_]*|=~|!~|!=|[{}=,]''',
+        r""""(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|`[^`]*`|\#[^\n]*|[a-zA-Z_][a-zA-Z0-9_]*|=~|!~|!=|[{}=,]""",
         expr,
     )
     tokens = [token for token in tokens if not token.startswith("#")]

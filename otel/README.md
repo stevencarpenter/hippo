@@ -20,7 +20,7 @@ on-call pointers: [`docs/observability.md`](../docs/observability.md).
 | `otel/grafana/dashboards/hippo-knowledge-health.json` | "Hippo — Knowledge Health": recall, capture, corpus, graveyard, identity/hygiene, snowball rows. |
 | `otel/grafana/alerting/hippo-knowledge-alerts.yml` | 10 active rules + 2 pre-wired **paused** snowball rules. |
 | `launchd/com.hippo.metrics-exporter.plist` | LaunchAgent template, installed by `hippo daemon install` when `[telemetry] enabled = true` (removed when disabled); `hippo doctor` verifies the port answers. |
-| `brain/tests/test_otel_dashboards.py` | Drift guard: dashboards/alerts may only reference `EMITTED_METRICS` (OTel) ∪ `_EXPORTER_METRICS`. The exporter half is derived from the exporter module and verified by rendering it against a synthetic DB, so a declared-but-unemitted name fails the suite instead of rendering a blank panel. |
+| Runtime metric drift checks | See the [metric contract and contribution guidance](../docs/observability.md#dashboards). |
 
 ## Tasks
 
