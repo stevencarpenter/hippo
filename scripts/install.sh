@@ -343,15 +343,20 @@ install_brain() {
     share_dir="$(dirname "${BRAIN_DIR}")"
     mkdir -p "${share_dir}"
 
-    # Stage the new install alongside BRAIN_DIR (same filesystem) so the final
-    # swap is a single rename. The brain tarball has one top-level entry
-    # `brain/` which contains the python package plus a `scripts/` subdir
-    # consumed by LaunchAgents. Clears any staging path left behind by a
-    # prior aborted run.
-    local brain_staging="${BRAIN_DIR}.new"
-    rm -rf "${brain_staging}"
-    mkdir -p "${brain_staging}"
-    tar -xzf "${brain_path}" -C "${brain_staging}" --strip-components=1
+    if ! command -v uv >/dev/null 2>&1; then
+        log_error "uv is required to verify the brain before replacing an existing installation"
+        exit 1
+    fi
+
+    # Prepare a complete replacement on the same filesystem. Never remove the
+    # working tree before downloads, dependency installation and imports pass.
+    local brain_staging
+    brain_staging="$(mktemp -d "${BRAIN_DIR}.new.XXXXXX")"
+    if ! tar -xzf "${brain_path}" -C "${brain_staging}" --strip-components=1; then
+        rm -rf "${brain_staging}"
+        log_error "Brain tarball extraction failed; existing brain preserved"
+        exit 1
+    fi
 
     # Both scripts/ and shell/ are required: scripts/ is consumed by the
     # xcode-ingest LaunchAgents, shell/ is sourced from the user's zsh
@@ -365,43 +370,87 @@ install_brain() {
         fi
     done
 
-    rm -rf "${BRAIN_DIR}"
-    mv "${brain_staging}" "${BRAIN_DIR}"
-
-    # Eagerly build the venv at install time and verify imports. Without this
-    # step `uv run` lazy-creates the venv on first launchd start, which has
-    # in the wild left a half-installed namespace (dist-info present but the
-    # package contents missing). The brain then runs alongside a "telemetry
-    # disabled" warning and every Grafana panel fed by brain metrics goes
-    # dark. Recovered by `uv sync --reinstall`; we now do that proactively.
-    if command -v uv >/dev/null 2>&1; then
-        log_info "Syncing brain Python dependencies..."
-        if ! (cd "${BRAIN_DIR}" && uv sync 2>&1); then
-            log_error "uv sync failed in ${BRAIN_DIR}"
+    # Relocatable entry points and a non-editable package keep the venv usable
+    # after its directory is renamed. Preserve the import-repair retry for
+    # cached wheels whose metadata exists but package contents are incomplete.
+    log_info "Syncing staged brain Python dependencies..."
+    if ! (cd "${brain_staging}" && uv venv --relocatable --python 3.14 .venv \
+            && uv sync --locked --no-editable 2>&1); then
+        rm -rf "${brain_staging}"
+        log_error "Staged brain dependency installation failed; existing brain preserved"
+        exit 1
+    fi
+    if ! verify_brain_imports "${brain_staging}"; then
+        log_warning "Brain imports failed after sync; retrying with --reinstall..."
+        if ! (cd "${brain_staging}" && uv sync --locked --no-editable --reinstall 2>&1) \
+                || ! verify_brain_imports "${brain_staging}"; then
+            rm -rf "${brain_staging}"
+            log_error "Staged brain imports failed; existing brain preserved"
             exit 1
         fi
-
-        log_info "Verifying brain imports..."
-        if ! verify_brain_imports "${BRAIN_DIR}"; then
-            log_warning "Brain imports failed after sync; retrying with --reinstall..."
-            if ! (cd "${BRAIN_DIR}" && uv sync --reinstall 2>&1); then
-                log_error "uv sync --reinstall failed in ${BRAIN_DIR}"
-                exit 1
-            fi
-            if ! verify_brain_imports "${BRAIN_DIR}"; then
-                log_error "Brain venv at ${BRAIN_DIR} is unusable even after --reinstall."
-                log_error "Manual recovery: rm -rf '${BRAIN_DIR}/.venv' && cd '${BRAIN_DIR}' && uv sync"
-                exit 1
-            fi
-        fi
-        log_success "Brain dependencies verified"
-    else
-        log_warning "uv not found; skipping eager brain venv build (will lazy-init on first launch)"
     fi
 
-    write_receipt "brain" "${expected_checksum}"
+    local brain_backup="${brain_staging}.previous"
+    if [ -e "${BRAIN_DIR}" ]; then
+        mv "${BRAIN_DIR}" "${brain_backup}"
+    fi
+    if ! mv "${brain_staging}" "${BRAIN_DIR}"; then
+        [ ! -e "${brain_backup}" ] || mv "${brain_backup}" "${BRAIN_DIR}"
+        log_error "Brain promotion failed; existing brain restored"
+        exit 1
+    fi
+    if ! verify_brain_imports "${BRAIN_DIR}"; then
+        rm -rf "${BRAIN_DIR}"
+        [ ! -e "${brain_backup}" ] || mv "${brain_backup}" "${BRAIN_DIR}"
+        log_error "Relocated brain imports failed; existing brain restored"
+        exit 1
+    fi
+
+    if ! (write_receipt "brain" "${expected_checksum}"); then
+        rm -rf "${BRAIN_DIR}"
+        [ ! -e "${brain_backup}" ] || mv "${brain_backup}" "${BRAIN_DIR}"
+        log_error "Brain receipt write failed; existing brain restored"
+        exit 1
+    fi
+    components_committed=true
+    rm -rf "${brain_backup}" || log_warning "Unable to remove brain backup: ${brain_backup}"
     log_success "Brain installed"
 }
+
+# Keep the daemon and its receipt at the prior version if brain preparation
+# fails. The subshell's EXIT trap also handles explicit exits in the helpers.
+install_components() (
+    local arch="$1" tag="$2" checksums_file="$3" temp_dir="$4"
+    local rollback_dir components_committed=false
+    rollback_dir="$(mktemp -d "${temp_dir}/rollback.XXXXXX")"
+    if [ -e "${BIN_DIR}/hippo" ] || [ -L "${BIN_DIR}/hippo" ]; then
+        cp -pP "${BIN_DIR}/hippo" "${rollback_dir}/hippo"
+    fi
+    if [ -f "${RECEIPTS_DIR}/daemon.sha256" ]; then
+        cp -p "${RECEIPTS_DIR}/daemon.sha256" "${rollback_dir}/daemon.sha256"
+    fi
+    trap '
+        install_status=$?
+        if [ "${install_status}" -ne 0 ] && [ "${components_committed}" = false ]; then
+            if [ -e "${rollback_dir}/hippo" ] || [ -L "${rollback_dir}/hippo" ]; then
+                mv -f "${rollback_dir}/hippo" "${BIN_DIR}/hippo"
+            else
+                rm -f "${BIN_DIR}/hippo"
+            fi
+            if [ -f "${rollback_dir}/daemon.sha256" ]; then
+                mv -f "${rollback_dir}/daemon.sha256" "${RECEIPTS_DIR}/daemon.sha256"
+            else
+                rm -f "${RECEIPTS_DIR}/daemon.sha256"
+            fi
+            log_error "Component upgrade failed; previous daemon restored"
+        fi
+        rm -rf "${rollback_dir}" || log_warning "Unable to remove component backup: ${rollback_dir}"
+        exit "${install_status}"
+    ' EXIT
+    install_daemon "${arch}" "${tag}" "${checksums_file}" "${temp_dir}"
+    install_brain "${tag}" "${checksums_file}" "${temp_dir}"
+    components_committed=true
+)
 
 # Hash a directory's contents (paths + bytes), so an unchanged skill is a
 # no-op on re-run and a user's local edit is detectable.
@@ -738,10 +787,7 @@ main() {
     echo ""
 
     # Install components
-    install_daemon "${arch}" "${tag}" "${temp_dir}/SHA256SUMS.txt" "${temp_dir}"
-    echo ""
-
-    install_brain "${tag}" "${temp_dir}/SHA256SUMS.txt" "${temp_dir}"
+    install_components "${arch}" "${tag}" "${temp_dir}/SHA256SUMS.txt" "${temp_dir}"
     echo ""
 
     install_skills

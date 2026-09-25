@@ -290,7 +290,19 @@ uv run --project brain ruff check brain/
 uv run --project brain ruff format --check brain/src brain/tests
 echo ""
 
+mise run test:install
+
 echo "=== All checks passed ==="
+"""
+
+[tasks."test:install"]
+description = "Check release installer upgrades and shell hook paths"
+run = """
+set -euo pipefail
+bash -n scripts/install.sh
+bash tests/shell/test-install-brain-upgrade.sh
+bash tests/shell/test-install-preserves-shared-scripts.sh
+bash tests/shell/test-install-shell-source-paths.sh
 """
 
 [tasks."test:rust"]
@@ -722,7 +734,7 @@ uv sync --project brain
 echo "  venv ready at brain/.venv"
 
 # ── 4b. Sync brain tree to XDG install location ─────────────────────
-# The brain LaunchAgent runs `uv run --project ~/.local/share/hippo-brain`,
+# The brain LaunchAgent runs `uv run --no-sync --project ~/.local/share/hippo-brain`,
 # not from the repo. Without this sync, a rebuilt daemon running against
 # the installed brain sees a schema-version mismatch after any migration.
 # Keep --delete so removed files don't linger, but exclude dev caches.

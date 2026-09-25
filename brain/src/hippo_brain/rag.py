@@ -172,6 +172,7 @@ def _shape_rag_sources(
         sources.append(
             {
                 "score": score,
+                "score_semantics": hit.get("score_semantics", "unknown"),
                 "summary": _truncate(hit.get("summary", ""), 120),
                 "cwd": hit.get("cwd", ""),
                 "git_branch": hit.get("git_branch", ""),
@@ -203,7 +204,8 @@ def _hit_lines(
     ts = hit.get("captured_at", 0)
     date_str = _format_timestamp(ts) if ts else "unknown"
 
-    lines = [f"[{index}] (score: {score}, {date_str})"]
+    semantics = hit.get("score_semantics", "unknown")
+    lines = [f"[{index}] (score: {score}, semantics: {semantics}, {date_str})"]
     if hit.get("summary"):
         lines.append(f"Summary: {hit['summary']}")
     if hit.get("intent"):
@@ -440,9 +442,16 @@ def format_rag_response(result: dict) -> str:
                 location_parts.append(date_str)
 
             loc = " — ".join(location_parts) if location_parts else ""
-            parts.append(f"  {i}. [{score:.0%}] {summary}")
+            semantics = src.get("score_semantics", "unknown")
+            label = "rank score" if semantics == "relative_rank" else "retrieval score"
+            parts.append(f"  {i}. [{label} {score:.3f}; {semantics}] {summary}")
             if loc:
                 parts.append(f"     {loc}")
+            if src.get("uuid"):
+                parts.append(f"     node: {src['uuid']}")
+            confidence = src.get("confidence") or {}
+            if confidence.get("explanation"):
+                parts.append(f"     {confidence['explanation']}")
             if degraded:
                 cmds = src.get("commands_raw", "")
                 if cmds:
@@ -486,6 +495,7 @@ def _result_to_hit(r: SearchResult) -> dict:
     """
     return {
         "_distance": round(1.0 - max(0.0, min(1.0, r.score)), 4),
+        "score_semantics": r.score_semantics,
         "summary": r.summary,
         "embed_text": r.embed_text,
         "intent": r.intent,

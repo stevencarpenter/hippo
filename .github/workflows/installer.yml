@@ -1,0 +1,40 @@
+name: Installer CI
+
+on:
+  pull_request:
+    paths:
+      - "scripts/install.sh"
+      - "shell/**"
+      - "tests/shell/test-install-*.sh"
+      - ".github/workflows/installer.yml"
+  push:
+    branches: [main]
+    paths:
+      - "scripts/install.sh"
+      - "shell/**"
+      - "tests/shell/test-install-*.sh"
+      - ".github/workflows/installer.yml"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  install-tests:
+    name: Installer upgrade and rollback
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v6
+
+      # Mirrors `mise run test:install`.
+      - name: Run installer tests
+        run: |
+          set -euo pipefail
+          bash -n scripts/install.sh
+          bash tests/shell/test-install-brain-upgrade.sh
+          bash tests/shell/test-install-preserves-shared-scripts.sh
+          bash tests/shell/test-install-shell-source-paths.sh

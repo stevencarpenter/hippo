@@ -1216,10 +1216,7 @@ def test_configure_parses_tier2_knobs():
 
 
 def test_hybrid_top_score_normalizes_to_one_even_with_recency_on(conn):
-    """Recency must be applied BEFORE the final top-score normalization, or
-    the top hit ends up below 1.0 whenever it isn't also the freshest node —
-    silently breaking the "top score == 1.0" invariant that min_score and
-    confidence_scoring's absolute thresholds rely on."""
+    """Keep historical normalized ranking without treating it as relevance."""
     import time as _time
 
     now_ms = int(_time.time() * 1000)
@@ -1231,10 +1228,12 @@ def test_hybrid_top_score_normalizes_to_one_even_with_recency_on(conn):
     results = search(conn, "q", [1.0, 0.0], Filters(), mode="hybrid", limit=2, backend=backend)
     assert results[0].uuid == "uuid-1"
     assert results[0].score == pytest.approx(1.0)
+    assert results[0].score_semantics == "relative_rank"
 
 
-def test_min_score_ignored_for_positional_score_modes(conn):
-    """lexical/recent scores are positional (1.0 - rank/n), not an absolute
+@pytest.mark.parametrize("mode", ["lexical", "recent", "hybrid"])
+def test_min_score_ignored_for_positional_score_modes(conn, mode):
+    """Rank-based scores are not an absolute
     relevance measure — min_score must not chop a fixed fraction of them."""
     _insert_node(conn, 1, summary="a")
     _insert_node(conn, 2, summary="b")
@@ -1243,7 +1242,7 @@ def test_min_score_ignored_for_positional_score_modes(conn):
 
     strict = Tuning(min_score=0.9, recency_half_life_days=0)
     results = search(
-        conn, "q", None, Filters(), mode="lexical", limit=5, backend=backend, tuning=strict
+        conn, "q", [1.0, 0.0], Filters(), mode=mode, limit=5, backend=backend, tuning=strict
     )
     assert len(results) == 3  # all three positional hits survive
 

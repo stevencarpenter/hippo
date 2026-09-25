@@ -1205,6 +1205,8 @@ pub async fn handle_doctor(config: &HippoConfig, explain: bool) -> Result<()> {
     // Check brain — store JSON for reuse in Check 10 (schema version).
     let brain_json = print_brain_health_details(config, &client).await;
 
+    fail_count += check_data_dir_private(&config.storage.data_dir, explain);
+
     // Check 9: Fallback file age (extends the old plain-count check).
     fail_count += check_fallback_age(&config.fallback_dir(), daemon_socket_ok, explain);
 
@@ -1721,6 +1723,10 @@ fn check_brain_classification(brain_json: Option<&serde_json::Value>, explain: b
     }
 
     if let Some(jev) = json.get("jev") {
+        if jev.get("available").and_then(|v| v.as_bool()) == Some(false) {
+            println!("[--] Jev endpoint: client not configured");
+            return fails;
+        }
         let cooldown = jev
             .get("cooldown_seconds")
             .and_then(|v| v.as_f64())
@@ -3313,6 +3319,28 @@ fn check_zsh_hook_sourced(explain: bool) -> u32 {
         println!("     DOC:    docs/capture/anti-patterns.md");
     }
     1
+}
+
+/// Fail when `daemon run` would refuse the data dir.
+fn check_data_dir_private(data_dir: &std::path::Path, explain: bool) -> u32 {
+    match hippo_core::storage::check_private_dir(data_dir) {
+        Ok(_) => {
+            println!("[OK] Data dir private");
+            0
+        }
+        Err(e) => {
+            println!("[!!] {e:#}");
+            if explain {
+                println!(
+                    "     CAUSE:  `hippo daemon run` refuses a data dir it cannot keep private."
+                );
+                println!(
+                    "     FIX:    hippo config edit, then set storage.data_dir to a real directory you own."
+                );
+            }
+            1
+        }
+    }
 }
 
 /// Check 7: Warn/fail on large log files in the hippo data directory.
@@ -5931,6 +5959,20 @@ replacement = "***"
     }
 
     #[test]
+    fn check_data_dir_private_fails_on_symlink() {
+        let dir = tempfile::tempdir().unwrap();
+        let real = dir.path().join("real");
+        std::fs::create_dir(&real).unwrap();
+        let link = dir.path().join("link");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        assert_eq!(check_data_dir_private(&real, false), 0);
+        assert_eq!(check_data_dir_private(&link, false), 1);
+        if let Some(home) = dirs::home_dir() {
+            assert_eq!(check_data_dir_private(&home, false), 1);
+        }
+    }
+
+    #[test]
     fn check_brain_classification_absent_or_disabled_is_quiet() {
         assert_eq!(check_brain_classification(None, false), 0);
         assert_eq!(
@@ -5938,6 +5980,8 @@ replacement = "***"
             0
         );
         let json = serde_json::json!({"classification": {"enabled": false}});
+        assert_eq!(check_brain_classification(Some(&json), false), 0);
+        let json = serde_json::json!({"jev": {"available": false}});
         assert_eq!(check_brain_classification(Some(&json), false), 0);
     }
 

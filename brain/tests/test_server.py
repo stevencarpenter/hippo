@@ -528,9 +528,75 @@ def test_create_app_routes_work(tmp_db):
         poll_interval_secs=9999,
         enrichment_batch_size=5,
     )
-    with TestClient(app) as client:
+    with TestClient(app, base_url="http://127.0.0.1:9175") as client:
         resp = client.get("/health")
         assert resp.status_code == 200
+
+
+@pytest.mark.parametrize(
+    "authority", ["127.0.0.1:9175", "localhost:9175", "[::1]:9175", "localhost"]
+)
+def test_local_http_accepts_cli_and_same_origin(tmp_db, authority):
+    _, db_path = tmp_db
+    client = TestClient(
+        create_app(db_path=str(db_path)),
+        base_url="http://127.0.0.1:9175",
+        headers={"Host": authority},
+    )
+    assert client.get("/openapi.json").status_code == 200
+    assert (
+        client.post("/control/pause", headers={"Origin": f"http://{authority}"}).status_code == 200
+    )
+    assert client.post("/control/resume").status_code == 200
+
+
+@pytest.mark.parametrize(
+    "headers, status",
+    [
+        ([("Host", "attacker.example")], 400),
+        ([("Host", "127.0.0.1.attacker.example")], 400),
+        ([("Host", "127.0.0.1:0")], 400),
+        ([("Host", "127.0.0.1:65536")], 400),
+        ([("Host", "localhost:")], 400),
+        ([("Host", "[::1")], 400),
+        ([("Host", "127.0.0.1:9175"), ("Host", "attacker.example")], 400),
+        ([("Origin", "https://attacker.example")], 403),
+        ([("Origin", "null")], 403),
+        ([("Origin", "http://localhost:9175")], 403),
+        ([("Origin", "http://127.0.0.1:9999")], 403),
+        ([("Origin", "https://127.0.0.1:9175")], 403),
+        ([("Origin", "http://127.0.0.1:9175/")], 403),
+        ([("Origin", "http://127.0.0.1:9175@attacker.example")], 403),
+        ([("Origin", "http://[::1")], 403),
+        ([("Origin", "http://127.0.0.1:9175 http://attacker.example")], 403),
+        ([("Origin", "http://127.0.0.1:9175"), ("Origin", "http://127.0.0.1:9175")], 403),
+    ],
+)
+def test_local_http_rejects_foreign_and_malformed_browser_requests(tmp_db, headers, status):
+    _, db_path = tmp_db
+    with patch.object(BrainServer, "control_pause", new_callable=AsyncMock) as pause:
+        # Rebuild routes with the patched handler, proving rejected requests do not execute it.
+        client = TestClient(create_app(db_path=str(db_path)), base_url="http://127.0.0.1:9175")
+        response = client.post(
+            "/control/pause",
+            headers=[*headers, ("Content-Type", "application/x-www-form-urlencoded")],
+        )
+        assert response.status_code == status
+        pause.assert_not_called()
+    assert client.get("/knowledge", headers=headers).status_code == status
+
+
+async def test_local_http_requires_host(tmp_db):
+    import httpx
+
+    _, db_path = tmp_db
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=create_app(db_path=str(db_path))),
+        base_url="http://127.0.0.1:9175",
+    ) as client:
+        request = client.build_request("GET", "/openapi.json")
+        del request.headers["host"]
+        assert (await client.send(request)).status_code == 400
 
 
 # ---- Query error handling ----
@@ -864,7 +930,7 @@ def test_create_app_starts_and_stops_enrichment_task(tmp_db):
         enrichment_batch_size=5,
     )
 
-    with TestClient(app) as client:
+    with TestClient(app, base_url="http://127.0.0.1:9175") as client:
         resp = client.get("/health")
         assert resp.status_code == 200
         assert resp.json()["status"] == "ok"
@@ -944,7 +1010,7 @@ def test_health_exposes_enrichment_model(tmp_db):
         poll_interval_secs=9999,
         enrichment_batch_size=5,
     )
-    with TestClient(app) as client:
+    with TestClient(app, base_url="http://127.0.0.1:9175") as client:
         resp = client.get("/health")
         assert resp.status_code == 200
         data = resp.json()

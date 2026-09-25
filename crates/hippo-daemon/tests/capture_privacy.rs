@@ -115,3 +115,49 @@ fn missing_config_uses_defaults_and_fallback_redacts_captured_output() {
     assert!(saved.contains("[REDACTED]"));
     assert!(saved.contains("keep"));
 }
+
+#[test]
+fn symlinked_data_dir_warns_but_still_captures() {
+    let temp = tempdir().unwrap();
+    let real = temp.path().join("volume/hippo");
+    std::fs::create_dir_all(&real).unwrap();
+    std::fs::create_dir_all(temp.path().join("data")).unwrap();
+    std::os::unix::fs::symlink(&real, temp.path().join("data/hippo")).unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_hippo"))
+        .args([
+            "send-event",
+            "shell",
+            "--cmd",
+            "true",
+            "--exit",
+            "0",
+            "--cwd",
+        ])
+        .arg(temp.path())
+        .args(["--duration-ms", "1"])
+        .env("HOME", temp.path().join("home"))
+        .env("XDG_CONFIG_HOME", temp.path().join("config"))
+        .env("XDG_DATA_HOME", temp.path().join("data"))
+        .env("HIPPO_OTEL_ENABLED", "false")
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    assert!(String::from_utf8_lossy(&output.stderr).contains("Warning: data directory"));
+    let entries = hippo_core::storage::list_fallback_files(&real.join("fallback")).unwrap();
+    assert_eq!(entries.len(), 1);
+
+    // Pollers write captured content too, so they keep the hard failure.
+    let poll = Command::new(env!("CARGO_BIN_EXE_hippo"))
+        .arg("codex-poll")
+        .env("HOME", temp.path().join("home"))
+        .env("XDG_CONFIG_HOME", temp.path().join("config"))
+        .env("XDG_DATA_HOME", temp.path().join("data"))
+        .env("HIPPO_OTEL_ENABLED", "false")
+        .output()
+        .unwrap();
+    assert!(!poll.status.success(), "{poll:?}");
+    let stderr = String::from_utf8_lossy(&poll.stderr);
+    assert!(stderr.contains("not a symlink"), "{stderr}");
+    assert!(!stderr.contains("Warning"), "{stderr}");
+    assert!(!real.join("hippo.db").exists());
+}

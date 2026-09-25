@@ -62,8 +62,9 @@ def _seed_minimal_full_schema(conn: sqlite3.Connection) -> None:
 
 
 @pytest.fixture
-def real_corpus(tmp_db, tmp_path):
+def real_corpus(tmp_db, tmp_path, monkeypatch):
     """Build a real shadow-DB corpus from tmp_db's full hippo schema."""
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
     conn, db_path = tmp_db
     _seed_minimal_full_schema(conn)
 
@@ -149,3 +150,5 @@ def test_e2e_bench_run_composes_cleanly(real_corpus, tmp_path):
     assert summaries[0]["downstream_proxy"]["modes"]["hybrid"]["mrr"] == 0.4
     assert records[-1]["record_type"] == "run_end"
     assert result.models_completed == ["m1"]
+    with sqlite3.connect(tmp_path / "hippo-bench" / "bench-results.db") as results_db:
+        assert results_db.execute("SELECT COUNT(*) FROM bench_runs").fetchone()[0] == 1

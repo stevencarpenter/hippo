@@ -79,28 +79,38 @@ def _decision_conflict(hits: Sequence[dict[str, Any]]) -> dict[str, Any] | None:
                     "considered": dd.get("considered") if isinstance(dd, dict) else None,
                     "reason": dd.get("reason") if isinstance(dd, dict) else None,
                     "uuid": hit.get("uuid"),
+                    "cwd": hit.get("cwd"),
+                    "git_branch": hit.get("git_branch"),
                     "captured_at": hit.get("captured_at"),
                     "evidence_refs": [
                         p.get("ref") for p in (hit.get("evidence") or []) if p.get("ref")
                     ],
                 }
             )
-    chosen_values = {e["chosen"] for e in entries}
-    if len(chosen_values) < 2:
-        return None
-    ordered = sorted(entries, key=lambda e: e.get("captured_at") or 0)
-    older = ordered[0]
-    newer = ordered[-1]
-    if older["chosen"] == newer["chosen"]:
-        return None
-    return {
-        "kind": "decision_contradiction",
-        "message": (
-            f"Newer evidence ({newer['chosen']!r} @ {newer.get('captured_at')}) "
-            f"contradicts an older decision ({older['chosen']!r} @ {older.get('captured_at')})."
-        ),
-        "sides": [older, newer],
-    }
+    groups: dict[tuple, dict[str, Any]] = {}
+    for entry in sorted(entries, key=lambda e: e.get("captured_at") or 0):
+        considered = entry["considered"]
+        if not entry["uuid"] or not entry["cwd"] or not isinstance(considered, str):
+            continue
+        chosen = " ".join(entry["chosen"].casefold().split())
+        considered = " ".join(considered.casefold().split())
+        alternatives = frozenset((chosen, considered))
+        if not considered or len(alternatives) < 2:
+            continue
+        key = (entry["cwd"], entry["git_branch"], alternatives)
+        older = groups.setdefault(key, entry)
+        if older["uuid"] == entry["uuid"] or " ".join(older["chosen"].casefold().split()) == chosen:
+            continue
+        return {
+            "kind": "decision_contradiction",
+            "message": (
+                f"Records choose different explicit alternatives ({older['chosen']!r} and "
+                f"{entry['chosen']!r}). Verify their chronology before treating this as "
+                "an unresolved contradiction."
+            ),
+            "sides": [older, entry],
+        }
+    return None
 
 
 def analyze_conflicts(hits: Sequence[dict[str, Any]]) -> dict[str, Any]:
@@ -149,3 +159,11 @@ def apply_conflict_confidence_caps(hits: list[dict[str, Any]], report: dict[str,
             conf["explanation"] = (
                 conf.get("explanation", "") + " Capped: all evidence is stale or idle."
             ).strip()
+        if conf.get("level") != level:
+            cap = {"medium": 0.7199, "low": 0.4499}[conf["level"]]
+            if "score" in conf:
+                conf.setdefault("uncapped_score", conf["score"])
+                conf["score"] = min(conf["score"], cap)
+            conf["explanation"] = conf.get("explanation", "").replace(
+                f"{level.title()} confidence:", f"{conf['level'].title()} confidence:", 1
+            )

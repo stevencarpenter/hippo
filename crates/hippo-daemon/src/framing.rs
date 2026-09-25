@@ -1,8 +1,8 @@
 use anyhow::Result;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 use tokio::net::UnixStream;
 
-pub async fn read_frame(stream: &mut UnixStream) -> Result<Option<Vec<u8>>> {
+pub async fn read_frame(stream: &mut (impl AsyncRead + Unpin)) -> Result<Option<Vec<u8>>> {
     let mut len_buf = [0u8; 4];
     match stream.read_exact(&mut len_buf).await {
         Ok(_) => {}

@@ -9,6 +9,7 @@ import time
 import pytest
 
 from hippo_brain.agent_query import AgentQueryRequest, run_agent_query
+from hippo_brain.retrieval import SearchResult
 from hippo_brain.retrieval_eligibility import IN_FLIGHT_SETTLE_MS
 from tests.retrieval_fixtures import TRUST_EVAL_SCHEMA, FakeBackend
 
@@ -181,3 +182,36 @@ def test_freshness_marks_stale_source(conn: sqlite3.Connection) -> None:
 
     assert out["freshness"]["shell"]["status"] == "stale"
     assert out["freshness"]["shell"]["stale"] is True
+
+
+@pytest.mark.parametrize("mode", ["known", "evidence", "recent", "decisions"])
+def test_decision_conflicts_detected_before_compacting(conn, monkeypatch, mode):
+    results = [
+        SearchResult(
+            uuid=str(i),
+            score=1.0,
+            summary=f"Current store: {chosen}",
+            embed_text="store",
+            outcome="success",
+            tags=[],
+            cwd="/p",
+            git_branch="main",
+            captured_at=i,
+            design_decisions=[
+                {
+                    "chosen": chosen,
+                    "considered": "Postgres" if i == 1 else "SQLite",
+                    "reason": "current",
+                }
+            ],
+            confidence={"level": "high", "score": 0.95},
+        )
+        for i, chosen in enumerate(["SQLite", "Postgres"], start=1)
+    ]
+    monkeypatch.setattr("hippo_brain.agent_query.search", lambda *args, **kwargs: results)
+
+    out = run_agent_query(conn, AgentQueryRequest("current store", mode=mode))
+
+    assert out["conflicts"]["has_unresolved_conflicts"] is True
+    assert out["hits"][0]["confidence"]["level"] == "medium"
+    assert ("design_decisions" in out["hits"][0]) is (mode == "decisions")

@@ -2,17 +2,21 @@ import asyncio
 import datetime as _dt
 import logging
 import os
+import re
 import sqlite3
 import time
 from contextlib import asynccontextmanager, nullcontext
 from functools import wraps
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 import sqlite_vec  # type: ignore[import-untyped]
 from starlette.applications import Starlette
+from starlette.middleware import Middleware
+from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 from starlette.requests import Request
-from starlette.responses import JSONResponse
+from starlette.responses import JSONResponse, Response
 from starlette.routing import Route
 
 from hippo_brain.agent_query import AgentQueryRequest, run_agent_query
@@ -147,6 +151,45 @@ MAX_ANSWER_TOKENS_CEILING = 16384
 # /sessions). These are just bounded SELECTs, so the cap is mainly to avoid
 # accidentally serializing tens of thousands of rows into one response.
 MAX_LIST_LIMIT = 500
+
+_LOCAL_AUTHORITY = re.compile(r"(localhost|127\.0\.0\.1|\[::1\])(?::([0-9]{1,5}))?", re.I)
+
+
+def _local_authority(value: str, scheme: str) -> tuple[str, int] | None:
+    match = _LOCAL_AUTHORITY.fullmatch(value)
+    if match is None or scheme not in ("http", "https"):
+        return None
+    port = int(match[2]) if match[2] else (443 if scheme == "https" else 80)
+    return (match[1].lower(), port) if 1 <= port <= 65535 else None
+
+
+async def _require_local_http(request: Request, call_next: RequestResponseEndpoint) -> Response:
+    """Block DNS rebinding and browser cross-origin access to the local API.
+
+    CLI clients omit Origin. This is a browser boundary, not OS-user authentication.
+    Reject duplicate headers and noncanonical authorities before any route runs.
+    """
+    hosts = request.headers.getlist("host")
+    origins = request.headers.getlist("origin")
+    scheme = request.scope["scheme"]
+    host = _local_authority(hosts[0], scheme) if len(hosts) == 1 else None
+    if host is None:
+        return JSONResponse({"error": "local Host required"}, status_code=400)
+    if origins:
+        try:
+            origin = urlsplit(origins[0])
+            valid = (
+                len(origins) == 1
+                and origins[0] == f"{origin.scheme}://{origin.netloc}"
+                and origin.scheme == scheme
+                and _local_authority(origin.netloc, origin.scheme) == host
+            )
+        except ValueError:
+            valid = False
+        if not valid:
+            return JSONResponse({"error": "same-origin request required"}, status_code=403)
+    return await call_next(request)
+
 
 QUEUE_DEPTH_STATUSES = ("pending", "processing", "failed")
 CODEX_SOURCE_SQL = (
@@ -2288,5 +2331,6 @@ def create_app(
     app = Starlette(
         routes=server.get_routes(),
         lifespan=lifespan,
+        middleware=[Middleware(BaseHTTPMiddleware, dispatch=_require_local_http)],
     )
     return app
