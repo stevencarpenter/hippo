@@ -87,6 +87,7 @@ fn spawn_reconcile_file(config: &HippoConfig, path: &Path) -> Result<()> {
     let output = Command::new("uv")
         .args([
             "run",
+            "--no-sync",
             "--project",
             &brain_dir.to_string_lossy(),
             "hippo-auto-memory-reconcile",
@@ -124,6 +125,7 @@ fn spawn_reconcile_all(config: &HippoConfig) -> Result<usize> {
     let output = Command::new("uv")
         .args([
             "run",
+            "--no-sync",
             "--project",
             &brain_dir.to_string_lossy(),
             "hippo-auto-memory-poll",

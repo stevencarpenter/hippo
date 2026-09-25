@@ -399,7 +399,7 @@ pub fn drain_brain(timeout: std::time::Duration) -> bool {
 /// or `None` if the service isn't loaded or has no running process.
 ///
 /// Uses `launchctl list com.hippo.brain` rather than `pgrep -f` because:
-///   1. The agent wraps the real brain inside `uv run --project ... hippo-brain
+///   1. The agent wraps the real brain inside `uv run --no-sync --project ... hippo-brain
 ///      serve`. `pgrep -f 'hippo-brain serve'` would match both the `uv run`
 ///      wrapper AND the child python process (same substring in both argv
 ///      strings) plus anything else a user has running with that substring.
@@ -945,6 +945,28 @@ mod tests {
                  expected at least one __SCRIPTS_DIR__/{expected} reference (seen: {seen:?})"
             );
         }
+    }
+
+    /// The installer verifies a locked, non-editable brain venv. A plain
+    /// `uv run` re-syncs it to an editable install at first launch, so every
+    /// agent that runs the installed brain must skip syncing.
+    #[test]
+    fn uv_run_plists_do_not_resync_the_installed_brain() {
+        let launchd_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../launchd");
+        let mut checked = 0;
+        for entry in std::fs::read_dir(&launchd_dir).expect("read launchd/") {
+            let path = entry.expect("dir entry").path();
+            let body = std::fs::read_to_string(&path).expect("read plist");
+            if body.contains("<string>__UV_BIN__</string>") {
+                assert!(
+                    body.contains("<string>--no-sync</string>"),
+                    "{} runs uv without --no-sync",
+                    path.display()
+                );
+                checked += 1;
+            }
+        }
+        assert!(checked >= 2, "expected brain and xcode-ingest uv plists");
     }
 
     #[test]

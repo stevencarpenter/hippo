@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use chrono::Utc;
 use rusqlite::{Connection, OptionalExtension};
 use sha2::{Digest, Sha256};
@@ -356,10 +356,23 @@ pub fn ensure_private_dir(path: &Path) -> Result<()> {
         .recursive(true)
         .mode(0o700)
         .create(path)?;
+    check_private_dir(path)?.set_permissions(std::fs::Permissions::from_mode(0o700))?;
+    Ok(())
+}
+
+/// Read-only half of [`ensure_private_dir`]: the directory must be a real
+/// directory owned by the current user and dedicated to Hippo.
+pub fn check_private_dir(path: &Path) -> Result<std::fs::File> {
     let dir = std::fs::OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_NOFOLLOW | libc::O_DIRECTORY)
-        .open(path)?;
+        .open(path)
+        .with_context(|| {
+            format!(
+                "data directory must be a real directory, not a symlink: {}",
+                path.display()
+            )
+        })?;
     let canonical = path.canonicalize()?;
     anyhow::ensure!(
         canonical.parent().is_some()
@@ -375,8 +388,7 @@ pub fn ensure_private_dir(path: &Path) -> Result<()> {
         "data directory is not owned by the current user: {}",
         path.display()
     );
-    dir.set_permissions(std::fs::Permissions::from_mode(0o700))?;
-    Ok(())
+    Ok(dir)
 }
 
 pub fn open_db(path: &Path) -> Result<Connection> {

@@ -8,6 +8,7 @@
     <array>
         <string>__UV_BIN__</string>
         <string>run</string>
+        <string>--no-sync</string>
         <string>--project</string>
         <string>__BRAIN_DIR__</string>
         <string>hippo-brain</string>

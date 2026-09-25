@@ -62,15 +62,37 @@ async fn main() -> Result<()> {
     // The launchd StandardErrorPath still captures pre-main panics and OS-level
     // launch output; runtime application logs go here exclusively.
     let data_dir = config.storage.data_dir.clone();
-    hippo_core::storage::ensure_private_dir(&data_dir)?;
-    let file_appender = tracing_appender::rolling::RollingFileAppender::builder()
-        .rotation(tracing_appender::rolling::Rotation::DAILY)
-        .filename_prefix("daemon")
-        .filename_suffix("log")
-        .max_log_files(7)
-        .build(&data_dir)
-        .expect("failed to initialize log appender");
-    let (non_blocking, _log_guard) = tracing_appender::non_blocking(file_appender);
+    let cli = Cli::parse();
+    // The shell hook and browser bridge keep capturing, and doctor and config
+    // keep running so the problem can be reported and fixed. Every other
+    // command refuses. Logs then go to stderr, not into the refused directory.
+    let private = match hippo_core::storage::ensure_private_dir(&data_dir) {
+        Ok(()) => true,
+        Err(e)
+            if matches!(
+                cli.command,
+                Commands::SendEvent { .. }
+                    | Commands::NativeMessagingHost
+                    | Commands::Doctor { .. }
+                    | Commands::Config { .. }
+            ) =>
+        {
+            eprintln!("Warning: {e:#}");
+            false
+        }
+        Err(e) => return Err(e),
+    };
+    let (non_blocking, _log_guard) = if private {
+        let file_appender = tracing_appender::rolling::RollingFileAppender::builder()
+            .rotation(tracing_appender::rolling::Rotation::DAILY)
+            .filename_prefix("daemon")
+            .filename_suffix("log")
+            .max_log_files(7)
+            .build(&data_dir)?;
+        tracing_appender::non_blocking(file_appender)
+    } else {
+        tracing_appender::non_blocking(std::io::stderr())
+    };
 
     // Initialize telemetry — OTel if feature-enabled and config says so, else plain fmt
     #[cfg(feature = "otel")]
@@ -108,8 +130,6 @@ async fn main() -> Result<()> {
             EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
         )
         .init();
-
-    let cli = Cli::parse();
 
     match cli.command {
         Commands::Daemon { action } => match action {
