@@ -11,7 +11,7 @@ printf 'new\n' > "$tmp/release/brain/new-version"
 tar -czf "$tmp/hippo-brain-1.2.3.tar.gz" -C "$tmp/release" brain
 shasum -a 256 "$tmp/hippo-brain-1.2.3.tar.gz" | sed "s|$tmp/||" > "$tmp/SHA256SUMS.txt"
 
-for scenario in sync-fails imports-fail relocated-imports-fail receipt-fails cleanup-fails success; do
+for scenario in extract-fails sync-fails imports-fail relocated-imports-fail receipt-fails cleanup-fails success; do
     brain_dir="$tmp/$scenario/brain"
     bin_dir="$tmp/$scenario/bin"
     receipts_dir="$tmp/$scenario/receipts"
@@ -45,6 +45,9 @@ for scenario in sync-fails imports-fail relocated-imports-fail receipt-fails cle
             command rm "$@"
         }
         uv() { [[ "$scenario" != sync-fails ]]; }
+        if [[ "$scenario" == extract-fails ]]; then
+            tar() { return 1; }
+        fi
         verify_brain_imports() {
             [[ "$scenario" != imports-fail ]] || return 1
             [[ "$scenario" != relocated-imports-fail || "$1" != "$BRAIN_DIR" ]]
@@ -68,6 +71,8 @@ for scenario in sync-fails imports-fail relocated-imports-fail receipt-fails cle
         [[ "$(cat "$receipts_dir/brain.sha256")" == old-checksum ]]
         [[ "$(cat "$bin_dir/hippo")" == old-daemon ]]
         [[ "$(cat "$receipts_dir/daemon.sha256")" == old-daemon-checksum ]]
+        staging=("$brain_dir".new.*)
+        test ! -e "${staging[0]}"
     fi
 done
 

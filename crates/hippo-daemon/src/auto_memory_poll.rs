@@ -24,6 +24,7 @@ pub fn poll_tick(config: &HippoConfig) -> Result<usize> {
     let output = Command::new("uv")
         .args([
             "run",
+            "--no-sync",
             "--project",
             &brain_dir.to_string_lossy(),
             "hippo-auto-memory-poll",

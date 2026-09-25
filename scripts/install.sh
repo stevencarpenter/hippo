@@ -352,7 +352,11 @@ install_brain() {
     # working tree before downloads, dependency installation and imports pass.
     local brain_staging
     brain_staging="$(mktemp -d "${BRAIN_DIR}.new.XXXXXX")"
-    tar -xzf "${brain_path}" -C "${brain_staging}" --strip-components=1
+    if ! tar -xzf "${brain_path}" -C "${brain_staging}" --strip-components=1; then
+        rm -rf "${brain_staging}"
+        log_error "Brain tarball extraction failed; existing brain preserved"
+        exit 1
+    fi
 
     # Both scripts/ and shell/ are required: scripts/ is consumed by the
     # xcode-ingest LaunchAgents, shell/ is sourced from the user's zsh

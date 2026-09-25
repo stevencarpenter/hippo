@@ -1,2 +1,3 @@
 commit:
-  fix_message: "fix: {{.Summary}}"
+  # Agent summaries sometimes already carry the prefix; avoid "fix: fix:".
+  fix_message: '{{if and (ge (len .Summary) 5) (eq (slice .Summary 0 5) "fix: ")}}{{.Summary}}{{else}}fix: {{.Summary}}{{end}}'

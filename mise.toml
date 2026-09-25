@@ -734,7 +734,7 @@ uv sync --project brain
 echo "  venv ready at brain/.venv"
 
 # ── 4b. Sync brain tree to XDG install location ─────────────────────
-# The brain LaunchAgent runs `uv run --project ~/.local/share/hippo-brain`,
+# The brain LaunchAgent runs `uv run --no-sync --project ~/.local/share/hippo-brain`,
 # not from the repo. Without this sync, a rebuilt daemon running against
 # the installed brain sees a schema-version mismatch after any migration.
 # Keep --delete so removed files don't linger, but exclude dev caches.
