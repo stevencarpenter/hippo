@@ -25,8 +25,9 @@ holdout. Evidence comes from eligible linked capture rows. Up to eight sources,
 6,000 characters per field, and 4,000 summary characters are retained. Workflow
 evidence includes up to 100 annotations with job attribution; corrections change
 packet identity. JSON fields are decoded before redaction. Known capture truncation,
-export truncation, missing source, malformed JSON, or oversized input blocks automatic assessment. The
-export cannot prove the original capture was complete.
+export truncation, missing source, malformed JSON, or oversized input blocks
+automatic assessment. The export cannot prove the original capture was complete.
+Packet v2 rejects older frozen exports. Run prepare again before assessing them.
 
 Assess requires `TYPESAFE_API_KEY` and explicitly sends bounded, redacted packet
 state to TypeSafe. Human labels never enter the request. It pins `jev-1.13.0`,
@@ -58,8 +59,9 @@ answers undermines unbiased audit interpretation. New queues may overlap; this
 initial workflow reports each frozen queue separately.
 
 The selected items use a separate seeded presentation order that does not group
-audits or sort by confidence. The terminal shows the summary, captured fields, and coverage gaps. Jev's verdict
-and sampling stratum are hidden. Use `y`, `n`, or `u` for yes, no, or unsure. Add
+audits or sort by confidence. The terminal shows the summary, captured fields,
+and coverage gaps. Jev's verdict and sampling stratum are hidden.
+Use `y`, `n`, or `u` for yes, no, or unsure. Add
 optional text after the decision; `s` skips and `q` exits. Each completed review
 is saved immediately. EOF and interruption preserve previous annotations.
 Repeat the same review command to resume; already annotated packets are skipped.
