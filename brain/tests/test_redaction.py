@@ -31,6 +31,11 @@ def test_generic_secret_assignment_redacted():
     assert "supersecretvalue123" not in out
 
 
+@pytest.mark.parametrize("key", ["password", "client_secret", "refresh_token", "X-API-Key"])
+def test_short_unquoted_credential_assignment_redacted(key):
+    assert redact(f"{key}=alpha") == REPLACEMENT
+
+
 @pytest.mark.parametrize(
     "key",
     ["password", "API_KEY", "api-token", "access_token", "auth-token", "secret_key", "private_key"],

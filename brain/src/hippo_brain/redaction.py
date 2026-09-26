@@ -45,16 +45,16 @@ _PATTERNS: tuple[re.Pattern[str], ...] = (
     ),
     re.compile(r"AKIA[0-9A-Z]{16}"),
     re.compile(r"ghp_[a-zA-Z0-9]{36}|github_pat_[a-zA-Z0-9_]{82}"),
-    # Quoted values may contain whitespace or escaped quotes, including JSON.
-    re.compile(
-        rf"""(?i)["']?(?:{_SECRET_NAME})["']?\s*[=:]\s*(?:"(?:\\.|[^"\\])*(?:"|$)|'(?:\\.|[^'\\])*(?:'|$))"""
-    ),
-    re.compile(rf"(?i)(?:{_SECRET_NAME})\s*[=:]\s*\S{{8,}}"),
-    re.compile(r"eyJ[a-zA-Z0-9_-]{10,}\.eyJ[a-zA-Z0-9_-]{10,}\.[a-zA-Z0-9_-]+"),
     re.compile(
         r"""(?i)(?:proxy-)?authorization(?:\\*["'])?\s*:\s*(?:\\*["'])?"""
         r"[^\r\n\"']+"
     ),
+    # Quoted values may contain whitespace or escaped quotes, including JSON.
+    re.compile(
+        rf"""(?i)["']?(?:{_SECRET_NAME})["']?\s*[=:]\s*(?:"(?:\\.|[^"\\])*(?:"|$)|'(?:\\.|[^'\\])*(?:'|$))"""
+    ),
+    re.compile(rf"(?i)(?:{_SECRET_NAME})\s*[=:]\s*\S+"),
+    re.compile(r"eyJ[a-zA-Z0-9_-]{10,}\.eyJ[a-zA-Z0-9_-]{10,}\.[a-zA-Z0-9_-]+"),
 )
 
 
