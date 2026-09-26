@@ -79,6 +79,30 @@ def test_legacy_packets_require_reexport(tmp_path, legacy_version):
     packet["packet_hash"] = digest({k: v for k, v in packet.items() if k != "packet_hash"})
     with pytest.raises(ValueError, match="unsupported claim packet"):
         validate_packet(packet)
+    validate_packet(packet, allow_legacy=True)
+
+
+def test_legacy_corpus_is_readable_only_for_historical_reporting(tmp_path):
+    from hippo_brain.jev import digest
+
+    source = tmp_path / "source.sqlite"
+    with database(source):
+        pass
+    corpus = tmp_path / "corpus"
+    prepare(source, corpus)
+    packets = load_packets(corpus)
+    packets[0]["version"] = "claim-packets-v2"
+    packets[0]["packet_hash"] = digest(
+        {key: value for key, value in packets[0].items() if key != "packet_hash"}
+    )
+    manifest = json.loads((corpus / "manifest.json").read_text())
+    manifest["version"] = "claim-packets-v2"
+    manifest["packets_hash"] = digest(packets)
+    (corpus / "packets.json").write_text(json.dumps(packets))
+    (corpus / "manifest.json").write_text(json.dumps(manifest))
+    with pytest.raises(ValueError, match="manifest mismatch"):
+        load_packets(corpus)
+    assert load_packets(corpus, allow_legacy=True) == packets
 
 
 @pytest.mark.parametrize("raw", ['{"n": NaN}', '{"n": Infinity}', "{broken"])
