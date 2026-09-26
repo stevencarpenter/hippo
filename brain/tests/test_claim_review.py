@@ -1,10 +1,12 @@
 """Shadow decisions never become human labels or production approvals."""
 
+import asyncio
 import json
 
 import httpx
 import pytest
 
+import hippo_brain.bench.claim_review as claim_review
 from hippo_brain.bench.claim_packets import load_packets, prepare, write_artifact
 from hippo_brain.bench.claim_review import (
     annotate,
@@ -15,7 +17,7 @@ from hippo_brain.bench.claim_review import (
     report,
     review,
 )
-from hippo_brain.jev import JevClient
+from hippo_brain.jev import JevClient, digest
 from tests.test_claim_packets import database
 
 
@@ -112,6 +114,18 @@ async def test_incomplete_sources_do_not_dispatch_and_invalid_responses_fail_clo
     assert all(disposition(r, 0) == "review" for r in records.values())
 
 
+async def test_oversized_numeric_answer_is_recorded_as_error(tmp_path):
+    corpus = cohort(tmp_path, count=1)
+    oversized = response(confidence=10**400)
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(lambda _: httpx.Response(200, json=oversized))
+    ) as http:
+        async with JevClient("synthetic-key", client=http) as client:
+            completion = await assess(corpus, tmp_path / "run", max_requests=1, client=client)
+    assert completion["statuses"] == {"error": 1}
+    assert list(load_run(corpus, tmp_path / "run")[2].values())[0]["error"] == "ValueError"
+
+
 async def test_random_audit_includes_automatic_cases_and_is_reproducible(tmp_path):
     corpus, run = await evaluated(tmp_path)
     one = make_queue(
@@ -123,6 +137,129 @@ async def test_random_audit_includes_automatic_cases_and_is_reproducible(tmp_pat
     assert one == two
     assert len(one["rows"]) == 2
     assert all(r["stratum"] == "audit" for r in one["rows"])
+
+
+async def test_queue_freezes_interrupted_assessment_before_later_results_arrive(tmp_path):
+    class DelayedClient:
+        def __init__(self):
+            self.entered = asyncio.Event()
+            self.release = asyncio.Event()
+
+        async def assess(self, *_args, **_kwargs):
+            self.entered.set()
+            await self.release.wait()
+            return response()
+
+    corpus, run = cohort(tmp_path), tmp_path / "run"
+    client = DelayedClient()
+    task = asyncio.create_task(assess(corpus, run, max_requests=4, client=client))
+    try:
+        await asyncio.wait_for(client.entered.wait(), timeout=2)
+        queue_path, labels = tmp_path / "queue.json", tmp_path / "labels"
+        queue = make_queue(
+            corpus, run, queue_path, threshold=0.9, limit=4, audit=1, seed="before-results"
+        )
+        assert set(queue["assessment_snapshot"]) == {
+            packet["packet_hash"] for packet in load_packets(corpus)
+        }
+        labels.mkdir(mode=0o700)
+        indexed = {packet["packet_hash"]: packet for packet in load_packets(corpus)}
+        for member in queue["rows"]:
+            key = member["packet_hash"]
+            write_artifact(
+                labels / f"{key}.json",
+                annotate(queue, indexed[key], reviewer="human-test", decision="no"),
+            )
+        before = report(corpus, run, queue_path, labels)
+        legacy = {
+            key: value
+            for key, value in queue.items()
+            if key not in {"assessment_snapshot", "queue_hash"}
+        }
+        legacy = {"queue_hash": digest(legacy), **legacy}
+        legacy_path = tmp_path / "legacy-queue.json"
+        write_artifact(legacy_path, legacy)
+        with pytest.raises(ValueError, match="legacy queue has no assessment snapshot"):
+            report(corpus, run, legacy_path, labels)
+    finally:
+        client.release.set()
+        await task
+    after = report(corpus, run, queue_path, labels)
+    assert before == after
+    assert before["statuses"] == {"missing": 4}
+    assert before["hypothetical_routing"] == {"review": 4}
+    assert before["review"]["exception"]["false_approvals"] == 0
+    assert {record["status"] for record in load_run(corpus, run)[2].values()} == {"ok"}
+    legacy_labels = tmp_path / "legacy-labels"
+    legacy_labels.mkdir(mode=0o700)
+    legacy_report = report(corpus, run, legacy_path, legacy_labels)
+    assert legacy_report["legacy_unfrozen_queue"] is True
+    assert legacy_report["statuses"] == {"ok": 4}
+    invalid = {**queue, "assessment_snapshot": None}
+    invalid["queue_hash"] = digest(
+        {key: value for key, value in invalid.items() if key != "queue_hash"}
+    )
+    invalid_path = tmp_path / "invalid-queue.json"
+    write_artifact(invalid_path, invalid)
+    with pytest.raises(ValueError, match="review queue assessment snapshot mismatch"):
+        report(corpus, run, invalid_path, labels)
+
+
+async def test_historical_rubric_and_model_replay_uses_saved_manifest(tmp_path, monkeypatch):
+    corpus, run = await evaluated(tmp_path)
+    queue_path, labels = tmp_path / "queue.json", tmp_path / "labels"
+    make_queue(corpus, run, queue_path, threshold=0.9, limit=4, audit=4, seed="frozen")
+    labels.mkdir(mode=0o700)
+    current = report(corpus, run, queue_path, labels)
+    changed_rubric = json.loads(json.dumps(claim_review.rubric()))
+    changed_rubric["questions"]["verdict"]["instructions"] += " Revised."
+    monkeypatch.setattr(claim_review, "rubric", lambda: changed_rubric)
+    monkeypatch.setattr(claim_review, "MODEL", "1.14.0")
+    historical = report(corpus, run, queue_path, labels)
+    assert historical == {**current, "historical_run": True}
+    assert load_run(corpus, run)[1]["model"] == "jev-1.13.0"
+
+    packet = load_packets(corpus)[0]
+    record_path = run / f"{packet['packet_hash']}.json"
+    record = json.loads(record_path.read_text())
+    record["request_hash"] = "tampered"
+    record_path.write_text(json.dumps(record))
+    with pytest.raises(ValueError, match="assessment record mismatch"):
+        report(corpus, run, queue_path, labels)
+
+
+async def test_legacy_corpus_and_run_are_readable_but_cannot_be_reassessed(tmp_path):
+    corpus, run = await evaluated(tmp_path)
+    packets_path, manifest_path = corpus / "packets.json", corpus / "manifest.json"
+    packets = json.loads(packets_path.read_text())
+    old_keys = [packet["packet_hash"] for packet in packets]
+    for packet in packets:
+        packet["version"] = "claim-packets-v2"
+        packet["packet_hash"] = digest({k: v for k, v in packet.items() if k != "packet_hash"})
+    packets_path.write_text(json.dumps(packets))
+    manifest = json.loads(manifest_path.read_text())
+    manifest.update(version="claim-packets-v2", packets_hash=digest(packets))
+    manifest_path.write_text(json.dumps(manifest))
+    run_manifest_path = run / "run.json"
+    run_manifest = json.loads(run_manifest_path.read_text())
+    run_manifest["packets_hash"] = digest(packets)
+    run_manifest["run_hash"] = digest({k: v for k, v in run_manifest.items() if k != "run_hash"})
+    run_manifest_path.write_text(json.dumps(run_manifest))
+    for old_key, packet in zip(old_keys, packets, strict=True):
+        old_path = run / f"{old_key}.json"
+        record = json.loads(old_path.read_text())
+        record.update(packet_hash=packet["packet_hash"], run_hash=run_manifest["run_hash"])
+        (run / f"{packet['packet_hash']}.json").write_text(json.dumps(record))
+        old_path.unlink()
+
+    assert len(load_run(corpus, run)[2]) == 4
+    queue_path, labels = tmp_path / "queue.json", tmp_path / "labels"
+    make_queue(corpus, run, queue_path, threshold=0.9, limit=4, audit=4, seed="frozen")
+    labels.mkdir(mode=0o700)
+    assert report(corpus, run, queue_path, labels)["historical_run"] is True
+    with pytest.raises(ValueError, match="frozen packet manifest mismatch"):
+        await assess(corpus, tmp_path / "new-run", max_requests=4)
+    assert not (tmp_path / "new-run").exists()
 
 
 async def test_report_retains_false_approvals_unsure_and_unreviewed(tmp_path):
@@ -364,6 +501,50 @@ def test_cli_setup_error_is_concise_and_does_not_reserve_output(tmp_path, monkey
     assert exc.value.code == 2
     assert capsys.readouterr().err == "claim-review: TYPESAFE_API_KEY is required\n"
     assert not run.exists()
+
+
+@pytest.mark.parametrize("invalid_file", [False, True])
+def test_cli_sqlite_error_is_concise_and_does_not_reserve_output(
+    tmp_path, monkeypatch, capsys, invalid_file
+):
+    import sys
+    from hippo_brain.bench.claim_review import main
+
+    source, out = tmp_path / "source.sqlite", tmp_path / "corpus"
+    if invalid_file:
+        source.write_text("not a SQLite database")
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["claim-review", "prepare", "--database", str(source), "--out", str(out)],
+    )
+    with pytest.raises(SystemExit) as exc:
+        main()
+    assert exc.value.code == 2
+    error = capsys.readouterr().err
+    assert error.startswith(f"claim-review: database {source}: ") and "Traceback" not in error
+    assert not out.exists()
+
+
+async def test_null_annotation_has_path_error_and_review_can_resume(tmp_path, monkeypatch):
+    corpus, run = await evaluated(tmp_path)
+    queue_path, labels = tmp_path / "queue.json", tmp_path / "labels"
+    queue = make_queue(corpus, run, queue_path, threshold=0.9, limit=4, audit=4, seed="frozen")
+    labels.mkdir(mode=0o700)
+    key = queue["rows"][0]["packet_hash"]
+    packet = next(packet for packet in load_packets(corpus) if packet["packet_hash"] == key)
+    write_artifact(labels / f"{key}.json", annotate(queue, packet, reviewer="human", decision="no"))
+    malformed = labels / "null.json"
+    malformed.write_text("null")
+    with pytest.raises(ValueError, match="null.json"):
+        report(corpus, run, queue_path, labels)
+    with pytest.raises(ValueError, match="null.json"):
+        review(corpus, run, queue_path, labels, reviewer="human")
+    assert (labels / f"{key}.json").exists()
+    malformed.unlink()
+    monkeypatch.setattr("builtins.input", lambda _: "q")
+    assert review(corpus, run, queue_path, labels, reviewer="human") == 0
+    assert report(corpus, run, queue_path, labels)["review"]["audit"]["no"] == 1
 
 
 async def test_owned_client_is_closed_when_output_is_rejected(tmp_path, monkeypatch):

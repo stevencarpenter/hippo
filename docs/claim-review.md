@@ -27,7 +27,8 @@ evidence includes up to 100 annotations with job attribution; corrections change
 packet identity. JSON fields are decoded before redaction. Known capture truncation,
 export truncation, missing source, malformed JSON, or oversized input blocks
 automatic assessment. The export cannot prove the original capture was complete.
-Packet v2 rejects older frozen exports. Run prepare again before assessing them.
+Packet v3 rejects older frozen exports for new assessments. Run prepare again
+before assessing them. Existing v1/v2 runs remain readable for historical review.
 
 Assess requires `TYPESAFE_API_KEY` and explicitly sends bounded, redacted packet
 state to TypeSafe. Human labels never enter the request. It pins `jev-1.13.0`,
@@ -57,6 +58,11 @@ remaining places with unresolved cases. It can contain fewer than 20 items.
 Select the seed before inspecting outcomes. Reseeding or stopping after particular
 answers undermines unbiased audit interpretation. New queues may overlap; this
 initial workflow reports each frozen queue separately.
+
+Each queue saves the assessment records available when it is created. Reports and
+human labels stay tied to those records even if an interrupted assessment later
+finishes. A queue created by an older version during an incomplete run has no
+assessment snapshot. Finish that run and requeue before reviewing it.
 
 The selected items use a separate seeded presentation order that does not group
 audits or sort by confidence. The terminal shows the summary, captured fields,
@@ -89,6 +95,10 @@ Reports retain missing/error/budget states and separate random audits from
 targeted exceptions. False approvals and rejections include their reviewed
 denominators; unsure and unreviewed rows remain explicit. The output never claims
 population accuracy or release acceptance. Unknown token usage is not zero.
+Historical reports validate records against the rubric and model saved with their
+run and set `historical_run` when those differ from the installed definitions or
+the packet format is older. Older completed queues without assessment snapshots
+set `legacy_unfrozen_queue`; their reports use the final run records.
 
 Artifacts bind decisions to source/summary/rubric identities. Re-export after
 evidence changes, and reassess after rubric/model changes. Corrections to labels
