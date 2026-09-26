@@ -2,8 +2,11 @@
 
 import json
 import sqlite3
+import errno
+from contextlib import contextmanager
 
 import pytest
+import httpx
 
 from hippo_brain.bench.claim_packets import load_packets, make_packet, prepare, write_artifact
 from tests.retrieval_fixtures import TRUST_EVAL_SCHEMA
@@ -96,3 +99,168 @@ def test_output_rejects_repository_and_overwrite(tmp_path):
     write_artifact(target, {})
     with pytest.raises(FileExistsError):
         write_artifact(target, {})
+
+
+@pytest.mark.parametrize("stdout,stderr", [(0, 0), (1, 0), (0, 1), (1, 1)])
+def test_capture_truncation_is_preserved_and_blocks_assessment(tmp_path, stdout, stderr):
+    with database(tmp_path / "source.sqlite") as conn:
+        conn.executescript(
+            "ALTER TABLE events ADD COLUMN stdout_truncated INTEGER;"
+            "ALTER TABLE events ADD COLUMN stderr_truncated INTEGER;"
+        )
+        conn.execute("UPDATE events SET stdout_truncated=?, stderr_truncated=?", (stdout, stderr))
+        packet = make_packet(conn, 1)
+        fields = packet["state"]["sources"][0]["fields"]
+        assert fields["stdout_truncated"] == stdout
+        assert fields["stderr_truncated"] == stderr
+        assert bool(packet["problems"]) == bool(stdout or stderr)
+
+
+def test_workflow_annotations_are_evidence_and_invalidate_revisions(tmp_db):
+    conn, _ = tmp_db
+    conn.execute(
+        "INSERT INTO knowledge_nodes(id,uuid,content,embed_text,created_at) VALUES(1,'workflow',?,'',1)",
+        (json.dumps({"summary": "Ruff reported F821 in app.py at line 4."}),),
+    )
+    conn.execute(
+        "INSERT INTO workflow_runs(id,repo,head_sha,event,status,html_url,raw_json,first_seen_at,last_seen_at) "
+        "VALUES(1,'org/repo','abc','push','completed','https://example.test/run','{}',1,1)"
+    )
+    conn.execute("INSERT INTO knowledge_node_workflow_runs VALUES(1,1)")
+    conn.execute(
+        "INSERT INTO workflow_jobs(id,run_id,name,status,raw_json) VALUES(1,1,'lint','completed','{}')"
+    )
+    conn.execute(
+        "INSERT INTO workflow_annotations(job_id,level,tool,rule_id,path,start_line,message) "
+        "VALUES(1,'failure','ruff','F821','app.py',4,'undefined name x')"
+    )
+    packet = make_packet(conn, 1)
+    assert not packet["problems"]
+    fields = packet["state"]["sources"][0]["fields"]
+    annotation = fields["annotations_json"][0]
+    assert (annotation["rule_id"], annotation["path"], annotation["start_line"]) == (
+        "F821",
+        "app.py",
+        4,
+    )
+    conn.execute("UPDATE workflow_annotations SET rule_id='F822', message='corrected diagnostic'")
+    assert make_packet(conn, 1)["packet_hash"] != packet["packet_hash"]
+    conn.execute("UPDATE workflow_annotations SET message=?", ("x" * 6001,))
+    assert make_packet(conn, 1)["problems"]
+    conn.execute("UPDATE workflow_annotations SET message='diagnostic'")
+    conn.executemany(
+        "INSERT INTO workflow_annotations(job_id,level,message) VALUES(1,'failure',?)",
+        [(f"diagnostic {i}",) for i in range(100)],
+    )
+    assert "truncated_annotations:workflow-1" in make_packet(conn, 1)["problems"]
+    conn.execute("DROP TABLE workflow_annotations")
+    assert "missing_workflow_annotations:workflow-1" in make_packet(conn, 1)["problems"]
+
+
+def test_failed_write_does_not_publish_partial_json(tmp_path, monkeypatch):
+    from hippo_brain.bench import claim_packets
+    import tempfile
+
+    first, second = tmp_path / "first.json", tmp_path / "second.json"
+    write_artifact(first, {"completed": True})
+    original = tempfile.NamedTemporaryFile
+
+    @contextmanager
+    def failing_file(*args, **kwargs):
+        with original(*args, **kwargs) as stream:
+
+            class InterruptedStream:
+                name = stream.name
+
+                def write(self, body):
+                    stream.write(body[:3])
+                    stream.flush()
+                    raise OSError(errno.ENOSPC, "synthetic disk full")
+
+            yield InterruptedStream()
+
+    with monkeypatch.context() as patch:
+        patch.setattr(tempfile, "NamedTemporaryFile", failing_file)
+        with pytest.raises(OSError, match="synthetic disk full"):
+            claim_packets.write_artifact(second, {"completed": False})
+    assert json.loads(first.read_text()) == {"completed": True}
+    assert not second.exists()
+    assert list(tmp_path.iterdir()) == [first]
+    write_artifact(second, {"retried": True})
+    assert json.loads(second.read_text()) == {"retried": True}
+
+
+@pytest.mark.parametrize("historical", [False, True])
+async def test_ingested_and_historical_credentials_never_reach_http(tmp_db, tmp_path, historical):
+    from hippo_brain.claude_sessions import SessionSegment, insert_segment
+    from hippo_brain.jev import JevClient, canonical
+    from pathlib import Path
+
+    conn, path = tmp_db
+    credential = "synthetic_sensitive_credential-927483"
+    prompt = json.dumps({"headers": {"Authorization": f"Bearer {credential}"}, "method": "GET"})
+    segment = SessionSegment(
+        session_id="credential-test",
+        project_dir="/project",
+        cwd="/project",
+        git_branch="main",
+        segment_index=0,
+        start_time=1,
+        end_time=2,
+        user_prompts=[prompt],
+        tool_calls=[{"name": "http", "summary": json.dumps(prompt)}],
+        message_count=5,
+        source_file="/project/session.jsonl",
+    )
+    source_id = insert_segment(conn, segment)
+    assert credential not in canonical(
+        conn.execute(
+            "SELECT summary_text,user_prompts_json,tool_calls_json FROM agentic_sessions WHERE id=?",
+            (source_id,),
+        ).fetchone()
+    )
+    if historical:
+        conn.execute(
+            "UPDATE agentic_sessions SET user_prompts_json=? WHERE id=?",
+            (json.dumps([prompt]), source_id),
+        )
+    conn.execute(
+        "INSERT INTO knowledge_nodes(id,uuid,content,embed_text,created_at) VALUES(1,'credential',?,'',1)",
+        (json.dumps({"summary": "The user configured request headers."}),),
+    )
+    conn.execute("INSERT INTO knowledge_node_agentic_sessions VALUES(1,?)", (source_id,))
+    conn.commit()
+    prepare(path, tmp_path / "packets")
+    packet = load_packets(tmp_path / "packets")[0]
+    assert not packet["problems"]
+    assert credential not in canonical(packet)
+    assert isinstance(packet["state"]["sources"][0]["fields"]["user_prompts_json"], list)
+    seen = []
+
+    def handle(request):
+        seen.append(request.content)
+        assert credential.encode() not in request.content
+        return httpx.Response(
+            200,
+            json={
+                "model": "jev-1.13.0",
+                "answers": {
+                    "verdict": {
+                        "type": "choice",
+                        "choice": "unsupported",
+                        "confidence": 1.0,
+                        "probabilities": {"supports": 0, "contradicts": 0, "unsupported": 1},
+                    }
+                },
+            },
+        )
+
+    questions = json.loads(
+        (
+            Path(__file__).parents[1] / "src/hippo_brain/_fixtures/claim_review_rubric.json"
+        ).read_text()
+    )["questions"]
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as http:
+        async with JevClient("synthetic", client=http) as client:
+            await client.assess(packet["state"], questions)
+    assert len(seen) == 1

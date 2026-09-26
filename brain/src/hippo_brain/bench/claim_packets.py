@@ -6,6 +6,7 @@ import argparse
 import json
 import os
 import sqlite3
+import tempfile
 import time
 from contextlib import closing
 from pathlib import Path
@@ -34,6 +35,7 @@ TEXT_FIELDS = (
     "extracted_text",
     "title",
     "raw_json",
+    "annotations_json",
     "content",
 )
 CONTEXT_FIELDS = (
@@ -45,16 +47,20 @@ CONTEXT_FIELDS = (
     "git_branch",
     "repo",
     "head_sha",
+    "head_branch",
     "url",
     "repository",
     "timestamp",
     "start_time",
+    "started_at",
     "end_time",
     "completed_at",
     "created_at",
     "exit_code",
     "status",
     "conclusion",
+    "stdout_truncated",
+    "stderr_truncated",
 )
 
 
@@ -62,9 +68,12 @@ def write_artifact(path: Path, value: Any) -> None:
     """Write a private immutable artifact outside repository/production trees."""
     path = external_path(path)
     body = (canonical(value) + "\n").encode()
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    with os.fdopen(fd, "wb") as stream:
+    with tempfile.NamedTemporaryFile(dir=path.parent, prefix=".claim-", suffix=".tmp") as stream:
         stream.write(body)
+        stream.flush()
+        os.fsync(stream.fileno())
+        # link publishes a complete file atomically and refuses an existing destination.
+        os.link(stream.name, path)
 
 
 def create_directory(path: Path) -> Path:
@@ -127,19 +136,45 @@ def make_packet(conn: sqlite3.Connection, node_id: int) -> dict[str, Any]:
             original = _inspect_evidence_row(conn, kind, source_id, ref, include_excluded=False)[
                 "row"
             ]
+            if kind == "workflow":
+                tables = {
+                    r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
+                }
+                if {"workflow_jobs", "workflow_annotations"} <= tables:
+                    annotations = conn.execute(
+                        "SELECT a.*, j.name AS job_name, j.status AS job_status, "
+                        "j.conclusion AS job_conclusion FROM workflow_annotations a "
+                        "JOIN workflow_jobs j ON j.id=a.job_id WHERE j.run_id=? "
+                        "ORDER BY a.id LIMIT 101",
+                        (source_id,),
+                    ).fetchall()
+                    if len(annotations) > 100:
+                        problems.append(f"truncated_annotations:{ref}")
+                    original["annotations_json"] = canonical([dict(a) for a in annotations[:100]])
+                else:
+                    problems.append(f"missing_workflow_annotations:{ref}")
         except LookupError, ValueError:
             problems.append(f"unavailable_source:{ref}")
             continue
         finally:
             conn.row_factory = previous_factory
         fields = {}
+        for name in ("stdout_truncated", "stderr_truncated"):
+            if original.get(name):
+                problems.append(f"capture_truncated:{ref}:{name}")
         for name in (*CONTEXT_FIELDS, *TEXT_FIELDS):
             value = original.get(name)
             if value is None:
                 continue
+            if name.endswith("_json") and isinstance(value, str):
+                try:
+                    value = json.loads(value)
+                except ValueError:
+                    problems.append(f"invalid_json_field:{ref}:{name}")
             clean = redact_state(value)
-            if isinstance(clean, str) and len(clean) > 6000:
-                clean = clean[:6000]
+            bounded = clean if isinstance(clean, str) else canonical(clean)
+            if len(bounded) > 6000:
+                clean = bounded[:6000]
                 problems.append(f"truncated_field:{ref}:{name}")
             fields[name] = clean
         if not any(fields.get(name) for name in TEXT_FIELDS):
