@@ -7,8 +7,8 @@ that bypass the daemon's redaction path. This module is the chokepoint for
 those flows so that secrets in tool calls, user prompts, and assistant
 responses do not get persisted or sent to the LLM.
 
-Patterns are kept in lockstep with the Rust builtin set; if you add a pattern
-in one place, add it in the other.
+Token signatures mirror the Rust builtin set. Python additionally handles
+quoted and serialized credential fields at session and external-request boundaries.
 """
 
 from __future__ import annotations
@@ -20,7 +20,7 @@ from typing import Any
 REPLACEMENT = "[REDACTED]"
 _SECRET_NAME = (
     r"api[_-]?key|api[_-]?token|access[_-]?token|auth[_-]?token|"
-    r"secret[_-]?key|private[_-]?key|password"
+    r"secret[_-]?key|private[_-]?key|password|(?:proxy[_-]?)?authorization"
 )
 _SECRET_KEY = re.compile(rf"(?:{_SECRET_NAME})", re.IGNORECASE)
 
@@ -46,7 +46,10 @@ _PATTERNS: tuple[re.Pattern[str], ...] = (
     ),
     re.compile(rf"(?i)(?:{_SECRET_NAME})\s*[=:]\s*\S{{8,}}"),
     re.compile(r"eyJ[a-zA-Z0-9_-]{10,}\.eyJ[a-zA-Z0-9_-]{10,}\.[a-zA-Z0-9_-]+"),
-    re.compile(r"(?i)authorization:\s*bearer\s+\S+"),
+    re.compile(
+        r"""(?i)(?:proxy-)?authorization(?:\\*["'])?\s*:\s*(?:\\*["'])?"""
+        r"(?:bearer|basic)\s+[A-Za-z0-9._~+/=-]+"
+    ),
 )
 
 

@@ -67,6 +67,17 @@ def test_bearer_header_redacted():
     assert "abcDEF123token" not in out
 
 
+@pytest.mark.parametrize("header", ["Authorization", "Proxy-Authorization"])
+@pytest.mark.parametrize("scheme", ["Bearer", "Basic"])
+@pytest.mark.parametrize("encodings", [0, 1, 2])
+def test_serialized_authorization_headers_redacted(header, scheme, encodings):
+    credential = "synthetic_sensitive_credential-927483"
+    text = json.dumps({"headers": {header: f"{scheme} {credential}"}})
+    for _ in range(encodings):
+        text = json.dumps(text)
+    assert credential not in redact(text)
+
+
 def test_private_key_pem_redacted():
     out = redact("-----BEGIN RSA PRIVATE KEY-----\nbody\n-----END...")
     assert out == REPLACEMENT
