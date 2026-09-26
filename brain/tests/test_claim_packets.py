@@ -415,16 +415,28 @@ async def test_ingested_and_historical_credentials_never_reach_http(tmp_db, tmp_
 
 
 @pytest.mark.parametrize(
-    "key,prefix", [("api_key", ""), ("password", ""), ("Authorization", "Token ")]
+    "key,prefix,plaintext",
+    [
+        ("api_key", "", False),
+        ("password", "", False),
+        ("Authorization", "Token ", False),
+        ("Authorization", "Token ", True),
+    ],
 )
-async def test_nested_credentials_never_reach_assessment(tmp_db, tmp_path, key, prefix):
+async def test_serialized_and_plaintext_credentials_never_reach_assessment(
+    tmp_db, tmp_path, key, prefix, plaintext
+):
     from hippo_brain.claude_sessions import SessionSegment, insert_segment
     from hippo_brain.jev import JevClient
     from pathlib import Path
 
     conn, path = tmp_db
     secret = "synthetic_sensitive_credential-927483"
-    nested = json.dumps({key: prefix + secret, "public": "keep"})
+    nested = (
+        f"Authorization: {prefix}{secret}"
+        if plaintext
+        else json.dumps({key: prefix + secret, "public": "keep"})
+    )
     segment = SessionSegment(
         session_id="nested-credential",
         project_dir="/project",
@@ -449,7 +461,8 @@ async def test_nested_credentials_never_reach_assessment(tmp_db, tmp_path, key, 
     packet = load_packets(tmp_path / "packets")[0]
     assert not packet["problems"]
     assert secret not in json.dumps(packet)
-    assert "keep" in json.dumps(packet["state"])
+    if not plaintext:
+        assert "keep" in json.dumps(packet["state"])
 
     seen = []
 
