@@ -16,9 +16,10 @@ from hippo_brain.bench.knowledge_probe import open_readonly
 from hippo_brain.decision_capture import external_path
 from hippo_brain.evidence_packets import _inspect_evidence_row, parse_ref
 from hippo_brain.jev import canonical, digest, redact_state
+from hippo_brain.redaction import REPLACEMENT
 
-VERSION = "claim-packets-v3"
-HISTORICAL_VERSIONS = {"claim-packets-v1", "claim-packets-v2", VERSION}
+VERSION = "claim-packets-v4"
+HISTORICAL_VERSIONS = {"claim-packets-v1", "claim-packets-v2", "claim-packets-v3", VERSION}
 LINKS = (
     ("knowledge_node_events", "event_id", "shell"),
     ("knowledge_node_agentic_sessions", "agentic_session_id", "agentic"),
@@ -51,6 +52,8 @@ CONTEXT_FIELDS = (
     "segment_index",
     "cwd",
     "project_dir",
+    "logical_path",
+    "source_path",
     "git_branch",
     "git_commit",
     "git_repo",
@@ -136,6 +139,8 @@ def make_packet(conn: sqlite3.Connection, node_id: int) -> dict[str, Any]:
         summary = ""
         problems.append("missing_summary")
     claim = redact_state(summary)
+    if REPLACEMENT in claim:
+        problems.append("redacted_claim")
     if len(claim) > 4000:
         claim = claim[:4000]
         problems.append("truncated_claim")
@@ -144,6 +149,24 @@ def make_packet(conn: sqlite3.Connection, node_id: int) -> dict[str, Any]:
         problems.append("no_linked_sources")
     if len(refs) > 8:
         problems.append("truncated_source_set")
+    shell_ids = [int(ref[6:]) for ref in refs if ref.startswith("shell-")]
+    browser_ids = {int(ref[8:]) for ref in refs if ref.startswith("browser-")}
+    if shell_ids and len(refs) <= 8:
+        tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        if "browser_events" in tables:
+            marks = ",".join("?" for _ in shell_ids)
+            start, end = conn.execute(
+                f"SELECT MIN(timestamp), MAX(timestamp) FROM events WHERE id IN ({marks})",
+                shell_ids,
+            ).fetchone()
+            if start is not None:
+                candidates = conn.execute(
+                    "SELECT id FROM browser_events WHERE timestamp BETWEEN ? AND ? "
+                    "AND probe_tag IS NULL",
+                    (start - 300_000, end + 300_000),
+                )
+                if any(row[0] not in browser_ids for row in candidates):
+                    problems.append("possible_unlinked_browser_context")
     sources = []
     for ref in refs[:8]:
         previous_factory = conn.row_factory
@@ -199,6 +222,8 @@ def make_packet(conn: sqlite3.Connection, node_id: int) -> dict[str, Any]:
             fields[name] = clean
         if not any(fields.get(name) for name in TEXT_FIELDS):
             problems.append(f"empty_source:{ref}")
+        if REPLACEMENT in canonical(fields):
+            problems.append(f"redacted_evidence:{ref}")
         sources.append({"ref": ref, "revision_hash": digest(original), "fields": fields})
     state = {"claim": claim, "sources": sources}
     if len(canonical(state).encode()) > 100_000:

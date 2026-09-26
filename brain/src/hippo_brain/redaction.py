@@ -20,8 +20,9 @@ from typing import Any
 
 REPLACEMENT = "[REDACTED]"
 _SECRET_NAME = (
-    r"api[_-]?key|api[_-]?token|access[_-]?token|auth[_-]?token|"
-    r"secret[_-]?key|private[_-]?key|password|(?:proxy[_-]?)?authorization"
+    r"(?:[a-z0-9]+[_-])*(?:token|secret)|"
+    r"(?:x[_-])?api[_-]?key|aws[_-]?secret[_-]?access[_-]?key|"
+    r"secret[_-]?key|private[_-]?key|password|passwd|(?:proxy[_-]?)?authorization"
 )
 _SECRET_KEY = re.compile(rf"(?:{_SECRET_NAME})", re.IGNORECASE)
 _ESCAPED_SECRET_ASSIGNMENT = re.compile(
