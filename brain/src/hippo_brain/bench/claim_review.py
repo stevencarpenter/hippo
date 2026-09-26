@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import sqlite3
 import time
 from collections import Counter
 from pathlib import Path
@@ -13,6 +14,7 @@ from typing import Any
 import httpx
 
 from hippo_brain.bench.claim_packets import (
+    VERSION as PACKET_VERSION,
     create_directory,
     load_packets,
     prepare,
@@ -25,6 +27,7 @@ from hippo_brain.jev import (
     canonical,
     digest,
     number,
+    validate_questions,
     validate_response,
 )
 from hippo_brain.decision_capture import external_path
@@ -39,8 +42,15 @@ def rubric() -> dict[str, Any]:
     )
 
 
-def request_for(packet: dict[str, Any]) -> dict[str, Any]:
-    return {"model": f"jev-{MODEL}", "state": packet["state"], "questions": rubric()["questions"]}
+def request_for(
+    packet: dict[str, Any], *, definition: dict | None = None, model: str | None = None
+) -> dict[str, Any]:
+    definition = rubric() if definition is None else definition
+    return {
+        "model": f"jev-{MODEL}" if model is None else model,
+        "state": packet["state"],
+        "questions": definition["questions"],
+    }
 
 
 def disposition(record: dict[str, Any], threshold: float) -> str:
@@ -86,7 +96,7 @@ async def assess(
         root = create_directory(out)
         write_artifact(root / "run.json", manifest)
         for packet in packets:
-            payload = request_for(packet)
+            payload = request_for(packet, definition=definition, model=manifest["model"])
             record = {
                 "packet_hash": packet["packet_hash"],
                 "run_hash": manifest["run_hash"],
@@ -121,18 +131,44 @@ async def assess(
     return completion
 
 
+def validate_record(packet: dict, record: dict, manifest: dict) -> None:
+    if not isinstance(record, dict):
+        raise ValueError("assessment record mismatch")
+    if record.get("status") == "missing":
+        if record != {"status": "missing"}:
+            raise ValueError("assessment record mismatch")
+        return
+    if (
+        record.get("packet_hash") != packet["packet_hash"]
+        or record.get("run_hash") != manifest["run_hash"]
+        or record.get("request_hash")
+        != digest(request_for(packet, definition=manifest["rubric"], model=manifest["model"]))
+        or record.get("status") not in {"ok", "blocked", "budget_exhausted", "error"}
+    ):
+        raise ValueError("assessment record mismatch")
+    if record["status"] == "ok":
+        if packet["problems"] or not packet["state"]["sources"] or not packet["state"]["claim"]:
+            raise ValueError("incomplete evidence cannot have a successful assessment")
+        validate_response(
+            record.get("response"), manifest["rubric"]["questions"], model=manifest["model"]
+        )
+
+
 def load_run(corpus: Path, run: Path) -> tuple[list[dict], dict, dict[str, dict]]:
-    packets = load_packets(corpus)
+    packets = load_packets(corpus, allow_legacy=True)
     manifest = json.loads((run / "run.json").read_text())
     if (
         manifest.get("version") != VERSION
         or manifest.get("packets_hash") != digest(packets)
-        or manifest.get("rubric") != rubric()
-        or manifest.get("model") != f"jev-{MODEL}"
+        or not isinstance(manifest.get("rubric"), dict)
+        or not isinstance(manifest["rubric"].get("questions"), dict)
+        or not isinstance(manifest.get("model"), str)
+        or not manifest["model"].startswith("jev-")
         or manifest.get("run_hash")
         != digest({k: v for k, v in manifest.items() if k != "run_hash"})
     ):
         raise ValueError("assessment identity mismatch")
+    validate_questions(manifest["rubric"]["questions"])
     records = {}
     for packet in packets:
         key = packet["packet_hash"]
@@ -141,17 +177,7 @@ def load_run(corpus: Path, run: Path) -> tuple[list[dict], dict, dict[str, dict]
             records[key] = {"status": "missing"}
             continue
         record = json.loads(path.read_text())
-        if (
-            record.get("packet_hash") != key
-            or record.get("run_hash") != manifest["run_hash"]
-            or record.get("request_hash") != digest(request_for(packet))
-            or record.get("status") not in {"ok", "blocked", "budget_exhausted", "error"}
-        ):
-            raise ValueError("assessment record mismatch")
-        if record["status"] == "ok":
-            if packet["problems"] or not packet["state"]["sources"] or not packet["state"]["claim"]:
-                raise ValueError("incomplete evidence cannot have a successful assessment")
-            validate_response(record["response"], rubric()["questions"], model=MODEL)
+        validate_record(packet, record, manifest)
         records[key] = record
     return packets, manifest, records
 
@@ -203,6 +229,7 @@ def make_queue(
         "seed": seed,
         "population": len(keys),
         "rows": selected,
+        "assessment_snapshot": records,
     }
     queue = {"queue_hash": digest(body), **body}
     write_artifact(out, queue)
@@ -212,7 +239,7 @@ def make_queue(
 def load_queue(
     corpus: Path, run: Path, path: Path
 ) -> tuple[dict, dict[str, dict], dict[str, dict]]:
-    packets, manifest, records = load_run(corpus, run)
+    packets, manifest, live_records = load_run(corpus, run)
     queue = json.loads(path.read_text())
     if (
         queue.get("version") != VERSION
@@ -229,6 +256,16 @@ def load_queue(
         if key not in indexed or key in seen or row["stratum"] not in {"audit", "exception"}:
             raise ValueError("invalid review queue member")
         seen.add(key)
+    if "assessment_snapshot" not in queue:
+        if not (run / "completion.json").is_file():
+            raise ValueError("legacy queue has no assessment snapshot; finish the run or requeue")
+        records = live_records
+    else:
+        records = queue["assessment_snapshot"]
+        if not isinstance(records, dict) or set(records) != set(indexed):
+            raise ValueError("review queue assessment snapshot mismatch")
+        for key, record in records.items():
+            validate_record(indexed[key], record, manifest)
     return queue, indexed, records
 
 
@@ -268,6 +305,8 @@ def review(corpus: Path, run: Path, queue_path: Path, out: Path, *, reviewer: st
         root = create_directory(root)
     completed = load_annotations(queue, root, packets)
     count = 0
+    if historical_run(corpus, run):
+        print("Historical run: saved rubric/model and evidence; not current qualification.")
     print("Does every part of the summary follow from the displayed captured evidence?")
     print("y = yes, n = no, u = unsure, s = skip, q = quit. Predictions are hidden.")
     for index, member in enumerate(queue["rows"], 1):
@@ -313,7 +352,12 @@ def load_annotations(queue: dict, labels: Path, packets: dict[str, dict]) -> dic
     if not labels.is_dir():
         raise ValueError("labels must be a review directory")
     for path in sorted(labels.glob("*.json")):
-        row = json.loads(path.read_text())
+        try:
+            row = json.loads(path.read_text())
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"invalid human annotation in {path}: {exc.msg}") from exc
+        if not isinstance(row, dict):
+            raise ValueError(f"invalid human annotation in {path}")
         key = row.get("packet_hash")
         if (
             row.get("version") != VERSION
@@ -328,7 +372,7 @@ def load_annotations(queue: dict, labels: Path, packets: dict[str, dict]) -> dic
             or type(row.get("reviewed_at_ms")) is not int
             or row["reviewed_at_ms"] <= 0
         ):
-            raise ValueError("invalid, duplicate, or mismatched human annotation")
+            raise ValueError(f"invalid, duplicate, or mismatched human annotation in {path}")
         if row["decision"] == "yes" and not complete_claim(packets[key]):
             raise ValueError("yes requires a complete summary")
         annotations[key] = row
@@ -378,6 +422,8 @@ def report(corpus: Path, run: Path, queue_path: Path, labels: Path) -> dict[str,
     ]
     return {
         "scope": "descriptive frozen-cohort results; not production approval or population accuracy",
+        "historical_run": historical_run(corpus, run),
+        "legacy_unfrozen_queue": "assessment_snapshot" not in queue,
         "run_hash": queue["run_hash"],
         "queue_hash": queue["queue_hash"],
         "threshold": queue["threshold"],
@@ -395,6 +441,16 @@ def report(corpus: Path, run: Path, queue_path: Path, labels: Path) -> dict[str,
         ),
         "acceptance_qualified": False,
     }
+
+
+def historical_run(corpus: Path, run: Path) -> bool:
+    manifest = json.loads((run / "run.json").read_text())
+    packets = load_packets(corpus, allow_legacy=True)
+    return (
+        manifest["rubric"] != rubric()
+        or manifest["model"] != f"jev-{MODEL}"
+        or any(packet["version"] != PACKET_VERSION for packet in packets)
+    )
 
 
 def main() -> None:
@@ -453,6 +509,8 @@ def main() -> None:
         else:
             result = report(args.corpus, args.run, args.queue, args.labels)
             write_artifact(args.out, result)
+    except sqlite3.Error as exc:
+        parser.exit(2, f"claim-review: database {args.database}: {exc}\n")
     except (ValueError, OSError, JevUnavailable) as exc:
         parser.exit(2, f"claim-review: {exc}\n")
     print(canonical(result))
