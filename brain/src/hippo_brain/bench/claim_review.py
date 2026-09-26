@@ -31,6 +31,7 @@ from hippo_brain.jev import (
     validate_response,
 )
 from hippo_brain.decision_capture import external_path
+from hippo_brain.redaction import REPLACEMENT
 
 VERSION = "claim-review-v1"
 DECISIONS = {"yes", "no", "unsure"}
@@ -158,7 +159,8 @@ def load_run(corpus: Path, run: Path) -> tuple[list[dict], dict, dict[str, dict]
     packets = load_packets(corpus, allow_legacy=True)
     manifest = json.loads((run / "run.json").read_text())
     if (
-        manifest.get("version") != VERSION
+        not isinstance(manifest, dict)
+        or manifest.get("version") != VERSION
         or manifest.get("packets_hash") != digest(packets)
         or not isinstance(manifest.get("rubric"), dict)
         or not isinstance(manifest["rubric"].get("questions"), dict)
@@ -167,7 +169,7 @@ def load_run(corpus: Path, run: Path) -> tuple[list[dict], dict, dict[str, dict]
         or manifest.get("run_hash")
         != digest({k: v for k, v in manifest.items() if k != "run_hash"})
     ):
-        raise ValueError("assessment identity mismatch")
+        raise ValueError(f"assessment identity mismatch in {run / 'run.json'}")
     validate_questions(manifest["rubric"]["questions"])
     records = {}
     for packet in packets:
@@ -182,6 +184,48 @@ def load_run(corpus: Path, run: Path) -> tuple[list[dict], dict, dict[str, dict]
     return packets, manifest, records
 
 
+def select_rows(
+    packets: list[dict],
+    records: dict[str, dict],
+    *,
+    threshold: float,
+    limit: int,
+    audit: int,
+    seed: str,
+) -> list[dict[str, str]]:
+    number(threshold, 0, 1)
+    if (
+        not isinstance(seed, str)
+        or not seed
+        or type(limit) is not int
+        or type(audit) is not int
+        or not 1 <= audit <= limit <= 1000
+    ):
+        raise ValueError("queue needs a seed and 1 <= audit <= limit <= 1000")
+    keys = [packet["packet_hash"] for packet in packets]
+    audit_keys = sorted(keys, key=lambda key: digest([seed, key]))[:audit]
+    audit_set = set(audit_keys)
+    exceptions = [
+        key
+        for key in keys
+        if key not in audit_set and disposition(records[key], threshold) == "review"
+    ]
+    exceptions.sort(
+        key=lambda key: (
+            records[key]["response"]["answers"]["verdict"]["confidence"]
+            if records[key]["status"] == "ok"
+            else 0,
+            key,
+        )
+    )
+    selected = [{"packet_hash": key, "stratum": "audit"} for key in audit_keys]
+    selected += [
+        {"packet_hash": key, "stratum": "exception"} for key in exceptions[: limit - len(selected)]
+    ]
+    selected.sort(key=lambda row: digest(["presentation", seed, row["packet_hash"]]))
+    return selected
+
+
 def make_queue(
     corpus: Path,
     run: Path,
@@ -192,33 +236,10 @@ def make_queue(
     audit: int = 5,
     seed: str,
 ) -> dict[str, Any]:
-    number(threshold, 0, 1)
-    if not seed or not 1 <= limit <= 1000 or not 1 <= audit <= limit:
-        raise ValueError("queue needs a seed and 1 <= audit <= limit <= 1000")
     packets, manifest, records = load_run(corpus, run)
-    keys = [p["packet_hash"] for p in packets]
-    audit_keys = sorted(keys, key=lambda key: digest([seed, key]))[:audit]
-    audit_set = set(audit_keys)
-    exceptions = [
-        key
-        for key in keys
-        if key not in audit_set and disposition(records[key], threshold) == "review"
-    ]
-    exceptions.sort(
-        key=lambda key: (
-            records[key]
-            .get("response", {})
-            .get("answers", {})
-            .get("verdict", {})
-            .get("confidence", 0),
-            key,
-        )
+    selected = select_rows(
+        packets, records, threshold=threshold, limit=limit, audit=audit, seed=seed
     )
-    selected = [{"packet_hash": key, "stratum": "audit"} for key in audit_keys]
-    selected += [
-        {"packet_hash": key, "stratum": "exception"} for key in exceptions[: limit - len(selected)]
-    ]
-    selected.sort(key=lambda row: digest(["presentation", seed, row["packet_hash"]]))
     body = {
         "version": VERSION,
         "run_hash": manifest["run_hash"],
@@ -227,7 +248,7 @@ def make_queue(
         "limit": limit,
         "audit": audit,
         "seed": seed,
-        "population": len(keys),
+        "population": len(packets),
         "rows": selected,
         "assessment_snapshot": records,
     }
@@ -239,38 +260,58 @@ def make_queue(
 def load_queue(
     corpus: Path, run: Path, path: Path
 ) -> tuple[dict, dict[str, dict], dict[str, dict]]:
-    packets, manifest, live_records = load_run(corpus, run)
+    packets, manifest, _ = load_run(corpus, run)
     queue = json.loads(path.read_text())
     if (
-        queue.get("version") != VERSION
+        not isinstance(queue, dict)
+        or queue.get("version") != VERSION
         or queue.get("queue_hash") != digest({k: v for k, v in queue.items() if k != "queue_hash"})
         or queue.get("run_hash") != manifest["run_hash"]
         or queue.get("packets_hash") != digest(packets)
     ):
-        raise ValueError("review queue identity mismatch")
-    number(queue["threshold"], 0, 1)
-    indexed = {p["packet_hash"]: p for p in packets}
-    seen = set()
-    for row in queue["rows"]:
-        key = row["packet_hash"]
-        if key not in indexed or key in seen or row["stratum"] not in {"audit", "exception"}:
-            raise ValueError("invalid review queue member")
-        seen.add(key)
+        raise ValueError(f"review queue identity mismatch in {path}")
     if "assessment_snapshot" not in queue:
-        if not (run / "completion.json").is_file():
-            raise ValueError("legacy queue has no assessment snapshot; finish the run or requeue")
-        records = live_records
-    else:
-        records = queue["assessment_snapshot"]
-        if not isinstance(records, dict) or set(records) != set(indexed):
-            raise ValueError("review queue assessment snapshot mismatch")
-        for key, record in records.items():
-            validate_record(indexed[key], record, manifest)
+        raise ValueError(f"legacy queue has no assessment snapshot; requeue: {path}")
+    if type(queue.get("population")) is not int or queue["population"] != len(packets):
+        raise ValueError(f"review queue population mismatch in {path}")
+    if not isinstance(queue.get("rows"), list):
+        raise ValueError(f"invalid review queue rows in {path}")
+    indexed = {p["packet_hash"]: p for p in packets}
+    for row in queue["rows"]:
+        if (
+            not isinstance(row, dict)
+            or not isinstance(row.get("packet_hash"), str)
+            or not isinstance(row.get("stratum"), str)
+        ):
+            raise ValueError(f"invalid review queue member in {path}")
+    records = queue["assessment_snapshot"]
+    if not isinstance(records, dict) or set(records) != set(indexed):
+        raise ValueError("review queue assessment snapshot mismatch")
+    for key, record in records.items():
+        validate_record(indexed[key], record, manifest)
+    try:
+        expected = select_rows(
+            packets,
+            records,
+            threshold=queue.get("threshold"),
+            limit=queue.get("limit"),
+            audit=queue.get("audit"),
+            seed=queue.get("seed"),
+        )
+    except ValueError as exc:
+        raise ValueError(f"invalid review queue selection parameters in {path}: {exc}") from exc
+    if queue["rows"] != expected:
+        raise ValueError(f"review queue selection mismatch in {path}")
     return queue, indexed, records
 
 
 def complete_claim(packet: dict) -> bool:
-    return bool(packet["state"]["claim"].strip()) and "truncated_claim" not in packet["problems"]
+    return (
+        bool(packet["state"]["claim"].strip())
+        and REPLACEMENT not in packet["state"]["claim"]
+        and "truncated_claim" not in packet["problems"]
+        and "redacted_claim" not in packet["problems"]
+    )
 
 
 def annotate(queue: dict, packet: dict, *, reviewer: str, decision: str, notes: str = "") -> dict:
@@ -362,8 +403,10 @@ def load_annotations(queue: dict, labels: Path, packets: dict[str, dict]) -> dic
         if (
             row.get("version") != VERSION
             or row.get("queue_hash") != queue["queue_hash"]
+            or not isinstance(key, str)
             or key not in members
             or key in annotations
+            or not isinstance(row.get("decision"), str)
             or row.get("decision") not in DECISIONS
             or row.get("annotator_type") != "human"
             or not isinstance(row.get("reviewer"), str)
@@ -423,7 +466,7 @@ def report(corpus: Path, run: Path, queue_path: Path, labels: Path) -> dict[str,
     return {
         "scope": "descriptive frozen-cohort results; not production approval or population accuracy",
         "historical_run": historical_run(corpus, run),
-        "legacy_unfrozen_queue": "assessment_snapshot" not in queue,
+        "legacy_unfrozen_queue": False,
         "run_hash": queue["run_hash"],
         "queue_hash": queue["queue_hash"],
         "threshold": queue["threshold"],
