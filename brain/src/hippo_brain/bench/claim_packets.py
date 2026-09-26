@@ -17,7 +17,7 @@ from hippo_brain.decision_capture import external_path
 from hippo_brain.evidence_packets import _inspect_evidence_row, parse_ref
 from hippo_brain.jev import canonical, digest, redact_state
 
-VERSION = "claim-packets-v1"
+VERSION = "claim-packets-v2"
 LINKS = (
     ("knowledge_node_events", "event_id", "shell"),
     ("knowledge_node_agentic_sessions", "agentic_session_id", "agentic"),
@@ -168,7 +168,9 @@ def make_packet(conn: sqlite3.Connection, node_id: int) -> dict[str, Any]:
                 continue
             if name.endswith("_json") and isinstance(value, str):
                 try:
-                    value = json.loads(value)
+                    decoded = json.loads(value)
+                    canonical(decoded)
+                    value = decoded
                 except ValueError:
                     problems.append(f"invalid_json_field:{ref}:{name}")
             clean = redact_state(value)
