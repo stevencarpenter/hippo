@@ -274,9 +274,7 @@ def test_workflow_annotations_are_evidence_and_invalidate_revisions(tmp_db):
         "WHERE id=(SELECT MAX(id) FROM workflow_annotations)"
     )
     corrected = make_packet(conn, 1)
-    assert corrected["state"]["sources"][0]["fields"] == truncated["state"]["sources"][0][
-        "fields"
-    ]
+    assert corrected["state"]["sources"][0]["fields"] == truncated["state"]["sources"][0]["fields"]
     assert corrected["packet_hash"] != truncated["packet_hash"]
     conn.execute("DROP TABLE workflow_annotations")
     assert "missing_workflow_annotations:workflow-1" in make_packet(conn, 1)["problems"]
