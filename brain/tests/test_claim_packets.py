@@ -132,9 +132,9 @@ def test_redacted_claim_and_source_block_automatic_assessment(tmp_path):
     with database(tmp_path / "source.sqlite") as conn:
         conn.execute(
             "UPDATE knowledge_nodes SET content=?",
-            (json.dumps({"summary": "password=synthetic_secret_alpha_123"}),),
+            (json.dumps({"summary": "password=alpha"}),),
         )
-        conn.execute("UPDATE events SET stdout='password=synthetic_secret_beta_456'")
+        conn.execute("UPDATE events SET stdout='password=beta'")
         packet = make_packet(conn, 1)
     assert packet["state"]["claim"] == "[REDACTED]"
     assert packet["state"]["sources"][0]["fields"]["stdout"] == "[REDACTED]"
