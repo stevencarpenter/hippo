@@ -1375,6 +1375,10 @@ run = "uv run --project brain python -m hippo_brain.bench.knowledge_probe ${@}"
 description = "Freeze source-backed summaries for private fidelity review (read-only database)"
 run = "uv run --project brain python -m hippo_brain.bench.claim_packets ${@}"
 
+[tasks."bench:claims"]
+description = "Assess frozen claims with Jev, review a bounded queue, and report fidelity"
+run = "uv run --project brain python -m hippo_brain.bench.claim_review ${@}"
+
 [tasks."bench:knowledge:tags"]
 description = "Classify and test topic tags on external database copies"
 run = "uv run --project brain python -m hippo_brain.bench.knowledge_tags ${@}"
