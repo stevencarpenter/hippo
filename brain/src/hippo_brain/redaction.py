@@ -13,6 +13,7 @@ quoted and serialized credential fields at session and external-request boundari
 
 from __future__ import annotations
 
+import json
 import re
 from collections.abc import Iterable
 from typing import Any
@@ -23,6 +24,9 @@ _SECRET_NAME = (
     r"secret[_-]?key|private[_-]?key|password|(?:proxy[_-]?)?authorization"
 )
 _SECRET_KEY = re.compile(rf"(?:{_SECRET_NAME})", re.IGNORECASE)
+_ESCAPED_SECRET_ASSIGNMENT = re.compile(
+    rf"""(?i)\\+["'](?:{_SECRET_NAME})\\+["']\s*[=:]\s*\\+["']"""
+)
 
 
 def is_secret_key(value: object) -> bool:
@@ -48,15 +52,43 @@ _PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"eyJ[a-zA-Z0-9_-]{10,}\.eyJ[a-zA-Z0-9_-]{10,}\.[a-zA-Z0-9_-]+"),
     re.compile(
         r"""(?i)(?:proxy-)?authorization(?:\\*["'])?\s*:\s*(?:\\*["'])?"""
-        r"(?:bearer|basic)\s+[A-Za-z0-9._~+/=-]+"
+        r"[^\r\n\"']+"
     ),
 )
+
+
+def redact_state(value: Any) -> Any:
+    """Redact recognized secret fields and nested string values."""
+    if isinstance(value, str):
+        return redact(value)
+    if isinstance(value, dict):
+        return {
+            key: REPLACEMENT if is_secret_key(key) else redact_state(item)
+            for key, item in value.items()
+        }
+    if isinstance(value, (list, tuple)):
+        return [redact_state(item) for item in value]
+    return value
 
 
 def redact(text: str) -> str:
     """Apply all builtin redaction patterns to ``text``."""
     if not text:
         return text
+    if text.lstrip().startswith(("{", "[", '"')):
+        try:
+            decoded = json.loads(text)
+        except ValueError, RecursionError:
+            pass
+        else:
+            if isinstance(decoded, (dict, list, str)):
+                clean = redact_state(decoded)
+                if clean != decoded:
+                    return json.dumps(clean, ensure_ascii=False)
+                return text
+    # When prose wraps serialized JSON, its inner object cannot be parsed alone.
+    if _ESCAPED_SECRET_ASSIGNMENT.search(text):
+        return REPLACEMENT
     for pattern in _PATTERNS:
         text = pattern.sub(REPLACEMENT, text)
     return text

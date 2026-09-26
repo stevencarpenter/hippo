@@ -16,7 +16,7 @@ from typing import Any, NotRequired, TypedDict
 
 import httpx
 
-from hippo_brain.redaction import REPLACEMENT, is_secret_key, redact
+from hippo_brain.redaction import redact_state
 
 MODEL = "1.13.0"
 ENDPOINT = "https://api.typesafe.ai/v1/systemone"
@@ -46,22 +46,8 @@ def digest(value: object) -> str:
     return hashlib.sha256(canonical(value).encode()).hexdigest()
 
 
-def redact_state(value: Any) -> Any:
-    """Redact string values before either transmission or external capture."""
-    if isinstance(value, str):
-        return redact(value)
-    if isinstance(value, dict):
-        return {
-            key: REPLACEMENT if is_secret_key(key) else redact_state(item)
-            for key, item in value.items()
-        }
-    if isinstance(value, (list, tuple)):
-        return [redact_state(item) for item in value]
-    return value
-
-
 def number(value: object, low: float, high: float) -> float:
-    if type(value) not in (int, float) or not math.isfinite(value) or not low <= value <= high:
+    if type(value) not in (int, float) or not low <= value <= high or not math.isfinite(value):
         raise ValueError("invalid numeric answer")
     return float(value)
 

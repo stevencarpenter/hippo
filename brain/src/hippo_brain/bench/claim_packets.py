@@ -17,7 +17,7 @@ from hippo_brain.decision_capture import external_path
 from hippo_brain.evidence_packets import _inspect_evidence_row, parse_ref
 from hippo_brain.jev import canonical, digest, redact_state
 
-VERSION = "claim-packets-v2"
+VERSION = "claim-packets-v3"
 LINKS = (
     ("knowledge_node_events", "event_id", "shell"),
     ("knowledge_node_agentic_sessions", "agentic_session_id", "agentic"),
@@ -36,19 +36,34 @@ TEXT_FIELDS = (
     "title",
     "raw_json",
     "annotations_json",
+    "snapshot_diffs_json",
+    "commit_messages_json",
+    "search_query",
     "content",
 )
 CONTEXT_FIELDS = (
     "session_id",
     "harness",
+    "model",
+    "agent",
+    "slug",
     "segment_index",
     "cwd",
     "project_dir",
     "git_branch",
+    "git_commit",
+    "git_repo",
+    "shell",
+    "source_kind",
+    "tool_name",
+    "duration_ms",
     "repo",
     "head_sha",
     "head_branch",
     "url",
+    "domain",
+    "dwell_ms",
+    "scroll_depth",
     "repository",
     "timestamp",
     "start_time",
@@ -61,6 +76,8 @@ CONTEXT_FIELDS = (
     "conclusion",
     "stdout_truncated",
     "stderr_truncated",
+    "message_count",
+    "token_count",
 )
 
 
