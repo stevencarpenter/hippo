@@ -22,14 +22,17 @@ mise run bench:claims -- assess \
 Prepare reads one SQLite transaction. It includes the most recent nodes, including
 nodes with missing evidence. This is a descriptive cohort, not a representative
 holdout. Evidence comes from eligible linked capture rows. Up to eight sources,
-6,000 characters per field, and 4,000 summary characters are retained. Any
-truncation, missing source, or oversized input blocks automatic assessment. The
+6,000 characters per field, and 4,000 summary characters are retained. Workflow
+evidence includes up to 100 annotations with job attribution; corrections change
+packet identity. JSON fields are decoded before redaction. Known capture truncation,
+export truncation, missing source, malformed JSON, or oversized input blocks automatic assessment. The
 export cannot prove the original capture was complete.
 
 Assess requires `TYPESAFE_API_KEY` and explicitly sends bounded, redacted packet
 state to TypeSafe. Human labels never enter the request. It pins `jev-1.13.0`,
 makes at most `--max-requests` assessment attempts, and defaults to a ten-second
-timeout per attempt. Interrupted runs retain completed records; missing records
+timeout per attempt. Credentials are checked before reserving the run directory.
+Interrupted runs retain completed records; missing records
 remain visible. A rerun uses a new output directory.
 
 ## Review a bounded queue
@@ -54,11 +57,15 @@ Select the seed before inspecting outcomes. Reseeding or stopping after particul
 answers undermines unbiased audit interpretation. New queues may overlap; this
 initial workflow reports each frozen queue separately.
 
-The terminal shows the summary, captured fields, and coverage gaps. Jev's verdict
+The selected items use a separate seeded presentation order that does not group
+audits or sort by confidence. The terminal shows the summary, captured fields, and coverage gaps. Jev's verdict
 and sampling stratum are hidden. Use `y`, `n`, or `u` for yes, no, or unsure. Add
 optional text after the decision; `s` skips and `q` exits. Each completed review
 is saved immediately. EOF and interruption preserve previous annotations.
 Repeat the same review command to resume; already annotated packets are skipped.
+Missing or truncated summary text cannot receive a yes label. Use no or unsure,
+add notes, or skip until the complete summary is available. Reports also reject
+previously saved positive labels for incomplete summaries.
 
 No includes unsupported or contradicted claims. Unsure remains unresolved. A
 claim that tests passed needs supporting observations; a transcript saying so
@@ -84,7 +91,8 @@ population accuracy or release acceptance. Unknown token usage is not zero.
 Artifacts bind decisions to source/summary/rubric identities. Re-export after
 evidence changes, and reassess after rubric/model changes. Corrections to labels
 use a new directory; do not mix competing annotations in one report. Private
-artifacts use 0600 files and 0700 leaf directories. Keep them outside Git.
+artifacts use 0600 files and 0700 leaf directories. Complete files are published
+atomically without overwriting existing artifacts. Keep them outside Git.
 
 The accepted [specification](superpowers/specs/2026-09-25-claim-review-design.md)
 defines the evaluation boundary and independent acceptance requirements.
