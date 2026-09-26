@@ -49,11 +49,12 @@ _PATTERNS: tuple[re.Pattern[str], ...] = (
         r"""(?i)(?:proxy-)?authorization(?:\\*["'])?\s*:\s*(?:\\*["'])?"""
         r"[^\r\n\"']+"
     ),
+    re.compile(r"(?i)private[_-]?key\s*[=:]\s*\[REDACTED\]"),
     # Quoted values may contain whitespace or escaped quotes, including JSON.
     re.compile(
         rf"""(?i)["']?(?:{_SECRET_NAME})["']?\s*[=:]\s*(?:"(?:\\.|[^"\\])*(?:"|$)|'(?:\\.|[^'\\])*(?:'|$))"""
     ),
-    re.compile(rf"(?i)(?:{_SECRET_NAME})\s*[=:]\s*\S+"),
+    re.compile(rf"(?i)(?:{_SECRET_NAME})\s*[=:]\s*(?!\[REDACTED\])\S+"),
     re.compile(r"eyJ[a-zA-Z0-9_-]{10,}\.eyJ[a-zA-Z0-9_-]{10,}\.[a-zA-Z0-9_-]+"),
 )
 
