@@ -23,12 +23,13 @@ Prepare reads one SQLite transaction. It includes the most recent nodes, includi
 nodes with missing evidence. This is a descriptive cohort, not a representative
 holdout. Evidence comes from eligible linked capture rows. Up to eight sources,
 6,000 characters per field, and 4,000 summary characters are retained. Workflow
-evidence includes up to 100 annotations with job attribution; corrections change
-packet identity. JSON fields are decoded before redaction. Known capture truncation,
+evidence displays up to 100 annotations with job attribution; the full annotation
+set is hashed so corrections outside the display cap change packet identity.
+JSON fields are decoded before redaction. Known capture truncation,
 export truncation, missing source, malformed JSON, or oversized input blocks
 automatic assessment. The export cannot prove the original capture was complete.
-Packet v4 rejects older frozen exports for new assessments. Run prepare again
-before assessing them. Existing v1/v2/v3 runs remain readable for historical review.
+Packet v5 rejects older frozen exports for new assessments. Run prepare again
+before assessing them. Existing v1/v2/v3/v4 runs remain readable for historical review.
 Redacted claim or source content blocks automatic assessment because distinct
 secrets can become the same replacement marker. A redacted claim cannot receive
 a human yes label. Memory evidence includes its logical and source paths. New
