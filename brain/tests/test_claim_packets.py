@@ -69,12 +69,13 @@ def test_corrections_and_unavailable_sources_change_identity(tmp_path, monkeypat
         assert make_packet(conn, 1)["problems"] == ["no_linked_sources"]
 
 
-def test_legacy_packets_require_reexport(tmp_path):
+@pytest.mark.parametrize("legacy_version", ["claim-packets-v1", "claim-packets-v2"])
+def test_legacy_packets_require_reexport(tmp_path, legacy_version):
     from hippo_brain.jev import digest
 
     with database(tmp_path / "source.sqlite") as conn:
         packet = make_packet(conn, 1)
-    packet["version"] = "claim-packets-v1"
+    packet["version"] = legacy_version
     packet["packet_hash"] = digest({k: v for k, v in packet.items() if k != "packet_hash"})
     with pytest.raises(ValueError, match="unsupported claim packet"):
         validate_packet(packet)
@@ -125,6 +126,16 @@ def test_output_rejects_repository_and_overwrite(tmp_path):
     write_artifact(target, {})
     with pytest.raises(FileExistsError):
         write_artifact(target, {})
+
+
+def test_output_rejects_another_git_checkout(tmp_path):
+    import subprocess
+
+    other_repo = tmp_path / "other-repo"
+    subprocess.run(["git", "init", "-q", str(other_repo)], check=True)
+    with pytest.raises(ValueError, match="repository"):
+        write_artifact(other_repo / "private-review.json", {"synthetic": "evidence"})
+    assert not (other_repo / "private-review.json").exists()
 
 
 @pytest.mark.parametrize("stdout,stderr", [(0, 0), (1, 0), (0, 1), (1, 1)])
@@ -181,6 +192,93 @@ def test_workflow_annotations_are_evidence_and_invalidate_revisions(tmp_db):
     assert "truncated_annotations:workflow-1" in make_packet(conn, 1)["problems"]
     conn.execute("DROP TABLE workflow_annotations")
     assert "missing_workflow_annotations:workflow-1" in make_packet(conn, 1)["problems"]
+
+
+def test_shell_enrichment_qualifiers_survive_export(tmp_db):
+    conn, _ = tmp_db
+    conn.execute(
+        "INSERT INTO sessions(id,start_time,shell,hostname,username) VALUES(1,1,'zsh','test','test')"
+    )
+    conn.execute(
+        "INSERT INTO knowledge_nodes(id,uuid,content,embed_text,created_at) VALUES(1,'shell',?,'',1)",
+        (
+            json.dumps(
+                {"summary": "Claude ran cargo test on commit abc1234 in org/repo in 250 ms."}
+            ),
+        ),
+    )
+    conn.execute(
+        "INSERT INTO events(id,session_id,timestamp,command,stdout,exit_code,duration_ms,cwd,hostname,shell,git_repo,git_commit,source_kind,tool_name) "
+        "VALUES(1,1,1,'cargo test','ok',0,250,'/work','test','claude','org/repo','abc1234','claude-tool','Bash')"
+    )
+    conn.execute("INSERT INTO knowledge_node_events VALUES(1,1)")
+    packet = make_packet(conn, 1)
+    fields = packet["state"]["sources"][0]["fields"]
+    assert packet["problems"] == []
+    assert {
+        key: fields[key]
+        for key in ("shell", "source_kind", "tool_name", "duration_ms", "git_commit", "git_repo")
+    } == {
+        "shell": "claude",
+        "source_kind": "claude-tool",
+        "tool_name": "Bash",
+        "duration_ms": 250,
+        "git_commit": "abc1234",
+        "git_repo": "org/repo",
+    }
+
+
+def test_browser_enrichment_qualifiers_survive_export(tmp_db):
+    conn, _ = tmp_db
+    conn.execute(
+        "INSERT INTO knowledge_nodes(id,uuid,content,embed_text,created_at) VALUES(1,'browser',?,'',1)",
+        (json.dumps({"summary": "Searched for checkpoint recovery and read the page."}),),
+    )
+    conn.execute(
+        "INSERT INTO browser_events(id,timestamp,url,title,domain,dwell_ms,scroll_depth,search_query) "
+        "VALUES(1,1,'https://example.test','Reference','example.test',45000,0.8,'wal checkpoint recovery')"
+    )
+    conn.execute("INSERT INTO knowledge_node_browser_events VALUES(1,1)")
+    packet = make_packet(conn, 1)
+    fields = packet["state"]["sources"][0]["fields"]
+    assert packet["problems"] == []
+    assert (
+        fields["domain"],
+        fields["dwell_ms"],
+        fields["scroll_depth"],
+        fields["search_query"],
+    ) == ("example.test", 45000, 0.8, "wal checkpoint recovery")
+
+
+def test_opencode_enrichment_qualifiers_survive_export(tmp_db):
+    conn, _ = tmp_db
+    conn.execute(
+        "INSERT INTO knowledge_nodes(id,uuid,content,embed_text,created_at) VALUES(1,'opencode',?,'',1)",
+        (json.dumps({"summary": "The fix changed two files and was committed."}),),
+    )
+    conn.execute(
+        "INSERT INTO agentic_sessions(id,session_id,harness,project_dir,cwd,start_time,end_time,summary_text,message_count,snapshot_diffs_json,commit_messages_json,agent,model,slug) "
+        "VALUES(1,'s','opencode','project','/work',1,2,'Worked on a fix',3,?,?,?,?,?)",
+        (
+            json.dumps({"additions": 12, "deletions": 3, "files": 2}),
+            json.dumps(["fix: repair checkpoint replay"]),
+            "builder",
+            "local",
+            "fix",
+        ),
+    )
+    conn.execute("INSERT INTO knowledge_node_agentic_sessions VALUES(1,1)")
+    packet = make_packet(conn, 1)
+    fields = packet["state"]["sources"][0]["fields"]
+    assert packet["problems"] == []
+    assert fields["snapshot_diffs_json"] == {"additions": 12, "deletions": 3, "files": 2}
+    assert fields["commit_messages_json"] == ["fix: repair checkpoint replay"]
+    assert (fields["agent"], fields["model"], fields["slug"], fields["message_count"]) == (
+        "builder",
+        "local",
+        "fix",
+        3,
+    )
 
 
 def test_failed_write_does_not_publish_partial_json(tmp_path, monkeypatch):
@@ -266,6 +364,74 @@ async def test_ingested_and_historical_credentials_never_reach_http(tmp_db, tmp_
     def handle(request):
         seen.append(request.content)
         assert credential.encode() not in request.content
+        return httpx.Response(
+            200,
+            json={
+                "model": "jev-1.13.0",
+                "answers": {
+                    "verdict": {
+                        "type": "choice",
+                        "choice": "unsupported",
+                        "confidence": 1.0,
+                        "probabilities": {"supports": 0, "contradicts": 0, "unsupported": 1},
+                    }
+                },
+            },
+        )
+
+    questions = json.loads(
+        (
+            Path(__file__).parents[1] / "src/hippo_brain/_fixtures/claim_review_rubric.json"
+        ).read_text()
+    )["questions"]
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as http:
+        async with JevClient("synthetic", client=http) as client:
+            await client.assess(packet["state"], questions)
+    assert len(seen) == 1
+
+
+@pytest.mark.parametrize(
+    "key,prefix", [("api_key", ""), ("password", ""), ("Authorization", "Token ")]
+)
+async def test_nested_credentials_never_reach_assessment(tmp_db, tmp_path, key, prefix):
+    from hippo_brain.claude_sessions import SessionSegment, insert_segment
+    from hippo_brain.jev import JevClient
+    from pathlib import Path
+
+    conn, path = tmp_db
+    secret = "synthetic_sensitive_credential-927483"
+    nested = json.dumps({key: prefix + secret, "public": "keep"})
+    segment = SessionSegment(
+        session_id="nested-credential",
+        project_dir="/project",
+        cwd="/project",
+        git_branch="main",
+        segment_index=0,
+        start_time=1,
+        end_time=2,
+        user_prompts=[json.dumps({"body": nested})],
+        tool_calls=[{"name": "http", "summary": json.dumps(nested)}],
+        message_count=5,
+        source_file="/project/session.jsonl",
+    )
+    source_id = insert_segment(conn, segment)
+    conn.execute(
+        "INSERT INTO knowledge_nodes(id,uuid,content,embed_text,created_at) VALUES(1,'credential',?,'',1)",
+        (json.dumps({"summary": "The user configured request headers."}),),
+    )
+    conn.execute("INSERT INTO knowledge_node_agentic_sessions VALUES(1,?)", (source_id,))
+    conn.commit()
+    prepare(path, tmp_path / "packets")
+    packet = load_packets(tmp_path / "packets")[0]
+    assert not packet["problems"]
+    assert secret not in json.dumps(packet)
+    assert "keep" in json.dumps(packet["state"])
+
+    seen = []
+
+    def handle(request):
+        seen.append(request.content)
+        assert secret.encode() not in request.content
         return httpx.Response(
             200,
             json={
