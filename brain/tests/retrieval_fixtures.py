@@ -115,6 +115,7 @@ CREATE TABLE memory_documents (
     id INTEGER PRIMARY KEY,
     uuid TEXT NOT NULL,
     repository TEXT NOT NULL,
+    logical_path TEXT NOT NULL DEFAULT '',
     source_path TEXT NOT NULL,
     active_revision_id INTEGER,
     state TEXT NOT NULL DEFAULT 'active',

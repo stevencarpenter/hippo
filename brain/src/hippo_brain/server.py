@@ -1525,11 +1525,14 @@ class BrainServer:
             _add(_events_claimed, len(event_ids), source="shell")
 
             browser_context = ""
+            browser_event_ids = []
             try:
                 start_ts = min(e["timestamp"] for e in events)
                 end_ts = max(e["timestamp"] for e in events)
                 correlated = get_correlated_browser_events(claim_conn, start_ts, end_ts)
                 browser_context = format_browser_context_for_shell_prompt(correlated)
+                if browser_context:
+                    browser_event_ids = [event["id"] for event in correlated]
             except Exception as e:
                 logger.debug("browser correlation skipped: %s", e)
 
@@ -1555,7 +1558,11 @@ class BrainServer:
                     conn = self._get_conn()
                     try:
                         node_id = write_knowledge_node(
-                            conn, result, event_ids, self.enrichment_model
+                            conn,
+                            result,
+                            event_ids,
+                            self.enrichment_model,
+                            browser_event_ids=browser_event_ids,
                         )
                     finally:
                         conn.close()

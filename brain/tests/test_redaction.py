@@ -78,7 +78,20 @@ def test_serialized_authorization_headers_redacted(header, scheme, encodings):
     assert credential not in redact(text)
 
 
-@pytest.mark.parametrize("key", ["api_key", "password", "Authorization"])
+@pytest.mark.parametrize(
+    "key",
+    [
+        "api_key",
+        "password",
+        "Authorization",
+        "client_secret",
+        "refresh_token",
+        "X-API-Key",
+        "token",
+        "AWS_SECRET_ACCESS_KEY",
+        "passwd",
+    ],
+)
 @pytest.mark.parametrize("encodings", [0, 1, 2])
 def test_nested_serialized_credentials_are_redacted_without_losing_public_fields(key, encodings):
     credential = "synthetic_sensitive_credential-927483"

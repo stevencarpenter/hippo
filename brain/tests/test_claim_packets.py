@@ -69,7 +69,9 @@ def test_corrections_and_unavailable_sources_change_identity(tmp_path, monkeypat
         assert make_packet(conn, 1)["problems"] == ["no_linked_sources"]
 
 
-@pytest.mark.parametrize("legacy_version", ["claim-packets-v1", "claim-packets-v2"])
+@pytest.mark.parametrize(
+    "legacy_version", ["claim-packets-v1", "claim-packets-v2", "claim-packets-v3"]
+)
 def test_legacy_packets_require_reexport(tmp_path, legacy_version):
     from hippo_brain.jev import digest
 
@@ -124,6 +126,57 @@ def test_truncation_and_redaction_are_visible(tmp_path):
         )
         packet = make_packet(conn, 1)
         assert "abcdefghijklmnopqrstuvwxyz123456" not in json.dumps(packet)
+
+
+def test_redacted_claim_and_source_block_automatic_assessment(tmp_path):
+    with database(tmp_path / "source.sqlite") as conn:
+        conn.execute(
+            "UPDATE knowledge_nodes SET content=?",
+            (json.dumps({"summary": "password=synthetic_secret_alpha_123"}),),
+        )
+        conn.execute("UPDATE events SET stdout='password=synthetic_secret_beta_456'")
+        packet = make_packet(conn, 1)
+    assert packet["state"]["claim"] == "[REDACTED]"
+    assert packet["state"]["sources"][0]["fields"]["stdout"] == "[REDACTED]"
+    assert "redacted_claim" in packet["problems"]
+    assert "redacted_evidence:shell-1" in packet["problems"]
+
+
+def test_possible_historical_browser_context_blocks_incomplete_shell_packet(tmp_path):
+    with database(tmp_path / "source.sqlite") as conn:
+        conn.execute(
+            "INSERT INTO browser_events(id,timestamp,url,title,domain) "
+            "VALUES(1,1,'https://example.test','Recovery guide','example.test')"
+        )
+        packet = make_packet(conn, 1)
+        assert packet["source_refs"] == ["shell-1"]
+        assert "possible_unlinked_browser_context" in packet["problems"]
+        conn.execute("INSERT INTO knowledge_node_browser_events VALUES(1,1)")
+        linked = make_packet(conn, 1)
+        assert "possible_unlinked_browser_context" not in linked["problems"]
+        assert "browser-1" in linked["source_refs"]
+
+
+def test_memory_packet_keeps_prompt_logical_path(tmp_path):
+    with database(tmp_path / "source.sqlite") as conn:
+        conn.execute(
+            "INSERT INTO memory_documents(id,uuid,repository,logical_path,source_path,state,updated_at) "
+            "VALUES(1,'memory','org/repo','docs/decisions.md','/memory/decisions.md','active',1)"
+        )
+        conn.execute(
+            "INSERT INTO memory_revisions(id,document_id,revision_number,created_at) "
+            "VALUES(1,1,1,1)"
+        )
+        conn.execute("UPDATE memory_documents SET active_revision_id=1 WHERE id=1")
+        conn.execute(
+            "INSERT INTO memory_chunks(id,revision_id,content,created_at) "
+            "VALUES(1,1,'Release decision',1)"
+        )
+        conn.execute("INSERT INTO knowledge_node_memory_chunks VALUES(1,1)")
+        packet = make_packet(conn, 1)
+    source = next(s for s in packet["state"]["sources"] if s["ref"] == "memory-1")
+    assert source["fields"]["logical_path"] == "docs/decisions.md"
+    assert source["fields"]["source_path"] == "/memory/decisions.md"
 
 
 def test_agentic_packet_retains_attribution_and_correction(tmp_path):
@@ -380,7 +433,7 @@ async def test_ingested_and_historical_credentials_never_reach_http(tmp_db, tmp_
     conn.commit()
     prepare(path, tmp_path / "packets")
     packet = load_packets(tmp_path / "packets")[0]
-    assert not packet["problems"]
+    assert f"redacted_evidence:claude-{source_id}" in packet["problems"]
     assert credential not in canonical(packet)
     assert isinstance(packet["state"]["sources"][0]["fields"]["user_prompts_json"], list)
     seen = []
@@ -421,6 +474,12 @@ async def test_ingested_and_historical_credentials_never_reach_http(tmp_db, tmp_
         ("password", "", False),
         ("Authorization", "Token ", False),
         ("Authorization", "Token ", True),
+        ("client_secret", "", False),
+        ("refresh_token", "", False),
+        ("X-API-Key", "", False),
+        ("token", "", False),
+        ("AWS_SECRET_ACCESS_KEY", "", False),
+        ("passwd", "", False),
     ],
 )
 async def test_serialized_and_plaintext_credentials_never_reach_assessment(
@@ -459,7 +518,7 @@ async def test_serialized_and_plaintext_credentials_never_reach_assessment(
     conn.commit()
     prepare(path, tmp_path / "packets")
     packet = load_packets(tmp_path / "packets")[0]
-    assert not packet["problems"]
+    assert f"redacted_evidence:claude-{source_id}" in packet["problems"]
     assert secret not in json.dumps(packet)
     if not plaintext:
         assert "keep" in json.dumps(packet["state"])

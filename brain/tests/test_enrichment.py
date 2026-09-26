@@ -431,6 +431,31 @@ def _make_result():
     )
 
 
+def test_shell_writer_preserves_browser_context_provenance(tmp_db):
+    from hippo_brain.bench.claim_packets import make_packet
+
+    conn, _ = tmp_db
+    _seed_event_with_queue(conn)
+    timestamp = conn.execute("SELECT timestamp FROM events WHERE id=1").fetchone()[0]
+    conn.execute(
+        "INSERT INTO browser_events(id,timestamp,url,title,domain,dwell_ms,search_query) "
+        "VALUES(1,?,'https://example.test','Recovery guide','example.test',5000,'checkpoint')",
+        (timestamp,),
+    )
+    conn.commit()
+    node_id = write_knowledge_node(conn, _make_result(), [1], "test-model", browser_event_ids=[1])
+    assert (
+        conn.execute(
+            "SELECT browser_event_id FROM knowledge_node_browser_events WHERE knowledge_node_id=?",
+            (node_id,),
+        ).fetchone()[0]
+        == 1
+    )
+    packet = make_packet(conn, node_id)
+    assert "browser-1" in packet["source_refs"]
+    assert "possible_unlinked_browser_context" not in packet["problems"]
+
+
 class _FailingConn:
     """Thin wrapper around a sqlite3.Connection that injects a failure
     when a specific SQL fragment is executed."""
