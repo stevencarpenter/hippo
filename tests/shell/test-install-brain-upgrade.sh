@@ -11,7 +11,7 @@ printf 'new\n' > "$tmp/release/brain/new-version"
 tar -czf "$tmp/hippo-brain-1.2.3.tar.gz" -C "$tmp/release" brain
 shasum -a 256 "$tmp/hippo-brain-1.2.3.tar.gz" | sed "s|$tmp/||" > "$tmp/SHA256SUMS.txt"
 
-for scenario in extract-fails sync-fails imports-fail relocated-imports-fail receipt-fails cleanup-fails success; do
+for scenario in extract-fails sync-fails imports-fail backup-rename-fails relocated-imports-fail receipt-fails cleanup-fails success; do
     brain_dir="$tmp/$scenario/brain"
     bin_dir="$tmp/$scenario/bin"
     receipts_dir="$tmp/$scenario/receipts"
@@ -43,6 +43,13 @@ for scenario in extract-fails sync-fails imports-fail relocated-imports-fail rec
                 return 1
             fi
             command rm "$@"
+        }
+        mv() {
+            if [[ "$scenario" == backup-rename-fails && "$1" == "$BRAIN_DIR" && "$2" == *.previous ]]; then
+                printf "injected brain backup rename failure\n" >&2
+                return 1
+            fi
+            command mv "$@"
         }
         uv() { [[ "$scenario" != sync-fails ]]; }
         if [[ "$scenario" == extract-fails ]]; then
