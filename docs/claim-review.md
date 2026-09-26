@@ -27,8 +27,13 @@ evidence includes up to 100 annotations with job attribution; corrections change
 packet identity. JSON fields are decoded before redaction. Known capture truncation,
 export truncation, missing source, malformed JSON, or oversized input blocks
 automatic assessment. The export cannot prove the original capture was complete.
-Packet v3 rejects older frozen exports for new assessments. Run prepare again
-before assessing them. Existing v1/v2 runs remain readable for historical review.
+Packet v4 rejects older frozen exports for new assessments. Run prepare again
+before assessing them. Existing v1/v2/v3 runs remain readable for historical review.
+Redacted claim or source content blocks automatic assessment because distinct
+secrets can become the same replacement marker. A redacted claim cannot receive
+a human yes label. Memory evidence includes its logical and source paths. New
+shell summaries link the browser events used as prompt context; older shell
+summaries with possible unlinked browser context require human review.
 
 Assess requires `TYPESAFE_API_KEY` and explicitly sends bounded, redacted packet
 state to TypeSafe. Human labels never enter the request. It pins `jev-1.13.0`,
@@ -61,8 +66,9 @@ initial workflow reports each frozen queue separately.
 
 Each queue saves the assessment records available when it is created. Reports and
 human labels stay tied to those records even if an interrupted assessment later
-finishes. A queue created by an older version during an incomplete run has no
-assessment snapshot. Finish that run and requeue before reviewing it.
+finishes. Snapshotless older queues cannot be reviewed or reported because their
+records can change after selection. Create a new queue. Existing labels tied to
+the old queue cannot be rebound safely.
 
 The selected items use a separate seeded presentation order that does not group
 audits or sort by confidence. The terminal shows the summary, captured fields,
@@ -71,7 +77,7 @@ Use `y`, `n`, or `u` for yes, no, or unsure. Add
 optional text after the decision; `s` skips and `q` exits. Each completed review
 is saved immediately. EOF and interruption preserve previous annotations.
 Repeat the same review command to resume; already annotated packets are skipped.
-Missing or truncated summary text cannot receive a yes label. Use no or unsure,
+Missing, truncated, or redacted summary text cannot receive a yes label. Use no or unsure,
 add notes, or skip until the complete summary is available. Reports also reject
 previously saved positive labels for incomplete summaries.
 
@@ -97,8 +103,8 @@ denominators; unsure and unreviewed rows remain explicit. The output never claim
 population accuracy or release acceptance. Unknown token usage is not zero.
 Historical reports validate records against the rubric and model saved with their
 run and set `historical_run` when those differ from the installed definitions or
-the packet format is older. Older completed queues without assessment snapshots
-set `legacy_unfrozen_queue`; their reports use the final run records.
+the packet format is older. Queue loading recomputes the seeded audit and
+exception selection from the frozen assessment snapshot.
 
 Artifacts bind decisions to source/summary/rubric identities. Re-export after
 evidence changes, and reassess after rubric/model changes. Corrections to labels

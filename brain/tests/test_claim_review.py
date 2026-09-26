@@ -192,9 +192,8 @@ async def test_queue_freezes_interrupted_assessment_before_later_results_arrive(
     assert {record["status"] for record in load_run(corpus, run)[2].values()} == {"ok"}
     legacy_labels = tmp_path / "legacy-labels"
     legacy_labels.mkdir(mode=0o700)
-    legacy_report = report(corpus, run, legacy_path, legacy_labels)
-    assert legacy_report["legacy_unfrozen_queue"] is True
-    assert legacy_report["statuses"] == {"ok": 4}
+    with pytest.raises(ValueError, match="legacy queue has no assessment snapshot"):
+        report(corpus, run, legacy_path, legacy_labels)
     invalid = {**queue, "assessment_snapshot": None}
     invalid["queue_hash"] = digest(
         {key: value for key, value in invalid.items() if key != "queue_hash"}
@@ -381,6 +380,36 @@ async def test_incomplete_claim_cannot_receive_or_replay_yes(
         report(corpus, run, queue_path, labels)
 
 
+async def test_redacted_claim_and_evidence_block_jev_and_human_yes(tmp_path):
+    source = tmp_path / "source.sqlite"
+    with database(source) as conn:
+        conn.execute(
+            "UPDATE knowledge_nodes SET content=?",
+            (json.dumps({"summary": "password=alpha"}),),
+        )
+        conn.execute("UPDATE events SET stdout='password=beta'")
+    corpus, run = tmp_path / "corpus", tmp_path / "run"
+    prepare(source, corpus)
+    packet = load_packets(corpus)[0]
+    assert "redacted_claim" in packet["problems"]
+    assert "redacted_evidence:shell-1" in packet["problems"]
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(lambda _: pytest.fail("redacted content dispatched"))
+    ) as http:
+        async with JevClient("synthetic", client=http) as client:
+            assert (await assess(corpus, run, max_requests=1, client=client))["statuses"] == {
+                "blocked": 1
+            }
+    queue = make_queue(
+        corpus, run, tmp_path / "queue.json", threshold=0.9, limit=1, audit=1, seed="fixed"
+    )
+    with pytest.raises(ValueError, match="complete summary"):
+        annotate(queue, packet, reviewer="human", decision="yes")
+    with pytest.raises(ValueError, match="complete summary"):
+        annotate(queue, {**packet, "problems": []}, reviewer="human", decision="yes")
+    assert annotate(queue, packet, reviewer="human", decision="no")["decision"] == "no"
+
+
 async def test_presentation_order_does_not_group_audits_before_exceptions(tmp_path):
     corpus, run = await evaluated(tmp_path)
     orders = []
@@ -395,6 +424,26 @@ async def test_presentation_order_does_not_group_audits_before_exceptions(tmp_pa
         assert sum(row["stratum"] == "audit" for row in queue["rows"]) == 1
         orders.append([row["stratum"] for row in queue["rows"]])
     assert any(order[0] == "exception" for order in orders)
+
+
+async def test_queue_rejects_rehashed_audit_substitution(tmp_path):
+    corpus, run = await evaluated(tmp_path)
+    queue_path, labels = tmp_path / "queue.json", tmp_path / "labels"
+    queue = make_queue(corpus, run, queue_path, threshold=0.9, limit=1, audit=1, seed="fixed")
+    labels.mkdir(mode=0o700)
+    other = next(
+        packet["packet_hash"]
+        for packet in load_packets(corpus)
+        if packet["packet_hash"] != queue["rows"][0]["packet_hash"]
+    )
+    queue["rows"][0]["packet_hash"] = other
+    queue["queue_hash"] = digest(
+        {key: value for key, value in queue.items() if key != "queue_hash"}
+    )
+    tampered = tmp_path / "tampered.json"
+    write_artifact(tampered, queue)
+    with pytest.raises(ValueError, match="review queue selection mismatch"):
+        report(corpus, run, tampered, labels)
 
 
 async def test_missing_credentials_leave_output_available(tmp_path, monkeypatch):
@@ -545,6 +594,43 @@ async def test_null_annotation_has_path_error_and_review_can_resume(tmp_path, mo
     monkeypatch.setattr("builtins.input", lambda _: "q")
     assert review(corpus, run, queue_path, labels, reviewer="human") == 0
     assert report(corpus, run, queue_path, labels)["review"]["audit"]["no"] == 1
+
+
+async def test_malformed_review_artifacts_have_path_errors(tmp_path):
+    corpus, run = await evaluated(tmp_path)
+    queue_path, labels = tmp_path / "queue.json", tmp_path / "labels"
+    queue = make_queue(corpus, run, queue_path, threshold=0.9, limit=1, audit=1, seed="fixed")
+    labels.mkdir(mode=0o700)
+    run_path = run / "run.json"
+    original_run = run_path.read_text()
+    run_path.write_text("null")
+    with pytest.raises(ValueError, match="run.json"):
+        report(corpus, run, queue_path, labels)
+    run_path.write_text(original_run)
+    null_queue = tmp_path / "null-queue.json"
+    null_queue.write_text("null")
+    with pytest.raises(ValueError, match="null-queue.json"):
+        report(corpus, run, null_queue, labels)
+    malformed_queue = {**queue, "rows": [None]}
+    malformed_queue["queue_hash"] = digest(
+        {key: value for key, value in malformed_queue.items() if key != "queue_hash"}
+    )
+    row_path = tmp_path / "invalid-row.json"
+    write_artifact(row_path, malformed_queue)
+    with pytest.raises(ValueError, match="invalid-row.json"):
+        report(corpus, run, row_path, labels)
+    packet = next(
+        packet
+        for packet in load_packets(corpus)
+        if packet["packet_hash"] == queue["rows"][0]["packet_hash"]
+    )
+    row = annotate(queue, packet, reviewer="human", decision="no")
+    annotation_path = labels / "annotation.json"
+    for field in ("packet_hash", "decision"):
+        malformed = {**row, field: []}
+        annotation_path.write_text(json.dumps(malformed))
+        with pytest.raises(ValueError, match="annotation.json"):
+            report(corpus, run, queue_path, labels)
 
 
 async def test_owned_client_is_closed_when_output_is_rejected(tmp_path, monkeypatch):
