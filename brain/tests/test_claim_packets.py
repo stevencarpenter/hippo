@@ -8,7 +8,13 @@ from contextlib import contextmanager
 import pytest
 import httpx
 
-from hippo_brain.bench.claim_packets import load_packets, make_packet, prepare, write_artifact
+from hippo_brain.bench.claim_packets import (
+    load_packets,
+    make_packet,
+    prepare,
+    validate_packet,
+    write_artifact,
+)
 from tests.retrieval_fixtures import TRUST_EVAL_SCHEMA
 
 
@@ -61,6 +67,26 @@ def test_corrections_and_unavailable_sources_change_identity(tmp_path, monkeypat
         assert packet["problems"] == ["unavailable_source:shell-1"]
         conn.execute("DELETE FROM knowledge_node_events")
         assert make_packet(conn, 1)["problems"] == ["no_linked_sources"]
+
+
+def test_legacy_packets_require_reexport(tmp_path):
+    from hippo_brain.jev import digest
+
+    with database(tmp_path / "source.sqlite") as conn:
+        packet = make_packet(conn, 1)
+    packet["version"] = "claim-packets-v1"
+    packet["packet_hash"] = digest({k: v for k, v in packet.items() if k != "packet_hash"})
+    with pytest.raises(ValueError, match="unsupported claim packet"):
+        validate_packet(packet)
+
+
+@pytest.mark.parametrize("raw", ['{"n": NaN}', '{"n": Infinity}', "{broken"])
+def test_invalid_json_evidence_blocks_without_aborting_export(tmp_path, raw):
+    with database(tmp_path / "source.sqlite") as conn:
+        conn.execute("ALTER TABLE events ADD COLUMN raw_json TEXT")
+        conn.execute("UPDATE events SET raw_json=?", (raw,))
+        packet = make_packet(conn, 1)
+    assert "invalid_json_field:shell-1:raw_json" in packet["problems"]
 
 
 def test_truncation_and_redaction_are_visible(tmp_path):
