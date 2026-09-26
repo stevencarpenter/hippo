@@ -18,6 +18,7 @@ from hippo_brain.evidence_packets import _inspect_evidence_row, parse_ref
 from hippo_brain.jev import canonical, digest, redact_state
 
 VERSION = "claim-packets-v3"
+HISTORICAL_VERSIONS = {"claim-packets-v1", "claim-packets-v2", VERSION}
 LINKS = (
     ("knowledge_node_events", "event_id", "shell"),
     ("knowledge_node_agentic_sessions", "agentic_session_id", "agentic"),
@@ -214,8 +215,9 @@ def make_packet(conn: sqlite3.Connection, node_id: int) -> dict[str, Any]:
     return {"packet_hash": digest(body), **body}
 
 
-def validate_packet(packet: dict[str, Any]) -> None:
-    if not isinstance(packet, dict) or packet.get("version") != VERSION:
+def validate_packet(packet: dict[str, Any], *, allow_legacy: bool = False) -> None:
+    versions = HISTORICAL_VERSIONS if allow_legacy else {VERSION}
+    if not isinstance(packet, dict) or packet.get("version") not in versions:
         raise ValueError("unsupported claim packet")
     body = {key: value for key, value in packet.items() if key != "packet_hash"}
     if packet.get("packet_hash") != digest(body):
@@ -258,11 +260,12 @@ def prepare(database: Path, out: Path, *, limit: int = 50) -> dict[str, Any]:
     return manifest
 
 
-def load_packets(root: Path) -> list[dict[str, Any]]:
+def load_packets(root: Path, *, allow_legacy: bool = False) -> list[dict[str, Any]]:
     manifest = json.loads((root / "manifest.json").read_text())
     packets = json.loads((root / "packets.json").read_text())
+    versions = HISTORICAL_VERSIONS if allow_legacy else {VERSION}
     if (
-        manifest.get("version") != VERSION
+        manifest.get("version") not in versions
         or not isinstance(packets, list)
         or manifest.get("packets_hash") != digest(packets)
         or manifest.get("count") != len(packets)
@@ -270,7 +273,9 @@ def load_packets(root: Path) -> list[dict[str, Any]]:
         raise ValueError("frozen packet manifest mismatch")
     seen = set()
     for packet in packets:
-        validate_packet(packet)
+        validate_packet(packet, allow_legacy=allow_legacy)
+        if packet["version"] != manifest["version"]:
+            raise ValueError("packet and manifest versions differ")
         if packet["packet_hash"] in seen:
             raise ValueError("duplicate claim packet")
         seen.add(packet["packet_hash"])
