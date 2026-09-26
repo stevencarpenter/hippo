@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import sqlite3
@@ -18,8 +19,14 @@ from hippo_brain.evidence_packets import _inspect_evidence_row, parse_ref
 from hippo_brain.jev import canonical, digest, redact_state
 from hippo_brain.redaction import REPLACEMENT
 
-VERSION = "claim-packets-v4"
-HISTORICAL_VERSIONS = {"claim-packets-v1", "claim-packets-v2", "claim-packets-v3", VERSION}
+VERSION = "claim-packets-v5"
+HISTORICAL_VERSIONS = {
+    "claim-packets-v1",
+    "claim-packets-v2",
+    "claim-packets-v3",
+    "claim-packets-v4",
+    VERSION,
+}
 LINKS = (
     ("knowledge_node_events", "event_id", "shell"),
     ("knowledge_node_agentic_sessions", "agentic_session_id", "agentic"),
@@ -186,12 +193,25 @@ def make_packet(conn: sqlite3.Connection, node_id: int) -> dict[str, Any]:
                         "SELECT a.*, j.name AS job_name, j.status AS job_status, "
                         "j.conclusion AS job_conclusion FROM workflow_annotations a "
                         "JOIN workflow_jobs j ON j.id=a.job_id WHERE j.run_id=? "
-                        "ORDER BY a.id LIMIT 101",
+                        "ORDER BY a.id",
                         (source_id,),
-                    ).fetchall()
-                    if len(annotations) > 100:
+                    )
+                    full_hash = hashlib.sha256(b"[")
+                    displayed = []
+                    count = 0
+                    for annotation in annotations:
+                        if count:
+                            full_hash.update(b",")
+                        record = dict(annotation)
+                        full_hash.update(canonical(record).encode())
+                        if count < 100:
+                            displayed.append(record)
+                        count += 1
+                    full_hash.update(b"]")
+                    if count > 100:
                         problems.append(f"truncated_annotations:{ref}")
-                    original["annotations_json"] = canonical([dict(a) for a in annotations[:100]])
+                    original["annotations_json"] = canonical(displayed)
+                    original["annotations_revision_hash"] = full_hash.hexdigest()
                 else:
                     problems.append(f"missing_workflow_annotations:{ref}")
         except LookupError, ValueError:

@@ -70,7 +70,8 @@ def test_corrections_and_unavailable_sources_change_identity(tmp_path, monkeypat
 
 
 @pytest.mark.parametrize(
-    "legacy_version", ["claim-packets-v1", "claim-packets-v2", "claim-packets-v3"]
+    "legacy_version",
+    ["claim-packets-v1", "claim-packets-v2", "claim-packets-v3", "claim-packets-v4"],
 )
 def test_legacy_packets_require_reexport(tmp_path, legacy_version):
     from hippo_brain.jev import digest
@@ -266,7 +267,17 @@ def test_workflow_annotations_are_evidence_and_invalidate_revisions(tmp_db):
         "INSERT INTO workflow_annotations(job_id,level,message) VALUES(1,'failure',?)",
         [(f"diagnostic {i}",) for i in range(100)],
     )
-    assert "truncated_annotations:workflow-1" in make_packet(conn, 1)["problems"]
+    truncated = make_packet(conn, 1)
+    assert "truncated_annotations:workflow-1" in truncated["problems"]
+    conn.execute(
+        "UPDATE workflow_annotations SET message='corrected tail diagnostic' "
+        "WHERE id=(SELECT MAX(id) FROM workflow_annotations)"
+    )
+    corrected = make_packet(conn, 1)
+    assert corrected["state"]["sources"][0]["fields"] == truncated["state"]["sources"][0][
+        "fields"
+    ]
+    assert corrected["packet_hash"] != truncated["packet_hash"]
     conn.execute("DROP TABLE workflow_annotations")
     assert "missing_workflow_annotations:workflow-1" in make_packet(conn, 1)["problems"]
 
