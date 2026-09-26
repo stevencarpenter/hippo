@@ -132,7 +132,12 @@ async def test_report_retains_false_approvals_unsure_and_unreviewed(tmp_path):
     labels = tmp_path / "labels"
     labels.mkdir()
     for member, decision in zip(queue["rows"], ("yes", "no", "unsure")):
-        row = annotate(queue, member["packet_hash"], reviewer="human-test", decision=decision)
+        row = annotate(
+            queue,
+            next(p for p in load_packets(corpus) if p["packet_hash"] == member["packet_hash"]),
+            reviewer="human-test",
+            decision=decision,
+        )
         write_artifact(labels / f"{member['packet_hash']}.json", row)
     result = report(corpus, run, path, labels)
     assert result["automation_coverage"] == 1
@@ -188,11 +193,187 @@ async def test_unknown_model_labels_and_nonfinite_policy_are_rejected(tmp_path):
         corpus, run, tmp_path / "q.json", threshold=0.9, audit=1, limit=1, seed="frozen"
     )
     with pytest.raises(ValueError, match="outside"):
-        annotate(queue, "unknown", reviewer="human-test", decision="yes")
+        annotate(queue, {"packet_hash": "unknown"}, reviewer="human-test", decision="yes")
     labels = tmp_path / "labels"
     labels.mkdir()
-    row = annotate(queue, queue["rows"][0]["packet_hash"], reviewer="model", decision="yes")
+    row = annotate(
+        queue,
+        next(
+            p for p in load_packets(corpus) if p["packet_hash"] == queue["rows"][0]["packet_hash"]
+        ),
+        reviewer="model",
+        decision="yes",
+    )
     row["annotator_type"] = "model"
     write_artifact(labels / "row.json", row)
     with pytest.raises(ValueError, match="human annotation"):
         report(corpus, run, tmp_path / "q.json", labels)
+
+
+@pytest.mark.parametrize("summary", ["", "The test passed.".ljust(4000) + " Production shipped."])
+async def test_incomplete_claim_cannot_receive_or_replay_yes(
+    tmp_path, monkeypatch, capsys, summary
+):
+    source = tmp_path / "source.sqlite"
+    with database(source) as conn:
+        conn.execute("UPDATE knowledge_nodes SET content=?", (json.dumps({"summary": summary}),))
+    corpus, run, queue_path, labels = [
+        tmp_path / name for name in ("corpus", "run", "queue.json", "labels")
+    ]
+    prepare(source, corpus)
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(lambda _: pytest.fail("blocked request"))
+    ) as http:
+        async with JevClient("synthetic", client=http) as client:
+            await assess(corpus, run, max_requests=1, client=client)
+    queue = make_queue(corpus, run, queue_path, threshold=0.9, limit=1, audit=1, seed="fixed")
+    with pytest.raises(ValueError, match="complete summary"):
+        annotate(queue, load_packets(corpus)[0], reviewer="human-test", decision="yes")
+    answers = iter(["y", "u", "Need the complete summary"])
+    monkeypatch.setattr("builtins.input", lambda _: next(answers))
+    assert review(corpus, run, queue_path, labels, reviewer="human-test") == 1
+    saved = next(labels.glob("*.json"))
+    row = json.loads(saved.read_text())
+    assert row["decision"] == "unsure"
+    assert row["notes"] == "Need the complete summary"
+    assert "yes requires a complete summary" in capsys.readouterr().out
+    assert report(corpus, run, queue_path, labels)["review"]["audit"]["yes"] == 0
+    row["decision"] = "yes"
+    saved.write_text(json.dumps(row))
+    with pytest.raises(ValueError, match="complete summary"):
+        report(corpus, run, queue_path, labels)
+
+
+async def test_presentation_order_does_not_group_audits_before_exceptions(tmp_path):
+    corpus, run = await evaluated(tmp_path)
+    orders = []
+    for seed in ("one", "two", "three", "four"):
+        queue = make_queue(
+            corpus, run, tmp_path / f"{seed}.json", threshold=1, limit=4, audit=1, seed=seed
+        )
+        repeated = make_queue(
+            corpus, run, tmp_path / f"{seed}-repeat.json", threshold=1, limit=4, audit=1, seed=seed
+        )
+        assert queue == repeated
+        assert sum(row["stratum"] == "audit" for row in queue["rows"]) == 1
+        orders.append([row["stratum"] for row in queue["rows"]])
+    assert any(order[0] == "exception" for order in orders)
+
+
+async def test_missing_credentials_leave_output_available(tmp_path, monkeypatch):
+    from hippo_brain.jev import JevUnavailable
+
+    corpus, run = cohort(tmp_path), tmp_path / "run"
+    monkeypatch.delenv("TYPESAFE_API_KEY", raising=False)
+    with pytest.raises(JevUnavailable):
+        await assess(corpus, run, max_requests=1)
+    assert not run.exists()
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(lambda _: httpx.Response(200, json=response()))
+    ) as http:
+        async with JevClient("synthetic", client=http) as client:
+            result = await assess(corpus, run, max_requests=1, client=client)
+    assert result["attempted"] == 1
+
+
+@pytest.mark.parametrize("flag", ["stdout_truncated", "stderr_truncated"])
+async def test_known_capture_truncation_never_dispatches(tmp_path, flag):
+    source, corpus = tmp_path / "source.sqlite", tmp_path / "corpus"
+    with database(source) as conn:
+        conn.execute(f"ALTER TABLE events ADD COLUMN {flag} INTEGER DEFAULT 1")
+    prepare(source, corpus)
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(lambda _: pytest.fail("incomplete capture dispatched"))
+    ) as http:
+        async with JevClient("synthetic", client=http) as client:
+            result = await assess(corpus, tmp_path / "run", max_requests=1, client=client)
+    assert result["statuses"] == {"blocked": 1}
+
+
+async def test_failed_publication_preserves_assessments_and_annotations(tmp_path, monkeypatch):
+    import errno
+    import os
+    from hippo_brain.bench.claim_review import load_annotations
+
+    corpus, run = cohort(tmp_path), tmp_path / "run"
+    sync = os.fsync
+    writes = 0
+
+    def fail_second_result(fd):
+        nonlocal writes
+        writes += 1
+        if writes == 3:
+            raise OSError(errno.ENOSPC, "synthetic disk full")
+        sync(fd)
+
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(lambda _: httpx.Response(200, json=response()))
+    ) as http:
+        async with JevClient("synthetic", client=http) as client:
+            with monkeypatch.context() as patch:
+                patch.setattr(os, "fsync", fail_second_result)
+                with pytest.raises(OSError):
+                    await assess(corpus, run, max_requests=4, client=client)
+    packets, _, records = load_run(corpus, run)
+    assert sum(r["status"] == "ok" for r in records.values()) == 1
+    assert sum(r["status"] == "missing" for r in records.values()) == 3
+    indexed = {p["packet_hash"]: p for p in packets}
+    queue_path, labels = tmp_path / "queue.json", tmp_path / "labels"
+    queue = make_queue(corpus, run, queue_path, threshold=0.9, limit=4, audit=4, seed="fixed")
+    labels.mkdir(mode=0o700)
+    first, second = [indexed[row["packet_hash"]] for row in queue["rows"][:2]]
+    write_artifact(labels / "first.json", annotate(queue, first, reviewer="human", decision="no"))
+
+    def fail_publication(fd):
+        raise OSError(errno.ENOSPC, "synthetic disk full")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(os, "fsync", fail_publication)
+        with pytest.raises(OSError):
+            write_artifact(
+                labels / "second.json", annotate(queue, second, reviewer="human", decision="no")
+            )
+    assert len(load_annotations(queue, labels, indexed)) == 1
+    assert report(corpus, run, queue_path, labels)["review"]["audit"]["unreviewed"] == 3
+    write_artifact(labels / "second.json", annotate(queue, second, reviewer="human", decision="no"))
+    assert len(load_annotations(queue, labels, indexed)) == 2
+
+
+def test_cli_setup_error_is_concise_and_does_not_reserve_output(tmp_path, monkeypatch, capsys):
+    import sys
+    from hippo_brain.bench.claim_review import main
+
+    corpus, run = cohort(tmp_path), tmp_path / "run"
+    monkeypatch.delenv("TYPESAFE_API_KEY", raising=False)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "claim-review",
+            "assess",
+            "--corpus",
+            str(corpus),
+            "--run",
+            str(run),
+            "--max-requests",
+            "1",
+        ],
+    )
+    with pytest.raises(SystemExit) as exc:
+        main()
+    assert exc.value.code == 2
+    assert capsys.readouterr().err == "claim-review: TYPESAFE_API_KEY is required\n"
+    assert not run.exists()
+
+
+async def test_owned_client_is_closed_when_output_is_rejected(tmp_path, monkeypatch):
+    from unittest.mock import AsyncMock
+
+    corpus, run = cohort(tmp_path), tmp_path / "run"
+    run.mkdir()
+    client = AsyncMock(spec=JevClient)
+    monkeypatch.setattr(JevClient, "from_env", lambda: client)
+    with pytest.raises(FileExistsError):
+        await assess(corpus, run, max_requests=1)
+    client.aclose.assert_awaited_once()
+    client.assess.assert_not_awaited()

@@ -77,14 +77,14 @@ async def assess(
         "timeout_seconds": timeout,
     }
     manifest["run_hash"] = digest(manifest)
-    root = create_directory(out)
-    write_artifact(root / "run.json", manifest)
     owned = client is None
     # Missing credentials are setup failure, not a successful empty run.
     client = client or JevClient.from_env()
     attempted = 0
     statuses: Counter[str] = Counter()
     try:
+        root = create_directory(out)
+        write_artifact(root / "run.json", manifest)
         for packet in packets:
             payload = request_for(packet)
             record = {
@@ -192,6 +192,7 @@ def make_queue(
     selected += [
         {"packet_hash": key, "stratum": "exception"} for key in exceptions[: limit - len(selected)]
     ]
+    selected.sort(key=lambda row: digest(["presentation", seed, row["packet_hash"]]))
     body = {
         "version": VERSION,
         "run_hash": manifest["run_hash"],
@@ -231,11 +232,18 @@ def load_queue(
     return queue, indexed, records
 
 
-def annotate(queue: dict, key: str, *, reviewer: str, decision: str, notes: str = "") -> dict:
+def complete_claim(packet: dict) -> bool:
+    return bool(packet["state"]["claim"].strip()) and "truncated_claim" not in packet["problems"]
+
+
+def annotate(queue: dict, packet: dict, *, reviewer: str, decision: str, notes: str = "") -> dict:
+    key = packet["packet_hash"]
     if not reviewer.strip() or decision not in DECISIONS:
         raise ValueError("a named reviewer and yes/no/unsure decision are required")
     if key not in {r["packet_hash"] for r in queue["rows"]}:
         raise ValueError("annotation is outside the queue")
+    if decision == "yes" and not complete_claim(packet):
+        raise ValueError("yes requires a complete summary")
     return {
         "version": VERSION,
         "queue_hash": queue["queue_hash"],
@@ -258,7 +266,7 @@ def review(corpus: Path, run: Path, queue_path: Path, out: Path, *, reviewer: st
             raise ValueError("existing review directory must be private (0700)")
     else:
         root = create_directory(root)
-    completed = load_annotations(queue, root)
+    completed = load_annotations(queue, root, packets)
     count = 0
     print("Does every part of the summary follow from the displayed captured evidence?")
     print("y = yes, n = no, u = unsure, s = skip, q = quit. Predictions are hidden.")
@@ -273,10 +281,13 @@ def review(corpus: Path, run: Path, queue_path: Path, out: Path, *, reviewer: st
         print(json.dumps(packet["state"]["sources"], indent=2, ensure_ascii=False))
         if packet["problems"]:
             print("Evidence gaps: " + ", ".join(packet["problems"]))
+        allowed = {"y", "n", "u", "s", "q"} if complete_claim(packet) else {"n", "u", "s", "q"}
+        if "y" not in allowed:
+            print("yes requires a complete summary; use n, u, s, or q.")
         try:
             answer = input("Supported? [y/n/u/s/q] ").strip().lower()
-            while answer not in {"y", "n", "u", "s", "q"}:
-                answer = input("Use y, n, u, s, or q: ").strip().lower()
+            while answer not in allowed:
+                answer = input("Use " + "/".join(sorted(allowed)) + ": ").strip().lower()
             if answer == "q":
                 break
             if answer == "s":
@@ -286,7 +297,7 @@ def review(corpus: Path, run: Path, queue_path: Path, out: Path, *, reviewer: st
             break
         row = annotate(
             queue,
-            key,
+            packet,
             reviewer=reviewer,
             decision={"y": "yes", "n": "no", "u": "unsure"}[answer],
             notes=notes,
@@ -296,7 +307,7 @@ def review(corpus: Path, run: Path, queue_path: Path, out: Path, *, reviewer: st
     return count
 
 
-def load_annotations(queue: dict, labels: Path) -> dict[str, dict]:
+def load_annotations(queue: dict, labels: Path, packets: dict[str, dict]) -> dict[str, dict]:
     members = {r["packet_hash"]: r["stratum"] for r in queue["rows"]}
     annotations = {}
     if not labels.is_dir():
@@ -318,6 +329,8 @@ def load_annotations(queue: dict, labels: Path) -> dict[str, dict]:
             or row["reviewed_at_ms"] <= 0
         ):
             raise ValueError("invalid, duplicate, or mismatched human annotation")
+        if row["decision"] == "yes" and not complete_claim(packets[key]):
+            raise ValueError("yes requires a complete summary")
         annotations[key] = row
     return annotations
 
@@ -325,7 +338,7 @@ def load_annotations(queue: dict, labels: Path) -> dict[str, dict]:
 def report(corpus: Path, run: Path, queue_path: Path, labels: Path) -> dict[str, Any]:
     queue, packets, records = load_queue(corpus, run, queue_path)
     members = {r["packet_hash"]: r["stratum"] for r in queue["rows"]}
-    annotations = load_annotations(queue, labels)
+    annotations = load_annotations(queue, labels, packets)
     routing = {key: disposition(record, queue["threshold"]) for key, record in records.items()}
     strata = {}
     for stratum in ("audit", "exception"):
@@ -413,30 +426,35 @@ def main() -> None:
                 cmd.add_argument("--labels", type=Path, required=True)
                 cmd.add_argument("--out", type=Path, required=True)
     args = parser.parse_args()
-    if args.command == "prepare":
-        result = prepare(args.database, args.out, limit=args.limit)
-    elif args.command == "assess":
-        result = asyncio.run(
-            assess(args.corpus, args.run, max_requests=args.max_requests, timeout=args.timeout)
-        )
-    elif args.command == "queue":
-        queue = make_queue(
-            args.corpus,
-            args.run,
-            args.out,
-            threshold=args.confidence,
-            limit=args.limit,
-            audit=args.audit,
-            seed=args.seed,
-        )
-        result = {"selected": len(queue["rows"]), "queue_hash": queue["queue_hash"]}
-    elif args.command == "review":
-        result = {
-            "reviewed": review(args.corpus, args.run, args.queue, args.out, reviewer=args.reviewer)
-        }
-    else:
-        result = report(args.corpus, args.run, args.queue, args.labels)
-        write_artifact(args.out, result)
+    try:
+        if args.command == "prepare":
+            result = prepare(args.database, args.out, limit=args.limit)
+        elif args.command == "assess":
+            result = asyncio.run(
+                assess(args.corpus, args.run, max_requests=args.max_requests, timeout=args.timeout)
+            )
+        elif args.command == "queue":
+            queue = make_queue(
+                args.corpus,
+                args.run,
+                args.out,
+                threshold=args.confidence,
+                limit=args.limit,
+                audit=args.audit,
+                seed=args.seed,
+            )
+            result = {"selected": len(queue["rows"]), "queue_hash": queue["queue_hash"]}
+        elif args.command == "review":
+            result = {
+                "reviewed": review(
+                    args.corpus, args.run, args.queue, args.out, reviewer=args.reviewer
+                )
+            }
+        else:
+            result = report(args.corpus, args.run, args.queue, args.labels)
+            write_artifact(args.out, result)
+    except (ValueError, OSError, JevUnavailable) as exc:
+        parser.exit(2, f"claim-review: {exc}\n")
     print(canonical(result))
     if args.command == "assess" and result["statuses"].get("error"):
         raise SystemExit(3)
