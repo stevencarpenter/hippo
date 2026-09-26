@@ -20,8 +20,8 @@ def external_path(path: Path | str) -> Path:
     """Resolve an experiment output path and reject repository/production trees."""
     xdg = Path(os.environ.get("XDG_DATA_HOME") or Path.home() / ".local/share")
     root = Path(path).expanduser().resolve()
-    for parent in (*Path(__file__).resolve().parents, Path.cwd(), *Path.cwd().parents):
-        if (parent / ".git").exists() and (root == parent or parent in root.parents):
+    for parent in (root, *root.parents):
+        if (parent / ".git").exists():
             raise ValueError("decision artifacts must be outside the repository")
     production = [xdg / "hippo", Path.home() / ".local/share/hippo"]
     config_path = Path.home() / ".config/hippo/config.toml"
