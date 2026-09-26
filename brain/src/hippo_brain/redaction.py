@@ -19,8 +19,9 @@ from collections.abc import Iterable
 from typing import Any
 
 REPLACEMENT = "[REDACTED]"
+# ponytail: cap key-name prefixes to keep long nonsecret text cheap; extend for observed longer fields.
 _SECRET_NAME = (
-    r"(?:[a-z0-9]+[_-])*(?:token|secret)|"
+    r"(?:[a-z0-9]{1,32}[_-]){0,4}(?:token|secret)|"
     r"(?:x[_-])?api[_-]?key|aws[_-]?secret[_-]?access[_-]?key|"
     r"secret[_-]?key|private[_-]?key|password|passwd|(?:proxy[_-]?)?authorization"
 )

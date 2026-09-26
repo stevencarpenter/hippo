@@ -36,6 +36,11 @@ def test_short_unquoted_credential_assignment_redacted(key):
     assert redact(f"{key}=alpha") == REPLACEMENT
 
 
+def test_long_nonsecret_input_does_not_stall_redaction():
+    text = "a" * 128_000
+    assert redact(text) == text
+
+
 @pytest.mark.parametrize(
     "key",
     ["password", "API_KEY", "api-token", "access_token", "auth-token", "secret_key", "private_key"],
