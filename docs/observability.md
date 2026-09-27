@@ -52,7 +52,7 @@ All dashboards provision automatically from `otel/grafana/dashboards/` into the 
 |-----------|-----|-----|---------------|
 | **Hippo Overview** | `hippo-overview` | http://localhost:3030/d/hippo-overview | Health grade, capture lag, probe success/lag, invariant violations, alarm firings, daemon drops |
 | **Hippo Daemon** | `hippo-daemon` | http://localhost:3030/d/hippo-daemon | Event ingest/drop rates, flush latency, redactions, fallback writes, watcher throughput |
-| **Hippo Enrichment** | `hippo-enrichment` | http://localhost:3030/d/hippo-enrichment | Brain queue depth, LLM latency, enrichment throughput, MCP tool metrics |
+| **Hippo Enrichment** | `hippo-enrichment` | http://localhost:3030/d/hippo-enrichment | Brain queue depth, LLM latency, enrichment throughput, MCP tool metrics, Jev/rules/local decision outcomes, stage latency, Jev tokens, error ratio, and classification backlog (see [Jev decisions](jev-decisions.md#observability-and-rollback)) |
 | **Hippo Processes** | `hippo-processes` | http://localhost:3030/d/hippo-processes | `process.*` CPU/memory for daemon and brain |
 | **Hippo — Knowledge Health** | `hippo-knowledge-health` | http://localhost:3030/d/hippo-knowledge-health | Recall probe (golden-question `/ask` round-trips), capture alarms/staleness, corpus size, project graveyard and dead-project contamination, identity fragmentation, redaction canary. Fed by the knowledge-health exporter, not OTel. |
 

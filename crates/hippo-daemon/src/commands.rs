@@ -1230,6 +1230,9 @@ pub async fn handle_doctor(config: &HippoConfig, explain: bool) -> Result<()> {
     // Check OpenTelemetry configuration (incl. brain self-reported status)
     fail_count += check_otel_status(config, &client, brain_json.as_ref()).await;
 
+    // Jev classification queue and endpoint health (opt-in feature).
+    fail_count += check_brain_classification(brain_json.as_ref(), explain);
+
     // Check GitHub CI-ingest configuration
     fail_count += check_github_source(config);
 
@@ -1642,6 +1645,116 @@ fn check_brain_telemetry_status(brain_json: Option<&serde_json::Value>) -> u32 {
         // close-enough proxy for installs that haven't been upgraded yet.
         _ => 0,
     }
+}
+
+/// Report Jev classification queue and endpoint health from brain `/health`.
+///
+/// Fails when classification is enabled but its worker is unavailable,
+/// stopped, or erroring, or when the Jev client is in failure cooldown.
+/// Warns on failed rows, recent endpoint failures, or a pending backlog older
+/// than 24 h (a full-corpus backfill drains in roughly a day at the default
+/// poll interval). Older brains without these fields report nothing.
+fn check_brain_classification(brain_json: Option<&serde_json::Value>, explain: bool) -> u32 {
+    const STALL_MS: u64 = 24 * 3600 * 1000;
+    let Some(json) = brain_json else { return 0 };
+    let mut fails = 0;
+
+    if let Some(c) = json.get("classification") {
+        let flag = |k: &str| c.get(k).and_then(|v| v.as_bool());
+        let count = |k: &str| {
+            c.get("counts")
+                .and_then(|v| v.get(k))
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0)
+        };
+        let last_error = c.get("last_error").and_then(|v| v.as_str());
+        let oldest_ms = c.get("oldest_pending_age_ms").and_then(|v| v.as_u64());
+        let (ready, pending, failed) = (
+            count("ready"),
+            count("pending") + count("processing"),
+            count("failed"),
+        );
+        let oldest = oldest_ms.map_or_else(
+            || "none".to_string(),
+            |ms| format_age_secs((ms / 1000) as i64),
+        );
+        let summary =
+            format!("{ready} ready, {pending} pending (oldest queued {oldest}), {failed} failed");
+
+        if flag("enabled") != Some(true) {
+            println!("[--] Classification: disabled");
+        } else if flag("available") == Some(false)
+            || flag("running") == Some(false)
+            || last_error.is_some()
+        {
+            println!(
+                "[!!] Classification: worker not healthy (available={:?}, running={:?}, last_error={})",
+                flag("available"),
+                flag("running"),
+                last_error.unwrap_or("none")
+            );
+            if explain {
+                println!(
+                    "     CAUSE:  Classification schema missing, Jev client absent, or batch errors."
+                );
+                println!(
+                    "     FIX:    Check brain logs; confirm TYPESAFE_API_KEY in the brain LaunchAgent env,"
+                );
+                println!(
+                    "             then: mise run classification -- status --database ~/.local/share/hippo/hippo.db"
+                );
+                println!("     DOC:    docs/jev-decisions.md");
+            }
+            fails += 1;
+        } else if failed > 0 || oldest_ms.is_some_and(|ms| ms > STALL_MS) {
+            println!("[WW] Classification: {summary}");
+            if explain {
+                println!("     CAUSE:  Rows exhausted retries, or the queue is not draining.");
+                println!(
+                    "     FIX:    mise run classification -- status --database ~/.local/share/hippo/hippo.db"
+                );
+                println!("     DOC:    docs/jev-decisions.md");
+            }
+        } else {
+            println!("[OK] Classification: {summary}");
+        }
+    }
+
+    if let Some(jev) = json.get("jev") {
+        let cooldown = jev
+            .get("cooldown_seconds")
+            .and_then(|v| v.as_f64())
+            .unwrap_or(0.0);
+        let failures = jev
+            .get("consecutive_failures")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        let last = jev
+            .get("last_failure")
+            .and_then(|v| v.as_str())
+            .unwrap_or("none");
+        if cooldown > 0.0 {
+            println!(
+                "[!!] Jev endpoint: cooling down {cooldown:.0}s after {failures} failures (last: {last})"
+            );
+            if explain {
+                println!(
+                    "     CAUSE:  Three consecutive Jev request failures; decisions fall back until cooldown ends."
+                );
+                println!(
+                    "     FIX:    Check network, TYPESAFE_API_KEY, and the pinned model in brain logs."
+                );
+                println!("     DOC:    docs/jev-decisions.md");
+            }
+            fails += 1;
+        } else if failures > 0 {
+            println!("[WW] Jev endpoint: {failures} consecutive failures (last: {last})");
+        } else {
+            println!("[OK] Jev endpoint: no recent failures");
+        }
+    }
+
+    fails
 }
 
 /// Whether a launchd label is currently loaded. Local duplicate of
@@ -5815,6 +5928,41 @@ replacement = "***"
         let fail = check_github_source_with(&config, || true);
         // At least the empty-repos fail (maybe also plist-not-installed in CI).
         assert!(fail >= 1);
+    }
+
+    #[test]
+    fn check_brain_classification_absent_or_disabled_is_quiet() {
+        assert_eq!(check_brain_classification(None, false), 0);
+        assert_eq!(
+            check_brain_classification(Some(&serde_json::json!({"status": "ok"})), false),
+            0
+        );
+        let json = serde_json::json!({"classification": {"enabled": false}});
+        assert_eq!(check_brain_classification(Some(&json), false), 0);
+    }
+
+    #[test]
+    fn check_brain_classification_healthy_and_backlog_do_not_fail() {
+        let json = serde_json::json!({
+            "classification": {"enabled": true, "available": true, "running": true,
+                "last_error": null, "counts": {"ready": 40, "pending": 29000, "failed": 2},
+                "oldest_pending_age_ms": 25u64 * 3600 * 1000},
+            "jev": {"cooldown_seconds": 0.0, "consecutive_failures": 1, "last_failure": "HTTPStatusError"},
+        });
+        // Failed rows, a stalled backlog, and isolated endpoint failures warn only.
+        assert_eq!(check_brain_classification(Some(&json), true), 0);
+    }
+
+    #[test]
+    fn check_brain_classification_fails_on_worker_error_and_cooldown() {
+        let json = serde_json::json!({
+            "classification": {"enabled": true, "available": true, "running": true,
+                "last_error": "OperationalError", "counts": {}},
+            "jev": {"cooldown_seconds": 22.5, "consecutive_failures": 3, "last_failure": "ConnectTimeout"},
+        });
+        assert_eq!(check_brain_classification(Some(&json), false), 2);
+        let stopped = serde_json::json!({"classification": {"enabled": true, "running": false}});
+        assert_eq!(check_brain_classification(Some(&stopped), false), 1);
     }
 
     #[test]

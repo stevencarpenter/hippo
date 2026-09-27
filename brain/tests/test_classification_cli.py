@@ -279,3 +279,80 @@ def test_cli_uses_deployment_recipe_and_explicit_override_cannot_resume_old_reci
         json.loads(capsys.readouterr().out)["recipe_hash"]
         == classification.load_recipe(override).recipe_hash
     )
+
+
+def test_export_writes_consistent_parquet_and_refuses_overwrite(tmp_db, tmp_path, capsys):
+    duckdb = pytest.importorskip("duckdb")
+    conn, database = tmp_db
+    add_node(conn, 1)
+    add_node(conn, 2)
+    conn.execute(
+        "UPDATE knowledge_node_classifications SET status='pending', "
+        "probabilities_json='{}', accepted_topics_json='[]' WHERE node_id=2"
+    )
+    conn.commit()
+    out = tmp_path / "export"
+    assert cli.main(["export", "--database", str(database), "--out", str(out)]) == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result["rows"]["classifications"] == 2
+    rows = duckdb.sql(
+        f"SELECT node_id, status, node_type, latency_ms IS NOT NULL FROM "
+        f"'{out / 'classifications.parquet'}' ORDER BY node_id"
+    ).fetchall()
+    assert [r[:2] for r in rows] == [(1, "ready"), (2, "pending")]
+    topics = duckdb.sql(
+        f"SELECT node_id, topic, prob, accepted FROM '{out / 'topic-probabilities.parquet'}'"
+    ).fetchall()
+    assert topics and all(r[0] == 1 for r in topics)
+    assert result["rows"]["topic_probabilities"] == len(topics)
+    assert sorted(path.name for path in out.iterdir()) == [
+        "classifications.parquet",
+        "topic-probabilities.parquet",
+    ]
+    with pytest.raises(ValueError, match="already exist"):
+        cli.export(database, out)
+    with pytest.raises(ValueError, match="outside"):
+        cli.export(database, Path(__file__).parent / "export")
+
+
+def test_export_publishes_nothing_on_failure_and_handles_quoted_paths(
+    tmp_db, tmp_path, monkeypatch
+):
+    pytest.importorskip("duckdb")
+    conn, database = tmp_db
+    add_node(conn, 1)
+    conn.commit()
+    quoted = tmp_path / "it's here"
+    assert cli.export(database, quoted)["rows"]["classifications"] == 1
+    out = tmp_path / "failed"
+    real_link = cli.os.link
+    calls = []
+
+    def fail_second(source, target):
+        calls.append(target)
+        if len(calls) == 2:
+            raise OSError("disk full")
+        real_link(source, target)
+
+    monkeypatch.setattr(cli.os, "link", fail_second)
+    with pytest.raises(OSError, match="disk full"):
+        cli.export(database, out)
+    assert list(out.iterdir()) == []
+
+
+def test_export_duckdb_failure_exits_cleanly(tmp_db, tmp_path, monkeypatch, capsys):
+    duckdb = pytest.importorskip("duckdb")
+    conn, database = tmp_db
+    add_node(conn, 1)
+    conn.commit()
+
+    def broken():
+        raise duckdb.IOException("cannot open")
+
+    monkeypatch.setattr(duckdb, "connect", broken)
+    out = tmp_path / "broken"
+    with pytest.raises(SystemExit) as error:
+        cli.main(["export", "--database", str(database), "--out", str(out)])
+    assert error.value.code == 2
+    assert "Parquet export failed" in capsys.readouterr().err
+    assert list(out.iterdir()) == []
