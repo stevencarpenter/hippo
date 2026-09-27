@@ -668,6 +668,7 @@ dependencies = [
  "anyhow",
  "chrono",
  "dirs",
+ "libc",
  "regex",
  "rusqlite",
  "serde",

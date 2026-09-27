@@ -1066,7 +1066,7 @@
       "id": 22,
       "type": "timeseries",
       "title": "Classification Backlog",
-      "description": "Classification rows by status. A draining pending line is backfill progress; a flat nonzero line means the worker stopped.",
+      "description": "Classification queue population by status. Counts reflect arrivals and processing; a flat nonzero count does not establish whether the worker is running. Failed rows may remain while processing continues.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"

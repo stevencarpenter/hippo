@@ -74,16 +74,42 @@ def test_outcome_disagreement_conflict() -> None:
     assert len(report["conflicts"][0]["sides"]) == 2
 
 
+@pytest.mark.parametrize(
+    ("level", "score", "report", "expected_level", "expected_score"),
+    [
+        ("high", 0.95, {"has_unresolved_conflicts": True}, "medium", 0.7199),
+        ("medium", 0.60, {"has_unresolved_conflicts": True}, "low", 0.4499),
+        ("high", 0.95, {"staleness": True}, "medium", 0.7199),
+    ],
+)
+def test_conflict_caps_score_and_explanation(level, score, report, expected_level, expected_score):
+    confidence = {
+        "level": level,
+        "score": score,
+        "explanation": f"{level.title()} confidence: evidence.",
+    }
+    apply_conflict_confidence_caps([{"confidence": confidence}], report)
+
+    assert confidence["level"] == expected_level
+    assert confidence["score"] == expected_score
+    assert confidence["uncapped_score"] == score
+    assert confidence["explanation"].startswith(f"{expected_level.title()} confidence:")
+
+
 def test_decision_contradiction_newer_vs_older() -> None:
     hits = [
         {
             "uuid": "old",
+            "cwd": "/hippo",
+            "git_branch": "main",
             "captured_at": _SETTLED - 50_000,
             "design_decisions": [{"chosen": "LanceDB", "considered": "sqlite-vec"}],
             "evidence": [{"ref": "claude-1"}],
         },
         {
             "uuid": "new",
+            "cwd": "/hippo",
+            "git_branch": "main",
             "captured_at": _SETTLED,
             "design_decisions": [{"chosen": "sqlite-vec", "considered": "LanceDB"}],
             "evidence": [{"ref": "claude-2"}],
@@ -95,6 +121,33 @@ def test_decision_contradiction_newer_vs_older() -> None:
     sides = report["conflicts"][0]["sides"]
     assert sides[0]["chosen"] == "LanceDB"
     assert sides[1]["chosen"] == "sqlite-vec"
+
+
+@pytest.mark.parametrize(
+    ("same_node", "other_cwd", "other_branch", "decisions"),
+    [
+        (True, "/hippo", "main", [("SQLite", "Postgres"), ("pytest", "unittest")]),
+        (False, "/hippo", "main", [("SQLite", "current"), ("pytest", "current")]),
+        (False, "/other", "main", [("SQLite", "Postgres"), ("Postgres", "SQLite")]),
+        (False, "/hippo", "feature", [("SQLite", "Postgres"), ("Postgres", "SQLite")]),
+        (True, "/hippo", "main", [("SQLite", "Postgres"), ("Postgres", "SQLite")]),
+    ],
+)
+def test_independent_decisions_are_not_contradictions(
+    same_node, other_cwd, other_branch, decisions
+):
+    hits = [
+        {
+            "uuid": "a" if same_node or i == 0 else "b",
+            "cwd": "/hippo" if i == 0 else other_cwd,
+            "git_branch": "main" if i == 0 else other_branch,
+            "design_decisions": [{"chosen": chosen, "considered": considered}],
+        }
+        for i, (chosen, considered) in enumerate(decisions)
+    ]
+    if same_node:
+        hits[0]["design_decisions"].extend(hits.pop()["design_decisions"])
+    assert analyze_conflicts(hits)["has_unresolved_conflicts"] is False
 
 
 @pytest.fixture

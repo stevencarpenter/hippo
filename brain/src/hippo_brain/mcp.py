@@ -1104,7 +1104,7 @@ def main() -> None:
     """Entry point for the hippo-mcp script."""
     import argparse
 
-    from hippo_brain import _load_runtime_settings
+    from hippo_brain import _load_runtime_settings, _secure_data_dir
     from hippo_brain.telemetry import init_telemetry
 
     parser = argparse.ArgumentParser(
@@ -1131,6 +1131,7 @@ def main() -> None:
     # creating any instruments. Instruments must come after init_telemetry()
     # so they bind to the real MeterProvider rather than the NoOp default.
     settings = _load_runtime_settings()
+    _secure_data_dir(settings["data_dir"])
     otel_endpoint = settings.get("telemetry_endpoint", "").replace(":4317", ":4318")
     otel_shutdown = init_telemetry("hippo-mcp", endpoint=otel_endpoint)
     _init_telemetry_instruments()

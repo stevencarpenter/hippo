@@ -56,7 +56,7 @@ All dashboards provision automatically from `otel/grafana/dashboards/` into the 
 | **Hippo Processes** | `hippo-processes` | http://localhost:3030/d/hippo-processes | `process.*` CPU/memory for daemon and brain |
 | **Hippo — Knowledge Health** | `hippo-knowledge-health` | http://localhost:3030/d/hippo-knowledge-health | Recall probe (golden-question `/ask` round-trips), capture alarms/staleness, corpus size, project graveyard and dead-project contamination, identity fragmentation, redaction canary. Fed by the knowledge-health exporter, not OTel. |
 
-Metric names in PromQL use Prometheus exporter suffixes (`_total`, `_milliseconds`, etc.). The canonical allow-list and drift tests live in `brain/tests/test_otel_dashboards.py`.
+Metric names in PromQL use Prometheus exporter suffixes (`_total`, `_milliseconds`, etc.). The shared OTel name/type contract lives in `tests/fixtures/otel-metric-names.json`. When adding an instrument, update that contract and exercise its runtime emission in `brain/tests/test_otel_dashboards.py` (Python) or `crates/hippo-daemon/tests/dashboard_metrics.rs` (Rust). These tests collect SDK measurements and check names, types, and units; Python validates parsed dashboard and alert references against the contract and collected Python samples. The standalone knowledge-health exporter owns its registry, which the Python tests verify against synthetic-database scrapes. Dashboard selector checks reject the retired `service_namespace` label, not harmless mentions in descriptions or label values.
 
 Dashboards draw on two metric sources: OTel instruments in the daemon and brain (`hippo_daemon_*`, `hippo_brain_*`), and the knowledge-health exporter (`hippo_kb_*`, see below). Both are covered by the same drift tests.
 

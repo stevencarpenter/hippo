@@ -105,7 +105,10 @@ def test_workflow_journal_session_excluded(conn: sqlite3.Connection) -> None:
     assert "n" not in uuids
 
 
-def test_in_flight_agentic_session_excluded(conn: sqlite3.Connection) -> None:
+def test_in_flight_agentic_session_excluded(
+    conn: sqlite3.Connection, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("hippo_brain.retrieval_eligibility.time.time", lambda: _NOW / 1000)
     _insert_node(conn, 1)
     _insert_node(conn, 2, uuid="settled")
     _link_agentic(conn, 1, 20, end_time=_NOW - 1000)
