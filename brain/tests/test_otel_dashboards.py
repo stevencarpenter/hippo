@@ -374,14 +374,17 @@ def test_no_lmstudio_metrics_in_any_dashboard():
     ("expr", "rejected"),
     [
         ('hippo_brain_inference_errors_total{reason="hippo_brain_lmstudio_timeout"}', False),
-        ('hippo_brain_inference_errors_total # hippo_brain_lmstudio_timeout', False),
+        ("hippo_brain_inference_errors_total # hippo_brain_lmstudio_timeout", False),
         (r'hippo_brain_inference_errors_total{reason="} hippo_brain_lmstudio_timeout \""}', False),
         ("hippo_brain_inference_errors_total{reason='} hippo_brain_lmstudio_timeout'}", False),
-        ('hippo_brain_inference_errors_total{reason=`} hippo_brain_lmstudio_timeout`}', False),
+        ("hippo_brain_inference_errors_total{reason=`} hippo_brain_lmstudio_timeout`}", False),
         ('hippo_brain_lmstudio_errors_total{reason="timeout"}', True),
-        ('rate(hippo_brain_lmstudio_errors_total[5m])', True),
-        ('hippo_brain_lmstudio_errors_total == 5', True),
-        ('hippo_brain_inference_errors_total # ignored\n + hippo_brain_lmstudio_errors_total', True),
+        ("rate(hippo_brain_lmstudio_errors_total[5m])", True),
+        ("hippo_brain_lmstudio_errors_total == 5", True),
+        (
+            "hippo_brain_inference_errors_total # ignored\n + hippo_brain_lmstudio_errors_total",
+            True,
+        ),
     ],
 )
 def test_retired_metric_reference_policy(tmp_path, monkeypatch, expr, rejected):
