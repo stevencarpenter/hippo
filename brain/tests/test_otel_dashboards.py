@@ -176,7 +176,12 @@ def _extract_metric_names(expr: str) -> list[str]:
     comparison such as `hippo_x == 5`, which is a worse failure (an unguarded
     metric) than the label-key false positive it would prevent.
     """
-    cleaned = re.sub(r"\{[^{}]*\}", " ", expr)
+    cleaned = re.sub(
+        r""""(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|`[^`]*`|\#[^\n]*""",
+        " ",
+        expr,
+    )
+    cleaned = re.sub(r"\{[^{}]*\}", " ", cleaned)
     cleaned = re.sub(
         r"\b(?:by|without|on|ignoring|group_left|group_right)\s*\([^()]*\)",
         " ",
@@ -341,7 +346,11 @@ def test_no_lmstudio_metrics_in_any_dashboard():
         for panel in _iter_panels(dashboard):
             for target in panel.get("targets", []):
                 expr = target.get("expr", "")
-                lms_hits = re.findall(r"hippo_brain_lmstudio_[a-z0-9_]*", expr)
+                lms_hits = [
+                    name
+                    for name in _extract_metric_names(expr)
+                    if name.startswith("hippo_brain_lmstudio_")
+                ]
                 if lms_hits:
                     violations.append(
                         f"  dashboard={path.name!r}  panel_id={panel.get('id', '?')}  "
@@ -359,6 +368,31 @@ def test_no_lmstudio_metrics_in_any_dashboard():
 # Test 7: Exactly the five expected production dashboards exist (no extras,
 # no bench dashboards remaining after the isolation decision).
 # ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("expr", "rejected"),
+    [
+        ('hippo_brain_inference_errors_total{reason="hippo_brain_lmstudio_timeout"}', False),
+        ('hippo_brain_inference_errors_total # hippo_brain_lmstudio_timeout', False),
+        (r'hippo_brain_inference_errors_total{reason="} hippo_brain_lmstudio_timeout \""}', False),
+        ("hippo_brain_inference_errors_total{reason='} hippo_brain_lmstudio_timeout'}", False),
+        ('hippo_brain_inference_errors_total{reason=`} hippo_brain_lmstudio_timeout`}', False),
+        ('hippo_brain_lmstudio_errors_total{reason="timeout"}', True),
+        ('rate(hippo_brain_lmstudio_errors_total[5m])', True),
+        ('hippo_brain_lmstudio_errors_total == 5', True),
+        ('hippo_brain_inference_errors_total # ignored\n + hippo_brain_lmstudio_errors_total', True),
+    ],
+)
+def test_retired_metric_reference_policy(tmp_path, monkeypatch, expr, rejected):
+    dashboard = {"panels": [{"targets": [{"expr": expr}]}]}
+    (tmp_path / "fixture.json").write_text(json.dumps(dashboard))
+    monkeypatch.setattr(sys.modules[__name__], "_DASHBOARDS_DIR", tmp_path)
+    if rejected:
+        with pytest.raises(AssertionError, match="metrics, which no longer exist"):
+            test_no_lmstudio_metrics_in_any_dashboard()
+    else:
+        test_no_lmstudio_metrics_in_any_dashboard()
 
 
 def test_only_prod_dashboards_exist():
