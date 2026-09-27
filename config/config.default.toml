@@ -32,6 +32,10 @@ query_timeout_secs = 300        # GUI timeout for /ask and /query requests (seco
 # is considered stale and gets reaped back to `pending`.
 max_claim_batch = 10
 lock_timeout_secs = 600
+# 1Password secret reference the brain LaunchAgent resolves with `op read` at
+# startup and exports as TYPESAFE_API_KEY (Jev). Example: "op://<vault>/<item>/<field>".
+# Leave unset to disable Jev credential lookup.
+# typesafe_api_key_op_ref = "op://<vault>/<item>/<field>"
 
 [storage]
 # data_dir = "~/.local/share/hippo"
