@@ -392,7 +392,11 @@ install_brain() {
 
     local brain_backup="${brain_staging}.previous"
     if [ -e "${BRAIN_DIR}" ]; then
-        mv "${BRAIN_DIR}" "${brain_backup}"
+        if ! mv "${BRAIN_DIR}" "${brain_backup}"; then
+            rm -rf "${brain_staging}"
+            log_error "Brain backup failed; existing brain preserved"
+            exit 1
+        fi
     fi
     if ! mv "${brain_staging}" "${BRAIN_DIR}"; then
         [ ! -e "${brain_backup}" ] || mv "${brain_backup}" "${BRAIN_DIR}"
