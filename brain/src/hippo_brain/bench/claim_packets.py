@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import argparse
 import hashlib
 import json
 import os
@@ -325,16 +324,3 @@ def load_packets(root: Path, *, allow_legacy: bool = False) -> list[dict[str, An
             raise ValueError("duplicate claim packet")
         seen.add(packet["packet_hash"])
     return packets
-
-
-def main() -> None:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--database", type=Path, required=True)
-    parser.add_argument("--out", type=Path, required=True)
-    parser.add_argument("--limit", type=int, default=50)
-    args = parser.parse_args()
-    print(canonical(prepare(args.database, args.out, limit=args.limit)))
-
-
-if __name__ == "__main__":
-    main()
