@@ -7,22 +7,28 @@ that bypass the daemon's redaction path. This module is the chokepoint for
 those flows so that secrets in tool calls, user prompts, and assistant
 responses do not get persisted or sent to the LLM.
 
-Patterns are kept in lockstep with the Rust builtin set; if you add a pattern
-in one place, add it in the other.
+Token signatures mirror the Rust builtin set. Python additionally handles
+quoted and serialized credential fields at session and external-request boundaries.
 """
 
 from __future__ import annotations
 
+import json
 import re
 from collections.abc import Iterable
 from typing import Any
 
 REPLACEMENT = "[REDACTED]"
+# ponytail: cap key-name prefixes to keep long nonsecret text cheap; extend for observed longer fields.
 _SECRET_NAME = (
-    r"api[_-]?key|api[_-]?token|access[_-]?token|auth[_-]?token|"
-    r"secret[_-]?key|private[_-]?key|password"
+    r"(?:[a-z0-9]{1,32}[_-]){0,4}(?:token|secret)|"
+    r"(?:x[_-])?api[_-]?key|aws[_-]?secret[_-]?access[_-]?key|"
+    r"secret[_-]?key|private[_-]?key|password|passwd|(?:proxy[_-]?)?authorization"
 )
 _SECRET_KEY = re.compile(rf"(?:{_SECRET_NAME})", re.IGNORECASE)
+_ESCAPED_SECRET_ASSIGNMENT = re.compile(
+    rf"""(?i)\\+["'](?:{_SECRET_NAME})\\+["']\s*[=:]\s*\\+["']"""
+)
 
 
 def is_secret_key(value: object) -> bool:
@@ -40,20 +46,52 @@ _PATTERNS: tuple[re.Pattern[str], ...] = (
     ),
     re.compile(r"AKIA[0-9A-Z]{16}"),
     re.compile(r"ghp_[a-zA-Z0-9]{36}|github_pat_[a-zA-Z0-9_]{82}"),
+    re.compile(
+        r"""(?i)(?:proxy-)?authorization(?:\\*["'])?\s*:\s*(?:\\*["'])?"""
+        r"[^\r\n\"']+"
+    ),
+    re.compile(r"(?i)private[_-]?key\s*[=:]\s*\[REDACTED\]"),
     # Quoted values may contain whitespace or escaped quotes, including JSON.
     re.compile(
         rf"""(?i)["']?(?:{_SECRET_NAME})["']?\s*[=:]\s*(?:"(?:\\.|[^"\\])*(?:"|$)|'(?:\\.|[^'\\])*(?:'|$))"""
     ),
-    re.compile(rf"(?i)(?:{_SECRET_NAME})\s*[=:]\s*\S{{8,}}"),
+    re.compile(rf"(?i)(?:{_SECRET_NAME})\s*[=:]\s*(?!\[REDACTED\])\S+"),
     re.compile(r"eyJ[a-zA-Z0-9_-]{10,}\.eyJ[a-zA-Z0-9_-]{10,}\.[a-zA-Z0-9_-]+"),
-    re.compile(r"(?i)authorization:\s*bearer\s+\S+"),
 )
+
+
+def redact_state(value: Any) -> Any:
+    """Redact recognized secret fields and nested string values."""
+    if isinstance(value, str):
+        return redact(value)
+    if isinstance(value, dict):
+        return {
+            key: REPLACEMENT if is_secret_key(key) else redact_state(item)
+            for key, item in value.items()
+        }
+    if isinstance(value, (list, tuple)):
+        return [redact_state(item) for item in value]
+    return value
 
 
 def redact(text: str) -> str:
     """Apply all builtin redaction patterns to ``text``."""
     if not text:
         return text
+    if text.lstrip().startswith(("{", "[", '"')):
+        try:
+            decoded = json.loads(text)
+        except ValueError, RecursionError:
+            pass
+        else:
+            if isinstance(decoded, (dict, list, str)):
+                clean = redact_state(decoded)
+                if clean != decoded:
+                    return json.dumps(clean, ensure_ascii=False)
+                return text
+    # When prose wraps serialized JSON, its inner object cannot be parsed alone.
+    if _ESCAPED_SECRET_ASSIGNMENT.search(text):
+        return REPLACEMENT
     for pattern in _PATTERNS:
         text = pattern.sub(REPLACEMENT, text)
     return text

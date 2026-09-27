@@ -31,6 +31,16 @@ def test_generic_secret_assignment_redacted():
     assert "supersecretvalue123" not in out
 
 
+@pytest.mark.parametrize("key", ["password", "client_secret", "refresh_token", "X-API-Key"])
+def test_short_unquoted_credential_assignment_redacted(key):
+    assert redact(f"{key}=alpha") == REPLACEMENT
+
+
+def test_long_nonsecret_input_does_not_stall_redaction():
+    text = "a" * 128_000
+    assert redact(text) == text
+
+
 @pytest.mark.parametrize(
     "key",
     ["password", "API_KEY", "api-token", "access_token", "auth-token", "secret_key", "private_key"],
@@ -38,7 +48,7 @@ def test_generic_secret_assignment_redacted():
 @pytest.mark.parametrize("secret", ["short", "two word secret", 'escaped " quote', "line\nbreak"])
 def test_json_credential_assignments_redacted(key, secret):
     text = json.dumps({key: secret, "public": "keep"})
-    assert redact(text) == '{[REDACTED], "public": "keep"}'
+    assert json.loads(redact(text)) == {key: REPLACEMENT, "public": "keep"}
 
 
 @pytest.mark.parametrize(
@@ -65,6 +75,57 @@ def test_jwt_redacted():
 def test_bearer_header_redacted():
     out = redact("Authorization: Bearer abcDEF123token")
     assert "abcDEF123token" not in out
+
+
+@pytest.mark.parametrize("header", ["Authorization", "Proxy-Authorization"])
+@pytest.mark.parametrize("scheme", ["Bearer", "Basic"])
+@pytest.mark.parametrize("encodings", [0, 1, 2])
+def test_serialized_authorization_headers_redacted(header, scheme, encodings):
+    credential = "synthetic_sensitive_credential-927483"
+    text = json.dumps({"headers": {header: f"{scheme} {credential}"}})
+    for _ in range(encodings):
+        text = json.dumps(text)
+    assert credential not in redact(text)
+
+
+@pytest.mark.parametrize(
+    "key",
+    [
+        "api_key",
+        "password",
+        "Authorization",
+        "client_secret",
+        "refresh_token",
+        "X-API-Key",
+        "token",
+        "AWS_SECRET_ACCESS_KEY",
+        "passwd",
+    ],
+)
+@pytest.mark.parametrize("encodings", [0, 1, 2])
+def test_nested_serialized_credentials_are_redacted_without_losing_public_fields(key, encodings):
+    credential = "synthetic_sensitive_credential-927483"
+    value = f"Token {credential}" if key == "Authorization" else credential
+    text = json.dumps({"body": json.dumps({key: value, "public": "keep"})})
+    for _ in range(encodings):
+        text = json.dumps(text)
+    clean = redact(text)
+    assert credential not in clean
+    assert redact(clean) == clean
+    for _ in range(encodings):
+        clean = json.loads(clean)
+    assert json.loads(json.loads(clean)["body"])["public"] == "keep"
+
+
+def test_embedded_serialized_credential_is_not_exposed():
+    credential = "synthetic_sensitive_credential-927483"
+    text = "prompt: " + json.dumps(json.dumps({"api_key": credential}))
+    assert credential not in redact(text)
+
+
+def test_plaintext_token_authorization_is_redacted():
+    credential = "synthetic_sensitive_credential-927483"
+    assert credential not in redact(f"Authorization: Token {credential}")
 
 
 def test_private_key_pem_redacted():

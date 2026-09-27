@@ -46,6 +46,29 @@ def response(questions, grades, *, confidence=0.4):
     }
 
 
+def test_oversized_provider_number_is_a_validation_error():
+    questions = {
+        "verdict": {
+            "type": "choice",
+            "instructions": "Does the source support the claim?",
+            "criteria": {"supports": "yes", "unsupported": "no"},
+        }
+    }
+    answer = {
+        "model": "jev-1.13.0",
+        "answers": {
+            "verdict": {
+                "type": "choice",
+                "choice": "supports",
+                "confidence": 10**400,
+                "probabilities": {"supports": 1, "unsupported": 0},
+            }
+        },
+    }
+    with pytest.raises(ValueError, match="invalid numeric answer"):
+        validate_response(answer, questions, model="1.13.0")
+
+
 class FakeJev:
     model = "1.13.0"
 
@@ -527,7 +550,7 @@ async def test_json_and_nested_credential_values_never_reach_jev_transport():
         client = JevClient("test-key", client=http)
         await client.assess(state, {"q": {"type": "noul", "instructions": "Is this relevant?"}})
     assert requests[0]["state"] == {
-        "text": "{[REDACTED], [REDACTED]}",
+        "text": json.dumps({"password": "[REDACTED]", "api_key": "[REDACTED]"}),
         "nested": [{"password": "[REDACTED]", "public": "keep"}],
         "tuple": [{"AUTH_TOKEN": "[REDACTED]"}],
         "private_key": "[REDACTED]",

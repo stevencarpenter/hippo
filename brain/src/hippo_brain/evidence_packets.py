@@ -269,7 +269,7 @@ def _inspect_evidence_row(
     if kind == "memory":
         row = conn.execute(
             """
-            SELECT mc.*, md.repository, md.source_path, md.state
+            SELECT mc.*, md.repository, md.logical_path, md.source_path, md.state
             FROM memory_chunks mc
             JOIN memory_revisions mr ON mr.id = mc.revision_id
             JOIN memory_documents md ON md.id = mr.document_id

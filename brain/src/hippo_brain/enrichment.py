@@ -456,7 +456,12 @@ def _chunk_events(events: list[dict], max_size: int) -> list[list[dict]]:
 
 
 def write_knowledge_node(
-    conn, result: EnrichmentResult, event_ids: list[int], model_name: str
+    conn,
+    result: EnrichmentResult,
+    event_ids: list[int],
+    model_name: str,
+    *,
+    browser_event_ids: list[int] | None = None,
 ) -> int:
     """Insert knowledge node, link to events, upsert entities, mark queue done.
 
@@ -507,6 +512,12 @@ def write_knowledge_node(
             "INSERT INTO knowledge_node_events (knowledge_node_id, event_id) VALUES (?, ?)",
             [(node_id, eid) for eid in event_ids],
         )
+        if browser_event_ids:
+            conn.executemany(
+                "INSERT INTO knowledge_node_browser_events (knowledge_node_id, browser_event_id) "
+                "VALUES (?, ?)",
+                [(node_id, eid) for eid in browser_event_ids],
+            )
 
         # Upsert entities
         upsert_entities(conn, node_id, result.entities, SHELL_ENTITY_TYPE_MAP, now_ms)
