@@ -430,19 +430,17 @@ def report(corpus: Path, run: Path, queue_path: Path, labels: Path) -> dict[str,
     strata = {}
     for stratum in ("audit", "exception"):
         keys = [key for key in members if members[key] == stratum]
-        counts = Counter(
-            {
-                "selected": len(keys),
-                "unreviewed": 0,
-                "unsure": 0,
-                "yes": 0,
-                "no": 0,
-                "reviewed_approvals": 0,
-                "false_approvals": 0,
-                "reviewed_rejections": 0,
-                "false_rejections": 0,
-            }
-        )
+        counts = {
+            "selected": len(keys),
+            "unreviewed": 0,
+            "unsure": 0,
+            "yes": 0,
+            "no": 0,
+            "reviewed_approvals": 0,
+            "false_approvals": 0,
+            "reviewed_rejections": 0,
+            "false_rejections": 0,
+        }
         for key in keys:
             if key not in annotations:
                 counts["unreviewed"] += 1
@@ -457,7 +455,7 @@ def report(corpus: Path, run: Path, queue_path: Path, labels: Path) -> dict[str,
             elif routing[key] == "reject":
                 counts["reviewed_rejections"] += 1
                 counts["false_rejections"] += decision == "yes"
-        strata[stratum] = dict(counts)
+        strata[stratum] = counts
     usage = [
         record.get("response", {}).get("usage")
         for record in records.values()
@@ -466,7 +464,6 @@ def report(corpus: Path, run: Path, queue_path: Path, labels: Path) -> dict[str,
     return {
         "scope": "descriptive frozen-cohort results; not production approval or population accuracy",
         "historical_run": historical_run(corpus, run),
-        "legacy_unfrozen_queue": False,
         "run_hash": queue["run_hash"],
         "queue_hash": queue["queue_hash"],
         "threshold": queue["threshold"],
