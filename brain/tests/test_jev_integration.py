@@ -2,6 +2,7 @@
 
 import asyncio
 import sqlite3
+import subprocess
 from unittest.mock import AsyncMock
 
 import pytest
@@ -58,6 +59,37 @@ def test_http_and_mcp_read_identical_query_settings(tmp_path, monkeypatch):
     assert (
         http["classification"] == mcp["classification"]
     )  # MCP reads the recipe, starts no worker.
+
+
+def test_mcp_jev_uses_configured_key_without_inherited_fallback(monkeypatch):
+    monkeypatch.setenv("TYPESAFE_API_KEY", "rolled-key")
+    monkeypatch.setattr(mcp_module.shutil, "which", lambda _: "/usr/local/bin/op")
+    calls = []
+
+    def read_key(command, **kwargs):
+        calls.append((command, kwargs))
+        return subprocess.CompletedProcess(command, 0, "hippo-key\n", "")
+
+    monkeypatch.setattr(mcp_module.subprocess, "run", read_key)
+    config = {"typesafe_api_key_op_ref": "op://vault/item/field"}
+    client = mcp_module._jev_client_from_config(config)
+    try:
+        assert client._api_key == "hippo-key"
+        assert calls == [
+            (
+                ["/usr/local/bin/op", "read", "op://vault/item/field"],
+                {"capture_output": True, "text": True, "timeout": 5, "check": True},
+            )
+        ]
+    finally:
+        asyncio.run(client.aclose())
+
+    def fail_lookup(command, **kwargs):
+        raise subprocess.CalledProcessError(1, command)
+
+    monkeypatch.setattr(mcp_module.subprocess, "run", fail_lookup)
+    with pytest.raises(subprocess.CalledProcessError):
+        mcp_module._jev_client_from_config(config)
 
 
 @pytest.mark.asyncio

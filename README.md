@@ -239,6 +239,12 @@ Replace `/path/to/hippo` with the absolute path to your clone.
 
 The MCP server reads SQLite directly (vectors live in the same DB via sqlite-vec; no dependency on the brain HTTP server).
 
+When `[telemetry] enabled = true` in `~/.config/hippo/config.toml`, newly started `hippo-mcp` processes export tool calls, latency, errors, lookup outcomes, and returned result counts to the configured OpenTelemetry collector. `HIPPO_OTEL_ENABLED=0` in an MCP client's environment explicitly disables this. The enrichment dashboard shows these metrics; a nonempty result measures corpus coverage for that query, not whether the result answered it correctly. Existing MCP processes must be restarted to pick up the setting.
+
+The Knowledge Health dashboard shows knowledge node growth and the share with vectors while a new corpus builds. Its opt-in golden-question probe checks whether brain `/ask` returns nonempty answers for three built-in questions; it is disabled by default and does not exercise MCP credentials. Retrieval outcomes and vector coverage do not measure answer accuracy.
+
+When Jev reranking is enabled, the MCP server reads `[brain] typesafe_api_key_op_ref` from the same config and resolves the key with `op read` at startup. The key stays in process memory; a failed lookup leaves Jev unavailable rather than using an inherited `TYPESAFE_API_KEY` that may belong to another application.
+
 > **Trust boundary.** Granting Claude Code MCP access to hippo gives the model — and any prompt injection that reaches it through code or documents you ask Claude to read — read access to your shell history, Claude transcripts, and browser data. Grant deliberately.
 
 ## Firefox Extension (Optional)

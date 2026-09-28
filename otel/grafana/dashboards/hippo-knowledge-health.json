@@ -387,7 +387,7 @@
       "gridPos": {
         "x": 0,
         "y": 15,
-        "w": 6,
+        "w": 4,
         "h": 4
       },
       "targets": [
@@ -422,6 +422,54 @@
       }
     },
     {
+      "id": 28,
+      "type": "timeseries",
+      "title": "Vector coverage",
+      "description": "Fraction of knowledge nodes with a vector row. A new corpus can have a temporary gap while embeddings build; a sustained gap indicates embedding backlog.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 4,
+        "y": 15,
+        "w": 4,
+        "h": 4
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "hippo_kb_vector_coverage_ratio",
+          "legendFormat": "",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "displayMode": "table",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
       "id": 8,
       "type": "timeseries",
       "title": "Agentic session messages",
@@ -431,9 +479,9 @@
         "uid": "prometheus"
       },
       "gridPos": {
-        "x": 6,
+        "x": 8,
         "y": 15,
-        "w": 6,
+        "w": 4,
         "h": 4
       },
       "targets": [

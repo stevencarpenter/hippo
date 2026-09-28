@@ -436,6 +436,10 @@ async fn main() -> Result<()> {
                     include_str!("../../../launchd/com.hippo.opencode-poll.plist");
 
                 install::install_plist("com.hippo.daemon", daemon_template, &vars, force)?;
+                // The brain LaunchAgent starts through this wrapper so the Jev /
+                // TypeSafe key can be resolved from 1Password at runtime instead
+                // of being persisted. See install::BRAIN_WRAPPER_SCRIPT.
+                install::install_brain_wrapper(&vars.data_dir, force)?;
                 install::install_plist("com.hippo.brain", brain_template, &vars, force)?;
                 install::install_plist("com.hippo.probe", probe_template, &vars, force)?;
                 install::install_plist("com.hippo.watchdog", watchdog_template, &vars, force)?;

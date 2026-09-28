@@ -108,6 +108,8 @@ METRIC_NAMES = [
     "hippo_kb_stdout_nonempty",
     "hippo_kb_stderr_nonempty",
     "hippo_kb_knowledge_nodes",
+    "hippo_kb_vectorized_nodes",
+    "hippo_kb_vector_coverage_ratio",
     "hippo_kb_agentic_sessions",
     "hippo_kb_agentic_messages",
     "hippo_kb_db_size_bytes",
@@ -124,6 +126,9 @@ METRIC_NAMES = [
     "hippo_kb_project_fragmentation_ratio",
     # --- decisions ---
     "hippo_kb_design_decisions",
+    "hippo_kb_jev_accepted_labels",
+    "hippo_kb_jev_accepted_topic_coverage_ratio",
+    "hippo_kb_jev_accepted_noul_mean",
     # --- hygiene / redaction canary ---
     "hippo_kb_env_secretish_keys",
 ]
@@ -374,6 +379,7 @@ def collect_db(reg: Registry, now_ms: int, db_path: Path | None = None) -> None:
         reg.family("graveyard", lambda: _f_graveyard(reg, conn, now_ms, stats))
         reg.family("identity", lambda: _f_identity(reg, stats))
         reg.family("decisions", lambda: _f_decisions(reg, conn))
+        reg.family("jev_quality", lambda: _f_jev_quality(reg, conn))
         reg.family("envsnap", lambda: _f_envsnap(reg, conn))
         reg.family("snowball", lambda: _f_snowball(reg, conn))
     finally:
@@ -412,6 +418,22 @@ def _f_events(reg: Registry, conn: sqlite3.Connection, now_ms: int) -> None:
 def _f_nodes(reg: Registry, conn: sqlite3.Connection) -> None:
     n = conn.execute("SELECT COUNT(*) FROM knowledge_nodes").fetchone()[0]
     reg.gauge("hippo_kb_knowledge_nodes", n, help="Total knowledge nodes.")
+    vectorized = (
+        conn.execute(
+            "SELECT COUNT(*) FROM knowledge_nodes "
+            "WHERE id IN (SELECT rowid FROM knowledge_vectors_rowids)"
+        ).fetchone()[0]
+        if _table_exists(conn, "knowledge_vectors_rowids")
+        else 0
+    )
+    reg.gauge(
+        "hippo_kb_vectorized_nodes", vectorized, help="Knowledge nodes with vectors."
+    )
+    reg.gauge(
+        "hippo_kb_vector_coverage_ratio",
+        vectorized / n if n else 0,
+        help="Share of knowledge nodes with vectors (0 for an empty corpus).",
+    )
 
 
 def _f_sessions(reg: Registry, conn: sqlite3.Connection) -> None:
@@ -676,6 +698,44 @@ def _f_decisions(reg: Registry, conn: sqlite3.Connection) -> None:
         n,
         help="Knowledge nodes carrying structured design decisions.",
     )
+
+
+def _f_jev_quality(reg: Registry, conn: sqlite3.Connection) -> None:
+    """Stored ready classifications; Noul scores are not measured accuracy."""
+    if not _table_exists(conn, "knowledge_node_classifications"):
+        return
+    ready, accepted_nodes, labels = conn.execute(
+        """SELECT COUNT(*),
+                  SUM(json_array_length(accepted_topics_json) > 0),
+                  SUM(json_array_length(accepted_topics_json))
+           FROM knowledge_node_classifications
+           WHERE status='ready' AND probabilities_json IS NOT NULL"""
+    ).fetchone()
+    reg.gauge(
+        "hippo_kb_jev_accepted_labels",
+        labels or 0,
+        help="Accepted topic labels in stored ready Jev classifications.",
+    )
+    if ready:
+        reg.gauge(
+            "hippo_kb_jev_accepted_topic_coverage_ratio",
+            (accepted_nodes or 0) / ready,
+            help="Ready classified nodes with at least one accepted topic, divided by ready nodes.",
+        )
+    if labels:
+        mean = conn.execute(
+            """SELECT AVG(CAST(p.value AS REAL))
+               FROM knowledge_node_classifications c
+               JOIN json_each(c.accepted_topics_json) a
+               JOIN json_each(c.probabilities_json) p ON p.key=a.value
+               WHERE c.status='ready' AND c.probabilities_json IS NOT NULL"""
+        ).fetchone()[0]
+        if mean is not None:
+            reg.gauge(
+                "hippo_kb_jev_accepted_noul_mean",
+                mean,
+                help="Mean Jev Noul score across accepted topic labels; not calibrated confidence or accuracy.",
+            )
 
 
 def _env_snapshot_keys(conn: sqlite3.Connection) -> set[str]:

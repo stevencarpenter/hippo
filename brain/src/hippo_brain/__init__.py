@@ -42,6 +42,7 @@ def _default_settings() -> dict:
         "session_stale_secs": 120,
         "port": 9175,
         "telemetry_endpoint": "http://localhost:4318",
+        "telemetry_enabled": False,
         "max_claim_batch": 10,
         "lock_timeout_secs": 600,
         "long_dwell_bypass_ms": 120_000,
@@ -101,6 +102,7 @@ def _load_runtime_settings() -> dict:
         "session_stale_secs": brain.get("session_stale_secs", 120),
         "port": brain.get("port", 9175),
         "telemetry_endpoint": telemetry.get("endpoint", "http://localhost:4318"),
+        "telemetry_enabled": telemetry.get("enabled", False) is True,
         "max_claim_batch": brain.get("max_claim_batch", 10),
         "lock_timeout_secs": brain.get("lock_timeout_secs", 600),
         "long_dwell_bypass_ms": browser.get("long_dwell_bypass_ms", 120_000),
@@ -206,6 +208,15 @@ def _cmd_export(args: object) -> None:
         print("  sources:")
         for src, count in sorted(stats["sources"].items()):
             print(f"    {src}: {count}")
+
+
+def mcp_main() -> None:
+    """Apply the shared telemetry setting before importing MCP instruments."""
+    if "HIPPO_OTEL_ENABLED" not in os.environ and _load_runtime_settings()["telemetry_enabled"]:
+        os.environ["HIPPO_OTEL_ENABLED"] = "1"
+    from hippo_brain.mcp import main as run_mcp
+
+    run_mcp()
 
 
 def main() -> None:

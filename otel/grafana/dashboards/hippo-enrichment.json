@@ -7,7 +7,7 @@
     "performance"
   ],
   "schemaVersion": 39,
-  "version": 1,
+  "version": 2,
   "editable": true,
   "graphTooltip": 1,
   "time": {
@@ -594,7 +594,8 @@
     },
     {
       "id": 11,
-      "title": "MCP Tool Latency",
+      "title": "MCP Tool Latency p95",
+      "description": "P95 across calls recorded by recently observed MCP processes. The histogram resets when a client process restarts.",
       "type": "timeseries",
       "gridPos": {
         "x": 0,
@@ -613,7 +614,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "histogram_quantile(0.95, sum(rate(hippo_brain_mcp_tool_duration_milliseconds_bucket[5m])) by (le, tool))",
+          "expr": "histogram_quantile(0.95, sum by (le, tool) (hippo_brain_mcp_tool_duration_milliseconds_bucket))",
           "legendFormat": "{{tool}} p95",
           "editorMode": "code"
         }
@@ -640,7 +641,8 @@
     },
     {
       "id": 12,
-      "title": "MCP Tool Calls / min",
+      "title": "MCP Tool Calls",
+      "description": "Calls recorded by recently observed MCP processes. Counts reset when a client process restarts; use Prometheus rate() for sustained throughput.",
       "type": "timeseries",
       "gridPos": {
         "x": 8,
@@ -659,7 +661,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum(rate(hippo_brain_mcp_tool_calls_total[5m])) by (tool) * 60",
+          "expr": "sum by (tool) (hippo_brain_mcp_tool_calls_total)",
           "legendFormat": "{{tool}}",
           "editorMode": "code"
         }
@@ -966,6 +968,110 @@
       }
     },
     {
+      "id": 40,
+      "title": "MCP Lookup Outcomes",
+      "description": "Hit means at least one result or source was returned. Counts cover recently observed MCP processes and reset when clients restart. This measures retrieval coverage, not answer correctness.",
+      "type": "timeseries",
+      "gridPos": {
+        "x": 12,
+        "y": 40,
+        "w": 6,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum by (tool, outcome) (hippo_brain_mcp_result_outcomes_total)",
+          "legendFormat": "{{tool}} {{outcome}}",
+          "editorMode": "code"
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum by (tool) (hippo_brain_mcp_tool_errors_total)",
+          "legendFormat": "{{tool}} error",
+          "editorMode": "code"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "bars",
+            "fillOpacity": 30,
+            "lineWidth": 1
+          }
+        }
+      },
+      "options": {
+        "tooltip": {
+          "mode": "multi"
+        },
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      }
+    },
+    {
+      "id": 41,
+      "title": "MCP Results per Lookup",
+      "description": "Average returned results or answer sources across active MCP processes. Counters reset when a client restarts; this is a coverage proxy, not a relevance or accuracy score.",
+      "type": "timeseries",
+      "gridPos": {
+        "x": 18,
+        "y": 40,
+        "w": 6,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum by (tool) (hippo_brain_mcp_result_count_sum) / sum by (tool) (hippo_brain_mcp_result_count_count)",
+          "legendFormat": "{{tool}}",
+          "editorMode": "code"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "lineWidth": 1
+          }
+        }
+      },
+      "options": {
+        "tooltip": {
+          "mode": "multi"
+        },
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      }
+    },
+    {
       "id": 19,
       "type": "row",
       "title": "Decisions (Jev / rules / local)",
@@ -1011,8 +1117,8 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "sum by (task, backend, outcome) (rate(hippo_brain_decision_count_total[$__rate_interval])) * 60",
-          "legendFormat": "{{task}} {{backend}} {{outcome}}",
+          "expr": "sum by (exported_job, task, backend, outcome) (rate(hippo_brain_decision_count_total[$__rate_interval])) * 60",
+          "legendFormat": "{{exported_job}} {{task}} {{backend}} {{outcome}}",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
@@ -1053,8 +1159,8 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "histogram_quantile(0.95, sum by (le, task, stage) (rate(hippo_brain_decision_duration_milliseconds_bucket{stage=~\"decision|http|queue\"}[$__rate_interval])))",
-          "legendFormat": "{{task}} {{stage}}",
+          "expr": "histogram_quantile(0.95, sum by (le, task, backend, stage) (rate(hippo_brain_decision_duration_milliseconds_bucket{stage=~\"decision|http|queue\"}[$__rate_interval])))",
+          "legendFormat": "{{task}} {{backend}} {{stage}}",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
@@ -1108,7 +1214,7 @@
       "id": 23,
       "type": "timeseries",
       "title": "Jev Tokens / hour",
-      "description": "Provider-reported tokens. Use for spend; missing usage is counted separately.",
+      "description": "Provider-reported tokens, not dollar cost. Missing usage is counted separately.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -1179,8 +1285,8 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "sum by (task) (rate(hippo_brain_decision_errors_total[$__rate_interval])) / sum by (task) (rate(hippo_brain_decision_count_total[$__rate_interval]))",
-          "legendFormat": "{{task}}",
+          "expr": "sum by (task, backend) (rate(hippo_brain_decision_errors_total[$__rate_interval])) / sum by (task, backend) (rate(hippo_brain_decision_count_total[$__rate_interval]))",
+          "legendFormat": "{{task}} {{backend}}",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
@@ -1229,6 +1335,414 @@
           }
         }
       ]
+    },
+    {
+      "id": 26,
+      "type": "row",
+      "title": "Jev live operations",
+      "collapsed": false,
+      "gridPos": {
+        "x": 0,
+        "y": 65,
+        "w": 24,
+        "h": 1
+      },
+      "panels": []
+    },
+    {
+      "id": 30,
+      "title": "Jev success by service",
+      "type": "stat",
+      "gridPos": {
+        "x": 0,
+        "y": 66,
+        "w": 8,
+        "h": 5
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "(sum by (exported_job) (hippo_brain_decision_count_total{backend=\"jev\",outcome=\"success\"}) or on (exported_job) (0 * sum by (exported_job) (hippo_brain_decision_count_total{backend=\"jev\"}))) / sum by (exported_job) (hippo_brain_decision_count_total{backend=\"jev\"})",
+          "legendFormat": "{{exported_job}}",
+          "editorMode": "code"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "decimals": 1
+        }
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "orientation": "auto",
+        "textMode": "auto",
+        "colorMode": "value"
+      },
+      "description": "Successful Jev decisions divided by completed decisions for each recently observed process service. Values reset when processes restart; brain success does not hide MCP fallback."
+    },
+    {
+      "id": 31,
+      "title": "HTTP requests (1h)",
+      "type": "stat",
+      "gridPos": {
+        "x": 8,
+        "y": 66,
+        "w": 8,
+        "h": 5
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum(increase(hippo_brain_decision_requests_total{backend=\"jev\"}[1h]))",
+          "legendFormat": "",
+          "editorMode": "code"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0
+        }
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "orientation": "auto",
+        "textMode": "auto",
+        "colorMode": "value"
+      },
+      "description": "Transport-reported HTTP dispatches in the past hour. Retries and multi-pass decisions can create more than one request. No data means the metric series is unavailable."
+    },
+    {
+      "id": 32,
+      "title": "Usage missing (1h)",
+      "type": "stat",
+      "gridPos": {
+        "x": 16,
+        "y": 66,
+        "w": 8,
+        "h": 5
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum(increase(hippo_brain_decision_usage_unknown_total{backend=\"jev\"}[1h]))",
+          "legendFormat": "",
+          "editorMode": "code"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0
+        }
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "orientation": "auto",
+        "textMode": "auto",
+        "colorMode": "value"
+      },
+      "description": "Assessments without complete provider token usage in the past hour. These are not zero-token calls. No data means the metric series is unavailable."
+    },
+    {
+      "id": 33,
+      "type": "timeseries",
+      "title": "Jev decisions / min by outcome",
+      "description": "Completed decisions by task and outcome. Failure, retry, and fallback remain visible beside success.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 71,
+        "w": 12,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (task, outcome) (rate(hippo_brain_decision_count_total{backend=\"jev\"}[$__rate_interval])) * 60",
+          "legendFormat": "{{task}} {{outcome}}",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        }
+      ]
+    },
+    {
+      "id": 34,
+      "type": "timeseries",
+      "title": "Jev decision latency",
+      "description": "End-to-end decision wall time, including queue wait and SQL application for classification. Gaps mean no observations in the rate window.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 71,
+        "w": 12,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.5, sum by (le, task) (rate(hippo_brain_decision_duration_milliseconds_bucket{backend=\"jev\",stage=\"decision\"}[$__rate_interval])))",
+          "legendFormat": "{{task}} p50",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        },
+        {
+          "refId": "B",
+          "expr": "histogram_quantile(0.95, sum by (le, task) (rate(hippo_brain_decision_duration_milliseconds_bucket{backend=\"jev\",stage=\"decision\"}[$__rate_interval])))",
+          "legendFormat": "{{task}} p95",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        },
+        {
+          "refId": "C",
+          "expr": "histogram_quantile(0.99, sum by (le, task) (rate(hippo_brain_decision_duration_milliseconds_bucket{backend=\"jev\",stage=\"decision\"}[$__rate_interval])))",
+          "legendFormat": "{{task}} p99",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        }
+      ]
+    },
+    {
+      "id": 35,
+      "type": "row",
+      "title": "Jev quality signals",
+      "collapsed": false,
+      "gridPos": {
+        "x": 0,
+        "y": 79,
+        "w": 24,
+        "h": 1
+      },
+      "panels": []
+    },
+    {
+      "id": 36,
+      "title": "Accepted-topic coverage",
+      "type": "stat",
+      "gridPos": {
+        "x": 0,
+        "y": 80,
+        "w": 8,
+        "h": 5
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "hippo_kb_jev_accepted_topic_coverage_ratio",
+          "legendFormat": "",
+          "editorMode": "code"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "decimals": 1
+        }
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "orientation": "auto",
+        "textMode": "auto",
+        "colorMode": "value"
+      },
+      "description": "Stored ready classified nodes with at least one accepted topic, divided by stored ready classifications. This is publication coverage, not accuracy."
+    },
+    {
+      "id": 37,
+      "title": "Mean accepted Noul",
+      "type": "stat",
+      "gridPos": {
+        "x": 8,
+        "y": 80,
+        "w": 8,
+        "h": 5
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "hippo_kb_jev_accepted_noul_mean",
+          "legendFormat": "",
+          "editorMode": "code"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 3
+        }
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "orientation": "auto",
+        "textMode": "auto",
+        "colorMode": "value"
+      },
+      "description": "Mean Jev Noul score across accepted topic labels. A model score, not calibrated confidence or correctness."
+    },
+    {
+      "id": 38,
+      "title": "Accepted topic labels",
+      "type": "stat",
+      "gridPos": {
+        "x": 16,
+        "y": 80,
+        "w": 8,
+        "h": 5
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "hippo_kb_jev_accepted_labels",
+          "legendFormat": "",
+          "editorMode": "code"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0
+        }
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "orientation": "auto",
+        "textMode": "auto",
+        "colorMode": "value"
+      },
+      "description": "Number of accepted labels in stored ready classifications; denominator for the mean accepted Noul score."
+    },
+    {
+      "id": 39,
+      "type": "text",
+      "title": "Measured quality reference",
+      "description": "Dated offline evidence, separate from live Noul and operational metrics.",
+      "gridPos": {
+        "x": 0,
+        "y": 85,
+        "w": 24,
+        "h": 6
+      },
+      "options": {
+        "mode": "markdown",
+        "content": "**Offline evaluation, 2026-09-22. These are not live accuracy measures.**\n\n- Topic classification at Noul \u2265 0.8: **86.7% precision (39/45)** and **41.9% recall (39/93)** on 50 nodes and 93 agent-reviewed reference labels. The labels were not human-adjudicated ground truth.\n- Reranking: Jev placed the known target first in **25/50** questions, versus **12/50** for baseline retrieval. Candidate relevance was not exhaustively judged.\n- The live Noul and coverage panels describe stored production scores and publication. They do not measure correctness. Source: `docs/superpowers/specs/2026-09-22-jev-retrieval-classification-design.md`."
+      }
     }
   ]
 }

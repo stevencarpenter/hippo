@@ -1,7 +1,9 @@
 """Hippo MCP Server — expose the knowledge base as tools for Claude Code."""
 
 import dataclasses
+import shutil
 import sqlite3
+import subprocess
 import time
 import tomllib
 from contextlib import asynccontextmanager, nullcontext
@@ -55,16 +57,18 @@ logger = setup_logging("hippo-mcp")
 _tool_calls = None
 _tool_errors = None
 _tool_duration = None
+_result_outcomes = None
+_result_count = None
 
 
 def _init_telemetry_instruments() -> None:
     """Create MCP metric instruments against the live MeterProvider.
 
     Must be called from main() after init_telemetry() has replaced the global
-    MeterProvider. Mutates the three module-level globals so all tool handlers
+    MeterProvider. Mutates the module-level globals so all tool handlers
     pick up real instruments transparently.
     """
-    global _tool_calls, _tool_errors, _tool_duration
+    global _tool_calls, _tool_errors, _tool_duration, _result_outcomes, _result_count
     meter = get_meter()
     if meter is None:
         return
@@ -77,6 +81,19 @@ def _init_telemetry_instruments() -> None:
     _tool_duration = meter.create_histogram(
         "hippo.brain.mcp.tool_duration", description="MCP tool latency", unit="ms"
     )
+    _result_outcomes = meter.create_counter(
+        "hippo.brain.mcp.result_outcomes",
+        description="Lookup outcomes by tool (hit, empty, or degraded)",
+    )
+    _result_count = meter.create_histogram(
+        "hippo.brain.mcp.result_count", description="Results or sources returned by a lookup"
+    )
+
+
+def _record_result(tool: str, count: int, *, degraded: bool = False) -> None:
+    outcome = "degraded" if degraded else "hit" if count else "empty"
+    _add(_result_outcomes, tool=tool, outcome=outcome)
+    _hist(_result_count, count, tool=tool)
 
 
 def _load_config() -> dict:
@@ -93,6 +110,7 @@ def _load_config() -> dict:
         "query_model": "",
         "retrieval": {},
         "classification": {},
+        "typesafe_api_key_op_ref": "",
     }
 
     if not config_path.exists():
@@ -127,6 +145,7 @@ def _load_config() -> dict:
         "query_model": models.get("query", "") or models.get("enrichment", ""),
         "retrieval": config.get("retrieval", {}),
         "classification": config.get("classification", {}),
+        "typesafe_api_key_op_ref": config.get("brain", {}).get("typesafe_api_key_op_ref", ""),
     }
 
 
@@ -175,6 +194,25 @@ def _get_conn(db_path: str = "") -> sqlite3.Connection:
     return conn
 
 
+def _jev_client_from_config(config: dict):
+    """Use the Hippo-specific 1Password key when configured, never a stale inherited key."""
+    from hippo_brain.jev import JevClient
+
+    ref = config.get("typesafe_api_key_op_ref", "")
+    if not ref:
+        return JevClient.from_env()
+    op = shutil.which("op") or next(
+        (path for path in ("/opt/homebrew/bin/op", "/usr/local/bin/op") if Path(path).is_file()),
+        None,
+    )
+    if op is None:
+        raise FileNotFoundError("1Password CLI unavailable")
+    result = subprocess.run(
+        [op, "read", ref], capture_output=True, text=True, timeout=5, check=True
+    )
+    return JevClient(result.stdout.strip())
+
+
 def _init_state() -> None:
     """Load config and initialize the inference client and vector table (called once at startup)."""
     from hippo_brain import retrieval as _retrieval_mod
@@ -192,11 +230,9 @@ def _init_state() -> None:
     _state.inference_client = InferenceClient(base_url=config["inference_base_url"])
     _state.jev_client = None
     if tuning.rerank and tuning.rerank_backend == "jev":
-        from hippo_brain.jev import JevClient
-
         try:
-            _state.jev_client = JevClient.from_env()
-        except (ValueError, RuntimeError) as exc:
+            _state.jev_client = _jev_client_from_config(config)
+        except (OSError, subprocess.SubprocessError, ValueError, RuntimeError) as exc:
             logger.warning("Jev unavailable (%s)", type(exc).__name__)
             _state.jev_client = None
 
@@ -275,24 +311,11 @@ async def search_knowledge(
     limit = _clamp_limit(limit)
     _add(_tool_calls, tool="search_knowledge")
     t0 = time.monotonic()
-    logger.info(
-        "search_knowledge called: query=%r mode=%s limit=%d project=%r since=%r "
-        "source=%r branch=%r category=%r",
-        query,
-        mode,
-        limit,
-        project,
-        since,
-        source,
-        branch,
-        category,
-    )
-
     tracer = _get_tracer()
     span_ctx = (
         tracer.start_as_current_span(
             "mcp.search_knowledge",
-            attributes={"hippo.query": query, "hippo.mode": mode},
+            attributes={"hippo.query_length": len(query), "hippo.mode": mode},
         )
         if tracer
         else nullcontext()
@@ -316,6 +339,7 @@ async def search_knowledge(
                     )
                     elapsed = time.monotonic() - t0
                     _hist(_tool_duration, elapsed * 1000, tool="search_knowledge")
+                    _record_result("search_knowledge", len(results))
                     logger.info(
                         "search_knowledge completed: %d results in %.3fs (%s)",
                         len(results),
@@ -345,6 +369,7 @@ async def search_knowledge(
 
             elapsed = time.monotonic() - t0
             _hist(_tool_duration, elapsed * 1000, tool="search_knowledge")
+            _record_result("search_knowledge", len(results))
             logger.info(
                 "search_knowledge completed: %d results in %.3fs (lexical)",
                 len(results),
@@ -392,21 +417,14 @@ async def ask(
     limit = _clamp_limit(limit)
     _add(_tool_calls, tool="ask")
     t0 = time.monotonic()
-    logger.info(
-        "ask called: question=%r limit=%d project=%r since=%r source=%r branch=%r",
-        question,
-        limit,
-        project,
-        since,
-        source,
-        branch,
-    )
     since_ms = _parse_since_ms(since) if since else None
 
     if not _state.inference_client or not _state.vector_table:
+        _record_result("ask", 0, degraded=True)
         return "Error: Semantic search not available (inference client or vector store not initialized)"
 
     if not _state.query_model:
+        _record_result("ask", 0, degraded=True)
         return "Error: No query model configured (set models.query in config.toml)"
 
     conn = _open_retrieval_conn()
@@ -436,6 +454,7 @@ async def ask(
 
     elapsed = time.monotonic() - t0
     _hist(_tool_duration, elapsed * 1000, tool="ask")
+    _record_result("ask", len(result.get("sources", [])), degraded=bool(result.get("degraded")))
     logger.info("ask completed in %.3fs", elapsed)
 
     return format_rag_response(result)
@@ -464,21 +483,11 @@ async def search_events(
     limit = _clamp_limit(limit)
     _add(_tool_calls, tool="search_events")
     t0 = time.monotonic()
-    logger.info(
-        "search_events called: query=%r source=%s since=%r project=%r branch=%r limit=%d",
-        query,
-        source,
-        since,
-        project,
-        branch,
-        limit,
-    )
-
     tracer = _get_tracer()
     span_ctx = (
         tracer.start_as_current_span(
             "mcp.search_events",
-            attributes={"hippo.query": query, "hippo.mode": source},
+            attributes={"hippo.query_length": len(query), "hippo.mode": source},
         )
         if tracer
         else nullcontext()
@@ -501,6 +510,7 @@ async def search_events(
 
             elapsed = time.monotonic() - t0
             _hist(_tool_duration, elapsed * 1000, tool="search_events")
+            _record_result("search_events", len(results))
             logger.info("search_events completed: %d results in %.3fs", len(results), elapsed)
             return results
 
@@ -532,20 +542,11 @@ async def get_entities(
     limit = _clamp_limit(limit)
     _add(_tool_calls, tool="get_entities")
     t0 = time.monotonic()
-    logger.info(
-        "get_entities called: type=%r query=%r limit=%d project=%r since=%r",
-        type,
-        query,
-        limit,
-        project,
-        since,
-    )
-
     tracer = _get_tracer()
     span_ctx = (
         tracer.start_as_current_span(
             "mcp.get_entities",
-            attributes={"hippo.query": query, "hippo.mode": type},
+            attributes={"hippo.query_length": len(query), "hippo.mode": type},
         )
         if tracer
         else nullcontext()
@@ -567,6 +568,7 @@ async def get_entities(
 
             elapsed = time.monotonic() - t0
             _hist(_tool_duration, elapsed * 1000, tool="get_entities")
+            _record_result("get_entities", len(results))
             logger.info("get_entities completed: %d results in %.3fs", len(results), elapsed)
             return results
 
@@ -595,13 +597,11 @@ async def get_ci_status(
     """
     _add(_tool_calls, tool="get_ci_status")
     t0 = time.monotonic()
-    logger.info("get_ci_status called: repo=%r sha=%r branch=%r", repo, sha, branch)
-
     tracer = _get_tracer()
     span_ctx = (
         tracer.start_as_current_span(
             "mcp.get_ci_status",
-            attributes={"hippo.repo": repo},
+            attributes={"hippo.repo_present": bool(repo)},
         )
         if tracer
         else nullcontext()
@@ -612,6 +612,7 @@ async def get_ci_status(
             result = dataclasses.asdict(status) if status else {}
             elapsed = time.monotonic() - t0
             _hist(_tool_duration, elapsed * 1000, tool="get_ci_status")
+            _record_result("get_ci_status", int(status is not None))
             logger.info("get_ci_status completed: found=%s in %.3fs", status is not None, elapsed)
             return result
         except Exception:
@@ -642,13 +643,11 @@ async def get_lessons(
     limit = _clamp_limit(limit)
     _add(_tool_calls, tool="get_lessons")
     t0 = time.monotonic()
-    logger.info("get_lessons called: repo=%r path=%r tool=%r limit=%d", repo, path, tool, limit)
-
     tracer = _get_tracer()
     span_ctx = (
         tracer.start_as_current_span(
             "mcp.get_lessons",
-            attributes={"hippo.repo": repo or ""},
+            attributes={"hippo.repo_present": bool(repo)},
         )
         if tracer
         else nullcontext()
@@ -659,6 +658,7 @@ async def get_lessons(
             result = [dataclasses.asdict(lesson) for lesson in lessons]
             elapsed = time.monotonic() - t0
             _hist(_tool_duration, elapsed * 1000, tool="get_lessons")
+            _record_result("get_lessons", len(result))
             logger.info("get_lessons completed: %d results in %.3fs", len(result), elapsed)
             return result
         except Exception:
@@ -813,20 +813,6 @@ async def search_hybrid(
     limit = _clamp_limit(limit)
     _add(_tool_calls, tool="search_hybrid")
     t0 = time.monotonic()
-    logger.info(
-        "search_hybrid called: query=%r mode=%s limit=%d filters=%r",
-        query,
-        mode,
-        limit,
-        {
-            "project": project,
-            "since": since,
-            "source": source,
-            "branch": branch,
-            "entity": entity,
-        },
-    )
-
     try:
         results = await _retrieve_filtered(
             query=query,
@@ -840,6 +826,7 @@ async def search_hybrid(
         )
         elapsed = time.monotonic() - t0
         _hist(_tool_duration, elapsed * 1000, tool="search_hybrid")
+        _record_result("search_hybrid", len(results))
         logger.info("search_hybrid completed: %d results in %.3fs", len(results), elapsed)
         return results
     except Exception:
@@ -873,15 +860,6 @@ async def get_context(
     limit = _clamp_limit(limit)
     _add(_tool_calls, tool="get_context")
     t0 = time.monotonic()
-    logger.info(
-        "get_context called: query=%r limit=%d project=%r since=%r source=%r",
-        query,
-        limit,
-        project,
-        since,
-        source,
-    )
-
     try:
         results = await _retrieve_filtered(
             query=query,
@@ -895,6 +873,7 @@ async def get_context(
         block = format_context_block(query, results)
         elapsed = time.monotonic() - t0
         _hist(_tool_duration, elapsed * 1000, tool="get_context")
+        _record_result("get_context", len(results))
         logger.info("get_context completed: %d sources in %.3fs", len(results), elapsed)
         return block
     except Exception:
@@ -928,14 +907,6 @@ async def agent_query(
     limit = _clamp_limit(limit)
     _add(_tool_calls, tool="agent_query")
     t0 = time.monotonic()
-    logger.info(
-        "agent_query called: query=%r mode=%s limit=%d source=%r",
-        query,
-        mode,
-        limit,
-        source,
-    )
-
     req = AgentQueryRequest(
         query=query,
         mode=mode,
@@ -961,12 +932,14 @@ async def agent_query(
             result = run_agent_query(conn, req, query_vec)
         except ValueError as exc:
             _add(_tool_errors, tool="agent_query")
+            _record_result("agent_query", 0, degraded=True)
             return {"error": str(exc)}
     finally:
         conn.close()
 
     elapsed = time.monotonic() - t0
     _hist(_tool_duration, elapsed * 1000, tool="agent_query")
+    _record_result("agent_query", len(result.get("hits", [])))
     logger.info("agent_query completed in %.3fs", elapsed)
     return result
 
@@ -1012,11 +985,13 @@ async def query_memory(
             result = query_memory_current(conn, req)
         except ValueError as exc:
             _add(_tool_errors, tool="query_memory")
+            _record_result("query_memory", 0, degraded=True)
             return {"error": str(exc)}
     finally:
         conn.close()
     elapsed = time.monotonic() - t0
     _hist(_tool_duration, elapsed * 1000, tool="query_memory")
+    _record_result("query_memory", len(result["results"]))
     logger.info("query_memory completed: %d results in %.3fs", len(result["results"]), elapsed)
     return result
 
@@ -1039,6 +1014,7 @@ async def query_memory_history(
     _add(_tool_calls, tool="query_memory_history")
     t0 = time.monotonic()
     if not document_uuid and not (repository and logical_path):
+        _record_result("query_memory_history", 0, degraded=True)
         return {
             "error": "document_uuid or repository+logical_path is required for history",
         }
@@ -1055,11 +1031,13 @@ async def query_memory_history(
             )
         except ValueError as exc:
             _add(_tool_errors, tool="query_memory_history")
+            _record_result("query_memory_history", 0, degraded=True)
             return {"error": str(exc)}
     finally:
         conn.close()
     elapsed = time.monotonic() - t0
     _hist(_tool_duration, elapsed * 1000, tool="query_memory_history")
+    _record_result("query_memory_history", len(result["results"]))
     logger.info(
         "query_memory_history completed: %d revisions in %.3fs",
         len(result["results"]),
@@ -1092,6 +1070,7 @@ async def list_projects(limit: int = 50) -> list[dict]:
             conn.close()
         elapsed = time.monotonic() - t0
         _hist(_tool_duration, elapsed * 1000, tool="list_projects")
+        _record_result("list_projects", len(results))
         logger.info("list_projects completed: %d results in %.3fs", len(results), elapsed)
         return results
     except Exception:

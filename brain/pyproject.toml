@@ -27,7 +27,7 @@ dev = [
 
 [project.scripts]
 hippo-brain = "hippo_brain:main"
-hippo-mcp = "hippo_brain.mcp:main"
+hippo-mcp = "hippo_brain:mcp_main"
 hippo-eval = "hippo_brain.evaluation:main"
 hippo-trust-eval = "hippo_brain.trust_eval:main"
 hippo-evidence-inspect = "hippo_brain.evidence_packets:main"
