@@ -232,8 +232,8 @@ exec {hippo_bin} gh-poll
 /// `TYPESAFE_API_KEY` consumer and never written to disk or passed on the
 /// command line.
 ///
-/// A failed lookup exits gracefully (the brain starts without the key and
-/// reports Jev unavailable) rather than wedging the always-on service.
+/// A failed lookup warns and still starts the brain rather than stopping the
+/// always-on service. See docs/jev-decisions.md for operator setup.
 pub const BRAIN_WRAPPER_SCRIPT: &str = r#"#!/bin/bash
 # Runtime secret resolution for the com.hippo.brain LaunchAgent.
 # See install.rs::BRAIN_WRAPPER_SCRIPT for the design rationale.
