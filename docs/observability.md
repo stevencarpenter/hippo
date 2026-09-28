@@ -53,12 +53,12 @@ All dashboards provision automatically from `otel/grafana/dashboards/` into the 
 | **Hippo Overview** | `hippo-overview` | http://localhost:3030/d/hippo-overview | Health grade, capture lag, probe success/lag, invariant violations, alarm firings, daemon drops |
 | **Hippo Daemon** | `hippo-daemon` | http://localhost:3030/d/hippo-daemon | Event ingest/drop rates, flush latency, redactions, fallback writes, watcher throughput |
 | **Hippo Enrichment** | `hippo-enrichment` | http://localhost:3030/d/hippo-enrichment | Brain queue depth, LLM latency, enrichment throughput, MCP tool metrics, Jev/rules/local decision outcomes, stage latency, Jev tokens, error ratio, and classification backlog (see [Jev decisions](jev-decisions.md#observability-and-rollback)) |
-| **Hippo Processes** | `hippo-processes` | http://localhost:3030/d/hippo-processes | `process.*` CPU/memory for daemon and brain |
-| **Hippo — Knowledge Health** | `hippo-knowledge-health` | http://localhost:3030/d/hippo-knowledge-health | Recall probe (golden-question `/ask` round-trips), capture alarms/staleness, corpus size, project graveyard and dead-project contamination, identity fragmentation, redaction canary. Fed by the knowledge-health exporter, not OTel. |
+| **Hippo Processes** | `hippo-processes` | http://localhost:3030/d/hippo-processes | `process.*` CPU/memory for daemon, brain, and MCP, plus recently observed MCP telemetry instances |
+| **Hippo — Knowledge Health** | `hippo-knowledge-health` | http://localhost:3030/d/hippo-knowledge-health | Recall probe (golden-question `/ask` round-trips), capture alarms/staleness, corpus size and vector coverage, project graveyard and dead-project contamination, identity fragmentation, redaction canary. Fed by the knowledge-health exporter, not OTel. |
 
 Metric names in PromQL use Prometheus exporter suffixes (`_total`, `_milliseconds`, etc.). The shared OTel name/type contract lives in `tests/fixtures/otel-metric-names.json`. When adding an instrument, update that contract and exercise its runtime emission in `brain/tests/test_otel_dashboards.py` (Python) or `crates/hippo-daemon/tests/dashboard_metrics.rs` (Rust). These tests collect SDK measurements and check names, types, and units; Python validates parsed dashboard and alert references against the contract and collected Python samples. The standalone knowledge-health exporter owns its registry, which the Python tests verify against synthetic-database scrapes. Dashboard selector checks reject the retired `service_namespace` label, not harmless mentions in descriptions or label values.
 
-Dashboards draw on two metric sources: OTel instruments in the daemon and brain (`hippo_daemon_*`, `hippo_brain_*`), and the knowledge-health exporter (`hippo_kb_*`, see below). Both are covered by the same drift tests.
+Dashboards draw on two metric sources: OTel instruments in the daemon, brain, and MCP (`hippo_daemon_*`, `hippo_brain_*`), and the knowledge-health exporter (`hippo_kb_*`, see below). Both are covered by the same drift tests.
 
 `_total` is reserved for cumulative counters. A point-in-time reading is a gauge with a bare name — `hippo_kb_events`, not `hippo_kb_events_total` — because `increase()`/`rate()` over a non-monotonic `_total` series is silently always zero.
 
@@ -108,6 +108,8 @@ All capture rules use `noDataState: OK` so a stack with telemetry disabled does 
 - **Snowball metrics** (`hippo_kb_epitaphs`, `hippo_kb_bets`, …) are emitted only when their backing table exists, so an unshipped feature shows No data rather than a fake zero. They live in a collapsed dashboard row.
 - **Run in the foreground** for debugging: `mise run metrics:exporter`. Reload Grafana/Prometheus provisioning after editing `otel/`: `mise run otel:restart`.
 
+Vector coverage is the share of live knowledge nodes with vector rows, not a measure of answer accuracy. The enrichment dashboard also uses this exporter's stored ready-classification signals: accepted-topic coverage, accepted-label count, and mean accepted Noul score. These do not establish classification correctness or calibrated confidence. The recall probe exercises brain `/ask`, not MCP credentials.
+
 Endpoints: `/metrics` (Prometheus), `/metrics.json` (same samples as JSON), `/healthz`.
 
 ## Enabling telemetry
@@ -129,6 +131,10 @@ Build: `mise run build:otel` or `cargo build --features otel`.
 export HIPPO_OTEL_ENABLED=1
 # optional: export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318
 ```
+
+New `hippo-mcp` processes also honor `[telemetry] enabled = true` in `~/.config/hippo/config.toml` when `HIPPO_OTEL_ENABLED` is unset. An explicit `HIPPO_OTEL_ENABLED=0` disables MCP telemetry. Restart existing MCP processes after changing settings. Python telemetry assigns a unique `service.instance.id` on initialization so concurrent clients export distinct series.
+
+The enrichment dashboard aggregates MCP calls, latency, errors, lookup outcomes, and returned result counts across recently observed processes. Lookup outcomes distinguish hit, empty, and degraded responses; a hit means a nonempty result or source list, not a correct answer. These cumulative MCP panels reset with process restarts, rather than showing a fixed-window rate. MCP request logs omit query text and filters, and lookup spans record query length or repository presence instead of their contents.
 
 ## Commands
 
