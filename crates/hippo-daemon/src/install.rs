@@ -14,6 +14,7 @@ pub fn render_plist(template: &str, vars: &PlistVars) -> String {
         .replace("__DATA_DIR__", &vars.data_dir.to_string_lossy())
         .replace("__HIPPO_OTEL_ENABLED__", &vars.otel_enabled)
         .replace("__OTEL_ENDPOINT__", &vars.otel_endpoint)
+        .replace("__TYPESAFE_OP_REF__", &vars.typesafe_api_key_op_ref)
         .replace(
             "__OPENCODE_POLL_INTERVAL_SECS__",
             &vars.opencode_poll_interval_secs.to_string(),
@@ -46,6 +47,9 @@ pub struct PlistVars {
     pub data_dir: PathBuf,
     pub otel_enabled: String,
     pub otel_endpoint: String,
+    /// 1Password secret reference for the Jev/TypeSafe API key, rendered into
+    /// the brain plist as `HIPPO_TYPESAFE_OP_REF`. Empty disables the lookup.
+    pub typesafe_api_key_op_ref: String,
     pub opencode_poll_interval_secs: u64,
     pub codex_poll_interval_secs: u64,
     pub cursor_poll_interval_secs: u64,
@@ -135,6 +139,10 @@ pub fn detect_vars(brain_dir: &Path, hippo_bin_override: Option<PathBuf>) -> Res
             }
             parsed.to_string()
         },
+        typesafe_api_key_op_ref: cfg
+            .as_ref()
+            .map(|c| c.brain.typesafe_api_key_op_ref.clone())
+            .unwrap_or_default(),
         opencode_poll_interval_secs,
         codex_poll_interval_secs,
         cursor_poll_interval_secs,
@@ -208,6 +216,67 @@ exec {hippo_bin} gh-poll
         hippo_bin = hippo_bin.display(),
     );
     std::fs::write(&wrapper, content)?;
+    std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o700))?;
+    println!("  Installed wrapper {}", wrapper.display());
+    Ok(wrapper)
+}
+
+/// Runtime secret resolution for the `com.hippo.brain` LaunchAgent.
+///
+/// launchd does not inherit the interactive shell environment, so the Jev /
+/// TypeSafe API key is fetched from 1Password with `op read` at process start
+/// instead of being persisted anywhere. The 1Password secret reference comes
+/// from `[brain] typesafe_api_key_op_ref`, rendered into the plist as
+/// `HIPPO_TYPESAFE_OP_REF`; an empty reference skips the lookup so an install
+/// without Jev needs no `op`. The retrieved value is exported into the existing
+/// `TYPESAFE_API_KEY` consumer and never written to disk or passed on the
+/// command line.
+///
+/// A failed lookup warns and still starts the brain rather than stopping the
+/// always-on service. See docs/jev-decisions.md for operator setup.
+pub const BRAIN_WRAPPER_SCRIPT: &str = r#"#!/bin/bash
+# Runtime secret resolution for the com.hippo.brain LaunchAgent.
+# See install.rs::BRAIN_WRAPPER_SCRIPT for the design rationale.
+set -euo pipefail
+
+ref="${HIPPO_TYPESAFE_OP_REF:-}"
+if [ -n "$ref" ]; then
+    op_bin="$(command -v op || true)"
+    if [ -z "$op_bin" ]; then
+        for candidate in /opt/homebrew/bin/op /usr/local/bin/op; do
+            if [ -x "$candidate" ]; then
+                op_bin="$candidate"
+                break
+            fi
+        done
+    fi
+    if [ -n "$op_bin" ]; then
+        if TYPESAFE_API_KEY="$("$op_bin" read "$ref" 2>/dev/null)"; then
+            export TYPESAFE_API_KEY
+        else
+            echo "brain-wrapper: 1Password lookup failed; continuing without TYPESAFE_API_KEY" >&2
+        fi
+    else
+        echo "brain-wrapper: op not found; continuing without TYPESAFE_API_KEY" >&2
+    fi
+elif [ -z "${TYPESAFE_API_KEY:-}" ]; then
+    echo "brain-wrapper: TYPESAFE_API_KEY missing; configure brain.typesafe_api_key_op_ref and run hippo daemon install --force" >&2
+fi
+
+exec "$@"
+"#;
+
+/// Write the brain runtime secret wrapper to the data dir, mode 0700.
+pub fn install_brain_wrapper(data_dir: &Path, force: bool) -> Result<PathBuf> {
+    hippo_core::storage::ensure_private_dir(data_dir)?;
+    let wrapper = data_dir.join("brain-wrapper.sh");
+    if wrapper.exists() && !force {
+        anyhow::bail!(
+            "{} already exists. Use --force to overwrite.",
+            wrapper.display()
+        );
+    }
+    std::fs::write(&wrapper, BRAIN_WRAPPER_SCRIPT)?;
     std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o700))?;
     println!("  Installed wrapper {}", wrapper.display());
     Ok(wrapper)
@@ -807,7 +876,8 @@ mod tests {
 <string>__OTEL_ENDPOINT__</string>
 <integer>__OPENCODE_POLL_INTERVAL_SECS__</integer>
 <integer>__CODEX_POLL_INTERVAL_SECS__</integer>
-<integer>__CURSOR_POLL_INTERVAL_SECS__</integer>"#;
+<integer>__CURSOR_POLL_INTERVAL_SECS__</integer>
+<string>__TYPESAFE_OP_REF__</string>"#;
 
         let vars = PlistVars {
             hippo_bin: PathBuf::from("/usr/local/bin/hippo"),
@@ -824,6 +894,7 @@ mod tests {
             cursor_poll_interval_secs: 60,
             pi_poll_interval_secs: 60,
             auto_memory_poll_interval_secs: 60,
+            typesafe_api_key_op_ref: String::new(),
         };
 
         let result = render_plist(template, &vars);
@@ -839,6 +910,7 @@ mod tests {
         assert!(!result.contains("__OPENCODE_POLL_INTERVAL_SECS__"));
         assert!(!result.contains("__CODEX_POLL_INTERVAL_SECS__"));
         assert!(!result.contains("__CURSOR_POLL_INTERVAL_SECS__"));
+        assert!(!result.contains("__TYPESAFE_OP_REF__"));
         assert!(result.contains("/usr/local/bin/hippo"));
         assert!(result.contains("/usr/local/bin/uv"));
         assert!(result.contains("http://localhost:4318"));
@@ -863,6 +935,7 @@ mod tests {
             cursor_poll_interval_secs: 60,
             pi_poll_interval_secs: 60,
             auto_memory_poll_interval_secs: 60,
+            typesafe_api_key_op_ref: String::new(),
         };
 
         let rendered = render_plist(template, &vars);
@@ -875,6 +948,84 @@ mod tests {
         assert!(rendered.contains("<string>/Users/me/.local/share/hippo/omlx.stdout.log</string>"));
         assert!(rendered.contains("<string>/Users/me/.local/share/hippo/omlx.stderr.log</string>"));
         assert!(rendered.contains("<string>/Users/me</string>"));
+    }
+
+    /// The brain LaunchAgent must resolve `TYPESAFE_API_KEY` from 1Password at
+    /// process start through the runtime wrapper. This fails if the wrapper is
+    /// dropped (brain reverts to starting `uv` directly) or if the rejected
+    /// plaintext-file fallback returns.
+    #[test]
+    fn brain_launchagent_supplies_typesafe_key_via_op_at_start() {
+        let template = include_str!("../../../launchd/com.hippo.brain.plist");
+        let vars = PlistVars {
+            hippo_bin: PathBuf::from("/usr/local/bin/hippo"),
+            uv_bin: PathBuf::from("/opt/homebrew/bin/uv"),
+            brain_dir: PathBuf::from("/Users/me/.local/share/hippo-brain"),
+            scripts_dir: PathBuf::from("/Users/me/.local/share/hippo-brain/scripts"),
+            home: PathBuf::from("/Users/me"),
+            path: "/opt/homebrew/bin:/usr/bin:/bin".to_string(),
+            data_dir: PathBuf::from("/Users/me/.local/share/hippo"),
+            otel_enabled: "0".to_string(),
+            otel_endpoint: "http://localhost:4318".to_string(),
+            typesafe_api_key_op_ref: "op://Vault/Item/credential".to_string(),
+            opencode_poll_interval_secs: 30,
+            codex_poll_interval_secs: 60,
+            cursor_poll_interval_secs: 60,
+            pi_poll_interval_secs: 60,
+            auto_memory_poll_interval_secs: 60,
+        };
+
+        let rendered = render_plist(template, &vars);
+
+        // Brain starts through the runtime wrapper, not `uv` directly.
+        assert!(
+            rendered.contains("<string>/Users/me/.local/share/hippo/brain-wrapper.sh</string>"),
+            "brain plist must start through the 1Password runtime wrapper"
+        );
+        // The reference travels in the environment, not in argv.
+        assert!(rendered.contains("<key>HIPPO_TYPESAFE_OP_REF</key>"));
+        assert!(rendered.contains("<string>op://Vault/Item/credential</string>"));
+        // No plaintext secret path and no secret-valued app env var in the plist.
+        assert!(!rendered.contains("typesafe-api-key"));
+        assert!(!rendered.contains("TYPESAFE_API_KEY"));
+        // The wrapper does the 1Password lookup at runtime and exports the
+        // existing consumer name.
+        assert!(BRAIN_WRAPPER_SCRIPT.contains("HIPPO_TYPESAFE_OP_REF"));
+        assert!(BRAIN_WRAPPER_SCRIPT.contains("\"$op_bin\" read \"$ref\""));
+        assert!(BRAIN_WRAPPER_SCRIPT.contains("export TYPESAFE_API_KEY"));
+        assert!(!BRAIN_WRAPPER_SCRIPT.contains("typesafe-api-key"));
+    }
+
+    #[test]
+    fn brain_wrapper_warns_only_when_reference_and_key_are_empty() {
+        for key in [None, Some(""), Some("test-only-value")] {
+            let mut command = std::process::Command::new("/bin/bash");
+            command
+                .args([
+                    "-c",
+                    BRAIN_WRAPPER_SCRIPT,
+                    "brain-wrapper",
+                    "/bin/bash",
+                    "-c",
+                    "test \"${TYPESAFE_API_KEY:-}\" = \"$1\"",
+                    "child",
+                    key.unwrap_or(""),
+                ])
+                .env_clear()
+                .env("HIPPO_TYPESAFE_OP_REF", "");
+            if let Some(key) = key {
+                command.env("TYPESAFE_API_KEY", key);
+            }
+            let output = command.output().unwrap();
+            assert!(output.status.success());
+            assert!(output.stdout.is_empty());
+            let expected = if key.unwrap_or("").is_empty() {
+                "brain-wrapper: TYPESAFE_API_KEY missing; configure brain.typesafe_api_key_op_ref and run hippo daemon install --force\n"
+            } else {
+                ""
+            };
+            assert_eq!(String::from_utf8(output.stderr).unwrap(), expected);
+        }
     }
 
     /// Every `__SCRIPTS_DIR__/<file>` referenced by a LaunchAgent plist must
@@ -987,6 +1138,7 @@ mod tests {
             cursor_poll_interval_secs: 60,
             pi_poll_interval_secs: 60,
             auto_memory_poll_interval_secs: 60,
+            typesafe_api_key_op_ref: String::new(),
         };
 
         let rendered = render_plist(template, &vars);

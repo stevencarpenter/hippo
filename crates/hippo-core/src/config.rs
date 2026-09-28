@@ -216,6 +216,13 @@ pub struct BrainConfig {
     pub max_events_per_chunk: usize,
     #[serde(default = "default_session_stale_secs")]
     pub session_stale_secs: u64,
+    /// 1Password secret reference for the Jev/TypeSafe API key, for example
+    /// `op://<vault>/<item>/<field>`. The installer renders it into the brain
+    /// LaunchAgent, whose startup wrapper resolves it with `op read` and
+    /// exports the result as `TYPESAFE_API_KEY`. Empty disables the lookup, so
+    /// installs that do not use Jev need no 1Password CLI.
+    #[serde(default)]
+    pub typesafe_api_key_op_ref: String,
 }
 
 fn default_brain_port() -> u16 {
@@ -246,6 +253,7 @@ impl Default for BrainConfig {
             max_queue_depth: default_max_queue_depth(),
             max_events_per_chunk: default_max_events_per_chunk(),
             session_stale_secs: default_session_stale_secs(),
+            typesafe_api_key_op_ref: String::new(),
         }
     }
 }
