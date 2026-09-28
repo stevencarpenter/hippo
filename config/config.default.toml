@@ -34,7 +34,9 @@ max_claim_batch = 10
 lock_timeout_secs = 600
 # 1Password secret reference the brain LaunchAgent resolves with `op read` at
 # startup and exports as TYPESAFE_API_KEY (Jev). Example: "op://<vault>/<item>/<field>".
-# Leave unset to disable Jev credential lookup.
+# Leave unset to disable Jev credential lookup (warns if TYPESAFE_API_KEY is absent).
+# After adding or changing this machine-local reference, run
+# `hippo daemon install --force` to regenerate the plist, then restart the brain.
 # typesafe_api_key_op_ref = "op://<vault>/<item>/<field>"
 
 [storage]
