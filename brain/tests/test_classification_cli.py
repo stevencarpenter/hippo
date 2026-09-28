@@ -232,6 +232,41 @@ def test_retry_failed_requeues_only_current_selected_failures(tmp_db, tmp_path, 
         cli.retry_failed(database, ["invalid node content"])
 
 
+def test_retry_failed_advances_past_ineligible_rows(tmp_db, tmp_path):
+    conn, database = tmp_db
+    ids = [node(conn, f"failure-{i}") for i in range(8)]
+    cli.backfill(database, tmp_path / "backfill.json")
+    with conn:
+        conn.execute(
+            "UPDATE knowledge_node_classifications SET status='failed',"
+            "error='HTTPStatusError',updated_at=1"
+        )
+        conn.execute(
+            "UPDATE knowledge_node_classifications SET recipe_hash='old' WHERE node_id=?",
+            (ids[0],),
+        )
+        conn.execute(
+            "UPDATE knowledge_node_classifications SET applied_revision=1 WHERE node_id=?",
+            (ids[1],),
+        )
+        conn.execute("UPDATE knowledge_nodes SET content='invalid' WHERE id=?", (ids[2],))
+        conn.execute("UPDATE knowledge_nodes SET embed_text='changed' WHERE id=?", (ids[3],))
+        conn.execute(
+            "UPDATE knowledge_node_classifications SET node_uuid='stale' WHERE node_id=?",
+            (ids[4],),
+        )
+    assert cli.retry_failed(database, ["HTTPStatusError"], limit=2) == {
+        "selected": 5,
+        "requeued": 2,
+        "skipped": 3,
+    }
+    assert conn.execute(
+        "SELECT node_id FROM knowledge_node_classifications WHERE status='pending' "
+        "ORDER BY node_id"
+    ).fetchall() == [(ids[5],), (ids[6],)]
+    assert cli.retry_failed(database, ["HTTPStatusError"], limit=2)["requeued"] == 1
+
+
 def test_connections_include_exact_topic_and_both_current_provenances(tmp_db):
     conn, database = tmp_db
     add_node(conn, 1)

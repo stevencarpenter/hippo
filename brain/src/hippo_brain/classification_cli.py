@@ -244,31 +244,37 @@ def retry_failed(database: Path, errors: list[str], *, limit: int = 100) -> dict
     errors = list(dict.fromkeys(errors))
     placeholders = ",".join("?" for _ in errors)
     now = time.time_ns() // 1_000_000
-    requeued = 0
+    selected = requeued = 0
+    after_time = after_id = None
     with closing(_connect(database, write=True)) as conn, conn:
         conn.execute("BEGIN IMMEDIATE")
-        rows = conn.execute(
-            "SELECT node_id,node_uuid,desired_input_hash,recipe_hash,applied_revision "
-            "FROM knowledge_node_classifications WHERE status='failed' "
-            f"AND error IN ({placeholders}) ORDER BY updated_at,node_id LIMIT ?",
-            (*errors, limit),
-        ).fetchall()
-        for node_id, node_uuid, input_hash, recipe_hash, applied_revision in rows:
-            if recipe_hash != recipe.recipe_hash or applied_revision is not None:
-                continue
-            try:
-                identity = classification.node_input(conn, node_id)
-            except ValueError:
-                continue
-            if identity is None or identity[0] != node_uuid or identity[2] != input_hash:
-                continue
-            requeued += conn.execute(
-                "UPDATE knowledge_node_classifications SET status='pending',attempts=0,"
-                "next_attempt_at=0,lease_token=NULL,lease_expires_at=NULL,error=NULL,"
-                "enqueued_at=?,updated_at=? WHERE node_id=? AND status='failed'",
-                (now, now, node_id),
-            ).rowcount
-    return {"selected": len(rows), "requeued": requeued, "skipped": len(rows) - requeued}
+        while requeued < limit:
+            rows = conn.execute(
+                "SELECT node_id,node_uuid,desired_input_hash,updated_at "
+                "FROM knowledge_node_classifications WHERE status='failed' "
+                f"AND error IN ({placeholders}) AND recipe_hash=? AND applied_revision IS NULL "
+                "AND (? IS NULL OR (updated_at,node_id) > (?,?)) "
+                "ORDER BY updated_at,node_id LIMIT ?",
+                (*errors, recipe.recipe_hash, after_time, after_time, after_id, limit - requeued),
+            ).fetchall()
+            if not rows:
+                break
+            for node_id, node_uuid, input_hash, updated_at in rows:
+                selected += 1
+                after_time, after_id = updated_at, node_id
+                try:
+                    identity = classification.node_input(conn, node_id)
+                except ValueError:
+                    continue
+                if identity is None or identity[0] != node_uuid or identity[2] != input_hash:
+                    continue
+                requeued += conn.execute(
+                    "UPDATE knowledge_node_classifications SET status='pending',attempts=0,"
+                    "next_attempt_at=0,lease_token=NULL,lease_expires_at=NULL,error=NULL,"
+                    "enqueued_at=?,updated_at=? WHERE node_id=? AND status='failed'",
+                    (now, now, node_id),
+                ).rowcount
+    return {"selected": selected, "requeued": requeued, "skipped": selected - requeued}
 
 
 _EXPORT_COLUMNS = {

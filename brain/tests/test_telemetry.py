@@ -1,5 +1,6 @@
 import os
 import sys
+from contextlib import ExitStack
 from unittest.mock import patch
 
 import pytest
@@ -43,6 +44,45 @@ def test_telemetry_enabled_returns_providers():
                 result()
         except ImportError:
             pass
+
+
+def test_telemetry_initializations_have_distinct_shared_resource_identity(monkeypatch):
+    from hippo_brain.telemetry import init_telemetry
+
+    monkeypatch.setenv("HIPPO_OTEL_ENABLED", "1")
+    monkeypatch.setenv("OTEL_RESOURCE_ATTRIBUTES", "service.namespace=hippo-bench")
+    with ExitStack() as stack:
+        providers = [
+            stack.enter_context(patch(path))
+            for path in (
+                "opentelemetry.sdk.trace.TracerProvider",
+                "opentelemetry.sdk._logs.LoggerProvider",
+                "opentelemetry.sdk.metrics.MeterProvider",
+            )
+        ]
+        for path in (
+            "opentelemetry.trace.set_tracer_provider",
+            "opentelemetry.metrics.set_meter_provider",
+            "opentelemetry.sdk.trace.export.BatchSpanProcessor",
+            "opentelemetry.sdk._logs.export.BatchLogRecordProcessor",
+            "opentelemetry.sdk.metrics.export.PeriodicExportingMetricReader",
+            "logging.RootLogger.addHandler",
+            "hippo_brain.telemetry._register_process_metrics",
+        ):
+            stack.enter_context(patch(path))
+        for _ in range(2):
+            shutdown = init_telemetry("hippo-mcp")
+            shutdown()
+        resources = [call.kwargs["resource"] for call in providers[0].call_args_list]
+        assert resources[0].attributes["service.instance.id"]
+        assert resources[0].attributes["service.instance.id"] != resources[1].attributes[
+            "service.instance.id"
+        ]
+        for index, resource in enumerate(resources):
+            assert resource.attributes["service.name"] == "hippo-mcp"
+            assert resource.attributes["service.namespace"] == "hippo-bench"
+            for provider in providers[1:]:
+                assert provider.call_args_list[index].kwargs["resource"] is resource
 
 
 def _hide_otel_modules():
