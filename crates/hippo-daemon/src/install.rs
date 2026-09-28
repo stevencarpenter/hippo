@@ -232,8 +232,8 @@ exec {hippo_bin} gh-poll
 /// `TYPESAFE_API_KEY` consumer and never written to disk or passed on the
 /// command line.
 ///
-/// A failed lookup exits gracefully (the brain starts without the key and
-/// reports Jev unavailable) rather than wedging the always-on service.
+/// A failed lookup warns and still starts the brain rather than stopping the
+/// always-on service. See docs/jev-decisions.md for operator setup.
 pub const BRAIN_WRAPPER_SCRIPT: &str = r#"#!/bin/bash
 # Runtime secret resolution for the com.hippo.brain LaunchAgent.
 # See install.rs::BRAIN_WRAPPER_SCRIPT for the design rationale.
@@ -259,6 +259,8 @@ if [ -n "$ref" ]; then
     else
         echo "brain-wrapper: op not found; continuing without TYPESAFE_API_KEY" >&2
     fi
+elif [ -z "${TYPESAFE_API_KEY:-}" ]; then
+    echo "brain-wrapper: TYPESAFE_API_KEY missing; configure brain.typesafe_api_key_op_ref and run hippo daemon install --force" >&2
 fi
 
 exec "$@"
@@ -992,6 +994,38 @@ mod tests {
         assert!(BRAIN_WRAPPER_SCRIPT.contains("\"$op_bin\" read \"$ref\""));
         assert!(BRAIN_WRAPPER_SCRIPT.contains("export TYPESAFE_API_KEY"));
         assert!(!BRAIN_WRAPPER_SCRIPT.contains("typesafe-api-key"));
+    }
+
+    #[test]
+    fn brain_wrapper_warns_only_when_reference_and_key_are_empty() {
+        for key in [None, Some(""), Some("test-only-value")] {
+            let mut command = std::process::Command::new("/bin/bash");
+            command
+                .args([
+                    "-c",
+                    BRAIN_WRAPPER_SCRIPT,
+                    "brain-wrapper",
+                    "/bin/bash",
+                    "-c",
+                    "test \"${TYPESAFE_API_KEY:-}\" = \"$1\"",
+                    "child",
+                    key.unwrap_or(""),
+                ])
+                .env_clear()
+                .env("HIPPO_TYPESAFE_OP_REF", "");
+            if let Some(key) = key {
+                command.env("TYPESAFE_API_KEY", key);
+            }
+            let output = command.output().unwrap();
+            assert!(output.status.success());
+            assert!(output.stdout.is_empty());
+            let expected = if key.unwrap_or("").is_empty() {
+                "brain-wrapper: TYPESAFE_API_KEY missing; configure brain.typesafe_api_key_op_ref and run hippo daemon install --force\n"
+            } else {
+                ""
+            };
+            assert_eq!(String::from_utf8(output.stderr).unwrap(), expected);
+        }
     }
 
     /// Every `__SCRIPTS_DIR__/<file>` referenced by a LaunchAgent plist must
