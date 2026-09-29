@@ -141,7 +141,8 @@ acceptance window, so its volume cannot satisfy that gate.
    agent traces in private external artifacts, not Git.
 2. Run two fresh, isolated instances of the same agent model and configuration
    per task. Both receive identical instructions, repository state, ordinary
-   tools, time limit, and token budget. Randomize arm order. The treatment arm
+   tools, and wall-time limit. Neither arm has a token cap; record token use
+   from the JSON trace when available. Randomize arm order. The treatment arm
    receives the normal read-only Hippo tools; the control arm does not. Neither
    arm sees the other's work, labels, or evaluator output. Run in separate
    disposable worktrees with no shared writable state. Enforce read and write
@@ -605,10 +606,15 @@ other trial packages. All five cases remain without a paired agent run.
 The five-case development pilot's case order and within-case arm order were
 randomized and frozen before any agent outputs at
 `~/.local/share/hippo-bench/agent-benefit/2026-09-29-five-case-pilot-schedule.private.json`
-(SHA-256 `531a91f883ae1036d28ad48fef0ba3cb96361929702056bbd2bb494478ee5c73`).
+(SHA-256 `973766132ef86034f516fbb3117f1e1b11367da1f638f122a1510b0c34320403`).
 The schedule records prompt, config, repository HEAD, and treatment database
-hashes. It is a development schedule, not the acceptance cohort. Execution
-still requires a passing final Jev preflight and a fixed per-arm resource cap.
+hashes. It fixes a 30-minute wall limit per arm. Codex CLI 0.158.0 does not
+expose a total-token-cap option in `codex exec --help`, so neither arm has a
+token cap. Its `--json` trace reports usage in `turn.completed` events when
+available, which supports the secondary token-use comparison
+([OpenAI eval guidance](https://developers.openai.com/blog/eval-skills)).
+This is a development schedule, not the acceptance cohort. Execution still
+requires a passing final Jev preflight.
 
 ### Prospective intake
 
