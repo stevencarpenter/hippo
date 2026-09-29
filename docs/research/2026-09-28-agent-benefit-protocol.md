@@ -672,6 +672,17 @@ cross-package deny rule protecting the FirstMate canary:
 (SHA-256 `037f674e36efe85a29b56caf8d8b964c2a075a7517ae133f205fb69859eb9818`).
 Case order, arm order, prompts, repository commits, database hashes, and wall
 limit match version three. No agent run preceded this amendment.
+The private launcher at
+`~/.local/share/hippo-bench/agent-benefit/launch_pilot.py` (SHA-256
+`7759be6feaafa6f72cebf36929ceceba3e8e33ce02d87e630793a3cce42fab80`)
+checks the version-four schedule, current Codex version, both arms' prompt and
+config hashes, Git commit and clean state, local-only remotes, and the treatment
+database hash. Its default command verifies all five cases and reported zero
+agent runs. A deliberate prompt-hash mismatch was rejected even under
+`python3 -O`. Execution requires its separate `--run` flag; it rechecks each
+arm before starting, enforces the scheduled wall limit, saves private JSONL
+traces, and disables Codex multi-agent mode. These dry checks do not establish
+the complete agent process boundary or any task outcome.
 
 ### Prospective intake
 
