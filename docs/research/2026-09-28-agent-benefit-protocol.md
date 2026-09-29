@@ -67,11 +67,16 @@ or citation counts alone remain observational.
 ### Answer accuracy and abstention gate
 
 This is a separate v1 readiness gate, not a substitute for executed agent
-benefit. Freeze 300 consecutive human-originated factual Hippo questions from
-a declared capture window before viewing answers. Preserve the complete
-source request and pre-query memory snapshot. Two reviewers blind to the
-system answer determine from the frozen sources whether each question is
-answerable, identify the supporting facts, and resolve disagreements. A
+benefit. Freeze 300 consecutive factual Hippo query calls made by agents on
+real human-originated tasks in a declared prospective window, before viewing
+answers. Preserve the complete request, response, source packets, task-family
+identity, Hippo build, and a memory cutoff that predates the query. Select the
+first qualifying call per independent task family for the primary rate; keep
+later calls in that family as repeated measures. Require at least 100 primary
+families, or leave the result inconclusive. Report direct human Hippo queries
+as a separate slice. Two reviewers blind to the system answer determine from
+the frozen sources whether each question is answerable, identify the
+supporting facts, and resolve disagreements. A
 source-answerable question remains answerable when retrieval misses its source.
 Do not use the older keyword QA fixture or assistant-written labels as human
 acceptance judgments.
@@ -83,13 +88,19 @@ question as a failure. Add 100 separately frozen genuinely absent controls,
 including post-cutoff and stale/conflicting-history questions; absence needs
 a source audit, not just an empty retrieval result. For these controls, score
 correct abstention and any unsupported factual assertion. Report exact
-binomial 95% bounds for grounded correctness and correct abstention, with all
+binomial 95% bounds over independent primary families and controls, with all
 timeouts and tool failures retained in the denominator. Report natural-query
 answerability and per-family results separately from the constructed controls.
 The study is inconclusive if the sample or independent labels are incomplete.
 The release decision must set tolerated error rates before seeing these
 outcomes; no rate from the existing 100-question fixture qualifies as that
 threshold.
+The current frozen live copy has only 25 shell events matching `hippo ask`.
+A summary-level scan before September 22 found roughly 486 `ask` or
+`agent_query` tool-call mentions across 185 agent sessions, including repeated
+calls and subagents. This is enough to justify prospective intake of agent
+queries, but it is not a verified count of independent factual questions or
+an accuracy sample.
 
 ## Paired experiment
 
