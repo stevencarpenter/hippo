@@ -468,14 +468,34 @@ isolated Codex homes now authenticate through symlinks to the host Codex
 credential, without copying its bytes. `codex login status` succeeds in both
 homes, while an actual file-open attempt on each symlink from its trial
 sandbox raises `PermissionError`. Each top-level Codex CLI also reports logged
-in under the outer macOS sandbox when invoked by its absolute binary path;
-the nested trial profile still denies model-shell credential reads. The
-configured MCP has not been exercised
-by an actual Codex agent process. That process-level check is required before
-any pair is counted. The authentication probe is recorded privately at
+in under the outer macOS sandbox when invoked by its absolute binary path.
+Those checks were separate: nesting the named Codex Seatbelt sandbox inside
+the outer `sandbox-exec` profile failed with `sandbox_apply: Operation not
+permitted` (exit 71). The combined boundary cannot launch an agent. The
+candidate development launch uses the named permission profile alone; its
+complete Codex process boundary has not been checked. The
+[Codex permissions documentation](https://learn.chatgpt.com/docs/permissions)
+states that profiles restrict local commands, while MCP servers use their
+own process or transport and separate controls. The configured MCP server
+must be limited to its private database and declared tools. Do not pass
+`--sandbox` with the named profile because that selects the older sandbox
+settings. No actual Codex agent process has run, and no pair can be counted
+yet. The authentication
+probe is recorded privately at
 `~/.local/share/hippo-agent-trials/2026-09-29-gcampr-package/auth-boundary.private.json`.
 The private hashes and probe results are recorded in the case's
 `trial-package.private.json` outside this repository.
+
+A second development package freezes the dotfiles CI-removal task at commit
+`555e16c7a9edd1c9ca38eb23d43baf4fbe755ca0`. Its control and treatment
+clones have identical full prompts, separate offline remotes without the later
+fix, and clean worktrees. Both reproduce the pre-task failing script. The
+treatment MCP exposes 12 tools and completes `agent_query` against its private
+schema-25 database. Separate named-profile probes denied answer-key, sibling,
+credential, and raw-database reads. Jev again fell back after the 1Password
+CLI failed. The private manifest is at
+`~/.local/share/hippo-agent-trials/2026-09-29-ci-removal-package/manifest.private.json`.
+Neither arm has executed the task, so this package supplies no benefit result.
 
 ### Prospective intake
 
