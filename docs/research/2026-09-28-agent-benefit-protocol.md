@@ -532,6 +532,21 @@ arms: each read its own prompt and wrote its assigned repository, while
 answer-key, sibling, and credential reads were denied. Treatment shell reads
 of the raw private database were also denied. These checks do not exercise an
 actual agent process or establish the MCP server's process boundary.
+After 1Password was unlocked, host `op read` succeeded but the isolated MCP
+home reported no configured account. A treatment-only `op` wrapper gave just
+that subprocess the host home; it copied no secret into either trial. Both
+isolated Hippo processes then initialized a Jev client, and a synthetic Jev
+request returned HTTP 200. A real stdio `ask` call in the gcampr treatment
+returned normally and recorded one Jev rerank pass with HTTP 200 and no
+fallback. The model-shell profile denied the host `op` config and private
+wrapper, while a direct sandboxed `op read` could not reach the desktop app.
+The stdio preflight inherited the host `XDG_DATA_HOME`, so its private trace
+was written under the host benchmark directory. The current treatment MCP
+configs now set private XDG directories; a synthetic capture verified the
+new trace path. Host and isolated `op read` subsequently timed out, so the
+complete stdio preflight has not been repeated under these final configs.
+The private manifests distinguish the verified Jev pass from this pending
+rerun. No paired agent outcome exists.
 
 ### Prospective intake
 
