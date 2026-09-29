@@ -306,14 +306,16 @@ control and treatment clones now contain only that commit's reachable history,
 and both prompts reference the verified document copies. The source transcript,
 original prompt, hashes, and read ranges are frozen under
 `~/.local/share/hippo-bench/agent-benefit/2026-09-29-gringotts-provenance/`.
-This is a reset and input-provenance verification, not yet an eligible paired
-task: its broad assessment still needs an independent success rubric.
+The blind, source-backed six-item rubric is frozen at
+`~/.local/share/hippo-bench/agent-benefit/2026-09-29-gringotts-provenance/rubric-v1.private.md`
+(SHA-256 `b02dc0a638c6191c39b71a65b9a407b6a7da6cfed80db4e868c0071811243810`).
+This makes Gringotts a fifth resettable, independently scorable investigation
+candidate. It has no paired agent outcome.
 Context review is complete for all 64 distinct first-request groups. Forty
-were excluded by prompt, eight by source-session provenance, four have
-verified resettable primary development cases, and one is the separate
-no-history control. Of the remaining 11, the Gringotts case now has a verified
-reset and input provenance but awaits an independent success rubric. Four
-lack a verified local reset, two require historical external state, two
+were excluded by prompt, eight by source-session provenance, five now have
+verified resettable development or investigation cases, and one is the
+separate no-history control. Of the remaining ten, four lack a verified local
+reset, two require historical external state, two
 duplicate another issue family, one has only a focused failure reproducer,
 and one was delegated to a worker in a different repository whose starting
 state is not frozen. The historical
@@ -418,7 +420,8 @@ and the separate no-history control. Its selected-task list is frozen at
 with SHA-256
 `f199ca1a0b2fedf1d4136ab048f4694eeeb1ada7d549cee8eb5ffaacef96d742`.
 This is a development frame, not the prospective acceptance sample; it has no
-agent outcomes.
+agent outcomes. Gringotts was verified after this frame was frozen and is
+tracked separately; the frozen list and its hash are unchanged.
 A manual retrieval diagnostic queried each selected development prompt against
 its frozen database after task selection. One of four prompts had any top-five
 hit describing the same component: three CI hits discussed earlier work on the
