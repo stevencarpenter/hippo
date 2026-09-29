@@ -497,6 +497,11 @@ probe is recorded privately at
 `~/.local/share/hippo-agent-trials/2026-09-29-gcampr-package/auth-boundary.private.json`.
 The private hashes and probe results are recorded in the case's
 `trial-package.private.json` outside this repository.
+The 12 registered tools in [`mcp.py`](../../brain/src/hippo_brain/mcp.py)
+accept retrieval filters and query text, with no general file-read or command
+execution tool. Both treatment configs point storage and vector data at their
+private trial directories. This static tool-surface check does not sandbox
+the MCP process or prove the model cannot reach another capability.
 
 A second development package freezes the dotfiles CI-removal task at commit
 `555e16c7a9edd1c9ca38eb23d43baf4fbe755ca0`. Its control and treatment
