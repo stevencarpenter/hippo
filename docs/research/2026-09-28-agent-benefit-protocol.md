@@ -508,6 +508,15 @@ credential, and raw-database reads. Jev again fell back after the 1Password
 CLI failed. The private manifest is at
 `~/.local/share/hippo-agent-trials/2026-09-29-ci-removal-package/manifest.private.json`.
 Neither arm has executed the task, so this package supplies no benefit result.
+Both development packages now pin Codex CLI 0.158.0, `gpt-6-sol`, medium
+reasoning, `approval_policy = "never"`, and the same named `trial` permission
+profile in private per-arm configs. Their manifests record each config hash.
+`codex login status` reports authenticated for all four homes.
+A post-configuration `codex sandbox -P trial` shell probe passed in all four
+arms: each read its own prompt and wrote its assigned repository, while
+answer-key, sibling, and credential reads were denied. Treatment shell reads
+of the raw private database were also denied. These checks do not exercise an
+actual agent process or establish the MCP server's process boundary.
 
 ### Prospective intake
 
