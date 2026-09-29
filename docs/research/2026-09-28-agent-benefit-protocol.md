@@ -298,16 +298,25 @@ review because their first requests looked like ordinary code reviews. They
 are not evidence of independent human task demand.
 The Gringotts assessment's stored first-request preview stops at 499
 characters, before five required research-document paths. Its source Pi
-message is 909 characters. The current document copies were modified after
-the request began, so their pretask content is unverified and this case cannot
-enter a paired replay from the repository commit alone.
+message is 909 characters. A later provenance check found that every line of
+all five current documents matches the original Pi `read` tool results. The
+original session captured a clean worktree at commit
+`d9b6c2ace245273be6418a09a717222a8c0884d7`, before the request. Private
+control and treatment clones now contain only that commit's reachable history,
+and both prompts reference the verified document copies. The source transcript,
+original prompt, hashes, and read ranges are frozen under
+`~/.local/share/hippo-bench/agent-benefit/2026-09-29-gringotts-provenance/`.
+This is a reset and input-provenance verification, not yet an eligible paired
+task: its broad assessment still needs an independent success rubric.
 Context review is complete for all 64 distinct first-request groups. Forty
 were excluded by prompt, eight by source-session provenance, four have
 verified resettable primary development cases, and one is the separate
-no-history control. Of the remaining 11, five lack a verified local reset,
-two require historical external state, two duplicate another issue family,
-one has only a focused failure reproducer, and one was delegated to a worker
-in a different repository whose starting state is not frozen. The historical
+no-history control. Of the remaining 11, the Gringotts case now has a verified
+reset and input provenance but awaits an independent success rubric. Four
+lack a verified local reset, two require historical external state, two
+duplicate another issue family, one has only a focused failure reproducer,
+and one was delegated to a worker in a different repository whose starting
+state is not frozen. The historical
 frame therefore cannot supply the planned 20 to 30 eligible development
 tasks. The consecutive prospective intake must supply them; these counts do
 not estimate Hippo's benefit.
