@@ -114,6 +114,22 @@ answer or cited source was independently graded. Even if each file represented
 a different eligible family, this Pi slice would supply at most 52 primary
 families. It cannot satisfy the 300-call, 100-family accuracy gate.
 
+A separate read-only census inspected every Codex transcript path referenced
+by the same frozen database, not just rows whose tool summaries mentioned
+Hippo. Of 1,655 distinct paths, 1,653 remain readable. Before the database
+backup cutoff, 279 files contain `tools.mcp__hippo__ask` or
+`tools.mcp__hippo__agent_query` invocation syntax: 1,187 `ask` and 13
+`agent_query` occurrences. The files represent 144 primary sessions and 135
+subagent sessions. The outer tool execution visibly completed for 1,158
+`ask` occurrences; four errored, four have other output, and 21 lack a
+recorded completion after yielding. The diagnostic manifest records each
+source-file hash, invocation timestamp, and outer execution status at
+`~/.local/share/hippo-bench/agent-benefit/2026-09-29-codex-query-census/`.
+These are source-code invocation counts, not verified factual questions or
+completed Hippo responses. No human task-family, answerability, source, or
+accuracy labels exist for this slice. It predates the declared prospective
+acceptance window, so its volume cannot satisfy that gate.
+
 ## Paired experiment
 
 1. Freeze the Hippo database before case-specific evaluator investigation or
