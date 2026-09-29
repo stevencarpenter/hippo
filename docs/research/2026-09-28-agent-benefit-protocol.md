@@ -408,6 +408,13 @@ passed despite the reproduced failure. The later fix's offline FirstMate and
 update tests both pass in a separate oracle checkout. Those later tests encode
 one implementation, so blind review must also accept alternative safe repairs
 that meet the behavior rubric.
+The FirstMate case now has separate clean control and treatment clones of the
+pre-task dotfiles commit and the external FirstMate checkout. Each arm has its
+own HOME with the captured reviewed pin. Running the pre-task launcher with
+`--setup` exits one in both arms with the captured pin-mismatch error; neither
+dotfiles clone contains the later fix commit. The package is at
+`~/.local/share/hippo-agent-trials/2026-09-29-firstmate-update-package/`.
+Trial runtime isolation and paired agent execution remain unverified.
 A third development candidate is a request to add a Git helper that prepares
 and opens a PR using an existing helper. Its captured initial status is clean;
 the branch HEAD was recovered from the reflog and reproduced with a local bare
