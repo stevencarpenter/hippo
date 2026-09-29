@@ -66,7 +66,9 @@ def redact_state(value: Any) -> Any:
         return redact(value)
     if isinstance(value, dict):
         return {
-            key: REPLACEMENT if is_secret_key(key) else redact_state(item)
+            redact(key) if isinstance(key, str) else key: (
+                REPLACEMENT if is_secret_key(key) else redact_state(item)
+            )
             for key, item in value.items()
         }
     if isinstance(value, (list, tuple)):

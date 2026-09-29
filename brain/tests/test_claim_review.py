@@ -410,6 +410,30 @@ async def test_redacted_claim_and_evidence_block_jev_and_human_yes(tmp_path):
     assert annotate(queue, packet, reviewer="human", decision="no")["decision"] == "no"
 
 
+async def test_credential_in_json_key_blocks_claim_assessment(tmp_path):
+    from hippo_brain.redaction import redact
+
+    secret = "synthetic_sensitive_credential-927483"
+    raw = json.dumps({f"password={secret}": "public"})
+    assert secret not in redact(raw)
+    source = tmp_path / "source.sqlite"
+    with database(source) as conn:
+        conn.execute("ALTER TABLE events ADD COLUMN raw_json TEXT")
+        conn.execute("UPDATE events SET raw_json=?", (raw,))
+    corpus, run = tmp_path / "corpus", tmp_path / "run"
+    prepare(source, corpus)
+    packet = load_packets(corpus)[0]
+    assert secret not in json.dumps(packet)
+    assert "redacted_evidence:shell-1" in packet["problems"]
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(lambda _: pytest.fail("credential dispatched"))
+    ) as http:
+        async with JevClient("synthetic", client=http) as client:
+            assert (await assess(corpus, run, max_requests=1, client=client))["statuses"] == {
+                "blocked": 1
+            }
+
+
 async def test_presentation_order_does_not_group_audits_before_exceptions(tmp_path):
     corpus, run = await evaluated(tmp_path)
     orders = []
