@@ -261,8 +261,7 @@ def test_retry_failed_advances_past_ineligible_rows(tmp_db, tmp_path):
         "skipped": 3,
     }
     assert conn.execute(
-        "SELECT node_id FROM knowledge_node_classifications WHERE status='pending' "
-        "ORDER BY node_id"
+        "SELECT node_id FROM knowledge_node_classifications WHERE status='pending' ORDER BY node_id"
     ).fetchall() == [(ids[5],), (ids[6],)]
     assert cli.retry_failed(database, ["HTTPStatusError"], limit=2)["requeued"] == 1
 

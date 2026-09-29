@@ -75,9 +75,10 @@ def test_telemetry_initializations_have_distinct_shared_resource_identity(monkey
             shutdown()
         resources = [call.kwargs["resource"] for call in providers[0].call_args_list]
         assert resources[0].attributes["service.instance.id"]
-        assert resources[0].attributes["service.instance.id"] != resources[1].attributes[
-            "service.instance.id"
-        ]
+        assert (
+            resources[0].attributes["service.instance.id"]
+            != resources[1].attributes["service.instance.id"]
+        )
         for index, resource in enumerate(resources):
             assert resource.attributes["service.name"] == "hippo-mcp"
             assert resource.attributes["service.namespace"] == "hippo-bench"
