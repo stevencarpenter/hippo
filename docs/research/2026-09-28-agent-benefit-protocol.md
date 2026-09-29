@@ -700,6 +700,45 @@ the complete agent process boundary or any task outcome.
 With each arm's private `HOME` and `CODEX_HOME`, `codex mcp list --json` loaded
 zero servers for all five controls and only `hippo` for all five treatments.
 Listing configuration did not start an agent or exercise its shell sandbox.
+The first authorized launch attempted all ten arms but failed before thread
+creation. Their JSONL traces are empty. The CLI resolved through
+`~/.local/bin/codex` into the sandbox-denied `~/.codex` tree, so its helper
+could not execute while loading `AGENTS.md`. Codex also appended a
+trusted-project stanza to each private config; removing that stanza reproduces
+all ten version-four config hashes. The failed attempt has no task outcomes.
+Version five records only those uniform config changes and the allowed
+`/opt/homebrew/bin/codex` executable:
+`~/.local/share/hippo-bench/agent-benefit/2026-09-29-five-case-pilot-schedule-v5.private.json`
+(SHA-256 `fdcd4789b711483dccfef8f61a21ea238016edf269ea6b72fe77921632fabd1b`).
+The revised private launcher hashes to
+`ebe8764712e01d1c3aa1fad9c9008c45565820ee903555fa6d71e53008da8f07`.
+The Homebrew CLI executed inside the first arm's named sandbox before retry.
+
+The version-five development pilot completed all ten agent turns with exit
+status zero, one terminal event each, and no timeout. Its private execution
+report is
+`~/.local/share/hippo-bench/agent-benefit/2026-09-29-five-case-pilot-execution.private.json`
+(SHA-256 `c9e6d914a903ecc52ab1fd21e706be8956740a12a495f55dfc7602268929eaec`).
+The traces record 600.516 control and 712.541 treatment wall seconds, and
+2,314,033 control and 2,738,359 treatment input tokens. No treatment made a
+Hippo MCP tool call. Availability alone has not demonstrated historical-memory
+use or task benefit in these cases.
+
+Executable checks found that both CI-removal arms removed exactly the obsolete
+workflow step and script, and both Agent Journal arms preserved eight existing
+workstreams while routing ten archived organization repositories distinctly.
+An independent offline gcampr default-branch check reached a mocked PR-create
+call in the control and refused before drafting in the treatment. Its private
+checker SHA-256 is
+`3143ea8d3ff3d818a75b1c30efa9f1bdac248441f9d9fd04d30b70e09bef163c`.
+That subcheck alone is not the five-item gcampr success rubric. Firstmate,
+gcampr, and Gringotts still need blind source-backed review. Separate A/B
+packets for two independent reviewers have no arm-labeled paths; their private
+manifest is
+`~/.local/share/hippo-bench/agent-benefit/2026-09-29-pilot-blind-review/independent-review-manifest.private.json`
+(SHA-256 `182f203241b02e50cc292605c70bb0bf36b66681cb56e6b15d42acc3699edc23`).
+No reviewer labels exist. These five development cases are not the acceptance
+cohort and cannot establish a population benefit verdict.
 
 ### Prospective intake
 
