@@ -718,6 +718,16 @@ only for eligible requests starting after its cutoff.
 One real-size tooling smoke against an existing private schema-25 fixture
 completed in 2.3 seconds, passed `PRAGMA quick_check`, and produced a clean
 clone without the later fix commit. This smoke is not an acceptance task.
+A later prospective memory freeze at
+`~/.local/share/hippo-bench/agent-benefit/2026-09-29-prospective-clean-snapshot/manifest.json`
+finished at Unix millisecond `1790666055105`. Its schema-25 SQLite copy
+passes `PRAGMA quick_check` and hashes to
+`4a3fca856492e0e9bdd2edaf9c4985c1dc68c00a028ab5b6c2f252723ac0931a`.
+The commit-only Hippo clone is clean at `23dd19355b05726f4635517d76fbd4ba35986637`
+and has no remote. The directory and files have private permissions. This is
+a reusable pretask memory source for later requests; without a task start and
+prompt, its `snapshot_ready` flag is correctly false. It is not a paired
+outcome or acceptance sample.
 
 ## Score adjudicated pairs
 
