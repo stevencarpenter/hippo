@@ -384,6 +384,18 @@ commit, a captured prompt hash, and an independent Git-history answer key.
 Its decisive event occurred after the September 22 memory snapshot, and its
 top five isolated Hippo results did not describe that event. It is a
 no-relevant-history control for agent execution, not evidence of Hippo benefit.
+Its separate trial package at
+`~/.local/share/hippo-agent-trials/2026-09-29-sluice-no-history-package/`
+has two clean clones at the same commit. Both contain the artifact's add and
+removal commits in Git history, and neither can read the private answer key.
+The treatment uses a private September 22 database and lists 12 Hippo tools.
+Named-profile probes allowed assigned work and denied the sibling, other
+trial packages, the answer key, credentials, and raw treatment database.
+Its arm order is frozen separately at
+`~/.local/share/hippo-bench/agent-benefit/2026-09-29-sluice-control-schedule.private.json`
+(SHA-256 `7c9d5aca64b0b9c0396f8b17a3049c1a1c5b34ffac1ab5f9d5cee79be70eea38`).
+This case remains outside the primary benefit denominator and has no agent
+outcome.
 A separate CI-maintenance case has a clean private checkout of a commit two
 minutes before the request. Its named configuration check fails locally with
 exit status one, matching the captured CI error. The checkout has no remote and
@@ -615,6 +627,13 @@ available, which supports the secondary token-use comparison
 ([OpenAI eval guidance](https://developers.openai.com/blog/eval-skills)).
 This is a development schedule, not the acceptance cohort. Execution still
 requires a passing final Jev preflight.
+Adding the separately packaged Sluice control required a new cross-package
+deny rule in each primary arm. A version-two schedule records only those
+config-hash changes at
+`~/.local/share/hippo-bench/agent-benefit/2026-09-29-five-case-pilot-schedule-v2.private.json`
+(SHA-256 `c96c89373a3c8b3f5207af9c87e76c6488d280d0bdddec936589d2b0b2a5837b`).
+Its case order, arm order, prompts, repository commits, database hashes, and
+wall limit match version one. No agent run preceded this amendment.
 
 ### Prospective intake
 
