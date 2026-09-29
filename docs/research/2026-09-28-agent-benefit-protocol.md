@@ -786,3 +786,24 @@ cannot verify that the frame was frozen before outcomes, that all eligible
 candidates were selected, that the environment was isolated, or that the
 adjudication was blind; those require the acceptance record above. A
 statistical verdict alone is not v1 release approval.
+
+## Score prospective answer accuracy
+
+`uv run --project brain python -m hippo_brain.bench.agent_answer_accuracy /private/path/adjudicated-answers.json --frame /private/path/frozen-call-frame.json`
+reports the two exact one-sided bounds and the answer-quality verdict. The
+ordered frozen frame contains `id`, `family`, and `kind` (`natural` or
+`absent_control`) for each call. Its natural entries must be the 300 consecutive
+qualifying calls, in capture order; the scorer uses the first call per family.
+Adjudicated rows repeat those fields and add two distinct reviewer names and
+`response_status` (`answer`, `abstention`, `timeout`, or `tool_error`). Natural
+rows add `answerable`; answerable rows add `correct`, `fully_supported`, and
+`superseded`. Absent controls add `unsupported_claim`. All these judgments are
+booleans. The scorer rejects missing or added rows, dependent controls,
+missing judgments, and absent reviewer identities. It stays inconclusive
+without exactly 300 natural calls, at least 100 answerable primary families,
+and exactly 100 independent absent controls.
+
+The frame hash, source audit, human reviewer independence and blindness, and
+proof that the capture window was consecutive remain external acceptance
+evidence. Reviewer names and matching row counts alone do not prove them. No
+prospective answer labels have been collected.
