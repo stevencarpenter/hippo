@@ -400,6 +400,19 @@ unchanged arm order is recorded in
 (SHA-256 `a22960b23e3be164b7b62d082879ae4042660e56f301349f5d14437943688153`).
 This case remains outside the primary benefit denominator and has no agent
 outcome.
+Adding an isolation rule for a separate FirstMate stale-history canary changed
+only the Sluice control's configuration hashes. Its prompt, database, arm order,
+and wall limit remain fixed in
+`~/.local/share/hippo-bench/agent-benefit/2026-09-29-sluice-control-schedule-v3.private.json`
+(SHA-256 `977b875b6af56dbf049556592692974436a09c704797092d4ec6a0282ea8aaab`).
+No agent run preceded this amendment.
+A constructed FirstMate canary uses a September 22 frozen memory record and a
+later repository commit that changed the update procedure. Both arms have the
+same prompt and clean repository commit. Two treatment `ask` preflights used
+Jev successfully, but neither retrieved the target old record among 30
+candidates. The second prompt was revised after inspecting the first retrieval,
+so this canary is not a frozen acceptance case. It has no agent outcome and
+does not yet verify stale-history exposure.
 A separate CI-maintenance case has a clean private checkout of a commit two
 minutes before the request. Its named configuration check fails locally with
 exit status one, matching the captured CI error. The checkout has no remote and
@@ -650,6 +663,12 @@ query and decision capture with model-shell trace denials:
 (SHA-256 `242cd217986914571d9f57aff353c402df437f6deffd6fcb89dea2f953478db6`).
 No agent run preceded this amendment. A complete Codex agent process boundary
 and paired task outcomes remain unverified.
+A version-four schedule changes only configuration hashes for an additional
+cross-package deny rule protecting the FirstMate canary:
+`~/.local/share/hippo-bench/agent-benefit/2026-09-29-five-case-pilot-schedule-v4.private.json`
+(SHA-256 `037f674e36efe85a29b56caf8d8b964c2a075a7517ae133f205fb69859eb9818`).
+Case order, arm order, prompts, repository commits, database hashes, and wall
+limit match version three. No agent run preceded this amendment.
 
 ### Prospective intake
 
