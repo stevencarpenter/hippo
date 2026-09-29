@@ -84,17 +84,31 @@ acceptance judgments.
 For each answerable question, separately score factual correctness, whether
 every material claim is supported by a cited pre-query source, and whether
 the answer uses a superseded fact. Score an abstention on an answerable
-question as a failure. Add 100 separately frozen genuinely absent controls,
+question as a failure. Add 100 independent genuinely absent controls, frozen
+separately,
 including post-cutoff and stale/conflicting-history questions; absence needs
 a source audit, not just an empty retrieval result. For these controls, score
 correct abstention and any unsupported factual assertion. Report exact
-binomial 95% bounds over independent primary families and controls, with all
+binomial bounds over independent primary families and controls, with all
 timeouts and tool failures retained in the denominator. Report natural-query
 answerability and per-family results separately from the constructed controls.
 The study is inconclusive if the sample or independent labels are incomplete.
-The release decision must set tolerated error rates before seeing these
-outcomes; no rate from the existing 100-question fixture qualifies as that
-threshold.
+
+For the v1 answer-quality decision, require at least 100 independent
+source-answerable primary families within that consecutive-call sample. A
+primary family succeeds only when its first qualifying answer is factually
+correct, every material claim is supported by a cited pre-query source, and
+no superseded fact is used; abstention, timeout, and tool error fail. The
+one-sided exact 97.5% lower bound on this joint success rate must be at least
+90%. Each of the 100 absent controls fails on an unsupported factual claim,
+failure to abstain, timeout, or tool error. The one-sided exact 97.5% upper
+bound on that failure rate must be at most 5%. Bonferroni allocation makes
+these two bound claims jointly 95% confident without assuming independence
+between them. Missing sample size or labels leaves the gate inconclusive;
+failing either bound holds v1. These are release tolerances selected before
+the prospective outcomes, not rates inferred from the existing 100-question
+fixture. Report the component error rates and the post-cutoff and
+stale/conflicting controls separately even when the joint gate passes.
 The current frozen live copy has only 25 shell events matching `hippo ask`.
 A summary-level scan before September 22 found roughly 486 `ask` or
 `agent_query` tool-call mentions across 185 agent sessions, including repeated
