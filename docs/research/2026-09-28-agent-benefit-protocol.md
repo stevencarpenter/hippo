@@ -683,6 +683,9 @@ agent runs. A deliberate prompt-hash mismatch was rejected even under
 arm before starting, enforces the scheduled wall limit, saves private JSONL
 traces, and disables Codex multi-agent mode. These dry checks do not establish
 the complete agent process boundary or any task outcome.
+With each arm's private `HOME` and `CODEX_HOME`, `codex mcp list --json` loaded
+zero servers for all five controls and only `hippo` for all five treatments.
+Listing configuration did not start an agent or exercise its shell sandbox.
 
 ### Prospective intake
 
