@@ -589,6 +589,19 @@ new trace path. Host and isolated `op read` subsequently timed out, so the
 complete stdio preflight has not been repeated under these final configs.
 The private manifests distinguish the verified Jev pass from this pending
 rerun. No paired agent outcome exists.
+The Gringotts, Agent Journal, and FirstMate packages now each have separate
+Codex homes with the same model and named permission profile, plus a private
+schema-25 treatment database copied from the frozen development memory.
+Their treatment MCP processes use per-case HOME and XDG directories while
+sharing the installed Hippo wheel environment and treatment-only `op` wrapper.
+All three MCP servers initialized against their own database and listed 12
+tools. Their Jev initialization timed out while `op whoami` reported the CLI
+account unsigned; this is not a successful final-config Jev preflight.
+Named-profile shell probes in all six new arms allowed own-prompt reads and
+repository writes, while denying sibling-arm, other-package, answer-key, and
+Codex credential reads. Treatment shell reads of raw databases were denied.
+The two older packages' profiles were also extended and probed to deny the
+other trial packages. All five cases remain without a paired agent run.
 
 ### Prospective intake
 
