@@ -430,6 +430,13 @@ scores the first request and its ten-repository inventory, not that later
 follow-up. An isolated Hippo query returned five hits after case selection;
 two summaries named the organization, and none named the routing tool. This
 case has no paired agent outcome.
+The Agent Journal case now has separate clean control and treatment clones at
+the captured `journal` commit, a shared hash-verified ten-repository inventory,
+and identical prompts. The private resolver check fails in both clones because
+`sluice` has no matching workstream. Later fix commits and the answer key are
+absent from each clone. The package is at
+`~/.local/share/hippo-agent-trials/2026-09-29-agent-journal-package/`;
+trial runtime isolation and paired agent execution remain unverified.
 The current private development frame contains these four primary candidates
 and the separate no-history control. Its selected-task list is frozen at
 `~/.local/share/hippo-bench/agent-benefit/2026-09-28-development-frame.json`
