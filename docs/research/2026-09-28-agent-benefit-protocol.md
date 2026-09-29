@@ -602,6 +602,13 @@ repository writes, while denying sibling-arm, other-package, answer-key, and
 Codex credential reads. Treatment shell reads of raw databases were denied.
 The two older packages' profiles were also extended and probed to deny the
 other trial packages. All five cases remain without a paired agent run.
+The five-case development pilot's case order and within-case arm order were
+randomized and frozen before any agent outputs at
+`~/.local/share/hippo-bench/agent-benefit/2026-09-29-five-case-pilot-schedule.private.json`
+(SHA-256 `531a91f883ae1036d28ad48fef0ba3cb96361929702056bbd2bb494478ee5c73`).
+The schedule records prompt, config, repository HEAD, and treatment database
+hashes. It is a development schedule, not the acceptance cohort. Execution
+still requires a passing final Jev preflight and a fixed per-arm resource cap.
 
 ### Prospective intake
 
