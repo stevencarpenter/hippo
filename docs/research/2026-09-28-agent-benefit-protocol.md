@@ -102,6 +102,18 @@ calls and subagents. This is enough to justify prospective intake of agent
 queries, but it is not a verified count of independent factual questions or
 an accuracy sample.
 
+A read-only census of all 246 still-readable Pi transcript files referenced
+by the September 28 frozen database found 127 complete `hippo_ask` calls in
+52 primary session files before that database's backup cutoff. Sixteen calls
+returned tool errors; 124 carried a nonempty `question` argument. The calls,
+responses, and complete source files were copied with SHA-256 checks into a
+private diagnostic archive at
+`~/.local/share/hippo-bench/agent-benefit/2026-09-29-pi-ask-census/`.
+No question was screened for factual scope or human task provenance, and no
+answer or cited source was independently graded. Even if each file represented
+a different eligible family, this Pi slice would supply at most 52 primary
+families. It cannot satisfy the 300-call, 100-family accuracy gate.
+
 ## Paired experiment
 
 1. Freeze the Hippo database before case-specific evaluator investigation or
