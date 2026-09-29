@@ -206,11 +206,14 @@ estimate would cap power near 50%, regardless of sample size. Freeze these
 values before collecting acceptance outcomes.
 
 Call a gain of five percentage points or more **ruled out for this population**
-only if the upper 95% bound is below five points. Anything between those
+only if the upper 95% bound is below five points. If that bound is below zero,
+report **harm** in verified completion instead. Anything between those
 decisions is inconclusive. No finite experiment proves that Hippo never helps
 any agent. Separately report a confidence interval for treatment-minus-control
-harm; any observed severe safety violation requires case review before release.
-Do not offset a verified unsafe action with faster completion.
+safety harm; any observed severe safety violation requires case review before
+release. Do not offset a verified unsafe action with faster completion. The
+completion-harm verdict uses the same frozen pairs and interval; it does not
+classify isolated safety events.
 
 Use a development cohort to estimate the number of independent families needed
 for the locked cohort. Simulate the planned exact paired interval on plausible

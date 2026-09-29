@@ -62,6 +62,24 @@ def test_observed_gain_must_reach_preregistered_five_points():
     assert score(rows, planned_primary_n=1000, frozen_frame=frame)["verdict"] == "benefit"
 
 
+def test_negative_interval_identifies_lower_completion_with_hippo():
+    rows = [
+        {
+            "id": str(i),
+            "family": str(i),
+            "kind": "primary",
+            "control_success": True,
+            "hippo_success": False,
+        }
+        for i in range(100)
+    ]
+    frame = [{key: row[key] for key in ("id", "family", "kind")} for row in rows]
+    result = score(rows, planned_primary_n=100, frozen_frame=frame)
+    assert result["conservative_95_percent_interval"][1] < 0
+    assert result["verdict"] == "harm"
+    assert score(rows, planned_primary_n=100)["verdict"] == "inconclusive"
+
+
 def test_missing_outcomes_and_dependent_families_fail_closed():
     row = {"id": "a", "family": "one", "kind": "primary", "control_success": True}
     with pytest.raises(ValueError, match="adjudicated booleans"):

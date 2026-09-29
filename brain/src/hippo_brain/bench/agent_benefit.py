@@ -116,6 +116,8 @@ def score(
     if frame_matched and planned_primary_n == n and n >= 100:
         if gain >= 0.05 and lower > 0:
             verdict = "benefit"
+        elif upper < 0:
+            verdict = "harm"
         elif upper < 0.05:
             verdict = "gain_of_five_points_ruled_out"
     return {
