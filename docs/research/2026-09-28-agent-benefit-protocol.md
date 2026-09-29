@@ -508,6 +508,16 @@ credential, and raw-database reads. Jev again fell back after the 1Password
 CLI failed. The private manifest is at
 `~/.local/share/hippo-agent-trials/2026-09-29-ci-removal-package/manifest.private.json`.
 Neither arm has executed the task, so this package supplies no benefit result.
+The shared source snapshot has SHA-256
+`b9eb5c74ca7ba78eb337b16ef519918bd251f93580e31838ee0d394d51b86ff6`
+and its protocol record predates both requests. Its latest knowledge node was
+created on September 22 at 06:15 UTC, before the CI request at 09:37 UTC and
+the gcampr request on September 27. A row-multiset comparison found identical
+captured knowledge, agent sessions, shell and browser events, source links,
+FTS content, and vector index rows in both treatment databases. The private
+manifests record counts and fingerprints for all 11 checked tables. This
+rules out packaging or MCP smoke calls adding later task evidence to those
+tables; it does not test what a full Codex process can access.
 Both development packages now pin Codex CLI 0.158.0, `gpt-6-sol`, medium
 reasoning, `approval_policy = "never"`, and the same named `trial` permission
 profile in private per-arm configs. Their manifests record each config hash.
