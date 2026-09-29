@@ -394,6 +394,10 @@ trial packages, the answer key, credentials, and raw treatment database.
 Its arm order is frozen separately at
 `~/.local/share/hippo-bench/agent-benefit/2026-09-29-sluice-control-schedule.private.json`
 (SHA-256 `7c9d5aca64b0b9c0396f8b17a3049c1a1c5b34ffac1ab5f9d5cee79be70eea38`).
+Private capture configuration later changed its treatment config hash. The
+unchanged arm order is recorded in
+`~/.local/share/hippo-bench/agent-benefit/2026-09-29-sluice-control-schedule-v2.private.json`
+(SHA-256 `a22960b23e3be164b7b62d082879ae4042660e56f301349f5d14437943688153`).
 This case remains outside the primary benefit denominator and has no agent
 outcome.
 A separate CI-maintenance case has a clean private checkout of a commit two
@@ -596,20 +600,27 @@ returned normally and recorded one Jev rerank pass with HTTP 200 and no
 fallback. The model-shell profile denied the host `op` config and private
 wrapper, while a direct sandboxed `op read` could not reach the desktop app.
 The stdio preflight inherited the host `XDG_DATA_HOME`, so its private trace
-was written under the host benchmark directory. The current treatment MCP
-configs now set private XDG directories; a synthetic capture verified the
-new trace path. Host and isolated `op read` subsequently timed out, so the
-complete stdio preflight has not been repeated under these final configs.
-The private manifests distinguish the verified Jev pass from this pending
-rerun. No paired agent outcome exists.
+was written under the host benchmark directory. Treatment MCP configs now set
+private XDG directories. After an initial CLI timeout, a noninteractive
+`op signin` restored credential reads. A new gcampr stdio `ask` completed with
+one Jev pass, HTTP 200, and no fallback under the final private XDG config.
+Its query packet and decision trace were written with mode 0600 inside the
+treatment home; the model-shell profile denied reads of both, and no new host
+benchmark trace appeared. No paired agent outcome exists.
 The Gringotts, Agent Journal, and FirstMate packages now each have separate
 Codex homes with the same model and named permission profile, plus a private
 schema-25 treatment database copied from the frozen development memory.
 Their treatment MCP processes use per-case HOME and XDG directories while
 sharing the installed Hippo wheel environment and treatment-only `op` wrapper.
 All three MCP servers initialized against their own database and listed 12
-tools. Their Jev initialization timed out while `op whoami` reported the CLI
-account unsigned; this is not a successful final-config Jev preflight.
+tools. Their initial Jev initialization timed out while the CLI account was
+unsigned. Later full stdio `ask` preflights completed with Jev HTTP 200 and
+no fallback in all three, as well as in the CI-removal and Sluice treatments.
+FirstMate had one transient `JevUnavailable` fallback after a 1Password
+timeout; its isolated retry completed with Jev HTTP 200 and no fallback. Each
+treatment wrote a private query capture and decision trace. All six treatment
+database hashes remained unchanged, and model-shell reads of the traces were
+denied. These are MCP probes, not agent task outcomes.
 Named-profile shell probes in all six new arms allowed own-prompt reads and
 repository writes, while denying sibling-arm, other-package, answer-key, and
 Codex credential reads. Treatment shell reads of raw databases were denied.
@@ -625,8 +636,7 @@ expose a total-token-cap option in `codex exec --help`, so neither arm has a
 token cap. Its `--json` trace reports usage in `turn.completed` events when
 available, which supports the secondary token-use comparison
 ([OpenAI eval guidance](https://developers.openai.com/blog/eval-skills)).
-This is a development schedule, not the acceptance cohort. Execution still
-requires a passing final Jev preflight.
+This is a development schedule, not the acceptance cohort.
 Adding the separately packaged Sluice control required a new cross-package
 deny rule in each primary arm. A version-two schedule records only those
 config-hash changes at
@@ -634,6 +644,12 @@ config-hash changes at
 (SHA-256 `c96c89373a3c8b3f5207af9c87e76c6488d280d0bdddec936589d2b0b2a5837b`).
 Its case order, arm order, prompts, repository commits, database hashes, and
 wall limit match version one. No agent run preceded this amendment.
+A version-three schedule changes only treatment config hashes for private
+query and decision capture with model-shell trace denials:
+`~/.local/share/hippo-bench/agent-benefit/2026-09-29-five-case-pilot-schedule-v3.private.json`
+(SHA-256 `242cd217986914571d9f57aff353c402df437f6deffd6fcb89dea2f953478db6`).
+No agent run preceded this amendment. A complete Codex agent process boundary
+and paired task outcomes remain unverified.
 
 ### Prospective intake
 
