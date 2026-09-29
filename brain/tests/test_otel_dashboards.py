@@ -594,6 +594,7 @@ def _collect_brain_metrics(directory: Path) -> str:
         telemetry.add(mcp._tool_calls, tool="ask")
         telemetry.add(mcp._tool_errors, tool="ask")
         telemetry.hist(mcp._tool_duration, 7, tool="ask")
+        mcp._record_result("ask", 2)
         telemetry.record_decision_metrics(
             {
                 "backend": "jev",
@@ -746,6 +747,10 @@ CREATE TABLE events (
     duration_ms INTEGER, stdout TEXT, stderr TEXT
 );
 CREATE TABLE knowledge_nodes (id INTEGER PRIMARY KEY, design_decisions TEXT, tags TEXT);
+CREATE TABLE knowledge_vectors_rowids (rowid INTEGER PRIMARY KEY);
+CREATE TABLE knowledge_node_classifications (
+    status TEXT, accepted_topics_json TEXT, probabilities_json TEXT
+);
 CREATE TABLE agentic_sessions (
     id INTEGER PRIMARY KEY, project_dir TEXT, message_count INTEGER DEFAULT 0
 );
@@ -790,6 +795,16 @@ def _build_fixture_db(path, snowball: bool):
         )
     conn.execute("INSERT INTO knowledge_nodes (design_decisions, tags) VALUES ('[{}]', 'x')")
     conn.execute("INSERT INTO knowledge_nodes (design_decisions, tags) VALUES (NULL, 'y')")
+    conn.execute("INSERT INTO knowledge_vectors_rowids (rowid) VALUES (1)")
+    conn.execute("INSERT INTO knowledge_vectors_rowids (rowid) VALUES (999)")
+    conn.execute(
+        "INSERT INTO knowledge_node_classifications VALUES ('ready', ?, ?)",
+        ('["database-storage"]', '{"database-storage":0.9,"rust":0.1}'),
+    )
+    conn.execute(
+        "INSERT INTO knowledge_node_classifications VALUES ('ready', '[]', ?)",
+        ('{"database-storage":0.3,"rust":0.2}',),
+    )
     conn.execute(
         "INSERT INTO agentic_sessions (id, project_dir, message_count) VALUES (1, '/w/dead-proj', 7)"
     )
@@ -889,6 +904,25 @@ def test_exporter_emits_every_always_on_metric(tmp_path, monkeypatch):
         + "\n\nEither the registry name is stale, or the gauge()/counter() call "
         "was lost. A declared-but-unemitted name renders a blank dashboard panel."
     )
+
+
+def test_vector_coverage_counts_only_live_nodes(tmp_path, monkeypatch):
+    db = tmp_path / "hippo.db"
+    _build_fixture_db(db, snowball=False)
+    reg = _render_against(db, monkeypatch)
+    samples = {s["name"]: s["value"] for s in reg.samples}
+    assert samples["hippo_kb_vectorized_nodes"] == 1
+    assert samples["hippo_kb_vector_coverage_ratio"] == 0.5
+
+
+def test_exporter_jev_quality_uses_only_accepted_labels(tmp_path, monkeypatch):
+    db = tmp_path / "hippo.db"
+    _build_fixture_db(db, snowball=False)
+    reg = _render_against(db, monkeypatch)
+    samples = {s["name"]: s["value"] for s in reg.samples}
+    assert samples["hippo_kb_jev_accepted_labels"] == 1
+    assert samples["hippo_kb_jev_accepted_topic_coverage_ratio"] == 0.5
+    assert samples["hippo_kb_jev_accepted_noul_mean"] == 0.9
 
 
 def test_exporter_emits_snowball_metrics_when_tables_exist(tmp_path, monkeypatch):

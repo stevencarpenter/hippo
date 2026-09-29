@@ -10,6 +10,7 @@ service fails loud rather than silently shipping zero metrics.
 import logging
 import math
 import os
+from uuid import uuid4
 
 logger = logging.getLogger("hippo_brain.telemetry")
 
@@ -101,7 +102,7 @@ def init_telemetry(
     # Resource.create() merges OTEL_RESOURCE_ATTRIBUTES from the environment
     # via the Python SDK default detector chain. bench/shadow_stack.py injects
     # service.namespace=hippo-bench here at process spawn time.
-    resource = Resource.create({"service.name": service_name})
+    resource = Resource.create({"service.name": service_name, "service.instance.id": str(uuid4())})
 
     # Traces
     tracer_provider = TracerProvider(resource=resource)

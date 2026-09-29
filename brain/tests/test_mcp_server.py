@@ -8,8 +8,9 @@ import subprocess
 import sys
 import tempfile
 import time
+from contextlib import nullcontext
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
 
@@ -468,6 +469,53 @@ class TestSearchKnowledgeTool:
 
 
 class TestSearchEventsTool:
+    def test_query_text_is_not_exported_or_logged(self, events_db, monkeypatch):
+        from importlib import import_module
+
+        mcp_module = import_module("hippo_brain.mcp")
+        tracer = MagicMock()
+        tracer.start_as_current_span.return_value = nullcontext()
+        log_info = MagicMock()
+        monkeypatch.setattr(mcp_module, "_get_tracer", lambda: tracer)
+        monkeypatch.setattr(mcp_module.logger, "info", log_info)
+        _state.db_path = str(events_db[1])
+
+        query = "private credential marker"
+        for tool in (
+            lambda: search_knowledge(query, mode="lexical"),
+            lambda: search_events(query=query),
+            lambda: get_entities(query=query),
+        ):
+            tracer.reset_mock()
+            asyncio.run(tool())
+            attributes = tracer.start_as_current_span.call_args.kwargs["attributes"]
+            assert attributes["hippo.query_length"] == len(query)
+            assert query not in repr(attributes)
+
+        assert query not in repr(log_info.call_args_list)
+
+    def test_result_metrics_distinguish_hit_and_empty(self, events_db, monkeypatch):
+        from importlib import import_module
+
+        mcp_module = import_module("hippo_brain.mcp")
+        outcomes = MagicMock()
+        counts = MagicMock()
+        monkeypatch.setattr(mcp_module, "_result_outcomes", outcomes)
+        monkeypatch.setattr(mcp_module, "_result_count", counts)
+        _state.db_path = str(events_db[1])
+
+        assert len(asyncio.run(search_events(query="cargo", source="shell"))) == 1
+        assert asyncio.run(search_events(query="nonexistent_xyz", source="shell")) == []
+
+        assert outcomes.add.call_args_list == [
+            call(1, {"tool": "search_events", "outcome": "hit"}),
+            call(1, {"tool": "search_events", "outcome": "empty"}),
+        ]
+        assert counts.record.call_args_list == [
+            call(1, {"tool": "search_events"}),
+            call(0, {"tool": "search_events"}),
+        ]
+
     def test_search_events_shell(self, events_db):
         conn, db_path = events_db
         _state.db_path = str(db_path)

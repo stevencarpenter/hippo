@@ -38,7 +38,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "process_cpu_utilization_ratio",
+          "expr": "sum by (exported_job) (process_cpu_utilization_ratio)",
           "legendFormat": "{{exported_job}}",
           "editorMode": "code"
         }
@@ -88,7 +88,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "process_memory_usage_bytes",
+          "expr": "sum by (exported_job) (process_memory_usage_bytes)",
           "legendFormat": "{{exported_job}}",
           "editorMode": "code"
         }
@@ -138,7 +138,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "process_memory_virtual_bytes",
+          "expr": "sum by (exported_job) (process_memory_virtual_bytes)",
           "legendFormat": "{{exported_job}}",
           "editorMode": "code"
         }
@@ -169,7 +169,7 @@
     },
     {
       "id": 4,
-      "title": "Threads (brain only — daemon unsupported cross-platform)",
+      "title": "Threads (brain and MCP)",
       "type": "timeseries",
       "gridPos": {
         "x": 12,
@@ -188,7 +188,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "process_threads",
+          "expr": "sum by (exported_job) (process_threads)",
           "legendFormat": "{{exported_job}}",
           "editorMode": "code"
         }
@@ -224,7 +224,7 @@
       "gridPos": {
         "x": 0,
         "y": 16,
-        "w": 24,
+        "w": 16,
         "h": 6
       },
       "datasource": {
@@ -238,7 +238,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "rate(process_cpu_time_milliseconds_total[5m]) / 1000",
+          "expr": "sum by (exported_job) (rate(process_cpu_time_milliseconds_total[5m])) / 1000",
           "legendFormat": "{{exported_job}}",
           "editorMode": "code"
         }
@@ -265,6 +265,51 @@
           "mode": "multi",
           "sort": "desc"
         }
+      }
+    },
+    {
+      "id": 6,
+      "title": "MCP telemetry instances",
+      "description": "Recently observed hippo-mcp processes exporting telemetry. Older client processes contribute after their next restart.",
+      "type": "stat",
+      "gridPos": {
+        "x": 16,
+        "y": 16,
+        "w": 8,
+        "h": 6
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "count(process_memory_usage_bytes{exported_job=\"hippo-mcp\"}) or vector(0)",
+          "legendFormat": "instances",
+          "editorMode": "code"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0,
+          "decimals": 0
+        }
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": ["lastNotNull"],
+          "fields": "",
+          "values": false
+        },
+        "orientation": "auto",
+        "textMode": "value",
+        "colorMode": "value"
       }
     }
   ]

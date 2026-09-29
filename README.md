@@ -239,6 +239,8 @@ Replace `/path/to/hippo` with the absolute path to your clone.
 
 The MCP server reads SQLite directly (vectors live in the same DB via sqlite-vec; no dependency on the brain HTTP server).
 
+For MCP telemetry configuration, dashboards, and corpus coverage signals, see [Observability](docs/observability.md). For optional Jev reranking credentials, see the [Jev operator reference](docs/jev-decisions.md).
+
 > **Trust boundary.** Granting Claude Code MCP access to hippo gives the model — and any prompt injection that reaches it through code or documents you ask Claude to read — read access to your shell history, Claude transcripts, and browser data. Grant deliberately.
 
 ## Firefox Extension (Optional)

@@ -233,6 +233,50 @@ def backfill(database: Path, cursor: Path, *, limit: int = 100) -> dict:
     }
 
 
+def retry_failed(database: Path, errors: list[str], *, limit: int = 100) -> dict:
+    """Requeue bounded, current failures without changing node or recipe identity."""
+    allowed = {"HTTPStatusError", "lease attempts exhausted"}
+    if not errors or set(errors) - allowed:
+        raise ValueError("retry requires a supported failure reason")
+    if not 1 <= limit <= 100:
+        raise ValueError("retry limit must be between one and 100")
+    recipe = classification.default_recipe()
+    errors = list(dict.fromkeys(errors))
+    placeholders = ",".join("?" for _ in errors)
+    now = time.time_ns() // 1_000_000
+    selected = requeued = 0
+    after_time = after_id = None
+    with closing(_connect(database, write=True)) as conn, conn:
+        conn.execute("BEGIN IMMEDIATE")
+        while requeued < limit:
+            rows = conn.execute(
+                "SELECT node_id,node_uuid,desired_input_hash,updated_at "
+                "FROM knowledge_node_classifications WHERE status='failed' "
+                f"AND error IN ({placeholders}) AND recipe_hash=? AND applied_revision IS NULL "
+                "AND (? IS NULL OR (updated_at,node_id) > (?,?)) "
+                "ORDER BY updated_at,node_id LIMIT ?",
+                (*errors, recipe.recipe_hash, after_time, after_time, after_id, limit - requeued),
+            ).fetchall()
+            if not rows:
+                break
+            for node_id, node_uuid, input_hash, updated_at in rows:
+                selected += 1
+                after_time, after_id = updated_at, node_id
+                try:
+                    identity = classification.node_input(conn, node_id)
+                except ValueError:
+                    continue
+                if identity is None or identity[0] != node_uuid or identity[2] != input_hash:
+                    continue
+                requeued += conn.execute(
+                    "UPDATE knowledge_node_classifications SET status='pending',attempts=0,"
+                    "next_attempt_at=0,lease_token=NULL,lease_expires_at=NULL,error=NULL,"
+                    "enqueued_at=?,updated_at=? WHERE node_id=? AND status='failed'",
+                    (now, now, node_id),
+                ).rowcount
+    return {"selected": selected, "requeued": requeued, "skipped": selected - requeued}
+
+
 _EXPORT_COLUMNS = {
     "node_id": "BIGINT",
     "node_uuid": "VARCHAR",
@@ -425,7 +469,7 @@ def connections(
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
-    for command in ("status", "backfill", "connections", "export"):
+    for command in ("status", "backfill", "retry-failed", "connections", "export"):
         child = commands.add_parser(command)
         child.add_argument("--database", type=Path, required=True)
         child.add_argument("--recipe", type=Path, help="Override classification.recipe_path")
@@ -433,6 +477,9 @@ def main(argv: list[str] | None = None) -> int:
             child.add_argument("--out", type=Path, required=True)
         if command == "backfill":
             child.add_argument("--cursor", type=Path, required=True)
+            child.add_argument("--limit", type=int, default=100)
+        elif command == "retry-failed":
+            child.add_argument("--error", action="append", required=True)
             child.add_argument("--limit", type=int, default=100)
         elif command == "connections":
             child.add_argument("--node", required=True)
@@ -455,6 +502,8 @@ def main(argv: list[str] | None = None) -> int:
             result = status(args.database)
         elif args.command == "backfill":
             result = backfill(args.database, args.cursor, limit=args.limit)
+        elif args.command == "retry-failed":
+            result = retry_failed(args.database, args.error, limit=args.limit)
         elif args.command == "export":
             result = export(args.database, args.out)
         else:

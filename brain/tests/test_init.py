@@ -1,12 +1,30 @@
 """Tests for hippo_brain.__init__.main() command dispatch."""
 
+import os
 import sys
+from types import ModuleType
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 import hippo_brain
 from hippo_brain import main
+
+
+def test_mcp_entry_uses_config_before_import_and_respects_env(monkeypatch):
+    seen = []
+    stub = ModuleType("hippo_brain.mcp")
+    stub.main = lambda: seen.append(os.environ.get("HIPPO_OTEL_ENABLED"))
+    monkeypatch.setitem(sys.modules, "hippo_brain.mcp", stub)
+    monkeypatch.setattr(hippo_brain, "_load_runtime_settings", lambda: {"telemetry_enabled": True})
+
+    monkeypatch.delenv("HIPPO_OTEL_ENABLED", raising=False)
+    hippo_brain.mcp_main()
+    assert seen == ["1"]
+
+    monkeypatch.setenv("HIPPO_OTEL_ENABLED", "0")
+    hippo_brain.mcp_main()
+    assert seen == ["1", "0"]
 
 
 def test_main_no_args_prints_usage_and_exits(capsys):
