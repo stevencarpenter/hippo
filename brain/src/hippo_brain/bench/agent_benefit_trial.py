@@ -35,6 +35,20 @@ TOOLS = {
 }
 
 
+def verify_history_boundaries(permissions: dict, host_home: Path) -> None:
+    """Known host capture stores must be denied independently of the submitted spec."""
+    for relative in (
+        ".pi/agent/sessions",
+        ".claude/projects",
+        ".codex",
+        ".local/share/hippo",
+        ".zsh_history",
+        ".bash_history",
+    ):
+        path = host_home / relative
+        require(permissions.get(str(path)) == "deny", f"missing host history denial: {relative}")
+
+
 def verify_inventory(result: dict, arm: str) -> None:
     require(result.get("nextCursor") is None, "incomplete runtime inventory")
     servers = result["data"]
@@ -117,6 +131,7 @@ def verify(spec: dict, contract: dict) -> None:
             "inherited or missing server",
         )
         permissions = config["permissions"]["trial"]["filesystem"]
+        verify_history_boundaries(permissions, Path.home())
         for denied in definition["required_denials"]:
             require(permissions.get(denied) == "deny", "missing filesystem boundary")
         if arm == "treatment":

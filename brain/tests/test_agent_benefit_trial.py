@@ -7,6 +7,25 @@ from hippo_brain.bench import agent_benefit_trial as trial
 from hippo_brain.bench.agent_benefit_study import load_contract
 
 
+def test_host_history_denials_cannot_be_omitted_from_the_trial_spec(tmp_path):
+    paths = (
+        ".pi/agent/sessions",
+        ".claude/projects",
+        ".codex",
+        ".local/share/hippo",
+        ".zsh_history",
+        ".bash_history",
+    )
+    permissions = {str(tmp_path / path): "deny" for path in paths}
+    trial.verify_history_boundaries(permissions, tmp_path)
+    for path in paths:
+        with pytest.raises(ValueError, match="missing host history denial"):
+            trial.verify_history_boundaries(
+                {key: value for key, value in permissions.items() if key != str(tmp_path / path)},
+                tmp_path,
+            )
+
+
 def test_runtime_inventory_rejects_apps_missing_servers_and_discovery_errors():
     trial.verify_inventory({"data": []}, "control")
     server = {"name": "hippo", "tools": dict.fromkeys(trial.TOOLS), "runtimeStatus": "connected"}

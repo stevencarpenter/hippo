@@ -134,3 +134,20 @@ preflight. The original reservation remains in place. Further model execution
 requires an explicit versioned diagnostic amendment and a complete boundary
 audit. Prospective population supply and the required human labels are still
 unestablished.
+
+The subsequent host-history audit found that both frozen trial configurations
+omit an explicit Pi session-history denial. An additional no-inference OS
+probe exited with status 1 because opening host `.zsh_history` succeeded.
+No history contents were read or emitted. The earlier boundary qualification
+therefore covers only the original listed probes. It cannot qualify complete
+history isolation, and the original control outcome cannot support an isolated
+benefit comparison. The runner's input verifier now independently requires
+denials for Pi sessions, Claude projects, Codex history, Hippo storage, zsh
+history and bash history. Omitting a path from a submitted spec cannot bypass
+this check. The original configuration and failed audit remain preserved.
+An independently copied treatment configuration with the six explicit denials
+passed a real 9.087-second preflight. The OS probe denied opening one existing
+file from each of the six history locations, and denied the private write
+probe. Runtime inventory still contained exactly the 12 Hippo tools. No model
+turn started. This verifies the corrected tested boundaries without replacing
+the original diagnostic or authorizing cohort expansion.
