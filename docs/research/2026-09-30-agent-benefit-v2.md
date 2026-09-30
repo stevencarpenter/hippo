@@ -165,3 +165,25 @@ checkers have not been audited. No prospective primary family is qualified by
 this inventory. Diagnostic amendment A is prepared separately and remains
 pending owner approval because the original contract prohibits automatic
 resource extensions.
+
+The source-provenance audit of those 11 session groups excludes six automated
+sources: two Codex review subagents and four Firstmate worker sessions. Their
+captured database rows all have `is_subagent=0`; original Codex spawn metadata
+and Firstmate launch briefs contradict using that flag as proof of human
+origin. Request-level timestamps in the remaining five sources yield 16
+window records. Fourteen are excluded as automatic continuations, watcher
+wakes, evaluation reviewer arrangements or a status-only continuation. Two
+requests remain unresolved pending full context, incident independence,
+resettable starting state and checker verification. Zero primary families are
+qualified. This is a bounded audit of the original source inventory, not a
+complete census of the evolving window. The source hashes, line references,
+timestamps and exclusion reasons remain in private intake artifacts.
+The two unresolved follow-ups were subsequently linked to their full original
+benchmark request at source line 966, timestamp September 30 at 05:48:29.239
+UTC. This precedes the 08:00 UTC enrollment boundary. They continue the same
+benchmark incident and are excluded under the one-primary-request-per-family
+rule. The version 2 private disposition report retains the original request,
+timestamp, source hash and line reference. All 16 audited window records are
+now excluded, with zero qualified new primary families in this bounded source
+inventory. The original unresolved report remains preserved. This does not
+establish absence of eligible tasks elsewhere in the live capture database.
