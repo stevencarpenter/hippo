@@ -745,7 +745,7 @@ packets for two independent reviewers have no arm-labeled paths; their private
 manifest is
 `~/.local/share/hippo-bench/agent-benefit/2026-09-29-pilot-blind-review/independent-review-manifest.private.json`
 (SHA-256 `182f203241b02e50cc292605c70bb0bf36b66681cb56e6b15d42acc3699edc23`).
-No reviewer labels exist. These five development cases are not the acceptance
+No human reviewer labels exist. These five development cases are not the acceptance
 cohort and cannot establish a population benefit verdict.
 Rechecking all ten trace and stderr hashes reproduced the execution manifest.
 The control gcampr stderr records an attempted test command rejected because
@@ -773,6 +773,27 @@ database hash remained unchanged. Its private report is
 These checks establish present client discovery and a verified isolation
 setting. They do not reconstruct the model-visible inventory during the
 completed pilot, explain zero Hippo calls, or supply a task-benefit verdict.
+
+Two subsequently authorized AI reviewers independently scored only their ZIP
+contents, with no inherited conversation. Their archived forms disagree on
+four of 28 submission/rubric judgments and agree that three Firstmate judgments
+lack installed-state evidence. They supply diagnostic reviews, not independent
+human acceptance labels.
+
+The retrospective source audit found that the Gringotts packets omit all 157
+Rust source files tracked at the frozen task commit
+`d9b6c2ace245273be6418a09a717222a8c0884d7`. The answers cite implementation,
+ADR, and benchmark files available in that commit but absent from the packets.
+The first rubric item also incorrectly requires pre-implementation status
+based on a README contradicted by source implementation at the same commit.
+For example, `crates/gringotts-teller/src/main.rs` calls the serving function
+with `DenyAllAttestor`, and `docs/benchmarks/branch-sync-latency.md` records a
+local measurement runner and its limits. Missing packet evidence cannot
+establish that these implementation or measurement claims were invented.
+The Gringotts grades cannot supply a valid task-success verdict without a
+corrected rubric and complete evidence review. The original frozen rubric,
+packets, and reviewer forms remain preserved as diagnostic artifacts; these
+cases remain development data.
 
 ### Prospective intake
 

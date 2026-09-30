@@ -152,6 +152,16 @@ These five cases supply development diagnostics. They do not satisfy the frozen
 acceptance protocol or establish benefit from retrieved history. The v1.0.0
 decision remains NO-GO.
 
+A subsequent retrospective audited the two isolated AI reviews of the
+development packets. The Gringotts packet omitted 157 tracked Rust source
+files from the frozen task commit, while its rubric incorrectly required
+pre-implementation status from a stale README. Both reviews used missing
+packet evidence to reject claims citing actual source and benchmark files.
+Those grades do not establish that the answers invented implementations, and
+cannot supply a valid task-success verdict. Firstmate also lacks installed
+checkout evidence in its review packets. These are evaluation defects,
+independent of Hippo's unproven benefit; the release decision is unchanged.
+
 ### Conflict detection remains a warning heuristic
 
 | Diagnostic | Baseline | Interpretation |
