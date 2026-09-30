@@ -28,6 +28,7 @@ def test_runtime_inventory_rejects_apps_missing_servers_and_discovery_errors():
         ("closed", "transport_closed"),
         ("timeout", "timeout"),
         ("token_cap", "token_budget_exhausted"),
+        ("preflight", "preflight_verified"),
     ],
 )
 def test_real_stdio_transport_keeps_explicit_terminal_failures(tmp_path, behavior, terminal):
@@ -69,8 +70,19 @@ for line in sys.stdin:
     }
     out = tmp_path / "out"
     out.mkdir(mode=0o700)
-    record = trial.run_arm(spec, {"model": "fixture", "effort": "medium"}, "control", out, 0.5, 50)
-    assert record["turn_started"]
+    record = trial.run_arm(
+        spec,
+        {"model": "fixture", "effort": "medium"},
+        "control",
+        out,
+        0.5,
+        50,
+        preflight_only=behavior == "preflight",
+    )
+    assert record["turn_started"] is (behavior != "preflight")
+    assert record["launch_command"][-4:] == ["--disable", "plugins", "--disable", "remote_plugin"]
+    if behavior == "preflight":
+        assert '"turn/start"' not in (out / "control.rpc.jsonl").read_text()
     assert record["terminal"] == terminal
     assert record["hippo_calls"] == []
     assert record["trace_sha256"]

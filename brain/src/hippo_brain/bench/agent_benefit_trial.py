@@ -159,7 +159,14 @@ def verify(spec: dict, contract: dict) -> None:
 
 
 def run_arm(
-    spec: dict, contract: dict, arm: str, output: Path, seconds: float, tokens: int
+    spec: dict,
+    contract: dict,
+    arm: str,
+    output: Path,
+    seconds: float,
+    tokens: int,
+    *,
+    preflight_only: bool = False,
 ) -> dict:
     root = Path(spec["arms"][arm]["root"])
     env = {
@@ -181,6 +188,10 @@ def run_arm(
         "apps",
         "--disable",
         "multi_agent",
+        "--disable",
+        "plugins",
+        "--disable",
+        "remote_plugin",
     ]
     started = time.monotonic()
     record = {
@@ -193,6 +204,7 @@ def run_arm(
         "command_results": [],
         "inventory_verified": False,
         "boundaries_verified": False,
+        "launch_command": command,
     }
     event_path = output / (arm + ".rpc.jsonl")
     with event_path.open("x") as events, (output / (arm + ".stderr.log")).open("x") as stderr:
@@ -346,21 +358,24 @@ print('boundaries_denied')
                 "sandbox boundary escape or inconclusive probe",
             )
             record["boundaries_verified"] = True
-            rpc(
-                "turn/start",
-                {
-                    "threadId": thread,
-                    "effort": contract["effort"],
-                    "input": [{"type": "text", "text": (root / "prompt.txt").read_text()}],
-                },
-            )
-            record["turn_started"] = True
-            record["terminal"] = "task_failure"
-            while True:
-                message = receive()
-                if message.get("method") == "turn/completed":
-                    record["terminal"] = message["params"]["turn"]["status"]
-                    break
+            if preflight_only:
+                record["terminal"] = "preflight_verified"
+            else:
+                rpc(
+                    "turn/start",
+                    {
+                        "threadId": thread,
+                        "effort": contract["effort"],
+                        "input": [{"type": "text", "text": (root / "prompt.txt").read_text()}],
+                    },
+                )
+                record["turn_started"] = True
+                record["terminal"] = "task_failure"
+                while True:
+                    message = receive()
+                    if message.get("method") == "turn/completed":
+                        record["terminal"] = message["params"]["turn"]["status"]
+                        break
         except (ValueError, TimeoutError, ConnectionError, OverflowError, OSError) as error:
             record["failure_type"] = type(error).__name__
             record["failure_reason"] = str(error)

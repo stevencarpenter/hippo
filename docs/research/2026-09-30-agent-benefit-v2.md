@@ -92,3 +92,45 @@ and cannot satisfy the prospective gate. Bob and Carlos remain AI diagnostics.
 Software regression tests, actual deployment and final release-SHA CI remain
 separate readiness requirements. No study outcome authorizes a release tag or
 deployment. Private history and raw traces remain outside Git and Kaneo.
+
+## September 30 execution evidence
+
+The source-bound packet export, adjudicator, study validator and bounded
+app-server runner were implemented at `bee491b`. The authorized Bob v2 and
+Carlos v2 reviewers each received only an independently ordered ZIP and its
+instructions in a fresh session. Both identities are recorded as AI reviewers.
+Their 28 paired item judgments contain three disagreements. All six aggregate
+submission outcomes remain unresolved, and none qualifies for acceptance.
+The original 125 artifact hashes were rechecked without changes.
+
+Both reviewers pass all Gringotts rubric items against the corrected complete
+tracked source. A redacted required source file still prevents complete packet
+qualification. Firstmate lacks historical installed state and execution
+evidence. A subsequent anonymous executable gcampr check confirms that A
+creates a PR on the default branch when its HEAD is ahead of the remote. Both
+candidates invoke gcamp before checking the default-branch condition. These
+checks use mocked commands and preserve the original reviewer forms.
+
+The frozen diagnostic reservation was consumed. The control completed its
+task and passed the independently checked removal criterion in 209.140 seconds,
+with 600,536 reported total tokens. The treatment stopped during runtime
+inventory verification after 11.656 seconds, before any model turn or Hippo
+call. Codex 0.159.2 injected `creative_production_mcp` despite `apps=false`.
+The pair is a failed diagnostic, not a completion comparison or benefit result.
+
+The runner now disables `plugins` and `remote_plugin` explicitly. A subsequent
+12.520-second treatment-only preflight verified exactly the normal 12 Hippo
+tools and the configured filesystem read/write probes. It started no model
+turn and does not repair or replace the failed pair. The probes establish only
+their configured boundaries; they do not prove denial of every possible host
+history location. HIPO-51 therefore remains incomplete. No cohort expansion or
+release-readiness claim is supported by this execution.
+
+Private evidence is retained under
+`~/.local/share/hippo-bench/agent-benefit/2026-09-30-v2-execution/`, including
+the raw reviews, provenance registry, packet and label hashes, adjudication,
+anonymous gcampr checker, original paired RPC traces and plugin-isolation
+preflight. The original reservation remains in place. Further model execution
+requires an explicit versioned diagnostic amendment and a complete boundary
+audit. Prospective population supply and the required human labels are still
+unestablished.
