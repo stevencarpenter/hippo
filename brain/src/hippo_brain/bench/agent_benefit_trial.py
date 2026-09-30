@@ -492,7 +492,15 @@ def run_pair(spec: dict, contract: dict, output: Path) -> dict:
             r["terminal"] == "completed" and r["checker_passed"] and r["usage"] is not None
             for r in rows
         )
-        and treatment["hippo_calls"]
+        and any(
+            call.get("server") == "hippo"
+            and call.get("tool") == "agent_query"
+            and call.get("status") == "completed"
+            and not call.get("error")
+            and call.get("result") is not None
+            and not call["result"].get("isError", False)
+            for call in treatment["hippo_calls"]
+        )
         and not control["hippo_calls"]
     )
     report = {

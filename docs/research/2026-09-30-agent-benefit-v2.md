@@ -187,3 +187,13 @@ timestamp, source hash and line reference. All 16 audited window records are
 now excluded, with zero qualified new primary families in this bounded source
 inventory. The original unresolved report remains preserved. This does not
 establish absence of eligible tasks elsewhere in the live capture database.
+
+The owner subsequently approved diagnostic amendment A. Its corrected pair
+completed both task checkers within 166.344 summed seconds and 657,464 reported
+tokens. The treatment attempted one `agent_query`, denied by Codex's MCP tool
+approval policy before execution. No Hippo result reached the model. The pair
+therefore fails canary qualification despite successful task completion. The
+approved additional reservation is consumed; further attempts are not
+authorized. The report's erroneous call-presence qualification is preserved
+with a hash-bound correction, and the runner now rejects failed calls as
+delivery proof. The amendment document records the full current evidence.

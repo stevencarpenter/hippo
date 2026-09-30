@@ -14,6 +14,42 @@ def test_pending_amendment_cannot_reserve_or_start_a_pair(tmp_path, monkeypatch)
     assert not (tmp_path / "out").exists()
 
 
+def test_rejected_model_tool_call_does_not_verify_delivery(tmp_path, monkeypatch):
+    contract = load_contract(Path(__file__).parents[2] / "config/agent-benefit-v2.json")
+    monkeypatch.setattr(trial, "verify", lambda *args: None)
+    monkeypatch.setattr(trial, "hippo_bench_root", lambda: tmp_path / "bench")
+
+    def run(spec, contract, arm, output, seconds, tokens):
+        return {
+            "arm": arm,
+            "terminal": "completed",
+            "elapsed_seconds": 0.01,
+            "usage": {"totalTokens": 1},
+            "hippo_calls": []
+            if arm == "control"
+            else [
+                {
+                    "server": "hippo",
+                    "tool": "agent_query",
+                    "status": "failed",
+                    "error": {"message": "approval denied"},
+                    "result": None,
+                }
+            ],
+        }
+
+    monkeypatch.setattr(trial, "run_arm", run)
+    spec = {
+        "arm_order": ["control", "treatment"],
+        "arms": {arm: {"root": str(tmp_path / arm)} for arm in ("control", "treatment")},
+        "checker": ["/usr/bin/true"],
+        "study_id": "diagnostic",
+    }
+    report = trial.run_pair(spec, contract, tmp_path / "out")
+    assert not report["model_thread_path_verified"]
+    assert not report["canary_verified"]
+
+
 def test_host_history_denials_cannot_be_omitted_from_the_trial_spec(tmp_path):
     paths = (
         ".pi/agent/sessions",
