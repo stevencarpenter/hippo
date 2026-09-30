@@ -721,8 +721,11 @@ report is
 (SHA-256 `c9e6d914a903ecc52ab1fd21e706be8956740a12a495f55dfc7602268929eaec`).
 The traces record 600.516 control and 712.541 treatment wall seconds, and
 2,314,033 control and 2,738,359 treatment input tokens. No treatment made a
-Hippo MCP tool call. Availability alone has not demonstrated historical-memory
-use or task benefit in these cases.
+Hippo MCP tool call. Configuration listing and a separate stdio preflight
+establish configured access and server operation, but the execution logs do not
+record the tools exposed to the model. They cannot distinguish missing runtime
+tool exposure from a choice not to call Hippo. Historical-memory use and task
+benefit remain unproven in these cases.
 
 Executable checks found that both CI-removal arms removed exactly the obsolete
 workflow step and script, and both Agent Journal arms preserved eight existing
@@ -739,6 +742,11 @@ manifest is
 (SHA-256 `182f203241b02e50cc292605c70bb0bf36b66681cb56e6b15d42acc3699edc23`).
 No reviewer labels exist. These five development cases are not the acceptance
 cohort and cannot establish a population benefit verdict.
+Rechecking all ten trace and stderr hashes reproduced the execution manifest.
+The control gcampr stderr records an attempted test command rejected because
+it contained file-deletion commands. Its completed turn does not establish
+that this attempted validation ran. Treatment stderr contains no recorded MCP
+startup error; silence does not establish model-visible tool exposure.
 
 ### Prospective intake
 
