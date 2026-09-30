@@ -418,6 +418,10 @@ print('boundaries_denied')
 
 
 def run_pair(spec: dict, contract: dict, output: Path) -> dict:
+    require(
+        contract.get("amendment", {}).get("approval_status", "approved") == "approved",
+        "diagnostic amendment requires owner approval before reservation",
+    )
     verify(spec, contract)
     reservation = create_directory(
         hippo_bench_root()

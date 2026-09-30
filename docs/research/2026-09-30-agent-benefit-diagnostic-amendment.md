@@ -37,3 +37,20 @@ Hippo invocation, delivered source identities, pre-task factual support,
 interpretation and application against its trace and independently audited
 sources. Missing source support prevents canary qualification. Completion in
 both arms establishes task feasibility, not population benefit.
+
+The pending private contract and spec are now prepared. Both fresh starting
+repositories are clean at the original frozen commit. Each Codex home initially
+contains only copied auth, frozen config and an empty temporary directory.
+Both arms pass static verification. Actual no-inference preflights passed for
+control in 2.973 seconds and treatment in 8.255 seconds. Their per-thread MCP
+inventories and configured OS read/write denials passed. Neither started a
+model turn. Original frozen inputs remain unchanged. The runner rejects a
+pending amendment before creating its resource reservation. Approval is still
+absent, and no amended pair has been reserved or launched.
+
+Prepared inputs and preflight traces are private under
+`~/.local/share/hippo-bench/agent-benefit/2026-09-30-v2-execution/`.
+The spec hash is
+`20ececcd2966e1363f3258e5ebf968255322bc19b8052538fd558f0fc3a6e210`.
+An approved contract needs a recorded owner decision and a new content hash;
+the pending contract must remain preserved.

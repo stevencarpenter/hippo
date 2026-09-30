@@ -7,6 +7,13 @@ from hippo_brain.bench import agent_benefit_trial as trial
 from hippo_brain.bench.agent_benefit_study import load_contract
 
 
+def test_pending_amendment_cannot_reserve_or_start_a_pair(tmp_path, monkeypatch):
+    monkeypatch.setattr(trial, "verify", lambda *args: pytest.fail("must not prepare a launch"))
+    with pytest.raises(ValueError, match="requires owner approval before reservation"):
+        trial.run_pair({}, {"amendment": {"approval_status": "pending"}}, tmp_path / "out")
+    assert not (tmp_path / "out").exists()
+
+
 def test_host_history_denials_cannot_be_omitted_from_the_trial_spec(tmp_path):
     paths = (
         ".pi/agent/sessions",
