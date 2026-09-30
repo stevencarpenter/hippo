@@ -151,3 +151,17 @@ file from each of the six history locations, and denied the private write
 probe. Runtime inventory still contained exactly the 12 Hippo tools. No model
 turn started. This verifies the corrected tested boundaries without replacing
 the original diagnostic or authorizing cohort expansion.
+
+The existing September 29 clean prospective memory snapshot was rechecked:
+its file hash matches its recorded manifest, its schema is 25, and its recorded
+repository freeze is ready. It has no attached task and remains
+`snapshot_ready=false`; the memory itself can serve only requests after its
+recorded cutoff. A read-only inventory of the active enrollment window found
+35 captured segments in 11 session groups. These counts are not independent
+task-family counts. Full captured prompt records and their hashes are retained
+privately under `prospective-intake-audit/`. Prompt origin and individual time,
+incident-family independence, historical starting state and independent task
+checkers have not been audited. No prospective primary family is qualified by
+this inventory. Diagnostic amendment A is prepared separately and remains
+pending owner approval because the original contract prohibits automatic
+resource extensions.
