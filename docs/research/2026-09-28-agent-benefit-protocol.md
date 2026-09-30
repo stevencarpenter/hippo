@@ -166,6 +166,11 @@ acceptance window, so its volume cannot satisfy that gate.
    setting alone does not establish this blindness. Deny model-generated shell
    commands direct access to the treatment database so memory is reached only
    through the configured Hippo tools.
+   Disable connected apps in both arms. Before execution, archive Codex's
+   discovered MCP tool inventory using `mcpServerStatus/list`, not only
+   `codex mcp list`. Require no servers in the control and only the intended
+   Hippo tools in the treatment, with no discovery error. Freeze the explicit
+   feature settings and inventory alongside the other launch inputs.
 3. Run the same preregistered success checks on both outputs in clean
    environments. Prefer executable tests and reproduced issue behavior. Two
    reviewers blinded to arm adjudicate cases that need judgment, including
@@ -747,6 +752,27 @@ The control gcampr stderr records an attempted test command rejected because
 it contained file-deletion commands. Its completed turn does not establish
 that this attempted validation ran. Treatment stderr contains no recorded MCP
 startup error; silence does not establish model-visible tool exposure.
+
+Post-pilot discovery used Codex `0.158.0` app-server clients in all ten private
+homes, with the pilot's sanitized environment and unchanged configuration.
+The clients sent only `initialize`, `initialized`, and `mcpServerStatus/list`;
+they created no thread, model turn, or tool call. Each treatment discovered
+all 12 Hippo tools without a tool-list error. The same check also discovered
+230 connected-app tools in each control and 265 in each treatment. Configuration
+listing had not established the required isolation of the tool inventories.
+The private report is
+`~/.local/share/hippo-bench/agent-benefit/mcp-discovery-1790732536798/results.private.json`
+(SHA-256 `91d677735535ebc4e10c30f7db7cf3566ed3c9311c44b41b32edd638b9c35d8e`).
+
+A separate diagnostic added `--disable apps` to the app-server command. All
+five controls then discovered no servers; all five treatments discovered only
+the same 12 Hippo tools without a tool-list error. Every config and treatment
+database hash remained unchanged. Its private report is
+`~/.local/share/hippo-bench/agent-benefit/mcp-discovery-1790732650948/results.private.json`
+(SHA-256 `2171823d3cc1446fcaae3f512d31ad5f032ceac00144d8df7d8e5140fc7e132b`).
+These checks establish present client discovery and a verified isolation
+setting. They do not reconstruct the model-visible inventory during the
+completed pilot, explain zero Hippo calls, or supply a task-benefit verdict.
 
 ### Prospective intake
 

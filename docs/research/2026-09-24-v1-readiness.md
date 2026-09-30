@@ -133,6 +133,12 @@ All ten arms completed without a timeout. Rechecking every trace against its
 recorded SHA-256 confirmed zero Hippo MCP calls. Server configuration and a
 separate stdio preflight were verified; the execution logs do not record the
 tools exposed to the model. The cause of zero usage remains unresolved.
+Post-pilot app-server discovery found Hippo's 12 tools in every treatment,
+but also found different connected-app inventories between arms. A separate
+check with connected apps disabled found zero control servers and only Hippo
+in every treatment, while preserving config and database hashes. These checks
+verify present discovery and an isolation setting; they do not reconstruct
+the completed pilot's model-visible tool inventory.
 
 Both arms passed the executable CI-removal and Agent Journal checks. An offline
 gcampr check showed the treatment refusing a PR on the default branch while the
