@@ -211,7 +211,12 @@ def _jev_client_from_config(config: dict):
     if op is None:
         raise FileNotFoundError("1Password CLI unavailable")
     result = subprocess.run(
-        [op, "read", ref], capture_output=True, text=True, timeout=5, check=True
+        # Desktop credential resolution was measured at 5.042s, beyond the old limit.
+        [op, "read", ref],
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=True,
     )
     return JevClient(result.stdout.strip())
 

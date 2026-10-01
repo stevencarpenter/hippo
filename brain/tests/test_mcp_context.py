@@ -37,5 +37,12 @@ def test_unknown_candidates_and_errors_remain_visible():
     score = score_response(case, {"structuredContent": {"hits": [{"uuid": "unjudged"}]}}, 1)
     assert score["graded"]["unjudged_returned"] == 1
     assert score["graded"]["ndcg_at_5"] is None
-    for wire in ({"isError": True}, {"structuredContent": {"error": "failed"}}):
+    for wire in (
+        {"isError": True},
+        {"structuredContent": {"error": "failed"}},
+        {"content": [{"type": "text", "text": "not JSON context"}]},
+        {"structuredContent": {"hits": [{"uuid": "support"}, {"uuid": "support"}]}},
+    ):
         assert not score_response(case, wire, 1)["success"]
+    duplicates = {"structuredContent": {"hits": [{"uuid": "support"}, {"uuid": "support"}]}}
+    assert score_response(case, duplicates, 1)["known_support_recall"] == 1

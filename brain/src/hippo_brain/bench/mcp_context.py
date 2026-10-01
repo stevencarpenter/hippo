@@ -37,14 +37,19 @@ def response_hits(wire: dict) -> tuple[list[dict], dict]:
                 except ValueError:
                     continue
     hits, metadata = [], {}
+    parsed_context = False
     for value in values:
         if isinstance(value, dict):
             metadata.update({key: value[key] for key in ("error", "retrieval") if key in value})
+            parsed_context |= "error" in value
             value = value.get("hits", value.get("result", value))
         if isinstance(value, dict):
+            parsed_context |= bool(value.get("uuid"))
             value = [value]
         if isinstance(value, list):
+            parsed_context |= all(isinstance(hit, dict) and hit.get("uuid") for hit in value)
             hits.extend(hit for hit in value if isinstance(hit, dict) and hit.get("uuid"))
+    metadata["parsed_context"] = parsed_context
     return hits, metadata
 
 
@@ -71,16 +76,24 @@ def score_response(case: dict, wire: dict, elapsed_ms: float) -> dict:
         "id": case["id"],
         "family": case["family"],
         "tool": case["tool"],
-        "success": not wire.get("isError", False) and "error" not in metadata,
+        "success": not wire.get("isError", False)
+        and "error" not in metadata
+        and metadata["parsed_context"]
+        and len(set(ids)) == len(ids),
         "elapsed_ms": round(elapsed_ms, 3),
         "returned_ids": ids,
-        "known_support_recall": recall_at_k(ids, known, len(ids)) if known else None,
+        "known_support_recall": recall_at_k(list(dict.fromkeys(ids)), known, len(ids))
+        if known
+        else None,
         "known_support_mrr": mrr(ids, known) if known else None,
-        "graded": graded_retrieval_metrics(ids, judgments),
+        "graded": graded_retrieval_metrics(list(dict.fromkeys(ids)), judgments),
         "literal_fact_availability": facts,
         "result_bytes": len(json.dumps(wire, ensure_ascii=False).encode()),
         "text_chars": sum(len(block.get("text", "")) for block in wire.get("content", [])),
         "structured": wire.get("structuredContent") is not None,
+        "structured_chars": len(json.dumps(wire["structuredContent"], ensure_ascii=False))
+        if wire.get("structuredContent") is not None
+        else 0,
         "duplicate_source_fraction": 1 - len(set(refs)) / len(refs) if refs else None,
         **metadata,
     }

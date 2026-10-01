@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import os
 import select
 import sqlite3
 import subprocess
@@ -188,17 +189,30 @@ class TestGetConn:
 
 
 class TestMCPStdioProtocol:
-    def test_server_starts_and_responds_to_initialize(self):
+    def test_server_starts_and_responds_to_initialize(self, tmp_path):
         """Start hippo-mcp as subprocess, send MCP initialize, verify response.
 
         MCP SDK >=1.x uses newline-delimited JSON for stdio transport (not
         Content-Length framing).  Each message is a single JSON line.
         """
+        config_dir = tmp_path / ".config/hippo"
+        config_dir.mkdir(parents=True)
+        (config_dir / "config.toml").write_text(
+            f'[storage]\ndata_dir = "{tmp_path / "data"}"\n[retrieval]\nrerank = false\n'
+        )
         proc = subprocess.Popen(
             [sys.executable, "-m", "hippo_brain.mcp"],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
+            env={
+                "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+                "HOME": str(tmp_path),
+                "XDG_CONFIG_HOME": str(tmp_path / ".config"),
+                "XDG_DATA_HOME": str(tmp_path / ".local/share"),
+                "XDG_CACHE_HOME": str(tmp_path / ".cache"),
+                "PYTHONDONTWRITEBYTECODE": "1",
+            },
         )
 
         try:
@@ -251,6 +265,26 @@ class TestMCPStdioProtocol:
 
 
 class TestLoadConfig:
+    def test_desktop_credential_resolution_fits_startup_budget(self, monkeypatch):
+        from hippo_brain import jev, mcp as server
+
+        def resolve(_command, **kwargs):
+            if kwargs["timeout"] <= 5.042:
+                raise subprocess.TimeoutExpired(_command, kwargs["timeout"])
+            assert kwargs["timeout"] <= 20
+            assert kwargs["capture_output"] and kwargs["check"]
+            return subprocess.CompletedProcess(_command, 0, stdout="resolved-test-key\n")
+
+        client = object()
+        constructor = MagicMock(return_value=client)
+        monkeypatch.setattr(server.shutil, "which", lambda _name: "/fake/op")
+        monkeypatch.setattr(server.subprocess, "run", resolve)
+        monkeypatch.setattr(jev, "JevClient", constructor)
+        assert (
+            server._jev_client_from_config({"typesafe_api_key_op_ref": "op://test/key"}) is client
+        )
+        constructor.assert_called_once_with("resolved-test-key")
+
     def test_missing_config_returns_defaults(self, tmp_path, monkeypatch):
         """When config.toml doesn't exist, defaults are returned."""
         monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))

@@ -212,3 +212,13 @@ benefit result. Canary qualification and expansion remain false. The private
 audit, delivered-source audit and outputs by SHA-256. Original records remain
 unchanged. One selected recovery task does not estimate ordinary-task coverage
 or population benefit.
+
+The owner subsequently requested fixes and an MCP-specific usefulness measure.
+Amendment D reserved one fresh pair on the unchanged policy-recovery task and
+corpus. Treatment passed all five decisions with source-supported reasons;
+control marked all five unknown. All four treatment follow-up searches were
+allowed. Treatment added 34.148 seconds and 209,936 reported tokens. The
+MCP transport replay and credential diagnosis are recorded in
+[Hippo MCP context evaluation](2026-10-01-mcp-context-evaluation.md).
+This is one repeated known-history diagnostic family. It qualifies the tested
+delivery/application mechanism, not population benefit or HIPO-55 acceptance.
