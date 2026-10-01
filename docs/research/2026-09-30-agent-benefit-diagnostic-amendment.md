@@ -95,3 +95,29 @@ an evidence-mode response. The turn completed in 23.100 seconds using 56,464
 reported tokens. This verifies actual invocation under the corrected policy;
 it does not replace either paired diagnostic or estimate agent benefit.
 Private trace and result are retained under `agent-query-permission-test/`.
+
+The owner authorized proceeding with one corrected pair using the tested
+permission setting. Amendment B has a separate approved contract and resource
+reservation. Its spec hash is
+`f5ea080e3c054b4f7e113c421d2637ddded454ce45a16ab3215f466a753f0b80`.
+The frozen inputs passed static verification. All 29,626 knowledge nodes in its
+memory snapshot predate the original task timestamp.
+
+Both task checkers passed. Control completed in 46.153 seconds using 226,522
+reported tokens. Treatment completed in 71.368 seconds using 577,547 tokens.
+The summed 117.521 seconds and 804,069 tokens are within the authorized limits.
+Treatment successfully invoked `agent_query` and received five evidence hits.
+None matches the four independently pre-audited relevant nodes. The treatment
+stated that the returned older CI failures did not identify the failing test,
+then solved it using the checkout. Its additional `get_ci_status` call was
+denied because that tool had no explicit approval. Factual support for the
+returned hits has not been independently adjudicated.
+
+For this reused case, treatment took 25.215 seconds longer and used 351,025 more
+reported tokens. Completion was tied. This demonstrates a working model query
+path and a relevance miss in the tested lookup policy. It does not estimate
+population benefit, prove general harm or establish successful source
+application. Canary qualification and expansion remain false. Both approved
+attempts are consumed. The private hash-bound `amendment-b-run/mechanism-audit.json`
+retains delivered identities, pre-audited identities, timing checks, model
+interpretation, failed-call evidence and completion/resource measurements.
