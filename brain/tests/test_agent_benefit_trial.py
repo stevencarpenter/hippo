@@ -1,4 +1,5 @@
 import json
+import sys
 from pathlib import Path
 
 import pytest
@@ -40,6 +41,63 @@ def test_related_nodes_alone_cannot_qualify_a_usefulness_diagnostic():
             trial.verify_history_opportunity(
                 {**proof, "history_opportunity": {**opportunity, field: ""}}
             )
+
+
+@pytest.mark.parametrize("control_checker_exit", [1, 2])
+def test_control_task_failure_runs_treatment_but_checker_error_stops(
+    tmp_path, monkeypatch, control_checker_exit
+):
+    contract = load_contract(Path(__file__).parents[2] / "config/agent-benefit-v2.json")
+    monkeypatch.setattr(trial, "verify", lambda *args: None)
+    monkeypatch.setattr(trial, "hippo_bench_root", lambda: tmp_path / "bench")
+    called = []
+    expected = trial.query_arguments("task", "/project")
+
+    def run(spec, contract, arm, output, seconds, tokens):
+        called.append(arm)
+        return {
+            "arm": arm,
+            "terminal": "completed",
+            "elapsed_seconds": 0.01,
+            "usage": {"totalTokens": 1},
+            "hippo_calls": []
+            if arm == "control"
+            else [
+                {
+                    "server": "hippo",
+                    "tool": "agent_query",
+                    "status": "completed",
+                    "arguments": expected,
+                    "result": {"content": []},
+                }
+            ],
+        }
+
+    monkeypatch.setattr(trial, "run_arm", run)
+    for arm in ("control", "treatment"):
+        (tmp_path / arm).mkdir()
+        (tmp_path / arm / "original-task.txt").write_text("task")
+    checker = tmp_path / "check.py"
+    checker.write_text(
+        f"import sys\nsys.exit({control_checker_exit} if sys.argv[1].endswith('/control/repo') else 0)\n"
+    )
+    spec = {
+        "arm_order": ["control", "treatment"],
+        "original_project": "/project",
+        "arms": {arm: {"root": str(tmp_path / arm)} for arm in ("control", "treatment")},
+        "checker": [sys.executable, str(checker), "{repo}"],
+        "study_id": "diagnostic",
+    }
+    report = trial.run_pair(spec, contract, tmp_path / "out")
+    assert called == (["control", "treatment"] if control_checker_exit == 1 else ["control"])
+    assert not report["rows"][0]["checker_passed"]
+    if control_checker_exit == 1:
+        assert report["rows"][1]["checker_passed"]
+        assert report["model_thread_path_verified"] and report["query_policy_verified"]
+    else:
+        assert not report["model_thread_path_verified"]
+        assert report["unstarted_arms"] == ["treatment"]
+    assert not report["canary_verified"]
 
 
 def test_pending_amendment_cannot_reserve_or_start_a_pair(tmp_path, monkeypatch):

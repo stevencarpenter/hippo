@@ -519,6 +519,7 @@ def run_pair(spec: dict, contract: dict, output: Path) -> dict:
         try:
             checker = subprocess.run(command, capture_output=True, text=True, timeout=30)
             row["checker_passed"] = checker.returncode == 0
+            row["checker_verified"] = checker.returncode in (0, 1)
             checker_record = {
                 "exit_code": checker.returncode,
                 "stdout": checker.stdout,
@@ -526,11 +527,12 @@ def run_pair(spec: dict, contract: dict, output: Path) -> dict:
             }
         except (OSError, subprocess.TimeoutExpired) as error:
             row["checker_passed"] = False
+            row["checker_verified"] = False
             checker_record = {"status": "checker_error", "failure_type": type(error).__name__}
         write_artifact(output / (arm + ".checker.json"), checker_record)
         write_artifact(output / (arm + ".result.json"), row)
         rows.append(row)
-        if row["terminal"] != "completed" or not row["checker_passed"] or row["usage"] is None:
+        if row["terminal"] != "completed" or not row["checker_verified"] or row["usage"] is None:
             break
     treatment = next((r for r in rows if r["arm"] == "treatment"), None)
     control = next((r for r in rows if r["arm"] == "control"), None)
@@ -548,7 +550,7 @@ def run_pair(spec: dict, contract: dict, output: Path) -> dict:
         treatment
         and control
         and all(
-            r["terminal"] == "completed" and r["checker_passed"] and r["usage"] is not None
+            r["terminal"] == "completed" and r["checker_verified"] and r["usage"] is not None
             for r in rows
         )
         and any(

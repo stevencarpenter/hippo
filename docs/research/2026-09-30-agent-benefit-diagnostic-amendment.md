@@ -144,3 +144,31 @@ measurements. The regression check rejects contaminated queries, wrong project
 paths, missing calls and duplicate calls. Previous specs fail static validation
 because they do not freeze the separate original task. The correction does not
 authorize another pair or establish agent benefit.
+
+The owner subsequently authorized a trial of the revised task criteria.
+Amendment C permits one additional pair under the same limits of 600 seconds
+per arm, 1,200 summed seconds and two million reported tokens. The task is a
+deliberately constructed policy-recovery exercise grounded in the real
+pre-task .dotfiles corpus. Five proposed checks must be retained or dropped
+according to the earlier Pi CI decisions. It is one diagnostic family, not
+five independent tasks, and is excluded from population estimates.
+
+Two original Codex sessions support the frozen answer key. The earlier repair
+accepted local paths, Git sources and package objects, retained exact npm pins
+and theme-reference checks, and removed assertions for fixed model/provider
+preferences. A fresh single-commit repository contains only the proposals and
+a neutral README. Neither arm receives the historical decisions or answer key.
+The checker scores five decisions identically in both arms and does not require
+citations. Returned sources, explanations and the recalled earlier failure are
+audited separately for supported application. Correct citations alone cannot
+produce a completion win.
+
+This trial changes the task-checker stop rule: a completed arm with a verified
+incorrect task result (checker exit 1) remains in the pair and does not prevent
+the other arm from running. Checker errors (exit 2 or higher, execution failure
+or timeout), failed runtime isolation, transport failure and missing usage
+still stop execution. Tool delivery qualification is independent of task
+success. The regression check verifies both continued treatment after a control
+task failure and stopping after a checker error. Original runs and contracts
+remain unchanged. The approved private spec and contract are retained as
+`known-history-spec.approved.json` and `known-history-contract.approved.json`.
