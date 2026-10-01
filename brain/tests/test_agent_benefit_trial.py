@@ -23,6 +23,25 @@ def test_guided_query_uses_only_frozen_original_request():
         assert not trial.query_fidelity([{**call, "arguments": arguments}], expected)
 
 
+def test_related_nodes_alone_cannot_qualify_a_usefulness_diagnostic():
+    proof = {"supporting_node_ids": ["source"]}
+    with pytest.raises(ValueError, match="source-bound history opportunity"):
+        trial.verify_history_opportunity(proof)
+    opportunity = {
+        "source_node_id": "source",
+        "fact": "A prior attempt failed because the installed version differed from the lockfile.",
+        "expected_application": "Check the installed version before repeating that attempt.",
+        "scored_check": "The independent trace checker detects a repeated failed attempt.",
+        "advantage_over_starting_context": "The installed state is absent from the checkout.",
+    }
+    trial.verify_history_opportunity({**proof, "history_opportunity": opportunity})
+    for field in opportunity:
+        with pytest.raises(ValueError):
+            trial.verify_history_opportunity(
+                {**proof, "history_opportunity": {**opportunity, field: ""}}
+            )
+
+
 def test_pending_amendment_cannot_reserve_or_start_a_pair(tmp_path, monkeypatch):
     monkeypatch.setattr(trial, "verify", lambda *args: pytest.fail("must not prepare a launch"))
     with pytest.raises(ValueError, match="requires owner approval before reservation"):

@@ -6,6 +6,8 @@
   "codex_version": "0.159.2",
   "window": {"start": "2026-09-30T08:00:00Z", "end": "2026-10-07T08:00:00Z"},
   "population": "Consecutive human-originated maintenance and investigation requests in Hippo-captured projects",
+  "diagnostic_task_requirement": "Select deliberate cases with independently audited pre-task corpus facts, a specified application, a scored check, and an advantage over the starting context. Related topic matches alone do not qualify. These selected cases are excluded from population estimates.",
+  "corpus_coverage_measurement": "For every consecutive eligible task, audit whether actionable pre-task history exists independently of query results and arm outcomes. Report present, absent and unknown counts. Report retrieval, factual support, correct application and checked outcomes within the audited history-present group. Retain history-absent tasks in the population estimate and report deliberate absent controls separately.",
   "studies": {
     "availability": {
       "estimand": "Effect of offering normal read-only Hippo tools under ordinary agent behavior",

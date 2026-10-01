@@ -57,6 +57,25 @@ def query_fidelity(calls: list[dict], expected: dict) -> bool:
     return len(queries) == 1 and queries[0].get("arguments") == expected
 
 
+def verify_history_opportunity(proof: dict) -> None:
+    """A diagnostic needs an audited fact that can affect its scored task."""
+    opportunity = proof.get("history_opportunity", {})
+    require(
+        opportunity.get("source_node_id") in proof.get("supporting_node_ids", []),
+        "diagnostic requires a source-bound history opportunity",
+    )
+    for field in (
+        "fact",
+        "expected_application",
+        "scored_check",
+        "advantage_over_starting_context",
+    ):
+        require(
+            isinstance(opportunity.get(field), str) and bool(opportunity[field].strip()),
+            f"history opportunity requires audited {field}",
+        )
+
+
 def verify_history_boundaries(permissions: dict, host_home: Path) -> None:
     """Known host capture stores must be denied independently of the submitted spec."""
     for relative in (
@@ -96,6 +115,7 @@ def verify(spec: dict, contract: dict) -> None:
         spec["role"] == "diagnostic_only" and spec["phase"] == "diagnostic",
         "no cohort launch before verified canary",
     )
+    verify_history_opportunity(spec["source_proof"])
     version = subprocess.check_output([spec["codex"], "--version"], text=True).strip()
     require(version == "codex-cli " + contract["codex_version"], "changed Codex build")
     require(set(spec["arms"]) == {"control", "treatment"}, "two arms required")

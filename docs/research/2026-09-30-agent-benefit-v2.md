@@ -17,6 +17,52 @@ instructions and ordinary tools. Do not pool these studies. The first
 known-history guided pair is a diagnostic, excluded from both population
 estimates and acceptance.
 
+## Diagnostic task validity and corpus coverage
+
+The CI-removal case is retained as a plumbing diagnostic. Its checker requires
+deleting the Pi test and removing its CI step. Its four audited memories concern
+earlier fixes that retained structural, pinning and theme checks. These sources
+establish related prior work, but the case does not establish that applying a
+historical fact changes the scored decision or prevents a measured mistake.
+It is unsuitable as the sole usefulness canary, even after query repair.
+
+Use three distinct measurements:
+
+1. Deliberate known-history diagnostics select actionable facts from the frozen
+   corpus. Audit original sources before running either arm. Specify the fact,
+   expected application, independent scored check and advantage over the starting
+   context. Examples include a prior failed approach, an external-state fact or a
+   recorded constraint unavailable in the checkout. Keep the fact and expected
+   action out of both agents' prompts. Score retrieval, supported interpretation,
+   action, checked outcome, repeated failures, time and tokens separately.
+   Treatment must retrieve and correctly apply an audited fact before the
+   mechanism is qualified. A completion tie does not prove benefit; improvement
+   can be measured in a preregistered avoided mistake or effort endpoint.
+2. Deliberate no-history controls test unsupported claims, inappropriate actions
+   and lookup overhead. Corpus absence must be independently audited. An empty
+   retrieval result is not proof that relevant history is absent.
+3. Consecutive real tasks measure practical coverage and average benefit. Audit
+   actionable history independently of retrieval and arm outcomes. Report present,
+   absent and unknown counts. Report retrieval and correct application within the
+   history-present group, with checked paired outcomes and effort. Keep tasks
+   without history in the overall population estimate. Deliberately selected
+   diagnostics cannot establish ordinary-task coverage or average benefit.
+
+An all-zero application result on known-history diagnostics fails the mechanism
+gate. Zero history-present cases in a consecutive sample provides no conditional
+usefulness evidence; report that sample's coverage and do not interpret it as a
+test of retrieval/application when usable history exists. Unknown source labels
+remain unknown. Corpus size and tool-call counts do not measure actionable
+coverage. Do not select cases using observed treatment wins.
+
+The diagnostic input verifier now requires a source-bound `history_opportunity`
+with its fact, expected application, scored check and advantage over the starting
+context. This validates the audit's completeness, not the truth of its claims.
+Independent source and checker review remain necessary. The old CI-removal
+spec lacks this evidence and cannot qualify as a usefulness canary. Its original
+records remain unchanged. The changed contract creates a new content identity
+without replenishing any model-run allowance.
+
 Enroll consecutive real human maintenance and investigation requests from
 Hippo-captured projects in the contract's UTC window. Preserve every candidate,
 timestamp, full request and attachment hash, original project, family,
