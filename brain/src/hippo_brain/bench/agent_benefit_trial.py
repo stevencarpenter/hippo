@@ -35,6 +35,13 @@ TOOLS = {
 }
 
 
+def readonly_tool_approvals() -> str:
+    """Explicit host permissions for the audited Hippo context-tool surface."""
+    return "\n".join(
+        f'[mcp_servers.hippo.tools.{name}]\napproval_mode = "approve"\n' for name in sorted(TOOLS)
+    )
+
+
 def query_arguments(request: str, project: str) -> dict:
     require(bool(request.strip()) and bool(project.strip()), "missing original task or project")
     return {"query": request[:1000], "mode": "evidence", "project": project, "limit": 5}
@@ -187,6 +194,17 @@ def verify(spec: dict, contract: dict) -> None:
             require(
                 config["mcp_servers"]["hippo"].get("required") is True,
                 "Hippo startup must fail closed",
+            )
+            require(
+                all(
+                    config["mcp_servers"]["hippo"]
+                    .get("tools", {})
+                    .get(name, {})
+                    .get("approval_mode")
+                    == "approve"
+                    for name in TOOLS
+                ),
+                "all read-only context tools require explicit host approval",
             )
         common.append((file_hash(root / "original-task.txt"), file_hash(root / "prompt.txt")))
         settings.append(

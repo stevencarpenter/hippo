@@ -1,11 +1,18 @@
 import json
 import sys
+import tomllib
 from pathlib import Path
 
 import pytest
 
 from hippo_brain.bench import agent_benefit_trial as trial
 from hippo_brain.bench.agent_benefit_study import load_contract
+
+
+def test_readonly_host_policy_includes_followup_search():
+    tools = tomllib.loads(trial.readonly_tool_approvals())["mcp_servers"]["hippo"]["tools"]
+    assert set(tools) == trial.TOOLS
+    assert all(t["approval_mode"] == "approve" for t in tools.values())
 
 
 def test_guided_query_uses_only_frozen_original_request():

@@ -32,6 +32,10 @@ from hippo_brain.schema_version import EXPECTED_SCHEMA_VERSION
 
 
 class TestToolRegistration:
+    def test_context_tools_advertise_read_only_and_agent_query_has_output_schema(self):
+        assert all(t.annotations.readOnlyHint for t in mcp._tool_manager._tools.values())
+        assert mcp._tool_manager._tools["agent_query"].fn_metadata.output_schema["type"] == "object"
+
     def test_search_knowledge_registered(self):
         assert "search_knowledge" in mcp._tool_manager._tools
 
@@ -67,6 +71,50 @@ class TestToolRegistration:
 
 
 class TestAgentQueryTool:
+    def test_agent_and_followup_paths_use_configured_reranker(self, monkeypatch):
+        from hippo_brain import mcp as server, retrieval
+
+        good = SearchResult(
+            uuid="decision",
+            score=0.5,
+            summary="Retain npm pins",
+            embed_text="",
+            outcome="success",
+            tags=[],
+            cwd="/p",
+            git_branch="",
+            captured_at=0,
+        )
+        bad = SearchResult(
+            uuid="workflow",
+            score=1.0,
+            summary="Workflow passed",
+            embed_text="",
+            outcome="success",
+            tags=[],
+            cwd="/p",
+            git_branch="",
+            captured_at=0,
+        )
+        search = MagicMock(return_value=[bad, good])
+        rerank = AsyncMock(return_value=[good])
+        monkeypatch.setattr(
+            retrieval, "_active_tuning", retrieval.Tuning(rerank=True, rerank_backend="rules")
+        )
+        monkeypatch.setattr(retrieval, "search", search)
+        monkeypatch.setattr("hippo_brain.rerank.rerank_results", rerank)
+        monkeypatch.setattr(server, "_open_retrieval_conn", lambda: sqlite3.connect(":memory:"))
+        monkeypatch.setattr(server, "capture_query", lambda *args, **kwargs: None)
+        monkeypatch.setattr(server, "capture_decision", lambda *args, **kwargs: None)
+        monkeypatch.setattr(_state, "inference_client", None)
+        monkeypatch.setattr(_state, "classification_enabled", False)
+        result = asyncio.run(agent_query("prior policy", mode="evidence", project="/p", limit=1))
+        followup = asyncio.run(server.search_hybrid("prior policy", project="/p", limit=1))
+        assert result["hits"][0]["uuid"] == followup[0]["uuid"] == "decision"
+        assert search.call_args.kwargs["limit"] == 30
+        assert rerank.await_count == 2
+        assert rerank.call_args.kwargs["effective_filters"].project == "/p"
+
     def test_invalid_mode_returns_structured_error(self, knowledge_db):
         conn, db_path = knowledge_db
         _state.db_path = str(db_path)

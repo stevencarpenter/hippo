@@ -10,12 +10,14 @@ from contextlib import asynccontextmanager, nullcontext
 from dataclasses import dataclass
 from functools import wraps
 from pathlib import Path
+from typing import Any
 
 from mcp.server.fastmcp import FastMCP
+from mcp.types import ToolAnnotations
 
-from hippo_brain.agent_query import AgentQueryRequest, run_agent_query
+from hippo_brain.agent_query import AgentQueryRequest, agent_query_parameters, run_agent_query
 from hippo_brain.client import InferenceClient
-from hippo_brain.decision_capture import capture_query
+from hippo_brain.decision_capture import capture_decision, capture_query
 from hippo_brain.embeddings import (
     EMBED_DIM,
     _pad_or_truncate,
@@ -49,6 +51,7 @@ from hippo_brain.telemetry import get_tracer as _get_tracer
 from hippo_brain.telemetry import hist as _hist
 
 logger = setup_logging("hippo-mcp")
+READ_ONLY = ToolAnnotations(readOnlyHint=True, destructiveHint=False)
 
 # Instruments are None at import time; _init_telemetry_instruments() must be
 # called from main() after init_telemetry() wires up the real MeterProvider.
@@ -277,7 +280,7 @@ mcp = FastMCP(
 )
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 @_query_priority
 async def search_knowledge(
     query: str,
@@ -383,7 +386,7 @@ async def search_knowledge(
             raise
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 @_query_priority
 async def ask(
     question: str,
@@ -460,7 +463,7 @@ async def ask(
     return format_rag_response(result)
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 @_query_priority
 async def search_events(
     query: str = "",
@@ -520,7 +523,7 @@ async def search_events(
             raise
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 @_query_priority
 async def get_entities(
     type: str = "",
@@ -578,7 +581,7 @@ async def get_entities(
             raise
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 @_query_priority
 async def get_ci_status(
     repo: str,
@@ -621,7 +624,7 @@ async def get_ci_status(
             raise
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 @_query_priority
 async def get_lessons(
     repo: str | None = None,
@@ -696,6 +699,52 @@ def _result_to_dict(result) -> dict:
     }
 
 
+async def _search_context(conn, query, query_vec, filters, *, mode, limit):
+    """Apply configured reranking to the MCP retrieval paths, before compaction."""
+    from hippo_brain import retrieval
+    from hippo_brain.rerank import rerank_results
+
+    tuning = retrieval.get_tuning()
+    enabled = tuning.rerank and mode != "recent" and limit > 0
+    pool = min(tuning.rerank_pool, 30) if tuning.rerank_backend != "local" else tuning.rerank_pool
+    results = retrieval.search(
+        conn,
+        query,
+        query_vec,
+        filters,
+        mode=mode,
+        limit=max(limit, pool) if enabled else limit,
+    )
+    capture_query(query, results, filters=filters, origin="mcp")
+    diagnostics = {}
+    if enabled:
+        tail = results[30:] if tuning.rerank_backend != "local" else []
+        results = await rerank_results(
+            _state.inference_client,
+            _state.query_model,
+            query,
+            results[:30] if tuning.rerank_backend != "local" else results,
+            min(limit, 30) if tuning.rerank_backend != "local" else limit,
+            backend=tuning.rerank_backend,
+            adaptive=tuning.rerank_adaptive,
+            deadline_ms=tuning.decision_deadline_ms,
+            conn=conn,
+            effective_filters=filters,
+            jev_client=_state.jev_client,
+            diagnostics=diagnostics,
+            recipe=tuning.rerank_recipe,
+        )
+        results = (results + tail)[:limit]
+        if diagnostics:
+            capture_decision(diagnostics, origin="mcp")
+    return results, {
+        "rerank_enabled": enabled,
+        "backend": tuning.rerank_backend if enabled else None,
+        "fallback_reason": diagnostics.get("fallback_reason"),
+        "stop_reason": diagnostics.get("stop_reason"),
+    }
+
+
 async def _retrieve_filtered(
     *,
     query: str,
@@ -739,8 +788,9 @@ async def _retrieve_filtered(
     conn = _open_retrieval_conn()
     try:
         try:
-            results = _retrieval.search(conn, query, query_vec, filters, mode=mode, limit=limit)
-            capture_query(query, results, filters=filters, origin="mcp")
+            results, _ = await _search_context(
+                conn, query, query_vec, filters, mode=mode, limit=limit
+            )
             return [_result_to_dict(r) for r in results]
         except Exception:
             logger.exception("retrieval.search failed; falling back to lexical SQL")
@@ -782,7 +832,7 @@ def _open_retrieval_conn() -> sqlite3.Connection:
     return conn
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 @_query_priority
 async def search_hybrid(
     query: str,
@@ -835,7 +885,7 @@ async def search_hybrid(
         raise
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 @_query_priority
 async def get_context(
     query: str,
@@ -882,7 +932,7 @@ async def get_context(
         raise
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY, structured_output=True)
 @_query_priority
 async def agent_query(
     query: str,
@@ -893,7 +943,7 @@ async def agent_query(
     source: str = "",
     branch: str = "",
     include_excluded: bool = False,
-) -> dict:
+) -> dict[str, Any]:
     """Compact agent query — concise answer plus evidence packets.
 
     Modes:
@@ -902,7 +952,10 @@ async def agent_query(
     - ``recent``: recent knowledge around the topic
     - ``decisions``: nodes with documented design decisions
 
-    Returns a bounded dict: answer, hits (with evidence), freshness hints.
+    Returns bounded extracted notes: summary, key decisions, prior failures,
+    design decisions and source excerpts. Verify notes against cited evidence;
+    ranking is not factual confidence. Refine with search_knowledge or
+    search_hybrid when the first lookup lacks the needed fact.
     """
     limit = _clamp_limit(limit)
     _add(_tool_calls, tool="agent_query")
@@ -917,6 +970,12 @@ async def agent_query(
         limit=limit,
         include_excluded=include_excluded or include_excluded_from_env(),
     )
+    try:
+        filters, fetch_limit = agent_query_parameters(req)
+    except ValueError as exc:
+        _add(_tool_errors, tool="agent_query")
+        _record_result("agent_query", 0, degraded=True)
+        return {"error": str(exc)}
 
     query_vec = None
     if _state.inference_client and query:
@@ -929,7 +988,16 @@ async def agent_query(
     conn = _open_retrieval_conn()
     try:
         try:
-            result = run_agent_query(conn, req, query_vec)
+            results, diagnostics = await _search_context(
+                conn,
+                query,
+                query_vec,
+                filters,
+                mode="recent" if req.mode == "recent" else "hybrid",
+                limit=fetch_limit,
+            )
+            result = run_agent_query(conn, req, query_vec, results=results)
+            result["retrieval"] = diagnostics
         except ValueError as exc:
             _add(_tool_errors, tool="agent_query")
             _record_result("agent_query", 0, degraded=True)
@@ -944,7 +1012,7 @@ async def agent_query(
     return result
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 @_query_priority
 async def query_memory(
     query: str = "",
@@ -996,7 +1064,7 @@ async def query_memory(
     return result
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 @_query_priority
 async def query_memory_history(
     repository: str = "",
@@ -1046,7 +1114,7 @@ async def query_memory_history(
     return result
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 @_query_priority
 async def list_projects(limit: int = 50) -> list[dict]:
     """Return distinct projects (git_repo + cwd_root) seen in the knowledge base.

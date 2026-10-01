@@ -214,4 +214,29 @@ def test_decision_conflicts_detected_before_compacting(conn, monkeypatch, mode):
 
     assert out["conflicts"]["has_unresolved_conflicts"] is True
     assert out["hits"][0]["confidence"]["level"] == "medium"
-    assert ("design_decisions" in out["hits"][0]) is (mode == "decisions")
+    assert "design_decisions" in out["hits"][0]
+
+
+def test_evidence_preserves_bounded_pin_decisions_and_failure_details(conn, monkeypatch):
+    result = SearchResult(
+        uuid="pins",
+        score=1.0,
+        summary="Removed exact version assertions",
+        embed_text="",
+        outcome="success",
+        tags=[],
+        cwd="/p",
+        git_branch="",
+        captured_at=0,
+        key_decisions=["Retain npm pin validation", "Accept local package sources"]
+        + ["x" * 900] * 8,
+        problems_encountered=["Local pi-warden was incorrectly treated as an npm source"],
+        design_decisions=[{"chosen": "Retain pins", "reason": "Repeatable installs"}],
+    )
+    monkeypatch.setattr("hippo_brain.agent_query.search", lambda *args, **kwargs: [result])
+    hit = run_agent_query(conn, AgentQueryRequest("prior validation", mode="evidence"))["hits"][0]
+    assert hit["key_decisions"][0] == "Retain npm pin validation"
+    assert len(hit["key_decisions"]) == 5
+    assert len(hit["key_decisions"][-1]) == 600
+    assert "pi-warden" in hit["problems_encountered"][0]
+    assert hit["design_decisions"][0]["chosen"] == "Retain pins"

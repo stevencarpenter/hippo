@@ -1387,6 +1387,10 @@ run = 'uv run --project brain python -m hippo_brain.bench.agent_benefit_packets 
 description = "Verify or execute one isolated model-thread guided diagnostic pair"
 run = 'uv run --project brain python -m hippo_brain.bench.agent_benefit_trial "$@"'
 
+[tasks."bench:mcp-context"]
+description = "Replay bounded source-audited context cases over actual MCP stdio"
+run = 'uv run --project brain python -m hippo_brain.bench.mcp_context "$@"'
+
 [tasks."bench:knowledge:tags"]
 description = "Classify and test topic tags on external database copies"
 run = "uv run --project brain python -m hippo_brain.bench.knowledge_tags ${@}"
