@@ -7,6 +7,22 @@ from hippo_brain.bench import agent_benefit_trial as trial
 from hippo_brain.bench.agent_benefit_study import load_contract
 
 
+def test_guided_query_uses_only_frozen_original_request():
+    contract = load_contract(Path(__file__).parents[2] / "config/agent-benefit-v2.json")
+    request = "fix CI"
+    expected = trial.query_arguments(request, "/project")
+    prompt = trial.guided_prompt(contract, request, "/project")
+    assert json.loads(prompt.splitlines()[-1]) == expected
+    assert expected["query"] == request[:1000]
+    assert trial.query_arguments("é" * 1100, "/project")["query"] == "é" * 1000
+    call = {"server": "hippo", "tool": "agent_query", "arguments": expected}
+    assert trial.query_fidelity([call], expected)
+    assert not trial.query_fidelity([], expected)
+    assert not trial.query_fidelity([call, call], expected)
+    for arguments in ({**expected, "query": prompt[:1000]}, {**expected, "project": "/other"}):
+        assert not trial.query_fidelity([{**call, "arguments": arguments}], expected)
+
+
 def test_pending_amendment_cannot_reserve_or_start_a_pair(tmp_path, monkeypatch):
     monkeypatch.setattr(trial, "verify", lambda *args: pytest.fail("must not prepare a launch"))
     with pytest.raises(ValueError, match="requires owner approval before reservation"):
@@ -44,7 +60,10 @@ def test_rejected_model_tool_call_does_not_verify_delivery(tmp_path, monkeypatch
         "arms": {arm: {"root": str(tmp_path / arm)} for arm in ("control", "treatment")},
         "checker": ["/usr/bin/true"],
         "study_id": "diagnostic",
+        "original_project": "/project",
     }
+    (tmp_path / "treatment").mkdir()
+    (tmp_path / "treatment/original-task.txt").write_text("task")
     report = trial.run_pair(spec, contract, tmp_path / "out")
     assert not report["model_thread_path_verified"]
     assert not report["canary_verified"]

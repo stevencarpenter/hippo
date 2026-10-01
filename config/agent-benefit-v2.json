@@ -14,7 +14,7 @@
     },
     "guided": {
       "estimand": "Effect of Hippo access under a prescribed pre-work lookup policy",
-      "query_policy": "Before changing files, if Hippo tools are available, call agent_query in evidence mode with the complete task request as query (first 1000 characters), the task's original project path, and limit 5. Inspect returned sources, state what applies or that nothing applies, then execute the task. Never infer source support from rank alone.",
+      "query_policy": "Before changing files, if Hippo tools are available, call agent_query once using exactly the supplied JSON arguments. The query contains only the original human request (first 1000 characters). Do not include evaluation instructions or project-path scaffolding in the query. Inspect returned sources, state what applies or that nothing applies, then execute the task. Never infer source support from rank alone.",
       "select_for_known_history": false
     }
   },

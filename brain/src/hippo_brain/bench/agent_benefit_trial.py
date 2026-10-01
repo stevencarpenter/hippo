@@ -35,6 +35,28 @@ TOOLS = {
 }
 
 
+def query_arguments(request: str, project: str) -> dict:
+    require(bool(request.strip()) and bool(project.strip()), "missing original task or project")
+    return {"query": request[:1000], "mode": "evidence", "project": project, "limit": 5}
+
+
+def guided_prompt(contract: dict, request: str, project: str) -> str:
+    arguments = query_arguments(request, project)
+    return (
+        request
+        + "\n\n"
+        + contract["studies"]["guided"]["query_policy"]
+        + "\nUse exactly these agent_query arguments (do not append these instructions):\n"
+        + json.dumps(arguments, ensure_ascii=False, sort_keys=True)
+        + "\n"
+    )
+
+
+def query_fidelity(calls: list[dict], expected: dict) -> bool:
+    queries = [c for c in calls if c.get("server") == "hippo" and c.get("tool") == "agent_query"]
+    return len(queries) == 1 and queries[0].get("arguments") == expected
+
+
 def verify_history_boundaries(permissions: dict, host_home: Path) -> None:
     """Known host capture stores must be denied independently of the submitted spec."""
     for relative in (
@@ -87,8 +109,9 @@ def verify(spec: dict, contract: dict) -> None:
         root = external_path(definition["root"])
         require(root.is_dir(), "arm unavailable")
         require(
-            {"prompt.txt", "codex-home/config.toml"} <= set(definition["hashes"]),
-            "prompt and config must be frozen",
+            {"prompt.txt", "original-task.txt", "codex-home/config.toml"}
+            <= set(definition["hashes"]),
+            "original task, prompt and config must be frozen",
         )
         for name, expected in definition["hashes"].items():
             path = root / name
@@ -96,6 +119,12 @@ def verify(spec: dict, contract: dict) -> None:
                 path.resolve().is_relative_to(root) and file_hash(path) == expected,
                 "changed frozen arm input",
             )
+        request = (root / "original-task.txt").read_text()
+        require(
+            (root / "prompt.txt").read_text()
+            == guided_prompt(contract, request, spec["original_project"]),
+            "prompt must bind exact original-task query arguments",
+        )
         repo = root / "repo"
         require(
             git(repo, "rev-parse", "HEAD").decode().strip() == definition["head"],
@@ -139,7 +168,7 @@ def verify(spec: dict, contract: dict) -> None:
                 config["mcp_servers"]["hippo"].get("required") is True,
                 "Hippo startup must fail closed",
             )
-        common.append(file_hash(root / "prompt.txt"))
+        common.append((file_hash(root / "original-task.txt"), file_hash(root / "prompt.txt")))
         settings.append(
             {k: v for k, v in config.items() if k not in {"mcp_servers", "permissions", "projects"}}
         )
@@ -485,6 +514,16 @@ def run_pair(spec: dict, contract: dict, output: Path) -> dict:
             break
     treatment = next((r for r in rows if r["arm"] == "treatment"), None)
     control = next((r for r in rows if r["arm"] == "control"), None)
+    fidelity = bool(
+        treatment
+        and query_fidelity(
+            treatment["hippo_calls"],
+            query_arguments(
+                (Path(spec["arms"]["treatment"]["root"]) / "original-task.txt").read_text(),
+                spec["original_project"],
+            ),
+        )
+    )
     verified = bool(
         treatment
         and control
@@ -509,6 +548,7 @@ def run_pair(spec: dict, contract: dict, output: Path) -> dict:
         "role": "diagnostic_only",
         "rows": rows,
         "model_thread_path_verified": verified,
+        "query_policy_verified": fidelity,
         "source_support_verified": False,
         "canary_verified": False,
         "expansion_allowed": False,

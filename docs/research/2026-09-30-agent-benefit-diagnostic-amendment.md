@@ -121,3 +121,26 @@ application. Canary qualification and expansion remain false. Both approved
 attempts are consumed. The private hash-bound `amendment-b-run/mechanism-audit.json`
 retains delivered identities, pre-audited identities, timing checks, model
 interpretation, failed-call evidence and completion/resource measurements.
+
+Further diagnosis identified evaluation-instruction contamination in the
+recorded query. The model appended the lookup instructions and original
+project-path scaffolding to the human request. A read-only replay of that exact
+query reproduced all five delivered identities in order. On the same snapshot,
+filters, retrieval settings and clock, the original human request alone
+retrieved two of the four pre-audited relevant nodes in its top five.
+This corrects the interpretation of amendment B: it demonstrates a miss for
+the contaminated query, not a miss for the prescribed original-request query.
+The private `query-fidelity-correction.json` binds both replays and the original
+mechanism audit by SHA-256. The original results and resource costs remain
+unchanged. No model turn was started for these replays.
+
+The current contract now specifies exact supplied JSON arguments and excludes
+evaluation instructions from the query. Its content hash creates a distinct
+study identity; previously frozen contracts are unchanged. The runner requires
+a separately hashed `original-task.txt` in both arms, constructs equal prompts
+with the exact arguments, and records `query_policy_verified` only for one
+matching `agent_query`. Tool delivery and query adherence remain separate
+measurements. The regression check rejects contaminated queries, wrong project
+paths, missing calls and duplicate calls. Previous specs fail static validation
+because they do not freeze the separate original task. The correction does not
+authorize another pair or establish agent benefit.
