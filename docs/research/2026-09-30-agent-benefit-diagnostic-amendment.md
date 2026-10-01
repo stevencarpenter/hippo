@@ -84,3 +84,14 @@ The approved allowance is consumed. No further model attempts are authorized.
 Tool-level approval configuration must be resolved before proposing another
 trial. Inventory discovery and OS boundary probes do not test permission to
 invoke a model tool. Readiness remains unproven.
+
+The owner then requested the configuration change and an invocation test.
+A separate permission diagnostic used the explicit per-tool setting
+`mcp_servers.hippo.tools.agent_query.approval_mode = "approve"`, with global
+`approval_policy = "never"` retained. It started one model turn, bounded at
+120 seconds and 100,000 reported tokens, and requested exactly one query with
+no file edits. The model's `agent_query` completed with no error and returned
+an evidence-mode response. The turn completed in 23.100 seconds using 56,464
+reported tokens. This verifies actual invocation under the corrected policy;
+it does not replace either paired diagnostic or estimate agent benefit.
+Private trace and result are retained under `agent-query-permission-test/`.
