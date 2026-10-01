@@ -172,3 +172,43 @@ success. The regression check verifies both continued treatment after a control
 task failure and stopping after a checker error. Original runs and contracts
 remain unchanged. The approved private spec and contract are retained as
 `known-history-spec.approved.json` and `known-history-contract.approved.json`.
+
+Amendment C completed both model turns within the authorized bounds. Exact
+query adherence and successful Hippo delivery passed. Control recovered zero
+of five decisions and marked all five unknown. It made no incorrect policy
+claims. Treatment recovered two decisions correctly, made one incorrect
+decision and marked two unknown. Neither passed the full five-decision checker.
+
+Treatment correctly retained theme-reference validation and dropped exact
+model/provider assertions, citing `codex-18346`. Its trace explicitly applies
+the retrieved record to those proposals. The cited original source confirms
+both choices. Treatment incorrectly dropped exact npm pins by conflating
+removal of fixed-version preference assertions with removal of pin validation.
+The original source states that package pinning was retained and unpinned
+variants were rejected. The delivered compact summary mentions both pinning
+and removal of exact-version assertions without explaining that distinction.
+Its evidence excerpt begins with session instructions rather than the decisive
+work record. The trace demonstrates an incorrect interpretation; it does not
+isolate the relative contribution of summary compression and model reasoning.
+
+Four of five delivered hits describe routine workflow successes. The fifth is
+one of the four audited relevant nodes. The source establishing local/Git/object
+compatibility was not delivered. Treatment marked those two proposals unknown
+and attempted three `search_knowledge` calls. All three were denied because
+the trial configuration explicitly approved only `agent_query`, while global
+approval remained `never`. This restricts the result to the tested permission
+policy; it does not evaluate unrestricted read-only Hippo follow-up use.
+
+Control took 35.303 seconds and 94,217 reported tokens. Treatment took 67.983
+seconds and 248,937 tokens. Summed use was 103.286 seconds and 343,154 tokens;
+treatment added 32.680 seconds and 154,720 tokens. Token totals include cached
+input and do not establish dollar cost. Both approved attempts are consumed.
+
+This diagnostic establishes corpus delivery and two source-supported policy
+applications. It also exposes one wrong policy action, incomplete relevant
+retrieval and blocked follow-up inspection. It is not a successful full-task
+benefit result. Canary qualification and expansion remain false. The private
+`known-history-run/mechanism-audit.json` binds the traces, checkers, answer key
+audit, delivered-source audit and outputs by SHA-256. Original records remain
+unchanged. One selected recovery task does not estimate ordinary-task coverage
+or population benefit.
