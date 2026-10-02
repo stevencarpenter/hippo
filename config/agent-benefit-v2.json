@@ -1,0 +1,38 @@
+{
+  "version": "agent-benefit-v2",
+  "owner": "carpenter",
+  "model": "gpt-6-sol",
+  "effort": "medium",
+  "codex_version": "0.159.2",
+  "window": {"start": "2026-09-30T08:00:00Z", "end": "2026-10-07T08:00:00Z"},
+  "population": "Consecutive human-originated maintenance and investigation requests in Hippo-captured projects",
+  "diagnostic_task_requirement": "Select deliberate cases with independently audited pre-task corpus facts, a specified application, a scored check, and an advantage over the starting context. Related topic matches alone do not qualify. These selected cases are excluded from population estimates.",
+  "corpus_coverage_measurement": "For every consecutive eligible task, audit whether actionable pre-task history exists independently of query results and arm outcomes. Report present, absent and unknown counts. Report retrieval, factual support, correct application and checked outcomes within the audited history-present group. Retain history-absent tasks in the population estimate and report deliberate absent controls separately.",
+  "studies": {
+    "availability": {
+      "estimand": "Effect of offering normal read-only Hippo tools under ordinary agent behavior",
+      "query_policy": null,
+      "select_for_known_history": false
+    },
+    "guided": {
+      "estimand": "Effect of Hippo access under a prescribed pre-work lookup policy",
+      "query_policy": "Before changing files, if Hippo tools are available, call agent_query once using exactly the supplied JSON arguments. The query contains only the original human request (first 1000 characters). Do not include evaluation instructions or project-path scaffolding in the query. Inspect returned sources, state what applies or that nothing applies, then execute the task. Never infer source support from rank alone.",
+      "select_for_known_history": false
+    }
+  },
+  "budgets": {
+    "diagnostic": {"max_pairs": 1, "max_runs": 2, "per_arm_seconds": 600, "total_seconds": 1200, "max_total_tokens": 2000000, "reviewer_hours": 2},
+    "development": {"target_pairs": 20, "max_pairs": 20, "max_runs": 40, "per_arm_seconds": 600, "total_seconds": 14400, "max_total_tokens": 25000000, "reviewer_hours": 10},
+    "acceptance": {"max_pairs": 200, "max_runs": 400, "per_arm_seconds": 600, "total_seconds": 86400, "max_total_tokens": 250000000, "reviewer_hours": 40}
+  },
+  "decision": {"minimum_primary_n": 100, "minimum_gain": 0.05, "sizing_gain": 0.10, "minimum_power": 0.80, "confidence": 0.95},
+  "accuracy": {"natural_calls": 300, "answerable_families": 100, "absent_controls": 100, "joint_success_lower": 0.90, "absent_failure_upper": 0.05, "reviewer_kind": "human"},
+  "stops": {
+    "failed_canary": "hold; no cohort launch",
+    "budget_exhausted": "terminal inconclusive; no automatic extension",
+    "insufficient_sample": "terminal inconclusive",
+    "insufficient_labels": "terminal hold; do not convert AI reviews into human labels",
+    "unsafe_behavior": "hold for source-backed case review",
+    "recipe_changed": "invalidate affected qualification; use fresh acceptance families"
+  }
+}

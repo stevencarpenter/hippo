@@ -31,6 +31,8 @@ AGENT_QUERY_SOURCES = frozenset(
 DEFAULT_LIMIT = 10
 MAX_ANSWER_CHARS = 2000
 MAX_SUMMARY_CHARS = 400
+MAX_DETAIL_CHARS = 600
+MAX_DETAILS = 5
 DECISIONS_CANDIDATE_MULTIPLIER = 3
 
 
@@ -79,6 +81,7 @@ def _compact_hit(result: SearchResult, *, include_decisions: bool) -> dict[str, 
     hit: dict[str, Any] = {
         "uuid": result.uuid,
         "score": result.score,
+        "score_semantics": result.score_semantics,
         "summary": _truncate(result.summary or "", MAX_SUMMARY_CHARS),
         "captured_at": result.captured_at,
         "cwd": result.cwd,
@@ -86,6 +89,12 @@ def _compact_hit(result: SearchResult, *, include_decisions: bool) -> dict[str, 
         "outcome": result.outcome,
         "evidence": list(result.evidence),
         "confidence": dict(result.confidence) if result.confidence else {},
+        "key_decisions": [
+            _truncate(d, MAX_DETAIL_CHARS) for d in result.key_decisions[:MAX_DETAILS]
+        ],
+        "problems_encountered": [
+            _truncate(p, MAX_DETAIL_CHARS) for p in result.problems_encountered[:MAX_DETAILS]
+        ],
     }
     if include_decisions and result.design_decisions:
         hit["design_decisions"] = list(result.design_decisions)
@@ -128,19 +137,28 @@ def _compose_answer(mode: str, hits: list[dict[str, Any]]) -> str:
     return _compose_known_answer(hits)
 
 
+def agent_query_parameters(req: AgentQueryRequest) -> tuple[Filters, int]:
+    if req.mode not in AGENT_QUERY_MODES:
+        raise ValueError(f"unknown mode: {req.mode!r}")
+    if req.source not in AGENT_QUERY_SOURCES:
+        raise ValueError(f"unsupported source filter: {req.source!r}")
+    limit = clamp_limit(req.limit)
+    fetch_limit = (
+        min(limit * DECISIONS_CANDIDATE_MULTIPLIER, MAX_LIMIT) if req.mode == "decisions" else limit
+    )
+    return _filters_from_request(req), fetch_limit
+
+
 def run_agent_query(
     conn: sqlite3.Connection,
     req: AgentQueryRequest,
     query_vec: Sequence[float] | None = None,
     *,
     backend=None,
+    results: list[SearchResult] | None = None,
 ) -> dict[str, Any]:
     """Execute a compact agent query and return a bounded response dict."""
-    if req.mode not in AGENT_QUERY_MODES:
-        raise ValueError(f"unknown mode: {req.mode!r}")
-    if req.source not in AGENT_QUERY_SOURCES:
-        raise ValueError(f"unsupported source filter: {req.source!r}")
-
+    filters, fetch_limit = agent_query_parameters(req)
     limit = clamp_limit(req.limit)
     if limit == 0:
         return {
@@ -159,20 +177,16 @@ def run_agent_query(
             "truncated": False,
         }
 
-    filters = _filters_from_request(req)
-    fetch_limit = limit
-    if req.mode == "decisions":
-        fetch_limit = min(limit * DECISIONS_CANDIDATE_MULTIPLIER, MAX_LIMIT)
-
-    results = search(
-        conn,
-        req.query,
-        query_vec,
-        filters,
-        mode=_retrieval_mode(req),
-        limit=fetch_limit,
-        backend=backend,
-    )
+    if results is None:
+        results = search(
+            conn,
+            req.query,
+            query_vec,
+            filters,
+            mode=_retrieval_mode(req),
+            limit=fetch_limit,
+            backend=backend,
+        )
     if req.mode == "decisions":
         results = [r for r in results if r.design_decisions]
 
@@ -182,9 +196,16 @@ def run_agent_query(
 
     conflict_report = analyze_conflicts(hits)
     apply_conflict_confidence_caps(hits, conflict_report)
-    if req.mode != "decisions":
-        for hit in hits:
-            hit.pop("design_decisions", None)
+    for hit in hits:
+        if "design_decisions" in hit:
+            hit["design_decisions"] = [
+                {
+                    k: _truncate(str(d[k]), MAX_DETAIL_CHARS)
+                    for k in ("considered", "chosen", "reason")
+                    if k in d
+                }
+                for d in hit["design_decisions"][:MAX_DETAILS]
+            ]
 
     all_packets: list[dict[str, Any]] = []
     for hit in hits:

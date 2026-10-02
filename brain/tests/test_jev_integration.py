@@ -78,7 +78,7 @@ def test_mcp_jev_uses_configured_key_without_inherited_fallback(monkeypatch):
         assert calls == [
             (
                 ["/usr/local/bin/op", "read", "op://vault/item/field"],
-                {"capture_output": True, "text": True, "timeout": 5, "check": True},
+                {"capture_output": True, "text": True, "timeout": 10, "check": True},
             )
         ]
     finally:

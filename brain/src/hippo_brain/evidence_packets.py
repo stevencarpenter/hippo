@@ -106,13 +106,15 @@ def make_agentic_packet(
 ) -> dict[str, Any]:
     prefix = "claude" if harness == "claude-code" else harness
     logical_kind = source_kind_from_linked_id(f"{prefix}-{row_id}") or prefix
+    # Captured environment scaffolding otherwise consumes the entire excerpt.
+    _, marker, responses = (summary_text or "").partition("\nAssistant responses (excerpts):\n")
     return EvidencePacket(
         ref=ref or f"{prefix}-{row_id}",
         source_kind=logical_kind,
         table="agentic_sessions",
         row_id=row_id,
         timestamp_ms=timestamp_ms,
-        excerpt=_truncate(summary_text),
+        excerpt=_truncate(responses if marker and responses.strip() else summary_text),
         session_id=session_id or None,
         harness=harness,
         segment_index=segment_index,

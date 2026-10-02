@@ -9,7 +9,7 @@ Assessment date: September 24, 2026. Source baseline: [`317273a6de8b84767447bd6b
 | Gate | Current evidence | Decision |
 |---|---|---|
 | Accurate, grounded answers and correct abstention | April labels recovered in 10/28 answerable top-10 pools; current pooled review has zero human grades; adversarial trust cases remain pending. | Not met. A frozen, independently judged representative evaluation must measure correct answers, unsupported claims, and correct abstentions. |
-| Better agent decisions | Both pilot arms chose the expected action in 12/12 cases. No wins or losses from memory. Conflict detectors still make semantic errors. | Not met. The requested improvement needs paired task outcomes with independent success checks and cases that avoid the observed baseline ceiling. |
+| Better agent decisions | The earlier pilot tied at 12/12. The September 29 executed development pilot completed ten arms, but none of five treatments called Hippo. Two objective cases tied; three await blind review. | Not met. Neither pilot establishes improved task completion from historical memory. |
 | Supported capture and operational behavior | Current shell/session capture and storage integrity are observed. Probe traffic confounds other source counters; monitoring history cannot establish continuous availability. | Not met for an unrestricted capture/reliability claim. Supported producers and candidate installation need direct end-to-end evidence, with activity separated from probes. |
 | Privacy and security within a stated deployment boundary | Reproduced browser-origin and filesystem defects have source fixes. Core dependency scans passed; optional containers have untriaged findings. | Conditional for a trusted single-user workstation. See [Validation record](#validation-record) for candidate verification. No approval for untrusted local users or the entire optional stack. |
 | Tested, installable, publishable final candidate | Published v0.35.0 artifacts install in isolation. Corrective changes through `888a413`, plus the September 25 follow-up fixes, pass the full local suite, including upgrade rollback checks. The release workflow can publish despite failed CI. | Final release-SHA Linux/macOS CI remains required. Passing these checks alone does not satisfy the first two gates. |
@@ -124,6 +124,43 @@ Queries used the complete task prompt without answer options, one frozen lexical
 The original draft's implausible distractors and label-informed query terms were corrected before retrieval or model outcomes. One transport deviation occurred: the memory arm's initial input read was truncated, so the same blinded agent resumed in chunks without labels or outcome feedback. Only its final 12 responses were graded.
 
 The pilot is small, authored, and partly dependent because controls reuse incident sources. Historical labels came from captured session text containing reports and tool activity, not independent execution traces proving each historical fix succeeded. Both the task and common instructions warned that the injection control's content was untrusted. Passing it therefore does not establish resistance to an unannounced production injection. This pilot measures choice selection, not executed repair success, elapsed time, tool-call savings, or repeated-mistake prevention.
+
+### Executed development pilot, September 29
+
+The [paired task protocol](2026-09-28-agent-benefit-protocol.md) records five
+historical development cases with isolated control and treatment environments.
+All ten arms completed without a timeout. Rechecking every trace against its
+recorded SHA-256 confirmed zero Hippo MCP calls. Server configuration and a
+separate stdio preflight were verified; the execution logs do not record the
+tools exposed to the model. The cause of zero usage remains unresolved.
+Post-pilot app-server discovery found Hippo's 12 tools in every treatment,
+but also found different connected-app inventories between arms. A separate
+check with connected apps disabled found zero control servers and only Hippo
+in every treatment, while preserving config and database hashes. These checks
+verify present discovery and an isolation setting; they do not reconstruct
+the completed pilot's model-visible tool inventory.
+
+Both arms passed the executable CI-removal and Agent Journal checks. An offline
+gcampr check showed the treatment refusing a PR on the default branch while the
+control reached a mocked PR-create call. That is one rubric item, not a complete
+task verdict. Firstmate, gcampr, and Gringotts have prepared packets for two
+independent blind reviewers, with no submitted labels. The control gcampr trace
+also records rejection of an attempted test command because it contained file
+deletion; that interrupted validation remains part of the execution evidence.
+
+These five cases supply development diagnostics. They do not satisfy the frozen
+acceptance protocol or establish benefit from retrieved history. The v1.0.0
+decision remains NO-GO.
+
+A subsequent retrospective audited the two isolated AI reviews of the
+development packets. The Gringotts packet omitted 157 tracked Rust source
+files from the frozen task commit, while its rubric incorrectly required
+pre-implementation status from a stale README. Both reviews used missing
+packet evidence to reject claims citing actual source and benchmark files.
+Those grades do not establish that the answers invented implementations, and
+cannot supply a valid task-success verdict. Firstmate also lacks installed
+checkout evidence in its review packets. These are evaluation defects,
+independent of Hippo's unproven benefit; the release decision is unchanged.
 
 ### Conflict detection remains a warning heuristic
 

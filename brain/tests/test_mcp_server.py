@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import os
 import select
 import sqlite3
 import subprocess
@@ -32,6 +33,10 @@ from hippo_brain.schema_version import EXPECTED_SCHEMA_VERSION
 
 
 class TestToolRegistration:
+    def test_context_tools_advertise_read_only_and_agent_query_has_output_schema(self):
+        assert all(t.annotations.readOnlyHint for t in mcp._tool_manager._tools.values())
+        assert mcp._tool_manager._tools["agent_query"].fn_metadata.output_schema["type"] == "object"
+
     def test_search_knowledge_registered(self):
         assert "search_knowledge" in mcp._tool_manager._tools
 
@@ -67,6 +72,50 @@ class TestToolRegistration:
 
 
 class TestAgentQueryTool:
+    def test_agent_and_followup_paths_use_configured_reranker(self, monkeypatch):
+        from hippo_brain import mcp as server, retrieval
+
+        good = SearchResult(
+            uuid="decision",
+            score=0.5,
+            summary="Retain npm pins",
+            embed_text="",
+            outcome="success",
+            tags=[],
+            cwd="/p",
+            git_branch="",
+            captured_at=0,
+        )
+        bad = SearchResult(
+            uuid="workflow",
+            score=1.0,
+            summary="Workflow passed",
+            embed_text="",
+            outcome="success",
+            tags=[],
+            cwd="/p",
+            git_branch="",
+            captured_at=0,
+        )
+        search = MagicMock(return_value=[bad, good])
+        rerank = AsyncMock(return_value=[good])
+        monkeypatch.setattr(
+            retrieval, "_active_tuning", retrieval.Tuning(rerank=True, rerank_backend="rules")
+        )
+        monkeypatch.setattr(retrieval, "search", search)
+        monkeypatch.setattr("hippo_brain.rerank.rerank_results", rerank)
+        monkeypatch.setattr(server, "_open_retrieval_conn", lambda: sqlite3.connect(":memory:"))
+        monkeypatch.setattr(server, "capture_query", lambda *args, **kwargs: None)
+        monkeypatch.setattr(server, "capture_decision", lambda *args, **kwargs: None)
+        monkeypatch.setattr(_state, "inference_client", None)
+        monkeypatch.setattr(_state, "classification_enabled", False)
+        result = asyncio.run(agent_query("prior policy", mode="evidence", project="/p", limit=1))
+        followup = asyncio.run(server.search_hybrid("prior policy", project="/p", limit=1))
+        assert result["hits"][0]["uuid"] == followup[0]["uuid"] == "decision"
+        assert search.call_args.kwargs["limit"] == 30
+        assert rerank.await_count == 2
+        assert rerank.call_args.kwargs["effective_filters"].project == "/p"
+
     def test_invalid_mode_returns_structured_error(self, knowledge_db):
         conn, db_path = knowledge_db
         _state.db_path = str(db_path)
@@ -140,17 +189,30 @@ class TestGetConn:
 
 
 class TestMCPStdioProtocol:
-    def test_server_starts_and_responds_to_initialize(self):
+    def test_server_starts_and_responds_to_initialize(self, tmp_path):
         """Start hippo-mcp as subprocess, send MCP initialize, verify response.
 
         MCP SDK >=1.x uses newline-delimited JSON for stdio transport (not
         Content-Length framing).  Each message is a single JSON line.
         """
+        config_dir = tmp_path / ".config/hippo"
+        config_dir.mkdir(parents=True)
+        (config_dir / "config.toml").write_text(
+            f'[storage]\ndata_dir = "{tmp_path / "data"}"\n[retrieval]\nrerank = false\n'
+        )
         proc = subprocess.Popen(
             [sys.executable, "-m", "hippo_brain.mcp"],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
+            env={
+                "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+                "HOME": str(tmp_path),
+                "XDG_CONFIG_HOME": str(tmp_path / ".config"),
+                "XDG_DATA_HOME": str(tmp_path / ".local/share"),
+                "XDG_CACHE_HOME": str(tmp_path / ".cache"),
+                "PYTHONDONTWRITEBYTECODE": "1",
+            },
         )
 
         try:
@@ -203,6 +265,26 @@ class TestMCPStdioProtocol:
 
 
 class TestLoadConfig:
+    def test_desktop_credential_resolution_fits_startup_budget(self, monkeypatch):
+        from hippo_brain import jev, mcp as server
+
+        def resolve(_command, **kwargs):
+            if kwargs["timeout"] <= 5.042:
+                raise subprocess.TimeoutExpired(_command, kwargs["timeout"])
+            assert kwargs["timeout"] <= 20
+            assert kwargs["capture_output"] and kwargs["check"]
+            return subprocess.CompletedProcess(_command, 0, stdout="resolved-test-key\n")
+
+        client = object()
+        constructor = MagicMock(return_value=client)
+        monkeypatch.setattr(server.shutil, "which", lambda _name: "/fake/op")
+        monkeypatch.setattr(server.subprocess, "run", resolve)
+        monkeypatch.setattr(jev, "JevClient", constructor)
+        assert (
+            server._jev_client_from_config({"typesafe_api_key_op_ref": "op://test/key"}) is client
+        )
+        constructor.assert_called_once_with("resolved-test-key")
+
     def test_missing_config_returns_defaults(self, tmp_path, monkeypatch):
         """When config.toml doesn't exist, defaults are returned."""
         monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))

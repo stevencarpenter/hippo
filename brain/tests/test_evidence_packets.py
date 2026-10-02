@@ -8,7 +8,7 @@ import time
 
 import pytest
 
-from hippo_brain.evidence_packets import inspect_evidence, parse_ref
+from hippo_brain.evidence_packets import inspect_evidence, make_agentic_packet, parse_ref
 from hippo_brain.retrieval import Filters, search
 from hippo_brain.retrieval_eligibility import IN_FLIGHT_SETTLE_MS
 from tests.retrieval_fixtures import TRUST_EVAL_SCHEMA, FakeBackend
@@ -40,6 +40,22 @@ def test_parse_ref_roundtrip() -> None:
     kind, row_id = parse_ref("claude-42")
     assert kind == "claude"
     assert row_id == 42
+
+
+def test_session_excerpt_retains_work_instead_of_environment_scaffolding():
+    packet = make_agentic_packet(
+        row_id=42,
+        harness="codex",
+        session_id="session",
+        segment_index=0,
+        timestamp_ms=123,
+        summary_text="User requests:\n<environment_context>"
+        + "x" * 700
+        + "\nAssistant responses (excerpts):\nRetained npm pins; accepted local packages.",
+        source_path="/private/session.jsonl",
+    )
+    assert packet["excerpt"] == "Retained npm pins; accepted local packages."
+    assert packet["ref"] == "codex-42" and packet["timestamp_ms"] == 123
 
 
 def test_shell_knowledge_includes_evidence_packet(conn: sqlite3.Connection) -> None:
