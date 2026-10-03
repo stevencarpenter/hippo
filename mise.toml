@@ -894,7 +894,7 @@ if [ "$OTEL_ENABLED" = "0" ] && [ "$OTEL_COLLECTOR_UP" = "1" ]; then
     echo "      To enable observability:"
     echo "        1. Edit ~/.config/hippo/config.toml and set [telemetry] enabled = true"
     echo "        2. Run: mise run restart"
-    echo "        3. Access Grafana: http://localhost:3030 (admin / configured password)"
+    echo "        3. Access Grafana: http://localhost:3030 (no login by default)"
 elif [ "$OTEL_ENABLED" = "0" ] && [ "$OTEL_COLLECTOR_UP" = "0" ]; then
     echo "NOTE: OpenTelemetry observability is disabled."
     echo "      To enable it:"
@@ -1158,10 +1158,6 @@ description = "Start the OTel observability stack (Grafana, Tempo, Loki, Prometh
 run = """
 #!/usr/bin/env bash
 set -euo pipefail
-if [ -z "${HIPPO_OTEL_GRAFANA_ADMIN_PASSWORD:-}" ]; then
-    echo "Set HIPPO_OTEL_GRAFANA_ADMIN_PASSWORD before starting Grafana" >&2
-    exit 1
-fi
 OTEL_DATA_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/hippo/otel"
 mkdir -p \
     "$OTEL_DATA_DIR/tempo" \
@@ -1202,6 +1198,7 @@ migrate_legacy_volume() {
 }
 
 cd otel
+docker compose config --quiet
 docker compose down --remove-orphans >/dev/null 2>&1 || true
 migrate_legacy_volume "hippo-otel_tempo-data" "$OTEL_DATA_DIR/tempo"
 migrate_legacy_volume "hippo-otel_loki-data" "$OTEL_DATA_DIR/loki"
@@ -1213,7 +1210,7 @@ fi
 docker compose up -d --remove-orphans
 echo ""
 echo "=== OTel stack running ==="
-echo "  Grafana:        http://localhost:3030 (admin / configured password)"
+echo "  Grafana:        http://localhost:3030"
 echo "  OTel Collector: localhost:4317 (gRPC) / localhost:4318 (HTTP)"
 echo "  Collector health: http://localhost:13133"
 echo "  Data dir:       $OTEL_DATA_DIR"
@@ -1756,4 +1753,4 @@ description = "Recreate Prometheus + Grafana to reload otel/ provisioning (scrap
 # --force-recreate is required: `up -d` is a no-op for a running container whose
 # config is unchanged, and the provisioning files are bind-mounted, so without
 # it a dashboard or alert-rule edit is never picked up.
-run = "docker compose -f otel/docker-compose.yml up -d --force-recreate prometheus grafana"
+run = "cd otel && docker compose up -d --force-recreate prometheus grafana"
