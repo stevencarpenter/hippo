@@ -7,7 +7,6 @@ Telemetry is **off by default**. Nothing is emitted until you build with OTel su
 ## Quick start
 
 ```bash
-export HIPPO_OTEL_GRAFANA_ADMIN_PASSWORD='<private password>'
 mise run otel:up          # Grafana + Prometheus + collector on localhost
 mise run build:otel       # daemon with OTel feature
 hippo config edit         # [telemetry] enabled = true
@@ -16,12 +15,33 @@ mise run restart
 open http://localhost:3030
 ```
 
-Grafana requires the configured password for the `admin` account. The stack
-publishes its ports on `127.0.0.1`, and anonymous access is disabled. Grafana
-uses `GF_SECURITY_ADMIN_PASSWORD` only when the database is first created. If
-you already ran the stack with the former `admin` / `hippo` credentials, change
-the existing account password in Grafana's user preferences. [Grafana's
-configuration reference](https://grafana.com/docs/grafana/latest/setup-grafana/configure-grafana/)
+Grafana allows anonymous Admin access by default, so startup requires no
+password export or login. All published ports bind to `127.0.0.1`. A new
+Grafana database uses `admin` / `hippo` unless
+`HIPPO_OTEL_GRAFANA_ADMIN_PASSWORD` is supplied.
+
+If your Grafana organization was renamed, set `HIPPO_OTEL_GRAFANA_ORG_NAME`
+to its name in the ignored `otel/.env` file. The default is `Main Org.`.
+[Grafana's anonymous access configuration](https://grafana.com/docs/grafana/latest/setup-grafana/configure-access/configure-authentication/anonymous-auth/)
+requires the configured name to match the stored organization name.
+
+### Optional Grafana authentication
+
+```bash
+export COMPOSE_FILE=docker-compose.yml:docker-compose.auth.yml
+export HIPPO_OTEL_GRAFANA_ADMIN_PASSWORD='<private password>'
+mise run otel:up
+```
+
+The override disables anonymous access and requires a nonempty password.
+Keep both variables available for subsequent OTel tasks, including
+`otel:restart`. To restore anonymous access, run `unset COMPOSE_FILE` and
+`mise run otel:up`.
+
+Grafana uses `GF_SECURITY_ADMIN_PASSWORD` only when the database is first
+created. For an existing database, change the admin password in Grafana's user
+preferences before enabling authentication. [Grafana's configuration
+reference](https://grafana.com/docs/grafana/latest/setup-grafana/configure-grafana/)
 documents the first-run behavior.
 
 ## Architecture
