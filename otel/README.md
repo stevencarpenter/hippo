@@ -4,9 +4,25 @@ Grafana (3030) · Prometheus (9090) · Loki · Tempo, plus the knowledge-health
 exporter (host, :9835) that bridges SQLite-derived metrics and the /ask
 recall probe into Prometheus.
 
-Set `HIPPO_OTEL_GRAFANA_ADMIN_PASSWORD` before `mise run otel:up`. The
-Compose stack accepts connections only on `127.0.0.1` and requires Grafana
-authentication. Keep the variable available for subsequent Compose commands.
+Run `mise run otel:up` without any password setup. Published ports bind to
+`127.0.0.1`, and Grafana allows anonymous Admin access by default.
+
+If your Grafana organization was renamed, set `HIPPO_OTEL_GRAFANA_ORG_NAME`
+to its name in the ignored `otel/.env` file. The default is `Main Org.`.
+
+To require Grafana authentication, select the optional Compose override:
+
+```bash
+export COMPOSE_FILE=docker-compose.yml:docker-compose.auth.yml
+export HIPPO_OTEL_GRAFANA_ADMIN_PASSWORD='<private password>'
+mise run otel:up
+```
+
+Keep both variables available for subsequent OTel tasks. To restore anonymous
+access, run `unset COMPOSE_FILE` and `mise run otel:up`.
+For an existing Grafana database, change the admin password in Grafana before
+enabling authentication. The environment variable only initializes a new
+database's password. With no password supplied, a new database uses `admin` / `hippo`.
 
 Dashboard inventory, the full alert-rule tables, enabling telemetry, and
 on-call pointers: [`docs/observability.md`](../docs/observability.md).

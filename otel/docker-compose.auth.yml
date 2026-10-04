@@ -1,0 +1,6 @@
+# Opt in with COMPOSE_FILE=docker-compose.yml:docker-compose.auth.yml.
+services:
+  grafana:
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=${HIPPO_OTEL_GRAFANA_ADMIN_PASSWORD:?Set HIPPO_OTEL_GRAFANA_ADMIN_PASSWORD to enable Grafana authentication}
+      - GF_AUTH_ANONYMOUS_ENABLED=false
