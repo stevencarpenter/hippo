@@ -20,6 +20,7 @@
 //!   even when no further filesystem events arrive.
 //! - Settling enqueues segments where `content_hash != last_enriched_content_hash`
 //!   and the source file has been idle for 30+ minutes, backing the T-A.4 debounce gate.
+//!
 //! See `docs/capture/architecture.md` for the watcher shutdown contract.
 
 use std::collections::{HashMap, VecDeque};
