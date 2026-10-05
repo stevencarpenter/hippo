@@ -56,17 +56,22 @@ fn main() -> Result<()> {
 }
 
 #[test]
-fn runtime_shutdown_does_not_wait_for_blocking_worker() {
+fn runtime_shutdown_does_not_wait_for_timed_out_blocking_worker() {
     let (release, wait) = std::sync::mpsc::channel::<()>();
     let (finished, result) = std::sync::mpsc::channel();
     let thread = std::thread::spawn(move || {
         let outcome = run_with_runtime(async {
             let (started, ready) = tokio::sync::oneshot::channel();
-            tokio::task::spawn_blocking(move || {
+            let worker = tokio::task::spawn_blocking(move || {
                 started.send(()).unwrap();
                 let _ = wait.recv();
             });
             ready.await?;
+            assert!(
+                tokio::time::timeout(std::time::Duration::from_millis(50), worker)
+                    .await
+                    .is_err()
+            );
             Ok(())
         });
         finished.send(outcome).unwrap();

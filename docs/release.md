@@ -93,8 +93,10 @@ the default runtime data root. Empty values use the HOME defaults.
 It installs LaunchAgents through `hippo daemon install`, preserving resolved
 XDG roots in each service environment and the selected daemon's stable path
 with `--binary-path`, including package-managed symlinks.
-The Claude watcher polls shutdown signals and writes heartbeats while ingestion
-is pending. Runtime teardown waits at most one second for blocking workers;
+The Claude watcher polls shutdown signals while ingestion or SQLite writes are
+pending. One sequential maintenance worker handles heartbeat, settling, and
+discovery independently of ingestion. Startup database work is also cancellable
+at its async wait. Runtime teardown waits at most one second for blocking workers;
 unfinished ingestion is recovered from persisted offsets on the next start.
 
 ```bash

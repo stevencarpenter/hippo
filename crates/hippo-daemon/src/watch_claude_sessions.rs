@@ -299,19 +299,33 @@ async fn reconcile_next_file(
 }
 
 async fn wait_responsive(
-    work: impl std::future::Future<Output = ()>,
+    work: impl std::future::Future<Output = Result<()>>,
     shutdown: impl std::future::Future<Output = ()>,
-    heartbeat_tick: &mut tokio::time::Interval,
-    conn: &Connection,
-) -> bool {
-    tokio::pin!(work, shutdown);
+) -> Result<()> {
+    tokio::select! {
+        biased;
+        _ = shutdown => Ok(()),
+        result = work => result,
+    }
+}
+
+async fn maintain(
+    mut conn: Connection,
+    projects: PathBuf,
+    mut ticks: tokio::time::Interval,
+    discovered: tokio::sync::watch::Sender<Vec<PathBuf>>,
+) -> Result<()> {
+    ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
-        tokio::select! {
-            biased;
-            _ = &mut shutdown => return false,
-            _ = heartbeat_tick.tick() => heartbeat_and_settle(conn),
-            _ = &mut work => return true,
-        }
+        ticks.tick().await;
+        let projects = projects.clone();
+        let (returned_conn, files) = tokio::task::spawn_blocking(move || {
+            heartbeat_and_settle(&conn);
+            (conn, find_session_files(&projects))
+        })
+        .await?;
+        conn = returned_conn;
+        discovered.send_replace(files);
     }
 }
 
@@ -546,7 +560,7 @@ fn run_settling_sweep(
             }
             Err(e) => {
                 warn!(%e, agentic_session_row_id, "watcher: settling sweep enqueue failed");
-                // Non-fatal: continue trying remaining candidates.
+                return Err(e);
             }
         }
     }
@@ -651,6 +665,18 @@ fn check_backfill_needed(conn: &Connection) -> usize {
 
 /// Entry point — runs until SIGTERM/ctrl-c.
 pub async fn run(config: &HippoConfig) -> Result<()> {
+    let mut sigterm = unix_signal(SignalKind::terminate())
+        .context("watcher: failed to install SIGTERM handler")?;
+    wait_responsive(watch(config), async {
+        tokio::select! {
+            _ = sigterm.recv() => info!("watcher: received SIGTERM, shutting down"),
+            _ = tokio::signal::ctrl_c() => info!("watcher: received SIGINT, shutting down"),
+        }
+    })
+    .await
+}
+
+async fn watch(config: &HippoConfig) -> Result<()> {
     let db_path = config.db_path();
 
     let projects = match projects_dir() {
@@ -663,26 +689,17 @@ pub async fn run(config: &HippoConfig) -> Result<()> {
 
     warn_if_remote_fs(&projects);
 
-    // Open our own write connection (WAL, separate from the daemon).
-    let conn = open_db(&db_path).context("watcher: failed to open DB")?;
-
-    // One-shot startup check: warn if Bug A truncation residue is present.
-    check_backfill_needed(&conn);
-
-    // Load saved offsets and build initial state map.
-    let mut states: HashMap<PathBuf, FileState> = load_offsets(&conn).unwrap_or_default();
-
-    // Catch up after subscribing so startup processing cannot miss notifications.
-    let mut pending_reconciliation: VecDeque<PathBuf> = find_session_files(&projects).into();
-    info!(
-        count = pending_reconciliation.len(),
-        "watcher: startup scan"
-    );
-
-    upsert_heartbeat(&conn);
+    let startup_db = db_path.clone();
+    let (conn, states) = tokio::task::spawn_blocking(move || -> Result<_> {
+        let conn = open_db(&startup_db).context("watcher: failed to open DB")?;
+        check_backfill_needed(&conn);
+        let states = load_offsets(&conn).unwrap_or_default();
+        Ok((conn, states))
+    })
+    .await??;
 
     // Set up FSEvents subscription.
-    let (tx, mut rx) = mpsc::channel::<Event>(256);
+    let (tx, rx) = mpsc::channel::<Event>(256);
     let mut watcher = RecommendedWatcher::new(
         move |event: notify::Result<Event>| {
             if let Ok(e) = event {
@@ -733,48 +750,32 @@ pub async fn run(config: &HippoConfig) -> Result<()> {
         "watcher: listening for FSEvents"
     );
 
-    let mut heartbeat_tick = tokio::time::interval(HEARTBEAT_INTERVAL);
-    heartbeat_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let (discovered, discoveries) = tokio::sync::watch::channel(Vec::new());
+    tokio::select! {
+        result = maintain(conn, projects, tokio::time::interval(HEARTBEAT_INTERVAL), discovered) => result,
+        result = ingest_events(states, &db_path, rx, discoveries) => result,
+    }
+}
 
-    // Handle both SIGTERM (launchd stop / system shutdown) and SIGINT (ctrl-c).
-    let mut sigterm = unix_signal(SignalKind::terminate())
-        .context("watcher: failed to install SIGTERM handler")?;
-
+async fn ingest_events(
+    mut states: HashMap<PathBuf, FileState>,
+    db_path: &Path,
+    mut rx: mpsc::Receiver<Event>,
+    mut discoveries: tokio::sync::watch::Receiver<Vec<PathBuf>>,
+) -> Result<()> {
+    let mut pending_reconciliation = VecDeque::new();
     loop {
         tokio::select! {
-            _ = sigterm.recv() => {
-                info!("watcher: received SIGTERM, shutting down");
-                break;
-            }
-            _ = tokio::signal::ctrl_c() => {
-                info!("watcher: received SIGINT, shutting down");
-                break;
-            }
-
-            _ = heartbeat_tick.tick() => {
-                heartbeat_and_settle(&conn);
-                // Finish the current snapshot before rescanning; replacing it on
-                // each tick would starve files at the end of a large backlog.
-                if pending_reconciliation.is_empty() {
-                    pending_reconciliation = find_session_files(&projects).into();
-                }
-            }
-
-            _ = std::future::ready(()), if !pending_reconciliation.is_empty() => {
-                let shutdown = async {
-                    tokio::select! {
-                        _ = sigterm.recv() => {},
-                        _ = tokio::signal::ctrl_c() => {},
+            changed = discoveries.changed() => {
+                changed?;
+                for path in discoveries.borrow_and_update().iter() {
+                    if !pending_reconciliation.contains(path) {
+                        pending_reconciliation.push_back(path.clone());
                     }
-                };
-                if !wait_responsive(
-                    reconcile_next_file(&mut pending_reconciliation, &mut states, &db_path),
-                    shutdown,
-                    &mut heartbeat_tick,
-                    &conn,
-                ).await {
-                    break;
                 }
+            }
+            _ = std::future::ready(()), if !pending_reconciliation.is_empty() => {
+                reconcile_next_file(&mut pending_reconciliation, &mut states, db_path).await;
                 tokio::task::yield_now().await;
             }
 
@@ -798,8 +799,6 @@ pub async fn run(config: &HippoConfig) -> Result<()> {
             }
         }
     }
-
-    Ok(())
 }
 
 /// Generate a minimal Claude JSONL line for testing.
@@ -993,52 +992,134 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn pending_ingestion_keeps_heartbeats_and_cancellation_responsive() {
+    async fn shared_database_contention_keeps_cancellation_responsive() {
         let dir = TempDir::new().unwrap();
         let db_path = dir.path().join("ingestion.db");
         let lock = open_db(&db_path).unwrap();
-        let heartbeat = open_db(&dir.path().join("heartbeat.db")).unwrap();
+        let maintenance_conn = open_db(&db_path).unwrap();
         let path = dir.path().join("pending.jsonl");
         std::fs::write(&path, j("pending", 1, "user", "hello") + "\n").unwrap();
+        let settled = dir.path().join("settled.jsonl");
+        std::fs::write(&settled, "settled content").unwrap();
+        set_mtime_seconds_ago(&settled, 35 * 60);
+        seed_session(
+            &lock,
+            1,
+            "settled",
+            settled.to_str().unwrap(),
+            Some("new"),
+            Some("old"),
+            None,
+            Some(r#"["hello"]"#),
+        );
+        seed_queue(&lock, 1, "done");
         lock.execute_batch("BEGIN IMMEDIATE").unwrap();
         let mut state = FileState::default();
-        let mut tick = tokio::time::interval(Duration::from_millis(10));
-        let started = Utc::now().timestamp_millis();
-        let completed = wait_responsive(
+        let (discovered, _discoveries) = tokio::sync::watch::channel(Vec::new());
+        let started = Instant::now();
+        wait_responsive(
             async {
-                process_file(&path, &mut state, &db_path).await.unwrap();
+                tokio::select! {
+                    result = maintain(maintenance_conn, dir.path().to_path_buf(),
+                        tokio::time::interval(Duration::from_millis(10)), discovered) => result,
+                    result = process_file(&path, &mut state, &db_path) => {
+                        panic!("ingestion completed while locked: {result:?}");
+                    }
+                }
             },
             async {
                 tokio::time::sleep(Duration::from_millis(100)).await;
             },
-            &mut tick,
-            &heartbeat,
         )
-        .await;
-        assert!(!completed);
+        .await
+        .unwrap();
+        assert!(started.elapsed() < Duration::from_secs(1));
         assert!(!state.in_flight.as_ref().unwrap().is_finished());
         let first_worker = state.in_flight.as_ref().unwrap().id();
         assert_eq!(process_file(&path, &mut state, &db_path).await.unwrap(), 0);
         assert_eq!(state.in_flight.as_ref().unwrap().id(), first_worker);
-        let last_beat: i64 = heartbeat
+        assert_eq!(queue_status(&lock, 1).as_deref(), Some("done"));
+        lock.execute_batch("ROLLBACK").unwrap();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while !state.in_flight.as_ref().unwrap().is_finished()
+                || queue_status(&lock, 1).as_deref() != Some("pending")
+            {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        let last_beat: i64 = lock
             .query_row(
                 "SELECT last_success_ts FROM source_health WHERE source = 'claude-session-watcher'",
                 [],
                 |row| row.get(0),
             )
             .unwrap();
-        assert!(last_beat >= started + 10);
-        lock.execute_batch("ROLLBACK").unwrap();
-        tokio::time::timeout(Duration::from_secs(5), async {
-            while !state.in_flight.as_ref().unwrap().is_finished() {
-                tokio::time::sleep(Duration::from_millis(10)).await;
+        assert!(last_beat > 0);
+        process_file(&path, &mut state, &db_path).await.unwrap();
+        assert!(state.in_flight.is_none());
+        assert_eq!(state.byte_offset, std::fs::metadata(path).unwrap().len());
+    }
+
+    #[tokio::test]
+    async fn maintenance_retries_settling_and_discovery_after_contention() {
+        let dir = TempDir::new().unwrap();
+        let db_path = dir.path().join("test.db");
+        let lock = open_db(&db_path).unwrap();
+        let conn = open_db(&db_path).unwrap();
+        conn.busy_timeout(Duration::from_millis(10)).unwrap();
+        let (discovered, mut discoveries) = tokio::sync::watch::channel(Vec::new());
+        let first = dir.path().join("first.jsonl");
+        std::fs::write(&first, "first").unwrap();
+        set_mtime_seconds_ago(&first, 35 * 60);
+        seed_session(
+            &lock,
+            1,
+            "settled",
+            first.to_str().unwrap(),
+            Some("new"),
+            Some("old"),
+            None,
+            Some(r#"["hello"]"#),
+        );
+        seed_queue(&lock, 1, "done");
+        lock.execute_batch("BEGIN IMMEDIATE").unwrap();
+        let maintenance = maintain(
+            conn,
+            dir.path().to_path_buf(),
+            tokio::time::interval(Duration::from_millis(10)),
+            discovered,
+        );
+        let observe = async {
+            discoveries.changed().await.unwrap();
+            assert!(discoveries.borrow_and_update().contains(&first));
+            assert_eq!(queue_status(&lock, 1).as_deref(), Some("done"));
+            let second = dir.path().join("second.jsonl");
+            std::fs::write(&second, "second").unwrap();
+            loop {
+                discoveries.changed().await.unwrap();
+                if discoveries.borrow_and_update().contains(&second) {
+                    break;
+                }
+            }
+            lock.execute_batch("ROLLBACK").unwrap();
+            loop {
+                discoveries.changed().await.unwrap();
+                drop(discoveries.borrow_and_update());
+                if queue_status(&lock, 1).as_deref() == Some("pending") {
+                    break;
+                }
+            }
+        };
+        tokio::time::timeout(Duration::from_secs(2), async {
+            tokio::select! {
+                result = maintenance => panic!("maintenance stopped: {result:?}"),
+                _ = observe => {},
             }
         })
         .await
         .unwrap();
-        process_file(&path, &mut state, &db_path).await.unwrap();
-        assert!(state.in_flight.is_none());
-        assert_eq!(state.byte_offset, std::fs::metadata(path).unwrap().len());
     }
 
     #[tokio::test]
