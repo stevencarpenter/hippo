@@ -21,7 +21,7 @@ fi
 EOF
     chmod +x "$fixture/fake-hippo"
     case "$scenario" in
-        path-only|local-and-path|config-fails|xdg-config) cp "$fixture/fake-hippo" "$fixture/external-bin/hippo" ;;
+        path-only|local-and-path|config-fails|xdg-config) ln -s "$fixture/fake-hippo" "$fixture/external-bin/hippo" ;;
     esac
     case "$scenario" in
         local-only|local-and-path) cp "$fixture/fake-hippo" "$fixture/.local/bin/hippo" ;;
@@ -33,7 +33,8 @@ EOF
 
     if env HOME="$fixture" PATH="$fixture/external-bin:/usr/bin:/bin" \
         XDG_STATE_HOME="$fixture/state" HIPPO_INSTALL_DAEMON=0 HIPPO_INSTALL_SKILLS=0 \
-        XDG_CONFIG_HOME="$fixture/config-root" HIPPO_TEST_HEALTH="$fixture/health" \
+        XDG_CONFIG_HOME="$fixture/config-root" XDG_DATA_HOME="$fixture/data-root" \
+        HIPPO_TEST_HEALTH="$fixture/health" \
         HIPPO_TEST_INVOCATIONS="$fixture/invocations" HIPPO_TEST_BINARIES="$fixture/binaries" \
         HIPPO_TEST_SCENARIO="$scenario" \
         bash -c '
@@ -56,17 +57,19 @@ EOF
         else
             printf 'config init\n' > "$fixture/expected-invocations"
         fi
+        expected_binary="$fixture/.local/bin/hippo"
+        if [[ "$scenario" == path-only || "$scenario" == xdg-config ]]; then
+            expected_binary="$fixture/external-bin/hippo"
+        fi
+        test -d "$fixture/data-root/hippo"
+        test ! -e "$fixture/.local/share/hippo"
         cat >> "$fixture/expected-invocations" <<EOF
-daemon install --force --brain-dir $fixture/.local/share/hippo-brain
+daemon install --force --binary-path $expected_binary --brain-dir $fixture/.local/share/hippo-brain
 daemon start
 status
 doctor
 EOF
         diff -u "$fixture/expected-invocations" "$fixture/invocations"
-        expected_binary="$fixture/.local/bin/hippo"
-        if [[ "$scenario" == path-only || "$scenario" == xdg-config ]]; then
-            expected_binary="$fixture/external-bin/hippo"
-        fi
         while IFS= read -r _; do
             printf '%s\n' "$expected_binary"
         done < "$fixture/expected-invocations" > "$fixture/expected-binaries"

@@ -51,8 +51,44 @@ async fn wait_for_path(path: &std::path::Path, wait_secs: u64) {
     eprintln!(" found.");
 }
 
-#[tokio::main]
-async fn main() -> Result<()> {
+fn main() -> Result<()> {
+    run_with_runtime(run())
+}
+
+#[test]
+fn runtime_shutdown_does_not_wait_for_blocking_worker() {
+    let (release, wait) = std::sync::mpsc::channel::<()>();
+    let (finished, result) = std::sync::mpsc::channel();
+    let thread = std::thread::spawn(move || {
+        let outcome = run_with_runtime(async {
+            let (started, ready) = tokio::sync::oneshot::channel();
+            tokio::task::spawn_blocking(move || {
+                started.send(()).unwrap();
+                let _ = wait.recv();
+            });
+            ready.await?;
+            Ok(())
+        });
+        finished.send(outcome).unwrap();
+    });
+    let outcome = result.recv_timeout(std::time::Duration::from_secs(3));
+    let _ = release.send(());
+    thread.join().unwrap();
+    outcome
+        .expect("runtime shutdown exceeded its bound")
+        .unwrap();
+}
+
+fn run_with_runtime(work: impl std::future::Future<Output = Result<()>>) -> Result<()> {
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?;
+    let result = runtime.block_on(work);
+    runtime.shutdown_timeout(std::time::Duration::from_secs(1));
+    result
+}
+
+async fn run() -> Result<()> {
     // Load config early — needed for telemetry init before CLI parsing
     // Missing configuration already uses defaults in load_default. Invalid or
     // unreadable configuration must not silently re-enable disabled capture.

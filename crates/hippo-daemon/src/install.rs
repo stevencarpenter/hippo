@@ -1,9 +1,35 @@
+#[cfg(test)]
+mod service_paths;
+
 use anyhow::{Context, Result};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
 /// Replace plist template placeholders with actual system values.
 pub fn render_plist(template: &str, vars: &PlistVars) -> String {
+    let storage = hippo_core::config::StorageConfig::default();
+    let xml_path = |path: &Path| {
+        path.to_string_lossy()
+            .replace('&', "&amp;")
+            .replace('<', "&lt;")
+            .replace('>', "&gt;")
+    };
+    let environment_key = "<key>EnvironmentVariables</key>";
+    let template = match template.split_once(environment_key) {
+        Some((prefix, environment)) => format!(
+            "{prefix}{environment_key}{}",
+            environment.replacen(
+                "<dict>",
+                &format!(
+                    "<dict>\n<key>XDG_CONFIG_HOME</key><string>{}</string>\n<key>XDG_DATA_HOME</key><string>{}</string>",
+                    xml_path(storage.config_dir.parent().unwrap()),
+                    xml_path(storage.data_dir.parent().unwrap()),
+                ),
+                1,
+            ),
+        ),
+        None => template.to_owned(),
+    };
     template
         .replace("__HIPPO_BIN__", &vars.hippo_bin.to_string_lossy())
         .replace("__UV_BIN__", &vars.uv_bin.to_string_lossy())
@@ -88,10 +114,7 @@ pub fn detect_vars(brain_dir: &Path, hippo_bin_override: Option<PathBuf>) -> Res
     let uv_bin = which("uv").unwrap_or_else(|| PathBuf::from("/usr/local/bin/uv"));
     let home = dirs::home_dir().context("cannot determine home directory")?;
     let path = std::env::var("PATH").unwrap_or_default();
-    let data_dir = std::env::var_os("XDG_DATA_HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| home.join(".local/share"))
-        .join("hippo");
+    let data_dir = hippo_core::config::StorageConfig::default().data_dir;
 
     let cfg = hippo_core::config::HippoConfig::load_default().ok();
     let telemetry = cfg

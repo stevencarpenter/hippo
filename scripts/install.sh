@@ -74,7 +74,7 @@ INSTALL_DIR="${HOME}/.local"
 BIN_DIR="${INSTALL_DIR}/bin"
 BRAIN_DIR="${INSTALL_DIR}/share/hippo-brain"
 CONFIG_DIR="${XDG_CONFIG_HOME:-${HOME}/.config}/hippo"
-DATA_DIR="${HOME}/.local/share/hippo"
+DATA_DIR="${XDG_DATA_HOME:-${HOME}/.local/share}/hippo"
 # Receipts live under XDG_STATE_HOME (not DATA_DIR) so a user wipe of Hippo's
 # runtime data doesn't desynchronize them from the actual installed binaries.
 RECEIPTS_DIR="${XDG_STATE_HOME:-${HOME}/.local/state}/hippo/install-receipts"
@@ -566,7 +566,7 @@ install_services() {
     log_info "Installing LaunchAgents..."
 
     if [ -x "${hippo_binary}" ]; then
-        "${hippo_binary}" daemon install --force --brain-dir "${BRAIN_DIR}" || {
+        "${hippo_binary}" daemon install --force --binary-path "${hippo_binary}" --brain-dir "${BRAIN_DIR}" || {
             log_warning "Failed to install LaunchAgents automatically"
             log_info "You can install them manually later with: hippo daemon install --brain-dir '${BRAIN_DIR}'"
         }
@@ -804,6 +804,7 @@ main() {
     local hippo_binary="${BIN_DIR}/hippo"
     if [ ! -x "${hippo_binary}" ]; then
         hippo_binary="$(command -v hippo)"
+        hippo_binary="$(cd "$(dirname "${hippo_binary}")" && pwd)/$(basename "${hippo_binary}")"
     fi
 
     install_skills

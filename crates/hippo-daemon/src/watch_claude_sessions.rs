@@ -213,6 +213,7 @@ async fn process_file(path: &Path, state: &mut FileState, db_path: &Path) -> Res
         Ok((inserted, skipped, errors))
     });
 
+    state.in_flight = Some(task.abort_handle());
     let join_result = match tokio::time::timeout(PER_FILE_TIMEOUT, &mut task).await {
         Err(_elapsed) => {
             warn!(
@@ -220,12 +221,12 @@ async fn process_file(path: &Path, state: &mut FileState, db_path: &Path) -> Res
                 timeout_secs = PER_FILE_TIMEOUT.as_secs(),
                 "watcher: per-file processing timed out; entering cooldown"
             );
-            state.in_flight = Some(task.abort_handle());
             state.cooldown_until = Some(Instant::now() + BACKOFF_DURATION);
             return Ok(0);
         }
         Ok(r) => r,
     };
+    state.in_flight = None;
 
     #[cfg(feature = "otel")]
     crate::metrics::WATCHER_PROCESS_DURATION_MS.record(start.elapsed().as_secs_f64() * 1000.0, &[]);
@@ -294,6 +295,30 @@ async fn reconcile_next_file(
         Err(e) => {
             warn!(path = %path.display(), %e, "watcher: reconciliation error");
         }
+    }
+}
+
+async fn wait_responsive(
+    work: impl std::future::Future<Output = ()>,
+    shutdown: impl std::future::Future<Output = ()>,
+    heartbeat_tick: &mut tokio::time::Interval,
+    conn: &Connection,
+) -> bool {
+    tokio::pin!(work, shutdown);
+    loop {
+        tokio::select! {
+            biased;
+            _ = &mut shutdown => return false,
+            _ = heartbeat_tick.tick() => heartbeat_and_settle(conn),
+            _ = &mut work => return true,
+        }
+    }
+}
+
+fn heartbeat_and_settle(conn: &Connection) {
+    upsert_heartbeat(conn);
+    if let Err(e) = run_settling_sweep(conn, 10, Utc::now().timestamp_millis()) {
+        warn!(%e, "watcher: settling sweep error");
     }
 }
 
@@ -727,23 +752,29 @@ pub async fn run(config: &HippoConfig) -> Result<()> {
             }
 
             _ = heartbeat_tick.tick() => {
-                upsert_heartbeat(&conn);
+                heartbeat_and_settle(&conn);
                 // Finish the current snapshot before rescanning; replacing it on
                 // each tick would starve files at the end of a large backlog.
                 if pending_reconciliation.is_empty() {
                     pending_reconciliation = find_session_files(&projects).into();
                 }
-                let now_ms = Utc::now().timestamp_millis();
-                match run_settling_sweep(&conn, 10, now_ms) {
-                    Ok(_) => {}
-                    Err(e) => {
-                        warn!(%e, "watcher: settling sweep error");
-                    }
-                }
             }
 
             _ = std::future::ready(()), if !pending_reconciliation.is_empty() => {
-                reconcile_next_file(&mut pending_reconciliation, &mut states, &db_path).await;
+                let shutdown = async {
+                    tokio::select! {
+                        _ = sigterm.recv() => {},
+                        _ = tokio::signal::ctrl_c() => {},
+                    }
+                };
+                if !wait_responsive(
+                    reconcile_next_file(&mut pending_reconciliation, &mut states, &db_path),
+                    shutdown,
+                    &mut heartbeat_tick,
+                    &conn,
+                ).await {
+                    break;
+                }
                 tokio::task::yield_now().await;
             }
 
@@ -760,15 +791,8 @@ pub async fn run(config: &HippoConfig) -> Result<()> {
                     if path.extension().is_none_or(|e| e != "jsonl") {
                         continue;
                     }
-                    let state = states.entry(path.clone()).or_default();
-                    match process_file(&path, state, &db_path).await {
-                        Ok(0) => {}
-                        Ok(n) => {
-                            info!(path = %path.display(), inserted = n, "watcher: ingested segments");
-                        }
-                        Err(e) => {
-                            warn!(path = %path.display(), %e, "watcher: processing error");
-                        }
+                    if !pending_reconciliation.contains(&path) {
+                        pending_reconciliation.push_back(path);
                     }
                 }
             }
@@ -966,6 +990,55 @@ mod tests {
         task.await.unwrap();
         assert!(process_file(&path, &mut state, &db_path).await.unwrap() > 0);
         assert!(state.in_flight.is_none());
+    }
+
+    #[tokio::test]
+    async fn pending_ingestion_keeps_heartbeats_and_cancellation_responsive() {
+        let dir = TempDir::new().unwrap();
+        let db_path = dir.path().join("ingestion.db");
+        let lock = open_db(&db_path).unwrap();
+        let heartbeat = open_db(&dir.path().join("heartbeat.db")).unwrap();
+        let path = dir.path().join("pending.jsonl");
+        std::fs::write(&path, j("pending", 1, "user", "hello") + "\n").unwrap();
+        lock.execute_batch("BEGIN IMMEDIATE").unwrap();
+        let mut state = FileState::default();
+        let mut tick = tokio::time::interval(Duration::from_millis(10));
+        let started = Utc::now().timestamp_millis();
+        let completed = wait_responsive(
+            async {
+                process_file(&path, &mut state, &db_path).await.unwrap();
+            },
+            async {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            },
+            &mut tick,
+            &heartbeat,
+        )
+        .await;
+        assert!(!completed);
+        assert!(!state.in_flight.as_ref().unwrap().is_finished());
+        let first_worker = state.in_flight.as_ref().unwrap().id();
+        assert_eq!(process_file(&path, &mut state, &db_path).await.unwrap(), 0);
+        assert_eq!(state.in_flight.as_ref().unwrap().id(), first_worker);
+        let last_beat: i64 = heartbeat
+            .query_row(
+                "SELECT last_success_ts FROM source_health WHERE source = 'claude-session-watcher'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(last_beat >= started + 10);
+        lock.execute_batch("ROLLBACK").unwrap();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while !state.in_flight.as_ref().unwrap().is_finished() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        process_file(&path, &mut state, &db_path).await.unwrap();
+        assert!(state.in_flight.is_none());
+        assert_eq!(state.byte_offset, std::fs::metadata(path).unwrap().len());
     }
 
     #[tokio::test]
