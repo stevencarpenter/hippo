@@ -1,0 +1,105 @@
+{
+  "ok": false,
+  "bundle": "/Users/runner/work/hippo/hippo/release-bundle.tar.gz",
+  "output_dir": "/Users/runner/work/_temp/hippo-release-smoke",
+  "brain_import": {
+    "version": "0.37.0",
+    "module": "/Users/runner/work/_temp/hippo-release-smoke/home/.local/share/hippo-brain/.venv/lib/python3.14/site-packages/hippo_brain/__init__.py"
+  },
+  "daemon_version": "hippo 0.37.0-dev+gfcacc45",
+  "installation": {
+    "version": "0.37.0",
+    "checksums": {
+      "hippo-darwin-arm64": "9323a9e0759a9e2b12e3543fc0df86de78f82389209bf48c5e286ca1b30762c7",
+      "hippo-brain-0.37.0.tar.gz": "47f6f2aefa786273abd2ffac2a9c860f1074daf54d83f33f87bcf96bb346ee40"
+    },
+    "config_mode": "0600",
+    "reinstall_preserved": true
+  },
+  "daemon_status": "Hippo Daemon Status\n  Uptime:            0s\n  Events today:      0\n  Sessions today:    0\n  Queue depth:       0\n  Queue failed:      0\n  Drop count:        0\n  DB size:           4096 bytes\n  Fallback pending:  0\n  Inference:        unreachable\n  Brain:            unreachable\n",
+  "health": {
+    "status": 200,
+    "body": {
+      "status": "ok",
+      "pid": 1640,
+      "version": "0.37.0",
+      "expected_schema_version": 25,
+      "accepted_read_versions": [
+        24,
+        25
+      ],
+      "inference_reachable": false,
+      "enrichment_running": true,
+      "paused": false,
+      "paused_at": null,
+      "db_reachable": true,
+      "queue_depth": 0,
+      "queue_failed": 0,
+      "claude_queue_depth": 0,
+      "claude_queue_failed": 0,
+      "browser_queue_depth": 0,
+      "browser_queue_failed": 0,
+      "workflow_queue_depth": 0,
+      "workflow_queue_failed": 0,
+      "memory_queue_depth": 0,
+      "memory_queue_failed": 0,
+      "enrichment_model": "",
+      "enrichment_model_preferred": "",
+      "query_inflight": 0,
+      "embed_model_drift": null,
+      "classification": {
+        "enabled": false,
+        "running": false,
+        "last_error": null
+      },
+      "jev": {
+        "available": false
+      },
+      "last_success_at_ms": null,
+      "last_error": null,
+      "last_error_at_ms": null,
+      "telemetry_enabled": false,
+      "telemetry_active": false
+    }
+  },
+  "empty_query": {
+    "status": 200,
+    "body": {
+      "mode": "lexical",
+      "events": [],
+      "nodes": []
+    }
+  },
+  "schema_version": 25,
+  "seeded_query": {
+    "status": 200,
+    "body": {
+      "mode": "lexical",
+      "events": [],
+      "nodes": [
+        {
+          "id": 1,
+          "uuid": "candidate-smoke",
+          "content": "{\"summary\": \"candidate offline smoke\"}",
+          "embed_text": "candidate offline smoke"
+        }
+      ]
+    }
+  },
+  "non_object_query": {
+    "status": 400,
+    "body": {
+      "error": "request body must be a JSON object"
+    }
+  },
+  "packaged_shell_hook_capture": [
+    "echo candidate-hook-capture",
+    0,
+    "shell"
+  ],
+  "process_exits": {
+    "brain.log": -15,
+    "daemon.log": -15
+  },
+  "error": "[Errno 1] Operation not permitted"
+}

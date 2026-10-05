@@ -62,7 +62,7 @@ def process(
             yield child
         finally:
             # Terminate the process group, including installer grandchildren.
-            with suppress(ProcessLookupError):
+            with suppress(ProcessLookupError, PermissionError):
                 os.killpg(child.pid, signal.SIGTERM)
             try:
                 deadline = time.monotonic() + 15
@@ -72,8 +72,12 @@ def process(
                         os.killpg(child.pid, 0)
                     except ProcessLookupError:
                         break
+                    except PermissionError:
+                        # macOS can report EPERM for an unreaped zombie group.
+                        # Keep waiting; only ESRCH proves the group is gone.
+                        pass
                     if time.monotonic() >= deadline:
-                        with suppress(ProcessLookupError):
+                        with suppress(ProcessLookupError, PermissionError):
                             os.killpg(child.pid, signal.SIGKILL)
                         if results is not None:
                             results.setdefault("forced_cleanup", []).append(child.pid)

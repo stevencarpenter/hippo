@@ -4,7 +4,9 @@ import importlib.util
 import os
 from pathlib import Path
 import shutil
+import signal
 import subprocess
+import sys
 
 import pytest
 import sqlite_vec
@@ -15,6 +17,62 @@ spec = importlib.util.spec_from_file_location("smoke_release_bundle", SCRIPT)
 assert spec is not None and spec.loader is not None
 smoke = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(smoke)
+
+
+@pytest.mark.skipif(os.name != "posix", reason="release process groups require POSIX")
+@pytest.mark.parametrize("denied_signal", [signal.SIGTERM, 0])
+def test_process_cleanup_retries_transient_eperm(tmp_path, monkeypatch, denied_signal):
+    killpg = os.killpg
+    denied = []
+
+    def transient_eperm(pid, sig):
+        if sig == denied_signal and not denied:
+            denied.append(sig)
+            raise PermissionError(1, "Operation not permitted")
+        return killpg(pid, sig)
+
+    monkeypatch.setattr(smoke.os, "killpg", transient_eperm)
+    results = {}
+    with smoke.process(
+        [sys.executable, "-c", "import time; time.sleep(0.2)"],
+        dict(os.environ),
+        tmp_path / "child.log",
+        tmp_path,
+        results,
+    ) as child:
+        pass
+    assert denied == [denied_signal]
+    assert child.returncode is not None
+    assert results["process_exits"]["child.log"] == child.returncode
+    assert "forced_cleanup" not in results
+    with pytest.raises(ProcessLookupError):
+        killpg(child.pid, 0)
+
+
+@pytest.mark.skipif(os.name != "posix", reason="release process groups require POSIX")
+def test_process_cleanup_does_not_accept_persistent_eperm(tmp_path, monkeypatch):
+    killpg = os.killpg
+    clock = iter([0, 16])
+    monkeypatch.setattr(smoke.time, "monotonic", lambda: next(clock))
+
+    def permission_error(pid, sig):
+        if sig == signal.SIGKILL:
+            killpg(pid, sig)
+        raise PermissionError(1, "Operation not permitted")
+
+    monkeypatch.setattr(smoke.os, "killpg", permission_error)
+    results = {}
+    with pytest.raises(RuntimeError, match="required SIGKILL"):
+        with smoke.process(
+            [sys.executable, "-c", "import time; time.sleep(60)"],
+            dict(os.environ),
+            tmp_path / "child.log",
+            tmp_path,
+            results,
+        ) as child:
+            pass
+    assert results["forced_cleanup"] == [child.pid]
+    assert results["process_exits"]["child.log"] == -signal.SIGKILL
 
 
 def test_isolated_installer_uses_provisioned_python(tmp_path, monkeypatch):
