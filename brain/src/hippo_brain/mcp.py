@@ -1,6 +1,7 @@
 """Hippo MCP Server — expose the knowledge base as tools for Claude Code."""
 
 import dataclasses
+import os
 import shutil
 import sqlite3
 import subprocess
@@ -100,14 +101,16 @@ def _record_result(tool: str, count: int, *, degraded: bool = False) -> None:
 
 
 def _load_config() -> dict:
-    """Load Hippo config from ~/.config/hippo/config.toml.
+    """Load Hippo config from the XDG config directory, falling back to HOME.
 
     Returns a dict with db_path, data_dir, inference_base_url, embedding_model, query_model.
     """
-    config_path = Path.home() / ".config" / "hippo" / "config.toml"
+    config_base = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config")
+    config_path = config_base / "hippo" / "config.toml"
+    data_dir = Path(os.environ.get("XDG_DATA_HOME") or Path.home() / ".local" / "share") / "hippo"
     defaults = {
-        "db_path": str(Path.home() / ".local" / "share" / "hippo" / "hippo.db"),
-        "data_dir": str(Path.home() / ".local" / "share" / "hippo"),
+        "db_path": str(data_dir / "hippo.db"),
+        "data_dir": str(data_dir),
         "inference_base_url": "http://127.0.0.1:42069/v1",
         "embedding_model": "",
         "query_model": "",
@@ -124,9 +127,7 @@ def _load_config() -> dict:
         config = tomllib.load(f)
 
     storage = config.get("storage", {})
-    data_dir = Path(
-        storage.get("data_dir", Path.home() / ".local" / "share" / "hippo")
-    ).expanduser()
+    data_dir = Path(storage.get("data_dir", defaults["data_dir"])).expanduser()
 
     # Section renamed from [lmstudio] -> [inference] in the omlx PR. Fail loud
     # on the legacy name; see hippo_brain.__init__ and HippoConfig::load

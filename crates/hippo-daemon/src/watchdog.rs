@@ -571,7 +571,7 @@ pub fn check_invariants(
 
 /// I-1: Shell liveness.
 ///
-/// Fires when `shell.last_event_ts` is older than the probe cadence plus
+/// Fires when the latest production event or successful probe is older than the probe cadence plus
 /// launchd/SQLite jitter grace, **and** `shell.probe_ok = 1`, **and**
 /// (a real (non-probe) shell event has landed within the idle window checked
 /// by `shell_health::shell_real_activity_recent`, **or** the staleness has
@@ -580,7 +580,7 @@ pub fn check_invariants(
 /// `probe_ok = 1` means only "the last synthetic probe round-trip
 /// succeeded": `com.hippo.probe` sends an unconditional synthetic canary
 /// every 5 minutes through the same insert path as real shell commands, so
-/// it advances `last_event_ts` regardless of whether a human is present. An
+/// it advances the capture liveness signal regardless of whether a human is present. An
 /// earlier version of this comment read `probe_ok` as "user not idle",
 /// which is wrong (see issue #263): a machine that has been asleep for
 /// hours still shows `probe_ok = 1`, a stale leftover from before the
@@ -590,8 +590,7 @@ pub fn check_invariants(
 /// from "the pipe broke while someone was actively using the shell"
 /// (alarm).
 ///
-/// Sources with `last_event_ts IS NULL` (never seen) are skipped: a fresh
-/// install should not alarm before the first shell event.
+/// Sources with neither a production event nor a successful probe are skipped.
 pub fn check_i1_shell_liveness(
     by_source: &std::collections::HashMap<&str, &SourceHealthRow>,
     now_ms: i64,
@@ -599,8 +598,13 @@ pub fn check_i1_shell_liveness(
 ) -> Option<InvariantViolation> {
     let row = by_source.get("shell")?;
 
-    // Skip if the source has never delivered an event.
-    let last_event = row.last_event_ts?;
+    // A successful ingest probe also proves delivery while production is idle.
+    let last_event = crate::latest_capture_signal(
+        "shell",
+        row.last_event_ts,
+        row.probe_last_run_ts,
+        row.probe_ok,
+    )?;
 
     let age_ms = now_ms - last_event;
 
@@ -666,7 +670,8 @@ pub fn check_i2_claude_session_proxy(
 }
 
 /// I-4: Browser round-trip.
-/// Fires when `browser.last_event_ts` is older than the probe cadence plus
+/// Fires when the latest production event or successful ingest probe is older than
+/// the probe cadence plus
 /// launchd/SQLite jitter grace **and** `browser.last_heartbeat_ts` is fresh
 /// (within the 5-minute heartbeat cadence plus grace) — i.e. the extension is
 /// connected but the event round-trip (user visits or synthetic probe) has stalled.
@@ -681,8 +686,12 @@ pub fn check_i4_browser_roundtrip(
         return None;
     }
 
-    // Skip if the source has never delivered an event.
-    let last_event = row.last_event_ts?;
+    let last_event = crate::latest_capture_signal(
+        "browser",
+        row.last_event_ts,
+        row.probe_last_run_ts,
+        row.probe_ok,
+    )?;
 
     let heartbeat = row.last_heartbeat_ts?;
     if !crate::browser_health::browser_heartbeat_fresh(heartbeat, now_ms) {
@@ -1491,6 +1500,43 @@ mod tests {
     }
 
     // ── I-1 ────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn idle_production_uses_successful_probe_liveness_but_stale_or_failed_probes_alarm() {
+        for source in ["shell", "browser"] {
+            for (probe_ok, probe_age, expected_alarm) in [
+                (1, 60_000, false),
+                (
+                    1,
+                    2 * crate::shell_health::SHELL_IDLE_SUPPRESSION_BACKSTOP_MS,
+                    true,
+                ),
+                (0, 60_000, true),
+            ] {
+                let rows = vec![SourceHealthRow {
+                    last_event_ts: Some(
+                        NOW - 2 * crate::shell_health::SHELL_IDLE_SUPPRESSION_BACKSTOP_MS,
+                    ),
+                    probe_ok: Some(probe_ok),
+                    probe_last_run_ts: Some(NOW - probe_age),
+                    last_heartbeat_ts: Some(NOW - 60_000),
+                    ..blank_row(source)
+                }];
+                let by_source = by_source(&rows);
+                let capture_alarm = if source == "shell" {
+                    check_i1_shell_liveness(&by_source, NOW, false)
+                } else {
+                    check_i4_browser_roundtrip(&by_source, NOW, true)
+                };
+                let probe_alarms = check_i8_probe_freshness(&rows, NOW, false);
+                assert_eq!(
+                    capture_alarm.is_some() || !probe_alarms.is_empty(),
+                    expected_alarm,
+                    "{source}, probe_ok={probe_ok}, probe_age={probe_age}"
+                );
+            }
+        }
+    }
 
     #[test]
     fn watchdog_i1_fires_when_stale_and_probe_active() {

@@ -1969,13 +1969,44 @@ fn print_browser_staleness_explain(
     println!("     DOC:    docs/capture/operator-runbook.md");
 }
 
+struct SourceRow {
+    source: String,
+    last_event_ts: Option<i64>,
+    last_heartbeat_ts: Option<i64>,
+    last_error_msg: Option<String>,
+    probe_ok: Option<i64>,
+    probe_last_run_ts: Option<i64>,
+}
+
+impl SourceRow {
+    fn production_age_secs(&self, now_ms: i64) -> i64 {
+        self.last_event_ts
+            .map_or(i64::MAX, |ts| (now_ms - ts) / 1000)
+    }
+
+    fn browser_state(&self, now_ms: i64, firefox_running: bool) -> &'static str {
+        // The native-messaging probe bypasses Firefox. Only real visits or
+        // extension heartbeats establish that the extension is connected.
+        let event_age_secs = self.production_age_secs(now_ms);
+        browser_health::browser_capture_state_label(
+            browser_health::browser_extension_connectivity(
+                firefox_running,
+                self.last_heartbeat_ts.map(|ts| (now_ms - ts) / 1000),
+                event_age_secs,
+            ),
+            event_age_secs,
+            self.probe_ok,
+        )
+    }
+}
+
 /// Check 1: Per-source staleness via the `source_health` table (requires P0.1 migration).
 ///
 /// Returns the number of failing (hard-threshold) checks.
 fn check_source_staleness(db: &rusqlite::Connection, explain: bool) -> u32 {
     // Query source_health — if the table doesn't exist yet, print a soft notice and bail.
     let rows_result = db.prepare(
-        "SELECT source, last_event_ts, last_heartbeat_ts, last_error_msg, consecutive_failures, events_last_1h, probe_ok \
+        "SELECT source, last_event_ts, last_heartbeat_ts, last_error_msg, consecutive_failures, events_last_1h, probe_ok, probe_last_run_ts \
          FROM source_health \
          WHERE source IN ('shell', 'browser', 'agentic-session-claude', 'claude-tool', 'agentic-session-opencode', 'agentic-session-codex', 'agentic-session-cursor', 'agentic-session-pi') \
          ORDER BY source",
@@ -1996,14 +2027,6 @@ fn check_source_staleness(db: &rusqlite::Connection, explain: bool) -> u32 {
         }
     };
 
-    struct SourceRow {
-        source: String,
-        last_event_ts: Option<i64>,
-        last_heartbeat_ts: Option<i64>,
-        last_error_msg: Option<String>,
-        probe_ok: Option<i64>,
-    }
-
     let mapped = match stmt.query_map([], |row| {
         Ok(SourceRow {
             source: row.get(0)?,
@@ -2012,6 +2035,7 @@ fn check_source_staleness(db: &rusqlite::Connection, explain: bool) -> u32 {
             last_error_msg: row.get(3)?,
             // column 4 is consecutive_failures — not used here
             probe_ok: row.get(6)?,
+            probe_last_run_ts: row.get(7)?,
         })
     }) {
         Ok(m) => m,
@@ -2367,7 +2391,12 @@ fn check_source_staleness(db: &rusqlite::Connection, explain: bool) -> u32 {
         "shell",
     ];
     for source in all_sources {
-        let label = format!("{} events", source);
+        let signal_kind = if matches!(source, "shell" | "claude-tool" | "browser") {
+            "capture"
+        } else {
+            "events"
+        };
+        let label = format!("{source} {signal_kind}");
         let padded = format!("{:<29}", label);
 
         let row = rows.iter().find(|r| r.source == source);
@@ -2377,7 +2406,12 @@ fn check_source_staleness(db: &rusqlite::Connection, explain: bool) -> u32 {
             continue;
         };
 
-        let Some(last_ts) = row.last_event_ts else {
+        let Some(last_ts) = crate::latest_capture_signal(
+            source,
+            row.last_event_ts,
+            row.probe_last_run_ts,
+            row.probe_ok,
+        ) else {
             println!("[--] {}  never seen", padded);
             continue;
         };
@@ -2394,17 +2428,8 @@ fn check_source_staleness(db: &rusqlite::Connection, explain: bool) -> u32 {
             .then_some(row.last_error_msg.as_deref())
             .flatten()
             .filter(|m| !m.is_empty());
-        let browser_state = (source == "browser").then(|| {
-            browser_health::browser_capture_state_label(
-                browser_health::browser_extension_connectivity(
-                    suppression_env.firefox_running,
-                    heartbeat_age_secs,
-                    age_secs,
-                ),
-                age_secs,
-                row.probe_ok,
-            )
-        });
+        let browser_state = (source == "browser")
+            .then(|| row.browser_state(now_ms, suppression_env.firefox_running));
         match classify_source_staleness(source, age_secs, signals) {
             SourceStalenessStatus::Ok => {
                 if let Some(state) = browser_state {
@@ -2450,7 +2475,7 @@ fn check_source_staleness(db: &rusqlite::Connection, explain: bool) -> u32 {
                 if explain {
                     if source == "browser" {
                         print_browser_staleness_explain(
-                            age_secs,
+                            row.production_age_secs(now_ms),
                             heartbeat_age_secs,
                             row.probe_ok,
                             suppression_env.firefox_running,
@@ -2999,8 +3024,8 @@ struct SuppressionSignals {
     /// A real (non-probe) `shell` event has landed within
     /// `shell_health::SHELL_IDLE_WINDOW_MS`. `false` means the user simply
     /// hasn't been at the keyboard recently: the synthetic probe
-    /// (`com.hippo.probe`, every 5 min) touches `last_event_ts` on its own
-    /// cadence regardless of user presence, so this is the actual
+    /// (`com.hippo.probe`, every 5 min) verifies delivery independently
+    /// of user presence, so this is the actual
     /// idle-vs-broken disambiguator for `shell`. See `shell_health`.
     shell_activity_recent: bool,
     /// A Firefox process is currently running.
@@ -3155,8 +3180,8 @@ struct SourceStalenessThresholds {
 
 fn source_staleness_thresholds_for(source: &str) -> SourceStalenessThresholds {
     match source {
-        // These rows are advanced by 5-minute synthetic probes, so warnings
-        // must not fire between normal probe ticks.
+        // Capture liveness includes successful 5-minute ingest probes, so
+        // warnings must not fire between normal probe ticks.
         "shell" | "browser" => SourceStalenessThresholds {
             warn_secs: 420,
             fail_secs: 900,
@@ -5376,6 +5401,29 @@ replacement = "***"
         assert_eq!(fail2, 0, "fresh shell row should return fail_count=0");
     }
 
+    #[test]
+    fn test_doctor_capture_liveness_uses_successful_probe_without_recent_production() {
+        let dir = tempdir().unwrap();
+        let conn = hippo_core::storage::open_db(&dir.path().join("hippo.db")).unwrap();
+        conn.execute_batch(
+            "UPDATE source_health SET last_event_ts=(unixepoch('now')-172800)*1000,
+             probe_ok=1, probe_last_run_ts=(unixepoch('now')-60)*1000
+             WHERE source IN ('shell','claude-tool','browser')",
+        )
+        .unwrap();
+        assert_eq!(check_source_staleness(&conn, false), 0);
+
+        conn.execute_batch(
+            "UPDATE source_health SET probe_last_run_ts=(unixepoch('now')-172800)*1000
+             WHERE source IN ('shell','claude-tool','browser')",
+        )
+        .unwrap();
+        assert!(
+            check_source_staleness(&conn, false) >= 2,
+            "stale shell/tool probes must not indefinitely mask a stopped capture path"
+        );
+    }
+
     /// Regression test for issue #263: a stale shell `source_health` row
     /// with no real (non-probe) shell activity anywhere in `events` must be
     /// suppressed as ordinary idleness, not counted as a doctor failure.
@@ -6156,6 +6204,44 @@ replacement = "***"
                 probe.name
             );
         }
+    }
+
+    #[test]
+    fn browser_doctor_probe_does_not_imply_extension_connectivity_or_user_activity() {
+        let now_ms = 1_000_000;
+        let mut row = SourceRow {
+            source: "browser".into(),
+            last_event_ts: None,
+            last_heartbeat_ts: None,
+            last_error_msg: None,
+            probe_ok: Some(1),
+            probe_last_run_ts: Some(now_ms - 1_000),
+        };
+        assert_eq!(
+            crate::latest_capture_signal(
+                &row.source,
+                row.last_event_ts,
+                row.probe_last_run_ts,
+                row.probe_ok,
+            ),
+            Some(now_ms - 1_000)
+        );
+        assert_eq!(
+            row.browser_state(now_ms, true),
+            "extension never heartbeated"
+        );
+        row.last_heartbeat_ts = Some(now_ms - 600_000);
+        assert_eq!(
+            row.browser_state(now_ms, true),
+            "extension disconnected from daemon"
+        );
+        row.last_heartbeat_ts = Some(now_ms - 30_000);
+        assert_eq!(
+            row.browser_state(now_ms, true),
+            "extension connected; probe OK, user events idle"
+        );
+        row.last_event_ts = Some(now_ms - 1_000);
+        assert_eq!(row.browser_state(now_ms, true), "events flowing normally");
     }
 
     #[test]

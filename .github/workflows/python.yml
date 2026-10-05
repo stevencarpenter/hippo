@@ -1,18 +1,23 @@
 name: Python CI
 
 on:
+  workflow_call:
   pull_request:
     paths:
       - "brain/**"
+      - "scripts/check_release_version.py"
       - ".github/workflows/python.yml"
+      - ".github/workflows/release.yml"
   push:
     branches: [main]
     paths:
       - "brain/**"
+      - "scripts/check_release_version.py"
       - ".github/workflows/python.yml"
+      - ".github/workflows/release.yml"
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: python-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 permissions:
@@ -25,12 +30,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # macOS runs on merges to main (event=push) but not on every PR — macOS
-        # runners bill at ~10x Linux, and PR CI fires on every agent-loop push.
-        # Cross-platform coverage is preserved at merge; release.yml still builds
-        # macOS on tags. Revert to `[ubuntu-latest, macos-latest]` to require
-        # macOS pre-merge.
-        os: ${{ github.event_name == 'push' && fromJSON('["ubuntu-latest", "macos-latest"]') || fromJSON('["ubuntu-latest"]') }}
+        # Tag pushes and manual candidates test both platforms. PRs use Linux
+        # to limit macOS runner costs. Reusable calls retain the caller's event.
+        os: ${{ github.event_name != 'pull_request' && fromJSON('["ubuntu-latest", "macos-latest"]') || fromJSON('["ubuntu-latest"]') }}
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v6
@@ -44,7 +46,7 @@ jobs:
         run: uv python install 3.14
 
       - name: Sync dependencies
-        run: uv sync --project brain
+        run: uv sync --locked --project brain
 
       - name: Stamp version
         run: |
@@ -63,8 +65,9 @@ jobs:
                   DIRTY=".dirty"
                   CLEAN="${RAW%-dirty}"
               fi
-              COUNT=$(echo "$CLEAN" | sed 's/v[^-]*-\([0-9]*\)-.*/\1/')
-              SHA=$(echo "$CLEAN" | sed 's/v[^-]*-[0-9]*-//')
+              COUNT="${CLEAN%-*}"
+              COUNT="${COUNT##*-}"
+              SHA="${CLEAN##*-}"
               FULL_VERSION="${BASE_VERSION}-dev.${COUNT}+${SHA}${DIRTY}"
           else
               DIRTY=""
@@ -81,13 +84,13 @@ jobs:
           echo "Stamped brain version: ${FULL_VERSION}"
 
       - name: Ruff check
-        run: uv run --project brain ruff check brain/
+        run: uv run --locked --project brain ruff check brain/
 
       - name: Ruff format check
-        run: uv run --project brain ruff format --check brain/src brain/tests
+        run: uv run --locked --project brain ruff format --check brain/src brain/tests
 
       - name: Run tests
-        run: uv run --project brain pytest brain/tests -v --cov=hippo_brain --cov-report=term-missing
+        run: uv run --locked --project brain pytest brain/tests -v --cov=hippo_brain --cov-report=term-missing
 
       # TODO: Re-enable pip-audit when Python 3.14 support lands
       # (upstream ensurepip SIGABRT on macOS arm64). Dependabot covers CVEs meanwhile.

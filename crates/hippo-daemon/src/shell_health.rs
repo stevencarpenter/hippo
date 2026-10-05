@@ -3,13 +3,10 @@
 //! I-1 (shell liveness) and I-8 (probe freshness, for the `shell` source)
 //! both need to distinguish "the user simply isn't typing right now" from
 //! "the capture pipe broke while the user was active". `source_health`'s
-//! `shell.last_event_ts` cannot answer that alone: the synthetic probe
-//! (`com.hippo.probe`, every 5 min) rides the exact same insert path as a
-//! real shell command and advances `last_event_ts` on every successful run,
-//! regardless of whether a human typed anything. System sleep produces the
-//! same signature as a broken daemon on that column too: neither probes nor
-//! real events land while the machine is asleep, and once it wakes the
-//! watchdog sees the same "nothing landed recently" shape either way.
+//! `shell.last_event_ts` records production activity. Successful ingest probes
+//! are recorded separately in `probe_last_run_ts` and also establish delivery
+//! liveness. System sleep interrupts both real events and probes, so delivery
+//! age alone cannot distinguish inactivity from capture failure.
 //!
 //! The disambiguator already recorded on every event row is `probe_tag`:
 //! real shell commands never carry one, probe injections always do.

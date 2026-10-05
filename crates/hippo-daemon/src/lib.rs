@@ -70,6 +70,20 @@ pub(crate) fn is_missing_source_health_table_error(err: &rusqlite::Error) -> boo
     err.to_string().contains("no such table: source_health")
 }
 
+/// Ingest probes establish delivery liveness without counting as production activity.
+pub(crate) fn latest_capture_signal(
+    source: &str,
+    last_event_ts: Option<i64>,
+    probe_last_run_ts: Option<i64>,
+    probe_ok: Option<i64>,
+) -> Option<i64> {
+    if matches!(source, "shell" | "claude-tool" | "browser") && probe_ok == Some(1) {
+        last_event_ts.max(probe_last_run_ts)
+    } else {
+        last_event_ts
+    }
+}
+
 /// Returns `true` when the rusqlite error is SQLITE_BUSY (error code 5).
 /// Shared between watchdog (alarm-insert retry) and daemon flush_events
 /// (per-op DB_BUSY_COUNT instrumentation, post-review I-3).

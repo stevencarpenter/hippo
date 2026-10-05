@@ -19,8 +19,8 @@
 //! Three observable gauges are registered together because they all derive
 //! from the same `source_health` row read:
 //!
-//! - `hippo.daemon.source_health.lag` (ms) — `now - max(last_event_ts,
-//!   last_heartbeat_ts)`. The primary freshness signal.
+//! - `hippo.daemon.source_health.lag` (ms): age of the latest event, heartbeat,
+//!   or successful ingest probe. This measures capture liveness, not user activity.
 //! - `hippo.daemon.source_health.consecutive_failures` (count) — value of the
 //!   `consecutive_failures` column. Spikes when a source's writes start
 //!   erroring; useful as an "alarm leading indicator."
@@ -71,7 +71,7 @@ fn read_rows(db_path: &std::path::Path, now_ms: i64) -> Vec<Row> {
         return Vec::new();
     };
     let mut stmt = match conn.prepare(
-        "SELECT source, last_event_ts, last_heartbeat_ts, consecutive_failures, probe_ok
+        "SELECT source, last_event_ts, last_heartbeat_ts, consecutive_failures, probe_ok, probe_last_run_ts
            FROM source_health",
     ) {
         Ok(s) => s,
@@ -90,17 +90,11 @@ fn read_rows(db_path: &std::path::Path, now_ms: i64) -> Vec<Row> {
         let last_heartbeat_ts: Option<i64> = r.get(2)?;
         let consecutive_failures: i64 = r.get(3)?;
         let probe_ok: Option<i64> = r.get(4)?;
+        let probe_last_run_ts: Option<i64> = r.get(5)?;
 
-        // Freshness is the more-recent of the two liveness signals. A source
-        // with only heartbeats (no events yet — fresh install) still gets a
-        // bounded lag instead of NULL, which would silently drop from the
-        // dashboard.
-        let latest = match (last_event_ts, last_heartbeat_ts) {
-            (Some(a), Some(b)) => Some(a.max(b)),
-            (Some(a), None) => Some(a),
-            (None, Some(b)) => Some(b),
-            (None, None) => None,
-        };
+        let latest =
+            crate::latest_capture_signal(&source, last_event_ts, probe_last_run_ts, probe_ok)
+                .max(last_heartbeat_ts);
         let lag_ms = latest.map(|ts| (now_ms - ts).max(0) as u64);
 
         Ok(Row {
@@ -131,8 +125,8 @@ pub fn register(db_path: PathBuf) {
     let _ = meter
         .u64_observable_gauge("hippo.daemon.source_health.lag")
         .with_description(
-            "Per-source freshness: now - max(last_event_ts, last_heartbeat_ts). \
-             A line per source means OTel sees that source as captured.",
+            "Per-source capture liveness: age of the latest event, heartbeat, \
+             or successful ingest probe. Does not measure production activity.",
         )
         .with_unit("ms")
         .with_callback(move |g| {
@@ -200,7 +194,8 @@ mod tests {
                  last_event_ts INTEGER,
                  last_heartbeat_ts INTEGER,
                  consecutive_failures INTEGER NOT NULL DEFAULT 0,
-                 probe_ok INTEGER
+                 probe_ok INTEGER,
+                 probe_last_run_ts INTEGER
              );",
         )
         .unwrap();
@@ -275,6 +270,24 @@ mod tests {
         let rows = read_rows(db.path(), 1_000);
         assert_eq!(rows.len(), 1);
         assert!(rows[0].lag_ms.is_none());
+    }
+
+    #[test]
+    fn capture_lag_accepts_successful_ingest_probe_but_not_failed_probe() {
+        let db = fixture(&[FixtureRow {
+            source: "shell",
+            last_event_ts: Some(1_000),
+            last_heartbeat_ts: None,
+            consecutive_failures: 0,
+            probe_ok: Some(1),
+        }]);
+        let conn = RConn::open(db.path()).unwrap();
+        conn.execute("UPDATE source_health SET probe_last_run_ts=9500", [])
+            .unwrap();
+        assert_eq!(read_rows(db.path(), 10_000)[0].lag_ms, Some(500));
+        conn.execute("UPDATE source_health SET probe_ok=0", [])
+            .unwrap();
+        assert_eq!(read_rows(db.path(), 10_000)[0].lag_ms, Some(9_000));
     }
 
     #[test]

@@ -341,6 +341,8 @@ def test_cli_uses_deployment_recipe_and_explicit_override_cannot_resume_old_reci
     override.write_text(json.dumps({"thresholds": {"database-storage": 0.85}}))
     config.write_text(f"[classification]\nrecipe_path = {json.dumps(str(deployed))}\n")
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: fake_home))
+    monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
+    monkeypatch.delenv("XDG_DATA_HOME", raising=False)
     monkeypatch.setattr(cli, "_load_runtime_settings", _load_runtime_settings)
 
     assert cli.main(["status", "--database", str(database)]) == 0

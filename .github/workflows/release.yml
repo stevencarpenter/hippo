@@ -1,14 +1,21 @@
 name: Release
 
 on:
+  workflow_dispatch:
+    inputs:
+      candidate_tag:
+        description: 'Candidate version matching package manifests and lockfiles (vX.Y.Z)'
+        required: true
+        type: string
   push:
     tags:
       - 'v*.*.*'
 
 permissions:
-  contents: write
+  contents: read
 
 env:
+  RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.candidate_tag || github.ref_name }}
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: 0
   CARGO_NET_RETRY: 10
@@ -16,8 +23,33 @@ env:
   RUSTUP_MAX_RETRIES: 10
 
 jobs:
+  validate-version:
+    name: Validate release version
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.14'
+      - name: Match tag to manifests and lockfiles
+        run: python scripts/check_release_version.py "$RELEASE_TAG"
+
+  rust:
+    needs: validate-version
+    uses: ./.github/workflows/rust.yml
+
+  python:
+    needs: validate-version
+    uses: ./.github/workflows/python.yml
+
+  installer:
+    needs: validate-version
+    uses: ./.github/workflows/installer.yml
+
   build-daemon:
     name: Build Daemon Binary
+    needs: validate-version
     runs-on: macos-latest
     timeout-minutes: 30
     outputs:
@@ -40,7 +72,7 @@ jobs:
       - name: Extract version from tag
         id: version
         run: |
-          VERSION="${GITHUB_REF_NAME#v}"
+          VERSION="${RELEASE_TAG#v}"
           echo "version=${VERSION}" >> "${GITHUB_OUTPUT}"
           echo "Version: ${VERSION}"
 
@@ -79,6 +111,7 @@ jobs:
 
   build-brain:
     name: Build Brain Package
+    needs: validate-version
     runs-on: macos-latest
     timeout-minutes: 20
     outputs:
@@ -95,7 +128,7 @@ jobs:
       - name: Extract version from tag
         id: version
         run: |
-          VERSION="${GITHUB_REF_NAME#v}"
+          VERSION="${RELEASE_TAG#v}"
           echo "version=${VERSION}" >> "${GITHUB_OUTPUT}"
           echo "Version: ${VERSION}"
 
@@ -157,13 +190,19 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-  release:
-    name: Create Release
-    needs: [build-daemon, build-brain]
+  prepare-release:
+    name: Prepare Release Bundle
+    needs: [validate-version, rust, python, installer, build-daemon, build-brain]
     runs-on: macos-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v6
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.14'
+
+      - uses: astral-sh/setup-uv@v7
 
       - name: Download all artifacts
         uses: actions/download-artifact@v8
@@ -207,7 +246,7 @@ jobs:
       - name: Extract release notes
         id: notes
         run: |
-          VERSION="${GITHUB_REF_NAME#v}"
+          VERSION="${RELEASE_TAG#v}"
           cat > release-notes.md <<EOF
           # Hippo ${VERSION}
 
@@ -216,7 +255,7 @@ jobs:
           ### Quick Install (macOS)
 
           \`\`\`bash
-          curl -fsSL https://github.com/stevencarpenter/hippo/releases/download/${GITHUB_REF_NAME}/install.sh | bash
+          curl -fsSL https://github.com/stevencarpenter/hippo/releases/download/${RELEASE_TAG}/install.sh | bash
           \`\`\`
 
           ### Manual Installation
@@ -247,6 +286,50 @@ jobs:
 
           echo "Release notes prepared"
 
+      - name: Archive release bundle
+        run: tar -czf release-bundle.tar.gz release-files release-notes.md
+
+      - name: Smoke test the packaged installation
+        run: python scripts/smoke_release_bundle.py release-bundle.tar.gz --output-dir "$RUNNER_TEMP/hippo-release-smoke"
+
+      - name: Upload installation smoke evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-smoke-${{ env.RELEASE_TAG }}
+          path: |
+            ${{ runner.temp }}/hippo-release-smoke/results.json
+            ${{ runner.temp }}/hippo-release-smoke/*.log
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - name: Upload release bundle
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-bundle-${{ env.RELEASE_TAG }}
+          path: release-bundle.tar.gz
+          if-no-files-found: error
+          retention-days: 7
+
+  release:
+    name: Create Release
+    needs: prepare-release
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
+    permissions:
+      contents: write
+    runs-on: macos-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Download verified release bundle
+        uses: actions/download-artifact@v8
+        with:
+          name: release-bundle-${{ env.RELEASE_TAG }}
+
+      - name: Extract release bundle
+        run: tar -xzf release-bundle.tar.gz
+
       - name: Create or update GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -271,14 +354,8 @@ jobs:
       - name: Release summary
         run: |
           {
-            echo "### Release ${{ github.ref_name }} Published! :rocket:"
-            echo ""
-            echo "#### Artifacts"
-            echo "- Daemon: \`${{ needs.build-daemon.outputs.artifact_name }}\`"
-            echo "- Brain: \`${{ needs.build-brain.outputs.artifact_name }}\`"
-            echo ""
-            echo "#### Quick Install"
+            echo "### Release ${RELEASE_TAG} published"
             echo '```bash'
-            echo "curl -fsSL https://github.com/stevencarpenter/hippo/releases/download/${{ github.ref_name }}/install.sh | bash"
+            echo "curl -fsSL https://github.com/stevencarpenter/hippo/releases/download/${RELEASE_TAG}/install.sh | bash"
             echo '```'
           } >> "${GITHUB_STEP_SUMMARY}"

@@ -47,6 +47,8 @@ async def test_rag_dispatch_preserves_inputs_and_capture_when_reranking_disabled
 
 def test_http_and_mcp_read_identical_query_settings(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
+    monkeypatch.delenv("XDG_DATA_HOME", raising=False)
     path = tmp_path / ".config/hippo/config.toml"
     path.parent.mkdir(parents=True)
     path.write_text(

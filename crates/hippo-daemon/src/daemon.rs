@@ -312,7 +312,7 @@ pub async fn flush_events(state: &Arc<DaemonState>) -> usize {
     let db = state.write_db.lock().await;
     let mut session_map = state.session_map.lock().await;
 
-    let mut source_latest_ts: HashMap<&'static str, i64> = HashMap::new();
+    let mut source_latest_ts: HashMap<&'static str, Option<i64>> = HashMap::new();
     let mut source_counts: HashMap<&'static str, i64> = HashMap::new();
     let mut source_errors: HashMap<&'static str, String> = HashMap::new();
 
@@ -390,11 +390,11 @@ pub async fn flush_events(state: &Arc<DaemonState>) -> usize {
                     envelope.probe_tag.as_deref(),
                 ) {
                     Ok(id) if id >= 0 => {
-                        let entry = source_latest_ts.entry(source).or_insert(0);
-                        if event_ts > *entry {
-                            *entry = event_ts;
+                        let latest = source_latest_ts.entry(source).or_default();
+                        if envelope.probe_tag.is_none() {
+                            *latest = (*latest).max(Some(event_ts));
+                            *source_counts.entry(source).or_insert(0) += 1;
                         }
-                        *source_counts.entry(source).or_insert(0) += 1;
                     }
                     Ok(_) => {} // duplicate envelope_id, already stored
                     Err(e) => {
@@ -436,11 +436,11 @@ pub async fn flush_events(state: &Arc<DaemonState>) -> usize {
                     envelope.probe_tag.as_deref(),
                 ) {
                     Ok(id) if id >= 0 => {
-                        let entry = source_latest_ts.entry("browser").or_insert(0);
-                        if event_ts > *entry {
-                            *entry = event_ts;
+                        let latest = source_latest_ts.entry("browser").or_default();
+                        if envelope.probe_tag.is_none() {
+                            *latest = (*latest).max(Some(event_ts));
+                            *source_counts.entry("browser").or_insert(0) += 1;
                         }
-                        *source_counts.entry("browser").or_insert(0) += 1;
                     }
                     Ok(_) => {} // duplicate envelope_id
                     Err(e) => {
@@ -469,7 +469,8 @@ pub async fn flush_events(state: &Arc<DaemonState>) -> usize {
         }
     }
 
-    // Batch-upsert source_health SUCCESS paths for any source with persisted events.
+    // Production activity excludes probes, whose results have separate health columns.
+    // Probe-only success still clears write failures and stamps liveness.
     // Run independently of the error path so that mixed-outcome batches (some inserts
     // succeeded, one failed) still advance last_event_ts and rolling counters.  The error
     // path runs afterwards and increments consecutive_failures, netting to 1 for a partial
@@ -478,7 +479,8 @@ pub async fn flush_events(state: &Arc<DaemonState>) -> usize {
         let count_val = source_counts.get(source).copied().unwrap_or(0);
         match db.execute(
             "UPDATE source_health
-             SET last_event_ts        = MAX(COALESCE(last_event_ts, 0), ?1),
+             SET last_event_ts        = CASE WHEN ?1 IS NULL THEN last_event_ts
+                                            ELSE MAX(COALESCE(last_event_ts, 0), ?1) END,
                  last_success_ts      = ?2,
                  events_last_1h       = events_last_1h  + ?3,
                  events_last_24h      = events_last_24h + ?3,
@@ -580,16 +582,16 @@ fn read_rolling_counts(db: &rusqlite::Connection) -> rusqlite::Result<RollingCou
     let read = |sql: &str| -> rusqlite::Result<i64> { db.query_row(sql, [], |r| r.get(0)) };
     Ok(RollingCounts {
         shell_1h: read(
-            "SELECT COUNT(*) FROM events WHERE source_kind='shell' AND timestamp>(unixepoch('now')-3600)*1000",
+            "SELECT COUNT(*) FROM events WHERE source_kind='shell' AND probe_tag IS NULL AND timestamp>(unixepoch('now')-3600)*1000",
         )?,
         shell_24h: read(
-            "SELECT COUNT(*) FROM events WHERE source_kind='shell' AND timestamp>(unixepoch('now')-86400)*1000",
+            "SELECT COUNT(*) FROM events WHERE source_kind='shell' AND probe_tag IS NULL AND timestamp>(unixepoch('now')-86400)*1000",
         )?,
         tool_1h: read(
-            "SELECT COUNT(*) FROM events WHERE source_kind='claude-tool' AND timestamp>(unixepoch('now')-3600)*1000",
+            "SELECT COUNT(*) FROM events WHERE source_kind='claude-tool' AND probe_tag IS NULL AND timestamp>(unixepoch('now')-3600)*1000",
         )?,
         tool_24h: read(
-            "SELECT COUNT(*) FROM events WHERE source_kind='claude-tool' AND timestamp>(unixepoch('now')-86400)*1000",
+            "SELECT COUNT(*) FROM events WHERE source_kind='claude-tool' AND probe_tag IS NULL AND timestamp>(unixepoch('now')-86400)*1000",
         )?,
         session_1h: read(
             "SELECT COUNT(*) FROM agentic_sessions WHERE harness='claude-code' AND probe_tag IS NULL AND start_time>(unixepoch('now')-3600)*1000",
@@ -598,12 +600,35 @@ fn read_rolling_counts(db: &rusqlite::Connection) -> rusqlite::Result<RollingCou
             "SELECT COUNT(*) FROM agentic_sessions WHERE harness='claude-code' AND probe_tag IS NULL AND start_time>(unixepoch('now')-86400)*1000",
         )?,
         browser_1h: read(
-            "SELECT COUNT(*) FROM browser_events WHERE timestamp>(unixepoch('now')-3600)*1000",
+            "SELECT COUNT(*) FROM browser_events WHERE probe_tag IS NULL AND timestamp>(unixepoch('now')-3600)*1000",
         )?,
         browser_24h: read(
-            "SELECT COUNT(*) FROM browser_events WHERE timestamp>(unixepoch('now')-86400)*1000",
+            "SELECT COUNT(*) FROM browser_events WHERE probe_tag IS NULL AND timestamp>(unixepoch('now')-86400)*1000",
         )?,
     })
+}
+
+fn write_rolling_counts(
+    db: &rusqlite::Connection,
+    source: &str,
+    count_1h: i64,
+    count_24h: i64,
+) -> rusqlite::Result<usize> {
+    // Repair timestamps recorded by earlier versions that included probe traffic.
+    // Read the latest timestamp under the write lock so concurrent flushes cannot
+    // be overwritten by an older snapshot from read_rolling_counts.
+    db.execute(
+        "UPDATE source_health SET events_last_1h=?1, events_last_24h=?2,
+         last_event_ts=CASE
+             WHEN source IN ('shell','claude-tool') THEN
+                 (SELECT MAX(timestamp) FROM events
+                  WHERE source_kind=source_health.source AND probe_tag IS NULL)
+             WHEN source='browser' THEN
+                 (SELECT MAX(timestamp) FROM browser_events WHERE probe_tag IS NULL)
+             ELSE last_event_ts END,
+         updated_at=unixepoch('now')*1000 WHERE source=?3",
+        rusqlite::params![count_1h, count_24h, source],
+    )
 }
 
 async fn recompute_rolling_counts(state: Arc<DaemonState>) {
@@ -633,11 +658,7 @@ async fn recompute_rolling_counts(state: Arc<DaemonState>) {
             ),
             ("browser", counts.browser_1h, counts.browser_24h),
         ] {
-            match db.execute(
-                "UPDATE source_health SET events_last_1h=?1, events_last_24h=?2, \
-                 updated_at=unixepoch('now')*1000 WHERE source=?3",
-                rusqlite::params![c1h, c24h, source],
-            ) {
+            match write_rolling_counts(&db, source, c1h, c24h) {
                 Err(e) if !crate::is_missing_source_health_table_error(&e) => {
                     warn!("source_health rolling-count update failed for {source}: {e}");
                 }
@@ -1181,6 +1202,124 @@ mod tests {
 
         assert_eq!(counts.session_1h, 1, "1h count must exclude probe rows");
         assert_eq!(counts.session_24h, 1, "24h count must exclude probe rows");
+    }
+
+    #[tokio::test]
+    async fn test_probes_preserve_liveness_without_counting_as_production_activity() {
+        let state = test_state_with_config(test_config());
+        let now = chrono::Utc::now();
+        for source in ["shell", "claude-tool", "browser"] {
+            let mut real = test_envelope("echo real activity");
+            real.timestamp = now - chrono::Duration::seconds(10);
+            if source == "claude-tool" {
+                if let EventPayload::Shell(event) = &mut real.payload {
+                    event.tool_name = Some("Bash".to_string());
+                }
+            } else if source == "browser" {
+                real.payload = EventPayload::Browser(Box::new(BrowserEvent {
+                    url: "https://example.com".to_string(),
+                    title: "test".to_string(),
+                    domain: "example.com".to_string(),
+                    dwell_ms: 1,
+                    scroll_depth: 0.0,
+                    extracted_text: None,
+                    search_query: None,
+                    referrer: None,
+                    content_hash: None,
+                }));
+            }
+            let mut probe = real.clone();
+            probe.envelope_id = Uuid::new_v4();
+            probe.timestamp = now;
+            probe.probe_tag = Some("test-probe".to_string());
+
+            {
+                let db = state.write_db.lock().await;
+                db.execute(
+                    "UPDATE source_health SET consecutive_failures=3, probe_ok=1,
+                     probe_last_run_ts=?1 WHERE source=?2",
+                    rusqlite::params![now.timestamp_millis(), source],
+                )
+                .unwrap();
+            }
+            state.event_buffer.lock().await.push(probe.clone());
+            assert_eq!(flush_events(&state).await, 1);
+            {
+                let db = state.write_db.lock().await;
+                let row: (Option<i64>, i64, i64, i64, bool) = db
+                    .query_row(
+                        "SELECT last_event_ts,events_last_1h,events_last_24h,consecutive_failures,
+                     last_success_ts IS NOT NULL FROM source_health WHERE source=?1",
+                        [source],
+                        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+                    )
+                    .unwrap();
+                assert_eq!(row, (None, 0, 0, 0, true), "probe-only {source}");
+                db.execute(
+                    "UPDATE source_health SET last_event_ts=?1 WHERE source=?2",
+                    rusqlite::params![now.timestamp_millis(), source],
+                )
+                .unwrap();
+                write_rolling_counts(&db, source, 0, 0).unwrap();
+                let repaired: Option<i64> = db
+                    .query_row(
+                        "SELECT last_event_ts FROM source_health WHERE source=?1",
+                        [source],
+                        |r| r.get(0),
+                    )
+                    .unwrap();
+                assert_eq!(
+                    repaired, None,
+                    "remove historical probe-only timestamp for {source}"
+                );
+            }
+
+            probe.envelope_id = Uuid::new_v4();
+            state
+                .event_buffer
+                .lock()
+                .await
+                .extend([real.clone(), probe]);
+            assert_eq!(flush_events(&state).await, 2);
+            let db = state.write_db.lock().await;
+            let row: (Option<i64>, i64, i64, i64, i64) = db
+                .query_row(
+                    "SELECT last_event_ts,events_last_1h,events_last_24h,probe_ok,
+                 probe_last_run_ts FROM source_health WHERE source=?1",
+                    [source],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+                )
+                .unwrap();
+            assert_eq!(
+                row,
+                (
+                    Some(real.timestamp.timestamp_millis()),
+                    1,
+                    1,
+                    1,
+                    now.timestamp_millis()
+                )
+            );
+            db.execute(
+                "UPDATE source_health SET last_event_ts=?1 WHERE source=?2",
+                rusqlite::params![now.timestamp_millis(), source],
+            )
+            .unwrap();
+            write_rolling_counts(&db, source, 1, 1).unwrap();
+            let repaired: Option<i64> = db
+                .query_row(
+                    "SELECT last_event_ts FROM source_health WHERE source=?1",
+                    [source],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(repaired, Some(real.timestamp.timestamp_millis()));
+        }
+        let db = state.write_db.lock().await;
+        let counts = read_rolling_counts(&db).unwrap();
+        assert_eq!((counts.shell_1h, counts.shell_24h), (1, 1));
+        assert_eq!((counts.tool_1h, counts.tool_24h), (1, 1));
+        assert_eq!((counts.browser_1h, counts.browser_24h), (1, 1));
     }
 
     #[tokio::test]

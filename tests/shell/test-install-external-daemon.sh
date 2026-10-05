@@ -1,0 +1,92 @@
+#!/usr/bin/env bash
+# Run: bash tests/shell/test-install-external-daemon.sh
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "$0")/../.." && pwd)"
+tmp="$(mktemp -d)"
+trap 'rm -rf "$tmp"' EXIT
+sed '$d' "$repo_root/scripts/install.sh" > "$tmp/install-helpers.sh"
+
+for scenario in path-only local-only local-and-path missing config-fails xdg-config; do
+    fixture="$tmp/$scenario home"
+    mkdir -p "$fixture/.local/bin" "$fixture/external-bin"
+    cat > "$fixture/fake-hippo" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$HIPPO_TEST_INVOCATIONS"
+printf '%s\n' "$0" >> "$HIPPO_TEST_BINARIES"
+if [[ "$HIPPO_TEST_SCENARIO" == config-fails && "$*" == 'config init' ]]; then
+    printf 'injected config initialization failure\n' >&2
+    exit 23
+fi
+EOF
+    chmod +x "$fixture/fake-hippo"
+    case "$scenario" in
+        path-only|local-and-path|config-fails|xdg-config) cp "$fixture/fake-hippo" "$fixture/external-bin/hippo" ;;
+    esac
+    case "$scenario" in
+        local-only|local-and-path) cp "$fixture/fake-hippo" "$fixture/.local/bin/hippo" ;;
+    esac
+    if [[ "$scenario" == xdg-config ]]; then
+        mkdir -p "$fixture/config-root/hippo"
+        printf '[brain]\nport = 18234\n' > "$fixture/config-root/hippo/config.toml"
+    fi
+
+    if env HOME="$fixture" PATH="$fixture/external-bin:/usr/bin:/bin" \
+        XDG_STATE_HOME="$fixture/state" HIPPO_INSTALL_DAEMON=0 HIPPO_INSTALL_SKILLS=0 \
+        XDG_CONFIG_HOME="$fixture/config-root" HIPPO_TEST_HEALTH="$fixture/health" \
+        HIPPO_TEST_INVOCATIONS="$fixture/invocations" HIPPO_TEST_BINARIES="$fixture/binaries" \
+        HIPPO_TEST_SCENARIO="$scenario" \
+        bash -c '
+            set -euo pipefail
+            install_helpers="$1"
+            set --
+            source "$install_helpers"
+            detect_platform() { printf "arm64\n"; }
+            get_latest_release() { printf "v1.2.3\n"; }
+            download_file() { :; }
+            install_brain() { :; }
+            check_dependencies() { :; }
+            curl() { printf "%s\n" "$*" >> "$HIPPO_TEST_HEALTH"; }
+            main
+        ' _ "$tmp/install-helpers.sh" > "$fixture/output" 2>&1; then
+        [[ "$scenario" != missing && "$scenario" != config-fails ]]
+        if [[ "$scenario" == xdg-config ]]; then
+            : > "$fixture/expected-invocations"
+            rg -q 'http://127.0.0.1:18234/health$' "$fixture/health"
+        else
+            printf 'config init\n' > "$fixture/expected-invocations"
+        fi
+        cat >> "$fixture/expected-invocations" <<EOF
+daemon install --force --brain-dir $fixture/.local/share/hippo-brain
+daemon start
+status
+doctor
+EOF
+        diff -u "$fixture/expected-invocations" "$fixture/invocations"
+        expected_binary="$fixture/.local/bin/hippo"
+        if [[ "$scenario" == path-only || "$scenario" == xdg-config ]]; then
+            expected_binary="$fixture/external-bin/hippo"
+        fi
+        while IFS= read -r _; do
+            printf '%s\n' "$expected_binary"
+        done < "$fixture/expected-invocations" > "$fixture/expected-binaries"
+        diff -u "$fixture/expected-binaries" "$fixture/binaries"
+    else
+        status=$?
+        if [[ "$scenario" != missing && "$scenario" != config-fails ]]; then
+            cat "$fixture/output" >&2
+            exit 1
+        fi
+        test "$status" -eq 1
+        if [[ "$scenario" == missing ]]; then
+            test ! -e "$fixture/invocations"
+            rg -q 'HIPPO_INSTALL_DAEMON=0 but no hippo binary is on PATH' "$fixture/output"
+        else
+            [[ "$(cat "$fixture/invocations")" == 'config init' ]]
+            rg -q 'Failed to initialize configuration at ' "$fixture/output"
+            rg -q 'injected config initialization failure' "$fixture/output"
+        fi
+    fi
+done
+
+echo 'PASS: external daemons configure, install, start and verify through the selected binary'

@@ -309,12 +309,21 @@ def _collect_classification_depths(conn: sqlite3.Connection) -> list[tuple[str, 
 
 
 def _query_priority(handler):
-    """Prevent background claims while any HTTP knowledge query is running."""
+    """Validate query bodies and prevent background claims while queries run."""
 
     @wraps(handler)
     async def wrapped(self, request):
         from hippo_brain.classification import query_activity
 
+        if self._paused:
+            return JSONResponse({"error": "brain is paused"}, status_code=503)
+        try:
+            body = await request.json()
+        except ValueError:
+            return JSONResponse({"error": "request body must be a JSON object"}, status_code=400)
+        if not isinstance(body, dict):
+            return JSONResponse({"error": "request body must be a JSON object"}, status_code=400)
+        # Pause may have completed while the request body was arriving.
         if self._paused:
             return JSONResponse({"error": "brain is paused"}, status_code=503)
         self._query_inflight += 1

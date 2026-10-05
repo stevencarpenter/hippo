@@ -1162,21 +1162,49 @@ async fn main() -> Result<()> {
             }
         }
         Commands::Config { action } => match action {
-            ConfigAction::Edit => {
-                let editor = std::env::var("EDITOR").unwrap_or_else(|_| "vi".to_string());
+            ConfigAction::Init | ConfigAction::Edit => {
+                use std::io::Write;
+                use std::os::unix::fs::OpenOptionsExt;
+
                 let config_path = config.storage.config_dir.join("config.toml");
-                std::fs::create_dir_all(&config.storage.config_dir)?;
-                if !config_path.exists() {
-                    std::fs::write(
-                        &config_path,
-                        include_str!("../../../config/config.default.toml"),
-                    )?;
+                hippo_core::storage::ensure_private_dir(&config.storage.config_dir).with_context(
+                    || {
+                        format!(
+                            "failed to create config directory {}",
+                            config.storage.config_dir.display()
+                        )
+                    },
+                )?;
+                match std::fs::OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .mode(0o600)
+                    .open(&config_path)
+                {
+                    Ok(mut file) => file
+                        .write_all(include_bytes!("../../../config/config.default.toml"))
+                        .with_context(|| {
+                            format!("failed to write config at {}", config_path.display())
+                        })?,
+                    Err(error)
+                        if error.kind() == std::io::ErrorKind::AlreadyExists
+                            && config_path.is_file() => {}
+                    Err(error) => {
+                        return Err(error).with_context(|| {
+                            format!("failed to create config at {}", config_path.display())
+                        });
+                    }
                 }
-                let status = std::process::Command::new(editor)
-                    .arg(&config_path)
-                    .status()?;
-                if !status.success() {
-                    eprintln!("Editor exited with non-zero status");
+                if matches!(action, ConfigAction::Edit) {
+                    let editor = std::env::var("EDITOR").unwrap_or_else(|_| "vi".to_string());
+                    let status = std::process::Command::new(editor)
+                        .arg(&config_path)
+                        .status()?;
+                    if !status.success() {
+                        eprintln!("Editor exited with non-zero status");
+                    }
+                } else {
+                    println!("Config ready: {}", config_path.display());
                 }
             }
             ConfigAction::Set { key, value } => {

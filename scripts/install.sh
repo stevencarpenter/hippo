@@ -46,7 +46,7 @@ INSTALL LOCATIONS:
     ~/.claude/skills/                           Claude Code skills (copies)
     ~/.local/state/hippo/install-receipts/      per-component install receipts
                                                 (respects XDG_STATE_HOME)
-    ~/.config/hippo/                            config
+    ~/.config/hippo/                            config (respects XDG_CONFIG_HOME)
     ~/.local/share/hippo/                       runtime data (SQLite, logs)
 
 REQUIREMENTS:
@@ -73,7 +73,7 @@ REPO="stevencarpenter/hippo"
 INSTALL_DIR="${HOME}/.local"
 BIN_DIR="${INSTALL_DIR}/bin"
 BRAIN_DIR="${INSTALL_DIR}/share/hippo-brain"
-CONFIG_DIR="${HOME}/.config/hippo"
+CONFIG_DIR="${XDG_CONFIG_HOME:-${HOME}/.config}/hippo"
 DATA_DIR="${HOME}/.local/share/hippo"
 # Receipts live under XDG_STATE_HOME (not DATA_DIR) so a user wipe of Hippo's
 # runtime data doesn't desynchronize them from the actual installed binaries.
@@ -543,6 +543,7 @@ install_skills() {
 
 # Setup configuration
 setup_config() {
+    local hippo_binary="$1"
     log_info "Setting up configuration..."
 
     mkdir -p "${CONFIG_DIR}"
@@ -550,7 +551,10 @@ setup_config() {
 
     if [ ! -f "${CONFIG_DIR}/config.toml" ]; then
         log_info "Creating default config.toml..."
-        "${BIN_DIR}/hippo" config init 2>/dev/null || true
+        if ! "${hippo_binary}" config init; then
+            log_error "Failed to initialize configuration at ${CONFIG_DIR}/config.toml"
+            return 1
+        fi
     fi
 
     log_success "Configuration setup complete"
@@ -558,17 +562,18 @@ setup_config() {
 
 # Install LaunchAgents
 install_services() {
+    local hippo_binary="$1"
     log_info "Installing LaunchAgents..."
 
-    if [ -x "${BIN_DIR}/hippo" ]; then
-        "${BIN_DIR}/hippo" daemon install --force --brain-dir "${BRAIN_DIR}" || {
+    if [ -x "${hippo_binary}" ]; then
+        "${hippo_binary}" daemon install --force --brain-dir "${BRAIN_DIR}" || {
             log_warning "Failed to install LaunchAgents automatically"
             log_info "You can install them manually later with: hippo daemon install --brain-dir '${BRAIN_DIR}'"
         }
         # daemon install only restarts services that were already running (upgrade path).
         # For fresh installs the plists are written but services aren't bootstrapped yet.
         # daemon start is idempotent: skips services that are already loaded.
-        "${BIN_DIR}/hippo" daemon start || true
+        "${hippo_binary}" daemon start || true
     fi
 
     log_success "Services installed"
@@ -580,10 +585,11 @@ install_services() {
 # 10–30s to import torch and bind its HTTP port, so we poll until the
 # daemon's socket is live before firing the full doctor run.
 verify_installation() {
+    local hippo_binary="$1"
     log_info "Verifying installation (this can take ~30s on a cold start)..."
 
-    if [ ! -x "${BIN_DIR}/hippo" ]; then
-        log_warning "Skipping verification — daemon binary not executable at ${BIN_DIR}/hippo"
+    if [ ! -x "${hippo_binary}" ]; then
+        log_warning "Skipping verification — daemon binary not executable at ${hippo_binary}"
         return 0
     fi
 
@@ -618,7 +624,7 @@ verify_installation() {
     local brain_up=0
     while [ $((SECONDS - started_at)) -lt "${max_wait}" ]; do
         if [ "${daemon_up}" -eq 0 ] \
-            && "${BIN_DIR}/hippo" status >/dev/null 2>&1; then
+            && "${hippo_binary}" status >/dev/null 2>&1; then
             daemon_up=1
         fi
         if [ "${brain_up}" -eq 0 ] \
@@ -640,7 +646,7 @@ verify_installation() {
     fi
 
     echo ""
-    if "${BIN_DIR}/hippo" doctor; then
+    if "${hippo_binary}" doctor; then
         log_success "Hippo doctor: all checks passed"
         return 0
     fi
@@ -794,6 +800,12 @@ main() {
     install_components "${arch}" "${tag}" "${temp_dir}/SHA256SUMS.txt" "${temp_dir}"
     echo ""
 
+    # A package-managed daemon may only be on PATH when installation is skipped.
+    local hippo_binary="${BIN_DIR}/hippo"
+    if [ ! -x "${hippo_binary}" ]; then
+        hippo_binary="$(command -v hippo)"
+    fi
+
     install_skills
     echo ""
 
@@ -801,16 +813,16 @@ main() {
     echo ""
 
     # Setup
-    setup_config
+    setup_config "${hippo_binary}"
     echo ""
 
-    install_services
+    install_services "${hippo_binary}"
     echo ""
 
     check_dependencies
     echo ""
 
-    verify_installation
+    verify_installation "${hippo_binary}"
     echo ""
 
     # Success message

@@ -229,6 +229,27 @@ def test_health_ok_when_embed_models_match(tmp_db, request: pytest.FixtureReques
 # ---- /query limit validation ----
 
 
+@pytest.mark.parametrize(
+    "endpoint", ["/query", "/ask", "/agent/query", "/memory/query", "/memory/history"]
+)
+@pytest.mark.parametrize("body", [b"", b"{", b"\xff", b"[]", b"null", b'"text"', b"1", b"true"])
+def test_query_endpoints_reject_invalid_json_objects(tmp_db, endpoint: str, body: bytes) -> None:
+    _, db_path = tmp_db
+    server = _make_server(str(db_path))
+    try:
+        app = Starlette(routes=server.get_routes())
+        with TestClient(app, raise_server_exceptions=False) as client:
+            response = client.post(
+                endpoint, content=body, headers={"content-type": "application/json"}
+            )
+
+            assert response.status_code == 400
+            assert response.json() == {"error": "request body must be a JSON object"}
+            assert client.get("/health").status_code == 200
+    finally:
+        server.close()
+
+
 def test_query_rejects_zero_limit(tmp_db):
     """POST /query with limit=0 returns 400 — otherwise SQL LIMIT 0 returns
     nothing silently and callers can't tell why."""
@@ -622,6 +643,35 @@ def test_paused_queries_rejected_until_resume(tmp_db, endpoint):
             assert client.post("/control/resume").status_code == 200
             assert client.post(endpoint, json={}).status_code == initial_status
     finally:
+        server.close()
+
+
+@pytest.mark.asyncio
+async def test_pause_during_query_body_read_prevents_inference(tmp_db, monkeypatch) -> None:
+    _, db_path = tmp_db
+    server = _make_server(str(db_path), embedding_model="test-embed")
+    server._vector_table = object()
+    server.client.embed = AsyncMock(return_value=[[0.0]])
+    monkeypatch.setattr("hippo_brain.server.search_similar", lambda *args, **kwargs: [])
+    reading = asyncio.Event()
+    release = asyncio.Event()
+
+    async def read_body() -> dict[str, str]:
+        reading.set()
+        await release.wait()
+        return {"text": "query"}
+
+    request = MagicMock(json=read_body)
+    task = asyncio.create_task(server.query(request))
+    try:
+        await asyncio.wait_for(reading.wait(), 1)
+        assert b'"in_flight_finished":true' in (await server.control_pause(None)).body
+        release.set()
+        assert (await asyncio.wait_for(task, 1)).status_code == 503
+        server.client.embed.assert_not_awaited()
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
         server.close()
 
 
