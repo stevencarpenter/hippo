@@ -7,10 +7,9 @@
 Hippo's retrieval pipeline (sqlite-vec + FTS5 hybrid since v0.20) needs quantitative answers to:
 
 1. Does retrieval return the right nodes for a question? (Recall@K, MRR, NDCG)
-2. Are results diverse across sources, or do they collapse onto one Claude session? (source diversity, near-duplicate density)
+2. Are results diverse across capture source types? (source diversity)
 3. Do `ask()` answers stay grounded in sources, or hallucinate? (LLM-judge groundedness)
-4. Does the corpus have structural cohesion — do nodes from the same project cluster in embedding space? (embedding cohesion)
-5. For an individual query, does the top-K evidence look strong or weak? (coverage gap score)
+4. For an individual query, does the top-K evidence look strong or weak? (coverage gap score)
 
 `hippo-eval` runs a labeled Q/A set against the live corpus and reports all of the above.
 
@@ -25,7 +24,7 @@ uv run --project brain hippo-eval --subset q01,q02       # subset of question id
 uv run --project brain hippo-eval --no-synthesis         # skip ask() synthesis
 uv run --project brain hippo-eval --no-judge             # skip LM-judge groundedness
 uv run --project brain hippo-eval --questions <path>     # override questions file
-uv run --project brain hippo-eval --out <dir>            # write scorecard JSON
+uv run --project brain hippo-eval --out scorecard.md    # write Markdown scorecard
 ```
 
 All flags (verbatim, source: `_parse_args` in `evaluation.py`):
@@ -35,12 +34,12 @@ All flags (verbatim, source: `_parse_args` in `evaluation.py`):
 | `--questions` | [Default question set](#question-set) | Path to an explicit labeled question set; overrides the default. |
 | `--mode` | `hybrid` | One of `hybrid`, `semantic`, `lexical`, `recent`. |
 | `--limit` | `10` | Top-K size for retrieval. |
-| `--out` | `""` | When set, writes the full scorecard JSON to this directory. |
+| `--out` | `""` | Write the Markdown scorecard to this file; its parent directory must exist. Otherwise print to stdout. |
 | `--subset` | `""` | Comma-separated question ids; empty = all. |
 | `--no-synthesis` | off | Skip `ask()` synthesis (retrieval-only). |
 | `--no-judge` | off | Skip LM-judge groundedness scoring. |
 
-There is no `run` / `baseline` / `compare` subcommand surface; "compare two runs" is an external diff over the JSON scorecards in `--out` directories.
+There is no `run` / `baseline` / `compare` subcommand surface. To compare two runs, write separate Markdown scorecard files with `--out` and diff them externally.
 
 ## Question set
 
@@ -73,13 +72,13 @@ Field meanings (from the file's own `schema` block):
 | `acceptable_answer_keywords` | At least one MUST appear in a good answer (drives the `keyword_hit` boolean). |
 | `source_bias` | `shell`, `claude`, `browser`, or `mixed`. |
 
-The file's `schema` block also documents a `coverage_gap_reason` field for entries where `relevant_knowledge_node_uuids` is empty. As of v0.20, that field is informational only — `load_questions` and the `Question` dataclass in `evaluation.py` do not load it, and no metric consumes it. Treat it as a human-readable labeling note until the harness reads it explicitly.
+The file's `schema` block also documents a `coverage_gap_reason` field for entries where `relevant_knowledge_node_uuids` is empty. `load_questions` loads this labeling annotation into `Question`; the Markdown scorecard summarizes nonempty annotations as reason counts. The annotation does not determine the numeric coverage-gap score.
 
 Targets 30–50 questions drawn from hippo's own development history. Adding a question:
 
 1. Pick a real recent activity that produced retrievable nodes.
 2. Write the question as a user would ask it.
-3. Run `hippo ask` (or `hippo query --raw <text>`) to find the relevant node UUIDs.
+3. With the brain server running, use `uv run --project brain hippo-brain-api query "<text>" --mode lexical`; inspect `nodes[].uuid` and label the relevant nodes.
 4. Append to `eval_questions.json` under `questions`.
 5. Run `uv run --project brain hippo-eval --subset <new-id>` to confirm metrics.
 
@@ -90,19 +89,20 @@ Per-question (computed in `evaluation.py`):
 - **Recall@K** — fraction of `relevant_knowledge_node_uuids` present in the top-K retrieved hits.
 - **MRR** — mean reciprocal rank of the first expected hit.
 - **NDCG@K** — normalized discounted cumulative gain.
-- **Source diversity** — *normalized Shannon entropy* of `source_kind` distribution across top-K hits, in `[0, 1]` (`source_diversity` in `evaluation.py`). 0 means all hits share one source; 1 means uniform spread across all observed sources.
-- **Near-duplicate density** — pairwise cosine-similarity density of top-K embeddings; high values flag duplicate-heavy retrievals.
+- **Source diversity**: normalized Shannon entropy of linked source-type occurrences across top-K hits, in `[0, 1]` (`source_diversity` in `evaluation.py`). 0 means no source types or one type; 1 means an even distribution among the observed types.
 - **Coverage gap score**: fraction of semantic mode scores below a threshold (default 0.5). This is a distance-score heuristic, not an answerability measurement. Hybrid, lexical, and recent modes report an undefined value for nonempty results because relative ranks cannot establish corpus coverage. Empty retrieval reports 1.0.
 - **Groundedness** — LM-judge 0/1 score for whether `ask()`'s answer is supported by the retrieved sources (skipped under `--no-judge`).
 - **Keyword hit** — boolean: at least one of `acceptable_answer_keywords` appears in the synthesized answer.
 
-Aggregate: macro-mean of each metric across the question set, plus per-`intent` and per-`source_bias` breakouts when emitted to `--out`.
+The Markdown scorecard reports means and medians for recall, MRR, NDCG, source diversity, coverage gap, groundedness and keyword-hit rate, excluding undefined measurements. It also reports latency percentiles and per-enrichment-model aggregates when model labels are available. Per-question rows include the intent; there are no per-intent or per-source-bias aggregate sections.
+
+`near_duplicate_density` and `embedding_cohesion` are standalone metric helpers. The CLI does not measure or emit them.
 
 Retrieval results expose `score_semantics`. Hybrid RRF, lexical, and recent results use `relative_rank`; semantic results use `recency_adjusted_cosine`. The `min_score` setting applies only to semantic mode. Ranking order and normalized hybrid scores remain unchanged. The [confidence reference](capture/confidence-scoring.md) owns confidence interpretation and caps.
 
 ## Degradation
 
-`hippo-eval` exits with a non-zero code if `--subset` matches no questions. It does not currently enforce a minimum recall floor or fail on missing UUIDs; surfacing those as exit codes is open follow-up work. For diagnostic comparisons across runs, point `--out` at separate directories and diff the resulting JSON scorecards externally.
+`hippo-eval` exits with a non-zero code if `--subset` matches no questions. It does not currently enforce a minimum recall floor or fail on missing UUIDs. For diagnostic comparisons across runs, write separate Markdown scorecard files with `--out` and diff them externally.
 
 ## Implementation
 
