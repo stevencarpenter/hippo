@@ -28,7 +28,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
 
       # Guards against a skill being deleted while mise.toml still installs
       # it — `install:skill` creates a dangling symlink and `mise run install`

@@ -1,4 +1,4 @@
-# Hippo 1.0 acceptance status, 2026-10-04
+# Hippo 1.0 acceptance status, updated 2026-10-05
 
 **Decision: hold.** The package version remains 0.37.0. The existing
 [acceptance contract](../../config/agent-benefit-v2.json) is unchanged.
@@ -7,24 +7,37 @@ not establish population benefit or human-reviewed answer accuracy.
 
 ## Human review evidence
 
-Two independently ordered packets are ready for one complete historical
-diagnostic case. Each contains 419 evidence files, ten blank judgments, a
-blank reviewer identity form, and instructions. Both use the existing packet
-exporter and pass its completeness audit. Their `acceptance_eligible` value
-is false. Two other historical cases remain incomplete because required
-source or historical execution evidence is unavailable.
+Two independently ordered packets are ready for one historical diagnostic
+case. Each contains 419 manifest-bound evidence files, ten blank judgments,
+a blank reviewer identity form, and instructions. Five source files and
+seven task/submission artifacts remain readable. The other 407 source paths
+contain explicit privacy placeholders. Both packets pass the exporter's
+completeness audit. Their `acceptance_eligible` value is false. Two other
+historical cases remain incomplete because required source or historical
+execution evidence is unavailable.
 
 The private review entry point is:
 
 ```text
-~/.local/share/hippo-bench/v1-readiness/2026-10-04-followup/packets/START-HERE.txt
+~/.local/share/hippo-bench/v1-readiness/2026-10-04-followup/packets/handoff-v2/START-HERE.txt
 ```
 
 The adjacent `human-reviewer-1.zip` and `human-reviewer-2.zip` contain opposite
 A/B presentation orders. Assign each to a different independent human.
-Starting takes under two minutes; allow 20 to 30 minutes per review.
-`packet-status.json` records artifact hashes and completeness. No reviewers
-have been contacted, and no judgments have been supplied.
+Starting takes under two minutes. Allow 45 to 60 minutes per review as a
+planning estimate, not a measured duration. `handoff-status.json` records
+artifact hashes and completeness. The original full-source ZIPs are
+superseded for sharing and remain private historical evidence. No reviewers
+have been contacted automatically, and no human judgments have been supplied.
+
+Six automated pre-handoff reviews completed 117 integrity/provenance/archive
+checks and 29 synthetic return-contract tests. The owner importer validates
+returned forms against separately verified reviewer identities. These checks
+establish packet integrity and processing behavior, not candidate success.
+The packets contain no historical execution logs or measured generated PR
+metadata. Human reviewers must mark conclusions that require absent facts
+as missing evidence. The shared adjudicator rejects whitespace-only
+rationales and pass judgments supported only by redacted evidence.
 
 The existing evidence audit verified 125 original review-file hashes,
 65 archived hashes, and nine mechanism-evidence hashes. The registered
@@ -73,10 +86,18 @@ or Firefox extension connectivity.
 
 Current lockfile scans reported no known advisories: cargo-audit 0.22.1
 checked 323 Rust packages; OSV Scanner 2.3.3 checked 69 Python packages.
-The shell secret-pattern guard passed. This evidence covers the core locked
-dependencies, not optional Firefox/site dependencies, containers, or a
-general security certification. `security/report.md` retains commands,
-scanner versions, advisory database identity, and lockfile hashes.
+The shell secret-pattern guard passed. The October 5 follow-up separately
+audited the six pinned Python build dependencies and added recurring CI
+checks. `security/report.md` retains the original core scope, scanner
+versions, advisory database identity, and lockfile hashes.
+
+The [optional dependency disposition](2026-10-05-dependency-disposition.md)
+records the subsequent Firefox/site fixes, digest-pinned observability
+images, and remaining upstream advisories. This broader audit does not
+establish a general security certification. The Grafana panel description
+and seconds unit were visually checked in an isolated Grafana 12.4.4 fixture.
+That check used no production data and does not establish current production
+dashboard behavior or numeric time-series rendering.
 
 ## Release verification scope
 

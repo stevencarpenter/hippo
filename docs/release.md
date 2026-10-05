@@ -53,7 +53,7 @@ The [release workflow](../.github/workflows/release.yml) runs these jobs:
 | --- | --- |
 | `validate-version` | Tag, Rust/Python manifests, and internal lockfile versions match. |
 | `rust` | Reused Rust CI passes formatting, clippy, tests, and dependency audit. Linux and macOS test default features and the release's `--no-default-features` configuration. |
-| `python` | Reused Python CI validates the committed lockfile and passes lint, formatting, and tests with the configured coverage threshold on Linux and macOS. |
+| `python` | Reused Python CI audits runtime and build dependencies separately, validates the committed lockfile, and passes lint, formatting, and tests with the configured coverage threshold on Linux and macOS. |
 | `installer` | Reused installer CI passes isolated upgrade, rollback, and shell-path tests, including daemon selection from `PATH`. |
 | `build-daemon`, `build-brain` | Both artifacts build and upload successfully. |
 
@@ -62,6 +62,21 @@ Calls retain the caller's event, so branch and path filters cannot skip the
 release checks. Tag pushes and manual candidates both run Linux and macOS
 tests, including both Rust feature configurations. Each called workflow has
 a distinct concurrency group.
+
+External workflow actions are pinned to verified commits. Python build and
+test jobs use uv 0.12.17. The brain build pins Hatchling and its transitive
+build dependencies by version and hash in `brain/build-constraints.txt` and
+`brain/pyproject.toml`. Release builds require hashes, and source installation
+with `uv sync --locked --no-editable` enforces the same build constraints.
+The package requires uv 0.12.17 or newer and rejects older versions before
+installation. Keep both build-constraint declarations aligned when updating
+the build environment.
+
+Python advisory checks run on pull requests, release workflow calls, and a
+weekly schedule. The two OSV scans fail independently for advisories or invalid
+inputs and retain their JSON reports. A successful core scan does not clear
+the optional dependency findings in the
+[dependency disposition](research/2026-10-05-dependency-disposition.md).
 
 Artifact builds and checks run in parallel after version validation.
 `prepare-release` requires all six successful jobs, verifies checksums, and
@@ -82,7 +97,7 @@ for the default feature set.
 | Artifact | Contents |
 | --- | --- |
 | `hippo-darwin-arm64` | Daemon and CLI for macOS Apple Silicon. |
-| `hippo-brain-X.Y.Z.tar.gz` | Brain wheel, source distribution, source files, `uv.lock`, runtime scripts, shell hooks, and Claude skills. Runtime dependencies are installed with `uv`. |
+| `hippo-brain-X.Y.Z.tar.gz` | Brain wheel, source distribution, source files, `uv.lock`, hashed build constraints, runtime scripts, shell hooks, and Claude skills. Runtime dependencies are installed with `uv`. |
 | `SHA256SUMS.txt` | SHA-256 checksums for the daemon and brain archives. |
 | `install.sh` | Installer that downloads and verifies the daemon and brain artifacts. |
 
@@ -130,7 +145,7 @@ by version validation and is not a dry-run mechanism.
    npx -y gh-axi run download RUN_ID --name release-bundle-vX.Y.Z --dir candidate-release
    ```
 
-3. Exercise the downloaded bundle on macOS with Python 3.14, uv, and zsh:
+3. Exercise the downloaded bundle on macOS with Python 3.14, uv 0.12.17+, and zsh:
 
    ```bash
    mise run release:smoke candidate-release/release-bundle.tar.gz

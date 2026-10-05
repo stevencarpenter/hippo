@@ -19,6 +19,7 @@ __pycache__/
 *.jsonl
 !docs/baselines/**/*.jsonl
 # Generated benchmark archives belong outside the repository.
+/.ci-evidence/
 docs/research/**/run/
 docs/research/**/pool-run/
 docs/research/**/*results*.json
@@ -263,6 +264,9 @@ celerybeat.pid
 
 # Environments
 .env
+.env.*
+!.env.example
+!.env.template
 .venv
 env/
 venv/

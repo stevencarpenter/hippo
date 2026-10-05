@@ -28,8 +28,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-python@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: '3.14'
       - name: Match tag to manifests and lockfiles
@@ -56,15 +56,16 @@ jobs:
       artifact_name: ${{ steps.artifact.outputs.name }}
       checksum: ${{ steps.checksum.outputs.checksum }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
         with:
+          toolchain: "1.98" # Matches rust-toolchain.toml.
           targets: aarch64-apple-darwin
 
       - name: Setup Rust cache
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           shared-key: release-daemon-${{ github.ref_name }}
           cache-on-failure: false
@@ -102,7 +103,7 @@ jobs:
           echo "Checksum: ${CHECKSUM}"
 
       - name: Upload daemon artifact
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: daemon-binary
           path: ${{ steps.artifact.outputs.name }}
@@ -118,12 +119,12 @@ jobs:
       artifact_name: ${{ steps.artifact.outputs.name }}
       checksum: ${{ steps.checksum.outputs.checksum }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v7
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
         with:
-          version: "latest"
+          version: "0.12.17"
 
       - name: Extract version from tag
         id: version
@@ -135,7 +136,7 @@ jobs:
       - name: Build brain package
         run: |
           cd brain
-          uv build
+          uv build --build-constraints build-constraints.txt --require-hashes
 
       - name: Create brain tarball
         id: artifact
@@ -153,6 +154,7 @@ jobs:
           cp -r brain/src hippo-brain-release/brain/
           cp brain/pyproject.toml hippo-brain-release/brain/
           cp brain/uv.lock hippo-brain-release/brain/
+          cp brain/build-constraints.txt hippo-brain-release/brain/
           cp brain/README.md hippo-brain-release/brain/ 2>/dev/null || true
 
           # Copy runtime scripts AND shell hooks into the brain tree so
@@ -183,7 +185,7 @@ jobs:
           echo "Checksum: ${CHECKSUM}"
 
       - name: Upload brain artifact
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: brain-package
           path: ${{ steps.artifact.outputs.name }}
@@ -196,16 +198,18 @@ jobs:
     runs-on: macos-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
 
-      - uses: astral-sh/setup-uv@v7
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
+        with:
+          version: "0.12.17"
 
       # Python.org's macOS build cannot load sqlite-vec extensions.
       - name: Install Python with SQLite extension support
         run: uv python install 3.14
 
       - name: Download all artifacts
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           path: artifacts
 
@@ -294,7 +298,7 @@ jobs:
 
       - name: Upload installation smoke evidence
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: release-smoke-${{ env.RELEASE_TAG }}
           path: |
@@ -304,7 +308,7 @@ jobs:
           retention-days: 7
 
       - name: Upload release bundle
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: release-bundle-${{ env.RELEASE_TAG }}
           path: release-bundle.tar.gz
@@ -320,10 +324,10 @@ jobs:
     runs-on: macos-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
 
       - name: Download verified release bundle
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           name: release-bundle-${{ env.RELEASE_TAG }}
 

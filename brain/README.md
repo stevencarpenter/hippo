@@ -5,6 +5,9 @@ a local OpenAI-compatible inference server (default oMLX, LM Studio also support
 
 ## Setup
 
+Use Python 3.14+ and uv 0.12.17+. Source installation verifies the pinned
+build-dependency versions and hashes declared in `pyproject.toml`.
+
 ```bash
 uv sync --project brain
 ```

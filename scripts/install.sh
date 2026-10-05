@@ -50,7 +50,7 @@ INSTALL LOCATIONS:
     ~/.local/share/hippo/                       runtime data (SQLite, logs)
 
 REQUIREMENTS:
-    macOS only. bash, curl, uv (Python package manager), python3.
+    macOS only. bash, curl, uv 0.12.17+ (Python package manager), python3.
 EOF
 }
 

@@ -230,6 +230,12 @@ def adjudicate(
         [manifest["packet_hash"], manifest["rubric_hash"], "task-adjudication-v2", submission]
     )
     items = {item["id"] for item in manifest["rubric"]["items"]}
+    evidence_paths = {entry["path"] for entry in manifest["files"]} | {"manifest.json"}
+    unredacted_support = {
+        entry["path"]
+        for entry in manifest["files"]
+        if entry["redacted"] is False and entry["path"].startswith(("source/", "inputs/"))
+    }
     require(
         len(labels) == 2 and len({label["reviewer_id"] for label in labels}) == 2,
         "two independent reviewers required",
@@ -268,14 +274,24 @@ def adjudicate(
                 },
                 "invalid judgment",
             )
-            require(bool(judgment.get("rationale")), "source-backed rationale required")
+            rationale = judgment.get("rationale")
+            require(
+                isinstance(rationale, str) and bool(rationale.strip()),
+                "source-backed rationale required",
+            )
+            citations = judgment.get("citations", [])
+            require(
+                isinstance(citations, list)
+                and all(isinstance(ref, str) and ref.strip() for ref in citations),
+                "citations must be an array of nonempty strings",
+            )
             cited = []
-            for ref in judgment.get("citations", []):
+            for ref in citations:
                 parts = re.fullmatch(r"(.+?)(?::(\d+)(?:-(\d+))?)?", ref)
                 require(parts is not None, "invalid citation")
                 name, first, last = parts.groups()
                 require(
-                    name in {f["path"] for f in manifest["files"]} | {"manifest.json"},
+                    name in evidence_paths,
                     "unresolvable judgment citation",
                 )
                 if first:
@@ -286,9 +302,8 @@ def adjudicate(
                     )
                 cited.append(name)
             require(
-                judgment["status"] != "pass"
-                or any(name.startswith(("source/", "inputs/")) for name in cited),
-                "pass requires source citations",
+                judgment["status"] != "pass" or any(name in unredacted_support for name in cited),
+                "pass requires unredacted source/input citations",
             )
     unresolved = not evidence["complete_for_adjudication"]
     for item in items:

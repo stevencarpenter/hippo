@@ -15,6 +15,9 @@ on:
       - "scripts/check_release_version.py"
       - ".github/workflows/python.yml"
       - ".github/workflows/release.yml"
+  schedule:
+    # Check newly published advisories even when dependencies have not changed.
+    - cron: "37 8 * * 1"
 
 concurrency:
   group: python-${{ github.workflow }}-${{ github.ref }}
@@ -24,8 +27,49 @@ permissions:
   contents: read
 
 jobs:
+  dependency-audit:
+    name: Python Dependency Audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+
+      - name: Install OSV-Scanner
+        # A native lockfile scan avoids pip-audit's Python 3.14 ensurepip failure.
+        # Verify the release asset before execution; update version and hash together.
+        run: |
+          curl --fail --silent --show-error --location --retry 3 \
+            https://github.com/google/osv-scanner/releases/download/v2.6.0/osv-scanner_linux_amd64 \
+            --output "$RUNNER_TEMP/osv-scanner"
+          echo "ca69b3d3cd08f889a49dc0a383122f71cc528b83803671df5fd874d97485b108  $RUNNER_TEMP/osv-scanner" | sha256sum --check
+          chmod +x "$RUNNER_TEMP/osv-scanner"
+
+      - name: Audit locked Python dependencies
+        # Scan each source separately so an empty or invalid build requirements
+        # file cannot be hidden by a successful runtime/development lockfile scan.
+        # Findings and scanner failures must both block the release gate.
+        run: |
+          "$RUNNER_TEMP/osv-scanner" scan source --lockfile=brain/uv.lock \
+            --format=json --all-packages --output-file="$RUNNER_TEMP/python-advisories.json"
+          "$RUNNER_TEMP/osv-scanner" scan source --lockfile=requirements.txt:brain/build-constraints.txt \
+            --format=json --all-packages --output-file="$RUNNER_TEMP/python-build-advisories.json"
+
+      - name: Upload advisory report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: python-advisories
+          path: |
+            ${{ runner.temp }}/python-advisories.json
+            ${{ runner.temp }}/python-build-advisories.json
+          if-no-files-found: warn
+          retention-days: 14
+
   lint-and-test:
     name: Lint & Test (${{ matrix.os }})
+    if: github.event_name != 'schedule'
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -35,12 +79,14 @@ jobs:
         os: ${{ github.event_name != 'pull_request' && fromJSON('["ubuntu-latest", "macos-latest"]') || fromJSON('["ubuntu-latest"]') }}
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           fetch-depth: 0
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v7
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
+        with:
+          version: "0.12.17"
 
       - name: Install Python
         run: uv python install 3.14
@@ -91,6 +137,3 @@ jobs:
 
       - name: Run tests
         run: uv run --locked --project brain pytest brain/tests -v --cov=hippo_brain --cov-report=term-missing
-
-      # TODO: Re-enable pip-audit when Python 3.14 support lands
-      # (upstream ensurepip SIGABRT on macOS arm64). Dependabot covers CVEs meanwhile.
