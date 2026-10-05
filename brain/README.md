@@ -83,7 +83,7 @@ The brain server listens on `127.0.0.1:9175` and exposes:
 - `GET /knowledge/{id}` — One enriched knowledge node by id
 - `POST /query` — Lexical or semantic search over events and knowledge nodes
 - `POST /ask` — RAG answer synthesis over retrieved knowledge
-- `POST /control/pause` — Stop claiming new enrichment work while keeping ingestion live
+- `POST /control/pause` — Apply the [pause contract](../README.md#usage)
 - `POST /control/resume` — Resume enrichment work
 - `GET /openapi.json` — OpenAPI 3.1 contract for the routes above
 
