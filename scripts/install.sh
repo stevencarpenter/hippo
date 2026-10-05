@@ -109,8 +109,9 @@ log_error() {
 
 # Detect OS and architecture
 detect_platform() {
-    local os="$(uname -s)"
-    local arch="$(uname -m)"
+    local os arch
+    os="$(uname -s)"
+    arch="$(uname -m)"
 
     if [ "${os}" != "Darwin" ]; then
         log_error "This installer only supports macOS. Detected: ${os}"
@@ -436,6 +437,8 @@ install_components() (
     if [ -f "${RECEIPTS_DIR}/daemon.sha256" ]; then
         cp -p "${RECEIPTS_DIR}/daemon.sha256" "${rollback_dir}/daemon.sha256"
     fi
+    # Assigned first inside the EXIT handler, before either consumer below.
+    # shellcheck disable=SC2154
     trap '
         install_status=$?
         if [ "${install_status}" -ne 0 ] && [ "${components_committed}" = false ]; then
@@ -717,9 +720,13 @@ warn_on_stale_shell_hook_sources() {
         # $HOME at end-of-string only — we don't replace $HOME followed
         # by an identifier char (e.g. $HOMEDIR). Glob is single-quoted so
         # `$` is a literal here, not a parameter expansion.
+        # Match the literal token read from the user's source line.
+        # shellcheck disable=SC2016
         case "${p}" in
             *'$HOME') p="${p%\$HOME}${HOME}" ;;
         esac
+        # Match literal tildes from the source line; expand them in the arms.
+        # shellcheck disable=SC2088
         case "${p}" in
             '~') p="${HOME}" ;;
             '~/'*)
@@ -787,17 +794,22 @@ main() {
     echo ""
 
     # Detect platform
-    local arch="$(detect_platform)"
+    local arch
+    arch="$(detect_platform)"
     log_info "Detected architecture: ${arch}"
 
     # Get latest release
-    local tag="$(get_latest_release)"
+    local tag
+    tag="$(get_latest_release)"
     log_info "Latest release: ${tag}"
     echo ""
 
     # Create temporary directory
-    local temp_dir="$(mktemp -d)"
-    trap "rm -rf ${temp_dir}" EXIT
+    local temp_dir
+    temp_dir="$(mktemp -d)"
+    # Capture the local path now, quoted for the EXIT handler after main returns.
+    # shellcheck disable=SC2064
+    trap "$(printf 'rm -rf -- %q' "${temp_dir}")" EXIT
 
     # Download checksums file
     log_info "Downloading checksums..."

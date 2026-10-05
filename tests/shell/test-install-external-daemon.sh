@@ -77,6 +77,8 @@ EOF
         printf '[brain]\nport = 18234\n' > "$config_root/hippo/config.toml"
     fi
 
+    # The child bash expands its fixture environment, not the parent shell.
+    # shellcheck disable=SC2016
     if env HOME="$fixture" PATH="$fixture/external-bin:/usr/bin:/bin" \
         XDG_STATE_HOME="$fixture/state" HIPPO_INSTALL_DAEMON=0 HIPPO_INSTALL_SKILLS=0 \
         XDG_CONFIG_HOME="$config_env" XDG_DATA_HOME="$data_env" \
