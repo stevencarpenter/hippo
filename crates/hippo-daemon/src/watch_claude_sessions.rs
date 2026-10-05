@@ -14,13 +14,13 @@
 //!   `byte_offset` is stored as `current_size` (matching `size_at_last_read`) so a
 //!   future seek-based optimisation can use it without a schema change.
 //! - Resets offset on inode/device change (file replaced) or size regression (truncated).
-//! - Writes `source_health WHERE source='claude-session-watcher'` every 30 s.
-//! - Every heartbeat schedules reconciliation of session files. Files are checked
-//!   one at a time between event-loop polls, retrying missed notifications and
-//!   writes during cooldown even when no further filesystem events arrive.
-//! - Every heartbeat tick, runs `run_settling_sweep` to enqueue segments where
-//!   `content_hash != last_enriched_content_hash` and the source file has been
-//!   idle for 30+ minutes.  This is the backstop for the T-A.4 debounce gate.
+//! - A non-overlapping maintenance worker schedules heartbeat, settling, and
+//!   discovery at 30 s intervals; SQLite contention can delay completion.
+//! - Reconciliation retries missed notifications and writes during cooldown
+//!   even when no further filesystem events arrive.
+//! - Settling enqueues segments where `content_hash != last_enriched_content_hash`
+//!   and the source file has been idle for 30+ minutes, backing the T-A.4 debounce gate.
+//! See `docs/capture/architecture.md` for the watcher shutdown contract.
 
 use std::collections::{HashMap, VecDeque};
 use std::os::unix::fs::MetadataExt;

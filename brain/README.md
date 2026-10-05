@@ -5,8 +5,8 @@ a local OpenAI-compatible inference server (default oMLX, LM Studio also support
 
 ## Setup
 
-Use Python 3.14+ and uv 0.12.17+. Source installation verifies the pinned
-build-dependency versions and hashes declared in `pyproject.toml`.
+See the [project prerequisites](../README.md#prerequisites) and
+[release build constraints](../docs/release.md#publication-gates) before installing.
 
 ```bash
 uv sync --project brain
@@ -118,9 +118,9 @@ model to be running.
 
 ### Pausing enrichment
 
-`POST /control/pause` pauses only the brain worker's queue claims. The daemon,
-watchers, and pollers keep writing to SQLite, so queue depth can grow while the
-local chat model is unloaded or reserved for another benchmark:
+See the [pause contract](../README.md#usage) for query rejection, draining
+in-flight inference, and the standalone MCP exception. Capture continues while
+HTTP knowledge queries and new background inference are paused:
 
 ```bash
 mise run brain:api:pause
@@ -128,8 +128,7 @@ mise run brain:api:health
 mise run brain:api:resume
 ```
 
-For complete model quiescence, unload the brain LaunchAgent instead of using the
-soft pause endpoint:
+To stop the brain process entirely, unload its LaunchAgent:
 
 ```bash
 launchctl bootout "gui/$(id -u)" ~/Library/LaunchAgents/com.hippo.brain.plist
