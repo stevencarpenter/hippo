@@ -550,7 +550,12 @@ setup_config() {
 
     if [ ! -f "${CONFIG_DIR}/config.toml" ]; then
         log_info "Creating default config.toml..."
-        if ! "${hippo_binary}" config init; then
+        local config_action=init
+        if ! "${hippo_binary}" config init --help >/dev/null 2>&1; then
+            config_action=edit
+        fi
+        if ! (umask 077; EDITOR=true "${hippo_binary}" config "${config_action}") \
+                || [ ! -f "${CONFIG_DIR}/config.toml" ]; then
             log_error "Failed to initialize configuration at ${CONFIG_DIR}/config.toml"
             return 1
         fi
