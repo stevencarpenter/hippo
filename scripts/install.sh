@@ -73,8 +73,12 @@ REPO="stevencarpenter/hippo"
 INSTALL_DIR="${HOME}/.local"
 BIN_DIR="${INSTALL_DIR}/bin"
 BRAIN_DIR="${INSTALL_DIR}/share/hippo-brain"
-CONFIG_DIR="${XDG_CONFIG_HOME:-${HOME}/.config}/hippo"
-DATA_DIR="${XDG_DATA_HOME:-${HOME}/.local/share}/hippo"
+# Older daemons treat exported empty XDG roots as relative paths.
+# Normalize once so every child uses the installer's resolved locations.
+export XDG_CONFIG_HOME="${XDG_CONFIG_HOME:-${HOME}/.config}"
+export XDG_DATA_HOME="${XDG_DATA_HOME:-${HOME}/.local/share}"
+CONFIG_DIR="${XDG_CONFIG_HOME}/hippo"
+DATA_DIR="${XDG_DATA_HOME}/hippo"
 # Receipts live under XDG_STATE_HOME (not DATA_DIR) so a user wipe of Hippo's
 # runtime data doesn't desynchronize them from the actual installed binaries.
 RECEIPTS_DIR="${XDG_STATE_HOME:-${HOME}/.local/state}/hippo/install-receipts"
