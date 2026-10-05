@@ -292,26 +292,25 @@ install_daemon() {
     log_success "Daemon installed"
 }
 
-# Probe the deployed brain venv for the imports the brain process needs at
-# startup. Returns 0 on success, 1 on any import failure. Catches the
-# half-installed-namespace bug (dist-info present, package contents empty)
-# that surfaces only at brain-startup time as a generic ImportError.
+# Verify startup imports and SQLite extension support in the brain venv.
+# Importing sqlite_vec alone does not prove that this Python can load it.
 verify_brain_imports() {
     local brain_dir="$1"
-    # Importing `create_app` exercises the full startup import graph
-    # (starlette, uvicorn, httpx, sqlite_vec, opentelemetry, psutil, plus the
-    # hippo_brain.* internal modules). A strict superset of probing the
-    # third-party packages individually — protects against the same shape of
-    # bug surfacing in any startup-path dep, not just opentelemetry.
     local probe='
 import sys
 try:
+    from contextlib import closing
+    import sqlite3
+    import sqlite_vec
     from hippo_brain.server import create_app  # noqa: F401
+    with closing(sqlite3.connect(":memory:")) as conn:
+        conn.enable_load_extension(True)
+        sqlite_vec.load(conn)
+        conn.enable_load_extension(False)
+        conn.execute("SELECT vec_version()").fetchone()
     sys.exit(0)
 except Exception as exc:
-    # Print to stdout: any CI capture that records only stdout still gets
-    # the diagnostic, and the non-zero exit already signals failure.
-    print(f"brain import probe failed: {exc!r}")
+    print(f"brain runtime probe failed ({sys.executable}): {exc!r}", file=sys.stderr)
     sys.exit(1)
 '
     (cd "${brain_dir}" && uv run --no-sync python -c "${probe}")
@@ -381,11 +380,11 @@ install_brain() {
         exit 1
     fi
     if ! verify_brain_imports "${brain_staging}"; then
-        log_warning "Brain imports failed after sync; retrying with --reinstall..."
+        log_warning "Brain runtime probe failed after sync; retrying with --reinstall..."
         if ! (cd "${brain_staging}" && uv sync --locked --no-editable --reinstall 2>&1) \
                 || ! verify_brain_imports "${brain_staging}"; then
             rm -rf "${brain_staging}"
-            log_error "Staged brain imports failed; existing brain preserved"
+            log_error "Staged brain runtime probe failed; existing brain preserved"
             exit 1
         fi
     fi
@@ -406,7 +405,7 @@ install_brain() {
     if ! verify_brain_imports "${BRAIN_DIR}"; then
         rm -rf "${BRAIN_DIR}"
         [ ! -e "${brain_backup}" ] || mv "${brain_backup}" "${BRAIN_DIR}"
-        log_error "Relocated brain imports failed; existing brain restored"
+        log_error "Relocated brain runtime probe failed; existing brain restored"
         exit 1
     fi
 
