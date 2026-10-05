@@ -884,8 +884,11 @@ statistical verdict alone is not v1 release approval.
 ## Score prospective answer accuracy
 
 `uv run --project brain python -m hippo_brain.bench.agent_answer_accuracy /private/path/adjudicated-answers.json --frame /private/path/frozen-call-frame.json`
-reports the two exact one-sided bounds and the answer-quality verdict. The
-ordered frozen frame contains `id`, `family`, and `kind` (`natural` or
+reports the two exact one-sided bounds and a conditional statistical verdict.
+Its output always sets `verdict_scope` to `conditional_statistics` and
+`acceptance_qualified` to `false`, and lists the external evidence requirements
+in `unverified_prerequisites`. A passing statistical verdict is not acceptance
+qualification. The ordered frozen frame contains `id`, `family`, and `kind` (`natural` or
 `absent_control`) for each call. Its natural entries must be the 300 consecutive
 qualifying calls, in capture order; the scorer uses the first call per family.
 Adjudicated rows repeat those fields and add two distinct reviewer names and

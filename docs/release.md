@@ -87,17 +87,11 @@ for the default feature set.
 | `install.sh` | Installer that downloads and verifies the daemon and brain artifacts. |
 
 The installer places the daemon at `~/.local/bin/hippo`, the brain at
-`~/.local/share/hippo-brain/`, and configuration at `~/.config/hippo/`.
-`XDG_CONFIG_HOME` overrides the configuration root; `XDG_DATA_HOME` overrides
-the default runtime data root. Empty values use the HOME defaults.
-It installs LaunchAgents through `hippo daemon install`, preserving resolved
-XDG roots in each service environment and the selected daemon's stable path
-with `--binary-path`, including package-managed symlinks.
-The Claude watcher polls shutdown signals while ingestion or SQLite writes are
-pending. One sequential maintenance worker handles heartbeat, settling, and
-discovery independently of ingestion. Startup database work is also cancellable
-at its async wait. Runtime teardown waits at most one second for blocking workers;
-unfinished ingestion is recovered from persisted offsets on the next start.
+`~/.local/share/hippo-brain/`, and configuration under the [configured XDG roots](../README.md#data-storage).
+It installs LaunchAgents through `hippo daemon install`, preserving the selected
+daemon's stable path with `--binary-path`, including package-managed symlinks.
+See [capture architecture](capture/architecture.md#claude-session-watcher) for
+watcher reconciliation and shutdown behavior.
 
 ```bash
 curl -fsSL https://github.com/stevencarpenter/hippo/releases/latest/download/install.sh | bash

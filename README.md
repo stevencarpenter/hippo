@@ -261,7 +261,7 @@ The native messaging host is installed by `hippo daemon install --force` (also c
 | `~/.config/hippo/config.toml` | Runtime config (models, ports, browser allowlist, telemetry, GitHub token) |
 | `~/.config/hippo/redact.toml` | Secret redaction patterns (regex-based) |
 
-Created automatically by `mise run install`. Edit with `hippo config edit`. See [`config/config.default.toml`](config/config.default.toml) and [`config/redact.default.toml`](config/redact.default.toml) for the templates and inline documentation of each key.
+Created automatically by `mise run install`. Use `hippo config init` to create a missing `config.toml` without opening an editor; existing valid files are preserved. Edit with `hippo config edit`. See [`config/config.default.toml`](config/config.default.toml) and [`config/redact.default.toml`](config/redact.default.toml) for the templates and inline documentation of each key.
 
 The `[models]` section must be configured for enrichment to work. Set the model name to whatever your inference server exposes — verify with `curl -s http://localhost:8000/v1/models | python3 -m json.tool` (or `:1234` for LM Studio).
 
@@ -371,7 +371,7 @@ tools/                     Developer utilities (SQL formatting)
 
 ## Data Storage
 
-All paths follow XDG defaults. Override with `XDG_DATA_HOME` / `XDG_CONFIG_HOME`.
+Runtime data and configuration follow XDG defaults. `XDG_DATA_HOME` overrides the default runtime data root; `XDG_CONFIG_HOME` overrides the configuration root for the daemon, brain HTTP server, MCP server, and installer. Unset or empty values use the HOME defaults below. An explicit `[storage].data_dir` overrides the default data directory. Generated LaunchAgents preserve the resolved XDG roots from installation; changing shell variables does not update existing services.
 
 | Store | Path | Purpose |
 |-------|------|---------|

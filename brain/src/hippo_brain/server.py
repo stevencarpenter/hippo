@@ -309,7 +309,10 @@ def _collect_classification_depths(conn: sqlite3.Connection) -> list[tuple[str, 
 
 
 def _query_priority(handler):
-    """Validate query bodies and prevent background claims while queries run."""
+    """Reject invalid/non-object JSON with 400; paused requests take priority (503).
+
+    Prevent background claims while a validated knowledge query is running.
+    """
 
     @wraps(handler)
     async def wrapped(self, request):
