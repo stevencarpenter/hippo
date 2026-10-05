@@ -429,7 +429,9 @@ install_brain() {
 # fails. The subshell's EXIT trap also handles explicit exits in the helpers.
 install_components() (
     local arch="$1" tag="$2" checksums_file="$3" temp_dir="$4"
-    local rollback_dir components_committed=false
+    # Bash 3.2 can end function-local scope before EXIT under bash -c.
+    # Keep trap state in this subshell, which cannot alter the caller's state.
+    components_committed=false
     rollback_dir="$(mktemp -d "${temp_dir}/rollback.XXXXXX")"
     if [ -e "${BIN_DIR}/hippo" ] || [ -L "${BIN_DIR}/hippo" ]; then
         cp -pP "${BIN_DIR}/hippo" "${rollback_dir}/hippo"

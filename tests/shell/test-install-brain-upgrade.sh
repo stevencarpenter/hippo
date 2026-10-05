@@ -81,6 +81,43 @@ printf 'new\n' > "$tmp/release/brain/new-version"
 tar -czf "$tmp/hippo-brain-1.2.3.tar.gz" -C "$tmp/release" brain
 shasum -a 256 "$tmp/hippo-brain-1.2.3.tar.gz" | sed "s|$tmp/||" > "$tmp/SHA256SUMS.txt"
 
+# Bash 3.2 must retain rollback state when invoked with an argument-free -c.
+sed '$d' "$repo_root/scripts/install.sh" > "$tmp/install-helpers.sh"
+fixture="$tmp/command-rollback"
+mkdir -p "$fixture/bin" "$fixture/receipts"
+printf 'old-daemon\n' > "$fixture/bin/hippo"
+printf 'old-daemon-checksum\n' > "$fixture/receipts/daemon.sha256"
+: > "$fixture/SHA256SUMS.txt"
+if HOME="$fixture/home" XDG_CONFIG_HOME="$fixture/config" \
+    XDG_DATA_HOME="$fixture/data" XDG_STATE_HOME="$fixture/state" \
+    HIPPO_TEST_INSTALL_HELPERS="$tmp/install-helpers.sh" HIPPO_TEST_ROLLBACK_FIXTURE="$fixture" \
+    /bin/bash -c '
+        set -euo pipefail
+        source "$HIPPO_TEST_INSTALL_HELPERS"
+        cd "$HIPPO_TEST_ROLLBACK_FIXTURE"
+        BIN_DIR="$HIPPO_TEST_ROLLBACK_FIXTURE/bin"
+        RECEIPTS_DIR="$HIPPO_TEST_ROLLBACK_FIXTURE/receipts"
+        install_daemon() {
+            printf "new-daemon\n" > "$BIN_DIR/hippo"
+            printf "new-daemon-checksum\n" > "$RECEIPTS_DIR/daemon.sha256"
+        }
+        install_components arm64 v1.2.3 "$HIPPO_TEST_ROLLBACK_FIXTURE/SHA256SUMS.txt" "$HIPPO_TEST_ROLLBACK_FIXTURE"
+    ' > "$fixture/stdout" 2> "$fixture/stderr"; then
+    printf 'FAIL: missing brain checksum was accepted\n' >&2
+    exit 1
+else
+    test "$?" -eq 1
+fi
+[[ "$(cat "$fixture/stderr")" == *"Checksum entry not found"* ]]
+if [[ "$(cat "$fixture/bin/hippo")" != old-daemon \
+    || "$(cat "$fixture/receipts/daemon.sha256")" != old-daemon-checksum ]]; then
+    cat "$fixture/stderr" >&2
+    printf 'FAIL: bash -c did not restore the prior daemon and receipt\n' >&2
+    exit 1
+fi
+rollback_backups=("$fixture"/rollback.*)
+test ! -e "${rollback_backups[0]}"
+
 for scenario in extract-fails sync-fails imports-fail backup-rename-fails relocated-imports-fail receipt-fails cleanup-fails success sqlite-capable sqlite-api-missing sqlite-load-fails; do
     brain_dir="$tmp/$scenario/brain"
     bin_dir="$tmp/$scenario/bin"
