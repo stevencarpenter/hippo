@@ -101,6 +101,15 @@ for the default feature set.
 | `SHA256SUMS.txt` | SHA-256 checksums for the daemon and brain archives. |
 | `install.sh` | Installer that downloads and verifies the daemon and brain artifacts. |
 
+The outer brain archive includes `tests/eval_questions.json` beside `src` so
+installer rebuilds can package the [default evaluation corpus](eval-harness-design.md#question-set).
+Exact Hatchling force-include mappings in `brain/pyproject.toml` retain the QA
+template in wheels and source distributions and the golden QA JSONL in source
+distributions without allowing arbitrary JSONL files. Tests requiring root
+Rust, scripts, or docs assets still require a repository checkout.
+The macOS archive command suppresses AppleDouble files and extended-attribute
+PAX records; ordinary tar modes, owners, and timestamps remain.
+
 The installer places the daemon at `~/.local/bin/hippo`, the brain at
 `~/.local/share/hippo-brain/`, and configuration under the [configured XDG roots](../README.md#data-storage).
 It installs LaunchAgents through `hippo daemon install`, preserving the selected
@@ -114,10 +123,11 @@ curl -fsSL https://github.com/stevencarpenter/hippo/releases/latest/download/ins
 
 ## Checking workflow changes locally
 
-Run the version-validator regressions and installer tests without publishing:
+Run the version, installed-resource, archive-layout, and installer regressions
+without publishing:
 
 ```bash
-mise run test:python:focused brain/tests/test_release_version.py -q
+mise run test:python:focused brain/tests/test_release_version.py brain/tests/test_package_resources.py brain/tests/test_release_smoke.py -q
 mise run test:install
 actionlint .github/workflows/release.yml .github/workflows/rust.yml .github/workflows/python.yml .github/workflows/installer.yml
 ```

@@ -32,7 +32,7 @@ All flags (verbatim, source: `_parse_args` in `evaluation.py`):
 
 | Flag | Default | Notes |
 |---|---|---|
-| `--questions` | `brain/tests/eval_questions.json` (i.e. `_DEFAULT_QUESTIONS`) | Path to the labeled question set. |
+| `--questions` | [Default question set](#question-set) | Path to an explicit labeled question set; overrides the default. |
 | `--mode` | `hybrid` | One of `hybrid`, `semantic`, `lexical`, `recent`. |
 | `--limit` | `10` | Top-K size for retrieval. |
 | `--out` | `""` | When set, writes the full scorecard JSON to this directory. |
@@ -44,7 +44,9 @@ There is no `run` / `baseline` / `compare` subcommand surface; "compare two runs
 
 ## Question set
 
-The labeled question set lives at `brain/tests/eval_questions.json` (resolved via `_DEFAULT_QUESTIONS = Path(__file__).parent.parent.parent / "tests" / "eval_questions.json"`). The file is a JSON object whose `questions` array contains the labeled entries; each entry is loaded by `load_questions` into the `Question` dataclass (`brain/src/hippo_brain/evaluation.py`):
+The authoritative default question set is `brain/tests/eval_questions.json`. Wheel builds map its exact bytes to `hippo_brain/_fixtures/default_eval_questions.json`; `_DEFAULT_QUESTIONS` uses that installed resource, falling back to the tests file in a source checkout. The separate historical `_fixtures/eval_questions.json` is not the default corpus. Packaging does not change the 40 questions or their labels. Explicit `--questions` selection remains supported.
+
+The file is a JSON object whose `questions` array contains the labeled entries; each entry is loaded by `load_questions` into the `Question` dataclass (`brain/src/hippo_brain/evaluation.py`):
 
 ```json
 {
