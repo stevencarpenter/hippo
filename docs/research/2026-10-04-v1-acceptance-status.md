@@ -27,8 +27,9 @@ A/B presentation orders. Assign each to a different independent human.
 Starting takes under two minutes. Allow 45 to 60 minutes per review as a
 planning estimate, not a measured duration. `handoff-status.json` records
 artifact hashes and completeness. The original full-source ZIPs are
-superseded for sharing and remain private historical evidence. No reviewers
-have been contacted automatically, and no human judgments have been supplied.
+superseded for sharing and remain private historical evidence. Two diagnostic
+human returns are now available; they do not supply the missing prospective
+study cohorts or qualify this historical case for acceptance.
 
 Six automated pre-handoff reviews completed 117 integrity/provenance/archive
 checks and 29 synthetic return-contract tests. The owner importer validates
