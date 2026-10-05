@@ -53,7 +53,7 @@ EOF
         [[ "$scenario" != missing && "$scenario" != config-fails ]]
         if [[ "$scenario" == xdg-config ]]; then
             : > "$fixture/expected-invocations"
-            rg -q 'http://127.0.0.1:18234/health$' "$fixture/health"
+            grep -q 'http://127.0.0.1:18234/health$' "$fixture/health"
         else
             printf 'config init\n' > "$fixture/expected-invocations"
         fi
@@ -83,11 +83,11 @@ EOF
         test "$status" -eq 1
         if [[ "$scenario" == missing ]]; then
             test ! -e "$fixture/invocations"
-            rg -q 'HIPPO_INSTALL_DAEMON=0 but no hippo binary is on PATH' "$fixture/output"
+            grep -q 'HIPPO_INSTALL_DAEMON=0 but no hippo binary is on PATH' "$fixture/output"
         else
             [[ "$(cat "$fixture/invocations")" == 'config init' ]]
-            rg -q 'Failed to initialize configuration at ' "$fixture/output"
-            rg -q 'injected config initialization failure' "$fixture/output"
+            grep -q 'Failed to initialize configuration at ' "$fixture/output"
+            grep -q 'injected config initialization failure' "$fixture/output"
         fi
     fi
 done
