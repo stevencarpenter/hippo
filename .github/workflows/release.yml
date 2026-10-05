@@ -198,11 +198,11 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - uses: actions/setup-python@v6
-        with:
-          python-version: '3.14'
-
       - uses: astral-sh/setup-uv@v7
+
+      # Python.org's macOS build cannot load sqlite-vec extensions.
+      - name: Install Python with SQLite extension support
+        run: uv python install 3.14
 
       - name: Download all artifacts
         uses: actions/download-artifact@v8
@@ -290,7 +290,7 @@ jobs:
         run: tar -czf release-bundle.tar.gz release-files release-notes.md
 
       - name: Smoke test the packaged installation
-        run: python scripts/smoke_release_bundle.py release-bundle.tar.gz --output-dir "$RUNNER_TEMP/hippo-release-smoke"
+        run: uv run --no-project --python 3.14 python scripts/smoke_release_bundle.py release-bundle.tar.gz --output-dir "$RUNNER_TEMP/hippo-release-smoke"
 
       - name: Upload installation smoke evidence
         if: always()

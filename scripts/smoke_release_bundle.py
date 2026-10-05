@@ -126,13 +126,15 @@ def environment(output: Path) -> dict[str, str]:
         "TMPDIR": str(output / "tmp"),
         "UV_CACHE_DIR": str(output / "uv-cache"),
         "UV_PYTHON_DOWNLOADS": "never",
-        "UV_PYTHON_PREFERENCE": "only-system",
         "UV_NO_PROGRESS": "1",
         "HIPPO_OTEL_ENABLED": "0",
         "OTEL_SDK_DISABLED": "true",
         "NO_PROXY": "127.0.0.1,localhost",
         "PYTHONUNBUFFERED": "1",
     }
+    # setup-uv provisions an extension-capable Python outside the isolated HOME.
+    if "UV_PYTHON_INSTALL_DIR" in os.environ:
+        env["UV_PYTHON_INSTALL_DIR"] = os.environ["UV_PYTHON_INSTALL_DIR"]
     for key in (
         "HOME",
         "XDG_CONFIG_HOME",
