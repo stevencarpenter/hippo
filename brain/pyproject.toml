@@ -83,6 +83,16 @@ build-constraint-dependencies = [
 [tool.hatch.build.targets.wheel]
 packages = ["src/hippo_brain"]
 
+# The repository's JSONL ignore rules also apply to this nested project.
+[tool.hatch.build.targets.wheel.force-include]
+"src/hippo_brain/bench/qa_template.jsonl" = "hippo_brain/bench/qa_template.jsonl"
+# Preserve the CLI's current questions, independently of the historical fixture.
+"tests/eval_questions.json" = "hippo_brain/_fixtures/default_eval_questions.json"
+
+[tool.hatch.build.targets.sdist.force-include]
+"src/hippo_brain/bench/qa_template.jsonl" = "src/hippo_brain/bench/qa_template.jsonl"
+"tests/fixtures/golden_corpus_v1/qa.jsonl" = "tests/fixtures/golden_corpus_v1/qa.jsonl"
+
 [tool.ruff]
 line-length = 100
 target-version = "py314"

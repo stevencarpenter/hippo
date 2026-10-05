@@ -887,7 +887,9 @@ def render_markdown(report: ScoreReport) -> str:
 # ---------------------------------------------------------------------------
 
 
-_DEFAULT_QUESTIONS = Path(__file__).parent.parent.parent / "tests" / "eval_questions.json"
+_DEFAULT_QUESTIONS = Path(__file__).parent / "_fixtures" / "default_eval_questions.json"
+if not _DEFAULT_QUESTIONS.is_file():
+    _DEFAULT_QUESTIONS = Path(__file__).parent.parent.parent / "tests" / "eval_questions.json"
 
 
 def _corpus_stats(conn: sqlite3.Connection) -> dict:

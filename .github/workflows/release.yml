@@ -156,6 +156,8 @@ jobs:
           cp brain/uv.lock hippo-brain-release/brain/
           cp brain/build-constraints.txt hippo-brain-release/brain/
           cp brain/README.md hippo-brain-release/brain/ 2>/dev/null || true
+          mkdir -p hippo-brain-release/brain/tests
+          cp brain/tests/eval_questions.json hippo-brain-release/brain/tests/
 
           # Copy runtime scripts AND shell hooks into the brain tree so
           # they install under ${BRAIN_DIR}/{scripts,shell} rather than
@@ -171,7 +173,7 @@ jobs:
           cp -r extension/claude-skill hippo-brain-release/brain/
 
           # Create the tarball (single top-level entry: brain/)
-          tar -czf "${ARTIFACT_NAME}" -C hippo-brain-release brain
+          COPYFILE_DISABLE=1 tar --no-xattrs -czf "${ARTIFACT_NAME}" -C hippo-brain-release brain
 
           echo "name=${ARTIFACT_NAME}" >> "${GITHUB_OUTPUT}"
           echo "Artifact: ${ARTIFACT_NAME}"
