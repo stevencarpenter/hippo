@@ -298,6 +298,8 @@ pub enum SendEventSource {
 
 #[derive(Subcommand)]
 pub enum ConfigAction {
+    /// Create the default config if it does not exist
+    Init,
     /// Open config in editor
     Edit,
     /// Set a config value

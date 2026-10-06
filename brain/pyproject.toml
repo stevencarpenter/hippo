@@ -1,6 +1,6 @@
 [project]
 name = "hippo-brain"
-version = "0.37.0"
+version = "0.38.0"
 requires-python = ">=3.14"
 dependencies = [
   "httpx>=0.28",
@@ -45,11 +45,53 @@ hippo-auto-memory-probe = "hippo_brain.auto_memory_probe:main"
 hippo-memory-query = "hippo_brain.memory_query:main"
 
 [build-system]
-requires = ["hatchling"]
+# Keep the backend aligned with the hashed release build environment.
+requires = ["hatchling==1.32.4"]
 build-backend = "hatchling.build"
+
+[tool.uv]
+# Hashes also protect source installations using uv sync. Keep these entries
+# aligned with build-constraints.txt, the strict release-build and audit input.
+required-version = ">=0.12.17"
+build-constraint-dependencies = [
+  { requirement = "hatchling==1.32.4", hashes = [
+    "sha256:08ecf7548fb48205e7f213d70c71e67b8271b7242093dc3f1da578b42c734a2c",
+    "sha256:c4468f73144c054d2aab4ef0f0378c43b9878bf07f8ffd6b79690e970d375f07",
+  ] },
+  { requirement = "packaging==26.3", hashes = [
+    "sha256:94edc256424af38762eb31306eed28beb9f0efc50a8837492c9d6fd6004aed79",
+    "sha256:d7193f7c8e4e93f444fde0262bf90af30e16fa0ad0ad44cb553c87339b23cd1c",
+  ] },
+  { requirement = "pathspec==1.1.1", hashes = [
+    "sha256:17db5ecd524104a120e173814c90367a96a98d07c45b2e10c2f3919fff91bf5a",
+    "sha256:a00ce642f577bf7f473932318056212bc4f8bfdf53128c78bbd5af0b9b20b189",
+  ] },
+  { requirement = "pluggy==1.6.0", hashes = [
+    "sha256:7dcc130b76258d33b90f61b658791dede3486c3e6bfb003ee5c9bfb396dd22f3",
+    "sha256:e920276dd6813095e9377c0bc5566d94c932c33b27a3e3945d8389c374dd4746",
+  ] },
+  { requirement = "tomlkit==0.15.1", hashes = [
+    "sha256:177a05aece5a8ca5266fd3c448abb47b8d352f09d477d3ca8332db4d89b24304",
+    "sha256:e25bbf38843005246210a12982776f27f99cb9be67160e14434d0c0d21ee1e97",
+  ] },
+  { requirement = "trove-classifiers==2026.9.21.13", hashes = [
+    "sha256:0a9ebc8d4e2f3e8a22848c5258033035bec17a3012ac3fea16dbaa764489eb71",
+    "sha256:8b1ff4f9c191b1040b71c37f1e445ab99732911e3cd91de52838453a854d7a17",
+  ] },
+]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/hippo_brain"]
+
+# The repository's JSONL ignore rules also apply to this nested project.
+[tool.hatch.build.targets.wheel.force-include]
+"src/hippo_brain/bench/qa_template.jsonl" = "hippo_brain/bench/qa_template.jsonl"
+# Preserve the CLI's current questions, independently of the historical fixture.
+"tests/eval_questions.json" = "hippo_brain/_fixtures/default_eval_questions.json"
+
+[tool.hatch.build.targets.sdist.force-include]
+"src/hippo_brain/bench/qa_template.jsonl" = "src/hippo_brain/bench/qa_template.jsonl"
+"tests/fixtures/golden_corpus_v1/qa.jsonl" = "tests/fixtures/golden_corpus_v1/qa.jsonl"
 
 [tool.ruff]
 line-length = 100

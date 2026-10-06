@@ -237,6 +237,8 @@ def test_load_runtime_settings_rejects_legacy_lmstudio_section(tmp_path, monkeyp
     config_dir.mkdir(parents=True)
     (config_dir / "config.toml").write_text('[lmstudio]\nbase_url = "http://localhost:1234/v1"\n')
     monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
+    monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
+    monkeypatch.delenv("XDG_DATA_HOME", raising=False)
     with pytest.raises(RuntimeError, match=r"\[lmstudio\].*\[inference\]"):
         _load_runtime_settings()
 
@@ -253,6 +255,8 @@ def test_load_runtime_settings_reads_inference_section(tmp_path, monkeypatch):
         '[inference]\nbase_url = "http://omlx:8000/v1"\ntimeout_secs = 120\n'
     )
     monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
+    monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
+    monkeypatch.delenv("XDG_DATA_HOME", raising=False)
     settings = _load_runtime_settings()
     assert settings["inference_base_url"] == "http://omlx:8000/v1"
     assert settings["inference_timeout_secs"] == 120.0

@@ -51,8 +51,49 @@ async fn wait_for_path(path: &std::path::Path, wait_secs: u64) {
     eprintln!(" found.");
 }
 
-#[tokio::main]
-async fn main() -> Result<()> {
+fn main() -> Result<()> {
+    run_with_runtime(run())
+}
+
+#[test]
+fn runtime_shutdown_does_not_wait_for_timed_out_blocking_worker() {
+    let (release, wait) = std::sync::mpsc::channel::<()>();
+    let (finished, result) = std::sync::mpsc::channel();
+    let thread = std::thread::spawn(move || {
+        let outcome = run_with_runtime(async {
+            let (started, ready) = tokio::sync::oneshot::channel();
+            let worker = tokio::task::spawn_blocking(move || {
+                started.send(()).unwrap();
+                let _ = wait.recv();
+            });
+            ready.await?;
+            assert!(
+                tokio::time::timeout(std::time::Duration::from_millis(50), worker)
+                    .await
+                    .is_err()
+            );
+            Ok(())
+        });
+        finished.send(outcome).unwrap();
+    });
+    let outcome = result.recv_timeout(std::time::Duration::from_secs(3));
+    let _ = release.send(());
+    thread.join().unwrap();
+    outcome
+        .expect("runtime shutdown exceeded its bound")
+        .unwrap();
+}
+
+fn run_with_runtime(work: impl std::future::Future<Output = Result<()>>) -> Result<()> {
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?;
+    let result = runtime.block_on(work);
+    runtime.shutdown_timeout(std::time::Duration::from_secs(1));
+    result
+}
+
+async fn run() -> Result<()> {
     // Load config early — needed for telemetry init before CLI parsing
     // Missing configuration already uses defaults in load_default. Invalid or
     // unreadable configuration must not silently re-enable disabled capture.
@@ -1162,21 +1203,49 @@ async fn main() -> Result<()> {
             }
         }
         Commands::Config { action } => match action {
-            ConfigAction::Edit => {
-                let editor = std::env::var("EDITOR").unwrap_or_else(|_| "vi".to_string());
+            ConfigAction::Init | ConfigAction::Edit => {
+                use std::io::Write;
+                use std::os::unix::fs::OpenOptionsExt;
+
                 let config_path = config.storage.config_dir.join("config.toml");
-                std::fs::create_dir_all(&config.storage.config_dir)?;
-                if !config_path.exists() {
-                    std::fs::write(
-                        &config_path,
-                        include_str!("../../../config/config.default.toml"),
-                    )?;
+                hippo_core::storage::ensure_private_dir(&config.storage.config_dir).with_context(
+                    || {
+                        format!(
+                            "failed to create config directory {}",
+                            config.storage.config_dir.display()
+                        )
+                    },
+                )?;
+                match std::fs::OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .mode(0o600)
+                    .open(&config_path)
+                {
+                    Ok(mut file) => file
+                        .write_all(include_bytes!("../../../config/config.default.toml"))
+                        .with_context(|| {
+                            format!("failed to write config at {}", config_path.display())
+                        })?,
+                    Err(error)
+                        if error.kind() == std::io::ErrorKind::AlreadyExists
+                            && config_path.is_file() => {}
+                    Err(error) => {
+                        return Err(error).with_context(|| {
+                            format!("failed to create config at {}", config_path.display())
+                        });
+                    }
                 }
-                let status = std::process::Command::new(editor)
-                    .arg(&config_path)
-                    .status()?;
-                if !status.success() {
-                    eprintln!("Editor exited with non-zero status");
+                if matches!(action, ConfigAction::Edit) {
+                    let editor = std::env::var("EDITOR").unwrap_or_else(|_| "vi".to_string());
+                    let status = std::process::Command::new(editor)
+                        .arg(&config_path)
+                        .status()?;
+                    if !status.success() {
+                        eprintln!("Editor exited with non-zero status");
+                    }
+                } else {
+                    println!("Config ready: {}", config_path.display());
                 }
             }
             ConfigAction::Set { key, value } => {

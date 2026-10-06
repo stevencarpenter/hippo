@@ -288,6 +288,8 @@ class TestLoadConfig:
     def test_missing_config_returns_defaults(self, tmp_path, monkeypatch):
         """When config.toml doesn't exist, defaults are returned."""
         monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
+        monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
+        monkeypatch.delenv("XDG_DATA_HOME", raising=False)
         config = _load_config()
         assert "hippo.db" in config["db_path"]
         assert config["inference_base_url"] == "http://127.0.0.1:42069/v1"
@@ -305,6 +307,8 @@ class TestLoadConfig:
             '[models]\nembedding = "nomic-embed"\n'
         )
         monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
+        monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
+        monkeypatch.delenv("XDG_DATA_HOME", raising=False)
         config = _load_config()
         assert config["db_path"] == "/custom/data/hippo.db"
         assert config["data_dir"] == "/custom/data"
@@ -317,6 +321,8 @@ class TestLoadConfig:
         config_dir.mkdir(parents=True)
         (config_dir / "config.toml").write_text('[inference]\nbase_url = "http://other:9999/v1"\n')
         monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
+        monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
+        monkeypatch.delenv("XDG_DATA_HOME", raising=False)
         config = _load_config()
         # storage section missing → defaults
         assert config["data_dir"] == str(tmp_path / ".local" / "share" / "hippo")
@@ -331,6 +337,8 @@ class TestLoadConfig:
         config_dir.mkdir(parents=True)
         (config_dir / "config.toml").write_text('[lmstudio]\nbase_url = "http://custom:5678/v1"\n')
         monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
+        monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
+        monkeypatch.delenv("XDG_DATA_HOME", raising=False)
         with pytest.raises(RuntimeError, match=r"\[lmstudio\].*\[inference\]"):
             _load_config()
 

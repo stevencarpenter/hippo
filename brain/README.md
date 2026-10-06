@@ -5,6 +5,9 @@ a local OpenAI-compatible inference server (default oMLX, LM Studio also support
 
 ## Setup
 
+See the [project prerequisites](../README.md#prerequisites) and
+[release build constraints](../docs/release.md#publication-gates) before installing.
+
 ```bash
 uv sync --project brain
 ```
@@ -80,7 +83,7 @@ The brain server listens on `127.0.0.1:9175` and exposes:
 - `GET /knowledge/{id}` — One enriched knowledge node by id
 - `POST /query` — Lexical or semantic search over events and knowledge nodes
 - `POST /ask` — RAG answer synthesis over retrieved knowledge
-- `POST /control/pause` — Stop claiming new enrichment work while keeping ingestion live
+- `POST /control/pause` — Apply the [pause contract](../README.md#usage)
 - `POST /control/resume` — Resume enrichment work
 - `GET /openapi.json` — OpenAPI 3.1 contract for the routes above
 
@@ -115,9 +118,9 @@ model to be running.
 
 ### Pausing enrichment
 
-`POST /control/pause` pauses only the brain worker's queue claims. The daemon,
-watchers, and pollers keep writing to SQLite, so queue depth can grow while the
-local chat model is unloaded or reserved for another benchmark:
+See the [pause contract](../README.md#usage) for query rejection, draining
+in-flight inference, and the standalone MCP exception. Capture continues while
+HTTP knowledge queries and new background inference are paused:
 
 ```bash
 mise run brain:api:pause
@@ -125,8 +128,7 @@ mise run brain:api:health
 mise run brain:api:resume
 ```
 
-For complete model quiescence, unload the brain LaunchAgent instead of using the
-soft pause endpoint:
+To stop the brain process entirely, unload its LaunchAgent:
 
 ```bash
 launchctl bootout "gui/$(id -u)" ~/Library/LaunchAgents/com.hippo.brain.plist

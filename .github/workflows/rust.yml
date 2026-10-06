@@ -1,6 +1,7 @@
 name: Rust CI
 
 on:
+  workflow_call:
   pull_request:
     paths:
       - "crates/**"
@@ -8,6 +9,7 @@ on:
       - "Cargo.toml"
       - "Cargo.lock"
       - ".github/workflows/rust.yml"
+      - ".github/workflows/release.yml"
   push:
     branches: [main]
     paths:
@@ -16,9 +18,10 @@ on:
       - "Cargo.toml"
       - "Cargo.lock"
       - ".github/workflows/rust.yml"
+      - ".github/workflows/release.yml"
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: rust-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 env:
@@ -37,11 +40,12 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
         with:
+          toolchain: "1.98" # Matches rust-toolchain.toml.
           components: rustfmt
 
       - name: Check formatting
@@ -53,27 +57,25 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # macOS runs on merges to main (event=push) but not on every PR — macOS
-        # runners bill at ~10x Linux, and PR CI fires on every agent-loop push.
-        # Cross-platform coverage is preserved at merge; release.yml still builds
-        # macOS on tags. Set to include macOS on PRs too if you want it required
-        # pre-merge (revert to `[ubuntu-latest, macos-latest]`).
-        os: ${{ github.event_name == 'push' && fromJSON('["ubuntu-latest", "macos-latest"]') || fromJSON('["ubuntu-latest"]') }}
+        # Tag pushes and manual candidates test both platforms. PRs use Linux
+        # to limit macOS runner costs. Reusable calls retain the caller's event.
+        os: ${{ github.event_name != 'pull_request' && fromJSON('["ubuntu-latest", "macos-latest"]') || fromJSON('["ubuntu-latest"]') }}
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
 
       - name: Install zsh (Ubuntu)
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y zsh
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
         with:
+          toolchain: "1.98" # Matches rust-toolchain.toml.
           components: clippy
 
       - name: Setup Rust cache
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           shared-key: rust-ci-${{ matrix.os }}-${{ github.base_ref || github.ref_name }}
           cache-on-failure: true
@@ -87,26 +89,30 @@ jobs:
         if: github.event_name == 'pull_request'
         run: cargo build --all-targets --locked --no-default-features
 
-      - name: Build all targets (merge, default features)
-        if: github.event_name == 'push'
+      - name: Build all targets (non-PR, default features)
+        if: github.event_name != 'pull_request'
         run: cargo build --all-targets --locked
 
       - name: Run clippy
         run: cargo clippy --all-targets --locked --no-deps -- -D warnings
 
       - name: Clippy (no default features)
-        run: cargo clippy --no-default-features --all-targets -p hippo-daemon -- -D warnings
+        run: cargo clippy --locked --no-default-features --all-targets -p hippo-daemon -- -D warnings
 
       - name: Run tests (PR, no default features)
         if: github.event_name == 'pull_request'
         run: cargo test --locked --no-fail-fast --no-default-features
 
-      - name: Run tests (merge, default features)
-        if: github.event_name == 'push'
+      - name: Run tests (non-PR, default features)
+        if: github.event_name != 'pull_request'
         run: cargo test --locked --no-fail-fast
 
+      - name: Run tests (release feature set)
+        if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/')
+        run: cargo test --locked --no-fail-fast --no-default-features
+
       - name: Install cargo-audit
-        uses: taiki-e/install-action@cargo-audit
+        uses: taiki-e/install-action@2f205a16b33670c6744bb9451ca070d71ad155fa # cargo-audit
 
       - name: Audit Rust dependencies
         run: cargo audit --file Cargo.lock

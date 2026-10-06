@@ -14,12 +14,16 @@
 //!   `byte_offset` is stored as `current_size` (matching `size_at_last_read`) so a
 //!   future seek-based optimisation can use it without a schema change.
 //! - Resets offset on inode/device change (file replaced) or size regression (truncated).
-//! - Writes `source_health WHERE source='claude-session-watcher'` every 30 s.
-//! - Every heartbeat tick, runs `run_settling_sweep` to enqueue segments where
-//!   `content_hash != last_enriched_content_hash` and the source file has been
-//!   idle for 30+ minutes.  This is the backstop for the T-A.4 debounce gate.
+//! - A non-overlapping maintenance worker schedules heartbeat, settling, and
+//!   discovery at 30 s intervals; SQLite contention can delay completion.
+//! - Reconciliation retries missed notifications and writes during cooldown
+//!   even when no further filesystem events arrive.
+//! - Settling enqueues segments where `content_hash != last_enriched_content_hash`
+//!   and the source file has been idle for 30+ minutes, backing the T-A.4 debounce gate.
+//!
+//! See `docs/capture/architecture.md` for the watcher shutdown contract.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
@@ -54,6 +58,8 @@ struct FileState {
     size_at_last_read: u64,
     /// When to retry after a processing timeout.
     cooldown_until: Option<Instant>,
+    /// A timed-out blocking task must finish before another parser can start.
+    in_flight: Option<tokio::task::AbortHandle>,
 }
 
 /// Load all saved offsets from `agentic_session_offsets` into memory.
@@ -83,6 +89,7 @@ fn load_offsets(conn: &Connection) -> Result<HashMap<PathBuf, FileState>> {
                 device,
                 size_at_last_read: size,
                 cooldown_until: None,
+                in_flight: None,
             },
         );
     }
@@ -120,9 +127,17 @@ fn save_offset(conn: &Connection, path: &Path, state: &FileState) -> Result<()> 
 /// Process new content in a single file.  Returns the number of segments inserted.
 ///
 /// Runs `ingest_session_file` in a `spawn_blocking` task so the async executor
-/// is never stalled by SQLite I/O.  `PER_FILE_TIMEOUT` is enforced as a hard
-/// upper bound; a timeout puts the file into cooldown just as a parsing error would.
+/// is never stalled by SQLite I/O. `PER_FILE_TIMEOUT` bounds the wait, not the
+/// blocking task; a timeout enters cooldown and retries wait for that task to finish.
 async fn process_file(path: &Path, state: &mut FileState, db_path: &Path) -> Result<usize> {
+    if state
+        .in_flight
+        .as_ref()
+        .is_some_and(|task| !task.is_finished())
+    {
+        return Ok(0);
+    }
+    state.in_flight = None;
     if let Some(until) = state.cooldown_until {
         if Instant::now() < until {
             return Ok(0);
@@ -181,7 +196,7 @@ async fn process_file(path: &Path, state: &mut FileState, db_path: &Path) -> Res
     let path_owned = path.to_path_buf();
     let db_path_owned = db_path.to_path_buf();
 
-    let task = tokio::task::spawn_blocking(move || -> Result<(usize, usize, usize)> {
+    let mut task = tokio::task::spawn_blocking(move || -> Result<(usize, usize, usize)> {
         let conn = open_db(&db_path_owned)?;
         let (inserted, skipped, errors) = ingest_session_file(&conn, &path_owned);
         if errors == 0 {
@@ -199,7 +214,8 @@ async fn process_file(path: &Path, state: &mut FileState, db_path: &Path) -> Res
         Ok((inserted, skipped, errors))
     });
 
-    let join_result = match tokio::time::timeout(PER_FILE_TIMEOUT, task).await {
+    state.in_flight = Some(task.abort_handle());
+    let join_result = match tokio::time::timeout(PER_FILE_TIMEOUT, &mut task).await {
         Err(_elapsed) => {
             warn!(
                 path = %path.display(),
@@ -211,6 +227,7 @@ async fn process_file(path: &Path, state: &mut FileState, db_path: &Path) -> Res
         }
         Ok(r) => r,
     };
+    state.in_flight = None;
 
     #[cfg(feature = "otel")]
     crate::metrics::WATCHER_PROCESS_DURATION_MS.record(start.elapsed().as_secs_f64() * 1000.0, &[]);
@@ -258,6 +275,66 @@ fn find_session_files(projects_dir: &Path) -> Vec<PathBuf> {
         })
         .map(|e| e.into_path())
         .collect()
+}
+
+/// Check one file before returning to signal, heartbeat, and notification polling.
+/// The size/inode guard limits unchanged files to a metadata check.
+async fn reconcile_next_file(
+    pending: &mut VecDeque<PathBuf>,
+    states: &mut HashMap<PathBuf, FileState>,
+    db_path: &Path,
+) {
+    let Some(path) = pending.pop_front() else {
+        return;
+    };
+    let state = states.entry(path.clone()).or_default();
+    match process_file(&path, state, db_path).await {
+        Ok(0) => {}
+        Ok(n) => {
+            info!(path = %path.display(), inserted = n, "watcher: reconciled segments");
+        }
+        Err(e) => {
+            warn!(path = %path.display(), %e, "watcher: reconciliation error");
+        }
+    }
+}
+
+async fn wait_responsive(
+    work: impl std::future::Future<Output = Result<()>>,
+    shutdown: impl std::future::Future<Output = ()>,
+) -> Result<()> {
+    tokio::select! {
+        biased;
+        _ = shutdown => Ok(()),
+        result = work => result,
+    }
+}
+
+async fn maintain(
+    mut conn: Connection,
+    projects: PathBuf,
+    mut ticks: tokio::time::Interval,
+    discovered: tokio::sync::watch::Sender<Vec<PathBuf>>,
+) -> Result<()> {
+    ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    loop {
+        ticks.tick().await;
+        let projects = projects.clone();
+        let (returned_conn, files) = tokio::task::spawn_blocking(move || {
+            heartbeat_and_settle(&conn);
+            (conn, find_session_files(&projects))
+        })
+        .await?;
+        conn = returned_conn;
+        discovered.send_replace(files);
+    }
+}
+
+fn heartbeat_and_settle(conn: &Connection) {
+    upsert_heartbeat(conn);
+    if let Err(e) = run_settling_sweep(conn, 10, Utc::now().timestamp_millis()) {
+        warn!(%e, "watcher: settling sweep error");
+    }
 }
 
 /// Upsert the watcher's own heartbeat in `source_health`.
@@ -484,7 +561,7 @@ fn run_settling_sweep(
             }
             Err(e) => {
                 warn!(%e, agentic_session_row_id, "watcher: settling sweep enqueue failed");
-                // Non-fatal: continue trying remaining candidates.
+                return Err(e);
             }
         }
     }
@@ -589,6 +666,18 @@ fn check_backfill_needed(conn: &Connection) -> usize {
 
 /// Entry point — runs until SIGTERM/ctrl-c.
 pub async fn run(config: &HippoConfig) -> Result<()> {
+    let mut sigterm = unix_signal(SignalKind::terminate())
+        .context("watcher: failed to install SIGTERM handler")?;
+    wait_responsive(watch(config), async {
+        tokio::select! {
+            _ = sigterm.recv() => info!("watcher: received SIGTERM, shutting down"),
+            _ = tokio::signal::ctrl_c() => info!("watcher: received SIGINT, shutting down"),
+        }
+    })
+    .await
+}
+
+async fn watch(config: &HippoConfig) -> Result<()> {
     let db_path = config.db_path();
 
     let projects = match projects_dir() {
@@ -601,37 +690,22 @@ pub async fn run(config: &HippoConfig) -> Result<()> {
 
     warn_if_remote_fs(&projects);
 
-    // Open our own write connection (WAL, separate from the daemon).
-    let conn = open_db(&db_path).context("watcher: failed to open DB")?;
-
-    // One-shot startup check: warn if Bug A truncation residue is present.
-    check_backfill_needed(&conn);
-
-    // Load saved offsets and build initial state map.
-    let mut states: HashMap<PathBuf, FileState> = load_offsets(&conn).unwrap_or_default();
-
-    // Startup scan — catch up on any content written while we were down.
-    let initial_files = find_session_files(&projects);
-    info!(count = initial_files.len(), "watcher: startup scan");
-    for path in &initial_files {
-        let state = states.entry(path.clone()).or_default();
-        match process_file(path, state, &db_path).await {
-            Ok(n) if n > 0 => {
-                info!(path = %path.display(), inserted = n, "watcher: startup catch-up");
-            }
-            _ => {}
-        }
-    }
-
-    upsert_heartbeat(&conn);
+    let startup_db = db_path.clone();
+    let (conn, states) = tokio::task::spawn_blocking(move || -> Result<_> {
+        let conn = open_db(&startup_db).context("watcher: failed to open DB")?;
+        check_backfill_needed(&conn);
+        let states = load_offsets(&conn).unwrap_or_default();
+        Ok((conn, states))
+    })
+    .await??;
 
     // Set up FSEvents subscription.
-    let (tx, mut rx) = mpsc::channel::<Event>(256);
+    let (tx, rx) = mpsc::channel::<Event>(256);
     let mut watcher = RecommendedWatcher::new(
         move |event: notify::Result<Event>| {
             if let Ok(e) = event {
-                // try_send never blocks the notify thread; Full drops events (the full-file
-                // reparse on the next write catches anything missed); Closed means shutdown.
+                // try_send never blocks the notify thread; reconciliation catches
+                // dropped notifications even without another write. Closed means shutdown.
                 if let Err(tokio::sync::mpsc::error::TrySendError::Full(_)) = tx.try_send(e) {
                     debug!("watcher: FSEvents channel full; event dropped");
                     #[cfg(feature = "otel")]
@@ -677,32 +751,33 @@ pub async fn run(config: &HippoConfig) -> Result<()> {
         "watcher: listening for FSEvents"
     );
 
-    let mut heartbeat_tick = tokio::time::interval(HEARTBEAT_INTERVAL);
+    let (discovered, discoveries) = tokio::sync::watch::channel(Vec::new());
+    tokio::select! {
+        result = maintain(conn, projects, tokio::time::interval(HEARTBEAT_INTERVAL), discovered) => result,
+        result = ingest_events(states, &db_path, rx, discoveries) => result,
+    }
+}
 
-    // Handle both SIGTERM (launchd stop / system shutdown) and SIGINT (ctrl-c).
-    let mut sigterm = unix_signal(SignalKind::terminate())
-        .context("watcher: failed to install SIGTERM handler")?;
-
+async fn ingest_events(
+    mut states: HashMap<PathBuf, FileState>,
+    db_path: &Path,
+    mut rx: mpsc::Receiver<Event>,
+    mut discoveries: tokio::sync::watch::Receiver<Vec<PathBuf>>,
+) -> Result<()> {
+    let mut pending_reconciliation = VecDeque::new();
     loop {
         tokio::select! {
-            _ = sigterm.recv() => {
-                info!("watcher: received SIGTERM, shutting down");
-                break;
-            }
-            _ = tokio::signal::ctrl_c() => {
-                info!("watcher: received SIGINT, shutting down");
-                break;
-            }
-
-            _ = heartbeat_tick.tick() => {
-                upsert_heartbeat(&conn);
-                let now_ms = Utc::now().timestamp_millis();
-                match run_settling_sweep(&conn, 10, now_ms) {
-                    Ok(_) => {}
-                    Err(e) => {
-                        warn!(%e, "watcher: settling sweep error");
+            changed = discoveries.changed() => {
+                changed?;
+                for path in discoveries.borrow_and_update().iter() {
+                    if !pending_reconciliation.contains(path) {
+                        pending_reconciliation.push_back(path.clone());
                     }
                 }
+            }
+            _ = std::future::ready(()), if !pending_reconciliation.is_empty() => {
+                reconcile_next_file(&mut pending_reconciliation, &mut states, db_path).await;
+                tokio::task::yield_now().await;
             }
 
             Some(event) = rx.recv() => {
@@ -718,22 +793,13 @@ pub async fn run(config: &HippoConfig) -> Result<()> {
                     if path.extension().is_none_or(|e| e != "jsonl") {
                         continue;
                     }
-                    let state = states.entry(path.clone()).or_default();
-                    match process_file(&path, state, &db_path).await {
-                        Ok(0) => {}
-                        Ok(n) => {
-                            info!(path = %path.display(), inserted = n, "watcher: ingested segments");
-                        }
-                        Err(e) => {
-                            warn!(path = %path.display(), %e, "watcher: processing error");
-                        }
+                    if !pending_reconciliation.contains(&path) {
+                        pending_reconciliation.push_back(path);
                     }
                 }
             }
         }
     }
-
-    Ok(())
 }
 
 /// Generate a minimal Claude JSONL line for testing.
@@ -778,6 +844,283 @@ mod tests {
 
     fn j(session_id: &str, ts: u64, kind: &str, text: &str) -> String {
         make_test_jsonl_line(session_id, ts, kind, text)
+    }
+
+    async fn reconcile_files(
+        projects: &Path,
+        states: &mut HashMap<PathBuf, FileState>,
+        db_path: &Path,
+    ) {
+        let mut pending: VecDeque<PathBuf> = find_session_files(projects).into();
+        while !pending.is_empty() {
+            reconcile_next_file(&mut pending, states, db_path).await;
+        }
+    }
+
+    #[tokio::test]
+    async fn reconciliation_returns_after_one_file_with_backlog_remaining() {
+        let dir = TempDir::new().unwrap();
+        let db_path = dir.path().join("test.db");
+        let conn = open_db(&db_path).unwrap();
+        let mut pending = VecDeque::new();
+        for session_id in ["first", "second"] {
+            let path = dir.path().join(format!("{session_id}.jsonl"));
+            std::fs::write(&path, j(session_id, 1, "user", "hello") + "\n").unwrap();
+            pending.push_back(path);
+        }
+
+        let mut states = HashMap::new();
+        reconcile_next_file(&mut pending, &mut states, &db_path).await;
+        assert_eq!(pending.len(), 1);
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM agentic_sessions", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(
+            count, 1,
+            "return to event polling before processing the backlog"
+        );
+
+        reconcile_next_file(&mut pending, &mut states, &db_path).await;
+        assert!(pending.is_empty());
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM agentic_sessions", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(count, 2);
+    }
+
+    #[tokio::test]
+    async fn reconciliation_recovers_missed_creation_and_final_append_after_cooldown() {
+        use std::io::Write;
+
+        let dir = TempDir::new().unwrap();
+        let db_path = dir.path().join("test.db");
+        let conn = open_db(&db_path).unwrap();
+        let projects = dir.path().join("projects");
+        let nested = projects.join("project/subagents");
+        std::fs::create_dir_all(&nested).unwrap();
+        let mut states = HashMap::new();
+        reconcile_files(&projects, &mut states, &db_path).await;
+
+        // No filesystem notification is delivered for this new subagent file.
+        let session_id = "missed-notification";
+        let path = nested.join(format!("{session_id}.jsonl"));
+        let initial = j(session_id, 1, "user", "initial prompt") + "\n";
+        std::fs::write(&path, &initial).unwrap();
+        reconcile_files(&projects, &mut states, &db_path).await;
+        assert_eq!(states[&path].byte_offset, initial.len() as u64);
+        let initial_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM agentic_sessions", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(initial_count, 1);
+
+        // A final append arrives during cooldown and never gets another write.
+        states.get_mut(&path).unwrap().cooldown_until = Some(Instant::now() + BACKOFF_DURATION);
+        let mut file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap();
+        writeln!(file, "{}", j(session_id, 2, "user", "final prompt")).unwrap();
+        process_file(&path, states.get_mut(&path).unwrap(), &db_path)
+            .await
+            .unwrap();
+        reconcile_files(&projects, &mut states, &db_path).await;
+        assert_eq!(states[&path].byte_offset, initial.len() as u64);
+
+        states.get_mut(&path).unwrap().cooldown_until = Some(Instant::now());
+        reconcile_files(&projects, &mut states, &db_path).await;
+        assert_eq!(states[&path].byte_offset, file.metadata().unwrap().len());
+        let summary: String = conn
+            .query_row("SELECT summary_text FROM agentic_sessions", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert!(summary.contains("final prompt"));
+
+        // An unchanged file must not be reparsed or reset enrichment state.
+        conn.execute_batch(
+            "UPDATE agentic_enrichment_queue SET status = 'done';
+             CREATE TRIGGER reject_reparse BEFORE INSERT ON agentic_sessions
+             BEGIN SELECT RAISE(ABORT, 'unchanged file reparsed'); END;",
+        )
+        .unwrap();
+        reconcile_files(&projects, &mut states, &db_path).await;
+        assert!(states[&path].cooldown_until.is_none());
+        let status: String = conn
+            .query_row("SELECT status FROM agentic_enrichment_queue", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(status, "done");
+    }
+
+    #[tokio::test]
+    async fn process_file_waits_for_timed_out_worker_before_retrying() {
+        let dir = TempDir::new().unwrap();
+        let db_path = dir.path().join("test.db");
+        let conn = open_db(&db_path).unwrap();
+        let path = dir.path().join("in-flight.jsonl");
+        std::fs::write(&path, j("in-flight", 1, "user", "hello") + "\n").unwrap();
+
+        let (release, wait) = std::sync::mpsc::channel::<()>();
+        let task = tokio::task::spawn_blocking(move || {
+            let _ = wait.recv();
+        });
+        let mut state = FileState {
+            in_flight: Some(task.abort_handle()),
+            cooldown_until: Some(Instant::now()),
+            ..Default::default()
+        };
+
+        assert_eq!(process_file(&path, &mut state, &db_path).await.unwrap(), 0);
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM agentic_sessions", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(count, 0, "a retry must not overlap the unfinished worker");
+        assert_eq!(state.byte_offset, 0);
+
+        release.send(()).unwrap();
+        task.await.unwrap();
+        assert!(process_file(&path, &mut state, &db_path).await.unwrap() > 0);
+        assert!(state.in_flight.is_none());
+    }
+
+    #[tokio::test]
+    async fn shared_database_contention_keeps_cancellation_responsive() {
+        let dir = TempDir::new().unwrap();
+        let db_path = dir.path().join("ingestion.db");
+        let lock = open_db(&db_path).unwrap();
+        let maintenance_conn = open_db(&db_path).unwrap();
+        let path = dir.path().join("pending.jsonl");
+        std::fs::write(&path, j("pending", 1, "user", "hello") + "\n").unwrap();
+        let settled = dir.path().join("settled.jsonl");
+        std::fs::write(&settled, "settled content").unwrap();
+        set_mtime_seconds_ago(&settled, 35 * 60);
+        seed_session(
+            &lock,
+            1,
+            "settled",
+            settled.to_str().unwrap(),
+            Some("new"),
+            Some("old"),
+            None,
+            Some(r#"["hello"]"#),
+        );
+        seed_queue(&lock, 1, "done");
+        lock.execute_batch("BEGIN IMMEDIATE").unwrap();
+        let mut state = FileState::default();
+        let (discovered, _discoveries) = tokio::sync::watch::channel(Vec::new());
+        let started = Instant::now();
+        wait_responsive(
+            async {
+                tokio::select! {
+                    result = maintain(maintenance_conn, dir.path().to_path_buf(),
+                        tokio::time::interval(Duration::from_millis(10)), discovered) => result,
+                    result = process_file(&path, &mut state, &db_path) => {
+                        panic!("ingestion completed while locked: {result:?}");
+                    }
+                }
+            },
+            async {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            },
+        )
+        .await
+        .unwrap();
+        assert!(started.elapsed() < Duration::from_secs(1));
+        assert!(!state.in_flight.as_ref().unwrap().is_finished());
+        let first_worker = state.in_flight.as_ref().unwrap().id();
+        assert_eq!(process_file(&path, &mut state, &db_path).await.unwrap(), 0);
+        assert_eq!(state.in_flight.as_ref().unwrap().id(), first_worker);
+        assert_eq!(queue_status(&lock, 1).as_deref(), Some("done"));
+        lock.execute_batch("ROLLBACK").unwrap();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while !state.in_flight.as_ref().unwrap().is_finished()
+                || queue_status(&lock, 1).as_deref() != Some("pending")
+            {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        let last_beat: i64 = lock
+            .query_row(
+                "SELECT last_success_ts FROM source_health WHERE source = 'claude-session-watcher'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(last_beat > 0);
+        process_file(&path, &mut state, &db_path).await.unwrap();
+        assert!(state.in_flight.is_none());
+        assert_eq!(state.byte_offset, std::fs::metadata(path).unwrap().len());
+    }
+
+    #[tokio::test]
+    async fn maintenance_retries_settling_and_discovery_after_contention() {
+        let dir = TempDir::new().unwrap();
+        let db_path = dir.path().join("test.db");
+        let lock = open_db(&db_path).unwrap();
+        let conn = open_db(&db_path).unwrap();
+        conn.busy_timeout(Duration::from_millis(10)).unwrap();
+        let (discovered, mut discoveries) = tokio::sync::watch::channel(Vec::new());
+        let first = dir.path().join("first.jsonl");
+        std::fs::write(&first, "first").unwrap();
+        set_mtime_seconds_ago(&first, 35 * 60);
+        seed_session(
+            &lock,
+            1,
+            "settled",
+            first.to_str().unwrap(),
+            Some("new"),
+            Some("old"),
+            None,
+            Some(r#"["hello"]"#),
+        );
+        seed_queue(&lock, 1, "done");
+        lock.execute_batch("BEGIN IMMEDIATE").unwrap();
+        let maintenance = maintain(
+            conn,
+            dir.path().to_path_buf(),
+            tokio::time::interval(Duration::from_millis(10)),
+            discovered,
+        );
+        let observe = async {
+            discoveries.changed().await.unwrap();
+            assert!(discoveries.borrow_and_update().contains(&first));
+            assert_eq!(queue_status(&lock, 1).as_deref(), Some("done"));
+            let second = dir.path().join("second.jsonl");
+            std::fs::write(&second, "second").unwrap();
+            loop {
+                discoveries.changed().await.unwrap();
+                if discoveries.borrow_and_update().contains(&second) {
+                    break;
+                }
+            }
+            lock.execute_batch("ROLLBACK").unwrap();
+            loop {
+                discoveries.changed().await.unwrap();
+                drop(discoveries.borrow_and_update());
+                if queue_status(&lock, 1).as_deref() == Some("pending") {
+                    break;
+                }
+            }
+        };
+        tokio::time::timeout(Duration::from_secs(2), async {
+            tokio::select! {
+                result = maintenance => panic!("maintenance stopped: {result:?}"),
+                _ = observe => {},
+            }
+        })
+        .await
+        .unwrap();
     }
 
     #[tokio::test]

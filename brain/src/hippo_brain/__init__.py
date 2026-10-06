@@ -26,8 +26,18 @@ def _coerce_float(value: object, default: float) -> float:
         return default
 
 
+def _default_config_path() -> Path:
+    base = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config")
+    return base / "hippo" / "config.toml"
+
+
+def _storage_data_dir(config: dict) -> Path:
+    base = Path(os.environ.get("XDG_DATA_HOME") or Path.home() / ".local" / "share")
+    return Path(config.get("storage", {}).get("data_dir", base / "hippo")).expanduser()
+
+
 def _default_settings() -> dict:
-    data_dir = Path.home() / ".local" / "share" / "hippo"
+    data_dir = _storage_data_dir({})
     return {
         "db_path": str(data_dir / "hippo.db"),
         "data_dir": str(data_dir),
@@ -55,17 +65,15 @@ def _default_settings() -> dict:
 
 
 def _load_runtime_settings() -> dict:
-    config_path = Path.home() / ".config" / "hippo" / "config.toml"
+    defaults = _default_settings()
+    config_path = _default_config_path()
     if not config_path.exists():
-        return _default_settings()
+        return defaults
 
     with config_path.open("rb") as f:
         config = tomllib.load(f)
 
-    storage = config.get("storage", {})
-    data_dir = Path(
-        storage.get("data_dir", Path.home() / ".local" / "share" / "hippo")
-    ).expanduser()
+    data_dir = _storage_data_dir(config)
 
     # Section name changed from [lmstudio] -> [inference] in the omlx
     # vendor-neutrality PR. The Rust daemon already reads [inference]; the
@@ -226,7 +234,8 @@ def main() -> None:
         prog="hippo-brain",
         description=(
             "Hippo brain — enrichment + query server. Reads settings from "
-            "~/.config/hippo/config.toml and serves an HTTP API on 127.0.0.1."
+            "$XDG_CONFIG_HOME/hippo/config.toml (default ~/.config/hippo/config.toml) "
+            "and serves an HTTP API on 127.0.0.1."
         ),
     )
     sub = parser.add_subparsers(dest="command", required=True)

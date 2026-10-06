@@ -509,7 +509,7 @@
     {
       "id": 8,
       "title": "Capture Lag by Source",
-      "description": "Seconds since each capture source produced any signal of life (event or heartbeat). One line per source means OTel sees that source. Sourced from the source_health table — the same SQL ground truth the watchdog evaluates invariants against. Sources with no rows ever (NULL last_event_ts AND last_heartbeat_ts) intentionally emit nothing rather than spike to infinity.",
+      "description": "Seconds since the latest capture liveness signal: production event, heartbeat, or the latest shell, Claude-tool, or browser ingest probe when that probe succeeded. This measures capture liveness, not production activity. Values come from source_health. Sources without any of these signals emit no lag sample.",
       "type": "timeseries",
       "gridPos": {
         "x": 0,

@@ -1,14 +1,21 @@
 name: Release
 
 on:
+  workflow_dispatch:
+    inputs:
+      candidate_tag:
+        description: 'Candidate version matching package manifests and lockfiles (vX.Y.Z)'
+        required: true
+        type: string
   push:
     tags:
       - 'v*.*.*'
 
 permissions:
-  contents: write
+  contents: read
 
 env:
+  RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.candidate_tag || github.ref_name }}
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: 0
   CARGO_NET_RETRY: 10
@@ -16,23 +23,49 @@ env:
   RUSTUP_MAX_RETRIES: 10
 
 jobs:
+  validate-version:
+    name: Validate release version
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.14'
+      - name: Match tag to manifests and lockfiles
+        run: python scripts/check_release_version.py "$RELEASE_TAG"
+
+  rust:
+    needs: validate-version
+    uses: ./.github/workflows/rust.yml
+
+  python:
+    needs: validate-version
+    uses: ./.github/workflows/python.yml
+
+  installer:
+    needs: validate-version
+    uses: ./.github/workflows/installer.yml
+
   build-daemon:
     name: Build Daemon Binary
+    needs: validate-version
     runs-on: macos-latest
     timeout-minutes: 30
     outputs:
       artifact_name: ${{ steps.artifact.outputs.name }}
       checksum: ${{ steps.checksum.outputs.checksum }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
         with:
+          toolchain: "1.98" # Matches rust-toolchain.toml.
           targets: aarch64-apple-darwin
 
       - name: Setup Rust cache
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           shared-key: release-daemon-${{ github.ref_name }}
           cache-on-failure: false
@@ -40,7 +73,7 @@ jobs:
       - name: Extract version from tag
         id: version
         run: |
-          VERSION="${GITHUB_REF_NAME#v}"
+          VERSION="${RELEASE_TAG#v}"
           echo "version=${VERSION}" >> "${GITHUB_OUTPUT}"
           echo "Version: ${VERSION}"
 
@@ -70,7 +103,7 @@ jobs:
           echo "Checksum: ${CHECKSUM}"
 
       - name: Upload daemon artifact
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: daemon-binary
           path: ${{ steps.artifact.outputs.name }}
@@ -79,30 +112,31 @@ jobs:
 
   build-brain:
     name: Build Brain Package
+    needs: validate-version
     runs-on: macos-latest
     timeout-minutes: 20
     outputs:
       artifact_name: ${{ steps.artifact.outputs.name }}
       checksum: ${{ steps.checksum.outputs.checksum }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v7
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
         with:
-          version: "latest"
+          version: "0.12.17"
 
       - name: Extract version from tag
         id: version
         run: |
-          VERSION="${GITHUB_REF_NAME#v}"
+          VERSION="${RELEASE_TAG#v}"
           echo "version=${VERSION}" >> "${GITHUB_OUTPUT}"
           echo "Version: ${VERSION}"
 
       - name: Build brain package
         run: |
           cd brain
-          uv build
+          uv build --build-constraints build-constraints.txt --require-hashes
 
       - name: Create brain tarball
         id: artifact
@@ -120,7 +154,10 @@ jobs:
           cp -r brain/src hippo-brain-release/brain/
           cp brain/pyproject.toml hippo-brain-release/brain/
           cp brain/uv.lock hippo-brain-release/brain/
+          cp brain/build-constraints.txt hippo-brain-release/brain/
           cp brain/README.md hippo-brain-release/brain/ 2>/dev/null || true
+          mkdir -p hippo-brain-release/brain/tests
+          cp brain/tests/eval_questions.json hippo-brain-release/brain/tests/
 
           # Copy runtime scripts AND shell hooks into the brain tree so
           # they install under ${BRAIN_DIR}/{scripts,shell} rather than
@@ -136,7 +173,7 @@ jobs:
           cp -r extension/claude-skill hippo-brain-release/brain/
 
           # Create the tarball (single top-level entry: brain/)
-          tar -czf "${ARTIFACT_NAME}" -C hippo-brain-release brain
+          COPYFILE_DISABLE=1 tar --no-xattrs -czf "${ARTIFACT_NAME}" -C hippo-brain-release brain
 
           echo "name=${ARTIFACT_NAME}" >> "${GITHUB_OUTPUT}"
           echo "Artifact: ${ARTIFACT_NAME}"
@@ -150,23 +187,31 @@ jobs:
           echo "Checksum: ${CHECKSUM}"
 
       - name: Upload brain artifact
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: brain-package
           path: ${{ steps.artifact.outputs.name }}
           if-no-files-found: error
           retention-days: 7
 
-  release:
-    name: Create Release
-    needs: [build-daemon, build-brain]
+  prepare-release:
+    name: Prepare Release Bundle
+    needs: [validate-version, rust, python, installer, build-daemon, build-brain]
     runs-on: macos-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
+        with:
+          version: "0.12.17"
+
+      # Python.org's macOS build cannot load sqlite-vec extensions.
+      - name: Install Python with SQLite extension support
+        run: uv python install 3.14
 
       - name: Download all artifacts
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           path: artifacts
 
@@ -207,7 +252,7 @@ jobs:
       - name: Extract release notes
         id: notes
         run: |
-          VERSION="${GITHUB_REF_NAME#v}"
+          VERSION="${RELEASE_TAG#v}"
           cat > release-notes.md <<EOF
           # Hippo ${VERSION}
 
@@ -216,7 +261,7 @@ jobs:
           ### Quick Install (macOS)
 
           \`\`\`bash
-          curl -fsSL https://github.com/stevencarpenter/hippo/releases/download/${GITHUB_REF_NAME}/install.sh | bash
+          curl -fsSL https://github.com/stevencarpenter/hippo/releases/download/${RELEASE_TAG}/install.sh | bash
           \`\`\`
 
           ### Manual Installation
@@ -247,6 +292,50 @@ jobs:
 
           echo "Release notes prepared"
 
+      - name: Archive release bundle
+        run: tar -czf release-bundle.tar.gz release-files release-notes.md
+
+      - name: Smoke test the packaged installation
+        run: uv run --no-project --python 3.14 python scripts/smoke_release_bundle.py release-bundle.tar.gz --output-dir "$RUNNER_TEMP/hippo-release-smoke"
+
+      - name: Upload installation smoke evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: release-smoke-${{ env.RELEASE_TAG }}
+          path: |
+            ${{ runner.temp }}/hippo-release-smoke/results.json
+            ${{ runner.temp }}/hippo-release-smoke/*.log
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - name: Upload release bundle
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: release-bundle-${{ env.RELEASE_TAG }}
+          path: release-bundle.tar.gz
+          if-no-files-found: error
+          retention-days: 7
+
+  release:
+    name: Create Release
+    needs: prepare-release
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
+    permissions:
+      contents: write
+    runs-on: macos-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - name: Download verified release bundle
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: release-bundle-${{ env.RELEASE_TAG }}
+
+      - name: Extract release bundle
+        run: tar -xzf release-bundle.tar.gz
+
       - name: Create or update GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -271,14 +360,8 @@ jobs:
       - name: Release summary
         run: |
           {
-            echo "### Release ${{ github.ref_name }} Published! :rocket:"
-            echo ""
-            echo "#### Artifacts"
-            echo "- Daemon: \`${{ needs.build-daemon.outputs.artifact_name }}\`"
-            echo "- Brain: \`${{ needs.build-brain.outputs.artifact_name }}\`"
-            echo ""
-            echo "#### Quick Install"
+            echo "### Release ${RELEASE_TAG} published"
             echo '```bash'
-            echo "curl -fsSL https://github.com/stevencarpenter/hippo/releases/download/${{ github.ref_name }}/install.sh | bash"
+            echo "curl -fsSL https://github.com/stevencarpenter/hippo/releases/download/${RELEASE_TAG}/install.sh | bash"
             echo '```'
           } >> "${GITHUB_STEP_SUMMARY}"

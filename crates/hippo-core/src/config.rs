@@ -270,6 +270,7 @@ pub struct StorageConfig {
 /// ~/Library/Application Support) so all components agree on a single path.
 fn default_data_dir() -> PathBuf {
     let base = std::env::var_os("XDG_DATA_HOME")
+        .filter(|value| !value.is_empty())
         .map(PathBuf::from)
         .or_else(|| dirs::home_dir().map(|h| h.join(".local/share")))
         .unwrap_or_else(|| PathBuf::from(".local/share"));
@@ -293,6 +294,7 @@ pub fn default_brain_dir() -> PathBuf {
 /// XDG-based config directory. Same rationale as default_data_dir.
 fn default_config_dir() -> PathBuf {
     let base = std::env::var_os("XDG_CONFIG_HOME")
+        .filter(|value| !value.is_empty())
         .map(PathBuf::from)
         .or_else(|| dirs::home_dir().map(|h| h.join(".config")))
         .unwrap_or_else(|| PathBuf::from(".config"));

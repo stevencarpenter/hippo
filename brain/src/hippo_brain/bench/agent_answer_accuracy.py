@@ -1,4 +1,4 @@
-"""Score independently reviewed, prospectively sampled agent Hippo answers."""
+"""Compute conditional answer statistics; external evidence must qualify acceptance."""
 
 from __future__ import annotations
 
@@ -31,7 +31,11 @@ def _boolean(row: dict, field: str) -> bool:
 
 
 def score(rows: list[dict], frame: list[dict]) -> dict:
-    """Use the first frozen natural call per family and every absent control."""
+    """Use the first framed natural call per family and every absent control.
+
+    Labels and frame identities permit statistical scoring, but do not establish
+    source support, human reviewer provenance, or prospective sampling.
+    """
     if not isinstance(frame, list) or not frame or not isinstance(rows, list):
         raise ValueError("expected frozen frame and adjudicated row arrays")
     frame_ids = [_identity(item) for item in frame]
@@ -110,6 +114,15 @@ def score(rows: list[dict], frame: list[dict]) -> dict:
         "absent_control_failures": failures,
         "absent_failure_upper_97_5_percent": failure_upper,
         "verdict": verdict,
+        "verdict_scope": "conditional_statistics",
+        "acceptance_qualified": False,
+        "unverified_prerequisites": [
+            "prospectively_frozen_frame",
+            "consecutive_capture_window",
+            "independent_source_audit",
+            "independent_task_families",
+            "independent_blinded_human_reviews",
+        ],
     }
 
 

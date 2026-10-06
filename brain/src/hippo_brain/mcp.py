@@ -15,6 +15,7 @@ from typing import Any
 from mcp.server.fastmcp import FastMCP
 from mcp.types import ToolAnnotations
 
+from hippo_brain import _default_config_path, _storage_data_dir
 from hippo_brain.agent_query import AgentQueryRequest, agent_query_parameters, run_agent_query
 from hippo_brain.client import InferenceClient
 from hippo_brain.decision_capture import capture_decision, capture_query
@@ -100,14 +101,15 @@ def _record_result(tool: str, count: int, *, degraded: bool = False) -> None:
 
 
 def _load_config() -> dict:
-    """Load Hippo config from ~/.config/hippo/config.toml.
+    """Load Hippo config from the XDG config directory, falling back to HOME.
 
     Returns a dict with db_path, data_dir, inference_base_url, embedding_model, query_model.
     """
-    config_path = Path.home() / ".config" / "hippo" / "config.toml"
+    config_path = _default_config_path()
+    data_dir = _storage_data_dir({})
     defaults = {
-        "db_path": str(Path.home() / ".local" / "share" / "hippo" / "hippo.db"),
-        "data_dir": str(Path.home() / ".local" / "share" / "hippo"),
+        "db_path": str(data_dir / "hippo.db"),
+        "data_dir": str(data_dir),
         "inference_base_url": "http://127.0.0.1:42069/v1",
         "embedding_model": "",
         "query_model": "",
@@ -123,10 +125,7 @@ def _load_config() -> dict:
     with config_path.open("rb") as f:
         config = tomllib.load(f)
 
-    storage = config.get("storage", {})
-    data_dir = Path(
-        storage.get("data_dir", Path.home() / ".local" / "share" / "hippo")
-    ).expanduser()
+    data_dir = _storage_data_dir(config)
 
     # Section renamed from [lmstudio] -> [inference] in the omlx PR. Fail loud
     # on the legacy name; see hippo_brain.__init__ and HippoConfig::load

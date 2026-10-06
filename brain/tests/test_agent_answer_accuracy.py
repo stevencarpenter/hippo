@@ -43,6 +43,55 @@ def test_accuracy_gate_passes_with_first_call_per_family():
     assert result["absent_failure_upper_97_5_percent"] <= 0.05
 
 
+@pytest.mark.parametrize("reviewer_kind", [None, "AI", "human"])
+def test_passing_statistics_do_not_qualify_acceptance(reviewer_kind: str | None) -> None:
+    rows, frame = sample()
+    if reviewer_kind is not None:
+        for row in rows:
+            row["reviewer_kind"] = reviewer_kind
+
+    result = score(rows, frame)
+
+    assert result["verdict"] == "pass"
+    assert result["verdict_scope"] == "conditional_statistics"
+    assert result["acceptance_qualified"] is False
+    assert result["unverified_prerequisites"] == [
+        "prospectively_frozen_frame",
+        "consecutive_capture_window",
+        "independent_source_audit",
+        "independent_task_families",
+        "independent_blinded_human_reviews",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("index", "field"),
+    [(0, field) for field in ("answerable", "correct", "fully_supported", "superseded")]
+    + [(-1, "unsupported_claim")],
+)
+def test_rejects_missing_judgments(index: int, field: str) -> None:
+    rows, frame = sample()
+    del rows[index][field]
+    with pytest.raises(ValueError, match=f"{field} requires an adjudicated boolean"):
+        score(rows, frame)
+
+
+@pytest.mark.parametrize("duplicate_frame", [False, True])
+def test_rejects_duplicate_call_ids(duplicate_frame: bool) -> None:
+    rows, frame = sample()
+    data = frame if duplicate_frame else rows
+    data[1]["id"] = data[0]["id"]
+    with pytest.raises(ValueError, match="duplicate .* call ID"):
+        score(rows, frame)
+
+
+def test_rejects_control_family_overlap_with_natural_calls() -> None:
+    rows, frame = sample()
+    rows[-1]["family"] = frame[-1]["family"] = frame[0]["family"]
+    with pytest.raises(ValueError, match="independent families"):
+        score(rows, frame)
+
+
 def test_one_absent_control_failure_fails_and_missing_family_is_inconclusive():
     rows, frame = sample()
     rows[-1]["response_status"] = "tool_error"

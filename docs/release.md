@@ -1,172 +1,173 @@
 # Release Process
 
-This document describes the automated release pipeline for Hippo.
+Hippo publishes one daemon binary and one brain package per stable `vX.Y.Z`
+tag. Publication requires matching package versions and successful Rust,
+Python, and installer checks on the tagged commit. Manual candidate runs
+build the same artifacts without creating or updating a GitHub Release.
 
-## Overview
+These checks establish the release's build and regression-test status.
+The [v1.0 readiness assessment](research/2026-09-24-v1-readiness.md),
+[current acceptance contract](../config/agent-benefit-v2.json), and
+[current acceptance status](research/2026-10-04-v1-acceptance-status.md)
+define the separate empirical evidence requirements. The
+[October 1 evaluation](research/2026-10-01-mcp-context-evaluation.md)
+records a successful selected known-history task. It does not establish a
+population effect or satisfy the acceptance gate.
 
-When a version tag is pushed (format: `v*.*.*`), GitHub Actions automatically builds all components, creates a GitHub Release, and attaches installable artifacts with checksums.
+## Preparing a release
 
-## Triggering a Release
+1. Set `[workspace.package].version` in `Cargo.toml` and `[project].version`
+   in `brain/pyproject.toml` to the same `X.Y.Z`. Run `mise run build:all`
+   and include the refreshed `Cargo.lock` and `brain/uv.lock` in the change.
 
-Hippo's daemon and brain ship in lockstep: one tag → one GitHub Release
-with both artifacts. The daemon's startup handshake (see
-`crates/hippo-daemon/src/schema_handshake.rs`) requires the brain to run a
-matching schema version; a mismatch causes the daemon to refuse to bind its
-socket. Bumping the daemon and brain versions together keeps the handshake
-honest.
+2. Validate the intended tag locally, substituting the selected version:
 
-1. Bump the version in the shared manifests to the same `X.Y.Z`:
    ```bash
-   # Rust workspace (covers hippo-core + hippo-daemon)
-   vim Cargo.toml                  # [workspace.package].version
-
-   # Python brain
-   vim brain/pyproject.toml        # [project].version
+   mise run release:check-version vX.Y.Z
+   mise run test
    ```
-   Lockfiles (`Cargo.lock`, `brain/uv.lock`) refresh on the next build.
 
-2. Open a PR with the version bump and whatever feature work rides with the
-   release. Get it reviewed and merged to `main`.
+   The version check requires a stable tag with no leading zeroes, prerelease
+   suffix, or build metadata. It compares both manifests and each internal
+   package entry in the lockfiles. Package versions and [schema compatibility](schema.md)
+   are separate requirements; a matching package version does not validate
+   a schema migration.
 
-3. After the merge lands on `main`, tag `main` — **not the feature branch**:
+3. Merge the reviewed change to `main`, then tag the merged commit:
+
    ```bash
-   git checkout main && git pull
-   git tag vX.Y.Z                  # e.g. v0.13.0
+   git switch main
+   git pull --ff-only
+   git tag vX.Y.Z
    git push origin vX.Y.Z
    ```
-   Why tag `main` rather than the feature branch? The release workflow builds
-   from whatever the tag points at. Squash or rebase merges rewrite the SHA,
-   so a tag on the branch HEAD can point at a commit that isn't on `main` —
-   the release artifacts then diverge from what's actually shipped.
 
-4. The release workflow will automatically:
-   - Build the daemon binary for macOS (aarch64)
-   - Package the brain Python project
-   - Create SHA256 checksums for all artifacts
-   - Create a GitHub Release with all artifacts attached
-   - Include the `install.sh` script for one-liner installation
+   Tagging the merged commit keeps the release source consistent with `main`
+   after a squash or rebase merge.
 
-## Release Artifacts
+## Publication gates
 
-Each release includes:
+The [release workflow](../.github/workflows/release.yml) runs these jobs:
 
-| Artifact | Description | Example |
-|----------|-------------|---------|
-| `hippo-darwin-arm64` | Daemon binary for macOS Apple Silicon | `hippo-darwin-arm64` |
-| `hippo-brain-{version}.tar.gz` | Python brain project (including uv.lock, scripts, and runtime dependencies resolved via `uv` during install) | `hippo-brain-X.Y.Z.tar.gz` |
-| `SHA256SUMS.txt` | Checksums for all artifacts | Contains SHA-256 hashes |
-| `install.sh` | One-liner installation script | Downloads and verifies all components |
+| Job | Required result |
+| --- | --- |
+| `validate-version` | Tag, Rust/Python manifests, and internal lockfile versions match. |
+| `rust` | Reused Rust CI passes formatting, clippy, tests, and dependency audit. Linux and macOS test default features and the release's `--no-default-features` configuration. |
+| `python` | Reused Python CI audits runtime and build dependencies separately, validates the committed lockfile, and passes lint, formatting, and tests with the configured coverage threshold on Linux and macOS. |
+| `installer` | Reused installer CI passes isolated upgrade, rollback, and shell-path tests, including daemon selection from `PATH`. |
+| `build-daemon`, `build-brain` | Both artifacts build and upload successfully. |
 
-## Workflow Jobs
+The reusable workflows resolve from the same commit as the release workflow.
+Calls retain the caller's event, so branch and path filters cannot skip the
+release checks. Tag pushes and manual candidates both run Linux and macOS
+tests, including both Rust feature configurations. Each called workflow has
+a distinct concurrency group.
 
-The release workflow consists of two parallel build jobs and a final release job:
+External workflow actions are pinned to verified commits. Python build and
+test jobs use uv 0.12.17. The brain build pins Hatchling and its transitive
+build dependencies by version and hash in `brain/build-constraints.txt` and
+`brain/pyproject.toml`. Release builds require hashes, and source installation
+with `uv sync --locked --no-editable` enforces the same build constraints.
+The package requires uv 0.12.17 or newer and rejects older versions before
+installation. Keep both build-constraint declarations aligned when updating
+the build environment.
 
-### 1. `build-daemon` (macOS runner)
-- Builds the Rust daemon binary for `aarch64-apple-darwin`
-- Strips debug symbols to reduce size
-- Generates SHA-256 checksum
-- Uploads artifact for release job
+Python advisory checks run on pull requests, release workflow calls, and a
+weekly schedule. The two OSV scans fail independently for advisories or invalid
+inputs and retain their JSON reports. A successful core scan does not clear
+the optional dependency findings in the
+[dependency disposition](research/2026-10-05-dependency-disposition.md).
 
-### 2. `build-brain` (macOS runner)
-- Builds the Python brain package using `uv`
-- Creates a tarball with the wheel, source files, `uv.lock` (for reproducible installs), and runtime scripts
-- Generates SHA-256 checksum
-- Uploads artifact for release job
+Artifact builds and checks run in parallel after version validation.
+`prepare-release` requires all six successful jobs, verifies checksums, and
+smoke tests the packaged installation before uploading the complete bundle.
+The smoke uses private HOME/XDG directories, installs the supplied artifacts,
+checks configuration and reinstall preservation, and runs the installed daemon,
+brain, shell capture, and offline lexical retrieval. It registers no LaunchAgents
+and uses no model service. The `release` job consumes that bundle only for
+tag-push events and is the only job granted `contents: write`. Manual runs
+skip that job, including when dispatched against an existing tag.
 
-### 3. `release` (macOS runner)
-- Depends on both build jobs
-- Downloads all artifacts
-- Creates `SHA256SUMS.txt` with all checksums
-- Generates release notes with installation instructions
-- Creates GitHub Release via `gh` CLI
-- Attaches all artifacts to the release
+The daemon artifact targets `aarch64-apple-darwin` and disables default features,
+including the OTel metrics exporter. Build from source with `mise run build:release`
+for the default feature set.
 
-## Installation Script
+## Release artifacts
 
-The `scripts/install.sh` script provides automated installation:
+| Artifact | Contents |
+| --- | --- |
+| `hippo-darwin-arm64` | Daemon and CLI for macOS Apple Silicon. |
+| `hippo-brain-X.Y.Z.tar.gz` | Brain wheel, source distribution, source files, `uv.lock`, hashed build constraints, runtime scripts, shell hooks, and Claude skills. Runtime dependencies are installed with `uv`. |
+| `SHA256SUMS.txt` | SHA-256 checksums for the daemon and brain archives. |
+| `install.sh` | Installer that downloads and verifies the daemon and brain artifacts. |
+
+The outer brain archive includes `tests/eval_questions.json` beside `src` so
+installer rebuilds can package the [default evaluation corpus](eval-harness-design.md#question-set).
+Exact Hatchling force-include mappings in `brain/pyproject.toml` retain the QA
+template in wheels and source distributions and the golden QA JSONL in source
+distributions without allowing arbitrary JSONL files. Tests requiring root
+Rust, scripts, or docs assets still require a repository checkout.
+The macOS archive command suppresses AppleDouble files and extended-attribute
+PAX records; ordinary tar modes, owners, and timestamps remain.
+
+The installer places the daemon at `~/.local/bin/hippo`, the brain at
+`~/.local/share/hippo-brain/`, and configuration under the [configured XDG roots](../README.md#data-storage).
+It installs LaunchAgents through `hippo daemon install`, preserving the selected
+daemon's stable path with `--binary-path`, including package-managed symlinks.
+See [capture architecture](capture/architecture.md#claude-session-watcher) for
+watcher reconciliation and shutdown behavior.
 
 ```bash
 curl -fsSL https://github.com/stevencarpenter/hippo/releases/latest/download/install.sh | bash
 ```
 
-The script:
-1. Detects macOS architecture (`uname -m`)
-2. Fetches the latest release tag from GitHub API
-3. Downloads `SHA256SUMS.txt` for verification
-4. Downloads each component and verifies its checksum
-5. Installs components to standard locations:
-   - Daemon: `~/.local/bin/hippo`
-   - Brain: `~/.local/share/hippo-brain/`
-6. Sets up configuration at `~/.config/hippo/`
-7. Installs LaunchAgents via `hippo daemon install`
+## Checking workflow changes locally
 
-## Testing the Release Workflow
+Run the version, installed-resource, archive-layout, and installer regressions
+without publishing:
 
-To test the workflow without creating a real release:
+```bash
+mise run test:python:focused brain/tests/test_release_version.py brain/tests/test_package_resources.py brain/tests/test_release_smoke.py -q
+mise run test:install
+actionlint .github/workflows/release.yml .github/workflows/rust.yml .github/workflows/python.yml .github/workflows/installer.yml
+```
 
-1. Create a test tag locally:
+A pushed tag triggers publication when all gates pass. `v0.0.0-test` is rejected
+by version validation and is not a dry-run mechanism.
+
+## Checking a hosted candidate
+
+1. Dispatch the existing release workflow against the pushed candidate branch,
+   supplying a stable tag that matches its manifests and lockfiles:
+
    ```bash
-   git tag v0.0.0-test
+   npx -y gh-axi workflow run release.yml --ref CANDIDATE_BRANCH --field candidate_tag=vX.Y.Z
    ```
 
-2. Push to a test branch first to verify workflows pass:
+   The input selects the version for validation and artifact names. It does
+   not create a Git tag. A branch build retains its normal development version
+   metadata in the daemon binary.
+
+2. Find the successful run and download its bundle:
+
    ```bash
-   git checkout -b test-release
-   git push origin test-release
+   npx -y gh-axi run list --workflow release.yml --branch CANDIDATE_BRANCH --event workflow_dispatch
+   npx -y gh-axi run download RUN_ID --name release-bundle-vX.Y.Z --dir candidate-release
    ```
 
-3. Only push the tag when ready:
+3. Exercise the downloaded bundle on macOS with Python 3.14, uv 0.12.17+, and zsh:
+
    ```bash
-   git push origin v0.0.0-test
+   mise run release:smoke candidate-release/release-bundle.tar.gz
    ```
 
-4. Delete test releases via GitHub UI or CLI:
-   ```bash
-   gh release delete v0.0.0-test --yes
-   git tag -d v0.0.0-test
-   git push origin :refs/tags/v0.0.0-test
-   ```
+   The command verifies checksums before installation and prints the retained
+   `results.json` path. Dependency installation may download locked wheels.
+   Runtime checks use an isolated database and an unreachable inference endpoint.
+   A failed smoke exits nonzero and retains its logs. The hosted run also retains
+   its result and logs as `release-smoke-vX.Y.Z`.
 
-## Caching
-
-The workflow uses caching to speed up builds:
-
-- **Rust cache**: `Swatinem/rust-cache@v2` caches Cargo dependencies
-
-## Security
-
-- All artifacts are verified with SHA-256 checksums
-- The `install.sh` script verifies checksums before installation
-- No secrets or credentials are embedded in artifacts
-- Code signing uses ad-hoc signing (`codesign --sign -`)
-
-## Troubleshooting
-
-### Build failures
-
-- Check the workflow run logs in GitHub Actions
-- Verify all dependencies are available on the runner
-- Ensure version numbers are correctly formatted
-
-### Missing artifacts
-
-- Check that both build jobs completed successfully
-- Verify the artifact upload steps didn't fail
-- Check the release job logs for download issues
-
-### Checksum verification failures
-
-- Ensure artifacts weren't modified after upload
-- Check that the checksum generation step completed
-- Verify the `SHA256SUMS.txt` format is correct
-
-## Future Enhancements
-
-Potential improvements to the release pipeline:
-
-- [ ] Add x86_64 (Intel) macOS builds
-- [ ] Add automatic changelog generation
-- [ ] Sign artifacts with Developer ID certificate
-- [ ] Add Linux builds for daemon and brain
-- [ ] Create Homebrew formula
-- [ ] Add release notes from git commits
+The bundle contains `release-files/` with the four installable release assets
+and `release-notes.md`. GitHub retains it for seven days. The generated notes
+describe the prospective tagged release; their download URL is published only
+by a successful tag-push run.

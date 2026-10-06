@@ -46,11 +46,11 @@ INSTALL LOCATIONS:
     ~/.claude/skills/                           Claude Code skills (copies)
     ~/.local/state/hippo/install-receipts/      per-component install receipts
                                                 (respects XDG_STATE_HOME)
-    ~/.config/hippo/                            config
+    ~/.config/hippo/                            config (respects XDG_CONFIG_HOME)
     ~/.local/share/hippo/                       runtime data (SQLite, logs)
 
 REQUIREMENTS:
-    macOS only. bash, curl, uv (Python package manager), python3.
+    macOS only. bash, curl, uv 0.12.17+ (Python package manager), python3.
 EOF
 }
 
@@ -73,8 +73,12 @@ REPO="stevencarpenter/hippo"
 INSTALL_DIR="${HOME}/.local"
 BIN_DIR="${INSTALL_DIR}/bin"
 BRAIN_DIR="${INSTALL_DIR}/share/hippo-brain"
-CONFIG_DIR="${HOME}/.config/hippo"
-DATA_DIR="${HOME}/.local/share/hippo"
+# Older daemons treat exported empty XDG roots as relative paths.
+# Normalize once so every child uses the installer's resolved locations.
+export XDG_CONFIG_HOME="${XDG_CONFIG_HOME:-${HOME}/.config}"
+export XDG_DATA_HOME="${XDG_DATA_HOME:-${HOME}/.local/share}"
+CONFIG_DIR="${XDG_CONFIG_HOME}/hippo"
+DATA_DIR="${XDG_DATA_HOME}/hippo"
 # Receipts live under XDG_STATE_HOME (not DATA_DIR) so a user wipe of Hippo's
 # runtime data doesn't desynchronize them from the actual installed binaries.
 RECEIPTS_DIR="${XDG_STATE_HOME:-${HOME}/.local/state}/hippo/install-receipts"
@@ -105,8 +109,9 @@ log_error() {
 
 # Detect OS and architecture
 detect_platform() {
-    local os="$(uname -s)"
-    local arch="$(uname -m)"
+    local os arch
+    os="$(uname -s)"
+    arch="$(uname -m)"
 
     if [ "${os}" != "Darwin" ]; then
         log_error "This installer only supports macOS. Detected: ${os}"
@@ -292,26 +297,25 @@ install_daemon() {
     log_success "Daemon installed"
 }
 
-# Probe the deployed brain venv for the imports the brain process needs at
-# startup. Returns 0 on success, 1 on any import failure. Catches the
-# half-installed-namespace bug (dist-info present, package contents empty)
-# that surfaces only at brain-startup time as a generic ImportError.
+# Verify startup imports and SQLite extension support in the brain venv.
+# Importing sqlite_vec alone does not prove that this Python can load it.
 verify_brain_imports() {
     local brain_dir="$1"
-    # Importing `create_app` exercises the full startup import graph
-    # (starlette, uvicorn, httpx, sqlite_vec, opentelemetry, psutil, plus the
-    # hippo_brain.* internal modules). A strict superset of probing the
-    # third-party packages individually — protects against the same shape of
-    # bug surfacing in any startup-path dep, not just opentelemetry.
     local probe='
 import sys
 try:
+    from contextlib import closing
+    import sqlite3
+    import sqlite_vec
     from hippo_brain.server import create_app  # noqa: F401
+    with closing(sqlite3.connect(":memory:")) as conn:
+        conn.enable_load_extension(True)
+        sqlite_vec.load(conn)
+        conn.enable_load_extension(False)
+        conn.execute("SELECT vec_version()").fetchone()
     sys.exit(0)
 except Exception as exc:
-    # Print to stdout: any CI capture that records only stdout still gets
-    # the diagnostic, and the non-zero exit already signals failure.
-    print(f"brain import probe failed: {exc!r}")
+    print(f"brain runtime probe failed ({sys.executable}): {exc!r}", file=sys.stderr)
     sys.exit(1)
 '
     (cd "${brain_dir}" && uv run --no-sync python -c "${probe}")
@@ -381,11 +385,11 @@ install_brain() {
         exit 1
     fi
     if ! verify_brain_imports "${brain_staging}"; then
-        log_warning "Brain imports failed after sync; retrying with --reinstall..."
+        log_warning "Brain runtime probe failed after sync; retrying with --reinstall..."
         if ! (cd "${brain_staging}" && uv sync --locked --no-editable --reinstall 2>&1) \
                 || ! verify_brain_imports "${brain_staging}"; then
             rm -rf "${brain_staging}"
-            log_error "Staged brain imports failed; existing brain preserved"
+            log_error "Staged brain runtime probe failed; existing brain preserved"
             exit 1
         fi
     fi
@@ -406,7 +410,7 @@ install_brain() {
     if ! verify_brain_imports "${BRAIN_DIR}"; then
         rm -rf "${BRAIN_DIR}"
         [ ! -e "${brain_backup}" ] || mv "${brain_backup}" "${BRAIN_DIR}"
-        log_error "Relocated brain imports failed; existing brain restored"
+        log_error "Relocated brain runtime probe failed; existing brain restored"
         exit 1
     fi
 
@@ -425,7 +429,9 @@ install_brain() {
 # fails. The subshell's EXIT trap also handles explicit exits in the helpers.
 install_components() (
     local arch="$1" tag="$2" checksums_file="$3" temp_dir="$4"
-    local rollback_dir components_committed=false
+    # Bash 3.2 can end function-local scope before EXIT under bash -c.
+    # Keep trap state in this subshell, which cannot alter the caller's state.
+    components_committed=false
     rollback_dir="$(mktemp -d "${temp_dir}/rollback.XXXXXX")"
     if [ -e "${BIN_DIR}/hippo" ] || [ -L "${BIN_DIR}/hippo" ]; then
         cp -pP "${BIN_DIR}/hippo" "${rollback_dir}/hippo"
@@ -433,6 +439,8 @@ install_components() (
     if [ -f "${RECEIPTS_DIR}/daemon.sha256" ]; then
         cp -p "${RECEIPTS_DIR}/daemon.sha256" "${rollback_dir}/daemon.sha256"
     fi
+    # Assigned first inside the EXIT handler, before either consumer below.
+    # shellcheck disable=SC2154
     trap '
         install_status=$?
         if [ "${install_status}" -ne 0 ] && [ "${components_committed}" = false ]; then
@@ -543,6 +551,7 @@ install_skills() {
 
 # Setup configuration
 setup_config() {
+    local hippo_binary="$1"
     log_info "Setting up configuration..."
 
     mkdir -p "${CONFIG_DIR}"
@@ -550,7 +559,15 @@ setup_config() {
 
     if [ ! -f "${CONFIG_DIR}/config.toml" ]; then
         log_info "Creating default config.toml..."
-        "${BIN_DIR}/hippo" config init 2>/dev/null || true
+        local config_action=init
+        if ! "${hippo_binary}" config init --help >/dev/null 2>&1; then
+            config_action=edit
+        fi
+        if ! (umask 077; EDITOR=true "${hippo_binary}" config "${config_action}") \
+                || [ ! -f "${CONFIG_DIR}/config.toml" ]; then
+            log_error "Failed to initialize configuration at ${CONFIG_DIR}/config.toml"
+            return 1
+        fi
     fi
 
     log_success "Configuration setup complete"
@@ -558,17 +575,18 @@ setup_config() {
 
 # Install LaunchAgents
 install_services() {
+    local hippo_binary="$1"
     log_info "Installing LaunchAgents..."
 
-    if [ -x "${BIN_DIR}/hippo" ]; then
-        "${BIN_DIR}/hippo" daemon install --force --brain-dir "${BRAIN_DIR}" || {
+    if [ -x "${hippo_binary}" ]; then
+        "${hippo_binary}" daemon install --force --binary-path "${hippo_binary}" --brain-dir "${BRAIN_DIR}" || {
             log_warning "Failed to install LaunchAgents automatically"
             log_info "You can install them manually later with: hippo daemon install --brain-dir '${BRAIN_DIR}'"
         }
         # daemon install only restarts services that were already running (upgrade path).
         # For fresh installs the plists are written but services aren't bootstrapped yet.
         # daemon start is idempotent: skips services that are already loaded.
-        "${BIN_DIR}/hippo" daemon start || true
+        "${hippo_binary}" daemon start || true
     fi
 
     log_success "Services installed"
@@ -580,10 +598,11 @@ install_services() {
 # 10–30s to import torch and bind its HTTP port, so we poll until the
 # daemon's socket is live before firing the full doctor run.
 verify_installation() {
+    local hippo_binary="$1"
     log_info "Verifying installation (this can take ~30s on a cold start)..."
 
-    if [ ! -x "${BIN_DIR}/hippo" ]; then
-        log_warning "Skipping verification — daemon binary not executable at ${BIN_DIR}/hippo"
+    if [ ! -x "${hippo_binary}" ]; then
+        log_warning "Skipping verification — daemon binary not executable at ${hippo_binary}"
         return 0
     fi
 
@@ -618,7 +637,7 @@ verify_installation() {
     local brain_up=0
     while [ $((SECONDS - started_at)) -lt "${max_wait}" ]; do
         if [ "${daemon_up}" -eq 0 ] \
-            && "${BIN_DIR}/hippo" status >/dev/null 2>&1; then
+            && "${hippo_binary}" status >/dev/null 2>&1; then
             daemon_up=1
         fi
         if [ "${brain_up}" -eq 0 ] \
@@ -640,7 +659,7 @@ verify_installation() {
     fi
 
     echo ""
-    if "${BIN_DIR}/hippo" doctor; then
+    if "${hippo_binary}" doctor; then
         log_success "Hippo doctor: all checks passed"
         return 0
     fi
@@ -703,9 +722,13 @@ warn_on_stale_shell_hook_sources() {
         # $HOME at end-of-string only — we don't replace $HOME followed
         # by an identifier char (e.g. $HOMEDIR). Glob is single-quoted so
         # `$` is a literal here, not a parameter expansion.
+        # Match the literal token read from the user's source line.
+        # shellcheck disable=SC2016
         case "${p}" in
             *'$HOME') p="${p%\$HOME}${HOME}" ;;
         esac
+        # Match literal tildes from the source line; expand them in the arms.
+        # shellcheck disable=SC2088
         case "${p}" in
             '~') p="${HOME}" ;;
             '~/'*)
@@ -773,17 +796,22 @@ main() {
     echo ""
 
     # Detect platform
-    local arch="$(detect_platform)"
+    local arch
+    arch="$(detect_platform)"
     log_info "Detected architecture: ${arch}"
 
     # Get latest release
-    local tag="$(get_latest_release)"
+    local tag
+    tag="$(get_latest_release)"
     log_info "Latest release: ${tag}"
     echo ""
 
     # Create temporary directory
-    local temp_dir="$(mktemp -d)"
-    trap "rm -rf ${temp_dir}" EXIT
+    local temp_dir
+    temp_dir="$(mktemp -d)"
+    # Capture the local path now, quoted for the EXIT handler after main returns.
+    # shellcheck disable=SC2064
+    trap "$(printf 'rm -rf -- %q' "${temp_dir}")" EXIT
 
     # Download checksums file
     log_info "Downloading checksums..."
@@ -794,6 +822,13 @@ main() {
     install_components "${arch}" "${tag}" "${temp_dir}/SHA256SUMS.txt" "${temp_dir}"
     echo ""
 
+    # A package-managed daemon may only be on PATH when installation is skipped.
+    local hippo_binary="${BIN_DIR}/hippo"
+    if [ ! -x "${hippo_binary}" ]; then
+        hippo_binary="$(command -v hippo)"
+        hippo_binary="$(cd "$(dirname "${hippo_binary}")" && pwd)/$(basename "${hippo_binary}")"
+    fi
+
     install_skills
     echo ""
 
@@ -801,16 +836,16 @@ main() {
     echo ""
 
     # Setup
-    setup_config
+    setup_config "${hippo_binary}"
     echo ""
 
-    install_services
+    install_services "${hippo_binary}"
     echo ""
 
     check_dependencies
     echo ""
 
-    verify_installation
+    verify_installation "${hippo_binary}"
     echo ""
 
     # Success message

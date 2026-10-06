@@ -585,12 +585,9 @@ calling out:
    fail the run — that is an infra signal, NOT a model verdict. If a run shows
    widespread drops or a model lands in `errored`, probe the server directly
    (`POST /v1/chat/completions` a few times) and restart it before trusting any
-   numbers. Also **fully quiesce the prod brain** for the run window when you
-   need to unload a local model: the soft `/control/pause` stops new claims but
-   not an in-flight batch, and a running prod brain can still contend for the
-   inference server. Hard-stop it (`launchctl bootout "gui/$(id -u)" ~/Library/LaunchAgents/com.hippo.brain.plist`,
-   leaving `com.hippo.daemon` and ingest agents up so capture keeps queueing)
-   for a clean run.
+   numbers. Before unloading a local model, follow the
+   [brain control semantics](../../../../README.md#usage) to drain in-flight
+   inference and account for standalone consumers.
 
 Use the `tier0_verdict.skipped_gates` field to surface "didn't measure this" vs.
 "failed this" in any leaderboard you publish.

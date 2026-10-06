@@ -45,7 +45,7 @@ Retrieval applies eligibility from [`retrieval_eligibility.py`](../../brain/src/
 | **Synthetic / probe** | `events.probe_tag IS NOT NULL` — synthetic `hippo probe` commands. **Excluded** from MCP/RAG by default. |
 | **Expected absent** | No rows when terminal idle, hook not sourced, or command redacted to empty. |
 | **In-flight** | N/A — shell events are point-in-time. |
-| **Freshness** | `source_health.source = 'shell'` → `last_event_ts`, `probe_ok`, `probe_lag_ms`. Invariant **I-1**. |
+| **Freshness** | See the [`source_health` capture liveness definition](architecture.md#source_health) and invariant **I-1**. |
 | **Safe to cite** | `command` (redacted), `cwd`, `git_repo`, `git_branch`, `exit_code`, `duration_ms`, `timestamp` |
 | **Do not cite** | Raw `stdout`/`stderr` blobs unless operator mode; `probe_tag`; `env_snapshot_id` internals |
 
@@ -180,7 +180,7 @@ Retrieval applies eligibility from [`retrieval_eligibility.py`](../../brain/src/
 | **Synthetic / probe** | `probe_ok`, `probe_lag_ms`, `probe_last_run_ts` describe **canary** health, not user events |
 | **Expected absent** | Row missing only on pre-v8 schema; new sources seed via migration |
 | **In-flight** | N/A |
-| **Freshness** | Self-describing — `last_event_ts` staleness vs invariant thresholds in [`architecture.md`](architecture.md) |
+| **Freshness** | See the [signal definitions and invariant thresholds](architecture.md#source_health); production activity and capture liveness are distinct. |
 | **Safe to cite** | `source`, `last_event_ts`, `consecutive_failures`, `probe_ok`, `probe_lag_ms` when explaining **coverage gaps** |
 | **Do not cite** | As user-activity evidence — health rows are operational telemetry |
 

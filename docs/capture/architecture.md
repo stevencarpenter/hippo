@@ -40,6 +40,18 @@ Every capture path writes two things in the same SQLite transaction: the event r
 
 Operator interface: [`hippo doctor`](operator-runbook.md#doctor) for a snapshot, [`hippo alarms`](operator-runbook.md#alarms) for unacknowledged violations, [`hippo probe`](operator-runbook.md#probes) to run a one-off synthetic check.
 
+## Claude session watcher
+
+The Claude watcher polls shutdown signals while ingestion or SQLite writes are
+pending. One sequential maintenance worker handles heartbeat, settling, and
+file discovery independently of ingestion. Missed notifications are recovered
+through reconciliation. A timed-out ingestion worker must finish before the
+same file can be processed again. Startup database work is also cancellable
+at its async wait. Runtime teardown waits at most one second for blocking workers;
+unfinished ingestion is recovered from persisted offsets on the next start.
+See `crates/hippo-daemon/src/watch_claude_sessions.rs` for the implementation
+and shared-database contention regressions.
+
 ## Tables
 
 ### `source_health`
@@ -49,13 +61,15 @@ One row per source. Updated in the same transaction as event writes; the watchdo
 | Column | Type | Meaning |
 |---|---|---|
 | `source` | TEXT PK | Source name (one row per source; non-exhaustive): `shell`, `claude-tool`, `agentic-session-claude`, `agentic-session-opencode`, `agentic-session-codex`, `agentic-session-cursor`, `browser`, `claude-session-watcher`, `workflow`, `watchdog`, `brain-preflight`. (There is no `probe` row — the probe job writes `probe_*` columns onto each real source's row, not a separate probe heartbeat.) |
-| `last_event_ts` | INTEGER | Epoch ms of the most recent successful event write for this source. |
+| `last_event_ts` | INTEGER | Epoch ms of the most recent production event for this source. Synthetic events with a non-NULL `probe_tag` do not advance it. |
 | `consecutive_failures` | INTEGER | Bumped on each failure; reset on success. Backstop for I-1, I-4 freshness alarms. |
-| `events_last_1h` / `_24h` | INTEGER | Rolling counts. Maintained by the daemon: incremented per-write in `crates/hippo-daemon/src/daemon.rs::flush_events`, then periodically corrected by `recompute_rolling_counts` (same file, every 5 min) which overwrites them with fresh `COUNT(*)` queries against `events` / `claude_sessions` / `browser_events`. The watchdog reads these values; it does not compute them. |
+| `events_last_1h` / `_24h` | INTEGER | Production event counts excluding probes. The daemon increments these on real writes and corrects them every 5 minutes from `events`, `agentic_sessions`, and `browser_events`. That correction also replaces shell, Claude-tool, and browser timestamps previously derived from probes with the latest production timestamp, or NULL when none exists. |
 | `probe_ok` | INTEGER | Last probe-job result: 1 = healthy, 0 = unhealthy. Source-specific definition (see "Probes" below). |
 | `probe_last_run_ts` | INTEGER | When the probe last completed for this source. |
 | `probe_lag_ms` | INTEGER | End-to-end latency of the most recent successful probe. |
 | `updated_at` | INTEGER | Always bumped on any column update. |
+
+Shell, Claude-tool, and browser capture liveness uses the later of the production timestamp and the latest probe timestamp when that probe succeeded. Doctor labels this combined signal as `capture`; the source-health lag gauge also accepts heartbeats. These liveness signals do not represent production activity. Probe failure and freshness remain independently checked by I-8.
 
 ### `capture_alarms`
 
@@ -78,10 +92,10 @@ Asserted by the watchdog every 60 s. Each has a formal predicate in `crates/hipp
 
 | ID | Assertion | Threshold | Suppressed when | Backstop |
 |---|---|---|---|---|
-| **I-1** Shell liveness | If a real (non-probe) shell command has landed within the last 10 minutes, shell/probe events must land within one probe cadence plus jitter grace. | 7 min | `probe_ok != 1`; no real (`probe_tag IS NULL`) shell event within the last 10 minutes (ordinary idleness: sleep, stepping away, working elsewhere). | Watchdog alarm + doctor `[!!] shell events`. |
+| **I-1** Shell liveness | If a real (non-probe) shell command has landed within the last 10 minutes, shell/probe events must land within one probe cadence plus jitter grace. | 7 min | `probe_ok != 1`; no real (`probe_tag IS NULL`) shell event within the last 10 minutes (ordinary idleness: sleep, stepping away, working elsewhere). | Watchdog alarm + doctor `[!!] shell capture`. |
 | **I-2** Claude-session end-to-end | For every Claude JSONL with `mtime < 5 min`, a matching `claude_sessions` row must exist. | 5 min | No live JSONL. | Watchdog alarm naming each missing `session_id`. |
 | **I-3** Claude-tool concurrency | If a live JSONL has received a `tool_use` line within 5 min, at least one matching `events.source_kind='claude-tool'` row must exist in that window. | 5 min | No live JSONL with recent `tool_use`. | Structured log only by default; opt-in alarm via `[watchdog] claude_tool_alarm = true`. |
-| **I-4** Browser round-trip | If extension heartbeat is recent (within 5 min cadence + grace) and Firefox is running, browser events must land within one probe cadence plus jitter grace. | 7 min | Extension heartbeat absent or stale; Firefox not running (doctor suppresses). | Watchdog alarm + doctor `[!!] browser events` with connectivity state. |
+| **I-4** Browser round-trip | If extension heartbeat is recent (within 5 min cadence + grace) and Firefox is running, browser events must land within one probe cadence plus jitter grace. | 7 min | Extension heartbeat absent or stale; Firefox not running (doctor suppresses). | Watchdog alarm + doctor `[!!] browser capture` with connectivity state. |
 | **I-5** Drop visibility | Every event dropped (socket accept + crash, buffer overflow) increments a persistent counter. Zero tolerance for invisible drops. | every drop | — | OTel counter `hippo.daemon.events.dropped` (paired with `hippo.daemon.events.ingested`); see `crates/hippo-daemon/src/metrics.rs`. |
 | **I-6** Buffer non-saturation | Sustained drop rate over any 5 min sliding window ≤ 0.1% of total event traffic. | 0.1% / 5 min | — | Watchdog alarm + doctor `[!!] drop-rate`. |
 | **I-7** Watchdog liveness | The watchdog itself writes to `source_health WHERE source='watchdog'` at least every 60 s. | 180 s stale | — | Doctor only (a dead watchdog can't alarm about itself). |
@@ -101,7 +115,7 @@ Synthetic round-trip verification, every 5 minutes per source.
 
 - **Mechanism.** A `hippo probe --source <name>` invocation generates a synthetic event tagged with a per-run UUID in `probe_tag`, then waits for it to appear in the source's events table. Browser probes use the same per-run tag to bypass the normal browser URL/time-bucket dedup window. End-to-end latency is recorded in `source_health.probe_lag_ms`.
 - **Where they live.** Probe rows have `probe_tag IS NOT NULL`. Every user-facing query (RAG retrieval, MCP `search_events` / `search_knowledge` / `get_entities`, `hippo events`, `hippo ask`) filters them out at the daemon-side query path. A Semgrep rule blocks new query call-sites that omit the filter. (See [`anti-patterns.md`](anti-patterns.md) AP-6.)
-- **Per-source `probe_ok` definition.** For shell: whether the last synthetic `hippo probe --source shell` round-trip succeeded. This is an unconditional canary: it does not check zsh process state, whether `hippo.zsh` is sourced, or HID idle time (an earlier draft of this doc described exactly that check; it was never implemented, see issue #263). Because the probe runs every 5 minutes regardless of user presence, `probe_ok = 1` only means "the pipe worked the last time the probe ran". It can be a stale leftover from before a sleep/idle gap, not proof the user is currently active. The actual idle-vs-broken distinction for I-1 and the shell arm of I-8 comes from `shell_health::shell_real_activity_recent` (`crates/hippo-daemon/src/shell_health.rs`), which checks the recency of a genuine `probe_tag IS NULL` shell event, a signal the probe cannot pollute. For browser: last synthetic `hippo probe --source browser` round-trip succeeded (written by the probe job). Extension connectivity is tracked separately via `source_health.last_heartbeat_ts` (NM heartbeats every 5 min). Extension-side native-messaging failures are forwarded on the heartbeat as `last_error_msg` and surfaced by `hippo doctor --explain`. For claude-session: at least one JSONL under `~/.claude/projects` with recent `mtime`. The watchdog computes shell/claude-session predicates on every cycle; browser I-4 uses heartbeat freshness, not `probe_ok`.
+- **Per-source `probe_ok` definition.** For shell: whether the last synthetic `hippo probe --source shell` round-trip succeeded. This is an unconditional canary: it does not check zsh process state, whether `hippo.zsh` is sourced, or HID idle time (an earlier draft of this doc described exactly that check; it was never implemented, see issue #263). Because the probe runs every 5 minutes regardless of user presence, `probe_ok = 1` only means "the pipe worked the last time the probe ran". It can be a stale leftover from before a sleep/idle gap, not proof the user is currently active. The actual idle-vs-broken distinction for I-1 and the shell arm of I-8 comes from `shell_health::shell_real_activity_recent` (`crates/hippo-daemon/src/shell_health.rs`), which checks the recency of a genuine `probe_tag IS NULL` shell event, a signal the probe cannot pollute. For browser: last synthetic `hippo probe --source browser` round-trip succeeded (written by the probe job). Extension connectivity is tracked separately via `source_health.last_heartbeat_ts` (NM heartbeats every 5 min). Extension-side native-messaging failures are forwarded on the heartbeat as `last_error_msg` and surfaced by `hippo doctor --explain`. For claude-session: at least one JSONL under `~/.claude/projects` with recent `mtime`. The watchdog computes shell/claude-session predicates on every cycle; browser I-4 requires heartbeat freshness and evaluates the capture liveness signal defined under [`source_health`](#source_health).
 - **Manual probe.** `hippo probe --source <name>` runs one cycle on demand. Useful when bringing a source back up after a configuration change.
 
 ## Backstops
