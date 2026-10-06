@@ -26,8 +26,18 @@ def _coerce_float(value: object, default: float) -> float:
         return default
 
 
+def _default_config_path() -> Path:
+    base = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config")
+    return base / "hippo" / "config.toml"
+
+
+def _storage_data_dir(config: dict) -> Path:
+    base = Path(os.environ.get("XDG_DATA_HOME") or Path.home() / ".local" / "share")
+    return Path(config.get("storage", {}).get("data_dir", base / "hippo")).expanduser()
+
+
 def _default_settings() -> dict:
-    data_dir = Path(os.environ.get("XDG_DATA_HOME") or Path.home() / ".local" / "share") / "hippo"
+    data_dir = _storage_data_dir({})
     return {
         "db_path": str(data_dir / "hippo.db"),
         "data_dir": str(data_dir),
@@ -56,16 +66,14 @@ def _default_settings() -> dict:
 
 def _load_runtime_settings() -> dict:
     defaults = _default_settings()
-    config_base = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config")
-    config_path = config_base / "hippo" / "config.toml"
+    config_path = _default_config_path()
     if not config_path.exists():
         return defaults
 
     with config_path.open("rb") as f:
         config = tomllib.load(f)
 
-    storage = config.get("storage", {})
-    data_dir = Path(storage.get("data_dir", defaults["data_dir"])).expanduser()
+    data_dir = _storage_data_dir(config)
 
     # Section name changed from [lmstudio] -> [inference] in the omlx
     # vendor-neutrality PR. The Rust daemon already reads [inference]; the

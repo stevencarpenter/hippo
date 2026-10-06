@@ -1,11 +1,14 @@
-"""HTTP, MCP, and benchmark config paths share the Rust XDG contract."""
+"""Query and ingestion config paths share the Rust XDG contract."""
 
 import json
+import runpy
+import sqlite3
+import sys
 from pathlib import Path
 
 import pytest
 
-from hippo_brain import _load_runtime_settings
+from hippo_brain import _load_runtime_settings, auto_memory
 from hippo_brain.bench.prod_config import resolve_prod_brain_port
 from hippo_brain.mcp import _load_config
 
@@ -79,3 +82,91 @@ def test_explicit_storage_data_dir_overrides_xdg(
     for settings in (_load_runtime_settings(), _load_config()):
         assert settings["data_dir"] == str(tmp_path / "explicit-data")
         assert settings["db_path"] == str(tmp_path / "explicit-data/hippo.db")
+
+
+@pytest.mark.parametrize("consumer", ["xcode", "auto-memory"])
+@pytest.mark.parametrize(
+    ("xdg", "storage_override"),
+    [(None, None), ("", None), ("custom", None), ("custom", "absolute"), ("custom", "tilde")],
+)
+def test_ingestion_writes_to_the_query_database(
+    tmp_path: Path,
+    tmp_db,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    consumer: str,
+    xdg: str | None,
+    storage_override: str | None,
+) -> None:
+    config_base = tmp_path / ("xdg-config" if xdg == "custom" else ".config")
+    data_base = tmp_path / ("xdg-data" if xdg == "custom" else ".local/share")
+    if xdg is not None:
+        monkeypatch.setenv("XDG_CONFIG_HOME", str(config_base) if xdg else "")
+        monkeypatch.setenv("XDG_DATA_HOME", str(data_base) if xdg else "")
+    if xdg == "custom":
+        home_config = tmp_path / ".config/hippo/config.toml"
+        home_config.parent.mkdir(parents=True)
+        home_config.write_text("[auto_memory]\nenabled = false\n")
+
+    data_dir = tmp_path / "explicit-data" if storage_override else data_base / "hippo"
+    data_dir.mkdir(parents=True)
+    db_path = data_dir / "hippo.db"
+    schema_conn, _ = tmp_db
+    with sqlite3.connect(db_path) as conn:
+        schema_conn.backup(conn)
+
+    source = tmp_path / "MEMORY.md"
+    source.write_text("# Database\n\nUse SQLite WAL.\n")
+    config_path = config_base / "hippo/config.toml"
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    storage = ""
+    if storage_override:
+        value = "~/explicit-data" if storage_override == "tilde" else str(data_dir)
+        storage = f"[storage]\ndata_dir = {json.dumps(value)}\n"
+    config_path.write_text(
+        storage
+        + "[auto_memory]\nenabled = true\ndebounce_ms = 0\n"
+        + "stable_idle_ms = 1\nstable_sample_ms = 1\nstable_timeout_ms = 100\n"
+        + f'[[auto_memory.sources]]\npath = {json.dumps(str(source))}\nrepository = "fixture"\n'
+    )
+    assert _load_runtime_settings()["db_path"] == _load_config()["db_path"] == str(db_path)
+
+    if consumer == "xcode":
+        projects = tmp_path / "xcode-projects"
+        session = projects / "fixture/session.jsonl"
+        session.parent.mkdir(parents=True)
+        session.write_text(
+            json.dumps(
+                {
+                    "type": "user",
+                    "timestamp": "2026-03-28T12:00:00.000Z",
+                    "cwd": str(tmp_path),
+                    "message": {"content": [{"type": "text", "text": "Use SQLite WAL."}]},
+                }
+            )
+            + "\n"
+        )
+        script = Path(__file__).resolve().parents[2] / "scripts/hippo-ingest-claude.py"
+        monkeypatch.setattr(sys, "argv", [str(script), "--claude-dir", str(projects)])
+        runpy.run_path(str(script), run_name="__main__")
+        with sqlite3.connect(db_path) as conn:
+            assert (
+                conn.execute(
+                    "SELECT COUNT(*) FROM agentic_sessions WHERE harness = 'claude-code'"
+                ).fetchone()[0]
+                == 1
+            )
+    else:
+        assert auto_memory.inventory_main([]) == 0
+        assert json.loads(capsys.readouterr().out)["file_sources"] == 1
+        assert auto_memory.poll_main([]) == 0
+        assert json.loads(capsys.readouterr().out)["changed"] == 1
+        assert auto_memory.reconcile_from_config(config_path)["changed"] == 0
+        source.write_text("# Database\n\nUse SQLite WAL and a five-second busy timeout.\n")
+        assert auto_memory.reconcile_file_main(["--file", str(source)]) == 0
+        assert json.loads(capsys.readouterr().out)["changed"] is True
+        with sqlite3.connect(db_path) as conn:
+            assert conn.execute("SELECT COUNT(*) FROM memory_revisions").fetchone()[0] == 2
+
+    if xdg == "custom":
+        assert not (tmp_path / ".local/share/hippo/hippo.db").exists()

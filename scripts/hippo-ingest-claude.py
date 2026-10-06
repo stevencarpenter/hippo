@@ -9,6 +9,7 @@ import time
 import tomllib
 from pathlib import Path
 
+from hippo_brain import _default_config_path, _storage_data_dir
 from hippo_brain.claude_sessions import (
     CLAUDE_SYSTEM_PROMPT,
     claim_pending_claude_segments,
@@ -48,16 +49,13 @@ def main():
     args = parser.parse_args()
 
     # Load config
-    config_path = Path.home() / ".config" / "hippo" / "config.toml"
+    config_path = _default_config_path()
     config = {}
     if config_path.exists():
         with config_path.open("rb") as f:
             config = tomllib.load(f)
 
-    storage = config.get("storage", {})
-    data_dir = Path(
-        storage.get("data_dir", str(Path.home() / ".local" / "share" / "hippo"))
-    ).expanduser()
+    data_dir = _storage_data_dir(config)
     db_path = data_dir / "hippo.db"
 
     if not db_path.exists():

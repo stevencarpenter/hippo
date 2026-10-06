@@ -12,6 +12,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
+from hippo_brain import _default_config_path, _storage_data_dir
 from hippo_brain.classification import enqueue_node
 from hippo_brain.auto_memory_categories import replace_model_categories
 from hippo_brain.auto_memory_constants import (
@@ -453,7 +454,7 @@ def reconcile_from_config(
     require_stable: bool = True,
 ) -> dict[str, Any]:
     """Load config and reconcile all enabled auto-memory sources."""
-    path = config_path or Path.home() / ".config" / "hippo" / "config.toml"
+    path = config_path or _default_config_path()
     if not path.is_file():
         return {"changed": 0, "pending_enrichment": 0, "failed_enrichment": 0, "sources": []}
     with path.open("rb") as handle:
@@ -464,10 +465,7 @@ def reconcile_from_config(
     sources = load_sources_from_config(config)
     if not sources:
         return {"changed": 0, "pending_enrichment": 0, "failed_enrichment": 0, "sources": []}
-    storage = config.get("storage", {})
-    data_dir = Path(
-        storage.get("data_dir", Path.home() / ".local" / "share" / "hippo")
-    ).expanduser()
+    data_dir = _storage_data_dir(config)
     db_path = data_dir / "hippo.db"
     conn = _open_db(db_path)
     try:
@@ -502,7 +500,10 @@ def poll_main(argv: list[str] | None = None) -> int:
         "--config",
         type=Path,
         default=None,
-        help="Hippo config.toml (defaults to ~/.config/hippo/config.toml)",
+        help=(
+            "Hippo config.toml (defaults to $XDG_CONFIG_HOME/hippo/config.toml "
+            "or ~/.config/hippo/config.toml)"
+        ),
     )
     args = parser.parse_args(argv)
     summary = reconcile_from_config(args.config, require_stable=True)
@@ -519,10 +520,13 @@ def inventory_main(argv: list[str] | None = None) -> int:
         "--config",
         type=Path,
         default=None,
-        help="Hippo config.toml (defaults to ~/.config/hippo/config.toml)",
+        help=(
+            "Hippo config.toml (defaults to $XDG_CONFIG_HOME/hippo/config.toml "
+            "or ~/.config/hippo/config.toml)"
+        ),
     )
     args = parser.parse_args(argv)
-    config_path = args.config or Path.home() / ".config" / "hippo" / "config.toml"
+    config_path = args.config or _default_config_path()
     if not config_path.is_file():
         print(json.dumps({"roots": [], "file_sources": 0}, sort_keys=True))
         return 0
@@ -540,10 +544,13 @@ def reconcile_file_main(argv: list[str] | None = None) -> int:
         "--config",
         type=Path,
         default=None,
-        help="Hippo config.toml (defaults to ~/.config/hippo/config.toml)",
+        help=(
+            "Hippo config.toml (defaults to $XDG_CONFIG_HOME/hippo/config.toml "
+            "or ~/.config/hippo/config.toml)"
+        ),
     )
     args = parser.parse_args(argv)
-    config_path = args.config or Path.home() / ".config" / "hippo" / "config.toml"
+    config_path = args.config or _default_config_path()
     with config_path.open("rb") as handle:
         config = tomllib.load(handle)
     auto_memory = config.get("auto_memory", {})
@@ -569,10 +576,7 @@ def reconcile_file_main(argv: list[str] | None = None) -> int:
             )
         )
         return 0
-    storage = config.get("storage", {})
-    data_dir = Path(
-        storage.get("data_dir", Path.home() / ".local" / "share" / "hippo")
-    ).expanduser()
+    data_dir = _storage_data_dir(config)
     conn = _open_db(data_dir / "hippo.db")
     try:
         if _schema_version(conn) != EXPECTED_SCHEMA_VERSION:
