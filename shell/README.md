@@ -29,3 +29,21 @@ source /path/to/hippo/shell/hippo.zsh
 2. `precmd` fires after the command completes — computes duration, captures exit code and git state, then sends the
    event to the daemon via `hippo send-event shell`
 3. Events are sent fire-and-forget in the background so shell responsiveness is unaffected
+
+## Opt-in stdout and stderr
+
+In an interactive zsh session, wrap a noninteractive command to capture both streams:
+
+```zsh
+hippo_capture cargo test
+```
+
+The wrapper copies stdout and stderr to their original destinations and separate private files. It returns the command's exit status. The background sender applies the configured `[daemon] output_head_lines` and `output_tail_lines` limits independently, then removes the files. Redaction applies to both streams before storage.
+
+Ordinary commands keep their TTY behavior and capture only command metadata. Do not wrap editors, pagers, REPLs, or other terminal-dependent programs. Wrapped commands see pipes instead of terminal descriptors. To capture a pipeline, pass it to an explicit noninteractive shell:
+
+```zsh
+hippo_capture zsh -fc 'producer | consumer'
+```
+
+The existing `hippo send-event shell --output ...` path still stores legacy single-stream output as stdout.

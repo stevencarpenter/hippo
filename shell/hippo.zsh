@@ -20,6 +20,34 @@ typeset -g _HIPPO_GIT_DIRTY=""
 typeset -g _HIPPO_OUTPUT_HEAD=${_HIPPO_OUTPUT_HEAD:-50}
 typeset -g _HIPPO_OUTPUT_TAIL=${_HIPPO_OUTPUT_TAIL:-100}
 typeset -g _HIPPO_OUTPUT_FILE="/tmp/hippo-output.$$"
+typeset -g _HIPPO_CAPTURE_DIR=""
+
+# Opt in only for noninteractive commands. Ordinary commands keep their TTYs.
+hippo_capture() {
+    emulate -L zsh
+    setopt multios
+    if (( $# == 0 )); then
+        print -u2 'usage: hippo_capture command [args...]'
+        return 2
+    fi
+    if [[ -z "${_HIPPO_CAPTURE_DIR}" ]]; then
+        local capture_dir
+        capture_dir=$(mktemp -d "${TMPDIR:-/tmp}/hippo-capture.XXXXXXXX") || {
+            # Capture setup must not prevent the requested command from running.
+            "$@"
+            return $?
+        }
+        _HIPPO_CAPTURE_DIR="${capture_dir}"
+    fi
+    # Native multios copies each stream to its original destination and a file.
+    # The group waits for those copies before precmd can send the event.
+    { "$@" } >&1 >>"${_HIPPO_CAPTURE_DIR}/stdout" 2>&2 2>>"${_HIPPO_CAPTURE_DIR}/stderr"
+}
+
+_hippo_capture_cleanup() {
+    [[ -n "${_HIPPO_CAPTURE_DIR}" ]] && command rm -rf -- "${_HIPPO_CAPTURE_DIR}"
+    _HIPPO_CAPTURE_DIR=""
+}
 
 # Truncate captured output using head+tail with omission marker
 _hippo_truncate_output() {
@@ -136,8 +164,12 @@ _hippo_precmd() {
         args+=(--git-dirty)
     fi
 
-    # Attach captured output if available
-    if [[ -s "${_HIPPO_OUTPUT_FILE}" ]]; then
+    # File-backed opt-in capture keeps output out of the process argument list.
+    local capture_dir="${_HIPPO_CAPTURE_DIR}"
+    if [[ -n "${capture_dir}" ]]; then
+        args+=(--stdout-file "${capture_dir}/stdout" --stderr-file "${capture_dir}/stderr")
+    # Preserve the legacy single-stream attachment for existing producers.
+    elif [[ -s "${_HIPPO_OUTPUT_FILE}" ]]; then
         local captured
         captured="$(_hippo_truncate_output "${_HIPPO_OUTPUT_FILE}")"
         if [[ -n "${captured}" ]]; then
@@ -146,11 +178,16 @@ _hippo_precmd() {
     fi
 
     # Fire and forget — backgrounded, disowned, silenced
-    hippo "${args[@]}" &>/dev/null &!
+    (
+        hippo "${args[@]}" &>/dev/null
+        [[ -n "${capture_dir}" ]] && command rm -rf -- "${capture_dir}"
+    ) &!
 
-    # Clean up temp vars
+    # The background sender owns this directory until it has read both files.
+    _HIPPO_CAPTURE_DIR=""
     unset _HIPPO_CMD _HIPPO_CWD _HIPPO_START
 }
 
 add-zsh-hook preexec _hippo_preexec
 add-zsh-hook precmd _hippo_precmd
+add-zsh-hook zshexit _hippo_capture_cleanup
