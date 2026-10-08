@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use chrono::Utc;
 use hippo_core::config::{ENV_ALLOWLIST, HippoConfig};
 use hippo_core::events::{CapturedOutput, EventEnvelope, EventPayload, GitState, ShellEvent};
@@ -311,6 +311,46 @@ fn redacted_fallback_envelope(
     }
 }
 
+#[derive(clap::Args, Default)]
+pub struct ShellOutputArgs {
+    /// Legacy captured output, stored unchanged as stdout.
+    #[arg(long, conflicts_with = "stdout_file")]
+    pub output: Option<String>,
+    /// Captured stdout file; applies daemon head/tail limits.
+    #[arg(long)]
+    pub stdout_file: Option<PathBuf>,
+    /// Captured stderr file; applies daemon head/tail limits independently.
+    #[arg(long)]
+    pub stderr_file: Option<PathBuf>,
+}
+
+fn read_shell_output(path: &std::path::Path, config: &HippoConfig) -> Result<CapturedOutput> {
+    // ponytail: one stream is read into memory; use streaming head/tail if logs outgrow RAM.
+    let bytes = std::fs::read(path)
+        .with_context(|| format!("reading captured output {}", path.display()))?;
+    let original_bytes = bytes.len();
+    let text = String::from_utf8_lossy(&bytes);
+    let lines: Vec<_> = text.split_inclusive('\n').collect();
+    let head = config.daemon.output_head_lines;
+    let tail = config.daemon.output_tail_lines;
+    let truncated = lines.len() > head.saturating_add(tail);
+    let content = if truncated {
+        format!(
+            "{}... ({} lines omitted) ...\n{}",
+            lines[..head].concat(),
+            lines.len() - head - tail,
+            lines[lines.len() - tail..].concat(),
+        )
+    } else {
+        text.into_owned()
+    };
+    Ok(CapturedOutput {
+        content,
+        truncated,
+        original_bytes,
+    })
+}
+
 #[allow(clippy::too_many_arguments)]
 pub async fn handle_send_event_shell(
     config: &HippoConfig,
@@ -322,7 +362,7 @@ pub async fn handle_send_event_shell(
     git_branch: Option<String>,
     git_commit: Option<String>,
     git_dirty: bool,
-    output: Option<String>,
+    capture: ShellOutputArgs,
     probe_tag: Option<String>,
     source_kind: Option<String>,
     tool_name: Option<String>,
@@ -379,12 +419,19 @@ pub async fn handle_send_event_shell(
         cwd: PathBuf::from(cwd),
         hostname,
         shell: crate::detect_shell_kind(),
-        stdout: output.as_ref().map(|o| CapturedOutput {
-            content: o.clone(),
-            truncated: false,
-            original_bytes: o.len(),
-        }),
-        stderr: None,
+        stdout: match capture.stdout_file.as_deref() {
+            Some(path) => Some(read_shell_output(path, config)?),
+            None => capture.output.map(|content| CapturedOutput {
+                original_bytes: content.len(),
+                content,
+                truncated: false,
+            }),
+        },
+        stderr: capture
+            .stderr_file
+            .as_deref()
+            .map(|path| read_shell_output(path, config))
+            .transpose()?,
         env_snapshot,
         git_state,
         redaction_count: 0,
@@ -4976,7 +5023,7 @@ mod tests {
             Some("main".to_string()),
             None,
             false,
-            None,
+            Default::default(),
             None,
             None,
             None,
@@ -5030,7 +5077,7 @@ replacement = "***"
             None,
             None,
             false,
-            None,
+            Default::default(),
             None,
             None,
             None,
@@ -5094,7 +5141,7 @@ replacement = "***"
             Some("main".to_string()),
             None,
             false,
-            None,
+            Default::default(),
             None,
             None,
             None,
@@ -5135,7 +5182,7 @@ replacement = "***"
             None,
             None,
             false,
-            None,
+            Default::default(),
             None,
             None,
             None,
