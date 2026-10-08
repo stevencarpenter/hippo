@@ -65,6 +65,7 @@ async def enrich_one_async(
     try:
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA foreign_keys=ON")
+        conn.execute("PRAGMA secure_delete=ON")
         conn.execute("PRAGMA busy_timeout=5000")
         run = conn.execute("SELECT * FROM workflow_runs WHERE id = ?", (run_id,)).fetchone()
         if run is None:

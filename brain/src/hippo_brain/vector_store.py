@@ -70,6 +70,7 @@ def open_conn(path: str | Path) -> sqlite3.Connection:
     conn.enable_load_extension(False)
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")
+    conn.execute("PRAGMA secure_delete=ON")
     conn.execute("PRAGMA busy_timeout=5000")
     ensure_vec_table(conn)
     return conn

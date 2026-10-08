@@ -49,6 +49,7 @@ fn open_conn(db_path: &std::path::Path) -> Option<Connection> {
     )
     .ok()?;
     conn.busy_timeout(Duration::from_millis(5000)).ok()?;
+    conn.execute_batch("PRAGMA secure_delete=ON;").ok()?;
     Some(conn)
 }
 

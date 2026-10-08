@@ -73,6 +73,7 @@ async def main():
     # Connect to SQLite
     conn = sqlite3.connect(str(db_path))
     conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA secure_delete=ON")
     conn.execute("PRAGMA busy_timeout=5000")
 
     # Load all knowledge nodes

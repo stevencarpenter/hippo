@@ -47,12 +47,69 @@ The Rust migration runner at `storage.rs::open_db` walks every version from the 
 | **v20** | Auto-memory taxonomy tables. | `memory_categories`, `memory_index_links`, and related taxonomy DDL via `AUTO_MEMORY_TAXONOMY_SCHEMA`. | Category/index metadata for auto-memory retrieval; additive only. |
 | **v21** | Auto-memory watcher source_health identity. | Seeds `source_health.source = 'auto-memory-watcher'` via `INSERT OR IGNORE`. | Watcher liveness for the auto-memory ingest path joins the capture-health family. |
 | **v22** | Watcher resume-state rename (SNUG-115 Phase A). | Creates `agentic_session_offsets` (same columns as legacy `claude_session_offsets`) and `INSERT OR IGNORE` copies existing rows. **Does not drop** legacy tables. | Claude FS watcher and backfill CLI read/write `agentic_session_offsets`. Legacy `claude_session_offsets` remains frozen on upgraded DBs until Phase B. |
+| **v26** | Event payload expiry and deletion receipts (HIPO-13). | Adds `events.payload_expiry`, an insert trigger and expiry index, and append-only `deletion_receipts`. No event table rebuild or bulk backfill. | Explicit payload GC retains event metadata and joins. See [Event payload retention](#event-payload-retention). |
 
 The v24-to-v25 migration adds optional classification state without rewriting
 knowledge content or vectors. Its authoritative DDL is
 [`schema/classification.sql`](../crates/hippo-core/src/schema/classification.sql),
 with fresh-install parity covered by the storage migration tests. Operational
 usage is in [Jev decisions](jev-decisions.md).
+
+## Event payload retention
+
+New event writes set `payload_expiry = created_at + 7,776,000,000` milliseconds
+(90 days). `created_at` is ingestion time, not the captured event timestamp.
+The insert trigger covers direct SQL writers as well as capture and replay.
+Existing rows retain NULL expiry until touched. GC reads their effective expiry
+with `COALESCE(payload_expiry, created_at + 7776000000)` and stores it when clearing
+the payload. The migration does not extend old payloads by another 90 days.
+Payloads expire at the exact millisecond boundary (`expiry <= sweep_time`).
+
+`hippo gc-event-payloads --confirm` explicitly authorizes a destructive sweep of
+the configured database. Migration, daemon startup and ordinary reads do not
+run GC. Do not run this command against a real store without deletion authority.
+The sweep uses transactions of at most 100 event updates and a fixed initial
+maximum event ID, so concurrent arrivals cannot extend it indefinitely.
+
+GC sets `stdout`, `stderr` and `env_snapshot_id` to NULL. It retains event ledger
+rows, commands, metadata, source links and enrichment queues. It clears a shared
+snapshot's `env_json` only after no event references it. This includes references
+from unexpired and pinned events. The snapshot ID and hash remain. Capture can
+restore the same snapshot inside the new event's transaction. Ordinary
+`knowledge_node_events` enrichment links do not pin raw payloads.
+
+The optional `node_evidence(ref_type, ref_id)` and `epitaphs.evidence_refs` stores
+are not created by this migration. GC recognizes the published evidence citation
+namespace from `evidence_packets.parse_ref`: `shell-<id>` identifies `events`,
+including Claude tool events. For `node_evidence`, the corresponding pair is
+`('shell', <id>)`; epitaph references must be a JSON array of citation strings.
+The other published prefixes identify non-event stores, not event pins. GC
+refuses destruction if a present evidence store has incompatible columns,
+reference types, IDs or JSON. Future evidence writers must use the published
+citation contract or supply an explicitly reviewed adapter before GC can run.
+
+Each removed output has a SHA-256 receipt with timestamp, `payload_expired`
+reason and a locator such as `events/42/stdout`. Removing an environment
+reference records `events/42/env_snapshot_id` with the hash of its decimal ID;
+this is not proof that shared snapshot bytes were destroyed. Actual snapshot
+content removal records `env_snapshots/7/env_json` with its own content hash.
+Receipts and field updates commit atomically. SQL triggers reject receipt
+updates, deletes and replacement inserts. A failed batch rolls back both;
+earlier committed batches remain and the error reports their count. Reruns
+skip already-cleared payloads and do not duplicate receipts.
+
+Runtime Hippo connections explicitly set `secure_delete=ON`. After a completed
+sweep, GC requests `wal_checkpoint(TRUNCATE)`. It reports busy, failure and
+non-WAL outcomes separately from successful truncation. The CLI returns an
+error for an incomplete checkpoint even though payload updates committed.
+Release blocking readers and retry the sweep to retry the checkpoint. Receipts
+prove named field removal, not non-existence of the original content. These
+operations do not erase surviving derived knowledge, FTS/vectors, backups,
+capture logs, fallback files, process memory or copies outside the database.
+
+GC leaves the `hippo_kb_events` gauge unchanged because event ledger rows remain.
+The `hippo_kb_stdout_nonempty` gauge can fall after a sweep; this is expected,
+not lost capture. Both existing gauge names and definitions remain unchanged.
 
 ## Reading the live schema
 

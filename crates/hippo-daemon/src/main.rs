@@ -959,6 +959,25 @@ async fn run() -> Result<()> {
         } => {
             commands::handle_events(&config, session, since, project).await?;
         }
+        Commands::GcEventPayloads { confirm: _ } => {
+            let conn = hippo_core::storage::open_db(&config.db_path())?;
+            let report = hippo_core::storage::gc_event_payloads(
+                &conn,
+                chrono::Utc::now().timestamp_millis(),
+            )?;
+            println!(
+                "Cleared payloads from {} retained event rows",
+                report.events_cleared
+            );
+            match report.checkpoint {
+                hippo_core::storage::PayloadCheckpoint::Truncated => {
+                    println!("WAL checkpoint completed; this does not erase other copies");
+                }
+                outcome => anyhow::bail!(
+                    "payload updates committed, but WAL truncation did not complete: {outcome:?}; retry the sweep"
+                ),
+            }
+        }
         Commands::Query { text, raw } => {
             if raw {
                 commands::handle_query_raw(&config, &text).await?;

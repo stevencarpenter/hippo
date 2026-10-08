@@ -316,6 +316,7 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     conn = sqlite3.connect(str(db_path))
+    conn.execute("PRAGMA secure_delete=ON")
     conn.row_factory = sqlite3.Row
     try:
         payload = inspect_evidence(conn, args.ref, include_excluded=args.include_excluded)

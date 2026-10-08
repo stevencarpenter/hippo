@@ -96,6 +96,7 @@ def main(argv: list[str] | None = None) -> int:
     data_dir = args.data_dir or args.db.parent
     conn = sqlite3.connect(args.db)
     try:
+        conn.execute("PRAGMA secure_delete=ON")
         version = conn.execute("PRAGMA user_version").fetchone()[0]
         if version != EXPECTED_SCHEMA_VERSION:
             print(

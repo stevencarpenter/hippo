@@ -45,6 +45,7 @@ def upsert_cluster(
 
     conn = sqlite3.connect(db_path)
     try:
+        conn.execute("PRAGMA secure_delete=ON")
         # If lesson already exists, just bump and return.
         row = conn.execute(
             """SELECT id FROM lessons

@@ -279,6 +279,7 @@ def main(argv: list[str] | None = None) -> int:
         conn = open_conn(str(db_path))
     except ImportError:
         conn = sqlite3.connect(str(db_path))
+        conn.execute("PRAGMA secure_delete=ON")
 
     try:
         payload = run_agent_query(conn, req)

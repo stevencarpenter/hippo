@@ -200,6 +200,7 @@ def _cmd_export(args: object) -> None:
     try:
         conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
         conn.execute("PRAGMA busy_timeout=5000")
+        conn.execute("PRAGMA secure_delete=ON")
         try:
             stats = export_training_data(conn, args.out, since_ms=since_ms)
         finally:

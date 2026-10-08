@@ -54,6 +54,8 @@ CREATE TABLE IF NOT EXISTS events
     enriched INTEGER NOT NULL DEFAULT 0,
     redaction_count INTEGER NOT NULL DEFAULT 0,
     archived_at INTEGER,
+    -- NULL on grandfathered rows; effective expiry is created_at + 90 days.
+    payload_expiry INTEGER,
     -- probe_tag is set only on synthetic probe rows injected for health
     -- checking; NULL on all real events.
     probe_tag TEXT,
@@ -613,4 +615,38 @@ CREATE INDEX IF NOT EXISTS idx_classification_claim
 CREATE INDEX IF NOT EXISTS idx_classification_recipe
     ON knowledge_node_classifications(recipe_hash, status);
 
-PRAGMA user_version = 25;
+-- Keep this DDL in sync with schema/event_payloads.sql.
+-- HIPO-13: receipts name a removed field, not erasure of every copy.
+CREATE TABLE IF NOT EXISTS deletion_receipts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    content_hash TEXT NOT NULL,
+    ts INTEGER NOT NULL,
+    reason TEXT NOT NULL,
+    what TEXT NOT NULL
+);
+CREATE TRIGGER IF NOT EXISTS deletion_receipts_no_update
+BEFORE UPDATE ON deletion_receipts BEGIN
+    SELECT RAISE(ABORT, 'deletion_receipts are append-only');
+END;
+CREATE TRIGGER IF NOT EXISTS deletion_receipts_no_delete
+BEFORE DELETE ON deletion_receipts BEGIN
+    SELECT RAISE(ABORT, 'deletion_receipts are append-only');
+END;
+CREATE TRIGGER IF NOT EXISTS deletion_receipts_no_replace
+BEFORE INSERT ON deletion_receipts
+WHEN EXISTS (SELECT 1 FROM deletion_receipts WHERE id = NEW.id) BEGIN
+    SELECT RAISE(ABORT, 'deletion_receipts are append-only');
+END;
+
+-- Covers every writer, including direct SQL inserts. Old rows stay NULL.
+CREATE TRIGGER IF NOT EXISTS events_payload_expiry_on_insert
+AFTER INSERT ON events WHEN NEW.payload_expiry IS NULL BEGIN
+    UPDATE events SET payload_expiry = NEW.created_at + 7776000000 WHERE id = NEW.id;
+END;
+CREATE INDEX IF NOT EXISTS idx_events_env_snapshot
+    ON events (env_snapshot_id) WHERE env_snapshot_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_events_payload_expiry
+    ON events (COALESCE(payload_expiry, created_at + 7776000000), id)
+    WHERE stdout IS NOT NULL OR stderr IS NOT NULL OR env_snapshot_id IS NOT NULL;
+
+PRAGMA user_version = 26;
