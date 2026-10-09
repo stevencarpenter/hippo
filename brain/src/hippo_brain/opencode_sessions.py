@@ -20,7 +20,8 @@ from hippo_brain.enrichment import (
     upsert_entities,
 )
 from hippo_brain.entity_resolver import strip_worktree_prefix
-from hippo_brain.models import EnrichmentResult
+from hippo_brain.models import EnrichmentResult, index_enrichment_result
+from hippo_brain.redaction import index_text
 from hippo_brain.watchdog import DEFAULT_LOCK_TIMEOUT_MS as STALE_LOCK_TIMEOUT_MS
 
 OPENCODE_ENRICHMENT_PROMPT = """You are a developer activity analyst. You receive a summary of an Opencode AI coding assistant session.
@@ -254,7 +255,7 @@ def build_opencode_enrichment_prompt(segments: list[dict]) -> str:
             for cm in commits[:5]:
                 lines.append(f"  {cm}")
         parts.append("\n".join(lines))
-    return "\n---\n\n".join(parts)
+    return index_text("\n---\n\n".join(parts))
 
 
 def write_opencode_knowledge_node(
@@ -276,6 +277,7 @@ def write_opencode_knowledge_node(
             f"content_hashes length ({len(content_hashes)}) does not match "
             f"segment_ids length ({len(segment_ids)})"
         )
+    result = index_enrichment_result(result)
     node_uuid = str(uuid.uuid4())
     now_ms = int(time.time() * 1000)
     content = json.dumps(

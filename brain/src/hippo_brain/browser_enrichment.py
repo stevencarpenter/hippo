@@ -12,7 +12,8 @@ from hippo_brain.enrichment import (
     is_enrichment_eligible,
     upsert_entities,
 )
-from hippo_brain.models import EnrichmentResult
+from hippo_brain.models import EnrichmentResult, index_enrichment_result
+from hippo_brain.redaction import index_text
 from hippo_brain.watchdog import DEFAULT_LOCK_TIMEOUT_MS
 
 STALE_LOCK_TIMEOUT_MS = DEFAULT_LOCK_TIMEOUT_MS
@@ -239,7 +240,7 @@ def build_browser_enrichment_prompt(events: list[dict]) -> str:
             parts.append(f"  content excerpt: {excerpt}")
 
         lines.append("\n".join(parts))
-    return "\n\n".join(lines)
+    return index_text("\n\n".join(lines))
 
 
 def get_correlated_browser_events(
@@ -303,7 +304,7 @@ def format_browser_context_for_shell_prompt(browser_events: list[dict]) -> str:
         if search_query:
             lines.append(f'  Search query: "{search_query}"')
 
-    return "\n".join(lines)
+    return index_text("\n".join(lines))
 
 
 def write_browser_knowledge_node(
@@ -317,6 +318,7 @@ def write_browser_knowledge_node(
     All inserts run inside an explicit transaction so a mid-write failure
     leaves no partial state in the database.
     """
+    result = index_enrichment_result(result)
     node_uuid = str(uuid.uuid4())
     now_ms = int(time.time() * 1000)
     content = json.dumps(

@@ -5,8 +5,9 @@ import uuid
 
 from hippo_brain.classification import enqueue_node, source_entity_canonical
 from hippo_brain.entity_resolver import canonicalize, is_path_type, strip_worktree_prefix
-from hippo_brain.models import EnrichmentResult, validate_enrichment_data
+from hippo_brain.models import EnrichmentResult, index_enrichment_result, validate_enrichment_data
 from hippo_brain.projects import attribute_node
+from hippo_brain.redaction import index_text
 from hippo_brain.watchdog import DEFAULT_LOCK_TIMEOUT_MS
 
 STALE_LOCK_TIMEOUT_MS = DEFAULT_LOCK_TIMEOUT_MS
@@ -251,7 +252,7 @@ def build_enrichment_prompt(events: list[dict], browser_context: str = "") -> st
     prompt = "\n\n".join(lines)
     if browser_context:
         prompt += "\n\n" + browser_context
-    return prompt
+    return index_text(prompt)
 
 
 # Matches EITHER a valid JSON escape (\" \\ \/ \b \f \n \r \t \uXXXX) OR a single
@@ -294,7 +295,7 @@ def parse_enrichment_response(raw: str) -> EnrichmentResult:
         # error propagates; the terminal-failure watermark (mark_claude_queue_failed)
         # then stops the segment from re-enqueuing forever.
         data = json.loads(_repair_json_escapes(text), strict=False)
-    return validate_enrichment_data(data)
+    return index_enrichment_result(validate_enrichment_data(data))
 
 
 def claim_pending_events_by_session(
@@ -469,6 +470,7 @@ def write_knowledge_node(
     All inserts run inside an explicit transaction so a mid-write failure
     leaves no partial state in the database.
     """
+    result = index_enrichment_result(result)
     node_uuid = str(uuid.uuid4())
     now_ms = int(time.time() * 1000)
     content = json.dumps(

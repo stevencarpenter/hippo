@@ -40,7 +40,8 @@ from hippo_brain.auto_memory_reconcile import (
     reconcile_source,
     reconcile_sources,
 )
-from hippo_brain.models import EnrichmentResult
+from hippo_brain.models import EnrichmentResult, index_enrichment_result
+from hippo_brain.redaction import index_text
 from hippo_brain.schema_version import EXPECTED_SCHEMA_VERSION
 from hippo_brain.vector_store import vec_table_available
 
@@ -197,7 +198,7 @@ def render_memory_enrichment_input(
         f"Path: {logical_path}\nContent hash: {content_hash}"
     )
     body = "\n\n---\n\n".join(chunk_texts)
-    return f"{header}\n\n{body}"
+    return index_text(f"{header}\n\n{body}")
 
 
 def build_memory_enrichment_prompt(claim: MemoryClaim) -> str:
@@ -230,6 +231,7 @@ def write_memory_knowledge_node(
     discarded rather than promoted: publishing it would delete the current node
     and revert the projection to outdated content.
     """
+    result = index_enrichment_result(result)
     completed_at = now_ms if now_ms is not None else int(time.time() * 1000)
     revision = conn.execute(
         "SELECT r.document_id, r.content_hash, d.uuid, d.repository, d.logical_path, "
@@ -264,6 +266,7 @@ def write_memory_knowledge_node(
         },
         sort_keys=True,
     )
+    content = index_text(content)
     conn.execute("BEGIN IMMEDIATE")
     try:
         current_revision_id = conn.execute(

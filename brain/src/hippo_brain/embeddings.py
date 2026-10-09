@@ -24,6 +24,8 @@ from pathlib import Path
 from typing import Any
 
 from hippo_brain import vector_store
+from hippo_brain.redaction import index_text
+from hippo_brain.source_filters import table_exists
 from hippo_brain.telemetry import get_meter
 from hippo_brain.vector_store import (
     EMBED_DIM,
@@ -146,8 +148,8 @@ async def embed_knowledge_node(
 
         check_embed_model_drift(handle, embed_model, allow_switch=allow_embed_switch)
 
-        embed_text = node_dict.get("embed_text", "") or ""
-        commands_raw = node_dict.get("commands_raw", "") or ""
+        embed_text = index_text(node_dict.get("embed_text", "") or "")
+        commands_raw = index_text(node_dict.get("commands_raw", "") or "")
 
         cmd_model = command_model or embed_model
         cmd_text = commands_raw or embed_text
@@ -172,6 +174,25 @@ async def embed_knowledge_node(
             # until both inference calls succeed, then swap it atomically.
             handle.execute("BEGIN IMMEDIATE")
         try:
+            # Re-derivation also cleans legacy derived content used by the FTS triggers.
+            # Source events and sessions are never updated here.
+            # Existing callers can use a vector-only store. Other SQL errors
+            # still propagate; only absence of the node table skips its cleanup.
+            stored = None
+            if table_exists(handle, "knowledge_nodes"):
+                stored = handle.execute(
+                    "SELECT content, embed_text FROM knowledge_nodes WHERE id = ?", (node_id,)
+                ).fetchone()
+            if stored:
+                clean = tuple(index_text(text or "") for text in stored)
+                if clean != tuple(stored):
+                    from hippo_brain.classification import enqueue_node
+
+                    handle.execute(
+                        "UPDATE knowledge_nodes SET content = ?, embed_text = ? WHERE id = ?",
+                        (*clean, node_id),
+                    )
+                    enqueue_node(handle, node_id)
             if replace_existing:
                 handle.execute(
                     "DELETE FROM knowledge_vectors WHERE knowledge_node_id = ?", (node_id,)
@@ -180,8 +201,7 @@ async def embed_knowledge_node(
             record_embed_model(handle, embed_model)
             handle.commit()
         except Exception:
-            if replace_existing:
-                handle.rollback()
+            handle.rollback()
             raise
 
         if _embed_duration:

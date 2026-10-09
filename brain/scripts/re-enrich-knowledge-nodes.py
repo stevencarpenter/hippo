@@ -73,6 +73,8 @@ from hippo_brain.classification import enqueue_node, load_recipe
 from hippo_brain.claude_sessions import CLAUDE_SYSTEM_PROMPT
 from hippo_brain.client import InferenceClient
 from hippo_brain.embeddings import embed_knowledge_node
+from hippo_brain.models import index_enrichment_result
+from hippo_brain.redaction import index_text
 from hippo_brain.enrichment import (
     CURRENT_ENRICHMENT_VERSION,
     SHELL_ENTITY_TYPE_MAP,
@@ -207,6 +209,7 @@ async def _call_llm_with_retries(
     JSON object — without the hint we'd burn 3 full inferences before
     giving up. Behavior matches ``Server._call_llm_with_retries`` exactly.
     """
+    prompt = index_text(prompt)
     last_err: Exception | None = None
     for attempt in range(1, 4):
         messages = [
@@ -254,6 +257,7 @@ def _update_node_in_place(
     (knowledge_node_events / _claude_sessions / _browser_events /
     _workflow_runs) are untouched.
     """
+    result = index_enrichment_result(result)
     now_ms = int(time.time() * 1000)
     content = json.dumps(
         {

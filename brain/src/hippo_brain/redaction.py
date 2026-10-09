@@ -99,6 +99,56 @@ def redact(text: str) -> str:
     return text
 
 
+# Derived text excludes shapes deliberately preserved by capture redaction.
+# These are type markers, not a claim that each matched identifier is a secret.
+_INDEX_SPANS = (
+    (re.compile(r"\b[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}\b", re.I), "<uuid>"),
+    (re.compile(r"(?<!\w)(?:ghp_|github_pat_)[a-zA-Z0-9_]*"), "<github-token>"),
+    (re.compile(r"\bAKIA[a-zA-Z0-9_]*"), "<aws-key>"),
+    (re.compile(r"\beyJ[a-zA-Z0-9_-]*(?:\.[a-zA-Z0-9_-]+){0,2}"), "<jwt>"),
+    (re.compile(r"\b[0-9a-f]{64}\b", re.I), "<hash>"),
+    (re.compile(r"\b[0-9a-f]{7,40}\b", re.I), "<git-sha>"),
+    # ponytail: standalone blob heuristic, not absolute paths; explicit token types if recall suffers.
+    (
+        re.compile(
+            r"(?<![\w/+])(?=[A-Za-z0-9+/]*[A-Z])(?=[A-Za-z0-9+/]*[a-z])"
+            r"(?=[A-Za-z0-9+/]*[0-9])[A-Za-z0-9+][A-Za-z0-9+/]{23,}={0,2}(?![\w/+])"
+        ),
+        "<base64>",
+    ),
+)
+
+
+def index_text(text: str) -> str:
+    """Exclude preserved credential-shaped spans from derived text, never raw capture."""
+    text = redact(text)
+    if text.lstrip().startswith(("{", "[", '"')):
+        try:
+            decoded = json.loads(text)
+        except ValueError, RecursionError:
+            pass
+        else:
+            clean = index_state(decoded)
+            return json.dumps(clean, ensure_ascii=False) if clean != decoded else text
+    for pattern, placeholder in _INDEX_SPANS:
+        text = pattern.sub(placeholder, text)
+    return text
+
+
+def index_state(value: Any) -> Any:
+    """Copy structured derived content, including the keys indexed by FTS."""
+    if isinstance(value, str):
+        return index_text(value)
+    if isinstance(value, dict):
+        return {
+            index_text(key) if isinstance(key, str) else key: index_state(item)
+            for key, item in redact_state(value).items()
+        }
+    if isinstance(value, (list, tuple)):
+        return [index_state(item) for item in value]
+    return value
+
+
 def redact_iterable(values: Iterable[str]) -> list[str]:
     return [redact(v) for v in values]
 

@@ -20,6 +20,28 @@ Redaction is **best-effort**. It catches known secret formats; it cannot catch s
 - **Not a database scrubber.** Once a non-redacted secret has been stored in `events`, hippo doesn't re-process old rows when you add a pattern. Add a pattern → only future captures benefit.
 - **Not a substitute for FileVault.** The DB is unencrypted at rest.
 
+## Derived index exclusion
+
+Capture redaction and derived index exclusion have different contracts. Raw
+source events, session fields and memory files keep their existing capture
+behavior. Full PATs, actual JWTs and recognized credential assignments still
+redact at capture or existing Python credential boundaries.
+
+`brain/src/hippo_brain/redaction.py::index_text` replaces preserved UUID, SHA,
+digest, incomplete GitHub/AWS prefix and JWT/base64-lookalike spans with type
+placeholders such as `<git-sha>` and `<github-token>`. The same policy covers
+enrichment inputs, returned node fields (including FTS content JSON), and both
+knowledge and command embedding inputs. Re-embedding and the orphan reaper use
+the shared embedding boundary; successful re-derivation also cleans the node
+text used by FTS. These shapes can represent harmless identifiers. Search by
+an excluded identifier can lose recall; use raw event display for its value.
+
+This source change does not rebuild an installed corpus. Existing derived rows
+need separately authorized re-derivation. It does not remove raw sources, logs
+or backups, and it does not prove resistance to vector inversion. The synthetic
+regression checks both embedding inputs and a controlled nearest-neighbor probe
+with an unfiltered positive control. It does not use a live inference model.
+
 ## Pattern format
 
 `~/.config/hippo/redact.toml` is a TOML file with an array of pattern tables:

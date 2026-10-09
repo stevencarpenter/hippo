@@ -20,6 +20,7 @@ from hippo_brain.classification import enqueue_node
 from hippo_brain.claude_sessions import find_identical_node
 from hippo_brain.client import InferenceClient
 from hippo_brain.enrichment import CURRENT_ENRICHMENT_VERSION, parse_enrichment_response
+from hippo_brain.redaction import index_text
 from hippo_brain.lessons import ClusterKey, upsert_cluster
 from hippo_brain.watchdog import DEFAULT_LOCK_TIMEOUT_MS
 
@@ -369,4 +370,4 @@ def _build_prompt(run, shell_rows, claude_rows, ann_rows) -> str:
         "\nSummarize what changed, whether it succeeded, and if it "
         "failed, the root cause and one-line fix suggestion."
     )
-    return "\n".join(parts)
+    return index_text("\n".join(parts))
