@@ -149,6 +149,7 @@ def run(db_path: Path, dry_run: bool) -> int:
     conn = sqlite3.connect(str(db_path))
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys=ON")
+    conn.execute("PRAGMA secure_delete=ON")
     conn.execute("PRAGMA busy_timeout=5000")
 
     rows = conn.execute(

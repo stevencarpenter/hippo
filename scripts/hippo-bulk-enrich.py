@@ -118,6 +118,7 @@ async def main():
     conn = sqlite3.connect(str(db_path))
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")
+    conn.execute("PRAGMA secure_delete=ON")
     conn.execute("PRAGMA busy_timeout=5000")
 
     client = InferenceClient(base_url=inference_url, timeout=120.0)

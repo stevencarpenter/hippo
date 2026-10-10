@@ -368,14 +368,6 @@ pub async fn flush_events(state: &Arc<DaemonState>) -> usize {
                     metrics::SESSIONS_CREATED.add(1, &[]);
                 }
 
-                let env_snapshot_id =
-                    storage::upsert_env_snapshot(&db, &redacted_event.env_snapshot).unwrap_or_else(
-                        |e| {
-                            warn!("env snapshot failed: {}", e);
-                            None
-                        },
-                    );
-
                 let event_ts = envelope.timestamp.timestamp_millis();
                 let source: &'static str = storage::source_kind_of(&redacted_event);
                 let eid = envelope.envelope_id.to_string();
@@ -385,7 +377,7 @@ pub async fn flush_events(state: &Arc<DaemonState>) -> usize {
                     &redacted_event,
                     event_ts,
                     redacted_event.redaction_count,
-                    env_snapshot_id,
+                    None, // storage resolves the snapshot atomically with the event
                     Some(&eid),
                     envelope.probe_tag.as_deref(),
                 ) {
@@ -883,6 +875,10 @@ pub async fn run_with_mode(config: HippoConfig, bench_mode: bool) -> Result<()> 
                     Ok(c) => c,
                     Err(_) => return,
                 };
+                if let Err(e) = conn.execute_batch("PRAGMA secure_delete=ON;") {
+                    warn!(error = %e, "queue observer connection setup failed");
+                    return;
+                }
                 for (kind, table) in queues {
                     let sql = format!(
                         "SELECT COUNT(*) FROM {table} WHERE status IN ('pending', 'processing')"

@@ -47,6 +47,12 @@ pub enum Commands {
         #[arg(long)]
         project: Option<String>,
     },
+    /// Destroy expired event outputs and unreferenced environment payloads
+    GcEventPayloads {
+        /// Explicitly authorize this destructive sweep (ledger rows remain)
+        #[arg(long, required = true)]
+        confirm: bool,
+    },
     /// Query the knowledge base
     Query {
         /// Search text

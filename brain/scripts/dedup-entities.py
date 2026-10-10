@@ -262,6 +262,7 @@ def main() -> None:
 
     conn = sqlite3.connect(str(db_path))
     try:
+        conn.execute("PRAGMA secure_delete=ON")
         run(conn, dry_run=args.dry_run)
     finally:
         conn.close()

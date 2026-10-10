@@ -183,6 +183,7 @@ def sync_capture_alarms_to_lessons(
 
     conn = sqlite3.connect(db_path)
     try:
+        conn.execute("PRAGMA secure_delete=ON")
         if not table_exists(conn, "capture_alarms"):
             return 0
         _ensure_cursor_schema(conn)
@@ -236,6 +237,7 @@ def sync_capture_alarms_to_lessons(
 
         conn = sqlite3.connect(db_path)
         try:
+            conn.execute("PRAGMA secure_delete=ON")
             conn.execute(
                 "UPDATE capture_alarm_lesson_cursor SET last_alarm_id = ? WHERE id = 1",
                 (alarm_id,),
@@ -263,6 +265,7 @@ def _refresh_flap_summaries(db_path: str, keys: dict[ClusterKey, None]) -> None:
     """
     conn = sqlite3.connect(db_path)
     try:
+        conn.execute("PRAGMA secure_delete=ON")
         for key in keys:
             source = _source_for_key(key)
             stats = _flap_stats_for_key(conn, key.rule_id, source)

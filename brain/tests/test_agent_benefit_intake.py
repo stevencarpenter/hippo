@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from hippo_brain.bench.agent_benefit_intake import freeze
+from hippo_brain.schema_version import EXPECTED_SCHEMA_VERSION
 
 
 def _git(repo: Path, *args: str) -> str:
@@ -26,7 +27,7 @@ def test_freeze_keeps_pre_task_memory_and_code_and_records_dirty_repos(tmp_path)
     db = tmp_path / "live.sqlite"
     with sqlite3.connect(db) as source:
         source.execute("PRAGMA journal_mode=WAL")
-        source.execute("PRAGMA user_version=25")
+        source.execute(f"PRAGMA user_version={EXPECTED_SCHEMA_VERSION}")
         source.execute("CREATE TABLE evidence (value TEXT)")
         source.execute("INSERT INTO evidence VALUES ('before')")
         source.commit()

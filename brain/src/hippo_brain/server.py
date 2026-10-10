@@ -468,6 +468,7 @@ class BrainServer:
             raise
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA foreign_keys=ON")
+        conn.execute("PRAGMA secure_delete=ON")
         conn.execute("PRAGMA busy_timeout=5000")
         require_accepted_schema(conn)
         return conn
@@ -2304,6 +2305,7 @@ def create_app(
             try:
                 conn = sqlite3.connect(f"file:{_resolved_db_path}?mode=ro", uri=True)
                 try:
+                    conn.execute("PRAGMA secure_delete=ON")
                     for source, status, count in _collect_queue_depths(conn):
                         yield otel_metrics.Observation(count, {"source": source, "status": status})
                 finally:
@@ -2323,6 +2325,7 @@ def create_app(
             try:
                 conn = sqlite3.connect(f"file:{_resolved_db_path}?mode=ro", uri=True)
                 try:
+                    conn.execute("PRAGMA secure_delete=ON")
                     for status, count in _collect_classification_depths(conn):
                         yield otel_metrics.Observation(count, {"status": status})
                 finally:
