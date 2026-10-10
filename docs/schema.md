@@ -82,7 +82,8 @@ The optional `node_evidence(ref_type, ref_id)` and `epitaphs.evidence_refs` stor
 are not created by this migration. GC recognizes the published evidence citation
 namespace from `evidence_packets.parse_ref`: `shell-<id>` identifies `events`,
 including Claude tool events. For `node_evidence`, the corresponding pair is
-`('shell', <id>)`; epitaph references must be a JSON array of citation strings.
+`('shell', <id>)`; non-NULL epitaph references must be a JSON array of citation strings.
+NULL means no evidence references.
 The other published prefixes identify non-event stores, not event pins. GC
 refuses destruction if a present evidence store has incompatible columns,
 reference types, IDs or JSON. Future evidence writers must use the published
@@ -139,7 +140,7 @@ sqlite3 ~/.local/share/hippo/hippo.db "PRAGMA user_version;"
 | `workflow_runs` / `_jobs` / `_annotations` / `_log_excerpts` | GitHub Actions ingest. | `gh_poll.rs::run_once` |
 | `sha_watchlist` | Per-(repo, sha) follow flag for in-flight CI runs. Drives the gh-poller's "wait for this SHA's runs to settle" loop. | `gh_poll.rs` |
 | `lessons` / `lesson_pending` | Graduated recurring failure tips (CI annotations via workflow enrichment; capture alarms via `capture_alarm_lessons`). | Brain enrichment |
-| `env_snapshots` | Hashed environment-variable snapshots referenced by `events.env_snapshot_id`. Lets multiple events share one snapshot rather than embedding env-var sets in every row. | Daemon at session start |
+| `env_snapshots` | Shared environment snapshots; see [Event payload retention](#event-payload-retention) for clearing and restoration. | `storage.rs::insert_event_at` via `upsert_env_snapshot`; payload GC |
 | `knowledge_nodes` | The synthesized output of enrichment. The `content` column is a JSON blob (with `summary` / `intent` / `entities` / `tool_calls` / etc. as inner fields); `embed_text` and `node_type`/`outcome`/`tags` are real columns. | `enrichment.py::write_knowledge_node`, `claude_sessions.py::write_claude_knowledge_node` |
 | `knowledge_node_agentic_sessions` | **Live session-link table** tying knowledge nodes back to their `agentic_sessions` source rows. | `claude_sessions.py::write_claude_knowledge_node` |
 | `knowledge_node_events` / `_browser_events` / `_workflow_runs` / `_lessons` | Link tables tying knowledge nodes back to their source events. | Same writers as `knowledge_nodes` |
@@ -179,7 +180,7 @@ browser_enrichment_queue ──> browser_events
 workflow_enrichment_queue ──> workflow_runs
 ```
 
-`PRAGMA foreign_keys` is ON for every connection (`storage.rs::open_db`, `vector_store.py::open_conn`).
+`storage.rs::open_db` and `vector_store.py::open_conn` enable `PRAGMA foreign_keys`.
 
 ## Migration guarantees
 
