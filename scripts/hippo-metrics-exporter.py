@@ -168,6 +168,7 @@ FUTURE_METRIC_NAMES = [
 
 def _open_ro(path: Path | None = None) -> sqlite3.Connection:
     conn = sqlite3.connect(f"file:{path or DB_PATH}?mode=ro", uri=True, timeout=5)
+    conn.execute("PRAGMA secure_delete=ON")
     conn.execute("PRAGMA query_only=ON")
     return conn
 

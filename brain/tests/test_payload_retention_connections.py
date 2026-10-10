@@ -1,6 +1,8 @@
 """Connection settings are observable on synthetic stores, not inferred from source."""
 
+import importlib.util
 import sqlite3
+from pathlib import Path
 
 import pytest
 
@@ -39,6 +41,39 @@ def test_runtime_connections_enable_secure_delete(tmp_db, owner, monkeypatch):
         assert conn.execute("PRAGMA secure_delete").fetchone() == (1,)
         assert conn.execute("PRAGMA foreign_keys").fetchone() == (1,)
         assert conn.execute("PRAGMA journal_mode").fetchone() == ("wal",)
+    finally:
+        conn.close()
+
+
+def test_exporter_connection_enables_secure_delete_and_remains_read_only(tmp_path, monkeypatch):
+    script = Path(__file__).resolve().parents[2] / "scripts" / "hippo-metrics-exporter.py"
+    spec = importlib.util.spec_from_file_location("hippo_metrics_exporter", script)
+    exporter = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(exporter)
+    path = tmp_path / "metrics.db"
+    original_connect = sqlite3.connect
+    with original_connect(path) as setup:
+        setup.execute("CREATE TABLE sample (value TEXT)")
+        setup.execute("INSERT INTO sample VALUES ('retained')")
+    setup.close()
+
+    def insecure_default(*args, **kwargs):
+        conn = original_connect(*args, **kwargs)
+        conn.execute("PRAGMA secure_delete=OFF")
+        return conn
+
+    monkeypatch.setattr(sqlite3, "connect", insecure_default)
+    conn = exporter._open_ro(path)
+    try:
+        assert conn.execute("PRAGMA secure_delete").fetchone() == (1,)
+        assert conn.execute("PRAGMA query_only").fetchone() == (1,)
+        assert conn.execute("SELECT value FROM sample").fetchall() == [("retained",)]
+        with pytest.raises(sqlite3.OperationalError, match="readonly"):
+            conn.execute("DELETE FROM sample")
+        conn.execute("PRAGMA query_only=OFF")
+        with pytest.raises(sqlite3.OperationalError, match="readonly"):
+            conn.execute("DELETE FROM sample")
+        assert conn.execute("SELECT value FROM sample").fetchall() == [("retained",)]
     finally:
         conn.close()
 
