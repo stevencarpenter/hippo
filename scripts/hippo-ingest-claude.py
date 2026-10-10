@@ -20,6 +20,7 @@ from hippo_brain.claude_sessions import (
     write_claude_knowledge_node,
 )
 from hippo_brain.enrichment import parse_enrichment_response
+from hippo_brain.redaction import index_text
 
 
 def main():
@@ -229,7 +230,7 @@ async def run_enrichment(
         for segments in batches:
             segment_ids = [s["id"] for s in segments]
             # Build prompt from summary_text (already pre-formatted)
-            prompt = "\n---\n\n".join(s["summary_text"] for s in segments)
+            prompt = index_text("\n---\n\n".join(s["summary_text"] for s in segments))
 
             cwd = segments[0].get("cwd", "unknown")
             print(f"  Enriching {len(segments)} segments from {cwd}...")

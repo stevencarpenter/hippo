@@ -19,29 +19,32 @@ async def re_embed_nodes(
     conn, client, embedding_model: str, command_model: str = ""
 ) -> int:
     """Replace vectors without changing raw events or dropping the existing store."""
-    nodes = conn.execute(
-        "SELECT id, embed_text FROM knowledge_nodes ORDER BY id"
-    ).fetchall()
-    for node_id, embed_text in nodes:
-        commands = conn.execute(
-            "SELECT e.command FROM knowledge_node_events kne "
-            "JOIN events e ON e.id = kne.event_id "
-            "WHERE kne.knowledge_node_id = ? ORDER BY e.timestamp, e.id",
-            (node_id,),
+    conn.execute("BEGIN IMMEDIATE")
+    with conn:
+        nodes = conn.execute(
+            "SELECT id, embed_text FROM knowledge_nodes ORDER BY id"
         ).fetchall()
-        await embed_knowledge_node(
-            client,
-            conn,
-            {
-                "id": node_id,
-                "embed_text": embed_text,
-                "commands_raw": " ; ".join(r[0] for r in commands),
-            },
-            embed_model=embedding_model,
-            command_model=command_model,
-            allow_embed_switch=True,
-            replace_existing=True,
-        )
+        for node_id, embed_text in nodes:
+            commands = conn.execute(
+                "SELECT e.command FROM knowledge_node_events kne "
+                "JOIN events e ON e.id = kne.event_id "
+                "WHERE kne.knowledge_node_id = ? ORDER BY e.timestamp, e.id",
+                (node_id,),
+            ).fetchall()
+            await embed_knowledge_node(
+                client,
+                conn,
+                {
+                    "id": node_id,
+                    "embed_text": embed_text,
+                    "commands_raw": " ; ".join(r[0] for r in commands),
+                },
+                embed_model=embedding_model,
+                command_model=command_model,
+                allow_embed_switch=True,
+                replace_existing=True,
+                commit=False,
+            )
     return len(nodes)
 
 

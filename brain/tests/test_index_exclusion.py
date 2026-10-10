@@ -312,6 +312,84 @@ async def test_reembed_and_orphan_reaper_clean_both_embedding_arms(index_db):
         server.close()
 
 
+async def test_ingestion_prompt_exclusion_preserves_source(index_db, monkeypatch):
+    conn, path = index_db
+    sid = insert_segment(conn, segment())
+    source_query = "SELECT summary_text, user_prompts_json, tool_calls_json FROM agentic_sessions WHERE id=?"
+    source = conn.execute(source_query, (sid,)).fetchone()
+    client = MockInferenceClient()
+    client.CANNED_RESPONSE = json.dumps(vars(result()))
+    monkeypatch.setattr("hippo_brain.client.InferenceClient", lambda **kwargs: client)
+    enrich = runpy.run_path(str(ROOT / "scripts/hippo-ingest-claude.py"))["run_enrichment"]
+    await enrich({"models": {"enrichment": "synthetic"}}, "", path, path.parent)
+    assert len(client.chat_calls) == 1
+    prompt = client.chat_calls[0]["messages"][1]["content"]
+    assert SPAN not in prompt
+    assert "<github-token>" in prompt
+    assert conn.execute(source_query, (sid,)).fetchone() == source
+    assert conn.execute("SELECT COUNT(*) FROM knowledge_nodes").fetchone()[0] == 1
+
+
+@pytest.mark.parametrize("fail_call", [3, 4])
+async def test_reembed_model_switch_is_atomic(index_db, fail_call):
+    from hippo_brain.vector_store import (
+        EmbedDriftError,
+        check_embed_model_drift,
+        get_stored_embed_model,
+        record_embed_model,
+    )
+
+    conn, path = index_db
+    for nid in (1, 2):
+        conn.execute(
+            "INSERT INTO knowledge_nodes(id,uuid,content,embed_text,created_at) VALUES(?,?,?,?,1)",
+            (nid, str(nid), json.dumps({"summary": SPAN}), SPAN),
+        )
+        insert_vectors(conn, nid, [0.1] * EMBED_DIM, [0.2] * EMBED_DIM)
+    record_embed_model(conn, "model-a")
+    conn.commit()
+    old_vectors = conn.execute("SELECT * FROM knowledge_vectors ORDER BY knowledge_node_id").fetchall()
+    old_nodes = conn.execute("SELECT * FROM knowledge_nodes ORDER BY id").fetchall()
+    old_fts = conn.execute("SELECT * FROM knowledge_fts ORDER BY rowid").fetchall()
+    reader = open_conn(path)
+
+    class MigrationClient(MockInferenceClient):
+        async def embed(self, texts, model=""):
+            assert get_stored_embed_model(reader) == "model-a"
+            assert reader.execute(
+                "SELECT * FROM knowledge_vectors ORDER BY knowledge_node_id"
+            ).fetchall() == old_vectors
+            if len(self.embed_calls) + 1 == fail_call:
+                raise RuntimeError("synthetic inference failure")
+            return await super().embed(texts, model=model)
+
+    reembed = runpy.run_path(str(ROOT / "scripts/hippo-re-embed.py"))["re_embed_nodes"]
+    try:
+        with pytest.raises(RuntimeError, match="synthetic inference failure"):
+            await reembed(conn, MigrationClient(), "model-b", "command-b")
+        assert not conn.in_transaction
+        assert conn.execute(
+            "SELECT * FROM knowledge_vectors ORDER BY knowledge_node_id"
+        ).fetchall() == old_vectors
+        assert conn.execute("SELECT * FROM knowledge_nodes ORDER BY id").fetchall() == old_nodes
+        assert conn.execute("SELECT * FROM knowledge_fts ORDER BY rowid").fetchall() == old_fts
+        with pytest.raises(EmbedDriftError):
+            check_embed_model_drift(conn, "model-b")
+        client = MockInferenceClient()
+        assert await reembed(conn, client, "model-b", "command-b") == 2
+        assert get_stored_embed_model(reader) == "model-b"
+        rows = reader.execute(
+            "SELECT * FROM knowledge_vectors ORDER BY knowledge_node_id"
+        ).fetchall()
+        assert len(rows) == 2
+        assert all(new[1] != old[1] and new[2] != old[2] for new, old in zip(rows, old_vectors))
+        assert [call["model"] for call in client.embed_calls] == [
+            "model-b", "command-b", "model-b", "command-b"
+        ]
+    finally:
+        reader.close()
+
+
 def ingest_and_shutdown(socket_path, envelope):
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as peer:
         peer.settimeout(5)

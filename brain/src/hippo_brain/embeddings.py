@@ -127,6 +127,7 @@ async def embed_knowledge_node(
     *,
     allow_embed_switch: bool = False,
     replace_existing: bool = False,
+    commit: bool = True,
 ) -> None:
     """Embed a knowledge node and persist both vectors to ``knowledge_vectors``.
 
@@ -169,7 +170,7 @@ async def embed_knowledge_node(
         _check_vec_dim(command_vecs[0], "command")
         vec_command = command_vecs[0]
 
-        if replace_existing:
+        if replace_existing and not handle.in_transaction:
             # vec0 does not replace an existing primary key. Keep the old row
             # until both inference calls succeed, then swap it atomically.
             handle.execute("BEGIN IMMEDIATE")
@@ -199,7 +200,8 @@ async def embed_knowledge_node(
                 )
             vector_store.insert_vectors(handle, node_id, vec_knowledge, vec_command)
             record_embed_model(handle, embed_model)
-            handle.commit()
+            if commit:
+                handle.commit()
         except Exception:
             handle.rollback()
             raise
