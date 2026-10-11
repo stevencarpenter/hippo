@@ -348,7 +348,9 @@ async def test_reembed_model_switch_is_atomic(index_db, fail_call):
         insert_vectors(conn, nid, [0.1] * EMBED_DIM, [0.2] * EMBED_DIM)
     record_embed_model(conn, "model-a")
     conn.commit()
-    old_vectors = conn.execute("SELECT * FROM knowledge_vectors ORDER BY knowledge_node_id").fetchall()
+    old_vectors = conn.execute(
+        "SELECT * FROM knowledge_vectors ORDER BY knowledge_node_id"
+    ).fetchall()
     old_nodes = conn.execute("SELECT * FROM knowledge_nodes ORDER BY id").fetchall()
     old_fts = conn.execute("SELECT * FROM knowledge_fts ORDER BY rowid").fetchall()
     reader = open_conn(path)
@@ -356,9 +358,12 @@ async def test_reembed_model_switch_is_atomic(index_db, fail_call):
     class MigrationClient(MockInferenceClient):
         async def embed(self, texts, model=""):
             assert get_stored_embed_model(reader) == "model-a"
-            assert reader.execute(
-                "SELECT * FROM knowledge_vectors ORDER BY knowledge_node_id"
-            ).fetchall() == old_vectors
+            assert (
+                reader.execute(
+                    "SELECT * FROM knowledge_vectors ORDER BY knowledge_node_id"
+                ).fetchall()
+                == old_vectors
+            )
             if len(self.embed_calls) + 1 == fail_call:
                 raise RuntimeError("synthetic inference failure")
             return await super().embed(texts, model=model)
@@ -368,9 +373,10 @@ async def test_reembed_model_switch_is_atomic(index_db, fail_call):
         with pytest.raises(RuntimeError, match="synthetic inference failure"):
             await reembed(conn, MigrationClient(), "model-b", "command-b")
         assert not conn.in_transaction
-        assert conn.execute(
-            "SELECT * FROM knowledge_vectors ORDER BY knowledge_node_id"
-        ).fetchall() == old_vectors
+        assert (
+            conn.execute("SELECT * FROM knowledge_vectors ORDER BY knowledge_node_id").fetchall()
+            == old_vectors
+        )
         assert conn.execute("SELECT * FROM knowledge_nodes ORDER BY id").fetchall() == old_nodes
         assert conn.execute("SELECT * FROM knowledge_fts ORDER BY rowid").fetchall() == old_fts
         with pytest.raises(EmbedDriftError):
@@ -384,7 +390,10 @@ async def test_reembed_model_switch_is_atomic(index_db, fail_call):
         assert len(rows) == 2
         assert all(new[1] != old[1] and new[2] != old[2] for new, old in zip(rows, old_vectors))
         assert [call["model"] for call in client.embed_calls] == [
-            "model-b", "command-b", "model-b", "command-b"
+            "model-b",
+            "command-b",
+            "model-b",
+            "command-b",
         ]
     finally:
         reader.close()
