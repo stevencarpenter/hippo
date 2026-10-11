@@ -24,8 +24,7 @@ typeset -g _HIPPO_CAPTURE_DIR=""
 
 # Opt in only for noninteractive commands. Ordinary commands keep their TTYs.
 hippo_capture() {
-    emulate -L zsh
-    setopt multios
+    setopt localoptions multios
     if (( ZSH_SUBSHELL != 0 )); then
         print -u2 'hippo_capture: only foreground commands in the parent shell are supported'
         return 2
@@ -45,7 +44,7 @@ hippo_capture() {
     fi
     # Native multios copies each stream to its original destination and a file.
     # The group waits for those copies before precmd can send the event.
-    { "$@" } >&1 >>"${_HIPPO_CAPTURE_DIR}/stdout" 2>&2 2>>"${_HIPPO_CAPTURE_DIR}/stderr"
+    { "$@" } >&1 >>|"${_HIPPO_CAPTURE_DIR}/stdout" 2>&2 2>>|"${_HIPPO_CAPTURE_DIR}/stderr"
 }
 
 _hippo_capture_cleanup() {

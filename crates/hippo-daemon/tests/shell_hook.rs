@@ -6,6 +6,56 @@ use std::time::{Duration, Instant};
 use tempfile::tempdir;
 
 #[test]
+fn capture_preserves_caller_options_and_function_behavior() {
+    let temp = tempdir().unwrap();
+    let hook = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../shell/hippo.zsh");
+    let output = Command::new("zsh")
+        .args(["-f", "-c"])
+        .arg(
+            r#"
+source "$HOOK"
+probe() {
+    local sample='one two'
+    local -a words=( $sample )
+    print -r -- "words=${#words} noclobber=$options[noclobber]"
+    print replacement > "$EXISTING"
+    print -r -- "overwrite=$?"
+    false | true
+}
+for enabled in on off; do
+    if [[ $enabled == on ]]; then
+        setopt pipefail shwordsplit noclobber
+    else
+        unsetopt pipefail shwordsplit noclobber
+    fi
+    unsetopt multios
+    print original >| "$EXISTING"
+    probe >| "$BASELINE"; expected=$?
+    print original >| "$EXISTING"
+    hippo_capture probe; actual=$?
+    [[ $actual == $expected ]] || exit 10
+    [[ $options[pipefail] == $enabled && $options[shwordsplit] == $enabled && $options[noclobber] == $enabled && $options[multios] == off ]] || exit 11
+    cmp "$BASELINE" "$_HIPPO_CAPTURE_DIR/stdout" || exit 12
+    if [[ $enabled == on ]]; then
+        [[ $actual == 1 && $(< "$EXISTING") == original ]] || exit 13
+    else
+        [[ $actual == 0 && $(< "$EXISTING") == replacement ]] || exit 14
+    fi
+    _hippo_capture_cleanup
+done
+"#,
+        )
+        .env("HOOK", hook)
+        .env("TMPDIR", temp.path())
+        .env("EXISTING", temp.path().join("existing"))
+        .env("BASELINE", temp.path().join("baseline"))
+        .current_dir(temp.path())
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+}
+
+#[test]
 fn test_git_probes_use_captured_cwd() {
     let temp = tempdir().unwrap();
     let old_repo = temp.path().join("old-repo");
