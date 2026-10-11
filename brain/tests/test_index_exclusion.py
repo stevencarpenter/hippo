@@ -315,7 +315,9 @@ async def test_reembed_and_orphan_reaper_clean_both_embedding_arms(index_db):
 async def test_ingestion_prompt_exclusion_preserves_source(index_db, monkeypatch):
     conn, path = index_db
     sid = insert_segment(conn, segment())
-    source_query = "SELECT summary_text, user_prompts_json, tool_calls_json FROM agentic_sessions WHERE id=?"
+    source_query = (
+        "SELECT summary_text, user_prompts_json, tool_calls_json FROM agentic_sessions WHERE id=?"
+    )
     source = conn.execute(source_query, (sid,)).fetchone()
     client = MockInferenceClient()
     client.CANNED_RESPONSE = json.dumps(vars(result()))

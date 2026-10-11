@@ -132,8 +132,11 @@ async def embed_knowledge_node(
     """Embed a knowledge node and persist both vectors to ``knowledge_vectors``.
 
     ``node_dict`` must carry at least ``id`` (the knowledge_nodes PK) and
-    ``embed_text``. If ``node_dict["id"]`` is 0 or missing, nothing is
-    written — the caller is responsible for providing the foreign key.
+    ``embed_text``. A nonpositive or missing ``node_dict["id"]`` raises
+    ``ValueError``; the caller must provide the foreign key.
+
+    With ``commit=False``, the caller owns the transaction and must commit or
+    roll back the complete operation, including failures during inference.
 
     Raises ``EmbedDriftError`` if ``embed_model`` differs from the model used
     to build the existing corpus (unless ``allow_embed_switch=True``).

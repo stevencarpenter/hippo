@@ -37,8 +37,14 @@ text used by FTS. These shapes can represent harmless identifiers. Search by
 an excluded identifier can lose recall; use raw event display for its value.
 
 This source change does not rebuild an installed corpus. Existing derived rows
-need separately authorized re-derivation. It does not remove raw sources, logs
-or backups, and it does not prove resistance to vector inversion. The synthetic
+need separately authorized re-derivation. `mise run re-embed` stops the brain
+before running `scripts/hippo-re-embed.py`; it requires operational authorization.
+The script replaces both vector columns, cleans derived node text and FTS, and
+publishes model metadata in one transaction. Failure rolls back the whole
+replacement; the command holds a SQLite write lock during inference. Regression coverage is in
+[`brain/tests/test_index_exclusion.py`](../brain/tests/test_index_exclusion.py).
+Re-derivation does not remove raw sources, logs or backups, and it does not prove
+resistance to vector inversion. The synthetic
 regression checks both embedding inputs and a controlled nearest-neighbor probe
 with an unfiltered positive control. It does not use a live inference model.
 
