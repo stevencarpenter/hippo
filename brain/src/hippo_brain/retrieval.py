@@ -362,7 +362,10 @@ def _call_fts(
     per-caller copy-paste previously let ``_recent`` silently miss it.
     """
     fts_query = _sanitize_fts_query(query)
+    from hippo_brain.projects import infer_project, query_terms
+
     extra_terms = _expand_entity_terms(conn, query) if t.entity_expansion else []
+    extra_terms.extend(query_terms(conn, infer_project(conn, query)))
     if extra_terms:
         fts_query = " OR ".join([fts_query, *(_quote_fts_term(term) for term in extra_terms)])
     raw = backend.fts_search(conn, fts_query, limit=limit)
@@ -506,7 +509,11 @@ def search(
     """
     if limit <= 0:
         return []
+    from hippo_brain.projects import infer_project
+
     filters = filters or Filters()
+    if not filters.project and (project := infer_project(conn, query)):
+        filters = replace(filters, project=project)
     if include_excluded_from_env():
         filters = replace(filters, include_excluded=True)
     backend = backend or _default_backend()
@@ -927,7 +934,14 @@ def _apply_filters(
         )
         params.extend([filters.since_ms] * 4)
 
-    if filters.project:
+    from hippo_brain.projects import project_clause
+
+    canonical_filter = project_clause(conn, filters.project) if filters.project else None
+    if canonical_filter is not None:
+        clause, values = canonical_filter
+        clauses.append(clause)
+        params.extend(values)
+    elif filters.project:
         pattern = f"%{filters.project}%"
         project_terms = [
             "e.cwd LIKE ?",

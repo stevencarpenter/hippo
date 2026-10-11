@@ -183,6 +183,9 @@ async def enrich_one_async(
                 "UPDATE workflow_enrichment_queue SET status='done', updated_at=? WHERE run_id=?",
                 (now, run_id),
             )
+            from hippo_brain.projects import attribute_node
+
+            attribute_node(conn, existing_id)
             enqueue_node(conn, existing_id)
             conn.commit()
             return None
@@ -240,6 +243,9 @@ async def enrich_one_async(
             "UPDATE workflow_enrichment_queue SET status='done', updated_at=? WHERE run_id=?",
             (now, run_id),
         )
+        from hippo_brain.projects import attribute_node
+
+        attribute_node(conn, node_id)
         enqueue_node(conn, node_id)
         conn.commit()
 

@@ -360,6 +360,9 @@ def write_opencode_knowledge_node(
                         (ch, seg_id),
                     )
 
+        from hippo_brain.projects import attribute_node
+
+        attribute_node(conn, node_id)
         enqueue_node(conn, node_id)
         conn.commit()
         return node_id

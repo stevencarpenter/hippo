@@ -385,6 +385,9 @@ def write_memory_knowledge_node(
             model_name=model_name,
             now_ms=completed_at,
         )
+        from hippo_brain.projects import attribute_node
+
+        attribute_node(conn, node_id)
         enqueue_node(conn, node_id)
         conn.commit()
     except Exception:
