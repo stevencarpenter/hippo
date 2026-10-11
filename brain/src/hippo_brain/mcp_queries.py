@@ -221,7 +221,18 @@ def _build_knowledge_filter_clause(
         clauses.append("kn.created_at >= ?")
         params.append(since_ms)
 
-    if project:
+    from hippo_brain.projects import project_clause as canonical_project_clause
+
+    canonical_filter = (
+        canonical_project_clause(conn, project, include_excluded=include_excluded)
+        if project
+        else None
+    )
+    if canonical_filter is not None:
+        clause, values = canonical_filter
+        clauses.append(clause)
+        params.extend(values)
+    elif project:
         like = f"%{project}%"
         project_clause = (
             "(EXISTS (SELECT 1 FROM knowledge_node_events kne "
@@ -306,6 +317,10 @@ def search_knowledge_lexical(
     include_excluded: bool = False,
 ) -> list[dict]:
     """Lexical (LIKE) search over knowledge_nodes with optional filter pushdown."""
+    from hippo_brain.projects import infer_project, query_terms
+
+    inferred_project = infer_project(conn, query)
+    project = project or inferred_project or ""
     since_ms = parse_since(since)
     where_extra, extra_params = _build_knowledge_filter_clause(
         conn,
@@ -318,16 +333,18 @@ def search_knowledge_lexical(
     )
 
     if query:
-        pattern = f"%{query}%"
+        patterns = [f"%{term}%" for term in [query, *query_terms(conn, inferred_project)]]
+        text_clause = " OR ".join("kn.content LIKE ? OR kn.embed_text LIKE ?" for _ in patterns)
         sql = (
             "SELECT kn.id, kn.uuid, kn.content, kn.embed_text, kn.outcome, kn.tags, "
             "       kn.created_at "
             "FROM knowledge_nodes kn "
-            "WHERE (kn.content LIKE ? OR kn.embed_text LIKE ?)"
+            f"WHERE ({text_clause})"
             f"{where_extra} "
             "ORDER BY kn.created_at DESC LIMIT ?"
         )
-        params = [pattern, pattern, *extra_params, limit]
+        params = [value for pattern in patterns for value in (pattern, pattern)]
+        params.extend([*extra_params, limit])
     else:
         sql = (
             "SELECT kn.id, kn.uuid, kn.content, kn.embed_text, kn.outcome, kn.tags, "

@@ -20,7 +20,9 @@ const SCHEMA: &str = concat!(
 /// startup code (e.g. the brain handshake) can cross-check without
 /// re-declaring the value. Keep in sync with
 /// `brain/src/hippo_brain/schema_version.py::EXPECTED_SCHEMA_VERSION`.
-pub const EXPECTED_VERSION: i64 = 26;
+pub const EXPECTED_VERSION: i64 = 27;
+
+const PROJECT_SCHEMA: &str = include_str!("schema/projects.sql");
 
 const EVENT_PAYLOAD_SCHEMA: &str = include_str!("schema/event_payloads.sql");
 
@@ -1723,6 +1725,25 @@ pub fn open_db(path: &Path) -> Result<Connection> {
         }
         tx.execute_batch("PRAGMA user_version = 26;")?;
         tx.commit()?;
+    }
+
+    // v26→v27 adds derived project identity, never rewrites captured metadata.
+    if (1..27).contains(&version) {
+        let tx = conn.transaction()?;
+        tx.execute_batch(PROJECT_SCHEMA)?;
+        if table_exists(&tx, "knowledge_nodes")? {
+            add_column_if_missing(
+                &tx,
+                "knowledge_nodes",
+                "project_id",
+                "ALTER TABLE knowledge_nodes ADD COLUMN project_id INTEGER REFERENCES projects(id);",
+            )?;
+            tx.execute_batch(
+                "CREATE INDEX IF NOT EXISTS idx_knowledge_nodes_project ON knowledge_nodes(project_id);",
+            )?;
+        }
+        tx.execute_batch("PRAGMA user_version = 27;")?;
+        tx.commit()?;
     } else if version != 0 && version != EXPECTED_VERSION {
         anyhow::bail!(
             "DB schema version mismatch: expected {}, found {}. \
@@ -2584,6 +2605,76 @@ pub fn open_memory() -> Result<Connection> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn canonical_projects_migration_is_additive_and_rerunnable() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("projects-v26.db");
+        let conn = Connection::open(&db).unwrap();
+        conn.execute_batch(SCHEMA).unwrap();
+        conn.execute_batch(
+            "DROP INDEX idx_knowledge_nodes_project;
+             ALTER TABLE knowledge_nodes DROP COLUMN project_id;
+             DROP TABLE project_aliases;
+             DROP TABLE projects;
+             INSERT INTO knowledge_nodes(uuid,content,embed_text)
+             VALUES ('preserved-node','{}','source text');
+             INSERT INTO deletion_receipts(content_hash,ts,reason,what)
+             VALUES ('hash',1,'expiry','stdout');
+             PRAGMA user_version=26;",
+        )
+        .unwrap();
+        drop(conn);
+        let conn = open_db(&db).unwrap();
+        conn.execute_batch(
+            "INSERT INTO projects(id,canonical_name,first_seen,last_seen) VALUES(7,'dotfiles',1,2);
+             INSERT INTO project_aliases VALUES(7,'.dotfiles');
+             UPDATE knowledge_nodes SET project_id=7;
+             PRAGMA user_version=26;",
+        )
+        .unwrap();
+        drop(conn);
+        for _ in 0..2 {
+            let conn = open_db(&db).unwrap();
+            assert_eq!(
+                conn.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
+                    .unwrap(),
+                EXPECTED_VERSION
+            );
+            assert_eq!(
+                conn.query_row(
+                    "SELECT project_id,embed_text FROM knowledge_nodes",
+                    [],
+                    |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))
+                )
+                .unwrap(),
+                (7, "source text".into())
+            );
+            assert_eq!(
+                conn.query_row("SELECT count(*) FROM deletion_receipts", [], |r| r
+                    .get::<_, i64>(0))
+                    .unwrap(),
+                1
+            );
+            assert_eq!(
+                conn.query_row(
+                    "SELECT canonical_id FROM project_aliases WHERE alias='.dotfiles'",
+                    [],
+                    |r| r.get::<_, i64>(0)
+                )
+                .unwrap(),
+                7
+            );
+            assert_eq!(
+                conn.query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| r
+                    .get::<_, i64>(
+                    0
+                ))
+                .unwrap(),
+                0
+            );
+        }
+    }
 
     #[test]
     fn payload_checkpoint_failure_is_not_reported_as_erasure() {

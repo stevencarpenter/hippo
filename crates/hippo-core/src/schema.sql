@@ -105,6 +105,18 @@ CREATE TABLE IF NOT EXISTS event_entities
     UNIQUE (event_id, entity_id, role)
 );
 
+CREATE TABLE IF NOT EXISTS projects (
+    id INTEGER PRIMARY KEY,
+    canonical_name TEXT NOT NULL UNIQUE,
+    first_seen INTEGER NOT NULL,
+    last_seen INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS project_aliases (
+    canonical_id INTEGER NOT NULL REFERENCES projects (id),
+    alias TEXT NOT NULL PRIMARY KEY
+);
+CREATE INDEX IF NOT EXISTS idx_project_aliases_canonical ON project_aliases (canonical_id);
+
 CREATE TABLE IF NOT EXISTS knowledge_nodes
 (
     id INTEGER PRIMARY KEY,
@@ -116,6 +128,7 @@ CREATE TABLE IF NOT EXISTS knowledge_nodes
     tags TEXT,
     enrichment_model TEXT,
     enrichment_version INTEGER NOT NULL DEFAULT 1,
+    project_id INTEGER REFERENCES projects (id),
     created_at INTEGER NOT NULL DEFAULT (unixepoch('now', 'subsec') * 1000),
     updated_at INTEGER NOT NULL DEFAULT (unixepoch('now', 'subsec') * 1000)
 );
@@ -655,4 +668,5 @@ CREATE INDEX IF NOT EXISTS idx_events_payload_expiry
 ON events (COALESCE(payload_expiry, created_at + 7776000000), id)
 WHERE stdout IS NOT NULL OR stderr IS NOT NULL OR env_snapshot_id IS NOT NULL;
 
-PRAGMA user_version = 26;
+PRAGMA user_version = 27;
+CREATE INDEX IF NOT EXISTS idx_knowledge_nodes_project ON knowledge_nodes (project_id);
