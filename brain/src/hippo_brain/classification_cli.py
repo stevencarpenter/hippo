@@ -43,6 +43,7 @@ def _connect(database: Path, *, write: bool = False) -> sqlite3.Connection:
     conn = sqlite3.connect(path.as_uri() + ("?mode=rw" if write else "?mode=ro"), uri=True)
     try:
         conn.execute("PRAGMA foreign_keys=ON")
+        conn.execute("PRAGMA secure_delete=ON")
         conn.execute("PRAGMA busy_timeout=5000")
         if write:
             _require_schema(conn)

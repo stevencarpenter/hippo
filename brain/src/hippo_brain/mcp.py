@@ -191,6 +191,7 @@ def _get_conn(db_path: str = "") -> sqlite3.Connection:
     conn = sqlite3.connect(path)
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")
+    conn.execute("PRAGMA secure_delete=ON")
     conn.execute("PRAGMA busy_timeout=5000")
     require_accepted_schema(conn)
     return conn

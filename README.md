@@ -382,6 +382,13 @@ Runtime data and configuration follow XDG defaults. `XDG_DATA_HOME` overrides th
 
 Schema uses `PRAGMA user_version = N`; the authoritative version is in `crates/hippo-core/src/schema.sql`. Daemon and brain handshake on their expected version at startup. See [`docs/schema.md`](docs/schema.md) for the per-version changelog, table map, and version-mismatch recovery; see [`docs/release.md`](docs/release.md) for the lockstep release workflow.
 
+Event outputs and environment references expire 90 days after ingestion.
+`hippo gc-event-payloads --confirm` explicitly clears expired payloads, retains
+ledger rows and metadata, and appends deletion receipts. It is destructive;
+startup and migration do not run it automatically. See
+[event payload retention](docs/schema.md#event-payload-retention) for evidence
+pins, shared snapshots, checkpoint outcomes and the limits of erasure.
+
 ## License
 
 [MIT](LICENSE)

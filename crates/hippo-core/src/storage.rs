@@ -20,7 +20,12 @@ const SCHEMA: &str = concat!(
 /// startup code (e.g. the brain handshake) can cross-check without
 /// re-declaring the value. Keep in sync with
 /// `brain/src/hippo_brain/schema_version.py::EXPECTED_SCHEMA_VERSION`.
-pub const EXPECTED_VERSION: i64 = 25;
+pub const EXPECTED_VERSION: i64 = 26;
+
+const EVENT_PAYLOAD_SCHEMA: &str = include_str!("schema/event_payloads.sql");
+
+/// Raw event outputs and environment snapshots expire 90 days after ingestion.
+pub const EVENT_PAYLOAD_RETENTION_MS: i64 = 90 * 24 * 60 * 60 * 1000;
 
 const CLASSIFICATION_SCHEMA: &str = include_str!("schema/classification.sql");
 
@@ -432,7 +437,8 @@ pub fn open_db(path: &Path) -> Result<Connection> {
     conn.execute_batch(
         "PRAGMA journal_mode=WAL;
          PRAGMA foreign_keys=ON;
-         PRAGMA busy_timeout=5000;",
+         PRAGMA busy_timeout=5000;
+         PRAGMA secure_delete=ON;",
     )?;
     let version: i64 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
 
@@ -1701,6 +1707,22 @@ pub fn open_db(path: &Path) -> Result<Connection> {
         tx.execute_batch(CLASSIFICATION_SCHEMA)?;
         tx.execute_batch("PRAGMA user_version = 25;")?;
         tx.commit()?;
+    }
+
+    // v25→v26 adds expiry without backfilling or rebuilding the event ledger.
+    if (1..26).contains(&version) {
+        let tx = conn.transaction()?;
+        if table_exists(&tx, "events")? {
+            add_column_if_missing(
+                &tx,
+                "events",
+                "payload_expiry",
+                "ALTER TABLE events ADD COLUMN payload_expiry INTEGER;",
+            )?;
+            tx.execute_batch(EVENT_PAYLOAD_SCHEMA)?;
+        }
+        tx.execute_batch("PRAGMA user_version = 26;")?;
+        tx.commit()?;
     } else if version != 0 && version != EXPECTED_VERSION {
         anyhow::bail!(
             "DB schema version mismatch: expected {}, found {}. \
@@ -1762,6 +1784,14 @@ pub fn init_bench_schema(conn: &Connection) -> Result<()> {
 
 /// Internal implementation shared with unit tests in this module.
 fn ensure_schema(conn: &Connection) -> Result<()> {
+    if table_exists(conn, "events")? {
+        add_column_if_missing(
+            conn,
+            "events",
+            "payload_expiry",
+            "ALTER TABLE events ADD COLUMN payload_expiry INTEGER;",
+        )?;
+    }
     conn.execute_batch(SCHEMA)?;
     Ok(())
 }
@@ -1831,7 +1861,9 @@ pub fn upsert_env_snapshot(
         .collect();
 
     conn.execute(
-        "INSERT OR IGNORE INTO env_snapshots (content_hash, env_json) VALUES (?1, ?2)",
+        "INSERT INTO env_snapshots (content_hash, env_json) VALUES (?1, ?2)
+         ON CONFLICT(content_hash) DO UPDATE SET env_json=excluded.env_json
+         WHERE env_snapshots.env_json = ''",
         rusqlite::params![content_hash, env_json],
     )?;
     let id: i64 = conn.query_row(
@@ -1903,7 +1935,14 @@ pub fn insert_event_at(
 
     let source_kind = source_kind_of(event);
 
-    let tx = conn.unchecked_transaction()?;
+    let tx = rusqlite::Transaction::new_unchecked(conn, rusqlite::TransactionBehavior::Immediate)?;
+    // Resolve/restore shared snapshots under the event's write lock. GC cannot
+    // clear a snapshot between this upsert and the new event reference.
+    let env_snapshot_id = if event.env_snapshot.is_empty() {
+        env_snapshot_id
+    } else {
+        upsert_env_snapshot(&tx, &event.env_snapshot)?
+    };
 
     let rows = tx.execute(
         "INSERT OR IGNORE INTO events (session_id, timestamp, command, stdout, stderr, stdout_truncated, stderr_truncated,
@@ -1936,8 +1975,8 @@ pub fn insert_event_at(
         ],
     )?;
     if rows == 0 {
-        // Duplicate envelope_id — skip enrichment queue too
-        tx.commit()?;
+        // Duplicate envelope_id: do not restore an already-expired snapshot.
+        tx.rollback()?;
         return Ok(-1);
     }
     let event_id = tx.last_insert_rowid();
@@ -1954,6 +1993,186 @@ pub fn insert_event_at(
 
     tx.commit()?;
     Ok(event_id)
+}
+
+/// Checkpoint results describe this WAL only, never all copies of a payload.
+#[derive(Debug, PartialEq, Eq)]
+pub enum PayloadCheckpoint {
+    Truncated,
+    Busy,
+    NotWal,
+    Failed(String),
+}
+
+#[derive(Debug)]
+pub struct PayloadGcReport {
+    pub events_cleared: usize,
+    pub checkpoint: PayloadCheckpoint,
+}
+
+fn payload_checkpoint(conn: &Connection) -> PayloadCheckpoint {
+    match conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |row| {
+        Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?))
+    }) {
+        Ok((0, n)) if n >= 0 => PayloadCheckpoint::Truncated,
+        Ok((0, _)) => PayloadCheckpoint::NotWal,
+        Ok(_) => PayloadCheckpoint::Busy,
+        Err(err) => PayloadCheckpoint::Failed(err.to_string()),
+    }
+}
+
+// These are the published citation prefixes from evidence_packets.parse_ref.
+// Unknown representations must stop destruction, not silently lose a pin.
+fn event_pin_from_ref(kind: &str, id: &str) -> Result<Option<i64>> {
+    anyhow::ensure!(
+        !id.is_empty() && id.bytes().all(|b| b.is_ascii_digit()),
+        "incompatible evidence reference: expected a decimal row id"
+    );
+    let id: i64 = id.parse().context("evidence row id exceeds i64")?;
+    match kind {
+        "shell" => Ok(Some(id)),
+        "claude" | "codex" | "cursor" | "opencode" | "pi" | "browser" | "workflow" | "memory" => {
+            Ok(None)
+        }
+        _ => anyhow::bail!("incompatible evidence reference type: {kind}"),
+    }
+}
+
+// ponytail: scans optional pin stores per batch; use indexed joins when their shipped schema permits it.
+fn event_payload_pins(conn: &Connection) -> Result<std::collections::HashSet<i64>> {
+    let mut pins = std::collections::HashSet::new();
+    if table_exists(conn, "node_evidence")? {
+        let mut stmt = conn
+            .prepare("SELECT ref_type, CAST(ref_id AS TEXT) FROM node_evidence")
+            .context("incompatible node_evidence: expected ref_type and ref_id")?;
+        for row in stmt.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })? {
+            let (kind, id) = row?;
+            if let Some(id) = event_pin_from_ref(&kind, &id)? {
+                pins.insert(id);
+            }
+        }
+    }
+    if table_exists(conn, "epitaphs")? {
+        let mut stmt = conn
+            .prepare("SELECT evidence_refs FROM epitaphs")
+            .context("incompatible epitaphs: missing evidence_refs citation array")?;
+        for row in stmt.query_map([], |row| row.get::<_, Option<String>>(0))? {
+            if let Some(refs) = row? {
+                let refs: Vec<String> = serde_json::from_str(&refs).context(
+                    "incompatible epitaphs.evidence_refs: expected JSON citation strings",
+                )?;
+                for reference in refs {
+                    let (kind, id) = reference
+                        .trim()
+                        .split_once('-')
+                        .ok_or_else(|| anyhow::anyhow!("incompatible epitaph evidence citation"))?;
+                    if let Some(id) = event_pin_from_ref(kind, id)? {
+                        pins.insert(id);
+                    }
+                }
+            }
+        }
+    }
+    Ok(pins)
+}
+
+fn payload_receipt(conn: &Connection, content: &str, now_ms: i64, what: &str) -> Result<()> {
+    let hash: String = Sha256::digest(content.as_bytes())
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    conn.execute(
+        "INSERT INTO deletion_receipts(content_hash, ts, reason, what)
+         VALUES (?1, ?2, 'payload_expired', ?3)",
+        rusqlite::params![hash, now_ms, what],
+    )?;
+    Ok(())
+}
+
+/// Explicit event-payload sweep. Never called by migration or capture startup.
+///
+/// Each batch holds the SQLite writer lock for at most 100 event updates.
+/// Receipt insertion and field clearing commit together. Earlier batches remain
+/// committed if a later batch fails; the error states that partial progress.
+/// Old rows use created_at + 90 days until GC touches them. Event ledger rows,
+/// command/metadata, source joins, FTS and vectors are not removed.
+pub fn gc_event_payloads(conn: &Connection, now_ms: i64) -> Result<PayloadGcReport> {
+    anyhow::ensure!(
+        conn.is_autocommit(),
+        "payload GC requires its own connection transaction"
+    );
+    conn.execute_batch("PRAGMA secure_delete=ON;")?;
+    let ceiling: i64 =
+        conn.query_row("SELECT COALESCE(MAX(id), 0) FROM events", [], |r| r.get(0))?;
+    let mut cursor = i64::MIN;
+    let mut cleared = 0;
+    loop {
+        let batch = (|| -> Result<(i64, usize, usize)> {
+            let tx = rusqlite::Transaction::new_unchecked(conn, rusqlite::TransactionBehavior::Immediate)?;
+            let pins = event_payload_pins(&tx)?;
+            let rows = tx.prepare(
+                "SELECT id, stdout, stderr, env_snapshot_id FROM events
+                 WHERE id >= ?1 AND id <= ?3 AND COALESCE(payload_expiry, created_at + 7776000000) <= ?2
+                   AND (stdout IS NOT NULL OR stderr IS NOT NULL OR env_snapshot_id IS NOT NULL)
+                 ORDER BY id LIMIT 100",
+            )?.query_map(rusqlite::params![cursor, now_ms, ceiling], |row| {
+                Ok((row.get::<_, i64>(0)?, row.get::<_, Option<String>>(1)?,
+                    row.get::<_, Option<String>>(2)?, row.get::<_, Option<i64>>(3)?))
+            })?.collect::<rusqlite::Result<Vec<_>>>()?;
+            let count = rows.len();
+            let mut last_id = cursor;
+            let mut changed = 0;
+            for (id, stdout, stderr, env_id) in rows {
+                last_id = id;
+                if pins.contains(&id) {
+                    continue;
+                }
+                for (field, content) in [("stdout", stdout), ("stderr", stderr)] {
+                    if let Some(content) = content {
+                        payload_receipt(&tx, &content, now_ms, &format!("events/{id}/{field}"))?;
+                    }
+                }
+                if let Some(env_id) = env_id {
+                    // Reference removal does not prove snapshot-byte destruction.
+                    payload_receipt(&tx, &env_id.to_string(), now_ms, &format!("events/{id}/env_snapshot_id"))?;
+                }
+                tx.execute(
+                    "UPDATE events SET stdout=NULL, stderr=NULL, env_snapshot_id=NULL,
+                     payload_expiry=COALESCE(payload_expiry, created_at + 7776000000) WHERE id=?1",
+                    [id],
+                )?;
+                if let Some(env_id) = env_id {
+                    let env: Option<String> = tx.query_row(
+                        "SELECT env_json FROM env_snapshots WHERE id=?1 AND env_json != ''
+                         AND NOT EXISTS(SELECT 1 FROM events WHERE env_snapshot_id=?1)",
+                        [env_id], |row| row.get(0),
+                    ).optional()?;
+                    if let Some(env) = env {
+                        payload_receipt(&tx, &env, now_ms, &format!("env_snapshots/{env_id}/env_json"))?;
+                        // Keep snapshot identity/hash; a later atomic writer can restore it.
+                        tx.execute("UPDATE env_snapshots SET env_json='' WHERE id=?1", [env_id])?;
+                    }
+                }
+                changed += 1;
+            }
+            tx.commit()?;
+            Ok((last_id, count, changed))
+        })().with_context(|| format!("payload GC stopped after {cleared} committed event clears; current batch rolled back"))?;
+        cleared += batch.2;
+        if batch.1 < 100 {
+            break;
+        }
+        let Some(next) = batch.0.checked_add(1) else {
+            break; // No SQLite row ID can follow i64::MAX.
+        };
+        cursor = next;
+    }
+    Ok(PayloadGcReport {
+        events_cleared: cleared,
+        checkpoint: payload_checkpoint(conn),
+    })
 }
 
 pub fn insert_browser_event(
@@ -2355,7 +2574,8 @@ pub fn open_memory() -> Result<Connection> {
     conn.execute_batch(
         "PRAGMA journal_mode=WAL;
          PRAGMA foreign_keys=ON;
-         PRAGMA busy_timeout=5000;",
+         PRAGMA busy_timeout=5000;
+         PRAGMA secure_delete=ON;",
     )?;
     conn.execute_batch(SCHEMA)?;
     Ok(conn)
@@ -2364,6 +2584,21 @@ pub fn open_memory() -> Result<Connection> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn payload_checkpoint_failure_is_not_reported_as_erasure() {
+        let dir = tempfile::tempdir().unwrap();
+        let conn = open_db(&dir.path().join("checkpoint.db")).unwrap();
+        conn.execute_batch("BEGIN IMMEDIATE; CREATE TABLE synthetic_lock(value TEXT);")
+            .unwrap();
+        assert!(matches!(
+            payload_checkpoint(&conn),
+            PayloadCheckpoint::Failed(_)
+        ));
+        assert!(gc_event_payloads(&conn, 0).is_err());
+        conn.execute_batch("ROLLBACK;").unwrap();
+        assert_eq!(payload_checkpoint(&conn), PayloadCheckpoint::Truncated);
+    }
 
     #[test]
     fn test_migrate_v24_to_v25_preserves_nodes_and_cascades_classification() {

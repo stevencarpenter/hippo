@@ -719,6 +719,7 @@ def get_lessons_impl(
     Ordered by occurrences DESC, then last_seen_at DESC.
     """
     conn = sqlite3.connect(db_path)
+    conn.execute("PRAGMA secure_delete=ON")
     conn.row_factory = sqlite3.Row
     try:
         rows = conn.execute(
@@ -769,6 +770,7 @@ def get_ci_status_impl(
         raise ValueError("must supply sha or branch")
 
     conn = sqlite3.connect(db_path)
+    conn.execute("PRAGMA secure_delete=ON")
     conn.row_factory = sqlite3.Row
     try:
         if sha:
