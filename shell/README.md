@@ -32,20 +32,4 @@ source /path/to/hippo/shell/hippo.zsh
 
 ## Opt-in stdout and stderr
 
-In an interactive zsh session, wrap a noninteractive command to capture both streams:
-
-```zsh
-hippo_capture cargo test
-```
-
-Capture is foreground-only in the parent shell. Background jobs, command substitutions, non-final pipeline stages, and explicit subshells return status 2 before running the command or creating capture files.
-
-The wrapper copies stdout and stderr to their original destinations and separate private files. It returns the command's exit status. The background sender applies the configured `[daemon] output_head_lines` and `output_tail_lines` limits independently, then removes the files. Redaction applies to both streams before storage.
-
-Ordinary commands keep their TTY behavior and capture only command metadata. Do not wrap editors, pagers, REPLs, or other terminal-dependent programs. Wrapped commands see pipes instead of terminal descriptors. To capture a pipeline, pass it to an explicit noninteractive shell:
-
-```zsh
-hippo_capture zsh -fc 'producer | consumer'
-```
-
-The existing `hippo send-event shell --output ...` path still stores legacy single-stream output as stdout.
+See the [shell lifecycle](../docs/lifecycle.md#shell-command) for `hippo_capture` usage, foreground-only restrictions, terminal compatibility, per-stream limits, cleanup, and legacy payload behavior.
