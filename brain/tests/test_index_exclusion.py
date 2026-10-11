@@ -332,6 +332,27 @@ async def test_ingestion_prompt_exclusion_preserves_source(index_db, monkeypatch
     assert conn.execute("SELECT COUNT(*) FROM knowledge_nodes").fetchone()[0] == 1
 
 
+async def test_empty_reembed_records_model_for_the_first_new_node(index_db):
+    from hippo_brain.vector_store import get_stored_embed_model, record_embed_model
+
+    conn, _ = index_db
+    record_embed_model(conn, "model-a")
+    conn.commit()
+    client = MockInferenceClient()
+    reembed = runpy.run_path(str(ROOT / "scripts/hippo-re-embed.py"))["re_embed_nodes"]
+    assert await reembed(conn, client, "model-b") == 0
+    assert get_stored_embed_model(conn) == "model-b"
+    assert client.embed_calls == []
+    conn.execute(
+        "INSERT INTO knowledge_nodes(id,uuid,content,embed_text) VALUES(1,'first','{}','safe')"
+    )
+    conn.commit()
+    await embed_knowledge_node(
+        client, conn, {"id": 1, "embed_text": "safe"}, embed_model="model-b"
+    )
+    assert conn.execute("SELECT COUNT(*) FROM knowledge_vectors").fetchone()[0] == 1
+
+
 @pytest.mark.parametrize("fail_call", [3, 4])
 async def test_reembed_model_switch_is_atomic(index_db, fail_call):
     from hippo_brain.vector_store import (

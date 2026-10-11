@@ -13,6 +13,7 @@ from pathlib import Path
 
 from hippo_brain.client import InferenceClient
 from hippo_brain.embeddings import embed_knowledge_node, open_vector_db
+from hippo_brain.vector_store import record_embed_model
 
 
 async def re_embed_nodes(
@@ -45,6 +46,7 @@ async def re_embed_nodes(
                 replace_existing=True,
                 commit=False,
             )
+        record_embed_model(conn, embedding_model)
     return len(nodes)
 
 
