@@ -26,6 +26,10 @@ typeset -g _HIPPO_CAPTURE_DIR=""
 hippo_capture() {
     emulate -L zsh
     setopt multios
+    if (( ZSH_SUBSHELL != 0 )); then
+        print -u2 'hippo_capture: only foreground commands in the parent shell are supported'
+        return 2
+    fi
     if (( $# == 0 )); then
         print -u2 'usage: hippo_capture command [args...]'
         return 2
