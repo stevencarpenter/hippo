@@ -2,16 +2,19 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+    <!--
+      Keeper for the oMLX macOS app. `omlx-cli start` launches oMLX.app through
+      LaunchServices when it is not running and exits immediately when it is,
+      so this agent never competes with the app's own Launch-at-Login entry
+      (com.omlx.app), quit, update, or restart logic. No KeepAlive on purpose.
+    -->
     <key>Label</key>
     <string>com.hippo.omlx</string>
     <key>ProgramArguments</key>
     <array>
-        <string>/opt/homebrew/opt/omlx/bin/omlx</string>
-        <string>serve</string>
-        <string>--host</string>
-        <string>127.0.0.1</string>
-        <string>--port</string>
-        <string>8000</string>
+        <string>/Applications/oMLX.app/Contents/MacOS/omlx-cli</string>
+        <string>start</string>
+        <string>--no-wait</string>
     </array>
     <key>EnvironmentVariables</key>
     <dict>
@@ -20,12 +23,10 @@
         <key>PATH</key>
         <string>__PATH__</string>
     </dict>
-    <key>KeepAlive</key>
-    <true/>
     <key>RunAtLoad</key>
     <true/>
-    <key>ThrottleInterval</key>
-    <integer>10</integer>
+    <key>StartInterval</key>
+    <integer>60</integer>
     <key>StandardOutPath</key>
     <string>__DATA_DIR__/omlx.stdout.log</string>
     <key>StandardErrorPath</key>
