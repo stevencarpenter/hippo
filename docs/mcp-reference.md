@@ -26,12 +26,12 @@ The ones to reach for first: **`ask`** for natural-language questions with answe
 
 ## Common arguments
 
-Several tools share filter arguments. They all behave the same way:
+Several tools share filter arguments. Project matching differs between knowledge queries and raw event or entity lookups:
 
 | Argument | Type | Behavior |
 |---|---|---|
 | `since` | `str` | Time window. **Strict format only**: `^<digits><unit>$` where unit is `m`/`h`/`d`. Examples: `"30m"`, `"24h"`, `"7d"`. `parse_since` returns 0 (no filter) for inputs with spaces, words, bare numbers, mixed case, or anything else that doesn't match. Empty string disables. |
-| `project` | `str` | Substring match on `cwd` or `git_repo` of the events/sessions linked to a knowledge node. Use `list_projects` first to find candidates. |
+| `project` | `str` | Knowledge queries use [canonical project scope](canonical-project-identity.md#editable-aliases). Raw event and entity lookups retain substring matching. Use `list_projects` first to find captured names. |
 | `source` | `str` | One of `"shell"`, `"claude"`, `"browser"`, `"workflow"`. Empty string means all sources. |
 | `branch` | `str` | Exact-match `git_branch` filter. Ignored for browser events. |
 | `limit` | `int` | Max results. Clamped to a sane upper bound by `_clamp_limit`; values above that are silently capped. |
