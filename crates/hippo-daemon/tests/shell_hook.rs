@@ -128,7 +128,7 @@ async fn opt_in_hook_sends_independent_streams_and_preserves_legacy_events() {
     let listener = tokio::net::UnixListener::bind(data.join("daemon.sock")).unwrap();
     let receiver = tokio::spawn(async move {
         let mut events = Vec::new();
-        for _ in 0..3 {
+        for _ in 0..8 {
             let (mut stream, _) = tokio::time::timeout(Duration::from_secs(10), listener.accept())
                 .await
                 .unwrap()
@@ -177,7 +177,12 @@ async fn opt_in_hook_sends_independent_streams_and_preserves_legacy_events() {
             br#"source "$HOOK"; _HIPPO_OUTPUT_FILE="$SCRATCH"; git() { return 1; }; PROMPT=''; RPROMPT=''; emit() { printf 'password=out-synthetic\nout-middle-1\nout-middle-2\nout-last\n'; printf 'password=err-synthetic\nerr-middle\nerr-last\n' >&2; return 7; }
 printf 'ordinary-out\n'; printf 'ordinary-err\n' >&2; (exit 9)
 hippo_capture emit
+verbose() { print 'out-first'; print 'err-first' >&2; repeat 200000 { print 'out-middle'; print 'err-middle' >&2; }; printf 'out-final'; printf 'err-final' >&2; return 8; }; hippo_capture verbose
 printf 'legacy\n' > "$_HIPPO_OUTPUT_FILE"; (exit 3)
+mktemp() { print attempted >> "$TMPDIR/mktemp-called"; command mktemp "$@"; }; forbidden() { print executed >> "$TMPDIR/command-ran"; }; hippo_capture forbidden & job=$!; wait "$job"; result=$?; (exit "$result")
+value=$(hippo_capture forbidden); result=$?; (exit "$result")
+hippo_capture forbidden | cat; result=${pipestatus[1]}; (exit "$result")
+(hippo_capture forbidden)
 exit 0
 "#,
         )
@@ -202,12 +207,30 @@ exit 0
             _ => panic!("expected shell payload"),
         })
         .collect();
+    let rejected: Vec<_> = shells.iter().filter(|e| e.exit_code == 2).collect();
+    assert_eq!(rejected.len(), 4, "{shells:?}");
+    for event in rejected {
+        assert!(event.stdout.is_none() && event.stderr.is_none());
+    }
+    assert!(!capture_tmp.join("mktemp-called").exists());
+    assert!(!capture_tmp.join("command-ran").exists());
+    assert_eq!(stderr.matches("only foreground commands").count(), 4);
     let ordinary = shells.iter().find(|e| e.exit_code == 9).unwrap();
     assert!(ordinary.stdout.is_none() && ordinary.stderr.is_none());
     let legacy = shells.iter().find(|e| e.exit_code == 3).unwrap();
     assert_eq!(legacy.stdout.as_ref().unwrap().content, "legacy");
     assert!(!legacy.stdout.as_ref().unwrap().truncated);
     assert!(legacy.stderr.is_none());
+    let verbose = shells.iter().find(|e| e.exit_code == 8).unwrap();
+    for (stream, prefix) in [(&verbose.stdout, "out"), (&verbose.stderr, "err")] {
+        let stream = stream.as_ref().unwrap();
+        assert_eq!(
+            stream.content,
+            format!("{prefix}-first\n... (200000 lines omitted) ...\n{prefix}-final")
+        );
+        assert!(stream.truncated);
+        assert_eq!(stream.original_bytes, 10 + 200000 * 11 + 9);
+    }
     let captured = shells.iter().find(|e| e.exit_code == 7).unwrap();
     let out = captured.stdout.as_ref().unwrap();
     let err = captured.stderr.as_ref().unwrap();

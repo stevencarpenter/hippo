@@ -325,25 +325,47 @@ pub struct ShellOutputArgs {
 }
 
 fn read_shell_output(path: &std::path::Path, config: &HippoConfig) -> Result<CapturedOutput> {
-    // ponytail: one stream is read into memory; use streaming head/tail if logs outgrow RAM.
-    let bytes = std::fs::read(path)
+    use std::io::BufRead;
+
+    let file = std::fs::File::open(path)
         .with_context(|| format!("reading captured output {}", path.display()))?;
-    let original_bytes = bytes.len();
-    let text = String::from_utf8_lossy(&bytes);
-    let lines: Vec<_> = text.split_inclusive('\n').collect();
+    let mut reader = std::io::BufReader::new(file);
     let head = config.daemon.output_head_lines;
     let tail = config.daemon.output_tail_lines;
-    let truncated = lines.len() > head.saturating_add(tail);
-    let content = if truncated {
-        format!(
-            "{}... ({} lines omitted) ...\n{}",
-            lines[..head].concat(),
-            lines.len() - head - tail,
-            lines[lines.len() - tail..].concat(),
-        )
-    } else {
-        text.into_owned()
-    };
+    let mut content = String::new();
+    let mut last = std::collections::VecDeque::new();
+    let mut line = Vec::new();
+    let mut original_bytes = 0;
+    let mut total = 0usize;
+    loop {
+        line.clear();
+        let count = reader
+            .read_until(b'\n', &mut line)
+            .with_context(|| format!("reading captured output {}", path.display()))?;
+        if count == 0 {
+            break;
+        }
+        original_bytes += count;
+        total += 1;
+        if total <= head {
+            content.push_str(&String::from_utf8_lossy(&line));
+        } else if tail > 0 {
+            if last.len() == tail {
+                last.pop_front();
+            }
+            last.push_back(String::from_utf8_lossy(&line).into_owned());
+        }
+    }
+    let truncated = total > head.saturating_add(tail);
+    if truncated {
+        content.push_str(&format!(
+            "... ({} lines omitted) ...\n",
+            total - head - tail
+        ));
+    }
+    for line in last {
+        content.push_str(&line);
+    }
     Ok(CapturedOutput {
         content,
         truncated,
