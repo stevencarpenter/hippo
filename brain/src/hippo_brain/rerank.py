@@ -376,6 +376,7 @@ def _read_refinement(
     try:
         conn.execute("PRAGMA query_only=ON")
         conn.execute("PRAGMA foreign_keys=ON")
+        conn.execute("PRAGMA secure_delete=ON")
         conn.execute(f"PRAGMA busy_timeout={max(1, int(remaining * 1000))}")
         conn.set_progress_handler(
             lambda: int(cancelled.is_set() or time.monotonic() >= deadline), 100

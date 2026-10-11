@@ -54,6 +54,8 @@ CREATE TABLE IF NOT EXISTS events
     enriched INTEGER NOT NULL DEFAULT 0,
     redaction_count INTEGER NOT NULL DEFAULT 0,
     archived_at INTEGER,
+    -- NULL on grandfathered rows; effective expiry is created_at + 90 days.
+    payload_expiry INTEGER,
     -- probe_tag is set only on synthetic probe rows injected for health
     -- checking; NULL on all real events.
     probe_tag TEXT,
@@ -103,6 +105,18 @@ CREATE TABLE IF NOT EXISTS event_entities
     UNIQUE (event_id, entity_id, role)
 );
 
+CREATE TABLE IF NOT EXISTS projects (
+    id INTEGER PRIMARY KEY,
+    canonical_name TEXT NOT NULL UNIQUE,
+    first_seen INTEGER NOT NULL,
+    last_seen INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS project_aliases (
+    canonical_id INTEGER NOT NULL REFERENCES projects (id),
+    alias TEXT NOT NULL PRIMARY KEY
+);
+CREATE INDEX IF NOT EXISTS idx_project_aliases_canonical ON project_aliases (canonical_id);
+
 CREATE TABLE IF NOT EXISTS knowledge_nodes
 (
     id INTEGER PRIMARY KEY,
@@ -114,6 +128,7 @@ CREATE TABLE IF NOT EXISTS knowledge_nodes
     tags TEXT,
     enrichment_model TEXT,
     enrichment_version INTEGER NOT NULL DEFAULT 1,
+    project_id INTEGER REFERENCES projects (id),
     created_at INTEGER NOT NULL DEFAULT (unixepoch('now', 'subsec') * 1000),
     updated_at INTEGER NOT NULL DEFAULT (unixepoch('now', 'subsec') * 1000)
 );
@@ -613,4 +628,45 @@ CREATE INDEX IF NOT EXISTS idx_classification_claim
 CREATE INDEX IF NOT EXISTS idx_classification_recipe
     ON knowledge_node_classifications(recipe_hash, status);
 
-PRAGMA user_version = 25;
+-- Keep this DDL in sync with schema/event_payloads.sql.
+-- HIPO-13: receipts name a removed field, not erasure of every copy.
+CREATE TABLE IF NOT EXISTS deletion_receipts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    content_hash TEXT NOT NULL,
+    ts INTEGER NOT NULL,
+    reason TEXT NOT NULL,
+    what TEXT NOT NULL
+);
+CREATE TRIGGER IF NOT EXISTS deletion_receipts_no_update
+BEFORE UPDATE ON deletion_receipts BEGIN
+    SELECT RAISE(ABORT, 'deletion_receipts are append-only');
+END;
+CREATE TRIGGER IF NOT EXISTS deletion_receipts_no_delete
+BEFORE DELETE ON deletion_receipts BEGIN
+    SELECT RAISE(ABORT, 'deletion_receipts are append-only');
+END;
+CREATE TRIGGER IF NOT EXISTS deletion_receipts_no_replace
+BEFORE INSERT ON deletion_receipts
+WHEN EXISTS (
+    SELECT 1 FROM deletion_receipts
+    -- NEW is SQLite's trigger row, not a FROM table.
+    WHERE id = NEW.id -- noqa: RF01,RF03
+) BEGIN
+    SELECT RAISE(ABORT, 'deletion_receipts are append-only');
+END;
+
+-- Covers every writer, including direct SQL inserts. Old rows stay NULL.
+CREATE TRIGGER IF NOT EXISTS events_payload_expiry_on_insert
+AFTER INSERT ON events WHEN NEW.payload_expiry IS NULL BEGIN
+    UPDATE events SET payload_expiry = NEW.created_at + 7776000000
+    WHERE id = NEW.id;
+END;
+CREATE INDEX IF NOT EXISTS idx_events_env_snapshot
+ON events (env_snapshot_id)
+WHERE env_snapshot_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_events_payload_expiry
+ON events (COALESCE(payload_expiry, created_at + 7776000000), id)
+WHERE stdout IS NOT NULL OR stderr IS NOT NULL OR env_snapshot_id IS NOT NULL;
+
+PRAGMA user_version = 27;
+CREATE INDEX IF NOT EXISTS idx_knowledge_nodes_project ON knowledge_nodes (project_id);

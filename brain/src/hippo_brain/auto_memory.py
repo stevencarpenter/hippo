@@ -385,6 +385,9 @@ def write_memory_knowledge_node(
             model_name=model_name,
             now_ms=completed_at,
         )
+        from hippo_brain.projects import attribute_node
+
+        attribute_node(conn, node_id)
         enqueue_node(conn, node_id)
         conn.commit()
     except Exception:
@@ -422,6 +425,7 @@ def _open_db(db_path: Path) -> sqlite3.Connection:
     conn = sqlite3.connect(db_path)
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")
+    conn.execute("PRAGMA secure_delete=ON")
     conn.execute("PRAGMA busy_timeout=5000")
     return conn
 

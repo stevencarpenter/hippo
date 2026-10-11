@@ -34,6 +34,15 @@ pub struct HippoConfig {
     pub auto_memory: AutoMemoryConfig,
     #[serde(default)]
     pub reaper: ReaperConfig,
+    #[serde(default)]
+    pub projects: ProjectsConfig,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ProjectsConfig {
+    /// Alias -> canonical name. The derived knowledge writer and queries share this map.
+    #[serde(default)]
+    pub aliases: std::collections::BTreeMap<String, String>,
 }
 
 /// Explicit read-only Claude Code auto-memory sources. Fleet discovery is a

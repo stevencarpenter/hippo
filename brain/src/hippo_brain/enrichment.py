@@ -6,6 +6,7 @@ import uuid
 from hippo_brain.classification import enqueue_node, source_entity_canonical
 from hippo_brain.entity_resolver import canonicalize, is_path_type, strip_worktree_prefix
 from hippo_brain.models import EnrichmentResult, validate_enrichment_data
+from hippo_brain.projects import attribute_node
 from hippo_brain.watchdog import DEFAULT_LOCK_TIMEOUT_MS
 
 STALE_LOCK_TIMEOUT_MS = DEFAULT_LOCK_TIMEOUT_MS
@@ -534,6 +535,7 @@ def write_knowledge_node(
             [(now_ms, eid) for eid in event_ids],
         )
 
+        attribute_node(conn, node_id)
         enqueue_node(conn, node_id)
         conn.commit()
         return node_id

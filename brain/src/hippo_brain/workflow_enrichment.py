@@ -65,6 +65,7 @@ async def enrich_one_async(
     try:
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA foreign_keys=ON")
+        conn.execute("PRAGMA secure_delete=ON")
         conn.execute("PRAGMA busy_timeout=5000")
         run = conn.execute("SELECT * FROM workflow_runs WHERE id = ?", (run_id,)).fetchone()
         if run is None:
@@ -182,6 +183,9 @@ async def enrich_one_async(
                 "UPDATE workflow_enrichment_queue SET status='done', updated_at=? WHERE run_id=?",
                 (now, run_id),
             )
+            from hippo_brain.projects import attribute_node
+
+            attribute_node(conn, existing_id)
             enqueue_node(conn, existing_id)
             conn.commit()
             return None
@@ -239,6 +243,9 @@ async def enrich_one_async(
             "UPDATE workflow_enrichment_queue SET status='done', updated_at=? WHERE run_id=?",
             (now, run_id),
         )
+        from hippo_brain.projects import attribute_node
+
+        attribute_node(conn, node_id)
         enqueue_node(conn, node_id)
         conn.commit()
 

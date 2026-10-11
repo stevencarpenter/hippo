@@ -97,6 +97,7 @@ def main():
         conn = sqlite3.connect(str(db_path))
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA foreign_keys=ON")
+        conn.execute("PRAGMA secure_delete=ON")
         conn.execute("PRAGMA busy_timeout=5000")
     else:
         conn = None
@@ -149,6 +150,7 @@ def main():
         pending = 0
         check_conn = sqlite3.connect(str(db_path))
         try:
+            check_conn.execute("PRAGMA secure_delete=ON")
             pending = check_conn.execute(
                 """
                 SELECT COUNT(*) FROM agentic_enrichment_queue q
@@ -212,6 +214,7 @@ async def run_enrichment(
     conn = sqlite3.connect(str(db_path))
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")
+    conn.execute("PRAGMA secure_delete=ON")
     conn.execute("PRAGMA busy_timeout=5000")
 
     worker_id = "claude-ingestion"

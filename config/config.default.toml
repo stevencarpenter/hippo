@@ -149,6 +149,15 @@ strip_params = [
     "sig",
 ]
 
+# Editable alias -> canonical project name. Both enrichment and queries read this map.
+# Explicit families avoid merging unrelated projects with similar names.
+[projects.aliases]
+# "SNUG" = "snugmarina"
+# "SNUG project" = "snugmarina"
+# "SNUG-23" = "snugmarina"
+# "snug-31" = "snugmarina"
+# "snugmarina-base" = "snugmarina"
+
 [entities]
 # Absolute paths to strip as prefixes when canonicalizing path-type entities.
 # Allows the same file under different worktree clones to collapse to one entity.

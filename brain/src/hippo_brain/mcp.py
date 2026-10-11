@@ -191,6 +191,7 @@ def _get_conn(db_path: str = "") -> sqlite3.Connection:
     conn = sqlite3.connect(path)
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")
+    conn.execute("PRAGMA secure_delete=ON")
     conn.execute("PRAGMA busy_timeout=5000")
     require_accepted_schema(conn)
     return conn
@@ -305,7 +306,7 @@ async def search_knowledge(
               "semantic" (pure vector similarity), or "lexical" (FTS5 BM25).
               Falls back to a SQL LIKE scan if vec0/FTS5 are unavailable.
         limit: Maximum number of results to return (default 10).
-        project: Substring match on cwd or git_repo of linked events/sessions.
+        project: Knowledge project scope; see docs/canonical-project-identity.md.
         since: Window like "24h", "7d", "30m". Empty means no time filter.
         source: Restrict to nodes linked to a specific source: "shell",
                 "claude", "browser", "workflow", or "claude-auto-memory".
@@ -413,7 +414,7 @@ async def ask(
     Args:
         question: The natural language question to answer.
         limit: Number of knowledge nodes to retrieve for context (default 10).
-        project: Substring match on cwd/git_repo to narrow scope. Empty = all.
+        project: Knowledge project scope; see docs/canonical-project-identity.md.
         since: Window like "24h", "7d". Empty means no time filter.
         source: Restrict to nodes linked to "shell", "claude", "browser",
                 or "workflow". Empty means all sources.
@@ -858,7 +859,7 @@ async def search_hybrid(
         query: Natural language query.
         mode: "hybrid" (default), "semantic", "lexical", or "recent".
         limit: Maximum number of results (default 10).
-        project: Substring match on cwd/git_repo of linked events.
+        project: Knowledge project scope; see docs/canonical-project-identity.md.
         since: Window like "24h", "7d". Empty means no time filter.
         source: "shell" | "claude" | "browser" | "workflow" | "" (all).
         branch: Exact-match git_branch filter.
@@ -907,7 +908,7 @@ async def get_context(
     Args:
         query: Natural language query.
         limit: Maximum number of sources to embed (default 5).
-        project: Substring match on cwd/git_repo of linked events.
+        project: Knowledge project scope; see docs/canonical-project-identity.md.
         since: Window like "24h", "7d". Empty means no time filter.
         source: "shell" | "claude" | "browser" | "workflow" | "" (all).
     """

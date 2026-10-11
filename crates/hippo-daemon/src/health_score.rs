@@ -109,6 +109,7 @@ fn spawn_refresh_task(state: Arc<State>, db_path: PathBuf) {
 
 fn read_alarm_count(db_path: &std::path::Path) -> rusqlite::Result<u64> {
     let conn = Connection::open(db_path)?;
+    conn.execute_batch("PRAGMA secure_delete=ON;")?;
     // CLAUDE.md: every connection sets busy_timeout=5000 so a concurrent
     // watchdog writer doesn't immediately return SQLITE_BUSY on every tick.
     conn.busy_timeout(Duration::from_millis(5000))?;

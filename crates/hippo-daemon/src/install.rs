@@ -965,9 +965,13 @@ mod tests {
 
         assert!(!rendered.contains("__"));
         assert!(rendered.contains("<string>com.hippo.omlx</string>"));
-        assert!(rendered.contains("<string>/opt/homebrew/opt/omlx/bin/omlx</string>"));
-        assert!(rendered.contains("<string>serve</string>"));
-        assert!(rendered.contains("<string>8000</string>"));
+        assert!(
+            rendered.contains("<string>/Applications/oMLX.app/Contents/MacOS/omlx-cli</string>")
+        );
+        assert!(rendered.contains("<string>start</string>"));
+        assert!(rendered.contains("<string>--no-wait</string>"));
+        assert!(rendered.contains("<integer>60</integer>"));
+        assert!(!rendered.contains("<key>KeepAlive</key>"));
         assert!(rendered.contains("<string>/Users/me/.local/share/hippo/omlx.stdout.log</string>"));
         assert!(rendered.contains("<string>/Users/me/.local/share/hippo/omlx.stderr.log</string>"));
         assert!(rendered.contains("<string>/Users/me</string>"));
