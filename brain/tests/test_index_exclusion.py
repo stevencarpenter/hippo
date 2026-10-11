@@ -347,10 +347,65 @@ async def test_empty_reembed_records_model_for_the_first_new_node(index_db):
         "INSERT INTO knowledge_nodes(id,uuid,content,embed_text) VALUES(1,'first','{}','safe')"
     )
     conn.commit()
-    await embed_knowledge_node(
-        client, conn, {"id": 1, "embed_text": "safe"}, embed_model="model-b"
-    )
+    await embed_knowledge_node(client, conn, {"id": 1, "embed_text": "safe"}, embed_model="model-b")
     assert conn.execute("SELECT COUNT(*) FROM knowledge_vectors").fetchone()[0] == 1
+
+
+async def test_reembed_allows_another_writer_during_inference(index_db):
+    conn, path = index_db
+    conn.execute(
+        "INSERT INTO knowledge_nodes(id,uuid,content,embed_text) VALUES(1,'lock','{}','safe')"
+    )
+    conn.commit()
+    writer = sqlite3.connect(path, timeout=0)
+
+    class ConcurrentClient(MockInferenceClient):
+        async def embed(self, texts, model=""):
+            assert not conn.in_transaction
+            writer.execute("UPDATE knowledge_nodes SET outcome='concurrent' WHERE id=1")
+            writer.commit()
+            return await super().embed(texts, model=model)
+
+    reembed = runpy.run_path(str(ROOT / "scripts/hippo-re-embed.py"))["re_embed_nodes"]
+    try:
+        client = ConcurrentClient()
+        assert await reembed(conn, client, "model-b") == 1
+        assert len(client.embed_calls) == 2
+        assert conn.execute("SELECT outcome FROM knowledge_nodes").fetchone()[0] == "concurrent"
+        assert not conn.in_transaction
+    finally:
+        writer.close()
+
+
+async def test_reembed_refuses_inputs_changed_during_inference(index_db):
+    from hippo_brain.vector_store import get_stored_embed_model, record_embed_model
+
+    conn, path = index_db
+    conn.execute(
+        "INSERT INTO knowledge_nodes(id,uuid,content,embed_text) VALUES(1,'changed','{}','safe')"
+    )
+    insert_vectors(conn, 1, [0.1] * EMBED_DIM, [0.2] * EMBED_DIM)
+    record_embed_model(conn, "model-a")
+    conn.commit()
+    old_vectors = conn.execute("SELECT * FROM knowledge_vectors").fetchall()
+    writer = sqlite3.connect(path, timeout=0)
+
+    class ChangedInputClient(MockInferenceClient):
+        async def embed(self, texts, model=""):
+            writer.execute("UPDATE knowledge_nodes SET embed_text='changed' WHERE id=1")
+            writer.commit()
+            return await super().embed(texts, model=model)
+
+    reembed = runpy.run_path(str(ROOT / "scripts/hippo-re-embed.py"))["re_embed_nodes"]
+    try:
+        with pytest.raises(RuntimeError, match="corpus changed during inference"):
+            await reembed(conn, ChangedInputClient(), "model-b")
+        assert conn.execute("SELECT * FROM knowledge_vectors").fetchall() == old_vectors
+        assert get_stored_embed_model(conn) == "model-a"
+        assert conn.execute("SELECT embed_text FROM knowledge_nodes").fetchone()[0] == "changed"
+        assert not conn.in_transaction
+    finally:
+        writer.close()
 
 
 @pytest.mark.parametrize("fail_call", [3, 4])

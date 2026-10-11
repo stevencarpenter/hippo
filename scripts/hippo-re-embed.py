@@ -12,42 +12,60 @@ import tomllib
 from pathlib import Path
 
 from hippo_brain.client import InferenceClient
-from hippo_brain.embeddings import embed_knowledge_node, open_vector_db
-from hippo_brain.vector_store import record_embed_model
+from hippo_brain.embeddings import open_vector_db, prepare_node_vectors, store_node_vectors
+from hippo_brain.vector_store import get_stored_embed_model, record_embed_model
+
+
+def _corpus_inputs(conn):
+    rows = conn.execute(
+        "SELECT id, uuid, content, embed_text, tags FROM knowledge_nodes ORDER BY id"
+    ).fetchall()
+    return [
+        (
+            tuple(row),
+            tuple(
+                command[0]
+                for command in conn.execute(
+                    "SELECT e.command FROM knowledge_node_events kne "
+                    "JOIN events e ON e.id = kne.event_id "
+                    "WHERE kne.knowledge_node_id = ? ORDER BY e.timestamp, e.id",
+                    (row[0],),
+                )
+            ),
+        )
+        for row in rows
+    ]
 
 
 async def re_embed_nodes(
     conn, client, embedding_model: str, command_model: str = ""
 ) -> int:
-    """Replace vectors without changing raw events or dropping the existing store."""
+    """Stage inference, then atomically publish a corpus whose inputs did not change."""
+    conn.execute("BEGIN")
+    with conn:
+        inputs = _corpus_inputs(conn)
+        old_model = get_stored_embed_model(conn)
+    staged = []
+    for row, commands in inputs:
+        node = {"id": row[0], "embed_text": row[3], "commands_raw": " ; ".join(commands)}
+        vectors = await prepare_node_vectors(client, node, embedding_model, command_model)
+        staged.append((node, vectors))
     conn.execute("BEGIN IMMEDIATE")
     with conn:
-        nodes = conn.execute(
-            "SELECT id, embed_text FROM knowledge_nodes ORDER BY id"
-        ).fetchall()
-        for node_id, embed_text in nodes:
-            commands = conn.execute(
-                "SELECT e.command FROM knowledge_node_events kne "
-                "JOIN events e ON e.id = kne.event_id "
-                "WHERE kne.knowledge_node_id = ? ORDER BY e.timestamp, e.id",
-                (node_id,),
-            ).fetchall()
-            await embed_knowledge_node(
-                client,
+        if _corpus_inputs(conn) != inputs or get_stored_embed_model(conn) != old_model:
+            raise RuntimeError("corpus changed during inference; migration not published")
+        for node, vectors in staged:
+            store_node_vectors(
                 conn,
-                {
-                    "id": node_id,
-                    "embed_text": embed_text,
-                    "commands_raw": " ; ".join(r[0] for r in commands),
-                },
-                embed_model=embedding_model,
-                command_model=command_model,
+                node,
+                vectors,
+                embedding_model,
                 allow_embed_switch=True,
                 replace_existing=True,
                 commit=False,
             )
         record_embed_model(conn, embedding_model)
-    return len(nodes)
+    return len(inputs)
 
 
 async def main():

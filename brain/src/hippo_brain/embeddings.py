@@ -118,6 +118,68 @@ def _check_vec_dim(vec: list[float], label: str) -> None:
         )
 
 
+async def prepare_node_vectors(
+    client: Any, node_dict: dict, embed_model: str = "", command_model: str = ""
+) -> tuple[list[float], list[float]]:
+    """Generate both validated vector arms without opening a database transaction."""
+    embed_text = index_text(node_dict.get("embed_text", "") or "")
+    commands_raw = index_text(node_dict.get("commands_raw", "") or "")
+    # Separate requests avoid the inference server's mixed-length batch bug.
+    knowledge_vecs = await client.embed([embed_text], model=embed_model)
+    _check_vec_dim(knowledge_vecs[0], "knowledge")
+    command_vecs = await client.embed(
+        [commands_raw or embed_text], model=command_model or embed_model
+    )
+    _check_vec_dim(command_vecs[0], "command")
+    return knowledge_vecs[0], command_vecs[0]
+
+
+def store_node_vectors(
+    handle: sqlite3.Connection,
+    node_dict: dict,
+    vectors: tuple[list[float], list[float]],
+    embed_model: str = "",
+    *,
+    allow_embed_switch: bool = False,
+    replace_existing: bool = False,
+    commit: bool = True,
+) -> None:
+    """Publish prepared vectors and derived cleanup in the caller's transaction."""
+    node_id = int(node_dict.get("id", 0) or 0)
+    if node_id <= 0:
+        raise ValueError("embedding requires the knowledge_nodes primary key")
+    _check_vec_dim(vectors[0], "knowledge")
+    _check_vec_dim(vectors[1], "command")
+    if replace_existing and not handle.in_transaction:
+        handle.execute("BEGIN IMMEDIATE")
+    try:
+        check_embed_model_drift(handle, embed_model, allow_switch=allow_embed_switch)
+        stored = None
+        if table_exists(handle, "knowledge_nodes"):
+            stored = handle.execute(
+                "SELECT content, embed_text FROM knowledge_nodes WHERE id = ?", (node_id,)
+            ).fetchone()
+        if stored:
+            clean = tuple(index_text(text or "") for text in stored)
+            if clean != tuple(stored):
+                from hippo_brain.classification import enqueue_node
+
+                handle.execute(
+                    "UPDATE knowledge_nodes SET content = ?, embed_text = ? WHERE id = ?",
+                    (*clean, node_id),
+                )
+                enqueue_node(handle, node_id)
+        if replace_existing:
+            handle.execute("DELETE FROM knowledge_vectors WHERE knowledge_node_id = ?", (node_id,))
+        vector_store.insert_vectors(handle, node_id, *vectors)
+        record_embed_model(handle, embed_model)
+        if commit:
+            handle.commit()
+    except Exception:
+        handle.rollback()
+        raise
+
+
 async def embed_knowledge_node(
     client: Any,
     handle: sqlite3.Connection,
@@ -152,62 +214,16 @@ async def embed_knowledge_node(
 
         check_embed_model_drift(handle, embed_model, allow_switch=allow_embed_switch)
 
-        embed_text = index_text(node_dict.get("embed_text", "") or "")
-        commands_raw = index_text(node_dict.get("commands_raw", "") or "")
-
-        cmd_model = command_model or embed_model
-        cmd_text = commands_raw or embed_text
-
-        # Issue each embed call as a single-item request, even when both
-        # vectors share a model. Batching disparate-length inputs
-        # (e.g. a long identifier-dense summary alongside a short
-        # commands snippet) triggers an oMLX server bug where the
-        # shorter item comes back as a 768-vector of nulls, which then
-        # crashes `_vec_blob`. Two round-trips are sub-millisecond
-        # against a local inference server; the lost batch isn't worth
-        # the silent-corpus-corruption exposure.
-        knowledge_vecs = await client.embed([embed_text], model=embed_model)
-        _check_vec_dim(knowledge_vecs[0], "knowledge")
-        vec_knowledge = knowledge_vecs[0]
-        command_vecs = await client.embed([cmd_text], model=cmd_model)
-        _check_vec_dim(command_vecs[0], "command")
-        vec_command = command_vecs[0]
-
-        if replace_existing and not handle.in_transaction:
-            # vec0 does not replace an existing primary key. Keep the old row
-            # until both inference calls succeed, then swap it atomically.
-            handle.execute("BEGIN IMMEDIATE")
-        try:
-            # Re-derivation also cleans legacy derived content used by the FTS triggers.
-            # Source events and sessions are never updated here.
-            # Existing callers can use a vector-only store. Other SQL errors
-            # still propagate; only absence of the node table skips its cleanup.
-            stored = None
-            if table_exists(handle, "knowledge_nodes"):
-                stored = handle.execute(
-                    "SELECT content, embed_text FROM knowledge_nodes WHERE id = ?", (node_id,)
-                ).fetchone()
-            if stored:
-                clean = tuple(index_text(text or "") for text in stored)
-                if clean != tuple(stored):
-                    from hippo_brain.classification import enqueue_node
-
-                    handle.execute(
-                        "UPDATE knowledge_nodes SET content = ?, embed_text = ? WHERE id = ?",
-                        (*clean, node_id),
-                    )
-                    enqueue_node(handle, node_id)
-            if replace_existing:
-                handle.execute(
-                    "DELETE FROM knowledge_vectors WHERE knowledge_node_id = ?", (node_id,)
-                )
-            vector_store.insert_vectors(handle, node_id, vec_knowledge, vec_command)
-            record_embed_model(handle, embed_model)
-            if commit:
-                handle.commit()
-        except Exception:
-            handle.rollback()
-            raise
+        vectors = await prepare_node_vectors(client, node_dict, embed_model, command_model)
+        store_node_vectors(
+            handle,
+            node_dict,
+            vectors,
+            embed_model,
+            allow_embed_switch=allow_embed_switch,
+            replace_existing=replace_existing,
+            commit=commit,
+        )
 
         if _embed_duration:
             _embed_duration.record((time.monotonic() - t0) * 1000)
