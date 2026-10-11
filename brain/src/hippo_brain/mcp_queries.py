@@ -223,7 +223,11 @@ def _build_knowledge_filter_clause(
 
     from hippo_brain.projects import project_clause as canonical_project_clause
 
-    canonical_filter = canonical_project_clause(conn, project) if project else None
+    canonical_filter = (
+        canonical_project_clause(conn, project, include_excluded=include_excluded)
+        if project
+        else None
+    )
     if canonical_filter is not None:
         clause, values = canonical_filter
         clauses.append(clause)

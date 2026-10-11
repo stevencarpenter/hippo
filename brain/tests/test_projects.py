@@ -20,6 +20,7 @@ from hippo_brain.projects import (
     load_aliases,
     normalize,
     project_clause,
+    query_terms,
 )
 from hippo_brain.retrieval import Filters, Tuning, _apply_filters, search
 
@@ -123,9 +124,9 @@ def test_owner_dot_and_remote_normalization(value):
     assert normalize(value) == "dotfiles"
 
 
-def test_subpath_protection_and_config_validation(isolated_config):
-    assert normalize("/projects/foo/brain", directory=True) == "/projects/foo/brain"
-    assert normalize("/projects/bar/brain", directory=True) == "/projects/bar/brain"
+def test_directory_basename_and_config_validation(isolated_config):
+    assert normalize("/projects/foo/brain", directory=True) == "brain"
+    assert normalize("/projects/bar/brain", directory=True) == "brain"
     assert normalize("/projects/foo/.claude/worktrees/agent-a", directory=True) == "foo"
     assert normalize("/synthetic/.dotfiles", directory=True) == "dotfiles"
     with pytest.raises(ValueError, match="cycle"):
@@ -320,6 +321,106 @@ def test_fragmentation_ratio_remains_informational(tmp_db, isolated_config):
         if line.startswith("hippo_kb_project_fragmentation_ratio ")
     )
     assert float(value) == 2.0
+
+
+@pytest.mark.parametrize("source", ["session", "event", "memory", "workflow"])
+def test_unassigned_history_survives_first_identity(tmp_db, isolated_config, source):
+    from hippo_brain.auto_memory import ingest_memory_file, write_memory_knowledge_node
+
+    conn, _ = tmp_db
+    set_aliases(isolated_config, {"shortcut": "lumin"})
+    if source == "memory":
+        path = isolated_config / "MEMORY.md"
+        path.write_text("# Lumin\n\nProject history.\n")
+        ingested = ingest_memory_file(conn, path, repository="lumin", now_ms=1000)
+        old = write_memory_knowledge_node(conn, result(), ingested.revision_id, "synthetic")
+        conn.execute("UPDATE knowledge_nodes SET project_id=NULL WHERE id=?", (old,))
+        conn.execute("DELETE FROM project_aliases")
+        conn.execute("DELETE FROM projects")
+    elif source == "session":
+        old = existing_node(conn, session(conn, "/synthetic/lumin"))
+    else:
+        old = conn.execute(
+            "INSERT INTO knowledge_nodes(uuid,content,embed_text) "
+            "VALUES('historical', '{}', 'lumin') RETURNING id"
+        ).fetchone()[0]
+        if source == "event":
+            eid = event(conn, "owner/lumin")
+            conn.execute("INSERT INTO knowledge_node_events VALUES(?,?)", (old, eid))
+        else:
+            conn.execute(
+                "INSERT INTO workflow_runs "
+                "(id,repo,head_sha,head_branch,event,status,conclusion,html_url,raw_json,"
+                "first_seen_at,last_seen_at) "
+                "VALUES(1,'owner/lumin','abc','main','push','completed','success','x','{}',1,2)"
+            )
+            conn.execute("INSERT INTO knowledge_node_workflow_runs VALUES(?,1)", (old,))
+    conn.commit()
+    assert _apply_filters(conn, [old], Filters(project="shortcut")) == {old}
+    new_sid = session(conn, "/new/lumin")
+    conn.commit()
+    new = write_claude_knowledge_node(conn, result(), [new_sid], "synthetic")
+    conn.execute("PRAGMA query_only=ON")
+    for project in ("lumin", "shortcut"):
+        assert _apply_filters(conn, [old, new], Filters(project=project)) == {old, new}
+        assert len(search_knowledge_lexical(conn, "", project=project)) == 2
+    assert project_name(conn, old) is None
+
+
+@pytest.mark.parametrize("writer", [write_claude_knowledge_node, write_opencode_knowledge_node])
+def test_encoded_directory_uses_captured_cwd(tmp_db, isolated_config, writer):
+    conn, _ = tmp_db
+    set_aliases(isolated_config, {"local-lumin": "lumin"})
+    old_sid = session(conn, "-Users-carpenter-projects-local-lumin")
+    new_sid = session(conn, "-Users-carpenter-other-local-lumin")
+    conn.execute("UPDATE agentic_sessions SET cwd='/synthetic/local-lumin'")
+    before = conn.execute("SELECT project_dir,cwd FROM agentic_sessions").fetchall()
+    old = existing_node(conn, old_sid)
+    conn.commit()
+    new = writer(conn, result(), [new_sid], "synthetic")
+    assert project_name(conn, new) == "lumin"
+    backfill(conn)
+    assert project_name(conn, old) == "lumin"
+    assert [row[0] for row in conn.execute("SELECT canonical_name FROM projects")] == ["lumin"]
+    assert _apply_filters(conn, [old, new], Filters(project="local-lumin")) == {old, new}
+    assert conn.execute("SELECT project_dir,cwd FROM agentic_sessions").fetchall() == before
+
+
+def test_retargeted_alias_does_not_transfer_canonical_history(tmp_db, isolated_config):
+    conn, _ = tmp_db
+    set_aliases(isolated_config, {"shortcut": "alpha"})
+    nodes = {}
+    for name in ("shortcut", "alpha", "beta"):
+        sid = session(conn, f"/synthetic/{name}")
+        conn.commit()
+        nodes[name] = write_claude_knowledge_node(conn, result(name), [sid], "synthetic")
+    set_aliases(isolated_config, {"shortcut": "beta"})
+    for project in ("shortcut", "beta"):
+        assert _apply_filters(conn, list(nodes.values()), Filters(project=project)) == {
+            nodes["beta"]
+        }
+        assert [hit["summary"] for hit in search_knowledge_lexical(conn, "", project=project)] == [
+            "beta"
+        ]
+    assert _apply_filters(conn, list(nodes.values()), Filters(project="alpha")) == {
+        nodes["alpha"],
+        nodes["shortcut"],
+    }
+    sid = session(conn, "/new/shortcut")
+    conn.commit()
+    new = write_claude_knowledge_node(conn, result("beta"), [sid], "synthetic")
+    assert project_name(conn, new) == "beta"
+    assert _apply_filters(conn, [*nodes.values(), new], Filters(project="beta")) == {
+        nodes["beta"],
+        new,
+    }
+    assert infer_project(conn, "shortcut") == "beta"
+    assert "shortcut" not in query_terms(conn, "alpha")
+    assert "alpha" not in query_terms(conn, "beta")
+    set_aliases(isolated_config, {})
+    assert infer_project(conn, "shortcut") is None
+    assert "shortcut" not in query_terms(conn, "alpha")
+    assert _apply_filters(conn, list(nodes.values()), Filters(project="shortcut")) == set()
 
 
 def test_older_readable_schema_keeps_legacy_behavior(tmp_db):

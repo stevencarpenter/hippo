@@ -8,8 +8,13 @@ import tomllib
 from pathlib import Path
 
 from hippo_brain import _default_config_path
-from hippo_brain.entity_resolver import _resolve_project_roots, canonicalize, strip_worktree_prefix
-from hippo_brain.source_filters import table_exists
+from hippo_brain.entity_resolver import strip_worktree_prefix
+from hippo_brain.retrieval_eligibility import (
+    agentic_session_eligible_sql,
+    shell_event_eligible_sql,
+    workflow_run_eligible_sql,
+)
+from hippo_brain.source_filters import knowledge_memory_project_clause, table_exists
 
 
 def load_aliases() -> dict[str, str]:
@@ -26,15 +31,11 @@ def load_aliases() -> dict[str, str]:
     return aliases
 
 
-def normalize(value: str, *, directory: bool = False, roots: list[str] | None = None) -> str:
-    """Strip remote/owner spelling; preserve known separate-project subpaths."""
+def normalize(value: str, *, directory: bool = False) -> str:
+    """Strip remote/owner spelling and use directory basenames."""
     value = strip_worktree_prefix(value.strip().lower().rstrip("/"))
     if directory or value.startswith("/"):
-        roots = _resolve_project_roots(roots)
-        protected = canonicalize("project", value, project_roots=roots)
-        if any(value.startswith(root.lower().rstrip("/") + "/") for root in roots):
-            return protected
-        value = Path(protected).name
+        value = Path(value).name
     elif "/" in value:
         value = value.rsplit("/", 1)[-1]
     value = value.removesuffix(".git").lstrip(".")
@@ -78,6 +79,10 @@ def upsert_project(
     return project_id
 
 
+def _session_directory(directory: str, cwd: str | None) -> str:
+    return cwd if directory.startswith("-") and cwd else directory
+
+
 def _node_sources(conn, node_id: int):
     """Rank remote-derived repo > local repo > session directory, without git I/O."""
     sources = []
@@ -88,12 +93,14 @@ def _node_sources(conn, node_id: int):
         (node_id,),
     ):
         sources.append((3 if "/" in repo else 2, repo, timestamp, timestamp, False))
-    for directory, start, end in conn.execute(
-        "SELECT s.project_dir, s.start_time, s.end_time FROM knowledge_node_agentic_sessions l "
+    for directory, cwd, start, end in conn.execute(
+        "SELECT s.project_dir, s.cwd, s.start_time, s.end_time "
+        "FROM knowledge_node_agentic_sessions l "
         "JOIN agentic_sessions s ON s.id=l.agentic_session_id "
         "WHERE l.knowledge_node_id=? AND s.probe_tag IS NULL",
         (node_id,),
     ):
+        directory = _session_directory(directory, cwd)
         if directory.strip():
             sources.append((1, directory, start, end, True))
     # Captured git metadata can be correlated by exact session cwd and time.
@@ -185,15 +192,19 @@ def backfill(conn, aliases: dict[str, str] | None = None) -> int:
                 for (repo,) in repos:
                     upsert_project(conn, repo, start, end, aliases)
             else:
-                upsert_project(conn, directory, start, end, aliases, directory=True)
+                upsert_project(
+                    conn, _session_directory(directory, cwd), start, end, aliases, directory=True
+                )
         node_ids = [row[0] for row in conn.execute("SELECT id FROM knowledge_nodes")]
         for node_id in node_ids:
             attribute_node(conn, node_id, aliases)
     return len(node_ids)
 
 
-def project_clause(conn, project: str, node_alias: str = "kn") -> tuple[str, list] | None:
-    """Resolve configured and stored aliases to exact project IDs, without writes."""
+def project_clause(
+    conn, project: str, node_alias: str = "kn", *, include_excluded: bool = False
+) -> tuple[str, list] | None:
+    """Match assigned identities and unassigned provenance without writes."""
     if not table_exists(conn, "projects"):
         return None
     aliases = load_aliases()
@@ -202,13 +213,39 @@ def project_clause(conn, project: str, node_alias: str = "kn") -> tuple[str, lis
     for project_id, name in conn.execute("SELECT id, canonical_name FROM projects"):
         if canonical_name(name, aliases) == target:
             ids.add(project_id)
-    for project_id, alias in conn.execute("SELECT canonical_id, alias FROM project_aliases"):
-        if canonical_name(alias, aliases) == target:
-            ids.add(project_id)
-    if not ids:
-        return None
-    placeholders = ",".join("?" for _ in ids)
-    return f"{node_alias}.project_id IN ({placeholders})", sorted(ids)
+    clauses = []
+    params = sorted(ids)
+    if ids:
+        placeholders = ",".join("?" for _ in ids)
+        clauses.append(f"{node_alias}.project_id IN ({placeholders})")
+    provenance = [
+        "EXISTS (SELECT 1 FROM knowledge_node_events l JOIN events e ON e.id=l.event_id "
+        f"WHERE l.knowledge_node_id={node_alias}.id "
+        f"AND {shell_event_eligible_sql('e', include_excluded=include_excluded)} "
+        "AND (e.cwd LIKE ? OR e.git_repo LIKE ?))",
+        "EXISTS (SELECT 1 FROM knowledge_node_agentic_sessions l "
+        "JOIN agentic_sessions s ON s.id=l.agentic_session_id "
+        f"WHERE l.knowledge_node_id={node_alias}.id "
+        f"AND {agentic_session_eligible_sql('s', include_excluded=include_excluded)} "
+        "AND (s.cwd LIKE ? OR s.project_dir LIKE ?))",
+    ]
+    memory = knowledge_memory_project_clause(conn)
+    if memory:
+        provenance.append(memory.replace("kn.id", f"{node_alias}.id"))
+    if table_exists(conn, "knowledge_node_workflow_runs"):
+        provenance.append(
+            "EXISTS (SELECT 1 FROM knowledge_node_workflow_runs l "
+            "JOIN workflow_runs r ON r.id=l.run_id "
+            f"WHERE l.knowledge_node_id={node_alias}.id "
+            f"AND {workflow_run_eligible_sql('r', include_excluded=include_excluded)} "
+            "AND r.repo LIKE ?)"
+        )
+    matches = []
+    for term in query_terms(conn, project):
+        matches.extend(provenance)
+        params.extend([f"%{term}%"] * sum(clause.count("?") for clause in provenance))
+    clauses.append(f"({node_alias}.project_id IS NULL AND ({' OR '.join(matches)}))")
+    return "(" + " OR ".join(clauses) + ")", params
 
 
 def infer_project(conn, query: str) -> str | None:
@@ -217,7 +254,6 @@ def infer_project(conn, query: str) -> str | None:
         return None
     aliases = load_aliases()
     names = {row[0] for row in conn.execute("SELECT canonical_name FROM projects")}
-    names.update(row[0] for row in conn.execute("SELECT alias FROM project_aliases"))
     names.update(aliases)
     text = query.lower()
     # A longer, explicitly named non-project referent wins over its short prefix.
@@ -248,9 +284,9 @@ def query_terms(conn, project: str | None) -> list[str]:
     aliases = load_aliases()
     target = canonical_name(project, aliases)
     terms = {target}
-    for (alias,) in conn.execute("SELECT alias FROM project_aliases"):
-        if canonical_name(alias, aliases) == target:
-            terms.add(alias)
+    for (name,) in conn.execute("SELECT canonical_name FROM projects"):
+        if canonical_name(name, aliases) == target:
+            terms.add(name)
     terms.update(alias for alias in aliases if canonical_name(alias, aliases) == target)
     return sorted(terms)
 

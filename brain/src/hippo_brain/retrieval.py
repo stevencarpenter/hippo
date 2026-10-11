@@ -936,7 +936,11 @@ def _apply_filters(
 
     from hippo_brain.projects import project_clause
 
-    canonical_filter = project_clause(conn, filters.project) if filters.project else None
+    canonical_filter = (
+        project_clause(conn, filters.project, include_excluded=filters.include_excluded)
+        if filters.project
+        else None
+    )
     if canonical_filter is not None:
         clause, values = canonical_filter
         clauses.append(clause)
