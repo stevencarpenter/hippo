@@ -258,6 +258,7 @@ def infer_project(conn, query: str) -> str | None:
     names = {row[0] for row in conn.execute("SELECT canonical_name FROM projects")}
     names.update(aliases)
     names.update(normalize(alias) for alias in aliases)
+    names.update(canonical_name(alias, aliases) for alias in aliases)
     text = query.lower()
     # A longer, explicitly named non-project referent wins over its short prefix.
     nonprojects = []

@@ -212,6 +212,31 @@ def test_config_edit_resolves_existing_ids_and_next_ingest(tmp_db, isolated_conf
     assert project_name(conn, first) == project_name(conn, second) == "snugmarina"
 
 
+@pytest.mark.parametrize(
+    "aliases",
+    [
+        {"snug-23": "snugmarina"},
+        {"owner/.snug-23.git": "owner/.snugmarina.git"},
+        {"snug-23": "intermediate", "intermediate": "snugmarina"},
+    ],
+)
+def test_canonical_target_inference_after_config_edit(tmp_db, isolated_config, aliases):
+    conn, _ = tmp_db
+    sid = session(conn, "/synthetic/snug-23")
+    conn.commit()
+    node = write_claude_knowledge_node(conn, result("snug-23 work"), [sid], "synthetic")
+    set_aliases(isolated_config, aliases)
+    conn.execute("PRAGMA query_only=ON")
+    query = "explain snugmarina"
+    assert infer_project(conn, query) == "snugmarina"
+    assert [hit["summary"] for hit in search_knowledge_lexical(conn, query)] == ["snug-23 work"]
+    assert [
+        hit.summary for hit in search(conn, query, None, mode="lexical", tuning=Tuning())
+    ] == ["snug-23 work"]
+    assert project_name(conn, node) == "snug-23"
+    assert [row[0] for row in conn.execute("SELECT canonical_name FROM projects")] == ["snug-23"]
+
+
 def test_shell_writer_uses_captured_git_identity_not_model_entities(tmp_db):
     conn, _ = tmp_db
     eid = event(conn, "stevencarpenter/.dotfiles")
