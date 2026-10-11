@@ -204,7 +204,7 @@ def backfill(conn, aliases: dict[str, str] | None = None) -> int:
 def project_clause(
     conn, project: str, node_alias: str = "kn", *, include_excluded: bool = False
 ) -> tuple[str, list] | None:
-    """Match assigned identities and unassigned provenance without writes."""
+    """Resolve identities or match unresolved project substrings without writes."""
     if not table_exists(conn, "projects"):
         return None
     aliases = load_aliases()
@@ -240,11 +240,13 @@ def project_clause(
             f"AND {workflow_run_eligible_sql('r', include_excluded=include_excluded)} "
             "AND r.repo LIKE ?)"
         )
+    resolved = bool(ids) or any(canonical_name(alias, aliases) == target for alias in aliases)
     matches = []
-    for term in query_terms(conn, project):
+    for term in query_terms(conn, project) if resolved else [project]:
         matches.extend(provenance)
         params.extend([f"%{term}%"] * sum(clause.count("?") for clause in provenance))
-    clauses.append(f"({node_alias}.project_id IS NULL AND ({' OR '.join(matches)}))")
+    unassigned = f"{node_alias}.project_id IS NULL AND " if resolved else ""
+    clauses.append(f"({unassigned}({' OR '.join(matches)}))")
     return "(" + " OR ".join(clauses) + ")", params
 
 
@@ -255,6 +257,7 @@ def infer_project(conn, query: str) -> str | None:
     aliases = load_aliases()
     names = {row[0] for row in conn.execute("SELECT canonical_name FROM projects")}
     names.update(aliases)
+    names.update(normalize(alias) for alias in aliases)
     text = query.lower()
     # A longer, explicitly named non-project referent wins over its short prefix.
     nonprojects = []
@@ -288,6 +291,7 @@ def query_terms(conn, project: str | None) -> list[str]:
         if canonical_name(name, aliases) == target:
             terms.add(name)
     terms.update(alias for alias in aliases if canonical_name(alias, aliases) == target)
+    terms.update(normalize(term) for term in list(terms))
     return sorted(terms)
 
 

@@ -361,7 +361,7 @@ def test_unassigned_history_survives_first_identity(tmp_db, isolated_config, sou
     conn.commit()
     new = write_claude_knowledge_node(conn, result(), [new_sid], "synthetic")
     conn.execute("PRAGMA query_only=ON")
-    for project in ("lumin", "shortcut"):
+    for project in ("lumin", "shortcut", "lum"):
         assert _apply_filters(conn, [old, new], Filters(project=project)) == {old, new}
         assert len(search_knowledge_lexical(conn, "", project=project)) == 2
     assert project_name(conn, old) is None
@@ -420,7 +420,76 @@ def test_retargeted_alias_does_not_transfer_canonical_history(tmp_db, isolated_c
     set_aliases(isolated_config, {})
     assert infer_project(conn, "shortcut") is None
     assert "shortcut" not in query_terms(conn, "alpha")
-    assert _apply_filters(conn, list(nodes.values()), Filters(project="shortcut")) == set()
+    assert _apply_filters(conn, list(nodes.values()), Filters(project="shortcut")) == {
+        nodes["shortcut"]
+    }
+
+
+@pytest.mark.parametrize("alias", ["owner/snug-23", ".snug-23", "owner/.snug-23.git"])
+def test_normalized_current_aliases_match_history_and_inference(tmp_db, isolated_config, alias):
+    conn, _ = tmp_db
+    set_aliases(isolated_config, {alias: "snugmarina"})
+    old = existing_node(conn, session(conn, "/projects/snug-23"))
+    conn.execute(
+        "UPDATE knowledge_nodes SET content=?,embed_text=? WHERE id=?",
+        (json.dumps({"summary": "snug-23 history"}), "snug-23 history", old),
+    )
+    sid = session(conn, "/new/snug-23")
+    conn.commit()
+    new = write_claude_knowledge_node(conn, result("snugmarina work"), [sid], "synthetic")
+    assert project_name(conn, new) == "snugmarina"
+    conn.execute("PRAGMA query_only=ON")
+    for project in (alias, "snug-23", "snugmarina"):
+        assert _apply_filters(conn, [old, new], Filters(project=project)) == {old, new}
+        assert len(search_knowledge_lexical(conn, "", project=project)) == 2
+    assert infer_project(conn, "explain snug-23") == "snugmarina"
+    assert "snug-23" in query_terms(conn, "snugmarina")
+    expected = {"snug-23 history", "snugmarina work"}
+    assert {
+        hit["summary"] for hit in search_knowledge_lexical(conn, "explain snug-23")
+    } == expected
+    assert {
+        hit.summary
+        for hit in search(conn, "explain snug-23", None, mode="lexical", tuning=Tuning())
+    } == expected
+    assert project_name(conn, old) is None
+
+
+@pytest.mark.parametrize("source", ["event", "session"])
+def test_unresolved_substrings_match_assigned_and_unassigned_nodes(tmp_db, source):
+    conn, _ = tmp_db
+    nodes = []
+    for index in range(2):
+        if source == "event":
+            eid = event(conn, "owner/hippo")
+            conn.commit()
+            node = write_knowledge_node(conn, result("hippo work"), [eid], "synthetic")
+        else:
+            sid = session(conn, f"/location-{index}/owner/hippo")
+            conn.commit()
+            node = write_claude_knowledge_node(conn, result("hippo work"), [sid], "synthetic")
+        nodes.append(node)
+    conn.execute("UPDATE knowledge_nodes SET project_id=NULL WHERE id=?", (nodes[0],))
+    conn.commit()
+    conn.execute("PRAGMA query_only=ON")
+    for project in ("hip", "owner/hip", "missing"):
+        expected = set() if project == "missing" else set(nodes)
+        assert _apply_filters(conn, nodes, Filters(project=project)) == expected
+        assert len(search_knowledge_lexical(conn, "", project=project)) == len(expected)
+    assert project_name(conn, nodes[0]) is None
+    assert project_name(conn, nodes[1]) == "hippo"
+
+
+def test_configured_alias_without_identity_does_not_use_unrestricted_substrings(
+    tmp_db, isolated_config
+):
+    conn, _ = tmp_db
+    sid = session(conn, "/projects/hippo")
+    conn.commit()
+    node = write_claude_knowledge_node(conn, result("hippo work"), [sid], "synthetic")
+    set_aliases(isolated_config, {"hip": "unseen"})
+    assert _apply_filters(conn, [node], Filters(project="hip")) == set()
+    assert search_knowledge_lexical(conn, "", project="hip") == []
 
 
 def test_older_readable_schema_keeps_legacy_behavior(tmp_db):
