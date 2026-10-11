@@ -230,9 +230,9 @@ def test_canonical_target_inference_after_config_edit(tmp_db, isolated_config, a
     query = "explain snugmarina"
     assert infer_project(conn, query) == "snugmarina"
     assert [hit["summary"] for hit in search_knowledge_lexical(conn, query)] == ["snug-23 work"]
-    assert [
-        hit.summary for hit in search(conn, query, None, mode="lexical", tuning=Tuning())
-    ] == ["snug-23 work"]
+    assert [hit.summary for hit in search(conn, query, None, mode="lexical", tuning=Tuning())] == [
+        "snug-23 work"
+    ]
     assert project_name(conn, node) == "snug-23"
     assert [row[0] for row in conn.execute("SELECT canonical_name FROM projects")] == ["snug-23"]
 
@@ -470,9 +470,7 @@ def test_normalized_current_aliases_match_history_and_inference(tmp_db, isolated
     assert infer_project(conn, "explain snug-23") == "snugmarina"
     assert "snug-23" in query_terms(conn, "snugmarina")
     expected = {"snug-23 history", "snugmarina work"}
-    assert {
-        hit["summary"] for hit in search_knowledge_lexical(conn, "explain snug-23")
-    } == expected
+    assert {hit["summary"] for hit in search_knowledge_lexical(conn, "explain snug-23")} == expected
     assert {
         hit.summary
         for hit in search(conn, "explain snug-23", None, mode="lexical", tuning=Tuning())
