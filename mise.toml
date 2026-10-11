@@ -601,7 +601,8 @@ set -euo pipefail
 
 DOMAIN="gui/$(id -u)"
 DEST="$HOME/Library/LaunchAgents/com.hippo.omlx.plist"
-OMLX_CLI="${OMLX_CLI:-/Applications/oMLX.app/Contents/MacOS/omlx-cli}"
+# The rendered plist hard-codes this path (launchd/com.hippo.omlx.plist).
+OMLX_CLI="/Applications/oMLX.app/Contents/MacOS/omlx-cli"
 BASE_URL="$(sed -n 's/^base_url *= *"\([^"]*\)".*/\1/p' "${XDG_CONFIG_HOME:-$HOME/.config}/hippo/config.toml" | head -1)"
 BASE_URL="${BASE_URL:-http://127.0.0.1:42069/v1}"
 
@@ -690,13 +691,6 @@ run = '''
 #!/usr/bin/env bash
 set -uo pipefail
 tail -n 40 -F "$HOME/Library/Application Support/oMLX/logs/server.log" "${XDG_DATA_HOME:-$HOME/.local/share}/hippo/omlx.stdout.log"
-'''
-
-[tasks."omlx:diagnose"]
-description = "Run the oMLX app's own diagnostics"
-run = '''
-#!/usr/bin/env bash
-"${OMLX_CLI:-/Applications/oMLX.app/Contents/MacOS/omlx-cli}" diagnose
 '''
 
 [tasks.install]

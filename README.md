@@ -83,7 +83,7 @@ installs an optional `com.hippo.omlx` keeper LaunchAgent. Every 60 s it runs
 `omlx-cli start --no-wait`, which relaunches oMLX.app if it is not running and
 is a no-op otherwise, so the inference backend comes back after a crash or
 logout without competing with the app's own Launch-at-Login entry.
-`mise run omlx:start|stop|restart|status|logs|diagnose` manage the app from the
+`mise run omlx:start|stop|restart|status|logs` manage the app from the
 repo; `omlx:stop` also unloads the keeper so the server stays stopped.
 
 ## Prerequisites
