@@ -78,10 +78,13 @@ Five core LaunchAgents run under `gui/$(id -u)`:
 
 `hippo daemon install --force` writes the plists and bootstraps all five. The capture-reliability stack (source health, invariants, watchdog, probes, alarms) is documented in [`docs/capture/`](docs/capture/) — start with [`architecture.md`](docs/capture/architecture.md). For an end-to-end trace of how a shell command, Claude session segment, or browser visit becomes a knowledge node, see [`docs/lifecycle.md`](docs/lifecycle.md). Review-blocker rules every contributor must follow live in [`docs/capture/anti-patterns.md`](docs/capture/anti-patterns.md).
 
-If Hippo is configured to use oMLX, `mise run install:omlx` installs an
-optional `com.hippo.omlx` LaunchAgent. It starts `/opt/homebrew/opt/omlx/bin/omlx
-serve` on `127.0.0.1:8000` at login and keeps it in Hippo's service lifecycle,
-so no terminal session has to stay open.
+If Hippo is configured to use the oMLX macOS app, `mise run install:omlx`
+installs an optional `com.hippo.omlx` keeper LaunchAgent. Every 60 s it runs
+`omlx-cli start --no-wait`, which relaunches oMLX.app if it is not running and
+is a no-op otherwise, so the inference backend comes back after a crash or
+logout without competing with the app's own Launch-at-Login entry.
+`mise run omlx:start|stop|restart|status|logs|diagnose` manage the app from the
+repo; `omlx:stop` also unloads the keeper so the server stays stopped.
 
 ## Prerequisites
 
@@ -330,7 +333,8 @@ mise run start              # Start daemon + brain via launchd
 mise run stop               # Stop both services
 mise run restart            # Stop + start
 mise run nuke               # SIGKILL everything (preserves data)
-mise run install:omlx       # Optional: install + start Hippo's oMLX LaunchAgent
+mise run install:omlx       # Optional: install the oMLX keeper LaunchAgent
+mise run omlx:status        # oMLX app/server/keeper state + loaded models
 ```
 
 To keep ingestion running while enrichment is fully stopped, do not use

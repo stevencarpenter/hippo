@@ -594,54 +594,109 @@ exit 1
 '''
 
 [tasks."install:omlx"]
-description = "Install and start the optional oMLX LaunchAgent used by Hippo's local inference backend"
+description = "Install the optional com.hippo.omlx keeper LaunchAgent (relaunches the oMLX macOS app if it is not running)"
 run = '''
 #!/usr/bin/env bash
 set -euo pipefail
 
 DOMAIN="gui/$(id -u)"
 DEST="$HOME/Library/LaunchAgents/com.hippo.omlx.plist"
-DATA_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/hippo"
-OMLX_BIN="/opt/homebrew/opt/omlx/bin/omlx"
+OMLX_CLI="${OMLX_CLI:-/Applications/oMLX.app/Contents/MacOS/omlx-cli}"
+BASE_URL="$(sed -n 's/^base_url *= *"\([^"]*\)".*/\1/p' "${XDG_CONFIG_HOME:-$HOME/.config}/hippo/config.toml" | head -1)"
+BASE_URL="${BASE_URL:-http://127.0.0.1:42069/v1}"
 
-if [ ! -x "$OMLX_BIN" ]; then
-    echo "ERROR: oMLX is not installed at $OMLX_BIN"
-    echo "Install it with: brew install jundot/omlx/omlx"
+if [ ! -x "$OMLX_CLI" ]; then
+    echo "ERROR: oMLX.app is not installed ($OMLX_CLI missing)"
+    echo "Install it from https://github.com/jundot/omlx/releases"
     exit 1
 fi
 
-mkdir -p "$DATA_DIR"
-
 # Render and write the plist through hippo's render_plist path (same code path
 # the unit test exercises). PATH is pinned to a launchd-safe set so the rendered
-# plist environment matches the rest of Hippo's LaunchAgents, independent of the
-# operator's shell at install time.
+# plist environment matches the rest of Hippo's LaunchAgents.
+HIPPO_BIN="$(command -v hippo || echo "$HOME/.local/bin/hippo")"
 PATH="/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin" \
-    hippo daemon install-omlx --force
-
+    "$HIPPO_BIN" daemon install-omlx --force
 plutil -lint "$DEST" >/dev/null
 
-# Retire competing managers before loading Hippo's oMLX agent. The Homebrew
-# service is a user LaunchAgent too, but it is invisible to Hippo's service
-# lifecycle and can drift to a different port than ~/.config/hippo/config.toml.
-brew services stop jundot/omlx/omlx >/dev/null 2>&1 || brew services stop omlx >/dev/null 2>&1 || true
 launchctl bootout "$DOMAIN" "$DEST" >/dev/null 2>&1 || true
-pkill -f '/opt/homebrew/.*/omlx serve' >/dev/null 2>&1 || true
-
 launchctl bootstrap "$DOMAIN" "$DEST"
 
-for _ in {1..60}; do
-    if curl -fsS --max-time 2 http://127.0.0.1:8000/v1/models >/dev/null 2>&1; then
-        echo "Started com.hippo.omlx on http://127.0.0.1:8000/v1"
+for _ in {1..90}; do
+    if curl -fsS --max-time 2 "$BASE_URL/models" >/dev/null 2>&1; then
+        echo "Installed com.hippo.omlx; oMLX serving on $BASE_URL"
         exit 0
     fi
     sleep 1
 done
-
-echo "ERROR: com.hippo.omlx started but http://127.0.0.1:8000/v1/models did not respond within 60s"
-echo "Inspect with: launchctl print $DOMAIN/com.hippo.omlx"
-echo "Logs: $DATA_DIR/omlx.stderr.log"
+echo "ERROR: com.hippo.omlx loaded but $BASE_URL/models did not respond within 90s"
+echo "Inspect with: launchctl print $DOMAIN/com.hippo.omlx  and  mise run omlx:logs"
 exit 1
+'''
+
+# ── oMLX (macOS app) ─────────────────────────────────────────────────
+# All tasks go through the app's own CLI (omlx-cli), so they stay in sync with
+# the menu bar app. The server port comes from the app settings, not Hippo.
+
+[tasks."omlx:start"]
+description = "Start the oMLX app/server and load the com.hippo.omlx keeper"
+run = '''
+#!/usr/bin/env bash
+set -euo pipefail
+OMLX_CLI="${OMLX_CLI:-/Applications/oMLX.app/Contents/MacOS/omlx-cli}"
+PLIST="$HOME/Library/LaunchAgents/com.hippo.omlx.plist"
+# Start (and wait for health) before loading the keeper, so the keeper's
+# RunAtLoad `start --no-wait` does not race this call mid-launch.
+"$OMLX_CLI" start
+[ -f "$PLIST" ] && launchctl bootstrap "gui/$(id -u)" "$PLIST" 2>/dev/null || true
+'''
+
+[tasks."omlx:stop"]
+description = "Stop the oMLX server and unload the keeper so it stays stopped"
+run = '''
+#!/usr/bin/env bash
+set -euo pipefail
+OMLX_CLI="${OMLX_CLI:-/Applications/oMLX.app/Contents/MacOS/omlx-cli}"
+PLIST="$HOME/Library/LaunchAgents/com.hippo.omlx.plist"
+launchctl bootout "gui/$(id -u)" "$PLIST" 2>/dev/null && echo "Unloaded com.hippo.omlx keeper (mise run omlx:start reloads it)" || true
+"$OMLX_CLI" stop
+'''
+
+[tasks."omlx:restart"]
+description = "Restart the oMLX server"
+run = '''
+#!/usr/bin/env bash
+set -euo pipefail
+"${OMLX_CLI:-/Applications/oMLX.app/Contents/MacOS/omlx-cli}" restart
+'''
+
+[tasks."omlx:status"]
+description = "Show oMLX process, keeper, and loaded models"
+run = '''
+#!/usr/bin/env bash
+set -uo pipefail
+BASE_URL="$(sed -n 's/^base_url *= *"\([^"]*\)".*/\1/p' "${XDG_CONFIG_HOME:-$HOME/.config}/hippo/config.toml" | head -1)"
+BASE_URL="${BASE_URL:-http://127.0.0.1:42069/v1}"
+echo "app:    $(pgrep -x oMLX | head -1 || echo 'not running')"
+echo "server: $(pgrep -x omlx-server | head -1 || echo 'not running')"
+echo "keeper: $(launchctl list | grep -q com.hippo.omlx && echo loaded || echo 'not loaded')"
+echo "api:    $BASE_URL"
+curl -fsS --max-time 3 "$BASE_URL/models" | python3 -c 'import sys,json; [print("  -", m["id"]) for m in json.load(sys.stdin)["data"]]' || echo "  unreachable"
+'''
+
+[tasks."omlx:logs"]
+description = "Tail the oMLX server log and the keeper log"
+run = '''
+#!/usr/bin/env bash
+set -uo pipefail
+tail -n 40 -F "$HOME/Library/Application Support/oMLX/logs/server.log" "${XDG_DATA_HOME:-$HOME/.local/share}/hippo/omlx.stdout.log"
+'''
+
+[tasks."omlx:diagnose"]
+description = "Run the oMLX app's own diagnostics"
+run = '''
+#!/usr/bin/env bash
+"${OMLX_CLI:-/Applications/oMLX.app/Contents/MacOS/omlx-cli}" diagnose
 '''
 
 [tasks.install]
@@ -993,7 +1048,6 @@ launchctl bootout "$DOMAIN" ~/Library/LaunchAgents/com.hippo.brain.plist 2>/dev/
 launchctl bootout "$DOMAIN" ~/Library/LaunchAgents/com.hippo.metrics-exporter.plist 2>/dev/null && echo "  Unloaded com.hippo.metrics-exporter" || echo "  com.hippo.metrics-exporter not loaded"
 
 echo "Killing all hippo processes (SIGKILL)..."
-pkill -9 -f '/opt/homebrew/.*/omlx serve' 2>/dev/null && echo "  Killed oMLX serve processes" || echo "  No oMLX serve processes found"
 pkill -9 -f 'hippo.*(daemon|send-event)' 2>/dev/null && echo "  Killed daemon processes" || echo "  No daemon processes found"
 pkill -9 -f 'hippo ingest claude-session' 2>/dev/null && echo "  Killed session tailers" || echo "  No session tailers found"
 pkill -9 -f 'hippo-brain' 2>/dev/null && echo "  Killed brain processes" || echo "  No brain processes found"
