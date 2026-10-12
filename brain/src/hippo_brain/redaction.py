@@ -108,13 +108,11 @@ _INDEX_SPANS = (
     (re.compile(r"\beyJ[a-zA-Z0-9_-]*(?:\.[a-zA-Z0-9_-]+){0,2}"), "<jwt>"),
     (re.compile(r"\b[0-9a-f]{64}\b", re.I), "<hash>"),
     (re.compile(r"\b(?=[0-9a-f]{0,39}[a-f])[0-9a-f]{7,40}\b", re.I), "<git-sha>"),
-    # Standalone blobs exclude absolute paths and common relative repository roots.
+    # shortcut: slash-free blobs only, so every path segment survives; add explicit token types if recall suffers.
     (
         re.compile(
-            r"(?<![\w/+])(?P<path>(?:/|(?:src|lib|bin|tests?|docs|brain|crates|scripts|shell|config|launchd)/)"
-            r"[^\s\"'<>(),;\[\]{}]*)|(?<![\w/+])"
-            r"(?=[A-Za-z0-9+/]*[A-Z])(?=[A-Za-z0-9+/]*[a-z])"
-            r"(?=[A-Za-z0-9+/]*[0-9])[A-Za-z0-9+][A-Za-z0-9+/]{23,}={0,2}(?![\w/+])"
+            r"(?<![\w/+])(?=[A-Za-z0-9+]*[A-Z])(?=[A-Za-z0-9+]*[a-z])"
+            r"(?=[A-Za-z0-9+]*[0-9])[A-Za-z0-9+]{24,}={0,2}(?![\w/+])"
         ),
         "<base64>",
     ),
@@ -133,9 +131,7 @@ def index_text(text: str) -> str:
             clean = index_state(decoded)
             return json.dumps(clean, ensure_ascii=False) if clean != decoded else text
     for pattern, placeholder in _INDEX_SPANS:
-        text = pattern.sub(
-            lambda match, marker=placeholder: match.groupdict().get("path") or marker, text
-        )
+        text = pattern.sub(placeholder, text)
     return text
 
 

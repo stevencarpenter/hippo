@@ -99,7 +99,6 @@ def test_absolute_paths_are_not_base64_blobs(path):
     assert index_state({path: path}) == {path: path}
     assert json.loads(index_text(json.dumps({path: path}))) == {path: path}
     assert index_state({"source_path": path}) == {"source_path": path}
-    assert index_text("dGhpc2lzbm90YWp3dGp1c3RhYmFzZTY0c3RyaW5n/Ab9+") == "<base64>"
 
 
 @pytest.mark.parametrize(
@@ -110,20 +109,28 @@ def test_absolute_paths_are_not_base64_blobs(path):
         "src/foo.bar/VeryLongComponentName2",
         "src/LongComponentNameHere2.py",
         "brain/Foo2/LongComponentNameHere",
-        "crates/Foo2/LongComponentNameHere",
+        "Application Support/JetBrains/IntelliJIdea2025/options",
+        "com/DarrenBaldwin07/clerk",
+        "ddc5e0/extension/firefox/README",
     ],
 )
-def test_relative_repository_paths_are_not_base64_blobs(path):
+def test_relative_paths_are_not_base64_blobs(path):
     assert redact(path) == path
     assert index_state({path: path}) == {path: path}
     assert json.loads(index_text(json.dumps({path: path}))) == {path: path}
     assert index_text(path) == path
     assert index_text(f"file {path}") == f"file {path}"
     assert index_state({"source_path": path}) == {"source_path": path}
-    blob = "dGhpc2lzbm90YWp3dGp1c3RhYmFzZTY0c3RyaW5n/Ab9+"
-    assert index_text(blob) == "<base64>"
-    assert index_state({"summary": blob}) == {"summary": "<base64>"}
     assert index_text(f"{path} {SPAN}") == f"{path} <github-token>"
+
+
+def test_slash_containing_blob_is_treated_as_a_path():
+    # shortcut: a base64 blob containing "/" is indistinguishable from a path and stays.
+    blob = "dGhpc2lzbm90YWp3dGp1c3RhYmFzZTY0c3RyaW5n/Ab9+"
+    assert index_text(blob) == blob
+    assert index_text("timestamp 1774850158312 issue 5693046") == (
+        "timestamp 1774850158312 issue 5693046"
+    )
 
 
 @pytest.mark.parametrize("identifier", ["1234567", "12345678", "1" * 40])

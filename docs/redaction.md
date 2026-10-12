@@ -40,10 +40,10 @@ The short-SHA heuristic requires an a-f character within its 7-to-40-character
 hexadecimal token, without changing case handling or token boundaries. Digit-only
 SHA abbreviations no longer match this heuristic, so ordinary decimal identifiers
 remain searchable. The 64-character hash rule remains unchanged.
-The standalone base64 heuristic preserves absolute paths and relative paths under
-common repository roots such as `src/`, `brain/` and `crates/`. It does not exempt
-every relative path. A slash alone does not exempt an encoded blob. Other credential
-patterns and structured Authorization protections still apply to path text.
+The standalone base64 heuristic matches slash-free blobs only, so absolute and
+relative paths survive. An encoded blob that contains `/` is treated as a path
+and is not replaced. Other credential patterns and structured Authorization
+protections still apply to path text.
 
 This source change does not rebuild an installed corpus. Existing derived rows
 need separately authorized re-derivation. `mise run re-embed` stops the brain
