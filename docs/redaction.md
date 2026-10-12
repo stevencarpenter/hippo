@@ -39,10 +39,13 @@ an excluded identifier can lose recall; use raw event display for its value.
 This source change does not rebuild an installed corpus. Existing derived rows
 need separately authorized re-derivation. `mise run re-embed` stops the brain
 before running `scripts/hippo-re-embed.py`; it requires operational authorization.
-The script replaces both vector columns, cleans derived node text and FTS, and
-publishes model metadata in one transaction. Failure rolls back the whole
-replacement. The command stages inference results before acquiring the SQLite
-write lock, then validates the corpus inputs and publishes the staged results
+The script replaces both vector columns, cleans derived node text, tags and FTS,
+and rebuilds affected entity links. It removes unreferenced credential-shaped
+entities but preserves entities referenced by raw events or relationships and
+classification-owned entities. It publishes model metadata even for an empty
+corpus. Publication uses one transaction; failure rolls back the whole replacement.
+The command stages inference results before acquiring the SQLite write lock,
+then validates the corpus inputs and publishes the staged results
 atomically in a short transaction. Regression coverage is in
 [`brain/tests/test_index_exclusion.py`](../brain/tests/test_index_exclusion.py).
 Re-derivation does not remove raw sources, logs or backups, and it does not prove

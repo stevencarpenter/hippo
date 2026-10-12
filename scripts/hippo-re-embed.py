@@ -52,13 +52,21 @@ async def re_embed_nodes(
         old_model = get_stored_embed_model(conn)
     staged = []
     for row, commands in inputs:
-        node = {"id": row[0], "embed_text": row[3], "commands_raw": " ; ".join(commands)}
-        vectors = await prepare_node_vectors(client, node, embedding_model, command_model)
+        node = {
+            "id": row[0],
+            "embed_text": row[3],
+            "commands_raw": " ; ".join(commands),
+        }
+        vectors = await prepare_node_vectors(
+            client, node, embedding_model, command_model
+        )
         staged.append((node, vectors))
     conn.execute("BEGIN IMMEDIATE")
     with conn:
         if _corpus_inputs(conn) != inputs or get_stored_embed_model(conn) != old_model:
-            raise RuntimeError("corpus changed during inference; migration not published")
+            raise RuntimeError(
+                "corpus changed during inference; migration not published"
+            )
         for node, vectors in staged:
             store_node_vectors(
                 conn,
