@@ -424,6 +424,9 @@ replacement = "***"
         // Only the literal prefix without 36 more chars. Users discussing
         // "the ghp_ pattern" must not have their text redacted.
         assert_not_redacted("the token prefix is ghp_ for personal access tokens");
+        // HIPO-7 excludes this synthetic shape only from derived text/indexes.
+        // Capture must retain the original for raw display.
+        assert_not_redacted("echo ghp_HIPCANARY_927483");
     }
 
     #[test]

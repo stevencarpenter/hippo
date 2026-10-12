@@ -20,6 +20,52 @@ Redaction is **best-effort**. It catches known secret formats; it cannot catch s
 - **Not a database scrubber.** Once a non-redacted secret has been stored in `events`, hippo doesn't re-process old rows when you add a pattern. Add a pattern → only future captures benefit.
 - **Not a substitute for FileVault.** The DB is unencrypted at rest.
 
+## Derived index exclusion
+
+Capture redaction and derived index exclusion have different contracts. Raw
+source events, session fields and memory files keep their existing capture
+behavior. Full PATs, actual JWTs and recognized credential assignments still
+redact at capture or existing Python credential boundaries.
+
+`brain/src/hippo_brain/redaction.py::index_text` replaces preserved UUID, SHA,
+digest, incomplete GitHub/AWS prefix and JWT/base64-lookalike spans with type
+placeholders such as `<git-sha>` and `<github-token>`. The same policy covers
+enrichment inputs, returned node fields (including FTS content JSON), and both
+knowledge and command embedding inputs. Re-embedding and the orphan reaper use
+the shared embedding boundary; successful re-derivation also cleans the node
+text used by FTS. These shapes can represent harmless identifiers. Search by
+an excluded identifier can lose recall; use raw event display for its value.
+
+The short-SHA heuristic requires an a-f character within its 7-to-40-character
+hexadecimal token, without changing case handling or token boundaries. Digit-only
+SHA abbreviations no longer match this heuristic, so ordinary decimal identifiers
+remain searchable. The 64-character hash rule remains unchanged.
+The standalone base64 heuristic matches slash-free blobs only, so absolute and
+relative paths survive. An encoded blob that contains `/` is treated as a path
+and is not replaced. Other credential patterns and structured Authorization
+protections still apply to path text.
+
+This source change does not rebuild an installed corpus. Existing derived rows
+need separately authorized re-derivation. `mise run re-embed` stops the brain
+before running `scripts/hippo-re-embed.py`; it requires operational authorization.
+The script replaces both vector columns, cleans derived node text, tags and FTS,
+and rebuilds affected entity links. It removes unreferenced credential-shaped
+entities but preserves entities referenced by raw events or relationships and
+classification-owned entities. It publishes model metadata even for an empty
+corpus. Publication uses one transaction; failure rolls back the whole replacement.
+The command stages both validated vector arms in an anonymous temporary file
+before acquiring the SQLite write lock. It retains one vector pair at a time,
+then rechecks corpus inputs and model metadata before atomic publication.
+The input snapshot still scales with corpus size; vector payloads do not accumulate
+in Python memory. The temporary file closes on success or failure. Publication
+retains one transaction across all nodes and rolls back if any stored pair or
+cleanup fails. Regression coverage is in
+[`brain/tests/test_index_exclusion.py`](../brain/tests/test_index_exclusion.py).
+Re-derivation does not remove raw sources, logs or backups, and it does not prove
+resistance to vector inversion. The synthetic
+regression checks both embedding inputs and a controlled nearest-neighbor probe
+with an unfiltered positive control. It does not use a live inference model.
+
 ## Pattern format
 
 `~/.config/hippo/redact.toml` is a TOML file with an array of pattern tables:

@@ -56,6 +56,7 @@ from hippo_brain.enrichment import (
     write_knowledge_node,
 )
 from hippo_brain.enrichment_sources import claim_all_sources, enrich_all_sources
+from hippo_brain.redaction import index_text
 from hippo_brain.memory_query import (
     MemoryQueryRequest,
     query_memory_current,
@@ -1453,6 +1454,7 @@ class BrainServer:
 
     async def _call_llm_with_retries(self, system_prompt, prompt, source_label):
         """Call the inference server with up to 3 retries on parse failure."""
+        prompt = index_text(prompt)
         last_err: Exception = RuntimeError("no attempts made")
         for attempt in range(3):
             try:

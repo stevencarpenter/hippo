@@ -24,6 +24,8 @@ from pathlib import Path
 from typing import Any
 
 from hippo_brain import vector_store
+from hippo_brain.redaction import index_text
+from hippo_brain.source_filters import table_exists
 from hippo_brain.telemetry import get_meter
 from hippo_brain.vector_store import (
     EMBED_DIM,
@@ -116,6 +118,135 @@ def _check_vec_dim(vec: list[float], label: str) -> None:
         )
 
 
+async def prepare_node_vectors(
+    client: Any, node_dict: dict, embed_model: str = "", command_model: str = ""
+) -> tuple[list[float], list[float]]:
+    """Generate both validated vector arms without opening a database transaction."""
+    embed_text = index_text(node_dict.get("embed_text", "") or "")
+    commands_raw = index_text(node_dict.get("commands_raw", "") or "")
+    # Separate requests avoid the inference server's mixed-length batch bug.
+    knowledge_vecs = await client.embed([embed_text], model=embed_model)
+    _check_vec_dim(knowledge_vecs[0], "knowledge")
+    command_vecs = await client.embed(
+        [commands_raw or embed_text], model=command_model or embed_model
+    )
+    _check_vec_dim(command_vecs[0], "command")
+    return knowledge_vecs[0], command_vecs[0]
+
+
+def _delete_orphan_entity(handle: sqlite3.Connection, entity_id: int) -> None:
+    handle.execute(
+        "DELETE FROM entities WHERE id=? "
+        "AND NOT EXISTS(SELECT 1 FROM knowledge_node_entities WHERE entity_id=entities.id) "
+        "AND NOT EXISTS(SELECT 1 FROM event_entities WHERE entity_id=entities.id) "
+        "AND NOT EXISTS(SELECT 1 FROM relationships WHERE from_entity_id=entities.id OR to_entity_id=entities.id)",
+        (entity_id,),
+    )
+
+
+def _clean_node_entities(handle: sqlite3.Connection, node_id: int) -> None:
+    if not table_exists(handle, "knowledge_node_entities"):
+        return
+    from hippo_brain.classification import OWNER_METADATA, source_entity_canonical
+    from hippo_brain.enrichment import upsert_entities
+    from hippo_brain.entity_resolver import canonicalize
+
+    rows = handle.execute(
+        "SELECT e.id,e.type,e.name,e.canonical,e.metadata FROM entities e "
+        "JOIN knowledge_node_entities ne ON ne.entity_id=e.id WHERE ne.knowledge_node_id=?",
+        (node_id,),
+    ).fetchall()
+    for entity_id, kind, name, canonical, metadata in rows:
+        if metadata == OWNER_METADATA:
+            continue
+        clean_name = index_text(name)
+        if clean_name == name and index_text(canonical or "") == (canonical or ""):
+            continue
+        handle.execute(
+            "DELETE FROM knowledge_node_entities WHERE knowledge_node_id=? AND entity_id=?",
+            (node_id, entity_id),
+        )
+        upsert_entities(
+            handle, node_id, {kind: [clean_name]}, {kind: kind}, time.time_ns() // 1_000_000
+        )
+        target = handle.execute(
+            "SELECT id,name FROM entities WHERE type=? AND canonical=?",
+            (kind, source_entity_canonical(kind, canonicalize(kind, clean_name))),
+        ).fetchone()
+        if target and index_text(target[1]) != target[1]:
+            handle.execute(
+                "UPDATE entities SET name=? WHERE id=?", (index_text(target[1]), target[0])
+            )
+        _delete_orphan_entity(handle, entity_id)
+
+
+def clean_credential_orphans(handle: sqlite3.Connection) -> None:
+    """Remove unreferenced credential-shaped derived entities once per corpus rebuild."""
+    if not table_exists(handle, "entities"):
+        return
+    from hippo_brain.classification import OWNER_METADATA
+
+    rows = handle.execute(
+        "SELECT e.id,e.name,e.canonical,e.metadata FROM entities e "
+        "WHERE NOT EXISTS(SELECT 1 FROM knowledge_node_entities WHERE entity_id=e.id) "
+        "AND NOT EXISTS(SELECT 1 FROM event_entities WHERE entity_id=e.id) "
+        "AND NOT EXISTS(SELECT 1 FROM relationships WHERE from_entity_id=e.id OR to_entity_id=e.id)"
+    ).fetchall()
+    for entity_id, name, canonical, metadata in rows:
+        if metadata != OWNER_METADATA and (
+            index_text(name) != name or index_text(canonical or "") != (canonical or "")
+        ):
+            _delete_orphan_entity(handle, entity_id)
+
+
+def store_node_vectors(
+    handle: sqlite3.Connection,
+    node_dict: dict,
+    vectors: tuple[list[float], list[float]],
+    embed_model: str = "",
+    *,
+    allow_embed_switch: bool = False,
+    replace_existing: bool = False,
+    commit: bool = True,
+) -> None:
+    """Publish prepared vectors and derived cleanup in the caller's transaction."""
+    node_id = int(node_dict.get("id", 0) or 0)
+    if node_id <= 0:
+        raise ValueError("embedding requires the knowledge_nodes primary key")
+    _check_vec_dim(vectors[0], "knowledge")
+    _check_vec_dim(vectors[1], "command")
+    if replace_existing and not handle.in_transaction:
+        handle.execute("BEGIN IMMEDIATE")
+    try:
+        check_embed_model_drift(handle, embed_model, allow_switch=allow_embed_switch)
+        stored = None
+        if table_exists(handle, "knowledge_nodes"):
+            stored = handle.execute(
+                "SELECT content, embed_text, tags FROM knowledge_nodes WHERE id = ?", (node_id,)
+            ).fetchone()
+        if stored:
+            clean = tuple(index_text(text) if text is not None else None for text in stored)
+            if clean != tuple(stored):
+                handle.execute(
+                    "UPDATE knowledge_nodes SET content = ?, embed_text = ?, tags = ? WHERE id = ?",
+                    (*clean, node_id),
+                )
+                if clean[:2] != tuple(stored)[:2]:
+                    from hippo_brain.classification import enqueue_node
+
+                    enqueue_node(handle, node_id)
+            _clean_node_entities(handle, node_id)
+        if replace_existing:
+            handle.execute("DELETE FROM knowledge_vectors WHERE knowledge_node_id = ?", (node_id,))
+        vector_store.insert_vectors(handle, node_id, *vectors)
+        record_embed_model(handle, embed_model)
+        if commit:
+            handle.commit()
+    except Exception:
+        handle.rollback()
+        raise
+
+
 async def embed_knowledge_node(
     client: Any,
     handle: sqlite3.Connection,
@@ -129,8 +260,8 @@ async def embed_knowledge_node(
     """Embed a knowledge node and persist both vectors to ``knowledge_vectors``.
 
     ``node_dict`` must carry at least ``id`` (the knowledge_nodes PK) and
-    ``embed_text``. If ``node_dict["id"]`` is 0 or missing, nothing is
-    written — the caller is responsible for providing the foreign key.
+    ``embed_text``. A nonpositive or missing ``node_dict["id"]`` raises
+    ``ValueError``; the caller must provide the foreign key.
 
     Raises ``EmbedDriftError`` if ``embed_model`` differs from the model used
     to build the existing corpus (unless ``allow_embed_switch=True``).
@@ -146,43 +277,15 @@ async def embed_knowledge_node(
 
         check_embed_model_drift(handle, embed_model, allow_switch=allow_embed_switch)
 
-        embed_text = node_dict.get("embed_text", "") or ""
-        commands_raw = node_dict.get("commands_raw", "") or ""
-
-        cmd_model = command_model or embed_model
-        cmd_text = commands_raw or embed_text
-
-        # Issue each embed call as a single-item request, even when both
-        # vectors share a model. Batching disparate-length inputs
-        # (e.g. a long identifier-dense summary alongside a short
-        # commands snippet) triggers an oMLX server bug where the
-        # shorter item comes back as a 768-vector of nulls, which then
-        # crashes `_vec_blob`. Two round-trips are sub-millisecond
-        # against a local inference server; the lost batch isn't worth
-        # the silent-corpus-corruption exposure.
-        knowledge_vecs = await client.embed([embed_text], model=embed_model)
-        _check_vec_dim(knowledge_vecs[0], "knowledge")
-        vec_knowledge = knowledge_vecs[0]
-        command_vecs = await client.embed([cmd_text], model=cmd_model)
-        _check_vec_dim(command_vecs[0], "command")
-        vec_command = command_vecs[0]
-
-        if replace_existing:
-            # vec0 does not replace an existing primary key. Keep the old row
-            # until both inference calls succeed, then swap it atomically.
-            handle.execute("BEGIN IMMEDIATE")
-        try:
-            if replace_existing:
-                handle.execute(
-                    "DELETE FROM knowledge_vectors WHERE knowledge_node_id = ?", (node_id,)
-                )
-            vector_store.insert_vectors(handle, node_id, vec_knowledge, vec_command)
-            record_embed_model(handle, embed_model)
-            handle.commit()
-        except Exception:
-            if replace_existing:
-                handle.rollback()
-            raise
+        vectors = await prepare_node_vectors(client, node_dict, embed_model, command_model)
+        store_node_vectors(
+            handle,
+            node_dict,
+            vectors,
+            embed_model,
+            allow_embed_switch=allow_embed_switch,
+            replace_existing=replace_existing,
+        )
 
         if _embed_duration:
             _embed_duration.record((time.monotonic() - t0) * 1000)

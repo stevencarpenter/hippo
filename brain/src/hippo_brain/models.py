@@ -1,5 +1,7 @@
 import re
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
+
+from hippo_brain.redaction import index_state
 
 
 @dataclass
@@ -27,6 +29,11 @@ class EnrichmentResult:
     # weighed during the work session. Each entry is a dict with keys
     # "considered", "chosen", and "reason" (all str). Issue #98 F3.
     design_decisions: list = field(default_factory=list)
+
+
+def index_enrichment_result(result: EnrichmentResult) -> EnrichmentResult:
+    """Return a derived-only copy safe for all node writers and FTS content arms."""
+    return EnrichmentResult(**index_state(asdict(result)))
 
 
 @dataclass

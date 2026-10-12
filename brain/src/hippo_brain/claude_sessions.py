@@ -16,7 +16,8 @@ from hippo_brain.enrichment import (
     upsert_entities,
 )
 from hippo_brain.entity_resolver import strip_worktree_prefix
-from hippo_brain.models import EnrichmentResult
+from hippo_brain.models import EnrichmentResult, index_enrichment_result
+from hippo_brain.redaction import index_text
 from hippo_brain.vector_store import vec_table_available
 from hippo_brain.watchdog import DEFAULT_LOCK_TIMEOUT_MS
 
@@ -345,7 +346,12 @@ def extract_segments(
 
 
 def build_claude_enrichment_prompt(segments: list[SessionSegment]) -> str:
-    """Format session segments into the enrichment prompt.
+    """Render derived input without changing the captured session fields."""
+    return index_text(_render_claude_segments(segments))
+
+
+def _render_claude_segments(segments: list[SessionSegment]) -> str:
+    """Format captured session segments before derived-only exclusions.
 
     The segment `cwd` is normalized via `strip_worktree_prefix` so the
     LLM sees the parent-repo path rather than the ephemeral
@@ -421,7 +427,7 @@ def insert_segment(conn, segment: SessionSegment) -> int | None:
 
     redact_segment_secrets(segment)
 
-    summary_text = build_claude_enrichment_prompt([segment])
+    summary_text = _render_claude_segments([segment])
     tool_calls_json = json.dumps(segment.tool_calls)
     user_prompts_json = json.dumps(segment.user_prompts)
     now_ms = int(time.time() * 1000)
@@ -862,6 +868,7 @@ def write_claude_knowledge_node(
             f"content_hashes length ({len(content_hashes)}) does not match "
             f"segment_ids length ({len(segment_ids)})"
         )
+    result = index_enrichment_result(result)
     node_uuid = str(uuid.uuid4())
     now_ms = int(time.time() * 1000)
     content = json.dumps(
