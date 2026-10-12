@@ -79,7 +79,7 @@ MCP-visible: search_events / search_knowledge / ask
 
 **Truncation.** The background CLI reads the wrapper's private temporary files via `--stdout-file` and `--stderr-file`. It counts all original bytes without allocating an entire oversized line. Each stream has independent head/tail line limits and a retained-content ceiling of 512 KiB, including omission markers. The sender reduces this ceiling when necessary to fit both streams and serialized metadata within the 10 MiB frame limit. Its byte budget accounts for JSON escaping. It divides retained bytes equally between the head and tail and clips text at UTF-8 character boundaries. It marks omitted lines and byte clipping, sets each stream's `truncated` flag, and preserves its original byte count. The daemon stores the flags as `stdout_truncated` and `stderr_truncated`. Configure `[daemon] output_head_lines` and `output_tail_lines` in `~/.config/hippo/config.toml` (defaults: 50 / 100; see `config/config.default.toml`). Files are removed after the sender finishes. The legacy `--output` argument remains accepted unchanged as stdout, with no separate stderr and no additional truncation.
 
-**Redaction.** `crates/hippo-core/src/redaction.rs` runs on the event's command, stdout, and stderr before storage. Patterns come from `~/.config/hippo/redact.toml`. (Limits are documented in [`config/README.md`](../config/README.md); a deeper redaction reference is tracked in [#114](https://github.com/stevencarpenter/hippo/issues/114).)
+**Redaction.** See the [redaction reference](redaction.md) for per-field processing before storage, configuration, and limits. The wrapper's temporary capture files contain raw output before redaction.
 
 ## Claude session segment
 

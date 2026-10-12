@@ -270,7 +270,7 @@ The `[models]` section must be configured for enrichment to work. Set the model 
 
 ## Privacy and Security
 
-Hippo captures shell commands (including stdout/stderr), Claude Code session transcripts, and browser visits from allowlisted domains. All data is stored locally in `~/.local/share/hippo/hippo.db` (SQLite, unencrypted — use macOS FileVault for full-disk encryption). Default inference stays local. Opting into Jev reranking or classification sends bounded, redacted query/candidate or node evidence to TypeSafe's cloud API. See the [Jev operator reference](docs/jev-decisions.md) for configuration and request limits.
+Hippo captures shell commands (with [opt-in stdout/stderr capture](docs/lifecycle.md#shell-command)), Claude Code session transcripts, and browser visits from allowlisted domains. All data is stored locally in `~/.local/share/hippo/hippo.db` (SQLite, unencrypted — use macOS FileVault for full-disk encryption). Default inference stays local. Opting into Jev reranking or classification sends bounded, redacted query/candidate or node evidence to TypeSafe's cloud API. See the [Jev operator reference](docs/jev-decisions.md) for configuration and request limits.
 
 **Enrichment and answer synthesis use the configured inference server.** Enrichment and RAG queries go to whichever local OpenAI-compatible server you configure (`[inference].base_url`, default `http://localhost:8000/v1` for omlx). If you point that URL at a remote backend, your shell history and session transcripts travel that path.
 
