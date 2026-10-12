@@ -30,11 +30,11 @@ For the rules every contributor must follow when adding a new source, see [`anti
 The shell hook runs in the user's interactive prompt critical path. The capture path is fire-and-forget at the socket boundary:
 
 - `hippo.zsh::preexec` records command start.
-- `hippo.zsh::precmd` records exit code, duration, captures stdout/stderr (head + tail truncation per `[capture]` config), and `disown`s a background `hippo send-event-shell` invocation that writes to the daemon socket.
+- `hippo.zsh::precmd` records exit code and duration, then starts a disowned background `hippo send-event shell` invocation that writes to the daemon socket.
 - The hook never touches SQLite directly. (See [`anti-patterns.md`](anti-patterns.md) AP-1.)
 - Daemon's `flush_events` batches socket frames every `flush_interval_ms` and writes events + `source_health` in the same transaction.
 
-Captures: command, exit_code, duration_ms, cwd, hostname, shell, git_branch, git_commit, git_repo, stdout (truncated to head/tail), stderr (truncated). Redaction runs before storage; see [`config/README.md`](../../config/README.md).
+Captures: command, exit_code, duration_ms, cwd, hostname, shell, git_branch, git_commit, git_repo. For opt-in output capture, supported execution contexts, per-stream truncation, and redaction, see the [shell lifecycle](../lifecycle.md#shell-command).
 
 ### Claude session segments
 

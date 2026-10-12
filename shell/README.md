@@ -29,3 +29,7 @@ source /path/to/hippo/shell/hippo.zsh
 2. `precmd` fires after the command completes — computes duration, captures exit code and git state, then sends the
    event to the daemon via `hippo send-event shell`
 3. Events are sent fire-and-forget in the background so shell responsiveness is unaffected
+
+## Opt-in stdout and stderr
+
+See the [shell lifecycle](../docs/lifecycle.md#shell-command) for `hippo_capture` usage, foreground-only restrictions, terminal compatibility, per-stream limits, cleanup, and legacy payload behavior.
