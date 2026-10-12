@@ -41,7 +41,9 @@ need separately authorized re-derivation. `mise run re-embed` stops the brain
 before running `scripts/hippo-re-embed.py`; it requires operational authorization.
 The script replaces both vector columns, cleans derived node text and FTS, and
 publishes model metadata in one transaction. Failure rolls back the whole
-replacement; the command holds a SQLite write lock during inference. Regression coverage is in
+replacement. The command stages inference results before acquiring the SQLite
+write lock, then validates the corpus inputs and publishes the staged results
+atomically in a short transaction. Regression coverage is in
 [`brain/tests/test_index_exclusion.py`](../brain/tests/test_index_exclusion.py).
 Re-derivation does not remove raw sources, logs or backups, and it does not prove
 resistance to vector inversion. The synthetic
