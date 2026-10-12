@@ -99,15 +99,13 @@ def redact(text: str) -> str:
     return text
 
 
-# Derived text excludes shapes deliberately preserved by capture redaction.
-# These are type markers, not a claim that each matched identifier is a secret.
+# Derived text excludes credential-shaped spans that capture redaction preserves.
+# UUIDs and git SHAs are plain identifiers and stay searchable.
 _INDEX_SPANS = (
-    (re.compile(r"\b[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}\b", re.I), "<uuid>"),
     (re.compile(r"(?<!\w)(?:ghp_|github_pat_)[a-zA-Z0-9_]*"), "<github-token>"),
     (re.compile(r"\bAKIA[a-zA-Z0-9_]*"), "<aws-key>"),
     (re.compile(r"\beyJ[a-zA-Z0-9_-]*(?:\.[a-zA-Z0-9_-]+){0,2}"), "<jwt>"),
     (re.compile(r"\b[0-9a-f]{64}\b", re.I), "<hash>"),
-    (re.compile(r"\b(?=[0-9a-f]{0,39}[a-f])[0-9a-f]{7,40}\b", re.I), "<git-sha>"),
     # shortcut: slash-free blobs only, so every path segment survives; add explicit token types if recall suffers.
     (
         re.compile(

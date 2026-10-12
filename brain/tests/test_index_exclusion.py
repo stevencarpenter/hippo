@@ -67,9 +67,6 @@ def result():
         (SPAN, "<github-token>"),
         ("ghp_", "<github-token>"),
         ("AKIAlowercase_suffix", "<aws-key>"),
-        ("550e8400-e29b-41d4-a716-446655440000", "<uuid>"),
-        ("abc1234", "<git-sha>"),
-        ("5f3a9c2e1b8d7f6a4c3e2d1b9a8f7e6d5c4b3a2e", "<git-sha>"),
         ("3a4b5c6d7e8f9012a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c5d6e7f80912", "<hash>"),
         ("dGhpc2lzbm90YWp3dGp1c3RhYmFzZTY0c3RyaW5n", "<base64>"),
         ("eyJshort.lookalike", "<jwt>"),
@@ -146,22 +143,18 @@ def test_decimal_identifiers_remain_searchable(identifier):
 
 
 @pytest.mark.parametrize(
-    "text,expected",
+    "identifier",
     [
-        ("abc1234", "<git-sha>"),
-        ("ABC1234", "<git-sha>"),
-        ("f" + "1" * 39, "<git-sha>"),
-        ("F" + "1" * 39, "<git-sha>"),
-        ("abc123", "abc123"),
-        ("f" + "1" * 40, "f" + "1" * 40),
-        ("zabc1234z", "zabc1234z"),
-        ("1234567g", "1234567g"),
+        "abc1234",
+        "5f3a9c2e1b8d7f6a4c3e2d1b9a8f7e6d5c4b3a2e",
+        "550e8400-e29b-41d4-a716-446655440000",
+        "commit=abc1234 session_id=550e8400-e29b-41d4-a716-446655440000",
     ],
 )
-def test_short_sha_letter_requirement_keeps_case_length_and_boundaries(text, expected):
-    assert redact(text) == text
-    assert index_text(text) == expected
-    assert index_state({"summary": text}) == {"summary": expected}
+def test_shas_and_uuids_remain_searchable(identifier):
+    assert redact(identifier) == identifier
+    assert index_text(identifier) == identifier
+    assert index_state({"summary": identifier}) == {"summary": identifier}
 
 
 async def test_vector_only_handle_excludes_both_inputs(tmp_path):

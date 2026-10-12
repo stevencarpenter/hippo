@@ -27,19 +27,17 @@ source events, session fields and memory files keep their existing capture
 behavior. Full PATs, actual JWTs and recognized credential assignments still
 redact at capture or existing Python credential boundaries.
 
-`brain/src/hippo_brain/redaction.py::index_text` replaces preserved UUID, SHA,
-digest, incomplete GitHub/AWS prefix and JWT/base64-lookalike spans with type
-placeholders such as `<git-sha>` and `<github-token>`. The same policy covers
-enrichment inputs, returned node fields (including FTS content JSON), and both
-knowledge and command embedding inputs. Re-embedding and the orphan reaper use
-the shared embedding boundary; successful re-derivation also cleans the node
-text used by FTS. These shapes can represent harmless identifiers. Search by
-an excluded identifier can lose recall; use raw event display for its value.
+`brain/src/hippo_brain/redaction.py::index_text` replaces preserved 64-hex
+digests, incomplete GitHub/AWS prefixes, JWT lookalikes and standalone base64
+blobs with type placeholders such as `<hash>` and `<github-token>`. UUIDs and
+git SHAs are plain identifiers, not credentials, and stay in derived text so
+commits and sessions remain searchable. The same policy covers enrichment
+inputs, returned node fields (including FTS content JSON), and both knowledge
+and command embedding inputs. Re-embedding and the orphan reaper use the
+shared embedding boundary; successful re-derivation also cleans the node text
+used by FTS. The excluded shapes can represent harmless values; search by an
+excluded value can lose recall, so use raw event display for it.
 
-The short-SHA heuristic requires an a-f character within its 7-to-40-character
-hexadecimal token, without changing case handling or token boundaries. Digit-only
-SHA abbreviations no longer match this heuristic, so ordinary decimal identifiers
-remain searchable. The 64-character hash rule remains unchanged.
 The standalone base64 heuristic matches slash-free blobs only, so absolute and
 relative paths survive. An encoded blob that contains `/` is treated as a path
 and is not replaced. Other credential patterns and structured Authorization

@@ -29,8 +29,7 @@ def test_build_enrichment_prompt():
     assert "cargo test -p hippo-core" in prompt
     assert "/Users/dev/projects/hippo" in prompt
     assert "main" in prompt
-    assert "git_commit: <git-sha>" in prompt
-    assert "abc1234" not in prompt
+    assert "git_commit: abc1234" in prompt
 
 
 def test_build_enrichment_prompt_strips_worktree_from_cwd():
