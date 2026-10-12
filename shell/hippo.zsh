@@ -40,7 +40,7 @@ hippo_capture() {
             "$@"
             return $?
         }
-        _HIPPO_CAPTURE_DIR="${capture_dir}"
+        _HIPPO_CAPTURE_DIR="${capture_dir:A}"
     fi
     # Native multios copies each stream to its original destination and a file.
     # The group waits for those copies before precmd can send the event.

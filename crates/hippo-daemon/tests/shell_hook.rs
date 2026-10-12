@@ -116,6 +116,78 @@ print -r -- "$_HIPPO_GIT_BRANCH"
 }
 
 #[test]
+fn capture_paths_survive_relative_tmpdir_and_directory_changes() {
+    let temp = tempdir().unwrap();
+    let hook = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../shell/hippo.zsh");
+    for kind in ["relative", "absolute"] {
+        let root = temp.path().join(kind);
+        for dir in ["start/tmp", "next", "home"] {
+            fs::create_dir_all(root.join(dir)).unwrap();
+        }
+        let output = Command::new("zsh")
+            .args(["-d", "-f", "-c"])
+            .arg(
+                r#"
+source "$HOOK"
+_HIPPO_OUTPUT_FILE="$ROOT/legacy"
+git() { return 1; }
+hippo() {
+    local out err event_exit
+    while (( $# )); do
+        case "$1" in
+            --stdout-file) out="$2"; shift ;;
+            --stderr-file) err="$2"; shift ;;
+            --exit) event_exit="$2"; shift ;;
+        esac
+        shift
+    done
+    local result=0
+    cp "$out" "$ROOT/sent-out" || result=1
+    cp "$err" "$ROOT/sent-err" || result=1
+    print -r -- "$result $event_exit" > "$ROOT/sent-status"
+}
+cd "$ROOT/start"
+if [[ "$KIND" == absolute ]]; then
+    TMPDIR="$ROOT/start/tmp"
+else
+    TMPDIR=tmp
+fi
+hop() { print before; cd "$ROOT/next"; print after >&2; return 17; }
+_hippo_preexec 'hippo_capture hop'
+hippo_capture hop
+result=$?
+saved="$_HIPPO_CAPTURE_DIR"
+return_status() { return "$1"; }
+return_status "$result"
+_hippo_precmd
+for i in {1..100}; do
+    [[ -s "$ROOT/sent-status" ]] && break
+    sleep 0.01
+done
+[[ $(< "$ROOT/sent-status") == '0 17' ]] || exit 10
+[[ $(< "$ROOT/sent-out") == before && $(< "$ROOT/sent-err") == after ]] || exit 11
+[[ "$saved" == /* ]] || exit 12
+for i in {1..100}; do
+    [[ ! -d "$saved" ]] && break
+    sleep 0.01
+done
+[[ ! -d "$saved" ]]
+"#,
+            )
+            .env("HOOK", &hook)
+            .env("ROOT", &root)
+            .env("KIND", kind)
+            .env("HOME", root.join("home"))
+            .env("ZDOTDIR", root.join("home"))
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{kind}: {output:?}");
+        assert!(String::from_utf8_lossy(&output.stdout).contains("before\n"));
+        assert!(String::from_utf8_lossy(&output.stderr).contains("after\n"));
+    }
+}
+
+#[test]
 fn clean_zsh_loads_clock_and_sends_numeric_duration() {
     let temp = tempdir().unwrap();
     let hook = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../shell/hippo.zsh");
