@@ -33,7 +33,10 @@ async fn shell_event_lands_in_events_table_with_source_kind_shell() {
         None,
         None,
         false,
-        Some("test result: ok. 12 passed".to_string()),
+        hippo_daemon::commands::ShellOutputArgs {
+            output: Some("test result: ok. 12 passed".to_string()),
+            ..Default::default()
+        },
         None,
         None,
         None,

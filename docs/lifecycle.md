@@ -19,7 +19,8 @@ zsh runs the command
        v
 shell/hippo.zsh::_hippo_precmd captures exit_code, duration_ms, captured output
        |  -- registered via add-zsh-hook precmd _hippo_precmd
-       |  -- single combined stream sent via --output (head + tail truncated)
+       |  -- hippo_capture opts noninteractive commands into separate stdout/stderr files
+       |  -- --stdout-file / --stderr-file are read by the background CLI sender
        |
        v  (DISOWNED, fire-and-forget)
 hippo send-event shell  -- a child process
@@ -74,9 +75,11 @@ MCP-visible: search_events / search_knowledge / ask
 
 **The key invariant for shell capture:** the hook never touches SQLite. Latency in the user's interactive prompt is bounded by the socket write — typically 20–50 ms. SQLite writes happen in `flush_events` on the daemon's tokio runtime. (See [`capture/anti-patterns.md`](capture/anti-patterns.md) AP-1.)
 
-**Truncation.** The shell hook captures a single combined stream (stdout-only via the script's `--output` flag; stderr is not separately captured today). It is truncated to `[daemon] output_head_lines` lines from the head and `[daemon] output_tail_lines` from the tail (defaults: 50 head / 100 tail; see `config/config.default.toml`). Long output in between is replaced with an ellipsis marker. Configure in `~/.config/hippo/config.toml`.
+**Opt-in output capture.** In an interactive zsh session, use `hippo_capture command [args...]` for noninteractive commands. For example, `hippo_capture cargo test` captures stdout and stderr separately while copying each stream to its original destination. The wrapper preserves the command's exit status and caller options. It makes capture paths absolute before running the command. Capture is foreground-only in the parent shell. Background jobs, command substitutions, non-final pipeline stages, and explicit subshells return status 2 before running the command or creating capture files. Ordinary commands keep their normal terminal descriptors and do not capture output. Do not wrap editors, pagers, REPLs, or other terminal-dependent programs: wrapped commands see pipes, not TTYs. The wrapper does not parse command strings; to capture a pipeline, use an explicit noninteractive shell, such as `hippo_capture zsh -fc 'producer | consumer'`.
 
-**Redaction.** `crates/hippo-core/src/redaction.rs` runs on the event's command, stdout, and stderr before storage. Patterns come from `~/.config/hippo/redact.toml`. (Limits are documented in [`config/README.md`](../config/README.md); a deeper redaction reference is tracked in [#114](https://github.com/stevencarpenter/hippo/issues/114).)
+**Truncation.** The background CLI reads the wrapper's private temporary files via `--stdout-file` and `--stderr-file`. It counts all original bytes without allocating an entire oversized line. Each stream has independent head/tail line limits and a retained-content ceiling of 512 KiB, including omission markers. The sender reduces this ceiling when necessary to fit both streams and serialized metadata within the 10 MiB frame limit. Its byte budget accounts for JSON escaping. It divides retained bytes equally between the head and tail and clips text at UTF-8 character boundaries. It marks omitted lines and byte clipping, sets each stream's `truncated` flag, and preserves its original byte count. The daemon stores the flags as `stdout_truncated` and `stderr_truncated`. Configure `[daemon] output_head_lines` and `output_tail_lines` in `~/.config/hippo/config.toml` (defaults: 50 / 100; see `config/config.default.toml`). Files are removed after the sender finishes. The legacy `--output` argument remains accepted unchanged as stdout, with no separate stderr and no additional truncation.
+
+**Redaction.** See the [redaction reference](redaction.md) for per-field processing before storage, configuration, and limits. The wrapper's temporary capture files contain raw output before redaction.
 
 ## Claude session segment
 

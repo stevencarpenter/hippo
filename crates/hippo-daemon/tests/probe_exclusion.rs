@@ -45,7 +45,10 @@ async fn probe_shell_event_not_queued_for_enrichment() {
         None,
         None,
         false,
-        Some("ok".to_string()),
+        hippo_daemon::commands::ShellOutputArgs {
+            output: Some("ok".to_string()),
+            ..Default::default()
+        },
         Some("probe-v1".to_string()), // probe_tag
         Some("shell".to_string()),    // source_kind
         None,                         // tool_name
@@ -64,7 +67,10 @@ async fn probe_shell_event_not_queued_for_enrichment() {
         None,
         None,
         false,
-        Some("Compiling hippo-core".to_string()),
+        hippo_daemon::commands::ShellOutputArgs {
+            output: Some("Compiling hippo-core".to_string()),
+            ..Default::default()
+        },
         None, // probe_tag = None
         None, // source_kind
         None, // tool_name
