@@ -12,7 +12,12 @@ import tomllib
 from pathlib import Path
 
 from hippo_brain.client import InferenceClient
-from hippo_brain.embeddings import open_vector_db, prepare_node_vectors, store_node_vectors
+from hippo_brain.embeddings import (
+    clean_credential_orphans,
+    open_vector_db,
+    prepare_node_vectors,
+    store_node_vectors,
+)
 from hippo_brain.vector_store import get_stored_embed_model, record_embed_model
 
 
@@ -64,6 +69,7 @@ async def re_embed_nodes(
                 replace_existing=True,
                 commit=False,
             )
+        clean_credential_orphans(conn)
         record_embed_model(conn, embedding_model)
     return len(inputs)
 

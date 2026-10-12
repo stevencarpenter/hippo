@@ -477,6 +477,87 @@ async def test_reembed_model_switch_is_atomic(index_db, fail_call):
         reader.close()
 
 
+@pytest.mark.parametrize("fail_publication", [False, True])
+async def test_reembed_cleans_legacy_tags_entities_and_orphans_atomically(
+    index_db, fail_publication
+):
+    from hippo_brain.classification import NAMESPACE, OWNER_METADATA
+    from hippo_brain.embeddings import search_similar
+    from hippo_brain.vector_store import get_stored_embed_model, record_embed_model
+
+    conn, _ = index_db
+    for nid in (1, 2):
+        conn.execute(
+            "INSERT INTO knowledge_nodes(id,uuid,content,embed_text,tags) VALUES(?,?,?,?,?)",
+            (
+                nid,
+                str(nid),
+                json.dumps({"summary": SPAN, "entities": {"tools": [SPAN]}}),
+                SPAN,
+                json.dumps([SPAN, "safe"]),
+            ),
+        )
+        insert_vectors(conn, nid, [0.1] * EMBED_DIM, [0.2] * EMBED_DIM)
+    for eid, kind, name, canonical, metadata in [
+        (1, "tool", SPAN, SPAN, None),
+        (2, "tool", "cargo", "cargo", None),
+        (3, "concept", NAMESPACE + "python", NAMESPACE + "python", OWNER_METADATA),
+        (4, "tool", SPAN + "_ORPHAN", SPAN + "_ORPHAN", None),
+        (5, "tool", SPAN, "<github-token>", None),
+    ]:
+        conn.execute(
+            "INSERT INTO entities(id,type,name,canonical,metadata) VALUES(?,?,?,?,?)",
+            (eid, kind, name, canonical, metadata),
+        )
+    conn.executemany(
+        "INSERT INTO knowledge_node_entities VALUES(?,?)", [(1, 1), (2, 1), (1, 2), (2, 2), (1, 3)]
+    )
+    record_embed_model(conn, "model-a")
+    if fail_publication:
+        conn.execute(
+            "CREATE TRIGGER fail_cleanup BEFORE UPDATE ON knowledge_nodes WHEN NEW.id=2 "
+            "BEGIN SELECT RAISE(ABORT,'synthetic cleanup failure'); END"
+        )
+    conn.commit()
+    tables = (
+        "knowledge_nodes",
+        "knowledge_vectors",
+        "knowledge_fts",
+        "entities",
+        "knowledge_node_entities",
+        "embed_model_meta",
+    )
+    before = {t: conn.execute(f"SELECT * FROM {t}").fetchall() for t in tables}
+    reembed = runpy.run_path(str(ROOT / "scripts/hippo-re-embed.py"))["re_embed_nodes"]
+    if fail_publication:
+        with pytest.raises(sqlite3.IntegrityError, match="synthetic cleanup failure"):
+            await reembed(conn, MockInferenceClient(), "model-b")
+        assert {t: conn.execute(f"SELECT * FROM {t}").fetchall() for t in tables} == before
+        assert not conn.in_transaction
+        return
+    assert await reembed(conn, MockInferenceClient(), "model-b") == 2
+    assert get_stored_embed_model(conn) == "model-b"
+    assert all(SPAN not in tags for (tags,) in conn.execute("SELECT tags FROM knowledge_nodes"))
+    assert all(
+        SPAN not in value
+        for row in conn.execute("SELECT content,embed_text FROM knowledge_fts")
+        for value in row
+    )
+    names = conn.execute("SELECT name,canonical FROM entities").fetchall()
+    assert all(SPAN not in str(row) for row in names)
+    assert ("<github-token>", "<github-token>") in names
+    assert conn.execute("SELECT name FROM entities WHERE id=2").fetchone()[0] == "cargo"
+    assert conn.execute("SELECT metadata FROM entities WHERE id=3").fetchone()[0] == OWNER_METADATA
+    links = conn.execute(
+        "SELECT knowledge_node_id,entity_id FROM knowledge_node_entities"
+    ).fetchall()
+    assert (1, 2) in links and (2, 2) in links and (1, 3) in links
+    assert (1, 1) not in links and (2, 1) not in links
+    assert all(
+        SPAN not in json.dumps(hit["tags"]) for hit in search_similar(conn, [0.1] * EMBED_DIM)
+    )
+
+
 def ingest_and_shutdown(socket_path, envelope):
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as peer:
         peer.settimeout(5)

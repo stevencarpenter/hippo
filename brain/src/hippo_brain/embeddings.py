@@ -134,6 +134,71 @@ async def prepare_node_vectors(
     return knowledge_vecs[0], command_vecs[0]
 
 
+def _delete_orphan_entity(handle: sqlite3.Connection, entity_id: int) -> None:
+    handle.execute(
+        "DELETE FROM entities WHERE id=? "
+        "AND NOT EXISTS(SELECT 1 FROM knowledge_node_entities WHERE entity_id=entities.id) "
+        "AND NOT EXISTS(SELECT 1 FROM event_entities WHERE entity_id=entities.id) "
+        "AND NOT EXISTS(SELECT 1 FROM relationships WHERE from_entity_id=entities.id OR to_entity_id=entities.id)",
+        (entity_id,),
+    )
+
+
+def _clean_node_entities(handle: sqlite3.Connection, node_id: int) -> None:
+    if not table_exists(handle, "knowledge_node_entities"):
+        return
+    from hippo_brain.classification import OWNER_METADATA, source_entity_canonical
+    from hippo_brain.enrichment import upsert_entities
+    from hippo_brain.entity_resolver import canonicalize
+
+    rows = handle.execute(
+        "SELECT e.id,e.type,e.name,e.canonical,e.metadata FROM entities e "
+        "JOIN knowledge_node_entities ne ON ne.entity_id=e.id WHERE ne.knowledge_node_id=?",
+        (node_id,),
+    ).fetchall()
+    for entity_id, kind, name, canonical, metadata in rows:
+        if metadata == OWNER_METADATA:
+            continue
+        clean_name = index_text(name)
+        if clean_name == name and index_text(canonical or "") == (canonical or ""):
+            continue
+        handle.execute(
+            "DELETE FROM knowledge_node_entities WHERE knowledge_node_id=? AND entity_id=?",
+            (node_id, entity_id),
+        )
+        upsert_entities(
+            handle, node_id, {kind: [clean_name]}, {kind: kind}, time.time_ns() // 1_000_000
+        )
+        target = handle.execute(
+            "SELECT id,name FROM entities WHERE type=? AND canonical=?",
+            (kind, source_entity_canonical(kind, canonicalize(kind, clean_name))),
+        ).fetchone()
+        if target and index_text(target[1]) != target[1]:
+            handle.execute(
+                "UPDATE entities SET name=? WHERE id=?", (index_text(target[1]), target[0])
+            )
+        _delete_orphan_entity(handle, entity_id)
+
+
+def clean_credential_orphans(handle: sqlite3.Connection) -> None:
+    """Remove unreferenced credential-shaped derived entities once per corpus rebuild."""
+    if not table_exists(handle, "entities"):
+        return
+    from hippo_brain.classification import OWNER_METADATA
+
+    rows = handle.execute(
+        "SELECT e.id,e.name,e.canonical,e.metadata FROM entities e "
+        "WHERE NOT EXISTS(SELECT 1 FROM knowledge_node_entities WHERE entity_id=e.id) "
+        "AND NOT EXISTS(SELECT 1 FROM event_entities WHERE entity_id=e.id) "
+        "AND NOT EXISTS(SELECT 1 FROM relationships WHERE from_entity_id=e.id OR to_entity_id=e.id)"
+    ).fetchall()
+    for entity_id, name, canonical, metadata in rows:
+        if metadata != OWNER_METADATA and (
+            index_text(name) != name or index_text(canonical or "") != (canonical or "")
+        ):
+            _delete_orphan_entity(handle, entity_id)
+
+
 def store_node_vectors(
     handle: sqlite3.Connection,
     node_dict: dict,
@@ -157,18 +222,20 @@ def store_node_vectors(
         stored = None
         if table_exists(handle, "knowledge_nodes"):
             stored = handle.execute(
-                "SELECT content, embed_text FROM knowledge_nodes WHERE id = ?", (node_id,)
+                "SELECT content, embed_text, tags FROM knowledge_nodes WHERE id = ?", (node_id,)
             ).fetchone()
         if stored:
-            clean = tuple(index_text(text or "") for text in stored)
+            clean = tuple(index_text(text) if text is not None else None for text in stored)
             if clean != tuple(stored):
-                from hippo_brain.classification import enqueue_node
-
                 handle.execute(
-                    "UPDATE knowledge_nodes SET content = ?, embed_text = ? WHERE id = ?",
+                    "UPDATE knowledge_nodes SET content = ?, embed_text = ?, tags = ? WHERE id = ?",
                     (*clean, node_id),
                 )
-                enqueue_node(handle, node_id)
+                if clean[:2] != tuple(stored)[:2]:
+                    from hippo_brain.classification import enqueue_node
+
+                    enqueue_node(handle, node_id)
+            _clean_node_entities(handle, node_id)
         if replace_existing:
             handle.execute("DELETE FROM knowledge_vectors WHERE knowledge_node_id = ?", (node_id,))
         vector_store.insert_vectors(handle, node_id, *vectors)
