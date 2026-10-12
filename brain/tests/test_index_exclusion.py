@@ -79,6 +79,9 @@ def test_derived_exclusion_keeps_capture_preserve_rules(span, placeholder):
     assert redact(span) == span
     assert index_text(span) == placeholder
     assert index_text(index_text(span)) == placeholder
+    if placeholder != "<base64>":
+        for root in ("src/foo-bar", "/Users/foo-bar"):
+            assert index_text(f"{root}/{span}") == f"{root}/{placeholder}"
 
 
 @pytest.mark.parametrize(
@@ -86,10 +89,15 @@ def test_derived_exclusion_keeps_capture_preserve_rules(span, placeholder):
     [
         "/private/var/folders/v8/y545g92s5gd7tk27zk4nmhjm0000gn/T/pytest-of-synthetic/MEMORY.md",
         "/Users/Developer/Projects2026/OrdinaryFolder/Memory",
+        "/Users/foo-bar/VeryLongComponentName2",
+        "/Users/foo.bar/VeryLongComponentName2",
     ],
 )
 def test_absolute_paths_are_not_base64_blobs(path):
     assert index_text(path) == path
+    assert index_text(f"file {path}") == f"file {path}"
+    assert index_state({path: path}) == {path: path}
+    assert json.loads(index_text(json.dumps({path: path}))) == {path: path}
     assert index_state({"source_path": path}) == {"source_path": path}
     assert index_text("dGhpc2lzbm90YWp3dGp1c3RhYmFzZTY0c3RyaW5n/Ab9+") == "<base64>"
 
@@ -98,6 +106,8 @@ def test_absolute_paths_are_not_base64_blobs(path):
     "path",
     [
         "src/Foo2/LongComponentNameHere",
+        "src/foo-bar/VeryLongComponentName2",
+        "src/foo.bar/VeryLongComponentName2",
         "src/LongComponentNameHere2.py",
         "brain/Foo2/LongComponentNameHere",
         "crates/Foo2/LongComponentNameHere",
@@ -105,6 +115,8 @@ def test_absolute_paths_are_not_base64_blobs(path):
 )
 def test_relative_repository_paths_are_not_base64_blobs(path):
     assert redact(path) == path
+    assert index_state({path: path}) == {path: path}
+    assert json.loads(index_text(json.dumps({path: path}))) == {path: path}
     assert index_text(path) == path
     assert index_text(f"file {path}") == f"file {path}"
     assert index_state({"source_path": path}) == {"source_path": path}

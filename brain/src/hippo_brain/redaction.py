@@ -111,7 +111,8 @@ _INDEX_SPANS = (
     # Standalone blobs exclude absolute paths and common relative repository roots.
     (
         re.compile(
-            r"(?<![\w/+])(?!(?:src|lib|bin|tests?|docs|brain|crates|scripts|shell|config|launchd)/)"
+            r"(?<![\w/+])(?P<path>(?:/|(?:src|lib|bin|tests?|docs|brain|crates|scripts|shell|config|launchd)/)"
+            r"[^\s\"'<>(),;\[\]{}]*)|(?<![\w/+])"
             r"(?=[A-Za-z0-9+/]*[A-Z])(?=[A-Za-z0-9+/]*[a-z])"
             r"(?=[A-Za-z0-9+/]*[0-9])[A-Za-z0-9+][A-Za-z0-9+/]{23,}={0,2}(?![\w/+])"
         ),
@@ -132,7 +133,9 @@ def index_text(text: str) -> str:
             clean = index_state(decoded)
             return json.dumps(clean, ensure_ascii=False) if clean != decoded else text
     for pattern, placeholder in _INDEX_SPANS:
-        text = pattern.sub(placeholder, text)
+        text = pattern.sub(
+            lambda match, marker=placeholder: match.groupdict().get("path") or marker, text
+        )
     return text
 
 
