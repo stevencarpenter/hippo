@@ -20,7 +20,11 @@ from hippo_brain.embeddings import (
     prepare_node_vectors,
     store_node_vectors,
 )
-from hippo_brain.vector_store import EMBED_DIM, get_stored_embed_model, record_embed_model
+from hippo_brain.vector_store import (
+    EMBED_DIM,
+    get_stored_embed_model,
+    record_embed_model,
+)
 
 
 def _corpus_inputs(conn):
@@ -64,12 +68,20 @@ async def re_embed_nodes(
             vectors = await prepare_node_vectors(
                 client, node, embedding_model, command_model
             )
-            staged.write(vector_pair.pack(*vectors[0], *vectors[1]))
+            try:
+                staged.write(vector_pair.pack(*vectors[0], *vectors[1]))
+            except struct.error as exc:
+                raise ValueError(
+                    f"non-float vector element for node {row[0]}: {exc}"
+                ) from exc
             del vectors
         staged.seek(0)
         conn.execute("BEGIN IMMEDIATE")
         with conn:
-            if _corpus_inputs(conn) != inputs or get_stored_embed_model(conn) != old_model:
+            if (
+                _corpus_inputs(conn) != inputs
+                or get_stored_embed_model(conn) != old_model
+            ):
                 raise RuntimeError(
                     "corpus changed during inference; migration not published"
                 )
