@@ -2,6 +2,8 @@ use anyhow::Result;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 use tokio::net::UnixStream;
 
+pub const MAX_FRAME_BYTES: usize = 10 * 1024 * 1024;
+
 pub async fn read_frame(stream: &mut (impl AsyncRead + Unpin)) -> Result<Option<Vec<u8>>> {
     let mut len_buf = [0u8; 4];
     match stream.read_exact(&mut len_buf).await {
@@ -10,7 +12,7 @@ pub async fn read_frame(stream: &mut (impl AsyncRead + Unpin)) -> Result<Option<
         Err(e) => return Err(e.into()),
     }
     let len = u32::from_be_bytes(len_buf) as usize;
-    if len > 10 * 1024 * 1024 {
+    if len > MAX_FRAME_BYTES {
         anyhow::bail!("frame too large: {} bytes", len);
     }
     let mut buf = vec![0u8; len];

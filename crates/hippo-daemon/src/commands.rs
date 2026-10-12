@@ -324,44 +324,75 @@ pub struct ShellOutputArgs {
     pub stderr_file: Option<PathBuf>,
 }
 
-fn read_shell_output(path: &std::path::Path, config: &HippoConfig) -> Result<CapturedOutput> {
-    use std::io::BufRead;
+const SHELL_OUTPUT_BYTES: usize = 512 * 1024;
+
+fn read_shell_output(
+    path: &std::path::Path,
+    config: &HippoConfig,
+    max_bytes: usize,
+) -> Result<CapturedOutput> {
+    use std::io::{BufRead, Read};
 
     let file = std::fs::File::open(path)
         .with_context(|| format!("reading captured output {}", path.display()))?;
     let mut reader = std::io::BufReader::new(file);
     let head = config.daemon.output_head_lines;
     let tail = config.daemon.output_tail_lines;
+    // Reserve space for both omission markers.
+    // ponytail: equal head/tail byte budgets; borrow unused space only if needed.
+    let section_bytes = max_bytes.saturating_sub(128) / 2;
     let mut content = String::new();
-    let mut last = std::collections::VecDeque::new();
+    let mut last = std::collections::VecDeque::<String>::new();
+    let mut last_bytes = 0;
+    let mut head_lines = 0;
     let mut line = Vec::new();
     let mut original_bytes = 0;
     let mut total = 0usize;
+    let mut byte_truncated = false;
     loop {
         line.clear();
+        // Four extra bytes complete a UTF-8 character at the retained boundary.
         let count = reader
+            .by_ref()
+            .take((section_bytes + 4) as u64)
             .read_until(b'\n', &mut line)
             .with_context(|| format!("reading captured output {}", path.display()))?;
         if count == 0 {
             break;
         }
-        original_bytes += count;
+        let skipped = if line.ends_with(b"\n") {
+            0
+        } else {
+            reader.skip_until(b'\n')?
+        };
+        original_bytes += count + skipped;
         total += 1;
+        let mut text = String::from_utf8_lossy(&line).into_owned();
+        byte_truncated |= skipped > 0 || text.len() > section_bytes;
+        text.truncate(text.floor_char_boundary(section_bytes));
         if total <= head {
-            content.push_str(&String::from_utf8_lossy(&line));
-        } else if tail > 0 {
-            if last.len() == tail {
-                last.pop_front();
+            let remaining = section_bytes - content.len();
+            byte_truncated |= text.len() > remaining;
+            text.truncate(text.floor_char_boundary(remaining));
+            head_lines += usize::from(!text.is_empty());
+            content.push_str(&text);
+        } else if tail > 0 && !text.is_empty() {
+            last_bytes += text.len();
+            last.push_back(text);
+            while last.len() > tail || last_bytes > section_bytes {
+                last_bytes -= last.pop_front().unwrap().len();
             }
-            last.push_back(String::from_utf8_lossy(&line).into_owned());
         }
     }
-    let truncated = total > head.saturating_add(tail);
-    if truncated {
-        content.push_str(&format!(
-            "... ({} lines omitted) ...\n",
-            total - head - tail
-        ));
+    let omitted = total - head_lines - last.len();
+    let truncated = byte_truncated || omitted > 0;
+    if max_bytes >= 128 {
+        if omitted > 0 {
+            content.push_str(&format!("... ({omitted} lines omitted) ...\n"));
+        }
+        if byte_truncated {
+            content.push_str("\n... (byte limit reached) ...\n");
+        }
     }
     for line in last {
         content.push_str(&line);
@@ -431,6 +462,12 @@ pub async fn handle_send_event_shell(
             None
         };
 
+    // Longest possible capture metadata, used to reserve exact frame overhead.
+    let file_output = CapturedOutput {
+        content: String::new(),
+        truncated: false,
+        original_bytes: usize::MAX,
+    };
     let event = ShellEvent {
         session_id,
         command: cmd,
@@ -442,28 +479,44 @@ pub async fn handle_send_event_shell(
         hostname,
         shell: crate::detect_shell_kind(),
         stdout: match capture.stdout_file.as_deref() {
-            Some(path) => Some(read_shell_output(path, config)?),
+            Some(_) => Some(file_output.clone()),
             None => capture.output.map(|content| CapturedOutput {
                 original_bytes: content.len(),
                 content,
                 truncated: false,
             }),
         },
-        stderr: capture
-            .stderr_file
-            .as_deref()
-            .map(|path| read_shell_output(path, config))
-            .transpose()?,
+        stderr: capture.stderr_file.as_ref().map(|_| file_output),
         env_snapshot,
         git_state,
         redaction_count: 0,
         tool_name: effective_tool_name,
     };
 
-    let envelope = EventEnvelope {
+    let mut envelope = EventEnvelope {
         probe_tag: probe_tag.clone(),
         ..EventEnvelope::shell(event)
     };
+    let file_count =
+        usize::from(capture.stdout_file.is_some()) + usize::from(capture.stderr_file.is_some());
+    if file_count > 0 {
+        let overhead =
+            serde_json::to_vec(&DaemonRequest::IngestEvent(Box::new(envelope.clone())))?.len();
+        // JSON can expand each source byte to six bytes (for example, \\u0001).
+        let max_bytes = (crate::framing::MAX_FRAME_BYTES
+            .checked_sub(overhead)
+            .context("shell metadata exceeds the frame limit")?
+            / (6 * file_count))
+            .min(SHELL_OUTPUT_BYTES);
+        if let EventPayload::Shell(event) = &mut envelope.payload {
+            if let Some(path) = capture.stdout_file.as_deref() {
+                event.stdout = Some(read_shell_output(path, config, max_bytes)?);
+            }
+            if let Some(path) = capture.stderr_file.as_deref() {
+                event.stderr = Some(read_shell_output(path, config, max_bytes)?);
+            }
+        }
+    }
     match send_event_fire_and_forget(
         &config.socket_path(),
         &envelope,
@@ -5026,6 +5079,105 @@ mod tests {
             check_firefox_extension_dist_at(&tmp.path().join("does-not-exist"), false),
             0
         );
+    }
+
+    #[tokio::test]
+    async fn file_capture_bounds_both_streams_in_the_real_encoded_frame() {
+        use std::io::Write;
+
+        let temp = tempfile::Builder::new()
+            .prefix("hippo-bytes-")
+            .tempdir_in("/tmp")
+            .unwrap();
+        let mut config = HippoConfig::default();
+        config.storage.data_dir = temp.path().join("data");
+        config.storage.config_dir = temp.path().join("config");
+        config.daemon.output_head_lines = 2;
+        config.daemon.output_tail_lines = 1;
+        std::fs::create_dir_all(&config.storage.data_dir).unwrap();
+        let listener = UnixListener::bind(config.socket_path()).unwrap();
+        let stdout_file = temp.path().join("stdout");
+        let stderr_file = temp.path().join("stderr");
+        // Escaped metadata consumes more than half the frame. Both streams
+        // must share the remaining encoded budget, not just a source-byte cap.
+        let command = "\u{1}".repeat(1024 * 1024);
+        for bytes in [b"\x01".as_slice(), "🌳".as_bytes(), b"\xff".as_slice()] {
+            let block = bytes.repeat(4096 / bytes.len());
+            for path in [&stdout_file, &stderr_file] {
+                let mut file = std::fs::File::create(path).unwrap();
+                file.write_all(b"password=synthetic\n").unwrap();
+                for index in 0..512 {
+                    if index == 256 {
+                        file.write_all(b"\n").unwrap();
+                    }
+                    file.write_all(&block).unwrap();
+                }
+            }
+            let exchange = async {
+                let send = handle_send_event_shell(
+                    &config,
+                    command.clone(),
+                    17,
+                    temp.path().to_string_lossy().into_owned(),
+                    42,
+                    None,
+                    None,
+                    None,
+                    false,
+                    ShellOutputArgs {
+                        stdout_file: Some(stdout_file.clone()),
+                        stderr_file: Some(stderr_file.clone()),
+                        ..Default::default()
+                    },
+                    None,
+                    None,
+                    None,
+                );
+                let receive = async {
+                    let (mut stream, _) = listener.accept().await.unwrap();
+                    crate::framing::read_frame(&mut stream).await
+                };
+                let (sent, received) = tokio::join!(send, receive);
+                sent.unwrap();
+                received
+                    .expect("captured streams must fit the real frame")
+                    .unwrap()
+            };
+            let json = tokio::time::timeout(std::time::Duration::from_secs(30), exchange)
+                .await
+                .unwrap();
+            assert!(json.len() <= crate::framing::MAX_FRAME_BYTES);
+            if bytes == b"\x01" {
+                assert!(json.len() > 9 * 1024 * 1024, "exercise the encoded ceiling");
+            }
+            let DaemonRequest::IngestEvent(envelope) = serde_json::from_slice(&json).unwrap()
+            else {
+                panic!("expected event");
+            };
+            let EventPayload::Shell(event) = envelope.payload else {
+                panic!("expected shell");
+            };
+            assert_eq!(event.command, command);
+            assert_eq!(event.exit_code, 17);
+            for stream in [&event.stdout, &event.stderr] {
+                let stream = stream.as_ref().unwrap();
+                assert!(stream.content.len() <= 512 * 1024);
+                assert!(stream.truncated);
+                assert_eq!(stream.original_bytes, 2 * 1024 * 1024 + 20);
+                if bytes == "🌳".as_bytes() {
+                    assert!(!stream.content.contains('\u{fffd}'));
+                }
+            }
+            let (redacted, _) = crate::redact_shell_event(&event, &RedactionEngine::builtin());
+            for stream in [&redacted.stdout, &redacted.stderr] {
+                assert!(!stream.as_ref().unwrap().content.contains("synthetic"));
+            }
+            assert!(
+                storage::list_fallback_files(&config.fallback_dir())
+                    .unwrap()
+                    .is_empty()
+            );
+        }
     }
 
     #[tokio::test]
