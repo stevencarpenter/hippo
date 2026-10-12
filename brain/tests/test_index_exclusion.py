@@ -10,6 +10,7 @@ import subprocess
 import tempfile
 import time
 import uuid
+import weakref
 from pathlib import Path
 
 import pytest
@@ -91,6 +92,57 @@ def test_absolute_paths_are_not_base64_blobs(path):
     assert index_text(path) == path
     assert index_state({"source_path": path}) == {"source_path": path}
     assert index_text("dGhpc2lzbm90YWp3dGp1c3RhYmFzZTY0c3RyaW5n/Ab9+") == "<base64>"
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "src/Foo2/LongComponentNameHere",
+        "src/LongComponentNameHere2.py",
+        "brain/Foo2/LongComponentNameHere",
+        "crates/Foo2/LongComponentNameHere",
+    ],
+)
+def test_relative_repository_paths_are_not_base64_blobs(path):
+    assert redact(path) == path
+    assert index_text(path) == path
+    assert index_text(f"file {path}") == f"file {path}"
+    assert index_state({"source_path": path}) == {"source_path": path}
+    blob = "dGhpc2lzbm90YWp3dGp1c3RhYmFzZTY0c3RyaW5n/Ab9+"
+    assert index_text(blob) == "<base64>"
+    assert index_state({"summary": blob}) == {"summary": "<base64>"}
+    assert index_text(f"{path} {SPAN}") == f"{path} <github-token>"
+
+
+@pytest.mark.parametrize("identifier", ["1234567", "12345678", "1" * 40])
+def test_decimal_identifiers_remain_searchable(identifier):
+    text = f"error code {identifier}"
+    assert redact(text) == text
+    assert index_text(text) == text
+    assert index_state({"summary": text, "identifier": identifier}) == {
+        "summary": text,
+        "identifier": identifier,
+    }
+    assert index_text("1" * 64) == "<hash>"
+
+
+@pytest.mark.parametrize(
+    "text,expected",
+    [
+        ("abc1234", "<git-sha>"),
+        ("ABC1234", "<git-sha>"),
+        ("f" + "1" * 39, "<git-sha>"),
+        ("F" + "1" * 39, "<git-sha>"),
+        ("abc123", "abc123"),
+        ("f" + "1" * 40, "f" + "1" * 40),
+        ("zabc1234z", "zabc1234z"),
+        ("1234567g", "1234567g"),
+    ],
+)
+def test_short_sha_letter_requirement_keeps_case_length_and_boundaries(text, expected):
+    assert redact(text) == text
+    assert index_text(text) == expected
+    assert index_state({"summary": text}) == {"summary": expected}
 
 
 async def test_vector_only_handle_excludes_both_inputs(tmp_path):
@@ -349,6 +401,48 @@ async def test_empty_reembed_records_model_for_the_first_new_node(index_db):
     conn.commit()
     await embed_knowledge_node(client, conn, {"id": 1, "embed_text": "safe"}, embed_model="model-b")
     assert conn.execute("SELECT COUNT(*) FROM knowledge_vectors").fetchone()[0] == 1
+
+
+async def test_reembed_releases_staged_vectors_before_next_node(index_db, monkeypatch):
+    conn, _ = index_db
+    for nid in (1, 2, 3):
+        conn.execute(
+            "INSERT INTO knowledge_nodes(id,uuid,content,embed_text) VALUES(?,?,?,?)",
+            (nid, f"bounded-{nid}", "{}", f"safe node {nid}"),
+        )
+    conn.commit()
+    references = []
+    staged_files = []
+
+    class TrackedVector(list):
+        pass
+
+    class BoundedClient(MockInferenceClient):
+        async def embed(self, texts, model=""):
+            assert not conn.in_transaction
+            vectors = [TrackedVector(vector) for vector in await super().embed(texts, model=model)]
+            references.extend(weakref.ref(vector) for vector in vectors)
+            assert sum(ref() is not None for ref in references) <= 2
+            return vectors
+
+    def staged_file():
+        stream = tempfile.TemporaryFile()
+        staged_files.append(stream)
+        return stream
+
+    reembed = runpy.run_path(str(ROOT / "scripts/hippo-re-embed.py"))["re_embed_nodes"]
+    monkeypatch.setitem(reembed.__globals__, "TemporaryFile", staged_file)
+    client = BoundedClient()
+    assert await reembed(conn, client, "model-b") == 3
+    assert len(client.embed_calls) == 6
+    assert all(ref() is None for ref in references)
+    assert len(staged_files) == 1 and staged_files[0].closed
+    rows = conn.execute("SELECT * FROM knowledge_vectors ORDER BY knowledge_node_id").fetchall()
+    assert len(rows) == 3
+    for nid, knowledge, command in rows:
+        expected = MockInferenceClient._deterministic_vector(f"safe node {nid}", EMBED_DIM)
+        blob = struct.pack(f"<{EMBED_DIM}f", *expected)
+        assert knowledge == blob and command == blob
 
 
 async def test_reembed_allows_another_writer_during_inference(index_db):

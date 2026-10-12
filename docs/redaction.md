@@ -36,6 +36,15 @@ the shared embedding boundary; successful re-derivation also cleans the node
 text used by FTS. These shapes can represent harmless identifiers. Search by
 an excluded identifier can lose recall; use raw event display for its value.
 
+The short-SHA heuristic requires an a-f character within its 7-to-40-character
+hexadecimal token, without changing case handling or token boundaries. Digit-only
+SHA abbreviations no longer match this heuristic, so ordinary decimal identifiers
+remain searchable. The 64-character hash rule remains unchanged.
+The standalone base64 heuristic preserves absolute paths and relative paths under
+common repository roots such as `src/`, `brain/` and `crates/`. It does not exempt
+every relative path. A slash alone does not exempt an encoded blob. Other credential
+patterns and structured Authorization protections still apply to path text.
+
 This source change does not rebuild an installed corpus. Existing derived rows
 need separately authorized re-derivation. `mise run re-embed` stops the brain
 before running `scripts/hippo-re-embed.py`; it requires operational authorization.
@@ -44,9 +53,13 @@ and rebuilds affected entity links. It removes unreferenced credential-shaped
 entities but preserves entities referenced by raw events or relationships and
 classification-owned entities. It publishes model metadata even for an empty
 corpus. Publication uses one transaction; failure rolls back the whole replacement.
-The command stages inference results before acquiring the SQLite write lock,
-then validates the corpus inputs and publishes the staged results
-atomically in a short transaction. Regression coverage is in
+The command stages both validated vector arms in an anonymous temporary file
+before acquiring the SQLite write lock. It retains one vector pair at a time,
+then rechecks corpus inputs and model metadata before atomic publication.
+The input snapshot still scales with corpus size; vector payloads do not accumulate
+in Python memory. The temporary file closes on success or failure. Publication
+retains one transaction across all nodes and rolls back if any stored pair or
+cleanup fails. Regression coverage is in
 [`brain/tests/test_index_exclusion.py`](../brain/tests/test_index_exclusion.py).
 Re-derivation does not remove raw sources, logs or backups, and it does not prove
 resistance to vector inversion. The synthetic

@@ -107,11 +107,12 @@ _INDEX_SPANS = (
     (re.compile(r"\bAKIA[a-zA-Z0-9_]*"), "<aws-key>"),
     (re.compile(r"\beyJ[a-zA-Z0-9_-]*(?:\.[a-zA-Z0-9_-]+){0,2}"), "<jwt>"),
     (re.compile(r"\b[0-9a-f]{64}\b", re.I), "<hash>"),
-    (re.compile(r"\b[0-9a-f]{7,40}\b", re.I), "<git-sha>"),
-    # ponytail: standalone blob heuristic, not absolute paths; explicit token types if recall suffers.
+    (re.compile(r"\b(?=[0-9a-f]{0,39}[a-f])[0-9a-f]{7,40}\b", re.I), "<git-sha>"),
+    # Standalone blobs exclude absolute paths and common relative repository roots.
     (
         re.compile(
-            r"(?<![\w/+])(?=[A-Za-z0-9+/]*[A-Z])(?=[A-Za-z0-9+/]*[a-z])"
+            r"(?<![\w/+])(?!(?:src|lib|bin|tests?|docs|brain|crates|scripts|shell|config|launchd)/)"
+            r"(?=[A-Za-z0-9+/]*[A-Z])(?=[A-Za-z0-9+/]*[a-z])"
             r"(?=[A-Za-z0-9+/]*[0-9])[A-Za-z0-9+][A-Za-z0-9+/]{23,}={0,2}(?![\w/+])"
         ),
         "<base64>",

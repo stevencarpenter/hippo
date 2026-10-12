@@ -7,9 +7,11 @@ never run the live mise re-embed task without separate operational authority.
 
 import argparse
 import asyncio
+import struct
 import sys
 import tomllib
 from pathlib import Path
+from tempfile import TemporaryFile
 
 from hippo_brain.client import InferenceClient
 from hippo_brain.embeddings import (
@@ -18,7 +20,7 @@ from hippo_brain.embeddings import (
     prepare_node_vectors,
     store_node_vectors,
 )
-from hippo_brain.vector_store import get_stored_embed_model, record_embed_model
+from hippo_brain.vector_store import EMBED_DIM, get_stored_embed_model, record_embed_model
 
 
 def _corpus_inputs(conn):
@@ -50,35 +52,40 @@ async def re_embed_nodes(
     with conn:
         inputs = _corpus_inputs(conn)
         old_model = get_stored_embed_model(conn)
-    staged = []
-    for row, commands in inputs:
-        node = {
-            "id": row[0],
-            "embed_text": row[3],
-            "commands_raw": " ; ".join(commands),
-        }
-        vectors = await prepare_node_vectors(
-            client, node, embedding_model, command_model
-        )
-        staged.append((node, vectors))
-    conn.execute("BEGIN IMMEDIATE")
-    with conn:
-        if _corpus_inputs(conn) != inputs or get_stored_embed_model(conn) != old_model:
-            raise RuntimeError(
-                "corpus changed during inference; migration not published"
+    vector_pair = struct.Struct(f"<{EMBED_DIM * 2}d")
+    # Keep validated vector payloads on disk, not one Python pair per node.
+    with TemporaryFile() as staged:
+        for row, commands in inputs:
+            node = {
+                "id": row[0],
+                "embed_text": row[3],
+                "commands_raw": " ; ".join(commands),
+            }
+            vectors = await prepare_node_vectors(
+                client, node, embedding_model, command_model
             )
-        for node, vectors in staged:
-            store_node_vectors(
-                conn,
-                node,
-                vectors,
-                embedding_model,
-                allow_embed_switch=True,
-                replace_existing=True,
-                commit=False,
-            )
-        clean_credential_orphans(conn)
-        record_embed_model(conn, embedding_model)
+            staged.write(vector_pair.pack(*vectors[0], *vectors[1]))
+            del vectors
+        staged.seek(0)
+        conn.execute("BEGIN IMMEDIATE")
+        with conn:
+            if _corpus_inputs(conn) != inputs or get_stored_embed_model(conn) != old_model:
+                raise RuntimeError(
+                    "corpus changed during inference; migration not published"
+                )
+            for row, _ in inputs:
+                values = vector_pair.unpack(staged.read(vector_pair.size))
+                store_node_vectors(
+                    conn,
+                    {"id": row[0]},
+                    (list(values[:EMBED_DIM]), list(values[EMBED_DIM:])),
+                    embedding_model,
+                    allow_embed_switch=True,
+                    replace_existing=True,
+                    commit=False,
+                )
+            clean_credential_orphans(conn)
+            record_embed_model(conn, embedding_model)
     return len(inputs)
 
 
