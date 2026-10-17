@@ -37,7 +37,10 @@ in `config/agent-benefit-v2.json` is amended by this design (see
 - Proving Hippo improves task pass/fail. The September pilot tied 12/12.
   Task outcome is recorded but is not the primary metric.
 - Measuring model quality across harnesses. The unit is prompt times
-  provider, with the harness and model held fixed within a study.
+  provider, with the harness and model held fixed within a study. The
+  agent, model, and harness are to be determined. The design treats all
+  three as parameters of a study, recorded in the study's contract hash,
+  and nothing below depends on a specific choice.
 - Replacing the enrichment-fidelity review in `claim_review.py`. That
   measures summaries against sources. This design measures agent
   behavior against preferences.
@@ -237,16 +240,19 @@ class Harness(Protocol):
     def run(self, task: Task, arm_root: Path, mcp_servers: dict, user: SimulatedUser, budget: Budget) -> Trajectory: ...
 ```
 
-Codex is the first adapter because the existing runner already drives it
-through `CODEX_HOME`. The existing runner rejects every server-initiated
-request with "interactive requests disabled". The adapter changes that:
+The harness for the first study is to be determined. The Codex adapter
+is described here because the existing runner already drives Codex
+through `CODEX_HOME`, so it is the cheapest port and the reference for
+what every adapter must provide. The existing runner rejects every
+server-initiated request with "interactive requests disabled". The
+adapter changes that:
 `request_user_input` and approval requests are routed to the simulated
 user and count as asks. An end-of-turn message that contains a question
 also counts as an ask; the adapter answers it through the simulated user
 and starts another turn. The loop ends when the agent reports done, the
 checker passes, or the arm budget is spent. Both ask paths are logged
-with their origin so the jury can tell them apart. Claude Code is the
-second adapter. Its config goes
+with their origin so the jury can tell them apart. A Claude Code adapter
+follows the same contract. Its config goes
 through `$HOME/.claude/settings.json` inside the arm root, and the
 session JSONL lands under the arm's `$HOME/.claude/projects`, which the
 quarantine keeps away from production. The adapter contract is the same
@@ -462,8 +468,11 @@ the decision thresholds carried over from v2 (`minimum_primary_n` 100,
 `confidence` 0.95), the arm budget of 600 seconds, and a review clause:
 one human reviewer (the owner) plus a citation-verified jury, valid for a
 study only when the jury's kappa against the owner on at least 30 overlap
-items is at least 0.6. The v2 `window` does not apply; every session
-before the eval branch's first commit is eligible. The accuracy section
+items is at least 0.6. Unlike v2, the v3 file does not pin an agent,
+model, or harness. Each study run records the three it used, and that
+record is part of the study's identity. Runs with different triples are
+never pooled. The v2 `window` does not apply; every session before the
+eval branch's first commit is eligible. The accuracy section
 (300 natural calls, 100 answerable families, 100 absent controls) is
 unchanged and is not satisfied by this design; it remains a separate open
 gate. The owner decided to amend. The file shape, kappa threshold, and
@@ -482,6 +491,13 @@ overlap size are the builder's defaults from this document.
 | `bench/dashboard_export.py` | Report HTML |
 | `agent_query.py` decisions mode | Source of `key_decisions` and `design_decisions` for ecological decision points |
 | `conflict_detection.py` | Candidate `reversed` points: pairs it flags with matching cwd and branch |
+
+## Left to the owner
+
+- The agent, model, and harness for the first study. The plan must be
+  runnable with any of them set through configuration, and the first
+  chain corpus should be built only after the owner picks, since a
+  chain's memory is harness-specific.
 
 ## Left to the builder
 
@@ -509,8 +525,11 @@ overlap size are the builder's defaults from this document.
   preference must then be re-found in an earlier session for the Hippo
   arm to conform. If no earlier session holds it, the point is valid but
   Hippo cannot win it. The report counts these separately.
-- One model family on this machine for both the agent and the jury
-  weakens the jury's independence. The report states the families used.
+- The agent, model, and harness are undecided. If the agent and the jury
+  end up on one model family, the jury's independence weakens. The
+  report states the families used. If the agent runs on a paid model,
+  600 arms is a real bill; the report states tokens per arm so the owner
+  can size the next batch.
 - Stopping fourteen launchd jobs per batch and restarting them is slow
   and touches the owner's live services. Batches should be large, and
   the restore must run even on crash.
