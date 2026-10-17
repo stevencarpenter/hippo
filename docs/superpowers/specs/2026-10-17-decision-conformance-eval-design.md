@@ -206,9 +206,12 @@ class Provider(Protocol):
 ```
 
 - `prepare` receives the as-of corpus and a private root. For Hippo it
-  copies the corpus, writes the shadow `config.toml`, and spawns the
-  shadow stack from `shadow_stack.py`. For `none` it returns an empty
-  handle.
+  copies the corpus and writes the shadow `config.toml`. It does not
+  spawn the daemon or brain: `hippo-mcp` reads SQLite directly, so a
+  treatment arm needs only the MCP server process pointed at the copy.
+  The full shadow stack from `shadow_stack.py` is spawned only when a
+  corpus is being built (the controlled chain study). For `none` it
+  returns an empty handle.
 - `mcp_servers` returns the exact MCP configuration to inject into the
   harness config. The runner asserts the control arm gets `{}` and every
   other arm gets exactly one server, as `agent_benefit_trial.py` already
@@ -235,7 +238,15 @@ class Harness(Protocol):
 ```
 
 Codex is the first adapter because the existing runner already drives it
-through `CODEX_HOME`. Claude Code is the second adapter. Its config goes
+through `CODEX_HOME`. The existing runner rejects every server-initiated
+request with "interactive requests disabled". The adapter changes that:
+`request_user_input` and approval requests are routed to the simulated
+user and count as asks. An end-of-turn message that contains a question
+also counts as an ask; the adapter answers it through the simulated user
+and starts another turn. The loop ends when the agent reports done, the
+checker passes, or the arm budget is spent. Both ask paths are logged
+with their origin so the jury can tell them apart. Claude Code is the
+second adapter. Its config goes
 through `$HOME/.claude/settings.json` inside the arm root, and the
 session JSONL lands under the arm's `$HOME/.claude/projects`, which the
 quarantine keeps away from production. The adapter contract is the same
@@ -360,16 +371,40 @@ Both counts appear in the report by cell.
 Never pooled. Each has its own task corpus, its own kappa sample, and its
 own report.
 
-**Ecological study.** Tasks come from the owner's live sessions through
-the existing `agent_benefit_intake.freeze`, which already records the
-starting commit, the first request, and later corrections. New work:
-derive decision points from the session's own later corrections (each
-correction the owner made is a decision point whose preference is the
-correction text, cited to the session segment) and from `key_decisions`
-on nodes linked to earlier sessions in the same project. The per-task
-cutoff `T` is the segment start. Every task must have `T` before the
-first commit on the eval branch. The study answers: on the owner's real
-work, would the corrections have been unnecessary.
+**Ecological study.** Retrospective. Tasks are mined from the existing
+`agentic_sessions` rows, not frozen prospectively. The existing
+`agent_benefit_intake.freeze` is prospective (it snapshots before a
+request happens) and records no later corrections, so it is not reused
+here. New module `bench/ecological_tasks.py`:
+
+1. Candidate sessions: segment index 0, a `cwd` inside a repository the
+   owner still has on disk, `start_time` before the first commit on the
+   eval branch, and at least two entries in `user_prompts_json`.
+2. Starting state: the newest commit on the recorded `git_branch` whose
+   committer time is at or before `start_time`, found in the local clone.
+   Sessions where no such commit exists, or the branch is gone, are
+   excluded and counted.
+3. Prompt: the first entry of `user_prompts_json`.
+4. Decision point candidates: every later entry of `user_prompts_json`
+   is a candidate, extracted by a bounded model call that only decides
+   whether the entry states a preference and which trigger words apply.
+   The preference text is the owner's prompt verbatim; the model never
+   writes a preference. The owner confirms or rejects every candidate in
+   one batch before any arm runs. Owner knowledge of the preferences does
+   not break the kappa sample, because kappa is measured on arm bins,
+   which the owner has not seen. Plan two to three owner hours per 100
+   tasks.
+5. Additional candidates: `key_decisions` on nodes linked to earlier
+   sessions in the same project, same confirmation step.
+6. Checker: none for most ecological tasks. Task pass is `unobserved`
+   for them and the simulated user answers checker requests with "no
+   checker available". The primary metric does not need a checker.
+
+The per-task cutoff `T` is the segment start. The study answers: on the
+owner's real work, would the corrections have been unnecessary. The
+contract's 100-pair minimum applies to the controlled study; the
+ecological study reports whatever count survives steps 1 to 4 and is
+acceptance evidence only if it also reaches 100.
 
 **Controlled study.** Tasks are chains of three to six related tasks on
 small open-source repositories pinned by commit. Task 1 of a chain states
@@ -377,7 +412,12 @@ one or more preferences through the simulated user. Later tasks require
 those preferences again without stating them. The chain's corpus is built
 by running task 1 through `n-1` in the shadow stack with capture on,
 through the normal enrichment path, so memory exists only as Hippo would
-have created it. Decision points and preferences are authored with the
+have created it. Capture during the build is the agentic transcript
+only: after each task, run `hippo codex-poll` (or the matching poller for
+the adapter in use) with `XDG_*` and `CODEX_HOME` pointed at the arm root,
+then wait for the shadow brain's enrichment queue to drain. Shell and
+browser capture are not expected; the harness runs commands in its own
+sandbox and no browser is involved. Decision points and preferences are authored with the
 chain, so ground truth is known by construction and there is no human
 answer to leak. The study answers: when a preference is known to exist in
 memory, does the agent use it.
@@ -411,13 +451,22 @@ number links to the hash of the artifact it came from.
 
 ## Contract amendment
 
-`config/agent-benefit-v2.json` gains a new content hash. The clause
-"independent human review" becomes: one human reviewer (the owner) plus a
-citation-verified jury, valid for a study only when the jury's kappa
-against the owner on at least 30 overlap items is at least 0.6. The
-accuracy section (300 natural calls, 100 answerable families, 100 absent
-controls) is unchanged and is not satisfied by this design; it remains a
-separate open gate. The owner decided to amend. The kappa threshold and
+The amendment is a new file, `config/agent-benefit-v3.json`, with its own
+content hash. `agent-benefit-v2.json` and the code that loads it
+(`agent_benefit_study.load_contract`, which requires exactly the
+`availability` and `guided` studies, and `agent_benefit_packets.adjudicate`,
+which requires two human reviewers) stay untouched as the record of the
+historical studies. The v3 file declares one study, `conformance`, with
+the decision thresholds carried over from v2 (`minimum_primary_n` 100,
+`minimum_gain` 0.05, `sizing_gain` 0.10, `minimum_power` 0.8,
+`confidence` 0.95), the arm budget of 600 seconds, and a review clause:
+one human reviewer (the owner) plus a citation-verified jury, valid for a
+study only when the jury's kappa against the owner on at least 30 overlap
+items is at least 0.6. The v2 `window` does not apply; every session
+before the eval branch's first commit is eligible. The accuracy section
+(300 natural calls, 100 answerable families, 100 absent controls) is
+unchanged and is not satisfied by this design; it remains a separate open
+gate. The owner decided to amend. The file shape, kappa threshold, and
 overlap size are the builder's defaults from this document.
 
 ## Reuse map
@@ -427,7 +476,7 @@ overlap size are the builder's defaults from this document.
 | `bench/shadow_stack.py` | Hippo provider process lifecycle |
 | `bench/coordinator.py` | Pattern for load, copy corpus, spawn, drain, teardown |
 | `bench/agent_benefit_trial.py` | Env isolation, MCP config assertions, process-group kill; split into harness adapter and runner |
-| `bench/agent_benefit_intake.py` | Ecological task freezing |
+| `bench/agent_benefit_intake.py` | Not reused; it is prospective. Kept for reference only |
 | `bench/agent_benefit_packets.py` | Packet export and `adjudicate` citation rules |
 | `bench/knowledge_corpus.py` | Cluster bootstrap, frozen input hashes |
 | `bench/dashboard_export.py` | Report HTML |
