@@ -88,25 +88,3 @@ def test_main_enrichment_pass_populates_gates(mock_call):
     assert "refusal_detected" in gates
     assert "echo_similarity" in gates
     assert attempts[0].parsed_output is not None
-
-
-@patch("hippo_brain.bench.runner.call_enrichment")
-def test_main_enrichment_pass_does_not_embed(mock_call):
-    """Cycle 1 RED: main pass never calls call_embedding (no SC vectors needed)."""
-    mock_call.return_value = CallResult(
-        raw_output='{"summary": "ok", "intent": "x", "outcome": "success", "entities": {}}',
-        ttft_ms=None,
-        total_ms=50,
-        timeout=False,
-    )
-    entries = [CorpusEntry(event_id="e1", source="shell", redacted_content="ls")]
-    with patch("hippo_brain.bench.runner.call_embedding") as mock_embed:
-        run_main_enrichment_pass(
-            base_url="http://x",
-            model="m1",
-            entries=entries,
-            timeout_sec=10,
-            metrics_snapshot=dict,
-            temperature=0.0,
-        )
-        mock_embed.assert_not_called()

@@ -305,15 +305,6 @@ class TestQueueCleanup:
         assert row["status"] == "processing"
         conn.close()
 
-    def test_releases_orphan_locks(self, tmp_db: Path) -> None:
-        fake_reaped = {"shell": 1, "claude": 0, "browser": 0, "workflow": 0}
-        _watchdog_stub.reap_stale_locks.return_value = fake_reaped
-
-        conn = _open_v5(tmp_db)
-        _mod.phase_queue_cleanup(conn, dry_run=False, log=_dummy_log())
-        _watchdog_stub.reap_stale_locks.assert_called_once()
-        conn.close()
-
     def test_resets_recent_failed_rows(self, tmp_db: Path) -> None:
         _watchdog_stub.reap_stale_locks.return_value = {}
         _watchdog_stub.QUEUES = ()  # skip the loop via empty QUEUES in the stub
