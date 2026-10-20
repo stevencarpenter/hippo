@@ -34,8 +34,9 @@ def test_self_consistency_pass_embeds_each_output(mock_call, mock_embed):
     assert all(len(v) == 3 for v in per_event_vectors)
 
 
+@patch("hippo_brain.bench.runner.call_embedding")
 @patch("hippo_brain.bench.runner.call_enrichment")
-def test_main_enrichment_pass_one_attempt_per_event(mock_call):
+def test_main_enrichment_pass_one_attempt_per_event(mock_call, mock_embed):
     """Cycle 1 RED: exactly one main-purpose attempt per corpus event."""
     mock_call.return_value = CallResult(
         raw_output='{"summary": "ok", "intent": "x", "outcome": "success", "entities": {}}',
@@ -62,6 +63,7 @@ def test_main_enrichment_pass_one_attempt_per_event(mock_call):
     assert [a.event["event_id"] for a in attempts] == ["e1", "e2", "e3"]
     assert all(a.attempt_idx == 0 for a in attempts)
     assert mock_call.call_count == len(entries)
+    mock_embed.assert_not_called()
 
 
 @patch("hippo_brain.bench.runner.call_enrichment")
