@@ -83,6 +83,7 @@ from hippo_brain.telemetry import (
     get_meter,
     is_telemetry_active,
     is_telemetry_enabled,
+    prime_decision_metrics,
 )
 from hippo_brain.telemetry import (
     get_tracer as _get_tracer,
@@ -415,6 +416,10 @@ class BrainServer:
             except (ValueError, RuntimeError) as exc:
                 self.classification_status["last_error"] = type(exc).__name__
                 logger.warning("Jev unavailable (%s)", type(exc).__name__)
+        prime_decision_metrics(
+            tuning.rerank_backend if tuning.rerank else None,
+            classification=self.classification_enabled,
+        )
         self.enrichment_running = False
         self._paused: bool = False
         self._paused_at_iso: str | None = None

@@ -50,6 +50,7 @@ from hippo_brain.telemetry import add as _add
 from hippo_brain.telemetry import get_meter
 from hippo_brain.telemetry import get_tracer as _get_tracer
 from hippo_brain.telemetry import hist as _hist
+from hippo_brain.telemetry import prime_decision_metrics
 
 logger = setup_logging("hippo-mcp")
 READ_ONLY = ToolAnnotations(readOnlyHint=True, destructiveHint=False)
@@ -228,6 +229,7 @@ def _init_state() -> None:
 
     config = _load_config()
     tuning = _retrieval_mod.configure(config.get("retrieval"))
+    prime_decision_metrics(tuning.rerank_backend if tuning.rerank else None)
     classification.configure(
         False, classification.load_recipe(config.get("classification", {}).get("recipe_path"))
     )

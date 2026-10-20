@@ -217,3 +217,64 @@ def test_decision_metrics_exporter_failure_cannot_fail_a_decision(monkeypatch, f
         monkeypatch.setattr(telemetry, "get_meter", lambda _: meter)
         monkeypatch.setattr(FakeInstrument, "add", fail)
     telemetry.record_decision_metrics({"backend": "jev", "stop_reason": "single_pass"})
+
+
+def test_prime_exports_zero_counters_on_the_same_label_sets_the_recorder_uses(meter):
+    telemetry.prime_decision_metrics("jev", classification=True)
+    telemetry.record_decision_metrics(
+        {
+            "backend": "jev",
+            "stop_reason": "single_pass",
+            "passes": [
+                {
+                    "transport": {"network_calls": 1},
+                    "usage": {"input_tokens": 11, "output_tokens": 3},
+                }
+            ],
+        }
+    )
+    success_input = {"backend": "jev", "task": "rerank", "outcome": "success", "direction": "input"}
+    tokens = meter.records[PREFIX + "tokens"]
+    assert [value for value, attrs in tokens if attrs == success_input] == [0, 11]
+    assert (0, {**success_input, "outcome": "fallback"}) in tokens
+    assert (0, {**success_input, "task": "classification", "direction": "output"}) in tokens
+    for name in ("count", "requests", "errors", "usage_unknown", "requests_unknown"):
+        assert (0, {"backend": "jev", "task": "rerank", "outcome": "success"}) in meter.records[
+            PREFIX + name
+        ]
+    # A histogram cannot hold a zero placeholder without a fake observation.
+    assert meter.records[PREFIX + "duration"] == []
+
+
+def test_prime_skips_local_backend_and_disabled_classification(meter):
+    telemetry.prime_decision_metrics("local")
+    telemetry.prime_decision_metrics(None)
+    assert dict(meter.records) == {}
+
+
+def test_prime_produces_zero_data_points_through_the_otel_sdk(monkeypatch):
+    from opentelemetry.sdk.metrics import MeterProvider
+    from opentelemetry.sdk.metrics.export import InMemoryMetricReader
+
+    reader = InMemoryMetricReader()
+    provider = MeterProvider(metric_readers=[reader])
+    monkeypatch.setattr(telemetry, "get_meter", provider.get_meter)
+    try:
+        telemetry.prime_decision_metrics("jev")
+        data = reader.get_metrics_data()
+        points = {
+            (metric.name, tuple(sorted(point.attributes.items()))): point.value
+            for resource in data.resource_metrics
+            for scope in resource.scope_metrics
+            for metric in scope.metrics
+            for point in metric.data.data_points
+        }
+    finally:
+        provider.shutdown()
+    labels = (
+        ("backend", "jev"),
+        ("direction", "input"),
+        ("outcome", "success"),
+        ("task", "rerank"),
+    )
+    assert points[(PREFIX + "tokens", labels)] == 0
