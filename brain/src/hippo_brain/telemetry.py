@@ -192,6 +192,87 @@ def hist(histogram, value, **attrs):
         histogram.record(value, attrs)
 
 
+DECISION_OUTCOMES = (
+    "success",
+    "fallback",
+    "cancelled",
+    "failed",
+    "error",
+    "retry",
+    "stale",
+    "skipped",
+    "unknown",
+)
+
+
+def _decision_instruments(meter):
+    """Create (or fetch) the decision counters and histogram with identical params."""
+    counts = {
+        "count": meter.create_counter(
+            "hippo.brain.decision.count",
+            description="Completed decision operations by outcome",
+        ),
+        "requests": meter.create_counter(
+            "hippo.brain.decision.requests", description="Transport-reported HTTP dispatches"
+        ),
+        "errors": meter.create_counter(
+            "hippo.brain.decision.errors",
+            description="Decisions that failed, fell back, or require retry",
+        ),
+        "usage_unknown": meter.create_counter(
+            "hippo.brain.decision.usage_unknown",
+            description="Assessments with missing or invalid provider token usage",
+        ),
+        "requests_unknown": meter.create_counter(
+            "hippo.brain.decision.requests_unknown",
+            description="Assessments without a transport dispatch count",
+        ),
+    }
+    tokens = meter.create_counter(
+        "hippo.brain.decision.tokens",
+        unit="{token}",
+        description="Provider-reported token usage",
+    )
+    duration = meter.create_histogram(
+        "hippo.brain.decision.duration",
+        unit="ms",
+        description="Measured decision stages; overlapping, not additive",
+    )
+    return counts, tokens, duration
+
+
+def prime_decision_metrics(rerank_backend: str | None, *, classification: bool = False) -> None:
+    """Export zero-valued decision counters before the first decision.
+
+    A per-session ``hippo-mcp`` process otherwise exports its first sample with
+    the first rerank already counted, so Prometheus ``rate()``/``increase()``
+    never see that increment. The histogram is not primed: a placeholder
+    would be a fake observation.
+    """
+    tasks = []
+    if rerank_backend in ("jev", "rules"):
+        tasks.append((rerank_backend, "rerank"))
+    if classification:
+        tasks.append(("jev", "classification"))
+    if not tasks:
+        return
+    try:
+        meter = get_meter("hippo-brain.decisions")
+        if meter is None:
+            return
+        counts, tokens, _ = _decision_instruments(meter)
+        for backend, task in tasks:
+            for outcome in DECISION_OUTCOMES:
+                attrs = {"backend": backend, "task": task, "outcome": outcome}
+                for counter in counts.values():
+                    counter.add(0, attrs)
+                for direction in ("input", "output"):
+                    tokens.add(0, {**attrs, "direction": direction})
+    except Exception:
+        # Advisory metrics must not fail process startup.
+        return
+
+
 def record_decision_metrics(diagnostics: dict, task: str = "rerank") -> None:
     """Record one completed decision using bounded labels and measured values.
 
@@ -238,37 +319,7 @@ def record_decision_metrics(diagnostics: dict, task: str = "rerank") -> None:
             "task": label(task, ("rerank", "classification", "query_topic")),
             "outcome": outcome,
         }
-        counts = {
-            "count": meter.create_counter(
-                "hippo.brain.decision.count",
-                description="Completed decision operations by outcome",
-            ),
-            "requests": meter.create_counter(
-                "hippo.brain.decision.requests", description="Transport-reported HTTP dispatches"
-            ),
-            "errors": meter.create_counter(
-                "hippo.brain.decision.errors",
-                description="Decisions that failed, fell back, or require retry",
-            ),
-            "usage_unknown": meter.create_counter(
-                "hippo.brain.decision.usage_unknown",
-                description="Assessments with missing or invalid provider token usage",
-            ),
-            "requests_unknown": meter.create_counter(
-                "hippo.brain.decision.requests_unknown",
-                description="Assessments without a transport dispatch count",
-            ),
-        }
-        tokens = meter.create_counter(
-            "hippo.brain.decision.tokens",
-            unit="{token}",
-            description="Provider-reported token usage",
-        )
-        duration = meter.create_histogram(
-            "hippo.brain.decision.duration",
-            unit="ms",
-            description="Measured decision stages; overlapping, not additive",
-        )
+        counts, tokens, duration = _decision_instruments(meter)
         counts["count"].add(1, attrs)
         if outcome in ("fallback", "failed", "error", "retry"):
             counts["errors"].add(1, attrs)
