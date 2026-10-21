@@ -148,6 +148,7 @@ fn format_optional_brain_field(label: &str, value: Option<&str>) -> Option<Strin
 async fn print_brain_health_details(
     config: &HippoConfig,
     client: &reqwest::Client,
+    paused: bool,
 ) -> Option<serde_json::Value> {
     let brain_url = format!("http://localhost:{}/health", config.brain.port);
     match client.get(&brain_url).send().await {
@@ -236,6 +237,8 @@ async fn print_brain_health_details(
                     );
                     if inference_reachable {
                         println!("[OK] Brain inference backend: reachable");
+                    } else if paused {
+                        println!("[--] Brain inference backend: unreachable (enrichment paused)");
                     } else {
                         println!("[!!] Brain inference backend: unreachable");
                     }
@@ -896,6 +899,63 @@ pub fn pending_enrichment_counts(conn: &rusqlite::Connection) -> Result<Vec<(&'s
     Ok(counts)
 }
 
+fn format_paused_since(changed_at_ms: i64) -> String {
+    chrono::DateTime::from_timestamp_millis(changed_at_ms)
+        .map(|dt| {
+            dt.with_timezone(&chrono::Local)
+                .format("%Y-%m-%d %H:%M %Z")
+                .to_string()
+        })
+        .unwrap_or_else(|| changed_at_ms.to_string())
+}
+
+/// Doctor line for the operator enrichment pause, and its fail-count contribution (always 0).
+fn enrichment_pause_line(state: &hippo_core::enrichment_state::StateRead) -> (String, u32) {
+    use hippo_core::enrichment_state::StateRead;
+    let line = match state {
+        StateRead::Missing => "[OK] Enrichment: running".to_string(),
+        StateRead::Valid(s) if !s.paused => "[OK] Enrichment: running".to_string(),
+        StateRead::Valid(s) => format!(
+            "[--] Enrichment: paused by operator since {}",
+            format_paused_since(s.changed_at_ms)
+        ),
+        StateRead::Invalid(_) => "[WW] Enrichment: state file unreadable, treated as paused; \
+             fix the file or run `hippo enrichment resume`"
+            .to_string(),
+    };
+    (line, 0)
+}
+
+fn auto_memory_enrichment_line(pending: i64, failed: i64, paused: bool) -> (String, u32) {
+    let label = "auto-memory enrichment";
+    if failed > 0 {
+        (
+            format!("[!!] {label:<29}  pending={pending} failed={failed}"),
+            1,
+        )
+    } else if pending > 0 && paused {
+        (
+            format!("[--] {label:<29}  pending={pending} (enrichment paused)"),
+            0,
+        )
+    } else if pending > 0 {
+        (format!("[WW] {label:<29}  pending={pending}"), 0)
+    } else {
+        (format!("[OK] {label:<29}  queue empty"), 0)
+    }
+}
+
+fn auto_memory_projection_line(stale: i64, paused: bool) -> String {
+    let label = "auto-memory projection";
+    if stale > 0 && paused {
+        format!("[--] {label:<29}  {stale} stale pending projection(s) (enrichment paused)")
+    } else if stale > 0 {
+        format!("[WW] {label:<29}  {stale} stale pending projection(s)")
+    } else {
+        format!("[OK] {label:<29}  projections fresh")
+    }
+}
+
 /// Run `hippo enrichment <action>` and return the text to print.
 pub fn handle_enrichment(
     config: &HippoConfig,
@@ -920,14 +980,10 @@ pub fn handle_enrichment(
                 StateRead::Missing => "Enrichment: running".to_string(),
                 StateRead::Valid(s) if !s.paused => "Enrichment: running".to_string(),
                 StateRead::Valid(s) => {
-                    let since = chrono::DateTime::from_timestamp_millis(s.changed_at_ms)
-                        .map(|dt| {
-                            dt.with_timezone(&chrono::Local)
-                                .format("%Y-%m-%d %H:%M %Z")
-                                .to_string()
-                        })
-                        .unwrap_or_else(|| s.changed_at_ms.to_string());
-                    format!("Enrichment: paused since {since}")
+                    format!(
+                        "Enrichment: paused since {}",
+                        format_paused_since(s.changed_at_ms)
+                    )
                 }
                 StateRead::Invalid(_) => format!(
                     "Enrichment: state file unreadable ({}), treated as paused",
@@ -1355,7 +1411,6 @@ mod alarms {
 }
 
 pub async fn handle_doctor(config: &HippoConfig, explain: bool) -> Result<()> {
-    let mut fail_count: u32 = 0;
     let cli_version = env!("HIPPO_VERSION_FULL");
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(2))
@@ -1364,6 +1419,13 @@ pub async fn handle_doctor(config: &HippoConfig, explain: bool) -> Result<()> {
     println!("Hippo Doctor");
     println!("============");
     println!("[OK] CLI version: {}", cli_version);
+
+    // A paused or unreadable state file is treated as paused (see is_paused).
+    let pause_state = hippo_core::enrichment_state::read_state(&config.storage.data_dir);
+    let paused = pause_state.is_paused();
+    let (pause_line, pause_fails) = enrichment_pause_line(&pause_state);
+    println!("{pause_line}");
+    let mut fail_count: u32 = pause_fails;
 
     // Check daemon socket and version
     let socket = config.socket_path();
@@ -1420,6 +1482,10 @@ pub async fn handle_doctor(config: &HippoConfig, explain: bool) -> Result<()> {
     let inference_url = format!("{}/models", config.inference.base_url);
     match client.get(&inference_url).send().await {
         Ok(r) if r.status().is_success() => println!("[OK] Inference backend reachable"),
+        _ if paused => println!(
+            "[--] Inference backend not reachable at {} (enrichment paused)",
+            config.inference.base_url
+        ),
         _ => {
             println!(
                 "[!!] Inference backend not reachable at {}",
@@ -1430,7 +1496,7 @@ pub async fn handle_doctor(config: &HippoConfig, explain: bool) -> Result<()> {
     }
 
     // Check brain — store JSON for reuse in Check 10 (schema version).
-    let brain_json = print_brain_health_details(config, &client).await;
+    let brain_json = print_brain_health_details(config, &client, paused).await;
 
     fail_count += check_data_dir_private(&config.storage.data_dir, explain);
 
@@ -1482,7 +1548,7 @@ pub async fn handle_doctor(config: &HippoConfig, explain: bool) -> Result<()> {
         }
         fail_count += check_cursor_session_coverage(config, &conn, explain);
         fail_count += check_pi_session_coverage(config, &conn, explain);
-        fail_count += check_auto_memory_health(config, &conn, explain);
+        fail_count += check_auto_memory_health(config, &conn, explain, paused);
         fail_count += check_watchdog_heartbeat(&conn, explain);
         // Auto-resolved alarm count is informational — never increments fail_count.
         check_resolved_alarm_count(&conn);
@@ -3737,7 +3803,12 @@ fn watchdog_heartbeat_status(age_secs: i64) -> WatchdogHeartbeatStatus {
 }
 
 /// Auto-memory reliability doctor check (SNUG-138) — SQLite only, no brain HTTP.
-fn check_auto_memory_health(config: &HippoConfig, db: &rusqlite::Connection, explain: bool) -> u32 {
+fn check_auto_memory_health(
+    config: &HippoConfig,
+    db: &rusqlite::Connection,
+    explain: bool,
+    paused: bool,
+) -> u32 {
     if !config.auto_memory.enabled {
         println!("[--] {:<29}  source disabled", "auto-memory health");
         return 0;
@@ -3843,20 +3914,12 @@ fn check_auto_memory_health(config: &HippoConfig, db: &rusqlite::Connection, exp
             |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .unwrap_or((0, 0));
-    if failed > 0 {
-        println!(
-            "[!!] {:<29}  pending={pending} failed={failed}",
-            "auto-memory enrichment"
-        );
-        if explain {
-            println!("     FIX: hippo-auto-memory-replay --limit 50");
-        }
-        fail_count += 1;
-    } else if pending > 0 {
-        println!("[WW] {:<29}  pending={pending}", "auto-memory enrichment");
-    } else {
-        println!("[OK] {:<29}  queue empty", "auto-memory enrichment");
+    let (line, fails) = auto_memory_enrichment_line(pending, failed, paused);
+    println!("{line}");
+    if failed > 0 && explain {
+        println!("     FIX: hippo-auto-memory-replay --limit 50");
     }
+    fail_count += fails;
 
     let stale_projections: i64 = db
         .query_row(
@@ -3868,14 +3931,7 @@ fn check_auto_memory_health(config: &HippoConfig, db: &rusqlite::Connection, exp
             |row| row.get(0),
         )
         .unwrap_or(0);
-    if stale_projections > 0 {
-        println!(
-            "[WW] {:<29}  {stale_projections} stale pending projection(s)",
-            "auto-memory projection"
-        );
-    } else {
-        println!("[OK] {:<29}  projections fresh", "auto-memory projection");
-    }
+    println!("{}", auto_memory_projection_line(stale_projections, paused));
 
     fail_count
 }
@@ -5536,7 +5592,7 @@ replacement = "***"
             .timeout(std::time::Duration::from_secs(2))
             .build()
             .unwrap();
-        print_brain_health_details(&config, &client).await;
+        print_brain_health_details(&config, &client, false).await;
 
         server.await.unwrap();
     }
@@ -6660,6 +6716,62 @@ replacement = "***"
             .unwrap();
         }
         conn
+    }
+
+    #[test]
+    fn doctor_pause_line_running() {
+        use hippo_core::enrichment_state::StateRead;
+        assert_eq!(
+            enrichment_pause_line(&StateRead::Missing),
+            ("[OK] Enrichment: running".to_string(), 0)
+        );
+    }
+
+    #[test]
+    fn doctor_pause_line_paused() {
+        use hippo_core::enrichment_state::{EnrichmentState, StateRead};
+        let (line, fails) = enrichment_pause_line(&StateRead::Valid(EnrichmentState {
+            paused: true,
+            changed_at_ms: 1_700_000_000_000,
+        }));
+        assert!(
+            line.starts_with("[--] Enrichment: paused by operator since"),
+            "{line}"
+        );
+        assert_eq!(fails, 0);
+    }
+
+    #[test]
+    fn doctor_pause_line_invalid() {
+        use hippo_core::enrichment_state::StateRead;
+        let (line, fails) = enrichment_pause_line(&StateRead::Invalid("bad".into()));
+        assert!(
+            line.starts_with("[WW] Enrichment: state file unreadable"),
+            "{line}"
+        );
+        assert!(line.contains("hippo enrichment resume"), "{line}");
+        assert_eq!(fails, 0);
+    }
+
+    #[test]
+    fn doctor_auto_memory_pending_while_paused_is_informational() {
+        let (line, fails) = auto_memory_enrichment_line(5, 0, true);
+        assert!(line.starts_with("[--]"), "{line}");
+        assert_eq!(fails, 0);
+        let (line, fails) = auto_memory_enrichment_line(5, 2, true);
+        assert!(line.starts_with("[!!]"), "{line}");
+        assert_eq!(fails, 1);
+        assert!(
+            auto_memory_enrichment_line(5, 0, false)
+                .0
+                .starts_with("[WW]")
+        );
+    }
+
+    #[test]
+    fn doctor_stale_projections_while_paused_is_informational() {
+        assert!(auto_memory_projection_line(3, true).starts_with("[--]"));
+        assert!(auto_memory_projection_line(3, false).starts_with("[WW]"));
     }
 
     #[test]
