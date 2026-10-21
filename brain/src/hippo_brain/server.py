@@ -56,6 +56,7 @@ from hippo_brain.enrichment import (
     write_knowledge_node,
 )
 from hippo_brain.enrichment_sources import claim_all_sources, enrich_all_sources
+from hippo_brain.enrichment_state import read_state
 from hippo_brain.redaction import index_text
 from hippo_brain.memory_query import (
     MemoryQueryRequest,
@@ -423,6 +424,8 @@ class BrainServer:
         self.enrichment_running = False
         self._paused: bool = False
         self._paused_at_iso: str | None = None
+        # Last operator pause value seen by the enrichment loop (None until the first read).
+        self._operator_paused_seen: bool | None = None
         self._query_inflight: int = 0  # incremented while /ask is executing
         # True while the enrichment loop body is running an LM-bound batch
         # (preflight + claim + gather). Used by /control/pause so callers like
@@ -571,6 +574,7 @@ class BrainServer:
         if embed_model_drift:
             status = "degraded"
 
+        operator_state = read_state(self.data_dir)
         return JSONResponse(
             {
                 "status": status,
@@ -582,6 +586,13 @@ class BrainServer:
                 "enrichment_running": self.enrichment_running,
                 "paused": self._paused,
                 "paused_at": self._paused_at_iso,
+                "enrichment_paused": operator_state.paused,
+                "enrichment_paused_since_ms": (
+                    operator_state.changed_at_ms
+                    if operator_state.paused and operator_state.valid
+                    else None
+                ),
+                "enrichment_state_valid": operator_state.valid,
                 "db_reachable": db_reachable,
                 "queue_depth": queue_depth,
                 "queue_failed": queue_failed,
@@ -1329,6 +1340,39 @@ class BrainServer:
         finally:
             conn.close()
 
+    def _enrichment_paused(self) -> bool:
+        """Bench pause or operator pause (state file). Resets preflight failures on operator change."""
+        operator_paused = read_state(self.data_dir).paused
+        seen = self._operator_paused_seen
+        if operator_paused != seen:
+            logger.info("operator enrichment pause observed: paused=%s", operator_paused)
+            self._operator_paused_seen = operator_paused
+            # A first observation of "running" is not a transition; resetting there
+            # would let repeated restarts during an outage hide I-12.
+            if seen is not None or operator_paused:
+                self._reset_preflight_failures()
+        return self._paused or operator_paused
+
+    def _reset_preflight_failures(self) -> None:
+        """Zero source_health['brain-preflight'] so a pause boundary does not trip I-12."""
+        try:
+            conn = self._get_conn()
+        except Exception as e:
+            logger.debug("brain-preflight source_health: get_conn failed: %s", e)
+            return
+        try:
+            conn.execute(
+                "UPDATE source_health SET consecutive_failures = 0, updated_at = ?1 "
+                "WHERE source = 'brain-preflight'",
+                (int(time.time() * 1000),),
+            )
+            conn.commit()
+        except sqlite3.OperationalError as e:
+            # source_health absent or schema older than v8.
+            logger.debug("brain-preflight source_health reset skipped: %s", e)
+        finally:
+            conn.close()
+
     def _pick_enrichment_model(self, loaded: list[str]) -> bool:
         """Filter chat models from `loaded` and set self.enrichment_model.
 
@@ -1369,7 +1413,7 @@ class BrainServer:
         try:
             while True:
                 try:
-                    if self._paused:
+                    if self._enrichment_paused():
                         # Wake immediately when /control/resume sets the event;
                         # otherwise re-poll _paused after poll_interval_secs.
                         try:
@@ -1406,7 +1450,7 @@ class BrainServer:
 
                     # Pause can arrive during either wait above. No await may
                     # separate this check from marking enrichment active.
-                    if self._paused:
+                    if self._enrichment_paused():
                         continue
 
                     # F-15: graduate new capture_alarms into lessons (best-effort).

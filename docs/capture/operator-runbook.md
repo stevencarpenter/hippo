@@ -39,6 +39,29 @@ A clean run looks like this:
 
 A failed run will list the specific check, the source, and (with `--explain`) what to do.
 
+### Enrichment pause
+
+Pause LLM enrichment while you work at the keyboard, and resume it later so the backlog drains.
+
+```bash
+hippo enrichment pause    # writes <data_dir>/enrichment-state.json
+hippo enrichment status   # state, time of last change, pending count per queue
+hippo enrichment resume
+```
+
+While paused, all capture paths keep writing and the queues keep growing. No item is dropped, expired, or marked failed. The brain notices a change within one poll interval (default 5 s). A batch already in flight finishes. Embeddings, queries, MCP tools, and Jev classification are not paused. The state survives brain, daemon, and host restarts, and a fresh install with no state file is running.
+
+A state file that cannot be parsed counts as paused. `hippo enrichment status` and `hippo doctor` report this. Fix the file, or run `hippo enrichment resume` to overwrite it.
+
+While paused:
+
+- `hippo doctor` prints `[--] Enrichment: paused by operator since <time>`. This line is not a failure.
+- Doctor reports `[--]` instead of a failure or warning for inference reachability (the `Brain inference backend` and `Inference backend` lines) and for the auto-memory enrichment and projection checks. Failed queue rows still report as usual.
+- The watchdog suppresses I-12 and I-19. After resume, I-19 measures document staleness from the later of the last update and the resume time. I-12 evaluates only fresh preflight results when the brain ran during the pause; if the brain was down for the whole pause, a count recorded before the pause still applies.
+- The brain `/health` response reports `enrichment_paused`, `enrichment_paused_since_ms`, and `enrichment_state_valid`.
+
+The bench `/control/pause` is a separate pause. `hippo enrichment resume` does not lift it, and a bench resume does not lift the operator pause. Enrichment runs only when neither pause is active.
+
 ## Alarms
 
 `capture_alarms` is an append-only ledger of invariant violations. The watchdog writes; you acknowledge.
@@ -156,7 +179,8 @@ Common causes:
 - Inference backend model swapped — `[models].enrichment` in `~/.config/hippo/config.toml` doesn't match a loaded model on the backend.
 - `[lmstudio]` → `[inference]` config-section drift — upgrading an old install? Rename the section in `~/.config/hippo/config.toml`. Both the daemon and the brain reject the legacy name with a clear migration error. The same `[inference]` key works for LM Studio, oMLX, ollama, vLLM, and any other OpenAI-compatible backend.
 - Brain crashed — `mise run restart` (or `launchctl bootout/bootstrap` the brain agent).
-- Watchdog **I-12** ("brain preflight stuck") will fire after the inference backend has been unreachable for ~1 minute; check `hippo alarms list` and the `Stack Health Grade` panel.
+- Enrichment paused by the operator (`hippo enrichment status`)? Queues grow by design; run `hippo enrichment resume` to drain them.
+- Watchdog **I-12** ("brain preflight stuck") will fire after the inference backend has been unreachable for ~1 minute while enrichment is running; check `hippo alarms list` and the `Stack Health Grade` panel.
 
 The watchdog reaper handles transient locks (rows stuck in `processing` for > `lock_timeout_secs`); see [`docs/brain-watchdog.md`](../brain-watchdog.md). A persistent backlog is operator-visible — neither the watchdog nor doctor will silently drop work.
 

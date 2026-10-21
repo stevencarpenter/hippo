@@ -1,4 +1,5 @@
 use clap::{Parser, Subcommand};
+pub use hippo_daemon::commands::EnrichmentAction;
 
 #[derive(Parser)]
 #[command(name = "hippo", version = env!("HIPPO_VERSION_FULL"), about = "Local knowledge capture daemon")]
@@ -136,6 +137,11 @@ pub enum Commands {
     Alarms {
         #[command(subcommand)]
         action: AlarmsAction,
+    },
+    /// Pause or resume LLM enrichment, or show its state
+    Enrichment {
+        #[command(subcommand)]
+        action: EnrichmentAction,
     },
     /// Watch ~/.claude/projects/**/*.jsonl for new session content (FSEvents, KeepAlive service)
     ClaudeSessionWatch,

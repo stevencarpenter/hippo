@@ -1433,6 +1433,10 @@ async fn run() -> Result<()> {
                 commands::handle_alarms_prune(&config)?;
             }
         },
+        Commands::Enrichment { action } => {
+            let now_ms = chrono::Utc::now().timestamp_millis();
+            println!("{}", commands::handle_enrichment(&config, &action, now_ms)?);
+        }
         Commands::ClaudeSessionWatch => {
             watch_claude_sessions::run(&config).await?;
         }

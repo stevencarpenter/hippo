@@ -180,6 +180,11 @@ pub fn run(config: &HippoConfig) -> Result<()> {
     });
     let mut violations = check_invariants(&rows, now_ms, shell_real_activity_recent);
     suppress_disabled_auto_memory_violations(&mut violations, config.auto_memory.enabled);
+    let pause_state = hippo_core::enrichment_state::read_state(&config.storage.data_dir);
+    if let hippo_core::enrichment_state::StateRead::Invalid(reason) = &pause_state {
+        warn!(%reason, "enrichment state file invalid; treating enrichment as paused");
+    }
+    suppress_operator_paused_violations(&mut violations, &pause_state);
     // I-14 needs a DB query, not just source_health rows — checked here.
     if let Some(v) = check_i14_embedding_orphans(
         &conn,
@@ -199,7 +204,16 @@ pub fn run(config: &HippoConfig) -> Result<()> {
         violations.push(v);
     }
     if config.auto_memory.enabled && !bench_pause_window_active() {
-        if let Some(v) = check_i19_stale_memory_projection(&conn, now_ms)? {
+        // A deliberate pause starves projection; staleness counts from resume.
+        let resumed_at_ms = match &pause_state {
+            hippo_core::enrichment_state::StateRead::Valid(st) if !st.paused => {
+                Some(st.changed_at_ms)
+            }
+            _ => None,
+        };
+        if !pause_state.is_paused()
+            && let Some(v) = check_i19_stale_memory_projection(&conn, now_ms, resumed_at_ms)?
+        {
             violations.push(v);
         }
         if let Some(v) = check_i20_orphaned_memory_chunk_links(&conn, now_ms)? {
@@ -342,6 +356,18 @@ fn suppress_disabled_auto_memory_violations(
     violations.retain(|violation| {
         violation.source != "claude-auto-memory" && violation.source != "auto-memory-watcher"
     });
+}
+
+/// A deliberate (or fail-closed) operator pause starves the brain, so I-12 and
+/// I-19 would fire for an intended state. The brain resets the preflight counter
+/// on transitions, so a resume with the server still down re-alarms on fresh failures.
+fn suppress_operator_paused_violations(
+    violations: &mut Vec<InvariantViolation>,
+    state: &hippo_core::enrichment_state::StateRead,
+) {
+    if state.is_paused() {
+        violations.retain(|v| v.invariant_id != "I-12" && v.invariant_id != "I-19");
+    }
 }
 
 /// Returns `(active, resolved_unacked)` from `capture_alarms`. Errors are
@@ -803,6 +829,7 @@ pub fn check_i18_auto_memory_ingest_proxy(
 pub fn check_i19_stale_memory_projection(
     conn: &Connection,
     now_ms: i64,
+    resumed_at_ms: Option<i64>,
 ) -> Result<Option<InvariantViolation>> {
     let table_exists: bool = conn.query_row(
         "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='memory_documents')",
@@ -818,8 +845,12 @@ pub fn check_i19_stale_memory_projection(
          WHERE state = 'active'
            AND projection_status = 'pending'
            AND repository != ?1
-           AND updated_at < ?2",
-        rusqlite::params![AUTO_MEMORY_PROBE_REPOSITORY, cutoff],
+           AND MAX(updated_at, ?3) < ?2",
+        rusqlite::params![
+            AUTO_MEMORY_PROBE_REPOSITORY,
+            cutoff,
+            resumed_at_ms.unwrap_or(0)
+        ],
         |row| row.get(0),
     )?;
     if count == 0 {
@@ -1359,6 +1390,85 @@ fn fire_macos_notification(message: &str, title: &str) {
 mod tests {
     use super::*;
     use tempfile::TempDir;
+
+    // ── Operator enrichment pause ──────────────────────────────────────────
+
+    fn violation(id: &str, source: &str) -> InvariantViolation {
+        InvariantViolation {
+            invariant_id: id.to_string(),
+            source: source.to_string(),
+            since_ms: 1,
+            details: json!({ "consecutive_failures": 40 }),
+        }
+    }
+
+    fn state(paused: bool) -> hippo_core::enrichment_state::StateRead {
+        hippo_core::enrichment_state::StateRead::Valid(
+            hippo_core::enrichment_state::EnrichmentState {
+                paused,
+                changed_at_ms: 1,
+            },
+        )
+    }
+
+    fn ids_after_suppress(state: &hippo_core::enrichment_state::StateRead) -> Vec<String> {
+        let mut vs = vec![
+            violation("I-12", "brain-preflight"),
+            violation("I-1", "shell"),
+            violation("I-19", "claude-auto-memory"),
+        ];
+        suppress_operator_paused_violations(&mut vs, state);
+        vs.into_iter().map(|v| v.invariant_id).collect()
+    }
+
+    #[test]
+    fn operator_pause_suppresses_i12() {
+        assert_eq!(ids_after_suppress(&state(true)), vec!["I-1"]);
+    }
+
+    #[test]
+    fn invalid_state_file_suppresses_like_pause() {
+        let invalid = hippo_core::enrichment_state::StateRead::Invalid("bad".into());
+        assert_eq!(ids_after_suppress(&invalid), vec!["I-1"]);
+    }
+
+    #[test]
+    fn running_state_keeps_i12() {
+        assert_eq!(
+            ids_after_suppress(&state(false)),
+            vec!["I-12", "I-1", "I-19"]
+        );
+    }
+
+    #[test]
+    fn i19_measures_staleness_from_resume() {
+        let dir = TempDir::new().unwrap();
+        let conn = hippo_core::storage::open_db(&dir.path().join("h.db")).unwrap();
+        let now = 10_000_000_000_i64;
+        conn.execute(
+            "INSERT INTO memory_documents
+               (uuid, repository, logical_path, source_path, observed_at, created_at, updated_at)
+             VALUES ('u', 'repo', 'p', 's', ?1, ?1, ?2)",
+            rusqlite::params![now - 3 * 3_600_000, now - 2 * 3_600_000],
+        )
+        .unwrap();
+        let min = 60_000;
+        assert!(
+            check_i19_stale_memory_projection(&conn, now, Some(now - 10 * min))
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            check_i19_stale_memory_projection(&conn, now, Some(now - 40 * min))
+                .unwrap()
+                .is_some()
+        );
+        assert!(
+            check_i19_stale_memory_projection(&conn, now, None)
+                .unwrap()
+                .is_some()
+        );
+    }
 
     // ── Helpers ────────────────────────────────────────────────────────────
 
