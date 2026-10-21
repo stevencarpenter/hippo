@@ -34,6 +34,15 @@ Structured failure logs include `queue_name`, `stage`, `exception_type`,
 `enrichment_model`, `claim_count`, and `claim_age_ms` — the fields a human or
 alert rule needs to diagnose a wedge without tailing the full log.
 
+## Pause controls
+
+Two independent pauses exist:
+
+- **Bench pause**: `POST /control/pause` and `/control/resume`, used by hippo-bench. It is a full quiesce held in memory. It also rejects queries with 503 and stops the embed reaper and classification.
+- **Operator pause**: `hippo enrichment pause|resume`, persisted in `<data_dir>/enrichment-state.json`. It stops only the enrichment loop. Capture, embeddings, queries, and classification continue.
+
+Neither pause clears the other. Enrichment runs only when both are inactive. While the operator pause is active, the watchdog suppresses I-12 and I-19, and the brain resets `brain-preflight.consecutive_failures` on pause transitions. While either pause is active, the loop skips the reaper and the preflight. A batch already in flight finishes, so no row is cancelled or retried because of the pause.
+
 ## Config knobs
 
 `[brain]` section of `~/.config/hippo/config.toml`:

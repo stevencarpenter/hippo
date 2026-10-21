@@ -27,6 +27,7 @@ local LLMs.
     hippo doctor              # Health check
     hippo config edit         # Edit runtime config
     hippo ask "<question>"    # RAG query: synthesized answer from knowledge base
+    hippo enrichment pause|resume|status   # Operator pause of LLM enrichment (state in <data_dir>/enrichment-state.json)
 
 ### Rust (daemon + CLI)
 
