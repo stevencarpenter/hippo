@@ -56,7 +56,7 @@ A state file that cannot be parsed counts as paused. `hippo enrichment status` a
 While paused:
 
 - `hippo doctor` prints `[--] Enrichment: paused by operator since <time>`. This line is not a failure.
-- Doctor reports `[--]` instead of a failure or warning for inference reachability, the pending enrichment backlog, and the auto-memory enrichment and projection checks. Failed queue rows still report as usual.
+- Doctor reports `[--]` instead of a failure or warning for inference reachability (the `Brain inference backend` and `Inference backend` lines) and for the auto-memory enrichment and projection checks. Failed queue rows still report as usual.
 - The watchdog suppresses I-12 and I-19. After resume, I-19 measures document staleness from the later of the last update and the resume time. I-12 evaluates only fresh preflight results.
 - The brain `/health` response reports `enrichment_paused`, `enrichment_paused_since_ms`, and `enrichment_state_valid`.
 

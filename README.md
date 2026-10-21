@@ -175,7 +175,7 @@ hippo enrichment resume                 # Start LLM enrichment again
 hippo enrichment status                 # Pause state, time of last change, pending count per queue
 ```
 
-Pausing enrichment: `hippo enrichment pause` writes `enrichment-state.json` in the data directory. The brain reads it on each loop iteration (default 5 s) and stops the shell, agentic, browser, workflow, and auto-memory enrichment loop. A batch already in flight finishes. Capture, embeddings, queries, MCP tools, and Jev classification keep running, and every queue keeps growing without loss. The state survives restarts and reinstalls. Run `hippo enrichment resume` and the brain works through the backlog, then keeps enriching new work. This pause is separate from the bench pause below, and neither one clears the other.
+Pausing enrichment: `hippo enrichment pause` writes `enrichment-state.json` in the data directory. The brain reads it on each loop iteration (default 5 s) and stops enrichment for the shell, agentic, browser, workflow, and auto-memory sources. A batch already in flight finishes. Capture, embeddings, queries, MCP tools, and Jev classification keep running, and every queue keeps growing without loss. The state survives restarts and reinstalls. Run `hippo enrichment resume` and the brain works through the backlog, then keeps enriching new work. This pause is separate from the bench pause below, and neither one clears the other.
 
 Brain API and enrichment control:
 
