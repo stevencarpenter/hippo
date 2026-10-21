@@ -64,10 +64,14 @@ def _make_server(db_path, data_dir: Path) -> BrainServer:
     return server
 
 
+async def _hang(*args, **kwargs):
+    await asyncio.Event().wait()
+
+
 async def _run_loop(server: BrainServer, decision=OK, secs: float = 0.2) -> None:
-    with patch(
-        "hippo_brain.server.preflight_inference", new_callable=AsyncMock, return_value=decision
-    ):
+    """Run the loop briefly. decision=None makes preflight hang, so it never touches source_health."""
+    mock = AsyncMock(side_effect=_hang) if decision is None else AsyncMock(return_value=decision)
+    with patch("hippo_brain.server.preflight_inference", mock):
         task = asyncio.create_task(server._enrichment_loop())
         await asyncio.sleep(secs)
         task.cancel()
@@ -216,17 +220,36 @@ async def test_pause_transition_resets_preflight_failures(env):
 
 
 @pytest.mark.asyncio
-async def test_first_observation_after_construction_resets_preflight_failures(env):
+async def test_pause_to_running_transition_resets_preflight_failures(env):
+    conn, db_path, data_dir = env
+    _write_state(data_dir, paused=True)
+    server = _make_server(db_path, data_dir)
+    try:
+        await _run_loop(server, decision=None)
+        conn.execute(
+            "UPDATE source_health SET consecutive_failures = 40 WHERE source = 'brain-preflight'"
+        )
+        conn.commit()
+        _write_state(data_dir, paused=False)
+        await _run_loop(server, decision=None)
+        assert _preflight_failures(conn) == 0
+    finally:
+        server.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("paused", "expected"), [(True, 0), (False, 40)])
+async def test_first_observation_resets_preflight_failures_only_when_paused(env, paused, expected):
     conn, db_path, data_dir = env
     conn.execute(
         "UPDATE source_health SET consecutive_failures = 40 WHERE source = 'brain-preflight'"
     )
     conn.commit()
-    _write_state(data_dir, paused=True)
+    _write_state(data_dir, paused=paused)
     server = _make_server(db_path, data_dir)
     try:
-        await _run_loop(server, decision=FAIL)
-        assert _preflight_failures(conn) == 0
+        await _run_loop(server, decision=None)
+        assert _preflight_failures(conn) == expected
     finally:
         server.close()
 

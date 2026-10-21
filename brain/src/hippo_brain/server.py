@@ -1338,10 +1338,14 @@ class BrainServer:
     def _enrichment_paused(self) -> bool:
         """Bench pause or operator pause (state file). Resets preflight failures on operator change."""
         operator_paused = read_state(self.data_dir).paused
-        if operator_paused != self._operator_paused_seen:
+        seen = self._operator_paused_seen
+        if operator_paused != seen:
             logger.info("operator enrichment pause observed: paused=%s", operator_paused)
             self._operator_paused_seen = operator_paused
-            self._reset_preflight_failures()
+            # A first observation of "running" is not a transition; resetting there
+            # would let repeated restarts during an outage hide I-12.
+            if seen is not None or operator_paused:
+                self._reset_preflight_failures()
         return self._paused or operator_paused
 
     def _reset_preflight_failures(self) -> None:
