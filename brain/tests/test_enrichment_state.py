@@ -25,6 +25,7 @@ def test_reads_shared_fixture(tmp_path):
         '{"paused":"yes"}',
         '{"changed_at_ms":1}',
         '{"paused":true,"changed_at_ms":9223372036854775808}',
+        '{"paused": true, "paused": false, "changed_at_ms": 1}',
     ],
 )
 def test_invalid_contents_are_paused(tmp_path, bad):

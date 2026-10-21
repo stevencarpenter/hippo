@@ -17,6 +17,14 @@ class StateRead:
     valid: bool
 
 
+def _reject_duplicates(pairs):
+    # Rust serde rejects duplicate keys; Python keeps the last by default.
+    keys = [k for k, _ in pairs]
+    if len(keys) != len(set(keys)):
+        raise ValueError("duplicate key")
+    return dict(pairs)
+
+
 def read_state(data_dir: str | Path) -> StateRead:
     """Never raises. Missing file means running; invalid content fails closed (paused)."""
     path = Path(data_dir) / STATE_FILE
@@ -29,7 +37,7 @@ def read_state(data_dir: str | Path) -> StateRead:
         logger.warning("enrichment state unreadable at %s: %s", path, e)
         return invalid
     try:
-        data = json.loads(text)
+        data = json.loads(text, object_pairs_hook=_reject_duplicates)
     except ValueError as e:
         logger.warning("enrichment state invalid at %s: %s", path, e)
         return invalid

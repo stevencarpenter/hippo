@@ -282,6 +282,18 @@ def build_openapi_spec() -> dict:
                         "enrichment_running": {"type": "boolean"},
                         "paused": {"type": "boolean"},
                         "paused_at": {"type": ["string", "null"], "format": "date-time"},
+                        "enrichment_paused": {
+                            "type": "boolean",
+                            "description": "True when the operator enrichment pause is active or its state file is invalid.",
+                        },
+                        "enrichment_state_valid": {
+                            "type": "boolean",
+                            "description": "False when the operator pause state file is unreadable or malformed.",
+                        },
+                        "enrichment_paused_since_ms": {
+                            "type": ["integer", "null"],
+                            "description": "Epoch ms of the last operator pause state change, or null if unknown.",
+                        },
                         "db_reachable": {"type": "boolean"},
                         "queue_depth": {"type": "integer"},
                         "queue_failed": {"type": "integer"},

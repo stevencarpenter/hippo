@@ -978,7 +978,10 @@ pub fn handle_enrichment(
             let state = read_state(dir);
             let mut out = match &state {
                 StateRead::Missing => "Enrichment: running".to_string(),
-                StateRead::Valid(s) if !s.paused => "Enrichment: running".to_string(),
+                StateRead::Valid(s) if !s.paused => format!(
+                    "Enrichment: running since {}",
+                    format_paused_since(s.changed_at_ms)
+                ),
                 StateRead::Valid(s) => {
                     format!(
                         "Enrichment: paused since {}",
@@ -1423,6 +1426,11 @@ pub async fn handle_doctor(config: &HippoConfig, explain: bool) -> Result<()> {
     // A paused or unreadable state file is treated as paused (see is_paused).
     let pause_state = hippo_core::enrichment_state::read_state(&config.storage.data_dir);
     let paused = pause_state.is_paused();
+    // A deliberate pause starves projection; staleness counts from resume (matches watchdog I-19).
+    let resumed_at_ms = match &pause_state {
+        hippo_core::enrichment_state::StateRead::Valid(st) if !st.paused => Some(st.changed_at_ms),
+        _ => None,
+    };
     let (pause_line, pause_fails) = enrichment_pause_line(&pause_state);
     println!("{pause_line}");
     let mut fail_count: u32 = pause_fails;
@@ -1548,7 +1556,7 @@ pub async fn handle_doctor(config: &HippoConfig, explain: bool) -> Result<()> {
         }
         fail_count += check_cursor_session_coverage(config, &conn, explain);
         fail_count += check_pi_session_coverage(config, &conn, explain);
-        fail_count += check_auto_memory_health(config, &conn, explain, paused);
+        fail_count += check_auto_memory_health(config, &conn, explain, paused, resumed_at_ms);
         fail_count += check_watchdog_heartbeat(&conn, explain);
         // Auto-resolved alarm count is informational — never increments fail_count.
         check_resolved_alarm_count(&conn);
@@ -3808,6 +3816,7 @@ fn check_auto_memory_health(
     db: &rusqlite::Connection,
     explain: bool,
     paused: bool,
+    resumed_at_ms: Option<i64>,
 ) -> u32 {
     if !config.auto_memory.enabled {
         println!("[--] {:<29}  source disabled", "auto-memory health");
@@ -3921,19 +3930,27 @@ fn check_auto_memory_health(
     }
     fail_count += fails;
 
-    let stale_projections: i64 = db
-        .query_row(
-            "SELECT COUNT(*) FROM memory_documents
-             WHERE state = 'active' AND projection_status = 'pending'
-               AND repository != 'hippo/__hippo_probe__'
-               AND updated_at < ?1",
-            rusqlite::params![now_ms - 30 * 60 * 1000],
-            |row| row.get(0),
-        )
-        .unwrap_or(0);
+    let stale_projections = count_stale_projections(db, now_ms, resumed_at_ms);
     println!("{}", auto_memory_projection_line(stale_projections, paused));
 
     fail_count
+}
+
+/// Pending projections older than 30 min, measured from the later of `updated_at` and the resume time.
+fn count_stale_projections(
+    db: &rusqlite::Connection,
+    now_ms: i64,
+    resumed_at_ms: Option<i64>,
+) -> i64 {
+    db.query_row(
+        "SELECT COUNT(*) FROM memory_documents
+         WHERE state = 'active' AND projection_status = 'pending'
+           AND repository != 'hippo/__hippo_probe__'
+           AND MAX(updated_at, ?2) < ?1",
+        rusqlite::params![now_ms - 30 * 60 * 1000, resumed_at_ms.unwrap_or(0)],
+        |row| row.get(0),
+    )
+    .unwrap_or(0)
 }
 
 /// Check 8: Watchdog heartbeat — verify the watchdog row in source_health is fresh.
@@ -6775,6 +6792,30 @@ replacement = "***"
     }
 
     #[test]
+    fn doctor_stale_projection_counts_from_resume() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE memory_documents (id INTEGER PRIMARY KEY, state TEXT, \
+             projection_status TEXT, repository TEXT, updated_at INTEGER);",
+        )
+        .unwrap();
+        let now = 10_000_000_000_i64;
+        let min = 60_000;
+        conn.execute(
+            "INSERT INTO memory_documents (state, projection_status, repository, updated_at) \
+             VALUES ('active', 'pending', 'r', ?1)",
+            [now - 120 * min],
+        )
+        .unwrap();
+        let line = |resumed| {
+            auto_memory_projection_line(count_stale_projections(&conn, now, resumed), false)
+        };
+        assert!(line(Some(now - 10 * min)).starts_with("[OK]"));
+        assert!(line(Some(now - 40 * min)).starts_with("[WW]"));
+        assert!(line(None).starts_with("[WW]"));
+    }
+
+    #[test]
     fn enrichment_pause_writes_paused_state() {
         let dir = tempdir().unwrap();
         let config = enrichment_test_config(dir.path());
@@ -6798,6 +6839,8 @@ replacement = "***"
         handle_enrichment(&config, &EnrichmentAction::Pause, 1).unwrap();
         let out = handle_enrichment(&config, &EnrichmentAction::Resume, 2).unwrap();
         assert!(out.contains("Enrichment resumed"), "{out}");
+        let status = handle_enrichment(&config, &EnrichmentAction::Status, 0).unwrap();
+        assert!(status.starts_with("Enrichment: running since "), "{status}");
         assert!(matches!(
             hippo_core::enrichment_state::read_state(dir.path()),
             hippo_core::enrichment_state::StateRead::Valid(

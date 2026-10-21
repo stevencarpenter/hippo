@@ -124,7 +124,13 @@ mod tests {
 
     #[test]
     fn invalid_contents_read_as_paused() {
-        for bad in ["", "{", r#"{"paused":"yes"}"#, r#"{"changed_at_ms":1}"#] {
+        for bad in [
+            "",
+            "{",
+            r#"{"paused":"yes"}"#,
+            r#"{"changed_at_ms":1}"#,
+            r#"{"paused": true, "paused": false, "changed_at_ms": 1}"#,
+        ] {
             let t = tempfile::tempdir().unwrap();
             put(t.path(), bad);
             let r = read_state(t.path());
