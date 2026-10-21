@@ -965,16 +965,97 @@ mod tests {
 
         assert!(!rendered.contains("__"));
         assert!(rendered.contains("<string>com.hippo.omlx</string>"));
-        assert!(
-            rendered.contains("<string>/Applications/oMLX.app/Contents/MacOS/omlx-cli</string>")
-        );
-        assert!(rendered.contains("<string>start</string>"));
-        assert!(rendered.contains("<string>--no-wait</string>"));
+        assert!(rendered.contains("<string>/bin/sh</string>"));
         assert!(rendered.contains("<integer>60</integer>"));
         assert!(!rendered.contains("<key>KeepAlive</key>"));
         assert!(rendered.contains("<string>/Users/me/.local/share/hippo/omlx.stdout.log</string>"));
         assert!(rendered.contains("<string>/Users/me/.local/share/hippo/omlx.stderr.log</string>"));
         assert!(rendered.contains("<string>/Users/me</string>"));
+    }
+
+    /// Runs the rendered keeper script with fake `curl`, `pgrep`, and
+    /// `omlx-cli`, and returns whether it asked oMLX to start.
+    fn omlx_keeper_starts(server_healthy: bool, app_running: bool) -> bool {
+        use std::os::unix::fs::PermissionsExt;
+
+        let template = include_str!("../../../launchd/com.hippo.omlx.plist");
+        let script = template
+            .split("<string>-c</string>")
+            .nth(1)
+            .and_then(|rest| rest.split("<string>").nth(1))
+            .and_then(|rest| rest.split("</string>").next())
+            .expect("keeper runs an inline /bin/sh -c script");
+
+        let dir = tempfile::tempdir().unwrap();
+        let bin = dir.path().join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let marker = dir.path().join("started");
+        let fake = |name: &str, body: String| {
+            let path = bin.join(name);
+            std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+            path
+        };
+        let probed = dir.path().join("probed");
+        fake(
+            "curl",
+            format!(
+                "for a; do last=$a; done; echo \"$last\" > '{}'; exit {}",
+                probed.display(),
+                if server_healthy { 0 } else { 7 }
+            ),
+        );
+        fake("pgrep", format!("exit {}", if app_running { 0 } else { 1 }));
+        let cli = fake("omlx-cli", format!("echo \"$@\" > '{}'", marker.display()));
+        let script = script.replace(
+            "/Applications/oMLX.app/Contents/MacOS/omlx-cli",
+            cli.to_str().unwrap(),
+        );
+
+        let config_dir = dir.path().join(".config/hippo");
+        std::fs::create_dir_all(&config_dir).unwrap();
+        std::fs::write(
+            config_dir.join("config.toml"),
+            "[inference]\nbase_url = \"http://127.0.0.1:4242/v1\"\n",
+        )
+        .unwrap();
+
+        let status = std::process::Command::new("/bin/sh")
+            .args(["-c", &script])
+            .env_clear()
+            .env("HOME", dir.path())
+            .env("PATH", format!("{}:/usr/bin:/bin", bin.display()))
+            .status()
+            .unwrap();
+        assert!(status.success(), "keeper must exit 0 in every case");
+        assert_eq!(
+            std::fs::read_to_string(&probed).unwrap().trim(),
+            "http://127.0.0.1:4242/v1/models",
+            "keeper must probe the configured inference base_url"
+        );
+        let started = std::fs::read_to_string(&marker).ok();
+        if let Some(args) = &started {
+            assert_eq!(args.trim(), "start --no-wait");
+        }
+        started.is_some()
+    }
+
+    #[test]
+    fn omlx_keeper_leaves_a_healthy_server_alone() {
+        // Covers a server the app did not start (an orphan): the app would
+        // fail with "port in use", so the keeper must not ask it to start.
+        assert!(!omlx_keeper_starts(true, true));
+        assert!(!omlx_keeper_starts(true, false));
+    }
+
+    #[test]
+    fn omlx_keeper_never_reopens_a_quit_app() {
+        assert!(!omlx_keeper_starts(false, false));
+    }
+
+    #[test]
+    fn omlx_keeper_starts_the_server_when_the_app_runs_without_one() {
+        assert!(omlx_keeper_starts(false, true));
     }
 
     /// The brain LaunchAgent must resolve `TYPESAFE_API_KEY` from 1Password at

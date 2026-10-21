@@ -594,7 +594,7 @@ exit 1
 '''
 
 [tasks."install:omlx"]
-description = "Install the optional com.hippo.omlx keeper LaunchAgent (relaunches the oMLX macOS app if it is not running)"
+description = "Install the optional com.hippo.omlx keeper LaunchAgent (starts the oMLX server when the app runs without one; never reopens a quit app)"
 run = '''
 #!/usr/bin/env bash
 set -euo pipefail
@@ -622,6 +622,8 @@ plutil -lint "$DEST" >/dev/null
 
 launchctl bootout "$DOMAIN" "$DEST" >/dev/null 2>&1 || true
 launchctl bootstrap "$DOMAIN" "$DEST"
+# The keeper never opens the app, so start it once here.
+"$OMLX_CLI" start --no-wait
 
 for _ in {1..90}; do
     if curl -fsS --max-time 2 "$BASE_URL/models" >/dev/null 2>&1; then
