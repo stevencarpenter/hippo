@@ -849,6 +849,100 @@ fn print_alarms_table(rows: &[&AlarmRow], show_resolved: bool) {
     }
 }
 
+/// Operator enrichment pause actions. Defined here (not in `cli.rs`) because
+/// the bin-only `cli` module is not visible to the library; `cli.rs` re-exports it.
+#[derive(clap::Subcommand, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EnrichmentAction {
+    /// Stop LLM enrichment; capture continues and work queues.
+    Pause,
+    /// Resume LLM enrichment.
+    Resume,
+    /// Show the pause state and pending queue counts.
+    Status,
+}
+
+const ENRICHMENT_QUEUES: [(&str, &str); 5] = [
+    ("shell", "enrichment_queue"),
+    ("agentic", "agentic_enrichment_queue"),
+    ("browser", "browser_enrichment_queue"),
+    ("workflow", "workflow_enrichment_queue"),
+    ("auto-memory", "memory_enrichment_queue"),
+];
+
+/// Pending row count per enrichment queue. A missing table is skipped.
+pub fn pending_enrichment_counts(conn: &rusqlite::Connection) -> Vec<(&'static str, i64)> {
+    ENRICHMENT_QUEUES
+        .iter()
+        .filter_map(|(name, table)| {
+            conn.query_row(
+                &format!("SELECT COUNT(*) FROM {table} WHERE status = 'pending'"),
+                [],
+                |r| r.get::<_, i64>(0),
+            )
+            .ok()
+            .map(|n| (*name, n))
+        })
+        .collect()
+}
+
+/// Run `hippo enrichment <action>` and return the text to print.
+pub fn handle_enrichment(
+    config: &HippoConfig,
+    action: &EnrichmentAction,
+    now_ms: i64,
+) -> Result<String> {
+    use hippo_core::enrichment_state::{StateRead, read_state, state_path, write_state};
+    let dir = &config.storage.data_dir;
+    match action {
+        EnrichmentAction::Pause => {
+            write_state(dir, true, now_ms)?;
+            Ok("Enrichment paused. Capture continues; work queues until `hippo enrichment resume`."
+                .to_string())
+        }
+        EnrichmentAction::Resume => {
+            write_state(dir, false, now_ms)?;
+            Ok("Enrichment resumed. The brain picks it up within one poll interval.".to_string())
+        }
+        EnrichmentAction::Status => {
+            let state = read_state(dir);
+            let mut out = match &state {
+                StateRead::Missing | StateRead::Valid(_) if !state.is_paused() => {
+                    "Enrichment: running".to_string()
+                }
+                StateRead::Valid(s) => {
+                    let since = chrono::DateTime::from_timestamp_millis(s.changed_at_ms)
+                        .map(|dt| {
+                            dt.with_timezone(&chrono::Local)
+                                .format("%Y-%m-%d %H:%M %Z")
+                                .to_string()
+                        })
+                        .unwrap_or_else(|| s.changed_at_ms.to_string());
+                    format!("Enrichment: paused since {since}")
+                }
+                _ => format!(
+                    "Enrichment: state file unreadable ({}), treated as paused",
+                    state_path(dir).display()
+                ),
+            };
+            let db_path = config.db_path();
+            if !db_path.exists() {
+                out.push_str("\n  no database yet");
+                return Ok(out);
+            }
+            let conn = rusqlite::Connection::open_with_flags(
+                &db_path,
+                rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY
+                    | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+            )
+            .with_context(|| format!("open {} read-only", db_path.display()))?;
+            for (name, n) in pending_enrichment_counts(&conn) {
+                out.push_str(&format!("\n  {name}  {n} pending"));
+            }
+            Ok(out)
+        }
+    }
+}
+
 fn format_ts(ts_ms: i64) -> String {
     // Treat 0 as an uninitialized sentinel rather than rendering 1970-01-01.
     if ts_ms == 0 {
@@ -6538,5 +6632,119 @@ replacement = "***"
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap().to_string();
         assert_eq!(check_metrics_exporter(&plist, &addr, false), 0);
+    }
+
+    fn enrichment_test_config(dir: &std::path::Path) -> HippoConfig {
+        let mut config = HippoConfig::default();
+        config.storage.data_dir = dir.to_path_buf();
+        config
+    }
+
+    fn enrichment_test_db(config: &HippoConfig, tables: &[&str]) -> rusqlite::Connection {
+        let conn = rusqlite::Connection::open(config.db_path()).unwrap();
+        for t in tables {
+            conn.execute_batch(&format!(
+                "CREATE TABLE {t} (id INTEGER PRIMARY KEY, status TEXT);"
+            ))
+            .unwrap();
+        }
+        conn
+    }
+
+    #[test]
+    fn enrichment_pause_writes_paused_state() {
+        let dir = tempdir().unwrap();
+        let config = enrichment_test_config(dir.path());
+        let out = handle_enrichment(&config, &EnrichmentAction::Pause, 1234).unwrap();
+        assert!(out.contains("Enrichment paused"), "{out}");
+        assert_eq!(
+            hippo_core::enrichment_state::read_state(dir.path()),
+            hippo_core::enrichment_state::StateRead::Valid(
+                hippo_core::enrichment_state::EnrichmentState {
+                    paused: true,
+                    changed_at_ms: 1234
+                }
+            )
+        );
+    }
+
+    #[test]
+    fn enrichment_resume_writes_running_state() {
+        let dir = tempdir().unwrap();
+        let config = enrichment_test_config(dir.path());
+        handle_enrichment(&config, &EnrichmentAction::Pause, 1).unwrap();
+        let out = handle_enrichment(&config, &EnrichmentAction::Resume, 2).unwrap();
+        assert!(out.contains("Enrichment resumed"), "{out}");
+        assert!(matches!(
+            hippo_core::enrichment_state::read_state(dir.path()),
+            hippo_core::enrichment_state::StateRead::Valid(
+                hippo_core::enrichment_state::EnrichmentState {
+                    paused: false,
+                    changed_at_ms: 2
+                }
+            )
+        ));
+    }
+
+    #[test]
+    fn enrichment_status_reports_state_and_queue_counts() {
+        let dir = tempdir().unwrap();
+        let config = enrichment_test_config(dir.path());
+        let conn = enrichment_test_db(
+            &config,
+            &[
+                "enrichment_queue",
+                "agentic_enrichment_queue",
+                "browser_enrichment_queue",
+                "workflow_enrichment_queue",
+                "memory_enrichment_queue",
+            ],
+        );
+        for _ in 0..3 {
+            conn.execute(
+                "INSERT INTO enrichment_queue (status) VALUES ('pending')",
+                [],
+            )
+            .unwrap();
+        }
+        conn.execute(
+            "INSERT INTO enrichment_queue (status) VALUES ('failed')",
+            [],
+        )
+        .unwrap();
+        handle_enrichment(&config, &EnrichmentAction::Pause, 1_700_000_000_000).unwrap();
+        let out = handle_enrichment(&config, &EnrichmentAction::Status, 0).unwrap();
+        assert!(out.contains("Enrichment: paused since"), "{out}");
+        assert!(out.contains("  shell  3 pending"), "{out}");
+        assert!(out.contains("  agentic  0 pending"), "{out}");
+    }
+
+    #[test]
+    fn enrichment_status_missing_state_is_running() {
+        let dir = tempdir().unwrap();
+        let config = enrichment_test_config(dir.path());
+        let out = handle_enrichment(&config, &EnrichmentAction::Status, 0).unwrap();
+        assert!(out.starts_with("Enrichment: running"), "{out}");
+        assert!(out.contains("  no database yet"), "{out}");
+    }
+
+    #[test]
+    fn enrichment_status_tolerates_missing_tables() {
+        let dir = tempdir().unwrap();
+        let config = enrichment_test_config(dir.path());
+        let _conn = enrichment_test_db(&config, &["enrichment_queue"]);
+        let out = handle_enrichment(&config, &EnrichmentAction::Status, 0).unwrap();
+        assert!(out.contains("  shell  0 pending"), "{out}");
+        assert!(!out.contains("browser"), "{out}");
+    }
+
+    #[test]
+    fn enrichment_status_flags_invalid_state_file() {
+        let dir = tempdir().unwrap();
+        let config = enrichment_test_config(dir.path());
+        std::fs::write(hippo_core::enrichment_state::state_path(dir.path()), "{").unwrap();
+        let out = handle_enrichment(&config, &EnrichmentAction::Status, 0).unwrap();
+        assert!(out.contains("unreadable"), "{out}");
+        assert!(out.contains("treated as paused"), "{out}");
     }
 }
