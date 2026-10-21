@@ -1285,7 +1285,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "sum by (task, backend) (rate(hippo_brain_decision_errors_total[$__rate_interval])) / sum by (task, backend) (rate(hippo_brain_decision_count_total[$__rate_interval]))",
+          "expr": "sum by (task, backend) (rate(hippo_brain_decision_errors_total[$__rate_interval])) / (sum by (task, backend) (rate(hippo_brain_decision_count_total[$__rate_interval])) > 0)",
           "legendFormat": "{{task}} {{backend}}",
           "datasource": {
             "type": "prometheus",
@@ -1370,7 +1370,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "(sum by (exported_job) (hippo_brain_decision_count_total{backend=\"jev\",outcome=\"success\"}) or on (exported_job) (0 * sum by (exported_job) (hippo_brain_decision_count_total{backend=\"jev\"}))) / sum by (exported_job) (hippo_brain_decision_count_total{backend=\"jev\"})",
+          "expr": "(sum by (exported_job) (hippo_brain_decision_count_total{backend=\"jev\",outcome=\"success\"}) or on (exported_job) (0 * sum by (exported_job) (hippo_brain_decision_count_total{backend=\"jev\"}))) / (sum by (exported_job) (hippo_brain_decision_count_total{backend=\"jev\"}) > 0)",
           "legendFormat": "{{exported_job}}",
           "editorMode": "code"
         }
