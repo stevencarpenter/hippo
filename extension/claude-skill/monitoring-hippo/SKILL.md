@@ -138,7 +138,7 @@ done
 |---------|-------|-----|
 | "brain not reachable" in daemon logs | Brain on port 9175? `curl localhost:9175/health` | `launchctl kickstart -k "gui/$(id -u)/com.hippo.brain"` |
 | No enrichment happening | `brain.stderr.log` for errors; queue depth growing? | Restart brain (kickstart), then `hippo doctor` |
-| Inference server not responding | `curl http://localhost:42069/v1/models` (`:1234` for LM Studio) | `launchctl kickstart -k "gui/$(id -u)/com.hippo.omlx"`, ensure a model is loaded |
+| Inference server not responding | `curl http://localhost:42069/v1/models` (`:1234` for LM Studio) | Reopen oMLX.app (`open -gj /Applications/oMLX.app`, or `mise run omlx:start` from a checkout); the `com.hippo.omlx` keeper never reopens a quit app. Then make sure a model is loaded |
 | Socket not found | Daemon loaded? `launchctl list \| grep daemon` | `launchctl kickstart -k "gui/$(id -u)/com.hippo.daemon"` |
 | Multiple things wedged | — | Kickstart every agent (above); from a checkout, `mise run restart` |
 

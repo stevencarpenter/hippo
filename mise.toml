@@ -594,7 +594,7 @@ exit 1
 '''
 
 [tasks."install:omlx"]
-description = "Install the optional com.hippo.omlx keeper LaunchAgent (relaunches the oMLX macOS app if it is not running)"
+description = "Install the optional com.hippo.omlx keeper LaunchAgent (starts the oMLX server when the app runs without one; never reopens a quit app)"
 run = '''
 #!/usr/bin/env bash
 set -euo pipefail
@@ -603,7 +603,9 @@ DOMAIN="gui/$(id -u)"
 DEST="$HOME/Library/LaunchAgents/com.hippo.omlx.plist"
 # The rendered plist hard-codes this path (launchd/com.hippo.omlx.plist).
 OMLX_CLI="/Applications/oMLX.app/Contents/MacOS/omlx-cli"
-BASE_URL="$(sed -n 's/^base_url *= *"\([^"]*\)".*/\1/p' "${XDG_CONFIG_HOME:-$HOME/.config}/hippo/config.toml" | head -1)"
+# Same base_url extraction as the keeper script in launchd/com.hippo.omlx.plist.
+BASE_URL="$(sed -n "/^[[:space:]]*\[inference\][[:space:]]*\(#.*\)*\$/,/^[[:space:]]*\[/s/^[[:space:]]*base_url[[:space:]]*=[[:space:]]*[\"']\([^\"']*\)[\"'].*/\1/p" "${XDG_CONFIG_HOME:-$HOME/.config}/hippo/config.toml" 2>/dev/null | head -n 1)"
+BASE_URL="${BASE_URL%/}"
 BASE_URL="${BASE_URL:-http://127.0.0.1:42069/v1}"
 
 if [ ! -x "$OMLX_CLI" ]; then
@@ -622,6 +624,15 @@ plutil -lint "$DEST" >/dev/null
 
 launchctl bootout "$DOMAIN" "$DEST" >/dev/null 2>&1 || true
 launchctl bootstrap "$DOMAIN" "$DEST"
+# The keeper never opens the app, so start it once here.
+"$OMLX_CLI" start --no-wait
+
+# The keeper never opens the app, so login start relies on oMLX's own
+# Launch-at-Login agent.
+if [ ! -f "$HOME/Library/LaunchAgents/com.omlx.app.plist" ]; then
+    echo "WARNING: oMLX Launch-at-Login is off ($HOME/Library/LaunchAgents/com.omlx.app.plist missing)."
+    echo "         The keeper does not start oMLX at login. Turn on Launch at Login in oMLX settings."
+fi
 
 for _ in {1..90}; do
     if curl -fsS --max-time 2 "$BASE_URL/models" >/dev/null 2>&1; then
@@ -676,7 +687,9 @@ description = "Show oMLX process, keeper, and loaded models"
 run = '''
 #!/usr/bin/env bash
 set -uo pipefail
-BASE_URL="$(sed -n 's/^base_url *= *"\([^"]*\)".*/\1/p' "${XDG_CONFIG_HOME:-$HOME/.config}/hippo/config.toml" | head -1)"
+# Same base_url extraction as the keeper script in launchd/com.hippo.omlx.plist.
+BASE_URL="$(sed -n "/^[[:space:]]*\[inference\][[:space:]]*\(#.*\)*\$/,/^[[:space:]]*\[/s/^[[:space:]]*base_url[[:space:]]*=[[:space:]]*[\"']\([^\"']*\)[\"'].*/\1/p" "${XDG_CONFIG_HOME:-$HOME/.config}/hippo/config.toml" 2>/dev/null | head -n 1)"
+BASE_URL="${BASE_URL%/}"
 BASE_URL="${BASE_URL:-http://127.0.0.1:42069/v1}"
 echo "app:    $(pgrep -x oMLX | head -1 || echo 'not running')"
 echo "server: $(pgrep -x omlx-server | head -1 || echo 'not running')"
