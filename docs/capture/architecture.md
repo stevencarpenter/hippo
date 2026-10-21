@@ -86,7 +86,7 @@ Append-only ledger of invariant violations. The watchdog writes; `hippo alarms a
 | `resolved_at` | Set once the invariant has stayed clean for 2 consecutive ticks |
 | `clean_ticks` | Consecutive-clean tick count driving the auto-resolve loop |
 
-## Invariants (I-1..I-16)
+## Invariants
 
 Asserted by the watchdog every 60 s. Each has a formal predicate in `crates/hippo-daemon/src/watchdog.rs`. Violations create or refresh a `capture_alarms` row; the doctor surfaces them with `[!!]` severity.
 
