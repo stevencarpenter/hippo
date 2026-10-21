@@ -869,20 +869,31 @@ const ENRICHMENT_QUEUES: [(&str, &str); 5] = [
     ("auto-memory", "memory_enrichment_queue"),
 ];
 
-/// Pending row count per enrichment queue. A missing table is skipped.
-pub fn pending_enrichment_counts(conn: &rusqlite::Connection) -> Vec<(&'static str, i64)> {
-    ENRICHMENT_QUEUES
-        .iter()
-        .filter_map(|(name, table)| {
-            conn.query_row(
+/// Pending row count per enrichment queue. A missing table is skipped;
+/// any other error (locked, corrupt, schema drift) is returned.
+pub fn pending_enrichment_counts(conn: &rusqlite::Connection) -> Result<Vec<(&'static str, i64)>> {
+    let mut counts = Vec::new();
+    for (name, table) in ENRICHMENT_QUEUES {
+        let exists: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1)",
+                [table],
+                |r| r.get(0),
+            )
+            .with_context(|| format!("check table {table}"))?;
+        if !exists {
+            continue;
+        }
+        let n = conn
+            .query_row(
                 &format!("SELECT COUNT(*) FROM {table} WHERE status = 'pending'"),
                 [],
                 |r| r.get::<_, i64>(0),
             )
-            .ok()
-            .map(|n| (*name, n))
-        })
-        .collect()
+            .with_context(|| format!("count pending rows in {table}"))?;
+        counts.push((name, n));
+    }
+    Ok(counts)
 }
 
 /// Run `hippo enrichment <action>` and return the text to print.
@@ -906,9 +917,8 @@ pub fn handle_enrichment(
         EnrichmentAction::Status => {
             let state = read_state(dir);
             let mut out = match &state {
-                StateRead::Missing | StateRead::Valid(_) if !state.is_paused() => {
-                    "Enrichment: running".to_string()
-                }
+                StateRead::Missing => "Enrichment: running".to_string(),
+                StateRead::Valid(s) if !s.paused => "Enrichment: running".to_string(),
                 StateRead::Valid(s) => {
                     let since = chrono::DateTime::from_timestamp_millis(s.changed_at_ms)
                         .map(|dt| {
@@ -919,7 +929,7 @@ pub fn handle_enrichment(
                         .unwrap_or_else(|| s.changed_at_ms.to_string());
                     format!("Enrichment: paused since {since}")
                 }
-                _ => format!(
+                StateRead::Invalid(_) => format!(
                     "Enrichment: state file unreadable ({}), treated as paused",
                     state_path(dir).display()
                 ),
@@ -935,7 +945,8 @@ pub fn handle_enrichment(
                     | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
             )
             .with_context(|| format!("open {} read-only", db_path.display()))?;
-            for (name, n) in pending_enrichment_counts(&conn) {
+            conn.busy_timeout(std::time::Duration::from_millis(5000))?;
+            for (name, n) in pending_enrichment_counts(&conn)? {
                 out.push_str(&format!("\n  {name}  {n} pending"));
             }
             Ok(out)
@@ -6746,5 +6757,16 @@ replacement = "***"
         let out = handle_enrichment(&config, &EnrichmentAction::Status, 0).unwrap();
         assert!(out.contains("unreadable"), "{out}");
         assert!(out.contains("treated as paused"), "{out}");
+    }
+
+    #[test]
+    fn enrichment_status_errors_on_queue_table_without_status_column() {
+        let dir = tempdir().unwrap();
+        let config = enrichment_test_config(dir.path());
+        let conn = rusqlite::Connection::open(config.db_path()).unwrap();
+        conn.execute_batch("CREATE TABLE enrichment_queue (id INTEGER PRIMARY KEY);")
+            .unwrap();
+        let err = handle_enrichment(&config, &EnrichmentAction::Status, 0).unwrap_err();
+        assert!(format!("{err:#}").contains("enrichment_queue"), "{err:#}");
     }
 }
